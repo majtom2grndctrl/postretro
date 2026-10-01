@@ -26,10 +26,12 @@
 mod paths;
 mod pool_mirror;
 
+use std::ops::Range;
 use std::time::{Duration, Instant};
 
 use glam::{Mat4, Vec3};
 use postretro_level_format::SectionId;
+use postretro_level_format::cell_residency_set::CellResidencySetSection;
 use postretro_level_loader::{LevelWorld, PrlReadCounters};
 use postretro_stage_timing::StageFrame;
 use postretro_visibility::{TimingGate, VisibilityPath, VisibleCells, determine_visible_cells};
@@ -256,22 +258,46 @@ fn section_reads(counters: &PrlReadCounters) -> (u64, u64) {
     )
 }
 
-/// The camera cell's mandatory blocks at `lead` (fixed point), sorted.
+/// Each cell's blocks from the owning cell of every block in block order: a
+/// contiguous run, as the loader validates, empty for a cell without charts.
+fn cell_block_ranges(
+    block_cells: impl IntoIterator<Item = u32>,
+    cell_count: usize,
+) -> Vec<Range<u32>> {
+    let mut ranges = vec![0..0; cell_count];
+    for (block, cell) in (0u32..).zip(block_cells) {
+        let run = &mut ranges[cell as usize];
+        if run.start == run.end {
+            *run = block..block + 1;
+        } else {
+            assert_eq!(run.end, block, "cell {cell}'s blocks are contiguous");
+            run.end += 1;
+        }
+    }
+    ranges
+}
+
+/// Every block of the camera cell's mandatory cells at `lead` (fixed point),
+/// sorted.
 fn mandatory_blocks(
-    view: &LightmapLevelView<'_>,
-    block_of_cell: &[u32],
+    residency_set: &CellResidencySetSection,
+    cell_blocks: &[Range<u32>],
     camera_cell: u32,
     lead: u32,
     out: &mut Vec<u32>,
 ) {
     out.clear();
     out.extend(
-        view.residency_set
+        residency_set
             .entries_for(camera_cell as usize)
             .iter()
             .filter(|entry| entry.lead <= lead)
-            .filter_map(|entry| block_of_cell.get(entry.cell_id as usize).copied())
-            .filter(|&block| block != u32::MAX),
+            .flat_map(|entry| {
+                cell_blocks
+                    .get(entry.cell_id as usize)
+                    .cloned()
+                    .unwrap_or(0..0)
+            }),
     );
     out.sort_unstable();
     out.dedup();
@@ -280,10 +306,14 @@ fn mandatory_blocks(
 fn run(world: &LevelWorld, walk: &Walk, levers: Levers) -> RunReport {
     let view = LightmapLevelView::of(world).expect("the PRL streams its lightmap");
     let read_counters = view.manifest.read_counters().clone();
-    let mut block_of_cell = vec![u32::MAX; world.cells.len()];
-    for (block, record) in view.manifest.lightmap_index().records.iter().enumerate() {
-        block_of_cell[record.cell_id as usize] = block as u32;
-    }
+    let cell_blocks = cell_block_ranges(
+        view.manifest
+            .lightmap_index()
+            .records
+            .iter()
+            .map(|record| record.cell_id),
+        world.cells.len(),
+    );
 
     let hints = decode_level_hints(world.cluster_directory()).expect("id-49 hints");
     let mut session =
@@ -330,7 +360,13 @@ fn run(world: &LevelWorld, walk: &Walk, levers: Levers) -> RunReport {
     let mut mandatory_now = Vec::new();
     let mut mandatory_prev = Vec::new();
     let mut previous_cell = spawn_cell;
-    mandatory_blocks(&view, &block_of_cell, spawn_cell, lead, &mut mandatory_prev);
+    mandatory_blocks(
+        view.residency_set,
+        &cell_blocks,
+        spawn_cell,
+        lead,
+        &mut mandatory_prev,
+    );
     let mut seconds = 0.0f64;
     let frame_budget = Duration::from_secs_f64(FRAME_SECONDS);
 
@@ -360,7 +396,13 @@ fn run(world: &LevelWorld, walk: &Walk, levers: Levers) -> RunReport {
             if cell_changed {
                 // Blocks joining M(c, L), and how many the pool already holds
                 // before this frame's drain.
-                mandatory_blocks(&view, &block_of_cell, camera_cell, lead, &mut mandatory_now);
+                mandatory_blocks(
+                    view.residency_set,
+                    &cell_blocks,
+                    camera_cell,
+                    lead,
+                    &mut mandatory_now,
+                );
                 for &block in &mandatory_now {
                     if mandatory_prev.binary_search(&block).is_err() {
                         report.entering_blocks += 1;
@@ -417,12 +459,12 @@ fn run(world: &LevelWorld, walk: &Walk, levers: Levers) -> RunReport {
                 (visibility.stats.path, &visibility.visible_cells)
             {
                 for &drawn in cells {
-                    let block = block_of_cell[drawn as usize];
-                    if block != u32::MAX
-                        && mandatory_prev.binary_search(&block).is_err()
-                        && !mirror.model().is_resident(block)
-                    {
-                        outside_missing += 1;
+                    for block in cell_blocks[drawn as usize].clone() {
+                        if mandatory_prev.binary_search(&block).is_err()
+                            && !mirror.model().is_resident(block)
+                        {
+                            outside_missing += 1;
+                        }
                     }
                 }
             }
@@ -857,4 +899,23 @@ fn lightmap_install_timing_from_prl() {
             mirror.model().layers(),
         );
     }
+}
+
+#[test]
+fn mandatory_blocks_include_every_block_of_a_multi_block_cell() {
+    use crate::lightmap_streaming::test_fixtures::{M, residency_set};
+
+    // Cell 0 owns blocks 0 and 1, cell 1 owns block 2, cell 2 owns none.
+    let cell_blocks = cell_block_ranges([0, 0, 1], 3);
+    assert_eq!(cell_blocks, [0..2, 2..3, 0..0]);
+
+    // Camera 1 reaches cell 1 at 0 m, cell 0 at 8 m and cell 2 at 20 m.
+    let set = residency_set(3, &[(1, 1, 0), (1, 0, 8), (1, 2, 20)], 32);
+    let mut blocks = Vec::new();
+    mandatory_blocks(&set, &cell_blocks, 1, 0, &mut blocks);
+    assert_eq!(blocks, [2]);
+    mandatory_blocks(&set, &cell_blocks, 1, 8 * M, &mut blocks);
+    assert_eq!(blocks, [0, 1, 2], "cell 0 brings both of its blocks");
+    mandatory_blocks(&set, &cell_blocks, 1, 32 * M, &mut blocks);
+    assert_eq!(blocks, [0, 1, 2], "a chartless cell adds none");
 }

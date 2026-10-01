@@ -202,7 +202,7 @@ impl LightmapStreamingSession {
     }
 
     /// Capture's fixed view: its camera cell's baked set plus every drawn
-    /// cell's block as visible, whatever the visibility path, without
+    /// cell's blocks as visible, whatever the visibility path, without
     /// draining. See [`LightmapResidencyController::update_capture_view`].
     #[cfg_attr(
         not(feature = "capture"),

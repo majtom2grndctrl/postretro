@@ -49,7 +49,7 @@ fn round_atlas_dim(raw: u32, max_dim: u32) -> u32 {
 /// leaf in one layer (grown by doubling, capped at `max_dim`), so no leaf is
 /// ever forced to split for want of room within a layer.
 ///
-/// Production packs cell blocks instead (`block_layout::pack_cell_blocks`);
+/// Production packs cell blocks instead (`block_layout::pack_cell_blocks_within`);
 /// this chart-level packer remains for the residency dry run and tests.
 #[cfg(test)]
 pub(crate) fn pack_layers(
@@ -62,7 +62,7 @@ pub(crate) fn pack_layers(
 
 /// [`pack_layers`] with an explicit layer ceiling in place of
 /// [`MAX_ATLAS_LAYERS`]. Only tests and the dry run call this; production
-/// packs cell blocks (`block_layout::pack_cell_blocks`). The dry run raises
+/// packs cell blocks (`block_layout::pack_cell_blocks_within`). The dry run raises
 /// the ceiling so a small capped layer size can be measured even when its
 /// layer count would exceed the runtime floor.
 #[cfg(test)]

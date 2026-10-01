@@ -1,13 +1,12 @@
-//! Level-static block facts: cell to block, extents, read ranges, pins, priority.
+//! Level-static block facts: cell to blocks, extents, read ranges, pins, priority.
 //! See: context/lib/rendering_pipeline.md §4 (Lightmap cell-block residency)
+
+use std::ops::Range;
 
 use super::LightmapResidencyError;
 use super::source::LightmapBlockSource;
 use crate::streaming::cluster_hints::ClusterHints;
 use crate::streaming::request::ReadRanges;
-
-/// A cell without charts has no block.
-const NO_BLOCK: u32 = u32::MAX;
 
 /// What the controller needs about one block for the level's lifetime.
 #[derive(Debug, Clone, Copy)]
@@ -34,10 +33,11 @@ impl BlockFacts {
 }
 
 /// Built once per level from the block index and the id-49 hints. Maps
-/// residency-set cells to blocks; at most one block per cell.
+/// residency-set cells to their blocks: a contiguous, possibly empty, run of
+/// block ids.
 #[derive(Debug)]
 pub(crate) struct LevelBlockMap {
-    cell_to_block: Vec<u32>,
+    cell_blocks: Vec<Range<u32>>,
     blocks: Vec<BlockFacts>,
     /// Blocks of pinned clusters, ascending: mandatory from every camera cell.
     pinned_blocks: Vec<u32>,
@@ -61,23 +61,30 @@ impl LevelBlockMap {
         let block_count = source.block_count();
         let alignment = source.block_alignment().max(1);
         let slot_edge = |edge: u16| u64::from(u32::from(edge).next_multiple_of(alignment));
-        let mut cell_to_block = vec![NO_BLOCK; cell_count];
+        let mut cell_blocks = vec![0..0; cell_count];
         let mut blocks = Vec::with_capacity(block_count as usize);
         let mut pinned_blocks = Vec::new();
         for block in 0..block_count {
             let Some(summary) = source.block_summary(block) else {
                 return invalid(format!("block {block} has no index record"));
             };
-            let Some(slot) = cell_to_block.get_mut(summary.cell_id as usize) else {
+            let Some(run) = cell_blocks.get_mut(summary.cell_id as usize) else {
                 return invalid(format!(
                     "block {block} names cell {} past the {cell_count}-cell residency set",
                     summary.cell_id
                 ));
             };
-            if *slot != NO_BLOCK {
-                return invalid(format!("cell {} owns more than one block", summary.cell_id));
+            if run.start == run.end {
+                *run = block..block + 1;
+            } else if run.end == block {
+                run.end += 1;
+            } else {
+                return invalid(format!(
+                    "cell {}'s blocks are not contiguous: block {block} follows block {}",
+                    summary.cell_id,
+                    run.end - 1
+                ));
             }
-            *slot = block;
             let ranges = source
                 .block_file_ranges(block)
                 .map_err(LightmapResidencyError::Source)?;
@@ -109,7 +116,7 @@ impl LevelBlockMap {
             });
         }
         Ok(Self {
-            cell_to_block,
+            cell_blocks,
             blocks,
             pinned_blocks,
         })
@@ -119,11 +126,10 @@ impl LevelBlockMap {
         self.blocks.len()
     }
 
-    pub(crate) fn block_of_cell(&self, cell: u32) -> Option<u32> {
-        self.cell_to_block
-            .get(cell as usize)
-            .copied()
-            .filter(|&block| block != NO_BLOCK)
+    /// The blocks of `cell`, empty for a cell without charts or past the
+    /// map.
+    pub(crate) fn blocks_of_cell(&self, cell: u32) -> Range<u32> {
+        self.cell_blocks.get(cell as usize).cloned().unwrap_or(0..0)
     }
 
     pub(crate) fn facts(&self, block: u32) -> &BlockFacts {

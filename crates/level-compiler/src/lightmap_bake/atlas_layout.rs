@@ -5,7 +5,9 @@ use std::collections::HashSet;
 
 use glam::Vec3;
 
-use super::block_layout::{BlockLayout, BlockOrdering, pack_cell_blocks};
+use postretro_level_format::lightmap::LIGHTMAP_POOL_LAYER_EDGE;
+
+use super::block_layout::{BlockLayout, BlockOrdering, pack_cell_blocks_within};
 use super::charts::{Chart, check_chart_extents, plan_charts};
 use super::{CompositedAtlas, LightmapBakeError};
 use crate::bake_control::BakeControl;
@@ -53,15 +55,15 @@ pub fn prepare_atlas(
 
 /// Prepare charts and cell blocks, and assign each vertex its block id and
 /// block-local lightmap UV. Runs `split_shared_vertices`, `plan_charts`,
-/// `check_chart_extents`, `pack_cell_blocks`, and `assign_lightmap_uvs`. Does
+/// `check_chart_extents`, `pack_cell_blocks_within`, and `assign_lightmap_uvs`. Does
 /// NOT run the per-texel ray casting.
 ///
 /// Called once before either bake branch, so the layout is shared. Vertex
 /// splitting and UV writes run on all non-empty geometry with static lights.
 /// Without static lights the section has no blocks, so vertices keep block 0,
 /// but charts and placements are still returned for the animated-light
-/// passes; when those blocks exceed the runtime limits, placements come back
-/// empty instead of failing the build. Empty geometry returns an empty layout
+/// passes; when a chart or the block count exceeds the runtime limits,
+/// placements come back empty instead of failing the build. Empty geometry returns an empty layout
 /// without mutating anything.
 pub fn prepare_atlas_ordered(
     geom: &mut GeometryResult,
@@ -69,6 +71,30 @@ pub fn prepare_atlas_ordered(
     texel_density: f32,
     scale_regions: &[MapLightmapScaleRegion],
     ordering: BlockOrdering<'_>,
+    control: &BakeControl,
+) -> Result<PreparedAtlas, LightmapBakeError> {
+    prepare_atlas_within(
+        geom,
+        static_lights,
+        texel_density,
+        scale_regions,
+        ordering,
+        LIGHTMAP_POOL_LAYER_EDGE,
+        control,
+    )
+}
+
+/// [`prepare_atlas_ordered`] packing blocks against `pool_edge` rather than
+/// the runtime's, so tests can bake multi-block cells from small charts.
+/// Charts are still checked against the runtime pool edge; callers keep them
+/// within `pool_edge`.
+pub(crate) fn prepare_atlas_within(
+    geom: &mut GeometryResult,
+    static_lights: &StaticBakedLights<'_>,
+    texel_density: f32,
+    scale_regions: &[MapLightmapScaleRegion],
+    ordering: BlockOrdering<'_>,
+    pool_edge: u32,
     control: &BakeControl,
 ) -> Result<PreparedAtlas, LightmapBakeError> {
     if geom.geometry.vertices.is_empty() || geom.geometry.faces.is_empty() {
@@ -92,7 +118,7 @@ pub fn prepare_atlas_ordered(
         // the direction scale, which the placeholder id-22 header carries.
         let charts = plan_charts(geom, texel_density, scale_regions)?;
         let pack = check_chart_extents(&charts, texel_density, scale_regions)
-            .and_then(|()| pack_cell_blocks(&charts, ordering, control));
+            .and_then(|()| pack_cell_blocks_within(&charts, ordering, pool_edge, control));
         return Ok(match pack {
             Ok(pack) => PreparedAtlas {
                 charts,
@@ -118,7 +144,7 @@ pub fn prepare_atlas_ordered(
 
     let charts = plan_charts(geom, texel_density, scale_regions)?;
     check_chart_extents(&charts, texel_density, scale_regions)?;
-    let pack = pack_cell_blocks(&charts, ordering, control)?;
+    let pack = pack_cell_blocks_within(&charts, ordering, pool_edge, control)?;
     if !pack.placements.is_empty() {
         assign_lightmap_uvs(geom, &charts, &pack.placements, &pack.layout);
     }

@@ -24,11 +24,26 @@ pub struct Chart {
     /// Includes padding.
     pub width_texels: u32,
     pub height_texels: u32,
-    /// BSP leaf this chart's face belongs to. The multi-bin packer keeps all of
-    /// one leaf's charts on a single atlas array layer (a leaf is the runtime
-    /// draw/visibility unit, so its charts must share a layer to avoid a
-    /// per-face layer switch in the hot path).
+    /// BSP leaf (runtime cell) this chart's face belongs to; cell blocks
+    /// group charts by it.
     pub leaf_index: u32,
+    /// `Some` for a sub-chart of a face cut past one pool layer: the window
+    /// onto its parent's texel grid. `None` for a chart that is its own grid.
+    pub window: Option<ChartWindow>,
+}
+
+/// A sub-chart's view of its parent chart's texel grid. The sub-chart's
+/// `uv_min`/`uv_extent` and texel extent describe the window itself; its
+/// texels' world positions, seeds and vertex UVs come from the parent-grid
+/// index, so neighbouring sub-charts bake bit-identical overlap texels.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ChartWindow {
+    /// The parent chart's UV rect and interior texel extent.
+    pub grid_uv_min: [f32; 2],
+    pub grid_uv_extent: [f32; 2],
+    pub grid_interior: [u32; 2],
+    /// The parent-grid texel of this chart's first interior texel.
+    pub origin: [u32; 2],
 }
 
 pub(super) fn plan_charts(
@@ -152,6 +167,7 @@ pub(super) fn plan_charts(
             width_texels,
             height_texels,
             leaf_index,
+            window: None,
         });
     }
     Ok(charts)
@@ -249,5 +265,6 @@ pub(super) fn empty_chart_for_leaf(leaf_index: u32) -> Chart {
         width_texels: 1,
         height_texels: 1,
         leaf_index,
+        window: None,
     }
 }

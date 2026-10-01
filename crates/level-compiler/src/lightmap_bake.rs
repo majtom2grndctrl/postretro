@@ -36,7 +36,7 @@ pub use block_layout::{BlockLayout, BlockOrdering, CellBlock};
 pub(crate) use cell_blocks::{
     CANDIDATE_WIDTHS, PackedBlock, pack_cell_block, pack_cell_sub_blocks,
 };
-pub use charts::Chart;
+pub use charts::{Chart, ChartWindow};
 pub(crate) use encode::{BlockSectionBuilder, copy_unit_rect, irradiance_format};
 #[cfg(test)]
 pub(crate) use reference::{bake_monolithic_atlas, bake_monolithic_atlas_controlled};

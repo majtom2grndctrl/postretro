@@ -803,6 +803,7 @@ fn synthetic_chart_leaf(w: u32, h: u32, leaf_index: u32) -> Chart {
         width_texels: w,
         height_texels: h,
         leaf_index,
+        window: None,
     }
 }
 
@@ -3124,6 +3125,77 @@ fn moved_and_renumbered_chart_bakes_identical_texels() {
     assert_eq!(
         before.direction, after.direction,
         "direction moved with the chart"
+    );
+}
+
+/// A sub-chart window is a view onto its parent's grid: each of its texels
+/// has the parent texel's exact world position and seed, and a vertex maps to
+/// the parent-grid position shifted by the window origin.
+#[test]
+fn chart_window_texels_and_vertices_are_the_parents_bit_for_bit() {
+    use crate::chart_raster::{CHART_PADDING_TEXELS, chart_texel_seed, chart_texel_world_position};
+
+    let mut geometry = unit_quad_geometry();
+    for vertex in &mut geometry.geometry.vertices {
+        vertex.position[0] *= 7.3;
+        vertex.position[2] *= 3.1;
+    }
+    let parent = plan_charts(&geometry, 0.0137, &[]).unwrap().remove(0);
+    let padding = CHART_PADDING_TEXELS;
+    let (parent_w, parent_h) = (
+        parent.width_texels - 2 * padding,
+        parent.height_texels - 2 * padding,
+    );
+    let origin = [parent_w / 3, parent_h / 4];
+    let (window_w, window_h) = (parent_w / 2, parent_h / 2);
+    let pitch = [
+        parent.uv_extent[0] / parent_w as f32,
+        parent.uv_extent[1] / parent_h as f32,
+    ];
+    let sub = Chart {
+        uv_min: [
+            parent.uv_min[0] + origin[0] as f32 * pitch[0],
+            parent.uv_min[1] + origin[1] as f32 * pitch[1],
+        ],
+        uv_extent: [window_w as f32 * pitch[0], window_h as f32 * pitch[1]],
+        width_texels: window_w + 2 * padding,
+        height_texels: window_h + 2 * padding,
+        window: Some(ChartWindow {
+            grid_uv_min: parent.uv_min,
+            grid_uv_extent: parent.uv_extent,
+            grid_interior: [parent_w, parent_h],
+            origin,
+        }),
+        ..parent.clone()
+    };
+
+    for (tx, ty) in [(0, 0), (5, 9), (window_w as i32 - 1, window_h as i32 - 1)] {
+        let (px, py) = (origin[0] as i32 + tx, origin[1] as i32 + ty);
+        assert_eq!(
+            chart_texel_world_position(&sub, tx, ty)
+                .to_array()
+                .map(f32::to_bits),
+            chart_texel_world_position(&parent, px, py)
+                .to_array()
+                .map(f32::to_bits),
+            "texel ({tx}, {ty})"
+        );
+        assert_eq!(
+            chart_texel_seed(&sub, tx, ty),
+            chart_texel_seed(&parent, px, py)
+        );
+    }
+
+    let vertex = Vec3::new(2.9, 0.0, 1.7);
+    let (sx, sy) = chart_texel_position(&sub, 40, 60, vertex);
+    let (px, py) = chart_texel_position(&parent, 40, 60, vertex);
+    assert!(
+        (sx - (px - origin[0] as f32)).abs() < 1.0e-3,
+        "{sx} vs {px}"
+    );
+    assert!(
+        (sy - (py - origin[1] as f32)).abs() < 1.0e-3,
+        "{sy} vs {py}"
     );
 }
 

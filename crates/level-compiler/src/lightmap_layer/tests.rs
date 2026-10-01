@@ -211,6 +211,7 @@ fn analytic_and_baked_chart_walks_both_skip_non_positive_extent() {
         width_texels: 5,
         height_texels: 5,
         leaf_index: 0,
+        window: None,
     }];
     let placements = vec![ChartPlacement {
         x: 0,
@@ -1052,6 +1053,7 @@ fn lone_chart_layout_fingerprint(
         width_texels,
         height_texels,
         leaf_index: 0,
+        window: None,
     }];
     // Both P2 variants remain at the packer's 64² minimum and at the same
     // sole-chart placement. Only the resolved chart dimensions may re-key.
@@ -1645,6 +1647,7 @@ fn direction_texel_scale_rekeys_section_without_rekeying_light_layers() {
         width_texels: 5,
         height_texels: 5,
         leaf_index: 0,
+        window: None,
     }];
     let placements = [ChartPlacement {
         x: 0,
@@ -1699,6 +1702,7 @@ fn all_sdf_section_cache_rekeys_when_prepared_dimensions_change() {
         width_texels: 5,
         height_texels: 5,
         leaf_index: 0,
+        window: None,
     }];
     let placements = [ChartPlacement {
         x: 0,

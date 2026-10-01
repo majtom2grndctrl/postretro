@@ -509,8 +509,7 @@ fn bake_one_chunk(
                 continue;
             }
 
-            let world_p =
-                chart_texel_world_position(chart, tx_interior, ty_interior, interior_w, interior_h);
+            let world_p = chart_texel_world_position(chart, tx_interior, ty_interior);
             let surface_normal = chart.normal;
 
             // The static bake's seed for this chart texel, so the animated

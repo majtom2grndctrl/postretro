@@ -446,6 +446,7 @@ mod tests {
             width_texels: 32,
             height_texels: 32,
             leaf_index: 0,
+            window: None,
         }
     }
 
@@ -461,6 +462,7 @@ mod tests {
             width_texels: 32,
             height_texels: 32,
             leaf_index: 0,
+            window: None,
         }
     }
 
@@ -824,6 +826,7 @@ mod tests {
             width_texels: 8,
             height_texels: 8,
             leaf_index: 0,
+            window: None,
         };
         // Eight lights spread across the face → forces subdivision below cap.
         let uv_centers = [

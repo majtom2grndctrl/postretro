@@ -304,5 +304,6 @@ fn chart_for(rect: &ChartRect) -> Chart {
         width_texels: rect.width,
         height_texels: rect.height,
         leaf_index: rect.cell,
+        window: None,
     }
 }

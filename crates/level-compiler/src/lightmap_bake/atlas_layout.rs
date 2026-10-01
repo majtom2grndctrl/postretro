@@ -219,16 +219,36 @@ pub(crate) fn chart_texel_position(
     world_p: Vec3,
 ) -> (f32, f32) {
     let padding = CHART_PADDING_TEXELS as f32;
-    let interior_w = ((chart.width_texels as f32) - 2.0 * padding).max(1.0);
-    let interior_h = ((chart.height_texels as f32) - 2.0 * padding).max(1.0);
-    let scale_u = interior_w / chart.uv_extent[0].max(1.0e-6);
-    let scale_v = interior_h / chart.uv_extent[1].max(1.0e-6);
+    // A sub-chart maps through its parent's grid, then shifts by its window,
+    // so a vertex on a cut lands on the same grid texel from both sides.
+    let (uv_min, uv_extent, interior, window) = match chart.window {
+        None => (
+            chart.uv_min,
+            chart.uv_extent,
+            [
+                ((chart.width_texels as f32) - 2.0 * padding).max(1.0),
+                ((chart.height_texels as f32) - 2.0 * padding).max(1.0),
+            ],
+            [0.0, 0.0],
+        ),
+        Some(window) => (
+            window.grid_uv_min,
+            window.grid_uv_extent,
+            [
+                window.grid_interior[0] as f32,
+                window.grid_interior[1] as f32,
+            ],
+            [window.origin[0] as f32, window.origin[1] as f32],
+        ),
+    };
+    let scale_u = interior[0] / uv_extent[0].max(1.0e-6);
+    let scale_v = interior[1] / uv_extent[1].max(1.0e-6);
     let rel = world_p - chart.origin;
-    let local_u = rel.dot(chart.u_axis) - chart.uv_min[0];
-    let local_v = rel.dot(chart.v_axis) - chart.uv_min[1];
+    let local_u = rel.dot(chart.u_axis) - uv_min[0];
+    let local_v = rel.dot(chart.v_axis) - uv_min[1];
     (
-        (origin_x as f32 + padding) + local_u * scale_u,
-        (origin_y as f32 + padding) + local_v * scale_v,
+        (origin_x as f32 + padding - window[0]) + local_u * scale_u,
+        (origin_y as f32 + padding - window[1]) + local_v * scale_v,
     )
 }
 

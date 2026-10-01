@@ -19,6 +19,7 @@ fn chart(width: u32, height: u32, cell: u32) -> Chart {
         width_texels: width,
         height_texels: height,
         leaf_index: cell,
+        window: None,
     }
 }
 

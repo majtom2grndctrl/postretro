@@ -1,0 +1,43 @@
+# release-indirect-validation
+
+Brief · compact · reads: `context/lib/rendering_pipeline.md` §5, §7.1, §12 · `context/lib/development_guide.md` §3.5, §6.4 · `context/lib/build_pipeline.md` §PRL section IDs · read at 832e20c8a
+
+## Problem
+Developer-raised, from CPU profiling on this Mac (Radeon Pro 5300M, Metal). wgpu-core 29.0.1 validates every indirect draw while encoding, and its default instance flags keep that validation on in release builds. The depth prepass, the forward pass and each shadow slot draw one indirect record per BVH leaf, so the cost grows with leaf count. The cause is the per-draw `DrawBatcher::add` plus the injected validation pass, both inside `CommandEncoder::finish` under the `render_submit` stage. In the draft session they cost about 1.29 ms per frame on `stress-warren-hallway-inspection` (8,437 leaves) and 0.37 ms on `campaign-test` (774 leaves). When this is done, release builds skip that work. The engine's own load check and writer invariant take over the safety it gave. Debug and `dev-tools` builds keep wgpu's validation.
+
+## Decisions
+- **Release builds clear `InstanceFlags::VALIDATION_INDIRECT_CALL`, and no other bit.** A build with neither `debug_assertions` nor `dev-tools` creates its instance without the bit. Every other build keeps wgpu's build-config default unchanged. The windowed and offscreen-capture instances share one policy. Capture and observability builds follow the same rule. The gate matches the animated-block mismatch rule (`rendering_pipeline.md` §7.1 step 4): strict in debug or `dev-tools`, lean in player release. The renderer logs the effective state once, when it creates the instance.
+- **The guard is the existing load check, made a named contract.** `validate_bvh_structure` already runs in every build. It rejects a leaf whose `index_offset + index_count` overflows or passes the Geometry (id 17) index count. The rejection is a hard `PrlLoadError::SectionValidation { section: "Bvh" }`, never a clamp. Every production install reaches the renderer through `load_prl`, so the renderer adds no second check. This brief pins the check with tests, and its doc comment names the release flag as the thing that depends on it.
+- **`first_instance` is not map data.** No PRL field reaches `instance_count`, `first_instance` or `base_vertex`. The writers hard-code 1, 0 and 0. The device never requests `INDIRECT_FIRST_INSTANCE` (`request_renderer_device`). The writer invariant below covers the first-instance rule, and the load check does not try to.
+- **Writer invariant.** Each indirect slot holds either all zeros or its own leaf's baked record: `index_count`, 1, `index_offset`, 0, 0. No writer ever computes these values. A slot a walk skips keeps a value from an earlier frame, and that value was written under the same rule, so the invariant holds per slot across frames. The writers are listed in `research.md` §Writers. The invariant is stated as a comment at each shader's `indirect_draws` binding. At promotion it also goes into `rendering_pipeline.md` §7.1, because it spans three places: the loader check, the renderer's shaders and the renderer's instance flags.
+- **D3D12 built-ins are part of the invariant.** With the bit cleared, wgpu on D3D12 stops correcting `vertex_index` and `instance_index` in indirect draws, and `num_workgroups` in indirect dispatches. None of `depth_prepass.wgsl`, `forward.wgsl` or `spot_shadow.wgsl` reads those built-ins, and the engine issues no indirect dispatch. A future indirect draw or dispatch that reads them must revisit this flag.
+- **No `unsafe`.** Clearing the bit only sets the `flags` field of `InstanceDescriptor` (`development_guide.md` §3.5).
+- **Non-goals.** Draw count belongs to `visible-span-draws`. The two stack, because wgpu-hal Metal's `draw_indexed_indirect` still calls `drawIndexedPrimitives` once per draw. No other wgpu validation flag changes, so `InstanceFlags::with_env` is not adopted: it would also honor `WGPU_VALIDATION`, `WGPU_DEBUG` and `WGPU_GPU_BASED_VALIDATION`. The wgpu version stays as is.
+
+## Acceptance
+### Automated
+- [ ] Instance-flag policy, over every combination of debug and `dev-tools`: only a release build without `dev-tools` lacks the indirect-call bit. In every combination, every other bit equals wgpu's build-config default.
+- [ ] The windowed and offscreen renderers both build their instance flags through the policy. A source scan finds no non-test renderer code creating an instance any other way.
+- [ ] A map with one leaf that is triangle-aligned and ends one triangle past the Geometry index count fails to load with the Bvh range error, not the triangle-alignment error. Regression: the existing past-end test uses offset 5, so the alignment check rejects it first and the range check is never isolated.
+- [ ] A map whose last leaf ends exactly at the Geometry index count loads.
+- [ ] Regression guard (passes today): a leaf whose `index_offset + index_count` overflows `u32` fails to load.
+- [ ] A source scan fails in each of three cases. Case one: a renderer buffer gains `INDIRECT` usage outside the two cull owners. Case two: a shader other than `bvh_cull.wgsl` and `candidate_cull.wgsl` binds the indirect-args array. Case three: a store to that array writes anything other than the leaf's `index_count`, the leaf's `index_offset`, 0 or 1, or indexes the array by something other than the same leaf index the leaf record was read from.
+- [ ] A source scan shows that the indirect-drawn vertex shaders read neither `vertex_index` nor `instance_index`, and that no renderer code issues an indirect dispatch.
+
+These scans match statements, not meaning. A shadowed `leaf` binding would pass them. The writer comment carries that part as a review rule.
+### Manual
+- [ ] On this Mac, `--release` without `dev-tools`, `POSTRETRO_CPU_TIMING=1`, at map spawn with the window in front, and idle VRAM recorded per `rendering_pipeline.md` §12. On each map, the median of the per-window `render_submit` averages over at least 5 windows drops by at least half the draft-session validation share: ≥0.65 ms on `stress-warren-hallway-inspection`, ≥0.18 ms on `campaign-test`.
+- [ ] On both maps, a `sample` profile of that release build shows no `DrawBatcher::add` and no `inject_validation_pass` frames. A debug build of the same commit still shows both.
+- [ ] The startup log reports indirect-call validation off in that release build, and on in a debug build and a `dev-tools` build.
+- [ ] On both maps, at spawn and over a short walk, the release build looks the same as it did before the change.
+
+## Path
+- Seams: `renderer_backends` and `renderer_backends_from_env` in `renderer_init.rs` set the shape. Add a pure policy function that takes the build facts (and any override) beside them, plus a thin `cfg!` wrapper. `Renderer::new` and `Renderer::new_offscreen` both set `flags` from it. GPU test harnesses keep wgpu defaults.
+- Load-check tests go beside `load_prl_rejects_bvh_leaf_index_range_past_geometry_indices` in `crates/level-loader/src/prl.rs`. The last leaf of `sample_bvh_section` already ends at the 6-index boundary. Assert on the message so a range rejection is distinguishable from an alignment rejection.
+- Writer scans extend the shader-text tests in `compute_cull.rs` (`is_aabb_outside_frustum_is_identical_across_shaders`). Precedent for scanning source text: `cache_source_does_not_request_copy_source_usage` in `promoted_depth_cache.rs`.
+- Chosen: turn the flag off by build type, with the existing load check named as the contract. Rival: keep validation on everywhere and rely only on `visible-span-draws`. That still leaves validation's per-draw cost in release, where the debug safety net buys nothing.
+- First slice: clear the bit in a local release build and take the hallway `render_submit` numbers. That confirms the cost premise before any tests are written.
+- No file this touches is past ~800 non-test lines. `compute_cull.rs` reaches line 793 before its test module.
+
+## Open questions
+- Can an env var re-enable the bit in release for diagnosis? `development_guide.md` §6.4 routes *instrumentation* through `POSTRETRO_*` variables in every build. A wgpu safety toggle is not instrumentation, so the rule does not settle it. Recommendation: honor wgpu's own `WGPU_VALIDATION_INDIRECT_CALL` for this bit only, in every build and in both directions, following the `WGPU_BACKEND` precedent in `renderer_backends_from_env`. Turned on in release, it turns a suspected bad draw into missing geometry, which makes A/B testing possible. Turned off in debug, it allows debug-build A/B timing. The resolution adds one policy-test row. — owner: Dan — **blocks build**

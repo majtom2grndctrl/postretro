@@ -53,7 +53,8 @@ The fixture uses two complete world-material bundles:
   over the east end and a hip over the west, so the east wall rises to an
   87.9 m apex. At the default 0.04 m/texel its lightmap chart is past one
   2048-texel pool layer, and the compiler cuts it once, horizontally, about
-  46 m up (`--verbose` logs `cutting face … facing [0.00, 0.00, 1.00]`). It is
+  46 m up (`--verbose` logs `cutting face … facing [0.00, 0.00, 1.00]`, in
+  engine coordinates; in the `.map` the wall faces −x). It is
   the map's only cut face. Two soft spot lights 13.7 m in front of the wall
   light the cut: a static one and an animated one (`style 2` pulse). A pillar
   between them and the wall casts a soft shadow stripe from each across the
@@ -88,13 +89,12 @@ The fixture uses two complete world-material bundles:
    camera pitch or roll. Do not use the nearby moving-platform tracks as a
    rotation test area; the carousel station is intentionally isolated for the
    displace-only mover policy.
-
 7. At the gable station, look up from the floor at the east wall where the two
    spots meet, about 46 m up. In both lightmap streaming modes, no seam or
    sparkle shows where the spots' cone fade, the pillar's penumbra stripes or
    the animated spot's pulse cross the horizontal cut line.
 8. The gable cut is out of reach, so walking across a cut needs a finer build:
-   `--lightmap-density 0.02` cuts the east room's long floor and walls. Walk
+   `--lightmap-density 0.02` also cuts the room's long floor and walls. Walk
    across and slide along them; nothing snags at a cut.
 
 These are visual, in-engine checks. Map compilation only validates authored

@@ -2029,9 +2029,8 @@ fn occluder_produces_dark_texel() {
 
 #[test]
 fn oversize_face_is_cut_into_charts_that_fit_a_pool_layer() {
-    // Regression: the old path clamped atlas_h but left chart placements at pre-clamp
-    // coordinates, causing out-of-bounds writes during bake and dilation; the
-    // pool-edge limit then failed the build. The face is now cut.
+    // A 400 m face past one pool layer is cut into sub-charts that each fit
+    // the pool edge, rather than failing the build.
     let size = 400.0; // 10000 texels at 0.04 m/texel, beyond one pool layer
     let v0 = Vertex::new(
         [0.0, 0.0, 0.0],

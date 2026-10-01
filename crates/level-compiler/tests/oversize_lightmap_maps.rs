@@ -258,12 +258,13 @@ fn cut_summary(log: &str) -> &str {
         .unwrap_or_else(|| panic!("the build cut no face:\n{log}"))
 }
 
-// P17, P18: a density edit that moves a cut re-bakes the lightmap family and
-// nothing before atlas preparation: every pre-atlas cache hits, and so do
-// the SDF atlas and the cell residency set. The warm build equals a warm
-// build at the new density from an empty cache, and reverting the edit
-// reproduces the first build byte for byte. The cut map loads, its
-// partition rebuild validating against the emitted BVH and cells.
+// P17, P18: density edits that start a cut and then move it re-bake the
+// lightmap family and nothing before atlas preparation: every pre-atlas
+// cache hits, and so do the SDF atlas (whose source switches to the
+// pre-cut geometry when a cut appears) and the cell residency set. The warm
+// build equals a warm build at the new density from an empty cache, and
+// reverting the edit reproduces the first build byte for byte. The cut map
+// loads, its partition rebuild validating against the emitted BVH and cells.
 #[test]
 #[ignore = "multi-minute prl-build bakes; run on demand with -- --ignored"]
 fn density_edit_that_moves_a_cut_keeps_the_pre_atlas_caches() {
@@ -276,37 +277,39 @@ fn density_edit_that_moves_a_cut_keeps_the_pre_atlas_caches() {
     let warm = |density: &str, cache: &str| {
         ["--lightmap-density", density, "--cache-dir", cache].map(str::to_owned)
     };
+    let assert_pre_atlas_hits = |log: &str, edit: &str| {
+        for stage in [
+            "sh_group",
+            "direct_sh_volume",
+            "chunk_light_list",
+            "navmesh",
+            "cell_visibility",
+            "sdf_atlas",
+            "cell_residency_set",
+        ] {
+            assert!(
+                log.contains(&format!("[cache] {stage} hit")),
+                "{stage} hit expected after {edit}"
+            );
+            assert!(
+                !log.contains(&format!("[cache] {stage} miss")),
+                "{stage} missed after {edit}"
+            );
+        }
+    };
 
+    let (_, uncut_log) = compile_logged(map, &dir, "uncut", &warm("0.04", &cache));
+    assert!(
+        !uncut_log.contains("oversize lightmap face(s) into"),
+        "the default density cuts nothing"
+    );
     let (a, a_log) = compile_logged(map, &dir, "a", &warm("0.006", &cache));
-    let (b, b_log) = compile_logged(map, &dir, "b", &warm("0.005", &cache));
-    // Both densities cut the same faces, at different grid lines.
     cut_summary(&a_log);
+    assert_pre_atlas_hits(&a_log, "the edit that starts a cut");
+    // Both cut densities cut the same faces, at different grid lines.
+    let (b, b_log) = compile_logged(map, &dir, "b", &warm("0.005", &cache));
     cut_summary(&b_log);
-    for hit in [
-        "[cache] sh_group hit",
-        "[cache] direct_sh_volume hit",
-        "[cache] chunk_light_list hit",
-        "[cache] navmesh hit",
-        "[cache] cell_visibility hit",
-        "[cache] sdf_atlas hit",
-        "[cache] cell_residency_set hit",
-    ] {
-        assert!(b_log.contains(hit), "{hit} expected after the density edit");
-    }
-    for stage in [
-        "sh_group",
-        "direct_sh_volume",
-        "chunk_light_list",
-        "navmesh",
-        "cell_visibility",
-        "sdf_atlas",
-        "cell_residency_set",
-    ] {
-        assert!(
-            !b_log.contains(&format!("[cache] {stage} miss")),
-            "{stage} missed after the density edit"
-        );
-    }
+    assert_pre_atlas_hits(&b_log, "the edit that moves the cut");
 
     let (b_fresh, _) = compile_logged(map, &dir, "b-fresh", &warm("0.005", &fresh));
     assert!(

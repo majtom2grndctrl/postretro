@@ -381,7 +381,8 @@ A **leak** is a gap in your brush hull. If you have a leak, interior rooms can v
 |-------|-------|-----|
 | Missing `_falloff_range` on light | Every point/spot light requires `_falloff_range` (renamed from `_fade`; no alias) | Add `_falloff_range` to every `light` and `light_spot` |
 | `period_ms` missing | A `*_curve` key is present but no cycle length | Add `period_ms` to the same entity |
-| Lightmap atlas overflow | Too many surfaces at the current texel density | Increase `--lightmap-density` (the compiler retries automatically and logs a warning) |
+| Lightmap atlas layer overflow | Too many surfaces at the current texel density, or a `_lightmap_scale` region too fine | Raise `--lightmap-density` (coarser texels), lower the region's `_lightmap_scale`, or split the map |
+| Animated block count exceeds the block-table cap | More faces lie within animated lights' reach than the animated lightmap can hold | Shrink animated lights' `_falloff_range`, make some of them static, or split the map |
 | Exterior leak | Gap in the brush hull | Seal the map and check the compiler output for the breach location |
 | PNG color-space validation failed | An `_s.png`, `_n.png`, or `_h.png` carries an `sRGB` or `iCCP` chunk, or a `gAMA` that isn't ≈ 1.0 | Re-export the named files as linear PNG with no color-management metadata. The error lists every offending path |
 | `_h.png` dimensions must match diffuse | A height map is a different resolution from its diffuse texture | Re-export the height map at the diffuse's exact dimensions |

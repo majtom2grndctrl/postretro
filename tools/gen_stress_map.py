@@ -179,8 +179,8 @@ light type -- drives the atlas overflow. Every preset value is overridable.
   Look for `[PRL] Lightmap: WxH atlas, N layer(s)` with N >= 2. With only 4
   crates/room the chart area is lower than the old 10-crate preset, so the bake
   density is dropped to 0.06 to keep the overflow; if N == 1, lower it another
-  notch (0.05) or raise --crates. If the bake OOMs or reports ChartTooLarge,
-  RAISE the density (coarser) so the per-layer dim drops.
+  notch (0.05) or raise --crates. If the bake OOMs or reports a layer overflow,
+  RAISE the density (coarser) so the charts need fewer layers.
 """
 
 import argparse

@@ -7,7 +7,7 @@ use bvh::bvh::Bvh;
 use bvh::ray::Ray;
 use glam::Vec3;
 use nalgebra::{Point3, Vector3};
-use postretro_level_format::lightmap::LightmapSection;
+use postretro_level_format::lightmap::{LIGHTMAP_POOL_LAYER_EDGE, LightmapSection};
 use rayon::prelude::*;
 
 use crate::bake_control::BakeControl;
@@ -98,8 +98,9 @@ const SAMPLING_LATTICE_OFFSET: u64 = 0x5048_4542_414b_4552; // "PHBAKER"
 #[derive(Debug, Error)]
 pub enum LightmapBakeError {
     #[error(
-        "lightmap atlas layer overflow: packing the charts needs {layer_count} array layers \
-         but the atlas supports at most {max}; raise `texel_density` or split the map"
+        "lightmap atlas layer overflow: the charts need {layer_count} bake layers but the \
+         compiler allows at most {max}; raise `--lightmap-density` (or `_lightmap_density`), \
+         lower a region's `_lightmap_scale`, or split the map"
     )]
     LayerOverflow { layer_count: u32, max: u32 },
     #[error(
@@ -112,8 +113,8 @@ pub enum LightmapBakeError {
     },
     #[error(
         "lightmap chart dimension overflow: face {face_index} {axis} extent {extent_m} m at \
-         {density_m_per_texel} m/texel requires {texels} texels; raise `texel_density` or reduce \
-         `_lightmap_scale`"
+         {density_m_per_texel} m/texel requires {texels} texels; raise `--lightmap-density` or \
+         reduce `_lightmap_scale`"
     )]
     ChartDimensionOverflow {
         face_index: usize,
@@ -123,9 +124,9 @@ pub enum LightmapBakeError {
         texels: f32,
     },
     #[error(
-        "lightmap leaf too large: BVH leaf {leaf_index}'s {chart_count} charts can't fit a single \
-         {max_dim}x{max_dim} atlas layer, and the leaf-cohesion invariant forbids splitting a leaf \
-         across layers. Raise `texel_density` or split the map."
+        "lightmap leaf too large: leaf {leaf_index}'s {chart_count} chart(s) can't fit a single \
+         {max_dim}x{max_dim} atlas layer (an uncut chart past the layer, or a leaf whose charts \
+         must share one). Raise `--lightmap-density` or split the map."
     )]
     LeafTooLarge {
         leaf_index: u32,
@@ -287,12 +288,27 @@ pub fn bake_lightmap_controlled(
     config: &LightmapConfig,
     control: &BakeControl,
 ) -> Result<LightmapBakeOutput, LightmapBakeError> {
-    let texel_density = config.lightmap_density;
-    let prepared = prepare_atlas(
+    let cut = plan_cut_charts(
         inputs.geometry,
         inputs.lights,
-        texel_density,
+        config.lightmap_density,
         inputs.scale_regions,
+        LIGHTMAP_POOL_LAYER_EDGE,
+    )?;
+    // The caller's BVH indexes the geometry as it stood before this call; a
+    // cut rewrites the index buffer under it. The compiler pipeline cuts in
+    // its atlas stage and rebuilds the BVH there.
+    assert!(
+        cut.face_remap.is_none(),
+        "bake_lightmap cannot cut an oversize face under a prebuilt BVH;          prepare the atlas and rebuild the BVH first"
+    );
+    let prepared = pack_cut_charts(
+        inputs.geometry,
+        inputs.lights,
+        cut.charts,
+        BlockOrdering::by_cell_id(DIRECTION_TEXEL_SCALE),
+        LIGHTMAP_POOL_LAYER_EDGE,
+        &BakeControl::unrestricted(),
     )?;
 
     bake_prepared_lightmap_controlled(inputs, config, prepared, control)

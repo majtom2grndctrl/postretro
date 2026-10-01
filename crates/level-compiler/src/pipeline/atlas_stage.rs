@@ -18,7 +18,7 @@ use crate::animated_light_chunks::animated_candidate_face_count;
 use crate::bake_control::BakeControl;
 use crate::bvh_build::{BvhPrimitive, build_bvh};
 use crate::cell_draw_index_bake::bake_cell_draw_index;
-use crate::geometry::GeometryResult;
+use crate::geometry::{FaceIndexRange, GeometryResult};
 use crate::light_namespaces::{AnimatedBakedLights, StaticBakedLights};
 use crate::lightmap_bake::{self, BlockOrdering, LightmapConfig, PreparedAtlas};
 use crate::map_data::MapData;
@@ -100,8 +100,6 @@ pub(super) fn prepare_atlas_stage(
         bvh: rebuilt.as_ref().map_or(bvh_section, |r| &r.bvh_section),
     })?;
 
-    check_animated_block_bound(inputs.animated_lights, &cut.charts)?;
-
     let prepared = lightmap_bake::pack_cut_charts(
         geometry,
         inputs.static_lights,
@@ -114,6 +112,15 @@ pub(super) fn prepare_atlas_stage(
         inputs.control,
     )
     .map_err(prepare_error)?;
+    // Without placements the animated passes emit nothing, so there is no
+    // block to bound.
+    if !prepared.placements.is_empty() {
+        check_animated_block_bound(
+            inputs.animated_lights,
+            &prepared.charts,
+            &geometry.face_index_ranges,
+        )?;
+    }
     Ok(AtlasStageOutput {
         prepared,
         partition,
@@ -123,18 +130,23 @@ pub(super) fn prepare_atlas_stage(
 }
 
 /// Fail on the animated block cap's named error before any bake, from the
-/// conservative count of faces an animated light can reach.
+/// conservative count of faces an animated light can reach: a map whose
+/// culled block count would fit can still fail here.
 fn check_animated_block_bound(
     animated_lights: &AnimatedBakedLights<'_>,
     charts: &[crate::lightmap_bake::Chart],
+    face_index_ranges: &[FaceIndexRange],
 ) -> anyhow::Result<()> {
-    let count = animated_candidate_face_count(animated_lights, charts);
+    let count = animated_candidate_face_count(animated_lights, charts, face_index_ranges);
     if count > ANIMATED_BLOCK_CAP as usize {
         let error = AnimatedBlockGuardError::BlockCountOverCap {
             count,
             cap: ANIMATED_BLOCK_CAP,
         };
-        anyhow::bail!("Lightmap atlas prepare failed: {error}");
+        anyhow::bail!(
+            "Lightmap atlas prepare failed: {count} faces lie within an animated light's \
+             reach, each a possible animated block: {error}"
+        );
     }
     Ok(())
 }

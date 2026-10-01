@@ -265,6 +265,98 @@ fn sibling_sub_faces_own_their_vertices_and_agree_on_cut_vertices() {
     assert!(matched > 0);
 }
 
+// P20 past two pieces: a slanted face cut into many pieces on each axis.
+// A middle piece clips both its lines; every vertex the cut creates still
+// has a bit-identical twin in a sibling, because every crossing comes from
+// the same edge on both sides of its line.
+#[test]
+fn cut_vertices_agree_bit_for_bit_on_a_slanted_face_cut_into_middle_pieces() {
+    let quad: &[[f32; 2]] = &[
+        [0.37, 0.11],
+        [5.93, 0.83],
+        [8.71, 3.29],
+        [8.13, 8.97],
+        [2.41, 8.53],
+        [0.19, 5.07],
+    ];
+    let mut geometry = floor_faces(&[quad]);
+    let originals: Vec<[u32; 3]> = geometry
+        .geometry
+        .vertices
+        .iter()
+        .map(|v| v.position.map(f32::to_bits))
+        .collect();
+    let mut charts = plan_charts(&geometry, 0.05, &[]).unwrap();
+    let cuts = plan_face_cuts(&charts, 16);
+    assert!(
+        cuts[0].u_lines.len() >= 4 && cuts[0].v_lines.len() >= 4,
+        "middle pieces on both axes: {cuts:?}"
+    );
+    let cut = apply_face_cuts(&mut geometry, &mut charts, &cuts);
+
+    let siblings: Vec<Vec<u32>> = cut.face_remap[0]
+        .clone()
+        .map(|face| face_vertex_indices(&geometry, face))
+        .collect();
+    let bits = |index: u32| {
+        let v = &geometry.geometry.vertices[index as usize];
+        (v.position.map(f32::to_bits), v.uv.map(f32::to_bits))
+    };
+    let mut cut_vertices = 0;
+    for (i, own) in siblings.iter().enumerate() {
+        for &index in own {
+            if originals.contains(&bits(index).0) {
+                continue;
+            }
+            let twinned = siblings
+                .iter()
+                .enumerate()
+                .any(|(j, other)| j != i && other.iter().any(|&o| bits(o) == bits(index)));
+            assert!(
+                twinned,
+                "cut vertex {:?} has no bit-identical twin",
+                geometry.geometry.vertices[index as usize].position
+            );
+            cut_vertices += 1;
+        }
+    }
+    assert!(cut_vertices > 0);
+    let total: f32 = cut.face_remap[0]
+        .clone()
+        .map(|face| face_area(&geometry, face))
+        .sum();
+    let expected = 0.5
+        * quad
+            .iter()
+            .zip(quad.iter().cycle().skip(1))
+            .map(|(a, b)| a[0] * b[1] - b[0] * a[1])
+            .sum::<f32>()
+            .abs();
+    assert!((total - expected).abs() < 1.0e-3, "{total} vs {expected}");
+}
+
+// The planned area sums the windows in closed form: it equals the
+// window-by-window sum.
+#[test]
+fn planned_area_equals_the_sum_over_every_window() {
+    let (_, _, _, cuts) = cut_square();
+    let geometry = floor_faces(&[
+        &square(-5.0, -5.0, 1.0),
+        &square(0.0, 0.0, 9.0),
+        &square(20.0, 20.0, 1.0),
+    ]);
+    let charts = plan_charts(&geometry, 0.1, &[]).unwrap();
+    let by_window: u64 = [0, 2]
+        .iter()
+        .map(|&face| u64::from(charts[face].width_texels * charts[face].height_texels))
+        .sum::<u64>()
+        + cuts[0]
+            .windows()
+            .map(|([u, v], _)| u64::from((u.len() as u32 + PADDING) * (v.len() as u32 + PADDING)))
+            .sum::<u64>();
+    assert_eq!(planned_chart_area(&charts, &cuts), by_window);
+}
+
 #[test]
 fn applying_no_cuts_leaves_geometry_and_charts_untouched() {
     let mut geometry = floor_faces(&[&square(0.0, 0.0, 1.0), &square(3.0, 0.0, 1.0)]);
@@ -323,7 +415,10 @@ fn penumbra_floor() -> (GeometryResult, Vec<crate::map_data::MapLight>) {
 
 /// For every pair of sub-charts of the cut floor, each parent-grid texel both
 /// windows cover, as the two charts' interior texels.
-fn overlap_twins(charts: &[Chart]) -> Vec<((usize, [u32; 2]), (usize, [u32; 2]))> {
+/// A sub-chart's face and its window-local texel.
+type WindowTexel = (usize, [u32; 2]);
+
+fn overlap_twins(charts: &[Chart]) -> Vec<(WindowTexel, WindowTexel)> {
     let windowed: Vec<usize> = (0..charts.len())
         .filter(|&c| charts[c].window.is_some())
         .collect();
@@ -507,8 +602,8 @@ fn overlap_texels_bake_bit_identical_across_every_cut() {
     let mut seen: std::collections::HashMap<[u32; 3], (usize, [f32; 3])> =
         std::collections::HashMap::new();
     let mut shared_cut_vertices = 0;
-    for face in 0..geometry.face_index_ranges.len() {
-        if charts[face].window.is_none() {
+    for (face, chart) in charts.iter().enumerate() {
+        if chart.window.is_none() {
             continue;
         }
         for index in face_vertex_indices(&geometry, face) {
@@ -644,8 +739,8 @@ fn encoded_step_across_a_cut_stays_within_bc6h_noise() {
                 let i = ((y + CHART_PADDING_TEXELS) * exact.atlas_width + x + CHART_PADDING_TEXELS)
                     as usize;
                 let got = sample(face, [x, y]);
-                for c in 0..3 {
-                    noise = noise.max((got[c] - exact.irradiance[i * 4 + c]).abs());
+                for (c, value) in got.iter().enumerate() {
+                    noise = noise.max((value - exact.irradiance[i * 4 + c]).abs());
                 }
             }
         }

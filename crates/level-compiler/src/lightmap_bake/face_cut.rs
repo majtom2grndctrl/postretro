@@ -52,20 +52,26 @@ fn max_window_interior(pool_edge: u32) -> u32 {
     pool_edge - 2 * CHART_PADDING_TEXELS
 }
 
-/// Grid lines cutting an axis of `interior` texels into the fewest pieces of
-/// near-equal extent whose windows, overlap included, fit `pool_edge`.
+/// Grid lines cutting an axis of `interior` texels into near-equal pieces
+/// whose windows, overlap included, fit `pool_edge`: two when two fit, else
+/// the fewest whose longest segment fits as a middle piece (overlap on both
+/// sides), which can be one more than an exact fit of the end pieces needs.
 pub(crate) fn axis_cut_lines(interior: u32, pool_edge: u32) -> Vec<u32> {
     let max_interior = max_window_interior(pool_edge);
     if interior <= max_interior {
         return vec![0, interior];
     }
-    let pieces = (2..)
-        .find(|&n: &u32| {
-            let longest = interior.div_ceil(n);
-            let overlap = if n == 2 { 1 } else { 2 } * CUT_OVERLAP_TEXELS;
-            longest + overlap <= max_interior
-        })
-        .expect("enough pieces always fit");
+    // Two pieces share one cut line, so each window widens on one side only;
+    // three or more have middle pieces widened on both.
+    let middle_room = max_interior
+        .checked_sub(2 * CUT_OVERLAP_TEXELS)
+        .filter(|&room| room > 0)
+        .expect("a pool edge holds a middle piece");
+    let pieces = if interior.div_ceil(2) + CUT_OVERLAP_TEXELS <= max_interior {
+        2
+    } else {
+        interior.div_ceil(middle_room).max(3)
+    };
     (0..=pieces)
         .map(|k| (u64::from(k) * u64::from(interior) / u64::from(pieces)) as u32)
         .collect()
@@ -106,25 +112,32 @@ pub(crate) fn plan_face_cuts(charts: &[Chart], pool_edge: u32) -> Vec<FaceCut> {
         .collect()
 }
 
-/// Padded texel area of the charts once `cuts` apply, every window counted
-/// as if its polygon reached it: an upper bound on the cut atlas's area,
-/// computed before any geometry is cut.
+/// Padded texel area of the charts once `cuts` apply, computed before any
+/// geometry is cut, in time linear in the pieces (not the windows). Every
+/// window counts as if its polygon reached it, so a non-rectangular cut face
+/// counts corners it emits no sub-chart for. Saturates rather than wraps.
 pub(crate) fn planned_chart_area(charts: &[Chart], cuts: &[FaceCut]) -> u64 {
     let padding = u64::from(2 * CHART_PADDING_TEXELS);
-    let mut area: u64 = charts
+    let mut cuts = cuts.iter().peekable();
+    let area = charts
         .iter()
-        .map(|chart| u64::from(chart.width_texels) * u64::from(chart.height_texels))
-        .sum();
-    for cut in cuts {
-        let chart = &charts[cut.face];
-        area -= u64::from(chart.width_texels) * u64::from(chart.height_texels);
-        area += cut
-            .windows()
-            .map(|([u, v], _)| {
-                (u64::from(u.len() as u32) + padding) * (u64::from(v.len() as u32) + padding)
-            })
-            .sum::<u64>();
-    }
+        .enumerate()
+        .map(|(face, chart)| match cuts.next_if(|cut| cut.face == face) {
+            // Windows form a product grid: the sum over windows of
+            // (u + pad)(v + pad) factors into two per-axis sums.
+            Some(cut) => {
+                let axis_sum = |lines: &[u32]| {
+                    axis_windows(lines)
+                        .iter()
+                        .map(|window| u64::from(window.end - window.start) + padding)
+                        .fold(0u64, u64::saturating_add)
+                };
+                axis_sum(&cut.u_lines).saturating_mul(axis_sum(&cut.v_lines))
+            }
+            None => u64::from(chart.width_texels) * u64::from(chart.height_texels),
+        })
+        .fold(0u64, u64::saturating_add);
+    debug_assert!(cuts.next().is_none(), "cuts in face order, each in range");
     area
 }
 
@@ -158,9 +171,14 @@ pub(crate) fn apply_face_cuts(
     let mut new_charts = Vec::with_capacity(charts.len() + cuts.len());
     let mut face_remap = Vec::with_capacity(face_count);
     let mut cuts = cuts.iter().peekable();
+    debug_assert_eq!(charts.len(), face_count);
 
-    for face in 0..face_count {
-        let range = geometry.face_index_ranges[face];
+    for (face, (range, chart)) in geometry
+        .face_index_ranges
+        .iter()
+        .zip(charts.iter())
+        .enumerate()
+    {
         let start = range.index_offset as usize;
         let face_indices = &section.indices[start..start + range.index_count as usize];
         let first_new = faces.len();
@@ -187,10 +205,10 @@ pub(crate) fn apply_face_cuts(
                     index_offset,
                     index_count: face_indices.len() as u32,
                 });
-                new_charts.push(charts[face].clone());
+                new_charts.push(chart.clone());
             }
             Some(cut) => {
-                let parent = &charts[face];
+                let parent = chart;
                 let polygon = fan_polygon(face_indices, &section.vertices);
                 for (window, piece) in cut.windows() {
                     let clipped = clip_to_piece(&polygon, parent, cut, piece);
@@ -215,6 +233,7 @@ pub(crate) fn apply_face_cuts(
         face_remap.push(first_new..faces.len());
     }
 
+    debug_assert!(cuts.next().is_none(), "cuts in face order, each in range");
     geometry.geometry.vertices = vertices;
     geometry.geometry.indices = indices;
     geometry.geometry.faces = faces;
@@ -252,9 +271,11 @@ fn grid_coord(parent: &Chart, axis: usize, position: [f32; 3]) -> f64 {
 }
 
 /// `polygon` clipped to piece `piece`'s cut-line segments (outer chart
-/// edges never clip). Edge crossings are computed from the edge's endpoints
-/// in a canonical order, so the two faces sharing a cut produce bit-identical
-/// vertices on it.
+/// edges never clip). Each axis clips its slab in one pass, so every
+/// crossing comes from an edge of the polygon that axis receives: the face
+/// itself for `u`, the piece's column for `v`, which every piece in the
+/// column shares. Crossings take the edge's endpoints in a canonical order,
+/// so the two faces sharing a cut produce bit-identical vertices on it.
 fn clip_to_piece(
     polygon: &[Vertex],
     parent: &Chart,
@@ -269,12 +290,10 @@ fn clip_to_piece(
             &cut.v_lines
         };
         let (lo, hi) = (lines[piece[axis]], lines[piece[axis] + 1]);
-        if lo > 0 {
-            clipped = clip_half_plane(&clipped, parent, axis, f64::from(lo), true);
-        }
-        if hi < *lines.last().expect("two lines") {
-            clipped = clip_half_plane(&clipped, parent, axis, f64::from(hi), false);
-        }
+        let last = *lines.last().expect("two lines");
+        let lo = (lo > 0).then_some(f64::from(lo));
+        let hi = (hi < last).then_some(f64::from(hi));
+        clipped = clip_slab(&clipped, parent, axis, lo, hi);
         if clipped.len() < 3 {
             return Vec::new();
         }
@@ -288,28 +307,38 @@ fn clip_to_piece(
     clipped
 }
 
-/// Sutherland–Hodgman against grid line `line` on `axis`, keeping the side
-/// `>= line` when `keep_above`, else `<= line`.
-fn clip_half_plane(
+/// Clip convex `polygon` to the slab `lo <= c <= hi` on `axis` (a `None`
+/// bound does not clip) in one Sutherland–Hodgman pass. An edge spanning the
+/// slab yields both crossings, in order along the edge, each computed from
+/// that edge's own endpoints.
+fn clip_slab(
     polygon: &[Vertex],
     parent: &Chart,
     axis: usize,
-    line: f64,
-    keep_above: bool,
+    lo: Option<f64>,
+    hi: Option<f64>,
 ) -> Vec<Vertex> {
-    let inside = |v: &Vertex| {
-        let c = grid_coord(parent, axis, v.position);
-        if keep_above { c >= line } else { c <= line }
-    };
-    let mut out = Vec::with_capacity(polygon.len() + 1);
+    let coord = |v: &Vertex| grid_coord(parent, axis, v.position);
+    let above_lo = |c: f64| lo.is_none_or(|lo| c >= lo);
+    let below_hi = |c: f64| hi.is_none_or(|hi| c <= hi);
+    let mut out = Vec::with_capacity(polygon.len() + 2);
     for i in 0..polygon.len() {
         let current = &polygon[i];
         let next = &polygon[(i + 1) % polygon.len()];
-        let (current_in, next_in) = (inside(current), inside(next));
-        if current_in {
+        let (c, n) = (coord(current), coord(next));
+        if above_lo(c) && below_hi(c) {
             out.push(current.clone());
         }
-        if current_in != next_in {
+        let lo_crossing = lo.filter(|_| above_lo(c) != above_lo(n));
+        let hi_crossing = hi.filter(|_| below_hi(c) != below_hi(n));
+        // From below `lo` the edge meets `lo` first; from above `hi`, `hi`
+        // first. From inside the slab it meets only one.
+        let ordered = if above_lo(c) {
+            [hi_crossing, lo_crossing]
+        } else {
+            [lo_crossing, hi_crossing]
+        };
+        for line in ordered.into_iter().flatten() {
             out.push(crossing(current, next, parent, axis, line));
         }
     }

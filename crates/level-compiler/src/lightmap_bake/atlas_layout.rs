@@ -61,7 +61,8 @@ pub fn prepare_atlas(
 ///
 /// The compiler pipeline runs the two phases itself, rebuilding the
 /// face-identity set and the cell partition between them; this entry point
-/// keeps the cut geometry and drops the face remap.
+/// keeps the cut geometry and drops the face remap, so a BVH or face index
+/// built before the call is stale once a face was cut.
 pub fn prepare_atlas_ordered(
     geom: &mut GeometryResult,
     static_lights: &StaticBakedLights<'_>,
@@ -189,6 +190,8 @@ fn check_planned_area(
 
 /// Atlas preparation's second phase: pack `charts` into cell blocks in
 /// `ordering` and write every vertex's block id and block-local lightmap UV.
+/// With static lights, every chart must fit `pool_edge`, which
+/// [`plan_cut_charts`] guarantees.
 ///
 /// Without static lights the section has no blocks, so vertices keep block
 /// 0, but placements are still returned for the animated-light passes; when a

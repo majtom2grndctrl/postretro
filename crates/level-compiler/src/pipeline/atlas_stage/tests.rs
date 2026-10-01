@@ -134,11 +134,29 @@ fn empty_cut_rebuilds_the_pre_atlas_face_identity_set_unchanged() {
     assert_eq!(rebuilt.cell_draw_index, draw_before);
 }
 
-// P1, P2: after a cut, leaf face ranges, the BVH and CellDrawIndex all
-// agree with the emitted geometry, and sub-faces stay in their parent's leaf.
+/// The cell partition planned over `leaves` and `bvh`, as atlas preparation
+/// plans it (no portals, no streaming regions).
+fn partition_over(leaves: &BspLeavesSection, bvh: &BvhSection) -> CellPartitionPlan {
+    plan_cell_partition(CellPartitionInputs {
+        generated_portals: &[],
+        streaming_seam_regions: &[],
+        stream_resident_regions: &[],
+        stream_priority_regions: &[],
+        leaves,
+        exterior_leaves: &std::collections::HashSet::new(),
+        bvh,
+    })
+    .expect("the fixture partitions")
+}
+
+// P1, P2, P4: after a cut, leaf face ranges, the BVH and CellDrawIndex all
+// agree with the emitted geometry, sub-faces stay in their parent's leaf,
+// and the cell partition counts the sub-faces, not the parent.
 #[test]
 fn rebuilt_face_identity_agrees_with_cut_geometry() {
     let (mut geometry, mut leaves) = three_leaf_fixture();
+    let (_, _, bvh_before) = build_bvh(&geometry).unwrap();
+    let partition_before = partition_over(&leaves, &bvh_before);
     let (charts, rebuilt) = cut_and_rebuild(&mut geometry, &mut leaves, 64);
     let rebuilt = rebuilt.expect("the 9 m quad is cut");
     let faces = geometry.face_index_ranges.len();
@@ -194,6 +212,33 @@ fn rebuilt_face_identity_agrees_with_cut_geometry() {
         }
     }
     assert_eq!(covered, rebuilt.bvh_section.leaves.len());
+
+    // The partition reads the rebuilt leaves and BVH: its clusters count
+    // every face the cut emitted, where the pre-cut plan counted three.
+    let primitives = |plan: &CellPartitionPlan| {
+        plan.partition
+            .clusters
+            .iter()
+            .map(|cluster| cluster.primitive_count as usize)
+            .sum::<usize>()
+    };
+    assert_eq!(primitives(&partition_before), 3);
+    let partition = partition_over(&leaves, &rebuilt.bvh_section);
+    assert_eq!(primitives(&partition), faces);
+    // The Cells it encodes, which the pack stage emits, carry the remapped
+    // face ranges.
+    let cell_ranges: Vec<(u32, u32)> = partition
+        .cells
+        .cells
+        .iter()
+        .map(|cell| (cell.face_start, cell.face_count))
+        .collect();
+    let leaf_ranges: Vec<(u32, u32)> = leaves
+        .leaves
+        .iter()
+        .map(|leaf| (leaf.face_start, leaf.face_count))
+        .collect();
+    assert_eq!(cell_ranges, leaf_ranges);
 }
 
 // Face cuts and the rebuild are identical with one worker and with many.
@@ -253,35 +298,46 @@ fn map_without_static_lights_cuts_nothing() {
 }
 
 // P11: a scale region extreme enough to need more bake layers than allowed
-// fails by name before anything is cut.
+// fails by name before anything is cut — promptly, even when the region's
+// faces would cut into millions of pieces and their area overflows a u64.
 #[test]
 fn scale_region_past_the_bake_layer_cap_fails_by_name_before_cutting() {
-    let (mut geometry, _) = three_leaf_fixture();
-    let before = geometry.geometry.vertices.len();
-    let lights = lit();
-    let static_lights = StaticBakedLights::from_lights(&lights);
-    let region = crate::map_data::MapLightmapScaleRegion {
-        min: [1.0, -1.0, -1.0],
-        max: [12.0, 1.0, 12.0],
-        planes: Vec::new(),
-        scale: 2000.0,
-    };
-    let error = match lightmap_bake::plan_cut_charts(
-        &mut geometry,
-        &static_lights,
-        0.1,
-        std::slice::from_ref(&region),
-        2048,
-    ) {
-        Err(error) => error,
-        Ok(_) => panic!("the region must overflow the bake layers"),
-    };
-    assert!(
-        matches!(error, crate::lightmap_bake::LightmapBakeError::LayerOverflow { max, .. } if max == crate::lightmap_bake::MAX_ATLAS_LAYERS),
-        "{error}"
-    );
-    assert!(error.to_string().contains("layer overflow"), "{error}");
-    assert!(geometry.face_index_ranges.len() == 3 && geometry.geometry.vertices.len() >= before);
+    for scale in [2000.0, 1.0e6, 1.0e7] {
+        let (mut geometry, _) = three_leaf_fixture();
+        let before = geometry.geometry.vertices.len();
+        let lights = lit();
+        let static_lights = StaticBakedLights::from_lights(&lights);
+        let region = crate::map_data::MapLightmapScaleRegion {
+            min: [1.0, -1.0, -1.0],
+            max: [12.0, 1.0, 12.0],
+            planes: Vec::new(),
+            scale,
+        };
+        let started = std::time::Instant::now();
+        let error = match lightmap_bake::plan_cut_charts(
+            &mut geometry,
+            &static_lights,
+            0.1,
+            std::slice::from_ref(&region),
+            2048,
+        ) {
+            Err(error) => error,
+            Ok(_) => panic!("scale {scale}: the region must overflow the bake layers"),
+        };
+        assert!(
+            matches!(error, crate::lightmap_bake::LightmapBakeError::LayerOverflow { max, .. } if max == crate::lightmap_bake::MAX_ATLAS_LAYERS),
+            "scale {scale}: {error}"
+        );
+        assert!(error.to_string().contains("layer overflow"), "{error}");
+        assert!(
+            geometry.face_index_ranges.len() == 3 && geometry.geometry.vertices.len() >= before
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "scale {scale}: the limit took {:?}",
+            started.elapsed()
+        );
+    }
 }
 
 // P8, and the animated term of the overlap contract: a cut face lit by an
@@ -380,7 +436,8 @@ fn cut_face_lit_by_an_animated_light_passes_the_guards_with_matching_overlap_wei
     .expect("the animated weights bake");
 
     // Every texel's weights, keyed by its face's parent-grid texel.
-    let mut by_grid: HashMap<[u32; 2], Vec<(usize, Vec<(u32, u32, [u16; 2])>)>> = HashMap::new();
+    type TexelWeights = Vec<(u32, u32, [u16; 2])>;
+    let mut by_grid: HashMap<[u32; 2], Vec<(usize, TexelWeights)>> = HashMap::new();
     for (index, (chunk, rect)) in chunks
         .chunks
         .iter()
@@ -441,6 +498,130 @@ fn cut_face_lit_by_an_animated_light_passes_the_guards_with_matching_overlap_wei
     assert!(layout.is_some_and(|blocks| blocks.iter().flatten().count() >= 4));
 }
 
+// More animated lights than a chunk holds, over a sub-chart thousands of
+// texels from its frame's origin: chunks split inside the window, and each
+// chunk's atlas rect spans exactly the texels its UV range holds — no
+// sibling overlap (a release panic) and no texel row left without weights.
+#[test]
+fn chunks_split_far_inside_a_cut_face_own_every_texel_once() {
+    use crate::animated_light_chunks::build_placed_animated_light_chunks;
+    use crate::animated_light_weight_maps::{
+        WeightMapInputs, bake_animated_light_weight_maps_controlled,
+    };
+    use crate::chart_raster::chart_interior_dims;
+    use crate::light_namespaces::AnimatedBakedLights;
+    use crate::map_data::LightAnimation;
+    use postretro_level_format::animated_light_chunks::MAX_ANIMATED_LIGHTS_PER_CHUNK;
+
+    // A 400 m × 4 m strip at 0.1 m/texel: 4000 texels, cut once.
+    let (mut geometry, _) = three_leaf_fixture();
+    geometry.geometry.vertices.clear();
+    geometry.geometry.indices.clear();
+    geometry.geometry.faces.clear();
+    geometry.face_index_ranges.clear();
+    push_quad(&mut geometry, 0.0, 400.0, 1);
+    for vertex in &mut geometry.geometry.vertices {
+        vertex.position[2] *= 0.01;
+    }
+
+    let mut lights = lit();
+    for i in 0..6 {
+        let mut animated = lights[0].clone();
+        animated.origin = DVec3::new(263.7 + 7.3 * f64::from(i), 1.0, 2.0);
+        animated.falloff_range = 4.0;
+        animated.animation = Some(LightAnimation {
+            period: 1.0,
+            phase: 0.1 * i as f32,
+            brightness: Some(vec![1.0, 0.5]),
+            color: None,
+            direction: None,
+            start_active: true,
+        });
+        lights.push(animated);
+    }
+    let static_lights = StaticBakedLights::from_lights(&lights);
+    let animated_lights = AnimatedBakedLights::from_lights(&lights);
+    assert!(animated_lights.entries().len() > MAX_ANIMATED_LIGHTS_PER_CHUNK);
+
+    let prepared = lightmap_bake::prepare_atlas_within(
+        &mut geometry,
+        &static_lights,
+        0.1,
+        &[],
+        BlockOrdering::by_cell_id(2),
+        2048,
+        &BakeControl::unrestricted(),
+    )
+    .expect("the cut strip prepares");
+    let far = prepared
+        .charts
+        .iter()
+        .position(|c| c.window.is_some_and(|w| w.origin[0] > 1000))
+        .expect("a far sub-chart");
+    let (bvh, primitives, bvh_section) = build_bvh(&geometry).unwrap();
+    let (chunks, _) = build_placed_animated_light_chunks(
+        &bvh_section,
+        &animated_lights,
+        &prepared.charts,
+        &prepared.placements,
+        &geometry.face_index_ranges,
+        0.1,
+    );
+    let far_chunks = chunks
+        .chunks
+        .iter()
+        .filter(|c| c.face_index as usize == far)
+        .count();
+    assert!(far_chunks > 1, "chunks split in the far sub-chart");
+
+    let (animated_list, _) = animated_lights.to_parallel_vecs();
+    let mut weight_maps = bake_animated_light_weight_maps_controlled(
+        &WeightMapInputs {
+            bvh: &bvh,
+            primitives: &primitives,
+            geometry: &geometry,
+            chunk_section: &chunks,
+            lights: &animated_list,
+            face_charts: &prepared.charts,
+            face_placements: &prepared.placements,
+            layout: &prepared.layout,
+            atlas_width: prepared.atlas_width,
+            atlas_height: prepared.atlas_height,
+            static_atlas_layer_count: prepared.layer_count,
+            area_sample_count: 1,
+        },
+        &BakeControl::unrestricted(),
+    )
+    .expect("sibling chunk rects do not overlap");
+
+    for (chunk, rect) in chunks.chunks.iter().zip(&weight_maps.chunk_rects) {
+        let chart = &prepared.charts[chunk.face_index as usize];
+        let (iw, ih) = chart_interior_dims(chart);
+        let texels = |axis: usize, interior: i32| {
+            let scale = f64::from(interior) / f64::from(chart.uv_extent[axis]);
+            (f64::from(chunk.uv_max[axis] - chunk.uv_min[axis]) * scale).round() as u32
+        };
+        assert_eq!(
+            (rect.width, rect.height),
+            (texels(0, iw), texels(1, ih)),
+            "face {} chunk {:?}..{:?}",
+            chunk.face_index,
+            chunk.uv_min,
+            chunk.uv_max
+        );
+    }
+
+    super::super::animated_atlas_stage::layout_animated_atlas(
+        &mut weight_maps,
+        &chunks,
+        &geometry,
+        &prepared.layout,
+        prepared.atlas_width,
+        false,
+    )
+    .expect("the shared-vertex and footprint guards pass");
+}
+
 // P11: more faces within animated reach than the animated block table holds
 // fails at atlas preparation, before any bake, on the animated cap's error.
 #[test]
@@ -467,10 +648,16 @@ fn animated_reach_past_the_block_cap_fails_by_name_at_atlas_preparation() {
     let animated = vec![animated];
     let animated_lights = AnimatedBakedLights::from_lights(&animated);
 
+    let range = geometry.face_index_ranges[0];
+    let ranges = vec![range; ANIMATED_BLOCK_CAP as usize + 1];
     let at_cap = vec![chart.clone(); ANIMATED_BLOCK_CAP as usize];
-    assert!(check_animated_block_bound(&animated_lights, &at_cap).is_ok());
+    assert!(check_animated_block_bound(&animated_lights, &at_cap, &ranges[1..]).is_ok());
     let past_cap = vec![chart; ANIMATED_BLOCK_CAP as usize + 1];
-    let error = check_animated_block_bound(&animated_lights, &past_cap)
+    // Faces without geometry emit no chunk, so they count toward nothing.
+    let mut empty = ranges.clone();
+    empty[0].index_count = 0;
+    assert!(check_animated_block_bound(&animated_lights, &past_cap, &empty).is_ok());
+    let error = check_animated_block_bound(&animated_lights, &past_cap, &ranges)
         .expect_err("one face past the cap fails")
         .to_string();
     assert!(error.contains("exceeds the block-table cap"), "{error}");

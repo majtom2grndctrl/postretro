@@ -1693,7 +1693,8 @@ fn run_after_parsing(
     // BVH, CellDrawIndex) is then rebuilt over the cut geometry, and the
     // canonical cell partition resolves from it, once: lightmap blocks are
     // stored in its cluster order, and the ClusterDirectory stage consumes the
-    // same plan. Nothing after this point reads the pre-cut set.
+    // same plan. Nothing after this point names faces of the pre-cut set; the
+    // SDF reads the pre-cut geometry's positions only (below).
     let atlas_control = BakeControl::new(Arc::clone(&governor), &StageProgress::indeterminate());
     let atlas_stage::AtlasStageOutput {
         prepared: prepared_atlas,
@@ -1714,6 +1715,8 @@ fn run_after_parsing(
         &mut vis_result.leaves_section,
         &bvh_section,
     )?;
+    // A whole geometry copy: keep it only for the SDF stage that reads it.
+    let pre_cut_geometry = pre_cut_geometry.filter(|_| map_needs_sdf_atlas(&map_data.lights));
     if let Some(rebuilt) = rebuilt {
         bvh = rebuilt.bvh;
         bvh_primitives = rebuilt.primitives;
@@ -1992,6 +1995,7 @@ fn run_after_parsing(
             &sdf_config,
             stage_cache.as_ref(),
         );
+        drop(pre_cut_geometry);
         finish_stage(
             &mut timings,
             reporter.as_ref(),

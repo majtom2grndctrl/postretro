@@ -56,7 +56,7 @@ pub(super) struct FinalizedClusterMetadata<'a> {
 
 /// Inputs that determine the final cluster-directory metadata inventory.
 pub(super) struct FinalizedClusterMetadataInputs<'a> {
-    /// Cells, portals, hints, and partition resolved before atlas preparation.
+    /// Cells, portals, hints, and partition resolved during atlas preparation.
     pub(super) partition: CellPartitionPlan,
     pub(super) tree: &'a BspTree,
     pub(super) bvh: &'a BvhSection,

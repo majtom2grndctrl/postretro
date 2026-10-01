@@ -1327,6 +1327,7 @@ export type GameStateRefs = {
     mouseSensitivity: Ref<number>,
     musicVolume: Ref<number>,
     reduceMotion: Ref<boolean>,
+    renderResolution: Ref<"auto" | "native" | "half" | "third" | "quarter">,
     screenShakeScale: Ref<number>,
     sfxVolume: Ref<number>,
     shadowQuality: Ref<"low" | "medium" | "high">,

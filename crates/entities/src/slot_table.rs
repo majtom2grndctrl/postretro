@@ -812,6 +812,7 @@ mod tests {
             "options.shadowQuality",
             "options.fogQuality",
             "options.surfaceDepthQuality",
+            "options.renderResolution",
         ] {
             let slot = table.get(name).expect("engine option slot exists");
             assert_eq!(slot.schema.ownership, SlotOwnership::Engine);
@@ -848,6 +849,26 @@ mod tests {
             table.get("options.surfaceDepthQuality").unwrap().value,
             Some(SlotValue::Enum("on".into())),
             "the feature ships on; the switch is an escape hatch",
+        );
+        assert_eq!(
+            table
+                .get("options.renderResolution")
+                .unwrap()
+                .schema
+                .slot_type,
+            SlotType::Enum {
+                values: vec![
+                    "auto".into(),
+                    "native".into(),
+                    "half".into(),
+                    "third".into(),
+                    "quarter".into(),
+                ]
+            }
+        );
+        assert_eq!(
+            table.get("options.renderResolution").unwrap().value,
+            Some(SlotValue::Enum("auto".into())),
         );
     }
 

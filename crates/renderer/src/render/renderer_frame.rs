@@ -1,4 +1,4 @@
-// Per-frame renderer plumbing: surface resize, per-frame uniform updates, and
+// Per-frame renderer plumbing: surface acquire, per-frame uniform updates, and
 // debug-line clearing.
 // See: context/lib/rendering_pipeline.md §1
 
@@ -158,72 +158,6 @@ impl Renderer {
         };
 
         Ok(Some(PresentHandle::new(output)))
-    }
-
-    /// Camera owns aspect ratio; caller must also call `update_per_frame_uniforms`.
-    ///
-    /// Works in BOTH windowed phases. Windowed renderers reconfigure the surface
-    /// during boot; full-phase depth, HDR scene/bloom, fog, SDF shadow, and
-    /// spot-shadow resources rebuild only when the full renderer exists.
-    /// Offscreen renderers have no surface, so resize is a no-op.
-    /// During the boot/splash window (`full` is `None`) the surface is the only
-    /// thing that needs resizing — the boot splash re-projects against the new
-    /// backbuffer size on the next `render_splash_frame`.
-    pub fn resize(&mut self, width: u32, height: u32) {
-        if width == 0 || height == 0 {
-            return;
-        }
-        let Some(surface) = self.surface.as_ref() else {
-            return;
-        };
-        self.surface_config.width = width;
-        self.surface_config.height = height;
-        surface.configure(&self.device, &self.surface_config);
-        self.is_surface_configured = true;
-        self.surface_reconfigure_pending = false;
-
-        // Full-phase targets only — skip when boot-only (splash still presents).
-        if self.full.is_none() {
-            return;
-        }
-        let Self { device, full, .. } = self;
-        let full = full
-            .as_mut()
-            .expect("full renderer present (checked above)");
-        let (_depth_texture, depth_view) = create_depth_texture(device, width, height);
-        full.depth_view = depth_view;
-        // Recreate the surface-sized HDR scene target before bloom so bloom can
-        // rebuild its source view and resolution-dependent parameter table.
-        full.screen_effects.resize(device, width, height);
-        full.bloom.resize(
-            device,
-            width,
-            height,
-            full.screen_effects.scene_color_texture(),
-        );
-        full.fog.resize(device, width, height, &full.depth_view);
-        // SDF shadow target is half-res relative to the surface; the depth view
-        // also changed, so the pass bind group has to be rebuilt.
-        full.sdf_shadow_pass
-            .resize(device, &full.depth_view, width, height);
-        // Group-5 bind group references both the SDF shadow factor target
-        // and the scene depth — both just got recreated, so rebuild. The cube
-        // binding's presence is fixed for the renderer's lifetime: the pool is
-        // `Some` iff the adapter supports CUBE_ARRAY_TEXTURES, so rebuild the BGL
-        // with the same flag (its presence mirrors the pool's).
-        let cube_array_supported = full.cube_shadow_pool.is_some();
-        let spot_shadow_bgl = SpotShadowPool::bind_group_layout(device, cube_array_supported);
-        // The cube sampling view is surface-size-independent, but the group-5
-        // bind group is fully rebuilt here, so re-reference it (`Some` when the
-        // pool is present, `None` omits binding 5 to match the BGL).
-        let cube_sampling_view = full.cube_shadow_pool.as_ref().map(|p| &p.sampling_view);
-        full.spot_shadow_pool.rebuild_bind_group(
-            device,
-            &spot_shadow_bgl,
-            &full.sdf_shadow_pass.shadow_view,
-            &full.depth_view,
-            cube_sampling_view,
-        );
     }
 
     pub fn update_per_frame_uniforms(

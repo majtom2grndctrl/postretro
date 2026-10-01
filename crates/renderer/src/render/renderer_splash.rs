@@ -37,6 +37,9 @@ impl Renderer {
     /// The boot splash writes the swapchain directly — it never touches
     /// `scene_color`, the UI pass, or `UiReadSnapshot` (rendering_pipeline §7.8).
     pub fn render_splash_frame(&mut self) -> Result<Option<PresentHandle>> {
+        // Splash and loading frames have no camera; commit here so a resize
+        // still reconfigures the swapchain once before acquire.
+        self.commit_extents();
         let Some(handle) = self.acquire_present_handle("splash frame")? else {
             return Ok(None);
         };

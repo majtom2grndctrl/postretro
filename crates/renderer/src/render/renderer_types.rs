@@ -664,6 +664,11 @@ pub struct Renderer {
     /// has no surface and never reaches the present/splash paths.
     pub(super) surface: Option<wgpu::Surface<'static>>,
     pub(super) surface_config: wgpu::SurfaceConfiguration,
+    /// Recorded window size, scale factor and render resolution, and the
+    /// surface and scene extents last committed from them. `surface_config`
+    /// mirrors the committed surface; every scene target sizes to the
+    /// committed scene extent (`renderer_extent.rs`).
+    pub(super) extent_state: postretro_render_cpu::render_extent::ExtentState,
     pub(super) is_surface_configured: bool,
     pub(super) surface_reconfigure_pending: bool,
     /// CPU stage timing gate, handed in by the binary after construction.

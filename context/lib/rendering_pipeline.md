@@ -525,42 +525,60 @@ Spatial visible-cell coloring is derived from the drawable `VisibleCells` result
 
 The renderer owns a single-sample linear `Rgba16Float` `scene_color` target at
 the scene extent. Every gameplay scene pass writes there; the fullscreen
-resolve is the sole swapchain writer for the gameplay path. It samples
-`scene_color` through a nearest, pixel-aligned sampler, applies the
+resolve is the sole swapchain writer for the gameplay path. It loads
+`scene_color` texels by integer coordinate (no sampler), applies the
 near-neutral soft-knee tonemap, then the screen effects — flash (over-blend
 toward a tint, weighted by flash alpha), vignette (strength-scaled radial edge
-darken/tint), and shake (a pure UV offset applied before the sample) — and
-writes the sRGB swapchain. The effects pack CPU-side from the frame's UI
-snapshot into a per-frame uniform. The target stores raw linear values;
-sampling it does not decode sRGB, and the swapchain store performs the one
-display encode. This preserves in-range content closely while compressing HDR
+darken/tint), and shake (a screen-fraction offset added to the scene texel
+coordinate, clamped at the edge) — composites the UI layer, and writes the
+sRGB swapchain. The effects pack CPU-side from the frame's UI snapshot into a
+per-frame uniform that also carries the upscale divisor and the covers-HUD
+switches; a compile-time guard pins its 64-byte layout to the WGSL mirror. The
+target stores raw linear values; loading it does not decode sRGB, and the
+swapchain store performs the one display encode. This preserves in-range content closely while compressing HDR
 overshoot rather than hard-clipping it; in-range parity is a visual/manual-GPU
 gate, not byte identity. See `crates/renderer/src/render/screen_effects.rs`
 and `crates/renderer/src/shaders/screen_effects.wgsl`.
 
-**Scene extent (decided; not yet built).** The swapchain stays at the
-surface's physical size. The scene renders at its own extent: ceil(surface /
-divisor) per axis, minimum 1, for the integer divisor the player's render
-resolution selects (`player_options.md` §4). Every scene target — depth,
-`scene_color`, the bloom chain, fog scatter, the half-res SDF factor, the
-shadow bind group that samples scene depth — and the camera and viewmodel
-aspect follow the scene extent. One renderer-owned chokepoint derives both
-extents, so no scene target reads the surface size. Resize, scale-factor, and
-option changes only record state; the next frame start rebuilds once, from the
-final values, if either extent changed. Today the scene extent is the surface
-extent.
+**Scene extent.** The swapchain stays at the surface's physical size. The
+scene renders at its own extent: ceil(surface / divisor) per axis, minimum 1,
+for the integer divisor the player's render resolution selects
+(`player_options.md` §4). Every scene target — depth, `scene_color`, the bloom
+chain, fog scatter, the half-res SDF factor, the shadow bind group that samples
+scene depth — and the camera and viewmodel aspect follow the scene extent.
+`ExtentState` (`render-cpu/src/render_extent.rs`) is the one chokepoint that
+derives both extents; `renderer_extent.rs` holds the only scene-target resize
+path, and a source scan keeps surface-size reads to swapchain consumers.
+Window resize, scale-factor, and render-resolution changes only record. The
+binary commits once per frame, after the frame's option writes and before it
+builds the camera; render entries commit again as a no-op guard, and warn if
+that guard ever finds a change. A commit rebuilds only when an extent changed.
+A zero-size (minimized) surface is ignored, so extents stay at the last
+non-zero surface. The renderer reads the window's scale factor at build,
+because macOS sends no scale event at launch; full init commits recorded values
+before building, so a saved render resolution needs no rebuild after it.
 
-**Upscale and UI layer (decided; not yet built).** The resolve upscales the
-scene by nearest-neighbor integer replication: each scene pixel covers
-divisor × divisor surface pixels, and only the overshoot at the frame edge is
-cropped. Game UI never writes `scene_color`. It renders at native resolution
-into its own layer, cleared transparent each frame, and the resolve composites
-that layer over the upscaled, effected scene without tonemapping it. Frontend
-frames composite the same way. Screen effects apply to the scene only: each has
-a covers-HUD switch in the resolve, all off. Those switches are the single home
-for any effect that must cover the HUD, such as a future CRT filter. Today
-gameplay UI draws into `scene_color`, so the tonemap and all three effects
-reach it.
+**Upscale and UI layer.** The resolve upscales the scene by nearest-neighbor
+integer replication anchored at the top-left: each scene pixel covers
+divisor × divisor surface pixels, and the overshoot (up to divisor − 1 pixels)
+is cropped from the right and bottom. World-anchored UI therefore projects into
+the upscaled span (scene × divisor), not the window. Game UI never writes
+`scene_color`. It renders at native resolution into its own premultiplied
+`Rgba8UnormSrgb` layer, cleared transparent every frame whether or not UI
+draws, with its private depth target; the resolve composites that layer over
+the upscaled, effected scene (`scene·(1 − a) + ui`) without tonemapping it.
+Frontend frames composite the same way. Screen effects apply to the scene only:
+each has a covers-HUD switch in the resolve, all off (`COVERS_HUD` in
+`screen_effects.rs`). Those switches are the single home for any effect that
+must cover the HUD, such as a future CRT filter. Scene-only effects run before
+the composite and covering ones after it, so enabling only the vignette switch
+applies flash before vignette on the scene. Capture binds an empty 1×1 layer.
+
+**Measured effect (Radeon Pro 5300M, Retina 2×, 1280×720 logical window).**
+Auto (divisor 2) takes campaign-test from a GPU-bound ~27 fps to vsync-locked
+60 and stress-warren-hallway-inspection from ~41 to ~54 fps. The forward pass
+falls to ~0.41× of native, not ¼: about a third of its cost does not scale
+with pixel count (`plans/done/hidpi-render-scale`).
 
 The renderer-owned bloom compositor runs after fog and before capture,
 wireframe/debug/viewmodel overlays, and gameplay UI. It extracts HDR luminance
@@ -602,7 +620,8 @@ Windows and rates run on **presented-frame time** — not frame count, and not U
 Nothing else is limited today: world lights and light animation, UI panels, emissives, flipbooks, camera cuts, and load loops through the boot splash reach the player unlimited. A source-level floor for them is planned, not built. A GPU frame limiter over the composited frame was built and withdrawn: its per-cell means could not tell light added to a region from light moved through it, so ordinary camera motion read as flashes.
 
 **Frame capture.** Headless capture renders at its requested resolution,
-divisor 1 whatever the player's render resolution, so captures stay comparable
+divisor 1 whatever render resolution was recorded (both capture entries pin it
+first; capture is offscreen-only), so captures stay comparable
 across machines. It runs the same soft-knee tonemap into a capture-only
 `Rgba8UnormSrgb` target after the bloom composite, then reads it back. PNG bytes therefore stay deterministic RGBA8 while capture
 includes scene bloom and excludes transient screen effects. Renderer owns the

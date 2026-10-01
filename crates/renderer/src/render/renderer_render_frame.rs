@@ -65,6 +65,14 @@ impl Renderer {
         render_world: bool,
         sh_drain_batch: ShDrainBatch,
     ) -> std::result::Result<ShDrainFrameResult<Option<PresentHandle>>, ShResidencyDrainError> {
+        // The binary commits after its option writes and before building the
+        // camera, so this is always a no-op on gameplay and frontend frames. A
+        // change here means an extent was recorded after the camera was built.
+        if self.commit_extents().is_some() {
+            log::warn!(
+                "[Renderer] render extents changed after the camera was built; this frame's projection uses the previous aspect"
+            );
+        }
         // This is the sole loader→renderer admission point for a windowed
         // frame. It precedes surface acquisition so even a skipped frame
         // returns the ownership outcome to the session controller.
@@ -388,14 +396,15 @@ impl Renderer {
             self.record_depth_and_sdf_passes(encoder, view_proj, render_world);
         }
 
-        // Post-scene compositor seam: every gameplay scene + UI pass renders into
-        // `scene_color` (the offscreen target) instead of the swapchain `view`.
+        // Post-scene compositor seam: every gameplay scene pass renders into
+        // `scene_color` (the offscreen target) instead of the swapchain `view`;
+        // UI records separately into its own native-res layer.
         // The resolve pass below is the sole swapchain writer for the gameplay
         // path. The view is cloned (wgpu `TextureView` is `Arc`-backed) into an
         // OWNED handle so it no longer borrows `self.full()` — the post-split
         // `full()`/`full_mut()` accessors borrow ALL of `self`, so holding a
         // borrow of `screen_effects` across the later `&mut self` pass/helper
-        // calls (ui, debug_lines, wireframe overlay) would conflict. The owned
+        // calls (debug_lines, wireframe overlay) would conflict. The owned
         // clone preserves the disjoint-borrow behavior the inline-field layout
         // had. The splash path is unaffected — it writes the swapchain directly
         // and never touches this target.
@@ -843,161 +852,23 @@ impl Renderer {
             }
         }
 
-        // UI pass: records into `scene_color` (offscreen) with `LoadOp::Load`
-        // after the world/fog/wireframe/debug-line passes, before the timing
-        // resolve and submit — beneath the egui overlay (which draws in the
-        // caller's separate submission).
-        //
-        // The gameplay path lays out the snapshot's descriptor tree (renderer
-        // owns layout) and records its draw data. EMPTY-TREE EARLY-OUT: when the
-        // snapshot carries no tree, or the tree lays out empty, the pass is
-        // skipped entirely — no `begin_render_pass`. This is the gameplay-path-
-        // only early-out (A follow-up #3); the boot splash is a separate
-        // renderer-owned pass (`BootSplashPass`) that always clears the swapchain.
-        let ui_scope = cpu.scope(RenderStage::Ui);
-        let ui_viewport = [self.surface_config.width, self.surface_config.height];
-        // Destructure boot (`device`/`queue`) + `full` once for the whole UI
-        // region: the layout/focus-ring/encode/resolve statements interleave a
-        // `&mut full.ui` (or `&mut full.screen_effects`) borrow with disjoint
-        // `&full.ui_snapshot` / `&full.ui_theme` reads in single statements — the
-        // `full_mut()` accessor borrows ALL of `self`, so it cannot coexist with
-        // those argument reads. The destructure restores the disjoint-field
-        // borrows the inline layout had.
-        let Self {
-            device,
-            queue,
-            full,
-            ..
-        } = self;
+        // Game UI records into its native-res layer, never into `scene_color`,
+        // so the tonemap and scene-only effects leave it untouched.
+        {
+            let _ui_scope = cpu.scope(RenderStage::Ui);
+            self.record_ui_layer(encoder, font_system);
+        }
+
+        // Resolve: upscale + tonemap + scene effects, then composite the UI
+        // layer. This is the gameplay path's sole swapchain writer and runs
+        // even when screen effects are at rest; timing query resolution
+        // follows it.
+        let _resolve_scope = cpu.scope(RenderStage::Resolve);
+        let scene_divisor = self.render_extents().divisor;
+        let Self { queue, full, .. } = self;
         let full = full
             .as_mut()
             .expect("renderer full-init must complete before full-ready paths run");
-        // Modal stack: lay out and record each layer bottom→top (`trees[0]` is the
-        // bottom HUD, the last entry the top/active modal). Each layer keeps its
-        // own retained tree + dirty gate, so a frozen lower layer recomputes
-        // nothing while the top animates. Painter's order is the stack order: a
-        // later layer's quads composite over the earlier ones into the same view
-        // (LoadOp::Load). Empty/empty-laying-out layers early-out individually.
-        let stack_len = full.ui_snapshot.trees.len();
-
-        // Lay out EVERY layer first into owned draw data, THEN compose all layers
-        // into a SINGLE `encode` call. The glyphon text half (`UiTextRenderer`) is
-        // shared across layers and holds ONE vertex buffer it overwrites at offset
-        // 0 on each `prepare`; `queue.write_buffer` resolves on the queue timeline
-        // (last write wins) regardless of recording order, so issuing a separate
-        // `encode` per layer makes EVERY layer's text draw read the LAST layer's
-        // shaped glyphs — the readout-aliasing bug (a lower layer's text rendered
-        // the top layer's glyphs). This mirrors the multi-batch quad-buffer clobber
-        // already documented in `UiPass::encode`: one `prepare`/`render` per frame,
-        // with all layers' glyphs concatenated in painter order, sidesteps it.
-        let mut layer_draws: Vec<ui::tree::UiDrawData> = Vec::with_capacity(stack_len + 1);
-        // Presentation is a passive world-facing layer, not a retained modal.
-        // Lower it first so HUD and modal trees remain visually above it, while
-        // focus export continues to inspect only the retained top tree below.
-        let presentation_draw = full.ui.layout_presentation_inputs(
-            font_system,
-            &full.presentation_inputs,
-            ui_viewport,
-            full.ui_images.image_sizes(),
-            full.ui_images.image_sizes_generation(),
-            &full.ui_theme,
-            full.ui_theme_generation,
-            ui::tree::TweenClock {
-                now: full.ui_snapshot.time_seconds,
-                snap: full.ui_snapshot.reduce_motion,
-            },
-        );
-        layer_draws.push(presentation_draw);
-        for (layer, entry) in full.ui_snapshot.trees.iter().enumerate() {
-            // Image widgets measure from the renderer-owned image registry. A
-            // missing key still collapses, but the registry now warns once when
-            // the draw path tries to bind it instead of failing silently.
-            // Bound text/panel nodes resolve against the snapshot's slot values
-            // (disjoint field borrow from `&mut full.ui`). The entry carries the
-            // layer's owner, which the retained layer records for the focus
-            // export.
-            let mut draw = full.ui.layout_gameplay_tree(
-                font_system,
-                layer,
-                entry,
-                ui_viewport,
-                full.ui_images.image_sizes(),
-                full.ui_images.image_sizes_generation(),
-                &full.ui_snapshot.slot_values,
-                &full.ui_snapshot.cell_values,
-                &full.ui_theme,
-                full.ui_theme_generation,
-                ui::tree::TweenClock {
-                    now: full.ui_snapshot.time_seconds,
-                    snap: full.ui_snapshot.reduce_motion,
-                },
-            );
-            // Focus ring (M13 Goal F, Task 3): only the TOP layer takes focus, so
-            // draw the engine ring around the focused node's rect on it. The
-            // focused id rode in on the snapshot (resolved app-side last frame, so
-            // it may trail a focus change by one frame). The ring is a `focus.ring`
-            // bordered frame inset by the `xs` spacing token; appended through
-            // the layer's paint stream so it composites over the focused content.
-            let is_top = layer + 1 == stack_len;
-            if is_top {
-                if let Some(focused) = full.ui_snapshot.focused_id.as_deref() {
-                    let focus_rects = full.ui.export_top_focus_rects(
-                        ui_viewport,
-                        &full.ui_snapshot.slot_values,
-                        &full.ui_snapshot.cell_values,
-                    );
-                    if let Some(fr) = focus_rects.rects.iter().find(|r| r.id == focused) {
-                        let inset = full.ui_theme.spacing("xs").unwrap_or(0.0)
-                            * ui::layout::device_scale(ui_viewport);
-                        let ring_color = full
-                            .ui_theme
-                            .color("focus.ring")
-                            .unwrap_or([1.0, 0.0, 1.0, 1.0]);
-                        ui::push_focus_ring(&mut draw, fr.rect, inset, ring_color);
-                    }
-                }
-            }
-            layer_draws.push(draw);
-        }
-
-        // Fold every laid-out layer into ONE whole-frame composition (bottom→top
-        // painter order) and record a SINGLE UI pass. The composition is the unit
-        // of encoding — `encode` takes the whole composition, never one layer — so
-        // the cross-layer glyphon clobber (every layer's text reading the last
-        // layer's shaped glyphs) is unrepresentable. The white bind group is cloned
-        // out first so the `&self.ui_images` borrow the fold takes can coexist with
-        // the `&mut self.ui` encode call below.
-        let white_bg = full.ui.white_bind_group().clone();
-        let composition =
-            ui::UiComposition::from_layer_draws(&layer_draws, &white_bg, &full.ui_images);
-        if !composition.is_empty() {
-            full.ui.encode(
-                font_system,
-                device,
-                queue,
-                encoder,
-                &scene_color,
-                ui_viewport,
-                wgpu::LoadOp::Load,
-                &composition,
-            );
-        }
-        // The composition's frame-scoped borrows end here. Reclaim the passive
-        // layer's translated aggregate so its Vec/String storage stays warm for
-        // the next frame instead of being dropped with `layer_draws`.
-        drop(composition);
-        let presentation_draw = layer_draws.remove(0);
-        full.ui.recycle_presentation_draw_data(presentation_draw);
-        // Drop retained state for any layers popped since last frame (stack
-        // shrank), so freed modal trees release their layout cache.
-        full.ui.truncate_gameplay_stack(stack_len);
-
-        // Resolve HDR `scene_color` into the swapchain after UI, applying the
-        // soft-knee tonemap before flash/vignette/shake. This is the gameplay
-        // path's sole swapchain writer and runs even when screen effects are at
-        // rest; timing query resolution follows it.
-        drop(ui_scope);
-        let _resolve_scope = cpu.scope(RenderStage::Resolve);
         let resolve_timestamps = full
             .frame_timing
             .as_ref()
@@ -1008,6 +879,7 @@ impl Renderer {
             view,
             &full.ui_snapshot.slot_values,
             full.limiter_frame.take(),
+            scene_divisor,
             resolve_timestamps,
         );
 

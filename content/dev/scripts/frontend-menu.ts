@@ -176,6 +176,16 @@ export const frontendMenu = defineUiTree({
 
 const options = getGameState().options;
 
+/// Render resolution choices, in display order. ASCII fractions render in every
+/// bundled typeface.
+const RENDER_RESOLUTION_CHOICES = [
+  { value: "auto", id: "optionsRenderResolutionAuto", label: "AUTO" },
+  { value: "native", id: "optionsRenderResolutionNative", label: "NATIVE" },
+  { value: "half", id: "optionsRenderResolutionHalf", label: "1/2" },
+  { value: "third", id: "optionsRenderResolutionThird", label: "1/3" },
+  { value: "quarter", id: "optionsRenderResolutionQuarter", label: "1/4" },
+] as const;
+
 const optionReactions: NamedReactionDescriptor[] = [
   defineReaction("frontend.options.invertY.off", updateState(options.invertY, false)),
   defineReaction("frontend.options.invertY.on", updateState(options.invertY, true)),
@@ -200,6 +210,12 @@ const optionReactions: NamedReactionDescriptor[] = [
   defineReaction(
     "frontend.options.surfaceDepthQuality.on",
     updateState(options.surfaceDepthQuality, "on"),
+  ),
+  ...RENDER_RESOLUTION_CHOICES.map(({ value }) =>
+    defineReaction(
+      `frontend.options.renderResolution.${value}`,
+      updateState(options.renderResolution, value),
+    ),
   ),
 ];
 
@@ -411,6 +427,17 @@ const graphicsPanel = optionsPanel("optionsPanelGraphics", [
         "frontend.options.surfaceDepthQuality.on",
       ),
     ]),
+    optionLabel("optionsRenderResolutionLabel", "RENDER RESOLUTION"),
+    optionChoices(
+      RENDER_RESOLUTION_CHOICES.map(({ value, id, label }) =>
+        radioChoice(
+          id,
+          label,
+          stateEquals(options.renderResolution, value),
+          `frontend.options.renderResolution.${value}`,
+        ),
+      ),
+    ),
   ]),
 ]);
 

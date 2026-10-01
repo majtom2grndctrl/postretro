@@ -1769,8 +1769,11 @@ impl ApplicationHandler for App {
         // as fast as possible. See `run_splash_frame` and
         // `context/lib/boot_sequence.md` §1 (Splash state machine).
 
-        let size = window.inner_size();
-        self.camera.update_aspect(size.width, size.height);
+        // Provisional: the renderer read the window's size and scale factor at
+        // build, but the player's render resolution is applied at full init.
+        // Every frame's `commit_render_extents` sets the aspect that projects.
+        let scene = renderer.scene_extent();
+        self.camera.update_aspect(scene.width, scene.height);
 
         self.renderer = Some(renderer);
         self.window_state = Some(WindowState { window });
@@ -1886,11 +1889,18 @@ impl ApplicationHandler for App {
         let egui_consumed: bool = false;
 
         match event {
+            // Size and scale only record here. macOS can deliver both in one
+            // dispatch; the frame's `commit_render_extents` rebuilds once from
+            // the final values. egui-winit received this event above.
             WindowEvent::Resized(size) => {
                 if let Some(renderer) = self.renderer.as_mut() {
-                    renderer.resize(size.width, size.height);
+                    renderer.record_surface_size(size.width, size.height);
                 }
-                self.camera.update_aspect(size.width, size.height);
+            }
+            WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+                if let Some(renderer) = self.renderer.as_mut() {
+                    renderer.record_scale_factor(scale_factor);
+                }
             }
             WindowEvent::CloseRequested => {
                 self.release_cursor_for_exit();
@@ -3411,6 +3421,7 @@ impl ApplicationHandler for App {
                 }
 
                 self.update_player_options(frame_dt, options_menu_was_open);
+                self.commit_render_extents();
 
                 // Connected-client per-owner persistence runs exactly after the
                 // second command drain: every fixed tick and same-frame crossing
@@ -3716,11 +3727,15 @@ impl ApplicationHandler for App {
                     );
                 }
 
+                // World anchors project into the span the upscaled scene
+                // covers (scene × divisor, anchored top-left), so each lands on
+                // the scene pixel it marks even when the surface does not
+                // divide evenly. Committed this frame, so never a 0×0 minimize.
                 let presentation_viewport = self
-                    .window_state
+                    .renderer
                     .as_ref()
-                    .map(|state| state.window.inner_size())
-                    .map(|size| [size.width, size.height])
+                    .map(|renderer| renderer.render_extents().upscaled_scene())
+                    .map(|span| [span.width, span.height])
                     .unwrap_or([0, 0]);
                 let is_connected_client = self.is_connected_client();
 
@@ -5609,6 +5624,7 @@ impl App {
             self.dispatch_system_commands();
         }
         self.update_player_options(frame_dt, options_menu_was_open);
+        self.commit_render_extents();
         self.reconcile_ui_focus();
         self.apply_frontend_menu_camera_pose_if_present();
         self.poll_staged_manifest_results();
@@ -12811,7 +12827,7 @@ mod tests {
                 "optionsTabGraphics",
                 "graphics",
                 "optionsPanelGraphics",
-                6,
+                8,
                 &[
                     "optionsShadowLow",
                     "optionsShadowMedium",
@@ -12821,6 +12837,11 @@ mod tests {
                     "optionsFogHigh",
                     "optionsSurfaceDepthOff",
                     "optionsSurfaceDepthOn",
+                    "optionsRenderResolutionAuto",
+                    "optionsRenderResolutionNative",
+                    "optionsRenderResolutionHalf",
+                    "optionsRenderResolutionThird",
+                    "optionsRenderResolutionQuarter",
                 ][..],
             ),
             (
@@ -14346,8 +14367,8 @@ mod tests {
         );
         assert_eq!(
             snapshot.len(),
-            38,
-            "only the set player.health and default-valued reload-feedback + local weapon display + weapon-resource kind and overheat latch + player.spread + screen effects + input.mode + ui.textEntry + fourteen options slots + ten accessibility slots appear",
+            39,
+            "only the set player.health and default-valued reload-feedback + local weapon display + weapon-resource kind and overheat latch + player.spread + screen effects + input.mode + ui.textEntry + fifteen options slots + ten accessibility slots appear",
         );
     }
 

@@ -279,12 +279,12 @@ fn depth_prepass_wgsl_parses() {
     );
 }
 
-/// The depth pre-pass attachment is recreated at the surface size on resize.
+/// The depth pre-pass attachment is recreated at the scene extent when it changes.
 /// Actual texture creation needs a GPU device (unavailable in `cargo test`);
 /// the size decision is factored into `prepass_attachment_extent`, asserted
 /// here. Zero-size transients clamp to 1 so texture creation stays valid.
 #[test]
-fn prepass_attachment_extent_matches_surface_size() {
+fn prepass_attachment_extent_matches_scene_extent() {
     let e = prepass_attachment_extent(1920, 1080);
     assert_eq!(
         (e.width, e.height, e.depth_or_array_layers),

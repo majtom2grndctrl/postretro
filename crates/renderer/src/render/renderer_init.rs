@@ -43,6 +43,8 @@ impl Renderer {
     /// `install_textures`.
     pub fn new(window: &Arc<Window>) -> Result<Self> {
         let size = window.inner_size();
+        // macOS sends no scale-factor event at launch, so read it here.
+        let scale_factor = window.scale_factor();
         let backends = renderer_backends_from_env()?;
         log::info!("[Renderer] wgpu backend selection: {backends:?}");
 
@@ -99,6 +101,13 @@ impl Renderer {
             device,
             queue,
             surface: Some(surface),
+            extent_state: postretro_render_cpu::render_extent::ExtentState::new(
+                postretro_render_cpu::render_extent::Extent::new(size.width, size.height),
+                scale_factor,
+                // Native until the app applies the player's render resolution,
+                // which it does before full init builds any scene target.
+                postretro_render_cpu::render_extent::RenderResolutionPolicy::default(),
+            ),
             surface_config,
             is_surface_configured: true,
             surface_reconfigure_pending: false,
@@ -160,12 +169,18 @@ impl Renderer {
         // renders the default (full) tier.
         let surface_depth_quality =
             postretro_render_cpu::surface_depth::SurfaceDepthQuality::default();
+        // Capture renders at its requested resolution, divisor 1, with no
+        // window scale factor.
+        let extent_state = postretro_render_cpu::render_extent::ExtentState::new(
+            postretro_render_cpu::render_extent::Extent::new(capture_width, capture_height),
+            1.0,
+            postretro_render_cpu::render_extent::RenderResolutionPolicy::default(),
+        );
         let full = build_full_renderer(
             &device,
             &queue,
             capture_format,
-            capture_width,
-            capture_height,
+            extent_state.committed(),
             has_multi_draw_indirect,
             cube_array_supported,
             bloom_render_profile,
@@ -176,6 +191,7 @@ impl Renderer {
             device,
             queue,
             surface: None,
+            extent_state,
             // Retained as the renderer's common target dimensions/format store.
             // Offscreen construction never configures or accesses a surface.
             surface_config: wgpu::SurfaceConfiguration {
@@ -207,7 +223,7 @@ impl Renderer {
 
     /// Build (or rebuild) the full renderer from current boot state. Idempotent
     /// across surface recreation: any existing `FullRenderer` is dropped (its GPU
-    /// resources released) and a fresh one built from the live `surface_config`,
+    /// resources released) and a fresh one built at the committed extents,
     /// so a suspend→resume that recreates the surface can re-run completion
     /// without re-running app-side deferred session init. Builds with no level
     /// loaded; level data installs later via `install_level_geometry`.
@@ -215,12 +231,14 @@ impl Renderer {
     /// No raw wgpu handles cross the app boundary — the app calls this; the
     /// renderer stays the sole GPU owner.
     pub fn finish_full_init(&mut self) -> Result<()> {
+        // Take any recorded resize, scale or render-resolution change first, so
+        // the full renderer builds once at the final extents.
+        self.commit_extents();
         let full = build_full_renderer(
             &self.device,
             &self.queue,
             self.surface_config.format,
-            self.surface_config.width,
-            self.surface_config.height,
+            self.extent_state.committed(),
             self.has_multi_draw_indirect,
             self.cube_array_supported,
             self.bloom_render_profile,

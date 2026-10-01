@@ -245,12 +245,6 @@ impl<'a> UiComposition<'a> {
             order_count,
         }
     }
-
-    /// `true` when the composition records nothing — no quad, ring, or text batches.
-    /// The gameplay path early-outs the UI pass on this.
-    pub fn is_empty(&self) -> bool {
-        self.batches.is_empty() && self.ring_batches.is_empty() && self.texts.is_empty()
-    }
 }
 
 pub(super) fn append_ordered_text_batch(

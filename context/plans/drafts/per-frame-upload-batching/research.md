@@ -25,7 +25,7 @@ Derivation and evidence behind the brief. Source was read by symbol at 832e20c8a
 - Kernel plus driver time is 64–69% of `render_submit`. The top self-time function is `mach_msg2_trap`, at 39%.
 - Each drop runs `MTLIOAccelBuffer dealloc` → `ioAccelResourceFinalize` → `IOConnectCallMethod`, a synchronous kernel call. The profile shows this. Whether wgpu-hal's Metal buffer destroy makes one kernel call per buffer was not read in source.
 - `render/sh_streaming/gpu/staged_uploads.rs` measured about 40 µs per write call on Metal when it was built (`plans/done/sh-streaming--warm-set-and-io-contract`, T4: install CPU 1208 ms → 223 ms).
-- Combined, staging create and drop cost about 5 ms of a 10–12 ms CPU frame.
+- Combined, staging create and drop cost about 4.3 ms of a 10–12 ms CPU frame on the hallway map. This is a de-inflated estimate: the raw profile sum, about 5 ms, less the sampling inflation. Reconciled figures are pending.
 
 ## Why wgpu pays per call
 
@@ -107,7 +107,15 @@ Dropping a batch after any of those runs leaves the GPU stale until an unrelated
 
 ## Rivals considered
 
-- **`wgpu::util::StagingBelt`.** A second mechanism beside `StagedUploads`. It records copies into an encoder at write time, which breaks the writes `UiPass::encode` makes while its render pass is open. It also handles no texture writes.
-- **`Queue::write_buffer_with`.** The same `StagingBuffer::new` per call; it only saves a memcpy.
-- **Persistent per-resource mapped rings.** One ring per written resource is more machinery and more VRAM bookkeeping than one recycled batch, for the same effect.
+- **`wgpu::util::StagingBelt`.** Rejected, for three reasons:
+  - It records a copy into an encoder at write time. But many per-frame writes come through `Renderer` methods the binary calls before any frame encoder exists: the light bridge, fog, per-frame uniforms, viewmodel.
+  - It moves writes from the queue timeline to the encoder timeline. `ui.md` §5 relies on queue-timeline resolution: a draw recorded between overlapping writes does not snapshot the buffer. A deferred batch submitted first keeps that, and the build updates the sentence to name the batch.
+  - It has no texture writes.
+
+  It would also be a second mechanism beside `StagedUploads`, and it cannot take the writes `UiPass::encode` makes while its render pass is open.
+- **Coalescing at each writer.** Each module dedups, merges or diff-gates its own writes. It is weaker as the main fix, because every remaining write still pays a staging allocation. It is the right home for dedup and merging, which is why the batch does neither and the brief lists them as follow-ups.
+- **Batching only at record time.** Route only writes made while recording the scene and keep the binary-side writes direct. That means fewer submit sites change. But the uniform, bridge, fog and viewmodel writes keep paying per call. Direct and batched writes would also mix within one submit window, which is the ordering hazard the brief's direct-write rule forbids.
+- **Upstream wgpu issue.** Filing an issue asking to pool Metal staging buffers is worth doing. No release has a fix, and the transient-buffer pooling PR #10232 covers Vulkan only. It is not a substitute.
+- **`Queue::write_buffer_with`.** The same `StagingBuffer::new` per call; it saves only a memcpy.
+- **Persistent per-resource mapped rings.** One ring per written resource is more machinery and VRAM bookkeeping than one recycled batch, for the same effect.
 - **Upgrade or fork wgpu.** No released fix pools staging buffers on Metal.

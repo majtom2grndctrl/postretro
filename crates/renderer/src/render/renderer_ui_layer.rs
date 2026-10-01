@@ -14,9 +14,6 @@ impl Renderer {
     ) {
         let surface = self.render_extents().surface;
         let ui_viewport = [surface.width, surface.height];
-        // `TextureView` is `Arc`-backed; the owned clone frees the
-        // `screen_effects` borrow before `full.ui` is borrowed mutably.
-        let ui_layer = self.full().screen_effects.ui_layer_view().clone();
         let Self {
             device,
             queue,
@@ -40,8 +37,7 @@ impl Renderer {
         // 0 on each `prepare`; `queue.write_buffer` resolves on the queue timeline
         // (last write wins) regardless of recording order, so issuing a separate
         // `encode` per layer makes EVERY layer's text draw read the LAST layer's
-        // shaped glyphs — the readout-aliasing bug (a lower layer's text rendered
-        // the top layer's glyphs). This mirrors the multi-batch quad-buffer clobber
+        // shaped glyphs, so a lower layer's text renders the top layer's glyphs. This mirrors the multi-batch quad-buffer clobber
         // already documented in `UiPass::encode`: one `prepare`/`render` per frame,
         // with all layers' glyphs concatenated in painter order, sidesteps it.
         let mut layer_draws: Vec<ui::tree::UiDrawData> = Vec::with_capacity(stack_len + 1);
@@ -86,7 +82,7 @@ impl Renderer {
                     snap: full.ui_snapshot.reduce_motion,
                 },
             );
-            // Focus ring (M13 Goal F, Task 3): only the TOP layer takes focus, so
+            // Focus ring: only the TOP layer takes focus, so
             // draw the engine ring around the focused node's rect on it. The
             // focused id rode in on the snapshot (resolved app-side last frame, so
             // it may trail a focus change by one frame). The ring is a `focus.ring`
@@ -132,7 +128,7 @@ impl Renderer {
             device,
             queue,
             encoder,
-            &ui_layer,
+            full.screen_effects.ui_layer_view(),
             ui_viewport,
             wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
             &composition,

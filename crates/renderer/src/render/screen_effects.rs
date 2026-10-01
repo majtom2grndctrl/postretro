@@ -215,9 +215,12 @@ impl ScreenEffectsPass {
     }
 
     /// Record the resolve pass: a fullscreen-triangle blit from `scene_color`
-    /// into the swapchain `view`, composing the frame's screen effects
-    /// (flash/vignette/shake) after its soft-knee tonemap. The sole swapchain
-    /// writer for the gameplay path — encoded every frame, never gated.
+    /// into the swapchain `view`, upscaling by `scene_divisor` (nearest integer
+    /// replication), tonemapping with a soft knee, and composing the frame's
+    /// scene screen effects (flash/vignette/shake). The UI layer is composited
+    /// last, untonemapped; effects reach the UI only through their covers-HUD
+    /// switches. The sole swapchain writer for the gameplay path — encoded every
+    /// frame, never gated.
     ///
     /// Writes the per-frame effect uniform from the packed `slot_values` first.
     /// At rest all three effect slots collapse to no-ops (see [`pack_effect_uniform`]

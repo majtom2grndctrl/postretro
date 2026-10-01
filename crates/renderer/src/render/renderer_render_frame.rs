@@ -65,8 +65,14 @@ impl Renderer {
         render_world: bool,
         sh_drain_batch: ShDrainBatch,
     ) -> std::result::Result<ShDrainFrameResult<Option<PresentHandle>>, ShResidencyDrainError> {
-        // A no-op when the binary already committed this frame's extents.
-        self.commit_extents();
+        // The binary commits after its option writes and before building the
+        // camera, so this is always a no-op on gameplay and frontend frames. A
+        // change here means an extent was recorded after the camera was built.
+        if self.commit_extents().is_some() {
+            log::warn!(
+                "[Renderer] render extents changed after the camera was built; this frame's projection uses the previous aspect"
+            );
+        }
         // This is the sole loader→renderer admission point for a windowed
         // frame. It precedes surface acquisition so even a skipped frame
         // returns the ownership outcome to the session controller.
@@ -390,14 +396,15 @@ impl Renderer {
             self.record_depth_and_sdf_passes(encoder, view_proj, render_world);
         }
 
-        // Post-scene compositor seam: every gameplay scene + UI pass renders into
-        // `scene_color` (the offscreen target) instead of the swapchain `view`.
+        // Post-scene compositor seam: every gameplay scene pass renders into
+        // `scene_color` (the offscreen target) instead of the swapchain `view`;
+        // UI records separately into its own native-res layer.
         // The resolve pass below is the sole swapchain writer for the gameplay
         // path. The view is cloned (wgpu `TextureView` is `Arc`-backed) into an
         // OWNED handle so it no longer borrows `self.full()` — the post-split
         // `full()`/`full_mut()` accessors borrow ALL of `self`, so holding a
         // borrow of `screen_effects` across the later `&mut self` pass/helper
-        // calls (ui, debug_lines, wireframe overlay) would conflict. The owned
+        // calls (debug_lines, wireframe overlay) would conflict. The owned
         // clone preserves the disjoint-borrow behavior the inline-field layout
         // had. The splash path is unaffected — it writes the swapchain directly
         // and never touches this target.

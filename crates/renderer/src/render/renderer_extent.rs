@@ -46,9 +46,16 @@ impl Renderer {
         Some(change)
     }
 
-    /// Capture renders at its requested resolution, divisor 1, whatever render
-    /// resolution was recorded, so captures stay comparable across machines.
+    /// Capture renders at the offscreen renderer's surface extent (whatever it
+    /// was built or resized to) at divisor 1, whatever render resolution was
+    /// recorded, so captures stay comparable across machines. It pins the
+    /// policy, so it is offscreen-only: on a windowed renderer it would replace
+    /// the player's recorded render resolution.
     pub(super) fn commit_native_capture_extents(&mut self) {
+        debug_assert!(
+            self.surface.is_none(),
+            "capture pins native extents only on an offscreen renderer"
+        );
         self.extent_state
             .record_policy(RenderResolutionPolicy::default());
         self.commit_extents();

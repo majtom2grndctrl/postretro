@@ -118,7 +118,8 @@ pub struct Camera {
     /// Pitch angle in radians (rotation around camera local X axis).
     /// Positive looks up, negative looks down.
     pub pitch: f32,
-    /// Window aspect ratio (width / height).
+    /// Scene-extent aspect ratio (width / height), set each frame by
+    /// `App::commit_render_extents`.
     aspect: f32,
 }
 
@@ -133,7 +134,8 @@ impl Camera {
         }
     }
 
-    /// Update the aspect ratio from window dimensions. Skips zero-sized dimensions.
+    /// Update the aspect ratio from the committed scene extent, not the window
+    /// or surface size. Skips zero-sized dimensions.
     pub fn update_aspect(&mut self, width: u32, height: u32) {
         if width > 0 && height > 0 {
             self.aspect = width as f32 / height as f32;

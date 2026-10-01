@@ -217,8 +217,8 @@ pub(crate) const TIMING_PAIR_COUNT: usize = 15;
 
 pub(crate) const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
-/// Extent for the full-res depth pre-pass attachment. Recreated at the surface
-/// size on resize. `0` is clamped to `1` to keep texture creation valid during
+/// Extent for the full-res depth pre-pass attachment. Recreated at the scene
+/// extent when it changes. `0` is clamped to `1` to keep texture creation valid during
 /// transient zero-size resize events.
 pub(crate) fn prepass_attachment_extent(width: u32, height: u32) -> wgpu::Extent3d {
     wgpu::Extent3d {

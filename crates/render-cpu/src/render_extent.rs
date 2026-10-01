@@ -88,13 +88,16 @@ impl RenderExtents {
         }
     }
 
-    /// Divisor 1: capture and other fixed-size offscreen rendering.
-    pub fn native(surface: Extent) -> Self {
-        Self {
-            surface,
-            scene: surface,
-            divisor: 1,
-        }
+    /// `scene * divisor` per axis: the surface-pixel span the upscaled scene
+    /// image covers. Never smaller than the surface; the resolve anchors it at
+    /// the top-left and crops the right/bottom overshoot. World-anchored UI
+    /// must project into this viewport so an anchor lands on the scene pixel it
+    /// marks.
+    pub fn upscaled_scene(self) -> Extent {
+        Extent::new(
+            self.scene.width.saturating_mul(self.divisor),
+            self.scene.height.saturating_mul(self.divisor),
+        )
     }
 }
 
@@ -166,14 +169,6 @@ impl ExtentState {
     pub fn committed(&self) -> RenderExtents {
         self.committed
     }
-
-    pub fn scale_factor(&self) -> f64 {
-        self.scale_factor
-    }
-
-    pub fn policy(&self) -> RenderResolutionPolicy {
-        self.policy
-    }
 }
 
 #[cfg(test)]
@@ -194,6 +189,20 @@ mod tests {
         assert_eq!(scene_extent(ext(2561, 1441), 2), ext(1281, 721));
         assert_eq!(scene_extent(ext(1001, 999), 3), ext(334, 333));
         assert_eq!(scene_extent(ext(1920, 1080), 1), ext(1920, 1080));
+    }
+
+    #[test]
+    fn upscaled_scene_spans_at_least_the_surface() {
+        let odd = RenderExtents::derive(
+            ext(1001, 563),
+            1.0,
+            RenderResolutionPolicy::Fixed { divisor: 4 },
+        );
+        assert_eq!(odd.scene, ext(251, 141));
+        assert_eq!(odd.upscaled_scene(), ext(1004, 564));
+
+        let native = RenderExtents::derive(ext(1001, 563), 1.0, RenderResolutionPolicy::default());
+        assert_eq!(native.upscaled_scene(), native.surface);
     }
 
     #[test]

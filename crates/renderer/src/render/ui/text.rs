@@ -29,9 +29,10 @@ pub(crate) struct UiTextRenderer {
     #[allow(dead_code)]
     glyph_cache: GlyphCache,
     /// Device-resolution uniform glyphon maps glyph positions against. Set from
-    /// the backbuffer size each frame in `prepare`.
+    /// the UI layer (surface extent) each frame in `prepare`.
     viewport: Viewport,
-    /// glyphon's glyph atlas in Accurate colour mode: glyph colours convert to
+    /// Built by `TextAtlas::new`, which uses glyphon's default Accurate colour
+    /// mode: glyph colours convert to
     /// linear in the shader, and the sRGB UI layer blends in linear space.
     text_atlas: TextAtlas,
     /// One glyphon draw recorder per text span in the mixed paint stream. Each
@@ -113,7 +114,7 @@ impl UiTextRenderer {
         for (i, t) in texts.iter().enumerate() {
             let metrics = Metrics::new(t.font_size, t.font_size * LINE_HEIGHT_FACTOR);
             let mut buffer = TextBuffer::new(font_system, metrics);
-            // Bound the layout box to the backbuffer: glyphon needs a finite
+            // Bound the layout box to the UI layer (surface extent): glyphon needs a finite
             // layout size to resolve the run (an unbounded box has nothing to lay
             // glyphs against).
             buffer.set_size(

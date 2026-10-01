@@ -31,6 +31,15 @@ pub struct EffectUniform {
     pub scene_divisor: u32,
 }
 
+// Mirrors the `EffectUniform` struct in shaders/screen_effects.wgsl (flash @0,
+// vignette @16, shake @32, _pad @40, covers_hud @48, scene_divisor @60); wgpu
+// checks the size only at draw time, so pin the layout at compile time.
+const _: () = {
+    assert!(std::mem::size_of::<EffectUniform>() == 64);
+    assert!(std::mem::offset_of!(EffectUniform, covers_hud) == 48);
+    assert!(std::mem::offset_of!(EffectUniform, scene_divisor) == 60);
+};
+
 /// Which screen effects reach the UI layer as well as the scene. The single
 /// home for an effect that must cover the HUD.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

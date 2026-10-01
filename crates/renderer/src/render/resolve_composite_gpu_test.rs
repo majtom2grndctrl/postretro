@@ -1,5 +1,6 @@
 // GPU-harness tests for the resolve: nearest integer upscale, the UI-layer
-// composite, and the covers-HUD switches. Self-skip without an adapter.
+// composite (seeded directly and drawn through a real `UiPass`), and the
+// covers-HUD switches. Self-skip without an adapter.
 // See: context/lib/rendering_pipeline.md §7.8
 
 use std::collections::HashMap;
@@ -11,6 +12,8 @@ use postretro_render_cpu::screen_effects::CoversHud;
 
 use super::gpu_test_harness::{GpuCtx, Readback, read_texture_rgba8, try_init_gpu};
 use super::screen_effects::ScreenEffectsPass;
+use super::ui::{UiComposition, UiImageRegistry, UiInstance, UiPass, UiText, tree};
+use super::{SCENE_COLOR_FORMAT, UI_LAYER_FORMAT};
 
 const TARGET_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 
@@ -148,6 +151,38 @@ impl Fixture {
             encoder,
         )
     }
+}
+
+/// Record `draw` through a real `UiPass` into `view` at `viewport` and submit.
+fn draw_ui(
+    ctx: &GpuCtx,
+    format: wgpu::TextureFormat,
+    view: &wgpu::TextureView,
+    viewport: Extent,
+    load: wgpu::LoadOp<wgpu::Color>,
+    draw: tree::UiDrawData,
+) {
+    let mut pass = UiPass::new(&ctx.device, &ctx.queue, format);
+    let mut font_system = postretro_ui::text::build_font_system();
+    let images = UiImageRegistry::default();
+    let white = pass.white_bind_group().clone();
+    let layers = [draw];
+    let composition = UiComposition::from_layer_draws(&layers, &white, &images);
+    let mut encoder = ctx
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+    pass.encode(
+        &mut font_system,
+        &ctx.device,
+        &ctx.queue,
+        &mut encoder,
+        view,
+        [viewport.width, viewport.height],
+        load,
+        &composition,
+    );
+    ctx.queue.submit([encoder.finish()]);
+    pass.mark_submitted();
 }
 
 fn no_effects() -> HashMap<String, SlotValue> {
@@ -393,5 +428,148 @@ fn one_covers_hud_switch_lets_only_its_effect_reach_the_ui() {
         shake.at(centre.0, centre.1),
         opaque,
         "the UI no longer sits where it was drawn"
+    );
+}
+
+// The UI blend states over the transparent-cleared layer must leave
+// premultiplied colour with coverage alpha, so the composite reproduces
+// straight-alpha blending onto the scene, at native UI resolution whatever the
+// scene divisor.
+#[test]
+fn ui_pass_quads_composite_as_straight_alpha_over_the_scene() {
+    const SURFACE: Extent = Extent::new(16, 8);
+    // Linear 0.25 scene, below the tonemap knee so it reaches the target as is.
+    let scene = [0.25_f32; 3];
+    let red_half = [1.0, 0.0, 0.0, 0.5];
+    let opaque = [0.2, 0.6, 0.9, 1.0];
+    let blue = [0.0, 0.0, 1.0, 1.0];
+    let quad = |x: f32, color: [f32; 4]| UiInstance::panel([x, 0.0, 4.0, 8.0], color, [0.0; 4]);
+    let over = |under: [f32; 3], color: [f32; 4]| -> [f32; 3] {
+        std::array::from_fn(|c| under[c] * (1.0 - color[3]) + color[c] * color[3])
+    };
+
+    for divisor in [1, 2] {
+        let Some(ctx) = try_init_gpu() else {
+            return;
+        };
+        let mut fixture = Fixture::new(ctx, SURFACE, divisor);
+        fixture.write_scene(|_, _| [0x3400, 0x3400, 0x3400, F16_ONE]);
+        let mut draw = tree::UiDrawData::default();
+        draw.push_quad(quad(0.0, red_half));
+        draw.push_quad(quad(4.0, opaque));
+        draw.push_quad(quad(8.0, blue));
+        draw.push_quad(quad(8.0, red_half));
+        draw_ui(
+            &fixture.ctx,
+            UI_LAYER_FORMAT,
+            fixture.pass.ui_layer_view(),
+            SURFACE,
+            wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+            draw,
+        );
+        let out = fixture.resolve(&no_effects());
+
+        for (x, expected, what) in [
+            (1, over(scene, red_half), "translucent quad"),
+            (5, over(scene, opaque), "opaque quad"),
+            (
+                9,
+                over(over(scene, blue), red_half),
+                "translucent over opaque",
+            ),
+            (13, scene, "no UI"),
+        ] {
+            assert_rgb_near(
+                out.at(x, 3),
+                expected.map(linear_to_srgb),
+                2,
+                &format!("divisor {divisor}: {what}"),
+            );
+        }
+    }
+}
+
+// The text atlas was built for an sRGB surface. With UI moved from HDR scene
+// colour into the sRGB layer, glyph edges and a translucent quad over them must
+// composite as they blended into scene colour before.
+#[test]
+fn ui_text_through_the_layer_matches_text_drawn_into_scene_colour() {
+    const SURFACE: Extent = Extent::new(64, 32);
+    // Every colour stays below the 0.98 knee, so the old path's tonemap leaves
+    // the UI it drew into scene colour unchanged.
+    let scene = wgpu::Color {
+        r: 0.25,
+        g: 0.25,
+        b: 0.25,
+        a: 1.0,
+    };
+    let ink = [230, 180, 60, 255];
+    let draw = || {
+        let mut draw = tree::UiDrawData::default();
+        draw.push_text(UiText::new(
+            "Mg",
+            [4.0, 0.0],
+            24.0,
+            ink,
+            postretro_ui::text::UI_FONT_FAMILY,
+        ));
+        draw.push_quad(UiInstance::panel(
+            [32.0, 0.0, 32.0, 32.0],
+            [0.0, 0.5, 0.9, 0.4],
+            [0.0; 4],
+        ));
+        draw
+    };
+
+    // Old path: UI blended straight onto scene colour; the layer stays clear.
+    let Some(ctx) = try_init_gpu() else {
+        return;
+    };
+    let mut old = Fixture::new(ctx, SURFACE, 1);
+    old.write_ui(&[]);
+    draw_ui(
+        &old.ctx,
+        SCENE_COLOR_FORMAT,
+        old.pass.scene_color_view(),
+        SURFACE,
+        wgpu::LoadOp::Clear(scene),
+        draw(),
+    );
+    let expected = old.resolve(&no_effects());
+
+    // New path: flat scene, UI premultiplied into the layer, then composited.
+    let mut new = Fixture::new(try_init_gpu().expect("adapter present"), SURFACE, 1);
+    new.write_scene(|_, _| [0x3400, 0x3400, 0x3400, F16_ONE]);
+    draw_ui(
+        &new.ctx,
+        UI_LAYER_FORMAT,
+        new.pass.ui_layer_view(),
+        SURFACE,
+        wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+        draw(),
+    );
+    let got = new.resolve(&no_effects());
+
+    let scene_byte = linear_to_srgb(0.25);
+    let mut glyph_edges = 0;
+    for y in 0..SURFACE.height {
+        for x in 0..SURFACE.width {
+            let want = expected.at(x, y);
+            assert_rgb_near(
+                got.at(x, y),
+                [want[0], want[1], want[2]],
+                2,
+                &format!("pixel ({x},{y})"),
+            );
+            // Left of the quad, a red value strictly between scene and ink is
+            // partial glyph coverage.
+            if x < 32 && want[0] > scene_byte + 4 && want[0] < ink[0] - 4 {
+                glyph_edges += 1;
+            }
+        }
+    }
+    assert!(
+        glyph_edges > 0,
+        "the text must draw anti-aliased edges for the comparison to cover coverage alpha"
     );
 }

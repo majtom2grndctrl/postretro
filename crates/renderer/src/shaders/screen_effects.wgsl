@@ -109,6 +109,9 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let covers_vignette = effect.covers_hud.y != 0u;
     let covers_shake = effect.covers_hud.z != 0u;
 
+    // Scene-only effects run before the UI composite and HUD-covering ones
+    // after it, so with only the vignette switch on, flash is applied before
+    // vignette on the scene (the reverse of the all-off order).
     // Scene-only effects run before the UI composite.
     if !covers_vignette {
         color = apply_vignette(color, in.uv);

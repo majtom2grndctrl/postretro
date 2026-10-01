@@ -300,15 +300,6 @@ impl BloomPass {
     /// Apply a new static render profile while retaining the current scene
     /// dimensions. The profile owns the target sizing and pipeline selection,
     /// so all dependent resources are rebuilt together before the next frame.
-    /// Each chain level's allocated down-target size, base first.
-    #[cfg(test)]
-    pub(super) fn level_sizes(&self) -> Vec<(u32, u32)> {
-        self.levels
-            .iter()
-            .map(|level| (level.down_texture.width(), level.down_texture.height()))
-            .collect()
-    }
-
     pub fn set_profile(
         &mut self,
         device: &wgpu::Device,
@@ -318,6 +309,15 @@ impl BloomPass {
         if self.resource_plan.set_profile(profile) {
             self.rebuild_profile_resources(device, scene_color_texture);
         }
+    }
+
+    /// Each chain level's allocated down-target size, base first.
+    #[cfg(test)]
+    pub(super) fn level_sizes(&self) -> Vec<(u32, u32)> {
+        self.levels
+            .iter()
+            .map(|level| (level.down_texture.width(), level.down_texture.height()))
+            .collect()
     }
 
     fn rebuild_profile_resources(

@@ -443,7 +443,7 @@ impl Renderer {
 
     /// Boot-ready: the surface/device/queue/boot-splash exist and the surface is
     /// configured. The boot splash path requires only this. True immediately
-    /// after `Renderer::new`, and re-true after a resize reconfigures the surface.
+    /// after `Renderer::new`, and re-true after an extent commit reconfigures the surface.
     pub fn is_boot_ready(&self) -> bool {
         self.is_surface_configured
     }

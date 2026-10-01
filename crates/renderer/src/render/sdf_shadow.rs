@@ -275,7 +275,7 @@ impl SdfShadowPass {
 
     /// Rebuild the views and light buffers the pass depends on after a level
     /// load (SH section + the static-light buffers swap). The depth view is
-    /// unchanged by a level load (it is owned by the renderer's scene-extent state),
+    /// unchanged by a level load (the renderer's scene depth view, rebuilt only when the scene extent changes),
     /// so the caller passes the current one back in.
     pub fn rebuild_for_level(
         &mut self,

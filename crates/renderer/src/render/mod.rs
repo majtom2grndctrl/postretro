@@ -110,8 +110,10 @@ use winit::window::Window;
 pub(super) const SCENE_COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 /// Game UI's native-res layer. sRGB so UI blends in linear space as it did into
 /// scene colour, at a quarter of the bytes of an HDR target; the resolve's load
-/// decodes it. It holds premultiplied colour: both UI blend states take alpha
-/// with `One/OneMinusSrcAlpha` over a transparent clear.
+/// decodes it. It holds premultiplied colour: colour blends
+/// SrcAlpha/OneMinusSrcAlpha and alpha One/OneMinusSrcAlpha (wgpu
+/// ALPHA_BLENDING, also glyphon's), so over a transparent clear the layer holds
+/// premultiplied colour with coverage alpha.
 pub(super) const UI_LAYER_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 
 use crate::compute_cull::ComputeCullPipeline;

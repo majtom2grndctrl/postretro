@@ -22,6 +22,9 @@ impl App {
 #[cfg(test)]
 mod tests {
     const MAIN: &str = include_str!("../main.rs");
+    const OPTIONS: &str = "self.update_player_options(frame_dt, options_menu_was_open);";
+    const COMMIT: &str = "self.commit_render_extents();";
+    const FRONTEND_FN: &str = "fn run_frontend_ui_logic(";
 
     fn position(haystack: &str, needle: &str, from: usize) -> usize {
         from + haystack[from..]
@@ -29,54 +32,93 @@ mod tests {
             .unwrap_or_else(|| panic!("`{needle}` not found after offset {from}"))
     }
 
+    /// Byte range of `run_frontend_ui_logic`'s body: from its signature to the
+    /// next method-level `fn` at four-space indent (any visibility), or EOF.
+    fn frontend_logic_range() -> (usize, usize) {
+        let start = position(MAIN, FRONTEND_FN, 0);
+        let after = start + FRONTEND_FN.len();
+        let end = ["\n    fn ", "\n    pub(crate) fn ", "\n    pub fn "]
+            .iter()
+            .filter_map(|marker| MAIN[after..].find(marker).map(|at| after + at))
+            .min()
+            .unwrap_or(MAIN.len());
+        (start, end)
+    }
+
     // P6, P17: an option write in this frame's logic lands in the same commit
     // as a resize, and the camera is built from the committed extent.
     #[test]
     fn gameplay_frame_commits_extents_after_option_writes_and_before_the_camera() {
-        let options = position(
-            MAIN,
-            "self.update_player_options(frame_dt, options_menu_was_open);",
-            0,
-        );
-        let commit = position(MAIN, "self.commit_render_extents();", options);
+        let (frontend_start, frontend_end) = frontend_logic_range();
+        let options = MAIN
+            .match_indices(OPTIONS)
+            .map(|(at, _)| at)
+            .find(|at| *at < frontend_start || *at >= frontend_end)
+            .expect("gameplay frame calls update_player_options outside run_frontend_ui_logic");
+        let commit = position(MAIN, COMMIT, options);
         let eye = position(MAIN, "frame_eye::assemble_frame_eye(", commit);
         let viewmodel = position(MAIN, "renderer.update_viewmodel_view_projection(", eye);
+
+        assert!(
+            options < commit && commit < eye && eye < viewmodel,
+            "order must be options < commit < eye < viewmodel: an option write and a \
+             resize in the same frame rebuild once (P6), and the camera and viewmodel \
+             project at the committed scene aspect (P17)"
+        );
+        let commits_in_window = MAIN[options..eye].matches("commit_render_extents").count();
+        assert_eq!(
+            commits_in_window, 1,
+            "exactly one commit_render_extents between the option writes and the eye (P6)"
+        );
         assert!(
             MAIN[viewmodel..]
                 .trim_start_matches("renderer.update_viewmodel_view_projection(")
                 .trim_start()
                 .starts_with("self.camera.aspect()"),
-            "the viewmodel projects at the camera's scene aspect"
+            "the viewmodel projects at the camera's committed scene aspect (P17)"
         );
     }
 
     #[test]
     fn frontend_frame_commits_extents_after_option_writes() {
-        let logic = position(MAIN, "fn run_frontend_ui_logic(", 0);
-        let options = position(
-            MAIN,
-            "self.update_player_options(frame_dt, options_menu_was_open);",
-            logic,
+        let (start, end) = frontend_logic_range();
+        let body = &MAIN[start..end];
+        let options = position(body, OPTIONS, 0);
+        let commit = position(body, COMMIT, options);
+        let pose = position(
+            body,
+            "self.apply_frontend_menu_camera_pose_if_present();",
+            commit,
         );
-        let commit = position(MAIN, "self.commit_render_extents();", options);
-        let end = position(MAIN, "\n    }\n", options);
         assert!(
-            commit < end,
-            "the frontend commit belongs to the same frame logic"
+            options < commit && commit < pose,
+            "frontend frame order must be option writes < commit < menu camera pose (P6, P17)"
         );
     }
 
     // P1, P3–P5: window events only record; nothing rebuilds inside a handler.
     #[test]
     fn window_events_record_size_and_scale_without_rebuilding() {
-        let resized = position(MAIN, "WindowEvent::Resized(size) =>", 0);
+        let resized = position(MAIN, "WindowEvent::Resized(", 0);
         let arm_end = position(MAIN, "WindowEvent::CloseRequested", resized);
         let arms = &MAIN[resized..arm_end];
-        assert!(arms.contains("renderer.record_surface_size(size.width, size.height)"));
-        assert!(arms.contains("WindowEvent::ScaleFactorChanged"));
-        assert!(arms.contains("renderer.record_scale_factor(scale_factor)"));
-        assert!(!arms.contains("commit_extents"));
-        assert!(!arms.contains("update_aspect"));
-        assert!(!MAIN.contains("renderer.resize("));
+        assert!(
+            arms.contains("record_surface_size("),
+            "Resized records size"
+        );
+        assert!(
+            arms.contains("WindowEvent::ScaleFactorChanged"),
+            "ScaleFactorChanged arm sits between Resized and CloseRequested"
+        );
+        assert!(
+            arms.contains("record_scale_factor("),
+            "ScaleFactorChanged records scale"
+        );
+        assert!(!arms.contains("commit_extents"), "handlers never commit");
+        assert!(!arms.contains("update_aspect"), "handlers never set aspect");
+        assert!(
+            !MAIN.contains("renderer.resize("),
+            "nothing rebuilds via renderer.resize"
+        );
     }
 }

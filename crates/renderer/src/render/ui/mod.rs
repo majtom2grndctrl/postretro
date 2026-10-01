@@ -511,7 +511,7 @@ impl UiPass {
     /// disjoint per-command GPU-buffer invariant.
     ///
     /// Single color target plus a private UI depth target; the caller's `load` op
-    /// controls whether the color surface is cleared first. The depth target is
+    /// controls whether the color target (the UI layer) is cleared first. The depth target is
     /// always cleared. `load` rides alongside `&UiComposition` because
     /// clear-vs-load is a target concern, not a composition one.
     ///
@@ -790,7 +790,10 @@ fn create_ui_quad_pipeline(
             entry_point: Some("fs_main"),
             targets: &[Some(wgpu::ColorTargetState {
                 format: color_format,
-                // Standard alpha blend over the existing surface contents.
+                // Standard alpha blend over the existing target contents. Over the
+                // transparent-cleared UI layer this accumulates premultiplied
+                // colour with coverage alpha (colour SrcAlpha/OneMinusSrcAlpha,
+                // alpha One/OneMinusSrcAlpha via ALPHA_BLENDING).
                 blend: Some(wgpu::BlendState::ALPHA_BLENDING),
                 write_mask: wgpu::ColorWrites::ALL,
             })],

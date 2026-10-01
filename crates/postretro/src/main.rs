@@ -1769,7 +1769,9 @@ impl ApplicationHandler for App {
         // as fast as possible. See `run_splash_frame` and
         // `context/lib/boot_sequence.md` §1 (Splash state machine).
 
-        // The renderer read the window's size and scale factor at build.
+        // Provisional: the renderer read the window's size and scale factor at
+        // build, but the player's render resolution is applied at full init.
+        // Every frame's `commit_render_extents` sets the aspect that projects.
         let scene = renderer.scene_extent();
         self.camera.update_aspect(scene.width, scene.height);
 
@@ -3725,11 +3727,15 @@ impl ApplicationHandler for App {
                     );
                 }
 
+                // World anchors project into the span the upscaled scene
+                // covers (scene × divisor, anchored top-left), so each lands on
+                // the scene pixel it marks even when the surface does not
+                // divide evenly. Committed this frame, so never a 0×0 minimize.
                 let presentation_viewport = self
-                    .window_state
+                    .renderer
                     .as_ref()
-                    .map(|state| state.window.inner_size())
-                    .map(|size| [size.width, size.height])
+                    .map(|renderer| renderer.render_extents().upscaled_scene())
+                    .map(|span| [span.width, span.height])
                     .unwrap_or([0, 0]);
                 let is_connected_client = self.is_connected_client();
 

@@ -155,3 +155,60 @@ impl RenderResolution {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use postretro_entities::{EngineStateValueType, engine_state_catalog};
+
+    fn catalog_render_resolution_values() -> Vec<&'static str> {
+        let catalog = engine_state_catalog().expect("built-in catalog is valid");
+        let entry = catalog
+            .entries()
+            .iter()
+            .find(|entry| entry.wire_name == "options.renderResolution")
+            .expect("catalog declares options.renderResolution");
+        match entry.value_type {
+            EngineStateValueType::Enum { values } => values.to_vec(),
+            other => panic!("options.renderResolution must be an enum, got {other:?}"),
+        }
+    }
+
+    // Drift guard: the catalog's allowed values and the slot parser are two
+    // hand-written lists; each must name exactly the other's set.
+    #[test]
+    fn render_resolution_catalog_values_round_trip_through_slot_parser() {
+        let values = catalog_render_resolution_values();
+        for value in &values {
+            assert_eq!(
+                RenderResolution::from_slot_value(value).map(RenderResolution::slot_value),
+                Some(*value),
+                "catalog value `{value}` must parse and round-trip"
+            );
+        }
+        // Exhaustive match (no `_`): adding a variant fails to compile here
+        // until it is also checked against the catalog list.
+        let variants = [
+            RenderResolution::Auto,
+            RenderResolution::Native,
+            RenderResolution::Half,
+            RenderResolution::Third,
+            RenderResolution::Quarter,
+        ];
+        for variant in variants {
+            match variant {
+                RenderResolution::Auto
+                | RenderResolution::Native
+                | RenderResolution::Half
+                | RenderResolution::Third
+                | RenderResolution::Quarter => {}
+            }
+            assert!(
+                values.contains(&variant.slot_value()),
+                "variant {variant:?} (`{}`) missing from the catalog's allowed values",
+                variant.slot_value()
+            );
+        }
+        assert_eq!(values.len(), variants.len(), "catalog has extra values");
+    }
+}

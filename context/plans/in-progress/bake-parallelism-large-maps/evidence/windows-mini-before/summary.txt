@@ -1,0 +1,57 @@
+exit_code: 0
+wall_s: 2191.7 (00:36:32)
+cpu_s: 5806.3 (user + kernel)
+mean_busy_cores: 2.65
+peak_working_set_kb: 1819028 (1.73 GiB; GetProcessMemoryInfo after exit)
+cache_dir: C:\Users\danhi\Projects\Personal\postretro-baseline\target\bake-measure\stress-warren-mini-20261002-081346\prl-cache (74227 files, 3.89 GiB)
+
+Build Summary:
+  Parsing           0.06s
+  DataScript        0.72s
+  TexValidation     0.15s
+  Partitioning      0.02s
+  Visibility        0.00s
+  Geometry          0.00s
+  BVH Build         0.00s
+  Cell Visibility   0.02s
+  NavMesh           0.26s
+  SH Bake         741.53s
+  Delta SH Bake   180.12s
+  Direct SH Bake    4.70s
+  Animated Direct SH Bake  67.72s
+  EntityShadowLights   0.00s
+  Direct SH Delta Bake 246.92s
+  Billboard Direct Scatter Bake   3.33s
+  ChunkLightList    0.12s
+  Atlas Preparation   0.01s
+  Cell Residency Set   0.31s
+  Lightmap Bake   832.03s
+  ShadowmaskAtlas   6.64s
+  AnimLightChunks   0.00s
+  AnimWeightMaps   50.91s
+  TextureMips       0.94s
+  ClusterDirectory   0.36s
+  Packing          46.35s
+  Total           2191.57s
+
+Warnings: 19
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 55 (tex '50-free-textures/concrete_stone_023') wins over brush 196 (tex '50-free-textures/concrete_stone_027'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 199 (tex '50-free-textures/concrete_pavement_042') wins over brush 234 (tex '50-free-textures/concrete_stone_027'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::pipeline] [Compiler] Watertightness: 62 open edge(s) in world geometry — possible holes you can see through. Diagnostic only; the build still succeeds. Sample locations (world-space meters, showing up to 12):
+  [WARN prl_build::pipeline] [Compiler]   open edge near (-48.743, 14.224, -98.501) — near brush 265
+  [WARN prl_build::pipeline] [Compiler]   open edge near (-48.704, 14.224, -99.924) — near brush 265
+  [WARN prl_build::pipeline] [Compiler]   open edge near (-48.704, 14.224, -97.079) — near brush 265
+  [WARN prl_build::pipeline] [Compiler]   open edge near (-48.666, 14.224, -98.501) — near brush 266
+  [WARN prl_build::pipeline] [Compiler]   open edge near (-45.898, 14.224, -98.501) — near brush 265
+  [WARN prl_build::pipeline] [Compiler]   open edge near (-45.860, 14.224, -99.924) — near brush 266
+  [WARN prl_build::pipeline] [Compiler]   open edge near (-45.860, 14.224, -97.079) — near brush 266
+  [WARN prl_build::pipeline] [Compiler]   open edge near (-45.822, 14.224, -98.501) — near brush 266
+  [WARN prl_build::pipeline] [Compiler]   open edge near (-39.624, 14.224, 63.868) — near brush 264
+  [WARN prl_build::pipeline] [Compiler]   open edge near (-39.599, 14.224, 62.662) — near brush 264
+  [WARN prl_build::pipeline] [Compiler]   open edge near (-39.599, 14.224, 65.075) — near brush 264
+  [WARN prl_build::pipeline] [Compiler]   open edge near (-39.573, 14.224, 63.868) — near brush 263
+  [WARN prl_build::pipeline] [prl-build] warm SH bake: indirect lighting is APPROXIMATE (bounded light reach). This is a dev/iteration build — run a `--release` bake (or `--no-cache`) before shipping a final map.
+  [WARN prl_build::delta_sections] [Compiler] SH delta authoring budget warning: id 27 44681112 bytes, id 41 12608568 bytes, \
+             id 45 37928736 bytes; total 95218416 bytes exceeds the 64 MiB (67108864 byte) diagnostic target but remains within the 268435456 byte production cap
+  [WARN prl_build::shadowmask_bake::assignment] [ShadowmaskAtlas] dropped 11 selected light mask(s) to obtain a four-channel assignment: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+  [WARN prl_build::cache] [cache] build read/wrote 4172394823 (3.89 GiB) across 74227 unique entries, exceeding cache budget 2147483648 (2.00 GiB); the next build may evict entries used by this build

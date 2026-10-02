@@ -1,0 +1,48 @@
+{
+  "label": "dev-tools-release-unset",
+  "pid": 35651,
+  "build": "release",
+  "map": "campaign-test.prl",
+  "override": "unset",
+  "elapsed": 6.06,
+  "exit": -15,
+  "timing_windows": 1,
+  "foreground_checks": [
+    {
+      "elapsed": 0.1,
+      "windows": 0,
+      "state": "front_pid=16506 target_pid=35651 foreground=false",
+      "error": ""
+    },
+    {
+      "elapsed": 1.31,
+      "windows": 0,
+      "state": "front_pid=16506 target_pid=35651 foreground=false",
+      "error": ""
+    },
+    {
+      "elapsed": 2.43,
+      "windows": 0,
+      "state": "activated=true\nfront_pid=35651 target_pid=35651 foreground=true\nwindow_id=32412 bounds={\n    Height = 752;\n    Width = 1280;\n    X = 256;\n    Y = 115;\n}",
+      "error": ""
+    },
+    {
+      "elapsed": 3.54,
+      "windows": 0,
+      "state": "front_pid=35651 target_pid=35651 foreground=true\nwindow_id=32412 bounds={\n    Height = 752;\n    Width = 1280;\n    X = 256;\n    Y = 115;\n}",
+      "error": ""
+    },
+    {
+      "elapsed": 4.66,
+      "windows": 0,
+      "state": "front_pid=35651 target_pid=35651 foreground=true\nwindow_id=32412 bounds={\n    Height = 752;\n    Width = 1280;\n    X = 256;\n    Y = 115;\n}",
+      "error": ""
+    },
+    {
+      "elapsed": 5.76,
+      "windows": 1,
+      "state": "front_pid=35651 target_pid=35651 foreground=true\nwindow_id=32412 bounds={\n    Height = 752;\n    Width = 1280;\n    X = 256;\n    Y = 115;\n}",
+      "error": ""
+    }
+  ]
+}

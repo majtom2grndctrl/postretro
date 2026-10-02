@@ -383,7 +383,10 @@ impl App {
 
         match payload.level {
             Some(world) => {
-                self.install_level_payload(world, payload.prm_cache_root);
+                if let Err(err) = self.install_level_payload(world, payload.prm_cache_root) {
+                    self.finish_level_failure(err.to_string(), event_loop);
+                    return false;
+                }
                 // The spawn cell's lightmap blocks are resident before the
                 // first level frame renders.
                 if let Err(err) = self.install_spawn_streaming() {
@@ -453,11 +456,15 @@ impl App {
     ///
     /// Called after a level worker delivers a payload; assumes `self.renderer`
     /// is `Some` and `world` is populated.
+    /// Reject invalid indirect index ranges before any install mutation.
     fn install_level_payload(
         &mut self,
         mut world: postretro_level_loader::LevelWorld,
         prm_cache_root: PathBuf,
-    ) {
+    ) -> Result<(), render::LevelGeometryRangeError> {
+        // Before parity, navigation, textures, or any other install mutation:
+        // release indirect draws rely on this unchanged BVH/index mapping.
+        render::validate_level_geometry_ranges(&world.bvh.leaves, world.indices.len())?;
         self.view_feel_state = crate::view_feel::ViewFeelState::default();
         self.view_feel_followed_pawn = None;
         self.view_feel_descriptor = None;
@@ -597,7 +604,7 @@ impl App {
                 None => {
                     log::error!("[Engine] install_level_payload called with no renderer");
                     self.level = Some(world);
-                    return;
+                    return Ok(());
                 }
             };
 
@@ -988,6 +995,7 @@ impl App {
         // Animation clock is level-relative like `script_time`. The scale field
         // is engine config, not level state, so it is not reset here.
         self.anim_time = 0.0;
+        Ok(())
     }
 }
 
@@ -2754,6 +2762,135 @@ pub(crate) mod tests {
         assert_eq!(app.collision_world.vertex_count(), 3);
     }
 
+    #[test]
+    fn install_range_rejection_precedes_all_level_state_mutations() {
+        let mut app = test_app();
+        app.level = Some(level_world("old", 1));
+        app.active_level_tags = vec!["old-level".to_string()];
+        app.script_time = 17.0;
+        app.nav_graph = Some(crate::nav::NavGraph::from_section(
+            &postretro_level_format::navmesh::NavMeshSection {
+                version: postretro_level_format::navmesh::NAVMESH_VERSION,
+                origin: [0.0; 3],
+                cell_size: 1.0,
+                dim_x: 8,
+                dim_z: 8,
+                agent_radius: 0.3,
+                agent_height: 1.8,
+                step_height: 0.4,
+                max_slope_deg: 45.0,
+                regions: vec![],
+                portals: vec![],
+            },
+        ));
+        let before_slots: BTreeMap<_, _> = slot_snapshot(&app)
+            .into_iter()
+            .map(|(key, record)| (key, record.value))
+            .collect();
+        let mut rejected = level_world("rejected", 2);
+        rejected
+            .bvh
+            .leaves
+            .push(postretro_render_data::geometry::BvhLeaf {
+                aabb_min: [0.0; 3],
+                aabb_max: [1.0; 3],
+                material_bucket_id: 0,
+                index_offset: 6,
+                index_count: 3,
+                cell_id: 0,
+                chunk_range_start: 0,
+                chunk_range_count: 0,
+            });
+        let error = app
+            .install_level_payload(rejected, PathBuf::from("baked"))
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "BVH leaf 0 index range [6..9) exceeds Geometry index count 6"
+        );
+        assert_eq!(app.level.as_ref().unwrap().indices.len(), 3);
+        assert_eq!(app.active_level_tags, ["old-level"]);
+        assert!((app.script_time - 17.0).abs() < f64::EPSILON);
+        assert_eq!(app.nav_graph.as_ref().unwrap().grid().dim_x, 8);
+        let after_slots: BTreeMap<_, _> = slot_snapshot(&app)
+            .into_iter()
+            .map(|(key, record)| (key, record.value))
+            .collect();
+        assert_eq!(after_slots, before_slots);
+        assert!(app.renderer.is_none());
+    }
+
+    #[test]
+    fn install_range_errors_use_the_existing_boot_and_runtime_failure_routes() {
+        let source = include_str!("lifecycle.rs")
+            .split("#[cfg(test)]\npub(crate) mod tests")
+            .next()
+            .unwrap();
+        let finish = source
+            .split("fn finish_level_payload(")
+            .nth(1)
+            .unwrap()
+            .split("fn finish_level_failure(")
+            .next()
+            .unwrap();
+        let rejection = finish
+            .split("if let Err(err) = self.install_level_payload(")
+            .nth(1)
+            .unwrap()
+            .split("// The spawn cell")
+            .next()
+            .unwrap();
+        assert!(rejection.contains("self.finish_level_failure(err.to_string(), event_loop);"));
+        assert!(rejection.contains("return false;"));
+        let failure = source
+            .split("fn finish_level_failure(")
+            .nth(1)
+            .unwrap()
+            .split("fn install_level_payload(")
+            .next()
+            .unwrap();
+        let boot = failure
+            .split("if was_boot_load {")
+            .nth(1)
+            .unwrap()
+            .split("return;")
+            .next()
+            .unwrap();
+        assert!(boot.contains("self.exit_result = Err("));
+        assert!(boot.contains("event_loop.exit();"));
+        assert!(failure.contains("self.boot_state = BootState::Frontend;"));
+        let install = source.split("fn install_level_payload(").nth(1).unwrap();
+        let check = install
+            .find("render::validate_level_geometry_ranges(")
+            .unwrap();
+        for mutation in [
+            "self.view_feel_state =",
+            "endpoint.set_level_parity(",
+            "self.nav_graph =",
+            "renderer.install_textures(",
+            "renderer.install_level_geometry(",
+        ] {
+            assert!(
+                check < install.find(mutation).unwrap(),
+                "range check must precede {mutation}"
+            );
+        }
+        let capture = include_str!("../capture/prepared.rs");
+        let check = capture
+            .find("crate::render::validate_level_geometry_ranges(")
+            .unwrap();
+        for mutation in [
+            "Renderer::new_offscreen(",
+            "renderer.install_textures(",
+            "renderer.install_level_geometry(",
+        ] {
+            assert!(
+                check < capture.find(mutation).unwrap(),
+                "capture check must precede {mutation}"
+            );
+        }
+    }
+
     // Pin: no-upload-install. Payloads leave the world only into an upload;
     // an install with no renderer uploads nothing, so the world keeps them.
     #[test]
@@ -2798,7 +2935,8 @@ pub(crate) mod tests {
             blocks: payloads.blocks.clone(),
         };
 
-        app.install_level_payload(world, PathBuf::from("baked"));
+        app.install_level_payload(world, PathBuf::from("baked"))
+            .unwrap();
 
         let installed = app
             .level

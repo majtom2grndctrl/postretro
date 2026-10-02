@@ -1,0 +1,24 @@
+{
+  "source": "hallway-unset-trace-gpu.xml",
+  "sha256": "cb4bcfe7d4049501302e02843f18197d5a1458e83a4043650198284eb06a9601",
+  "unique_encoders_by_label": {
+    "Cube Shadow Depth Pass": 0,
+    "Depth Pre-Pass": 113,
+    "Dynamic Cube Entity Shadow Depth Pass": 0,
+    "Dynamic Cube World Depth Cache Pass": 0,
+    "Dynamic Spot Entity Shadow Depth Pass": 0,
+    "Dynamic Spot World Depth Cache Pass": 0,
+    "Promoted Cube Entity Shadow Depth Pass": 0,
+    "Promoted Cube World Depth Cache Pass": 0,
+    "Promoted Spot Entity Shadow Depth Pass": 904,
+    "Promoted Spot World Depth Cache Pass": 0,
+    "Spot Shadow Depth Pass": 0,
+    "Textured Pass": 113
+  },
+  "camera_frame_equivalents": 113,
+  "uncached_spot_world_passes": 0,
+  "uncached_cube_face_world_passes": 0,
+  "cached_world_refresh_passes": 0,
+  "cached_refreshes_per_camera_frame_estimate": 0.0,
+  "deduplication": "Metal command-buffer ID + encoder ID, process=postretro; every observed labelled pass retained. Frame normalization uses the smaller camera-pass count; trace boundaries can include partial frames. No temporal grouping or cache-refresh-frame exclusion."
+}

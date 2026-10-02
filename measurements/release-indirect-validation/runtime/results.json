@@ -1,0 +1,366 @@
+{
+  "timing": {
+    "hallway": {
+      "on": {
+        "complete_windows": 8,
+        "discarded_warmup_windows": 3,
+        "selected_window_averages_ms": [
+          5.091,
+          5.104,
+          5.067,
+          5.094,
+          5.14
+        ],
+        "median_ms": 5.094,
+        "foreground_during_in_level_checks": true,
+        "log_sha256": "1d5af8f5276a7833787b4012499ecd23e18af2b5aa74ffe62ebb893bafa1e1d1"
+      },
+      "unset": {
+        "complete_windows": 8,
+        "discarded_warmup_windows": 3,
+        "selected_window_averages_ms": [
+          3.94,
+          3.749,
+          3.853,
+          3.811,
+          3.722
+        ],
+        "median_ms": 3.811,
+        "foreground_during_in_level_checks": true,
+        "log_sha256": "9d407826cfc7e4344e8a22b136e4e90709a113b85a1c220146f57c0bd440e261"
+      },
+      "delta_ms": 1.2830000000000004,
+      "estimated_validation_cost_ms": 1.7121202010480165,
+      "half_cost_threshold_ms": 0.8560601005240083,
+      "provisional_threshold_ms": 0.65,
+      "cost_threshold_pass": true,
+      "provisional_threshold_pass": true
+    },
+    "campaign": {
+      "on": {
+        "complete_windows": 8,
+        "discarded_warmup_windows": 3,
+        "selected_window_averages_ms": [
+          3.841,
+          3.683,
+          3.685,
+          3.735,
+          3.667
+        ],
+        "median_ms": 3.685,
+        "foreground_during_in_level_checks": true,
+        "log_sha256": "b8ce5a780dfdfb8dae91f32b87e5d92f45515228fb50989e393f9e9d009e5274"
+      },
+      "unset": {
+        "complete_windows": 8,
+        "discarded_warmup_windows": 3,
+        "selected_window_averages_ms": [
+          3.525,
+          3.525,
+          3.418,
+          3.413,
+          3.477
+        ],
+        "median_ms": 3.477,
+        "foreground_during_in_level_checks": true,
+        "log_sha256": "f782fb96848c6a97482912972593c1641c3965e5461024a7cd494c35a49552f9"
+      },
+      "delta_ms": 0.20800000000000018,
+      "estimated_validation_cost_ms": 0.3160338824159636,
+      "half_cost_threshold_ms": 0.1580169412079818,
+      "provisional_threshold_ms": 0.18,
+      "cost_threshold_pass": true,
+      "provisional_threshold_pass": true
+    }
+  },
+  "profiles": {
+    "campaign-release-unset": {
+      "draw_batcher_add_present": false,
+      "inject_validation_pass_present": false,
+      "sha256": "d6896ce260fa6c88e2cc9543cbbca98f0af5e03ab3268093d68e60e07e9d2b49"
+    },
+    "hallway-release-unset": {
+      "draw_batcher_add_present": false,
+      "inject_validation_pass_present": false,
+      "sha256": "6c5158db49fe405d67dd7c7c83ace614847b4ae0dfc91e13dc539474a386ed19"
+    },
+    "hallway-release-on": {
+      "draw_batcher_add_present": true,
+      "inject_validation_pass_present": true,
+      "sha256": "f08040309cd3827f51d87d82d7ad82d1f41991ed3d1c603c2129aae73d8ee7f8"
+    },
+    "hallway-debug-unset": {
+      "draw_batcher_add_present": true,
+      "inject_validation_pass_present": true,
+      "sha256": "d50747a17905ec0751e4b6763264a73a0e884290d2e05d4e00d928e1d31b6b07"
+    },
+    "campaign-release-on": {
+      "draw_batcher_add_present": true,
+      "inject_validation_pass_present": true,
+      "sha256": "96a76c08f8ea310f4d95d25b3afbfbcc58b33a57953f78708d8a09d3736a6179"
+    },
+    "campaign-debug-unset": {
+      "draw_batcher_add_present": true,
+      "inject_validation_pass_present": true,
+      "sha256": "345cca5e917f8546a3a9b4cd58b26bab1a395cd97d9035d640c3ea77b4835257"
+    }
+  },
+  "startup": {
+    "hallway-cache-trace": {
+      "count": 1,
+      "lines": [
+        "[2026-10-02T04:11:15Z INFO  postretro_renderer::render::renderer_init] [Renderer] indirect-call validation: on (WGPU_VALIDATION_INDIRECT_CALL override)"
+      ]
+    },
+    "hallway-unset-cache-trace": {
+      "count": 1,
+      "lines": [
+        "[2026-10-02T04:27:22Z INFO  postretro_renderer::render::renderer_init] [Renderer] indirect-call validation: off (build default)"
+      ]
+    },
+    "hallway-timing-unset": {
+      "count": 1,
+      "lines": [
+        "[2026-10-02T04:09:01Z INFO  postretro_renderer::render::renderer_init] [Renderer] indirect-call validation: off (build default)"
+      ]
+    },
+    "campaign-debug-unset": {
+      "count": 1,
+      "lines": [
+        "[2026-10-02T04:22:57Z INFO  postretro_renderer::render::renderer_init] [Renderer] indirect-call validation: on (build default)"
+      ]
+    },
+    "campaign-timing-on": {
+      "count": 1,
+      "lines": [
+        "[2026-10-02T04:10:20Z INFO  postretro_renderer::render::renderer_init] [Renderer] indirect-call validation: on (WGPU_VALIDATION_INDIRECT_CALL override)"
+      ]
+    },
+    "campaign-timing-unset": {
+      "count": 1,
+      "lines": [
+        "[2026-10-02T04:10:40Z INFO  postretro_renderer::render::renderer_init] [Renderer] indirect-call validation: off (build default)"
+      ]
+    },
+    "debug-override-off": {
+      "count": 1,
+      "lines": [
+        "[2026-10-02T04:25:34Z INFO  postretro_renderer::render::renderer_init] [Renderer] indirect-call validation: off (WGPU_VALIDATION_INDIRECT_CALL override)"
+      ]
+    },
+    "hallway-debug-unset": {
+      "count": 1,
+      "lines": [
+        "[2026-10-02T04:22:16Z INFO  postretro_renderer::render::renderer_init] [Renderer] indirect-call validation: on (build default)"
+      ]
+    },
+    "hallway-release-unset": {
+      "count": 1,
+      "lines": [
+        "[2026-10-02T04:09:39Z INFO  postretro_renderer::render::renderer_init] [Renderer] indirect-call validation: off (build default)"
+      ]
+    },
+    "hallway-release-on": {
+      "count": 1,
+      "lines": [
+        "[2026-10-02T04:07:30Z INFO  postretro_renderer::render::renderer_init] [Renderer] indirect-call validation: on (WGPU_VALIDATION_INDIRECT_CALL override)"
+      ]
+    },
+    "campaign-release-on": {
+      "count": 1,
+      "lines": [
+        "[2026-10-02T04:20:38Z INFO  postretro_renderer::render::renderer_init] [Renderer] indirect-call validation: on (WGPU_VALIDATION_INDIRECT_CALL override)"
+      ]
+    },
+    "hallway-timing-on": {
+      "count": 1,
+      "lines": [
+        "[2026-10-02T04:08:17Z INFO  postretro_renderer::render::renderer_init] [Renderer] indirect-call validation: on (WGPU_VALIDATION_INDIRECT_CALL override)"
+      ]
+    },
+    "campaign-release-unset": {
+      "count": 1,
+      "lines": [
+        "[2026-10-02T04:21:55Z INFO  postretro_renderer::render::renderer_init] [Renderer] indirect-call validation: off (build default)"
+      ]
+    },
+    "dev-tools-release-unset": {
+      "count": 1,
+      "lines": [
+        "[2026-10-02T04:32:07Z INFO  postretro_renderer::render::renderer_init] [Renderer] indirect-call validation: off (build default)"
+      ]
+    },
+    "campaign-unset-cache-trace": {
+      "count": 1,
+      "lines": [
+        "[2026-10-02T04:29:20Z INFO  postretro_renderer::render::renderer_init] [Renderer] indirect-call validation: off (build default)"
+      ]
+    },
+    "dev-tools-release-on": {
+      "count": 1,
+      "lines": [
+        "[2026-10-02T04:32:12Z INFO  postretro_renderer::render::renderer_init] [Renderer] indirect-call validation: on (WGPU_VALIDATION_INDIRECT_CALL override)"
+      ]
+    }
+  },
+  "idle_gpu": {
+    "campaign-idle-before-unset.ioreg.txt": [
+      {
+        "Device Utilization %": 58,
+        "inUseVidMemoryBytes": 925618176,
+        "vramFreeBytes": 2429235200
+      },
+      {
+        "Device Utilization %": 35,
+        "inUseVidMemoryBytes": 926437376,
+        "vramFreeBytes": 2428416000
+      }
+    ],
+    "campaign-idle-before-on.ioreg.txt": [
+      {
+        "Device Utilization %": 18,
+        "inUseVidMemoryBytes": 901009408,
+        "vramFreeBytes": 2430832640
+      },
+      {
+        "Device Utilization %": 29,
+        "inUseVidMemoryBytes": 906530816,
+        "vramFreeBytes": 2429259776
+      }
+    ],
+    "idle-before-hallway-pair.ioreg.txt": [
+      {
+        "Device Utilization %": 17,
+        "inUseVidMemoryBytes": 865619968,
+        "vramFreeBytes": 2705485824
+      },
+      {
+        "Device Utilization %": 34,
+        "inUseVidMemoryBytes": 867192832,
+        "vramFreeBytes": 2703912960
+      }
+    ],
+    "hallway-idle-before-unset.ioreg.txt": [
+      {
+        "Device Utilization %": 16,
+        "inUseVidMemoryBytes": 903544832,
+        "vramFreeBytes": 2459766784
+      },
+      {
+        "Device Utilization %": 0,
+        "inUseVidMemoryBytes": 903544832,
+        "vramFreeBytes": 2459766784
+      }
+    ]
+  },
+  "visual": {
+    "result": "pass",
+    "owner_verdict": "Yes, both looked unchanged",
+    "scope": "campaign-test and stress-warren-hallway-inspection at spawn and during owner walks; seven prior static on/default-off capture pairs were byte-identical"
+  },
+  "cache": {
+    "campaign-cache-summary": {
+      "source": "campaign-trace-gpu.xml",
+      "sha256": "ad7c6fcf1a5c343b942ac696434b4e51c64dce8265c8081a6c19b6bfac5c24c2",
+      "unique_encoders_by_label": {
+        "Cube Shadow Depth Pass": 0,
+        "Depth Pre-Pass": 104,
+        "Dynamic Cube Entity Shadow Depth Pass": 0,
+        "Dynamic Cube World Depth Cache Pass": 0,
+        "Dynamic Spot Entity Shadow Depth Pass": 109,
+        "Dynamic Spot World Depth Cache Pass": 5,
+        "Promoted Cube Entity Shadow Depth Pass": 624,
+        "Promoted Cube World Depth Cache Pass": 0,
+        "Promoted Spot Entity Shadow Depth Pass": 104,
+        "Promoted Spot World Depth Cache Pass": 0,
+        "Spot Shadow Depth Pass": 0,
+        "Textured Pass": 104
+      },
+      "camera_frame_equivalents": 104,
+      "uncached_spot_world_passes": 0,
+      "uncached_cube_face_world_passes": 0,
+      "cached_world_refresh_passes": 5,
+      "cached_refreshes_per_camera_frame_estimate": 0.04807692307692308,
+      "deduplication": "Metal command-buffer ID + encoder ID, process=postretro; every observed labelled pass retained. Frame normalization uses the smaller camera-pass count; trace boundaries can include partial frames. No temporal grouping or cache-refresh-frame exclusion."
+    },
+    "hallway-unset-cache-summary": {
+      "source": "hallway-unset-trace-gpu.xml",
+      "sha256": "cb4bcfe7d4049501302e02843f18197d5a1458e83a4043650198284eb06a9601",
+      "unique_encoders_by_label": {
+        "Cube Shadow Depth Pass": 0,
+        "Depth Pre-Pass": 113,
+        "Dynamic Cube Entity Shadow Depth Pass": 0,
+        "Dynamic Cube World Depth Cache Pass": 0,
+        "Dynamic Spot Entity Shadow Depth Pass": 0,
+        "Dynamic Spot World Depth Cache Pass": 0,
+        "Promoted Cube Entity Shadow Depth Pass": 0,
+        "Promoted Cube World Depth Cache Pass": 0,
+        "Promoted Spot Entity Shadow Depth Pass": 904,
+        "Promoted Spot World Depth Cache Pass": 0,
+        "Spot Shadow Depth Pass": 0,
+        "Textured Pass": 113
+      },
+      "camera_frame_equivalents": 113,
+      "uncached_spot_world_passes": 0,
+      "uncached_cube_face_world_passes": 0,
+      "cached_world_refresh_passes": 0,
+      "cached_refreshes_per_camera_frame_estimate": 0.0,
+      "deduplication": "Metal command-buffer ID + encoder ID, process=postretro; every observed labelled pass retained. Frame normalization uses the smaller camera-pass count; trace boundaries can include partial frames. No temporal grouping or cache-refresh-frame exclusion."
+    },
+    "campaign-unset-cache-summary": {
+      "source": "campaign-unset-trace-gpu.xml",
+      "sha256": "7382f385f45f176546c8ae9985649eee95be851d9abc1cc31bd54710854aa76c",
+      "unique_encoders_by_label": {
+        "Cube Shadow Depth Pass": 0,
+        "Depth Pre-Pass": 140,
+        "Dynamic Cube Entity Shadow Depth Pass": 0,
+        "Dynamic Cube World Depth Cache Pass": 0,
+        "Dynamic Spot Entity Shadow Depth Pass": 133,
+        "Dynamic Spot World Depth Cache Pass": 6,
+        "Promoted Cube Entity Shadow Depth Pass": 838,
+        "Promoted Cube World Depth Cache Pass": 0,
+        "Promoted Spot Entity Shadow Depth Pass": 140,
+        "Promoted Spot World Depth Cache Pass": 0,
+        "Spot Shadow Depth Pass": 0,
+        "Textured Pass": 137
+      },
+      "camera_frame_equivalents": 137,
+      "uncached_spot_world_passes": 0,
+      "uncached_cube_face_world_passes": 0,
+      "cached_world_refresh_passes": 6,
+      "cached_refreshes_per_camera_frame_estimate": 0.043795620437956206,
+      "deduplication": "Metal command-buffer ID + encoder ID, process=postretro; every observed labelled pass retained. Frame normalization uses the smaller camera-pass count; trace boundaries can include partial frames. No temporal grouping or cache-refresh-frame exclusion."
+    },
+    "hallway-cache-summary": {
+      "source": "hallway-trace-gpu.xml",
+      "sha256": "82caf66b63b31e48d48417ea3c1e5977c6c443e6451e9dd363835bf33d363c44",
+      "unique_encoders_by_label": {
+        "Cube Shadow Depth Pass": 0,
+        "Depth Pre-Pass": 374,
+        "Dynamic Cube Entity Shadow Depth Pass": 0,
+        "Dynamic Cube World Depth Cache Pass": 0,
+        "Dynamic Spot Entity Shadow Depth Pass": 0,
+        "Dynamic Spot World Depth Cache Pass": 0,
+        "Promoted Cube Entity Shadow Depth Pass": 0,
+        "Promoted Cube World Depth Cache Pass": 0,
+        "Promoted Spot Entity Shadow Depth Pass": 2990,
+        "Promoted Spot World Depth Cache Pass": 0,
+        "Spot Shadow Depth Pass": 0,
+        "Textured Pass": 374
+      },
+      "camera_frame_equivalents": 374,
+      "uncached_spot_world_passes": 0,
+      "uncached_cube_face_world_passes": 0,
+      "cached_world_refresh_passes": 0,
+      "cached_refreshes_per_camera_frame_estimate": 0.0,
+      "deduplication": "Metal command-buffer ID + encoder ID, process=postretro; every observed labelled pass retained. Frame normalization uses the smaller camera-pass count; trace boundaries can include partial frames. No temporal grouping or cache-refresh-frame exclusion."
+    }
+  },
+  "manual_acceptance": {
+    "M1": "pass",
+    "M2": "pass",
+    "M3": "pass",
+    "M4": "pass"
+  },
+  "trace_summary_correction": "Initial temporal grouping excluded campaign cache refreshes. Final summaries retain every labelled pass: campaign on/unset has 5/6 spot-world refreshes and zero uncached overflow passes."
+}

@@ -1,0 +1,13 @@
+{
+  "commit": "dcde8f292",
+  "release_binary_sha256": "027bd9938a3ed853d9f56daafc22353e7288ba53b7c1d07e9b38254d6d05bf08",
+  "debug_binary_sha256": "e19e053942d7f2bd685ebe831ab60908e3574efe701918919497eed5fe15d079",
+  "maps": {
+    "campaign-test.prl": "574be03376fdb9cf6085ea109ad61b6aab584da6a5d726e64c06f3926892acbd",
+    "stress-warren-hallway-inspection.prl": "a543d0e0291dbceba3269f8c6898be6e689528fdfd3104aa5a9c9fd2b5507d14"
+  },
+  "plain_copy_sha256": "027bd9938a3ed853d9f56daafc22353e7288ba53b7c1d07e9b38254d6d05bf08",
+  "dev_tools_release_binary_sha256": "eb59223c30f339a5819ff85050d1152a63a8452ffbbd56508397f81c84545988",
+  "restored_plain_release_binary_sha256": "027bd9938a3ed853d9f56daafc22353e7288ba53b7c1d07e9b38254d6d05bf08",
+  "restored_plain_matches_measured": true
+}

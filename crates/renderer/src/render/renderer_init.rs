@@ -24,6 +24,37 @@ fn renderer_backends_from_env() -> Result<wgpu::Backends> {
     renderer_backends(wgpu::Backends::from_env())
 }
 
+/// Release safety relies on the checked baked leaf/index mapping (§5).
+/// Preserve every other wgpu build-default flag, regardless of diagnostic features.
+fn renderer_instance_flags(
+    debug_assertions: bool,
+    override_value: Option<&std::ffi::OsStr>,
+) -> wgpu::InstanceFlags {
+    let mut flags = wgpu::InstanceFlags::from_build_config();
+    flags.set(
+        wgpu::InstanceFlags::VALIDATION_INDIRECT_CALL,
+        override_value.map_or(debug_assertions, |value| value != "0"),
+    );
+    flags
+}
+
+fn renderer_instance_flags_from_env() -> wgpu::InstanceFlags {
+    let override_value = std::env::var_os("WGPU_VALIDATION_INDIRECT_CALL");
+    let flags = renderer_instance_flags(cfg!(debug_assertions), override_value.as_deref());
+    let state = if flags.contains(wgpu::InstanceFlags::VALIDATION_INDIRECT_CALL) {
+        "on"
+    } else {
+        "off"
+    };
+    let source = if override_value.is_some() {
+        "WGPU_VALIDATION_INDIRECT_CALL override"
+    } else {
+        "build default"
+    };
+    log::info!("[Renderer] indirect-call validation: {state} ({source})");
+    flags
+}
+
 impl Renderer {
     /// Boot phase: build only the minimal GPU state needed to present the boot
     /// splash — instance, surface, adapter, device, queue, surface configuration,
@@ -50,6 +81,7 @@ impl Renderer {
 
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends,
+            flags: renderer_instance_flags_from_env(),
             ..wgpu::InstanceDescriptor::new_without_display_handle()
         });
 
@@ -144,6 +176,7 @@ impl Renderer {
 
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends,
+            flags: renderer_instance_flags_from_env(),
             ..wgpu::InstanceDescriptor::new_without_display_handle()
         });
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
@@ -395,6 +428,39 @@ fn capture_gpu_timing_state(
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::OsStr;
+
+    #[test]
+    fn indirect_validation_policy_changes_only_its_bit_for_every_build_and_override() {
+        let bit = wgpu::InstanceFlags::VALIDATION_INDIRECT_CALL;
+        let other_defaults = wgpu::InstanceFlags::from_build_config() & !bit;
+        for debug in [false, true] {
+            for (value, expected) in [
+                (None, debug),
+                (Some("0"), false),
+                (Some("1"), true),
+                (Some(""), true),
+                (Some("false"), true),
+                (Some("00"), true),
+            ] {
+                let flags = super::renderer_instance_flags(debug, value.map(OsStr::new));
+                assert_eq!(
+                    flags.contains(bit),
+                    expected,
+                    "debug={debug}, override={value:?}"
+                );
+                assert_eq!(
+                    flags & !bit,
+                    other_defaults,
+                    "debug={debug}, override={value:?}"
+                );
+            }
+        }
+        assert_eq!(
+            super::renderer_instance_flags(cfg!(debug_assertions), None).contains(bit),
+            cfg!(debug_assertions),
+        );
+    }
     use super::*;
 
     #[test]

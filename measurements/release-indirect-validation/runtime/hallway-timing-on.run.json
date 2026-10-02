@@ -1,0 +1,138 @@
+{
+  "label": "hallway-timing-on",
+  "pid": 23550,
+  "build": "release",
+  "map": "stress-warren-hallway-inspection.prl",
+  "override": "on",
+  "elapsed": 22.48,
+  "exit": -15,
+  "timing_windows": 8,
+  "foreground_checks": [
+    {
+      "elapsed": 0.11,
+      "windows": 0,
+      "state": "front_pid=16506 target_pid=23550 foreground=false",
+      "error": ""
+    },
+    {
+      "elapsed": 1.23,
+      "windows": 0,
+      "state": "activated=true\nfront_pid=23550 target_pid=23550 foreground=true\nwindow_id=32301 bounds={\n    Height = 752;\n    Width = 1280;\n    X = 256;\n    Y = 115;\n}",
+      "error": ""
+    },
+    {
+      "elapsed": 2.33,
+      "windows": 0,
+      "state": "front_pid=23550 target_pid=23550 foreground=true\nwindow_id=32301 bounds={\n    Height = 752;\n    Width = 1280;\n    X = 256;\n    Y = 115;\n}",
+      "error": ""
+    },
+    {
+      "elapsed": 3.43,
+      "windows": 0,
+      "state": "front_pid=23550 target_pid=23550 foreground=true\nwindow_id=32301 bounds={\n    Height = 752;\n    Width = 1280;\n    X = 256;\n    Y = 115;\n}",
+      "error": ""
+    },
+    {
+      "elapsed": 4.54,
+      "windows": 0,
+      "state": "front_pid=23550 target_pid=23550 foreground=true\nwindow_id=32301 bounds={\n    Height = 752;\n    Width = 1280;\n    X = 256;\n    Y = 115;\n}",
+      "error": ""
+    },
+    {
+      "elapsed": 5.65,
+      "windows": 0,
+      "state": "front_pid=23550 target_pid=23550 foreground=true\nwindow_id=32301 bounds={\n    Height = 752;\n    Width = 1280;\n    X = 256;\n    Y = 115;\n}",
+      "error": ""
+    },
+    {
+      "elapsed": 6.76,
+      "windows": 0,
+      "state": "front_pid=23550 target_pid=23550 foreground=true\nwindow_id=32301 bounds={\n    Height = 752;\n    Width = 1280;\n    X = 256;\n    Y = 115;\n}",
+      "error": ""
+    },
+    {
+      "elapsed": 7.87,
+      "windows": 1,
+      "state": "front_pid=23550 target_pid=23550 foreground=true\nwindow_id=32301 bounds={\n    Height = 752;\n    Width = 1280;\n    X = 256;\n    Y = 115;\n}",
+      "error": ""
+    },
+    {
+      "elapsed": 9.1,
+      "windows": 1,
+      "state": "front_pid=23550 target_pid=23550 foreground=true\nwindow_id=32301 bounds={\n    Height = 752;\n    Width = 1280;\n    X = 256;\n    Y = 115;\n}",
+      "error": ""
+    },
+    {
+      "elapsed": 10.2,
+      "windows": 2,
+      "state": "front_pid=23550 target_pid=23550 foreground=true\nwindow_id=32301 bounds={\n    Height = 752;\n    Width = 1280;\n    X = 256;\n    Y = 115;\n}",
+      "error": ""
+    },
+    {
+      "elapsed": 11.31,
+      "windows": 2,
+      "state": "front_pid=23550 target_pid=23550 foreground=true\nwindow_id=32301 bounds={\n    Height = 752;\n    Width = 1280;\n    X = 256;\n    Y = 115;\n}",
+      "error": ""
+    },
+    {
+      "elapsed": 12.41,
+      "windows": 3,
+      "state": "front_pid=23550 target_pid=23550 foreground=true\nwindow_id=32301 bounds={\n    Height = 752;\n    Width = 1280;\n    X = 256;\n    Y = 115;\n}",
+      "error": ""
+    },
+    {
+      "elapsed": 13.53,
+      "windows": 3,
+      "state": "front_pid=23550 target_pid=23550 foreground=true\nwindow_id=32301 bounds={\n    Height = 752;\n    Width = 1280;\n    X = 256;\n    Y = 115;\n}",
+      "error": ""
+    },
+    {
+      "elapsed": 14.63,
+      "windows": 4,
+      "state": "front_pid=23550 target_pid=23550 foreground=true\nwindow_id=32301 bounds={\n    Height = 752;\n    Width = 1280;\n    X = 256;\n    Y = 115;\n}",
+      "error": ""
+    },
+    {
+      "elapsed": 15.73,
+      "windows": 4,
+      "state": "front_pid=23550 target_pid=23550 foreground=true\nwindow_id=32301 bounds={\n    Height = 752;\n    Width = 1280;\n    X = 256;\n    Y = 115;\n}",
+      "error": ""
+    },
+    {
+      "elapsed": 16.84,
+      "windows": 5,
+      "state": "front_pid=23550 target_pid=23550 foreground=true\nwindow_id=32301 bounds={\n    Height = 752;\n    Width = 1280;\n    X = 256;\n    Y = 115;\n}",
+      "error": ""
+    },
+    {
+      "elapsed": 17.94,
+      "windows": 6,
+      "state": "front_pid=23550 target_pid=23550 foreground=true\nwindow_id=32301 bounds={\n    Height = 752;\n    Width = 1280;\n    X = 256;\n    Y = 115;\n}",
+      "error": ""
+    },
+    {
+      "elapsed": 19.04,
+      "windows": 6,
+      "state": "front_pid=23550 target_pid=23550 foreground=true\nwindow_id=32301 bounds={\n    Height = 752;\n    Width = 1280;\n    X = 256;\n    Y = 115;\n}",
+      "error": ""
+    },
+    {
+      "elapsed": 20.14,
+      "windows": 7,
+      "state": "front_pid=23550 target_pid=23550 foreground=true\nwindow_id=32301 bounds={\n    Height = 752;\n    Width = 1280;\n    X = 256;\n    Y = 115;\n}",
+      "error": ""
+    },
+    {
+      "elapsed": 21.25,
+      "windows": 7,
+      "state": "front_pid=23550 target_pid=23550 foreground=true\nwindow_id=32301 bounds={\n    Height = 752;\n    Width = 1280;\n    X = 256;\n    Y = 115;\n}",
+      "error": ""
+    },
+    {
+      "elapsed": 22.36,
+      "windows": 8,
+      "state": "front_pid=23550 target_pid=23550 foreground=true\nwindow_id=32301 bounds={\n    Height = 752;\n    Width = 1280;\n    X = 256;\n    Y = 115;\n}",
+      "error": ""
+    }
+  ]
+}

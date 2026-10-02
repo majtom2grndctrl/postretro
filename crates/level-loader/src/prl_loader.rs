@@ -689,6 +689,8 @@ fn validate_bvh_leaf_cells(bvh_leaves: &[BvhLeaf], cells: &[CellData]) -> Result
     Ok(())
 }
 
+/// Rejects invalid baked leaf ranges in every build; release indirect-call
+/// validation is disabled, so draw safety depends on this and the install check.
 fn validate_bvh_structure(bvh: &BvhTree, geometry_index_count: usize) -> Result<(), PrlLoadError> {
     for (node_idx, node) in bvh.nodes.iter().enumerate() {
         if node.flags & !BVH_NODE_FLAG_LEAF != 0 {

@@ -1,0 +1,42 @@
+{
+  "label": "dev-tools-release-on",
+  "pid": 35722,
+  "build": "release",
+  "map": "campaign-test.prl",
+  "override": "on",
+  "elapsed": 4.87,
+  "exit": -15,
+  "timing_windows": 1,
+  "foreground_checks": [
+    {
+      "elapsed": 0.19,
+      "windows": 0,
+      "state": "front_pid=16506 target_pid=35722 foreground=false",
+      "error": ""
+    },
+    {
+      "elapsed": 1.31,
+      "windows": 0,
+      "state": "activated=true\nfront_pid=35722 target_pid=35722 foreground=true\nwindow_id=32420 bounds={\n    Height = 752;\n    Width = 1280;\n    X = 256;\n    Y = 115;\n}",
+      "error": ""
+    },
+    {
+      "elapsed": 2.43,
+      "windows": 0,
+      "state": "front_pid=35722 target_pid=35722 foreground=true\nwindow_id=32420 bounds={\n    Height = 752;\n    Width = 1280;\n    X = 256;\n    Y = 115;\n}",
+      "error": ""
+    },
+    {
+      "elapsed": 3.55,
+      "windows": 0,
+      "state": "front_pid=35722 target_pid=35722 foreground=true\nwindow_id=32420 bounds={\n    Height = 752;\n    Width = 1280;\n    X = 256;\n    Y = 115;\n}",
+      "error": ""
+    },
+    {
+      "elapsed": 4.67,
+      "windows": 1,
+      "state": "front_pid=35722 target_pid=35722 foreground=true\nwindow_id=32420 bounds={\n    Height = 752;\n    Width = 1280;\n    X = 256;\n    Y = 115;\n}",
+      "error": ""
+    }
+  ]
+}

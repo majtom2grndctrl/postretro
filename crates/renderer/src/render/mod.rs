@@ -69,6 +69,9 @@ mod sdf_light_select_test;
 mod shadowmask_sample_test;
 
 // --- Extracted submodules (module root is slim; impls split by concern) ---
+mod geometry_ranges;
+#[cfg(all(test, debug_assertions))]
+mod geometry_ranges_gpu_test;
 mod material_plan;
 mod pipeline_layout;
 mod renderer_capture;
@@ -193,6 +196,7 @@ pub(crate) use postretro_render_cpu::mesh_instances;
 
 // Re-export the moved free items so they stay reachable at their original
 // `render::*` paths (external callers and sibling render modules depend on these).
+pub use geometry_ranges::{LevelGeometryRangeError, validate_level_geometry_ranges};
 pub use kinematic_brush::KinematicMoverInstance;
 pub(crate) use material_plan::*;
 pub(crate) use pipeline_layout::*;

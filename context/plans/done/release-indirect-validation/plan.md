@@ -1,7 +1,7 @@
 # release-indirect-validation — plan of record
 
 mode: compact
-status: test-ready
+status: done
 read at: c443c91ef
 
 ## Corrections
@@ -50,7 +50,7 @@ Rows follow the brief's order within Automated and Manual.
 | 1 | Thin instance-policy slice; build release and attempt hallway paired timing before adding tests | integrating executor | — | done — symbol-preserving release build; paired 35-second hallway launch reached Metal and logged on/off once, but no in-level frames/timing windows. M1 remains outstanding. |
 | 2 | Load regressions, pure install check, early failed-load routing and offscreen rejection proof | integrating executor | 1 | done — 10 loader range tests, 3 pure install tests, 2 app routing/state tests; offscreen GPU rejection test ran (1 matched, no skip) and preserved buffers/counts/uploads. |
 | 3 | Policy tests, invariant comments, source drift guards and invalid scan fixtures | integrating executor | 1, 2 | done — policy test passed in all four debug/release × plain/dev-tools builds; all 12 contract scans/negative fixtures pass after review repairs. |
-| 4 | Focused readiness gate, review/fix loop, final preflight; record all results and external runbook | integrating executor | 2, 3 | done — review's 2 must-fix findings repaired and focused gate passed; final format/clippy/workspace test gate passed. All 19 automated rows pass; foreground follow-up completed M1–M4. Await owner’s “land the plane.” |
+| 4 | Focused readiness gate, review/fix loop, final preflight; record all results and external runbook | integrating executor | 2, 3 | done — review's 2 must-fix findings repaired and focused gate passed; final format/clippy/workspace test gate passed. All 19 automated rows pass; foreground follow-up completed M1–M4. Owner authorized landing. |
 
 ## Runtime constraints
 - Instance policy reads once at creation and adds no frame work. Range checks run O(leaves) only at install; existing cull and draw hot paths remain unchanged.
@@ -61,8 +61,8 @@ Rows follow the brief's order within Automated and Manual.
 - Fresh review panel: two slices plus seam pass; two correctness tracers, one contract verifier, one adversarial tester (Sol xhigh), two hygiene/drift reviewers (Sol medium). Runtime flows and comment drift were clean; two must-fix guard gaps found.
 - Fixed A16's renamed third-shader binding bypass with structural storage/alias discovery and negative fixtures. Fixed A19's nested-block state restoration with conservative outer-binding invalidation and lexical-shadow fixtures. `cargo check -p postretro-renderer` and `cargo test -p postretro-renderer --lib indirect_contract_` (12 tests) passed after both repairs. No Decision or Acceptance changes.
 - Final preflight ran once after integration/review/repairs: `cargo fmt --check` passed; `cargo clippy --target-dir target/preflight-clippy -- -D warnings` passed; `cargo test` passed (9,064 passed, 0 failed, 40 ignored across 60 targets). The on-demand GPU rejection proof above ran separately; its ignored default-suite status is not used as proof. Full-suite compilation emitted one existing level-compiler lib-test dead-code warning (`assemblies`, `brush_assembly`); release matrix builds also exposed existing debug-only upload-test helper warnings. No production warnings in the prescribed clippy gate.
-- Check logs: `/private/tmp/release-indirect-validation/preflight-{fmt,clippy,tests}.log`. Free disk at completion: 19 GiB; cleared inactive incremental caches when space reached the threshold, preserving active compiler caches and all target directories.
-- All automated AC results are recorded above. Foreground follow-up completed M1–M4; leave the brief in `in-progress/` and wait for “land the plane.” Durable context updates, moving the brief to `done/`, and feature-branch push are deferred to that step.
+- Check logs: preserved locally at `measurements/release-indirect-validation/runtime/raw/preflight-{fmt,clippy,tests}.log`. Free disk at completion: 19 GiB; cleared inactive incremental caches when space reached the threshold, preserving active compiler caches and all target directories.
+- All automated AC results are recorded above. Foreground follow-up completed M1–M4; owner authorized landing. Durable context contracts are updated and the brief is moved to `done/`.
 
 ## Exploratory run
 - Release binary: `CARGO_PROFILE_RELEASE_STRIP=none cargo build --release -p postretro` passed. Upload batching is already merged.
@@ -86,11 +86,19 @@ Rows follow the brief's order within Automated and Manual.
 
 ## Foreground follow-up — complete (2026-10-01)
 
-- Owner turned the screen on and authorized agent-launched engine runs. All manual results are now **pass**. `status: test-ready` is retained as the completed validation checkpoint; no acceptance proof remains outstanding. Landing awaits the owner’s “land the plane.”
+- Owner turned the screen on and authorized agent-launched engine runs. All manual results are now **pass**. No acceptance proof remains outstanding. Owner subsequently authorized landing.
 - Evidence: [runtime report](../../../../measurements/release-indirect-validation/runtime/README.md), structured `results.json`, binary/map digests, foreground run records, four cache trace summaries, and two cost profile summaries. The measured plain binary is pinned to `dcde8f292`; source code is unchanged from final preflight. No full suite rerun is needed for these proof/documentation additions.
 - M1 used eight complete 120-frame windows per mode/map, discarding the first three and taking the final-five median. Profiling, tracing, and Cargo work were separate from the accepted timing pairs. Same-binary treatment leaves the override unset. Recorded warm state has two camera world passes and zero uncached spot/cube-face world passes. Hallway records no cache refreshes (16,874 indirect world draws/frame). Campaign has 5 / 6 cached spot-world refreshes across 104 / 137 camera-frame equivalents (enabled / unset): ordinary warm frames draw 1,548, refresh frames add 774; sampled means are approximately 1,585 / 1,582. Profile-derived validation-only CPU point estimates are 1.712 / 0.316 ms; observed savings exceed half of each, and the provisional thresholds.
 - Machine state: AMD Radeon Pro 5300M / Metal; vsync on; unchanged window/options (resolution `auto`, shadows/fog `low`, Surface Depth `off`). Engine-closed VRAM/utilization snapshots are retained in the structured report, including nonzero shared-GPU utilization. Unsupported timestamp queries are reported explicitly; no GPU-time claim is made.
 - M2: both map profiles cover ten in-level seconds, after two timing windows. Both named functions are absent with release default off and present with override 1 and debug default on. M3 includes dev-tools release default and override checks, plus a debug off override, all logging once.
 - M4 owner verdict: “Yes, both looked unchanged.” Existing PRLs were used throughout; no re-bake. Live macOS window capture failed (`could not create image from window`); the earlier static offscreen gallery supplies the screenshot evidence.
-- Plain release is rebuilt after dev-tools startup checks so Cargo fingerprints remain consistent. Parsed Instruments bundles and session-owned ktrace temporaries are removed; raw XML exports remain in `/private/tmp/release-indirect-validation/`, with digests in the summaries. Inactive incremental caches were cleared after disk crossed the skill threshold; full target directories were preserved.
+- Plain release is rebuilt after dev-tools startup checks so Cargo fingerprints remain consistent. Parsed Instruments bundles and session-owned ktrace temporaries are removed; raw XML exports were compressed into `measurements/release-indirect-validation/runtime/raw/` during landing, with uncompressed digests in the summaries. Inactive incremental caches were cleared after disk crossed the skill threshold; full target directories were preserved.
 - Trace-summary correction: initial temporal grouping excluded campaign cache-refresh frames. Final summaries count every labelled pass, deduplicating encoder IDs; all five/six refreshes are retained. Trace-boundary frame normalization is approximate. This correction does not change the profile-derived cost thresholds or timing pass results.
+
+## Landing — owner authorized
+
+- Owner said “Land the plane.” All 19 automated and four manual acceptance rows passed before landing.
+- Updated durable renderer contracts in §5, §7.1, and §12. Moved this brief to `done/`; no matching roadmap entry exists.
+- Proof report remains in `measurements/release-indirect-validation/runtime/`. Temporary raw GPU XML exports are compressed into its ignored `raw/` directory, alongside preserved verification/build logs. Screenshots and runtime logs/profiles remain available locally. Session temporary tools and saved binaries are removed.
+- No worktree was created for this build. Cleaned the heavy-churn engine, renderer, and loader packages in the normal and preflight Cargo targets. Source, content, bake caches, and unrelated worktrees are preserved.
+- Feature branch: `codex/release-indirect-validation`. Landing commit and proof checkpoints are pushed together. Main-branch merge and post-merge cleanup follow the owner’s merge report.

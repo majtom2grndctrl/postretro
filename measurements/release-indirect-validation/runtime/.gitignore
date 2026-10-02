@@ -8,3 +8,4 @@
 *.trace-status.txt
 foreground
 __pycache__/
+raw/

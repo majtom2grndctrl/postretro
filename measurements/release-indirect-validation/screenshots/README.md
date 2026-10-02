@@ -2,7 +2,7 @@
 
 Seven views, fourteen 1280×720 PNGs. Every validation-on/default-off pair is byte-identical. Captured from the same symbol-preserving release binary with `capture`, without `dev-tools`, on AMD Radeon Pro 5300M / Metal.
 
-These static captures supplement M4. They run no script VM, gameplay tick, HUD, or simulated walk. M1 foreground timings, M2 profiles, M3 full startup matrix, and M4 owner/live-walk verdict remain outstanding. Physical display power state was not inspected.
+These static captures supplement M4. They run no script VM, gameplay tick, HUD, or simulated walk. All four manual rows subsequently passed; see the [foreground runtime report](../runtime/README.md), including the owner’s live-walk verdict. Physical display power state was not inspected.
 
 [Open the side-by-side gallery](gallery.html). PNGs and logs stay local; scene inputs and comparison hashes are versioned.
 

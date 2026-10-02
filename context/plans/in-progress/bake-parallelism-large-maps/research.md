@@ -50,17 +50,17 @@ What to do with a finished `measure-hallway.ps1` run. The before run happens onc
 
 | Number | m0 warm, empty cache (pre-lever) | m0c cold (pre-lever) | m1c cold (lever 1) | m2 warm | m3 warm |
 |---|---|---|---|---|---|
-| Evidence | `windows-mini-before/` | `windows-mini-before-cold/` | `windows-mini-after-lever1-cold/` | | |
-| Total wall time | 2,191.6 s | 1,561.4 s | 1,101.1 s | | |
-| Mean busy cores, whole build | 2.65 | 3.71 | 4.37 | | |
-| SH Bake | 741.5 s | 707.5 s | 727.4 s | | |
-| Lightmap Bake | 832.0 s | 675.8 s | 182.9 s | | |
-| Busy cores, "Shadowmask atlas bake" label (Lightmap + ShadowmaskAtlas) | 2.20 (82 samples) | 2.65 (68) | 3.85 (19; p50 3.97, p90 4.51) | | |
-| ShadowmaskAtlas | 6.6 s | 5.6 s | 4.9 s | | |
-| Delta SH / Direct SH Delta / Animated Direct / AnimWeightMaps | 180.1 / 246.9 / 67.7 / 50.9 s | 80.4 / 2.7 / 0.5 / 17.9 s | 81.9 / 2.6 / 0.5 / 17.8 s | | |
-| Packing | 46.4 s | 53.6 s | 65.2 s | | |
-| Peak working set | 1.73 GiB | 1.37 GiB | 1.37 GiB | | |
-| Cache at exit | 74,227 files, 3.89 GiB | none | none | | |
+| Evidence | `windows-mini-before/` | `windows-mini-before-cold/` | `windows-mini-after-lever1-cold/` | `windows-mini-after-m2/` | |
+| Total wall time | 2,191.6 s | 1,561.4 s | 1,101.1 s | 1,591.8 s | |
+| Mean busy cores, whole build | 2.65 | 3.71 | 4.37 | 3.05 | |
+| SH Bake | 741.5 s | 707.5 s | 727.4 s | 727.4 s | |
+| Lightmap Bake | 832.0 s | 675.8 s | 182.9 s | 365.7 s | |
+| Busy cores, "Shadowmask atlas bake" label (Lightmap + ShadowmaskAtlas) | 2.20 (82 samples) | 2.65 (68) | 3.85 (19; p50 3.97, p90 4.51) | 2.43 (28; p10 0.00, p50 3.00) | |
+| ShadowmaskAtlas | 6.6 s | 5.6 s | 4.9 s | 5.2 s | |
+| Delta SH / Direct SH Delta / Animated Direct / AnimWeightMaps | 180.1 / 246.9 / 67.7 / 50.9 s | 80.4 / 2.7 / 0.5 / 17.9 s | 81.9 / 2.6 / 0.5 / 17.8 s | 90.1 / 190.4 / 75.9 / 82.7 s | |
+| Packing | 46.4 s | 53.6 s | 65.2 s | 36.3 s | |
+| Peak working set | 1.73 GiB | 1.37 GiB | 1.37 GiB | 1.73 GiB | |
+| Cache at exit | 74,227 files, 3.89 GiB | none | none | 74,227 files, 3.89 GiB | |
 
 M2: cold Lightmap Bake 675.8 s → 182.9 s (3.7× faster), busy cores 2.65 → 3.85, peak working set unchanged. Lightmap still runs below 5 permits; the serial in-order fold and per-light consume are the likely remainder.
 
@@ -171,6 +171,23 @@ No sample landed in ray code. The raw stack sample was not retained; the breakdo
 - **Earlier levers shrink its target.** Lever 2 removes the I/O-bound delta idle time overlap mostly targets. Lever 1 shrinks the AnimWeightMaps gain.
 - **Most invasive lever.** `pipeline/stage_registry.rs` has no cross-stage concurrency today (§Stage dependencies). `development_guide.md` §1.4: no measured bottleneck, no optimization.
 - **Precedent.** The fused Lightmap + ShadowmaskAtlas bake already runs one foreground and one background stage under one governor.
+
+**Measurement (m2, 2026-10-02, warm warren-mini at 28b8ed8f7, levers 1, 2 and 4).** Bar: 4.6% of 1,591.8 s = 73.2 s. Each sample is weighted by its real gap in `elapsed_s`; the sampler stalled up to 61 s during heavy cache writes, so 141 samples cover 1,572 s. "Low" means under 2.5 cores (half of 5 permits).
+
+| Stage (sampler label) | Wall | Low | CPU-s | Stage lever 3 could start early, waiting |
+|---|---|---|---|---|
+| Base SH | 727 s | 0 s | 3,443 | excluded by the gate |
+| Delta SH | 90 s | 0 s | 413 | Direct SH, Animated Direct, Direct SH Delta |
+| Animated Direct | 75 s | 64 s | 37 | Direct SH Delta |
+| Direct SH Delta | 205 s | 205 s | 116 | none: last of the SH family |
+| Fused walk ("Shadowmask atlas bake") | 371 s | 230 s | 757 | AnimLightChunks, AnimWeightMaps |
+| AnimWeightMaps | 33 s labeled (83 s stage) | 13 s | 88 | none: the walk has finished |
+
+- **Gate as written:** low time outside base SH while an overlappable stage waits = 64 + 230 = **294 s (18.5% of total)**. It clears the bar fourfold.
+- **Bounded by what the waiters could fill:** overlap hides at most the waiting stage's own wall time. Fused walk + AnimWeightMaps ≤ 83 s; Animated Direct + Direct SH Delta ≤ 64 s; running Delta SH (90 s, saturated) inside Direct SH Delta's idle span ≤ 90 s, a pairing the gate's "waits" wording does not count because Delta SH runs first. Ceiling about 150–240 s (9–15%).
+- **Most low time is cache I/O, not idle CPU.** Warm Lightmap Bake is 365.7 s against cold 182.9 s: the extra 183 s are the window stalled behind partition puts. Direct SH Delta (205 s at 0.57 cores) and Animated Direct (0.49 cores) are put-bound. Overlapping two put-bound stages competes for the same SATA disk and Defender scan, so their pairing likely recovers little here; CPU work overlapping an I/O stall (AnimWeightMaps' 18 s chunk bake, Delta SH's ray work) is the clean gain.
+- **Hallway projection.** The same pairings on R0's stages after Task 7: AnimWeightMaps ≈ 40 s beside the walk, Animated Direct 25 s and Delta SH 151 s beside Direct SH Delta's 322 s. Ceiling ≈ 215 s of 19,388 s (1.1%), against the 15 minutes the 4.6% bar was derived from.
+- **m2 against m0 (levers 1, 2, 4 warm):** total 2,191.6 → 1,591.8 s (−27%); Lightmap 832.0 → 365.7 s; Delta SH 180.1 → 90.1 s; Direct SH Delta 246.9 → 190.4 s; Packing 46.4 → 36.3 s; AnimWeightMaps 50.9 → 82.7 s and Animated Direct 67.7 → 75.9 s slower (both put-bound; one run each, cause not isolated — warren-mini's AnimWeightMaps writes one 508 MB entry, so Task 7's cut does not reach it); peak 1.73 GiB both. Output equals m0's but for the embedded path (`prl-pathdiff.py`).
 
 ## Lightmap loop details (lever 1)
 

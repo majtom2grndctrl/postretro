@@ -27,7 +27,7 @@ Owner-raised, from a 5 h 54 m hallway bake on the owner's Mac. Parallelism was d
 ## Acceptance
 ### Automated
 - [ ] A cold `--release` fixture bake is byte-identical before and after, at `-j 1` and at the default `-j`.
-- [ ] A warm all-miss bake followed by a warm all-hit bake of the same fixture emits identical `.prl` bytes, and both match the pre-change warm bytes. The all-hit bake reads every entry the all-miss bake wrote, with zero cache misses.
+- [ ] A warm all-miss bake followed by a warm all-hit bake of the same fixture emits identical `.prl` bytes, and both match the pre-change warm bytes. Every entry the all-hit bake requests is a hit (zero cache misses), and the entries it reads, plus the per-light partitions its section-memo hits mark as used, cover every entry the all-miss bake wrote.
 - [ ] With a window of at least two lights, a later light's partition that is ready before an earlier one's is still folded and consumed after it. A test holds the earlier light's first chart until the later light's partition is ready. It records fold and consume order as ascending by global light index, and emits the window-1 bytes. (pin P1)
 - [ ] For rays aimed exactly at an edge two triangles share, the nearest-hit query returns the same distance and normal as today's full scan. The triangles meet at a crease, so their normals differ. The fixture has one such edge inside a single face's leaf and one between two faces' leaves. Occlusion queries give today's answer for segments ending just short of, exactly at, and past a blocker.
 - [ ] A ray lying in a BVH node's bounding-box face plane, parallel to it, and a ray starting on the triangle the traversal reaches first, each give today's nearest-hit and occlusion answers. (pin P2)

@@ -1,10 +1,10 @@
 # bake-parallelism-large-maps — plan of record
 
 mode: resumable
-status: blocked
+status: approved
 read at: 1527f5b26
 
-Blocked on one Acceptance restatement (Automated row 2, below). Everything else is planned. When the owner rules, apply the ruled wording to `index.md`, then set `status: proposed` or, if the owner approves the plan in the same reply, `approved`.
+Owner approved the plan and the Automated row 2 restatement (2026-10-01); `index.md` carries the ruled wording.
 
 ## Corrections
 - Brief re-read at 695c320e5; no file under `crates/level-compiler`, `crates/level-format` or `crates/visibility` changed between it and 1527f5b26. Every Decision- and Path-cited symbol was re-opened and exists as described: `bake_fused_prepared` (serial `layer_input_hash` pre-pass over layers × lights, serial `for layer { for light }` loop, second loop for lightmap-hit + shadowmask-miss), `load_or_bake_partition` (get, checkpoint on hit; bake then put on miss), `bake_light_layer_controlled` (rebuilds `face_indices` per call), `bake_light_layer_chart_controlled` (one `governor().enter()` per (light, chart) via `for_each_light_layer_chart_texel_controlled`), `IncrementalLayerAccumulator::fold_partition` (global-light-order contract), `StageCache::{get, touch_for_lru, put_streamed, write_streamed_entry (sync_all), prune_to_budget, live_set, warn_if_live_set_exceeds, test_access}`, `construct_stage_cache`, `run_with_failure_cache_report`, `sh_bake::{closest_hit, segment_clear}`, `lightmap_bake::segment_clear`, `billboard_direct_scatter_bake::segment_clear`, `chunk_light_list_bake::segment_clear`, `delta_sh_cache::bake_or_load_delta_subblocks`, `plan_delta_bakes`, `direct_sh_delta_is_usable_for_selection`, `layout_animated_atlas`, `probe_grid_layout`, `world_aabb_for_directional`, `assert_no_overlapping_rects_per_layer`, `bvh = 0.11`. No `thread::scope`, `rayon::join` or `rayon::scope` in `pipeline.rs` or `pipeline/`.
@@ -13,7 +13,7 @@ Blocked on one Acceptance restatement (Automated row 2, below). Everything else 
 - Research §Measurement conditions, Machine → the yardstick (6 logical processors, default `-j` 5) is this development machine. A hallway run (about 9 h) and a compile or test run cannot overlap without corrupting busy-core numbers. Planning around it by scheduling every hallway run as an owner overnight task with the machine otherwise idle, launched from a clean checkout at the named commit.
 - `lightmap_stage::predicted_peak` counts one layer plane, the shadowmask fill and the sections twice; it counts no partition. The window term Task 3 adds counts each in-window partition at every point it coexists (per-chart buffers, assembled texels, serialized cache copy), per `development_guide.md` §1.4.
 
-## Proposed restatement (blocks the plan)
+## Restatement (approved 2026-10-01)
 Automated row 2 today: "A warm all-miss bake followed by a warm all-hit bake of the same fixture emits identical `.prl` bytes, and both match the pre-change warm bytes. The all-hit bake reads every entry the all-miss bake wrote, with zero cache misses."
 
 Why it cannot pass: the all-miss bake writes every per-light `lightmap_layer` partition plus the `lightmap_section` and `shadowmask_atlas` memos. The all-hit bake hits both memos and, by design (`build_pipeline.md` §Build Cache), reads no partition. So it reads strictly fewer entries than the all-miss wrote, today and after this brief. Reading the partitions anyway would undo the memo's purpose.
@@ -31,7 +31,7 @@ This keeps the row's meaning (a warm rebuild re-bakes nothing and its use record
 | AC | Proof | Status |
 |---|---|---|
 | A1 Cold `--release` fixture bytes identical before/after at `-j 1` and default `-j` | `evidence/fixture-bytes.ps1` digest diff against `evidence/fixture-digests-before.txt` (Task 0, pre-lever compiler), run after every lever; permanent test `cold_release_bytes_match_across_job_counts` | achievable as stated |
-| A2 Warm all-miss then all-hit: identical bytes, match pre-change warm; all-hit coverage, zero misses | Same digest diff (warm modes); in-process test `warm_all_hit_covers_all_miss_writes_with_zero_misses` over `StageCache::test_access` plus the use record | **needs restatement** (above) |
+| A2 Warm all-miss then all-hit: identical bytes, match pre-change warm; all-hit coverage, zero misses | Same digest diff (warm modes); in-process test `warm_all_hit_covers_all_miss_writes_with_zero_misses` over `StageCache::test_access` plus the use record | achievable as restated |
 | A3 Window ordering, later light ready first, fold/consume ascending, window-1 bytes (P1) | `lightmap_window_folds_in_global_light_order_when_later_light_finishes_first` | achievable as stated |
 | A4 Shared crease edge: nearest-hit distance and normal equal today's full scan, in-leaf and cross-leaf; occlusion short of/at/past blocker | `bounded_closest_hit_matches_full_scan_on_shared_crease_edges`, `bounded_segment_clear_matches_full_scan_at_segment_end` against a `#[cfg(test)]` copy of today's full scan | achievable as stated |
 | A5 In-plane parallel ray; ray starting on first-reached triangle (P2) | `bounded_traversal_keeps_undefined_slab_node`, `sub_epsilon_start_hit_never_tightens_bound` | achievable as stated |

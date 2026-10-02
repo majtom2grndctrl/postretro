@@ -11,6 +11,8 @@ Run: powershell -ExecutionPolicy Bypass -File measure-hallway.ps1 [-SkipBuild]
 -Cold runs prl-build --release instead: the exact, uncached ship bake (the cold
 Lightmap Bake row). -ReuseCacheDir <dir> runs a second warm build on an existing,
 non-empty cache (the second-build budget row); pass the first run's prl-cache.
+-Map <name> bakes content/dev/maps/<name>.map instead of the hallway, such as
+stress-warren-hallway-inspection-mini for the in-between runs.
 Keep the console open and sleep disabled for the whole run (about 9 h): closing
 the console ends prl-build, and sleep pauses the wall clock's meaning.
 Written without a PowerShell host to test on: untested until its first run.
@@ -22,7 +24,8 @@ param(
     [ValidateRange(1, 3600)][int]$SampleSeconds = 10,
     [switch]$SkipBuild,
     [switch]$Cold,
-    [string]$ReuseCacheDir
+    [string]$ReuseCacheDir,
+    [string]$Map = 'stress-warren-hallway-inspection'
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2
@@ -34,7 +37,7 @@ if (-not $RepoRoot) {
 }
 $RepoRoot = (Resolve-Path $RepoRoot).Path
 $targetDir = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { Join-Path $RepoRoot 'target' }
-if (-not $OutDir) { $OutDir = Join-Path $targetDir ('bake-measure\hallway-' + (Get-Date -Format 'yyyyMMdd-HHmmss')) }
+if (-not $OutDir) { $OutDir = Join-Path $targetDir ('bake-measure\' + $Map + '-' + (Get-Date -Format 'yyyyMMdd-HHmmss')) }
 $null = New-Item -ItemType Directory -Force -Path $OutDir
 $OutDir = (Resolve-Path $OutDir).Path
 if ($Cold -and $ReuseCacheDir) { throw '-Cold bakes uncached; it cannot reuse a cache dir' }
@@ -65,12 +68,13 @@ $helpJobs = 'unknown'
 foreach ($l in @(& $exe --help)) { if ($l -match '--jobs <N>.*\(default: (\d+)\)') { $helpJobs = $Matches[1] } }
 if ("$helpJobs" -ne "$ruleJobs") { Write-Warning "default -j: binary says $helpJobs, rule says $ruleJobs" }
 
-$map = Join-Path $RepoRoot 'content\dev\maps\stress-warren-hallway-inspection.map'
-$prl = Join-Path $OutDir 'stress-warren-hallway-inspection.prl'
-if (-not (Test-Path $map)) { throw "missing $map" }
+# PowerShell names ignore case, so the input path cannot be called $map.
+$mapPath = Join-Path $RepoRoot "content\dev\maps\$Map.map"
+$prl = Join-Path $OutDir "$Map.prl"
+if (-not (Test-Path $mapPath)) { throw "missing $mapPath" }
 # Warm mode: no prl-build --release (that is the cold, uncached ship bake).
 # --no-tui is belt and braces: redirected stdout/stderr already select plain mode.
-$argLine = if ($Cold) { "`"$map`" -o `"$prl`" --release --no-tui" } else { "`"$map`" -o `"$prl`" --cache-dir `"$cacheDir`" --no-tui" }
+$argLine = if ($Cold) { "`"$mapPath`" -o `"$prl`" --release --no-tui" } else { "`"$mapPath`" -o `"$prl`" --cache-dir `"$cacheDir`" --no-tui" }
 $mode = if ($Cold) { 'cold (--release, no cache)' } elseif ($ReuseCacheDir) { 'warm, reused cache' } else { 'warm, empty cache' }
 
 $cpus = @(Get-CimInstance Win32_Processor)

@@ -1,7 +1,7 @@
 // Production-module inventory for the indirect-call drift guards.
 // See: context/lib/rendering_pipeline.md §5. Uses the upload scanner's cfg rules.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use syn::spanned::Spanned;
 use syn::visit::{self, Visit};
@@ -278,6 +278,11 @@ struct PassState {
     pipelines: HashMap<String, String>,
 }
 
+struct ShadowedPass {
+    index_binding: Option<String>,
+    pipeline: Option<String>,
+}
+
 struct Scanner<'a> {
     source: &'a Source,
     owner: String,
@@ -285,6 +290,7 @@ struct Scanner<'a> {
     functions: Vec<Function>,
     sites: Vec<Site>,
     passes: PassState,
+    block_locals: Vec<HashMap<String, ShadowedPass>>,
     use_prefix: Vec<String>,
 }
 
@@ -329,12 +335,30 @@ impl<'ast> Visit<'ast> for Scanner<'_> {
     }
     fn visit_local(&mut self, local: &'ast syn::Local) {
         if !test_only(&local.attrs) {
-            // A newly declared pass cannot inherit an outer pass's bindings.
-            if let syn::Pat::Ident(pattern) = &local.pat {
-                self.passes.indices.remove(&pattern.ident.to_string());
-                self.passes.pipelines.remove(&pattern.ident.to_string());
-            }
             visit::visit_local(self, local);
+            struct Bindings(Vec<String>);
+            impl<'ast> Visit<'ast> for Bindings {
+                fn visit_pat_ident(&mut self, pattern: &'ast syn::PatIdent) {
+                    self.0.push(pattern.ident.to_string());
+                    visit::visit_pat_ident(self, pattern);
+                }
+            }
+            let mut bindings = Bindings(Vec::new());
+            bindings.visit_pat(&local.pat);
+            // Initializers use the outer binding. The new local starts unbound.
+            for name in bindings.0 {
+                let bindings = ShadowedPass {
+                    index_binding: self.passes.indices.get(&name).cloned(),
+                    pipeline: self.passes.pipelines.get(&name).cloned(),
+                };
+                self.block_locals
+                    .last_mut()
+                    .unwrap()
+                    .entry(name.clone())
+                    .or_insert(bindings);
+                self.passes.indices.remove(&name);
+                self.passes.pipelines.remove(&name);
+            }
         }
     }
     fn visit_arm(&mut self, arm: &'ast syn::Arm) {
@@ -359,10 +383,37 @@ impl<'ast> Visit<'ast> for Scanner<'_> {
     fn visit_block(&mut self, block: &'ast syn::Block) {
         let indices = self.passes.indices.clone();
         let pipelines = self.passes.pipelines.clone();
+        self.block_locals.push(HashMap::new());
         visit::visit_block(self, block);
-        self.passes.indices = indices;
-        self.passes.pipelines = pipelines;
+        let locals = self.block_locals.pop().unwrap();
+        fn restore(current: &mut HashMap<String, String>, name: &str, binding: &Option<String>) {
+            if let Some(binding) = binding {
+                current.insert(name.to_string(), binding.clone());
+            } else {
+                current.remove(name);
+            }
+        }
+        for (name, bindings) in locals {
+            restore(&mut self.passes.indices, &name, &bindings.index_binding);
+            restore(&mut self.passes.pipelines, &name, &bindings.pipeline);
+        }
+        fn invalidate_changes(
+            current: &mut HashMap<String, String>,
+            previous: HashMap<String, String>,
+        ) {
+            let names: HashSet<_> = current.keys().chain(previous.keys()).cloned().collect();
+            for name in names {
+                if current.get(&name) != previous.get(&name) {
+                    // An outer pass keeps block mutations at runtime. Discard
+                    // changed proof; statement order cannot resolve branches.
+                    current.remove(&name);
+                }
+            }
+        }
+        invalidate_changes(&mut self.passes.indices, indices);
+        invalidate_changes(&mut self.passes.pipelines, pipelines);
     }
+
     fn visit_expr_method_call(&mut self, expr: &'ast syn::ExprMethodCall) {
         let name = expr.method.to_string();
         let receiver = self.source.fragment(&expr.receiver);
@@ -511,6 +562,7 @@ pub(super) fn scan(sources: &[Source]) -> (Vec<Function>, Vec<Site>) {
             functions: Vec::new(),
             sites: Vec::new(),
             passes: PassState::default(),
+            block_locals: Vec::new(),
             use_prefix: Vec::new(),
         };
         scanner.visit_file(&source.syntax);

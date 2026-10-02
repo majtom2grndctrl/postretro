@@ -49,12 +49,18 @@ Rows follow the brief's order within Automated and Manual.
 |---|---|---|---|---|
 | 1 | Thin instance-policy slice; build release and attempt hallway paired timing before adding tests | integrating executor | — | done — symbol-preserving release build; paired 35-second hallway launch reached Metal and logged on/off once, but no in-level frames/timing windows. M1 remains outstanding. |
 | 2 | Load regressions, pure install check, early failed-load routing and offscreen rejection proof | integrating executor | 1 | done — 10 loader range tests, 3 pure install tests, 2 app routing/state tests; offscreen GPU rejection test ran (1 matched, no skip) and preserved buffers/counts/uploads. |
-| 3 | Policy tests, invariant comments, source drift guards and invalid scan fixtures | integrating executor | 1, 2 | done — policy test passed in all four debug/release × plain/dev-tools builds; all 10 contract scans/negative fixtures pass. |
+| 3 | Policy tests, invariant comments, source drift guards and invalid scan fixtures | integrating executor | 1, 2 | done — policy test passed in all four debug/release × plain/dev-tools builds; all 12 contract scans/negative fixtures pass after review repairs. |
 | 4 | Focused readiness gate, review/fix loop, final preflight; record all results and external runbook | integrating executor | 2, 3 | pending |
 
 ## Runtime constraints
 - Instance policy reads once at creation and adds no frame work. Range checks run O(leaves) only at install; existing cull and draw hot paths remain unchanged.
 - Cargo runs are owned by the integrating executor and sequential. Check free disk space after each task/numbered step; only caches may be cleared below 15 GB.
+
+## Review and focused verification
+- Readiness: `cargo fmt --check`; touched-crate check with capture/observability; loader range filter (10), pure install filter (3), app install filter (2), and four build/feature policy variants (1 each) passed. The on-demand offscreen GPU rejection test ran and passed (1 matched, no skip).
+- Fresh review panel: two slices plus seam pass; two correctness tracers, one contract verifier, one adversarial tester (Sol xhigh), two hygiene/drift reviewers (Sol medium). Runtime flows and comment drift were clean; two must-fix guard gaps found.
+- Fixed A16's renamed third-shader binding bypass with structural storage/alias discovery and negative fixtures. Fixed A19's nested-block state restoration with conservative outer-binding invalidation and lexical-shadow fixtures. `cargo check -p postretro-renderer` and `cargo test -p postretro-renderer --lib indirect_contract_` (12 tests) passed after both repairs. No Decision or Acceptance changes.
+- Final preflight pending; manual M1–M4 remain blocking.
 
 ## Exploratory run
 - Release binary: `CARGO_PROFILE_RELEASE_STRIP=none cargo build --release -p postretro` passed. Upload batching is already merged.

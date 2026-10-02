@@ -5,6 +5,7 @@
 mod scanner;
 
 use scanner::{Function, Site, Source, compact, load_sources, scan};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 const INSTALL: &str = "render/renderer_resources.rs";
@@ -158,15 +159,158 @@ fn rust_violations(sources: &[Source]) -> Vec<String> {
     errors
 }
 
+// Read declarations only. Shader fragments need not form standalone modules.
+// Match the indexed-indirect fields through aliases, independent of names.
+// Writable integer records can reinterpret the same five-word ABI.
+fn indexed_indirect_storage(source: &str) -> Vec<String> {
+    use proc_macro2::{Delimiter, TokenTree};
+
+    let tokens: Vec<_> = source
+        .parse::<proc_macro2::TokenStream>()
+        .expect("shader source should tokenize")
+        .into_iter()
+        .collect();
+    let mut structs = HashMap::new();
+    let mut aliases = HashMap::new();
+    let mut storage = Vec::new();
+    let text = |tokens: &[TokenTree]| {
+        compact(
+            &tokens
+                .iter()
+                .cloned()
+                .collect::<proc_macro2::TokenStream>()
+                .to_string(),
+        )
+    };
+    for (index, token) in tokens.iter().enumerate() {
+        let TokenTree::Ident(keyword) = token else {
+            continue;
+        };
+        let tail = &tokens[index + 1..];
+        match keyword.to_string().as_str() {
+            "struct" => {
+                if let [TokenTree::Ident(name), TokenTree::Group(body), ..] = tail
+                    && body.delimiter() == Delimiter::Brace
+                {
+                    let members: Vec<_> = body.stream().into_iter().collect();
+                    let fields: Vec<_> = members
+                        .split(|token| token.to_string() == ",")
+                        .filter(|field| !field.is_empty())
+                        .filter_map(|field| {
+                            let colon = field.iter().position(|token| token.to_string() == ":")?;
+                            Some(text(&field[colon + 1..]))
+                        })
+                        .collect();
+                    structs.insert(name.to_string(), fields);
+                }
+            }
+            "alias" => {
+                if let [TokenTree::Ident(name), equals, definition @ ..] = tail
+                    && equals.to_string() == "="
+                    && let Some(end) = definition.iter().position(|token| token.to_string() == ";")
+                {
+                    aliases.insert(name.to_string(), text(&definition[..end]));
+                }
+            }
+            "var" => {
+                if tail.first().is_some_and(|token| token.to_string() == "<")
+                    && let Some(access_end) = tail.iter().position(|token| token.to_string() == ">")
+                    && matches!(
+                        text(&tail[1..access_end]).as_str(),
+                        "storage" | "storage,read" | "storage,read_write"
+                    )
+                    && let [TokenTree::Ident(name), colon, definition @ ..] =
+                        &tail[access_end + 1..]
+                    && colon.to_string() == ":"
+                    && let Some(end) = definition.iter().position(|token| token.to_string() == ";")
+                {
+                    storage.push((
+                        name.to_string(),
+                        text(&definition[..end]),
+                        text(&tail[1..access_end]) == "storage,read_write",
+                    ));
+                }
+            }
+            _ => {}
+        }
+    }
+    fn resolve<'a>(mut ty: &'a str, aliases: &'a HashMap<String, String>) -> &'a str {
+        for _ in 0..aliases.len() {
+            let Some(next) = aliases.get(ty) else {
+                break;
+            };
+            ty = next;
+        }
+        ty
+    }
+    fn contains_array(
+        ty: &str,
+        structs: &HashMap<String, Vec<String>>,
+        aliases: &HashMap<String, String>,
+        writable: bool,
+        remaining: usize,
+    ) -> bool {
+        if remaining == 0 {
+            return false;
+        }
+        let ty = resolve(ty, aliases);
+        if let Some(array) = ty
+            .strip_prefix("array<")
+            .and_then(|ty| ty.strip_suffix('>'))
+        {
+            let element = resolve(array.split(',').next().unwrap(), aliases);
+            if structs.get(element).is_some_and(|fields| {
+                fields.len() == 5
+                    && fields.iter().enumerate().all(|(index, field)| {
+                        let field = resolve(field, aliases);
+                        if writable {
+                            matches!(field, "u32" | "i32")
+                        } else {
+                            field == ["u32", "u32", "u32", "i32", "u32"][index]
+                        }
+                    })
+            }) {
+                return true;
+            }
+            return contains_array(element, structs, aliases, writable, remaining - 1);
+        }
+        structs.get(ty).is_some_and(|fields| {
+            fields
+                .iter()
+                .any(|field| contains_array(field, structs, aliases, writable, remaining - 1))
+        })
+    }
+    storage
+        .into_iter()
+        .filter_map(|(name, ty, writable)| {
+            contains_array(
+                &ty,
+                &structs,
+                &aliases,
+                writable,
+                structs.len() + aliases.len() + 1,
+            )
+            .then_some(name)
+        })
+        .collect()
+}
+
 fn shader_violations(path: &str, source: &str) -> Vec<String> {
+    let structural_storage = indexed_indirect_storage(source);
     let source = compact(source);
     let owner = matches!(path, "bvh_cull.wgsl" | "candidate_cull.wgsl");
     let mut errors = Vec::new();
     if !owner {
-        if source.contains("DrawIndexedIndirect") || source.contains("indirect_draws") {
+        if source.contains("DrawIndexedIndirect")
+            || source.contains("indirect_draws")
+            || !structural_storage.is_empty()
+        {
             errors.push(format!("{path}: new indirect-array consumer"));
         }
         return errors;
+    }
+    if structural_storage.as_slice() != ["indirect_draws"] {
+        errors.push(format!("{path}: indirect storage ownership changed"));
     }
     // Every occurrence must be the one binding or a recognized scalar store.
     // Taking an address, aliasing the array, or assigning whole records also fails.
@@ -517,6 +661,44 @@ fn indirect_contract_scanner_rejects_new_owners_calls_and_wrong_bound_indices() 
     assert!(!rust_violations(&[Source::fixture(path, "impl Renderer { fn record_spot_shadow_depth() { cull.draw_slot_indirect(&mut pass, 0, None); } }")]).is_empty());
 }
 
+// Regression: exiting a nested block restored stale bindings on the outer pass.
+#[test]
+fn indirect_contract_scanner_tracks_nested_pass_binding_changes_and_local_shadowing() {
+    let path = "render/renderer_dynamic_shadow_passes.rs";
+    let fixture = |nested: &str| {
+        format!(
+            "impl Renderer {{ fn record_spot_shadow_depth() {{
+                pass.set_pipeline(&full.shadow_depth_pipeline);
+                pass.set_index_buffer(full.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                {nested}
+                cull.draw_slot_indirect(&mut pass, 0, None);
+            }} }}"
+        )
+    };
+    for nested in [
+        "{ pass.set_index_buffer(full.index_buffer.slice(4..), wgpu::IndexFormat::Uint32); }",
+        "{ pass.set_pipeline(&other_pipeline); }",
+        "if changed { pass.set_index_buffer(full.index_buffer.slice(4..), wgpu::IndexFormat::Uint32); } else { pass.set_index_buffer(full.index_buffer.slice(..), wgpu::IndexFormat::Uint32); }",
+        "{ let mut pass = encoder.begin_render_pass(&descriptor); cull.draw_slot_indirect(&mut pass, 0, None); }",
+        "{ pass.set_index_buffer(full.index_buffer.slice(4..), wgpu::IndexFormat::Uint32); let mut pass = encoder.begin_render_pass(&descriptor); }",
+    ] {
+        assert!(
+            !rust_violations(&[Source::fixture(path, &fixture(nested))]).is_empty(),
+            "accepted {nested}"
+        );
+    }
+    for nested in [
+        "{ let mut pass = encoder.begin_render_pass(&descriptor); pass.set_pipeline(&other_pipeline); pass.set_index_buffer(other_buffer.slice(..), wgpu::IndexFormat::Uint32); }",
+        "{ let mut pass: RenderPass = encoder.begin_render_pass(&descriptor); pass.set_pipeline(&full.shadow_depth_pipeline); pass.set_index_buffer(full.index_buffer.slice(..), wgpu::IndexFormat::Uint32); cull.draw_slot_indirect(&mut pass, 0, None); }",
+        "{ let (mut pass, other) = pair; pass.set_pipeline(&other_pipeline); }",
+    ] {
+        assert!(
+            rust_violations(&[Source::fixture(path, &fixture(nested))]).is_empty(),
+            "rejected local pass: {nested}"
+        );
+    }
+}
+
 // Regression: source-span columns were treated as bytes after Unicode text.
 #[test]
 fn indirect_contract_scanner_handles_unicode_before_expression() {
@@ -581,6 +763,48 @@ fn indirect_contract_shader_scanner_rejects_computed_stores_and_wrong_leaf_slots
         )
         .is_empty()
     );
+}
+
+// Regression: a renamed record and aliased storage array bypassed owner checks.
+#[test]
+fn indirect_contract_shader_scanner_rejects_renamed_storage_records_and_aliases() {
+    let records = "struct Args { a: u32, b: u32, c: u32, d: i32, e: u32, }
+        alias Record = Args;
+        alias Records = array<Record>;
+        alias Output = Records;
+        @group(0) @binding(4) var<storage, read_write> args: Output;
+        @compute @workgroup_size(1) fn extra() { args[0] = Args(3u, 1u, 0xfffffffcu, 0, 0u); }";
+    assert!(!shader_violations("new_writer.wgsl", records).is_empty());
+    assert!(
+        !shader_violations(
+            "bvh_cull.wgsl",
+            &format!("{}\n{records}", super::CULL_SHADER_SOURCE)
+        )
+        .is_empty()
+    );
+    for source in [
+        records.replace("args: Output", "args: array<Args>"),
+        records.replace("args: Output", "args: array<Args, 4>"),
+        records.replace("d: i32", "d: u32"),
+        records.replace("a: u32", "a: Word") + "\nalias Word = u32;",
+        records.replace("args: Output", "args: Wrapped") + "\nstruct Wrapped { records: Output, }",
+    ] {
+        assert!(
+            !shader_violations("new_writer.wgsl", &source).is_empty(),
+            "accepted {source}"
+        );
+    }
+    for source in [
+        "struct Args { a: u32, b: u32, c: u32, d: i32, } @group(0) @binding(4) var<storage, read_write> args: array<Args>;",
+        "struct Args { a: f32, b: f32, c: f32, d: f32, e: f32, } @group(0) @binding(4) var<storage, read_write> args: array<Args>;",
+        "struct Rect { a: u32, b: u32, c: u32, d: u32, e: u32, } @group(1) @binding(0) var<storage, read> rects: array<Rect>;",
+        "struct Args { a: u32, b: u32, c: u32, d: i32, e: u32, } var<private> args: array<Args, 4>;",
+    ] {
+        assert!(
+            shader_violations("unrelated.wgsl", source).is_empty(),
+            "rejected {source}"
+        );
+    }
 }
 
 #[test]

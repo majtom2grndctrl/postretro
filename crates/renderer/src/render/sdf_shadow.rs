@@ -306,7 +306,7 @@ impl SdfShadowPass {
     /// guarding the multiply on the mode flag.
     pub fn dispatch(
         &self,
-        queue: &wgpu::Queue,
+        queue: &crate::render::uploads::UploadQueue,
         encoder: &mut wgpu::CommandEncoder,
         sdf_atlas: &SdfAtlasResources,
         frame: SdfShadowFrameInputs,

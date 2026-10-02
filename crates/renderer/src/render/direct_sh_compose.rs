@@ -283,7 +283,7 @@ impl DirectShComposeResources {
 
     pub fn dispatch_if_needed(
         &mut self,
-        queue: &wgpu::Queue,
+        queue: &crate::render::uploads::UploadQueue,
         encoder: &mut wgpu::CommandEncoder,
         frame: DirectShComposeFrameInputs<'_>,
     ) {

@@ -46,6 +46,7 @@ mod shadowmask;
 mod smoke;
 mod splash_pass;
 mod ui;
+pub(crate) mod uploads;
 
 #[cfg(test)]
 mod animated_atlas_parity_test;
@@ -172,10 +173,10 @@ pub use sh_streaming::{
     ShComposePassDiagnostics, ShResidencyDrainError, ShResidencySnapshot,
     ShStreamingLiveDiagnostics,
 };
-pub(crate) use sh_streaming::{StagedUploads, StagingPool};
 use sh_volume::{ShVolumeResources, ShVolumeSections};
 use smoke::SmokePass;
 pub use smoke::{SpriteCollectionRegistration, sprite_specular_exponent_is_valid};
+pub(crate) use uploads::{StagedUploads, StagingPool, UploadQueue};
 
 // Cross-crate re-export: these items now live in `postretro_render_cpu`, kept
 // reachable here at their original `render::*` paths.
@@ -236,3 +237,6 @@ pub use sh_volume::DeltaVolumeMeta;
 use renderer_full_init::*;
 use renderer_init_pipelines::*;
 use renderer_init_resources::*;
+
+#[cfg(test)]
+pub(crate) use sh_streaming::UploadOrderSh;

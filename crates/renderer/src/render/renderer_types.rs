@@ -659,7 +659,9 @@ pub(super) fn animated_baked_promotion_weight(
 ///   Loading completion, Running, UI pass, scene render) requires it.
 pub struct Renderer {
     pub(super) device: wgpu::Device,
-    pub(super) queue: wgpu::Queue,
+    pub(super) queue: UploadQueue,
+    #[cfg(test)]
+    pub(super) injected_acquire_failure: bool,
     /// Present surface for a windowed renderer. Offscreen capture deliberately
     /// has no surface and never reaches the present/splash paths.
     pub(super) surface: Option<wgpu::Surface<'static>>,

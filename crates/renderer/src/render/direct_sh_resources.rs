@@ -174,7 +174,11 @@ impl DirectShResources {
         self.dynamic_direct_params_buffer.as_entire_binding()
     }
 
-    pub(super) fn write_dynamic_direct_params(&self, queue: &wgpu::Queue, scale: f32) {
+    pub(super) fn write_dynamic_direct_params(
+        &self,
+        queue: &crate::render::uploads::UploadQueue,
+        scale: f32,
+    ) {
         let bytes = build_dynamic_direct_params_bytes(scale, self.has_direct);
         queue.write_buffer(&self.dynamic_direct_params_buffer, 0, &bytes);
     }
@@ -184,6 +188,8 @@ impl DirectShResources {
     /// slot pool. Keep this small state transition here so all later dynamic
     /// direct updates continue to write the existing binding-16 uniform.
     pub(super) fn enable_streamed_atlas(&mut self, queue: &wgpu::Queue) {
+        // Initial setup precedes frame writes. Pool growth revisits this method,
+        // but must not directly overwrite pending dynamic-direct params.
         if self.has_direct {
             return;
         }

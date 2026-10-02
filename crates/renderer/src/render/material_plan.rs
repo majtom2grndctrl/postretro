@@ -185,7 +185,7 @@ pub(crate) fn build_material_bind_group(
 /// recorded after it, so the change is live on the next presented frame with
 /// no level reload, no bind-group rebuild, and no allocation.
 pub(crate) fn rewrite_material_surface_depth(
-    queue: &wgpu::Queue,
+    queue: &crate::render::uploads::UploadQueue,
     uniform_buffer: &wgpu::Buffer,
     uniform_plan: MaterialUniformPlan,
     quality: SurfaceDepthQuality,

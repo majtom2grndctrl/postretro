@@ -722,7 +722,7 @@ impl AnimatedLightmapResources {
     /// as absent.
     pub fn dispatch(
         &mut self,
-        queue: &wgpu::Queue,
+        queue: &crate::render::uploads::UploadQueue,
         encoder: &mut wgpu::CommandEncoder,
         uniform_bind_group: &wgpu::BindGroup,
         visible: &VisibleCells,

@@ -4,6 +4,8 @@
 
 use std::collections::HashMap;
 
+use super::uploads::UploadQueue;
+
 use super::{SCENE_COLOR_FORMAT, UI_LAYER_FORMAT};
 use postretro_entities::SlotValue;
 use postretro_render_cpu::flash_clamp::ChannelClamp;
@@ -231,7 +233,7 @@ impl ScreenEffectsPass {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn encode_resolve(
         &mut self,
-        queue: &wgpu::Queue,
+        queue: &UploadQueue,
         encoder: &mut wgpu::CommandEncoder,
         swapchain_view: &wgpu::TextureView,
         slot_values: &HashMap<String, SlotValue>,
@@ -277,7 +279,7 @@ impl ScreenEffectsPass {
     pub(super) fn encode_capture_tonemap(
         &self,
         device: &wgpu::Device,
-        queue: &wgpu::Queue,
+        queue: &UploadQueue,
         encoder: &mut wgpu::CommandEncoder,
         width: u32,
         height: u32,

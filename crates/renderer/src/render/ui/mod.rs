@@ -6,6 +6,8 @@
 // the quads with matching painter depths.
 // See: context/lib/ui.md
 
+use crate::render::uploads::UploadQueue;
+
 use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
 
@@ -530,7 +532,7 @@ impl UiPass {
         &mut self,
         font_system: &mut FontSystem,
         device: &wgpu::Device,
-        queue: &wgpu::Queue,
+        queue: &UploadQueue,
         encoder: &mut wgpu::CommandEncoder,
         view: &wgpu::TextureView,
         viewport: [u32; 2],
@@ -554,10 +556,9 @@ impl UiPass {
         );
 
         // Give each batch its OWN region of the instance buffer, sized to the
-        // SUM of all batch instance counts. `queue.write_buffer` is a
-        // queue-timeline op: every staged write lands (last-wins per region)
-        // BEFORE the single submitted command buffer executes. Writing each
-        // batch to offset 0 would therefore have every draw read the LAST
+        // SUM of all batch instance counts. The deferred upload batch lands
+        // every write (last-wins per region) before the submitted draws execute.
+        // Writing each batch to offset 0 would have every draw read the LAST
         // batch's data — recording a draw between writes does not snapshot the
         // buffer, since the writes resolve on the queue timeline, not the
         // command-recording timeline. Disjoint per-batch regions sidestep this.
@@ -590,7 +591,7 @@ impl UiPass {
         let prepared_text_batches = self.text.prepare_text_batches(
             font_system,
             device,
-            queue,
+            queue.raw(),
             TextPrepareInput {
                 viewport,
                 texts,

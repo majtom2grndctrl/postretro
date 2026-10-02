@@ -62,9 +62,9 @@ pub use diagnostics::ShStreamingLiveDiagnostics;
 use diagnostics::{InstallCpuCounters, PoolGrowthCounters};
 use direct_compose::DirectSparseRowUpload;
 use floor::plan_initial_pool_floor;
+pub(crate) use gpu::StagedUploads;
 use gpu::StreamingGpuPools;
 use gpu::{AtlasShape, buffer_with_zeroes, checked_cell_count, sparse_compose_capacity, u32_bytes};
-pub(crate) use gpu::{StagedUploads, StagingPool};
 use install::InstallGpu;
 use install_journal::InstallJournal;
 use ownership::{StoredNode, StoredNodeLayout, derive_dense_node_layout, rewrite_slot};
@@ -268,6 +268,22 @@ impl fmt::Display for ShResidencyDrainError {
 }
 
 impl std::error::Error for ShResidencyDrainError {}
+
+impl From<crate::render::uploads::UploadError> for ShResidencyDrainError {
+    fn from(error: crate::render::uploads::UploadError) -> Self {
+        use crate::render::uploads::UploadError;
+        match error {
+            UploadError::Alignment => Self::GpuCapacity {
+                reason: "streamed buffer upload is not word aligned",
+            },
+            UploadError::Bounds => Self::SlotOverflow,
+            UploadError::TexturePayload => Self::MalformedChunk {
+                cluster_id: 0,
+                reason: "streamed texture upload rows disagree with their payload",
+            },
+        }
+    }
+}
 
 impl ShResidencyDrainError {
     /// Only a submitted replacement that is still fenced is retryable. An
@@ -661,3 +677,6 @@ fn required_compose_epochs(
         },
     ))
 }
+
+#[cfg(test)]
+pub(crate) use gpu::UploadOrderSh;

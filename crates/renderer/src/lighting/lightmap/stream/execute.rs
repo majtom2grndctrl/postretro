@@ -33,7 +33,7 @@ impl LightmapStreamState {
     pub(super) fn execute(
         &mut self,
         device: &wgpu::Device,
-        queue: &wgpu::Queue,
+        queue: &crate::render::uploads::UploadQueue,
         ready: &[PreparedLightmapBlock],
     ) -> Result<Executed, LightmapResidencyDrainError> {
         let plan = self.model.plan();
@@ -138,7 +138,7 @@ impl LightmapStreamState {
 
         if let Some((_, next)) = grown {
             let previous = std::mem::replace(&mut self.textures, next);
-            self.retiring = Some(RetiringPool::after_submitted_work(queue, previous));
+            self.retiring = Some(RetiringPool::after_submitted_work(queue.raw(), previous));
             executed.grew = true;
         }
         Ok(executed)

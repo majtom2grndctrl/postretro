@@ -394,7 +394,7 @@ impl DebugLineRenderer {
 
     pub fn render(
         &self,
-        queue: &wgpu::Queue,
+        queue: &crate::render::uploads::UploadQueue,
         encoder: &mut wgpu::CommandEncoder,
         color_view: &wgpu::TextureView,
         depth_view: &wgpu::TextureView,

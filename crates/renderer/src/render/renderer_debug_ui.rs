@@ -83,11 +83,16 @@ impl Renderer {
         });
 
         for (id, image_delta) in &textures_delta.set {
-            gpu.renderer.update_texture(device, queue, *id, image_delta);
-        }
-        let user_cmd_bufs =
             gpu.renderer
-                .update_buffers(device, queue, &mut encoder, &paint_jobs, &screen_desc);
+                .update_texture(device, queue.raw(), *id, image_delta);
+        }
+        let user_cmd_bufs = gpu.renderer.update_buffers(
+            device,
+            queue.raw(),
+            &mut encoder,
+            &paint_jobs,
+            &screen_desc,
+        );
 
         {
             let pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -112,10 +117,11 @@ impl Renderer {
             gpu.renderer.free_texture(id);
         }
 
-        queue.submit(
+        queue.submit_unbatched(
             user_cmd_bufs
                 .into_iter()
                 .chain(std::iter::once(encoder.finish())),
+            "dev-tools overlay",
         );
         Ok(())
     }

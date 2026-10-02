@@ -285,7 +285,7 @@ impl ComputeCullPipeline {
     pub fn dispatch(
         &mut self,
         device: &wgpu::Device,
-        queue: &wgpu::Queue,
+        queue: &crate::render::uploads::UploadQueue,
         encoder: &mut wgpu::CommandEncoder,
         visible: &postretro_visibility::VisibleCells,
         view_proj: &Mat4,

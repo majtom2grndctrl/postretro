@@ -152,7 +152,7 @@ impl StreamingGpuPools {
         &mut self,
         uploads: StagedUploads,
         device: &wgpu::Device,
-        queue: &wgpu::Queue,
+        queue: &crate::render::uploads::UploadQueue,
     ) {
         let scratch = uploads.submit(&mut self.staging, device, queue);
         if scratch.capacity() <= MAX_RETAINED_UPLOAD_SCRATCH_BYTES {
@@ -299,11 +299,11 @@ impl StreamingGpuPools {
 
     pub(in crate::render::sh_streaming) fn upload_compose_words(
         &self,
-        queue: &wgpu::Queue,
+        queue: &crate::render::uploads::UploadQueue,
         words: &[u32],
     ) {
         let bytes = u32_bytes(words);
-        queue.write_buffer(&self.compose_indirection, 0, &bytes);
+        queue.direct_write_buffer(&self.compose_indirection, 0, &bytes);
     }
 
     pub(in crate::render::sh_streaming) fn upload_changed_compose_words(
@@ -324,7 +324,7 @@ impl StreamingGpuPools {
 
     pub(in crate::render::sh_streaming) fn dispatch_indirect_compose<'a>(
         &mut self,
-        queue: &wgpu::Queue,
+        queue: &crate::render::uploads::UploadQueue,
         encoder: &mut wgpu::CommandEncoder,
         uniform_bind_group: &wgpu::BindGroup,
         rows: &[u32],
@@ -367,7 +367,7 @@ impl StreamingGpuPools {
 
     pub(in crate::render::sh_streaming) fn dispatch_direct_promotion<'a>(
         &mut self,
-        queue: &wgpu::Queue,
+        queue: &crate::render::uploads::UploadQueue,
         encoder: &mut wgpu::CommandEncoder,
         light_term_mask: postretro_render_cpu::frame_uniforms::LightTermMask,
         promotion_override: DirectShDebugOverride,
@@ -392,7 +392,7 @@ impl StreamingGpuPools {
     #[allow(clippy::too_many_arguments)]
     pub(in crate::render::sh_streaming) fn dispatch_direct_animated<'a>(
         &mut self,
-        queue: &wgpu::Queue,
+        queue: &crate::render::uploads::UploadQueue,
         encoder: &mut wgpu::CommandEncoder,
         uniform_bind_group: &wgpu::BindGroup,
         animated_override: AnimatedDirectShDebugOverride,
@@ -471,7 +471,7 @@ impl StreamingGpuPools {
 
     pub(in crate::render::sh_streaming) fn clear_all_indirect_sparse_rows(
         &self,
-        queue: &wgpu::Queue,
+        queue: &crate::render::uploads::UploadQueue,
     ) {
         self.indirect_compose.clear_all_row_pairs(queue);
     }
@@ -492,7 +492,7 @@ impl StreamingGpuPools {
 
     pub(in crate::render::sh_streaming) fn clear_all_direct_sparse_rows(
         &self,
-        queue: &wgpu::Queue,
+        queue: &crate::render::uploads::UploadQueue,
     ) -> Result<(), ShResidencyDrainError> {
         let Some(direct) = self.direct_compose.as_ref() else {
             return Ok(());

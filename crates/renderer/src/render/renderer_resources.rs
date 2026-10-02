@@ -46,9 +46,10 @@ impl Renderer {
         let full = full
             .as_mut()
             .expect("renderer full-init must complete before full-ready paths run");
+        queue.assert_empty("smoke collection install");
         full.smoke_pass.register_collection(
             device,
-            queue,
+            queue.raw(),
             collection_id,
             SpriteCollectionAssetSource {
                 asset,
@@ -62,6 +63,7 @@ impl Renderer {
     /// Release all level-owned GPU resources while keeping the device, queue,
     /// surface, UI, and window-facing state alive for the no-level Frontend.
     pub fn release_level_resources(&mut self) {
+        self.queue.assert_empty("level unload");
         let empty_keys = TextureCacheKeysSection::default();
         let empty_texture_names: Vec<String> = Vec::new();
         let empty_materials: Vec<Material> = Vec::new();
@@ -141,6 +143,7 @@ impl Renderer {
             full,
             ..
         } = self;
+        let _installation = queue.installation();
         let full = full
             .as_mut()
             .expect("renderer full-init must complete before full-ready paths run");
@@ -447,7 +450,7 @@ impl Renderer {
         let mut sh_allocation_ledger = sh_residency::ShAllocationLedger::new();
         full.sh_volume_resources = ShVolumeResources::new(
             device,
-            queue,
+            queue.raw(),
             ShVolumeSections {
                 sh: geometry.sh_volume,
                 stream_base_present: matches!(
@@ -483,7 +486,7 @@ impl Renderer {
                     .and_then(|mut state| {
                         state.initialize_gpu(
                             device,
-                            queue,
+                            queue.raw(),
                             manifest,
                             full.probe_occlusion_enabled,
                             &mut full.sh_volume_resources,
@@ -551,7 +554,7 @@ impl Renderer {
             promoted_cube_cache,
         );
 
-        full.sdf_atlas_resources = SdfAtlasResources::new(device, queue, geometry.sdf_atlas);
+        full.sdf_atlas_resources = SdfAtlasResources::new(device, queue.raw(), geometry.sdf_atlas);
         full.lightmap_mode = geometry.lightmap_mode;
         let compose_sh_volume = geometry
             .sh_volume
@@ -673,7 +676,7 @@ impl Renderer {
         );
         full.lightmap_resources = LightmapResources::new(
             device,
-            queue,
+            queue.raw(),
             geometry.lightmap,
             geometry.shadowmask_atlas,
             &static_pool,

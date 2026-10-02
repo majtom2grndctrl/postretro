@@ -10,9 +10,10 @@ use postretro_render_cpu::flash_limiter::{FLASH_LIMITER_SLOT, LimiterFrameInput}
 use postretro_render_cpu::render_extent::{Extent, scene_extent};
 use postretro_render_cpu::screen_effects::CoversHud;
 
-use super::gpu_test_harness::{GpuCtx, Readback, read_texture_rgba8, try_init_gpu};
+use super::gpu_test_harness::{GpuCtx, Readback, read_texture_rgba8_staged, try_init_gpu};
 use super::screen_effects::ScreenEffectsPass;
 use super::ui::{UiComposition, UiImageRegistry, UiInstance, UiPass, UiText, tree};
+use super::uploads::UploadQueue;
 use super::{SCENE_COLOR_FORMAT, UI_LAYER_FORMAT};
 
 const TARGET_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
@@ -52,6 +53,7 @@ fn assert_rgb_near(actual: [u8; 4], expected: [u8; 3], tolerance: u8, what: &str
 
 struct Fixture {
     ctx: GpuCtx,
+    uploads: UploadQueue,
     pass: ScreenEffectsPass,
     surface: Extent,
     divisor: u32,
@@ -61,8 +63,10 @@ impl Fixture {
     fn new(ctx: GpuCtx, surface: Extent, divisor: u32) -> Self {
         let scene = scene_extent(surface, divisor);
         let pass = ScreenEffectsPass::new(&ctx.device, scene, surface, TARGET_FORMAT);
+        let uploads = UploadQueue::new(&ctx.device, ctx.queue.clone(), true);
         Self {
             ctx,
+            uploads,
             pass,
             surface,
             divisor,
@@ -134,8 +138,9 @@ impl Fixture {
             .ctx
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        let before = self.uploads.counts();
         self.pass.encode_resolve(
-            &self.ctx.queue,
+            &self.uploads,
             &mut encoder,
             &view,
             slots,
@@ -143,8 +148,10 @@ impl Fixture {
             self.divisor,
             None,
         );
-        read_texture_rgba8(
+        assert_eq!(self.uploads.counts().writes, before.writes + 1);
+        read_texture_rgba8_staged(
             &self.ctx,
+            &self.uploads,
             &target,
             self.surface.width,
             self.surface.height,
@@ -171,17 +178,23 @@ fn draw_ui(
     let mut encoder = ctx
         .device
         .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+    let uploads = UploadQueue::new(&ctx.device, ctx.queue.clone(), true);
     pass.encode(
         &mut font_system,
         &ctx.device,
-        &ctx.queue,
+        &uploads,
         &mut encoder,
         view,
         [viewport.width, viewport.height],
         load,
         &composition,
     );
-    ctx.queue.submit([encoder.finish()]);
+    assert!(uploads.counts().writes > 0);
+    assert_eq!(uploads.counts().direct_writes, 0);
+    uploads.submit([encoder.finish()]);
+    assert_eq!(uploads.counts().batches, 1);
+    assert_eq!(uploads.counts().submits, 1);
+    uploads.assert_empty("UI composite test submission");
     pass.mark_submitted();
 }
 

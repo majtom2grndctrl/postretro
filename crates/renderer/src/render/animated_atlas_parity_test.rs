@@ -574,8 +574,9 @@ fn run(
     });
 
     let mut encoder = device.create_command_encoder(&Default::default());
+    let uploads = crate::render::uploads::UploadQueue::new(device, ctx.queue.clone(), true);
     resources.dispatch(
-        &ctx.queue,
+        &uploads,
         &mut encoder,
         &uniform_bind_group,
         &VisibleCells::DrawAll,
@@ -618,7 +619,7 @@ fn run(
             depth_or_array_layers: 1,
         },
     );
-    ctx.queue.submit([encoder.finish()]);
+    uploads.submit([encoder.finish()]);
 
     let slice = readback.slice(..);
     let (sender, receiver) = std::sync::mpsc::channel();

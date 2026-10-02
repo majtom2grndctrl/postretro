@@ -96,6 +96,36 @@ mod tests {
         );
     }
 
+    // Regression: frontend Surface Depth writes preceded an empty-only reload commit.
+    #[test]
+    fn frontend_reload_commits_before_option_uploads_without_reordering_camera_setup() {
+        let (start, end) = frontend_logic_range();
+        let body = &MAIN[start..end];
+        let commands = position(body, "self.dispatch_system_commands();", 0);
+        let reload = position(body, "self.poll_staged_manifest_results();", 0);
+        let options = position(body, OPTIONS, 0);
+        let commit = position(body, COMMIT, 0);
+        let focus = position(body, "self.reconcile_ui_focus();", commit);
+        let pose = position(
+            body,
+            "self.apply_frontend_menu_camera_pose_if_present();",
+            commit,
+        );
+        assert!(
+            commands < reload
+                && reload < options
+                && options < commit
+                && commit < focus
+                && focus < pose,
+            "frontend order must be commands < reload < options < extents < focus < camera: \
+             reload requires the completed frame's empty upload boundary"
+        );
+        assert_eq!(
+            body.matches("self.poll_staged_manifest_results();").count(),
+            1
+        );
+    }
+
     // P1, P3–P5: window events only record; nothing rebuilds inside a handler.
     #[test]
     fn window_events_record_size_and_scale_without_rebuilding() {

@@ -187,7 +187,7 @@ impl ShResidencyState {
     )]
     pub(in crate::render) fn dispatch_direct_compose<'a>(
         &mut self,
-        queue: &wgpu::Queue,
+        queue: &crate::render::uploads::UploadQueue,
         encoder: &mut wgpu::CommandEncoder,
         uniform_bind_group: &wgpu::BindGroup,
         _active: bool,
@@ -291,7 +291,7 @@ impl ShResidencyState {
     /// next drain promotes these completed compose writes.
     pub(in crate::render) fn dispatch_indirect_compose<'a>(
         &mut self,
-        queue: &wgpu::Queue,
+        queue: &crate::render::uploads::UploadQueue,
         encoder: &mut wgpu::CommandEncoder,
         uniform_bind_group: &wgpu::BindGroup,
         _active: bool,

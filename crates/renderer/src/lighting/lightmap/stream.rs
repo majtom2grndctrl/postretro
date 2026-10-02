@@ -235,7 +235,7 @@ impl LightmapStreamState {
     pub(crate) fn drain(
         &mut self,
         device: &wgpu::Device,
-        queue: &wgpu::Queue,
+        queue: &crate::render::uploads::UploadQueue,
         batch: LightmapDrainBatch,
     ) -> Result<(LightmapDrainOutcome, DrainEffects), LightmapResidencyDrainError> {
         batch

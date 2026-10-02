@@ -718,7 +718,7 @@ impl KinematicBrushPass {
     pub fn upload_instances(
         &mut self,
         device: &wgpu::Device,
-        queue: &wgpu::Queue,
+        queue: &crate::render::uploads::UploadQueue,
         beauty_instances: &[KinematicMoverInstance],
         shadow_instances: &[KinematicMoverInstance],
     ) {
@@ -784,7 +784,7 @@ impl KinematicBrushPass {
     #[allow(clippy::too_many_arguments)] // Mirrors the fixed group-2 light uniform fields.
     pub fn write_light_params(
         &self,
-        queue: &wgpu::Queue,
+        queue: &crate::render::uploads::UploadQueue,
         light_count: u32,
         dynamic_light_count: u32,
         scripted_light_count: u32,

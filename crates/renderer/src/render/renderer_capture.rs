@@ -102,6 +102,9 @@ impl Renderer {
             self.queue.submit(std::iter::once(encoder.finish()));
             self.complete_capture_measurement_submission()
         })();
+        if frame.is_ok() {
+            self.queue.complete_frame();
+        }
         Ok(ShDrainFrameResult {
             outcome,
             compose_submitted,
@@ -216,7 +219,15 @@ impl Renderer {
                 width,
                 height,
             );
-            let pixels = self.read_texture_rgba8(&capture_color, width, height, encoder)?;
+            self.queue.submit(std::iter::once(encoder.finish()));
+            self.queue.assert_empty("PNG capture scene submit");
+            let readback_encoder =
+                self.device
+                    .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                        label: Some("PNG Readback Encoder"),
+                    });
+            let pixels =
+                self.read_texture_rgba8(&capture_color, width, height, readback_encoder)?;
             Ok((pixels, compose_succeeded))
         })();
         // The readback helper owns submission. A successful return therefore
@@ -226,6 +237,9 @@ impl Renderer {
             .as_ref()
             .is_ok_and(|(_, compose_succeeded)| *compose_succeeded);
         let frame = frame.map(|(pixels, _)| pixels);
+        if frame.is_ok() {
+            self.queue.complete_frame();
+        }
         Ok(ShDrainFrameResult {
             outcome,
             compose_submitted,

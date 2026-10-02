@@ -7,7 +7,7 @@ impl ShResidencyState {
     pub(in crate::render) fn drain(
         &mut self,
         device: &wgpu::Device,
-        queue: &wgpu::Queue,
+        queue: &crate::render::uploads::UploadQueue,
         sh: &mut crate::render::sh_volume::ShVolumeResources,
         uniform_bind_group_layout: &wgpu::BindGroupLayout,
         selection_weights: &wgpu::Buffer,
@@ -134,7 +134,7 @@ impl ShResidencyState {
     fn apply_targets(
         &mut self,
         device: &wgpu::Device,
-        queue: &wgpu::Queue,
+        queue: &crate::render::uploads::UploadQueue,
         batch: &ShDrainBatch,
     ) -> Result<(), ShResidencyDrainError> {
         let (new_generation, next_targets) = self.plan_target_transition(batch)?;
@@ -216,7 +216,7 @@ impl ShResidencyState {
     fn clear_session(
         &mut self,
         device: &wgpu::Device,
-        queue: &wgpu::Queue,
+        queue: &crate::render::uploads::UploadQueue,
     ) -> Result<(), ShResidencyDrainError> {
         self.clear_session_mirrors();
         let grid = self.grid_dimensions();

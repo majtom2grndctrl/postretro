@@ -12,11 +12,17 @@ use crate::bake_control::BakeControl;
 use crate::bvh_build::BvhPrimitive;
 use crate::cache::{CacheKey, StageCache};
 use crate::geometry::GeometryResult;
-use crate::light_namespaces::{AlphaLightsNs, StaticBakedLights};
+use crate::light_namespaces::{AlphaLightsNs, StaticBakedEntry, StaticBakedLights};
 use crate::lightmap_bake::{self, LightmapBakeOutput, LightmapConfig, PreparedAtlas};
 use crate::lightmap_layer::{self, SharedAtlas};
-use crate::map_data::{MapLight, ShadowType};
+use crate::map_data::ShadowType;
 use crate::shadowmask_bake;
+
+mod window;
+
+#[cfg(test)]
+pub(crate) use window::WindowProbe;
+use window::{LIGHTMAP_PARTITION_WINDOW, PartitionSource};
 
 pub(crate) struct FusedLightingOutput {
     pub lightmap: LightmapBakeOutput,
@@ -95,6 +101,39 @@ pub(super) fn log_predicted_peak(prepared: &PreparedAtlas, uncompressed_irradian
     );
 }
 
+/// How the fused walk windows its (layer, light) partitions. Production uses
+/// [`LIGHTMAP_PARTITION_WINDOW`]; tests pick a size and attach probes.
+#[derive(Clone)]
+pub(crate) struct PartitionWindow {
+    pub(crate) size: usize,
+    #[cfg(test)]
+    pub(crate) probe: Option<WindowProbe>,
+    #[cfg(test)]
+    pub(crate) hooks: PartitionHooks,
+}
+
+impl Default for PartitionWindow {
+    fn default() -> Self {
+        Self {
+            size: LIGHTMAP_PARTITION_WINDOW,
+            #[cfg(test)]
+            probe: None,
+            #[cfg(test)]
+            hooks: PartitionHooks::default(),
+        }
+    }
+}
+
+/// Test holds at a partition's chart bake and cache I/O. Each receives the
+/// light's position in the stage's layer-light list and the target layer.
+#[cfg(test)]
+#[derive(Clone, Default)]
+pub(crate) struct PartitionHooks {
+    pub(crate) before_chart: Option<std::sync::Arc<dyn Fn(usize, u32, usize) + Send + Sync>>,
+    pub(crate) before_get: Option<std::sync::Arc<dyn Fn(usize, u32) + Send + Sync>>,
+    pub(crate) before_put: Option<std::sync::Arc<dyn Fn(usize, u32) + Send + Sync>>,
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn bake_fused_prepared(
     args: &Args,
@@ -109,6 +148,39 @@ pub(crate) fn bake_fused_prepared(
     primitives: &[BvhPrimitive],
     config: &LightmapConfig,
     prepared: PreparedAtlas,
+) -> anyhow::Result<FusedLightingOutput> {
+    bake_fused_windowed(
+        args,
+        stage_cache,
+        lightmap_control,
+        shadowmask_control,
+        geometry,
+        static_lights,
+        alpha_lights,
+        shadow_selection,
+        bvh,
+        primitives,
+        config,
+        prepared,
+        &PartitionWindow::default(),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn bake_fused_windowed(
+    args: &Args,
+    stage_cache: Option<&StageCache>,
+    lightmap_control: &BakeControl,
+    shadowmask_control: &BakeControl,
+    geometry: &mut GeometryResult,
+    static_lights: &StaticBakedLights<'_>,
+    alpha_lights: &AlphaLightsNs<'_>,
+    shadow_selection: Option<&EntityShadowLightsSection>,
+    bvh: &Bvh<f32, 3>,
+    primitives: &[BvhPrimitive],
+    config: &LightmapConfig,
+    prepared: PreparedAtlas,
+    window: &PartitionWindow,
 ) -> anyhow::Result<FusedLightingOutput> {
     let density = config.lightmap_density;
     let shared = SharedAtlas {
@@ -236,48 +308,74 @@ pub(crate) fn bake_fused_prepared(
             &prepared.layout,
             config.uncompressed_irradiance,
         );
-        let mut completed_work = 0usize;
-        for target_layer in 0..prepared.layer_count {
-            let target_chart_count = prepared
-                .placements
-                .iter()
-                .filter(|placement| placement.layer == target_layer)
-                .count();
-            let mut plane = if layer_lights.is_empty() {
-                lightmap_layer::empty_composite(prepared.atlas_width, prepared.atlas_height)
-            } else {
-                let mut accumulator = lightmap_layer::IncrementalLayerAccumulator::for_atlas_layer(
-                    &shared,
-                    target_layer,
-                );
-                let hash_offset = target_layer as usize * layer_lights.len();
-                for (entry, input_hash) in layer_lights
-                    .iter()
-                    .zip(&layer_input_hashes[hash_offset..hash_offset + layer_lights.len()])
-                {
-                    let partition = load_or_bake_partition(
-                        args,
-                        stage_cache,
-                        lightmap_control,
-                        geometry,
-                        bvh,
-                        primitives,
-                        &shared,
-                        entry.light,
-                        input_hash,
-                        target_layer,
-                        target_chart_count,
-                    );
-                    completed_work = completed_work.saturating_add(target_chart_count);
+        if layer_lights.is_empty() {
+            for target_layer in 0..prepared.layer_count {
+                let mut plane =
+                    lightmap_layer::empty_composite(prepared.atlas_width, prepared.atlas_height);
+                plane.dilate();
+                builder.push_layer(target_layer, &plane);
+            }
+        } else {
+            // Items run layer-major in global light order, the fold order
+            // `IncrementalLayerAccumulator::fold_partition` requires. One layer
+            // plane is live: the consumer closes a layer when the first item of
+            // the next one arrives.
+            let items: Vec<(u32, usize)> = (0..prepared.layer_count)
+                .flat_map(|layer| (0..layer_lights.len()).map(move |light| (layer, light)))
+                .collect();
+            let source = LayerPartitions::new(
+                args,
+                stage_cache,
+                lightmap_control,
+                geometry,
+                bvh,
+                primitives,
+                &shared,
+                &layer_lights,
+                &layer_input_hashes,
+                &items,
+                window,
+            );
+            let mut open: Option<(u32, lightmap_layer::IncrementalLayerAccumulator)> = None;
+            let mut close_layer =
+                |(layer, accumulator): (u32, lightmap_layer::IncrementalLayerAccumulator)| {
+                    let mut plane = accumulator.finish();
+                    plane.dilate();
+                    builder.push_layer(layer, &plane);
+                };
+            window::consume_in_order(
+                &source,
+                lightmap_control.governor(),
+                items.len(),
+                window.size,
+                |item, partition| {
+                    let (layer, light) = items[item];
+                    if open
+                        .as_ref()
+                        .is_none_or(|(open_layer, _)| *open_layer != layer)
+                    {
+                        if let Some(done) = open.take() {
+                            close_layer(done);
+                        }
+                        open = Some((
+                            layer,
+                            lightmap_layer::IncrementalLayerAccumulator::for_atlas_layer(
+                                &shared, layer,
+                            ),
+                        ));
+                    }
+                    let entry = layer_lights[light];
+                    let (_, accumulator) = open.as_mut().expect("a layer accumulator is open");
                     accumulator.fold_partition(entry.light, &partition, &shared);
                     shadowmask.consume_partition(entry.source_index, &partition);
-                }
-                accumulator.finish()
-            };
-            plane.dilate();
-            builder.push_layer(target_layer, &plane);
+                },
+                #[cfg(test)]
+                window.probe.clone(),
+            );
+            if let Some(done) = open.take() {
+                close_layer(done);
+            }
         }
-        debug_assert_eq!(completed_work, total);
         builder.finish()
     };
 
@@ -285,38 +383,39 @@ pub(crate) fn bake_fused_prepared(
     // selected partitions. They are read/baked once here and never by a later
     // pipeline stage.
     if !compose_lightmap {
-        let mut completed_work = 0usize;
-        for target_layer in 0..prepared.layer_count {
-            let target_chart_count = prepared
-                .placements
-                .iter()
-                .filter(|placement| placement.layer == target_layer)
-                .count();
-            let hash_offset = target_layer as usize * layer_lights.len();
-            for (entry, input_hash) in layer_lights
-                .iter()
-                .zip(&layer_input_hashes[hash_offset..hash_offset + layer_lights.len()])
-            {
-                if !shadowmask.needs_source(entry.source_index) {
-                    continue;
-                }
-                let partition = load_or_bake_partition(
-                    args,
-                    stage_cache,
-                    lightmap_control,
-                    geometry,
-                    bvh,
-                    primitives,
-                    &shared,
-                    entry.light,
-                    input_hash,
-                    target_layer,
-                    target_chart_count,
-                );
-                completed_work = completed_work.saturating_add(target_chart_count);
-                shadowmask.consume_partition(entry.source_index, &partition);
-            }
-        }
+        let items: Vec<(u32, usize)> = (0..prepared.layer_count)
+            .flat_map(|layer| (0..layer_lights.len()).map(move |light| (layer, light)))
+            .filter(|&(_, light)| shadowmask.needs_source(layer_lights[light].source_index))
+            .collect();
+        let source = LayerPartitions::new(
+            args,
+            stage_cache,
+            lightmap_control,
+            geometry,
+            bvh,
+            primitives,
+            &shared,
+            &layer_lights,
+            &layer_input_hashes,
+            &items,
+            window,
+        );
+        let completed_work: usize = items
+            .iter()
+            .map(|&(layer, _)| source.layer_charts[layer as usize].len())
+            .sum();
+        window::consume_in_order(
+            &source,
+            lightmap_control.governor(),
+            items.len(),
+            window.size,
+            |item, partition| {
+                let (_, light) = items[item];
+                shadowmask.consume_partition(layer_lights[light].source_index, &partition);
+            },
+            #[cfg(test)]
+            window.probe.clone(),
+        );
         if completed_work < total {
             lightmap_control.advance(total - completed_work);
         }
@@ -348,67 +447,151 @@ pub(crate) fn bake_fused_prepared(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
-fn load_or_bake_partition(
-    args: &Args,
-    cache: Option<&StageCache>,
-    control: &BakeControl,
-    geometry: &GeometryResult,
-    bvh: &Bvh<f32, 3>,
-    primitives: &[BvhPrimitive],
-    shared: &SharedAtlas<'_>,
-    light: &MapLight,
-    input_hash: &[u8; 32],
-    target_layer: u32,
-    target_chart_count: usize,
-) -> lightmap_layer::LightmapLayer {
-    let layer_key = CacheKey::new(
-        "lightmap_layer",
-        lightmap_layer::LAYER_FORMAT_VERSION,
-        input_hash,
-    );
-    let cached_partition = cache
-        .and_then(|cache| cache.get(&layer_key))
-        .and_then(|bytes| lightmap_layer::LightmapLayer::from_bytes(&bytes))
-        .and_then(|partition| {
-            match lightmap_layer::validate_layer_partition(&partition, shared, target_layer) {
-                Ok(()) => Some(partition),
-                Err(reason) => {
-                    log::warn!(
-                        "[Compiler] lightmap_layer cache entry does not match target layer {target_layer} ({reason}), re-baking"
-                    );
-                    None
+/// The fused walk's partitions: one (layer, light) per item, loaded from or
+/// written to the per-light layer cache.
+struct LayerPartitions<'a> {
+    args: &'a Args,
+    cache: Option<&'a StageCache>,
+    control: &'a BakeControl,
+    geometry: &'a GeometryResult,
+    bvh: &'a Bvh<f32, 3>,
+    primitives: &'a [BvhPrimitive],
+    shared: &'a SharedAtlas<'a>,
+    layer_lights: &'a [&'a StaticBakedEntry<'a>],
+    layer_input_hashes: &'a [[u8; 32]],
+    items: &'a [(u32, usize)],
+    /// Each bake layer's charts in placement order, built once.
+    layer_charts: Vec<Vec<usize>>,
+    #[cfg(test)]
+    hooks: PartitionHooks,
+}
+
+impl<'a> LayerPartitions<'a> {
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        args: &'a Args,
+        cache: Option<&'a StageCache>,
+        control: &'a BakeControl,
+        geometry: &'a GeometryResult,
+        bvh: &'a Bvh<f32, 3>,
+        primitives: &'a [BvhPrimitive],
+        shared: &'a SharedAtlas<'a>,
+        layer_lights: &'a [&'a StaticBakedEntry<'a>],
+        layer_input_hashes: &'a [[u8; 32]],
+        items: &'a [(u32, usize)],
+        #[cfg_attr(not(test), allow(unused_variables))] window: &PartitionWindow,
+    ) -> Self {
+        let mut layer_charts = vec![Vec::new(); lightmap_layer::atlas_layer_count(shared) as usize];
+        for (face_idx, placement) in shared.placements.iter().enumerate() {
+            layer_charts[placement.layer as usize].push(face_idx);
+        }
+        Self {
+            args,
+            cache,
+            control,
+            geometry,
+            bvh,
+            primitives,
+            shared,
+            layer_lights,
+            layer_input_hashes,
+            items,
+            layer_charts,
+            #[cfg(test)]
+            hooks: window.hooks.clone(),
+        }
+    }
+
+    fn key(&self, item: usize) -> CacheKey {
+        let (layer, light) = self.items[item];
+        let hash = &self.layer_input_hashes[layer as usize * self.layer_lights.len() + light];
+        CacheKey::new("lightmap_layer", lightmap_layer::LAYER_FORMAT_VERSION, hash)
+    }
+}
+
+impl PartitionSource for LayerPartitions<'_> {
+    fn load(&self, item: usize) -> Option<lightmap_layer::LightmapLayer> {
+        let cache = self.cache?;
+        let (target_layer, _light) = self.items[item];
+        #[cfg(test)]
+        if let Some(hook) = &self.hooks.before_get {
+            hook(_light, target_layer);
+        }
+        let partition = cache
+            .get(&self.key(item))
+            .and_then(|bytes| lightmap_layer::LightmapLayer::from_bytes(&bytes))
+            .and_then(|partition| {
+                match lightmap_layer::validate_layer_partition(
+                    &partition,
+                    self.shared,
+                    target_layer,
+                ) {
+                    Ok(()) => Some(partition),
+                    Err(reason) => {
+                        log::warn!(
+                            "[Compiler] lightmap_layer cache entry does not match target layer {target_layer} ({reason}), re-baking"
+                        );
+                        None
+                    }
                 }
-            }
-        });
-    match cached_partition {
-        Some(partition) => {
-            if args.verbose {
-                log::info!("[cache] lightmap_layer hit");
-            }
-            control.governor().checkpoint();
-            control.advance(target_chart_count);
-            partition
-        }
-        None => {
-            if args.verbose && cache.is_some() {
-                log::info!("[cache] lightmap_layer miss");
-            }
-            let partition = lightmap_layer::bake_light_layer_controlled(
-                light,
-                shared,
-                bvh,
-                primitives,
-                geometry,
-                target_layer,
-                args.soft_shadow_samples,
-                control,
+            });
+        if self.args.verbose {
+            log::info!(
+                "[cache] lightmap_layer {}",
+                if partition.is_some() { "hit" } else { "miss" }
             );
-            if let Some(cache) = cache {
-                cache.put(&layer_key, &partition.to_bytes());
-            }
-            partition
         }
+        if partition.is_some() {
+            self.control
+                .advance(self.layer_charts[target_layer as usize].len());
+        }
+        partition
+    }
+
+    fn charts(&self, item: usize) -> &[usize] {
+        &self.layer_charts[self.items[item].0 as usize]
+    }
+
+    fn bake_chart(&self, item: usize, chart: usize) -> Vec<lightmap_layer::LayerTexel> {
+        let (_layer, light) = self.items[item];
+        #[cfg(test)]
+        if let Some(hook) = &self.hooks.before_chart {
+            hook(light, _layer, chart);
+        }
+        lightmap_layer::bake_light_layer_chart_controlled(
+            self.layer_lights[light].light,
+            self.shared,
+            chart,
+            self.bvh,
+            self.primitives,
+            self.geometry,
+            self.args.soft_shadow_samples,
+            self.control,
+        )
+    }
+
+    fn finish(
+        &self,
+        item: usize,
+        mut texels: Vec<lightmap_layer::LayerTexel>,
+    ) -> lightmap_layer::LightmapLayer {
+        let (target_layer, _light) = self.items[item];
+        texels.sort_unstable_by_key(|texel| texel.idx);
+        let partition = lightmap_layer::LightmapLayer {
+            atlas_width: self.shared.atlas_width,
+            atlas_height: self.shared.atlas_height,
+            layer_count: lightmap_layer::atlas_layer_count(self.shared),
+            target_layer,
+            texels,
+        };
+        if let Some(cache) = self.cache {
+            #[cfg(test)]
+            if let Some(hook) = &self.hooks.before_put {
+                hook(_light, target_layer);
+            }
+            cache.put(&self.key(item), &partition.to_bytes());
+        }
+        partition
     }
 }
 
@@ -428,7 +611,7 @@ mod tests {
     use crate::bvh_build::build_bvh;
     use crate::geometry::FaceIndexRange;
     use crate::governor::Governor;
-    use crate::map_data::{FalloffModel, LightType};
+    use crate::map_data::{FalloffModel, LightType, MapLight};
     use crate::reporter::StageProgress;
 
     fn fresh_cache_dir(label: &str) -> std::path::PathBuf {
@@ -842,31 +1025,33 @@ mod tests {
             assert_eq!(warm_miss.1, reference.1, "warm miss shadowmask mismatch");
             warm_miss_logs.assert_logged_once(Level::Info, "[cache] shadowmask_atlas miss");
             warm_miss_logs.assert_logged_once(Level::Info, "[cache] lightmap_section miss");
-            let warm_miss_records = warm_miss_logs.records();
+            // Partition loads run on Rayon workers, where log capture does not
+            // reach, so partition counts come from the cache itself.
+            let layers = cache.test_access("lightmap_layer");
             assert_eq!(
-                warm_miss_records
-                    .iter()
-                    .filter(|record| record.message.contains("[cache] lightmap_layer miss"))
-                    .count(),
+                layers.read_attempts - layers.read_hits,
                 expected_partitions,
                 "an empty warm cache must bake each light/layer partition exactly once"
             );
-            assert!(
-                warm_miss_records
-                    .iter()
-                    .all(|record| !record.message.contains("[cache] lightmap_layer hit")),
+            assert_eq!(
+                layers.read_hits, 0,
                 "an empty warm cache cannot load a lightmap partition"
             );
             drop(warm_miss_logs);
+            cache.clear_test_accesses();
 
             let no_edit_logs = LogCapture::start();
             let warm_hit = fused_outputs(&args, Some(&cache), &lights, &initial_selection, &config);
             assert_eq!(warm_hit, warm_miss, "warm hit must preserve exact bytes");
             no_edit_logs.assert_logged_once(Level::Info, "[cache] shadowmask_atlas hit");
             no_edit_logs.assert_logged_once(Level::Info, "[cache] lightmap_section hit");
-            no_edit_logs.assert_not_logged(Level::Info, "[cache] lightmap_layer hit");
-            no_edit_logs.assert_not_logged(Level::Info, "[cache] lightmap_layer miss");
+            assert_eq!(
+                cache.test_access("lightmap_layer").read_attempts,
+                0,
+                "both memo hits must read no lightmap partition"
+            );
             drop(no_edit_logs);
+            cache.clear_test_accesses();
 
             let mut one_light_edit = lights.clone();
             one_light_edit[2].intensity = 0.875;
@@ -883,15 +1068,9 @@ mod tests {
             assert_eq!(edited.1, edit_reference.1, "warm partition-miss mismatch");
             edit_logs.assert_logged_once(Level::Info, "[cache] shadowmask_atlas hit");
             edit_logs.assert_logged_once(Level::Info, "[cache] lightmap_section miss");
-            let edit_records = edit_logs.records();
-            let layer_hits = edit_records
-                .iter()
-                .filter(|record| record.message.contains("[cache] lightmap_layer hit"))
-                .count();
-            let layer_misses = edit_records
-                .iter()
-                .filter(|record| record.message.contains("[cache] lightmap_layer miss"))
-                .count();
+            let layers = cache.test_access("lightmap_layer");
+            let layer_hits = layers.read_hits;
+            let layer_misses = layers.read_attempts - layers.read_hits;
             assert_eq!(
                 layer_hits,
                 (lights.len() - 1) * edited.2 as usize,
@@ -899,6 +1078,7 @@ mod tests {
             );
             assert_eq!(layer_misses, edited.2 as usize);
             drop(edit_logs);
+            cache.clear_test_accesses();
 
             let edited_reference = reference_outputs(&lights, &edited_selection, &config);
             let selection_logs = LogCapture::start();
@@ -915,15 +1095,12 @@ mod tests {
             assert_two_selected_channels_overlap_in_block_one(&selection_only.0, &selection_only.1);
             selection_logs.assert_logged_once(Level::Info, "[cache] shadowmask_atlas miss");
             selection_logs.assert_logged_once(Level::Info, "[cache] lightmap_section hit");
-            selection_logs.assert_not_logged(Level::Info, "[cache] lightmap_layer miss");
-            let layer_hits = selection_logs
-                .records()
-                .into_iter()
-                .filter(|record| {
-                    record.level == Level::Info
-                        && record.message.contains("[cache] lightmap_layer hit")
-                })
-                .count();
+            let layers = cache.test_access("lightmap_layer");
+            assert_eq!(
+                layers.read_attempts, layers.read_hits,
+                "a selection-only edit must miss no lightmap partition"
+            );
+            let layer_hits = layers.read_hits;
             assert_eq!(
                 layer_hits,
                 initial_selection.light_indices.len() * selection_only.2 as usize,
@@ -1299,4 +1476,6 @@ mod tests {
         assert_eq!(alone.direction, shifted.direction);
         assert_eq!(alone_mask, shifted_mask, "shadowmask moved with the chart");
     }
+
+    mod window_tests;
 }

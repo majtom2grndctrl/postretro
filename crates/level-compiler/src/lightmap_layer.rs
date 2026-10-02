@@ -240,8 +240,8 @@ pub struct SharedAtlas<'a> {
 
 /// One global atlas layer's in-progress, ordered light fold.
 ///
-/// The production warm path retains only this one atlas plane plus one
-/// light/layer cache partition at a time. `weighted_dir` deliberately stays
+/// The fused walk retains only this one atlas plane plus the partitions its
+/// light window holds (`lightmap_stage::window`). `weighted_dir` deliberately stays
 /// separate from the finished direction buffer so normalization still occurs
 /// once, after the complete global-light-order fold.
 pub struct IncrementalLayerAccumulator {

@@ -690,6 +690,27 @@ pub(crate) fn light_texel_contribution_and_visibility(
     area_sample_count: u32,
     trace: impl Fn(Vec3, Vec3) -> bool,
 ) -> (Vec3, Vec3, Option<f32>) {
+    light_texel_contribution_and_visibility_with(
+        light,
+        world_p,
+        surface_normal,
+        seed,
+        || SoftProbes::new(light, area_sample_count),
+        trace,
+    )
+}
+
+/// [`light_texel_contribution_and_visibility`] with the light's probe set
+/// supplied by the caller, so a chart walk computes it once rather than per
+/// texel. `probes` runs only for a soft (non-zero-radius) emitter.
+pub(crate) fn light_texel_contribution_and_visibility_with(
+    light: &MapLight,
+    world_p: Vec3,
+    surface_normal: Vec3,
+    seed: u64,
+    probes: impl FnOnce() -> SoftProbes,
+    trace: impl Fn(Vec3, Vec3) -> bool,
+) -> (Vec3, Vec3, Option<f32>) {
     let (contribution, to_light) = light_contribution_and_direction(light, world_p, surface_normal);
     if !contribution_covers_shadowmask(contribution.length_squared()) {
         return (Vec3::ZERO, Vec3::ZERO, None);
@@ -700,14 +721,7 @@ pub(crate) fn light_texel_contribution_and_visibility(
     // sample of the emitter — a multi-texel penumbra instead of a hard 1-texel
     // step. `sdf` lights are filtered out of the static set upstream (their
     // direct shadow resolves at runtime), so no double-shadow.
-    let v = soft_visibility(
-        world_p,
-        surface_normal,
-        light,
-        seed,
-        area_sample_count,
-        trace,
-    );
+    let v = soft_visibility_with(world_p, surface_normal, light, seed, probes, trace);
     if v <= 0.0 {
         return (Vec3::ZERO, Vec3::ZERO, Some(0.0));
     }
@@ -979,6 +993,46 @@ pub(crate) fn soft_visibility(
     full_samples: u32,
     trace: impl Fn(Vec3, Vec3) -> bool,
 ) -> f32 {
+    soft_visibility_with(
+        surface_point,
+        surface_normal,
+        light,
+        seed,
+        || SoftProbes::new(light, full_samples),
+        trace,
+    )
+}
+
+/// A light's probe subset at one escalated sample count. It depends only on
+/// the light and the count, so per-texel callers compute it once.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SoftProbes {
+    full_samples: u32,
+    probes: [u32; SOFT_PROBE_SAMPLES as usize],
+}
+
+impl SoftProbes {
+    /// `full_samples` is clamped to at least the probe count, as in
+    /// [`soft_visibility`].
+    pub(crate) fn new(light: &MapLight, full_samples: u32) -> Self {
+        let full_samples = full_samples.max(SOFT_PROBE_SAMPLES);
+        Self {
+            full_samples,
+            probes: probe_indices(light, full_samples),
+        }
+    }
+}
+
+/// [`soft_visibility`] with a caller-supplied probe set; `probes` runs only
+/// for a soft (non-zero-radius) emitter.
+pub(crate) fn soft_visibility_with(
+    surface_point: Vec3,
+    surface_normal: Vec3,
+    light: &MapLight,
+    seed: u64,
+    probes: impl FnOnce() -> SoftProbes,
+    trace: impl Fn(Vec3, Vec3) -> bool,
+) -> f32 {
     let origin = surface_point + surface_normal * RAY_EPSILON;
 
     // An author's explicit `0` is a hard edge: collapse to the single hard ray so
@@ -999,8 +1053,10 @@ pub(crate) fn soft_visibility(
     // only adds the in-between samples and the penumbra fraction stays
     // `clear / full_samples`. The subset spreads across the whole emitter (both
     // poles and all azimuths), so a penumbra anywhere splits the probes.
-    let full_samples = full_samples.max(SOFT_PROBE_SAMPLES);
-    let probes = probe_indices(light, full_samples);
+    let SoftProbes {
+        full_samples,
+        probes,
+    } = probes();
     let mut clear = 0u32;
     for &i in &probes {
         if trace(

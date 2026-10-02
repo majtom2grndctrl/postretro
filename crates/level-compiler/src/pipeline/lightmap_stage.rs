@@ -15,8 +15,9 @@ use crate::geometry::GeometryResult;
 use crate::light_namespaces::{AlphaLightsNs, StaticBakedEntry, StaticBakedLights};
 use crate::lightmap_bake::{self, LightmapBakeOutput, LightmapConfig, PreparedAtlas};
 use crate::lightmap_layer::{self, SharedAtlas};
-use crate::map_data::ShadowType;
+use crate::map_data::{LightType, MapLight, ShadowType};
 use crate::shadowmask_bake;
+use glam::Vec3;
 
 mod window;
 
@@ -41,26 +42,35 @@ const LAYER_PLANE_BYTES_PER_TEXEL: u64 = (4 * 4 + 12 + 1) + 12 + 12 + 4;
 /// four mask slots per texel of every bake layer, empty layer area included,
 /// live for the whole layer loop.
 const SHADOWMASK_FILL_BYTES_PER_TEXEL: u64 = 4;
+/// One resident light partition: at most one 8-byte record per bake-layer
+/// texel (charts never overlap), held twice at its peak — the per-chart
+/// buffers beside the assembled records, or the records beside their
+/// serialized cache copy.
+const PARTITION_BYTES_PER_TEXEL: u64 = 2 * std::mem::size_of::<lightmap_layer::LayerTexel>() as u64;
 
 /// The lightmap stage's predicted working-set peak, from the prepared layout
-/// alone: the shadowmask fill, one layer plane, and the encoded sections.
+/// alone: the shadowmask fill, one layer plane, the light window's resident
+/// partitions, and the encoded sections.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct PredictedLightmapPeak {
     pub(super) shadowmask_fill: u64,
     pub(super) layer_plane: u64,
+    /// Every partition the light window may hold at once.
+    pub(super) partitions: u64,
     /// Encoded ids 22 and 42, twice: the section and its cache copy.
     pub(super) sections: u64,
 }
 
 impl PredictedLightmapPeak {
     pub(super) fn total(&self) -> u64 {
-        self.shadowmask_fill + self.layer_plane + self.sections
+        self.shadowmask_fill + self.layer_plane + self.partitions + self.sections
     }
 }
 
 pub(super) fn predicted_peak(
     prepared: &PreparedAtlas,
     uncompressed_irradiance: bool,
+    partition_window: usize,
 ) -> PredictedLightmapPeak {
     let layer_texels = u64::from(prepared.atlas_width) * u64::from(prepared.atlas_height);
     let scale = u64::from(prepared.layout.direction_texel_scale.max(1));
@@ -81,6 +91,7 @@ pub(super) fn predicted_peak(
             * layer_texels
             * u64::from(prepared.layer_count),
         layer_plane: LAYER_PLANE_BYTES_PER_TEXEL * layer_texels,
+        partitions: PARTITION_BYTES_PER_TEXEL * layer_texels * partition_window as u64,
         sections: 2 * encoded,
     }
 }
@@ -88,12 +99,14 @@ pub(super) fn predicted_peak(
 /// `--verbose`: the predicted peak, for comparison with a measured RSS.
 pub(super) fn log_predicted_peak(prepared: &PreparedAtlas, uncompressed_irradiance: bool) {
     const MIB: f64 = 1024.0 * 1024.0;
-    let peak = predicted_peak(prepared, uncompressed_irradiance);
+    let peak = predicted_peak(prepared, uncompressed_irradiance, LIGHTMAP_PARTITION_WINDOW);
     log::info!(
-        "[Compiler] lightmap stage predicted peak {:.0} MiB: shadowmask fill {:.0} + layer plane {:.0} + sections {:.0} ({} blocks on {} bake layers of {}²)",
+        "[Compiler] lightmap stage predicted peak {:.0} MiB: shadowmask fill {:.0} + layer plane {:.0} + {} partitions {:.0} + sections {:.0} ({} blocks on {} bake layers of {}²)",
         peak.total() as f64 / MIB,
         peak.shadowmask_fill as f64 / MIB,
         peak.layer_plane as f64 / MIB,
+        LIGHTMAP_PARTITION_WINDOW,
+        peak.partitions as f64 / MIB,
         peak.sections as f64 / MIB,
         prepared.layout.blocks.len(),
         prepared.layer_count,
@@ -236,21 +249,21 @@ pub(crate) fn bake_fused_windowed(
     let total = prepared.placements.len().saturating_mul(layer_lights.len());
     lightmap_control.publish_total(total);
 
-    let mut layer_input_hashes =
-        Vec::with_capacity(prepared.layer_count as usize * layer_lights.len());
-    for target_layer in 0..prepared.layer_count {
-        for entry in &layer_lights {
-            layer_input_hashes.push(lightmap_layer::layer_input_hash(
-                entry.light,
-                &shared,
-                primitives,
-                geometry,
-                density,
-                args.soft_shadow_samples,
-                target_layer,
-            ));
-        }
-    }
+    // Partition keys feed only the cache, so an uncached bake hashes nothing.
+    let layer_input_hashes = if stage_cache.is_some() {
+        layer_key_hashes(
+            &layer_lights,
+            &shared,
+            primitives,
+            geometry,
+            density,
+            args.soft_shadow_samples,
+            prepared.layer_count,
+            lightmap_control,
+        )
+    } else {
+        Vec::new()
+    };
     let section_key = stage_cache.map(|_| {
         let input_hash = lightmap_layer::section_input_hash(
             &layer_input_hashes,
@@ -447,6 +460,84 @@ pub(crate) fn bake_fused_windowed(
     })
 }
 
+/// Every (layer, light) partition key, layer-major in global light order. The
+/// atlas fingerprint is hashed once and each light's prefix once; lights hash
+/// in parallel, each as one governed item.
+#[allow(clippy::too_many_arguments)]
+fn layer_key_hashes(
+    layer_lights: &[&StaticBakedEntry<'_>],
+    shared: &SharedAtlas<'_>,
+    primitives: &[BvhPrimitive],
+    geometry: &GeometryResult,
+    density: f32,
+    area_sample_count: u32,
+    layer_count: u32,
+    control: &BakeControl,
+) -> Vec<[u8; 32]> {
+    use rayon::prelude::*;
+    let context =
+        lightmap_layer::LayerKeyContext::new(shared, geometry, density, area_sample_count);
+    let prefixes: Vec<blake3::Hasher> = layer_lights
+        .par_iter()
+        .map(|entry| {
+            let _permit = control.governor().enter();
+            context.light_prefix(entry.light, primitives, geometry)
+        })
+        .collect();
+    (0..layer_count)
+        .flat_map(|layer| {
+            prefixes
+                .iter()
+                .map(move |prefix| lightmap_layer::LayerKeyContext::layer_hash(prefix, layer))
+        })
+        .collect()
+}
+
+/// World bounds of a chart's texel centres, padded by
+/// `AABB_PADDING_METERS` to absorb `f32` rounding in the texel walk.
+fn chart_texel_bounds(chart: &lightmap_bake::Chart) -> Option<(Vec3, Vec3)> {
+    if chart.uv_extent[0] <= 0.0 || chart.uv_extent[1] <= 0.0 {
+        return None;
+    }
+    // Texel centres are affine in (tx, ty), so the corner texels bound them.
+    let (width, height) = crate::chart_raster::chart_interior_dims(chart);
+    let corners = [
+        (0, 0),
+        (width - 1, 0),
+        (0, height - 1),
+        (width - 1, height - 1),
+    ]
+    .map(|(tx, ty)| crate::chart_raster::chart_texel_world_position(chart, tx, ty));
+    let pad = Vec3::splat(crate::affinity_grid::AABB_PADDING_METERS);
+    let min = corners
+        .iter()
+        .copied()
+        .fold(Vec3::splat(f32::INFINITY), Vec3::min);
+    let max = corners
+        .iter()
+        .copied()
+        .fold(Vec3::splat(f32::NEG_INFINITY), Vec3::max);
+    Some((min - pad, max + pad))
+}
+
+/// Whether any texel inside `bounds` may receive a direct term from `light`.
+/// Every falloff model is zero beyond `falloff_range`, so a point or spot
+/// light reaches no texel farther than that; a directional light reaches all.
+/// A chart with no texels is never reached.
+fn light_may_reach(light: &MapLight, bounds: Option<(Vec3, Vec3)>) -> bool {
+    let Some((min, max)) = bounds else {
+        return false;
+    };
+    match light.light_type {
+        LightType::Directional => true,
+        LightType::Point | LightType::Spot => {
+            let origin = light.origin.as_vec3();
+            let nearest = origin.clamp(min, max);
+            origin.distance(nearest) <= light.falloff_range.max(1.0e-4)
+        }
+    }
+}
+
 /// The fused walk's partitions: one (layer, light) per item, loaded from or
 /// written to the per-light layer cache.
 struct LayerPartitions<'a> {
@@ -462,6 +553,9 @@ struct LayerPartitions<'a> {
     items: &'a [(u32, usize)],
     /// Each bake layer's charts in placement order, built once.
     layer_charts: Vec<Vec<usize>>,
+    /// Padded world bounds of each chart's texels; `None` for a chart with no
+    /// texels.
+    chart_bounds: Vec<Option<(Vec3, Vec3)>>,
     #[cfg(test)]
     hooks: PartitionHooks,
 }
@@ -485,6 +579,7 @@ impl<'a> LayerPartitions<'a> {
         for (face_idx, placement) in shared.placements.iter().enumerate() {
             layer_charts[placement.layer as usize].push(face_idx);
         }
+        let chart_bounds = shared.charts.iter().map(chart_texel_bounds).collect();
         Self {
             args,
             cache,
@@ -497,6 +592,7 @@ impl<'a> LayerPartitions<'a> {
             layer_input_hashes,
             items,
             layer_charts,
+            chart_bounds,
             #[cfg(test)]
             hooks: window.hooks.clone(),
         }
@@ -548,8 +644,18 @@ impl PartitionSource for LayerPartitions<'_> {
         partition
     }
 
-    fn charts(&self, item: usize) -> &[usize] {
-        &self.layer_charts[self.items[item].0 as usize]
+    fn plan_charts(&self, item: usize) -> Vec<usize> {
+        let (layer, light) = self.items[item];
+        let layer_charts = &self.layer_charts[layer as usize];
+        let light = self.layer_lights[light].light;
+        let reached: Vec<usize> = layer_charts
+            .iter()
+            .copied()
+            .filter(|&chart| light_may_reach(light, self.chart_bounds[chart]))
+            .collect();
+        // A culled chart bakes no texel, so it completes here.
+        self.control.advance(layer_charts.len() - reached.len());
+        reached
     }
 
     fn bake_chart(&self, item: usize, chart: usize) -> Vec<lightmap_layer::LayerTexel> {
@@ -611,7 +717,7 @@ mod tests {
     use crate::bvh_build::build_bvh;
     use crate::geometry::FaceIndexRange;
     use crate::governor::Governor;
-    use crate::map_data::{FalloffModel, LightType, MapLight};
+    use crate::map_data::FalloffModel;
     use crate::reporter::StageProgress;
 
     fn fresh_cache_dir(label: &str) -> std::path::PathBuf {
@@ -1342,7 +1448,7 @@ mod tests {
         )
         .expect("multi-block fixture must prepare");
         let layer_texels = u64::from(prepared.atlas_width) * u64::from(prepared.atlas_height);
-        let peak = predicted_peak(&prepared, false);
+        let peak = predicted_peak(&prepared, false, 1);
         assert_eq!(
             peak.shadowmask_fill,
             4 * layer_texels * u64::from(prepared.layer_count)
@@ -1358,8 +1464,32 @@ mod tests {
         assert_eq!(peak.sections, 2 * (block_texels * 3 + block_texels / 4 * 2));
         assert_eq!(
             peak.total(),
-            peak.shadowmask_fill + peak.layer_plane + peak.sections
+            peak.shadowmask_fill + peak.layer_plane + peak.partitions + peak.sections
         );
+    }
+
+    // A11: the window's resident partitions are charged, growing with the
+    // window; a window of one adds exactly one partition to the old terms.
+    #[test]
+    fn predicted_peak_charges_window_partitions() {
+        let mut geometry = quads_in_one_cell(3);
+        let lights = vec![point_light(DVec3::new(20.0, 6.0, 6.0), [1.0; 3])];
+        let static_lights = StaticBakedLights::from_lights(&lights);
+        let prepared =
+            lightmap_bake::prepare_atlas(&mut geometry, &static_lights, 0.25, &[]).unwrap();
+        let layer_texels = u64::from(prepared.atlas_width) * u64::from(prepared.atlas_height);
+        let one_partition = 2 * 8 * layer_texels;
+
+        let one = predicted_peak(&prepared, false, 1);
+        let without_window = one.shadowmask_fill + one.layer_plane + one.sections;
+        assert_eq!(one.total(), without_window + one_partition);
+        let mut previous = one.total();
+        for window in [2, LIGHTMAP_PARTITION_WINDOW, 4 * LIGHTMAP_PARTITION_WINDOW] {
+            let peak = predicted_peak(&prepared, false, window);
+            assert!(peak.total() > previous, "window {window}");
+            assert_eq!(peak.partitions, window as u64 * one_partition);
+            previous = peak.total();
+        }
     }
 
     /// Append a horizontal quad `[x, x + size] × [z, z + size]` at height

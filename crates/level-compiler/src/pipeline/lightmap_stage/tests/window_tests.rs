@@ -322,6 +322,97 @@ fn lightmap_window_throttle_and_pause_admit_one_item_and_keep_bytes() {
     );
 }
 
+// P5: a light that reaches some charts plus a directional light that reaches
+// all. The cull skips charts out of the point light's range, yet every cached
+// partition equals the unculled per-light bake, and progress completes at the
+// published total.
+#[test]
+fn chart_cull_is_byte_identical_and_progress_completes() {
+    let mut near = point_light(DVec3::new(6.0, 3.0, 6.0), [1.0, 0.6, 0.3]);
+    near.falloff_range = 6.0;
+    let mut sun = point_light(DVec3::ZERO, [0.3, 0.4, 1.0]);
+    sun.light_type = LightType::Directional;
+    sun.cone_direction = Some([0.2, -1.0, 0.1]);
+    let lights = vec![near, sun];
+
+    let dir = fresh_cache_dir("chart_cull");
+    let cache = StageCache::new(&dir).expect("cull cache");
+    let baked_charts = Arc::new(Mutex::new(Vec::new()));
+    let mut window = sized(2);
+    let record = Arc::clone(&baked_charts);
+    window.hooks.before_chart = Some(Arc::new(move |light, _layer, chart| {
+        record.lock().unwrap().push((light, chart));
+    }));
+    let progress = StageProgress::indeterminate();
+    bake_window(
+        &lights,
+        Some(&cache),
+        &window,
+        Arc::new(Governor::new(4, false)),
+        &progress,
+    );
+    let published = progress.total().expect("lightmap total is published");
+    assert_eq!(published, WINDOW_QUADS * lights.len());
+    assert_eq!(progress.completed(), published);
+    let baked = baked_charts.lock().unwrap().clone();
+    assert_eq!(
+        baked.iter().filter(|(light, _)| *light == 0).count(),
+        1,
+        "the near light reaches one quad: {baked:?}"
+    );
+    assert_eq!(
+        baked.iter().filter(|(light, _)| *light == 1).count(),
+        WINDOW_QUADS,
+        "the directional light reaches every quad"
+    );
+
+    // Each cached partition equals an unculled bake of that light.
+    let args = test_args();
+    let config = config(false);
+    let mut geometry = quads_in_one_cell(WINDOW_QUADS);
+    let (bvh, primitives, _) = build_bvh(&geometry).unwrap();
+    let static_lights = StaticBakedLights::from_lights(&lights);
+    let prepared =
+        lightmap_bake::prepare_atlas(&mut geometry, &static_lights, config.lightmap_density, &[])
+            .unwrap();
+    let shared = SharedAtlas {
+        charts: &prepared.charts,
+        placements: &prepared.placements,
+        atlas_width: prepared.atlas_width,
+        atlas_height: prepared.atlas_height,
+        layout: &prepared.layout,
+    };
+    for light in &lights {
+        let key = CacheKey::new(
+            "lightmap_layer",
+            lightmap_layer::LAYER_FORMAT_VERSION,
+            &lightmap_layer::layer_input_hash(
+                light,
+                &shared,
+                &primitives,
+                &geometry,
+                config.lightmap_density,
+                args.soft_shadow_samples,
+                0,
+            ),
+        );
+        let unculled = lightmap_layer::bake_light_layer_controlled(
+            light,
+            &shared,
+            &bvh,
+            &primitives,
+            &geometry,
+            0,
+            args.soft_shadow_samples,
+            &BakeControl::unrestricted(),
+        );
+        assert!(!unculled.texels.is_empty(), "each light lights something");
+        assert_eq!(cache.get(&key), Some(unculled.to_bytes()));
+    }
+    drop(cache);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 // P11: at one permit, a held partition put (or get) holds no permit: another
 // light's chart work admits and runs before the I/O is released.
 #[test]

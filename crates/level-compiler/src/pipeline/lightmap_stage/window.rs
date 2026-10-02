@@ -28,8 +28,9 @@ pub(crate) const LIGHTMAP_PARTITION_WINDOW: usize = 8;
 pub(super) trait PartitionSource: Sync {
     /// Cache read for `item`, outside any permit. `Some` skips the chart bake.
     fn load(&self, item: usize) -> Option<LightmapLayer>;
-    /// Charts `item` bakes, in the order their texels are concatenated.
-    fn charts(&self, item: usize) -> &[usize];
+    /// Charts `item` bakes, in the order their texels are concatenated. Charts
+    /// the source skips count as complete progress here.
+    fn plan_charts(&self, item: usize) -> Vec<usize>;
     /// One governed (light, chart) work unit: enters the governor exactly once.
     fn bake_chart(&self, item: usize, chart: usize) -> Vec<LayerTexel>;
     /// Assemble the concatenated chart texels into a partition and write it to
@@ -152,7 +153,7 @@ where
             self.ready(scope, item, partition);
             return;
         }
-        let charts = self.source.charts(item);
+        let charts = self.source.plan_charts(item);
         if charts.is_empty() {
             let partition = self.source.finish(item, Vec::new());
             self.ready(scope, item, partition);
@@ -162,7 +163,7 @@ where
             slots: Mutex::new(vec![None; charts.len()]),
             remaining: AtomicUsize::new(charts.len()),
         });
-        for (ordinal, &chart) in charts.iter().enumerate() {
+        for (ordinal, chart) in charts.into_iter().enumerate() {
             let in_flight = Arc::clone(&in_flight);
             scope.spawn_fifo(move |scope| {
                 let texels = self.source.bake_chart(item, chart);

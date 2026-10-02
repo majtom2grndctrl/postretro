@@ -15,8 +15,8 @@ use crate::geometry::GeometryResult;
 #[cfg(test)]
 use crate::lightmap_bake::light_texel_is_covered;
 use crate::lightmap_bake::{
-    BlockLayout, Chart, CompositedAtlas, light_contribution_and_direction,
-    light_texel_contribution_and_visibility, segment_clear,
+    BlockLayout, Chart, CompositedAtlas, SoftProbes, light_contribution_and_direction,
+    light_texel_contribution_and_visibility_with, segment_clear,
 };
 #[cfg(test)]
 use crate::map_data::LightType;
@@ -27,7 +27,7 @@ mod cache_keys;
 
 pub(crate) use cache_keys::atlas_layout_fingerprint;
 pub use cache_keys::{
-    layer_input_hash, section_input_hash, validate_cached_lightmap_section,
+    LayerKeyContext, layer_input_hash, section_input_hash, validate_cached_lightmap_section,
     validate_layer_partition,
 };
 
@@ -91,15 +91,15 @@ fn bake_sparse_layer_texel(
     world_p: Vec3,
     surface_normal: Vec3,
     seed: u64,
-    area_sample_count: u32,
+    probes: &SoftProbes,
     trace: impl Fn(Vec3, Vec3) -> bool,
 ) -> Option<LayerTexel> {
-    let (_, _, raw_visibility) = light_texel_contribution_and_visibility(
+    let (_, _, raw_visibility) = light_texel_contribution_and_visibility_with(
         light,
         world_p,
         surface_normal,
         seed,
-        area_sample_count,
+        || *probes,
         trace,
     );
     sparse_layer_texel(idx, raw_visibility)
@@ -493,6 +493,7 @@ pub(crate) fn bake_light_layer_chart_controlled(
         0
     };
     let mut texels = Vec::with_capacity(capacity);
+    let probes = SoftProbes::new(light, area_sample_count);
     for_each_light_layer_chart_texel_controlled(atlas, face_idx, control, |sample| {
         if let Some(texel) = bake_sparse_layer_texel(
             sample.idx,
@@ -500,7 +501,7 @@ pub(crate) fn bake_light_layer_chart_controlled(
             sample.world_p,
             sample.surface_normal,
             sample.seed,
-            area_sample_count,
+            &probes,
             |from, to| segment_clear(bvh, primitives, geometry, from, to),
         ) {
             texels.push(texel);

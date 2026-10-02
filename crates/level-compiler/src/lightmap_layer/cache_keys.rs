@@ -177,7 +177,9 @@ fn bytemuck_f32x3(v: &[f32; 3]) -> Vec<u8> {
 /// - `target_layer`, so partitions with the same light and layout cannot alias.
 ///
 /// Consumers pass this digest to `CacheKey::new("lightmap_layer",
-/// LAYER_FORMAT_VERSION, &hash)` so the layer stage owns invalidation.
+/// LAYER_FORMAT_VERSION, &hash)` so the layer stage owns invalidation. Callers
+/// keying many partitions use [`LayerKeyContext`], which yields the same digest
+/// without rehashing the atlas per partition or the light per layer.
 pub fn layer_input_hash(
     light: &MapLight,
     atlas: &SharedAtlas<'_>,
@@ -187,19 +189,65 @@ pub fn layer_input_hash(
     area_sample_count: u32,
     target_layer: u32,
 ) -> [u8; 32] {
-    let world_aabb = geometry_world_aabb(geometry);
+    let context = LayerKeyContext::new(atlas, geometry, lightmap_density, area_sample_count);
+    LayerKeyContext::layer_hash(
+        &context.light_prefix(light, primitives, geometry),
+        target_layer,
+    )
+}
 
-    let mut hasher = blake3::Hasher::new();
-    hasher
-        .update(&postcard::to_allocvec(light).expect("postcard serialize MapLight for layer key"));
-    hasher.update(&geometry_slice_hash(
-        light, primitives, geometry, world_aabb,
-    ));
-    hasher.update(&lightmap_density.to_le_bytes());
-    hasher.update(&area_sample_count.to_le_bytes());
-    hasher.update(&atlas_layout_fingerprint(atlas));
-    hasher.update(&target_layer.to_le_bytes());
-    *hasher.finalize().as_bytes()
+/// The light- and layer-independent parts of every layer key in one bake.
+pub struct LayerKeyContext {
+    world_aabb: (DVec3, DVec3),
+    atlas_fingerprint: Vec<u8>,
+    lightmap_density: f32,
+    area_sample_count: u32,
+}
+
+impl LayerKeyContext {
+    pub fn new(
+        atlas: &SharedAtlas<'_>,
+        geometry: &GeometryResult,
+        lightmap_density: f32,
+        area_sample_count: u32,
+    ) -> Self {
+        Self {
+            world_aabb: geometry_world_aabb(geometry),
+            atlas_fingerprint: atlas_layout_fingerprint(atlas),
+            lightmap_density,
+            area_sample_count,
+        }
+    }
+
+    /// Everything in a layer key but the target layer, for one light.
+    pub fn light_prefix(
+        &self,
+        light: &MapLight,
+        primitives: &[BvhPrimitive],
+        geometry: &GeometryResult,
+    ) -> blake3::Hasher {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(
+            &postcard::to_allocvec(light).expect("postcard serialize MapLight for layer key"),
+        );
+        hasher.update(&geometry_slice_hash(
+            light,
+            primitives,
+            geometry,
+            self.world_aabb,
+        ));
+        hasher.update(&self.lightmap_density.to_le_bytes());
+        hasher.update(&self.area_sample_count.to_le_bytes());
+        hasher.update(&self.atlas_fingerprint);
+        hasher
+    }
+
+    /// Finish a light's prefix for one target layer.
+    pub fn layer_hash(prefix: &blake3::Hasher, target_layer: u32) -> [u8; 32] {
+        let mut hasher = prefix.clone();
+        hasher.update(&target_layer.to_le_bytes());
+        *hasher.finalize().as_bytes()
+    }
 }
 
 /// Validate a decoded cache partition against the current shared atlas. Cache

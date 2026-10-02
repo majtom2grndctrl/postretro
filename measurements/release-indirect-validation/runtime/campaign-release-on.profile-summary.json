@@ -1,0 +1,32 @@
+{
+  "profile": "campaign-release-on.sample.txt",
+  "main_thread_samples": 7467,
+  "validation_inclusive_samples": {
+    "draw_batcher_add": 30,
+    "inject_validation_pass": 107
+  },
+  "fully_contained_timing_windows": [
+    {
+      "end": "2026-10-02T04:20:49+00:00",
+      "total_ms": 17.015,
+      "render_submit_ms": 4.391
+    },
+    {
+      "end": "2026-10-02T04:20:51+00:00",
+      "total_ms": 17.346,
+      "render_submit_ms": 4.541
+    },
+    {
+      "end": "2026-10-02T04:20:53+00:00",
+      "total_ms": 17.062,
+      "render_submit_ms": 4.426
+    },
+    {
+      "end": "2026-10-02T04:20:55+00:00",
+      "total_ms": 17.477,
+      "render_submit_ms": 4.477
+    }
+  ],
+  "estimated_validation_cpu_ms_per_frame": 0.3160338824159636,
+  "method": "Inclusive validation-function samples / main-thread samples \u00d7 mean total frame time from complete windows contained in the 10-second in-level profile. Statistical estimate; timing acceptance uses separate unsampled runs."
+}

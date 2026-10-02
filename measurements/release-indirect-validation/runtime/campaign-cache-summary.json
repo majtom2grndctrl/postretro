@@ -1,0 +1,24 @@
+{
+  "source": "campaign-trace-gpu.xml",
+  "sha256": "ad7c6fcf1a5c343b942ac696434b4e51c64dce8265c8081a6c19b6bfac5c24c2",
+  "unique_encoders_by_label": {
+    "Cube Shadow Depth Pass": 0,
+    "Depth Pre-Pass": 104,
+    "Dynamic Cube Entity Shadow Depth Pass": 0,
+    "Dynamic Cube World Depth Cache Pass": 0,
+    "Dynamic Spot Entity Shadow Depth Pass": 109,
+    "Dynamic Spot World Depth Cache Pass": 5,
+    "Promoted Cube Entity Shadow Depth Pass": 624,
+    "Promoted Cube World Depth Cache Pass": 0,
+    "Promoted Spot Entity Shadow Depth Pass": 104,
+    "Promoted Spot World Depth Cache Pass": 0,
+    "Spot Shadow Depth Pass": 0,
+    "Textured Pass": 104
+  },
+  "camera_frame_equivalents": 104,
+  "uncached_spot_world_passes": 0,
+  "uncached_cube_face_world_passes": 0,
+  "cached_world_refresh_passes": 5,
+  "cached_refreshes_per_camera_frame_estimate": 0.04807692307692308,
+  "deduplication": "Metal command-buffer ID + encoder ID, process=postretro; every observed labelled pass retained. Frame normalization uses the smaller camera-pass count; trace boundaries can include partial frames. No temporal grouping or cache-refresh-frame exclusion."
+}

@@ -8,6 +8,9 @@ Builds prl-build in cargo's release profile, bakes the hallway on an empty cache
 and samples the process every -SampleSeconds into cpu-samples.tsv. Columns 1-5
 match evidence/stats.sh; run it on the TSV from Git Bash or WSL.
 Run: powershell -ExecutionPolicy Bypass -File measure-hallway.ps1 [-SkipBuild]
+-Cold runs prl-build --release instead: the exact, uncached ship bake (the cold
+Lightmap Bake row). -ReuseCacheDir <dir> runs a second warm build on an existing,
+non-empty cache (the second-build budget row); pass the first run's prl-cache.
 Keep the console open and sleep disabled for the whole run (about 9 h): closing
 the console ends prl-build, and sleep pauses the wall clock's meaning.
 Written without a PowerShell host to test on: untested until its first run.
@@ -17,7 +20,9 @@ param(
     [string]$RepoRoot,
     [string]$OutDir,
     [ValidateRange(1, 3600)][int]$SampleSeconds = 10,
-    [switch]$SkipBuild
+    [switch]$SkipBuild,
+    [switch]$Cold,
+    [string]$ReuseCacheDir
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2
@@ -32,9 +37,18 @@ $targetDir = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { Join-Pa
 if (-not $OutDir) { $OutDir = Join-Path $targetDir ('bake-measure\hallway-' + (Get-Date -Format 'yyyyMMdd-HHmmss')) }
 $null = New-Item -ItemType Directory -Force -Path $OutDir
 $OutDir = (Resolve-Path $OutDir).Path
-# An all-miss first build needs a cache no earlier run has touched.
-$cacheDir = Join-Path $OutDir 'prl-cache'
-if ((Test-Path $cacheDir) -and @(Get-ChildItem -Force $cacheDir).Count) { throw "cache dir not empty: $cacheDir" }
+if ($Cold -and $ReuseCacheDir) { throw '-Cold bakes uncached; it cannot reuse a cache dir' }
+if ($Cold) {
+    $cacheDir = $null
+} elseif ($ReuseCacheDir) {
+    # A second build reads the cache an earlier run filled.
+    if (-not (Test-Path $ReuseCacheDir) -or -not @(Get-ChildItem -Force $ReuseCacheDir).Count) { throw "reuse cache dir missing or empty: $ReuseCacheDir" }
+    $cacheDir = (Resolve-Path $ReuseCacheDir).Path
+} else {
+    # An all-miss first build needs a cache no earlier run has touched.
+    $cacheDir = Join-Path $OutDir 'prl-cache'
+    if ((Test-Path $cacheDir) -and @(Get-ChildItem -Force $cacheDir).Count) { throw "cache dir not empty: $cacheDir" }
+}
 
 if (-not $SkipBuild) {
     Push-Location $RepoRoot
@@ -56,7 +70,8 @@ $prl = Join-Path $OutDir 'stress-warren-hallway-inspection.prl'
 if (-not (Test-Path $map)) { throw "missing $map" }
 # Warm mode: no prl-build --release (that is the cold, uncached ship bake).
 # --no-tui is belt and braces: redirected stdout/stderr already select plain mode.
-$argLine = "`"$map`" -o `"$prl`" --cache-dir `"$cacheDir`" --no-tui"
+$argLine = if ($Cold) { "`"$map`" -o `"$prl`" --release --no-tui" } else { "`"$map`" -o `"$prl`" --cache-dir `"$cacheDir`" --no-tui" }
+$mode = if ($Cold) { 'cold (--release, no cache)' } elseif ($ReuseCacheDir) { 'warm, reused cache' } else { 'warm, empty cache' }
 
 $cpus = @(Get-CimInstance Win32_Processor)
 $os = Get-CimInstance Win32_OperatingSystem
@@ -79,6 +94,7 @@ $machine = @(
     "default_jobs: $helpJobs (binary help); $ruleJobs (default_jobs_for rule, $logical logical)"
     "command: `"$exe`" $argLine"
     "sample_seconds: $SampleSeconds"
+    "mode: $mode"
 )
 Set-Content -Path (Join-Path $OutDir 'machine.txt') -Value $machine
 # Peak working set read after exit, so a peak in the last interval still counts.
@@ -144,15 +160,19 @@ try { $cpuTotal = $proc.TotalProcessorTime.TotalSeconds }
 catch { $cpuTotal = $lastCpu; Write-Warning 'total CPU time unreadable after exit; using the last sample, which misses the final interval' }
 $peak = [PostretroPeakWs]::Peak($proc.Handle); $peakSource = 'GetProcessMemoryInfo after exit'
 if ($peak -lt 0) { $peak = $peakSampled; $peakSource = 'max sampled PeakWorkingSet64 (exit read failed)' }
-$entries = @(Get-ChildItem -File -Force $cacheDir -ErrorAction SilentlyContinue)
-$cacheBytes = ($entries | Measure-Object Length -Sum).Sum
+$cacheLine = 'cache_dir: none (cold)'
+if ($cacheDir) {
+    $entries = @(Get-ChildItem -File -Force $cacheDir -ErrorAction SilentlyContinue)
+    $cacheBytes = ($entries | Measure-Object Length -Sum).Sum
+    $cacheLine = "cache_dir: $cacheDir ($($entries.Count) files, $([math]::Round($cacheBytes / 1GB, 2).ToString($inv)) GiB)"
+}
 $summary = @(
     "exit_code: $exitCode"
     "wall_s: $([math]::Round($wallTotal, 1).ToString($inv)) ($([TimeSpan]::FromSeconds([math]::Round($wallTotal)).ToString()))"
     "cpu_s: $([math]::Round($cpuTotal, 1).ToString($inv)) (user + kernel)"
     "mean_busy_cores: $(if ($cpuTotal -ge 0) { [math]::Round($cpuTotal / $wallTotal, 2).ToString($inv) } else { 'unknown' })"
     "peak_working_set_kb: $([long]($peak / 1KB)) ($([math]::Round($peak / 1GB, 2).ToString($inv)) GiB; $peakSource)"
-    "cache_dir: $cacheDir ($($entries.Count) files, $([math]::Round($cacheBytes / 1GB, 2).ToString($inv)) GiB)"
+    $cacheLine
     ''
 )
 $outLines = @(Get-Content $outLog)

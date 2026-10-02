@@ -1,0 +1,220 @@
+{
+  "commit": "b29d78d60",
+  "binary_sha256": "ecd58740b9fdbca2be51e7937721d9e2313294edb7b4d37e8600f35f50e78b52",
+  "build": "release, capture feature, no dev-tools, symbols retained",
+  "adapter": "AMD Radeon Pro 5300M / Metal",
+  "sh_streaming": "sync-proof",
+  "validation_on": "WGPU_VALIDATION_INDIRECT_CALL=1",
+  "validation_off": "unset (release build default)",
+  "capture_scope": "Static authored instant; no VM/gameplay/HUD, no simulated walk. Physical display power state not inspected. Supplements M4 only; does not replace blocking foreground proof.",
+  "pairs": [
+    {
+      "view": "campaign-spawn",
+      "label": "Campaign \u2014 spawn",
+      "resolution": [
+        1280,
+        720
+      ],
+      "identical_png_bytes": true,
+      "on_sha256": "901cecb11d49b75c365d684ab1e3fb9acc1bbcdcb4fbe4af79a3b9af7e042a8c",
+      "off_sha256": "901cecb11d49b75c365d684ab1e3fb9acc1bbcdcb4fbe4af79a3b9af7e042a8c",
+      "scene": {
+        "map": "content/dev/maps/campaign-test.prl",
+        "camera": {
+          "position": [
+            -65.8368,
+            2.3288,
+            -45.9232
+          ],
+          "yaw_deg": -90,
+          "pitch_deg": 0,
+          "fov_deg": 100
+        },
+        "resolution": [
+          1280,
+          720
+        ],
+        "output": "measurements/release-indirect-validation/screenshots/campaign-spawn-off.png"
+      }
+    },
+    {
+      "view": "campaign-nearby",
+      "label": "Campaign \u2014 nearby view",
+      "resolution": [
+        1280,
+        720
+      ],
+      "identical_png_bytes": true,
+      "on_sha256": "42e9d98e6bcbc2bdd45a1990022959850c99ee6b86af8c5b5aaf79bc3cfe197b",
+      "off_sha256": "42e9d98e6bcbc2bdd45a1990022959850c99ee6b86af8c5b5aaf79bc3cfe197b",
+      "scene": {
+        "map": "content/dev/maps/campaign-test.prl",
+        "camera": {
+          "position": [
+            -63.8368,
+            2.3288,
+            -45.9232
+          ],
+          "yaw_deg": -55,
+          "pitch_deg": -8,
+          "fov_deg": 100
+        },
+        "resolution": [
+          1280,
+          720
+        ],
+        "output": "measurements/release-indirect-validation/screenshots/campaign-nearby-off.png"
+      }
+    },
+    {
+      "view": "hallway-spawn",
+      "label": "Hallway \u2014 spawn",
+      "resolution": [
+        1280,
+        720
+      ],
+      "identical_png_bytes": true,
+      "on_sha256": "03573a06c746666a0ca6a6358da7b13cddbadfe60ebcd0094308ddcb8d55f9b7",
+      "off_sha256": "03573a06c746666a0ca6a6358da7b13cddbadfe60ebcd0094308ddcb8d55f9b7",
+      "scene": {
+        "map": "content/dev/maps/stress-warren-hallway-inspection.prl",
+        "camera": {
+          "position": [
+            42.2656,
+            2.9384,
+            63.3984
+          ],
+          "yaw_deg": 0,
+          "pitch_deg": 0,
+          "fov_deg": 100
+        },
+        "resolution": [
+          1280,
+          720
+        ],
+        "output": "measurements/release-indirect-validation/screenshots/hallway-spawn-off.png"
+      }
+    },
+    {
+      "view": "hallway-nearby",
+      "label": "Hallway \u2014 nearby view",
+      "resolution": [
+        1280,
+        720
+      ],
+      "identical_png_bytes": true,
+      "on_sha256": "d03e9a13152f5af423273a03b78d57ccd1204a3390138c3799667c7ccfa8175a",
+      "off_sha256": "d03e9a13152f5af423273a03b78d57ccd1204a3390138c3799667c7ccfa8175a",
+      "scene": {
+        "map": "content/dev/maps/stress-warren-hallway-inspection.prl",
+        "camera": {
+          "position": [
+            42.2656,
+            2.9384,
+            61.3984
+          ],
+          "yaw_deg": 35,
+          "pitch_deg": -8,
+          "fov_deg": 100
+        },
+        "resolution": [
+          1280,
+          720
+        ],
+        "output": "measurements/release-indirect-validation/screenshots/hallway-nearby-off.png"
+      }
+    },
+    {
+      "view": "hallway-corridor",
+      "label": "Hallway \u2014 turn 90\u00b0",
+      "resolution": [
+        1280,
+        720
+      ],
+      "identical_png_bytes": true,
+      "on_sha256": "988d63aae2cbab3ccce8833adc03b80b0187c43ad51631c9e1722e7aaa56fad5",
+      "off_sha256": "988d63aae2cbab3ccce8833adc03b80b0187c43ad51631c9e1722e7aaa56fad5",
+      "scene": {
+        "map": "content/dev/maps/stress-warren-hallway-inspection.prl",
+        "camera": {
+          "position": [
+            42.2656,
+            2.9384,
+            63.3984
+          ],
+          "yaw_deg": 90,
+          "pitch_deg": 0,
+          "fov_deg": 100
+        },
+        "resolution": [
+          1280,
+          720
+        ],
+        "output": "measurements/release-indirect-validation/screenshots/hallway-corridor-off.png"
+      }
+    },
+    {
+      "view": "hallway-reverse",
+      "label": "Hallway \u2014 turn 180\u00b0",
+      "resolution": [
+        1280,
+        720
+      ],
+      "identical_png_bytes": true,
+      "on_sha256": "f97950c5e24932805803ddd684ca9f2e1fc43f6f42f4cc9e9064ebd02e5ccdf6",
+      "off_sha256": "f97950c5e24932805803ddd684ca9f2e1fc43f6f42f4cc9e9064ebd02e5ccdf6",
+      "scene": {
+        "map": "content/dev/maps/stress-warren-hallway-inspection.prl",
+        "camera": {
+          "position": [
+            42.2656,
+            2.9384,
+            63.3984
+          ],
+          "yaw_deg": 180,
+          "pitch_deg": 0,
+          "fov_deg": 100
+        },
+        "resolution": [
+          1280,
+          720
+        ],
+        "output": "measurements/release-indirect-validation/screenshots/hallway-reverse-off.png"
+      }
+    },
+    {
+      "view": "hallway-side",
+      "label": "Hallway \u2014 side passage",
+      "resolution": [
+        1280,
+        720
+      ],
+      "identical_png_bytes": true,
+      "on_sha256": "2c4d077957ef2d57e0e89c8f9a085bafd132d9b59c356d6e1a9c5118834a01af",
+      "off_sha256": "2c4d077957ef2d57e0e89c8f9a085bafd132d9b59c356d6e1a9c5118834a01af",
+      "scene": {
+        "map": "content/dev/maps/stress-warren-hallway-inspection.prl",
+        "camera": {
+          "position": [
+            42.2656,
+            2.9384,
+            63.3984
+          ],
+          "yaw_deg": -90,
+          "pitch_deg": 0,
+          "fov_deg": 100
+        },
+        "resolution": [
+          1280,
+          720
+        ],
+        "output": "measurements/release-indirect-validation/screenshots/hallway-side-off.png"
+      }
+    }
+  ],
+  "map_sha256": {
+    "campaign-test": "574be03376fdb9cf6085ea109ad61b6aab584da6a5d726e64c06f3926892acbd",
+    "stress-warren-hallway-inspection": "a543d0e0291dbceba3269f8c6898be6e689528fdfd3104aa5a9c9fd2b5507d14"
+  },
+  "spawn_verification": "Section 29 baked origins/angles match the source spawns; eye height adds player.ts capsule.eyeHeight = 0.5 m."
+}

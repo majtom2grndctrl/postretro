@@ -40,8 +40,8 @@ Rows follow the brief's order within Automated and Manual.
 | A19 whole world index buffer | world draw/upload source scan | achievable as stated | pass — includes nested binding review regression |
 | M1 submit savings on both maps | paired same-binary release runs, 5+ windows, idle VRAM and cache state | manual-performance | outstanding manual proof — exploratory launch had no in-level timing windows |
 | M2 sample frames absent/present | symbol-preserving release/debug sample profiles on both maps | manual-performance | outstanding manual proof |
-| M3 startup logs including dev-tools | windowed startup logs for build/override matrix | manual-runtime | outstanding manual proof — exploratory override logs only |
-| M4 visual parity | owner, spawn and short walk on both maps | manual-visual | outstanding manual proof |
+| M3 startup logs including dev-tools | windowed startup logs for build/override matrix | manual-runtime | outstanding manual proof — exploratory windowed override logs and offscreen release on/default-off logs only |
+| M4 visual parity | owner, spawn and short walk on both maps | manual-visual | outstanding manual proof — seven static offscreen pairs byte-identical; owner/live-walk verdict pending |
 
 ## Tasks
 
@@ -77,3 +77,9 @@ Rows follow the brief's order within Automated and Manual.
 5. Record startup lines once per run for unset plain release (off), unset `cargo build --release -p postretro --features dev-tools` (off), unset debug (on), and explicit overrides (line names override). Rebuild the plain symbol-preserving release binary if the dev-tools build replaced it.
 6. Compare the same release binary with override `1` versus unset on both maps at spawn and during a short walk. Record owner visual verdict for M4.
 7. Return M1–M4 results. Landing remains blocked until these pass, then the owner says “land the plane.”
+
+## Offscreen screenshot supplement
+- Owner requested screenshots while away from the desk. Built `CARGO_PROFILE_RELEASE_STRIP=none cargo build --release -p postretro --features capture` (passed); no `dev-tools`. This replaces `target/release/postretro` with a capture-enabled binary; rebuild the plain symbol-preserving release binary before M1/M2.
+- Saved fourteen 1280×720 images across seven views: campaign spawn/nearby; hallway spawn/nearby/three turns. Same binary and adapter for every pair. Validation on uses override `1`; off leaves it unset. All seven PNG pairs are byte-identical; each run logged its effective state once.
+- Inputs, map/binary/image hashes and gallery: `measurements/release-indirect-validation/screenshots/`. PNGs/logs remain local generated products; scene inputs and comparison report are versioned. Baked section-29 spawn origins/angles agree with the source spawns; eye adds the player's 0.5 m capsule eye height.
+- Static capture has no VM/gameplay/HUD or simulated walk. Physical display power state was not inspected. This supplements M4, without claiming M1–M4 passed.

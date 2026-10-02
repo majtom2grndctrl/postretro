@@ -2,7 +2,7 @@
 // See: context/lib/build_pipeline.md
 
 use std::fs;
-use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::io::{self, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex};
@@ -24,6 +24,9 @@ const LENGTH_PREFIX_BYTES: usize = 8;
 const HASH_BYTES: usize = 32;
 /// Combined header size in front of the payload on disk.
 const HEADER_BYTES: usize = ENTRY_MAGIC.len() + LENGTH_PREFIX_BYTES + HASH_BYTES;
+/// Write buffer for streamed entries, so a payload streamed in small pieces
+/// reaches the file in few writes.
+const STREAM_BUFFER_BYTES: usize = 64 * 1024;
 
 /// Identifier for a single cache entry. Hashes `(stage_id, stage_version,
 /// input_hash)` so unrelated stages and incompatible bakers never collide on
@@ -226,15 +229,24 @@ impl StageCache {
 
     /// Write an entry atomically. Best-effort: any error is logged and
     /// swallowed so a flaky cache directory cannot break a build.
+    ///
+    /// The entry is staged to `<digest>.tmp` and renamed into place, without
+    /// a sync: a killed or torn write leaves a temp file or a hash mismatch,
+    /// so the next build misses rather than hits wrong.
     pub fn put(&self, key: &CacheKey, bytes: &[u8]) {
-        self.put_streamed(key, bytes.len() as u64, |writer| writer.write_all(bytes));
+        self.publish(key, bytes.len() as u64, |tmp_path| {
+            let header = entry_header(bytes.len() as u64, blake3::hash(bytes));
+            let mut file = fs::File::create(tmp_path)?;
+            file.write_all(&header)?;
+            file.write_all(bytes)
+        });
     }
 
     /// Write an entry atomically without requiring one contiguous payload.
     ///
     /// `write_payload` streams exactly `payload_len` bytes into the staged
     /// entry. The cache computes the same payload hash as [`Self::put`], then
-    /// patches it into the reserved header before syncing and publishing.
+    /// patches it into the reserved header before publishing.
     /// Length mismatches and I/O failures follow `put`'s best-effort logging
     /// and cleanup behavior.
     pub fn put_streamed(
@@ -243,11 +255,23 @@ impl StageCache {
         payload_len: u64,
         write_payload: impl FnOnce(&mut dyn Write) -> io::Result<()>,
     ) {
+        self.publish(key, payload_len, |tmp_path| {
+            Self::write_streamed_entry(tmp_path, payload_len, write_payload)
+        });
+    }
+
+    /// Stage an entry through `write_tmp`, then rename it into place.
+    fn publish(
+        &self,
+        key: &CacheKey,
+        payload_len: u64,
+        write_tmp: impl FnOnce(&Path) -> io::Result<()>,
+    ) {
         let final_path = self.entry_path(key);
         // Distinct keys produce distinct hex filenames (no extension), so `<digest>.tmp` is unique per key — parallel group bakes never collide here.
         let tmp_path = final_path.with_extension("tmp");
 
-        if let Err(err) = self.write_streamed_entry(&tmp_path, payload_len, write_payload) {
+        if let Err(err) = write_tmp(&tmp_path) {
             log::warn!(
                 "[cache] failed to stage entry {}: {err}",
                 tmp_path.display()
@@ -424,22 +448,27 @@ impl StageCache {
     }
 
     fn write_streamed_entry(
-        &self,
         tmp_path: &Path,
         payload_len: u64,
         write_payload: impl FnOnce(&mut dyn Write) -> io::Result<()>,
     ) -> io::Result<()> {
-        let mut file = fs::File::create(tmp_path)?;
-        file.write_all(&ENTRY_MAGIC)?;
-        file.write_all(&payload_len.to_le_bytes())?;
-        file.write_all(&[0; HASH_BYTES])?;
+        let mut buffered =
+            BufWriter::with_capacity(STREAM_BUFFER_BYTES, fs::File::create(tmp_path)?);
+        // The hash is patched in once the payload has streamed through.
+        buffered.write_all(&entry_header(
+            payload_len,
+            blake3::Hash::from_bytes([0; HASH_BYTES]),
+        ))?;
 
         let (actual_len, hash) = {
-            let mut payload_writer = HashingWriter::new(&mut file);
+            let mut payload_writer = HashingWriter::new(&mut buffered);
             write_payload(&mut payload_writer)?;
             payload_writer.flush()?;
             payload_writer.finish()
         };
+        let mut file = buffered
+            .into_inner()
+            .map_err(io::IntoInnerError::into_error)?;
         if actual_len != payload_len {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -452,9 +481,7 @@ impl StageCache {
         file.seek(SeekFrom::Start(
             (ENTRY_MAGIC.len() + LENGTH_PREFIX_BYTES) as u64,
         ))?;
-        file.write_all(hash.as_bytes())?;
-        file.sync_all()?;
-        Ok(())
+        file.write_all(hash.as_bytes())
     }
 
     #[cfg(test)]
@@ -507,14 +534,24 @@ impl fmt::Display for ByteCount {
     }
 }
 
+/// Entry header: format marker, payload length, payload hash.
+fn entry_header(payload_len: u64, hash: blake3::Hash) -> [u8; HEADER_BYTES] {
+    let mut header = [0u8; HEADER_BYTES];
+    header[..ENTRY_MAGIC.len()].copy_from_slice(&ENTRY_MAGIC);
+    let length_end = ENTRY_MAGIC.len() + LENGTH_PREFIX_BYTES;
+    header[ENTRY_MAGIC.len()..length_end].copy_from_slice(&payload_len.to_le_bytes());
+    header[length_end..].copy_from_slice(hash.as_bytes());
+    header
+}
+
 struct HashingWriter<'a> {
-    file: &'a mut fs::File,
+    file: &'a mut BufWriter<fs::File>,
     hasher: blake3::Hasher,
     bytes_written: u64,
 }
 
 impl<'a> HashingWriter<'a> {
-    fn new(file: &'a mut fs::File) -> Self {
+    fn new(file: &'a mut BufWriter<fs::File>) -> Self {
         Self {
             file,
             hasher: blake3::Hasher::new(),
@@ -949,6 +986,135 @@ mod tests {
         cache.prune_to_budget(0);
 
         assert!(tmp.is_file(), ".tmp stage files must be left untouched");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Child half of the killed-write case: when the parent sets this
+    /// variable, stage a partial entry, signal, and wait to be killed.
+    const KILL_CHILD_ENV: &str = "POSTRETRO_CACHE_KILL_CHILD_DIR";
+
+    #[test]
+    fn cache_kill_child_writer() {
+        let Some(dir) = std::env::var_os(KILL_CHILD_ENV) else {
+            return;
+        };
+        let dir = PathBuf::from(dir);
+        let cache = StageCache::new(&dir).expect("child cache dir");
+        let key = CacheKey::new("lightmap_layer", 1, b"killed");
+        cache.put_streamed(&key, 4096, |writer| {
+            writer.write_all(&[7; 1024])?;
+            writer.flush()?;
+            fs::write(dir.join("child-is-mid-write"), b"")?;
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(1));
+            }
+        });
+        unreachable!("the parent kills the child mid-write");
+    }
+
+    // A13 regression guard: durability is by verification, not sync. A deleted
+    // or truncated entry, or a write killed before it published, reads back as
+    // a miss, never as a wrong hit.
+    #[test]
+    fn cache_deleted_truncated_or_killed_entry_is_a_miss() {
+        let dir = fresh_temp_dir("a13_guard");
+        let cache = StageCache::new(&dir).expect("create cache dir");
+        let payload = vec![42u8; 4096];
+
+        let deleted = CacheKey::new("lightmap_layer", 1, b"deleted");
+        cache.put(&deleted, &payload);
+        fs::remove_file(dir.join(deleted.as_filename())).expect("delete entry");
+        assert!(cache.get(&deleted).is_none(), "a deleted entry must miss");
+
+        let truncated = CacheKey::new("lightmap_layer", 1, b"truncated");
+        cache.put(&truncated, &payload);
+        let path = dir.join(truncated.as_filename());
+        for keep in [HEADER_BYTES as u64 + 100, HEADER_BYTES as u64 - 1, 0] {
+            fs::OpenOptions::new()
+                .write(true)
+                .open(&path)
+                .expect("open entry")
+                .set_len(keep)
+                .expect("truncate entry");
+            assert!(
+                cache.get(&truncated).is_none(),
+                "truncated to {keep} must miss"
+            );
+        }
+
+        let child_dir = dir.join("killed");
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "cache::tests::cache_kill_child_writer",
+                "--exact",
+                "--nocapture",
+            ])
+            .env(KILL_CHILD_ENV, &child_dir)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn child writer");
+        let marker = child_dir.join("child-is-mid-write");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while !marker.exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "child never reached its mid-write point"
+            );
+            if let Some(status) = child.try_wait().expect("poll child") {
+                panic!("child exited before the kill: {status}");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        child.kill().expect("kill child mid-write");
+        child.wait().expect("reap child");
+        let killed = CacheKey::new("lightmap_layer", 1, b"killed");
+        let reopened = StageCache::new(&child_dir).expect("reopen cache after kill");
+        assert!(reopened.get(&killed).is_none(), "a killed write must miss");
+        assert!(
+            !child_dir.join(killed.as_filename()).exists(),
+            "a killed write must not publish its entry"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Flat-directory cost: per-op `put` and `get` time at 1k to 150k entries
+    /// in one directory. Prints; asserts nothing. Set
+    /// `POSTRETRO_CACHE_MEASURE_DIR` to measure on the volume a bake uses;
+    /// real-time antivirus scanning of new files dominates if it covers it.
+    #[test]
+    #[ignore = "writes ~150k cache entries; run on demand"]
+    fn measure_flat_cache_dir_op_cost() {
+        const SAMPLE: usize = 1000;
+        let dir = std::env::var_os("POSTRETRO_CACHE_MEASURE_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| fresh_temp_dir("flat_dir_cost"));
+        let _ = fs::remove_dir_all(&dir);
+        let cache = StageCache::new(&dir).expect("create cache dir");
+        let payload = vec![3u8; 14 * 1024];
+        let mut written = 0usize;
+        for target in [SAMPLE, 10_000, 50_000, 150_000] {
+            while written + SAMPLE < target {
+                let key = CacheKey::new("measure", 1, &(written as u64).to_le_bytes());
+                cache.put(&key, &payload);
+                written += 1;
+            }
+            let started = std::time::Instant::now();
+            for i in 0..SAMPLE {
+                let key = CacheKey::new("measure", 1, &((written + i) as u64).to_le_bytes());
+                cache.put(&key, &payload);
+            }
+            let put = started.elapsed() / SAMPLE as u32;
+            let started = std::time::Instant::now();
+            for i in 0..SAMPLE {
+                let key = CacheKey::new("measure", 1, &((written + i) as u64).to_le_bytes());
+                assert!(cache.get(&key).is_some());
+            }
+            let get = started.elapsed() / SAMPLE as u32;
+            written += SAMPLE;
+            eprintln!("[flat-dir] {written} entries: put {put:?}/op, get {get:?}/op");
+        }
         let _ = fs::remove_dir_all(&dir);
     }
 

@@ -1,7 +1,7 @@
 # release-indirect-validation — plan of record
 
 mode: compact
-status: active
+status: test-ready
 read at: c443c91ef
 
 ## Corrections
@@ -17,31 +17,31 @@ read at: c443c91ef
 
 Rows follow the brief's order within Automated and Manual.
 
-| AC | Proof | Status |
-|---|---|---|
-| A1 release default, both feature sets | policy matrix tests in release + source gate scan | achievable as stated |
-| A2 debug default, both feature sets | policy matrix tests in debug + source gate scan | achievable as stated |
-| A3 release override 1 | policy matrix | achievable as stated |
-| A4 debug override 0 | policy matrix | achievable as stated |
-| A5 empty/false override | policy matrix | achievable as stated |
-| A6 preserve other bits/env isolation | policy matrix + env source scan | achievable as stated |
-| A7 shared constructors/read once | production instance/source scan | achievable as stated |
-| A8 aligned load past-end | loader regression with named range message | achievable as stated |
-| A9 load exact boundary | loader fixture | achievable as stated |
-| A10 load overflow | loader regression | achievable as stated |
-| A11 failed install load routes, no side effects | app rejection regression + failure routing/order scan | achievable as stated |
-| A12 install past-end, no GPU mutation | pure check + ignored offscreen rejection/state test | achievable as stated |
-| A13 install exact boundary/overflow | pure check | achievable as stated |
-| A14 install zero leaves | pure check | achievable as stated |
-| A15 empty leaf offset boundary, both checks | loader fixtures + pure check | achievable as stated |
-| A16 writer ownership and stores | source scans + deliberately invalid scan fixtures | achievable as stated |
-| A17 built-ins/composed modules/dispatch | pipeline/source scans | achievable as stated |
-| A18 indirect buffer lifetime | install/constructor source scan | achievable as stated |
-| A19 whole world index buffer | world draw/upload source scan | achievable as stated |
-| M1 submit savings on both maps | paired same-binary release runs, 5+ windows, idle VRAM and cache state | manual-performance |
-| M2 sample frames absent/present | symbol-preserving release/debug sample profiles on both maps | manual-performance |
-| M3 startup logs including dev-tools | windowed startup logs for build/override matrix | manual-runtime |
-| M4 visual parity | owner, spawn and short walk on both maps | manual-visual |
+| AC | Proof | Status | Result |
+|---|---|---|---|
+| A1 release default, both feature sets | policy matrix tests in release + source gate scan | achievable as stated | pass — plain/dev-tools release tests and gate scan |
+| A2 debug default, both feature sets | policy matrix tests in debug + source gate scan | achievable as stated | pass — plain/dev-tools debug tests |
+| A3 release override 1 | policy matrix | achievable as stated | pass |
+| A4 debug override 0 | policy matrix | achievable as stated | pass |
+| A5 empty/false override | policy matrix | achievable as stated | pass |
+| A6 preserve other bits/env isolation | policy matrix + env source scan | achievable as stated | pass |
+| A7 shared constructors/read once | production instance/source scan | achievable as stated | pass |
+| A8 aligned load past-end | loader regression with named range message | achievable as stated | pass |
+| A9 load exact boundary | loader fixture | achievable as stated | pass |
+| A10 load overflow | loader regression | achievable as stated | pass |
+| A11 failed install load routes, no side effects | app rejection regression + failure routing/order scan | achievable as stated | pass — 2 app tests |
+| A12 install past-end, no GPU mutation | pure check + ignored offscreen rejection/state test | achievable as stated | pass — GPU test explicitly ran, 1 matched, no skip |
+| A13 install exact boundary/overflow | pure check | achievable as stated | pass |
+| A14 install zero leaves | pure check | achievable as stated | pass |
+| A15 empty leaf offset boundary, both checks | loader fixtures + pure check | achievable as stated | pass |
+| A16 writer ownership and stores | source scans + deliberately invalid scan fixtures | achievable as stated | pass — includes renamed storage/alias review regression |
+| A17 built-ins/composed modules/dispatch | pipeline/source scans | achievable as stated | pass |
+| A18 indirect buffer lifetime | install/constructor source scan | achievable as stated | pass |
+| A19 whole world index buffer | world draw/upload source scan | achievable as stated | pass — includes nested binding review regression |
+| M1 submit savings on both maps | paired same-binary release runs, 5+ windows, idle VRAM and cache state | manual-performance | outstanding manual proof — exploratory launch had no in-level timing windows |
+| M2 sample frames absent/present | symbol-preserving release/debug sample profiles on both maps | manual-performance | outstanding manual proof |
+| M3 startup logs including dev-tools | windowed startup logs for build/override matrix | manual-runtime | outstanding manual proof — exploratory override logs only |
+| M4 visual parity | owner, spawn and short walk on both maps | manual-visual | outstanding manual proof |
 
 ## Tasks
 
@@ -50,7 +50,7 @@ Rows follow the brief's order within Automated and Manual.
 | 1 | Thin instance-policy slice; build release and attempt hallway paired timing before adding tests | integrating executor | — | done — symbol-preserving release build; paired 35-second hallway launch reached Metal and logged on/off once, but no in-level frames/timing windows. M1 remains outstanding. |
 | 2 | Load regressions, pure install check, early failed-load routing and offscreen rejection proof | integrating executor | 1 | done — 10 loader range tests, 3 pure install tests, 2 app routing/state tests; offscreen GPU rejection test ran (1 matched, no skip) and preserved buffers/counts/uploads. |
 | 3 | Policy tests, invariant comments, source drift guards and invalid scan fixtures | integrating executor | 1, 2 | done — policy test passed in all four debug/release × plain/dev-tools builds; all 12 contract scans/negative fixtures pass after review repairs. |
-| 4 | Focused readiness gate, review/fix loop, final preflight; record all results and external runbook | integrating executor | 2, 3 | pending |
+| 4 | Focused readiness gate, review/fix loop, final preflight; record all results and external runbook | integrating executor | 2, 3 | done — review's 2 must-fix findings repaired and focused gate passed; final format/clippy/workspace test gate passed. All 19 automated rows pass; M1–M4 remain outstanding and block landing. |
 
 ## Runtime constraints
 - Instance policy reads once at creation and adds no frame work. Range checks run O(leaves) only at install; existing cull and draw hot paths remain unchanged.
@@ -60,7 +60,9 @@ Rows follow the brief's order within Automated and Manual.
 - Readiness: `cargo fmt --check`; touched-crate check with capture/observability; loader range filter (10), pure install filter (3), app install filter (2), and four build/feature policy variants (1 each) passed. The on-demand offscreen GPU rejection test ran and passed (1 matched, no skip).
 - Fresh review panel: two slices plus seam pass; two correctness tracers, one contract verifier, one adversarial tester (Sol xhigh), two hygiene/drift reviewers (Sol medium). Runtime flows and comment drift were clean; two must-fix guard gaps found.
 - Fixed A16's renamed third-shader binding bypass with structural storage/alias discovery and negative fixtures. Fixed A19's nested-block state restoration with conservative outer-binding invalidation and lexical-shadow fixtures. `cargo check -p postretro-renderer` and `cargo test -p postretro-renderer --lib indirect_contract_` (12 tests) passed after both repairs. No Decision or Acceptance changes.
-- Final preflight pending; manual M1–M4 remain blocking.
+- Final preflight ran once after integration/review/repairs: `cargo fmt --check` passed; `cargo clippy --target-dir target/preflight-clippy -- -D warnings` passed; `cargo test` passed (9,064 passed, 0 failed, 40 ignored across 60 targets). The on-demand GPU rejection proof above ran separately; its ignored default-suite status is not used as proof. Full-suite compilation emitted one existing level-compiler lib-test dead-code warning (`assemblies`, `brush_assembly`); release matrix builds also exposed existing debug-only upload-test helper warnings. No production warnings in the prescribed clippy gate.
+- Check logs: `/private/tmp/release-indirect-validation/preflight-{fmt,clippy,tests}.log`. Free disk at completion: 19 GiB; cleared inactive incremental caches when space reached the threshold, preserving active compiler caches and all target directories.
+- All automated AC results are recorded above. Manual M1–M4 remain blocking; leave the brief in `in-progress/`, collect the external proof, then wait for “land the plane.” Durable context updates, moving the brief to `done/`, and feature-branch push are deferred to that step.
 
 ## Exploratory run
 - Release binary: `CARGO_PROFILE_RELEASE_STRIP=none cargo build --release -p postretro` passed. Upload batching is already merged.

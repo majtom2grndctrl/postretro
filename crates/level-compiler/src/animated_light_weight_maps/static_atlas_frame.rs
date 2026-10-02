@@ -176,6 +176,12 @@ pub(super) fn chunk_atlas_rect(
 /// If this fires, the UV packer assigned overlapping chart space within one
 /// bake layer. Different faces on the same layer share coordinates, so
 /// this must not be limited to sibling chunks of one face.
+///
+/// Each layer is checked by marking its rects in an occupancy bitmap, linear
+/// in the texels the bake already visited; a pairwise scan was quadratic in
+/// chunks per layer, hundreds of seconds on a map with ~10⁵ min-extent chunks
+/// on one layer. A layer the bitmap flags goes to the pairwise scan, which
+/// panics naming the same first overlapping pair it always named.
 pub(super) fn assert_no_overlapping_rects_per_layer(
     chunks: &[postretro_level_format::animated_light_chunks::AnimatedLightChunk],
     per_chunk: &[ChunkBakeResult],
@@ -186,42 +192,107 @@ pub(super) fn assert_no_overlapping_rects_per_layer(
     for (index, result) in per_chunk.iter().enumerate() {
         by_layer.entry(result.layer).or_default().push(index);
     }
+    let mut occupancy: Vec<u64> = Vec::new();
     for (layer, indices) in by_layer {
-        for (i_idx, &i) in indices.iter().enumerate() {
-            let a = &per_chunk[i].rect;
-            for &j in &indices[i_idx + 1..] {
-                let b = &per_chunk[j].rect;
-                let overlap_x =
-                    a.compact_x < b.compact_x + b.width && b.compact_x < a.compact_x + a.width;
-                let overlap_y =
-                    a.compact_y < b.compact_y + b.height && b.compact_y < a.compact_y + a.height;
-                if overlap_x && overlap_y {
-                    let ca = &chunks[i];
-                    let cb = &chunks[j];
-                    panic!(
-                        "animated-light chunks {i} (face {}) and {j} (face {}) on bake \
-                         layer {layer} produced \
-                         overlapping atlas rects under center-based half-open ownership \
-                         ({}x{}+{}+{} vs {}x{}+{}+{}); chunk UVs [{:?}..{:?}] vs \
-                         [{:?}..{:?}]. Likely causes: subdivider emitted truly \
-                         overlapping UV ranges, or shared-boundary float drift exceeded \
-                         `chunk_atlas_rect`'s BOUNDARY_SNAP_EPS.",
-                        ca.face_index,
-                        cb.face_index,
-                        a.width,
-                        a.height,
-                        a.compact_x,
-                        a.compact_y,
-                        b.width,
-                        b.height,
-                        b.compact_x,
-                        b.compact_y,
-                        ca.uv_min,
-                        ca.uv_max,
-                        cb.uv_min,
-                        cb.uv_max,
-                    );
+        if layer_rects_may_overlap(per_chunk, &indices, &mut occupancy) {
+            panic_on_first_overlap(chunks, per_chunk, layer, &indices);
+        }
+    }
+}
+
+/// Whether two of the layer's rects share a texel. A rect with a zero
+/// dimension answers `true` without marking: the pairwise half-open test can
+/// still report it inside another rect, so the scan decides that layer.
+pub(super) fn layer_rects_may_overlap(
+    per_chunk: &[ChunkBakeResult],
+    indices: &[usize],
+    occupancy: &mut Vec<u64>,
+) -> bool {
+    let rects = || indices.iter().map(|&i| &per_chunk[i].rect);
+    if rects().any(|r| r.width == 0 || r.height == 0) {
+        return true;
+    }
+    // `chunk_atlas_rect` clamps rects to the bake layer, so the bitmap spans
+    // at most one layer's texels.
+    let width = rects()
+        .map(|r| r.compact_x as usize + r.width as usize)
+        .max()
+        .unwrap_or(0);
+    let height = rects()
+        .map(|r| r.compact_y as usize + r.height as usize)
+        .max()
+        .unwrap_or(0);
+    let words_per_row = width.div_ceil(64);
+    occupancy.clear();
+    occupancy.resize(words_per_row * height, 0);
+    for rect in rects() {
+        let x0 = rect.compact_x as usize;
+        let x1 = x0 + rect.width as usize;
+        let (first_word, last_word) = (x0 / 64, (x1 - 1) / 64);
+        let y0 = rect.compact_y as usize;
+        for row in y0..y0 + rect.height as usize {
+            let row_words = &mut occupancy[row * words_per_row..(row + 1) * words_per_row];
+            for (word, bits) in row_words
+                .iter_mut()
+                .enumerate()
+                .take(last_word + 1)
+                .skip(first_word)
+            {
+                let lo = if word == first_word { x0 % 64 } else { 0 };
+                let hi = if word == last_word { (x1 - 1) % 64 + 1 } else { 64 };
+                let mask = (u64::MAX >> (64 - (hi - lo))) << lo;
+                if *bits & mask != 0 {
+                    return true;
                 }
+                *bits |= mask;
+            }
+        }
+    }
+    false
+}
+
+/// Pairwise scan of one layer: panics on its first overlapping pair in
+/// index order, and returns when no pair overlaps.
+fn panic_on_first_overlap(
+    chunks: &[postretro_level_format::animated_light_chunks::AnimatedLightChunk],
+    per_chunk: &[ChunkBakeResult],
+    layer: u32,
+    indices: &[usize],
+) {
+    for (i_idx, &i) in indices.iter().enumerate() {
+        let a = &per_chunk[i].rect;
+        for &j in &indices[i_idx + 1..] {
+            let b = &per_chunk[j].rect;
+            let overlap_x =
+                a.compact_x < b.compact_x + b.width && b.compact_x < a.compact_x + a.width;
+            let overlap_y =
+                a.compact_y < b.compact_y + b.height && b.compact_y < a.compact_y + a.height;
+            if overlap_x && overlap_y {
+                let ca = &chunks[i];
+                let cb = &chunks[j];
+                panic!(
+                    "animated-light chunks {i} (face {}) and {j} (face {}) on bake \
+                     layer {layer} produced \
+                     overlapping atlas rects under center-based half-open ownership \
+                     ({}x{}+{}+{} vs {}x{}+{}+{}); chunk UVs [{:?}..{:?}] vs \
+                     [{:?}..{:?}]. Likely causes: subdivider emitted truly \
+                     overlapping UV ranges, or shared-boundary float drift exceeded \
+                     `chunk_atlas_rect`'s BOUNDARY_SNAP_EPS.",
+                    ca.face_index,
+                    cb.face_index,
+                    a.width,
+                    a.height,
+                    a.compact_x,
+                    a.compact_y,
+                    b.width,
+                    b.height,
+                    b.compact_x,
+                    b.compact_y,
+                    ca.uv_min,
+                    ca.uv_max,
+                    cb.uv_min,
+                    cb.uv_max,
+                );
             }
         }
     }

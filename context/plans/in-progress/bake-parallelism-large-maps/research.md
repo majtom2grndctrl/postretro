@@ -68,6 +68,15 @@ m0's warm build is 630 s slower than m0c's cold build. The gap sits in the stage
 
 Byte check: m1c's `.prl` differs from m0c's only by the embedded absolute data-script path (`…\postretro-baseline\…` vs `…\postretro\…`, 9 bytes): the path's length prefix, 11 section-table offsets (each 9 lower), and nothing else; the 168 MB after the path is identical. `evidence/prl-pathdiff.py` performs this check. Byte comparisons across checkouts must normalize that path.
 
+**Lever 4 profile (Task 7, 2026-10-02).** Taken from R0's CPU samples, logs and cache rather than new bakes. Warren-mini cannot show it: its 977 animated chunks never split (1.00 light per covered texel), while the hallway's faces under five overlapping animated lights subdivide to the min-extent floor.
+
+| Candidate | Evidence | Finding |
+|---|---|---|
+| AnimWeightMaps, 664 s at 1.00 core (R0) | One 170% sample at stage start (the chunk bake; plain-progress lines put it near 5 s), then 650 s flat at one core with flat RSS, ending at the stage boundary. Log: 1,533,071 chunks, 104 bake layers, 299,852,356-byte section. | `assert_no_overlapping_rects_per_layer`: 628.17 s timed on the real rects (R0 cache entry `f10343db…`, 31 identity pages, largest 360,604 rects, 161,851,323,070 pair tests). Cut: occupancy bitmap per layer, 89.6 ms on the same rects; pairwise scan retained for a flagged layer's panic message. |
+| Packing, 83 s (R0) | 0.20 cores mean | I/O-bound file write, not serial BC6H CPU. No cut. |
+| Direct SH Delta, 322 s (R0) | 0.67 cores mean; 2.7 s cold on warren-mini vs 247 s warm | Cache put cost (lever 2's target). No lever 4 cut. |
+| `probe_grid_layout`, affinity decomposition, `world_aabb_for_directional`, TextureMips | Each falls inside a stage at ≥4.35 cores or runs under one 10 s sample | Not visible as serial time. No cut. |
+
 **Not covered by this run.**
 - The cold Lightmap Bake row: a separate run with `prl-build --release` on the same binary, before lever 1 lands.
 - The lever 3 gate: measured after levers 1 and 2 land (§Lever 3 gate).

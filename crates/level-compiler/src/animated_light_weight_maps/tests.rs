@@ -824,6 +824,116 @@ fn overlap_assert_rejects_cross_face_rects_on_one_layer() {
     assert_no_overlapping_rects_per_layer(&chunks, &results);
 }
 
+fn rect_result(layer: u32, x: u32, y: u32, width: u32, height: u32) -> ChunkBakeResult {
+    ChunkBakeResult {
+        rect: ChunkAtlasRect {
+            compact_x: x,
+            compact_y: y,
+            width,
+            height,
+            texel_offset: 0,
+            block: 0,
+        },
+        layer,
+        offset_counts: Vec::new(),
+        texel_lights: Vec::new(),
+    }
+}
+
+fn zero_chunks(count: usize) -> Vec<AnimatedLightChunk> {
+    vec![
+        AnimatedLightChunk {
+            aabb_min: [0.0; 3],
+            face_index: 0,
+            aabb_max: [0.0; 3],
+            index_offset: 0,
+            uv_min: [0.0; 2],
+            uv_max: [0.0; 2],
+            index_count: 0,
+            _padding: 0,
+        };
+        count
+    ]
+}
+
+/// The pairwise half-open test the overlap assert has always applied.
+fn pairwise_overlap(results: &[ChunkBakeResult]) -> bool {
+    results.iter().enumerate().any(|(i, a)| {
+        results[i + 1..].iter().any(|b| {
+            let (a, b) = (&a.rect, &b.rect);
+            a.compact_x < b.compact_x + b.width
+                && b.compact_x < a.compact_x + a.width
+                && a.compact_y < b.compact_y + b.height
+                && b.compact_y < a.compact_y + a.height
+        })
+    })
+}
+
+#[test]
+fn overlap_bitmap_agrees_with_pairwise_scan_on_random_layers() {
+    // xorshift64: deterministic, no dependency.
+    let mut state = 0x9E37_79B9_7F4A_7C15_u64;
+    let mut next = |bound: u32| {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        (state % u64::from(bound)) as u32
+    };
+    let mut occupancy = Vec::new();
+    let (mut overlapping, mut clear) = (0, 0);
+    for _ in 0..2_000 {
+        let count = 1 + next(12) as usize;
+        let results: Vec<ChunkBakeResult> = (0..count)
+            .map(|_| rect_result(0, next(200), next(40), 1 + next(90), 1 + next(12)))
+            .collect();
+        let indices: Vec<usize> = (0..count).collect();
+        let expected = pairwise_overlap(&results);
+        assert_eq!(
+            layer_rects_may_overlap(&results, &indices, &mut occupancy),
+            expected,
+            "rects {:?}",
+            results.iter().map(|r| r.rect).collect::<Vec<_>>()
+        );
+        if expected {
+            overlapping += 1;
+        } else {
+            clear += 1;
+        }
+    }
+    assert!(overlapping > 100 && clear > 100, "{overlapping} overlapping, {clear} clear");
+}
+
+#[test]
+fn overlap_assert_accepts_edge_sharing_rects_across_word_boundaries() {
+    // Abutting at x = 64 and x = 128, and rows touching at y = 3: no shared texel.
+    let results = vec![
+        rect_result(2, 0, 0, 64, 3),
+        rect_result(2, 64, 0, 64, 3),
+        rect_result(2, 128, 0, 1, 3),
+        rect_result(2, 60, 3, 70, 2),
+        rect_result(5, 60, 3, 70, 2),
+    ];
+    assert_no_overlapping_rects_per_layer(&zero_chunks(results.len()), &results);
+}
+
+#[test]
+#[should_panic(expected = "chunks 0 (face 0) and 2 (face 0) on bake layer 2")]
+fn overlap_assert_names_first_pair_when_one_texel_is_shared_across_a_word_boundary() {
+    let results = vec![
+        rect_result(2, 0, 0, 64, 3),
+        rect_result(2, 65, 0, 10, 3),
+        rect_result(2, 63, 2, 2, 1),
+    ];
+    assert_no_overlapping_rects_per_layer(&zero_chunks(results.len()), &results);
+}
+
+#[test]
+#[should_panic(expected = "overlapping atlas rects")]
+fn overlap_assert_keeps_rejecting_a_zero_width_rect_inside_another() {
+    let results = vec![rect_result(1, 3, 4, 2, 2), rect_result(1, 4, 4, 0, 2)];
+    assert_no_overlapping_rects_per_layer(&zero_chunks(results.len()), &results);
+}
+
 #[test]
 fn single_chunk_single_light_emits_one_light_per_covered_texel() {
     let section = bake_with_geometry_and_chunks(

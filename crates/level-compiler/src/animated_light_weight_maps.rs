@@ -30,6 +30,8 @@ use crate::map_data::MapLight;
 mod static_atlas_frame;
 
 #[cfg(test)]
+use static_atlas_frame::layer_rects_may_overlap;
+#[cfg(test)]
 pub(crate) use static_atlas_frame::rebase_to_cell_block;
 use static_atlas_frame::{
     assert_no_overlapping_rects_per_layer, chunk_atlas_rect, static_frame_blocks,

@@ -1,0 +1,81 @@
+# bake-parallelism-large-maps — plan of record
+
+mode: resumable
+status: blocked
+read at: 1527f5b26
+
+Blocked on one Acceptance restatement (Automated row 2, below). Everything else is planned. When the owner rules, apply the ruled wording to `index.md`, then set `status: proposed` or, if the owner approves the plan in the same reply, `approved`.
+
+## Corrections
+- Brief re-read at 695c320e5; no file under `crates/level-compiler`, `crates/level-format` or `crates/visibility` changed between it and 1527f5b26. Every Decision- and Path-cited symbol was re-opened and exists as described: `bake_fused_prepared` (serial `layer_input_hash` pre-pass over layers × lights, serial `for layer { for light }` loop, second loop for lightmap-hit + shadowmask-miss), `load_or_bake_partition` (get, checkpoint on hit; bake then put on miss), `bake_light_layer_controlled` (rebuilds `face_indices` per call), `bake_light_layer_chart_controlled` (one `governor().enter()` per (light, chart) via `for_each_light_layer_chart_texel_controlled`), `IncrementalLayerAccumulator::fold_partition` (global-light-order contract), `StageCache::{get, touch_for_lru, put_streamed, write_streamed_entry (sync_all), prune_to_budget, live_set, warn_if_live_set_exceeds, test_access}`, `construct_stage_cache`, `run_with_failure_cache_report`, `sh_bake::{closest_hit, segment_clear}`, `lightmap_bake::segment_clear`, `billboard_direct_scatter_bake::segment_clear`, `chunk_light_list_bake::segment_clear`, `delta_sh_cache::bake_or_load_delta_subblocks`, `plan_delta_bakes`, `direct_sh_delta_is_usable_for_selection`, `layout_animated_atlas`, `probe_grid_layout`, `world_aabb_for_directional`, `assert_no_overlapping_rects_per_layer`, `bvh = 0.11`. No `thread::scope`, `rayon::join` or `rayon::scope` in `pipeline.rs` or `pipeline/`.
+- `bake_shadowmask_atlas_with_window` → its window is a batch barrier: `fill_uncached_shadowmask_partitions` bakes up to 4 lights' charts in one `par_iter().collect()` and writes them only after the whole batch joins. Reused as-is it cannot meet pin P11 (another light's chart work must start while one light's put or get is held) or take cache I/O off the ray-work barrier. Planning around it by a sliding window: each in-window light's chart items run as independent governed tasks; the worker that finishes a light's last chart assembles the partition and runs its cache put outside any permit (a hit's get likewise runs outside a permit, then checkpoints); a serial folder on the stage thread folds and shadowmask-consumes finished partitions strictly in global light order, and a light leaves the window only once folded, consumed and written. Precedent kept: one governor entry per (light, chart), no nested permit.
+- `evidence/measure-hallway.ps1` → it has no cold mode and refuses a non-empty cache directory, so the cold Lightmap Bake row and the second-build budget row have no procedure. Planning around it by adding a `-Cold` switch (runs `prl-build --release`, no `--cache-dir`) and a `-ReuseCacheDir <path>` switch (second build on a named, non-empty cache) in Task 0. Neither changes the warm procedure the research pins.
+- Research §Measurement conditions, Machine → the yardstick (6 logical processors, default `-j` 5) is this development machine. A hallway run (about 9 h) and a compile or test run cannot overlap without corrupting busy-core numbers. Planning around it by scheduling every hallway run as an owner overnight task with the machine otherwise idle, launched from a clean checkout at the named commit.
+- `lightmap_stage::predicted_peak` counts one layer plane, the shadowmask fill and the sections twice; it counts no partition. The window term Task 3 adds counts each in-window partition at every point it coexists (per-chart buffers, assembled texels, serialized cache copy), per `development_guide.md` §1.4.
+
+## Proposed restatement (blocks the plan)
+Automated row 2 today: "A warm all-miss bake followed by a warm all-hit bake of the same fixture emits identical `.prl` bytes, and both match the pre-change warm bytes. The all-hit bake reads every entry the all-miss bake wrote, with zero cache misses."
+
+Why it cannot pass: the all-miss bake writes every per-light `lightmap_layer` partition plus the `lightmap_section` and `shadowmask_atlas` memos. The all-hit bake hits both memos and, by design (`build_pipeline.md` §Build Cache), reads no partition. So it reads strictly fewer entries than the all-miss wrote, today and after this brief. Reading the partitions anyway would undo the memo's purpose.
+
+Proposed wording: "A warm all-miss bake followed by a warm all-hit bake of the same fixture emits identical `.prl` bytes, and both match the pre-change warm bytes. Every entry the all-hit bake requests is a hit (zero cache misses), and the entries it reads, plus the per-light partitions its section-memo hits mark as used, cover every entry the all-miss bake wrote."
+
+This keeps the row's meaning (a warm rebuild re-bakes nothing and its use record covers the whole set) and ties it to the Decision that memo hits mark their partitions.
+
+## Delegated answers
+- Default `-j` on hyperthreaded hosts — not measured in this build, and `default_jobs_for` stays unchanged. The question concerns the owner's Mac, which is not the yardstick and backs no Acceptance row; the yardstick has 6 logical processors and no hyperthreading to test. Reported as a follow-up for a Mac session.
+- Flat cache directory — answered in Task 5 by measurement on the yardstick's NTFS volume: per-op `put` and `get` time with the fsync dropped, at about 1k and about 150k entries in one directory. Shard only if per-op cost at 150k is more than twice the 1k cost and the Task 12 run still shows Direct SH Delta I/O-bound. Default: no shard; entry format and keys unchanged either way.
+
+## AC-to-proof
+
+| AC | Proof | Status |
+|---|---|---|
+| A1 Cold `--release` fixture bytes identical before/after at `-j 1` and default `-j` | `evidence/fixture-bytes.ps1` digest diff against `evidence/fixture-digests-before.txt` (Task 0, pre-lever compiler), run after every lever; permanent test `cold_release_bytes_match_across_job_counts` | achievable as stated |
+| A2 Warm all-miss then all-hit: identical bytes, match pre-change warm; all-hit coverage, zero misses | Same digest diff (warm modes); in-process test `warm_all_hit_covers_all_miss_writes_with_zero_misses` over `StageCache::test_access` plus the use record | **needs restatement** (above) |
+| A3 Window ordering, later light ready first, fold/consume ascending, window-1 bytes (P1) | `lightmap_window_folds_in_global_light_order_when_later_light_finishes_first` | achievable as stated |
+| A4 Shared crease edge: nearest-hit distance and normal equal today's full scan, in-leaf and cross-leaf; occlusion short of/at/past blocker | `bounded_closest_hit_matches_full_scan_on_shared_crease_edges`, `bounded_segment_clear_matches_full_scan_at_segment_end` against a `#[cfg(test)]` copy of today's full scan | achievable as stated |
+| A5 In-plane parallel ray; ray starting on first-reached triangle (P2) | `bounded_traversal_keeps_undefined_slab_node`, `sub_epsilon_start_hit_never_tightens_bound` | achievable as stated |
+| A6 Permits to 1 mid-bake, start at 1, pause stops new items (P3) | `lightmap_window_throttle_and_pause_admit_one_item_and_keep_bytes` via `Governor::set_enter_hook`; overlap-stage pause case only if lever 3 is built | achievable as stated |
+| A7 One permit, held put / held get, other light's chart work starts first (P11) | `lightmap_window_cache_io_holds_no_permit` (two cases) via a `#[cfg(test)]` I/O hold hook | achievable as stated |
+| A8 Lever 3: two stages run together, one foreground, background progress advances first | `overlapped_stages_keep_one_foreground_and_advance_background` | conditional on Task 8 |
+| A9 Lever 3: early emptiness input equals `blocks.is_empty()` (P4) | `early_lightmap_emptiness_matches_finished_section` (three cases) | conditional on Task 8 |
+| A10 Window never exceeds bound, reaches it, cold and warm all-miss | `lightmap_window_resident_partitions_reach_and_never_exceed_window` via a resident-partition tracker | achievable as stated |
+| A11 `predicted_peak` includes window bytes; rises with window; window 1 = today + one partition | `predicted_peak_charges_window_partitions` | achievable as stated |
+| A12 Partial-reach light plus directional: culled bytes equal unculled; progress completes at published total (P5) | `chart_cull_is_byte_identical_and_progress_completes` | achievable as stated |
+| A13 Fsync guard: delete, truncate, kill mid-write → miss, never wrong hit | `cache_deleted_truncated_or_killed_entry_is_a_miss` (kill case: child process of the test binary killed mid-`put_streamed`); written and passing before the fsync drop | achievable as stated |
+| A14 Lightmap, shadowmask, delta-SH, weight-map stage tests unchanged; cache-load counts from `test_access` | Existing suites; log-count assertions converted to `test_access` with identical expected values | achievable as stated |
+| P-A Prune keeps previous success's written and only-read entries, evicts untouched (P6) | `prune_spares_previous_success_reads_and_writes` via `construct_stage_cache` | achievable as stated |
+| P-B Stopped build's touches plus last success spared (P7) | `prune_spares_stopped_build_touches_and_last_success` | achievable as stated |
+| P-C Memo-hit rebuild then one-light edit re-bakes only that light (P8) | `memo_hit_rebuild_then_light_edit_rebakes_one_light` (fixture pipeline, budget below set) | achievable as stated |
+| P-D A, B, A: third build zero misses (P9) | `interleaved_maps_keep_each_record` | achievable as stated |
+| P-E Parse-failed build changes nothing (P10) | `parse_failed_build_leaves_record_unchanged` | achievable as stated |
+| P-F Small project stays at or below budget after each prune | `orphaning_builds_stay_within_budget` | achievable as stated |
+| M1 Per-stage wall time and busy cores before/after | Task 1 (R0) vs Task 12 (R3), `stats.sh` | manual (owner run) |
+| M2 Cold Lightmap Bake before/after lever 1 | Task 1 (R0c) vs Task 4 (R1c) | manual (owner run) |
+| M3 SH Bake before/after traversal alone | Task 8 run (R2, or R2b if lever 3 built) vs Task 12 (R3); nothing but lever 5 lands between | manual (owner run) |
+| M4 Total wall time before/after | R0 vs R3 | manual (owner run) |
+| M5 Direct SH Delta mean busy cores before/after | R0 vs R3 | manual (owner run) |
+| M6 Lever 3 gate finding and call | Task 8 (R2) | manual (owner run, executor tabulates) |
+| M7 Peak RSS before/after, after ≤ before; re-taken after lever 3 | R0 vs R3 (and R2b) | manual (owner run) |
+| M8 Second unchanged hallway build hits SH group, Delta SH, Direct SH Delta; first build's warning fires | Task 12, `-ReuseCacheDir` second build | manual (owner run) |
+| M9 Warning text, `--cache-max-size` help, `DEFAULT_MAX_BYTES` doc, `build_pipeline.md` state new rule | Task 6; log assertion test plus executor text review | manual (backed by test) |
+
+## Tasks
+
+Hallway runs (R*) use `measure-hallway.ps1` on this machine with nothing else running, from a clean checkout at the stated commit; results go to `evidence/windows-<label>/` per research §Baseline record. Every code task ends with the Task 0 digest diff and its focused tests.
+
+| # | Task | Owner | Depends on | Status |
+|---|---|---|---|---|
+| 0 | Before-bytes and tooling. Add `evidence/fixture-bytes.ps1`: builds release `prl-build` at a given checkout and bakes a fixture set (`GATE_FIXTURES` maps plus fixtures covering shadowmask selection, animated delta SH and a cut map) in four modes: cold `-j 1`, cold default `-j`, warm all-miss, warm all-hit; prints blake3 per `.prl`. Run on the pre-lever compiler; commit `evidence/fixture-digests-before.txt`. Add `-Cold` and `-ReuseCacheDir` to `measure-hallway.ps1`. | integrating executor | — | |
+| 1 | Baselines on the pre-lever compiler (1527f5b26 or any later commit with no compiler change): R0 warm, R0c cold (`-Cold`). Commit `windows-before/`, `windows-before-cold/`; fill the research table's Before column. R0 also supplies `lightmap-oversize-cells-and-faces`' unrecorded hallway RSS. | owner (two overnight runs) | 0 | |
+| 2 | Lever 1 core, the riskiest premise: sliding light window in both `bake_fused_prepared` loops (Corrections, second bullet); test-only window size; resident-partition tracker; I/O hold hook. Proves A3, A6, A7, A10, A14 and A1/A2 digests. | integrating executor | 0 | |
+| 3 | Lever 1 companions: chart cull by light bounds with culled charts still advancing progress (A12); per-layer face list built once; `probe_indices` hoisted per light; `atlas_layout_fingerprint` once per bake and `geometry_slice_hash` once per light; skip the `layer_input_hash` pre-pass with no cache; window term in `predicted_peak` (A11). | integrating executor | 2 | |
+| 4 | R1c: cold hallway run after lever 1 → M2 after. | owner (overnight) | 1, 3 | |
+| 5 | Lever 2 write path: A13 first (passes on today's code); then drop `sync_all`, stage each entry in one buffered write, remove `touch_for_lru`'s second open. Flat-directory measurement (Delegated answers). | integrating executor | 0 | |
+| 6 | Lever 2 prune rule: persisted per-map use record (journal appended as entries are touched, promoted to the map's record on success; prune spares every map's record plus its later journals); section-memo hits mark summarized partitions; spared-set warning; `--cache-max-size` help, `DEFAULT_MAX_BYTES` doc and `build_pipeline.md` §Build Cache updated, "not yet built" markers dropped. P-A..P-F, M9. | integrating executor | 5 | |
+| 7 | Lever 4 (optional, no AC): profile per-stage serial setup on `campaign-test` and the hallway up to SH; cut only what the profile shows; record the profile either way. Lands before Task 8 so lever 5's measurement isolates. | integrating executor | 6 | |
+| 8 | R2: warm hallway run after levers 1, 2 (and 4) → M6 table and build-or-skip call against 15 min; also M3 before if lever 3 is skipped. | owner (overnight); executor tabulates | 1, 7 | |
+| 9 | Lever 3, only if Task 8 clears the bar: overlap per Decisions (one foreground stage, one governor; SH family among itself, animated stages beside the fused walk; atlas preparation unmoved); A8, A9, A6 overlap case; re-derive the delta working-set factor if an SH-family stage overlaps; then R2b (M7 re-take, M3 before). Skipped otherwise, with the numbers recorded. | integrating executor; owner (R2b) | 8 | |
+| 10 | Lever 5 profile: `#[ignore]` harness timing one hallway SH group, bound-only query on `traverse_iterator` vs near-child-first walk with the (distance, depth-first leaf rank, triangle offset) tie key; pick the faster shape. | integrating executor | 8 (and 9 if built) | |
+| 11 | Lever 5: chosen traversal at all five sites (`sh_bake::closest_hit`, four `segment_clear`); A4, A5; digest diff. | integrating executor | 10 | |
+| 12 | R3: final warm hallway run, then a second unchanged build on the same cache (`-ReuseCacheDir`) → M1, M3 after, M4, M5, M7, M8. | owner (overnight) | 11 | |

@@ -9,10 +9,17 @@ use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 use std::{collections::HashMap, fmt};
 
-/// Default LRU size budget for the on-disk stage cache, in bytes (2 GiB).
-/// Pruned down to this at build start unless `--cache-max-size` overrides it.
-/// Content addressing never reclaims orphaned generations on its own, so this
-/// bound is what stops the cache from growing without limit.
+mod records;
+
+use records::{Journal, SparedSet};
+
+/// Default size budget for the on-disk stage cache, in bytes (2 GiB). The
+/// start-of-build prune spares every map's use record (the entries its last
+/// successful build read or wrote, plus every entry later builds of it read or
+/// wrote) and evicts everything else, oldest first, down to this budget unless
+/// `--cache-max-size` overrides it. Content addressing never reclaims orphaned
+/// generations on its own, so this bound is what stops the cache from growing
+/// without limit; the cache can still exceed it by the spared set.
 pub const DEFAULT_MAX_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
 /// Cache-entry format marker. Entries without this marker predate the 64-bit
@@ -68,6 +75,8 @@ pub struct StageCache {
     dir: Arc<PathBuf>,
     live_entries: Arc<Mutex<HashMap<[u8; HASH_BYTES], u64>>>,
     live_set_reported: Arc<AtomicBool>,
+    /// This build's use journal, when the cache was opened for a map.
+    journal: Option<Arc<Journal>>,
     #[cfg(test)]
     test_accesses: Arc<Mutex<HashMap<String, CacheTestAccess>>>,
 }
@@ -96,39 +105,40 @@ impl StageCache {
             dir: Arc::new(dir),
             live_entries: Arc::new(Mutex::new(HashMap::new())),
             live_set_reported: Arc::new(AtomicBool::new(false)),
+            journal: None,
             #[cfg(test)]
             test_accesses: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
-    /// Mark an entry as freshly used, so the LRU prune treats it as recent.
-    ///
-    /// The touch needs a handle of its own. Windows requires write access to set
-    /// a file time, and `File::open` yields a read-only one — so doing this
-    /// through the read handle fails with `Access is denied`, and because the
-    /// result is discarded, it failed silently for every cache hit on Windows.
-    /// The prune then ordered by write time rather than use time, evicting
-    /// exactly the long-stable entries this touch exists to protect.
-    ///
-    /// Opening the *read* handle for writing instead would be worse: a cache
-    /// directory the process may read but not write would stop being readable at
-    /// all. So the touch takes a second, short-lived handle and stays
-    /// best-effort — a failure here costs prune accuracy, never the read.
-    fn touch_for_lru(path: &Path) {
-        let _ = fs::OpenOptions::new()
-            .write(true)
-            .open(path)
-            .and_then(|entry| entry.set_modified(SystemTime::now()));
+    /// Open the cache for one build of the map at `input`: prune to `max_bytes`
+    /// while sparing every map's use record, then start this build's journal.
+    /// The prune reads the records before this build records anything, so it
+    /// spares the map's last success and any stopped build since.
+    pub fn open_for_build(
+        path: impl AsRef<Path>,
+        input: &Path,
+        max_bytes: u64,
+    ) -> io::Result<Self> {
+        let mut cache = Self::new(path)?;
+        cache.prune_to_budget(max_bytes);
+        match Journal::begin(cache.dir.as_path(), &records::map_id(input)) {
+            Ok(journal) => cache.journal = Some(Arc::new(journal)),
+            Err(err) => log::warn!(
+                "[cache] cannot start a use journal in {} ({err}); the next prune may evict this build's entries",
+                cache.dir.display()
+            ),
+        }
+        Ok(cache)
     }
 
     /// Load and validate an entry. Missing entries return `None` silently.
     /// Corrupted entries (short read, length mismatch, hash mismatch) log a
     /// warning and return `None` so the stage falls through to a rebuild.
     ///
-    /// A successful read bumps the entry's mtime to now so the LRU prune
-    /// (`prune_to_budget`) treats it as recently used. This is what keeps a
-    /// long-stable entry (one whose inputs never change, so it is hit every
-    /// build but never rewritten) from being evicted purely for being old.
+    /// A hit is recorded in this build's use journal, which is what keeps a
+    /// long-stable entry (hit every build, never rewritten) from eviction; the
+    /// read takes one open and never touches the entry's mtime.
     pub fn get(&self, key: &CacheKey) -> Option<Vec<u8>> {
         #[cfg(test)]
         self.record_test_read_attempt(key);
@@ -141,8 +151,6 @@ impl StageCache {
                 return None;
             }
         };
-
-        Self::touch_for_lru(&path);
 
         let mut header = [0u8; HEADER_BYTES];
         if let Err(err) = file.read_exact(&mut header) {
@@ -314,6 +322,49 @@ impl StageCache {
             .clear();
     }
 
+    /// Count an entry this build used without reading it: a section-memo hit
+    /// stands in for the per-light partitions it summarizes. A missing entry
+    /// is ignored.
+    pub fn mark_used(&self, key: &CacheKey) {
+        if let Ok(metadata) = fs::metadata(self.entry_path(key)) {
+            self.record_live_entry(key, metadata.len());
+        }
+    }
+
+    /// End a successful build: its read/write set replaces the map's use
+    /// record, superseding any stopped build's journal, then the spared-set
+    /// warning runs.
+    pub fn finish_successful_build(&self, budget_bytes: u64) {
+        if let Some(journal) = &self.journal {
+            let entries = self
+                .live_entries
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone();
+            if let Err(err) = journal.promote(&entries) {
+                log::warn!(
+                    "[cache] cannot record this build's entries in {} ({err}); the next prune may evict them",
+                    self.dir.display()
+                );
+            }
+        }
+        self.warn_if_live_set_exceeds(budget_bytes);
+    }
+
+    /// The entries the next prune spares: every map's record on disk plus
+    /// this build's read/write set.
+    fn spared_set(&self) -> SparedSet {
+        let mut spared = records::read_spared(self.dir.as_path());
+        spared.extend(
+            self.live_entries
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .iter()
+                .map(|(digest, &size)| (*digest, size)),
+        );
+        spared
+    }
+
     /// Unique cache entries successfully read or written by this build.
     pub fn live_set(&self) -> CacheLiveSet {
         let entries = self
@@ -326,33 +377,34 @@ impl StageCache {
         }
     }
 
-    /// Warn once when this build's deduplicated read/write live set is larger
-    /// than the configured cache budget. Reporting never prunes or changes the
-    /// build; it only explains why the next build may need to evict hot entries.
+    /// Warn once when the spared set (every map's use record plus this
+    /// build's read/write set) is larger than the configured cache budget.
+    /// The prune keeps the spared set whole, so the cache then outgrows its
+    /// budget. Reporting never prunes or changes the build.
     pub fn warn_if_live_set_exceeds(&self, budget_bytes: u64) {
-        let live = self.live_set();
-        if live.total_bytes <= budget_bytes
-            || self.live_set_reported.swap(true, AtomicOrdering::AcqRel)
-        {
+        let spared = self.spared_set();
+        let total = spared.values().copied().fold(0u64, u64::saturating_add);
+        if total <= budget_bytes || self.live_set_reported.swap(true, AtomicOrdering::AcqRel) {
             return;
         }
         log::warn!(
-            "[cache] build read/wrote {} across {} unique entries, exceeding cache budget {}; the next build may evict entries used by this build",
-            ByteCount(live.total_bytes),
-            live.entry_count,
+            "[cache] spared set {} across {} entries (every map's last-build record) exceeds cache budget {}; the cache keeps the spared set and evicts only entries outside it",
+            ByteCount(total),
+            spared.len(),
             ByteCount(budget_bytes),
         );
     }
 
-    /// Evict least-recently-used entries until the cache directory's total size
-    /// is at or below `max_bytes`. Run once at build start, before any bake
-    /// writes a fresh generation, so the directory stays bounded across builds.
+    /// Evict entries outside every map's use record, oldest write first, until
+    /// the cache directory's total size is at or below `max_bytes` or nothing
+    /// unspared remains. Run once at build start, before any bake writes a
+    /// fresh generation, so the directory stays bounded across builds.
     ///
-    /// Recency is the entry's mtime, which `get` bumps on every hit and `put`
-    /// sets on write — so "least recently used" means "longest since a build
-    /// last read or wrote it", which is exactly the orphaned-generation tail
-    /// that content addressing leaves behind. Within the same mtime, eviction
-    /// order is unspecified.
+    /// A spared entry is one a map's last successful build read or wrote, or
+    /// one a later build of that map read or wrote (see `records`). Everything
+    /// else is the orphaned-generation tail content addressing leaves behind,
+    /// aged by its write time. Within the same mtime, eviction order is
+    /// unspecified.
     ///
     /// Best-effort: any I/O error while scanning or deleting is logged and the
     /// prune moves on. A failure to reclaim enough never fails the build — the
@@ -371,6 +423,11 @@ impl StageCache {
                 return;
             }
         };
+
+        let spared: std::collections::HashSet<String> = records::read_spared(self.dir.as_path())
+            .keys()
+            .map(|digest| hex_encode(digest))
+            .collect();
 
         // Gather (mtime, size, path) for every entry file. Skip non-files and
         // in-flight `.tmp` stages; a metadata failure drops just that entry.
@@ -406,6 +463,10 @@ impl StageCache {
             let mtime = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
             let size = meta.len();
             total = total.saturating_add(size);
+            let name = dir_entry.file_name();
+            if spared.contains(name.to_string_lossy().as_ref()) {
+                continue;
+            }
             entries.push(Entry { mtime, size, path });
         }
 
@@ -439,7 +500,7 @@ impl StageCache {
 
         if removed > 0 {
             log::info!(
-                "[cache] prune: evicted {removed} LRU entries ({} reclaimed), now ~{} (budget {})",
+                "[cache] prune: evicted {removed} unspared entries ({} reclaimed), now ~{} (budget {})",
                 human_bytes(reclaimed),
                 human_bytes(total),
                 human_bytes(max_bytes),
@@ -519,10 +580,15 @@ impl StageCache {
     }
 
     fn record_live_entry(&self, key: &CacheKey, bytes: u64) {
-        self.live_entries
+        let first_use = self
+            .live_entries
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .insert(key.digest, bytes);
+            .insert(key.digest, bytes)
+            .is_none();
+        if first_use && let Some(journal) = &self.journal {
+            journal.append(&key.digest, bytes);
+        }
     }
 }
 
@@ -700,12 +766,13 @@ mod tests {
 
         capture.assert_logged_once(
             Level::Warn,
-            &format!("[cache] build read/wrote {total} ({})", human_bytes(total)),
+            &format!("[cache] spared set {total} ({})", human_bytes(total)),
         );
         capture.assert_logged_once(
             Level::Warn,
-            &format!("exceeding cache budget {budget} ({})", human_bytes(budget)),
+            &format!("exceeds cache budget {budget} ({})", human_bytes(budget)),
         );
+        capture.assert_not_logged(Level::Warn, "may evict");
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -719,7 +786,7 @@ mod tests {
 
         cache.warn_if_live_set_exceeds(u64::MAX);
 
-        capture.assert_not_logged(Level::Warn, "[cache] build read/wrote");
+        capture.assert_not_logged(Level::Warn, "[cache] spared set");
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -851,41 +918,6 @@ mod tests {
             .expect("set mtime");
     }
 
-    /// The LRU touch must actually move the entry's mtime on every platform.
-    ///
-    /// Regression: `get` performed the touch through its read handle, which
-    /// Windows rejects, and discarded the error — so every cache hit there left
-    /// the mtime untouched and `prune_to_budget` silently degraded from LRU to
-    /// FIFO. The prune-ordering tests below cover the *consequence*, but each
-    /// one also writes an mtime itself, so they could not distinguish a broken
-    /// touch from a broken helper. This asserts the mechanism directly.
-    #[test]
-    fn get_touch_moves_the_entry_mtime_through_a_writable_handle() {
-        let dir = fresh_temp_dir("touch_mechanism");
-        let cache = StageCache::new(&dir).expect("create cache dir");
-        let key = CacheKey::new("lightmap_layer", 1, b"touched");
-        cache.put(&key, b"payload");
-
-        let entry = dir.join(key.as_filename());
-        let stale = SystemTime::now() - std::time::Duration::from_secs(3600);
-        set_mtime(&entry, stale);
-
-        assert!(cache.get(&key).is_some(), "warm-up read must hit");
-
-        let after = fs::metadata(&entry)
-            .expect("entry metadata")
-            .modified()
-            .expect("entry mtime");
-        assert!(
-            after > stale,
-            "a cache hit must bump the entry mtime; it stayed at {stale:?}, \
-             which means the LRU touch silently did nothing and the prune \
-             orders by write time instead of use time",
-        );
-
-        let _ = fs::remove_dir_all(&dir);
-    }
-
     #[test]
     fn prune_evicts_least_recently_used_until_under_budget() {
         let dir = fresh_temp_dir("prune_lru");
@@ -933,42 +965,40 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
+    /// A hit is recorded in the build's use journal through its one read
+    /// handle: the entry's mtime is left alone, and the next build's prune
+    /// spares it even though it is the oldest entry in the directory.
     #[test]
-    fn get_refreshes_mtime_so_hot_entries_survive_prune() {
-        let dir = fresh_temp_dir("prune_touch");
-        let cache = StageCache::new(&dir).expect("create cache dir");
-
+    fn get_hit_is_recorded_without_touching_the_entry() {
+        let dir = fresh_temp_dir("hit_recorded");
+        let input = dir.join("map.map");
         let payload = vec![0u8; 100];
-        let entry_len = (HEADER_BYTES + payload.len()) as u64;
-        let now = SystemTime::now();
-
-        // `old` was written long ago; `new` more recently. Without a touch,
-        // a budget-for-one prune would evict `old`.
         let old = CacheKey::new("lightmap_layer", 1, b"old");
         let new = CacheKey::new("lightmap_layer", 1, b"new");
-        cache.put(&old, &payload);
-        set_mtime(
-            &dir.join(old.as_filename()),
-            now - std::time::Duration::from_secs(300),
-        );
-        cache.put(&new, &payload);
-        set_mtime(
-            &dir.join(new.as_filename()),
-            now - std::time::Duration::from_secs(100),
-        );
+        {
+            let seed = StageCache::new(&dir).expect("create cache dir");
+            seed.put(&old, &payload);
+            seed.put(&new, &payload);
+        }
+        let stale = SystemTime::now() - std::time::Duration::from_secs(3600);
+        set_mtime(&dir.join(old.as_filename()), stale);
 
-        // A hit on `old` bumps its mtime to ~now, making `new` the LRU victim.
-        assert!(cache.get(&old).is_some(), "warm-up read must hit");
+        let build = StageCache::open_for_build(&dir, &input, u64::MAX).expect("open build");
+        assert!(build.get(&old).is_some(), "warm-up read must hit");
+        let after = fs::metadata(dir.join(old.as_filename()))
+            .and_then(|metadata| metadata.modified())
+            .expect("entry mtime");
+        assert_eq!(after, stale, "a hit must not touch the entry");
+        build.finish_successful_build(u64::MAX);
 
-        cache.prune_to_budget(entry_len + 10); // room for exactly one entry
-
+        let next = StageCache::open_for_build(&dir, &input, 0).expect("open next build");
         assert!(
-            cache.get(&old).is_some(),
-            "the recently-read entry must survive even though it was written first"
+            next.get(&old).is_some(),
+            "the recorded hit must survive the prune"
         );
         assert!(
-            cache.get(&new).is_none(),
-            "the now-least-recently-used entry must be evicted"
+            next.get(&new).is_none(),
+            "the unrecorded entry must be evicted"
         );
         let _ = fs::remove_dir_all(&dir);
     }

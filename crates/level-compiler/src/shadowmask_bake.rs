@@ -279,6 +279,15 @@ pub(crate) fn prepare_fused_shadowmask<'a>(
     if let (Some(cache), Some(key)) = (cache, section_key.as_ref()) {
         if let Some(memo) = read_shadowmask_memo(cache, key, selection, shared) {
             log::info!("[cache] shadowmask_atlas hit");
+            // The memo stands in for the selected partitions it summarizes;
+            // the next prune must keep them as the fallback for a light edit.
+            for hash in &layer_input_hashes {
+                cache.mark_used(&CacheKey::new(
+                    "lightmap_layer",
+                    lightmap_layer::LAYER_FORMAT_VERSION,
+                    hash,
+                ));
+            }
             control.governor().checkpoint();
             control.advance(fused_total);
             return Ok(FusedShadowmaskPlan {

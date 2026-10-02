@@ -526,3 +526,69 @@ fn lightmap_window_cache_io_holds_no_permit() {
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
+
+// P8: a no-edit rebuild hits both section memos and reads no partition, yet its
+// use record keeps every partition the memos summarize. The next build's
+// prune, under a budget smaller than the set, spares them, so a one-light edit
+// re-bakes only that light.
+#[test]
+fn memo_hit_rebuild_then_light_edit_rebakes_one_light() {
+    // Lights 0 and 1 are shadow-selected; light 2 is protected only by the
+    // lightmap memo's mark, and light 3 is the one edited.
+    let lights = window_lights(4);
+    let root = fresh_cache_dir("memo_record");
+    let input = root.join("fixture.map");
+    let cache_dir = root.join("cache");
+    let args = crate::parse_args_from(
+        [
+            input.to_string_lossy().into_owned(),
+            "--verbose".to_owned(),
+            "--soft-shadow-samples".to_owned(),
+            "4".to_owned(),
+            "--cache-dir".to_owned(),
+            cache_dir.to_string_lossy().into_owned(),
+            "--cache-max-size".to_owned(),
+            "1".to_owned(),
+        ]
+        .into_iter(),
+    )
+    .expect("memo record arguments");
+    let build = |lights: &[MapLight]| {
+        let cache = crate::construct_stage_cache(&args).expect("cache enabled");
+        bake_window(
+            lights,
+            Some(&cache),
+            &sized(2),
+            Arc::new(Governor::new(4, false)),
+            &StageProgress::indeterminate(),
+        );
+        let section_hit = cache.test_access("lightmap_section").read_hits == 1;
+        let shadowmask_hit = cache.test_access("shadowmask_atlas").read_hits == 1;
+        let layers = cache.test_access("lightmap_layer");
+        cache.finish_successful_build(1);
+        (section_hit, shadowmask_hit, layers)
+    };
+
+    let (_, _, first) = build(&lights);
+    assert_eq!(first.writes, lights.len());
+
+    let (section_hit, shadowmask_hit, rebuild) = build(&lights);
+    assert!(section_hit && shadowmask_hit, "both memos must hit");
+    assert_eq!(rebuild.read_attempts, 0, "memo hits read no partition");
+
+    let mut edited = lights.clone();
+    edited[3].intensity = 0.5;
+    let (section_hit, _, after_edit) = build(&edited);
+    assert!(!section_hit, "the edit must miss the lightmap memo");
+    assert_eq!(
+        after_edit.read_hits,
+        lights.len() - 1,
+        "unedited lights hit"
+    );
+    assert_eq!(
+        after_edit.read_attempts - after_edit.read_hits,
+        1,
+        "only the edited light re-bakes"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}

@@ -583,12 +583,12 @@ fn successful_plain_cache_budget_warning_precedes_exact_final_tally() {
     let over_stderr = String::from_utf8_lossy(&over_budget.stderr);
     assert_eq!(warning_count(&over_stdout), 1);
     assert_eq!(
-        count_occurrences(&over_stdout, "[cache] build read/wrote"),
+        count_occurrences(&over_stdout, "[cache] spared set"),
         1,
         "the final warning history must contain one cache-budget record:\n{over_stdout}"
     );
     assert_eq!(
-        count_occurrences(&over_stderr, "[cache] build read/wrote"),
+        count_occurrences(&over_stderr, "[cache] spared set"),
         1,
         "the live plain stream must emit the cache-budget record once:\n{over_stderr}"
     );
@@ -608,12 +608,12 @@ fn successful_plain_cache_budget_warning_precedes_exact_final_tally() {
             "{name} must finish with a silent warning tally:\n{stdout}"
         );
         assert_eq!(
-            count_occurrences(&stdout, "[cache] build read/wrote"),
+            count_occurrences(&stdout, "[cache] spared set"),
             0,
             "{name} final warning history must omit the cache-budget warning:\n{stdout}"
         );
         assert_eq!(
-            count_occurrences(&stderr, "[cache] build read/wrote"),
+            count_occurrences(&stderr, "[cache] spared set"),
             0,
             "{name} live stream must omit the cache-budget warning:\n{stderr}"
         );

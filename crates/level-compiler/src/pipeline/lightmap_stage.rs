@@ -303,11 +303,22 @@ pub(crate) fn bake_fused_windowed(
             }
         });
     let compose_lightmap = cached_section.is_none();
-    if stage_cache.is_some() {
+    if let Some(cache) = stage_cache {
         log::info!(
             "[cache] lightmap_section {}",
             if compose_lightmap { "miss" } else { "hit" }
         );
+        if !compose_lightmap {
+            // The memo stands in for every partition it summarizes; the next
+            // prune must keep them as the recompose fallback for a light edit.
+            for hash in &layer_input_hashes {
+                cache.mark_used(&CacheKey::new(
+                    "lightmap_layer",
+                    lightmap_layer::LAYER_FORMAT_VERSION,
+                    hash,
+                ));
+            }
+        }
     }
 
     let section = if let Some(section) = cached_section {

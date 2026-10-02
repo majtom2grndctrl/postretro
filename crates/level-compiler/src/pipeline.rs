@@ -2127,7 +2127,7 @@ fn run_after_parsing(
     );
 
     if let Some(cache) = stage_cache.as_ref() {
-        cache.warn_if_live_set_exceeds(args.cache_max_bytes);
+        cache.finish_successful_build(args.cache_max_bytes);
     }
     reporter.finalize(&timings, started.elapsed());
 

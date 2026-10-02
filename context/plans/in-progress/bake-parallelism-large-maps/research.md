@@ -35,14 +35,16 @@ What to do with a finished `measure-hallway.ps1` run. The before run happens onc
 
 | Number | Source | Acceptance row | Before | After |
 |---|---|---|---|---|
-| Total wall time | `summary.txt` | Total wall time | | |
-| SH Bake wall time | Build Summary | SH Bake, traversal change alone | | |
-| Wall time: Lightmap Bake, AnimWeightMaps, ShadowmaskAtlas, Delta SH, Direct SH Delta, Animated Direct | Build Summary | Per-stage wall time and busy cores | | |
-| Mean busy cores per stage above | `stats.sh` | Per-stage wall time and busy cores | | |
-| Mean busy cores, Direct SH Delta Bake | `stats.sh` | Direct SH Delta busy cores | | |
-| Peak working set | `summary.txt` | Peak RSS | | |
-| Mean busy cores, whole build | `summary.txt` | Context | | |
-| Cache size at exit | `summary.txt` | Context for the prune rule | | |
+| Total wall time | `summary.txt` | Total wall time | 19,387.7 s (5 h 23 m) | |
+| SH Bake wall time | Build Summary | SH Bake, traversal change alone | 11,535.7 s | |
+| Wall time: Lightmap Bake, AnimWeightMaps, ShadowmaskAtlas, Delta SH, Direct SH Delta, Animated Direct | Build Summary | Per-stage wall time and busy cores | 6,310.9 / 664.4 / 210.2 / 150.7 / 321.8 / 24.9 s | |
+| Mean busy cores per stage above | `stats.sh` | Per-stage wall time and busy cores | Lightmap Bake + ShadowmaskAtlas 2.88 (one sampler label, see note) / AnimWeightMaps 1.00 / Delta SH 4.35 / Direct SH Delta 0.67 / Animated Direct 1.34 (3 samples) | |
+| Mean busy cores, Direct SH Delta Bake | `stats.sh` | Direct SH Delta busy cores | 0.67 (p50 0.95, 33 samples) | |
+| Peak working set | `summary.txt` | Peak RSS | 3.62 GiB (3,799,832 KB) | |
+| Mean busy cores, whole build | `summary.txt` | Context | 3.95 of 5 permits | |
+| Cache size at exit | `summary.txt` | Context for the prune rule | 233,110 files, 12.76 GiB | |
+
+**Before run (R0).** `evidence/windows-before/`, the owner's run of 2026-10-01 at 83489c52b. Between it and the pre-lever compiler (1527f5b26) only `level-loader` test code and a doc comment changed, so it is the pre-lever bake. SH Bake ran at 4.86 of 5 permits (sampler label "SH volume bake"). The fused walk's 6,521 s carry one sampler label, "Shadowmask atlas bake", because both stages begin together and the sampler keeps the latest label; its 2.88 cores cover Lightmap Bake and ShadowmaskAtlas together.
 
 **Not covered by this run.**
 - The cold Lightmap Bake row: a separate run with `prl-build --release` on the same binary, before lever 1 lands.

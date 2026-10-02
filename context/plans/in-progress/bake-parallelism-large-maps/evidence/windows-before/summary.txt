@@ -1,0 +1,463 @@
+exit_code: 0
+wall_s: 19387.7 (05:23:08)
+cpu_s: 76591.4 (user + kernel)
+mean_busy_cores: 3.95
+peak_working_set_kb: 3799832 (3.62 GiB; GetProcessMemoryInfo after exit)
+cache_dir: C:\Users\danhi\Projects\Personal\postretro\target\bake-measure\hallway-20261001-133103\prl-cache (233110 files, 12.76 GiB)
+
+Build Summary:
+  Parsing           0.76s
+  DataScript        1.08s
+  TexValidation     0.02s
+  Partitioning      0.27s
+  Visibility        0.02s
+  Geometry          0.01s
+  BVH Build         0.01s
+  Cell Visibility   0.32s
+  NavMesh           2.49s
+  SH Bake         11535.72s
+  Delta SH Bake   150.72s
+  Direct SH Bake   22.74s
+  Animated Direct SH Bake  24.85s
+  EntityShadowLights   0.06s
+  Direct SH Delta Bake 321.84s
+  Billboard Direct Scatter Bake  21.79s
+  ChunkLightList    1.76s
+  Atlas Preparation   0.19s
+  Cell Residency Set   8.99s
+  Lightmap Bake   6310.85s
+  ShadowmaskAtlas 210.16s
+  AnimLightChunks   0.58s
+  AnimWeightMaps  664.42s
+  TextureMips       1.11s
+  ClusterDirectory   2.03s
+  Packing          82.92s
+  Total           19387.37s
+
+Warnings: 425
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 69 (tex '50-free-textures/concrete_stone_029') wins over brush 910 (tex '50-free-textures/concrete_stone_021'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 104 (tex '50-free-textures/concrete_stone_027') wins over brush 912 (tex '50-free-textures/concrete_stone_021'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 95 (tex '50-free-textures/concrete_stone_025') wins over brush 912 (tex '50-free-textures/concrete_stone_021'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 914 (tex '50-free-textures/concrete_stone_021') wins over brush 147 (tex '50-free-textures/concrete_stone_027'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 914 (tex '50-free-textures/concrete_stone_021') wins over brush 154 (tex '50-free-textures/concrete_stone_029'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 924 (tex '50-free-textures/concrete_stone_021') wins over brush 9 (tex '50-free-textures/concrete_stone_023'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 924 (tex '50-free-textures/concrete_stone_021') wins over brush 16 (tex '50-free-textures/concrete_stone_025'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 114 (tex '50-free-textures/concrete_stone_029') wins over brush 930 (tex '50-free-textures/concrete_stone_021'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 107 (tex '50-free-textures/concrete_stone_027') wins over brush 930 (tex '50-free-textures/concrete_stone_021'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 932 (tex '50-free-textures/concrete_stone_021') wins over brush 157 (tex '50-free-textures/concrete_stone_029'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 24 (tex '50-free-textures/concrete_stone_027') wins over brush 942 (tex '50-free-textures/concrete_stone_021'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 19 (tex '50-free-textures/concrete_stone_025') wins over brush 942 (tex '50-free-textures/concrete_stone_021'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 117 (tex '50-free-textures/concrete_stone_029') wins over brush 944 (tex '50-free-textures/concrete_stone_021'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 946 (tex '50-free-textures/concrete_stone_021') wins over brush 174 (tex '50-free-textures/concrete_stone_023'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 954 (tex '50-free-textures/concrete_stone_021') wins over brush 27 (tex '50-free-textures/concrete_stone_027'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 954 (tex '50-free-textures/concrete_stone_021') wins over brush 32 (tex '50-free-textures/concrete_stone_029'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 958 (tex '50-free-textures/concrete_stone_021') wins over brush 177 (tex '50-free-textures/concrete_stone_023'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 958 (tex '50-free-textures/concrete_stone_021') wins over brush 182 (tex '50-free-textures/concrete_stone_025'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 35 (tex '50-free-textures/concrete_stone_029') wins over brush 966 (tex '50-free-textures/concrete_stone_021'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 138 (tex '50-free-textures/concrete_stone_025') wins over brush 972 (tex '50-free-textures/concrete_stone_021'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 131 (tex '50-free-textures/concrete_stone_023') wins over brush 972 (tex '50-free-textures/concrete_stone_021'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 192 (tex '50-free-textures/concrete_stone_027') wins over brush 974 (tex '50-free-textures/concrete_stone_021'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 185 (tex '50-free-textures/concrete_stone_025') wins over brush 974 (tex '50-free-textures/concrete_stone_021'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 984 (tex '50-free-textures/concrete_stone_021') wins over brush 48 (tex '50-free-textures/concrete_stone_023'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 56 (tex '50-free-textures/concrete_stone_025') wins over brush 986 (tex '50-free-textures/concrete_stone_021'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 13 (tex '50-free-textures/concrete_stone_023') wins over brush 986 (tex '50-free-textures/concrete_stone_021'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 996 (tex '50-free-textures/concrete_stone_021') wins over brush 72 (tex '50-free-textures/concrete_stone_029'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 51 (tex '50-free-textures/concrete_stone_023') wins over brush 996 (tex '50-free-textures/concrete_stone_021'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 59 (tex '50-free-textures/concrete_stone_025') wins over brush 998 (tex '50-free-textures/concrete_stone_021'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 88 (tex '50-free-textures/concrete_stone_023') wins over brush 1000 (tex '50-free-textures/concrete_stone_021'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 65 (tex '50-free-textures/concrete_stone_027') wins over brush 1000 (tex '50-free-textures/concrete_stone_021'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 1002 (tex '50-free-textures/concrete_stone_021') wins over brush 98 (tex '50-free-textures/concrete_stone_025'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 75 (tex '50-free-textures/concrete_stone_029') wins over brush 1002 (tex '50-free-textures/concrete_stone_021'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 1012 (tex '50-free-textures/concrete_stone_021') wins over brush 91 (tex '50-free-textures/concrete_stone_023'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 1012 (tex '50-free-textures/concrete_stone_021') wins over brush 142 (tex '50-free-textures/concrete_stone_025'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 1014 (tex '50-free-textures/concrete_stone_021') wins over brush 150 (tex '50-free-textures/concrete_stone_027'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 101 (tex '50-free-textures/concrete_stone_025') wins over brush 1014 (tex '50-free-textures/concrete_stone_021'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 160 (tex '50-free-textures/concrete_stone_029') wins over brush 1016 (tex '50-free-textures/concrete_stone_021'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 111 (tex '50-free-textures/concrete_stone_027') wins over brush 1016 (tex '50-free-textures/concrete_stone_021'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 121 (tex '50-free-textures/concrete_stone_029') wins over brush 1018 (tex '50-free-textures/concrete_stone_021'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 188 (tex '50-free-textures/concrete_stone_025') wins over brush 1022 (tex '50-free-textures/concrete_stone_021'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 135 (tex '50-free-textures/concrete_stone_023') wins over brush 1022 (tex '50-free-textures/concrete_stone_021'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 906 (tex '50-free-textures/concrete_stone_021') wins over brush 1031 (tex '50-free-textures/concrete_stone_023'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 1032 (tex '50-free-textures/concrete_stone_023') wins over brush 217 (tex '50-free-textures/concrete_stone_029'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 1032 (tex '50-free-textures/concrete_stone_023') wins over brush 224 (tex '50-free-textures/concrete_stone_021'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 334 (tex '50-free-textures/concrete_stone_025') wins over brush 1036 (tex '50-free-textures/concrete_stone_023'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 914 (tex '50-free-textures/concrete_stone_021') wins over brush 1039 (tex '50-free-textures/concrete_stone_023'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 924 (tex '50-free-textures/concrete_stone_021') wins over brush 1049 (tex '50-free-textures/concrete_stone_023'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 282 (tex '50-free-textures/concrete_stone_025') wins over brush 1052 (tex '50-free-textures/concrete_stone_023'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 932 (tex '50-free-textures/concrete_stone_021') wins over brush 1057 (tex '50-free-textures/concrete_stone_023'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 942 (tex '50-free-textures/concrete_stone_021') wins over brush 1067 (tex '50-free-textures/concrete_stone_023'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 240 (tex '50-free-textures/concrete_stone_025') wins over brush 1068 (tex '50-free-textures/concrete_stone_023'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 294 (tex '50-free-textures/concrete_stone_027') wins over brush 1070 (tex '50-free-textures/concrete_stone_023'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 285 (tex '50-free-textures/concrete_stone_025') wins over brush 1070 (tex '50-free-textures/concrete_stone_023'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 354 (tex '50-free-textures/concrete_stone_029') wins over brush 1072 (tex '50-free-textures/concrete_stone_023'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 345 (tex '50-free-textures/concrete_stone_027') wins over brush 1072 (tex '50-free-textures/concrete_stone_023'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 406 (tex '50-free-textures/concrete_stone_021') wins over brush 1074 (tex '50-free-textures/concrete_stone_023'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 397 (tex '50-free-textures/concrete_stone_029') wins over brush 1074 (tex '50-free-textures/concrete_stone_023'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 946 (tex '50-free-textures/concrete_stone_021') wins over brush 1075 (tex '50-free-textures/concrete_stone_023'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 453 (tex '50-free-textures/concrete_stone_021') wins over brush 1076 (tex '50-free-textures/concrete_stone_023'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 954 (tex '50-free-textures/concrete_stone_021') wins over brush 1085 (tex '50-free-textures/concrete_stone_023'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 1086 (tex '50-free-textures/concrete_stone_023') wins over brush 243 (tex '50-free-textures/concrete_stone_025'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 1086 (tex '50-free-textures/concrete_stone_023') wins over brush 248 (tex '50-free-textures/concrete_stone_027'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 304 (tex '50-free-textures/concrete_stone_029') wins over brush 1088 (tex '50-free-textures/concrete_stone_023'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 297 (tex '50-free-textures/concrete_stone_027') wins over brush 1088 (tex '50-free-textures/concrete_stone_023'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 409 (tex '50-free-textures/concrete_stone_021') wins over brush 1092 (tex '50-free-textures/concrete_stone_023'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 958 (tex '50-free-textures/concrete_stone_021') wins over brush 1093 (tex '50-free-textures/concrete_stone_023'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 1094 (tex '50-free-textures/concrete_stone_023') wins over brush 470 (tex '50-free-textures/concrete_stone_025'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 966 (tex '50-free-textures/concrete_stone_021') wins over brush 1103 (tex '50-free-textures/concrete_stone_023'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 258 (tex '50-free-textures/concrete_stone_029') wins over brush 1104 (tex '50-free-textures/concrete_stone_023'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 251 (tex '50-free-textures/concrete_stone_027') wins over brush 1104 (tex '50-free-textures/concrete_stone_023'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 316 (tex '50-free-textures/concrete_stone_021') wins over brush 1106 (tex '50-free-textures/concrete_stone_023'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 307 (tex '50-free-textures/concrete_stone_029') wins over brush 1106 (tex '50-free-textures/concrete_stone_023'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 1110 (tex '50-free-textures/concrete_stone_023') wins over brush 430 (tex '50-free-textures/concrete_stone_025'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 974 (tex '50-free-textures/concrete_stone_021') wins over brush 1111 (tex '50-free-textures/concrete_stone_023'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 1112 (tex '50-free-textures/concrete_stone_023') wins over brush 473 (tex '50-free-textures/concrete_stone_025'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 1112 (tex '50-free-textures/concrete_stone_023') wins over brush 480 (tex '50-free-textures/concrete_stone_027'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 984 (tex '50-free-textures/concrete_stone_021') wins over brush 1121 (tex '50-free-textures/concrete_stone_023'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 1122 (tex '50-free-textures/concrete_stone_023') wins over brush 266 (tex '50-free-textures/concrete_stone_021'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 221 (tex '50-free-textures/concrete_stone_029') wins over brush 1122 (tex '50-free-textures/concrete_stone_023'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 229 (tex '50-free-textures/concrete_stone_021') wins over brush 1124 (tex '50-free-textures/concrete_stone_023'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 288 (tex '50-free-textures/concrete_stone_025') wins over brush 1126 (tex '50-free-textures/concrete_stone_023'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 310 (tex '50-free-textures/concrete_stone_029') wins over brush 1130 (tex '50-free-textures/concrete_stone_023'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 255 (tex '50-free-textures/concrete_stone_027') wins over brush 1130 (tex '50-free-textures/concrete_stone_023'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 994 (tex '50-free-textures/concrete_stone_021') wins over brush 1131 (tex '50-free-textures/concrete_stone_023'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 996 (tex '50-free-textures/concrete_stone_021') wins over brush 1133 (tex '50-free-textures/concrete_stone_023'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 269 (tex '50-free-textures/concrete_stone_021') wins over brush 1134 (tex '50-free-textures/concrete_stone_023'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 1136 (tex '50-free-textures/concrete_stone_023') wins over brush 338 (tex '50-free-textures/concrete_stone_025'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 1138 (tex '50-free-textures/concrete_stone_023') wins over brush 348 (tex '50-free-textures/concrete_stone_027'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 291 (tex '50-free-textures/concrete_stone_025') wins over brush 1138 (tex '50-free-textures/concrete_stone_023'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 358 (tex '50-free-textures/concrete_stone_029') wins over brush 1140 (tex '50-free-textures/concrete_stone_023'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 301 (tex '50-free-textures/concrete_stone_027') wins over brush 1140 (tex '50-free-textures/concrete_stone_023'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 1142 (tex '50-free-textures/concrete_stone_023') wins over brush 366 (tex '50-free-textures/concrete_stone_021'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 313 (tex '50-free-textures/concrete_stone_029') wins over brush 1142 (tex '50-free-textures/concrete_stone_023'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 1000 (tex '50-free-textures/concrete_stone_021') wins over brush 1143 (tex '50-free-textures/concrete_stone_023'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 321 (tex '50-free-textures/concrete_stone_021') wins over brush 1144 (tex '50-free-textures/concrete_stone_023'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 1002 (tex '50-free-textures/concrete_stone_021') wins over brush 1145 (tex '50-free-textures/concrete_stone_023'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 1146 (tex '50-free-textures/concrete_stone_023') wins over brush 382 (tex '50-free-textures/concrete_stone_025'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 390 (tex '50-free-textures/concrete_stone_027') wins over brush 1148 (tex '50-free-textures/concrete_stone_023'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 341 (tex '50-free-textures/concrete_stone_025') wins over brush 1148 (tex '50-free-textures/concrete_stone_023'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 400 (tex '50-free-textures/concrete_stone_029') wins over brush 1150 (tex '50-free-textures/concrete_stone_023'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 351 (tex '50-free-textures/concrete_stone_027') wins over brush 1150 (tex '50-free-textures/concrete_stone_023'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 1152 (tex '50-free-textures/concrete_stone_023') wins over brush 361 (tex '50-free-textures/concrete_stone_029'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 1152 (tex '50-free-textures/concrete_stone_023') wins over brush 412 (tex '50-free-textures/concrete_stone_021'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 369 (tex '50-free-textures/concrete_stone_021') wins over brush 1154 (tex '50-free-textures/concrete_stone_023'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 1012 (tex '50-free-textures/concrete_stone_021') wins over brush 1155 (tex '50-free-textures/concrete_stone_023'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 1156 (tex '50-free-textures/concrete_stone_023') wins over brush 434 (tex '50-free-textures/concrete_stone_025'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 1014 (tex '50-free-textures/concrete_stone_021') wins over brush 1157 (tex '50-free-textures/concrete_stone_023'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 1158 (tex '50-free-textures/concrete_stone_023') wins over brush 442 (tex '50-free-textures/concrete_stone_027'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 385 (tex '50-free-textures/concrete_stone_025') wins over brush 1158 (tex '50-free-textures/concrete_stone_023'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 1160 (tex '50-free-textures/concrete_stone_023') wins over brush 448 (tex '50-free-textures/concrete_stone_029'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 393 (tex '50-free-textures/concrete_stone_027') wins over brush 1160 (tex '50-free-textures/concrete_stone_023'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 1162 (tex '50-free-textures/concrete_stone_023') wins over brush 456 (tex '50-free-textures/concrete_stone_021'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 403 (tex '50-free-textures/concrete_stone_029') wins over brush 1162 (tex '50-free-textures/concrete_stone_023'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 415 (tex '50-free-textures/concrete_stone_021') wins over brush 1164 (tex '50-free-textures/concrete_stone_023'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 1166 (tex '50-free-textures/concrete_stone_023') wins over brush 476 (tex '50-free-textures/concrete_stone_025'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 1024 (tex '50-free-textures/concrete_stone_021') wins over brush 1167 (tex '50-free-textures/concrete_stone_023'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 484 (tex '50-free-textures/concrete_stone_027') wins over brush 1168 (tex '50-free-textures/concrete_stone_023'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 437 (tex '50-free-textures/concrete_stone_025') wins over brush 1168 (tex '50-free-textures/concrete_stone_023'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 1032 (tex '50-free-textures/concrete_stone_023') wins over brush 1175 (tex '50-free-textures/concrete_stone_025'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 1176 (tex '50-free-textures/concrete_stone_025') wins over brush 507 (tex '50-free-textures/concrete_stone_029'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 1176 (tex '50-free-textures/concrete_stone_025') wins over brush 512 (tex '50-free-textures/concrete_stone_021'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 611 (tex '50-free-textures/concrete_stone_023') wins over brush 1180 (tex '50-free-textures/concrete_stone_025'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 1040 (tex '50-free-textures/concrete_stone_023') wins over brush 1183 (tex '50-free-textures/concrete_stone_025'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 722 (tex '50-free-textures/concrete_stone_029') wins over brush 1184 (tex '50-free-textures/concrete_stone_025'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 715 (tex '50-free-textures/concrete_stone_027') wins over brush 1184 (tex '50-free-textures/concrete_stone_025'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 1050 (tex '50-free-textures/concrete_stone_023') wins over brush 1193 (tex '50-free-textures/concrete_stone_025'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 522 (tex '50-free-textures/concrete_stone_023') wins over brush 1194 (tex '50-free-textures/concrete_stone_025'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 515 (tex '50-free-textures/concrete_stone_021') wins over brush 1194 (tex '50-free-textures/concrete_stone_025'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 557 (tex '50-free-textures/concrete_stone_023') wins over brush 1196 (tex '50-free-textures/concrete_stone_025'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 628 (tex '50-free-textures/concrete_stone_027') wins over brush 1198 (tex '50-free-textures/concrete_stone_025'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 678 (tex '50-free-textures/concrete_stone_029') wins over brush 1200 (tex '50-free-textures/concrete_stone_025'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 673 (tex '50-free-textures/concrete_stone_027') wins over brush 1200 (tex '50-free-textures/concrete_stone_025'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 1058 (tex '50-free-textures/concrete_stone_023') wins over brush 1201 (tex '50-free-textures/concrete_stone_025'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 1202 (tex '50-free-textures/concrete_stone_025') wins over brush 725 (tex '50-free-textures/concrete_stone_029'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 1202 (tex '50-free-textures/concrete_stone_025') wins over brush 730 (tex '50-free-textures/concrete_stone_021'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 1068 (tex '50-free-textures/concrete_stone_023') wins over brush 1211 (tex '50-free-textures/concrete_stone_025'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 576 (tex '50-free-textures/concrete_stone_027') wins over brush 1214 (tex '50-free-textures/concrete_stone_025'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 640 (tex '50-free-textures/concrete_stone_029') wins over brush 1216 (tex '50-free-textures/concrete_stone_025'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 631 (tex '50-free-textures/concrete_stone_027') wins over brush 1216 (tex '50-free-textures/concrete_stone_025'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 1076 (tex '50-free-textures/concrete_stone_023') wins over brush 1219 (tex '50-free-textures/concrete_stone_025'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 740 (tex '50-free-textures/concrete_stone_023') wins over brush 1220 (tex '50-free-textures/concrete_stone_025'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 733 (tex '50-free-textures/concrete_stone_021') wins over brush 1220 (tex '50-free-textures/concrete_stone_025'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 1086 (tex '50-free-textures/concrete_stone_023') wins over brush 1229 (tex '50-free-textures/concrete_stone_025'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 1230 (tex '50-free-textures/concrete_stone_025') wins over brush 536 (tex '50-free-textures/concrete_stone_027'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 588 (tex '50-free-textures/concrete_stone_029') wins over brush 1232 (tex '50-free-textures/concrete_stone_025'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 579 (tex '50-free-textures/concrete_stone_027') wins over brush 1232 (tex '50-free-textures/concrete_stone_025'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 1094 (tex '50-free-textures/concrete_stone_023') wins over brush 1237 (tex '50-free-textures/concrete_stone_025'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 1238 (tex '50-free-textures/concrete_stone_025') wins over brush 743 (tex '50-free-textures/concrete_stone_023'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 1104 (tex '50-free-textures/concrete_stone_023') wins over brush 1247 (tex '50-free-textures/concrete_stone_025'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 600 (tex '50-free-textures/concrete_stone_021') wins over brush 1250 (tex '50-free-textures/concrete_stone_025'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 591 (tex '50-free-textures/concrete_stone_029') wins over brush 1250 (tex '50-free-textures/concrete_stone_025'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 697 (tex '50-free-textures/concrete_stone_023') wins over brush 1254 (tex '50-free-textures/concrete_stone_025'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 1112 (tex '50-free-textures/concrete_stone_023') wins over brush 1255 (tex '50-free-textures/concrete_stone_025'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 758 (tex '50-free-textures/concrete_stone_027') wins over brush 1256 (tex '50-free-textures/concrete_stone_025'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 1122 (tex '50-free-textures/concrete_stone_023') wins over brush 1265 (tex '50-free-textures/concrete_stone_025'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 560 (tex '50-free-textures/concrete_stone_023') wins over brush 1268 (tex '50-free-textures/concrete_stone_025'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 519 (tex '50-free-textures/concrete_stone_021') wins over brush 1268 (tex '50-free-textures/concrete_stone_025'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 582 (tex '50-free-textures/concrete_stone_027') wins over brush 1272 (tex '50-free-textures/concrete_stone_025'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 594 (tex '50-free-textures/concrete_stone_029') wins over brush 1274 (tex '50-free-textures/concrete_stone_025'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 541 (tex '50-free-textures/concrete_stone_027') wins over brush 1274 (tex '50-free-textures/concrete_stone_025'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 1132 (tex '50-free-textures/concrete_stone_023') wins over brush 1275 (tex '50-free-textures/concrete_stone_025'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 604 (tex '50-free-textures/concrete_stone_021') wins over brush 1276 (tex '50-free-textures/concrete_stone_025'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 547 (tex '50-free-textures/concrete_stone_029') wins over brush 1276 (tex '50-free-textures/concrete_stone_025'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 1134 (tex '50-free-textures/concrete_stone_023') wins over brush 1277 (tex '50-free-textures/concrete_stone_025'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 1278 (tex '50-free-textures/concrete_stone_025') wins over brush 614 (tex '50-free-textures/concrete_stone_023'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 553 (tex '50-free-textures/concrete_stone_021') wins over brush 1278 (tex '50-free-textures/concrete_stone_025'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 563 (tex '50-free-textures/concrete_stone_023') wins over brush 1280 (tex '50-free-textures/concrete_stone_025'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 1282 (tex '50-free-textures/concrete_stone_025') wins over brush 634 (tex '50-free-textures/concrete_stone_027'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 1284 (tex '50-free-textures/concrete_stone_025') wins over brush 644 (tex '50-free-textures/concrete_stone_029'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 585 (tex '50-free-textures/concrete_stone_027') wins over brush 1284 (tex '50-free-textures/concrete_stone_025'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 1286 (tex '50-free-textures/concrete_stone_025') wins over brush 652 (tex '50-free-textures/concrete_stone_021'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 597 (tex '50-free-textures/concrete_stone_029') wins over brush 1286 (tex '50-free-textures/concrete_stone_025'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 1144 (tex '50-free-textures/concrete_stone_023') wins over brush 1287 (tex '50-free-textures/concrete_stone_025'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 1288 (tex '50-free-textures/concrete_stone_025') wins over brush 607 (tex '50-free-textures/concrete_stone_021'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 1288 (tex '50-free-textures/concrete_stone_025') wins over brush 660 (tex '50-free-textures/concrete_stone_023'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 1146 (tex '50-free-textures/concrete_stone_023') wins over brush 1289 (tex '50-free-textures/concrete_stone_025'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 1294 (tex '50-free-textures/concrete_stone_025') wins over brush 682 (tex '50-free-textures/concrete_stone_029'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 637 (tex '50-free-textures/concrete_stone_027') wins over brush 1294 (tex '50-free-textures/concrete_stone_025'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 690 (tex '50-free-textures/concrete_stone_021') wins over brush 1296 (tex '50-free-textures/concrete_stone_025'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 647 (tex '50-free-textures/concrete_stone_029') wins over brush 1296 (tex '50-free-textures/concrete_stone_025'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 700 (tex '50-free-textures/concrete_stone_023') wins over brush 1298 (tex '50-free-textures/concrete_stone_025'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 655 (tex '50-free-textures/concrete_stone_021') wins over brush 1298 (tex '50-free-textures/concrete_stone_025'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 1156 (tex '50-free-textures/concrete_stone_023') wins over brush 1299 (tex '50-free-textures/concrete_stone_025'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 663 (tex '50-free-textures/concrete_stone_023') wins over brush 1300 (tex '50-free-textures/concrete_stone_025'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 1158 (tex '50-free-textures/concrete_stone_023') wins over brush 1301 (tex '50-free-textures/concrete_stone_025'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 1302 (tex '50-free-textures/concrete_stone_025') wins over brush 718 (tex '50-free-textures/concrete_stone_027'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 736 (tex '50-free-textures/concrete_stone_021') wins over brush 1306 (tex '50-free-textures/concrete_stone_025'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 685 (tex '50-free-textures/concrete_stone_029') wins over brush 1306 (tex '50-free-textures/concrete_stone_025'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 1308 (tex '50-free-textures/concrete_stone_025') wins over brush 746 (tex '50-free-textures/concrete_stone_023'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 693 (tex '50-free-textures/concrete_stone_021') wins over brush 1308 (tex '50-free-textures/concrete_stone_025'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 1168 (tex '50-free-textures/concrete_stone_023') wins over brush 1311 (tex '50-free-textures/concrete_stone_025'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 1312 (tex '50-free-textures/concrete_stone_025') wins over brush 762 (tex '50-free-textures/concrete_stone_027'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 936 (tex '50-free-textures/concrete_stone_021') wins over brush 1322 (tex '50-free-textures/concrete_stone_027'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 978 (tex '50-free-textures/concrete_stone_021') wins over brush 1325 (tex '50-free-textures/concrete_stone_027'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 990 (tex '50-free-textures/concrete_stone_021') wins over brush 1328 (tex '50-free-textures/concrete_stone_027'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::partition::face_extract] Coplanar brush sides with mismatched textures: brush 1008 (tex '50-free-textures/concrete_stone_021') wins over brush 1331 (tex '50-free-textures/concrete_stone_027'). Check brush placement — overlapping coplanar surfaces should carry the same material.
+  [WARN prl_build::pipeline] [Compiler] Watertightness: 642 open edge(s) in world geometry — possible holes you can see through. Diagnostic only; the build still succeeds. Sample locations (world-space meters, showing up to 12):
+  [WARN prl_build::pipeline] [Compiler]   open edge near (-97.536, 8.128, -45.517) — near brush 958
+  [WARN prl_build::pipeline] [Compiler]   open edge near (-97.536, 8.128, -39.014) — near brush 958
+  [WARN prl_build::pipeline] [Compiler]   open edge near (-97.536, 8.128, 39.014) — near brush 932
+  [WARN prl_build::pipeline] [Compiler]   open edge near (-97.536, 8.128, 45.517) — near brush 932
+  [WARN prl_build::pipeline] [Compiler]   open edge near (-97.536, 24.384, -45.517) — near brush 1094
+  [WARN prl_build::pipeline] [Compiler]   open edge near (-97.536, 24.384, -39.014) — near brush 1094
+  [WARN prl_build::pipeline] [Compiler]   open edge near (-97.536, 40.640, -45.517) — near brush 1238
+  [WARN prl_build::pipeline] [Compiler]   open edge near (-97.536, 40.640, -39.014) — near brush 1238
+  [WARN prl_build::pipeline] [Compiler]   open edge near (-97.536, 40.640, 39.014) — near brush 1202
+  [WARN prl_build::pipeline] [Compiler]   open edge near (-97.536, 40.640, 45.517) — near brush 1202
+  [WARN prl_build::pipeline] [Compiler]   open edge near (-94.691, 8.128, -47.142) — near brush 958
+  [WARN prl_build::pipeline] [Compiler]   open edge near (-94.691, 8.128, -43.891) — near brush 182
+  [WARN prl_build::pipeline] [prl-build] warm SH bake: indirect lighting is APPROXIMATE (bounded light reach). This is a dev/iteration build — run a `--release` bake (or `--no-cache`) before shipping a final map.
+  [WARN prl_build::delta_sections] [Compiler] SH delta authoring budget warning: id 27 64553328 bytes, id 41 8813448 bytes, \
+             id 45 59952744 bytes; total 133319520 bytes exceeds the 64 MiB (67108864 byte) diagnostic target but remains within the 268435456 byte production cap
+  [WARN prl_build::shadowmask_bake::assignment] [ShadowmaskAtlas] exact channel search exhausted its deterministic 100000-node budget; using conservative fallback
+  [WARN prl_build::shadowmask_bake::assignment] [ShadowmaskAtlas] dropped 70 selected light mask(s) to obtain a four-channel assignment: [103, 110, 112, 113, 114, 115, 117, 124, 126, 127, 128, 129, 131, 138, 140, 141, 142, 143, 145, 152, 154, 155, 156, 157, 159, 166, 168, 169, 170, 171, 173, 175, 177, 179, 181, 185, 187, 189, 191, 193, 197, 199, 201, 203, 205, 209, 211, 213, 215, 217, 221, 223, 225, 227, 235, 237, 239, 241, 249, 251, 253, 255, 263, 265, 267, 269, 277, 279, 281, 283]
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 0 at origin (92.659, 7.518, 86.970) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 1 at origin (76.403, 7.518, 82.093) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 2 at origin (50.394, 7.518, 86.970) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 3 at origin (34.138, 7.518, 82.093) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 5 at origin (-8.128, 7.518, 82.093) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 7 at origin (-50.394, 7.518, 82.093) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 9 at origin (-92.659, 7.518, 82.093) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 12 at origin (-21.133, 7.518, 84.531) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 15 at origin (76.403, 7.518, 39.827) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 16 at origin (50.394, 7.518, 44.704) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 17 at origin (34.138, 7.518, 39.827) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 18 at origin (8.128, 7.518, 44.704) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 19 at origin (-8.128, 7.518, 39.827) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 20 at origin (-34.138, 7.518, 44.704) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 22 at origin (-76.403, 7.518, 44.704) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 24 at origin (63.398, 7.518, 42.266) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 27 at origin (-63.398, 7.518, 42.266) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 28 at origin (92.659, 7.518, 2.438) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 31 at origin (-50.394, 7.518, -2.438) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 33 at origin (-92.659, 7.518, -2.438) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 38 at origin (76.403, 7.518, -44.704) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 39 at origin (-34.138, 7.518, -39.827) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 40 at origin (-50.394, 7.518, -44.704) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 41 at origin (-76.403, 7.518, -39.827) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 44 at origin (-21.133, 7.518, -42.266) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 46 at origin (92.659, 7.518, -82.093) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 48 at origin (50.394, 7.518, -82.093) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 49 at origin (34.138, 7.518, -86.970) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 50 at origin (8.128, 7.518, -82.093) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 51 at origin (-8.128, 7.518, -86.970) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 52 at origin (-34.138, 7.518, -82.093) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 55 at origin (-92.659, 7.518, -86.970) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 56 at origin (63.398, 7.518, -84.531) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 59 at origin (-63.398, 7.518, -84.531) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 61 at origin (60.960, 7.518, 97.536) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 63 at origin (60.960, 7.518, 55.270) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 64 at origin (65.837, 7.518, 29.261) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 65 at origin (60.960, 7.518, 13.005) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 66 at origin (65.837, 7.518, -13.005) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 67 at origin (60.960, 7.518, -29.261) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 68 at origin (65.837, 7.518, -55.270) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 69 at origin (60.960, 7.518, -71.526) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 70 at origin (65.837, 7.518, -97.536) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 71 at origin (60.960, 7.518, -113.792) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 72 at origin (23.571, 7.518, 113.792) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 74 at origin (23.571, 7.518, 71.526) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 77 at origin (18.694, 7.518, -113.792) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 79 at origin (-23.571, 7.518, 97.536) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 80 at origin (-18.694, 7.518, 71.526) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 81 at origin (-23.571, 7.518, 55.270) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 82 at origin (-18.694, 7.518, 29.261) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 83 at origin (-23.571, 7.518, 13.005) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 84 at origin (-18.694, 7.518, -13.005) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 85 at origin (-23.571, 7.518, -29.261) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 86 at origin (-18.694, 7.518, -55.270) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 87 at origin (-23.571, 7.518, -71.526) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 88 at origin (-18.694, 7.518, -97.536) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 90 at origin (-60.960, 7.518, 113.792) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 93 at origin (-65.837, 7.518, 55.270) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 95 at origin (-65.837, 7.518, 13.005) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 96 at origin (-60.960, 7.518, -13.005) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 97 at origin (-65.837, 7.518, -29.261) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 99 at origin (-65.837, 7.518, -71.526) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 100 at origin (-60.960, 7.518, -97.536) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 101 at origin (-65.837, 7.518, -113.792) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 103 at origin (76.403, 23.774, 82.093) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 104 at origin (50.394, 23.774, 86.970) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 105 at origin (34.138, 23.774, 82.093) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 107 at origin (-8.128, 23.774, 82.093) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 108 at origin (-34.138, 23.774, 86.970) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 109 at origin (-50.394, 23.774, 82.093) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 110 at origin (-76.403, 23.774, 86.970) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 111 at origin (-92.659, 23.774, 82.093) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 113 at origin (21.133, 23.774, 84.531) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 116 at origin (92.659, 23.774, 44.704) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 117 at origin (76.403, 23.774, 39.827) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 119 at origin (34.138, 23.774, 39.827) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 120 at origin (8.128, 23.774, 44.704) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 121 at origin (-8.128, 23.774, 39.827) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 122 at origin (-34.138, 23.774, 44.704) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 123 at origin (-50.394, 23.774, 39.827) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 124 at origin (-76.403, 23.774, 44.704) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 125 at origin (-92.659, 23.774, 39.827) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 128 at origin (-21.133, 23.774, 42.266) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 130 at origin (92.659, 23.774, 2.438) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 132 at origin (50.394, 23.774, 2.438) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 134 at origin (8.128, 23.774, 2.438) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 137 at origin (-50.394, 23.774, -2.438) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 139 at origin (-92.659, 23.774, -2.438) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 140 at origin (63.398, 23.774, -0.000) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 143 at origin (-63.398, 23.774, -0.000) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 145 at origin (76.403, 23.774, -44.704) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 147 at origin (34.138, 23.774, -44.704) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 148 at origin (8.128, 23.774, -39.827) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 149 at origin (-8.128, 23.774, -44.704) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 150 at origin (-34.138, 23.774, -39.827) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 152 at origin (-76.403, 23.774, -39.827) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 155 at origin (21.133, 23.774, -42.266) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 158 at origin (92.659, 23.774, -82.093) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 160 at origin (50.394, 23.774, -82.093) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 162 at origin (8.128, 23.774, -82.093) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 163 at origin (-8.128, 23.774, -86.970) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 165 at origin (-50.394, 23.774, -86.970) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 167 at origin (-92.659, 23.774, -86.970) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 170 at origin (-21.133, 23.774, -84.531) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 173 at origin (60.960, 23.774, 97.536) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 175 at origin (60.960, 23.774, 55.270) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 177 at origin (60.960, 23.774, 13.005) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 178 at origin (65.837, 23.774, -13.005) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 179 at origin (60.960, 23.774, -29.261) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 181 at origin (60.960, 23.774, -71.526) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 182 at origin (65.837, 23.774, -97.536) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 183 at origin (60.960, 23.774, -113.792) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 184 at origin (23.571, 23.774, 113.792) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 186 at origin (23.571, 23.774, 71.526) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 188 at origin (23.571, 23.774, 29.261) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 191 at origin (18.694, 23.774, -29.261) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 192 at origin (23.571, 23.774, -55.270) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 195 at origin (18.694, 23.774, -113.792) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 197 at origin (-23.571, 23.774, 97.536) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 199 at origin (-23.571, 23.774, 55.270) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 201 at origin (-23.571, 23.774, 13.005) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 202 at origin (-18.694, 23.774, -13.005) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 205 at origin (-23.571, 23.774, -71.526) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 206 at origin (-18.694, 23.774, -97.536) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 208 at origin (-60.960, 23.774, 113.792) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 210 at origin (-60.960, 23.774, 71.526) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 212 at origin (-60.960, 23.774, 29.261) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 215 at origin (-65.837, 23.774, -29.261) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 216 at origin (-60.960, 23.774, -55.270) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 219 at origin (-65.837, 23.774, -113.792) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 221 at origin (76.403, 40.030, 82.093) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 222 at origin (50.394, 40.030, 86.970) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 223 at origin (34.138, 40.030, 82.093) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 225 at origin (-8.128, 40.030, 82.093) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 226 at origin (-34.138, 40.030, 86.970) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 227 at origin (-50.394, 40.030, 82.093) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 229 at origin (-92.659, 40.030, 82.093) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 230 at origin (63.398, 40.030, 84.531) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 233 at origin (-63.398, 40.030, 84.531) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 234 at origin (92.659, 40.030, 44.704) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 237 at origin (34.138, 40.030, 39.827) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 238 at origin (8.128, 40.030, 44.704) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 241 at origin (-50.394, 40.030, 39.827) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 242 at origin (-76.403, 40.030, 44.704) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 245 at origin (21.133, 40.030, 42.266) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 248 at origin (92.659, 40.030, 2.438) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 249 at origin (76.403, 40.030, -2.438) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 250 at origin (50.394, 40.030, 2.438) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 253 at origin (-8.128, 40.030, -2.438) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 254 at origin (-34.138, 40.030, 2.438) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 255 at origin (-50.394, 40.030, -2.438) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 257 at origin (-92.659, 40.030, -2.438) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 260 at origin (-21.133, 40.030, -0.000) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 263 at origin (76.403, 40.030, -44.704) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 265 at origin (34.138, 40.030, -44.704) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 266 at origin (8.128, 40.030, -39.827) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 267 at origin (-8.128, 40.030, -44.704) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 268 at origin (-34.138, 40.030, -39.827) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 269 at origin (-50.394, 40.030, -44.704) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 270 at origin (-76.403, 40.030, -39.827) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 272 at origin (63.398, 40.030, -42.266) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 275 at origin (-63.398, 40.030, -42.266) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 276 at origin (92.659, 40.030, -82.093) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 277 at origin (76.403, 40.030, -86.970) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 278 at origin (50.394, 40.030, -82.093) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 280 at origin (8.128, 40.030, -82.093) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 281 at origin (-8.128, 40.030, -86.970) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 282 at origin (-34.138, 40.030, -82.093) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 285 at origin (-92.659, 40.030, -86.970) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 287 at origin (21.133, 40.030, -84.531) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 290 at origin (65.837, 40.030, 113.792) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 291 at origin (60.960, 40.030, 97.536) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 293 at origin (60.960, 40.030, 55.270) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 294 at origin (65.837, 40.030, 29.261) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 295 at origin (60.960, 40.030, 13.005) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 297 at origin (60.960, 40.030, -29.261) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 299 at origin (60.960, 40.030, -71.526) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 301 at origin (60.960, 40.030, -113.792) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 303 at origin (18.694, 40.030, 97.536) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 304 at origin (23.571, 40.030, 71.526) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 307 at origin (18.694, 40.030, 13.005) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 308 at origin (23.571, 40.030, -13.005) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 310 at origin (23.571, 40.030, -55.270) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 312 at origin (23.571, 40.030, -97.536) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 314 at origin (-18.694, 40.030, 113.792) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 315 at origin (-23.571, 40.030, 97.536) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 316 at origin (-18.694, 40.030, 71.526) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 317 at origin (-23.571, 40.030, 55.270) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 318 at origin (-18.694, 40.030, 29.261) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 321 at origin (-23.571, 40.030, -29.261) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 323 at origin (-23.571, 40.030, -71.526) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 325 at origin (-23.571, 40.030, -113.792) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 326 at origin (-60.960, 40.030, 113.792) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 328 at origin (-60.960, 40.030, 71.526) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 329 at origin (-65.837, 40.030, 55.270) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 331 at origin (-65.837, 40.030, 13.005) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 332 at origin (-60.960, 40.030, -13.005) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 334 at origin (-60.960, 40.030, -55.270) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 335 at origin (-65.837, 40.030, -71.526) is inside a solid leaf; marking unassigned
+  [WARN prl_build::pack] [Compiler] AlphaLights: light 336 at origin (-60.960, 40.030, -97.536) is inside a solid leaf; marking unassigned
+  [WARN prl_build::animated_light_chunks] [AnimatedLightChunks] face 7078 chunk bottomed out at min-extent with 5 animated lights (cap 4); retaining all overlapping lights
+  [WARN prl_build::animated_light_chunks] [AnimatedLightChunks] face 7078 chunk bottomed out at min-extent with 5 animated lights (cap 4); retaining all overlapping lights
+  [WARN prl_build::animated_light_chunks] [AnimatedLightChunks] face 7078 chunk bottomed out at min-extent with 5 animated lights (cap 4); retaining all overlapping lights
+  [WARN prl_build::animated_light_chunks] [AnimatedLightChunks] face 7078 chunk bottomed out at min-extent with 5 animated lights (cap 4); retaining all overlapping lights
+  [WARN prl_build::animated_light_chunks] [AnimatedLightChunks] face 7078 chunk bottomed out at min-extent with 5 animated lights (cap 4); retaining all overlapping lights
+  [WARN prl_build::animated_light_chunks] [AnimatedLightChunks] face 7078 chunk bottomed out at min-extent with 5 animated lights (cap 4); retaining all overlapping lights
+  [WARN prl_build::animated_light_chunks] [AnimatedLightChunks] face 7078 chunk bottomed out at min-extent with 5 animated lights (cap 4); retaining all overlapping lights
+  [WARN prl_build::animated_light_chunks] [AnimatedLightChunks] face 7078 chunk bottomed out at min-extent with 5 animated lights (cap 4); retaining all overlapping lights
+  [WARN prl_build::animated_light_chunks] [AnimatedLightChunks] 1523358 chunks exceeded cap 4 at the min-extent floor; 2740583 extra light entries retained beyond the cap
+  [WARN prl_build::cache] [cache] build read/wrote 13701056770 (12.76 GiB) across 233110 unique entries, exceeding cache budget 2147483648 (2.00 GiB); the next build may evict entries used by this build

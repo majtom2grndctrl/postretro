@@ -46,6 +46,28 @@ What to do with a finished `measure-hallway.ps1` run. The before run happens onc
 
 **Before run (R0).** `evidence/windows-before/`, the owner's run of 2026-10-01 at 83489c52b. Between it and the pre-lever compiler (1527f5b26) only `level-loader` test code and a doc comment changed, so it is the pre-lever bake. SH Bake ran at 4.86 of 5 permits (sampler label "SH volume bake"). The fused walk's 6,521 s carry one sampler label, "Shadowmask atlas bake", because both stages begin together and the sampler keeps the latest label; its 2.88 cores cover Lightmap Bake and ShadowmaskAtlas together.
 
+**Warren-mini runs (in-between yardstick).** Same machine and procedure, `-Map stress-warren-mini`. m0 and m0c ran from the pre-lever worktree (1527f5b26); m1c from this branch at 796ad42bc (levers 1 and 2; a cold bake bypasses the cache, so it measures lever 1 alone).
+
+| Number | m0 warm, empty cache (pre-lever) | m0c cold (pre-lever) | m1c cold (lever 1) | m2 warm | m3 warm |
+|---|---|---|---|---|---|
+| Evidence | `windows-mini-before/` | `windows-mini-before-cold/` | `windows-mini-after-lever1-cold/` | | |
+| Total wall time | 2,191.6 s | 1,561.4 s | 1,101.1 s | | |
+| Mean busy cores, whole build | 2.65 | 3.71 | 4.37 | | |
+| SH Bake | 741.5 s | 707.5 s | 727.4 s | | |
+| Lightmap Bake | 832.0 s | 675.8 s | 182.9 s | | |
+| Busy cores, "Shadowmask atlas bake" label (Lightmap + ShadowmaskAtlas) | 2.20 (82 samples) | 2.65 (68) | 3.85 (19; p50 3.97, p90 4.51) | | |
+| ShadowmaskAtlas | 6.6 s | 5.6 s | 4.9 s | | |
+| Delta SH / Direct SH Delta / Animated Direct / AnimWeightMaps | 180.1 / 246.9 / 67.7 / 50.9 s | 80.4 / 2.7 / 0.5 / 17.9 s | 81.9 / 2.6 / 0.5 / 17.8 s | | |
+| Packing | 46.4 s | 53.6 s | 65.2 s | | |
+| Peak working set | 1.73 GiB | 1.37 GiB | 1.37 GiB | | |
+| Cache at exit | 74,227 files, 3.89 GiB | none | none | | |
+
+M2: cold Lightmap Bake 675.8 s → 182.9 s (3.7× faster), busy cores 2.65 → 3.85, peak working set unchanged. Lightmap still runs below 5 permits; the serial in-order fold and per-light consume are the likely remainder.
+
+m0's warm build is 630 s slower than m0c's cold build. The gap sits in the stages that write cache entries (Direct SH Delta 247 s at 0.49 cores, Delta SH, Animated Direct, AnimWeightMaps), consistent with put cost on this machine's SATA SSD under Defender scanning. NVMe hosts should pay less, so lever 2's gain here may overstate a typical machine's.
+
+Byte check: m1c's `.prl` differs from m0c's only by the embedded absolute data-script path (`…\postretro-baseline\…` vs `…\postretro\…`, 9 bytes): the path's length prefix, 11 section-table offsets (each 9 lower), and nothing else; the 168 MB after the path is identical. `evidence/prl-pathdiff.py` performs this check. Byte comparisons across checkouts must normalize that path.
+
 **Not covered by this run.**
 - The cold Lightmap Bake row: a separate run with `prl-build --release` on the same binary, before lever 1 lands.
 - The lever 3 gate: measured after levers 1 and 2 land (§Lever 3 gate).

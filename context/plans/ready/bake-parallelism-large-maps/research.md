@@ -16,6 +16,39 @@ Derivation and numbers behind the brief. Every path below is relative to `crates
 | Binary | `prl-build` built in cargo's release profile (`cargo build --release -p postretro-level-compiler --bin prl-build`: `opt-level = 3`, thin LTO), then run without its own `--release` flag, with plain progress (`--no-tui`). The script builds and runs it. `prl-build --release` is the cold ship bake, and it implies `--no-cache`. The numbers on this page predate that pin: the live rebake ran `target/debug/prl-build`, and the first build's profile was not recorded. `[profile.dev]` gives workspace crates `opt-level = 1` and dependencies, `bvh` included, `opt-level = 2`. Re-take the before numbers on the pinned machine and binary. |
 | Baseline | Main after `lightmap-oversize-cells-and-faces` (#544). Byte-identity baselines and before numbers both come from there. That plan recorded no hallway RSS or stage timings; its recorded RSS runs are cold small-map bakes, unusable as before numbers. |
 
+## Baseline record
+
+What to do with a finished `measure-hallway.ps1` run. The before run happens once, on main at or after #544, before any lever lands. Each lever's after run repeats it on the lever's branch.
+
+**Check before trusting the run.** All must hold, or the run is not a baseline.
+- `summary.txt`: `exit_code: 0`.
+- `machine.txt`: `git_status_porcelain: clean`, and `git_head` is at or after #544 with no compiler change since.
+- `machine.txt`: the two default-`-j` values agree.
+- `cpu-samples.tsv`: the stage column fills in after the first stage begins. A blank column means the stderr log was unreadable mid-run; stage wall times still hold, per-stage busy cores do not.
+- `summary.txt`: the cache directory is non-empty at exit. The script refuses a non-empty cache at start, so every stage missed.
+
+**Commit.** Copy `machine.txt`, `summary.txt`, `cpu-samples.tsv` and `prl-build.stdout.log` into `evidence/windows-before/` (an after run: `evidence/windows-after-<lever>/`). Leave out the `.prl`, the cache directory and the stderr log. `evidence/cpu-samples.tsv` is the Mac's and stays.
+
+**Derive.** Run `evidence/stats.sh` on the committed TSV from Git Bash or WSL. It prints per-stage sample count, mean and percentile busy-core %, and peak RSS. Busy-core % divides by 100 for cores.
+
+**Fill this table** in place, one column per run.
+
+| Number | Source | Acceptance row | Before | After |
+|---|---|---|---|---|
+| Total wall time | `summary.txt` | Total wall time | | |
+| SH Bake wall time | Build Summary | SH Bake, traversal change alone | | |
+| Wall time: Lightmap Bake, AnimWeightMaps, ShadowmaskAtlas, Delta SH, Direct SH Delta, Animated Direct | Build Summary | Per-stage wall time and busy cores | | |
+| Mean busy cores per stage above | `stats.sh` | Per-stage wall time and busy cores | | |
+| Mean busy cores, Direct SH Delta Bake | `stats.sh` | Direct SH Delta busy cores | | |
+| Peak working set | `summary.txt` | Peak RSS | | |
+| Mean busy cores, whole build | `summary.txt` | Context | | |
+| Cache size at exit | `summary.txt` | Context for the prune rule | | |
+
+**Not covered by this run.**
+- The cold Lightmap Bake row: a separate run with `prl-build --release` on the same binary, before lever 1 lands.
+- The lever 3 gate: measured after levers 1 and 2 land (§Lever 3 gate).
+- The second-build budget row: an after-only check under the new prune rule.
+
 ## Where the 5 h 54 m goes
 
 All numbers in this section come from the Mac (§Measurement conditions, Other host).

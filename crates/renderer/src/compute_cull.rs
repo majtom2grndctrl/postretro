@@ -35,6 +35,10 @@ const FRONTIER_TARGET_SUBTREES: usize = 64;
 // `BvhLeaf`. `wgsl_bvh_struct_strides_match_spec` pins the contract against naga.
 pub(crate) const CULL_SHADER_SOURCE: &str = include_str!("shaders/bvh_cull.wgsl");
 
+#[cfg(test)]
+#[path = "indirect_contract_tests.rs"]
+mod indirect_contract_tests;
+
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct CullUniforms {
     pub(crate) planes: [[f32; 4]; 6],

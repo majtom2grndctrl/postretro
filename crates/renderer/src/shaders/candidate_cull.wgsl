@@ -56,6 +56,10 @@ struct CandidateCullParams {
 
 @group(0) @binding(0) var<uniform> uniforms: CullUniforms;
 @group(0) @binding(1) var<storage, read> leaves: array<BvhLeaf>;
+// Release draws skip wgpu indirect validation. Slot leaf_idx may hold only
+// zero or leaves[leaf_idx]'s baked (index_count, 1, index_offset, 0, 0), with
+// fields zeroed on rejection. Never compute args or compact slots. Review must
+// reject a shadowed leaf binding: leaf must remain leaves[leaf_idx].
 @group(0) @binding(2) var<storage, read_write> indirect_draws: array<DrawIndexedIndirect>;
 // Per-leaf cull status for the debug wireframe overlay.
 // 0 = portal-culled (non-candidate, left cleared),

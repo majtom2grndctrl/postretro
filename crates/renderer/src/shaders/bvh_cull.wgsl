@@ -61,6 +61,10 @@ struct DrawIndexedIndirect {
 @group(0) @binding(1) var<storage, read> nodes: array<BvhNode>;
 @group(0) @binding(2) var<storage, read> leaves: array<BvhLeaf>;
 @group(0) @binding(3) var<storage, read> visible_cells: array<u32>;
+// Release draws skip wgpu indirect validation. Slot leaf_idx may hold only
+// zero or leaves[leaf_idx]'s baked (index_count, 1, index_offset, 0, 0), with
+// fields zeroed on rejection. Never compute args or compact slots. Review must
+// reject a shadowed leaf binding: leaf must remain leaves[leaf_idx].
 @group(0) @binding(4) var<storage, read_write> indirect_draws: array<DrawIndexedIndirect>;
 // Per-leaf cull status for the debug wireframe overlay.
 // 0 = portal-culled (cell not in visible set),

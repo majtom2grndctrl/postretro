@@ -129,12 +129,18 @@ impl Renderer {
     /// Replaces dummy buffers with real geometry; rebuilds lighting, SH, lightmap, and cull pipeline.
     /// Takes the level's GPU-only lightmap and shadowmask payloads by value and
     /// drops them once their textures exist.
+    /// Call `validate_level_geometry_ranges` before the first install step;
+    /// release indirect draws rely on its checked leaf/index-buffer mapping.
     /// See: context/lib/boot_sequence.md §3 (Level Install Order)
     pub fn install_level_geometry(
         &mut self,
         geometry: &LevelGeometry<'_>,
         gpu_lighting_payloads: postretro_level_loader::GpuLightingPayloads,
     ) {
+        debug_assert!(
+            validate_level_geometry_ranges(&geometry.bvh.leaves, geometry.indices.len()).is_ok(),
+            "level geometry must pass the indirect index-range check before installation"
+        );
         let Self {
             device,
             queue,
@@ -206,6 +212,9 @@ impl Renderer {
             contents: &vertex_data,
             usage: wgpu::BufferUsages::VERTEX,
         });
+        // Indirect slots copy only these checked leaves' baked ranges, and all
+        // world indirect passes bind this complete array. Recreate every cull
+        // owner below before drawing; no slot may survive an index-buffer swap.
         full.index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("World Index Buffer"),
             contents: &index_data,

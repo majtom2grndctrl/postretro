@@ -26,12 +26,12 @@ use crate::light_namespaces::AnimatedBakedLights;
 use crate::lightmap_bake::{DEFAULT_AREA_SAMPLE_COUNT, soft_visibility};
 use crate::map_data::{MapLight, ShadowType};
 use crate::portals::Portal;
+use crate::ray_traversal::BoundedRay;
 use crate::sh_bake::{
     ProbeGridLayout, RaytracingCtx, ShBakeCtx, ShConfig, incident_radiance_at_point,
     probe_grid_layout, static_light_refs, vec3_from,
 };
 use crate::sh_group::geometry_content_hash;
-use crate::ray_traversal::BoundedRay;
 
 /// Cache stage for dense, normal-free static billboard scatter.
 pub const BILLBOARD_DIRECT_SCATTER_STAGE_ID: &str = "billboard_direct_scatter";

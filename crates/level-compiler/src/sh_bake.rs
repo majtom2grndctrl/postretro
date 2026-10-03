@@ -772,7 +772,9 @@ fn segment_clear(ctx: &RaytracingCtx<'_>, from: Vec3, to: Vec3) -> bool {
         false
     };
     let query = BoundedRay::new(&ray, max_distance);
-    !ctx.bvh.traverse_iterator(&query, ctx.primitives).any(blocks)
+    !ctx.bvh
+        .traverse_iterator(&query, ctx.primitives)
+        .any(blocks)
 }
 
 /// Today's unbounded closest-hit scan: the reference the bounded query must
@@ -814,11 +816,15 @@ fn segment_clear_full_scan(ctx: &RaytracingCtx<'_>, from: Vec3, to: Vec3) -> boo
     !ctx.bvh.traverse_iterator(&ray, ctx.primitives).any(|prim| {
         let start = prim.index_offset as usize;
         let end = start + prim.index_count as usize;
-        (start..end).step_by(3).filter(|tri| tri + 3 <= end).any(|tri| {
-            let p = |k: usize| Vec3::from(geom.vertices[geom.indices[tri + k] as usize].position);
-            ray_triangle_hit(origin, dir, p(0), p(1), p(2))
-                .is_some_and(|(dist, _)| dist > 0.0 && dist < max_distance)
-        })
+        (start..end)
+            .step_by(3)
+            .filter(|tri| tri + 3 <= end)
+            .any(|tri| {
+                let p =
+                    |k: usize| Vec3::from(geom.vertices[geom.indices[tri + k] as usize].position);
+                ray_triangle_hit(origin, dir, p(0), p(1), p(2))
+                    .is_some_and(|(dist, _)| dist > 0.0 && dist < max_distance)
+            })
     })
 }
 
@@ -3302,8 +3308,16 @@ mod tests {
         let mut triangles = vec![
             left,
             right,
-            [[-20.0, -6.0, -20.0], [20.0, -6.0, -20.0], [20.0, -6.0, 20.0]],
-            [[-20.0, -6.0, -20.0], [20.0, -6.0, 20.0], [-20.0, -6.0, 20.0]],
+            [
+                [-20.0, -6.0, -20.0],
+                [20.0, -6.0, -20.0],
+                [20.0, -6.0, 20.0],
+            ],
+            [
+                [-20.0, -6.0, -20.0],
+                [20.0, -6.0, 20.0],
+                [-20.0, -6.0, 20.0],
+            ],
             [[8.0, -6.0, -20.0], [8.0, 10.0, -20.0], [8.0, 10.0, 20.0]],
         ];
         for k in 0..12 {
@@ -3354,7 +3368,10 @@ mod tests {
             for (origin, dir) in crease_edge_rays() {
                 let full = hit_parts(closest_hit_full_scan(&ctx, origin, dir, f32::INFINITY));
                 let bounded = hit_parts(closest_hit(&ctx, origin, dir, f32::INFINITY));
-                assert_eq!(bounded, full, "shared_leaf {shared_leaf}, ray {origin} {dir}");
+                assert_eq!(
+                    bounded, full,
+                    "shared_leaf {shared_leaf}, ray {origin} {dir}"
+                );
                 let Some((distance, _, point)) = full else {
                     panic!("ray {origin} {dir} must hit the crease");
                 };
@@ -3362,7 +3379,12 @@ mod tests {
                     edge_hits += 1;
                 }
                 // Finite bounds at, just under and just over the hit distance.
-                for max in [distance, distance.next_down(), distance.next_up(), distance * 0.5] {
+                for max in [
+                    distance,
+                    distance.next_down(),
+                    distance.next_up(),
+                    distance * 0.5,
+                ] {
                     assert_eq!(
                         hit_parts(closest_hit(&ctx, origin, dir, max)),
                         hit_parts(closest_hit_full_scan(&ctx, origin, dir, max)),
@@ -3373,7 +3395,10 @@ mod tests {
             // A ray exactly on the shared edge can slip between the two
             // triangles and hit something farther; most must land on the edge so
             // the tie is exercised.
-            assert!(edge_hits * 2 > crease_edge_rays().len(), "{edge_hits} rays landed on the edge");
+            assert!(
+                edge_hits * 2 > crease_edge_rays().len(),
+                "{edge_hits} rays landed on the edge"
+            );
         }
     }
 
@@ -3483,7 +3508,10 @@ mod tests {
                 "ray {origin} {dir}"
             );
             let (distance, _, _) = bounded.expect("the ray reaches the floor or a tile");
-            assert!(distance > 1.0, "kept hit {distance} is past the start triangle");
+            assert!(
+                distance > 1.0,
+                "kept hit {distance} is past the start triangle"
+            );
         }
     }
 }

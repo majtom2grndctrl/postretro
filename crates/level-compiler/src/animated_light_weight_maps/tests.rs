@@ -900,7 +900,10 @@ fn overlap_bitmap_agrees_with_pairwise_scan_on_random_layers() {
             clear += 1;
         }
     }
-    assert!(overlapping > 100 && clear > 100, "{overlapping} overlapping, {clear} clear");
+    assert!(
+        overlapping > 100 && clear > 100,
+        "{overlapping} overlapping, {clear} clear"
+    );
 }
 
 #[test]

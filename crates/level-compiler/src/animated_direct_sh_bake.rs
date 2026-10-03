@@ -70,11 +70,7 @@ pub fn bake_animated_direct_sh_delta_volumes(
     inputs: &AnimatedDirectShBakeInputs<'_, '_>,
     config: &ShConfig,
 ) -> Option<AnimatedDirectShDeltaVolumesSection> {
-    bake_animated_direct_sh_delta_volumes_controlled(
-        inputs,
-        config,
-        &BakeControl::unrestricted(),
-    )
+    bake_animated_direct_sh_delta_volumes_controlled(inputs, config, &BakeControl::unrestricted())
 }
 
 pub fn bake_animated_direct_sh_delta_volumes_controlled(

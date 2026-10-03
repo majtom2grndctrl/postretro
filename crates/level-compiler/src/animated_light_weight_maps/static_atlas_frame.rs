@@ -239,7 +239,11 @@ pub(super) fn layer_rects_may_overlap(
                 .skip(first_word)
             {
                 let lo = if word == first_word { x0 % 64 } else { 0 };
-                let hi = if word == last_word { (x1 - 1) % 64 + 1 } else { 64 };
+                let hi = if word == last_word {
+                    (x1 - 1) % 64 + 1
+                } else {
+                    64
+                };
                 let mask = (u64::MAX >> (64 - (hi - lo))) << lo;
                 if *bits & mask != 0 {
                     return true;

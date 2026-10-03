@@ -1110,7 +1110,10 @@ fn direct_and_animated_direct_delta_bake_uncached() {
     assert_eq!(first.indirect_tally.hits, 0);
     assert_eq!(warm.indirect_tally.misses, 0, "Delta SH keeps its cache");
     let indirect = cache.test_access(INDIRECT_DELTA_SH_STAGE_ID);
-    assert!(indirect.writes > 0 && indirect.read_hits > 0, "{indirect:?}");
+    assert!(
+        indirect.writes > 0 && indirect.read_hits > 0,
+        "{indirect:?}"
+    );
     let _ = std::fs::remove_dir_all(dir);
 }
 

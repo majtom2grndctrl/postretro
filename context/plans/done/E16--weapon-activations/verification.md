@@ -52,7 +52,7 @@ The initial regression was investigated with separate stage timing. Firing work 
 | Mean tick | 210.59 µs | 233.93 µs | +11.08% |
 | Input payload per tick | 29.000 B | 34.571 B | Excludes transport overhead |
 
-All workload assertions passed. Earlier optimized comparisons gave +6.7–6.9% at the 95th percentile. Final candidate absolute timing stayed near those runs, while the final baseline ran faster; background-load and clock noise remain uncontrolled. The final higher result is retained. No zero-regression claim is made. Raw runs and summary: `/private/tmp/postretro-e16-verified-comparison-*`.
+All workload assertions passed. Earlier optimized comparisons gave +6.7–6.9% at the 95th percentile. Final candidate absolute timing stayed near those runs, while the final baseline ran faster; background-load and clock noise remain uncontrolled. The final higher result is retained. No zero-regression claim is made. Raw temporary runs and probe binaries were removed during landing; final measurements remain recorded here.
 
 ## Manual proof
 

@@ -1,6 +1,6 @@
 # Weapon activations — execution record
 
-Status: implementation, automated checks, review and runnable build complete; manual visual/audio proof pending.
+Status: done by owner approval; automated checks, review and runnable build passed. Manual visual/audio proof remains pending.
 Latest results: [verification](verification.md).
 Branch: `codex/weapon-activations`.
 Owner approved the public API and network migration. The demo multiplier remains authored data.
@@ -113,3 +113,7 @@ No runtime implementation or performance result is implied by approval of the de
 - Final tested source performance: 15 balanced-order matched pairs after the input-tick repair. Baseline/candidate median p50 185979/203802.5 ns (+9.58%), p95 415715/471836 ns (+13.50%, +56.1µs), mean 210594.7/233932.3 ns (+11.08%). All workload assertions passed; payload unchanged at29.000/34.571B per tick. Candidate absolute timings remain near earlier optimized runs, but this baseline ran faster. Retain the higher measured cost and uncontrolled desktop-load/clock limitation; do not claim unchanged performance. Raw data: /private/tmp/postretro-e16-verified-comparison-summary.json.
 
 - Final canonical launch built successfully with `observability,observe-live`, including the modified diagnostic tick producer. `scripts-build` and the engine completed without build warnings; the engine reached Metal GPU and window initialization. Gameplay/HUD/audio proof remains manual and unclaimed. The final demo is left running for that check.
+
+## Landing
+
+Owner approved landing on 2026-10-03. Plan moved to done; charge-on-activation and secondary activation marked done on the roadmap. Tracked deployables remain separate. Manual visual/audio proof remains outstanding as recorded in verification.md. Session temporary probes and build artifacts cleaned; unrelated drafts and worktrees preserved.

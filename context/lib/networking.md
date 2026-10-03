@@ -479,6 +479,8 @@ is a separate presentation vantage, deferred.
 
 ## Combat authority: FIRE vs HIT
 
+**Activation extension (approved, implementation pending).** Scheduled shots retain activation identity and authored shot ordinal independently of movement-command time. Clients name each requested execution; the host authorizes starts and individual resource spends. Explicit, correlated release/cancel edges survive input recovery; synthetic neutral input cannot release charge. Charge derives from the start/release interval, bounded by host simulation time. Clients resolve every scheduled shot during render catch-up. Pending hit declarations wait for the matching shot decision, never infer rejection of future shots from movement-cursor progress. Existing ownership checks, at-most-once damage, resource authority, and no-rewind co-op policy remain contracts. The descriptions below document the current implementation until this extension ships.
+
 Client-authoritative combat splits weapon fire into two independently-owned halves, both
 riding the prediction/reconciliation contract above — no server rewind, no
 lag-compensation history window (see *Non-goals*).

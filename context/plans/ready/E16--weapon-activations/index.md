@@ -1,6 +1,6 @@
 # Weapon activations
 
-Status: draft; public API migration requires owner sign-off.
+Status: approved for implementation. Owner approved scripting and network API changes in this session.
 Read at: `1527f5b26`.
 
 ## Goal
@@ -57,6 +57,8 @@ secondary: {
 
 Scale values accept finite literals or existing numeric IR. The activation scope exposes only normalized `charge`; uncharged actions read 1. Bind expressions when content installs. No state-store reads, writes, randomness, or retained closures. Evaluate once per resolved shot with no allocation. Supported scale keys are `damage`, `range`, `projectileSpeed`, `projectileRadius`, `projectileSize`, `knockbackSpeed`, and `resourceCost`. Unlisted values keep scale 1. Damage scale multiplies direct or splash damage once; visual size never changes collision or splash radius.
 
+The plasma example's 10× damage is content tuning, never an engine constant or charge rule. Authors choose the damage expression and full-charge multiplier within the validated numeric domain. Damage, resource cost, and visual size are independent expressions; matching their multipliers is optional.
+
 Limits: at most 64 steps and 16 shots; first and last steps must be shots; shots must have a positive wait between them. Durations must be finite, in (0, 60000] ms; recovery may be zero. Total quantized waits may not exceed 60 seconds. Charge permits minimum zero and requires minimum ≤ full duration. Waits round up to whole fixed ticks, with a minimum of one tick. Damage/knockback scales are in [0, 64]; other scales in (0, 64]. Invalid literals or structure reject content. Validate the final scaled values, including overflow and integer ammo conversion, before debit. Invalid evaluated values cancel execution and warn once per descriptor/field.
 
 ### Execution
@@ -100,7 +102,7 @@ Expose local HUD facts for charging and normalized progress, attributed to the a
 ## Acceptance criteria
 
 1. Both reference primary actions keep their existing cadence, damage, resource cost, and presentation.
-2. A full plasma secondary deals 100 damage before target modifiers, spends 50 cell units once, and emits one projectile with twice the primary's visual size. Partial charge follows the declared formula; early release cancels.
+2. A full plasma secondary deals 100 damage before target modifiers, spends 50 cell units once, and emits one projectile with twice the primary's visual size. Partial charge follows the declared formula; early release cancels. A separate authored fixture reaches 3× and then 6× damage by changing only its expression, without changing resource cost or visual size. Host and connected client honor both values; no engine change is required.
 3. A rifle secondary produces exactly three timed shots and spends three rounds when available. Releasing does not interrupt it; holding does not repeat it. Each shot uses its current aim and normal spread/bloom.
 4. Identical charge/sequence declarations work with ammo, heat, cell, or no resource. Exhaustion, overheat, reload, simultaneous inputs, interruption, and lifecycle cleanup obey Decisions without delayed ghost shots.
 5. TypeScript and Luau compile equivalent descriptors. Malformed steps, limits, scopes, and non-finite values fail at the documented boundary. Generated types match Rust. Review confirms there is no gameplay burst verb or live script callback.
@@ -143,4 +145,4 @@ Binary input/shot-key changes bump the wire epoch. Terminal activation outcomes 
 
 ## Owner decision
 
-Approve the proposed public scripting migration and network contract before promotion. Gameplay timings and costs above are initial reference tuning; architecture and acceptance are the feature contract.
+Owner approved the public scripting migration and network contract. The 10× plasma multiplier is reference content only; authors choose their own expressions. Gameplay timings and costs above are initial reference tuning; architecture and acceptance are the feature contract.

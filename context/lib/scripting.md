@@ -424,6 +424,8 @@ Both primitives call the one grant chokepoint per resolved recipient. Amounts mu
 
 ## 11. Typed Command Buffer
 
+**Weapon activation adopter (approved, implementation pending).** Author-time shot/wait builders produce bounded activation data. Numeric shot scaling uses a read-only scope exposing normalized charge; damage, resource cost, and visual size remain independent authored expressions. Programs bind at install and execute inside the fixed-tick weapon machine. The frame-end reaction scheduler does not drive weapon timing. No burst opcode or retained gameplay closure is introduced.
+
 **Authored behavior crosses the FFI as data, never as a retained function.** A closed vocabulary is not a small one. The engine owns the evaluator; the author owns a description the evaluator runs. Expressiveness comes from how rich the vocabulary is, not from shipping code the engine executes at runtime — cf. shader graphs, SQL, GraphQL, the WebGPU command encoder, all arbitrarily expressive yet closed.
 
 **The mechanism.** At load time the author calls an engine-provided builder API. Calling it looks like writing a function, but it does not produce one — it constructs a **typed, serializable IR**: a tree of closed-vocabulary opcodes whose leaf nodes reference engine-provided inputs by name. That IR crosses the FFI as plain data. The VM drops; Rust owns the IR and a **total evaluator** that binds the named input leaves to live state and evaluates the tree each tick. The author thus expresses behavior that depends on live state — `boost = f(speed, charges, grounded)` — with no retained closure and no live VM.

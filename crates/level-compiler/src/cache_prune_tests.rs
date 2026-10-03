@@ -41,7 +41,7 @@ fn args(map: &Path, cache_dir: &Path, budget: u64) -> crate::Args {
 }
 
 /// Start one build of `map` the way prl-build does: open, prune, journal.
-/// Each test's budget is smaller than the map's set unless it says otherwise.
+/// Most tests pass a budget smaller than the map's set, so only spared entries survive.
 fn open(map: &Path, cache_dir: &Path, budget: u64) -> StageCache {
     crate::construct_stage_cache(&args(map, cache_dir, budget)).expect("cache is enabled")
 }

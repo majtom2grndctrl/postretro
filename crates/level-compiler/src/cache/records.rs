@@ -225,7 +225,10 @@ fn is_debris(path: &Path, name: &str) -> bool {
     let orphan = if name.ends_with(".tmp") {
         true
     } else if let Some(journal) = name.strip_suffix(LOCK_SUFFIX) {
-        name.starts_with(JOURNAL_PREFIX) && !path.with_file_name(journal).exists()
+        // Only a journal that definitely no longer exists orphans its lock: a
+        // failed check must not delete a long-running build's lock file.
+        name.starts_with(JOURNAL_PREFIX)
+            && matches!(path.with_file_name(journal).try_exists(), Ok(false))
     } else {
         false
     };
@@ -235,7 +238,9 @@ fn is_debris(path: &Path, name: &str) -> bool {
 /// Whether a record still spares its entries. Only a stored path that
 /// definitely does not exist counts as missing. A directory without one,
 /// written before paths were stored or by a build whose input did not exist,
-/// is always kept, as is one whose path cannot be checked.
+/// is always kept, as is one whose path cannot be checked. The marker clears
+/// only when a prune sees the map present, so an absence that a prune never
+/// observed ending counts from the first prune that saw it.
 fn record_kept(map_dir: &Path, pass: Pass) -> bool {
     let Ok(stored) = fs::read_to_string(map_dir.join(MAP_PATH_FILE)) else {
         return true;
@@ -321,9 +326,18 @@ fn retire(map_dir: &Path) {
 }
 
 fn has_live_journal(map_dir: &Path) -> bool {
-    list_journals(map_dir)
-        .iter()
-        .any(|journal| journal_stopped(journal) != Some(true))
+    // Unlike superseding, an unknown here must keep the record: a directory
+    // that cannot be listed may hold a running build's journal.
+    let Ok(files) = fs::read_dir(map_dir) else {
+        return true;
+    };
+    files.into_iter().any(|file| match file {
+        Ok(file) => {
+            is_journal(&file.file_name().to_string_lossy())
+                && journal_stopped(&file.path()) != Some(true)
+        }
+        Err(_) => true,
+    })
 }
 
 /// Whether the build that owns `journal` has stopped; `None` when that cannot
@@ -335,7 +349,14 @@ fn has_live_journal(map_dir: &Path) -> bool {
 /// mandatory: a lock on the journal would make every other build's read of
 /// it fail, and the prune would skip eviction whenever a build was running.
 fn journal_stopped(journal: &Path) -> Option<bool> {
-    match fs::File::open(lock_path(journal)) {
+    // Read-write: file systems that emulate `flock` with a whole-file `fcntl`
+    // lock (NFS) grant an exclusive lock only through a writable handle, so a
+    // read-only probe would see a live build's lock as unsupported.
+    match fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(lock_path(journal))
+    {
         Ok(lock) => match lock.try_lock() {
             // Released when `lock` closes; nothing re-locks a stopped build's file.
             Ok(()) => Some(true),

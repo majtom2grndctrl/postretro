@@ -2,7 +2,7 @@
 //! outside permits, the consumer's permit, paused cache hits, the resident
 //! bound, chart-cull byte identity, and a memo-hit rebuild followed by a
 //! one-light edit.
-//! Governing context: `context/lib/build_pipeline.md` §Build Cache.
+//! Governing context: `context/lib/build_pipeline.md` §Build Cache and §Progress reporting, controls, and logging.
 
 use super::*;
 use std::sync::mpsc;
@@ -891,13 +891,6 @@ fn lightmap_window_consumer_permit_keeps_chart_work_out_of_fold_at_one_permit() 
     assert_eq!(bytes, baseline, "consumer-held bytes");
 }
 
-// A paused warm bake whose partitions all hit the cache advances no progress
-// while paused, and completes after resume. The pause lands inside the last
-// partition-key admission; the bake then looks up the section memo (a miss:
-// the seed used the other irradiance encoding, which keys no partition) and
-// starts the window. Were `start`'s checkpoint after `source.load`, the
-// admitted items would load their hits and advance progress by their chart
-// counts while paused, failing the zero-progress and zero-read assertions.
 /// Releases a pause when dropped, including while a failed assertion unwinds.
 struct UnpauseOnDrop<'a>(&'a Governor);
 
@@ -907,6 +900,13 @@ impl Drop for UnpauseOnDrop<'_> {
     }
 }
 
+// A paused warm bake whose partitions all hit the cache advances no progress
+// while paused, and completes after resume. The pause lands inside the last
+// partition-key admission; the bake then looks up the section memo (a miss:
+// the seed used the other irradiance encoding, which keys no partition) and
+// starts the window. Were `start`'s checkpoint after `source.load`, the
+// admitted items would load their hits and advance progress by their chart
+// counts while paused, failing the zero-progress and zero-read assertions.
 #[test]
 fn lightmap_window_paused_warm_hits_advance_no_progress_until_resume() {
     let lights = window_lights(3);

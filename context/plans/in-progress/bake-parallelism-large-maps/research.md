@@ -187,6 +187,22 @@ No sample landed in ray code. The raw stack sample was not retained; the breakdo
 - **Bounded by what the waiters could fill:** overlap hides at most the waiting stage's own wall time. Fused walk + AnimWeightMaps ≤ 83 s; Animated Direct + Direct SH Delta ≤ 64 s; running Delta SH (90 s, saturated) inside Direct SH Delta's idle span ≤ 90 s, a pairing the gate's "waits" wording does not count because Delta SH runs first. Ceiling about 150–240 s (9–15%).
 - **Most low time is cache I/O, not idle CPU.** Warm Lightmap Bake is 365.7 s against cold 182.9 s: the extra 183 s are the window stalled behind partition puts. Direct SH Delta (205 s at 0.57 cores) and Animated Direct (0.49 cores) are put-bound. Overlapping two put-bound stages competes for the same SATA disk and Defender scan, so their pairing likely recovers little here; CPU work overlapping an I/O stall (AnimWeightMaps' 18 s chunk bake, Delta SH's ray work) is the clean gain.
 - **Hallway projection.** The same pairings on R0's stages after Task 7: AnimWeightMaps ≈ 40 s beside the walk, Animated Direct 25 s and Delta SH 151 s beside Direct SH Delta's 322 s. Ceiling ≈ 215 s of 19,388 s (1.1%), against the 15 minutes the 4.6% bar was derived from.
+- **Warm rebuild after an edit (owner direction 2026-10-02: the most frequent build, then production, then warm on an empty cache).** `stress-warren-mini-edit.map` moves entity 5, a static `light` (600, static lightmap shadows), 64 units in X. m0r rebuilt it with the pre-lever compiler on a copy of m0's cache (`evidence/windows-mini-rebuild-before/`); m2r with this branch at a16a6027a on a copy of m2's cache (`evidence/windows-mini-rebuild-after/`). Both exit 0, clean, `-j` 5; outputs equal but for the embedded path.
+
+  | Number | m0r pre-lever | m2r this branch |
+  |---|---|---|
+  | Total | 1,802.6 s (2.62 cores) | 622.4 s (2.56 cores) |
+  | Start-of-build prune | evicted 73,195 of 74,227 entries (2 GiB budget, mtime LRU) | spared all (map records) |
+  | SH groups hit / miss | 0 / 8,960 | 5,760 / 3,200 |
+  | SH Bake | 731.0 s | 340.2 s |
+  | Delta SH / Animated Direct / Direct SH Delta | 145.5 / 20.2 / 126.6 s | 10.8 / 8.7 / 122.3 s |
+  | Lightmap Bake | 304.7 s | 29.8 s |
+  | AnimWeightMaps | 2.0 s (hit) | 2.0 s (hit) |
+  | Packing | 228.8 s (0.03 cores; cause not isolated) | 53.5 s |
+  | Peak working set | 1.51 GiB | 1.75 GiB |
+
+  Most of the gap is lever 2's prune rule: the pre-lever prune discarded the cache before using it, so its rebuild was nearly a full bake. Lever 3's candidates in m2r are Delta SH (10.8 s) and Animated Direct (8.7 s) beside Direct SH Delta's idle span, and AnimWeightMaps (2.0 s) beside the walk: at most about 22 s (3.5%), under the 73.2 s bar.
+- **Direct SH Delta's cache costs more than its compute.** It writes 46,495 entries (642,746,880 bytes, about 14 KB each). Cold computes the same entries in about 2.6 s (m1c: stage 814.56 s → about 817 s). Warm, the per-entry cache I/O costs 190–247 s on an empty cache (m2, m0) and 122 s on a rebuild that mostly reads them back (m2r, 0.19 cores): 20% of the rebuild. The cost is per file on this SATA SSD under Defender (about 2.6 ms per entry), not directory size, so sharding (the flat-directory question) would not remove it.
 - **m2 against m0 (levers 1, 2, 4 warm):** total 2,191.6 → 1,591.8 s (−27%); Lightmap 832.0 → 365.7 s; Delta SH 180.1 → 90.1 s; Direct SH Delta 246.9 → 190.4 s; Packing 46.4 → 36.3 s; AnimWeightMaps 50.9 → 82.7 s and Animated Direct 67.7 → 75.9 s slower (both put-bound; one run each, cause not isolated — warren-mini's AnimWeightMaps writes one 508 MB entry, so Task 7's cut does not reach it); peak 1.73 GiB both. Output equals m0's but for the embedded path (`prl-pathdiff.py`).
 
 ## Lightmap loop details (lever 1)

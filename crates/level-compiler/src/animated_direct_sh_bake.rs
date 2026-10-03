@@ -6,7 +6,6 @@ use crate::affinity_grid::{
     decompose_affinity_for_lights_with_policies,
 };
 use crate::bake_control::BakeControl;
-use crate::cache::StageCache;
 use crate::delta_drop_policy::ScriptMutableDescriptorSlots;
 use crate::delta_sh_cache::{DeltaShCacheInputs, DeltaShCacheTally, bake_or_load_delta_subblocks};
 use crate::light_namespaces::AnimatedBakedLights;
@@ -74,7 +73,6 @@ pub fn bake_animated_direct_sh_delta_volumes(
     bake_animated_direct_sh_delta_volumes_controlled(
         inputs,
         config,
-        None,
         &BakeControl::unrestricted(),
     )
 }
@@ -82,19 +80,16 @@ pub fn bake_animated_direct_sh_delta_volumes(
 pub fn bake_animated_direct_sh_delta_volumes_controlled(
     inputs: &AnimatedDirectShBakeInputs<'_, '_>,
     config: &ShConfig,
-    cache: Option<&StageCache>,
     control: &BakeControl,
 ) -> Option<AnimatedDirectShDeltaVolumesSection> {
-    bake_animated_direct_sh_delta_volumes_controlled_with_tally(inputs, config, cache, control).0
+    bake_animated_direct_sh_delta_volumes_controlled_with_tally(inputs, config, control).0
 }
 
-/// Test-facing cache accounting for animated direct delta entries. This keeps
-/// the production stage API section-only while exposing the CSR locality
-/// contract to cross-bake tests.
+/// The stage bake plus its per-entry tally. The stage bakes uncached, so the
+/// tally reports every CSR entry as a miss; tests read the entry count from it.
 pub(crate) fn bake_animated_direct_sh_delta_volumes_controlled_with_tally(
     inputs: &AnimatedDirectShBakeInputs<'_, '_>,
     config: &ShConfig,
-    cache: Option<&StageCache>,
     control: &BakeControl,
 ) -> (
     Option<AnimatedDirectShDeltaVolumesSection>,
@@ -185,7 +180,9 @@ pub(crate) fn bake_animated_direct_sh_delta_volumes_controlled_with_tally(
             expected_subblock_f16_len: PROBES_PER_CELL * FORMAT_DEFAULT_DELTA_PROBE_F16_STRIDE,
         },
         &keyed_lights,
-        cache,
+        // Uncached: these entries cost more to cache than to compute
+        // (`build_pipeline.md` §Build Cache).
+        None,
         control,
         |animated_index, cell| {
             let entry = &entries[animated_index as usize];

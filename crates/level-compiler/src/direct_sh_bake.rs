@@ -315,7 +315,6 @@ pub fn bake_direct_sh_delta_volumes(
         config,
         alpha_lights,
         entity_shadow_lights,
-        None,
         &BakeControl::unrestricted(),
     )
 }
@@ -325,7 +324,6 @@ pub fn bake_direct_sh_delta_volumes_controlled(
     config: &ShConfig,
     alpha_lights: &AlphaLightsNs<'_>,
     entity_shadow_lights: &EntityShadowLightsSection,
-    cache: Option<&StageCache>,
     control: &BakeControl,
 ) -> Option<(DirectShDeltaVolumesSection, DirectDeltaBakeStats)> {
     bake_direct_sh_delta_volumes_controlled_with_tally(
@@ -333,21 +331,19 @@ pub fn bake_direct_sh_delta_volumes_controlled(
         config,
         alpha_lights,
         entity_shadow_lights,
-        cache,
         control,
     )
     .0
 }
 
-/// Test-facing cache accounting for selected entity-shadow delta entries.
-/// The pipeline only consumes the reconstructed section and pre-drop stats;
-/// tests additionally pin the per-CSR-entry cache locality contract.
+/// The stage bake plus its per-entry tally. The pipeline only consumes the
+/// reconstructed section and pre-drop stats. The stage bakes uncached, so the
+/// tally reports every CSR entry as a miss; tests read the entry count from it.
 pub(crate) fn bake_direct_sh_delta_volumes_controlled_with_tally(
     inputs: &DirectBakeInputs<'_, '_>,
     config: &ShConfig,
     alpha_lights: &AlphaLightsNs<'_>,
     entity_shadow_lights: &EntityShadowLightsSection,
-    cache: Option<&StageCache>,
     control: &BakeControl,
 ) -> (
     Option<(DirectShDeltaVolumesSection, DirectDeltaBakeStats)>,
@@ -358,7 +354,6 @@ pub(crate) fn bake_direct_sh_delta_volumes_controlled_with_tally(
         config,
         alpha_lights,
         entity_shadow_lights,
-        cache,
         control,
         AffinityReachPolicy::SELECTED_DIRECT,
     )
@@ -369,7 +364,6 @@ fn bake_direct_sh_delta_volumes_with_reach_policy(
     config: &ShConfig,
     alpha_lights: &AlphaLightsNs<'_>,
     entity_shadow_lights: &EntityShadowLightsSection,
-    cache: Option<&StageCache>,
     control: &BakeControl,
     reach_policy: AffinityReachPolicy,
 ) -> (
@@ -438,7 +432,9 @@ fn bake_direct_sh_delta_volumes_with_reach_policy(
                 * delta_probe_f16_stride(TILE_DIMENSION),
         },
         &keyed_lights,
-        cache,
+        // Uncached: these entries cost more to cache than to compute
+        // (`build_pipeline.md` §Build Cache).
+        None,
         control,
         |selection_index, cell| {
             let selection_slot = usize::try_from(selection_index)
@@ -1243,7 +1239,6 @@ mod tests {
             &ShConfig { probe_spacing: 0.5 },
             &alpha_lights,
             &selected,
-            None,
             &control,
             reach_policy,
         )
@@ -1768,7 +1763,6 @@ mod tests {
             &ShConfig { probe_spacing: 1.0 },
             &alpha_lights,
             &selected,
-            None,
             &control,
         )
         .expect("selected lights should produce direct deltas");
@@ -1909,7 +1903,6 @@ mod tests {
             &ShConfig { probe_spacing: 1.0 },
             &alpha_lights,
             &selected,
-            None,
             &control,
         );
 

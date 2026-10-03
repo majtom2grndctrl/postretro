@@ -137,14 +137,22 @@ impl Default for PartitionWindow {
     }
 }
 
+/// A test hold at one chart bake: (light position, layer, chart index).
+#[cfg(test)]
+pub(crate) type ChartHook = std::sync::Arc<dyn Fn(usize, u32, usize) + Send + Sync>;
+
+/// A test hold at one partition cache get or put: (light position, layer).
+#[cfg(test)]
+pub(crate) type PartitionIoHook = std::sync::Arc<dyn Fn(usize, u32) + Send + Sync>;
+
 /// Test holds at a partition's chart bake and cache I/O. Each receives the
 /// light's position in the stage's layer-light list and the target layer.
 #[cfg(test)]
 #[derive(Clone, Default)]
 pub(crate) struct PartitionHooks {
-    pub(crate) before_chart: Option<std::sync::Arc<dyn Fn(usize, u32, usize) + Send + Sync>>,
-    pub(crate) before_get: Option<std::sync::Arc<dyn Fn(usize, u32) + Send + Sync>>,
-    pub(crate) before_put: Option<std::sync::Arc<dyn Fn(usize, u32) + Send + Sync>>,
+    pub(crate) before_chart: Option<ChartHook>,
+    pub(crate) before_get: Option<PartitionIoHook>,
+    pub(crate) before_put: Option<PartitionIoHook>,
 }
 
 #[allow(clippy::too_many_arguments)]

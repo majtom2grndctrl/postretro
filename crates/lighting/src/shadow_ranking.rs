@@ -243,19 +243,17 @@ pub fn assign_slots_with_hysteresis(
         // it can only swap into another baked light's slot below.
         let may_grow_promoted = !cand_baked || promoted_count < promoted_cap;
 
-        if may_grow_promoted {
-            if let Some(free) = slots.iter().position(|slot| slot.is_none()) {
-                slots[free] = Some(SlotOccupant {
-                    candidate_index: cand.candidate_index,
-                    score: cand.score,
-                    is_promoted_baked: cand_baked,
-                });
-                assignment[cand.candidate_index] = free as u32;
-                if cand_baked {
-                    promoted_count += 1;
-                }
-                continue;
+        if may_grow_promoted && let Some(free) = slots.iter().position(|slot| slot.is_none()) {
+            slots[free] = Some(SlotOccupant {
+                candidate_index: cand.candidate_index,
+                score: cand.score,
+                is_promoted_baked: cand_baked,
+            });
+            assignment[cand.candidate_index] = free as u32;
+            if cand_baked {
+                promoted_count += 1;
             }
+            continue;
         }
 
         // No free slot the candidate may take — try to evict the weakest
@@ -273,21 +271,21 @@ pub fn assign_slots_with_hysteresis(
                     .partial_cmp(&b.score)
                     .unwrap_or(std::cmp::Ordering::Equal)
             });
-        if let Some((slot, occ)) = target {
-            if challenger_can_evict(cand.score, occ.score, eviction_margin) {
-                assignment[occ.candidate_index] = NO_SHADOW_SLOT;
-                if occ.is_promoted_baked {
-                    promoted_count -= 1;
-                }
-                slots[slot] = Some(SlotOccupant {
-                    candidate_index: cand.candidate_index,
-                    score: cand.score,
-                    is_promoted_baked: cand_baked,
-                });
-                assignment[cand.candidate_index] = slot as u32;
-                if cand_baked {
-                    promoted_count += 1;
-                }
+        if let Some((slot, occ)) = target
+            && challenger_can_evict(cand.score, occ.score, eviction_margin)
+        {
+            assignment[occ.candidate_index] = NO_SHADOW_SLOT;
+            if occ.is_promoted_baked {
+                promoted_count -= 1;
+            }
+            slots[slot] = Some(SlotOccupant {
+                candidate_index: cand.candidate_index,
+                score: cand.score,
+                is_promoted_baked: cand_baked,
+            });
+            assignment[cand.candidate_index] = slot as u32;
+            if cand_baked {
+                promoted_count += 1;
             }
         }
     }

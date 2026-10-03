@@ -183,7 +183,7 @@ impl ShResidencyState {
                     reset.insert(cluster_id);
                 }
             }
-            if self.cluster_count % 64 != 0
+            if !self.cluster_count.is_multiple_of(64)
                 && words
                     .last()
                     .is_some_and(|word| *word >> (self.cluster_count % 64) != 0)

@@ -574,12 +574,12 @@ pub struct MapData {
     /// Compiler-only source-group identities, retained after the input adapter
     /// has flattened static group brushes into canonical world geometry.
     // `prl-build` consumes this compiler-only seam; the library target exposes
-    // geometry helpers but does not run the compile pipeline.
-    #[cfg_attr(not(test), allow(dead_code))]
+    // geometry helpers but does not run the compile pipeline, test build included.
+    #[allow(dead_code)]
     pub(crate) assemblies: Vec<MapAssembly>,
     /// One entry per retained [`Self::brush_volumes`] item. An entry names the
     /// assembly which supplied the brush, or is `None` for ungrouped geometry.
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[allow(dead_code)]
     pub(crate) brush_assembly: Vec<Option<usize>>,
     /// Brush count per non-worldspawn entity. Diagnostic only; editor-group
     /// brushes are flattened into static brush volumes, while semantic brush

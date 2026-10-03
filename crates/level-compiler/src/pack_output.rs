@@ -120,10 +120,11 @@ pub(super) fn write_and_validate_sections_with_cluster_directory_validation(
     cluster_directory_validation: Option<ClusterDirectoryValidationInputs<'_>>,
 ) -> anyhow::Result<()> {
     // Validate output directory exists before writing
-    if let Some(parent) = output.parent() {
-        if !parent.as_os_str().is_empty() && !parent.exists() {
-            anyhow::bail!("output directory does not exist: {}", parent.display());
-        }
+    if let Some(parent) = output.parent()
+        && !parent.as_os_str().is_empty()
+        && !parent.exists()
+    {
+        anyhow::bail!("output directory does not exist: {}", parent.display());
     }
     let original_output = OutputIdentity::capture(output)?;
 

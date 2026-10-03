@@ -320,10 +320,8 @@ fn run_local_weapon_command_inner(
             let _ = registry.set_component(pawn, inventory.clone());
             repointed_pawn = Some(pawn);
         }
-    } else if begin_lower {
-        if let (Some(pawn), Some(inventory)) = (pawn, inventory) {
-            let _ = registry.set_component(pawn, inventory);
-        }
+    } else if begin_lower && let (Some(pawn), Some(inventory)) = (pawn, inventory) {
+        let _ = registry.set_component(pawn, inventory);
     }
     let _ = registry.set_component(weapon_id, weapon_component);
     // Fire, dry fire and spawn sound from the firing pawn (the weapon itself

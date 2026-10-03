@@ -958,10 +958,8 @@ pub fn client_receive_and_apply(
                     agent_params,
                 )
             };
-            if materialized {
-                if let Some(state) = remote.initial_animation_state.as_deref() {
-                    client::apply_mesh_animation_state(registry, remote.entity_id, state, true);
-                }
+            if materialized && let Some(state) = remote.initial_animation_state.as_deref() {
+                client::apply_mesh_animation_state(registry, remote.entity_id, state, true);
             }
             let attachment_changed = remote.weapon_attachment_changed
                 && remote_materialize::update_active_weapon_attachment(
@@ -1993,29 +1991,29 @@ fn host_handle_client_message_inner(
             if !wire_convert::valid_wire_shot_id(declaration.shot_id) {
                 return;
             }
-            if let Some(pending) = pending_hit_declarations {
-                if !pending.push_at(client_id, declaration.clone(), server_tick) {
-                    if let Some(verdict) = open_shots.and_then(|shots| {
-                        shots.refuse_overflowed_hit(
-                            &command_queues.activations,
-                            client_id,
-                            wire_convert::shot_id_from_wire(declaration.shot_id),
-                            server_tick,
-                        )
-                    }) {
-                        send_shot_verdict(
-                            server,
-                            client_id,
-                            wire_convert::shot_id_from_wire(verdict.shot_id),
-                            verdict.accept,
-                            verdict.hit_accepted,
-                        );
-                    } else {
-                        server.send_input(
-                            client_id,
-                            wire::encode(&wire::ServerMessage::HitRefused(declaration.shot_id)),
-                        );
-                    }
+            if let Some(pending) = pending_hit_declarations
+                && !pending.push_at(client_id, declaration.clone(), server_tick)
+            {
+                if let Some(verdict) = open_shots.and_then(|shots| {
+                    shots.refuse_overflowed_hit(
+                        &command_queues.activations,
+                        client_id,
+                        wire_convert::shot_id_from_wire(declaration.shot_id),
+                        server_tick,
+                    )
+                }) {
+                    send_shot_verdict(
+                        server,
+                        client_id,
+                        wire_convert::shot_id_from_wire(verdict.shot_id),
+                        verdict.accept,
+                        verdict.hit_accepted,
+                    );
+                } else {
+                    server.send_input(
+                        client_id,
+                        wire::encode(&wire::ServerMessage::HitRefused(declaration.shot_id)),
+                    );
                 }
             }
         }
@@ -2330,6 +2328,7 @@ fn resolve_authorized_splash_projectile_impact(
 /// same ingester through [`host_ingest_ready_hit_declarations`]; this keeps tests from
 /// duplicating its authorization and damage rules just to observe the result.
 #[cfg(test)]
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn ingest_hit_declaration_for_test(
     registry: &mut EntityRegistry,
     collision_world: &CollisionWorld,
@@ -4541,7 +4540,7 @@ mod tests {
         let follow = wire::InputCommand {
             client_tick: token.start_tick.wrapping_add(1),
             activation: wire::WireActivationInput::default(),
-            ..start.clone()
+            ..start
         };
         assert!(queues.ingest(7, &follow));
         let resolved = queues.resolve_tick(7).unwrap();

@@ -59,7 +59,7 @@ pub(crate) fn pack_cell_sub_blocks(
     // The fill path relies on both: trimmed extents round up within the
     // edge, and the largest remaining chart always fits an empty block.
     assert!(
-        align > 0 && pool_edge % align == 0,
+        align > 0 && pool_edge.is_multiple_of(align),
         "block alignment {align} does not divide the pool layer edge {pool_edge}"
     );
     assert!(
@@ -177,7 +177,7 @@ pub(crate) fn pack_cell_block_within(
         return None;
     }
     assert!(
-        align > 0 && pool_edge % align == 0,
+        align > 0 && pool_edge.is_multiple_of(align),
         "block alignment {align} does not divide the pool layer edge {pool_edge}"
     );
     let area_of = |&(w, h): &(u32, u32)| u64::from(w) * u64::from(h);

@@ -309,14 +309,14 @@ fn carve_fragment_outside_brush(
         let has_outside_area = candidate_inside
             .iter()
             .any(|vertex| plane.normal.dot(*vertex) - plane.distance > clip_epsilon);
-        if has_outside_area {
-            if let Some(outside) = clip_winding_to_half_spaces(
+        if has_outside_area
+            && let Some(outside) = clip_winding_to_half_spaces(
                 candidate_inside.clone(),
                 &[(plane.normal, plane.distance)],
                 clip_epsilon,
-            ) {
-                outside_fragments.push(outside);
-            }
+            )
+        {
+            outside_fragments.push(outside);
         }
 
         let Some(inside) = clip_winding_to_half_spaces(

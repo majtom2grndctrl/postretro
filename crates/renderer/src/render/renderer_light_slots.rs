@@ -482,31 +482,29 @@ impl Renderer {
                 capture_animated_promotion_weights,
             )?;
         }
-        if !cube_slot_assignment.is_empty() {
-            if let Some(pool) = self.full_mut().cube_shadow_pool.as_mut() {
-                let mut live_slots = [false; crate::lighting::cube_shadow::CUBE_COUNT];
-                for &slot in &cube_slot_assignment {
-                    if slot != postretro_lighting::NO_SHADOW_SLOT {
-                        if let Some(live) = live_slots.get_mut(slot as usize) {
-                            *live = true;
-                        }
-                    }
+        if !cube_slot_assignment.is_empty()
+            && let Some(pool) = self.full_mut().cube_shadow_pool.as_mut()
+        {
+            let mut live_slots = [false; crate::lighting::cube_shadow::CUBE_COUNT];
+            for &slot in &cube_slot_assignment {
+                if slot != postretro_lighting::NO_SHADOW_SLOT
+                    && let Some(live) = live_slots.get_mut(slot as usize)
+                {
+                    *live = true;
                 }
-                for (slot, live) in live_slots.iter().copied().enumerate() {
-                    if live {
-                        continue;
-                    }
-                    pool.slot_entity_eligible[slot] = false;
-                    for face in 0..crate::lighting::cube_shadow::CUBE_FACES {
-                        let layer = crate::lighting::cube_shadow::CubeShadowPool::face_layer(
-                            slot as u32,
-                            face,
-                        );
-                        pool.face_matrices[layer] = None;
-                    }
-                }
-                pool.slot_assignment = cube_slot_assignment.clone();
             }
+            for (slot, live) in live_slots.iter().copied().enumerate() {
+                if live {
+                    continue;
+                }
+                pool.slot_entity_eligible[slot] = false;
+                for face in 0..crate::lighting::cube_shadow::CUBE_FACES {
+                    let layer =
+                        crate::lighting::cube_shadow::CubeShadowPool::face_layer(slot as u32, face);
+                    pool.face_matrices[layer] = None;
+                }
+            }
+            pool.slot_assignment = cube_slot_assignment.clone();
         }
 
         // The GPU lights buffer is keyed on `level_lights`. Translate slot
@@ -983,7 +981,7 @@ impl Renderer {
         // shadows) always triggers a re-emit and can never XOR-cancel against a
         // simultaneous spot flip.
         let fingerprint = (slot_occupancy, cube_occupancy, forward_visible, non_forward);
-        let heartbeat = f % 120 == 0;
+        let heartbeat = f.is_multiple_of(120);
         if fingerprint == self.full().shadow_debug_prev && !heartbeat {
             return;
         }
@@ -1284,23 +1282,20 @@ impl Renderer {
             // index. This cache record supplies its fixed world-depth layer;
             // it never appends a duplicate light record or aliases an
             // EntityShadowLights selection index.
-            if state.weight > 0.0 {
-                if let (Some(pool_kind), Some(candidate_index)) = (state.pool_kind, candidate_index)
-                {
-                    if let Some(&global_light_index) =
-                        full.shadow_candidate_source_indices.get(candidate_index)
-                    {
-                        full.promoted_baked_records.push(PromotedBakedLightRecord {
-                            global_light_index: global_light_index as u32,
-                            pool_kind,
-                            slot: state.slot,
-                            weight: state.weight.clamp(0.0, 1.0),
-                            source: PromotedBakedLightSource::AnimatedBaked {
-                                animated_baked_index: animated_index as u32,
-                            },
-                        });
-                    }
-                }
+            if state.weight > 0.0
+                && let (Some(pool_kind), Some(candidate_index)) = (state.pool_kind, candidate_index)
+                && let Some(&global_light_index) =
+                    full.shadow_candidate_source_indices.get(candidate_index)
+            {
+                full.promoted_baked_records.push(PromotedBakedLightRecord {
+                    global_light_index: global_light_index as u32,
+                    pool_kind,
+                    slot: state.slot,
+                    weight: state.weight.clamp(0.0, 1.0),
+                    source: PromotedBakedLightSource::AnimatedBaked {
+                        animated_baked_index: animated_index as u32,
+                    },
+                });
             }
         }
 

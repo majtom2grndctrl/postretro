@@ -354,19 +354,19 @@ pub(crate) fn read_pose_masks(
         }
     }
 
-    if metadata.aim_spine {
-        if let Some(weight_value) = object.get("aimBendWeight") {
-            let valid_weight = weight_value.as_f64().and_then(|weight| {
-                let weight = weight as f32;
-                (weight.is_finite() && weight > 0.0).then_some(weight)
-            });
-            if let Some(weight) = valid_weight {
-                metadata.aim_bend_weight = weight;
-            } else {
-                log::warn!(
-                    "[Model] invalid aimBendWeight on joint node {node_index} in {path_str}; using 1.0"
-                );
-            }
+    if metadata.aim_spine
+        && let Some(weight_value) = object.get("aimBendWeight")
+    {
+        let valid_weight = weight_value.as_f64().and_then(|weight| {
+            let weight = weight as f32;
+            (weight.is_finite() && weight > 0.0).then_some(weight)
+        });
+        if let Some(weight) = valid_weight {
+            metadata.aim_bend_weight = weight;
+        } else {
+            log::warn!(
+                "[Model] invalid aimBendWeight on joint node {node_index} in {path_str}; using 1.0"
+            );
         }
     }
 

@@ -75,7 +75,7 @@ impl StreamingIndirectCompose {
                 reason: "parsed sparse row does not match its header counts",
             });
         }
-        if tile_f16_start % 2 != 0 {
+        if !tile_f16_start.is_multiple_of(2) {
             return Err(ShResidencyDrainError::GpuCapacity {
                 reason: "streamed sparse tile allocation is not word aligned",
             });

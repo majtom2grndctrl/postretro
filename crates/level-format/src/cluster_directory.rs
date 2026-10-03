@@ -866,8 +866,8 @@ fn validate_companions(
     inventory: ClusterDirectoryShInventory<'_>,
     affinity_dims: [u32; 3],
 ) -> Result<(), ClusterDirectoryError> {
-    if let Some(direct) = inventory.direct {
-        if direct.grid_dimensions != base.grid_dimensions
+    if let Some(direct) = inventory.direct
+        && (direct.grid_dimensions != base.grid_dimensions
             || !float_array_bits_equal(direct.grid_origin, base.grid_origin)
             || !float_array_bits_equal(direct.cell_size, base.cell_size)
             || direct.tile_dimension != base.tile_dimension
@@ -876,10 +876,9 @@ fn validate_companions(
             || direct.atlas_tiles_per_row != base.atlas_tiles_per_row
             || direct.layer_count != base.layer_count
             || direct.tiles_per_layer != base.tiles_per_layer
-            || direct.irradiance_format != base.irradiance_format
-        {
-            return resource_mismatch("id 35 grid/stored-node layout disagrees with id 34");
-        }
+            || direct.irradiance_format != base.irradiance_format)
+    {
+        return resource_mismatch("id 35 grid/stored-node layout disagrees with id 34");
     }
     if let Some(billboard) = inventory.billboard {
         if billboard.grid_dimensions != base.grid_dimensions

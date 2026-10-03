@@ -810,12 +810,13 @@ fn client_overlay_anchor(
     if !transform.position.is_finite() {
         return None;
     }
-    if let Some(hitbox) = hitbox {
-        if hitbox.half_extents.is_finite() && hitbox.offset.is_finite() {
-            let top = transform.position + hitbox.offset + Vec3::Y * hitbox.half_extents.y + offset;
-            if top.is_finite() {
-                return Some(top);
-            }
+    if let Some(hitbox) = hitbox
+        && hitbox.half_extents.is_finite()
+        && hitbox.offset.is_finite()
+    {
+        let top = transform.position + hitbox.offset + Vec3::Y * hitbox.half_extents.y + offset;
+        if top.is_finite() {
+            return Some(top);
         }
     }
     let mesh = registry

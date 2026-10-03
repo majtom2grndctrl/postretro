@@ -30,6 +30,20 @@ pub(super) fn deliver_reload_to_weapon(
     machine::deliver_reload_to_weapon(registry, pawn, weapon, reload_pressed, tick_dt)
 }
 
+/// Predicted shell interruption shares the canonical transition and feedback reset.
+pub(crate) fn cancel_predicted_shell_reload(
+    component: &mut postretro_entities::components::weapon::WeaponComponent,
+) {
+    let reload_consumed = component.reload_press_consumed;
+    let feedback_tick = component.begin_reload_feedback_tick();
+    state::transition_wieldable_state(
+        component,
+        state::WieldableStateEvent::Cancel { feedback_tick },
+        None,
+    );
+    component.reload_press_consumed = reload_consumed;
+}
+
 #[cfg(test)]
 mod tests {
     use super::impact::apply_weapon_impact_damage;
@@ -4918,18 +4932,4 @@ mod tests {
             0
         );
     }
-}
-
-/// Predicted shell interruption shares the canonical transition and feedback reset.
-pub(crate) fn cancel_predicted_shell_reload(
-    component: &mut postretro_entities::components::weapon::WeaponComponent,
-) {
-    let reload_consumed = component.reload_press_consumed;
-    let feedback_tick = component.begin_reload_feedback_tick();
-    state::transition_wieldable_state(
-        component,
-        state::WieldableStateEvent::Cancel { feedback_tick },
-        None,
-    );
-    component.reload_press_consumed = reload_consumed;
 }

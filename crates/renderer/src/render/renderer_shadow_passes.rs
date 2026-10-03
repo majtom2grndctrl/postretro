@@ -167,68 +167,65 @@ impl Renderer {
             && full.has_geometry
             && full.wireframe_index_count > 0
             && !full.bvh_leaves.is_empty()
+            && let Some(cull) = &full.compute_cull
         {
-            if let Some(cull) = &full.compute_cull {
-                let cull_status_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("Wireframe Cull Status BG"),
-                    layout: &full.wireframe_cull_status_bgl,
-                    entries: &[wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: cull.cull_status_buffer().as_entire_binding(),
-                    }],
-                });
+            let cull_status_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("Wireframe Cull Status BG"),
+                layout: &full.wireframe_cull_status_bgl,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: cull.cull_status_buffer().as_entire_binding(),
+                }],
+            });
 
-                let mut overlay_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("Wireframe Overlay Pass"),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: scene_color,
-                        depth_slice: None,
-                        resolve_target: None,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Load,
-                            store: wgpu::StoreOp::Store,
-                        },
-                    })],
-                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                        view: &full.depth_view,
-                        depth_ops: Some(wgpu::Operations {
-                            load: wgpu::LoadOp::Load,
-                            store: wgpu::StoreOp::Store,
-                        }),
-                        stencil_ops: None,
+            let mut overlay_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Wireframe Overlay Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: scene_color,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &full.depth_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
                     }),
-                    ..Default::default()
-                });
+                    stencil_ops: None,
+                }),
+                ..Default::default()
+            });
 
-                let pipeline = match full.world_wireframe_mode {
-                    WorldWireframeMode::Off => return,
-                    WorldWireframeMode::CullStatusTrianglesAlwaysOnTop => {
-                        &full.wireframe_cull_status_pipeline
-                    }
-                    WorldWireframeMode::VisibleTrianglesDepthTested => {
-                        &full.wireframe_visible_pipeline
-                    }
-                };
-
-                overlay_pass.set_pipeline(pipeline);
-                overlay_pass.set_bind_group(0, &full.uniform_bind_group, &[]);
-                overlay_pass.set_bind_group(1, &cull_status_bind_group, &[]);
-                overlay_pass.set_vertex_buffer(0, full.vertex_buffer.slice(..));
-                overlay_pass.set_index_buffer(
-                    full.wireframe_index_buffer.slice(..),
-                    wgpu::IndexFormat::Uint32,
-                );
-
-                // instance_index = leaf index so shader looks up per-leaf cull status.
-                for (leaf_idx, leaf) in full.bvh_leaves.iter().enumerate() {
-                    if !wireframe_draws_leaf(full.world_wireframe_mode, visible, leaf) {
-                        continue;
-                    }
-                    let wire_offset = leaf.index_offset * 2;
-                    let wire_count = leaf.index_count * 2;
-                    let li = leaf_idx as u32;
-                    overlay_pass.draw_indexed(wire_offset..wire_offset + wire_count, 0, li..li + 1);
+            let pipeline = match full.world_wireframe_mode {
+                WorldWireframeMode::Off => return,
+                WorldWireframeMode::CullStatusTrianglesAlwaysOnTop => {
+                    &full.wireframe_cull_status_pipeline
                 }
+                WorldWireframeMode::VisibleTrianglesDepthTested => &full.wireframe_visible_pipeline,
+            };
+
+            overlay_pass.set_pipeline(pipeline);
+            overlay_pass.set_bind_group(0, &full.uniform_bind_group, &[]);
+            overlay_pass.set_bind_group(1, &cull_status_bind_group, &[]);
+            overlay_pass.set_vertex_buffer(0, full.vertex_buffer.slice(..));
+            overlay_pass.set_index_buffer(
+                full.wireframe_index_buffer.slice(..),
+                wgpu::IndexFormat::Uint32,
+            );
+
+            // instance_index = leaf index so shader looks up per-leaf cull status.
+            for (leaf_idx, leaf) in full.bvh_leaves.iter().enumerate() {
+                if !wireframe_draws_leaf(full.world_wireframe_mode, visible, leaf) {
+                    continue;
+                }
+                let wire_offset = leaf.index_offset * 2;
+                let wire_count = leaf.index_count * 2;
+                let li = leaf_idx as u32;
+                overlay_pass.draw_indexed(wire_offset..wire_offset + wire_count, 0, li..li + 1);
             }
         }
     }

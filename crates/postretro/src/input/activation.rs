@@ -19,11 +19,11 @@ impl ActivationInputCapture {
         }
     }
     pub fn suspend(&mut self) {
-        if let Some(token) = self.active.take() {
-            if self.pending_cancel != Some(token) {
-                self.pending_cancel = Some(token);
-                self.cancel_sent = false;
-            }
+        if let Some(token) = self.active.take()
+            && self.pending_cancel != Some(token)
+        {
+            self.pending_cancel = Some(token);
+            self.cancel_sent = false;
         }
         self.pressed = [false; 2];
         self.released = [false; 2];

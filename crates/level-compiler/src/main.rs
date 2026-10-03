@@ -48,6 +48,7 @@ pub mod parse;
 pub mod partition;
 pub mod pipeline;
 pub mod portals;
+pub mod ray_traversal;
 pub mod reporter;
 pub mod script_light_membership;
 pub mod sdf_bake;
@@ -71,6 +72,8 @@ pub mod visibility;
 mod binary_tests;
 #[cfg(test)]
 mod cache_cross_bake_tests;
+#[cfg(test)]
+mod cache_prune_tests;
 
 use std::collections::HashSet;
 use std::fmt::Display;
@@ -526,15 +529,15 @@ fn construct_stage_cache(args: &Args) -> Option<cache::StageCache> {
             .join(".build-caches")
             .join("prl-cache")
     });
-    match cache::StageCache::new(&dir) {
+    // Bound the cache before this build writes a fresh generation: content
+    // addressing never reclaims orphaned generations, so the build-start prune
+    // is what keeps the directory from growing without limit. It spares every live
+    // map's use record, so a stopped or failed build, or a build of another
+    // map, never costs this map's work. Off the bake path (one readdir, the
+    // records, a few unlinks); best-effort, never fails the build.
+    match cache::StageCache::open_for_build(&dir, &args.input, args.cache_max_bytes) {
         Ok(cache) => {
             log::info!("[prl-build] cache directory: {}", dir.display());
-            // Bound the cache before this build writes a fresh generation:
-            // content addressing never reclaims orphaned generations, so an
-            // LRU sweep at build start is what keeps the directory from
-            // growing without limit. Off the bake path (one readdir + a few
-            // unlinks); best-effort, never fails the build.
-            cache.prune_to_budget(args.cache_max_bytes);
             Some(cache)
         }
         Err(error) => {
@@ -731,9 +734,11 @@ pub struct Args {
     /// `Cargo.toml` ancestor walk. The engine takes the same flag naming the
     /// same directory — see `resolve_prm_root`.
     baked_root: Option<PathBuf>,
-    /// LRU size budget for the stage cache, in bytes. The cache is pruned to
-    /// this at build start (oldest-used entries first). Defaults to
-    /// `cache::DEFAULT_MAX_BYTES`; ignored when the cache is disabled.
+    /// Size budget for the stage cache, in bytes. The build-start prune spares
+    /// every live map's use record (its last successful build's entries plus
+    /// any later build's; a record retires a day after its map file goes
+    /// missing) and evicts the rest, oldest first, down to this. Defaults
+    /// to `cache::DEFAULT_MAX_BYTES`; ignored when the cache is disabled.
     cache_max_bytes: u64,
     /// Compiler-only limits for the three baked delta sections. The raw-payload
     /// cap is enforced after compaction; the working-set cap refuses the dense
@@ -815,7 +820,7 @@ fn help_text() -> String {
          --sdf-voxel-size <METERS>  SDF occluder-atlas voxel edge length in meters, > 0 (default: {voxel})\n    \
          --cache-dir <PATH>         Override the stage-cache directory (default: <workspace>/.build-caches/prl-cache)\n    \
          --baked-root <DIR>         Directory that CONTAINS materials/; .prm sidecars are written to <DIR>/materials/. Pass the engine the same directory. (default: <workspace>/baked)\n    \
-         --cache-max-size <SIZE>    LRU budget for the stage cache, pruned at build start; accepts e.g. 2GiB, 512MiB, or a byte count (default: {cache_max})\n    \
+         --cache-max-size <SIZE>    Stage-cache budget: the build-start prune keeps every map's last-build entries and evicts the rest, oldest first, down to this; accepts e.g. 2GiB, 512MiB, or a byte count (default: {cache_max})\n    \
          --sh-delta-max-size <SIZE> Aggregate raw payload cap for ids 27, 41, and 45 after the compiler delta policy; accepts e.g. 256MiB or a byte count (default: {delta_max})\n    \
          --sh-delta-working-set-max-size <SIZE> Peak host-RAM budget for dense ids 27, 41, and 45 before baking; accepts e.g. 16GiB or a byte count (default: {delta_working_set_max})\n    \
          --no-cache                 Disable the stage cache entirely; wins over --cache-dir (default: off)\n    \
@@ -1172,10 +1177,10 @@ fn is_compiler_stale(binary_path: &Path) -> bool {
             let path = entry.path();
             if path.is_dir() {
                 stack.push(path);
-            } else if let Ok(metadata) = std::fs::metadata(&path) {
-                if let Ok(mtime) = metadata.modified() {
-                    newest = Some(newest.map_or(mtime, |cur| cur.max(mtime)));
-                }
+            } else if let Ok(metadata) = std::fs::metadata(&path)
+                && let Ok(mtime) = metadata.modified()
+            {
+                newest = Some(newest.map_or(mtime, |cur| cur.max(mtime)));
             }
         }
     }
@@ -2990,7 +2995,7 @@ mod tests {
 
         let capture = LogCapture::start();
         run_with_failure_cache_report(None, 0, |_| Ok(())).unwrap();
-        capture.assert_not_logged(Level::Warn, "[cache] build read/wrote");
+        capture.assert_not_logged(Level::Warn, "[cache] spared set");
     }
 
     #[test]
@@ -3007,7 +3012,7 @@ mod tests {
             run_with_failure_cache_report(Some(cache), 0, |_| anyhow::bail!("expected failure"));
 
         assert!(result.is_err());
-        capture.assert_logged_once(Level::Warn, "[cache] build read/wrote");
+        capture.assert_logged_once(Level::Warn, "[cache] spared set");
         let _ = std::fs::remove_dir_all(dir);
     }
 

@@ -121,22 +121,20 @@ fn validate_activation_shapes(weapon: &Object<'_>) -> Result<(), DescriptorError
         for child in ["charge", "sounds", "emits"] {
             if let Some(object) =
                 optional_object_field_js(&action, child, &format!("{path}.{child}"), true)?
+                && child != "charge"
             {
-                if child != "charge" {
-                    for field in if child == "sounds" {
-                        ["fire", "impact"]
-                    } else {
-                        ["activate", "impact"]
-                    } {
-                        let value: JsValue = object.get(field).map_err(js_err)?;
-                        if !value.is_null() && !value.is_undefined() && value.as_string().is_none()
-                        {
-                            return Err(DescriptorError::InvalidShape {
-                                reason: format!(
-                                    "`{path}.{child}.{field}` must be a string when supplied"
-                                ),
-                            });
-                        }
+                for field in if child == "sounds" {
+                    ["fire", "impact"]
+                } else {
+                    ["activate", "impact"]
+                } {
+                    let value: JsValue = object.get(field).map_err(js_err)?;
+                    if !value.is_null() && !value.is_undefined() && value.as_string().is_none() {
+                        return Err(DescriptorError::InvalidShape {
+                            reason: format!(
+                                "`{path}.{child}.{field}` must be a string when supplied"
+                            ),
+                        });
                     }
                 }
             }

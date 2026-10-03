@@ -295,7 +295,7 @@ pub(super) fn generate_checkerboard_pixels() -> Vec<u8> {
         for x in 0..PLACEHOLDER_SIZE {
             let checker_x = x / CHECKER_SQUARE;
             let checker_y = y / CHECKER_SQUARE;
-            let color = if (checker_x + checker_y) % 2 == 0 {
+            let color = if (checker_x + checker_y).is_multiple_of(2) {
                 &MAGENTA
             } else {
                 &BLACK_RGBA

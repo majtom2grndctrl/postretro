@@ -30,7 +30,11 @@ impl SyntheticMap {
     pub(super) fn new(grid: [u32; 3], cluster_bricks: [u32; 3]) -> Self {
         let bricks = grid.map(|axis| axis / 4);
         let clusters = [0, 1, 2].map(|axis| bricks[axis] / cluster_bricks[axis]);
-        assert!((0..3).all(|axis| grid[axis] % 4 == 0 && bricks[axis] % cluster_bricks[axis] == 0));
+        assert!(
+            (0..3).all(
+                |axis| grid[axis].is_multiple_of(4) && bricks[axis] % cluster_bricks[axis] == 0
+            )
+        );
         Self {
             grid,
             bricks,

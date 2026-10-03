@@ -695,10 +695,10 @@ impl ClientReplication {
         // Old or duplicate sequence: ignore the whole snapshot. The unreliable
         // snapshot channel can deliver an older packet after a newer one; applying it
         // would regress state. Sequence 0 is a valid first snapshot (None < Some(0)).
-        if let Some(latest) = self.latest_sequence {
-            if snapshot.sequence <= latest {
-                return ApplyOutcome::default();
-            }
+        if let Some(latest) = self.latest_sequence
+            && snapshot.sequence <= latest
+        {
+            return ApplyOutcome::default();
         }
         self.latest_sequence = Some(snapshot.sequence);
         self.acked_server_tick = snapshot.server_tick;
@@ -992,17 +992,15 @@ impl ClientReplication {
                 // meshless. The local pawn is excluded: its descriptor presentation
                 // rides `armed_local_pawn` on the movement path, never the remote-entity
                 // mesh path.
-                if !local_player {
-                    if let Some(class) = entity_class {
-                        outcome.remote_entities.push(RemoteEntityMaterialize {
-                            network_id,
-                            entity_id: id,
-                            entity_class: class.to_string(),
-                            initial_animation_state: first_mesh_animation_state(components),
-                            active_weapon_archetype: None,
-                            weapon_attachment_changed: false,
-                        });
-                    }
+                if !local_player && let Some(class) = entity_class {
+                    outcome.remote_entities.push(RemoteEntityMaterialize {
+                        network_id,
+                        entity_id: id,
+                        entity_class: class.to_string(),
+                        initial_animation_state: first_mesh_animation_state(components),
+                        active_weapon_archetype: None,
+                        weapon_attachment_changed: false,
+                    });
                 }
                 true
             }
@@ -2304,15 +2302,15 @@ fn validate_kinematic_mover_state_binding(
         );
         return None;
     };
-    if let Some(bound) = bound_mover_id {
-        if bound != wire.mover_id {
-            log::warn!(
-                "[Net] KinematicMoverState mover_id {} would rebind {network_id:?} from mover_id {}; dropping phase",
-                wire.mover_id,
-                bound
-            );
-            return None;
-        }
+    if let Some(bound) = bound_mover_id
+        && bound != wire.mover_id
+    {
+        log::warn!(
+            "[Net] KinematicMoverState mover_id {} would rebind {network_id:?} from mover_id {}; dropping phase",
+            wire.mover_id,
+            bound
+        );
+        return None;
     }
     if mover.mover_id != wire.mover_id {
         log::warn!(

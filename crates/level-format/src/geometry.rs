@@ -391,7 +391,7 @@ fn validate_geometry(vertices: &[Vertex], indices: &[u32]) -> crate::Result<()> 
         }
     }
 
-    if indices.len() % 3 != 0 {
+    if !indices.len().is_multiple_of(3) {
         return Err(FormatError::Io(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             format!(

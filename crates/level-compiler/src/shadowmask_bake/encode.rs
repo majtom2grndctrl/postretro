@@ -31,7 +31,7 @@ pub(super) fn encode_blocks_bc5(
     blocks: &[CellBlock],
 ) -> Vec<[Vec<u8>; 2]> {
     assert!(
-        width % 4 == 0 && height % 4 == 0,
+        width.is_multiple_of(4) && height.is_multiple_of(4),
         "shadowmask atlas {width}x{height} is not 4-aligned; BC5 would truncate it"
     );
     let plane_texels = width as usize * height as usize;

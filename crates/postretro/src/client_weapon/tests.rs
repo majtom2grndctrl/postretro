@@ -819,12 +819,9 @@ fn client_weapon_charge_correction_uses_frozen_zero_scale_and_preserves_live_fli
         .clone();
     flight.remaining_range -= 3.0;
     registry.set_component(projectile, flight).unwrap();
-    let mut pose = registry
-        .get_component::<Transform>(projectile)
-        .unwrap()
-        .clone();
+    let mut pose = *registry.get_component::<Transform>(projectile).unwrap();
     pose.position = Vec3::new(0.0, 0.0, -3.0);
-    registry.set_component(projectile, pose.clone()).unwrap();
+    registry.set_component(projectile, pose).unwrap();
     let replacement:WeaponDescriptor=serde_json::from_value(serde_json::json!({"damage":99.0,"range":99.0,"resolution":"hitscan","primary":{"trigger":"press","recoveryMs":500.0,"steps":[{"kind":"shot"}]},"sounds":{"impact":"sfx/replacement_hit"}})).unwrap();
     let mut current = registry
         .get_component::<WeaponComponent>(weapon_id)

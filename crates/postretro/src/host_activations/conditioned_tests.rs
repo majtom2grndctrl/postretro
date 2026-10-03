@@ -453,18 +453,17 @@ impl Fixture {
                             self.frame.records.outcome(&mut registry, outcome)
                         };
                         if let Some(effect) = effect {
-                            if let Some(recovery) = effect.recovery_ms {
-                                if let Ok(ComponentValue::Weapon(component)) = self
+                            if let Some(recovery) = effect.recovery_ms
+                                && let Ok(ComponentValue::Weapon(component)) = self
                                     .local
                                     .borrow_mut()
                                     .get_component_value_mut(effect.weapon, ComponentKind::Weapon)
-                                {
-                                    self.predicted.reconcile_cooldown(
-                                        effect.weapon,
-                                        component,
-                                        recovery,
-                                    );
-                                }
+                            {
+                                self.predicted.reconcile_cooldown(
+                                    effect.weapon,
+                                    component,
+                                    recovery,
+                                );
                             }
                             self.reconciled
                                 .push((effect.token, effect.terminal, effect.rejected));

@@ -209,6 +209,62 @@ pub fn client_pull_effects(
     }
 }
 
+/// A stale owner projection chooses cosmetics using the frozen shot's actual cost.
+pub fn client_shot_presentation(
+    weapon: &WeaponComponent,
+    active_slot: usize,
+    projection: &ReplicatedWeaponProjection,
+    shot: &super::ResolvedWeaponShot,
+) -> ClientPullPresentation {
+    use postretro_foundation::ShotResourceCost;
+    match shot.activation.values.resource_cost {
+        ShotResourceCost::Heat(_) => {
+            if sample_for_slot(projection.overheated, active_slot) == Some(true) {
+                ClientPullPresentation::Silent
+            } else {
+                ClientPullPresentation::Fire
+            }
+        }
+        ShotResourceCost::Cell(cost) => {
+            if matches!(sample_for_slot(projection.cell, active_slot), Some(Some(charge)) if charge < cost)
+            {
+                ClientPullPresentation::DryFire
+            } else {
+                ClientPullPresentation::Fire
+            }
+        }
+        ShotResourceCost::Ammo(cost) => {
+            let (Some(Some(magazine)), Some(reload_active)) = (
+                sample_for_slot(projection.magazine, active_slot),
+                sample_for_slot(projection.reload_active, active_slot),
+            ) else {
+                return ClientPullPresentation::Fire;
+            };
+            let reloading = if reload_active {
+                let Some(progress) = sample_for_slot(projection.reload_progress, active_slot)
+                else {
+                    return ClientPullPresentation::Fire;
+                };
+                progress < 1.0
+            } else {
+                false
+            };
+            let per_shell = weapon
+                .effective()
+                .ammo
+                .is_some_and(|ammo| ammo.reload_style == ReloadStyle::PerShell);
+            if reloading && !(per_shell && magazine >= cost as f32) {
+                ClientPullPresentation::Silent
+            } else if magazine >= cost as f32 {
+                ClientPullPresentation::Fire
+            } else {
+                ClientPullPresentation::DryFire
+            }
+        }
+        ShotResourceCost::None => ClientPullPresentation::Fire,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -475,61 +531,5 @@ mod tests {
         };
         assert!(predicted_due(&mut drained, pull));
         assert_eq!(drained.cell, Some(empty), "no regeneration");
-    }
-}
-
-/// A stale owner projection chooses cosmetics using the frozen shot's actual cost.
-pub fn client_shot_presentation(
-    weapon: &WeaponComponent,
-    active_slot: usize,
-    projection: &ReplicatedWeaponProjection,
-    shot: &super::ResolvedWeaponShot,
-) -> ClientPullPresentation {
-    use postretro_foundation::ShotResourceCost;
-    match shot.activation.values.resource_cost {
-        ShotResourceCost::Heat(_) => {
-            if sample_for_slot(projection.overheated, active_slot) == Some(true) {
-                ClientPullPresentation::Silent
-            } else {
-                ClientPullPresentation::Fire
-            }
-        }
-        ShotResourceCost::Cell(cost) => {
-            if matches!(sample_for_slot(projection.cell, active_slot), Some(Some(charge)) if charge < cost)
-            {
-                ClientPullPresentation::DryFire
-            } else {
-                ClientPullPresentation::Fire
-            }
-        }
-        ShotResourceCost::Ammo(cost) => {
-            let (Some(Some(magazine)), Some(reload_active)) = (
-                sample_for_slot(projection.magazine, active_slot),
-                sample_for_slot(projection.reload_active, active_slot),
-            ) else {
-                return ClientPullPresentation::Fire;
-            };
-            let reloading = if reload_active {
-                let Some(progress) = sample_for_slot(projection.reload_progress, active_slot)
-                else {
-                    return ClientPullPresentation::Fire;
-                };
-                progress < 1.0
-            } else {
-                false
-            };
-            let per_shell = weapon
-                .effective()
-                .ammo
-                .is_some_and(|ammo| ammo.reload_style == ReloadStyle::PerShell);
-            if reloading && !(per_shell && magazine >= cost as f32) {
-                ClientPullPresentation::Silent
-            } else if magazine >= cost as f32 {
-                ClientPullPresentation::Fire
-            } else {
-                ClientPullPresentation::DryFire
-            }
-        }
-        ShotResourceCost::None => ClientPullPresentation::Fire,
     }
 }

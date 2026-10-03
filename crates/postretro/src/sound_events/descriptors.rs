@@ -357,6 +357,20 @@ fn collect_one_activity(
     }
 }
 
+/// Builtin and authored alias dispatch share one frozen originating action.
+pub(crate) fn weapon_emission_addresses(emission: &WeaponEmission) -> impl Iterator<Item = &str> {
+    let alias = emission
+        .action
+        .as_ref()
+        .and_then(|action| action.emits.as_ref())
+        .and_then(|emits| match emission.address {
+            "activate" => emits.activate.as_deref(),
+            "impact" => emits.impact.as_deref(),
+            _ => None,
+        });
+    std::iter::once(emission.address).chain(alias)
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -919,18 +933,4 @@ mod tests {
             capture.assert_not_logged(log::Level::Warn, &format!("`{key}`"));
         }
     }
-}
-
-/// Builtin and authored alias dispatch share one frozen originating action.
-pub(crate) fn weapon_emission_addresses(emission: &WeaponEmission) -> impl Iterator<Item = &str> {
-    let alias = emission
-        .action
-        .as_ref()
-        .and_then(|action| action.emits.as_ref())
-        .and_then(|emits| match emission.address {
-            "activate" => emits.activate.as_deref(),
-            "impact" => emits.impact.as_deref(),
-            _ => None,
-        });
-    std::iter::once(emission.address).chain(alias)
 }

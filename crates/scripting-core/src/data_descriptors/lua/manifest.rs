@@ -1124,10 +1124,10 @@ fn dense_lua_prefix_len(
     let mut indices = BTreeSet::new();
     for pair in arr.clone().pairs::<LuaValue, LuaValue>() {
         let (key, _) = pair.map_err(lua_err)?;
-        if let LuaValue::Integer(index) = key {
-            if index >= 1 {
-                indices.insert(index);
-            }
+        if let LuaValue::Integer(index) = key
+            && index >= 1
+        {
+            indices.insert(index);
         }
     }
 

@@ -797,7 +797,7 @@ fn validate_mover_geometry(mover_idx: usize, mover: &KinematicMoverRecord) -> cr
             mover.spin_accel_deg_s2
         ));
     }
-    if mover.indices.len() % 3 != 0 {
+    if !mover.indices.len().is_multiple_of(3) {
         return invalid_data(format!(
             "kinematic geometry: mover {mover_idx} index count {} is not divisible by 3",
             mover.indices.len()

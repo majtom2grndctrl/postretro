@@ -477,11 +477,10 @@ fn expand_bound_for_zone_capsules(
         };
         let radius = zone_radius(zone);
         finite &= expand_bound_for_finite_sphere(bound, joint_world.w_axis.truncate(), radius);
-        if let Some(child_index) = first_child_index(skeleton, joint_index) {
-            if let Some(child_world) = world_joints.get(child_index) {
-                finite &=
-                    expand_bound_for_finite_sphere(bound, child_world.w_axis.truncate(), radius);
-            }
+        if let Some(child_index) = first_child_index(skeleton, joint_index)
+            && let Some(child_world) = world_joints.get(child_index)
+        {
+            finite &= expand_bound_for_finite_sphere(bound, child_world.w_axis.truncate(), radius);
         }
     }
     finite
@@ -542,10 +541,10 @@ fn expand_bound_for_reach(
         if let Some(reach) = reach.get(joint_index) {
             expand_bound_for_origin_sphere(bound, *reach + radius);
         }
-        if let Some(child_index) = first_child_index(skeleton, joint_index) {
-            if let Some(reach) = reach.get(child_index) {
-                expand_bound_for_origin_sphere(bound, *reach + radius);
-            }
+        if let Some(child_index) = first_child_index(skeleton, joint_index)
+            && let Some(reach) = reach.get(child_index)
+        {
+            expand_bound_for_origin_sphere(bound, *reach + radius);
         }
     }
 }
@@ -865,10 +864,10 @@ pub(crate) fn nearest_entity_hit_ignoring(
             }),
         };
 
-        if let Some(hit) = hit {
-            if nearest.as_ref().is_none_or(|n| hit.toi < n.toi) {
-                nearest = Some(hit);
-            }
+        if let Some(hit) = hit
+            && nearest.as_ref().is_none_or(|n| hit.toi < n.toi)
+        {
+            nearest = Some(hit);
         }
     });
 

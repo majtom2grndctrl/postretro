@@ -196,7 +196,7 @@ fn astar_corridor(
     // The region a directed node arrives in, and the region it was left through.
     let arrived_region = |node: usize| -> usize {
         let p = &portals[node / 2];
-        if node % 2 == 0 {
+        if node.is_multiple_of(2) {
             p.region_b as usize
         } else {
             p.region_a as usize
@@ -204,7 +204,7 @@ fn astar_corridor(
     };
     let from_region = |node: usize| -> usize {
         let p = &portals[node / 2];
-        if node % 2 == 0 {
+        if node.is_multiple_of(2) {
             p.region_a as usize
         } else {
             p.region_b as usize

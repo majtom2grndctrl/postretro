@@ -136,21 +136,20 @@ fn validate_activation_shapes(weapon: &Table) -> Result<(), DescriptorError> {
         for child in ["charge", "sounds", "emits"] {
             if let Some(object) =
                 optional_table_field_lua(&action, child, &format!("{path}.{child}"), true)?
+                && child != "charge"
             {
-                if child != "charge" {
-                    for field in if child == "sounds" {
-                        ["fire", "impact"]
-                    } else {
-                        ["activate", "impact"]
-                    } {
-                        let value: LuaValue = object.get(field).map_err(lua_err)?;
-                        if !matches!(value, LuaValue::Nil | LuaValue::String(_)) {
-                            return Err(DescriptorError::InvalidShape {
-                                reason: format!(
-                                    "`{path}.{child}.{field}` must be a string when supplied"
-                                ),
-                            });
-                        }
+                for field in if child == "sounds" {
+                    ["fire", "impact"]
+                } else {
+                    ["activate", "impact"]
+                } {
+                    let value: LuaValue = object.get(field).map_err(lua_err)?;
+                    if !matches!(value, LuaValue::Nil | LuaValue::String(_)) {
+                        return Err(DescriptorError::InvalidShape {
+                            reason: format!(
+                                "`{path}.{child}.{field}` must be a string when supplied"
+                            ),
+                        });
                     }
                 }
             }

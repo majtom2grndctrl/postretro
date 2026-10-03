@@ -2,6 +2,8 @@
 
 Derivation and numbers behind the brief. Every path below is relative to `crates/level-compiler/src/`. Source was re-read by symbol at 4db4473f7 (`main`). The pipeline, atlas preparation, lightmap stage and BVH build were re-checked at b8b338400 (`main`, after the oversize merges), and their citations are symbols. Remaining line numbers were recorded at 4ae37c4af and may have drifted. Later additions cite symbols only.
 
+> Raw run files (owner ruling 2026-10-03). Each run's `summary.txt`, `cpu-samples.tsv`, `machine.txt` and stdout log were committed under `evidence/<run>/` during the build, along with the Mac sampler's `evidence/cpu-samples.tsv`, `evidence/fixture-digests-before.txt` and the branch-only map `content/dev/maps/stress-warren-mini-edit.map`. They were removed before merge: every number below is transcribed from them, and they last exist at 2270027a9. Folder names below identify runs. The scripts moved to `measurements/bake-performance/`.
+
 ## Measurement conditions
 
 | Item | Value |
@@ -9,7 +11,7 @@ Derivation and numbers behind the brief. Every path below is relative to `crates
 | Map | `content/dev/maps/stress-warren-hallway-inspection.map` |
 | Machine | The owner's Windows PC: 6 cores. It bakes the hallway in about 9 h. Each run records its specs in `machine.txt`: CPU, physical cores, logical processors, RAM, OS, volume, git HEAD and working-tree status. |
 | Other host | The owner's Mac: Intel i9-9980HK, 8 physical cores, 16 logical, 32 GiB RAM, macOS, APFS SSD; 14 permits. It bakes the hallway in about 6 h. It is not the yardstick. Every number on this page comes from it: context, not baselines. |
-| Procedure | `evidence/measure-hallway.ps1` (PowerShell 5.1 or 7) is the canonical run. It builds the binary below, bakes once under these conditions, and samples the process every 10 s into `cpu-samples.tsv`, in the column layout `evidence/stats.sh` reads. `summary.txt` records exit code, wall time, CPU time, peak working set and the Build Summary. Not yet run. |
+| Procedure | `measurements/bake-performance/measure-hallway.ps1` (PowerShell 5.1 or 7) is the canonical run. It builds the binary below, bakes once under these conditions, and samples the process every 10 s into `cpu-samples.tsv`, in the column layout `stats.sh` beside it reads. `summary.txt` records exit code, wall time, CPU time, peak working set and the Build Summary. |
 | Cache mode | Warm (cache enabled). The run starts on an empty cache directory, a fresh path passed to `--cache-dir`, so every entry misses in the first build. The script creates it inside its run folder and refuses a non-empty one. Warm base SH always runs the approximate grouped path. Under the 2 GiB `--cache-max-size` default, today's start-of-build prune evicts most of the hallway's live set; the brief's prune rule spares each map's record. |
 | Peak memory | The process's peak working set over the whole build, the counter `Process.PeakWorkingSet64` reads. The script reads it after exit and records it in `summary.txt`. See §Peak memory. |
 | Permits | Default `-j` from `default_jobs_for` (`cli.rs`): logical cores − 1 for 2 to 8 logical cores, logical cores − 2 above 8. The run records the value in `machine.txt`, from the binary's `--help` and checked against the rule. The global rayon pool is unconfigured, so it has one thread per logical core; the governor, not the pool, bounds concurrency. |
@@ -27,22 +29,76 @@ What to do with a finished `measure-hallway.ps1` run. The before run happens onc
 - `cpu-samples.tsv`: the stage column fills in after the first stage begins. A blank column means the stderr log was unreadable mid-run; stage wall times still hold, per-stage busy cores do not.
 - `summary.txt`: the cache directory is non-empty at exit. The script refuses a non-empty cache at start, so every stage missed.
 
-**Commit.** Copy `machine.txt`, `summary.txt`, `cpu-samples.tsv` and `prl-build.stdout.log` into `evidence/windows-before/` (an after run: `evidence/windows-after-<lever>/`). Leave out the `.prl`, the cache directory and the stderr log. `evidence/cpu-samples.tsv` is the Mac's and stays.
+**Record.** `machine.txt`, `summary.txt`, `cpu-samples.tsv` and `prl-build.stdout.log` hold the run; transcribe its numbers into the tables below. The `.prl`, the cache directory and the stderr log are not kept. This brief committed each run under `evidence/windows-<label>/` and removed them before merge (note at top).
 
-**Derive.** Run `evidence/stats.sh` on the committed TSV from Git Bash or WSL. It prints per-stage sample count, mean and percentile busy-core %, and peak RSS. Busy-core % divides by 100 for cores.
+**Derive.** Run `measurements/bake-performance/stats.sh` on the run's TSV from Git Bash or WSL. It prints per-stage sample count, mean and percentile busy-core %, and peak RSS. Busy-core % divides by 100 for cores.
 
 **Fill this table** in place, one column per run.
 
 | Number | Source | Acceptance row | Before | After |
 |---|---|---|---|---|
-| Total wall time | `summary.txt` | Total wall time | | |
-| SH Bake wall time | Build Summary | SH Bake, traversal change alone | | |
-| Wall time: Lightmap Bake, AnimWeightMaps, ShadowmaskAtlas, Delta SH, Direct SH Delta, Animated Direct | Build Summary | Per-stage wall time and busy cores | | |
-| Mean busy cores per stage above | `stats.sh` | Per-stage wall time and busy cores | | |
-| Mean busy cores, Direct SH Delta Bake | `stats.sh` | Direct SH Delta busy cores | | |
-| Peak working set | `summary.txt` | Peak RSS | | |
-| Mean busy cores, whole build | `summary.txt` | Context | | |
-| Cache size at exit | `summary.txt` | Context for the prune rule | | |
+| Total wall time | `summary.txt` | Total wall time | 19,387.7 s (5 h 23 m) | |
+| SH Bake wall time | Build Summary | SH Bake, traversal change alone | 11,535.7 s | |
+| Wall time: Lightmap Bake, AnimWeightMaps, ShadowmaskAtlas, Delta SH, Direct SH Delta, Animated Direct | Build Summary | Per-stage wall time and busy cores | 6,310.9 / 664.4 / 210.2 / 150.7 / 321.8 / 24.9 s | |
+| Mean busy cores per stage above | `stats.sh` | Per-stage wall time and busy cores | Lightmap Bake + ShadowmaskAtlas 2.88 (one sampler label, see note) / AnimWeightMaps 1.00 / Delta SH 4.35 / Direct SH Delta 0.67 / Animated Direct 1.34 (3 samples) | |
+| Mean busy cores, Direct SH Delta Bake | `stats.sh` | Direct SH Delta busy cores | 0.67 (p50 0.95, 33 samples) | |
+| Peak working set | `summary.txt` | Peak RSS | 3.62 GiB (3,799,832 KB) | |
+| Mean busy cores, whole build | `summary.txt` | Context | 3.95 of 5 permits | |
+| Cache size at exit | `summary.txt` | Context for the prune rule | 233,110 files, 12.76 GiB | |
+
+**Before run (R0).** `evidence/windows-before/`, the owner's run of 2026-10-01 at 83489c52b. Between it and the pre-lever compiler (1527f5b26) only `level-loader` test code and a doc comment changed, so it is the pre-lever bake. SH Bake ran at 4.86 of 5 permits (sampler label "SH volume bake"). The fused walk's 6,521 s carry one sampler label, "Shadowmask atlas bake", because both stages begin together and the sampler keeps the latest label; its 2.88 cores cover Lightmap Bake and ShadowmaskAtlas together.
+
+**Warren-mini runs (in-between yardstick).** Same machine and procedure, `-Map stress-warren-mini`. m0 and m0c ran from the pre-lever worktree (1527f5b26); m1c from this branch at 796ad42bc (levers 1 and 2; a cold bake bypasses the cache, so it measures lever 1 alone).
+
+| Number | m0 warm, empty cache (pre-lever) | m0c cold (pre-lever) | m1c cold (lever 1) | m2 warm | m3 warm |
+|---|---|---|---|---|---|
+| Run (raw files removed, note at top) | `windows-mini-before/` | `windows-mini-before-cold/` | `windows-mini-after-lever1-cold/` | `windows-mini-after-m2/` |  `windows-mini-after-lever5/` |
+| Total wall time | 2,191.6 s | 1,561.4 s | 1,101.1 s | 1,591.8 s | 1,518.0 s |
+| Mean busy cores, whole build | 2.65 | 3.71 | 4.37 | 3.05 | 2.77 |
+| SH Bake | 741.5 s | 707.5 s | 727.4 s | 727.4 s |  646.9 s |
+| Lightmap Bake | 832.0 s | 675.8 s | 182.9 s | 365.7 s |  266.0 s |
+| Busy cores, "Shadowmask atlas bake" label (Lightmap + ShadowmaskAtlas) | 2.20 (82 samples) | 2.65 (68) | 3.85 (19; p50 3.97, p90 4.51) | 2.43 (28; p10 0.00, p50 3.00) |  2.54 (22; p10 0.00, p50 3.47) |
+| ShadowmaskAtlas | 6.6 s | 5.6 s | 4.9 s | 5.2 s |  4.9 s |
+| Delta SH / Direct SH Delta / Animated Direct / AnimWeightMaps | 180.1 / 246.9 / 67.7 / 50.9 s | 80.4 / 2.7 / 0.5 / 17.9 s | 81.9 / 2.6 / 0.5 / 17.8 s | 90.1 / 190.4 / 75.9 / 82.7 s |  103.5 / 281.4 / 61.5 / 45.2 s |
+| Packing | 46.4 s | 53.6 s | 65.2 s | 36.3 s |  30.9 s |
+| Peak working set | 1.73 GiB | 1.37 GiB | 1.37 GiB | 1.73 GiB | 1.74 GiB |
+| Cache at exit | 74,227 files, 3.89 GiB | none | none | 74,227 files, 3.89 GiB |  74,227 files, 3.89 GiB |
+
+M3 (lever 5 alone, m2 → m3): SH Bake 727.4 s → 646.9 s (−11.1%); output byte-identical to m2's. The Task 10 harness measured −19% on hallway SH groups: warren-mini's smaller tree prunes less, and the stage also carries probe layout and cache I/O. Other ray stages: Lightmap 365.7 → 266.0 s, AnimWeightMaps 82.7 → 45.2 s. Direct SH Delta rose 190.4 → 281.4 s with no change to it: run-to-run put variance on this machine (Task 11b removes those writes).
+
+M2: cold Lightmap Bake 675.8 s → 182.9 s (3.7× faster), busy cores 2.65 → 3.85, peak working set unchanged. Lightmap still runs below 5 permits; the serial in-order fold and per-light consume are the likely remainder.
+
+m0's warm build is 630 s slower than m0c's cold build. The gap sits in the stages that write cache entries (Direct SH Delta 247 s at 0.49 cores, Delta SH, Animated Direct, AnimWeightMaps), consistent with put cost on this machine's SATA SSD under Defender scanning. NVMe hosts should pay less, so lever 2's gain here may overstate a typical machine's.
+
+Byte check: m1c's `.prl` differs from m0c's only by the embedded absolute data-script path (`…\postretro-baseline\…` vs `…\postretro\…`, 9 bytes): the path's length prefix, 11 section-table offsets (each 9 lower), and nothing else; the 168 MB after the path is identical. `measurements/bake-performance/prl-pathdiff.py` performs this check. Byte comparisons across checkouts must normalize that path.
+
+**Final warren-mini runs (Task 11b, 2026-10-02, 5488b77d5: levers 1, 2, 4, 5 and the uncached direct and animated-direct deltas).** All exit 0, clean, `-j` 5. Each output is byte-identical to the same-checkout run before it (m4 = m3, m4c = m1c, m4r = m2r) and differs from the pre-lever runs only by the embedded path.
+
+| Number | Cold: m0c → m4c | Warm, empty cache: m0 → m4 | Warm rebuild, one light moved: m0r → m2r → m4r |
+|---|---|---|---|
+| Run (raw files removed, note at top) | `windows-mini-before-cold/` → `windows-mini-final-cold/` | `windows-mini-before/` → `windows-mini-final-warm/` | `windows-mini-rebuild-before/` → `-after/` → `windows-mini-final-rebuild/` |
+| Total wall time | 1,561.4 → **990.6 s (−37%)** | 2,191.6 → **1,164.6 s (−47%)** | 1,802.6 → 622.4 → **507.8 s (−72%)** |
+| Mean busy cores | 3.71 → 4.25 | 2.65 → 3.54 | 2.62 → 2.56 → 2.76 |
+| SH Bake | 707.5 → 640.8 s | 741.5 → 636.3 s | 731.0 → 340.2 → 367.3 s |
+| Lightmap Bake | 675.8 → 137.3 s | 832.0 → 218.1 s | 304.7 → 29.8 → 49.8 s |
+| Delta SH / Direct SH Delta / Animated Direct | 80.4 / 2.7 / 0.5 → 71.0 / 2.5 / 0.5 s | 180.1 / 246.9 / 67.7 → 84.2 / 2.6 / 0.5 s | 145.5 / 126.6 / 20.2 → 10.8 / 122.3 / 8.7 → 11.3 / 2.6 / 0.5 s |
+| AnimWeightMaps | 17.9 → 15.8 s | 50.9 → 55.6 s | 2.0 → 2.0 → 2.0 s (hit) |
+| Packing | 53.6 → 101.3 s | 46.4 → 64.5 s | 228.8 → 53.5 → 6.6 s |
+| Peak working set | 1.37 → 1.37 GiB | 1.73 → 1.51 GiB | 1.51 → 1.75 → 1.51 GiB |
+| Cache at exit | none | 74,227 files, 3.89 GiB → 20,114 files, 3.19 GiB | 74,250 → 79,388 → 23,355 files |
+
+- **Rebuild, m2r → m4r:** Direct SH Delta 122.3 → 2.6 s and Packing 53.5 → 6.6 s; SH Bake rose 340.2 → 367.3 s (4.05 cores against 4.31) and Lightmap 29.8 → 49.8 s (1.39 cores), both stages that write cache entries while they work. One run each; cause not isolated.
+- **m4's Direct SH Bake (41.4 s, against 3.5–4.7 s before):** its compute finished in about 3 s, then about 37 s at 0% CPU on its one cache put while the disk and Defender drained Delta SH's write burst. In m3 the same stall landed in Animated Direct, the next stage that wrote (about 60 s under 0.8 cores). A write backlog on this machine, not a Direct SH change.
+- **Packing** varies 46–101 s across runs with unchanged packing code: it is the 712 MB `.prl` write.
+
+**Lever 4 profile (Task 7, 2026-10-02).** Taken from R0's CPU samples, logs and cache rather than new bakes. Warren-mini cannot show it: its 977 animated chunks never split (1.00 light per covered texel), while the hallway's faces under five overlapping animated lights subdivide to the min-extent floor.
+
+| Candidate | Evidence | Finding |
+|---|---|---|
+| AnimWeightMaps, 664 s at 1.00 core (R0) | One 170% sample at stage start (the chunk bake; plain-progress lines put it near 5 s), then 650 s flat at one core with flat RSS, ending at the stage boundary. Log: 1,533,071 chunks, 104 bake layers, 299,852,356-byte section. | `assert_no_overlapping_rects_per_layer`: 628.17 s timed on the real rects (R0 cache entry `f10343db…`, 31 identity pages, largest 360,604 rects, 161,851,323,070 pair tests). Cut: occupancy bitmap per layer, 89.6 ms on the same rects; pairwise scan retained for a flagged layer's panic message. |
+| Packing, 83 s (R0) | 0.20 cores mean | I/O-bound file write, not serial BC6H CPU. No cut. |
+| Direct SH Delta, 322 s (R0) | 0.67 cores mean; 2.7 s cold on warren-mini vs 247 s warm | Cache put cost (lever 2's target). No lever 4 cut. |
+| `probe_grid_layout`, affinity decomposition, `world_aabb_for_directional`, TextureMips | Each falls inside a stage at ≥4.35 cores or runs under one 10 s sample | Not visible as serial time. No cut. |
 
 **Not covered by this run.**
 - The cold Lightmap Bake row: a separate run with `prl-build --release` on the same binary, before lever 1 lands.
@@ -77,7 +133,7 @@ All numbers in this section come from the Mac (§Measurement conditions, Other h
 - Even if the Lightmap Bake got every one of those CPU-s, it would average **no more than 4.4 of 14 permits** over its 7,395 s.
 - This is the parallelism headline: the lightmap bake uses at most about a third of the cores it is allowed.
 
-**Live sampler.** It took a sample every 10 s: `ps` %CPU (100 = one core), RSS and thread count. Samples, covering 12,798 s to the build's exit at 13,967 s, are in `evidence/cpu-samples.tsv`.
+**Live sampler.** It took a sample every 10 s: `ps` %CPU (100 = one core), RSS and thread count. Samples, covering 12,798 s to the build's exit at 13,967 s, were in `evidence/cpu-samples.tsv` (removed before merge; note at top).
 
 | Stage | Samples | Mean %CPU | p10 | p50 | p90 | Threads |
 |---|---|---|---|---|---|---|
@@ -93,7 +149,7 @@ All numbers in this section come from the Mac (§Measurement conditions, Other h
 - **Even a warm lightmap hit is single-threaded.** In the second build the lightmap layers hit the cache. Lightmap Bake (388.7 s) and ShadowmaskAtlas (168.2 s) together sat at exactly one core for the whole window. That time is the serial pre-pass hash plus the per-partition work: `get` with its blake3 verify, fold, shadowmask fill, dilate, and BC6H. So about 9 minutes of every warm hallway rebake uses 1 of 14 permits. Only lever 1's serial-tail and hash-hoisting parts would change that; its light-axis ray parallelism would not.
 - In this rebake, Direct SH Delta took 1,717 s. In the first build it took 296 s. The compute is the same, so the difference is cache I/O. The cache directory had grown to 5.2 GB across about 142k flat entries.
 - Missed: every stage before Direct SH Delta, including all of SH Bake. The sampler started at 12,798 s elapsed.
-- Also missed: Atlas Preparation, Cell Residency Set, AnimLightChunks and AnimWeightMaps. Each ran for under 10 s, which is less than one sample interval. The sampler ran until the build exited at 13,967 s. Run `evidence/stats.sh` over `evidence/cpu-samples.tsv` for per-stage averages and percentiles.
+- Also missed: Atlas Preparation, Cell Residency Set, AnimLightChunks and AnimWeightMaps. Each ran for under 10 s, which is less than one sample interval. The sampler ran until the build exited at 13,967 s. The per-stage figures above came from `stats.sh` over that file.
 
 **Stack sample of Direct SH Delta.** A 3 s `sample` run shows all 16 workers inside cache syscalls, under `delta_sh_cache::bake_or_load_delta_subblocks` → `StageCache::put_streamed` / `get`:
 
@@ -139,6 +195,39 @@ No sample landed in ray code. The raw stack sample was not retained; the breakdo
 - **Most invasive lever.** `pipeline/stage_registry.rs` has no cross-stage concurrency today (§Stage dependencies). `development_guide.md` §1.4: no measured bottleneck, no optimization.
 - **Precedent.** The fused Lightmap + ShadowmaskAtlas bake already runs one foreground and one background stage under one governor.
 
+**Measurement (m2, 2026-10-02, warm warren-mini at 28b8ed8f7, levers 1, 2 and 4).** Bar: 4.6% of 1,591.8 s = 73.2 s. Each sample is weighted by its real gap in `elapsed_s`; the sampler stalled up to 61 s during heavy cache writes, so 141 samples cover 1,572 s. "Low" means under 2.5 cores (half of 5 permits).
+
+| Stage (sampler label) | Wall | Low | CPU-s | Stage lever 3 could start early, waiting |
+|---|---|---|---|---|
+| Base SH | 727 s | 0 s | 3,443 | excluded by the gate |
+| Delta SH | 90 s | 0 s | 413 | Direct SH, Animated Direct, Direct SH Delta |
+| Animated Direct | 75 s | 64 s | 37 | Direct SH Delta |
+| Direct SH Delta | 205 s | 205 s | 116 | none: last of the SH family |
+| Fused walk ("Shadowmask atlas bake") | 371 s | 230 s | 757 | AnimLightChunks, AnimWeightMaps |
+| AnimWeightMaps | 33 s labeled (83 s stage) | 13 s | 88 | none: the walk has finished |
+
+- **Gate as written:** low time outside base SH while an overlappable stage waits = 64 + 230 = **294 s (18.5% of total)**. It clears the bar fourfold.
+- **Bounded by what the waiters could fill:** overlap hides at most the waiting stage's own wall time. Fused walk + AnimWeightMaps ≤ 83 s; Animated Direct + Direct SH Delta ≤ 64 s; running Delta SH (90 s, saturated) inside Direct SH Delta's idle span ≤ 90 s, a pairing the gate's "waits" wording does not count because Delta SH runs first. Ceiling about 150–240 s (9–15%).
+- **Most low time is cache I/O, not idle CPU.** Warm Lightmap Bake is 365.7 s against cold 182.9 s: the extra 183 s are the window stalled behind partition puts. Direct SH Delta (205 s at 0.57 cores) and Animated Direct (0.49 cores) are put-bound. Overlapping two put-bound stages competes for the same SATA disk and Defender scan, so their pairing likely recovers little here; CPU work overlapping an I/O stall (AnimWeightMaps' 18 s chunk bake, Delta SH's ray work) is the clean gain.
+- **Hallway projection.** The same pairings on R0's stages after Task 7: AnimWeightMaps ≈ 40 s beside the walk, Animated Direct 25 s and Delta SH 151 s beside Direct SH Delta's 322 s. Ceiling ≈ 215 s of 19,388 s (1.1%), against the 15 minutes the 4.6% bar was derived from.
+- **Warm rebuild after an edit (owner direction 2026-10-02: the most frequent build, then production, then warm on an empty cache).** `stress-warren-mini-edit.map` (branch-only, removed before merge) moves entity 5, a static `light` (600, static lightmap shadows), 64 units in X. m0r rebuilt it with the pre-lever compiler on a copy of m0's cache (`evidence/windows-mini-rebuild-before/`); m2r with this branch at a16a6027a on a copy of m2's cache (`evidence/windows-mini-rebuild-after/`). Both exit 0, clean, `-j` 5; outputs equal but for the embedded path.
+
+  | Number | m0r pre-lever | m2r this branch |
+  |---|---|---|
+  | Total | 1,802.6 s (2.62 cores) | 622.4 s (2.56 cores) |
+  | Start-of-build prune | evicted 73,195 of 74,227 entries (2 GiB budget, mtime LRU) | spared all (map records) |
+  | SH groups hit / miss | 0 / 8,960 | 5,760 / 3,200 |
+  | SH Bake | 731.0 s | 340.2 s |
+  | Delta SH / Animated Direct / Direct SH Delta | 145.5 / 20.2 / 126.6 s | 10.8 / 8.7 / 122.3 s |
+  | Lightmap Bake | 304.7 s | 29.8 s |
+  | AnimWeightMaps | 2.0 s (hit) | 2.0 s (hit) |
+  | Packing | 228.8 s (0.03 cores; cause not isolated) | 53.5 s |
+  | Peak working set | 1.51 GiB | 1.75 GiB |
+
+  Most of the gap is lever 2's prune rule: the pre-lever prune discarded the cache before using it, so its rebuild was nearly a full bake. Lever 3's candidates in m2r are Delta SH (10.8 s) and Animated Direct (8.7 s) beside Direct SH Delta's idle span, and AnimWeightMaps (2.0 s) beside the walk: at most about 22 s (3.5%), under the 73.2 s bar.
+- **Direct SH Delta's cache costs more than its compute.** It writes 46,495 entries (642,746,880 bytes, about 14 KB each). Cold computes the same entries in about 2.6 s (m1c: stage 814.56 s → about 817 s). Warm, the per-entry cache I/O costs 190–247 s on an empty cache (m2, m0) and 122 s on a rebuild that mostly reads them back (m2r, 0.19 cores): 20% of the rebuild. The cost is per file on this SATA SSD under Defender (about 2.6 ms per entry), not directory size, so sharding (the flat-directory question) would not remove it.
+- **m2 against m0 (levers 1, 2, 4 warm):** total 2,191.6 → 1,591.8 s (−27%); Lightmap 832.0 → 365.7 s; Delta SH 180.1 → 90.1 s; Direct SH Delta 246.9 → 190.4 s; Packing 46.4 → 36.3 s; AnimWeightMaps 50.9 → 82.7 s and Animated Direct 67.7 → 75.9 s slower (both put-bound; one run each, cause not isolated — warren-mini's AnimWeightMaps writes one 508 MB entry, so Task 7's cut does not reach it); peak 1.73 GiB both. Output equals m0's but for the embedded path (`prl-pathdiff.py`).
+
 ## Lightmap loop details (lever 1)
 
 - The `layer_input_hash` pre-pass in `bake_fused_prepared` has no `stage_cache` guard, so it also runs cold, where nothing reads the hashes. Each call recomputes `atlas_layout_fingerprint`, which depends on neither light nor layer, and `geometry_slice_hash`, which depends only on the light.
@@ -165,6 +254,7 @@ bvh 0.11 (`crates/level-compiler/Cargo.toml`). Every site below builds a stock `
 - **Occlusion already exits on its first blocker.** Its waste is range and order. A clear segment, the common case for a lit texel, still tests every leaf the ray crosses beyond the light. A blocked segment may test far leaves before the near blocker, because `traverse_iterator` walks depth-first, left child first.
 - **Base SH ray mix.** 256 closest-hit rays per probe, then 4–32 soft-visibility shadow rays per hit and reaching light. Shadow rays likely outnumber closest-hit rays, but each closest-hit ray is infinite and never exits early. Which kind dominates cost is unmeasured.
 - **Left-first order blunts a best-hit bound.** `traverse_iterator` visits the left child first, whatever the ray direction. A closest-hit ray may find far hits before near ones, so its bound shrinks late and prunes little. Occlusion segments do not depend on this: their bound is the segment end, fixed from the start.
+- **Measured (Task 10, 2026-10-02).** Hallway via `load_fixture` (8,437 primitives, 16,873 BVH nodes), release, one thread, `bake_group` on evenly spaced bakeable groups. 24 groups: stock 63.73 s, bounded query on the stock iterator 51.36 s (−19.4%), near-first walk 55.34 s (−13.2%). Encoded group bytes equal across all three. Left-first order did not blunt the bound enough to favor near-first: the near-first walk's extra child-entry work outweighs its earlier pruning on this tree. Projection at −19%: warren-mini SH Bake 727 s → about 590 s, hallway 11,536 s → about 9,300 s.
 - **Rival shape: near-child-first walk with a tie key.** A stack-based walk that descends the nearer child first finds the nearest hit early, so a best-hit bound prunes most of the tree. It changes visit order, so it must pick the winner by key, not by first visit: (distance, leaf rank in today's depth-first left-first order, triangle offset within the leaf). Today's strict `dist < best` keeps the first-visited hit on a tie, and that key names the same one. A node may be pruned only when it is entered strictly beyond the best distance plus the rounding pad, so a tied hit with a lower rank is never skipped. The leaf rank can come from one depth-first pass at BVH build.
 - **bvh 0.11 API.**
   - `nearest_traverse_iterator` exists (`Bvh`, `bvh/bvh_impl.rs`) and is unused. It pops nodes from a `BinaryHeap` by AABB entry distance and yields shapes only, not distances. A caller that stops at its best hit must recompute `Ray::intersection_slice_for_aabb` per leaf. The heap allocates per ray despite the type's "without memory allocations" doc, and its comparator `partial_cmp(..).unwrap()` panics on a NaN distance.
@@ -206,7 +296,7 @@ bvh 0.11 (`crates/level-compiler/Cargo.toml`). Every site below builds a stock `
 - **Pre-cut geometry.** On a cut map that needs the SDF atlas, `AtlasStageOutput::pre_cut_geometry` holds a whole geometry copy from atlas preparation until the SDF stage drops it. It already spans the fused walk and the animated stages. If lever 3 overlaps stages in that span, count it as a co-resident term. The hallway is uncut, so its peak carries no copy.
 - **The delta working-set gate assumes serial stages.** `plans/done/lighting-scale--compile-peak-ram` sets the `--sh-delta-working-set-max-size` gate at 3× the cumulative dense delta bytes (4× under coarsened `--sh-analyze`). Its accounting follows today's run order: the three delta bakes in sequence, the exact-zero drop rebuild freed before compaction allocates, and one share reserved for the base id34/id35 copies held between the delta bakes. Overlapping base SH or the delta bakes with each other puts in-flight bake state beside those buffers, which the factor does not count.
 - **Hallway hosts.** `drafts/compiler-implausible-allocation-guard` records a `--release` hallway compile at lightmap density 0.04 dying on a 16 GiB machine. The request there was an implausible 42.9 TB, not a working set that outgrew the host, so it shows the hallway is compiled on 16 GiB hosts, not how close its peak is to 16 GiB.
-- **Evidence so far.** The Mac sampler's RSS column (`evidence/cpu-samples.tsv`) peaks at about 3.3 GiB, in Direct SH Delta, on the debug-binary warm rebake. It covers only the last 1,169 s: no SH Bake and no all-miss lightmap bake. The before number must be re-taken on the pinned machine and binary.
+- **Evidence so far.** The Mac sampler's RSS column (`evidence/cpu-samples.tsv`, removed before merge) peaks at about 3.3 GiB, in Direct SH Delta, on the debug-binary warm rebake. It covers only the last 1,169 s: no SH Bake and no all-miss lightmap bake. The before number must be re-taken on the pinned machine and binary.
 
 ## Ordering pins
 
@@ -215,7 +305,7 @@ Orderings an Acceptance row must exercise. Each row that rests on a pin cites it
 | Pin | Scenario | Ordering | Expected outcome |
 |---|---|---|---|
 | P1 | Lightmap window of two or more lights on one atlas layer | Light k+1's partition (baked or loaded) is ready before light k's | Fold and shadowmask consume run in ascending global light order. Bytes equal the window-1 bake. |
-| P2 | Bounded traversal query (lever 5) | A node's slab distance is undefined (the ray lies in a bounding-box face plane). Or the first triangle reached is the one the ray starts on (hit at or below `RAY_EPSILON`). | The undefined-slab node is kept. A rejected sub-epsilon hit never tightens the bound. The answer equals today's scan. |
+| P2 | Bounded traversal query (lever 5) | A node's slab distance is undefined (the ray lies in a bounding-box face plane). Or the first triangle reached is the one the ray starts on (hit at or below `RAY_EPSILON`). | The undefined-slab node gets the stock test's answer; with `bvh` built `default-features = false`, `intersect_default.rs` rejects it, as the unbounded scan does (correction, review 2026-10-03). A rejected sub-epsilon hit never tightens the bound. The answer equals the unbounded scan's. |
 | P3 | Lightmap window partly admitted | Permits drop to 1, or pause is set, after some of the window's chart items are admitted and before the rest | Admitted items finish. Later items admit one at a time, and none while paused. No permitted item waits on another. The bake completes with unthrottled bytes. |
 | P4 | Lever 3 built, with AnimWeightMaps overlapping the fused walk | The lightmap-emptiness input to `layout_animated_atlas` is taken before the walk finishes | It equals the finished section's `blocks.is_empty()` for no static lights, all-SDF static lights, and a section-memo hit. |
 | P5 | A light whose bounds reach only some of a layer's charts, and a directional light that reaches all | The chart cull runs before the window bakes | Partitions are byte-identical to an unculled bake. Culled charts still count toward the published progress total. |

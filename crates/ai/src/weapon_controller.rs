@@ -194,15 +194,13 @@ impl AiWeaponControllers {
                 .active
                 .as_ref()
                 .is_some_and(|active| active != &request.canonical_weapon)
-        {
-            if let Some(previous) = actor_weapons
+            && let Some(previous) = actor_weapons
                 .active
                 .take()
                 .and_then(|name| actor_weapons.weapons.get_mut(&name))
-            {
-                previous.component.cancel_activation();
-                previous.attack_name = None;
-            }
+        {
+            previous.component.cancel_activation();
+            previous.attack_name = None;
         }
         let mut committed = None;
         for (canonical, weapon) in &mut actor_weapons.weapons {

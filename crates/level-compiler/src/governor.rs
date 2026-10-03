@@ -150,6 +150,12 @@ impl Governor {
     pub fn is_paused(&self) -> bool {
         self.lock().paused
     }
+
+    /// Permits currently held.
+    #[cfg(test)]
+    pub(crate) fn active(&self) -> usize {
+        self.lock().active
+    }
 }
 
 /// An RAII admission permit returned by [`Governor::enter`].

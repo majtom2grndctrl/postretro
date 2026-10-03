@@ -139,7 +139,7 @@ pub(crate) fn observe_positional_reads<T>(
 
 #[cfg(test)]
 fn record_positional_read(offset: u64, len: u64) {
-    let end = offset.checked_add(len).unwrap_or(u64::MAX);
+    let end = offset.saturating_add(len);
     let read = offset..end;
     POSITIONAL_READ_OBSERVER.with(|observer| {
         let mut observation = observer.borrow_mut();

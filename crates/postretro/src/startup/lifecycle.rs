@@ -927,11 +927,11 @@ impl App {
 
         // Renderer-side fog: pixel scale + per-cell masks. The fog-volume entities
         // were created in segment B; this is the windowed GPU half.
-        if let Some(world) = self.level.as_ref() {
-            if let Some(renderer) = self.renderer.as_mut() {
-                renderer.set_fog_pixel_scale(world.fog_pixel_scale);
-                renderer.install_fog_cell_masks_for_level(world.fog_cell_masks.clone());
-            }
+        if let Some(world) = self.level.as_ref()
+            && let Some(renderer) = self.renderer.as_mut()
+        {
+            renderer.set_fog_pixel_scale(world.fog_pixel_scale);
+            renderer.install_fog_cell_masks_for_level(world.fog_cell_masks.clone());
         }
 
         // Register sprite collections for every distinct emitter `sprite` in the

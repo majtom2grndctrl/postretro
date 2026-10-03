@@ -830,7 +830,7 @@ mod tests {
             self.0
         }
         fn chance(&mut self, one_in: u64) -> bool {
-            self.next() % one_in == 0
+            self.next().is_multiple_of(one_in)
         }
         fn below(&mut self, bound: u64) -> u64 {
             self.next() % bound

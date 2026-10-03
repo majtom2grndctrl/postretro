@@ -774,14 +774,13 @@ pub fn bake_sprite_collection(
     // sprite domain discriminator, so it cannot collide with world/model keys.
     if let Ok(bytes) = std::fs::read(&prm_path) {
         let (header, parsed_slots) = PrmFile::from_bytes_partial(&bytes);
-        if let Ok(header) = header {
-            if header.bundle_hash == filename_key
-                && header.layer_count == layer_count
-                && header.slot_mask == slot_mask
-                && cache_entry_has_valid_declared_slots(&header, &parsed_slots)
-            {
-                return Some(filename_key);
-            }
+        if let Ok(header) = header
+            && header.bundle_hash == filename_key
+            && header.layer_count == layer_count
+            && header.slot_mask == slot_mask
+            && cache_entry_has_valid_declared_slots(&header, &parsed_slots)
+        {
+            return Some(filename_key);
         }
     }
 
@@ -830,21 +829,20 @@ pub fn bake_diffuse_texture(diffuse_path: &Path, cache_root: &Path) -> anyhow::R
     // A legacy richer world bundle may still occupy this pre-change
     // diffuse-addressed filename. Keep a structurally valid one intact because
     // model loading consumes only its diffuse slot.
-    if prm_path.exists() {
-        if let Ok(bytes) = std::fs::read(&prm_path) {
-            let (hdr_result, slots) = PrmFile::from_bytes_partial(&bytes);
-            if let Ok(hdr) = hdr_result {
-                let valid_slots =
-                    hdr.layer_count == 1 && cache_entry_has_valid_declared_slots(&hdr, &slots);
-                let matching_diffuse_only = hdr.slot_mask == PrmSlots::DIFFUSE
-                    && hdr.bundle_hash == bundle_hash
-                    && valid_slots;
-                let valid_richer_world_bundle = hdr.slot_mask.contains(PrmSlots::DIFFUSE)
-                    && hdr.slot_mask != PrmSlots::DIFFUSE
-                    && valid_slots;
-                if matching_diffuse_only || valid_richer_world_bundle {
-                    return Ok(filename_key);
-                }
+    if prm_path.exists()
+        && let Ok(bytes) = std::fs::read(&prm_path)
+    {
+        let (hdr_result, slots) = PrmFile::from_bytes_partial(&bytes);
+        if let Ok(hdr) = hdr_result {
+            let valid_slots =
+                hdr.layer_count == 1 && cache_entry_has_valid_declared_slots(&hdr, &slots);
+            let matching_diffuse_only =
+                hdr.slot_mask == PrmSlots::DIFFUSE && hdr.bundle_hash == bundle_hash && valid_slots;
+            let valid_richer_world_bundle = hdr.slot_mask.contains(PrmSlots::DIFFUSE)
+                && hdr.slot_mask != PrmSlots::DIFFUSE
+                && valid_slots;
+            if matching_diffuse_only || valid_richer_world_bundle {
+                return Ok(filename_key);
             }
         }
     }
@@ -1043,25 +1041,24 @@ pub fn bake_world_texture_mips(
         let prm_path = cache_root.join(format!("{}.prm", cache_filename_for_key(&filename_key)));
 
         // Cache hit: header and every declared slot parse, and bundle_hash matches.
-        if prm_path.exists() {
-            if let Ok(bytes) = std::fs::read(&prm_path) {
-                let (hdr_result, slots) = PrmFile::from_bytes_partial(&bytes);
-                if let Ok(hdr) = hdr_result {
-                    if hdr.layer_count == 1
-                        && hdr.bundle_hash == bundle_hash
-                        && cache_entry_has_valid_declared_slots(&hdr, &slots)
-                    {
-                        // Account the reused sidecar too: the report describes
-                        // what this level costs, not what this run rebaked.
-                        byte_summary.record_bundle(
-                            filename_key,
-                            name.clone(),
-                            MaterialBytes::from_parsed_slots(&slots, hdr.layer_count),
-                        );
-                        out.insert(name.clone(), filename_key);
-                        continue;
-                    }
-                }
+        if prm_path.exists()
+            && let Ok(bytes) = std::fs::read(&prm_path)
+        {
+            let (hdr_result, slots) = PrmFile::from_bytes_partial(&bytes);
+            if let Ok(hdr) = hdr_result
+                && hdr.layer_count == 1
+                && hdr.bundle_hash == bundle_hash
+                && cache_entry_has_valid_declared_slots(&hdr, &slots)
+            {
+                // Account the reused sidecar too: the report describes
+                // what this level costs, not what this run rebaked.
+                byte_summary.record_bundle(
+                    filename_key,
+                    name.clone(),
+                    MaterialBytes::from_parsed_slots(&slots, hdr.layer_count),
+                );
+                out.insert(name.clone(), filename_key);
+                continue;
             }
         }
 
@@ -1302,16 +1299,16 @@ impl StageTextureBytes {
         // nothing, so the bundle would otherwise be reported light while
         // looking perfectly healthy.
         for (index, declared) in SLOT_MASK_BITS.iter().enumerate() {
-            if header.slot_mask.contains(*declared) {
-                if let Err(error) = &slots[index] {
-                    log::warn!(
-                        "[prl-build] byte report: baked sidecar {} for '{name}' declares a \
+            if header.slot_mask.contains(*declared)
+                && let Err(error) = &slots[index]
+            {
+                log::warn!(
+                    "[prl-build] byte report: baked sidecar {} for '{name}' declares a \
                          {} slot that does not parse: {error} — that slot is missing from \
                          the texture total",
-                        prm_path.display(),
-                        slot_label(index as u8)
-                    );
-                }
+                    prm_path.display(),
+                    slot_label(index as u8)
+                );
             }
         }
 

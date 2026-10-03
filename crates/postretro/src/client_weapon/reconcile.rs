@@ -78,11 +78,11 @@ impl ActivationRecords {
         self.latest.insert(weapon, token);
     }
     pub fn local_terminal(&mut self, token: ActivationToken) {
-        if let Some(record) = self.records.get_mut(&token) {
-            if !record.terminal {
-                record.age_ms = 0.0;
-                record.terminal = true;
-            }
+        if let Some(record) = self.records.get_mut(&token)
+            && !record.terminal
+        {
+            record.age_ms = 0.0;
+            record.terminal = true;
         }
     }
     pub fn correct_new_shot(&self, shot: &mut weapon::ResolvedWeaponShot) -> bool {
@@ -208,9 +208,8 @@ impl ActivationRecords {
             {
                 if cancel {
                     component.cancel_activation();
-                } else if let Some(charge) = charge {
-                    if let postretro_entities::components::wieldable_state::WieldableState::Executing(mut cursor) = component.state { cursor.charge = charge; component.state = postretro_entities::components::wieldable_state::WieldableState::Executing(cursor); }
-                }
+                } else if let Some(charge) = charge
+                    && let postretro_entities::components::wieldable_state::WieldableState::Executing(mut cursor) = component.state { cursor.charge = charge; component.state = postretro_entities::components::wieldable_state::WieldableState::Executing(cursor); }
             }
             if self.latest.get(&record.weapon) == Some(&token)
                 && let Some(ticks) = recovery

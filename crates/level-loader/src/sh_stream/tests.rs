@@ -11,7 +11,6 @@ use super::boundary::{sorted_lists_intersect, validate_sorted_cluster_ids};
 use super::manifest::{load_manifest_positionally, streaming_content_tag};
 use super::metadata_base::{parse_animation_tail, read_base_metadata};
 use super::metadata_sparse::{read_optional_direct_metadata, read_optional_sparse_metadata};
-use super::positional_io::read_vec_at;
 use super::*;
 use crate::prl_file::PrlFile;
 

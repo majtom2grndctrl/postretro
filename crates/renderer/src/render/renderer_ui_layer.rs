@@ -89,22 +89,20 @@ impl Renderer {
             // bordered frame inset by the `xs` spacing token; appended through
             // the layer's paint stream so it composites over the focused content.
             let is_top = layer + 1 == stack_len;
-            if is_top {
-                if let Some(focused) = full.ui_snapshot.focused_id.as_deref() {
-                    let focus_rects = full.ui.export_top_focus_rects(
-                        ui_viewport,
-                        &full.ui_snapshot.slot_values,
-                        &full.ui_snapshot.cell_values,
-                    );
-                    if let Some(fr) = focus_rects.rects.iter().find(|r| r.id == focused) {
-                        let inset = full.ui_theme.spacing("xs").unwrap_or(0.0)
-                            * ui::layout::device_scale(ui_viewport);
-                        let ring_color = full
-                            .ui_theme
-                            .color("focus.ring")
-                            .unwrap_or([1.0, 0.0, 1.0, 1.0]);
-                        ui::push_focus_ring(&mut draw, fr.rect, inset, ring_color);
-                    }
+            if is_top && let Some(focused) = full.ui_snapshot.focused_id.as_deref() {
+                let focus_rects = full.ui.export_top_focus_rects(
+                    ui_viewport,
+                    &full.ui_snapshot.slot_values,
+                    &full.ui_snapshot.cell_values,
+                );
+                if let Some(fr) = focus_rects.rects.iter().find(|r| r.id == focused) {
+                    let inset = full.ui_theme.spacing("xs").unwrap_or(0.0)
+                        * ui::layout::device_scale(ui_viewport);
+                    let ring_color = full
+                        .ui_theme
+                        .color("focus.ring")
+                        .unwrap_or([1.0, 0.0, 1.0, 1.0]);
+                    ui::push_focus_ring(&mut draw, fr.rect, inset, ring_color);
                 }
             }
             layer_draws.push(draw);

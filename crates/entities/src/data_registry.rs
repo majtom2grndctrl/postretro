@@ -908,23 +908,22 @@ impl DataRegistry {
     /// mod manifest commits), not during per-level data-script execution.
     pub fn upsert_entity_type(&mut self, descriptor: EntityTypeDescriptor) {
         let descriptor_name = descriptor.canonical_name.clone();
-        if let Some(name) = descriptor_name.as_deref() {
-            if let Some(existing) = self
+        if let Some(name) = descriptor_name.as_deref()
+            && let Some(existing) = self
                 .entities
                 .iter_mut()
                 .find(|e| e.canonical_name.as_deref() == Some(name))
-            {
-                if *existing == descriptor {
-                    return;
-                }
-                log::debug!(
-                    "[Loader] upsert_entity_type: overwriting existing descriptor for `{}`",
-                    name,
-                );
-                *existing = descriptor;
-                self.entity_types_generation = self.entity_types_generation.wrapping_add(1);
+        {
+            if *existing == descriptor {
                 return;
             }
+            log::debug!(
+                "[Loader] upsert_entity_type: overwriting existing descriptor for `{}`",
+                name,
+            );
+            *existing = descriptor;
+            self.entity_types_generation = self.entity_types_generation.wrapping_add(1);
+            return;
         }
         self.entities.push(descriptor);
         self.entity_types_generation = self.entity_types_generation.wrapping_add(1);
@@ -944,12 +943,12 @@ impl DataRegistry {
         // keeps only that occurrence, preserving last-appearance order.
         let mut last_index: HashMap<String, usize> = HashMap::new();
         for (index, descriptor) in descriptors.iter().enumerate() {
-            if let Some(name) = descriptor.canonical_name.as_deref() {
-                if last_index.insert(name.to_string(), index).is_some() {
-                    log::warn!(
-                        "[Loader] duplicate entity descriptor canonicalName `{name}` in replacement snapshot; later declaration wins"
-                    );
-                }
+            if let Some(name) = descriptor.canonical_name.as_deref()
+                && last_index.insert(name.to_string(), index).is_some()
+            {
+                log::warn!(
+                    "[Loader] duplicate entity descriptor canonicalName `{name}` in replacement snapshot; later declaration wins"
+                );
             }
         }
         descriptors

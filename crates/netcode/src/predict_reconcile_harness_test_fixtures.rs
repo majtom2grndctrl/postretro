@@ -848,15 +848,15 @@ impl LoopbackHarness {
                     GRAVITY,
                     DT,
                 );
-                if class.is_some() {
-                    if let (Some(before), Ok(after)) = (
+                if class.is_some()
+                    && let (Some(before), Ok(after)) = (
                         before,
                         self.client_registry
                             .get_component::<Transform>(reconcile.entity_id),
-                    ) {
-                        self.latest_local_corrections
-                            .push((before - after.position).length());
-                    }
+                    )
+                {
+                    self.latest_local_corrections
+                        .push((before - after.position).length());
                 }
             }
             if let Some(ack) = outcome.ack {

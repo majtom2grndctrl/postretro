@@ -672,14 +672,14 @@ fn estimate_bvh_cull_with_planes(
                     let submitted =
                         !is_aabb_outside_gpu_planes(leaf.aabb_min, leaf.aabb_max, planes)
                             && bitmask_cell_is_visible(&visible_bitmask, leaf.cell_id);
-                    if submitted {
-                        if let Some(bucket_index) = bucket_ranges.iter().position(|range| {
+                    if submitted
+                        && let Some(bucket_index) = bucket_ranges.iter().position(|range| {
                             let start = range.first_leaf as usize;
                             let end = start + range.leaf_count as usize;
                             (start..end).contains(&leaf_idx)
-                        }) {
-                            submitted_bucket_scratch[bucket_index] = true;
-                        }
+                        })
+                    {
+                        submitted_bucket_scratch[bucket_index] = true;
                     }
                 }
                 i = next_skip_index(i, node.skip_index, nodes.len());
@@ -997,10 +997,10 @@ mod tests {
         let module = naga::front::wgsl::parse_str(source).expect("shader should parse as WGSL");
         let mut seen = std::collections::HashMap::new();
         for (_handle, ty) in module.types.iter() {
-            if let naga::TypeInner::Struct { span, .. } = &ty.inner {
-                if let Some(name) = &ty.name {
-                    seen.insert(name.clone(), *span);
-                }
+            if let naga::TypeInner::Struct { span, .. } = &ty.inner
+                && let Some(name) = &ty.name
+            {
+                seen.insert(name.clone(), *span);
             }
         }
         seen

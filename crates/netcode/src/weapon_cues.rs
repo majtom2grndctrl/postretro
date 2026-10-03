@@ -368,7 +368,7 @@ mod tests {
                 Vec3::Y,
                 Some(pawn),
             )]),
-            &mut allocator,
+            &allocator,
         )
         .unwrap();
         action.sounds.as_mut().unwrap().impact = Some("new_impact".into());
@@ -388,7 +388,7 @@ mod tests {
 
     #[test]
     fn weapon_cues_reject_empty_alias_and_oversized_contact_aggregation() {
-        let mut allocator = NetworkIdAllocator::new();
+        let allocator = NetworkIdAllocator::new();
         let id = ShotId::from_parts(7, 20, ActivationLane::Primary, 0);
         let mut action = WeaponActivationDescriptor::single(ActivationTrigger::Press, 100.0);
         action.emits = Some(ActivationEmits {
@@ -404,7 +404,7 @@ mod tests {
                 None,
                 None,
                 &Emitter::Contacts(vec![ImpactContact::new(Vec3::ZERO, Vec3::Y, None)]),
-                &mut allocator
+                &allocator
             )
             .is_none()
         );
@@ -418,7 +418,7 @@ mod tests {
                 None,
                 None,
                 &Emitter::Contacts(vec![ImpactContact::new(Vec3::ZERO, Vec3::Y, None)]),
-                &mut allocator
+                &allocator
             )
             .is_none()
         );
@@ -434,7 +434,7 @@ mod tests {
                     ImpactContact::new(Vec3::ZERO, Vec3::Y, None);
                     wire::MAX_WEAPON_CUE_CONTACTS + 1
                 ]),
-                &mut allocator
+                &allocator
             )
             .is_none()
         );

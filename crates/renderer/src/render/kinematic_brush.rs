@@ -303,13 +303,12 @@ fn push_or_merge_material_range(
     if index_count == 0 {
         return;
     }
-    if let Some(last) = ranges.last_mut() {
-        if last.material_index == material_index
-            && last.index_start + last.index_count == index_start
-        {
-            last.index_count += index_count;
-            return;
-        }
+    if let Some(last) = ranges.last_mut()
+        && last.material_index == material_index
+        && last.index_start + last.index_count == index_start
+    {
+        last.index_count += index_count;
+        return;
     }
     ranges.push(MaterialRange {
         material_index,

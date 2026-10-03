@@ -101,7 +101,12 @@ mod tests {
     #[test]
     fn hit_record_normals_refuse_the_previous_wire_version() {
         const PRE_CONTACT_NORMAL_WIRE_VERSION: u32 = 22;
-        assert!(WIRE_VERSION > 22, "hit records gained `normal`");
+        const {
+            assert!(
+                WIRE_VERSION > PRE_CONTACT_NORMAL_WIRE_VERSION,
+                "hit records gained `normal`"
+            );
+        };
         assert_ne!(
             transport_protocol_id(),
             ((PROTOCOL_ID as u64) << 32) | u64::from(PRE_CONTACT_NORMAL_WIRE_VERSION),
@@ -284,7 +289,7 @@ mod activation_epoch_tests {
         };
         let cases = [
             (
-                PreCueServerMessage::TimeSync(echo.clone()),
+                PreCueServerMessage::TimeSync(echo),
                 ServerMessage::TimeSync(echo),
             ),
             (

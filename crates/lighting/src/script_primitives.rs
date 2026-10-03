@@ -102,16 +102,16 @@ fn validate_and_normalize(
             reason: "brightness channel present but empty (use null to omit)".into(),
         });
     }
-    if let Some(ref c) = anim.color {
-        if c.is_empty() {
-            return Err(ScriptError::InvalidArgument {
-                reason: "color channel present but empty (use null to omit)".into(),
-            });
-        }
-        // Static lights with an animated compose slot route per-frame radiance
-        // through the baked compose path, including dominant direction and SDF
-        // visibility. Rejecting brightness or color by `is_dynamic` would confuse
-        // bake participation with animation support and block that valid path.
+    // Brightness and color are validated, not rejected by `is_dynamic`: static
+    // lights with an animated compose slot route per-frame radiance through the
+    // baked compose path, including dominant direction and SDF visibility.
+    // Rejecting them would confuse bake participation with animation support.
+    if let Some(ref c) = anim.color
+        && c.is_empty()
+    {
+        return Err(ScriptError::InvalidArgument {
+            reason: "color channel present but empty (use null to omit)".into(),
+        });
     }
     if let Some(ref mut dirs) = anim.direction {
         if dirs.is_empty() {

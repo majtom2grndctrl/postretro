@@ -629,6 +629,92 @@ fn projectile_collision_excludes(
 }
 
 #[cfg(test)]
+fn test_shot_id(tick: u32) -> postretro_foundation::ShotId {
+    postretro_foundation::ShotId::from_parts(
+        4,
+        tick,
+        postretro_foundation::ActivationLane::Primary,
+        0,
+    )
+}
+
+/// Hide resource-dependent cosmetics while keeping the flight and declaration live.
+pub fn set_predicted_projectile_visible(
+    registry: &mut EntityRegistry,
+    id: EntityId,
+    visible: bool,
+) {
+    if let Ok(ComponentValue::Projectile(component)) =
+        registry.get_component_value_mut(id, ComponentKind::Projectile)
+    {
+        component.predicted_visible = visible;
+    }
+    if !visible {
+        for kind in [
+            ComponentKind::SpriteVisual,
+            ComponentKind::Mesh,
+            ComponentKind::BillboardEmitter,
+            ComponentKind::Light,
+        ] {
+            let _ = registry.remove_component_kind(id, kind);
+        }
+    }
+}
+
+/// Apply accepted charge to still-live flights without rewinding a swept segment.
+pub fn correct_predicted_projectile(
+    registry: &mut EntityRegistry,
+    old: &weapon::ResolvedWeaponShot,
+    corrected: &weapon::ResolvedWeaponShot,
+) {
+    let ids: Vec<_> = registry
+        .iter_with_kind(ComponentKind::Projectile)
+        .filter_map(|(id, value)| {
+            let ComponentValue::Projectile(component) = value else {
+                return None;
+            };
+            (component.predicted_shot_id == Some(old.activation.shot_id)).then_some(id)
+        })
+        .collect();
+    for id in ids {
+        let Ok(mut component) = registry.get_component::<ProjectileComponent>(id).cloned() else {
+            continue;
+        };
+        let traveled = (old.activation.values.range - component.remaining_range).max(0.0);
+        component.remaining_range = (corrected.activation.values.range - traveled).max(0.0);
+        component.damage = corrected.activation.values.damage;
+        component.splash = corrected.splash.clone();
+        if let Some(projectile) = &corrected.projectile {
+            component.speed = projectile.speed;
+            component.radius = projectile.radius;
+            if let postretro_foundation::ProjectileBodyVisual::Sprite { size, .. } =
+                projectile.visual.body
+                && let Ok(mut visual) = registry
+                    .get_component::<postretro_entities::components::sprite_visual::SpriteVisual>(
+                        id,
+                    )
+                    .cloned()
+            {
+                visual.size = size;
+                let _ = registry.set_component(id, visual);
+            }
+        }
+        let direction = Vec3::from_array(component.direction);
+        component.knockback_impulse = corrected
+            .knockback
+            .map_or(Vec3::ZERO, |push| {
+                postretro_foundation::knockback_impulse(push.speed, push.upward_bias, direction)
+            })
+            .to_array();
+        let _ = registry.set_component(id, component);
+        if let Ok(mut transform) = registry.get_component::<Transform>(id).cloned() {
+            transform.scale = Vec3::splat(corrected.projectile_model_scale);
+            let _ = registry.set_component(id, transform);
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use glam::Vec3;
@@ -1990,91 +2076,5 @@ mod tests {
         assert!((previous.position.z - 0.0).abs() <= f32::EPSILON);
         assert!((midpoint.position.z + 0.5).abs() <= f32::EPSILON);
         assert!((current.position.z + 1.0).abs() <= f32::EPSILON);
-    }
-}
-
-#[cfg(test)]
-fn test_shot_id(tick: u32) -> postretro_foundation::ShotId {
-    postretro_foundation::ShotId::from_parts(
-        4,
-        tick,
-        postretro_foundation::ActivationLane::Primary,
-        0,
-    )
-}
-
-/// Hide resource-dependent cosmetics while keeping the flight and declaration live.
-pub fn set_predicted_projectile_visible(
-    registry: &mut EntityRegistry,
-    id: EntityId,
-    visible: bool,
-) {
-    if let Ok(ComponentValue::Projectile(component)) =
-        registry.get_component_value_mut(id, ComponentKind::Projectile)
-    {
-        component.predicted_visible = visible;
-    }
-    if !visible {
-        for kind in [
-            ComponentKind::SpriteVisual,
-            ComponentKind::Mesh,
-            ComponentKind::BillboardEmitter,
-            ComponentKind::Light,
-        ] {
-            let _ = registry.remove_component_kind(id, kind);
-        }
-    }
-}
-
-/// Apply accepted charge to still-live flights without rewinding a swept segment.
-pub fn correct_predicted_projectile(
-    registry: &mut EntityRegistry,
-    old: &weapon::ResolvedWeaponShot,
-    corrected: &weapon::ResolvedWeaponShot,
-) {
-    let ids: Vec<_> = registry
-        .iter_with_kind(ComponentKind::Projectile)
-        .filter_map(|(id, value)| {
-            let ComponentValue::Projectile(component) = value else {
-                return None;
-            };
-            (component.predicted_shot_id == Some(old.activation.shot_id)).then_some(id)
-        })
-        .collect();
-    for id in ids {
-        let Ok(mut component) = registry.get_component::<ProjectileComponent>(id).cloned() else {
-            continue;
-        };
-        let traveled = (old.activation.values.range - component.remaining_range).max(0.0);
-        component.remaining_range = (corrected.activation.values.range - traveled).max(0.0);
-        component.damage = corrected.activation.values.damage;
-        component.splash = corrected.splash.clone();
-        if let Some(projectile) = &corrected.projectile {
-            component.speed = projectile.speed;
-            component.radius = projectile.radius;
-            if let postretro_foundation::ProjectileBodyVisual::Sprite { size, .. } =
-                projectile.visual.body
-                && let Ok(mut visual) = registry
-                    .get_component::<postretro_entities::components::sprite_visual::SpriteVisual>(
-                        id,
-                    )
-                    .cloned()
-            {
-                visual.size = size;
-                let _ = registry.set_component(id, visual);
-            }
-        }
-        let direction = Vec3::from_array(component.direction);
-        component.knockback_impulse = corrected
-            .knockback
-            .map_or(Vec3::ZERO, |push| {
-                postretro_foundation::knockback_impulse(push.speed, push.upward_bias, direction)
-            })
-            .to_array();
-        let _ = registry.set_component(id, component);
-        if let Ok(mut transform) = registry.get_component::<Transform>(id).cloned() {
-            transform.scale = Vec3::splat(corrected.projectile_model_scale);
-            let _ = registry.set_component(id, transform);
-        }
     }
 }

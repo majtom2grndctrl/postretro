@@ -434,12 +434,13 @@ fn normalize_static_world_uvs(
         for i in start..end {
             if let Some(&idx) = indices.get(i) {
                 let vertex_index = idx as usize;
-                if vertex_index < normalized.len() && !normalized[vertex_index] {
-                    if let Some(vertex) = vertices.get_mut(vertex_index) {
-                        vertex.base_uv[0] /= width;
-                        vertex.base_uv[1] /= height;
-                        normalized[vertex_index] = true;
-                    }
+                if vertex_index < normalized.len()
+                    && !normalized[vertex_index]
+                    && let Some(vertex) = vertices.get_mut(vertex_index)
+                {
+                    vertex.base_uv[0] /= width;
+                    vertex.base_uv[1] /= height;
+                    normalized[vertex_index] = true;
                 }
             }
         }
@@ -486,12 +487,13 @@ fn normalize_kinematic_face_uvs(
     };
     for &index in indices {
         let vertex_index = index as usize;
-        if vertex_index < normalized.len() && !normalized[vertex_index] {
-            if let Some(vertex) = vertices.get_mut(vertex_index) {
-                vertex.uv[0] /= width;
-                vertex.uv[1] /= height;
-                normalized[vertex_index] = true;
-            }
+        if vertex_index < normalized.len()
+            && !normalized[vertex_index]
+            && let Some(vertex) = vertices.get_mut(vertex_index)
+        {
+            vertex.uv[0] /= width;
+            vertex.uv[1] /= height;
+            normalized[vertex_index] = true;
         }
     }
 }

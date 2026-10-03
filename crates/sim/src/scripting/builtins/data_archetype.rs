@@ -1066,9 +1066,8 @@ mod tests {
         ProjectileBodyVisual, ProjectileDescriptor, ProjectileTrailVisual, ProjectileVisual,
     };
     use postretro_scripting_core::data_descriptors::{
-        AirParams, AmmoResource, CapsuleParams, FallParams, FireMode, GroundParams,
-        PlayerMovementDescriptor, ReloadStyle, ResolutionMode, SpeedParams, TouchMode,
-        TouchableDescriptor, WeaponDescriptor,
+        AirParams, AmmoResource, CapsuleParams, FallParams, GroundParams, PlayerMovementDescriptor,
+        ReloadStyle, ResolutionMode, SpeedParams, TouchMode, TouchableDescriptor, WeaponDescriptor,
     };
     use std::collections::HashMap;
 
@@ -2200,8 +2199,11 @@ mod tests {
                 movement_spread_degrees: 0.0,
                 spread_vertical_bias: 0.0,
                 range: 64.0,
-                cooldown_ms: 180.0,
-                fire_mode: FireMode::Semi,
+                primary: postretro_foundation::WeaponActivationDescriptor::single(
+                    postretro_foundation::ActivationTrigger::Press,
+                    180.0,
+                ),
+                secondary: None,
                 resolution: ResolutionMode::Hitscan,
                 projectile: None,
                 splash: None,

@@ -1,4 +1,4 @@
-import { defineEntity } from "postretro";
+import { activation, defineEntity } from "postretro";
 
 const SMG_MODEL = "models/cyberpunk_weapons/smg/model.gltf";
 const SHOTGUN_MODEL = "models/cyberpunk_weapons/shotgun/model.gltf";
@@ -9,8 +9,7 @@ export const wieldableFixtureAutoEntity = defineEntity({
     weapon: {
       damage: 8.0,
       range: 48.0,
-      fireRateMs: 240.0,
-      fireMode: "semi",
+      primary: { trigger: "press", recoveryMs: 240.0, steps: [activation.shot()] },
       resolution: "hitscan",
       thirdPersonModel: SMG_MODEL,
       viewmodel: SMG_MODEL,
@@ -36,8 +35,7 @@ export const wieldableFixturePressEntity = defineEntity({
     weapon: {
       damage: 18.0,
       range: 48.0,
-      fireRateMs: 600.0,
-      fireMode: "semi",
+      primary: { trigger: "press", recoveryMs: 600.0, steps: [activation.shot()] },
       resolution: "hitscan",
       thirdPersonModel: SHOTGUN_MODEL,
       viewmodel: SHOTGUN_MODEL,

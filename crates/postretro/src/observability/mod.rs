@@ -299,8 +299,11 @@ mod tests {
                     movement_spread_degrees: 0.0,
                     spread_vertical_bias: 0.0,
                     range: 20.0,
-                    cooldown_ms: 100.0,
-                    fire_mode: FireMode::Semi,
+                    primary: postretro_foundation::WeaponActivationDescriptor::single(
+                        postretro_foundation::ActivationTrigger::Press,
+                        100.0,
+                    ),
+                    secondary: None,
                     resolution: ResolutionMode::Hitscan,
                     projectile: None,
                     splash: None,
@@ -426,6 +429,8 @@ mod tests {
                 },
             ),
             ComponentKind::Projectile => ComponentValue::Projectile(ProjectileComponent {
+                source_sounds: None,
+                predicted_visible: true,
                 activation: None,
                 source_weapon: None,
                 knockback_impulse: [0.0; 3],

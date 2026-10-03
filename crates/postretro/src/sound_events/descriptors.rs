@@ -84,7 +84,7 @@ impl WeaponCue {
     }
 }
 
-fn sfx(
+pub(crate) fn frozen_sound(
     sound: &str,
     emitter: &postretro_entities::Emitter,
     scene: &mut AnchorScene<'_>,
@@ -107,7 +107,7 @@ pub(crate) fn weapon_sound(
 ) -> Option<SoundRequest> {
     let cue = WeaponCue::for_address(address)?;
     let key = cue.key(table.weapon(weapon)?)?;
-    Some(sfx(key, emitter, scene))
+    Some(frozen_sound(key, emitter, scene))
 }
 
 /// [`weapon_sound`] for a weapon emission.
@@ -116,6 +116,31 @@ pub(crate) fn weapon_emission_sound(
     emission: &WeaponEmission,
     scene: &mut AnchorScene<'_>,
 ) -> Option<SoundRequest> {
+    let cue = WeaponCue::for_address(emission.address)?;
+    if matches!(cue, WeaponCue::Fire | WeaponCue::Impact) {
+        if let Some(sounds) = &emission.sounds {
+            let key = if cue == WeaponCue::Fire {
+                sounds.fire.as_deref()
+            } else {
+                sounds.impact.as_deref()
+            };
+            return key.map(|key| frozen_sound(key, &emission.emitter, scene));
+        }
+        if let Some(sounds) = emission
+            .action
+            .as_ref()
+            .and_then(|action| action.sounds.as_ref())
+        {
+            let key = if cue == WeaponCue::Fire {
+                sounds.fire.as_deref()
+            } else {
+                sounds.impact.as_deref()
+            };
+            if let Some(key) = key {
+                return Some(frozen_sound(key, &emission.emitter, scene));
+            }
+        }
+    }
     weapon_sound(
         table,
         emission.address,
@@ -144,7 +169,7 @@ pub(crate) fn movement_sound(
         "jumped" => sounds.jump?,
         _ => return None,
     };
-    Some(sfx(&key, &emission.emitter, scene))
+    Some(frozen_sound(&key, &emission.emitter, scene))
 }
 
 /// The sounds an enemy event plays. An attack plays its own `sound` and, when
@@ -162,13 +187,18 @@ pub(crate) fn ai_sounds(
                 return requests;
             };
             if let Some(sound) = params.sound.as_deref() {
-                requests.push(sfx(sound, &emission.emitter, scene));
+                requests.push(frozen_sound(sound, &emission.emitter, scene));
             }
-            if let Some(request) = weapon_sound(
+            if let Some(request) = weapon_emission_sound(
                 table,
-                "activate",
-                params.weapon.as_deref(),
-                &emission.emitter,
+                &WeaponEmission {
+                    sounds: emission.sounds.clone(),
+                    action: emission.action.clone(),
+                    shot_id: emission.shot_id,
+                    address: "activate",
+                    weapon: params.weapon.clone(),
+                    emitter: emission.emitter.clone(),
+                },
                 scene,
             ) {
                 requests.push(request);
@@ -178,7 +208,7 @@ pub(crate) fn ai_sounds(
             if let Some(sound) =
                 activity_at_path(graph, path).and_then(|(_, activity)| activity.sound.as_deref())
             {
-                requests.push(sfx(sound, &emission.emitter, scene));
+                requests.push(frozen_sound(sound, &emission.emitter, scene));
             }
         }
     }
@@ -208,6 +238,22 @@ pub(crate) fn warn_unknown_sound_keys(
         {
             for (field, key) in sounds.keys() {
                 name(key, format!("`{owner}` weapon.sounds.{field}"));
+            }
+        }
+        if let Some(weapon) = &descriptor.weapon {
+            for (lane, action) in std::iter::once(("primary", &weapon.primary))
+                .chain(weapon.secondary.as_ref().map(|a| ("secondary", a)))
+            {
+                if let Some(sounds) = &action.sounds {
+                    for (field, key) in [
+                        ("fire", sounds.fire.as_deref()),
+                        ("impact", sounds.impact.as_deref()),
+                    ] {
+                        if let Some(key) = key {
+                            name(key, format!("`{owner}` weapon.{lane}.sounds.{field}"));
+                        }
+                    }
+                }
             }
         }
         if let Some(sounds) = descriptor
@@ -311,6 +357,20 @@ fn collect_one_activity(
     }
 }
 
+/// Builtin and authored alias dispatch share one frozen originating action.
+pub(crate) fn weapon_emission_addresses(emission: &WeaponEmission) -> impl Iterator<Item = &str> {
+    let alias = emission
+        .action
+        .as_ref()
+        .and_then(|action| action.emits.as_ref())
+        .and_then(|emits| match emission.address {
+            "activate" => emits.activate.as_deref(),
+            "impact" => emits.impact.as_deref(),
+            _ => None,
+        });
+    std::iter::once(emission.address).chain(alias)
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -331,8 +391,8 @@ mod tests {
     fn weapon_descriptor(name: &str, sounds: WeaponSounds) -> EntityTypeDescriptor {
         let mut weapon: postretro_foundation::WeaponDescriptor =
             serde_json::from_value(serde_json::json!({
-                "damage": 5.0, "range": 50.0, "fireRateMs": 100.0,
-                "fireMode": "semi", "resolution": "hitscan"
+                "damage": 5.0, "range": 50.0, "primary": { "trigger": "press", "recoveryMs": 100.0, "steps": [{ "kind": "shot" }] },
+                 "resolution": "hitscan"
             }))
             .expect("minimal weapon parses");
         weapon.sounds = Some(sounds);
@@ -440,6 +500,9 @@ mod tests {
         }
 
         let impact = WeaponEmission {
+            sounds: None,
+            action: None,
+            shot_id: None,
             address: "impact",
             emitter: Emitter::Contacts(vec![
                 ImpactContact::new(Vec3::X, Vec3::Z, None),
@@ -457,6 +520,141 @@ mod tests {
             ])),
             "the impact carries every contact; audio picks the nearest",
         );
+    }
+
+    #[test]
+    fn action_sound_alias_delivery_freezes_primary_secondary_and_common_impact_fallback() {
+        use crate::weapon;
+        use postretro_foundation::{
+            ActivationEmits, ActivationInput, ActivationLane, ActivationSounds, ActivationToken,
+            ActivationTrigger, WeaponActivationDescriptor,
+        };
+        let mut descriptor = weapon_descriptor("shotgun", shotgun_sounds())
+            .weapon
+            .unwrap();
+        descriptor.primary.sounds = Some(ActivationSounds {
+            fire: Some("sfx/primary_fire".into()),
+            impact: Some("sfx/primary_hit".into()),
+        });
+        descriptor.primary.emits = Some(ActivationEmits {
+            activate: Some("primary_fire".into()),
+            impact: Some("primary_hit".into()),
+        });
+        let mut secondary = WeaponActivationDescriptor::single(ActivationTrigger::Press, 100.0);
+        secondary.sounds = Some(ActivationSounds {
+            fire: Some("sfx/secondary_fire".into()),
+            impact: None,
+        });
+        secondary.emits = Some(ActivationEmits {
+            activate: Some("secondary_fire".into()),
+            impact: Some("secondary_hit".into()),
+        });
+        descriptor.secondary = Some(secondary);
+        let replacement = DescriptorSoundTable::build(&[weapon_descriptor(
+            "shotgun",
+            WeaponSounds {
+                fire: Some("sfx/replacement_fire".into()),
+                impact: Some("sfx/replacement_hit".into()),
+                reload_start: Some("sfx/replacement_reload".into()),
+                ..Default::default()
+            },
+        )]);
+        let (registry, pawn) = scene_parts(Vec3::ZERO);
+        let mut movers = KinematicMoverRenderCollector::new();
+        let mut scene = AnchorScene {
+            registry: &registry,
+            world: None,
+            movers: &mut movers,
+        };
+        for (lane, fire, hit, fire_alias, hit_alias) in [
+            (
+                ActivationLane::Primary,
+                "sfx/primary_fire",
+                "sfx/primary_hit",
+                "primary_fire",
+                "primary_hit",
+            ),
+            (
+                ActivationLane::Secondary,
+                "sfx/secondary_fire",
+                "sfx/pellet_hit",
+                "secondary_fire",
+                "secondary_hit",
+            ),
+        ] {
+            let mut component =
+                postretro_entities::components::weapon::WeaponComponent::from_descriptor(
+                    &descriptor,
+                );
+            let token = ActivationToken {
+                start_tick: 8,
+                lane,
+            };
+            let button = |candidate| weapon::FireButtonState {
+                pressed: candidate == lane,
+                active: candidate == lane,
+            };
+            let attempt = weapon::activation_prediction::advance_predicted_weapon_tick(
+                &mut component,
+                weapon::execution::ActivationCommand {
+                    tick: 8,
+                    pawn: 1,
+                    real_command: true,
+                    input: ActivationInput {
+                        initiation: Some(token),
+                        ..Default::default()
+                    },
+                    controller_starts: false,
+                    primary: button(ActivationLane::Primary),
+                    secondary: button(ActivationLane::Secondary),
+                },
+                false,
+                16.0,
+                true,
+            )
+            .shot
+            .unwrap();
+            let frozen = weapon::freeze_weapon_shot(&component, attempt);
+            for (address, key, alias) in
+                [("activate", fire, fire_alias), ("impact", hit, hit_alias)]
+            {
+                let emission = WeaponEmission {
+                    sounds: Some(frozen.sounds.clone()),
+                    action: Some(frozen.action().clone()),
+                    shot_id: Some(frozen.activation.shot_id),
+                    address,
+                    emitter: emitter(&registry, pawn),
+                    weapon: Some("shotgun".into()),
+                };
+                assert_eq!(
+                    weapon_emission_sound(&replacement, &emission, &mut scene)
+                        .unwrap()
+                        .sound,
+                    key,
+                    "reloaded common table cannot replace frozen cue"
+                );
+                assert_eq!(
+                    weapon_emission_addresses(&emission).collect::<Vec<_>>(),
+                    vec![address, alias],
+                    "builtin and alias each dispatch once"
+                );
+            }
+            let reload = WeaponEmission {
+                sounds: Some(frozen.sounds.clone()),
+                action: None,
+                shot_id: None,
+                address: "reload_started",
+                emitter: emitter(&registry, pawn),
+                weapon: Some("shotgun".into()),
+            };
+            assert_eq!(
+                weapon_emission_sound(&replacement, &reload, &mut scene)
+                    .unwrap()
+                    .sound,
+                "sfx/replacement_reload",
+                "common reload remains a weapon cue"
+            );
+        }
     }
 
     // Pin P3: a committed reload rebuilds the table, so the next event plays
@@ -509,6 +707,9 @@ mod tests {
             movers: &mut movers,
         };
         let attack = AiEmission {
+            sounds: None,
+            action: None,
+            shot_id: None,
             address: Some("enemyAttack".into()),
             emitter: emitter(&registry, enemy),
             cue: AiCue::Attack {
@@ -530,6 +731,9 @@ mod tests {
         );
 
         let contact = WeaponEmission {
+            sounds: None,
+            action: None,
+            shot_id: None,
             address: "impact",
             emitter: Emitter::Contacts(vec![ImpactContact {
                 point: Vec3::new(0.0, 1.0, 0.0),
@@ -544,6 +748,7 @@ mod tests {
         );
 
         let contact_attack = AiEmission {
+            sounds: None,
             cue: AiCue::Attack {
                 graph: graph(),
                 attack: "bite".to_string(),
@@ -579,6 +784,9 @@ mod tests {
             .position(|name| name == "alerted")
             .expect("fixture declares alerted");
         let entry = AiEmission {
+            sounds: None,
+            action: None,
+            shot_id: None,
             address: None,
             emitter: emitter(&registry, enemy),
             cue: AiCue::Entered {
@@ -595,6 +803,7 @@ mod tests {
         );
 
         let idle = AiEmission {
+            sounds: None,
             cue: AiCue::Entered {
                 graph,
                 path: vec![1 - alerted],

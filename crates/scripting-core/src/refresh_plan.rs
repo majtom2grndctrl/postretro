@@ -470,7 +470,9 @@ fn plan_weapon_replace(
     // Clone the live component and refresh in-place so `WeaponComponent` stays
     // the single source of truth for which fields are live state versus
     // authored stats; copying preserved fields here would silently reset any
-    // future live-state field the component starts tracking.
+    // future live-state field the component starts tracking. Refresh cancels
+    // the clone's execution before installing its new program; planning itself
+    // leaves the live execution untouched until the plan is applied.
     let mut refreshed = live.clone();
     refreshed.refresh_from_descriptor(descriptor);
     Ok(ComponentValue::Weapon(refreshed))
@@ -802,8 +804,8 @@ mod tests {
     use crate::components::player_movement::MovementState;
     use crate::components::wieldable_state::WieldableState;
     use crate::data_descriptors::{
-        AirParams, CapsuleParams, DashParams, FallParams, FireMode, GroundParams,
-        PlayerMovementDescriptor, ResolutionMode, SpeedParams, WeaponDescriptor,
+        AirParams, CapsuleParams, DashParams, FallParams, GroundParams, PlayerMovementDescriptor,
+        ResolutionMode, SpeedParams, WeaponDescriptor,
     };
     use crate::provenance::{DescriptorMapOverride, DescriptorSpawnPath};
     use crate::registry::Transform;
@@ -830,8 +832,11 @@ mod tests {
                 movement_spread_degrees: 0.0,
                 spread_vertical_bias: 0.0,
                 range: 100.0,
-                cooldown_ms: 250.0,
-                fire_mode: FireMode::Semi,
+                primary: postretro_foundation::WeaponActivationDescriptor::single(
+                    postretro_foundation::ActivationTrigger::Press,
+                    250.0,
+                ),
+                secondary: None,
                 resolution: ResolutionMode::Hitscan,
                 projectile: None,
                 splash: None,
@@ -1097,6 +1102,132 @@ mod tests {
         assert_eq!(component.state, WieldableState::Reloading);
         assert_eq!(component.shells_fired, 7);
         assert_eq!(component.credit_source, "pistol");
+    }
+
+    #[test]
+    fn weapon_replacement_cancels_execution_preserving_debt_resources_and_prior_projectile() {
+        use postretro_entities::components::projectile::ProjectileComponent;
+        use postretro_foundation::{
+            ActivationCursor, ActivationLane, ActivationPhase, ActivationToken,
+        };
+
+        for charging in [true, false] {
+            for resource in [
+                serde_json::Value::Null,
+                serde_json::json!({ "kind": "ammo", "type": "rounds", "magazine": 10, "reserve": 0 }),
+                serde_json::json!({ "kind": "heat", "heatPerShot": 10, "overheatAt": 100, "coolPerSecond": 5 }),
+                serde_json::json!({ "kind": "cell", "capacity": 100, "costPerShot": 10, "regenPerSecond": 5 }),
+            ] {
+                let mut old = vec![weapon_descriptor("ion", 10.0)];
+                old[0].weapon.as_mut().unwrap().resource =
+                    serde_json::from_value(resource).unwrap();
+                let mut new = old.clone();
+                let descriptor = new[0].weapon.as_mut().unwrap();
+                descriptor.damage = 25.0;
+                descriptor.primary = serde_json::from_value(serde_json::json!({
+                    "trigger": "press", "recoveryMs": 600,
+                    "steps": [{ "kind": "shot" }, { "kind": "wait", "durationMs": 100 }, { "kind": "shot" }],
+                })).unwrap();
+                let new_primary = descriptor.primary.clone();
+                let mut registry = EntityRegistry::new();
+                let pawn = registry.spawn(Transform::default());
+                let id = registry.spawn(Transform::default());
+                let mut weapon = WeaponComponent::from_descriptor_with_canonical(
+                    old[0].weapon.as_ref().unwrap(),
+                    Some("ion"),
+                );
+                weapon.magazine = 4;
+                weapon.cooldown_remaining_ms = 87.0;
+                if let Some(heat) = weapon.heat.as_mut() {
+                    heat.heat = 100.0;
+                    heat.overheated = true;
+                    heat.idle_ms = 12.0;
+                }
+                if let Some(cell) = weapon.cell.as_mut() {
+                    cell.charge = 35.0;
+                    cell.idle_ms = 12.0;
+                }
+                let cursor = ActivationCursor {
+                    token: ActivationToken {
+                        start_tick: 12,
+                        lane: ActivationLane::Primary,
+                    },
+                    pawn: pawn.to_raw(),
+                    accepted_tick: 12,
+                    last_real_tick: 13,
+                    last_advanced_tick: Some(13),
+                    phase: if charging {
+                        ActivationPhase::Charging
+                    } else {
+                        ActivationPhase::Executing
+                    },
+                    step: 0,
+                    ordinal: 0,
+                    due_tick: 20,
+                    charge: 0.5,
+                };
+                weapon.state = if charging {
+                    WieldableState::Charging(cursor)
+                } else {
+                    WieldableState::Executing(cursor)
+                };
+                registry.set_component(id, weapon.clone()).unwrap();
+                registry
+                    .set_component(id, provenance("ion", &[DescriptorComponentKind::Weapon]))
+                    .unwrap();
+                let projectile = registry.spawn(Transform::default());
+                let snapshot: ProjectileComponent = serde_json::from_value(serde_json::json!({
+                    "direction": [0.0, 0.0, -1.0], "speed": 30.0, "radius": 0.2,
+                    "remaining_range": 45.0, "remaining_lifetime": 2.0, "damage": 100.0,
+                    "credit_source": "ion", "owner_pawn": pawn, "owner_weapon": id,
+                    "spawned": false, "source_weapon": "ion",
+                }))
+                .unwrap();
+                registry
+                    .set_component(projectile, snapshot.clone())
+                    .unwrap();
+
+                let plan = plan_descriptor_refresh(&old, &new, &registry);
+
+                assert!(plan.diagnostics.is_empty(), "{:?}", plan.diagnostics);
+                assert_eq!(
+                    registry.get_component::<WeaponComponent>(id).unwrap(),
+                    &weapon,
+                    "planning is read-only"
+                );
+                let summary = apply_descriptor_refresh_plan(&plan, &mut registry).unwrap();
+                assert_eq!(summary.applied_actions, 1);
+                let refreshed = registry.get_component::<WeaponComponent>(id).unwrap();
+                assert_eq!(refreshed.state, WieldableState::Idle);
+                assert_eq!(refreshed.damage, 25.0);
+                assert_eq!(refreshed.primary.as_ref(), &new_primary);
+                assert_eq!(
+                    refreshed.cooldown_remaining_ms,
+                    weapon.cooldown_remaining_ms
+                );
+                assert_eq!(refreshed.magazine, weapon.magazine);
+                assert_eq!(refreshed.heat, weapon.heat);
+                assert_eq!(refreshed.cell, weapon.cell);
+                assert_eq!(
+                    refreshed
+                        .activation_programs
+                        .primary
+                        .as_ref()
+                        .unwrap()
+                        .timing
+                        .steps
+                        .len(),
+                    new_primary.steps.len(),
+                    "the replacement installs the new bounded execution program"
+                );
+                assert_eq!(
+                    registry
+                        .get_component::<ProjectileComponent>(projectile)
+                        .unwrap(),
+                    &snapshot
+                );
+            }
+        }
     }
 
     #[test]

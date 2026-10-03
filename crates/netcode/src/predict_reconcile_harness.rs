@@ -44,7 +44,7 @@ use postretro_entities::{
     components::wieldable_state::WieldableState,
 };
 use postretro_foundation::{
-    FireMode, GroundRef, MovementState, PlayerMovementComponent, ResolutionMode, WeaponDescriptor,
+    GroundRef, MovementState, PlayerMovementComponent, ResolutionMode, WeaponDescriptor,
 };
 use std::collections::VecDeque;
 
@@ -110,8 +110,11 @@ fn run_ordered_switch_pair(refuse_final_for_reload: bool) -> (usize, Vec<Current
             movement_spread_degrees: 0.0,
             spread_vertical_bias: 0.0,
             range: 64.0,
-            cooldown_ms: 100.0,
-            fire_mode: FireMode::Semi,
+            primary: postretro_foundation::WeaponActivationDescriptor::single(
+                postretro_foundation::ActivationTrigger::Press,
+                100.0,
+            ),
+            secondary: None,
             resolution: ResolutionMode::Hitscan,
             projectile: None,
             splash: None,
@@ -1787,6 +1790,12 @@ fn scripted_command(tick: u32) -> SimCommand {
     };
     let facing_yaw = if phase < 80 { 0.0 } else { 0.4 };
     SimCommand {
+        input_tick: tick,
+        secondary_button: crate::weapon::FireButtonState {
+            pressed: false,
+            active: false,
+        },
+        activation: postretro_foundation::ActivationInput::default(),
         movement: MovementInput {
             wish_dir,
             jump_pressed: false,
@@ -1931,6 +1940,7 @@ fn stale_snapshot_for(h: &LoopbackHarness) -> postretro_net::wire::SnapshotMessa
             // it never exercises client materialization, so no class is stamped.
             entity_class: None,
             active_weapon_archetype: None,
+            projectile_presentation: None,
         }],
         state_schema_fingerprint: [0u8; 32],
         state_records: Vec::new(),

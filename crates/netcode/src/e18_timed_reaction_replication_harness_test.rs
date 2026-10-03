@@ -224,6 +224,12 @@ fn fog_volume() -> FogVolumeComponent {
 
 fn idle_command() -> SimCommand {
     SimCommand {
+        input_tick: 0,
+        secondary_button: crate::weapon::FireButtonState {
+            pressed: false,
+            active: false,
+        },
+        activation: postretro_foundation::ActivationInput::default(),
         movement: MovementInput {
             wish_dir: Vec2::ZERO,
             jump_pressed: false,
@@ -594,6 +600,8 @@ impl TimedAlarmHarness {
             &[],
             &mut mover_states,
             &[RemotePawnCommand {
+                real_command: true,
+                rejected_activation: None,
                 pawn: self.host_remote_pawn,
                 owner_client_id: CLIENT_ID,
                 weapon: None,

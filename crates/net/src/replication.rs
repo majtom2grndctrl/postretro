@@ -24,7 +24,7 @@ use crate::wire::{
     COMPONENT_KIND_KINEMATIC_MOVER_STATE, COMPONENT_KIND_MESH_ANIMATION_STATE,
     COMPONENT_KIND_PLAYER_MOVEMENT_STATE, COMPONENT_KIND_TRANSFORM, ComponentPayload, EntityRecord,
     RECORD_KIND_DELTA, RECORD_KIND_DESPAWN, RECORD_KIND_FULL_BASELINE, RawComponentPayload,
-    RawEntityRecord, RawSnapshotMessage, SNAPSHOT_VERSION,
+    RawEntityRecord, RawSnapshotMessage, SNAPSHOT_VERSION, WireProjectilePresentation,
 };
 
 /// One replicable entity's owned, post-tick component state, keyed by its stable
@@ -73,6 +73,7 @@ pub struct EntitySnapshot {
     /// unarmed. Shared-visible presentation metadata; a change advances the entity
     /// baseline so recipients observe an equip/unequip within one snapshot interval.
     pub active_weapon_archetype: Option<String>,
+    pub projectile_presentation: Option<WireProjectilePresentation>,
 }
 
 impl EntitySnapshot {
@@ -88,6 +89,7 @@ impl EntitySnapshot {
             last_processed_client_tick: None,
             entity_class: None,
             active_weapon_archetype: None,
+            projectile_presentation: None,
         }
     }
 }
@@ -145,6 +147,7 @@ struct EntityState {
     /// Active weapon canonical name for a movement pawn. Unlike immutable class and
     /// authority metadata, a change makes the snapshot dirty and advances its baseline.
     active_weapon_archetype: Option<String>,
+    projectile_presentation: Option<WireProjectilePresentation>,
 }
 
 /// A despawned entity awaiting per-client tombstone acks. Held until every client
@@ -371,7 +374,8 @@ impl ServerReplication {
             match self.entities.get_mut(&snap.network_id) {
                 Some(existing)
                     if existing.components == snap.components
-                        && existing.active_weapon_archetype == snap.active_weapon_archetype =>
+                        && existing.active_weapon_archetype == snap.active_weapon_archetype
+                        && existing.projectile_presentation == snap.projectile_presentation =>
                 {
                     // Unchanged pose/movement mirrors: keep the baseline id so acked
                     // clients are omitted. The authority metadata still refreshes —
@@ -384,6 +388,7 @@ impl ServerReplication {
                     existing.last_processed_client_tick = snap.last_processed_client_tick;
                     existing.entity_class = snap.entity_class;
                     existing.active_weapon_archetype = snap.active_weapon_archetype;
+                    existing.projectile_presentation = snap.projectile_presentation;
                 }
                 Some(existing) => {
                     existing.baseline_id = self.next_baseline_id;
@@ -392,6 +397,7 @@ impl ServerReplication {
                     existing.last_processed_client_tick = snap.last_processed_client_tick;
                     existing.entity_class = snap.entity_class;
                     existing.active_weapon_archetype = snap.active_weapon_archetype;
+                    existing.projectile_presentation = snap.projectile_presentation;
                     self.next_baseline_id = self.next_baseline_id.wrapping_add(1);
                 }
                 None => {
@@ -406,6 +412,7 @@ impl ServerReplication {
                             last_processed_client_tick: snap.last_processed_client_tick,
                             entity_class: snap.entity_class,
                             active_weapon_archetype: snap.active_weapon_archetype,
+                            projectile_presentation: snap.projectile_presentation,
                         },
                     );
                 }
@@ -639,6 +646,7 @@ impl ServerReplication {
                         entity_class: authority.entity_class.clone(),
                         has_active_weapon_archetype: authority.has_active_weapon_archetype,
                         active_weapon_archetype: authority.active_weapon_archetype.clone(),
+                        projectile_presentation: entity.projectile_presentation,
                         components: entity.components.iter().map(raw_from_payload).collect(),
                     });
                 }
@@ -657,6 +665,7 @@ impl ServerReplication {
                         entity_class: authority.entity_class.clone(),
                         has_active_weapon_archetype: authority.has_active_weapon_archetype,
                         active_weapon_archetype: authority.active_weapon_archetype.clone(),
+                        projectile_presentation: entity.projectile_presentation,
                         components: entity.components.iter().map(raw_from_payload).collect(),
                     });
                 }
@@ -695,6 +704,7 @@ impl ServerReplication {
                 entity_class: String::new(),
                 has_active_weapon_archetype: false,
                 active_weapon_archetype: String::new(),
+                projectile_presentation: None,
                 components: Vec::new(),
             });
         }
@@ -906,6 +916,7 @@ mod tests {
             last_processed_client_tick: last_tick,
             entity_class: Some("player".to_string()),
             active_weapon_archetype: None,
+            projectile_presentation: None,
         }
     }
 
@@ -916,6 +927,75 @@ mod tests {
             EntityRecord::Delta { network_id: n, .. } => *n == network_id,
             EntityRecord::Despawn { network_id: n, .. } => *n == network_id,
         })
+    }
+
+    #[test]
+    fn projectile_presentation_facts_survive_late_seed_refresh_and_dirty_delta() {
+        let facts = WireProjectilePresentation {
+            sprite_size: Some(0.4),
+            model_scale: 2.0,
+            shot_id: Some(crate::wire::WireShotId {
+                pawn: 41,
+                start_tick: 12,
+                lane: 1,
+                ordinal: 2,
+            }),
+        };
+        let mut current = entity(1, vec![transform(0.0)]);
+        current.entity_class = Some("projectile:plasma".into());
+        current.projectile_presentation = Some(facts);
+        let mut server = ServerReplication::new();
+        server.register_client(CLIENT_A);
+        server.ingest_tick(vec![current.clone()]);
+        let first = server.encode_for_client(CLIENT_A, 60).unwrap();
+        let EntityRecord::FullBaseline {
+            baseline_id,
+            projectile_presentation: Some(received),
+            ..
+        } = record_for(&first, 1).unwrap()
+        else {
+            panic!("frozen seed facts");
+        };
+        assert!((received.sprite_size.unwrap() - 0.4).abs() < 1.0e-6);
+        assert_eq!(received.shot_id, facts.shot_id);
+        server.apply_ack(CLIENT_A, first.sequence, &[(1, baseline_id)], &[]);
+        current
+            .projectile_presentation
+            .as_mut()
+            .unwrap()
+            .sprite_size = Some(0.6);
+        server.ingest_tick(vec![current]);
+        let changed = server.encode_for_client(CLIENT_A, 61).unwrap();
+        let EntityRecord::Delta {
+            new_baseline_id,
+            projectile_presentation: Some(received),
+            ..
+        } = record_for(&changed, 1).unwrap()
+        else {
+            panic!("scalar change dirties entity");
+        };
+        assert!((received.sprite_size.unwrap() - 0.6).abs() < 1.0e-6);
+        server.apply_ack(CLIENT_A, changed.sequence, &[(1, new_baseline_id)], &[]);
+        server.register_client(CLIENT_B);
+        let late = server.encode_for_client(CLIENT_B, 62).unwrap();
+        let EntityRecord::FullBaseline {
+            projectile_presentation: Some(late),
+            ..
+        } = record_for(&late, 1).unwrap()
+        else {
+            panic!("late full seed");
+        };
+        assert!((late.sprite_size.unwrap() - 0.6).abs() < 1.0e-6);
+        assert_eq!(late.shot_id, facts.shot_id);
+        server.request_refresh(CLIENT_A, 1, 0);
+        let refresh = server.encode_for_client(CLIENT_A, 63).unwrap();
+        assert!(matches!(
+            record_for(&refresh, 1),
+            Some(EntityRecord::FullBaseline {
+                projectile_presentation: Some(_),
+                ..
+            })
+        ));
     }
 
     // First snapshot for a fresh client is a FullBaseline for every entity.
@@ -1778,6 +1858,7 @@ mod tests {
             last_processed_client_tick: None,
             entity_class: Some(class.to_string()),
             active_weapon_archetype: None,
+            projectile_presentation: None,
         }
     }
 
@@ -1839,6 +1920,7 @@ mod tests {
             last_processed_client_tick: None,
             entity_class: Some(String::new()),
             active_weapon_archetype: None,
+            projectile_presentation: None,
         }]);
 
         let snap = server.encode_for_client(CLIENT_A, 60).unwrap();
@@ -1954,6 +2036,7 @@ mod tests {
             last_processed_client_tick: Some(3),
             entity_class: Some("grunt".to_string()),
             active_weapon_archetype: None,
+            projectile_presentation: None,
         }]);
 
         let snap = server.encode_for_client(CLIENT_A, 60).unwrap();

@@ -279,6 +279,7 @@ pub(super) fn materialize_armed_remote_projectile(
     descriptors: &[EntityTypeDescriptor],
     registry: &mut EntityRegistry,
     spawn_tick: u32,
+    facts: Option<postretro_net::wire::WireProjectilePresentation>,
 ) -> bool {
     let entity_class = decode_replicated_descriptor_class(&remote.entity_class).canonical_name();
     let Some(projectile) = descriptors
@@ -295,6 +296,13 @@ pub(super) fn materialize_armed_remote_projectile(
         projectile,
         spawn_tick,
     );
+    if let Some(facts) = facts {
+        super::projectile_presentation::apply_projectile_presentation_facts(
+            registry,
+            remote.entity_id,
+            facts,
+        );
+    }
     let _ = registry.set_component(
         remote.entity_id,
         DescriptorProvenance {
@@ -317,7 +325,7 @@ mod tests {
     };
     use postretro_entities::{ComponentKind, EntityId, MeshDescriptor, Transform};
     use postretro_foundation::{
-        AirParams, CapsuleParams, FallParams, FireMode, GroundParams, NavAgentParams,
+        AirParams, CapsuleParams, FallParams, GroundParams, NavAgentParams,
         PlayerMovementDescriptor, ProjectileBodyVisual, ProjectileDescriptor,
         ProjectileTrailSpinAnimation, ProjectileTrailVisual, ProjectileVisual, ResolutionMode,
         SpeedParams, WeaponDescriptor,
@@ -424,8 +432,11 @@ mod tests {
             movement_spread_degrees: 0.0,
             spread_vertical_bias: 0.0,
             range: 1.0,
-            cooldown_ms: 1.0,
-            fire_mode: FireMode::Semi,
+            primary: postretro_foundation::WeaponActivationDescriptor::single(
+                postretro_foundation::ActivationTrigger::Press,
+                1.0,
+            ),
+            secondary: None,
             resolution: ResolutionMode::Hitscan,
             projectile: None,
             splash: None,
@@ -458,8 +469,11 @@ mod tests {
             movement_spread_degrees: 0.0,
             spread_vertical_bias: 0.0,
             range: 16.0,
-            cooldown_ms: 1.0,
-            fire_mode: FireMode::Semi,
+            primary: postretro_foundation::WeaponActivationDescriptor::single(
+                postretro_foundation::ActivationTrigger::Press,
+                1.0,
+            ),
+            secondary: None,
             resolution: ResolutionMode::Projectile,
             projectile: Some(ProjectileDescriptor {
                 speed: 8.0,
@@ -660,6 +674,16 @@ mod tests {
             &descriptors,
             &mut reg,
             42,
+            Some(postretro_net::wire::WireProjectilePresentation {
+                sprite_size: Some(2.0),
+                model_scale: 2.0,
+                shot_id: Some(postretro_net::wire::WireShotId {
+                    pawn: 7,
+                    start_tick: 10,
+                    lane: 1,
+                    ordinal: 0
+                }),
+            }),
         ));
         assert_eq!(
             reg.projectile_presentation_age(id)
@@ -690,6 +714,14 @@ mod tests {
                 ProjectileBodyVisual::Model { .. } =>
                     panic!("fixture projectile uses a sprite body"),
             }
+        );
+        assert!(
+            (reg.get_component::<postretro_entities::components::sprite_visual::SpriteVisual>(id)
+                .unwrap()
+                .size
+                - 2.0)
+                .abs()
+                < 1.0e-6
         );
         let trail = reg
             .get_component::<postretro_entities::components::billboard_emitter::BillboardEmitterComponent>(id)

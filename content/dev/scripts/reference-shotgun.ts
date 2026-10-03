@@ -1,4 +1,4 @@
-import { defineEntity, defineWeaponPlacement } from "postretro";
+import { activation, defineEntity, defineWeaponPlacement } from "postretro";
 
 const shotgunPlacement =  defineWeaponPlacement({
   positionFromCenter: { right: 0.3, up: -0.45, forward: 0.5 },
@@ -14,8 +14,7 @@ export const referenceShotgunEntity = defineEntity({
       pelletCount: 8,
       spreadDegrees: 5,
       range: 64.0,
-      fireRateMs: 700.0,
-      fireMode: "semi",
+      primary: { trigger: "press", recoveryMs: 700.0, steps: [activation.shot()] },
       resolution: "hitscan",
       thirdPersonModel: "models/cyberpunk_weapons/shotgun/model.gltf",
       viewmodel: "models/cyberpunk_weapons/shotgun/model.gltf",

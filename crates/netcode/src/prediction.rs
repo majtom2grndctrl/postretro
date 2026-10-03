@@ -607,6 +607,11 @@ mod tests {
     /// Forward command at the given monotonic client tick, dash optional.
     fn forward_command(client_tick: u32, dash_pressed: bool) -> InputCommand {
         InputCommand {
+            secondary_button: postretro_net::wire::WireFireButtonState {
+                pressed: false,
+                active: false,
+            },
+            activation: postretro_net::wire::WireActivationInput::default(),
             client_tick,
             movement: WireMovementInput {
                 wish_dir: [0.0, 1.0],

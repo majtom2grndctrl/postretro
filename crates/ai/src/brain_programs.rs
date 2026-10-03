@@ -12,8 +12,8 @@ use postretro_entities::{
 };
 use postretro_foundation::{
     BakedIr, BehaviorGraphDescriptor, BehaviorGraphEnvelope, BehaviorLayerDescriptor,
-    BehaviorSelectorEntry, BoundProgram, CURRENT_IR_VERSION, GuardedRow, IrType,
-    ProjectileDescriptor, ResolutionMode, SplashDescriptor, bind,
+    BehaviorSelectorEntry, BoundProgram, CURRENT_IR_VERSION, GuardedRow, IrType, ResolutionMode,
+    bind,
 };
 
 use super::brain_scope::BrainScope;
@@ -27,13 +27,7 @@ use super::candidate_scope::CandidateScope;
 #[derive(Debug, Clone)]
 pub(crate) struct ResolvedProjectileAttack {
     canonical_weapon_name: String,
-    range: f32,
-    damage: f32,
-    knockback: Option<postretro_foundation::KnockbackDescriptor>,
-    cooldown_ms: f32,
-    credit_source: Option<String>,
-    projectile: ProjectileDescriptor,
-    splash: Option<SplashDescriptor>,
+    descriptor: Arc<postretro_foundation::WeaponDescriptor>,
 }
 
 impl ResolvedProjectileAttack {
@@ -42,33 +36,33 @@ impl ResolvedProjectileAttack {
     }
 
     pub(crate) fn range(&self) -> f32 {
-        self.range
+        self.descriptor.range
     }
 
+    #[cfg(test)]
     pub(crate) fn damage(&self) -> f32 {
-        self.damage
-    }
-
-    pub(crate) fn knockback_impulse(&self, direction: glam::Vec3) -> glam::Vec3 {
-        self.knockback.map_or(glam::Vec3::ZERO, |push| {
-            postretro_foundation::knockback_impulse(push.speed, push.upward_bias, direction)
-        })
+        self.descriptor.damage
     }
 
     pub(crate) fn cooldown_ms(&self) -> f32 {
-        self.cooldown_ms
+        self.descriptor.primary.recovery_ms
     }
 
+    #[cfg(test)]
     pub(crate) fn credit_source(&self) -> Option<&str> {
-        self.credit_source.as_deref()
+        self.descriptor.credit_source.as_deref()
     }
 
-    pub(crate) fn projectile(&self) -> &ProjectileDescriptor {
-        &self.projectile
+    #[cfg(test)]
+    pub(crate) fn projectile(&self) -> &postretro_foundation::ProjectileDescriptor {
+        self.descriptor
+            .projectile
+            .as_ref()
+            .expect("resolved projectile weapon")
     }
 
-    pub(crate) fn splash(&self) -> Option<&SplashDescriptor> {
-        self.splash.as_ref()
+    pub(crate) fn descriptor(&self) -> &Arc<postretro_foundation::WeaponDescriptor> {
+        &self.descriptor
     }
 }
 
@@ -102,6 +96,10 @@ pub(crate) struct BrainEntityPrograms {
 }
 
 impl BrainEntityPrograms {
+    pub(crate) fn installation(&self) -> (&Arc<BehaviorGraphDescriptor>, u64) {
+        (&self.graph, self.descriptor_generation)
+    }
+
     pub(crate) fn envelope(&self, index: usize) -> Option<&BoundEnvelope> {
         self.envelopes.get(index)
     }
@@ -255,6 +253,10 @@ fn resolve_projectile_attacks(
     descriptors: &[EntityTypeDescriptor],
     warned: &mut HashSet<String>,
 ) -> HashMap<String, ResolvedProjectileAttack> {
+    // Several named graph attacks may reference one physical weapon. Share
+    // its retained descriptor identity so controller sync sees replacement
+    // only when the descriptor generation changes, never when the alias does.
+    let mut weapons = HashMap::<&str, Arc<postretro_foundation::WeaponDescriptor>>::new();
     graph
         .attacks
         .iter()
@@ -267,15 +269,12 @@ fn resolve_projectile_attacks(
             .and_then(|descriptor| descriptor.weapon.as_ref())
             .filter(|weapon| weapon.resolution == ResolutionMode::Projectile)
             .and_then(|weapon| {
-                weapon.projectile.as_ref().map(|projectile| ResolvedProjectileAttack {
-                    knockback: weapon.knockback,
+                weapon.projectile.as_ref()?;
+                let descriptor = weapons.entry(weapon_name)
+                    .or_insert_with(|| Arc::new(weapon.clone()));
+                Some(ResolvedProjectileAttack {
                     canonical_weapon_name: weapon_name.to_string(),
-                    range: weapon.range,
-                    damage: weapon.damage,
-                    cooldown_ms: weapon.cooldown_ms,
-                    credit_source: weapon.credit_source.clone(),
-                    projectile: projectile.clone(),
-                    splash: weapon.splash.clone(),
+                    descriptor: Arc::clone(descriptor),
                 })
             });
 
@@ -445,8 +444,8 @@ mod tests {
     use postretro_entities::Transform;
     use postretro_entities::components::brain::BrainComponent;
     use postretro_foundation::{
-        AttackParams, BehaviorActivityDescriptor, BehaviorGraphEnvelope, FireMode,
-        ProjectileBodyVisual, ProjectileVisual, WeaponDescriptor,
+        AttackParams, BehaviorActivityDescriptor, BehaviorGraphEnvelope, ProjectileBodyVisual,
+        ProjectileDescriptor, ProjectileVisual, WeaponDescriptor,
     };
     use postretro_test_log_capture::LogCapture;
 
@@ -549,8 +548,11 @@ mod tests {
                 movement_spread_degrees: 0.0,
                 spread_vertical_bias: 0.0,
                 range,
-                cooldown_ms,
-                fire_mode: FireMode::Semi,
+                primary: postretro_foundation::WeaponActivationDescriptor::single(
+                    postretro_foundation::ActivationTrigger::Press,
+                    cooldown_ms,
+                ),
+                secondary: None,
                 resolution: ResolutionMode::Projectile,
                 projectile: Some(projectile_descriptor()),
                 splash: None,

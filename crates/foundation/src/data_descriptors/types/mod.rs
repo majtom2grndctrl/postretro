@@ -1,3 +1,4 @@
+pub mod activation;
 pub mod behavior;
 pub mod behavior_lints;
 pub mod combat;
@@ -7,6 +8,7 @@ pub mod manifest;
 pub mod movement;
 pub mod weapon_resource;
 
+pub use activation::*;
 pub use behavior::*;
 pub use behavior_lints::*;
 pub use combat::*;

@@ -1667,6 +1667,8 @@ pub(crate) mod tests {
             trigger_bindings: crate::trigger_bindings::TriggerBindingTable::default(),
             trigger_pool_report: TriggerPoolInstallReport::default(),
             client_fire_resolutions: Vec::new(),
+            client_weapon: Default::default(),
+            observer_weapon_cues: Vec::new(),
             client_predicted_shots: crate::weapon::ClientPredictedShots::new(),
             client_reload_edges: Default::default(),
             client_overheat_edge: Default::default(),

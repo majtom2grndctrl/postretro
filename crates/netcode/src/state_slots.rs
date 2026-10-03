@@ -2340,6 +2340,19 @@ mod tests {
             .set_component(
                 weapon,
                 WeaponComponent {
+                    sounds: None,
+                    primary: std::sync::Arc::new(
+                        postretro_foundation::WeaponActivationDescriptor::single(
+                            postretro_foundation::ActivationTrigger::Press,
+                            250.0,
+                        ),
+                    ),
+                    secondary: None,
+                    descriptor_identity: "weapon.test".into(),
+                    activation_clock: 0,
+                    last_activation_tick: None,
+                    secondary_press_consumed: false,
+                    activation_programs: Default::default(),
                     knockback: None,
                     damage: 10.0,
                     pellet_count: 1,
@@ -2351,11 +2364,9 @@ mod tests {
                     movement_spread_degrees: 0.0,
                     spread_vertical_bias: 0.0,
                     range: 100.0,
-                    cooldown_ms: 250.0,
                     lower_ms: 0,
                     raise_ms: 0,
                     block_during_reload: None,
-                    fire_mode: postretro_entities::data_descriptors::FireMode::Semi,
                     resolution: postretro_entities::data_descriptors::ResolutionMode::Hitscan,
                     projectile: None,
                     splash: None,
@@ -2410,6 +2421,19 @@ mod tests {
             .set_component(
                 weapon,
                 WeaponComponent {
+                    sounds: None,
+                    primary: std::sync::Arc::new(
+                        postretro_foundation::WeaponActivationDescriptor::single(
+                            postretro_foundation::ActivationTrigger::Press,
+                            250.0,
+                        ),
+                    ),
+                    secondary: None,
+                    descriptor_identity: "weapon.test".into(),
+                    activation_clock: 0,
+                    last_activation_tick: None,
+                    secondary_press_consumed: false,
+                    activation_programs: Default::default(),
                     knockback: None,
                     damage: 10.0,
                     pellet_count: 1,
@@ -2421,11 +2445,9 @@ mod tests {
                     movement_spread_degrees: 0.0,
                     spread_vertical_bias: 0.0,
                     range: 100.0,
-                    cooldown_ms: 250.0,
                     lower_ms: 0,
                     raise_ms: 0,
                     block_during_reload: None,
-                    fire_mode: postretro_entities::data_descriptors::FireMode::Semi,
                     resolution: postretro_entities::data_descriptors::ResolutionMode::Hitscan,
                     projectile: None,
                     splash: None,

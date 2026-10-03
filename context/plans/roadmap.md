@@ -78,8 +78,9 @@ Organized as five milestones along dependency seams. Shipped: the impact-policy 
 - [x] **heat + cell resources** — the other two resource-union variants plus the per-tick resource update (heat dissipates, cells regen — independent of fire).
 - [ ] **dual-wield** — generalize the single active reference to a primary/off-hand pair; resolves the activation-trigger fork (`weapon-model.md` §9).
 - [ ] **augments / attachments** — the unified slotted-modifier system (internal augments and visible attachments are one mechanism); composes stat deltas + behavior hooks through the `effective()` seam. Visible attachments ride the Epic 21 socket system.
-- [ ] **charge-on-activation** — charge level (0..1) scales listed stats at release; orthogonal to the resource, so it composes with any resource kind.
-- [ ] **secondary activation** — alt-fire, filling the `secondary` block seam; includes a primary-use that spawns a persistent tracked entity for a secondary to resolve (the detonator pattern).
+- [x] **charge-on-activation** — charge level (0..1) scales listed stats at release; orthogonal to the resource, so it composes with any resource kind.
+- [x] **secondary activation** — an optional alternate action beside primary fire. Each activation declares its behavior and events; charge composes with either.
+- [ ] **tracked deployables** — primary activation places persistent entities owned by the weapon instance; secondary activation acts on them, such as detonating placed charges. Defines ownership, limits, and cleanup.
 
 ### Resolution Modes
 

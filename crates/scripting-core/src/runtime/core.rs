@@ -828,9 +828,9 @@ mod tests {
     use crate::components::brain::BrainComponent;
     use crate::components::health::HealthComponent;
     use crate::data_descriptors::{
-        BehaviorGraphDescriptor, EntityTypeDescriptor, FireMode, HealthDescriptor,
-        InventoryDescriptor, MeshDescriptor, ProjectileBodyVisual, ProjectileDescriptor,
-        ProjectileTrailVisual, ProjectileVisual, ResolutionMode, WeaponDescriptor,
+        BehaviorGraphDescriptor, EntityTypeDescriptor, HealthDescriptor, InventoryDescriptor,
+        MeshDescriptor, ProjectileBodyVisual, ProjectileDescriptor, ProjectileTrailVisual,
+        ProjectileVisual, ResolutionMode, WeaponDescriptor,
     };
     use crate::provenance::{DescriptorComponentKind, DescriptorProvenance, DescriptorSpawnPath};
     use crate::registry::{ComponentKind, Transform};
@@ -1595,8 +1595,11 @@ mod tests {
             movement_spread_degrees: 0.0,
             spread_vertical_bias: 0.0,
             range: 64.0,
-            cooldown_ms: 100.0,
-            fire_mode: FireMode::Semi,
+            primary: postretro_foundation::WeaponActivationDescriptor::single(
+                postretro_foundation::ActivationTrigger::Press,
+                100.0,
+            ),
+            secondary: None,
             resolution: ResolutionMode::Hitscan,
             projectile: None,
             splash: None,

@@ -44,6 +44,7 @@ The production HUD is authored through the SDK, returned through `ModManifest.ui
 - The health bar uses `player.maxHealth` as a direct readonly max reference. There is no `player.healthFraction` slot; UI derives the displayed fill from `player.health / player.maxHealth`.
 - Bar `styleRanges` evaluate the normalized displayed fill, so health bands use thresholds in `[0, 1]` with `styleRanges.max = 1.0`.
 - The reticle is a separate always-on tree from the status HUD because one anchored tree has one viewport anchor.
+- Charge feedback binds readonly local `player.weaponCharging` and `player.weaponChargeProgress`; progress is `[0, 1]` with bar max 1. These describe the active action's fixed-tick charge, independently of cell charge. The dev HUD shows the indicator while charging. Release, cancellation, switching, death, and input suspension clear it; render-only frames do not advance it (`scripting.md` §5).
 
 Tree anchors and offsets are literal placement data. Theme tokens drive styling only: colors, fonts, spacing. Do not route placement through theme tokens.
 

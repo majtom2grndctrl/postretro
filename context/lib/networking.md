@@ -34,7 +34,7 @@ Four channels, fixed layout, agreed by both peers (the layout is folded into the
 |---------|----------|---------|
 | Control | reliable-ordered | join traffic both ways: compatibility declarations and join seed client→server; level changes, divergence causes, and the replicated tuning payload server→client |
 | Snapshot | unreliable | server snapshots: entity records, state-slot records, server tick metadata |
-| Input | reliable-ordered | client input commands, replication acks, baseline-refresh requests, state-refresh requests, time-sync probes |
+| Input | reliable-ordered | client input/activation commands, HIT declarations, repair/acks and time sync; host activation outcomes, shot verdicts and observer weapon cues |
 | Presentation | unreliable | host-addressed passive presentation events (damage numbers and future cosmetic facts) |
 
 Reliability is matched to the data: control state and client→server repair/ack traffic must arrive ordered; snapshots are disposable because missing entity or state baselines are repaired by explicit refresh requests.
@@ -145,7 +145,7 @@ A held slot is bounded by the transport, not by the gate: a peer that never reac
 
 **Hash only what cannot be replicated.** A digest is a fallback, not a first instrument: replication makes two peers *agree*, where a digest only lets them refuse each other. Every value a client simulates against that the host can send is sent — at the participation transition the host resolves that slot's pawn tuning and the client installs it instead of reading its own registry.
 
-The client predicts with the host's numbers, never its own, and the sites that resolve tuning keep **no fallback to the local registry** for a replicated value. A fallback fires only on the peers whose content differs, which is precisely the case replication exists to fix. This is a behavior semantic, not just a mechanism: a modder testing a movement change in co-op sees the host's values, not their own. First-person weapon placement also rides this payload because later fire authority consumes it. Pure presentation stays local: view feel and movement sounds are stripped from the payload, so a player's own view-feel settings survive a join and each peer resolves its own pawn's sounds from its local descriptor.
+The client predicts with the host's numbers, never its own, and the sites that resolve tuning keep **no fallback to the local registry** for a replicated value. A fallback fires only on the peers whose content differs, which is precisely the case replication exists to fix. This is a behavior semantic, not just a mechanism: a modder testing a movement change in co-op sees the host's values, not their own. First-person weapon placement also rides this payload because later fire authority consumes it. View feel and movement/weapon sound keys are stripped from tuning, so player view-feel settings survive a join and owners retain local sounds. Activation programs, scaling bases, and action aliases come from the host. Observer cues separately carry frozen host fire/impact keys, resolved against local sound assets.
 
 What stays hashed is what replication cannot reach: a *computation* both peers run independently over the same replicated state, and content too large to send. Reaching for a hash on a value the host could have sent produces a false refusal — the mistake a later widening is most likely to make.
 
@@ -479,20 +479,59 @@ is a separate presentation vantage, deferred.
 
 ## Combat authority: FIRE vs HIT
 
-**Activation extension (approved, implementation pending).** Scheduled shots retain activation identity and authored shot ordinal independently of movement-command time. Clients name each requested execution; the host authorizes starts and individual resource spends. Explicit, correlated release/cancel edges survive input recovery; synthetic neutral input cannot release charge. Charge derives from the start/release interval, bounded by host simulation time. Clients resolve every scheduled shot during render catch-up. Pending hit declarations wait for the matching shot decision, never infer rejection of future shots from movement-cursor progress. Existing ownership checks, at-most-once damage, resource authority, and no-rewind co-op policy remain contracts. The descriptions below document the current implementation until this extension ships.
-
 Client-authoritative combat splits weapon fire into two independently-owned halves, both
 riding the prediction/reconciliation contract above — no server rewind, no
 lag-compensation history window (see *Non-goals*).
 
-**FIRE is host-authoritative; cooldown is client-predicted.** Cooldown and ammo — how
-often and how many shots — are the damage-integrity surface. The host validates fire
-legitimacy, consumes the magazine, owns timed reload progression and reserve transfer,
-advances cooldown, and mints an authorized shot. It never applies target or damage from
-this path. Projectile FIRE resolves the eye ray against static world and live targetable
-entities to reconstruct an obstruction-safe origin and
-crosshair-converged direction. The firing client predicts its own cooldown and reconciles
-against an owner-private cooldown fact, the same pattern movement prediction uses.
+**FIRE is host-authoritative; execution and recovery are client-predicted.** The host
+admits activations, resolves charge and shot statistics, debits each shot's resource,
+owns timed reload progression and reserve transfer, and mints authorized shots. It
+never applies a client's target or damage from this path. Projectile FIRE resolves
+the eye ray against static world and live targetable entities to reconstruct an
+obstruction-safe origin and crosshair-converged direction. Every authorized shot
+retains its resolved combat and presentation tuning through later switching or
+descriptor replacement. Hit declarations cannot select those statistics.
+
+Each execution, including a hold restart, requires a client-named initiation on an
+admitted real input command. The request names its client tick and primary/secondary
+lane and binds to the live weapon instance. The host never invents remote restarts
+from held input. A start discarded by playout cannot become a delayed activation.
+Committed waits advance once per host simulation tick, independently of movement
+cursor holds or jumps, with at most one shot per execution per tick.
+
+Explicit release/cancel names the initiating activation. Intake retains edges before
+stale-drop or backlog trimming, deduplicates them, and delivers them once after that
+start is admitted. Early edges wait for admission; terminal edges are inert. Synthetic
+held/neutral commands contain no edges and cannot release charge. Cancellation wins
+over release in the same command. Focus/menu suspension sends reliable cancellation
+even on a render-only frame; intent does not advance execution, and the host applies
+it on its next tick. Switch, drop, death, disconnect, level change, and descriptor
+replacement also cancel future work without refunding authorized shots.
+
+Charge uses wrap-safe release tick minus start tick, capped by host elapsed time
+since admission plus 150 ms and then by authored full duration. Out-of-lifetime spans
+reject. Missing intermediate samples never imply release or weaken a valid hold;
+late arrival cannot add charge beyond the input timestamps. Severe backlog compression
+can clamp charge. Release before the minimum cancels without debit; full charge never
+auto-fires. Two seconds without an admitted real command cancels pending work; charge
+also expires without firing 60 seconds after its full duration.
+
+Connected prediction advances once per real fixed command after an equip-only
+switch/timer pass. It freezes every due shot's action/program, scaling bases,
+ordered shell/bloom reservation, effective fire/impact sounds, and projectile tuning.
+All due shots in a rendered frame resolve against that frame's displayed aim/target
+pose. Render-only frames advance no charge or steps.
+
+Reliable owner outcomes report initiation accept/reject, execution acceptance with
+resolved charge, cancellation, completion, and per-shot verdicts. Execution acceptance
+is sent before awaiting HIT. Outcomes bind the token's captured local instance to the
+host weapon id. Matching installed tuning corrects future snapshots and still-live
+predicted projectile size, speed, radius, and remaining travel budget. Correction never
+respawns, rewinds a transform, replays damage, or resurrects a contacted projectile.
+Recovery corrections name an activation and bound instance; older results cannot
+rewind newer execution. Slot-only cooldown projection can seed an instance before
+prediction starts, but cannot roll back its active prediction. No full weapon rollback.
+
 Client-side ammo, heat, cell, and reload prediction/reconciliation remain out of scope;
 connected clients never run the heat or cell update. Owner-private state-slot projection
 supplies each owner with the host's authoritative magazine, reserve, reload progress,
@@ -515,23 +554,22 @@ to a round trip after a local switch. A pawn with no inventory sends the
 HUD's reload defaults (no progress, not reloading) attributed to slot 0. `Unset` skips the
 write for plain and correlated slots alike, and a correlated slot is sent only from its
 projection, never from a plain table value. **Client fire
-prediction is presentation-gated only.** Every pull the client fire gate passes predicts and
-declares as an ordinary fire — it records the predicted shot for reconcile and declares its
-hits (the first selected tick traced, later ticks of a multi-tick frame empty) — so the host
-applies damage whenever it fires. The projection only chooses what the pull presents,
+prediction is presentation-gated only.** Every due shot predicts, resolves, and declares
+its contacts, including every shot in a multi-tick frame. Stale resource samples cannot
+stop semantic attempts or declarations. The projection only chooses what a shot presents,
 trusting each value it reads only when that value names the client's own active slot;
-otherwise the pull presents a fire. An idle weapon whose magazine cannot pay the shot cost
+otherwise it presents a fire. An idle weapon whose magazine cannot pay the resolved shot cost
 presents a dry fire: the dry-fire sound, with no fire sound, muzzle FX or impact. So does a cell
 weapon whose charge cannot pay it. An overheated heat weapon presents nothing; the shot that
 crosses the threshold presents a fire, since its latch arrives a round trip later. A magazine
 reload in progress, or a per-shell reload whose magazine cannot pay the cost, presents
 nothing; a per-shell reload the magazine covers presents a fire, since the shot cancels it. A
 reload flag held at full progress is the replayed Completed endpoint, so the weapon reads
-idle. A dry or silent pull spawns no predicted projectile, so a projectile weapon declares
-that shot empty at once, as a projectile that fails to materialize does; its damage is lost
-when the host did fire. Any other wrong guess costs only a sound. A dry or silent pull shows neither muzzle FX nor
-a hitmarker, even when its declaration carries an entity hit; the verdict only retracts
-those presentation flags. Hitscan prediction keeps
+idle. A dry or silent shot suppresses cosmetics, but its predicted projectile still
+simulates contact and declares normally. Only authoritative denial stops resource-dependent
+future execution. A dry or silent shot shows neither muzzle FX nor a hitmarker, even when
+its declaration carries an entity hit; verdicts retract presentation/flight without changing
+newer recovery. Hitscan prediction keeps
 world contacts and each contact's normal, so predicted impact presentation matches the
 host's contact data.
 Reload presentation edges (start, shell, complete) derive from the projected reload-active,
@@ -554,8 +592,9 @@ Projectile launch prediction is not rewind-synchronized. The firing client launc
 its rendered local camera and rendered target state; the host later reconstructs from the
 live authoritative pawn and target state plus the transmitted aim and shared tuning.
 Ordinary latency may therefore produce slightly different origin, direction, or contact.
-`ShotVerdict` reconciles fire acceptance, cooldown, muzzle FX, and hitmarker state; it does
-not correct the predicted projectile transform. This is the accepted no-rewind co-op
+`ShotVerdict` reconciles fire/hit acceptance, muzzle FX, hitmarker state, and rejected
+predicted flight; correlated activation outcomes reconcile recovery and charge. Neither
+rewinds the predicted projectile transform. This is the accepted no-rewind co-op
 tradeoff. Exact launch-pose reconciliation requires a separate protocol design.
 
 **HIT is client-authoritative declaration.** The client casts its own ray against the
@@ -571,12 +610,31 @@ A `shot_id` binds a hit declaration to a specific host-authorized fire. The host
 records an open authorized shot on the FIRE path, keyed by `shot_id` and owned by the
 firing connection. A declaration is accepted only when its `shot_id` matches a still-open
 shot owned by the declaring client — ownership is checked, not assumed, because `shot_id`
-derives from public inputs (pawn network id + tick) and is therefore guessable. Accepting
+derives from public inputs (pawn network id, initiating client tick, action lane, authored
+shot ordinal) and is therefore guessable. Host fire tick remains separate. Ordinals name
+authored attempts, including refused ones; movement-cursor progress never names a later shot. Accepting
 a declaration retires its shot, so one authorized fire accepts at most one declaration. A
 fire the host rejected because it is cooling, reloading, or lacks enough magazine ammo
 mints no authorized shot, so no declaration can bind to it — free damage is structurally
 unreachable, not merely discouraged by a check. This binding is validated first, before
 any geometry check.
+
+Early HIT for a future ordinal waits for its matching decision. Cancellation rejects
+unissued ordinals; previously authorized projectiles retain their normal validation and
+lifetime. Per client, pending declarations, retained release/cancel records, and terminal
+activation records are each bounded to 64. Unknown declarations/edges expire two seconds
+from first receipt; duplicates never refresh expiry. Future ordinals expire two seconds
+after their scheduled decision. Terminal records expire two seconds after termination;
+overflow evicts the oldest, while a monotonic settled-start watermark prevents replay
+after eviction. Live future ordinals remain independent of that watermark. Declaration
+overflow rejects the newest HIT without undoing FIRE. Expiry does not reject an
+initiation that remains eligible for admission. If FIRE is still unknown or
+pending at overflow or expiry, a reliable HIT-only refusal retires the client's hit feedback record without
+changing recovery or its predicted flight. A later actual FIRE denial still removes
+that shot's flight even after its hit feedback record has gone; no refusal queue is
+retained. Already-decided FIRE keeps its ordinary accurate verdict. Edge overflow rejects the newest
+edge and cancels its affected active execution. Live delivered-edge history stays until
+termination so duplicate release cannot revive and a later cancel remains valid.
 
 ### World-LOS-only validation
 
@@ -625,14 +683,25 @@ standing-eye ray would false-reject a legitimate crouched shot near cover.
 - **Declared normals are contact data only.** A non-finite or non-unit normal drops that
   record's contact data and never affects damage validation. Validated normals reach the
   host's impact presentation; a splash impact keeps its host-resolved normal. The host
-  raises one `impact` per remote activation carrying every validated contact, as a local
-  activation does (`audio.md` §4).
+  raises one `impact` per remote shot carrying every validated contact, as a local
+  shot does (`audio.md` §4).
+- **`ActivationOutcome`** (server -> client, reliable owner-private Input channel):
+  initiation/execution and terminal facts naming the token, bound host instance where
+  accepted, resolved charge at execution acceptance, and authoritative recovery.
 - **`ShotVerdict`** (server -> client, owner-private): the per-shot accept/reject fact,
   scoped to the declaring client only and never broadcast. Owner-private state slots
   carry the firing pawn's cooldown, magazine, reserve, reload progress, reload-active
   state, and heat or cell values, each beside the host wieldable slot it describes, following the same per-owner projection pattern as `player.health`. The firing
-  client reconciles predicted fire and hitmarker state against the verdict and cooldown;
-  ammo and reload remain authoritative projections rather than predicted state.
+  client reconciles predicted fire, flight, and hitmarker state against the verdict;
+  activation outcomes own recovery correction. Ammo and reload remain authoritative
+  projections rather than predicted state.
+- **Observer weapon cues** (server -> participating clients, reliable ordered Input
+  channel): frozen fire/impact sound keys, action aliases, shot identity, and captured
+  entity/contact anchors, independently of snapshot cadence. The firing owner is
+  excluded. Receivers resolve local assets without re-reading weapon descriptors.
+  Queues clear on demotion, level changes, and world-less polling. Explicit projectile
+  sprite size/model scale and shot identity survive snapshot seeds, deltas, and late
+  joins; local projectile assets keep the established local-resolution policy.
 
 ### Version gates
 
@@ -654,10 +723,14 @@ unreliable Presentation channel and `ServerPresentationMessage` family advance i
 `SNAPSHOT_VERSION` to 15 and `WIRE_VERSION` to 21; it changes no Input-channel
 `ClientMessage` or `ServerMessage` variant. Protected player knockback velocity
 advances `SNAPSHOT_VERSION` to 16 and `WIRE_VERSION` to 22. The hit record's contact
-normal advances `WIRE_VERSION` to 23; `SNAPSHOT_VERSION` is unchanged. `WIRE_VERSION` 23 refuses
-incompatible peers during the handshake; `SNAPSHOT_VERSION` 16 independently rejects
-incompatible snapshot envelopes during decode. The host movement descriptor's
-knockback response advances the independent tuning payload epoch to 9.
+normal advances `WIRE_VERSION` to 23; `SNAPSHOT_VERSION` is unchanged. Weapon
+activation commands/outcomes advance the application protocol to PRL8 and wire to
+24. Explicit projectile body size/model scale/shot identity and reliable frozen
+observer weapon cues advance the application protocol to PRL9, `WIRE_VERSION` to
+25, and `SNAPSHOT_VERSION` to 17. Incompatible peers fail the handshake; snapshot
+17 independently rejects older snapshot envelopes. The PRL level-file format is
+unchanged. The host movement descriptor's knockback response advances the tuning
+epoch to 9; host-resolved activation programs/scaling bases advance it to 10.
 Slot-correlated owner-private weapon samples change only the state-schema fingerprint,
 through per-slot wire-shape tags: `[slot, number]` is tag 1, `[slot, flag]` tag 2, and
 `[slot, number]` or `[slot]` (magazine and reserve) tag 3. They ride the existing array

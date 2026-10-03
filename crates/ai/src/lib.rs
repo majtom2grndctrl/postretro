@@ -21,6 +21,7 @@ mod graph_eval;
 mod perception;
 mod steering;
 mod targeting;
+mod weapon_controller;
 
 #[cfg(test)]
 #[path = "ai_tests.rs"]
@@ -47,7 +48,6 @@ pub(crate) use postretro_sim::{
 #[cfg(any(test, feature = "test-support"))]
 use crate::ai_host::SimAiHost;
 use crate::ai_host::{AiHost, AiTickInputs, AiTickResult};
-use crate::weapon::ProjectileLaunch;
 #[cfg(any(test, feature = "test-support"))]
 use crate::{collision::CollisionWorld, nav::NavGraph};
 use brain_programs::BrainPrograms;
@@ -171,6 +171,8 @@ pub(crate) struct EnemyOutcome {
     /// activity-count commit waits for apply to revalidate the target against
     /// earlier outcomes in the same batch.
     attack: Option<PendingAttack>,
+    /// Current selected-target aim for an already accepted weapon sequence.
+    weapon_aim: Option<weapon_controller::WeaponAim>,
     /// The selected offense action's standoff before and after this tick's
     /// transition. Combat slots are path-relative, not root-graph-relative.
     pub(crate) prior_standoff_distance: f32,
@@ -188,9 +190,8 @@ pub(crate) struct EnteredActivity {
 }
 
 /// One successful fire-latch's engine-owned resolution. Contact attacks keep
-/// their direct-damage path; weapon attacks carry the launch materialized by
-/// the apply pass, after the immutable evaluator has released its registry
-/// borrow.
+/// their direct-damage path; weapon attacks propose controller input. Apply
+/// advances the persistent component after the immutable registry borrow ends.
 pub(crate) struct PendingAttack {
     attack_name: String,
     cooldown_ms: f32,
@@ -202,19 +203,15 @@ pub(crate) enum AttackOutcome {
         damage: f32,
     },
     Projectile {
-        launch: Box<ProjectileLaunch>,
-        /// The resolved weapon descriptor is the presentation class. Enemy
-        /// entities never stand in for a materialized wieldable descriptor.
-        descriptor_class: String,
+        request: weapon_controller::WeaponAttackRequest,
     },
 }
 
 /// The AI tick's run-long state, owned by `App` across ticks.
 ///
-/// Two things outlive a tick: the warn-once latch and the evaluator's bound
-/// guard programs. They travel together because both are reconciled at the top
-/// of every tick — `sync` binds newly seen graphs, and a guard that fails to
-/// bind reports through the same latch that reports an unresolvable animation.
+/// Bound guards, canonical weapon components, and diagnostics outlive a tick.
+/// Their lifecycle is reconciled together before compute: newly seen graphs
+/// bind, changed descriptors cancel old execution, and dead actors are pruned.
 pub struct AiRuntime {
     /// Warn-once latch for the CONTENT-keyed diagnostics, namespaced so a given
     /// one fires once across the whole run, never each tick: `anim:<name>` for an
@@ -252,9 +249,17 @@ pub struct AiRuntime {
     /// It stays out of components and replication because clients never run AI
     /// perception or guard evaluation.
     los_grace: HashMap<EntityId, LosGraceState>,
+    /// Canonical weapon components retained across attacks and descriptor sync.
+    weapons: weapon_controller::AiWeaponControllers,
 }
 
 impl AiRuntime {
+    /// Cancel pending private weapon work on input/world suspension, retaining
+    /// installed tuning, paid resources and recovery already owed.
+    pub fn cancel_weapon_activations(&mut self) {
+        self.weapons.cancel_activations();
+    }
+
     pub fn new() -> Self {
         Self {
             warned: HashSet::new(),
@@ -262,6 +267,7 @@ impl AiRuntime {
             reseat_warned: HashSet::new(),
             programs: BrainPrograms::new(),
             los_grace: HashMap::new(),
+            weapons: weapon_controller::AiWeaponControllers::default(),
         }
     }
 }
@@ -431,8 +437,13 @@ where
         reseat_warned,
         programs,
         los_grace,
+        weapons,
     } = runtime;
     programs.sync(registry, descriptors, descriptor_generation, warned);
+    weapons.sync(registry, programs, |actor| {
+        host.is_quiescent(registry, actor)
+    });
+    weapons.begin_tick(dt_ms);
 
     // Bound the blocked-warn latch to entities that still carry a brain: the
     // side-table `sync` just reconciled is the authoritative live set, so this
@@ -489,5 +500,13 @@ where
 
     resolve_combat_slots(&mut outcomes, nav_graph, collision_world);
 
-    apply::apply_outcomes(registry, outcomes, tick_dt, warned, blocked_warned, host)
+    apply::apply_outcomes(
+        registry,
+        outcomes,
+        tick_dt,
+        warned,
+        blocked_warned,
+        weapons,
+        host,
+    )
 }

@@ -119,6 +119,8 @@ export type PostretroUiModule = {
 export type PostretroModule = {
   world: World,
   runtime: Runtime,
+  --- Pure bounded weapon-action data builders with read-only normalized charge.
+  activation: Activation,
   getGameState: typeof(getGameState),
   timeline: typeof(timeline),
   sequence: typeof(sequence),

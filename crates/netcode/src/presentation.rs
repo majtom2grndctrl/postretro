@@ -1153,6 +1153,7 @@ mod tests {
                 local_player: false,
                 entity_class: Some(entity_class.to_string()),
                 active_weapon_archetype: None,
+                projectile_presentation: None,
                 components: vec![ComponentPayload::Transform(WireTransform {
                     position: position.to_array(),
                     rotation: [0.0, 0.0, 0.0, 1.0],
@@ -1420,10 +1421,18 @@ mod tests {
         owners.set(owner, PREDICTED_OWNER_CLIENT);
         let mut allocator = NetworkIdAllocator::new();
         let owner_network_id = allocator.stamp(owner);
-        let shot_id = ShotId::from_parts(owner_network_id, 17);
+        let shot_id = ShotId::from_parts(
+            (owner_network_id).0,
+            17,
+            postretro_foundation::ActivationLane::Primary,
+            0,
+        );
         let mut open_shots = crate::netcode::OpenAuthorizedShots::new();
         open_shots.record(
             AuthorizedShot {
+                sounds: None,
+                action: None,
+                source_weapon: None,
                 knockback: None,
                 shot_id,
                 pawn: owner,
@@ -1453,7 +1462,7 @@ mod tests {
 
         let declaration = postretro_net::wire::ClientMessage::HitDeclaration(
             postretro_net::wire::HitDeclaration {
-                shot_id: shot_id.raw(),
+                shot_id: crate::wire_convert::shot_id_to_wire(shot_id),
                 records: vec![postretro_net::wire::HitRecord {
                     normal: [0.0, 1.0, 0.0],
                     target: crate::netcode::PRESENTATION_CONTACT_TARGET,

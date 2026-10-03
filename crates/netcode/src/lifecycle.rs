@@ -541,7 +541,7 @@ mod tests {
     use postretro_entities::provenance::{DescriptorProvenance, DescriptorSpawnPath};
     use postretro_entities::{ComponentKind, EntityTypeDescriptor};
     use postretro_foundation::{
-        AirParams, CapsuleParams, FallParams, FireMode, GroundParams, PlayerMovementComponent,
+        AirParams, CapsuleParams, FallParams, GroundParams, PlayerMovementComponent,
         PlayerMovementDescriptor, ResolutionMode, SpeedParams, WeaponDescriptor,
     };
 
@@ -635,8 +635,11 @@ mod tests {
                 movement_spread_degrees: 0.0,
                 spread_vertical_bias: 0.0,
                 range: 64.0,
-                cooldown_ms: 120.0,
-                fire_mode: FireMode::Semi,
+                primary: postretro_foundation::WeaponActivationDescriptor::single(
+                    postretro_foundation::ActivationTrigger::Press,
+                    120.0,
+                ),
+                secondary: None,
                 resolution: ResolutionMode::Hitscan,
                 projectile: None,
                 splash: None,
@@ -831,9 +834,17 @@ mod tests {
                 net_id
             })
             .collect();
-        let shot_id = ShotId::from_parts(pawn_net, 5);
+        let shot_id = ShotId::from_parts(
+            (pawn_net).0,
+            5,
+            postretro_foundation::ActivationLane::Primary,
+            0,
+        );
         open_shots.record(
             AuthorizedShot {
+                sounds: None,
+                action: None,
+                source_weapon: None,
                 knockback: None,
                 shot_id,
                 pawn,
@@ -858,7 +869,7 @@ mod tests {
         pending_hit_declarations.push(
             CLIENT_A,
             postretro_net::wire::HitDeclaration {
-                shot_id: shot_id.raw(),
+                shot_id: crate::wire_convert::shot_id_to_wire(shot_id),
                 records: Vec::new(),
             },
         );
@@ -1116,9 +1127,17 @@ mod tests {
         let old_pawn_net = allocator.network_id_for_entity(old_pawn).unwrap();
         let old_weapon_net = allocator.stamp(old_weapon);
         replicable.register(old_weapon);
-        let shot_id = ShotId::from_parts(old_pawn_net, 9);
+        let shot_id = ShotId::from_parts(
+            (old_pawn_net).0,
+            9,
+            postretro_foundation::ActivationLane::Primary,
+            0,
+        );
         open_shots.record(
             AuthorizedShot {
+                sounds: None,
+                action: None,
+                source_weapon: None,
                 knockback: None,
                 shot_id,
                 pawn: old_pawn,
@@ -1143,7 +1162,7 @@ mod tests {
         pending_hit_declarations.push(
             CLIENT_A,
             postretro_net::wire::HitDeclaration {
-                shot_id: shot_id.raw(),
+                shot_id: crate::wire_convert::shot_id_to_wire(shot_id),
                 records: Vec::new(),
             },
         );

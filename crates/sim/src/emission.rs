@@ -38,6 +38,9 @@ pub(crate) fn reload_emission(
     delivery: &crate::sim::ReloadDelivery,
 ) -> WeaponEmission {
     WeaponEmission {
+        sounds: None,
+        action: None,
+        shot_id: None,
         address: delivery.outcome.event_name(),
         emitter: entity_emitter(registry, delivery.pawn()),
         weapon: descriptor_name(registry, delivery.weapon()),

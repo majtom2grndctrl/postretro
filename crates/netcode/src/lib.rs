@@ -6,6 +6,13 @@
 
 #![deny(unsafe_code)]
 
+mod activation_edges;
+pub mod activation_ledger;
+mod shot_records;
+#[cfg(test)]
+use shot_records::MAX_PENDING_HIT_DECLARATIONS_PER_CLIENT;
+pub use shot_records::{OpenAuthorizedShots, PendingHitDeclaration, PendingHitDeclarations};
+
 // Simulation dependencies stay private to this crate. The established internal
 // paths keep the moved modules readable without re-exporting sim's API from
 // the higher netcode layer.
@@ -49,13 +56,14 @@ mod reconcile;
 mod remote_materialize;
 mod replication;
 mod seat;
+pub mod weapon_cues;
 // M15 Phase 3.5: the replicated-slot schema/fingerprint/lowering, the engine
 // production (`HostStateReplication`) and client apply (`ClientStateApply`) glue. The
 // schema is the only place the engine maps `StateSlotId <-> dotted name`; the net
 // trackers stay registry-blind.
 mod state_slots;
 mod tuning_payload;
-mod wire_convert;
+pub mod wire_convert;
 
 // M15 Phase 3 Task 6: the integrated in-memory prediction/reconciliation harness and
 // its shared test scaffolding. Both are test-only — they drive the real Task 1-5 seams
@@ -94,7 +102,7 @@ mod snapshot_regression_harness_test;
 
 pub use client::{ClientPresentationInputs, ClientReplication, MoverCorrection};
 pub use command_queue::{
-    HostCommandQueues, MovementOwners, ResolvedPawnCommand, WeaponOwners,
+    HostCommandQueues, MovementOwners, ResolutionSource, ResolvedPawnCommand, WeaponOwners,
     active_wieldable_for_pawn, host_resolve_remote_commands,
 };
 pub use endpoint::{
@@ -129,7 +137,7 @@ pub use presentation::{
     send_host_overlay_facts, update_client_overlay_anchors,
 };
 pub use seat::clear_released_seat_slot_values;
-pub use state_slots::ReplicatedSlotIdentity;
+pub use state_slots::{HostStateReplication, ReplicatedSlotIdentity};
 // Correction-classification API + thresholds and the reconcile entry point.
 // Re-exported for test consumers (the integrated latency harness asserts classification
 // directly against the pinned AC thresholds); production code uses the direct submodule path.
@@ -163,8 +171,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use glam::{Quat, Vec3};
 use postretro_combat_model::{
-    AuthorizedShot, HIT_RANGE_TOLERANCE, OpenAuthorizedShot, ShotId, TuningPayload,
-    WieldableTuningPayload,
+    AuthorizedShot, HIT_RANGE_TOLERANCE, ShotId, TuningPayload, WieldableTuningPayload,
 };
 #[cfg(test)]
 use postretro_combat_model::{
@@ -481,142 +488,6 @@ pub struct NetworkIdAllocator {
     reverse: HashMap<NetworkId, EntityId>,
 }
 
-const MAX_PENDING_HIT_DECLARATIONS_PER_CLIENT: usize = 64;
-
-#[derive(Debug, Default)]
-pub struct OpenAuthorizedShots {
-    shots: HashMap<ShotId, OpenAuthorizedShot>,
-}
-
-impl OpenAuthorizedShots {
-    pub(crate) fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn record(&mut self, shot: AuthorizedShot, owner_client_id: u64) {
-        self.shots.insert(
-            shot.shot_id,
-            OpenAuthorizedShot {
-                shot,
-                owner_client_id,
-            },
-        );
-    }
-
-    pub(crate) fn get(&self, shot_id: ShotId) -> Option<OpenAuthorizedShot> {
-        self.shots.get(&shot_id).cloned()
-    }
-
-    pub(crate) fn retire(&mut self, shot_id: ShotId) -> Option<OpenAuthorizedShot> {
-        self.shots.remove(&shot_id)
-    }
-
-    pub(crate) fn remove_client(&mut self, client_id: u64) {
-        self.shots
-            .retain(|_, shot| shot.owner_client_id != client_id);
-    }
-
-    pub(crate) fn remove_pawn(&mut self, pawn: EntityId) {
-        self.shots.retain(|_, shot| shot.shot.pawn != pawn);
-    }
-
-    pub(crate) fn prune_stale(&mut self, current_tick: u32) {
-        self.shots.retain(|_, shot| {
-            current_tick.wrapping_sub(shot.shot.fire_tick) <= shot.shot.timeout_budget_ticks
-        });
-    }
-
-    #[cfg(test)]
-    pub(crate) fn len(&self) -> usize {
-        self.shots.len()
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct PendingHitDeclaration {
-    pub client_id: u64,
-    pub declaration: wire::HitDeclaration,
-}
-
-#[derive(Debug, Default)]
-pub struct PendingHitDeclarations {
-    declarations: VecDeque<PendingHitDeclaration>,
-}
-
-impl PendingHitDeclarations {
-    pub(crate) fn new() -> Self {
-        Self::default()
-    }
-
-    pub(crate) fn push(&mut self, client_id: u64, declaration: wire::HitDeclaration) {
-        let retained_for_client = self
-            .declarations
-            .iter()
-            .filter(|pending| pending.client_id == client_id)
-            .count();
-        if retained_for_client >= MAX_PENDING_HIT_DECLARATIONS_PER_CLIENT
-            && let Some(index) = self
-                .declarations
-                .iter()
-                .position(|pending| pending.client_id == client_id)
-        {
-            self.declarations.remove(index);
-        }
-        self.declarations.push_back(PendingHitDeclaration {
-            client_id,
-            declaration,
-        });
-    }
-
-    pub(crate) fn remove_client(&mut self, client_id: u64) {
-        self.declarations
-            .retain(|pending| pending.client_id != client_id);
-    }
-
-    pub(crate) fn remove_pawn_shots(&mut self, allocator: &NetworkIdAllocator, pawn: EntityId) {
-        let Some(pawn_net) = allocator.network_id_for_entity(pawn) else {
-            return;
-        };
-        self.declarations.retain(|pending| {
-            let shot_id = ShotId::from_raw(pending.declaration.shot_id);
-            (shot_id.raw() >> 32) as u32 != pawn_net.0
-        });
-    }
-
-    fn drain_ready(
-        &mut self,
-        command_queues: &HostCommandQueues,
-        open_shots: &OpenAuthorizedShots,
-        current_tick: u32,
-    ) -> Vec<PendingHitDeclaration> {
-        let mut ready = Vec::new();
-        let mut waiting = VecDeque::new();
-        while let Some(pending) = self.declarations.pop_front() {
-            let shot_id = ShotId::from_raw(pending.declaration.shot_id);
-            let open_shot = open_shots.get(shot_id);
-            let shot_open = open_shot.is_some();
-            let projectile_waits_for_later_tick = open_shot.is_some_and(|open| {
-                open.shot.is_projectile && current_tick.wrapping_sub(open.shot.fire_tick) == 0
-            });
-            let resolved_past_shot = command_queues
-                .resolved_cursor(pending.client_id)
-                .is_some_and(|cursor| prediction::client_tick_le(shot_id.client_tick(), cursor));
-            if !projectile_waits_for_later_tick && (shot_open || resolved_past_shot) {
-                ready.push(pending);
-            } else {
-                waiting.push_back(pending);
-            }
-        }
-        self.declarations = waiting;
-        ready
-    }
-
-    #[cfg(test)]
-    fn len(&self) -> usize {
-        self.declarations.len()
-    }
-}
-
 impl NetworkIdAllocator {
     pub(crate) fn new() -> Self {
         Self {
@@ -638,7 +509,7 @@ impl NetworkIdAllocator {
 
     /// Stamp `id` with its stable `NetworkId`, allocating a fresh one on first
     /// sight. Monotonic counter; never recycled.
-    pub(crate) fn stamp(&mut self, id: EntityId) -> NetworkId {
+    pub fn stamp(&mut self, id: EntityId) -> NetworkId {
         if let Some(net_id) = self.map.get(&id) {
             return *net_id;
         }
@@ -1003,6 +874,7 @@ pub fn client_receive_and_apply(
                     descriptors,
                     registry,
                     snapshot.server_tick,
+                    replication.projectile_presentation(remote.network_id),
                 )
             } else if matches!(descriptor, Some(descriptor) if descriptor.movement.is_some()) {
                 let player_locomotion = descriptor.and_then(|descriptor| {
@@ -1338,13 +1210,18 @@ pub fn client_weapon_projection(
     }
 }
 
-pub fn shot_id_raw(pawn: NetworkId, client_tick: u32) -> u64 {
-    ShotId::from_parts(pawn, client_tick).raw()
+pub fn shot_id(
+    pawn: NetworkId,
+    start_tick: u32,
+    lane: postretro_foundation::ActivationLane,
+    ordinal: u8,
+) -> ShotId {
+    ShotId::from_parts(pawn.0, start_tick, lane, ordinal)
 }
 
 pub fn client_send_hit_declaration(
     endpoint: Option<&mut NetEndpoint>,
-    shot_id: u64,
+    shot_id: postretro_foundation::ShotId,
     hits: &[weapon::LocalHitRecord],
     world_contacts: &[weapon::WorldContact],
 ) -> Option<usize> {
@@ -1362,7 +1239,10 @@ pub fn client_send_hit_declaration(
     });
     let record_count = records.len();
     client.send_input(wire::encode(&wire::ClientMessage::HitDeclaration(
-        wire::HitDeclaration { shot_id, records },
+        wire::HitDeclaration {
+            shot_id: crate::wire_convert::shot_id_to_wire(shot_id),
+            records,
+        },
     )));
     Some(record_count)
 }
@@ -1373,7 +1253,7 @@ pub fn client_send_hit_declaration(
 /// entity contacts; normal range/ownership checks still gate the declaration.
 pub fn client_send_projectile_resolution_declaration(
     endpoint: Option<&mut NetEndpoint>,
-    shot_id: u64,
+    shot_id: postretro_foundation::ShotId,
     impact: Option<&weapon::WeaponImpact>,
 ) -> Option<usize> {
     let Some(NetEndpoint::Client {
@@ -1401,7 +1281,10 @@ pub fn client_send_projectile_resolution_declaration(
         .unwrap_or_default();
     let record_count = records.len();
     client.send_input(wire::encode(&wire::ClientMessage::HitDeclaration(
-        wire::HitDeclaration { shot_id, records },
+        wire::HitDeclaration {
+            shot_id: crate::wire_convert::shot_id_to_wire(shot_id),
+            records,
+        },
     )));
     Some(record_count)
 }
@@ -1539,7 +1422,13 @@ pub fn tuning_payload_for_pawn(
                     ),
                     muzzle_offset: weapon.muzzle_offset.map(|offset| offset.to_array()),
                     range: weapon.range,
-                    cooldown_ms: weapon.cooldown_ms,
+                    primary: (*weapon.primary).clone(),
+                    secondary: weapon.secondary.as_deref().cloned(),
+                    damage: weapon.damage,
+                    knockback: weapon.knockback,
+                    projectile: weapon.projectile.clone(),
+                    splash: weapon.splash.clone(),
+                    resource: WieldableTuningPayload::resource_from_weapon(weapon),
                     pellet_count: weapon.pellet_count,
                     spread_degrees: weapon.spread_degrees,
                     bloom_per_shot_degrees: weapon.bloom_per_shot_degrees,
@@ -1548,10 +1437,10 @@ pub fn tuning_payload_for_pawn(
                     bloom_decay_delay_ms: weapon.bloom_decay_delay_ms,
                     movement_spread_degrees: weapon.movement_spread_degrees,
                     spread_vertical_bias: weapon.spread_vertical_bias,
-                    fire_mode: weapon.fire_mode,
                     resolution: weapon.resolution,
                     lower_ms: weapon.lower_ms,
                     raise_ms: weapon.raise_ms,
+                    block_during_reload: weapon.block_during_reload,
                 })
             })
         })
@@ -1637,6 +1526,12 @@ fn apply_host_switch_declaration(
         return HostSwitchDecision::Refused;
     }
 
+    if let Some(outgoing) = inventory.active_wieldable()
+        && let Ok(postretro_entities::ComponentValue::Weapon(component)) =
+            registry.get_component_value_mut(outgoing, postretro_entities::ComponentKind::Weapon)
+    {
+        component.cancel_activation();
+    }
     inventory.active_slot = target_slot;
     inventory.switch_target = None;
     inventory.switch_origin = None;
@@ -1776,6 +1671,7 @@ pub fn host_handle_client_messages(
     state_slots: &mut state_slots::HostStateReplication,
     command_queues: &mut HostCommandQueues,
     pending_hit_declarations: &mut PendingHitDeclarations,
+    open_shots: &mut OpenAuthorizedShots,
     client_id: u64,
     server_tick: u32,
     server_now_us: u64,
@@ -1794,6 +1690,7 @@ pub fn host_handle_client_messages(
             state_slots,
             command_queues,
             Some(&mut *pending_hit_declarations),
+            Some(&mut *open_shots),
             client_id,
             server_tick,
             server_now_us,
@@ -1825,6 +1722,7 @@ pub(crate) fn host_handle_client_message(
         state_slots,
         command_queues,
         None,
+        None,
         client_id,
         server_tick,
         server_now_us,
@@ -1845,6 +1743,8 @@ struct HostHitIngestContext<'a> {
 
 #[derive(Debug, Default, Clone, PartialEq)]
 struct HitDeclarationResult {
+    sounds: Option<std::sync::Arc<postretro_foundation::ActivationSounds>>,
+    action: Option<std::sync::Arc<postretro_foundation::WeaponActivationDescriptor>>,
     fire_accepted: bool,
     hit_accepted: bool,
     projectile_contact: Option<Vec3>,
@@ -1958,6 +1858,20 @@ pub fn host_ingest_ready_hit_declarations(
 ) -> bool {
     let mut accepted_any_hit = false;
     for pending in ready {
+        let shot_id = crate::wire_convert::shot_id_from_wire(pending.declaration.shot_id);
+        if pending.undecided_expiry
+            && open_shots
+                .get(shot_id)
+                .is_none_or(|open| open.owner_client_id != pending.client_id)
+        {
+            server.send_input(
+                pending.client_id,
+                wire::encode(&wire::ServerMessage::HitRefused(
+                    pending.declaration.shot_id,
+                )),
+            );
+            continue;
+        }
         let result = ingest_hit_declaration(
             HostHitIngestContext {
                 registry: &mut *registry,
@@ -1976,19 +1890,47 @@ pub fn host_ingest_ready_hit_declarations(
         send_shot_verdict(
             server,
             pending.client_id,
-            pending.declaration.shot_id,
-            result.fire_accepted,
+            crate::wire_convert::shot_id_from_wire(pending.declaration.shot_id),
+            pending.fire_authorized || result.fire_accepted,
             result.hit_accepted,
         );
         if let Some(point) = result.projectile_contact {
-            on_projectile_contact(ShotId::from_raw(pending.declaration.shot_id), point);
+            on_projectile_contact(
+                crate::wire_convert::shot_id_from_wire(pending.declaration.shot_id),
+                point,
+            );
         }
-        // A remote shot's validated contacts are its one `impact`, as a local
-        // activation's are.
+        // A remote shot's validated contacts are its one `impact`, as a local shot's are.
         if !result.contacts.is_empty() {
+            let shot_id = crate::wire_convert::shot_id_from_wire(pending.declaration.shot_id);
+            let emitter = emission::Emitter::Contacts(result.contacts);
+            if let Some(cue) = weapon_cues::freeze_observer_weapon_cue(
+                shot_id,
+                NetworkId(shot_id.pawn),
+                weapon_cues::WeaponCueKind::Impact,
+                result.action.as_deref(),
+                result
+                    .sounds
+                    .as_ref()
+                    .and_then(|sounds| sounds.impact.as_deref()),
+                None,
+                &emitter,
+                allocator,
+            ) {
+                weapon_cues::send_observer_weapon_cue_to_server(
+                    server,
+                    Some(pending.client_id),
+                    cue,
+                );
+            }
             on_remote_impact(emission::WeaponEmission {
+                sounds: result.sounds,
+                action: result.action,
+                shot_id: Some(crate::wire_convert::shot_id_from_wire(
+                    pending.declaration.shot_id,
+                )),
                 address: "impact",
-                emitter: emission::Emitter::Contacts(result.contacts),
+                emitter,
                 weapon: result.weapon,
             });
         }
@@ -2004,6 +1946,7 @@ fn host_handle_client_message_inner(
     state_slots: &mut state_slots::HostStateReplication,
     command_queues: &mut HostCommandQueues,
     pending_hit_declarations: Option<&mut PendingHitDeclarations>,
+    open_shots: Option<&mut OpenAuthorizedShots>,
     client_id: u64,
     server_tick: u32,
     server_now_us: u64,
@@ -2047,8 +1990,33 @@ fn host_handle_client_message_inner(
             command_queues.ingest(client_id, &input);
         }
         wire::ClientMessage::HitDeclaration(declaration) => {
+            if !wire_convert::valid_wire_shot_id(declaration.shot_id) {
+                return;
+            }
             if let Some(pending) = pending_hit_declarations {
-                pending.push(client_id, declaration);
+                if !pending.push_at(client_id, declaration.clone(), server_tick) {
+                    if let Some(verdict) = open_shots.and_then(|shots| {
+                        shots.refuse_overflowed_hit(
+                            &command_queues.activations,
+                            client_id,
+                            wire_convert::shot_id_from_wire(declaration.shot_id),
+                            server_tick,
+                        )
+                    }) {
+                        send_shot_verdict(
+                            server,
+                            client_id,
+                            wire_convert::shot_id_from_wire(verdict.shot_id),
+                            verdict.accept,
+                            verdict.hit_accepted,
+                        );
+                    } else {
+                        server.send_input(
+                            client_id,
+                            wire::encode(&wire::ServerMessage::HitRefused(declaration.shot_id)),
+                        );
+                    }
+                }
             }
         }
         // M15 Phase 3.5: a client missing a replicated state-slot baseline. The state
@@ -2063,7 +2031,7 @@ fn host_handle_client_message_inner(
 pub fn send_shot_verdict(
     server: &mut NetServer,
     client_id: u64,
-    shot_id: u64,
+    shot_id: postretro_foundation::ShotId,
     accept: bool,
     hit_accepted: bool,
 ) {
@@ -2072,7 +2040,7 @@ pub fn send_shot_verdict(
         wire::encode(&wire::ServerMessage::ShotVerdicts(
             wire::ShotVerdictsMessage {
                 verdicts: vec![wire::ShotVerdict {
-                    shot_id,
+                    shot_id: crate::wire_convert::shot_id_to_wire(shot_id),
                     accept,
                     hit_accepted,
                 }],
@@ -2087,7 +2055,10 @@ fn ingest_hit_declaration(
     declaration: &wire::HitDeclaration,
     mut on_impact: impl FnMut(&mut EntityRegistry),
 ) -> HitDeclarationResult {
-    let shot_id = ShotId::from_raw(declaration.shot_id);
+    if !wire_convert::valid_wire_shot_id(declaration.shot_id) {
+        return HitDeclarationResult::default();
+    }
+    let shot_id = crate::wire_convert::shot_id_from_wire(declaration.shot_id);
     let Some(open) = context.open_shots.get(shot_id) else {
         return HitDeclarationResult::default();
     };
@@ -2103,10 +2074,18 @@ fn ingest_hit_declaration(
     // The peek above already confirmed the entry; nothing mutates the store between,
     // so retire for its removal side effect and reuse the peeked shot.
     context.open_shots.retire(shot_id);
-    let weapon = emission::descriptor_name(context.registry, open.shot.weapon);
+    let weapon = open
+        .shot
+        .source_weapon
+        .clone()
+        .or_else(|| emission::descriptor_name(context.registry, open.shot.weapon));
+    let action = open.shot.action.clone();
+    let sounds = open.shot.sounds.clone();
     let pellet_count = open.shot.pellet_count;
     if pellet_count == 0 {
         return HitDeclarationResult {
+            sounds,
+            action,
             fire_accepted: true,
             hit_accepted: false,
             projectile_contact: None,
@@ -2125,6 +2104,8 @@ fn ingest_hit_declaration(
             .any(|record| valid_projectile_contact(&open.shot, record));
         if !declared_contact {
             return HitDeclarationResult {
+                sounds,
+                action,
                 fire_accepted: true,
                 hit_accepted: false,
                 projectile_contact: None,
@@ -2134,6 +2115,8 @@ fn ingest_hit_declaration(
         }
         let Some(impact) = resolve_authorized_splash_projectile_impact(&context, &open.shot) else {
             return HitDeclarationResult {
+                sounds,
+                action,
                 fire_accepted: true,
                 hit_accepted: false,
                 projectile_contact: None,
@@ -2191,6 +2174,8 @@ fn ingest_hit_declaration(
             &mut on_impact,
         );
         return HitDeclarationResult {
+            sounds,
+            action,
             fire_accepted: true,
             hit_accepted,
             projectile_contact: Some(point),
@@ -2274,6 +2259,8 @@ fn ingest_hit_declaration(
     }
 
     HitDeclarationResult {
+        sounds,
+        action,
         fire_accepted: true,
         hit_accepted,
         projectile_contact: projectile_record.map(|record| Vec3::from_array(record.point)),
@@ -2353,8 +2340,11 @@ pub(crate) fn ingest_hit_declaration_for_test(
     client_id: u64,
     declaration: &wire::HitDeclaration,
 ) -> (bool, bool) {
+    if !wire_convert::valid_wire_shot_id(declaration.shot_id) {
+        return (false, false);
+    }
     let current_tick = open_shots
-        .get(ShotId::from_raw(declaration.shot_id))
+        .get(crate::wire_convert::shot_id_from_wire(declaration.shot_id))
         .map_or(0, |open| open.shot.fire_tick.wrapping_add(1));
     let result = ingest_hit_declaration(
         HostHitIngestContext {
@@ -2466,6 +2456,14 @@ fn attacker_eye(registry: &EntityRegistry, attacker: EntityId) -> Option<Vec3> {
     Some(transform.position + Vec3::new(0.0, movement.capsule.eye_height, 0.0))
 }
 
+/// Ordered shot facts drained for immediate application in this client frame.
+/// HIT refusal settles declaration bookkeeping without claiming FIRE authority.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClientShotFact {
+    Verdict(wire::ShotVerdict),
+    HitRefused(ShotId),
+}
+
 /// Drive one frame of the client time-sync exchange: emit a 5 Hz probe (stamped
 /// with the client's local sim tick and monotonic microseconds) over
 /// `Channel::Input`, then fold any echoes received this frame into the clock
@@ -2478,7 +2476,7 @@ pub fn client_drive_time_sync(
     client: &mut NetClient,
     time_sync: &mut ClientTimeSync,
     client_tick: u32,
-) -> Vec<wire::ShotVerdict> {
+) -> Vec<ClientShotFact> {
     // 1. Emit a probe if the 5 Hz cadence is due. `maybe_send_probe` records the
     //    issued sample id with the estimator so the matching echo passes the
     //    provenance guard (forgetting that would freeze the clock estimate).
@@ -2501,7 +2499,26 @@ pub fn client_drive_time_sync(
                 time_sync.estimator.ingest_echo(&echo, recv_us);
             }
             Ok(wire::ServerMessage::ShotVerdicts(message)) => {
-                verdicts.extend(message.verdicts);
+                verdicts.extend(
+                    message
+                        .verdicts
+                        .into_iter()
+                        .filter(|v| wire_convert::valid_wire_shot_id(v.shot_id))
+                        .map(ClientShotFact::Verdict),
+                );
+            }
+            Ok(wire::ServerMessage::ActivationOutcomes(outcomes)) => {
+                time_sync.retain_activation_outcomes(outcomes);
+            }
+            Ok(wire::ServerMessage::WeaponCues(message)) => {
+                time_sync.retain_weapon_cues(message.cues);
+            }
+            Ok(wire::ServerMessage::HitRefused(shot_id)) => {
+                if wire_convert::valid_wire_shot_id(shot_id) {
+                    verdicts.push(ClientShotFact::HitRefused(wire_convert::shot_id_from_wire(
+                        shot_id,
+                    )));
+                }
             }
             Err(err) => {
                 log::warn!("[Net] dropping undecodable server input message: {err}");
@@ -2617,7 +2634,7 @@ mod tests {
     use postretro_entities::components::weapon::{ReloadFeedback, WeaponComponent};
     use postretro_entities::provenance::{DescriptorComponentKind, DescriptorSpawnPath};
     use postretro_foundation::{
-        FireMode, KnockbackDescriptor, ResolutionMode, SplashDescriptor, WeaponDescriptor,
+        KnockbackDescriptor, ResolutionMode, SplashDescriptor, WeaponDescriptor,
     };
 
     // Float epsilon for transform round-trips (testing_guide §Floating-point:
@@ -2863,7 +2880,16 @@ mod tests {
             placement: WeaponPlacementDescriptor::default(),
             muzzle_offset: None,
             range: 12.0,
-            cooldown_ms: 90.0,
+            primary: postretro_foundation::WeaponActivationDescriptor::single(
+                postretro_foundation::ActivationTrigger::Press,
+                90.0,
+            ),
+            secondary: None,
+            damage: 10.0,
+            knockback: None,
+            projectile: None,
+            splash: None,
+            resource: None,
             pellet_count: 1,
             spread_degrees: 0.0,
             bloom_per_shot_degrees: 0.0,
@@ -2872,10 +2898,10 @@ mod tests {
             bloom_decay_delay_ms: 0.0,
             movement_spread_degrees: 0.0,
             spread_vertical_bias: 0.0,
-            fire_mode: FireMode::Semi,
             resolution: ResolutionMode::Hitscan,
             lower_ms: 25,
             raise_ms: 35,
+            block_during_reload: None,
         });
         let encoded = tuning_payload::encode_tuning_payload(&TuningPayload::new(
             host_player_descriptor().movement,
@@ -2891,7 +2917,15 @@ mod tests {
         let pawn = registry.spawn(Transform::default());
         let weapon_id = registry.spawn(Transform::default());
         let mut weapon = test_weapon(10.0, 96.0);
-        weapon.cooldown_ms = 180.0;
+        weapon.primary =
+            std::sync::Arc::new(postretro_foundation::WeaponActivationDescriptor::single(
+                postretro_foundation::ActivationTrigger::Hold,
+                180.0,
+            ));
+        weapon.activation_programs = postretro_foundation::WeaponActivationPrograms::install(
+            &weapon.primary,
+            weapon.secondary.as_deref(),
+        );
         weapon.pellet_count = 8;
         weapon.spread_degrees = 4.0;
         weapon.bloom_per_shot_degrees = 1.5;
@@ -2900,7 +2934,6 @@ mod tests {
         weapon.bloom_decay_delay_ms = 175.0;
         weapon.movement_spread_degrees = 3.0;
         weapon.spread_vertical_bias = 0.2;
-        weapon.fire_mode = FireMode::Auto;
         weapon.lower_ms = 45;
         weapon.raise_ms = 70;
         registry.set_component(weapon_id, weapon).unwrap();
@@ -2936,7 +2969,7 @@ mod tests {
         let slot = payload.wieldables[3].as_ref().unwrap();
         assert_eq!(slot.canonical_name, "live_ion_rifle");
         assert_eq!(slot.range, 96.0);
-        assert_eq!(slot.cooldown_ms, 180.0);
+        assert_eq!(slot.primary.recovery_ms, 180.0);
         assert_eq!(slot.pellet_count, 8);
         const EPSILON: f32 = 1.0e-6;
         assert!((slot.spread_degrees - 4.0).abs() <= EPSILON);
@@ -2946,7 +2979,10 @@ mod tests {
         assert!((slot.bloom_decay_delay_ms - 175.0).abs() <= EPSILON);
         assert!((slot.movement_spread_degrees - 3.0).abs() <= EPSILON);
         assert!((slot.spread_vertical_bias - 0.2).abs() <= EPSILON);
-        assert_eq!(slot.fire_mode, FireMode::Auto);
+        assert_eq!(
+            slot.primary.trigger,
+            postretro_foundation::ActivationTrigger::Hold
+        );
         assert_eq!(slot.lower_ms, 45);
         assert_eq!(slot.raise_ms, 70);
     }
@@ -3033,8 +3069,11 @@ mod tests {
                 movement_spread_degrees: 0.0,
                 spread_vertical_bias: 0.0,
                 range: 96.0,
-                cooldown_ms: 100.0,
-                fire_mode: FireMode::Semi,
+                primary: postretro_foundation::WeaponActivationDescriptor::single(
+                    postretro_foundation::ActivationTrigger::Press,
+                    100.0,
+                ),
+                secondary: None,
                 resolution: ResolutionMode::Hitscan,
                 projectile: None,
                 splash: None,
@@ -3108,8 +3147,11 @@ mod tests {
             movement_spread_degrees: 0.0,
             spread_vertical_bias: 0.0,
             range: 140.0,
-            cooldown_ms: 180.0,
-            fire_mode: FireMode::Auto,
+            primary: postretro_foundation::WeaponActivationDescriptor::single(
+                postretro_foundation::ActivationTrigger::Hold,
+                180.0,
+            ),
+            secondary: None,
             resolution: ResolutionMode::Hitscan,
             projectile: None,
             splash: None,
@@ -3318,8 +3360,11 @@ mod tests {
             movement_spread_degrees: 0.0,
             spread_vertical_bias: 0.0,
             range,
-            cooldown_ms: 100.0,
-            fire_mode: FireMode::Semi,
+            primary: postretro_foundation::WeaponActivationDescriptor::single(
+                postretro_foundation::ActivationTrigger::Press,
+                100.0,
+            ),
+            secondary: None,
             resolution: ResolutionMode::Hitscan,
             projectile: None,
             splash: None,
@@ -3643,8 +3688,11 @@ mod tests {
                 movement_spread_degrees: 0.0,
                 spread_vertical_bias: 0.0,
                 range: 1.0,
-                cooldown_ms: 1.0,
-                fire_mode: FireMode::Semi,
+                primary: postretro_foundation::WeaponActivationDescriptor::single(
+                    postretro_foundation::ActivationTrigger::Press,
+                    1.0,
+                ),
+                secondary: None,
                 resolution: ResolutionMode::Hitscan,
                 projectile: None,
                 splash: None,
@@ -3708,6 +3756,9 @@ mod tests {
         range: f32,
     ) -> AuthorizedShot {
         AuthorizedShot {
+            sounds: None,
+            action: None,
+            source_weapon: None,
             knockback: None,
             shot_id,
             pawn,
@@ -3785,9 +3836,15 @@ mod tests {
     }
 
     #[test]
-    fn shot_id_packs_pawn_network_id_and_client_tick() {
-        let raw = shot_id_raw(NetworkId(0xABCD_EF01), 0x1234_5678);
-        assert_eq!(raw, 0xABCD_EF01_1234_5678);
+    fn shot_id_preserves_pawn_start_lane_and_ordinal() {
+        let raw = shot_id(
+            NetworkId(0xABCD_EF01),
+            0x1234_5678,
+            postretro_foundation::ActivationLane::Primary,
+            0,
+        );
+        assert_eq!(raw.pawn, 0xABCD_EF01);
+        assert_eq!(raw.start_tick, 0x1234_5678);
     }
 
     #[test]
@@ -4018,7 +4075,12 @@ mod tests {
             let mut allocator = NetworkIdAllocator::new();
             let pawn_net = allocator.stamp(pawn);
             let target_net = allocator.stamp(target);
-            let shot_id = ShotId::from_parts(pawn_net, 11);
+            let shot_id = ShotId::from_parts(
+                (pawn_net).0,
+                11,
+                postretro_foundation::ActivationLane::Primary,
+                0,
+            );
             let mut owners = MovementOwners::new();
             owners.set(pawn, 7);
             set_active_inventory(&mut registry, pawn, weapon);
@@ -4045,7 +4107,7 @@ mod tests {
 
         fn declaration(&self, records: Vec<wire::HitRecord>) -> wire::HitDeclaration {
             wire::HitDeclaration {
-                shot_id: self.shot_id.raw(),
+                shot_id: crate::wire_convert::shot_id_to_wire(self.shot_id),
                 records,
             }
         }
@@ -4094,6 +4156,9 @@ mod tests {
             self.open_shots.retire(self.shot_id);
             self.open_shots.record(
                 AuthorizedShot {
+                    sounds: None,
+                    action: None,
+                    source_weapon: None,
                     knockback: stats.knockback,
                     shot_id: self.shot_id,
                     pawn: self.pawn,
@@ -4188,8 +4253,13 @@ mod tests {
         let mut registry = EntityRegistry::new();
         let pawn = registry.spawn(Transform::default());
         let weapon = registry.spawn(Transform::default());
-        let shot_id = ShotId::from_parts(NetworkId(0xABCD_EF01), 0x1234_5678);
-        assert_eq!(shot_id.raw(), 0xABCD_EF01_1234_5678);
+        let shot_id = ShotId::from_parts(
+            (NetworkId(0xABCD_EF01)).0,
+            0x1234_5678,
+            postretro_foundation::ActivationLane::Primary,
+            0,
+        );
+        assert_eq!(shot_id.pawn, 0xABCD_EF01);
 
         let mut shots = OpenAuthorizedShots::new();
         shots.record(
@@ -4212,14 +4282,738 @@ mod tests {
     }
 
     #[test]
+    fn activation_pending_overflow_preserves_owned_fire_acceptance_and_refuses_only_hit() {
+        let pawn = EntityId::from_raw(4);
+        let weapon = EntityId::from_raw(9);
+        let mut shots = OpenAuthorizedShots::new();
+        let mut pending = PendingHitDeclarations::new();
+        let make = |start_tick| wire::HitDeclaration {
+            shot_id: wire::WireShotId {
+                pawn: 4,
+                start_tick,
+                lane: 1,
+                ordinal: 0,
+            },
+            records: Vec::new(),
+        };
+        for tick in 0..64 {
+            assert!(pending.push_at(7, make(tick), 100));
+        }
+        let shot_id = ShotId::from_parts(4, 64, postretro_foundation::ActivationLane::Secondary, 0);
+        shots.record(
+            authorized_test_shot(shot_id, pawn, weapon, 99, 10.0, 10.0),
+            7,
+        );
+        let ledger = activation_ledger::HostActivationLedger::default();
+        // Another owner cannot consume the authorized shot.
+        assert!(
+            shots
+                .refuse_overflowed_hit(&ledger, 8, shot_id, 100)
+                .is_none(),
+            "another owner's undecided FIRE receives only HIT refusal"
+        );
+        assert_eq!(shots.len(), 1);
+        assert!(!pending.push_at(7, make(64), 100));
+        let verdict = shots
+            .refuse_overflowed_hit(&ledger, 7, shot_id, 100)
+            .unwrap();
+        assert!(
+            verdict.accept,
+            "overflow cannot roll back already debited FIRE"
+        );
+        assert!(!verdict.hit_accepted);
+        assert_eq!(verdict.shot_id, make(64).shot_id);
+        assert_eq!(
+            shots.len(),
+            0,
+            "refused HIT consumes its owned authorization"
+        );
+        assert_eq!(pending.len(), 64);
+    }
+
+    #[test]
+    fn activation_pending_overflow_does_not_reject_undecided_future_fire() {
+        let mut ledger = activation_ledger::HostActivationLedger::default();
+        let shot_id = ShotId::from_parts(4, 64, postretro_foundation::ActivationLane::Secondary, 0);
+        let program = postretro_foundation::ActivationProgram::new(
+            vec![postretro_foundation::ActivationStep::Shot],
+            None,
+            18,
+        )
+        .unwrap();
+        assert!(ledger.accept(
+            7,
+            shot_id.activation(),
+            EntityId::from_raw(9),
+            &program,
+            100
+        ));
+        assert!(
+            OpenAuthorizedShots::new()
+                .refuse_overflowed_hit(&ledger, 7, shot_id, 100)
+                .is_none()
+        );
+        assert_eq!(
+            ledger.status(7, shot_id, 100),
+            activation_ledger::OrdinalStatus::Pending { deadline: 220 }
+        );
+    }
+
+    fn hit_refusal_link() -> (NetServer, NetClient) {
+        let server_socket = std::net::UdpSocket::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let address = server_socket.local_addr().unwrap();
+        let mut server =
+            NetServer::new(server_socket, address, 2, Duration::from_secs(1), None).unwrap();
+        let client_socket = std::net::UdpSocket::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let mut client = NetClient::new(
+            client_socket,
+            address,
+            7,
+            Duration::from_secs(1),
+            None,
+            None,
+        )
+        .unwrap();
+        server.add_relay_connection(7, None);
+        client.set_connected();
+        (server, client)
+    }
+
+    fn settled_hit_without_open_shot(expired: bool, fire_accepted: bool) {
+        use postretro_foundation::{ActivationProgram, ActivationStep};
+
+        let mut fixture = HitIngestFixture::new(CollisionWorld::new());
+        let mut queues = HostCommandQueues::new();
+        let program = ActivationProgram::new(
+            vec![
+                ActivationStep::Shot,
+                ActivationStep::Wait { ticks: 600 },
+                ActivationStep::Shot,
+            ],
+            None,
+            18,
+        )
+        .unwrap();
+        assert!(queues.activations.accept(
+            7,
+            fixture.shot_id.activation(),
+            fixture.weapon,
+            &program,
+            99,
+        ));
+        queues
+            .activations
+            .settle_shot(7, fixture.shot_id, fire_accepted);
+        let declaration = fixture.declaration(vec![fixture.record(Vec3::new(4.0, 0.5, 0.0), None)]);
+        let tick = if expired {
+            let open = fixture.open_shots.get(fixture.shot_id).unwrap();
+            open.shot.fire_tick + open.shot.timeout_budget_ticks + 1
+        } else {
+            queues
+                .activations
+                .terminal(7, fixture.shot_id.activation(), 99);
+            if fire_accepted {
+                let first = fixture.ingest_result(7, &declaration);
+                assert!(first.fire_accepted);
+                assert!(first.hit_accepted);
+            } else {
+                fixture.open_shots.retire(fixture.shot_id);
+            }
+            100
+        };
+        assert_eq!(
+            queues.activations.status(7, fixture.shot_id, tick),
+            if fire_accepted {
+                activation_ledger::OrdinalStatus::Authorized
+            } else {
+                activation_ledger::OrdinalStatus::Rejected
+            }
+        );
+        let health_before = fixture.target_health().current;
+        let mut pending = PendingHitDeclarations::new();
+        assert!(pending.push_at(7, declaration, tick));
+        let ready =
+            host_take_ready_hit_declarations(&queues, &mut fixture.open_shots, &mut pending, tick);
+        assert_eq!(ready.len(), 1);
+        assert!(!ready[0].undecided_expiry);
+        assert_eq!(ready[0].fire_authorized, fire_accepted);
+        assert!(fixture.open_shots.get(fixture.shot_id).is_none());
+        let (mut server, mut client) = hit_refusal_link();
+        assert!(!host_ingest_ready_hit_declarations(
+            &mut server,
+            &mut fixture.registry,
+            &fixture.collision_world,
+            &fixture.hit_zone_store,
+            &fixture.allocator,
+            &fixture.owners,
+            &mut fixture.open_shots,
+            tick,
+            0.0,
+            ready,
+            |_| panic!("a retired HIT cannot apply damage again"),
+            |_, _| panic!("a retired HIT cannot dispatch projectile contact"),
+            |_| panic!("a retired HIT cannot dispatch impact presentation"),
+        ));
+        for packet in server.packets_to_send(7) {
+            client.process_packet(&packet);
+        }
+        assert_eq!(
+            client_drive_time_sync(&mut client, &mut ClientTimeSync::new(), tick),
+            vec![ClientShotFact::Verdict(wire::ShotVerdict {
+                shot_id: wire_convert::shot_id_to_wire(fixture.shot_id),
+                accept: fire_accepted,
+                hit_accepted: false,
+            })]
+        );
+        assert!((fixture.target_health().current - health_before).abs() < EPSILON);
+        assert_eq!(pending.len(), 0);
+        assert_eq!(fixture.open_shots.len(), 0);
+    }
+
+    // Regression: a duplicate HIT fabricated FIRE denial after consuming its open shot.
+    #[test]
+    fn activation_consumed_hit_preserves_authorized_fire_verdict() {
+        settled_hit_without_open_shot(false, true);
+    }
+
+    // Regression: open-shot budget expiry fabricated denial of an authorized live ordinal.
+    #[test]
+    fn activation_expired_open_hit_preserves_authorized_fire_verdict() {
+        settled_hit_without_open_shot(true, true);
+    }
+
+    #[test]
+    fn activation_rejected_hit_keeps_authoritative_fire_denial() {
+        settled_hit_without_open_shot(false, false);
+    }
+
+    fn overflowed_activation_hit(ordinal: u8) {
+        use postretro_foundation::{ActivationInput, ActivationLane};
+        use weapon::execution::{ActivationCommand, advance_weapon_activation};
+
+        let mut fixture = HitIngestFixture::new(CollisionWorld::new());
+        fixture.open_shots.retire(fixture.shot_id);
+        fixture.shot_id.ordinal = ordinal;
+        let descriptor: WeaponDescriptor = serde_json::from_value(serde_json::json!({
+            "damage": 10, "range": 100, "resolution": "hitscan",
+            "primary": { "trigger": "press", "recoveryMs": 300, "steps": [
+                { "kind": "shot" }, { "kind": "wait", "durationMs": 16 },
+                { "kind": "shot" }
+            ] },
+            "resource": { "kind": "ammo", "type": "rounds", "magazine": 4, "reserve": 0 }
+        }))
+        .unwrap();
+        let mut component = WeaponComponent::from_descriptor(&descriptor.validate().unwrap());
+        let mut queues = HostCommandQueues::new();
+        let token = fixture.shot_id.activation().token;
+        let start = wire::InputCommand {
+            client_tick: token.start_tick,
+            movement: wire::WireMovementInput {
+                wish_dir: [0.0, 0.0],
+                jump_pressed: false,
+                dash_pressed: false,
+                running: false,
+                crouch_intent: false,
+                facing_yaw: 0.0,
+                use_pressed: false,
+                drop_pressed: false,
+                aim_pitch: 0.0,
+                firing_slot: 0,
+            },
+            fire_button: wire::WireFireButtonState {
+                pressed: false,
+                active: false,
+            },
+            secondary_button: wire::WireFireButtonState {
+                pressed: false,
+                active: false,
+            },
+            activation: wire::WireActivationInput {
+                initiation: Some(wire::WireActivationToken {
+                    start_tick: token.start_tick,
+                    lane: token.lane as u8,
+                }),
+                ..Default::default()
+            },
+            reload: false,
+        };
+        assert!(queues.ingest(7, &start));
+        let follow = wire::InputCommand {
+            client_tick: token.start_tick.wrapping_add(1),
+            activation: wire::WireActivationInput::default(),
+            ..start.clone()
+        };
+        assert!(queues.ingest(7, &follow));
+        let resolved = queues.resolve_tick(7).unwrap();
+        assert_eq!(resolved.source, ResolutionSource::Real);
+        assert_eq!(resolved.command.activation.initiation, Some(token));
+        let activation_command = |tick, input| ActivationCommand {
+            tick,
+            pawn: fixture.shot_id.pawn,
+            real_command: true,
+            input,
+            controller_starts: false,
+            primary: weapon::FireButtonState {
+                pressed: false,
+                active: false,
+            },
+            secondary: weapon::FireButtonState {
+                pressed: false,
+                active: false,
+            },
+        };
+        let mut first = None;
+        if ordinal == 1 {
+            let advance = advance_weapon_activation(
+                &mut component,
+                activation_command(100, resolved.command.activation),
+                16.0,
+                false,
+                true,
+            );
+            assert!(queues.activations.accept(
+                7,
+                fixture.shot_id.activation(),
+                fixture.weapon,
+                &advance.program.as_ref().unwrap().timing,
+                100,
+            ));
+            queues
+                .activations
+                .settle_shot(7, advance.attempted.unwrap(), true);
+            first = Some(advance);
+            assert_eq!(component.magazine, 3);
+            assert!(matches!(
+                queues.activations.status(7, fixture.shot_id, 100),
+                activation_ledger::OrdinalStatus::Pending { .. }
+            ));
+        } else {
+            assert_eq!(
+                queues.activations.status(7, fixture.shot_id, 100),
+                activation_ledger::OrdinalStatus::Unknown
+            );
+        }
+        let mut pending = PendingHitDeclarations::new();
+        for tick in 1000..1064 {
+            assert!(pending.push_at(
+                7,
+                wire::HitDeclaration {
+                    shot_id: wire::WireShotId {
+                        pawn: fixture.shot_id.pawn,
+                        start_tick: tick,
+                        lane: ActivationLane::Primary as u8,
+                        ordinal: 0,
+                    },
+                    records: Vec::new(),
+                },
+                100
+            ));
+        }
+        let declaration = fixture.declaration(vec![fixture.record(Vec3::new(4.0, 0.5, 0.0), None)]);
+        let (mut server, mut client) = hit_refusal_link();
+        host_handle_client_message_inner(
+            &mut server,
+            &mut ServerReplication::new(),
+            &mut state_slots::HostStateReplication::new(),
+            &mut queues,
+            Some(&mut pending),
+            Some(&mut fixture.open_shots),
+            7,
+            100,
+            0,
+            wire::ClientMessage::HitDeclaration(declaration),
+        );
+        for packet in server.packets_to_send(7) {
+            client.process_packet(&packet);
+        }
+        let facts = client_drive_time_sync(&mut client, &mut ClientTimeSync::new(), 100);
+        assert_eq!(facts, vec![ClientShotFact::HitRefused(fixture.shot_id)]);
+        assert_eq!(pending.len(), 64);
+        let resolution = weapon::ClientFireResolution {
+            client_tick: token.start_tick,
+            hits: Vec::new(),
+            world_contacts: Vec::new(),
+            projectile_launch: None,
+        };
+        let mut predicted = weapon::ClientPredictedShots::new();
+        predicted.predict(
+            fixture.shot_id,
+            fixture.weapon,
+            &resolution,
+            0.0,
+            300.0,
+            weapon::ClientPullPresentation::Fire,
+        );
+        assert!(predicted.refuse_hit(fixture.shot_id).is_some());
+        assert!(
+            predicted.refuse_hit(fixture.shot_id).is_none(),
+            "HIT refusal retires its record once"
+        );
+        let tick = if ordinal == 0 { 100 } else { 101 };
+        let advance = advance_weapon_activation(
+            &mut component,
+            activation_command(
+                tick,
+                if ordinal == 0 {
+                    resolved.command.activation
+                } else {
+                    ActivationInput::default()
+                },
+            ),
+            16.0,
+            false,
+            true,
+        );
+        if first.is_none() {
+            assert!(queues.activations.accept(
+                7,
+                fixture.shot_id.activation(),
+                fixture.weapon,
+                &advance.program.as_ref().unwrap().timing,
+                tick
+            ));
+        }
+        assert_eq!(advance.shot.as_ref().unwrap().shot_id, fixture.shot_id);
+        queues.activations.settle_shot(7, fixture.shot_id, true);
+        assert_eq!(component.magazine, if ordinal == 0 { 3 } else { 2 });
+        assert_eq!(
+            queues.activations.status(7, fixture.shot_id, tick),
+            activation_ledger::OrdinalStatus::Authorized
+        );
+        fixture.open_shots.record(
+            authorized_test_shot(
+                fixture.shot_id,
+                fixture.pawn,
+                fixture.weapon,
+                tick,
+                10.0,
+                100.0,
+            ),
+            7,
+        );
+        assert!(
+            pending
+                .drain_ready(&queues, &fixture.open_shots, tick)
+                .is_empty(),
+            "the discarded HIT cannot apply when FIRE later authorizes"
+        );
+        assert!(
+            advance_weapon_activation(
+                &mut component,
+                activation_command(tick, ActivationInput::default()),
+                16.0,
+                false,
+                true
+            )
+            .shot
+            .is_none()
+        );
+        assert_eq!(
+            component.magazine,
+            if ordinal == 0 { 3 } else { 2 },
+            "duplicate tick never debits twice"
+        );
+        assert!((fixture.target_health().current - 100.0).abs() < EPSILON);
+    }
+
+    // Regression: overflow rejected FIRE before its queued real initiation was admitted.
+    #[test]
+    fn activation_hit_refusal_unknown_queued_start_preserves_fire_and_retires_client_record() {
+        overflowed_activation_hit(0);
+    }
+
+    // Regression: overflowed future HIT never settled if its later FIRE authorized.
+    #[test]
+    fn activation_hit_refusal_pending_ordinal_preserves_fire_and_retires_client_record() {
+        overflowed_activation_hit(1);
+    }
+
+    // Regression: early HIT expiry denied FIRE while its sparse queued start remained eligible.
+    #[test]
+    fn activation_unknown_hit_expiry_preserves_queued_fire_authority() {
+        use postretro_foundation::{ActivationInput, ActivationLane};
+        use weapon::execution::{ActivationCommand, advance_weapon_activation};
+
+        let mut fixture = HitIngestFixture::new(CollisionWorld::new());
+        fixture.open_shots.retire(fixture.shot_id);
+        fixture.shot_id.start_tick = 1000;
+        let token = fixture.shot_id.activation().token;
+        let command = |client_tick, initiation: Option<postretro_foundation::ActivationToken>| {
+            wire::InputCommand {
+                client_tick,
+                movement: wire::WireMovementInput {
+                    wish_dir: [0.0, 0.0],
+                    jump_pressed: false,
+                    dash_pressed: false,
+                    running: false,
+                    crouch_intent: false,
+                    facing_yaw: 0.0,
+                    use_pressed: false,
+                    drop_pressed: false,
+                    aim_pitch: 0.0,
+                    firing_slot: 0,
+                },
+                fire_button: wire::WireFireButtonState {
+                    pressed: false,
+                    active: false,
+                },
+                secondary_button: wire::WireFireButtonState {
+                    pressed: false,
+                    active: false,
+                },
+                activation: wire::WireActivationInput {
+                    initiation: initiation.map(|token| wire::WireActivationToken {
+                        start_tick: token.start_tick,
+                        lane: token.lane as u8,
+                    }),
+                    ..Default::default()
+                },
+                reload: false,
+            }
+        };
+        let mut queues = HostCommandQueues::new();
+        for tick in 0..=1 {
+            assert!(queues.ingest(7, &command(tick, None)));
+        }
+        for tick in 0..=1 {
+            let resolved = queues.resolve_tick(7).unwrap();
+            assert_eq!(resolved.source, ResolutionSource::Real);
+            assert_eq!(resolved.client_tick, tick);
+        }
+        assert!(queues.ingest(7, &command(1000, Some(token))));
+        assert!(queues.ingest(7, &command(1001, None)));
+
+        let declaration = fixture.declaration(vec![fixture.record(Vec3::new(4.0, 0.5, 0.0), None)]);
+        let mut pending = PendingHitDeclarations::new();
+        let (mut server, mut client) = hit_refusal_link();
+        host_handle_client_message_inner(
+            &mut server,
+            &mut ServerReplication::new(),
+            &mut state_slots::HostStateReplication::new(),
+            &mut queues,
+            Some(&mut pending),
+            Some(&mut fixture.open_shots),
+            7,
+            100,
+            0,
+            wire::ClientMessage::HitDeclaration(declaration.clone()),
+        );
+        let mut ready = Vec::new();
+        for tick in 101..=220 {
+            if tick == 219 {
+                assert!(pending.push_at(7, declaration.clone(), tick));
+            }
+            ready = host_take_ready_hit_declarations(
+                &queues,
+                &mut fixture.open_shots,
+                &mut pending,
+                tick,
+            );
+            assert_eq!(ready.len(), usize::from(tick == 220));
+            let resolved = queues.resolve_tick(7).unwrap();
+            assert_eq!(resolved.client_tick, tick - 99);
+            assert_ne!(resolved.source, ResolutionSource::Real);
+            assert!(resolved.command.activation.initiation.is_none());
+        }
+        assert_eq!(queues.resolved_cursor(7), Some(121));
+        assert_eq!(pending.len(), 0);
+        assert_eq!(
+            queues.activations.status(7, fixture.shot_id, 220),
+            activation_ledger::OrdinalStatus::Unknown
+        );
+        assert!(
+            queues
+                .activations
+                .can_accept(7, fixture.shot_id.activation(), 220)
+        );
+        assert!(!host_ingest_ready_hit_declarations(
+            &mut server,
+            &mut fixture.registry,
+            &fixture.collision_world,
+            &fixture.hit_zone_store,
+            &fixture.allocator,
+            &fixture.owners,
+            &mut fixture.open_shots,
+            220,
+            0.0,
+            ready,
+            |_| panic!("expired undecided HIT cannot dispatch damage"),
+            |_, _| panic!("expired undecided HIT cannot dispatch projectile contact"),
+            |_| panic!("expired undecided HIT cannot dispatch impact presentation"),
+        ));
+        for packet in server.packets_to_send(7) {
+            client.process_packet(&packet);
+        }
+        let facts = client_drive_time_sync(&mut client, &mut ClientTimeSync::new(), 220);
+        assert_eq!(facts, vec![ClientShotFact::HitRefused(fixture.shot_id)]);
+        let mut predicted = weapon::ClientPredictedShots::new();
+        predicted.predict(
+            fixture.shot_id,
+            fixture.weapon,
+            &weapon::ClientFireResolution {
+                client_tick: 1000,
+                hits: Vec::new(),
+                world_contacts: Vec::new(),
+                projectile_launch: None,
+            },
+            0.0,
+            300.0,
+            weapon::ClientPullPresentation::Fire,
+        );
+        let ClientShotFact::HitRefused(refused) = facts[0] else {
+            panic!("expiry must not fabricate a FIRE verdict")
+        };
+        assert!(predicted.refuse_hit(refused).is_some());
+        assert!(predicted.refuse_hit(refused).is_none());
+
+        // Continue resolving the actual sparse queue; its depth never triggers trim.
+        for client_tick in 122..1000 {
+            let resolved = queues.resolve_tick(7).unwrap();
+            assert_eq!(resolved.client_tick, client_tick);
+            assert_eq!(resolved.source, ResolutionSource::Neutral);
+            assert!(resolved.command.activation.initiation.is_none());
+        }
+        let resolved = queues.resolve_tick(7).unwrap();
+        assert_eq!(resolved.client_tick, 1000);
+        assert_eq!(resolved.source, ResolutionSource::Real);
+        assert_eq!(resolved.command.activation.initiation, Some(token));
+        let descriptor: WeaponDescriptor = serde_json::from_value(serde_json::json!({
+            "damage": 10, "range": 100, "resolution": "hitscan",
+            "primary": { "trigger": "press", "recoveryMs": 300,
+                "steps": [{ "kind": "shot" }] },
+            "resource": { "kind": "ammo", "type": "rounds", "magazine": 4, "reserve": 0 }
+        }))
+        .unwrap();
+        let mut component = WeaponComponent::from_descriptor(&descriptor.validate().unwrap());
+        let activation_command = |input| ActivationCommand {
+            tick: 1099,
+            pawn: fixture.shot_id.pawn,
+            real_command: true,
+            input,
+            controller_starts: false,
+            primary: weapon::FireButtonState {
+                pressed: false,
+                active: false,
+            },
+            secondary: weapon::FireButtonState {
+                pressed: false,
+                active: false,
+            },
+        };
+        assert_eq!(token.lane, ActivationLane::Primary);
+        assert!(
+            queues
+                .activations
+                .can_accept(7, fixture.shot_id.activation(), 1099)
+        );
+        let advance = advance_weapon_activation(
+            &mut component,
+            activation_command(resolved.command.activation),
+            16.0,
+            false,
+            true,
+        );
+        assert!(queues.activations.accept(
+            7,
+            fixture.shot_id.activation(),
+            fixture.weapon,
+            &advance.program.as_ref().unwrap().timing,
+            1099,
+        ));
+        assert_eq!(advance.shot.as_ref().unwrap().shot_id, fixture.shot_id);
+        queues.activations.settle_shot(7, fixture.shot_id, true);
+        fixture.open_shots.record(
+            authorized_test_shot(
+                fixture.shot_id,
+                fixture.pawn,
+                fixture.weapon,
+                1099,
+                10.0,
+                100.0,
+            ),
+            7,
+        );
+        assert_eq!(component.magazine, 3);
+        assert!(
+            host_take_ready_hit_declarations(&queues, &mut fixture.open_shots, &mut pending, 1099,)
+                .is_empty()
+        );
+        assert!(
+            advance_weapon_activation(
+                &mut component,
+                activation_command(ActivationInput::default()),
+                16.0,
+                false,
+                true,
+            )
+            .shot
+            .is_none()
+        );
+        assert_eq!(component.magazine, 3, "duplicate tick cannot debit twice");
+        assert_eq!(
+            queues.activations.status(7, fixture.shot_id, 1099),
+            activation_ledger::OrdinalStatus::Authorized
+        );
+        assert_eq!(fixture.open_shots.len(), 1);
+        assert!((fixture.target_health().current - 100.0).abs() < EPSILON);
+    }
+
+    #[test]
+    fn activation_hit_refusal_decoder_filters_invalid_ids_and_drains_each_frame() {
+        let (mut server, mut client) = hit_refusal_link();
+        let valid = wire::WireShotId {
+            pawn: 4,
+            start_tick: u32::MAX,
+            lane: 1,
+            ordinal: 15,
+        };
+        for shot_id in [
+            wire::WireShotId { lane: 2, ..valid },
+            wire::WireShotId {
+                ordinal: 16,
+                ..valid
+            },
+            valid,
+        ] {
+            server.send_input(7, wire::encode(&wire::ServerMessage::HitRefused(shot_id)));
+        }
+        for packet in server.packets_to_send(7) {
+            client.process_packet(&packet);
+        }
+        let mut time_sync = ClientTimeSync::new();
+        assert_eq!(
+            client_drive_time_sync(&mut client, &mut time_sync, 100),
+            vec![ClientShotFact::HitRefused(wire_convert::shot_id_from_wire(
+                valid
+            ))]
+        );
+        assert!(client_drive_time_sync(&mut client, &mut time_sync, 100).is_empty());
+    }
+
+    #[test]
     fn open_authorized_shots_prune_stale_and_remove_client_or_pawn_state() {
         let mut registry = EntityRegistry::new();
         let pawn_a = registry.spawn(Transform::default());
         let pawn_b = registry.spawn(Transform::default());
         let weapon = registry.spawn(Transform::default());
-        let stale = ShotId::from_parts(NetworkId(10), 19);
-        let newest_retained = ShotId::from_parts(NetworkId(10), 20);
-        let other_client = ShotId::from_parts(NetworkId(11), 21);
+        let stale = ShotId::from_parts(
+            (NetworkId(10)).0,
+            19,
+            postretro_foundation::ActivationLane::Primary,
+            0,
+        );
+        let newest_retained = ShotId::from_parts(
+            (NetworkId(10)).0,
+            20,
+            postretro_foundation::ActivationLane::Primary,
+            0,
+        );
+        let other_client = ShotId::from_parts(
+            (NetworkId(11)).0,
+            21,
+            postretro_foundation::ActivationLane::Primary,
+            0,
+        );
         let mut shots = OpenAuthorizedShots::new();
         shots.record(
             authorized_test_shot(stale, pawn_a, weapon, 19, 10.0, 10.0),
@@ -4281,8 +5075,18 @@ mod tests {
         let mut registry = EntityRegistry::new();
         let pawn = registry.spawn(Transform::default());
         let weapon = registry.spawn(Transform::default());
-        let kept_id = ShotId::from_parts(NetworkId(12), 10);
-        let expired_id = ShotId::from_parts(NetworkId(12), 11);
+        let kept_id = ShotId::from_parts(
+            (NetworkId(12)).0,
+            10,
+            postretro_foundation::ActivationLane::Primary,
+            0,
+        );
+        let expired_id = ShotId::from_parts(
+            (NetworkId(12)).0,
+            11,
+            postretro_foundation::ActivationLane::Primary,
+            0,
+        );
         let timeout = projectile_timeout_budget_ticks(128.0, 80.0, 4.0, 1.0 / 60.0);
         let mut kept = authorized_test_shot(kept_id, pawn, weapon, 10, 10.0, 128.0);
         kept.is_projectile = true;
@@ -4322,7 +5126,12 @@ mod tests {
             pending.push(
                 7,
                 wire::HitDeclaration {
-                    shot_id: ShotId::from_parts(NetworkId(4), tick as u32).raw(),
+                    shot_id: crate::wire_convert::shot_id_to_wire(ShotId::from_parts(
+                        (NetworkId(4)).0,
+                        tick as u32,
+                        postretro_foundation::ActivationLane::Primary,
+                        0,
+                    )),
                     records: Vec::new(),
                 },
             );
@@ -4330,7 +5139,12 @@ mod tests {
         pending.push(
             8,
             wire::HitDeclaration {
-                shot_id: ShotId::from_parts(NetworkId(5), 1).raw(),
+                shot_id: crate::wire_convert::shot_id_to_wire(ShotId::from_parts(
+                    (NetworkId(5)).0,
+                    1,
+                    postretro_foundation::ActivationLane::Primary,
+                    0,
+                )),
                 records: Vec::new(),
             },
         );
@@ -4349,8 +5163,13 @@ mod tests {
                 .declarations
                 .iter()
                 .all(|declaration| declaration.declaration.shot_id
-                    != ShotId::from_parts(NetworkId(4), 0).raw()),
-            "the oldest declaration for the overflowing client is dropped"
+                    != crate::wire_convert::shot_id_to_wire(ShotId::from_parts(
+                        (NetworkId(4)).0,
+                        MAX_PENDING_HIT_DECLARATIONS_PER_CLIENT as u32,
+                        postretro_foundation::ActivationLane::Primary,
+                        0
+                    ))),
+            "the newest declaration for the overflowing client is rejected"
         );
 
         let mut allocator = NetworkIdAllocator::new();
@@ -4359,7 +5178,12 @@ mod tests {
         pending.push(
             9,
             wire::HitDeclaration {
-                shot_id: ShotId::from_parts(NetworkId(0), 777).raw(),
+                shot_id: crate::wire_convert::shot_id_to_wire(ShotId::from_parts(
+                    (NetworkId(0)).0,
+                    777,
+                    postretro_foundation::ActivationLane::Primary,
+                    0,
+                )),
                 records: Vec::new(),
             },
         );
@@ -4369,7 +5193,12 @@ mod tests {
                 .declarations
                 .iter()
                 .all(|declaration| declaration.declaration.shot_id
-                    != ShotId::from_parts(NetworkId(0), 777).raw())
+                    != crate::wire_convert::shot_id_to_wire(ShotId::from_parts(
+                        (NetworkId(0)).0,
+                        777,
+                        postretro_foundation::ActivationLane::Primary,
+                        0
+                    )))
         );
         pending.remove_client(7);
         assert!(
@@ -4690,6 +5519,24 @@ mod tests {
     #[test]
     fn hit_declaration_uses_authorization_time_weapon_facts_after_switch_and_despawn() {
         let mut fixture = HitIngestFixture::new(CollisionWorld::new());
+        let mut shot = fixture.open_shots.get(fixture.shot_id).unwrap().shot;
+        shot.sounds = Some(std::sync::Arc::new(
+            postretro_foundation::ActivationSounds {
+                fire: Some("frozen_common_fire".into()),
+                impact: Some("frozen_common_impact".into()),
+            },
+        ));
+        let mut action = postretro_foundation::WeaponActivationDescriptor::single(
+            postretro_foundation::ActivationTrigger::Press,
+            300.0,
+        );
+        action.emits = Some(postretro_foundation::ActivationEmits {
+            activate: Some("old_alt_activate".into()),
+            impact: Some("old_alt_impact".into()),
+        });
+        shot.action = Some(std::sync::Arc::new(action));
+        fixture.open_shots.retire(fixture.shot_id);
+        fixture.open_shots.record(shot, 7);
         let original_weapon = fixture.weapon;
         let switched_weapon = fixture.registry.spawn(Transform::default());
         fixture
@@ -4706,6 +5553,26 @@ mod tests {
         let result = fixture.ingest_result(7, &declaration);
         assert!(result.fire_accepted);
         assert!(result.hit_accepted);
+        assert_eq!(
+            result.sounds.as_ref().unwrap().impact.as_deref(),
+            Some("frozen_common_impact")
+        );
+        let cue = weapon_cues::freeze_observer_weapon_cue(
+            fixture.shot_id,
+            NetworkId(fixture.shot_id.pawn),
+            weapon_cues::WeaponCueKind::Impact,
+            result.action.as_deref(),
+            result
+                .sounds
+                .as_ref()
+                .and_then(|sounds| sounds.impact.as_deref()),
+            None,
+            &emission::Emitter::Contacts(result.contacts.clone()),
+            &fixture.allocator,
+        )
+        .unwrap();
+        assert_eq!(cue.sound.as_deref(), Some("frozen_common_impact"));
+        assert_eq!(cue.alias.as_deref(), Some("old_alt_impact"));
         let health = fixture.target_health();
         assert_eq!(
             health.current, 90.0,
@@ -4854,18 +5721,18 @@ mod tests {
     fn enemy_projectile_authority_reuses_the_existing_wire_versions() {
         assert_eq!(
             postretro_net::handshake::PROTOCOL_ID,
-            0x_5052_4C37,
-            "enemy projectiles add no application message vocabulary"
+            0x_5052_4C39,
+            "observer weapon cues require application protocol PRL9"
         );
         assert_eq!(
             postretro_net::handshake::WIRE_VERSION,
-            23,
-            "enemy projectile damage and presentation add nothing beyond the current transport layout (23: hit records carry contact normals)"
+            25,
+            "frozen observer projectile facts and reliable cues require wire version 25"
         );
         assert_eq!(
             postretro_net::wire::SNAPSHOT_VERSION,
-            16,
-            "enemy projectile presentation adds nothing beyond the current knockback snapshot layout"
+            17,
+            "frozen observer projectile facts require snapshot version 17"
         );
     }
 
@@ -5359,6 +6226,7 @@ mod tests {
             local_player: false,
             entity_class: Some("grunt".to_string()),
             active_weapon_archetype: None,
+            projectile_presentation: None,
             components: vec![ComponentPayload::Transform(sample_wire_transform())],
         });
         let classless = snapshot_with_record(EntityRecord::FullBaseline {
@@ -5368,6 +6236,7 @@ mod tests {
             local_player: false,
             entity_class: None,
             active_weapon_archetype: None,
+            projectile_presentation: None,
             components: vec![ComponentPayload::Transform(sample_wire_transform())],
         });
 
@@ -5539,6 +6408,7 @@ mod tests {
                     local_player: false,
                     entity_class: None,
                     active_weapon_archetype: None,
+                    projectile_presentation: None,
                     components: vec![ComponentPayload::Transform(WireTransform {
                         position: [4.0, 0.0, 0.0],
                         rotation: [0.0, 0.0, 0.0, 1.0],
@@ -5637,6 +6507,7 @@ mod tests {
             local_player: false,
             entity_class: Some("player".to_string()),
             active_weapon_archetype: None,
+            projectile_presentation: None,
             components: vec![
                 ComponentPayload::Transform(WireTransform {
                     position: [transform_x, 0.0, 0.0],
@@ -6207,6 +7078,7 @@ mod tests {
                             local_player: true,
                             entity_class: Some("player".to_string()),
                             active_weapon_archetype: None,
+                            projectile_presentation: None,
                             components: vec![
                                 ComponentPayload::Transform(WireTransform {
                                     position: [3.0, 0.0, 0.0],
@@ -6238,6 +7110,7 @@ mod tests {
                             local_player: false,
                             entity_class: None,
                             active_weapon_archetype: None,
+                            projectile_presentation: None,
                             components: vec![ComponentPayload::Transform(WireTransform {
                                 position: [9.0, 0.0, 0.0],
                                 rotation: [0.0, 0.0, 0.0, 1.0],
@@ -6341,3 +7214,17 @@ mod tests {
         assert!(parse_net_config(&argv(&["--host", "--connect", "127.0.0.1:1"])).is_err());
     }
 }
+
+pub fn send_activation_outcome(
+    server: &mut NetServer,
+    client_id: u64,
+    outcome: wire::ActivationOutcome,
+) {
+    server.send_input(
+        client_id,
+        wire::encode(&wire::ServerMessage::ActivationOutcomes(vec![outcome])),
+    );
+}
+
+#[cfg(test)]
+mod activation_harness_test;

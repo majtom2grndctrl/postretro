@@ -464,7 +464,8 @@ impl Component for WeaponComponent {
         }
     }
 
-    fn into_value(self) -> ComponentValue {
+    fn into_value(mut self) -> ComponentValue {
+        self.ensure_activation_programs();
         ComponentValue::Weapon(self)
     }
 }
@@ -1374,9 +1375,12 @@ impl EntityRegistry {
     pub fn set_component_value(
         &mut self,
         id: EntityId,
-        value: ComponentValue,
+        mut value: ComponentValue,
     ) -> Result<(), RegistryError> {
         let index = self.validate(id)?;
+        if let ComponentValue::Weapon(weapon) = &mut value {
+            weapon.ensure_activation_programs();
+        }
         let kind = value.kind();
         let adds_light =
             kind == ComponentKind::Light && self.components[kind as usize][index].is_none();

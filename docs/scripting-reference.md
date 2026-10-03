@@ -246,8 +246,7 @@ defineEntity({
     weapon: {
       damage: 12,
       range: 64,
-      fireRateMs: 180,
-      fireMode: "semi",
+      primary: { trigger: "press", recoveryMs: 180, steps: [activation.shot()] },
       resolution: "hitscan",
       creditSource: "player.reference-pistol:primary",
       resource: {
@@ -268,14 +267,124 @@ defineEntity({
 |-------|------|-------------|
 | `damage` | `number` | Base damage payload per resolved shot. Must be finite and `>= 0.0`. |
 | `range` | `number` | Maximum hitscan distance in meters, or the second travel cap for a projectile. Must be finite and `> 0.0`. |
-| `fireRateMs` | `number` | Minimum interval between shots in milliseconds. Must be finite and `> 0.0`. |
-| `fireMode` | `"semi" \| "auto"` | Semi-automatic or automatic input gate. |
+| `primary` | `WeaponActivationDescriptor` | Required primary action: trigger, recovery, and a bounded shot/wait program. |
+| `secondary` | `WeaponActivationDescriptor` (optional) | Alternate-fire action. Both actions share weapon tuning, resource storage, and recovery. |
 | `resolution` | `"hitscan" \| "projectile"` | Shot resolution mode. A projectile requires the descriptor-owned `projectile` block below. |
 | `projectile` | `ProjectileDescriptor` (conditional) | Required exactly when `resolution` is `"projectile"`; omit it for hitscan. This is descriptor-owned tuning, never an FGD KVP. |
 | `knockback` | `{ speed, upwardBias? }` (optional) | Direct-hit push independent of damage. Applies per pellet or projectile entity contact; composes with `splash.knockback` when both are authored. |
 | `splash` | `{ radius, minFraction?, selfDamage?, knockback? }` (optional) | Radial damage at a projectile's impact point. It is currently valid only with `resolution: "projectile"`; hitscan weapons must omit it. |
 | `creditSource` | `string` (optional) | Combat attribution source id for damage caused by this weapon. Must be non-empty ASCII, at most 64 bytes, and use only `A-Z`, `a-z`, `0-9`, `_`, `.`, `:`, or `-`. If omitted, the engine uses the resolved canonical weapon name; if no canonical name is available, it uses a stable engine fallback. |
 | `resource` | `{ kind: "ammo", … }`, `{ kind: "heat", … }`, or `{ kind: "cell", … }` (optional) | What each shot spends. Omit the block for unlimited fire. The three kinds are described below the table. |
+
+### Weapon activations
+
+Import `activation` from `"postretro"` in TypeScript. In Luau, use
+`local Postretro = require("postretro")` and `Postretro.activation`; the bare
+`activation` global is also available. The namespace builds plain data during
+setup. The engine binds numeric expressions when installing the descriptor,
+then executes without a live script callback.
+
+An action has `{ trigger, recoveryMs, steps, charge?, sounds?, emits? }`:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `trigger` | `"press" \| "hold"` | `press` starts once per fresh press. `hold` repeats after execution and recovery finish while held. A charged action requires `press`. |
+| `recoveryMs` | `number` | Shared start-gate recovery after each accepted shot, in finite milliseconds `[0, 60000]`. Zero is allowed. Remaining recovery survives completion or cancellation. |
+| `steps` | `ActivationStepDescriptor[]` | At most 64 steps and 16 shots. First and last must be shots, with at least one positive wait between shots. |
+| `charge` | `{ minMs, fullMs }` (optional) | Finite milliseconds: `0 <= minMs <= fullMs`, `0 < fullMs <= 60000`. Press starts charge; release before `minMs` cancels without spending. Other releases execute using frozen charge. Holding at full charge does not fire. |
+| `sounds` | `{ fire?, impact? }` (optional) | Each authored field overrides the weapon's sound default for that action. A delayed impact uses its originating action's sound. |
+| `emits` | `{ activate?, impact? }` (optional) | Adds named reaction dispatch alongside each built-in event. Aliases must be non-empty, at most 256 UTF-8 bytes, and differ from `activate` or `impact` respectively. |
+
+Descriptor sound keys, including weapon defaults/action overrides and AI attack sounds, are limited to 256 UTF-8 bytes so reliable observer cues preserve every valid authored key.
+
+`activation.shot({ scale? })` emits `{ kind: "shot", scale? }`.
+`activation.wait(ms)` emits `{ kind: "wait", durationMs: ms }`. Waits must be
+finite, positive, and at most 60000 ms. Each rounds up to whole fixed ticks,
+with a minimum of one tick; total quantized waits cannot exceed 60 seconds.
+There is no burst mode or repetition opcode. Assemble ordinary shot/wait steps
+with author-time language composition.
+
+```typescript
+// reference_rifle: automatic primary and one three-shot secondary execution.
+primary: { trigger: "hold", recoveryMs: 110, steps: [activation.shot()] },
+secondary: {
+  trigger: "press",
+  recoveryMs: 300,
+  steps: [
+    activation.shot(), activation.wait(80),
+    activation.shot(), activation.wait(80),
+    activation.shot(),
+  ],
+},
+
+// reference_plasma_bolt: base damage 10 and cell cost 5.
+secondary: {
+  trigger: "press",
+  recoveryMs: 400,
+  charge: { minMs: 200, fullMs: 1000 },
+  steps: [activation.shot({ scale: {
+    damage: activation.charge.times(9).plus(1),
+    resourceCost: activation.charge.times(9).plus(1),
+    projectileSize: activation.charge.plus(1),
+  } })],
+},
+```
+
+Luau fluent methods use `:`:
+
+```lua
+local Postretro = require("postretro")
+local activation = Postretro.activation
+local secondary = {
+  trigger = "press",
+  recoveryMs = 400,
+  charge = { minMs = 200, fullMs = 1000 },
+  steps = { activation.shot({ scale = {
+    damage = activation.charge:times(9):plus(1),
+    resourceCost = activation.charge:times(9):plus(1),
+    projectileSize = activation.charge:plus(1),
+  } }) },
+}
+```
+
+The only numeric input in this scope is `charge`, exposed by
+`activation.charge` as a `NumberRef`. It is elapsed start-to-release time divided
+by `fullMs`, clamped to `[0, 1]`; an uncharged action reads 1. Scale expressions
+cannot read or write the state store, use randomness, or retain callbacks. Use
+`activation.shot()` to lower fluent refs into raw IR: putting a `NumberRef`
+directly into a hand-built raw `{ kind: "shot" }` record does not serialize it.
+Numeric `runtime.*` expressions and finite literals are also accepted by the
+builder; Rust checks their result type and input scope when content installs.
+
+| Scale field | Finite domain | Effect |
+|-------------|---------------|--------|
+| `damage` | `[0, 64]` | Multiplies direct or splash damage once. |
+| `range` | `(0, 64]` | Multiplies hitscan distance or projectile travel cap. |
+| `projectileSpeed` | `(0, 64]` | Multiplies travel speed. |
+| `projectileRadius` | `(0, 64]` | Multiplies swept collision radius. |
+| `projectileSize` | `(0, 64]` | Multiplies visual size independently of collision and splash radius. |
+| `knockbackSpeed` | `[0, 64]` | Multiplies direct and splash knockback speed. |
+| `resourceCost` | `(0, 64]` | Multiplies ammo, heat, or cell cost per shot. Positive scaled ammo cost rounds up to an integer; heat and cell keep fractional cost. |
+
+Omitted scales use 1. Damage, resource cost, and visual size are independent.
+The full plasma example reaches 100 damage, 50 cell cost, and twice the visual
+size; the 10× multiplier is authored content, not an engine charge rule.
+Changing only damage to `activation.charge.times(2).plus(1)` yields 3× damage,
+or `activation.charge.times(5).plus(1)` yields 6×, with the other scales unchanged.
+
+Malformed structure, non-finite numbers, invalid literal scales, unknown keys,
+and expressions outside the charge scope reject content at installation. The
+engine validates evaluated scales and final scaled values before spending;
+invalid values, overflow, or invalid integer ammo conversion cancel execution
+and warn once per descriptor/field. Resources are spent per accepted shot,
+never for waits or cancelled charge.
+
+One execution owns the weapon. Secondary wins simultaneous fresh starts;
+neither action interrupts an execution. A blocked press is consumed, while a
+hold action can start when idle. A normal sequence continues after release.
+Reload press, switching, dropping, death, input suspension, disconnect, level
+change, and descriptor replacement cancel charge and remaining steps without
+refunding previous shots or clearing recovery already owed.
 
 ### Weapon resources
 
@@ -325,8 +434,7 @@ feature.
 weapon: {
   damage: 36,
   range: 128,
-  fireRateMs: 750,
-  fireMode: "semi",
+  primary: { trigger: "press", recoveryMs: 750, steps: [activation.shot()] },
   resolution: "projectile",
   projectile: {
     speed: 40,          // metres/sec; finite and > 0
@@ -2174,6 +2282,16 @@ so stale feedback does not replay indefinitely. Ammo always publishes the latest
 authoritative count.
 
 ### The readonly weapon-resource slots
+
+`player.weaponCharging` is a local readonly boolean for the active weapon's
+charging action. `player.weaponChargeProgress` is its readonly progress from `0`
+to `1`, sampled from fixed simulation ticks on both host and connected client.
+Bind a `Bar` to the progress with `max: 1` and show it with
+`visibleWhen: stateEquals(player.weaponCharging, true)`. Release, cancellation,
+switching, death, and becoming unarmed clear both values. Input suspension hides
+the captured charge immediately even when a rendered frame runs no simulation
+tick; render-only frames never advance progress. These facts describe action
+charging separately from the weapon's cell resource below.
 
 These slots describe the resource of the weapon you're holding. They are readonly, engine-owned, and visible only to the owning player. They follow the pattern the health bar uses: a raw value plus a companion maximum, so a `Bar` binds the value and takes its `max` from the capacity slot.
 

@@ -259,9 +259,9 @@ pub(crate) mod tests {
     use postretro_entities::{
         AirParams, BehaviorActivityDescriptor, BehaviorGraphDescriptor, BehaviorGraphEnvelope,
         CapsuleParams, EntityTypeDescriptor, FactionRegistry, FactionSentimentDescriptor,
-        FactionSentimentState, FallParams, FireMode, GroundParams, HealthDescriptor,
-        ImpactEventDescriptor, MeshDescriptor, MotionVerb, PlayerMovementDescriptor,
-        PrimitiveDescriptor, ReactionDescriptor, ScopedReaction, SpeedParams, WeaponDescriptor,
+        FactionSentimentState, FallParams, GroundParams, HealthDescriptor, ImpactEventDescriptor,
+        MeshDescriptor, MotionVerb, PlayerMovementDescriptor, PrimitiveDescriptor,
+        ReactionDescriptor, ScopedReaction, SpeedParams, WeaponDescriptor,
     };
     use postretro_foundation::ir::{IrNode, IrValue};
     use postretro_scripting_core::data_descriptors::{ModFontAssets, ModThemeTokens};
@@ -493,8 +493,11 @@ pub(crate) mod tests {
             movement_spread_degrees: 0.0,
             spread_vertical_bias: 0.0,
             range: 64.0,
-            cooldown_ms: 100.0,
-            fire_mode: FireMode::Semi,
+            primary: postretro_foundation::WeaponActivationDescriptor::single(
+                postretro_foundation::ActivationTrigger::Press,
+                100.0,
+            ),
+            secondary: None,
             resolution: postretro_entities::ResolutionMode::Hitscan,
             projectile: None,
             splash: None,

@@ -4,7 +4,9 @@
 use postretro_entities::components::inventory::WIELDABLE_SLOT_CAPACITY;
 use postretro_entities::{AmmoReserve, EntityId, EntityRegistry};
 use postretro_foundation::{
-    FireMode, PlayerMovementDescriptor, ResolutionMode, WeaponPlacementDescriptor,
+    KnockbackDescriptor, PlayerMovementDescriptor, ProjectileDescriptor, ResolutionMode,
+    SplashDescriptor, WeaponActivationDescriptor, WeaponDescriptor, WeaponPlacementDescriptor,
+    WeaponResource,
 };
 use serde::{Deserialize, Serialize};
 
@@ -52,7 +54,7 @@ pub fn restore_carried_health(
 
 /// Bump whenever the payload's semantic contract changes. This is independent
 /// of the bitcode wire version because the payload itself is JSON.
-pub const TUNING_PAYLOAD_EPOCH: u32 = 9;
+pub const TUNING_PAYLOAD_EPOCH: u32 = 10;
 
 /// Host-resolved values for one occupied wieldable slot.
 ///
@@ -68,7 +70,13 @@ pub struct WieldableTuningPayload {
     /// `placement` from this same row rather than consulting local content.
     pub muzzle_offset: Option<[f32; 3]>,
     pub range: f32,
-    pub cooldown_ms: f32,
+    pub primary: WeaponActivationDescriptor,
+    pub secondary: Option<WeaponActivationDescriptor>,
+    pub damage: f32,
+    pub knockback: Option<KnockbackDescriptor>,
+    pub projectile: Option<ProjectileDescriptor>,
+    pub splash: Option<SplashDescriptor>,
+    pub resource: Option<WeaponResource>,
     pub pellet_count: u32,
     pub spread_degrees: f32,
     pub bloom_per_shot_degrees: f32,
@@ -77,10 +85,67 @@ pub struct WieldableTuningPayload {
     pub bloom_decay_delay_ms: f32,
     pub movement_spread_degrees: f32,
     pub spread_vertical_bias: f32,
-    pub fire_mode: FireMode,
     pub resolution: ResolutionMode,
     pub lower_ms: u32,
     pub raise_ms: u32,
+    pub block_during_reload: Option<bool>,
+}
+
+impl WieldableTuningPayload {
+    pub fn resource_from_weapon(
+        weapon: &postretro_entities::components::weapon::WeaponComponent,
+    ) -> Option<WeaponResource> {
+        if let Some(ammo) = &weapon.ammo {
+            Some(WeaponResource::Ammo(postretro_foundation::AmmoResource {
+                ammo_type: ammo.ammo_type.clone(),
+                magazine: ammo.capacity,
+                cost_per_shot: ammo.cost_per_shot,
+                reserve: 0,
+                reload_ms: ammo.reload_ms,
+                reload_style: ammo.reload_style,
+            }))
+        } else if let Some(heat) = &weapon.heat {
+            Some(WeaponResource::Heat(heat.tuning))
+        } else {
+            weapon.cell.map(|cell| WeaponResource::Cell(cell.tuning))
+        }
+    }
+    /// Project host-owned gameplay bases and expressions into a validated descriptor.
+    pub fn weapon_descriptor(&self) -> WeaponDescriptor {
+        WeaponDescriptor {
+            damage: self.damage,
+            knockback: self.knockback,
+            range: self.range,
+            primary: self.primary.clone(),
+            secondary: self.secondary.clone(),
+            pellet_count: self.pellet_count,
+            spread_degrees: self.spread_degrees,
+            bloom_per_shot_degrees: self.bloom_per_shot_degrees,
+            bloom_max_degrees: self.bloom_max_degrees,
+            bloom_decay_degrees_per_second: self.bloom_decay_degrees_per_second,
+            bloom_decay_delay_ms: self.bloom_decay_delay_ms,
+            movement_spread_degrees: self.movement_spread_degrees,
+            spread_vertical_bias: self.spread_vertical_bias,
+            resolution: self.resolution,
+            projectile: self.projectile.clone(),
+            splash: self.splash.clone(),
+            resource: self.resource.clone(),
+            lower_ms: self.lower_ms,
+            raise_ms: self.raise_ms,
+            credit_source: None,
+            third_person_model: None,
+            viewmodel: None,
+            sounds: None,
+            placement: None,
+            muzzle_offset: self.muzzle_offset,
+            block_during_reload: self.block_during_reload,
+        }
+    }
+
+    pub fn validate(&self) -> Result<(), postretro_foundation::DescriptorError> {
+        self.placement.validate()?;
+        self.weapon_descriptor().validate().map(|_| ())
+    }
 }
 
 /// Host-resolved tuning for one participating pawn.
@@ -89,7 +154,8 @@ pub struct WieldableTuningPayload {
 /// wieldable array is capacity-sized so a slot's identity survives empty
 /// positions. `movement.view_feel` and `movement.sounds` are always cleared
 /// because they are local presentation rather than predicted simulation tuning;
-/// no sound key crosses the wire.
+/// this tuning payload omits sound keys. Observer cues carry frozen effective
+/// sound keys separately.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TuningPayload {
     epoch: u32,
@@ -100,11 +166,17 @@ pub struct TuningPayload {
 impl TuningPayload {
     pub fn new(
         mut movement: Option<PlayerMovementDescriptor>,
-        wieldables: [Option<WieldableTuningPayload>; WIELDABLE_SLOT_CAPACITY],
+        mut wieldables: [Option<WieldableTuningPayload>; WIELDABLE_SLOT_CAPACITY],
     ) -> Self {
         if let Some(descriptor) = movement.as_mut() {
             descriptor.view_feel = None;
             descriptor.sounds = None;
+        }
+        for weapon in wieldables.iter_mut().flatten() {
+            weapon.primary.sounds = None;
+            if let Some(secondary) = &mut weapon.secondary {
+                secondary.sounds = None;
+            }
         }
         Self {
             epoch: TUNING_PAYLOAD_EPOCH,

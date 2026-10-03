@@ -35,7 +35,7 @@ use postretro_entities::{
     SlotSchema, SlotTable, SlotType, SlotValue, Transform,
 };
 use postretro_foundation::{
-    AmmoResource, FireMode, HealthDescriptor, IrNode, ProjectileBodyVisual, ProjectileDescriptor,
+    AmmoResource, HealthDescriptor, IrNode, ProjectileBodyVisual, ProjectileDescriptor,
     ProjectileVisual, ReloadStyle, ResolutionMode, SplashDescriptor, WeaponDescriptor,
     WeaponResource,
 };
@@ -164,8 +164,11 @@ fn spawn_owned_ammo_weapons(registry: &mut EntityRegistry, pawn: EntityId) -> (E
             movement_spread_degrees: 0.0,
             spread_vertical_bias: 0.0,
             range: 64.0,
-            cooldown_ms: 100.0,
-            fire_mode: FireMode::Semi,
+            primary: postretro_foundation::WeaponActivationDescriptor::single(
+                postretro_foundation::ActivationTrigger::Press,
+                100.0,
+            ),
+            secondary: None,
             resolution: ResolutionMode::Hitscan,
             projectile: None,
             splash: None,

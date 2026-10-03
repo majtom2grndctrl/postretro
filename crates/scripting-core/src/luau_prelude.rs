@@ -56,6 +56,13 @@ const TRIGGERS_LUAU_SRC: &str = include_str!("../../../sdk/lib/entities/triggers
 /// returns.
 const DATA_SCRIPT_LUAU_SRC: &str = include_str!("../../../sdk/lib/data_script.luau");
 
+/// Private identity-map implementation shared by the pure descriptor builders.
+const EXPRESSION_REFS_LUAU_SRC: &str = include_str!("../../../sdk/lib/util/expression_refs.luau");
+const EXPRESSION_REFS_GLOBAL: &str = "__postretroExpressionRefs";
+
+/// Frozen weapon-action namespace, shared by global and virtual-module exports.
+const ACTIVATION_LUAU_SRC: &str = include_str!("../../../sdk/lib/activation.luau");
+
 /// Temporary bridge captured by `data_script.luau` so descriptor arrays retain
 /// their sequence shape even when empty. The SDK clears it before author code runs.
 const ARRAY_METATABLE_GLOBAL: &str = "__postretroArrayMetatable";
@@ -316,6 +323,7 @@ pub const POSTRETRO_UI_MODULE_EXPORTS: &[&str] = &[
 pub const POSTRETRO_ROOT_MODULE_EXPORTS: &[&str] = &[
     "world",
     "runtime",
+    "activation",
     "getGameState",
     "timeline",
     "sequence",
@@ -629,6 +637,22 @@ pub fn evaluate_prelude(
             })?;
     }
 
+    // Share the private fluent-ref identity map between data and activation
+    // builders. Each captures the functions before the bridge is hidden.
+    let expression_refs: Table = lua
+        .load(EXPRESSION_REFS_LUAU_SRC)
+        .set_name("postretro/sdk/util/expression_refs.luau")
+        .eval()
+        .map_err(|e| ScriptError::ScriptThrew {
+            msg: format!("failed to evaluate SDK prelude `util/expression_refs.luau`: {e}"),
+            source_name: "sdk/lib/util/expression_refs.luau".to_string(),
+        })?;
+    globals
+        .set(EXPRESSION_REFS_GLOBAL, expression_refs)
+        .map_err(|e| ScriptError::InvalidArgument {
+            reason: format!("failed to install temporary expression-ref bridge: {e}"),
+        })?;
+
     // Step 7: evaluate `data_script.luau` and lift its fields to globals. The
     // private array metatable lets pure builders distinguish empty descriptor
     // arrays from empty descriptor maps when the result crosses through serde.
@@ -663,6 +687,25 @@ pub fn evaluate_prelude(
                 reason: format!("failed to install global `{field}`: {e}"),
             })?;
     }
+
+    let activation: mlua::Value = lua
+        .load(ACTIVATION_LUAU_SRC)
+        .set_name("postretro/sdk/activation.luau")
+        .eval()
+        .map_err(|e| ScriptError::ScriptThrew {
+            msg: format!("failed to evaluate SDK prelude `activation.luau`: {e}"),
+            source_name: "sdk/lib/activation.luau".to_string(),
+        })?;
+    globals
+        .set("activation", activation.clone())
+        .map_err(|e| ScriptError::InvalidArgument {
+            reason: format!("failed to install global `activation`: {e}"),
+        })?;
+    globals
+        .set(EXPRESSION_REFS_GLOBAL, mlua::Value::Nil)
+        .map_err(|e| ScriptError::InvalidArgument {
+            reason: format!("failed to clear temporary expression-ref bridge: {e}"),
+        })?;
 
     // Step 7b: evaluate `ui/reactions.luau` for the `postretro/ui` virtual
     // module. Do not lift its fields to globals: Task 1 of the UI SDK split
@@ -799,6 +842,7 @@ pub fn evaluate_prelude(
             LuauSdkExportInventory {
                 world,
                 runtime,
+                activation,
                 game_state_sdk,
                 brain_sdk,
                 keyframes_sdk,
@@ -821,6 +865,7 @@ pub fn evaluate_prelude(
 struct LuauSdkExportInventory {
     world: mlua::Value,
     runtime: mlua::Value,
+    activation: mlua::Value,
     game_state_sdk: Table,
     brain_sdk: Table,
     keyframes_sdk: Table,
@@ -947,6 +992,21 @@ fn populate_virtual_modules(
         "entities/emitters.luau",
     )?;
     virtual_modules.register_from_table(lua, "postretro", root_module)?;
+    // Fluent refs use table identity. Keep this already-frozen namespace as
+    // the same singleton as the bare global, rather than the registry's deep
+    // copy, so `Postretro.activation.charge` lowers even without a method call.
+    let root_module =
+        virtual_modules
+            .get("postretro")
+            .ok_or_else(|| ScriptError::InvalidArgument {
+                reason: "registered `postretro` virtual module is missing".to_string(),
+            })?;
+    root_module.set_readonly(false);
+    let result = root_module.set("activation", inventory.activation);
+    root_module.set_readonly(true);
+    result.map_err(|e| ScriptError::InvalidArgument {
+        reason: format!("failed to set `postretro.activation` singleton export: {e}"),
+    })?;
 
     Ok(())
 }
@@ -980,6 +1040,10 @@ mod tests {
     #[test]
     fn data_script_export_inventory_matches_returned_sdk_fields() {
         let lua = Lua::new();
+        let expression_refs: Table = lua.load(EXPRESSION_REFS_LUAU_SRC).eval().unwrap();
+        lua.globals()
+            .set(EXPRESSION_REFS_GLOBAL, expression_refs)
+            .unwrap();
         let sdk: Table = lua
             .load(DATA_SCRIPT_LUAU_SRC)
             .set_name("postretro/sdk/data_script.luau")
@@ -1004,8 +1068,43 @@ mod tests {
     }
 
     #[test]
+    fn activation_global_and_module_share_refs_and_hide_private_bridge() {
+        let lua = Lua::new();
+        let modules = LuauVirtualModuleRegistry::new();
+        evaluate_prelude(&lua, Some(&modules)).expect("SDK prelude must evaluate");
+        lua.globals()
+            .set("Postretro", modules.get("postretro").unwrap())
+            .unwrap();
+        let steps: Table = lua
+            .load(
+                r#"
+                assert(__postretroExpressionRefs == nil)
+                assert(activation == Postretro.activation)
+                local direct = Postretro.activation.shot({ scale = { damage = Postretro.activation.charge } })
+                local fluent = activation.shot({ scale = { damage = activation.charge:times(9):plus(1) } })
+                local lifted = activation.shot({ scale = { resourceCost = fromRuntime.number({ op = "input", name = "charge" }):plus(1) } })
+                return { direct, fluent, lifted, activation.wait(80) }
+                "#,
+            )
+            .eval()
+            .expect("activation builders must share the fluent lowering map");
+        let value: serde_json::Value = lua.from_value(mlua::Value::Table(steps)).unwrap();
+        assert_eq!(
+            value[0]["scale"]["damage"],
+            serde_json::json!({ "op": "input", "name": "charge" })
+        );
+        assert_eq!(value[1]["scale"]["damage"]["a"]["op"], "mul");
+        assert_eq!(value[1]["scale"]["damage"]["b"]["value"], 1);
+        assert_eq!(value[2]["scale"]["resourceCost"]["op"], "add");
+        assert_eq!(
+            value[3],
+            serde_json::json!({ "kind": "wait", "durationMs": 80 })
+        );
+    }
+
+    #[test]
     fn root_module_export_inventory_matches_composed_runtime_fields() {
-        let expected = ["world", "runtime"]
+        let expected = ["world", "runtime", "activation"]
             .into_iter()
             .chain(GAME_STATE_FIELDS.iter().copied())
             .chain(BRAIN_LUAU_FIELDS.iter().copied())

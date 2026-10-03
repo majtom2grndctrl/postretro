@@ -16,6 +16,8 @@ pub(crate) enum TuningPayloadError {
         #[source]
         source: serde_json::Error,
     },
+    #[error("tuning payload has invalid weapon data: {0}")]
+    InvalidWeapon(postretro_foundation::DescriptorError),
     #[error("tuning payload epoch mismatch: expected {expected}, received {received}")]
     EpochMismatch { expected: u32, received: u32 },
 }
@@ -59,6 +61,15 @@ pub(crate) fn decode_tuning_payload(data: &[u8]) -> Result<TuningPayload, Tuning
         descriptor.view_feel = None;
         descriptor.sounds = None;
     }
+    for weapon in payload.wieldables.iter_mut().flatten() {
+        weapon.primary.sounds = None;
+        if let Some(secondary) = &mut weapon.secondary {
+            secondary.sounds = None;
+        }
+        weapon
+            .validate()
+            .map_err(TuningPayloadError::InvalidWeapon)?;
+    }
     Ok(payload)
 }
 
@@ -70,7 +81,7 @@ mod tests {
     use postretro_combat_model::WieldableTuningPayload;
     use postretro_entities::components::inventory::WIELDABLE_SLOT_CAPACITY;
     use postretro_foundation::{
-        AirParams, BoolOrIr, CapsuleParams, DashParams, FallParams, FireMode, ForgivenessParams,
+        AirParams, BoolOrIr, CapsuleParams, DashParams, FallParams, ForgivenessParams,
         GroundParams, NumberOrIr, PlayerMovementDescriptor, ResolutionMode, SlideParams,
         SlideViewParams, SpeedParams, ViewFeelParams, WeaponPlacementDescriptor,
     };
@@ -78,7 +89,7 @@ mod tests {
     use super::*;
 
     const BLESS_ENV: &str = "POSTRETRO_BLESS_COMPATIBILITY_FIXTURES";
-    const FIXTURE_PATH: &str = "src/netcode/tests/fixtures/tuning_payload.expected.json";
+    const FIXTURE_PATH: &str = "src/tests/fixtures/tuning_payload.expected.json";
 
     fn movement_descriptor() -> PlayerMovementDescriptor {
         PlayerMovementDescriptor {
@@ -161,7 +172,16 @@ mod tests {
             placement: WeaponPlacementDescriptor::default(),
             muzzle_offset: Some([0.1, -0.2, -0.7]),
             range: 128.0,
-            cooldown_ms: 125.0,
+            primary: postretro_foundation::WeaponActivationDescriptor::single(
+                postretro_foundation::ActivationTrigger::Hold,
+                125.0,
+            ),
+            secondary: None,
+            damage: 10.0,
+            knockback: None,
+            projectile: None,
+            splash: None,
+            resource: None,
             pellet_count: 1,
             spread_degrees: 0.0,
             bloom_per_shot_degrees: 1.5,
@@ -170,17 +190,26 @@ mod tests {
             bloom_decay_delay_ms: 175.0,
             movement_spread_degrees: 3.0,
             spread_vertical_bias: 0.2,
-            fire_mode: FireMode::Auto,
             resolution: ResolutionMode::Hitscan,
             lower_ms: 40,
             raise_ms: 60,
+            block_during_reload: None,
         });
         slots[2] = Some(WieldableTuningPayload {
             canonical_name: "ion_rifle".to_string(),
             placement: WeaponPlacementDescriptor::default(),
             muzzle_offset: None,
             range: 256.0,
-            cooldown_ms: 240.0,
+            primary: postretro_foundation::WeaponActivationDescriptor::single(
+                postretro_foundation::ActivationTrigger::Press,
+                240.0,
+            ),
+            secondary: None,
+            damage: 10.0,
+            knockback: None,
+            projectile: None,
+            splash: None,
+            resource: None,
             pellet_count: 8,
             spread_degrees: 4.0,
             bloom_per_shot_degrees: 2.0,
@@ -189,10 +218,10 @@ mod tests {
             bloom_decay_delay_ms: 250.0,
             movement_spread_degrees: 4.0,
             spread_vertical_bias: 0.5,
-            fire_mode: FireMode::Semi,
             resolution: ResolutionMode::Hitscan,
             lower_ms: 75,
             raise_ms: 90,
+            block_during_reload: None,
         });
         slots
     }
@@ -225,7 +254,8 @@ mod tests {
         let encoded = encode_tuning_payload(&payload);
         let json: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
         assert!(json["movement"]["view_feel"].is_null());
-        // No sound key crosses the wire (`audio.md` §4).
+        // This tuning payload omits sound keys; observer cues transport frozen
+        // effective keys separately (`audio.md` §4).
         assert!(json["movement"]["sounds"].is_null());
         assert_eq!(json["movement"]["slide"]["min_speed"], 8.0);
         let wieldables = json["wieldables"].as_array().unwrap();
@@ -305,14 +335,14 @@ mod tests {
     fn payload_rejects_previous_epoch() {
         let mut json: serde_json::Value =
             serde_json::from_slice(&encode_tuning_payload(&full_payload())).unwrap();
-        json["epoch"] = serde_json::json!(8);
+        json["epoch"] = serde_json::json!(9);
         let previous_epoch = serde_json::to_vec(&json).unwrap();
 
         assert!(matches!(
             decode_tuning_payload(&previous_epoch),
             Err(TuningPayloadError::EpochMismatch {
-                expected: 9,
-                received: 8,
+                expected: 10,
+                received: 9,
             })
         ));
     }
@@ -331,5 +361,79 @@ mod tests {
             include_str!("tests/fixtures/tuning_payload.expected.json").trim_end_matches('\n'),
             "tuning payload JSON changed; bump TUNING_PAYLOAD_EPOCH for a semantic payload change, or re-bless with {BLESS_ENV}=1 for a non-semantic rendering change"
         );
+    }
+    #[test]
+    fn payload_carries_host_scale_bases_and_charge_expression_and_rejects_other_scope() {
+        use postretro_foundation::{
+            ActivationCharge, ActivationStepDescriptor, ActivationTrigger, CellResource,
+            CompiledActivation, IrNode, IrValue, ShotScaleDescriptor, WeaponActivationDescriptor,
+            WeaponResource,
+        };
+        let mut payload = full_payload();
+        let row = payload.wieldables[0].as_mut().unwrap();
+        row.damage = 13.0;
+        row.range = 230.0;
+        row.block_during_reload = Some(true);
+        row.resource = Some(WeaponResource::Cell(CellResource {
+            capacity: 100.0,
+            cost_per_shot: 7.0,
+            regen_per_second: 2.0,
+            regen_delay_ms: 500.0,
+        }));
+        row.resolution = ResolutionMode::Projectile;
+        row.projectile = Some(
+            serde_json::from_value(serde_json::json!({
+                "speed":57.0,"radius":0.25,"lifetimeMs":2500.0,
+                "visual":{"body":{"kind":"sprite","sprite":"effects/host-bolt","size":2.0}}
+            }))
+            .unwrap(),
+        );
+        let mut secondary = WeaponActivationDescriptor::single(ActivationTrigger::Press, 400.0);
+        secondary.charge = Some(ActivationCharge {
+            min_ms: 200.0,
+            full_ms: 1000.0,
+        });
+        secondary.steps = vec![ActivationStepDescriptor::Shot {
+            scale: Box::new(ShotScaleDescriptor {
+                damage: NumberOrIr::Ir(IrNode::Add {
+                    a: Box::new(IrNode::Mul {
+                        a: Box::new(IrNode::Input {
+                            name: "charge".into(),
+                            owner: None,
+                        }),
+                        b: Box::new(IrNode::Const {
+                            value: IrValue::Number(5.0),
+                        }),
+                    }),
+                    b: Box::new(IrNode::Const {
+                        value: IrValue::Number(1.0),
+                    }),
+                }),
+                ..Default::default()
+            }),
+        }];
+        row.secondary = Some(secondary);
+        let encoded = encode_tuning_payload(&payload);
+        let decoded = decode_tuning_payload(&encoded).unwrap();
+        assert_eq!(decoded, payload);
+        let row = decoded.wieldables[0].as_ref().unwrap();
+        assert_eq!(row.block_during_reload, Some(true));
+        assert_eq!(row.projectile.as_ref().unwrap().speed, 57.0);
+        assert_eq!(row.damage, 13.0);
+        assert_eq!(
+            row.resource,
+            payload.wieldables[0].as_ref().unwrap().resource
+        );
+        let compiled =
+            CompiledActivation::compile(row.secondary.as_ref().unwrap(), "fixture.secondary")
+                .unwrap();
+        assert_eq!(compiled.resolve_scales(0, 1.0).unwrap().damage, 6.0);
+        let mut invalid: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
+        invalid["wieldables"][0]["secondary"]["steps"][0]["scale"]["damage"] =
+            serde_json::json!({"op":"input","name":"player.health"});
+        assert!(matches!(
+            decode_tuning_payload(&serde_json::to_vec(&invalid).unwrap()),
+            Err(TuningPayloadError::InvalidWeapon(_))
+        ));
     }
 }

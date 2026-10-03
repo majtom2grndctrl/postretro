@@ -706,6 +706,28 @@ impl NetServer {
         self.server.send_message(client_id, Channel::Input, payload);
     }
 
+    /// Reliable observer facts belong to exactly this participation generation.
+    pub fn send_weapon_cues(&mut self, client_id: ClientId, cues: Vec<wire::WeaponCue>) -> bool {
+        if !self.is_participating(client_id) {
+            return false;
+        }
+        let Some(participation_epoch) = self.participation_epochs.get(&client_id).copied() else {
+            return false;
+        };
+        let message = wire::WeaponCuesMessage {
+            participation_epoch,
+            cues,
+        };
+        if !message.is_valid() {
+            return false;
+        }
+        self.send_input(
+            client_id,
+            wire::encode(&wire::ServerMessage::WeaponCues(message)),
+        );
+        true
+    }
+
     /// Send one transient server presentation event to its exact recipient.
     ///
     /// Presentation is intentionally not participation-framed and has no
@@ -1018,6 +1040,16 @@ impl NetClient {
 
     pub fn drain_input(&mut self) -> Vec<Vec<u8>> {
         drain_client_channel(&mut self.client, Channel::Input)
+            .into_iter()
+            .filter(|bytes| match wire::decode::<wire::ServerMessage>(bytes) {
+                Ok(wire::ServerMessage::WeaponCues(message)) => {
+                    self.client.is_connected()
+                        && self.active_participation_epoch == Some(message.participation_epoch)
+                        && message.is_valid()
+                }
+                _ => true,
+            })
+            .collect()
     }
 
     pub fn drain_snapshots(&mut self) -> Vec<Vec<u8>> {
@@ -1357,6 +1389,107 @@ mod tests {
         assert!(server.send_presentation(RELAY_CLIENT_ID, current.clone()));
         relay_server_to_client(&mut server, &mut client);
         assert_eq!(client.drain_presentation(), vec![current]);
+    }
+
+    fn observer_cue(ordinal: u8) -> wire::WeaponCue {
+        wire::WeaponCue {
+            shot_id: wire::WireShotId {
+                pawn: 7,
+                start_tick: 20,
+                lane: 1,
+                ordinal,
+            },
+            kind: wire::WeaponCueKind::Activate,
+            sound: Some("alt_fire".into()),
+            additional_sound: None,
+            alias: Some("alt_activate".into()),
+            anchor: wire::WeaponCueAnchor::Entity {
+                entity: wire::NetworkId(7),
+                origin: [1.0, 2.0, 3.0],
+            },
+        }
+    }
+
+    #[test]
+    fn weapon_cues_reliable_delivery_survives_loss_duplicate_and_reordered_packets_once() {
+        let (mut server, mut client) = participate_relay_pair();
+        relay_server_to_client(&mut server, &mut client);
+        let _ = client.drain_control();
+        assert!(server.send_weapon_cues(RELAY_CLIENT_ID, vec![observer_cue(0)]));
+        let lost = server.packets_to_send(RELAY_CLIENT_ID);
+        assert!(!lost.is_empty());
+        assert!(server.send_weapon_cues(RELAY_CLIENT_ID, vec![observer_cue(1)]));
+        server.update_connections(Duration::from_millis(400));
+        let mut packets = server.packets_to_send(RELAY_CLIENT_ID);
+        packets.reverse();
+        for packet in &packets {
+            client.process_packet(packet);
+            client.process_packet(packet);
+        }
+        // Any earlier lost packet that arrives late must also be inert.
+        for packet in lost {
+            client.process_packet(&packet);
+        }
+        let messages: Vec<_> = client
+            .drain_input()
+            .into_iter()
+            .filter_map(
+                |bytes| match wire::decode::<wire::ServerMessage>(&bytes).unwrap() {
+                    wire::ServerMessage::WeaponCues(message) => Some(message),
+                    _ => None,
+                },
+            )
+            .collect();
+        let ordinals: Vec<_> = messages
+            .into_iter()
+            .flat_map(|message| message.cues)
+            .map(|cue| cue.shot_id.ordinal)
+            .collect();
+        assert_eq!(ordinals, [0, 1]);
+        assert!(client.drain_input().is_empty());
+    }
+
+    #[test]
+    fn weapon_cues_ignore_retired_participation_and_malformed_payloads() {
+        let (mut server, mut client) = participate_relay_pair();
+        relay_server_to_client(&mut server, &mut client);
+        let _ = client.drain_control();
+        let old_epoch = client.active_participation_epoch.unwrap();
+        assert!(server.send_weapon_cues(RELAY_CLIENT_ID, vec![observer_cue(0)]));
+        let delayed = server.packets_to_send(RELAY_CLIENT_ID);
+        server.set_level_parity(None);
+        let _ = server.poll_handshakes();
+        relay_server_to_client(&mut server, &mut client);
+        let _ = client.drain_control();
+        assert!(!server.send_weapon_cues(RELAY_CLIENT_ID, vec![observer_cue(1)]));
+        server.set_level_parity(Some(("test-level".into(), [9; 32])));
+        let _ = server.poll_handshakes();
+        relay_server_to_client(&mut server, &mut client);
+        let _ = client.drain_control();
+        assert_ne!(client.active_participation_epoch, Some(old_epoch));
+        for packet in delayed {
+            client.process_packet(&packet);
+        }
+        assert!(client.drain_input().is_empty());
+        let mut invalid = observer_cue(0);
+        invalid.shot_id.lane = 7;
+        let epoch = client.active_participation_epoch.unwrap();
+        server.send_input(
+            RELAY_CLIENT_ID,
+            wire::encode(&wire::ServerMessage::WeaponCues(wire::WeaponCuesMessage {
+                participation_epoch: epoch,
+                cues: vec![invalid],
+            })),
+        );
+        assert!(server.send_weapon_cues(RELAY_CLIENT_ID, vec![observer_cue(1)]));
+        server.update_connections(Duration::from_millis(400));
+        relay_server_to_client(&mut server, &mut client);
+        let accepted = client.drain_input();
+        assert_eq!(accepted.len(), 1);
+        let wire::ServerMessage::WeaponCues(message) = wire::decode(&accepted[0]).unwrap() else {
+            panic!("current cue");
+        };
+        assert_eq!(message.cues[0].shot_id.ordinal, 1);
     }
 
     #[test]

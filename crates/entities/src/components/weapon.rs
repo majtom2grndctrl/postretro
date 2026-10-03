@@ -12,8 +12,8 @@ use crate::components::weapon_resource::{
 };
 use crate::components::wieldable_state::WieldableState;
 use crate::data_descriptors::{
-    FireMode, KnockbackDescriptor, ProjectileDescriptor, ReloadStyle, ResolutionMode,
-    SplashDescriptor, WeaponDescriptor, WeaponResource,
+    KnockbackDescriptor, ProjectileDescriptor, ReloadStyle, ResolutionMode, SplashDescriptor,
+    WeaponDescriptor, WeaponResource,
 };
 
 pub const UNKNOWN_WEAPON_CREDIT_SOURCE: &str = "weapon.unknown";
@@ -39,8 +39,7 @@ pub struct EffectiveStats<'a> {
     pub pellet_count: u32,
     pub spread_degrees: f32,
     pub range: f32,
-    pub cooldown_ms: f32,
-    pub fire_mode: FireMode,
+    pub primary: &'a postretro_foundation::WeaponActivationDescriptor,
     pub resolution: ResolutionMode,
     pub projectile: Option<&'a ProjectileDescriptor>,
     pub splash: Option<&'a SplashDescriptor>,
@@ -267,6 +266,23 @@ impl ReloadFeedbackStream {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WeaponComponent {
+    /// Canonical installed descriptor identity, distinct from authored damage credit.
+    #[serde(default)]
+    pub descriptor_identity: std::sync::Arc<str>,
+    /// Controller clock for the active instance, independent of movement command progress.
+    #[serde(default)]
+    pub activation_clock: u32,
+    #[serde(default)]
+    pub last_activation_tick: Option<u32>,
+    #[serde(default)]
+    pub secondary_press_consumed: bool,
+    /// Installed presentation data is shared by tick-time component clones.
+    #[serde(default)]
+    pub sounds: Option<std::sync::Arc<postretro_foundation::WeaponSounds>>,
+    pub primary: std::sync::Arc<postretro_foundation::WeaponActivationDescriptor>,
+    pub secondary: Option<std::sync::Arc<postretro_foundation::WeaponActivationDescriptor>>,
+    #[serde(skip)]
+    pub activation_programs: postretro_foundation::WeaponActivationPrograms,
     pub damage: f32,
     #[serde(default)]
     pub knockback: Option<KnockbackDescriptor>,
@@ -287,8 +303,6 @@ pub struct WeaponComponent {
     #[serde(default)]
     pub spread_vertical_bias: f32,
     pub range: f32,
-    pub cooldown_ms: f32,
-    pub fire_mode: FireMode,
     pub resolution: ResolutionMode,
     #[serde(default)]
     pub projectile: Option<ProjectileDescriptor>,
@@ -350,6 +364,23 @@ pub struct WeaponComponent {
 }
 
 impl WeaponComponent {
+    /// Cancel only future activation work, preserving resources and recovery.
+    pub fn cancel_activation(&mut self) -> Option<postretro_foundation::ActivationToken> {
+        let cursor = self.state.activation_cursor()?;
+        self.state = WieldableState::Idle;
+        Some(cursor.token)
+    }
+
+    /// The generic attachment boundary reinstalls serde-skipped caches after a
+    /// component restore. Normal tick-time component clones already share them.
+    pub fn ensure_activation_programs(&mut self) {
+        if !self.activation_programs.is_installed() {
+            self.activation_programs = postretro_foundation::WeaponActivationPrograms::install(
+                &self.primary,
+                self.secondary.as_deref(),
+            );
+        }
+    }
     pub fn from_descriptor(desc: &WeaponDescriptor) -> Self {
         Self::from_descriptor_with_canonical(desc, None)
     }
@@ -362,6 +393,17 @@ impl WeaponComponent {
         let magazine = ammo.as_ref().map_or(0, |ammo| ammo.capacity);
         let (heat, cell) = fresh_heat_cell(desc);
         Self {
+            descriptor_identity: canonical_name.unwrap_or("weapon.unknown").into(),
+            activation_clock: 0,
+            last_activation_tick: None,
+            secondary_press_consumed: false,
+            sounds: desc.sounds.clone().map(std::sync::Arc::new),
+            primary: std::sync::Arc::new(desc.primary.clone()),
+            secondary: desc.secondary.clone().map(std::sync::Arc::new),
+            activation_programs: postretro_foundation::WeaponActivationPrograms::install(
+                &desc.primary,
+                desc.secondary.as_ref(),
+            ),
             damage: desc.damage,
             pellet_count: desc.pellet_count,
             spread_degrees: desc.spread_degrees,
@@ -372,8 +414,6 @@ impl WeaponComponent {
             movement_spread_degrees: desc.movement_spread_degrees,
             spread_vertical_bias: desc.spread_vertical_bias,
             range: desc.range,
-            cooldown_ms: desc.cooldown_ms,
-            fire_mode: desc.fire_mode,
             resolution: desc.resolution,
             projectile: desc.projectile.clone(),
             splash: desc.splash.clone(),
@@ -408,8 +448,7 @@ impl WeaponComponent {
             pellet_count: self.pellet_count,
             spread_degrees: self.spread_degrees,
             range: self.range,
-            cooldown_ms: self.cooldown_ms,
-            fire_mode: self.fire_mode,
+            primary: &self.primary,
             resolution: self.resolution,
             projectile: self.projectile.as_ref(),
             splash: self.splash.as_ref(),
@@ -462,6 +501,7 @@ impl WeaponComponent {
     }
 
     pub fn refresh_from_descriptor(&mut self, desc: &WeaponDescriptor) {
+        self.cancel_activation();
         self.damage = desc.damage;
         self.pellet_count = desc.pellet_count;
         self.spread_degrees = desc.spread_degrees;
@@ -472,8 +512,13 @@ impl WeaponComponent {
         self.movement_spread_degrees = desc.movement_spread_degrees;
         self.spread_vertical_bias = desc.spread_vertical_bias;
         self.range = desc.range;
-        self.cooldown_ms = desc.cooldown_ms;
-        self.fire_mode = desc.fire_mode;
+        self.sounds = desc.sounds.clone().map(std::sync::Arc::new);
+        self.primary = std::sync::Arc::new(desc.primary.clone());
+        self.secondary = desc.secondary.clone().map(std::sync::Arc::new);
+        self.activation_programs = postretro_foundation::WeaponActivationPrograms::install(
+            &desc.primary,
+            desc.secondary.as_ref(),
+        );
         self.resolution = desc.resolution;
         self.projectile = desc.projectile.clone();
         self.splash = desc.splash.clone();
@@ -486,9 +531,8 @@ impl WeaponComponent {
             self.credit_source = credit_source.clone();
         }
         self.refresh_resource(desc);
-        // Cooldown, input edges, magazine, state, timed-state fields, reload credit,
-        // shell counter, and bloom state are live instance state. Hot reload changes authored tuning,
-        // not the active state sample or whether this instance is mid-cooldown. An
+        // Hot reload preserves resources, recovery, equip/reload timing, input edges,
+        // shell counter and bloom; charge/execution was cancelled before installing tuning. An
         // absent `creditSource` also keeps the already-resolved spawn-time default so
         // canonical defaults do not regress to `weapon.unknown` on reload.
     }
@@ -645,8 +689,11 @@ mod tests {
             movement_spread_degrees: 0.0,
             spread_vertical_bias: 0.0,
             range,
-            cooldown_ms,
-            fire_mode: FireMode::Semi,
+            primary: postretro_foundation::WeaponActivationDescriptor::single(
+                postretro_foundation::ActivationTrigger::Press,
+                cooldown_ms,
+            ),
+            secondary: None,
             resolution: ResolutionMode::Hitscan,
             projectile: None,
             splash: None,
@@ -821,6 +868,67 @@ mod tests {
         let restored: WeaponComponent = serde_json::from_value(persisted).unwrap();
         assert!((restored.bloom_accumulator_degrees - 0.0).abs() < f32::EPSILON);
         assert!((restored.bloom_idle_ms - 0.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn weapon_sounds_share_installed_data_and_refresh_preserves_retained_component() {
+        let mut descriptor = descriptor(10.0, 20.0, 100.0);
+        descriptor.sounds = Some(postretro_foundation::WeaponSounds {
+            fire: Some("sfx/original_fire".into()),
+            impact: Some("sfx/original_hit".into()),
+            ..Default::default()
+        });
+        let mut component = WeaponComponent::from_descriptor(&descriptor);
+        let retained = component.clone();
+        assert!(std::sync::Arc::ptr_eq(
+            component.sounds.as_ref().unwrap(),
+            retained.sounds.as_ref().unwrap(),
+        ));
+
+        descriptor.sounds.as_mut().unwrap().impact = Some("sfx/replacement_hit".into());
+        component.refresh_from_descriptor(&descriptor);
+        assert_eq!(
+            component.sounds.as_ref().unwrap().impact.as_deref(),
+            Some("sfx/replacement_hit")
+        );
+        assert_eq!(
+            retained.sounds.as_ref().unwrap().impact.as_deref(),
+            Some("sfx/original_hit")
+        );
+
+        descriptor.sounds = None;
+        component.refresh_from_descriptor(&descriptor);
+        assert!(component.sounds.is_none());
+        assert_eq!(
+            retained.sounds.as_ref().unwrap().fire.as_deref(),
+            Some("sfx/original_fire")
+        );
+    }
+
+    #[test]
+    fn weapon_sounds_persistence_preserves_descriptor_value_shape_and_optional_default() {
+        let sounds = serde_json::json!({
+            "fire": "sfx/fire",
+            "dryFire": "sfx/empty",
+            "impact": "sfx/hit",
+            "reloadStart": "sfx/reload_start",
+            "reloadShell": "sfx/reload_shell",
+            "reloadComplete": "sfx/reload_complete",
+            "overheat": "sfx/overheat",
+        });
+        let mut descriptor = descriptor(10.0, 20.0, 100.0);
+        descriptor.sounds = Some(serde_json::from_value(sounds.clone()).unwrap());
+        let component = WeaponComponent::from_descriptor(&descriptor);
+        let mut persisted = serde_json::to_value(&component).unwrap();
+        assert_eq!(persisted["sounds"], sounds);
+
+        let restored: WeaponComponent = serde_json::from_value(persisted.clone()).unwrap();
+        assert_eq!(restored.sounds.as_deref(), descriptor.sounds.as_ref());
+        assert_eq!(serde_json::to_value(&restored).unwrap()["sounds"], sounds);
+
+        persisted.as_object_mut().unwrap().remove("sounds");
+        let restored: WeaponComponent = serde_json::from_value(persisted).unwrap();
+        assert!(restored.sounds.is_none());
     }
 
     #[test]
@@ -1180,7 +1288,7 @@ mod tests {
         assert!((component.movement_spread_degrees - 2.5).abs() < f32::EPSILON);
         assert!((component.spread_vertical_bias - 0.25).abs() < f32::EPSILON);
         assert!((component.range - 80.0).abs() < f32::EPSILON);
-        assert!((component.cooldown_ms - 250.0).abs() < f32::EPSILON);
+        assert!((component.primary.recovery_ms - 250.0).abs() < f32::EPSILON);
         assert!((component.cooldown_remaining_ms - 42.0).abs() < f32::EPSILON);
         assert!(component.shoot_press_consumed);
         assert_eq!(component.state, WieldableState::Reloading);
@@ -1272,5 +1380,46 @@ mod tests {
         component.refresh_from_descriptor(&reloaded);
 
         assert_eq!(component.credit_source, "pistol.alt");
+    }
+    #[test]
+    fn activation_cache_clones_share_programs_and_restore_binds_once_on_attachment() {
+        use crate::registry::{ComponentValue, EntityRegistry, Transform};
+        let component = WeaponComponent::from_descriptor(&descriptor(10.0, 20.0, 100.0));
+        let cloned = component.clone();
+        assert!(std::sync::Arc::ptr_eq(
+            component.activation_programs.primary.as_ref().unwrap(),
+            cloned.activation_programs.primary.as_ref().unwrap()
+        ));
+        let json = serde_json::to_string(&component).unwrap();
+        let restored: WeaponComponent = serde_json::from_str(&json).unwrap();
+        assert!(!restored.activation_programs.is_installed());
+        let mut registry = EntityRegistry::new();
+        let entity = registry.spawn(Transform::default());
+        registry
+            .set_component_value(entity, ComponentValue::Weapon(restored))
+            .unwrap();
+        let installed = registry
+            .get_component::<WeaponComponent>(entity)
+            .unwrap()
+            .activation_programs
+            .primary
+            .as_ref()
+            .unwrap()
+            .clone();
+        let attached = registry
+            .get_component::<WeaponComponent>(entity)
+            .unwrap()
+            .clone();
+        registry.set_component(entity, attached).unwrap();
+        assert!(std::sync::Arc::ptr_eq(
+            &installed,
+            registry
+                .get_component::<WeaponComponent>(entity)
+                .unwrap()
+                .activation_programs
+                .primary
+                .as_ref()
+                .unwrap()
+        ));
     }
 }

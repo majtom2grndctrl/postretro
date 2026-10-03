@@ -37,6 +37,8 @@ const MOVERS_LUAU: &str = include_str!("../../../sdk/lib/entities/movers.luau");
 const TRIGGERS_LUAU: &str = include_str!("../../../sdk/lib/entities/triggers.luau");
 const KEYFRAMES_LUAU: &str = include_str!("../../../sdk/lib/util/keyframes.luau");
 const EMITTERS_LUAU: &str = include_str!("../../../sdk/lib/entities/emitters.luau");
+const EXPRESSION_REFS_LUAU: &str = include_str!("../../../sdk/lib/util/expression_refs.luau");
+const ACTIVATION_LUAU: &str = include_str!("../../../sdk/lib/activation.luau");
 const DATA_SCRIPT_LUAU: &str = include_str!("../../../sdk/lib/data_script.luau");
 const RUNTIME_LUAU: &str = include_str!("../../../sdk/lib/runtime.luau");
 const GAME_STATE_LUAU: &str = include_str!("../../../sdk/lib/game_state.luau");
@@ -454,7 +456,16 @@ fn install_lua_prelude(lua: &Lua, mod_root: &Path) -> mlua::Result<()> {
         &["emitter", "smokeEmitter", "sparkEmitter", "dustEmitter"],
     )?;
 
+    let expression_refs = eval_lua_table(
+        lua,
+        EXPRESSION_REFS_LUAU,
+        "sdk/lib/util/expression_refs.luau",
+    )?;
+    globals.set("__postretroExpressionRefs", expression_refs)?;
+    let activation = eval_lua_table(lua, ACTIVATION_LUAU, "sdk/lib/activation.luau")?;
+    globals.set("activation", activation.clone())?;
     let data = eval_lua_table(lua, DATA_SCRIPT_LUAU, "sdk/lib/data_script.luau")?;
+    globals.set("__postretroExpressionRefs", LuaValue::Nil)?;
     const DATA_FIELDS: &[&str] = &[
         "defineReaction",
         "onTriggerEvent",
@@ -515,6 +526,11 @@ fn install_lua_prelude(lua: &Lua, mod_root: &Path) -> mlua::Result<()> {
     )?;
     copy_lua_fields(&root, &data, DATA_FIELDS)?;
     let root = copy_readonly_lua_table(lua, root, 0)?;
+    // NumberRef lowering uses table identity. Keep the original frozen action
+    // namespace after copying the ordinary module values, before publishing it.
+    root.set_readonly(false);
+    root.set("activation", activation)?;
+    root.set_readonly(true);
     let ui = lua.create_table()?;
     copy_lua_fields(
         &ui,
@@ -1588,6 +1604,33 @@ mod tests {
         .expect("map-local relative module evaluates like runtime");
         assert_eq!(manifest.lights[0].index, 2);
         std::fs::remove_dir_all(root).expect("remove module fixture");
+    }
+
+    #[test]
+    fn luau_activation_module_preserves_shared_expression_refs_and_private_bridge() {
+        let source = r#"
+            local sdk = require("postretro")
+            assert(__postretroExpressionRefs == nil)
+            assert(sdk.activation == activation)
+            local direct = sdk.activation.shot({ scale = { damage = sdk.activation.charge } })
+            assert(direct.scale.damage.op == "input" and direct.scale.damage.name == "charge")
+            local fluent = activation.shot({ scale = { damage = activation.charge:times(5):plus(1) } })
+            assert(fluent.scale.damage.op == "add" and fluent.scale.damage.a.op == "mul")
+            function setupLevel(_)
+              local light = world:query({ component = "light", tag = "wave" })[1]
+              return { reactions = {
+                defineReaction("levelLoad", { sequence = light:pulse({ min = 0, max = 1, periodMs = 1 }) })
+              } }
+            end
+        "#;
+        let manifest = emit_light_membership_manifest(
+            source,
+            Path::new("fixture.luau"),
+            Path::new("."),
+            &table(),
+        )
+        .expect("build-side SDK must preserve action NumberRef identity");
+        assert_eq!(manifest.lights.len(), 1);
     }
 
     #[test]

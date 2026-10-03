@@ -637,6 +637,28 @@ const BUILTIN_ENGINE_STATE: &[EngineStateCatalogEntry<'static>] = &[
         network: ReplicationScope::None,
     },
     EngineStateCatalogEntry {
+        wire_name: "player.weaponCharging",
+        sdk_path: &["player", "weaponCharging"],
+        value_type: EngineStateValueType::Boolean,
+        default: EngineStateDefault::Boolean(false),
+        range: None,
+        persist: false,
+        capability: EngineStateCapability::Readonly,
+        // Active-instance predicted charge is local presentation on every role.
+        network: ReplicationScope::None,
+    },
+    EngineStateCatalogEntry {
+        wire_name: "player.weaponChargeProgress",
+        sdk_path: &["player", "weaponChargeProgress"],
+        value_type: EngineStateValueType::Number,
+        default: EngineStateDefault::Number(0.0),
+        range: Some(NumericRange { min: 0.0, max: 1.0 }),
+        persist: false,
+        capability: EngineStateCapability::Readonly,
+        // Normalized fixed-tick progress; independent of cell resource charge.
+        network: ReplicationScope::None,
+    },
+    EngineStateCatalogEntry {
         wire_name: "player.weaponCooldownMs",
         sdk_path: &["player", "weaponCooldownMs"],
         value_type: EngineStateValueType::Number,
@@ -1126,6 +1148,8 @@ mod tests {
                 "player.weapon.current",
                 "player.weapon.pending",
                 "player.weapon.switching",
+                "player.weaponChargeProgress",
+                "player.weaponCharging",
                 "player.weaponCooldownMs",
                 "player.weaponResource",
                 "screen.flash",
@@ -1330,6 +1354,38 @@ mod tests {
     }
 
     #[test]
+    fn weapon_charge_hud_slots_are_local_readonly_and_normalized() {
+        let catalog = engine_state_catalog().unwrap();
+        for (wire_name, value_type, default, range) in [
+            (
+                "player.weaponCharging",
+                EngineStateValueType::Boolean,
+                EngineStateDefault::Boolean(false),
+                None,
+            ),
+            (
+                "player.weaponChargeProgress",
+                EngineStateValueType::Number,
+                EngineStateDefault::Number(0.0),
+                Some(NumericRange { min: 0.0, max: 1.0 }),
+            ),
+        ] {
+            let entry = catalog
+                .entries()
+                .iter()
+                .find(|entry| entry.wire_name == wire_name)
+                .unwrap();
+            assert_eq!(entry.sdk_path.join("."), wire_name);
+            assert_eq!(entry.value_type, value_type);
+            assert_eq!(entry.default, default);
+            assert_eq!(entry.range, range);
+            assert_eq!(entry.capability, EngineStateCapability::Readonly);
+            assert_eq!(entry.network, ReplicationScope::None);
+            assert!(!entry.persist);
+        }
+    }
+
+    #[test]
     fn player_owner_private_slots_are_replicated_except_local_presentation_slots() {
         // Server-authoritative player facts replicate owner-private (server sends
         // each only to the owning client); every other built-in slot stays
@@ -1368,6 +1424,8 @@ mod tests {
             "player.weapon.current",
             "player.weapon.pending",
             "player.weapon.switching",
+            "player.weaponCharging",
+            "player.weaponChargeProgress",
         ] {
             let entry = entries
                 .iter()

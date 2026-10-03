@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 #[allow(unused_imports)]
 pub use bind::{BindError, BoundNode, BoundProgram, bind};
 #[allow(unused_imports)]
-pub use eval::{eval_and_write, eval_value};
+pub use eval::{IrEvalError, eval_and_write, eval_value, eval_value_checked};
 #[allow(unused_imports)]
 pub use load::load_baked_ir;
 #[allow(unused_imports)]

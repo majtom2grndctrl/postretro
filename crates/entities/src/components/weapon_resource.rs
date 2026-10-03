@@ -192,18 +192,21 @@ impl WeaponCell {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::data_descriptors::{AmmoResource, FireMode, ReloadStyle, ResolutionMode};
+    use crate::data_descriptors::{AmmoResource, ReloadStyle, ResolutionMode};
 
     fn descriptor(resource: Option<WeaponResource>) -> WeaponDescriptor {
         let mut descriptor: WeaponDescriptor = serde_json::from_value(serde_json::json!({
             "damage": 10.0,
             "range": 64.0,
-            "fireRateMs": 100.0,
-            "fireMode": "auto",
+            "primary": { "trigger": "hold", "recoveryMs": 100.0, "steps": [{ "kind": "shot" }] },
+
             "resolution": "hitscan",
         }))
         .unwrap();
-        assert_eq!(descriptor.fire_mode, FireMode::Auto);
+        assert_eq!(
+            descriptor.primary.trigger,
+            postretro_foundation::ActivationTrigger::Hold
+        );
         assert_eq!(descriptor.resolution, ResolutionMode::Hitscan);
         descriptor.resource = resource;
         descriptor

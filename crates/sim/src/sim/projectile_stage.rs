@@ -49,14 +49,17 @@ enum ProjectileResolution<'a> {
 #[derive(Debug, Clone, PartialEq)]
 pub enum PredictedProjectileResolution {
     Impact {
-        shot_id: u64,
+        shot_id: postretro_foundation::ShotId,
         impact: WeaponImpact,
-        /// Weapon descriptor the projectile was fired from, which names its
-        /// impact sound.
+        /// Frozen effective sounds from the originating action.
+        source_sounds: Option<std::sync::Arc<postretro_foundation::ActivationSounds>>,
+        visible: bool,
+        /// Weapon descriptor the projectile was fired from.
         source_weapon: Option<String>,
+        source_action: Option<std::sync::Arc<postretro_foundation::WeaponActivationDescriptor>>,
     },
     Expired {
-        shot_id: u64,
+        shot_id: postretro_foundation::ShotId,
     },
 }
 
@@ -68,15 +71,19 @@ pub struct ProjectileContactEvent {
     pub point: Vec3,
     pub normal: Vec3,
     pub target: Option<EntityId>,
+    /// Frozen effective sounds from the originating action.
+    pub source_sounds: Option<std::sync::Arc<postretro_foundation::ActivationSounds>>,
     /// Weapon descriptor the projectile was fired from.
     pub source_weapon: Option<String>,
-    /// The first projectile of its activation; contacts sharing it on one tick
+    pub source_action: Option<std::sync::Arc<postretro_foundation::WeaponActivationDescriptor>>,
+    pub source_shot: Option<postretro_foundation::ShotId>,
+    /// The first projectile of its shot; contacts sharing it on one tick
     /// are one impact.
     pub activation: EntityId,
 }
 
-/// One `impact` per activation among a tick's projectile contacts, in the order
-/// each activation first made contact, carrying every contact of that group.
+/// One `impact` per shot among a tick's projectile contacts, in the order
+/// each shot first made contact, carrying every contact of that group.
 pub(crate) fn projectile_impact_emissions(
     contacts: &[ProjectileContactEvent],
 ) -> Vec<WeaponEmission> {
@@ -97,6 +104,9 @@ pub(crate) fn projectile_impact_emissions(
             _ => emissions.push((
                 contact.activation,
                 WeaponEmission {
+                    sounds: contact.source_sounds.clone(),
+                    action: contact.source_action.clone(),
+                    shot_id: contact.source_shot,
                     address: "impact",
                     emitter: Emitter::Contacts(vec![impact]),
                     weapon: contact.source_weapon.clone(),
@@ -164,7 +174,10 @@ pub fn advance(
                 point: impact.point,
                 normal: impact.normal,
                 target: impact.target,
+                source_sounds: component.source_sounds.clone(),
                 source_weapon: component.source_weapon.clone(),
+                source_action: component.source_action.clone(),
+                source_shot: component.source_shot,
                 activation: component.activation.unwrap_or(projectile),
             });
             weapon::spawn_impact_effect_at(registry, impact.point, impact.normal);
@@ -296,8 +309,12 @@ pub fn advance_predicted(
             ProjectileResolution::Impact {
                 component, impact, ..
             } => {
-                weapon::spawn_impact_effect_at(registry, impact.point, impact.normal);
-                if let Some(config) = component.impact_light.as_ref() {
+                if component.predicted_visible {
+                    weapon::spawn_impact_effect_at(registry, impact.point, impact.normal);
+                }
+                if component.predicted_visible
+                    && let Some(config) = component.impact_light.as_ref()
+                {
                     weapon::spawn_projectile_impact_light(registry, impact.point, config);
                 }
                 on_resolution(PredictedProjectileResolution::Impact {
@@ -305,7 +322,10 @@ pub fn advance_predicted(
                         .predicted_shot_id
                         .expect("predicted advance filters to declaration-authorized projectiles"),
                     impact: impact.clone(),
+                    source_sounds: component.source_sounds.clone(),
+                    visible: component.predicted_visible,
                     source_weapon: component.source_weapon.clone(),
+                    source_action: component.source_action.clone(),
                 });
             }
             ProjectileResolution::Expire { component, .. } => {
@@ -659,6 +679,10 @@ mod tests {
             .set_component(
                 projectile,
                 ProjectileComponent {
+                    source_sounds: None,
+                    predicted_visible: true,
+                    source_action: None,
+                    source_shot: None,
                     knockback_impulse: [0.0; 3],
                     direction: Vec3::NEG_Z.to_array(),
                     speed: 1.0,
@@ -1381,11 +1405,14 @@ mod tests {
 
     fn contact(activation: u32, weapon: &str, x: f32) -> ProjectileContactEvent {
         ProjectileContactEvent {
+            source_sounds: None,
             projectile: EntityId::from_raw(100 + x as u32),
             point: Vec3::new(x, 0.0, 0.0),
             normal: Vec3::Z,
             target: None,
             source_weapon: Some(weapon.to_string()),
+            source_action: None,
+            source_shot: None,
             activation: EntityId::from_raw(activation),
         }
     }
@@ -1758,7 +1785,7 @@ mod tests {
                 .expect("predicted projectile component attaches")
                 .clone();
             component.flipbook_active = true;
-            component.predicted_shot_id = Some(7);
+            component.predicted_shot_id = Some(test_shot_id(7));
             predicted_registry
                 .borrow_mut()
                 .set_component(predicted, component)
@@ -1850,7 +1877,7 @@ mod tests {
             .get_component::<ProjectileComponent>(projectile)
             .expect("projectile component attaches")
             .clone();
-        component.predicted_shot_id = Some(0);
+        component.predicted_shot_id = Some(test_shot_id(0));
         component.impact_light = Some(impact_light());
         component.splash = Some(SplashDescriptor {
             knockback: None,
@@ -1883,7 +1910,7 @@ mod tests {
             PredictedProjectileResolution::Impact {
                 shot_id, impact, ..
             } => {
-                assert_eq!(*shot_id, 0);
+                assert_eq!(*shot_id, test_shot_id(0));
                 assert_eq!(impact.target, Some(target));
             }
             PredictedProjectileResolution::Expired { .. } => {
@@ -1924,7 +1951,7 @@ mod tests {
             .get_component::<ProjectileComponent>(projectile)
             .expect("projectile component attaches")
             .clone();
-        component.predicted_shot_id = Some(17);
+        component.predicted_shot_id = Some(test_shot_id(17));
         {
             let mut registry = registry.borrow_mut();
             registry
@@ -1963,5 +1990,91 @@ mod tests {
         assert!((previous.position.z - 0.0).abs() <= f32::EPSILON);
         assert!((midpoint.position.z + 0.5).abs() <= f32::EPSILON);
         assert!((current.position.z + 1.0).abs() <= f32::EPSILON);
+    }
+}
+
+#[cfg(test)]
+fn test_shot_id(tick: u32) -> postretro_foundation::ShotId {
+    postretro_foundation::ShotId::from_parts(
+        4,
+        tick,
+        postretro_foundation::ActivationLane::Primary,
+        0,
+    )
+}
+
+/// Hide resource-dependent cosmetics while keeping the flight and declaration live.
+pub fn set_predicted_projectile_visible(
+    registry: &mut EntityRegistry,
+    id: EntityId,
+    visible: bool,
+) {
+    if let Ok(ComponentValue::Projectile(component)) =
+        registry.get_component_value_mut(id, ComponentKind::Projectile)
+    {
+        component.predicted_visible = visible;
+    }
+    if !visible {
+        for kind in [
+            ComponentKind::SpriteVisual,
+            ComponentKind::Mesh,
+            ComponentKind::BillboardEmitter,
+            ComponentKind::Light,
+        ] {
+            let _ = registry.remove_component_kind(id, kind);
+        }
+    }
+}
+
+/// Apply accepted charge to still-live flights without rewinding a swept segment.
+pub fn correct_predicted_projectile(
+    registry: &mut EntityRegistry,
+    old: &weapon::ResolvedWeaponShot,
+    corrected: &weapon::ResolvedWeaponShot,
+) {
+    let ids: Vec<_> = registry
+        .iter_with_kind(ComponentKind::Projectile)
+        .filter_map(|(id, value)| {
+            let ComponentValue::Projectile(component) = value else {
+                return None;
+            };
+            (component.predicted_shot_id == Some(old.activation.shot_id)).then_some(id)
+        })
+        .collect();
+    for id in ids {
+        let Ok(mut component) = registry.get_component::<ProjectileComponent>(id).cloned() else {
+            continue;
+        };
+        let traveled = (old.activation.values.range - component.remaining_range).max(0.0);
+        component.remaining_range = (corrected.activation.values.range - traveled).max(0.0);
+        component.damage = corrected.activation.values.damage;
+        component.splash = corrected.splash.clone();
+        if let Some(projectile) = &corrected.projectile {
+            component.speed = projectile.speed;
+            component.radius = projectile.radius;
+            if let postretro_foundation::ProjectileBodyVisual::Sprite { size, .. } =
+                projectile.visual.body
+                && let Ok(mut visual) = registry
+                    .get_component::<postretro_entities::components::sprite_visual::SpriteVisual>(
+                        id,
+                    )
+                    .cloned()
+            {
+                visual.size = size;
+                let _ = registry.set_component(id, visual);
+            }
+        }
+        let direction = Vec3::from_array(component.direction);
+        component.knockback_impulse = corrected
+            .knockback
+            .map_or(Vec3::ZERO, |push| {
+                postretro_foundation::knockback_impulse(push.speed, push.upward_bias, direction)
+            })
+            .to_array();
+        let _ = registry.set_component(id, component);
+        if let Ok(mut transform) = registry.get_component::<Transform>(id).cloned() {
+            transform.scale = Vec3::splat(corrected.projectile_model_scale);
+            let _ = registry.set_component(id, transform);
+        }
     }
 }

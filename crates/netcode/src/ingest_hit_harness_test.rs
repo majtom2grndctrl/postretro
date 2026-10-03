@@ -22,8 +22,8 @@ use postretro_entities::{
     FactionSentimentState, Transform,
 };
 use postretro_foundation::{
-    BehaviorActivityDescriptor, BehaviorGraphDescriptor, BehaviorGraphEnvelope, FireMode,
-    MotionVerb, PlacementOffset, PlacementRotation, ProjectileBodyVisual, ProjectileDescriptor,
+    BehaviorActivityDescriptor, BehaviorGraphDescriptor, BehaviorGraphEnvelope, MotionVerb,
+    PlacementOffset, PlacementRotation, ProjectileBodyVisual, ProjectileDescriptor,
     ProjectileVisual, ResolutionMode, RetaliationDescriptor, SplashDescriptor, WeaponDescriptor,
     WeaponPlacementDescriptor,
 };
@@ -130,6 +130,12 @@ impl HostSimulation {
 
 fn neutral_command() -> SimCommand {
     SimCommand {
+        input_tick: 0,
+        secondary_button: crate::weapon::FireButtonState {
+            pressed: false,
+            active: false,
+        },
+        activation: postretro_foundation::ActivationInput::default(),
         movement: MovementInput {
             wish_dir: Vec2::ZERO,
             jump_pressed: false,
@@ -154,6 +160,8 @@ fn neutral_command() -> SimCommand {
 
 fn remote_fire(pawn: EntityId, weapon: EntityId, shot_id: ShotId) -> RemotePawnCommand {
     RemotePawnCommand {
+        real_command: true,
+        rejected_activation: None,
         pawn,
         owner_client_id: CLIENT_ID,
         weapon: Some(weapon),
@@ -162,6 +170,11 @@ fn remote_fire(pawn: EntityId, weapon: EntityId, shot_id: ShotId) -> RemotePawnC
         client_tick: shot_id.client_tick(),
         aim_pitch: 0.0,
         command: SimCommand {
+            input_tick: 0,
+            activation: postretro_foundation::ActivationInput {
+                initiation: Some(shot_id.activation().token),
+                ..Default::default()
+            },
             fire_button: FireButtonState {
                 pressed: true,
                 active: true,
@@ -255,8 +268,11 @@ fn projectile_weapon(source: &str) -> WeaponComponent {
         movement_spread_degrees: 0.0,
         spread_vertical_bias: 0.0,
         range: 100.0,
-        cooldown_ms: 100.0,
-        fire_mode: FireMode::Semi,
+        primary: postretro_foundation::WeaponActivationDescriptor::single(
+            postretro_foundation::ActivationTrigger::Press,
+            100.0,
+        ),
+        secondary: None,
         resolution: ResolutionMode::Projectile,
         projectile: Some(ProjectileDescriptor {
             speed: 1.0,
@@ -324,8 +340,11 @@ fn projectile_descriptor() -> WeaponDescriptor {
         movement_spread_degrees: 0.0,
         spread_vertical_bias: 0.0,
         range: 2.0,
-        cooldown_ms: 100.0,
-        fire_mode: FireMode::Semi,
+        primary: postretro_foundation::WeaponActivationDescriptor::single(
+            postretro_foundation::ActivationTrigger::Press,
+            100.0,
+        ),
+        secondary: None,
         resolution: ResolutionMode::Projectile,
         projectile: None,
         splash: None,
@@ -429,7 +448,12 @@ fn connected_obstructed_muzzle_declaration_replays_host_splash_from_eye() {
         (pawn, weapon, victim)
     };
     let mut allocator = NetworkIdAllocator::new();
-    let shot_id = ShotId::from_parts(allocator.stamp(pawn), 9);
+    let shot_id = ShotId::from_parts(
+        (allocator.stamp(pawn)).0,
+        9,
+        postretro_foundation::ActivationLane::Primary,
+        0,
+    );
     let mut host = HostSimulation::new(
         registry.clone(),
         wall(-0.5),
@@ -447,7 +471,7 @@ fn connected_obstructed_muzzle_declaration_replays_host_splash_from_eye() {
     owners.set(pawn, CLIENT_ID);
     let mut open = opened(shot);
     let declaration = delivered(HitDeclaration {
-        shot_id: shot_id.raw(),
+        shot_id: crate::wire_convert::shot_id_to_wire(shot_id),
         records: vec![HitRecord {
             normal: [0.0, 1.0, 0.0],
             target: u32::MAX,
@@ -510,7 +534,12 @@ fn connected_lateral_muzzle_convergence_matches_host_splash_replay() {
         (pawn, weapon, direct, splash)
     };
     let mut allocator = NetworkIdAllocator::new();
-    let shot_id = ShotId::from_parts(allocator.stamp(pawn), 9);
+    let shot_id = ShotId::from_parts(
+        (allocator.stamp(pawn)).0,
+        9,
+        postretro_foundation::ActivationLane::Primary,
+        0,
+    );
     let direct_network_id = allocator.stamp(direct_target);
     let mut host = HostSimulation::new(
         registry.clone(),
@@ -530,7 +559,7 @@ fn connected_lateral_muzzle_convergence_matches_host_splash_replay() {
     owners.set(pawn, CLIENT_ID);
     let mut open = opened(shot);
     let declaration = delivered(HitDeclaration {
-        shot_id: shot_id.raw(),
+        shot_id: crate::wire_convert::shot_id_to_wire(shot_id),
         records: vec![HitRecord {
             normal: [0.0, 1.0, 0.0],
             target: direct_network_id.0,
@@ -580,7 +609,12 @@ fn remote_projectile_contact_within_muzzle_range_validates() {
         )
     };
     let mut allocator = NetworkIdAllocator::new();
-    let shot_id = ShotId::from_parts(allocator.stamp(pawn), 9);
+    let shot_id = ShotId::from_parts(
+        (allocator.stamp(pawn)).0,
+        9,
+        postretro_foundation::ActivationLane::Primary,
+        0,
+    );
     let victim_network_id = allocator.stamp(victim);
     let mut host = HostSimulation::new(
         registry.clone(),
@@ -602,7 +636,7 @@ fn remote_projectile_contact_within_muzzle_range_validates() {
             &owners,
             &mut open,
             &HitDeclaration {
-                shot_id: shot_id.raw(),
+                shot_id: crate::wire_convert::shot_id_to_wire(shot_id),
                 records: vec![HitRecord {
                     normal: [0.0, 1.0, 0.0],
                     target: victim_network_id.0,
@@ -633,12 +667,26 @@ fn rejected_remote_projectile_fire_cannot_later_declare_plausible_damage() {
         )
     };
     let mut allocator = NetworkIdAllocator::new();
-    let shot_id = ShotId::from_parts(allocator.stamp(pawn), 9);
+    let shot_id = ShotId::from_parts(
+        (allocator.stamp(pawn)).0,
+        9,
+        postretro_foundation::ActivationLane::Primary,
+        0,
+    );
     let victim_network_id = allocator.stamp(victim);
     let mut host = HostSimulation::new(registry.clone(), CollisionWorld::new(), Vec::new());
     let events = host.tick(&[remote_fire(pawn, weapon, shot_id)], |_, _| {});
     assert!(events.authorized_shots.is_empty());
-    assert_eq!(events.rejected_remote_projectile_fires[0].shot_id, shot_id);
+    assert_eq!(
+        events.remote_activation_progress[0].advance.rejected,
+        Some(shot_id.activation().token)
+    );
+    assert!(
+        events.remote_activation_progress[0]
+            .advance
+            .attempted
+            .is_none()
+    );
     let mut owners = MovementOwners::new();
     owners.set(pawn, CLIENT_ID);
     assert_eq!(
@@ -649,7 +697,7 @@ fn rejected_remote_projectile_fire_cannot_later_declare_plausible_damage() {
             &owners,
             &mut OpenAuthorizedShots::new(),
             &HitDeclaration {
-                shot_id: shot_id.raw(),
+                shot_id: crate::wire_convert::shot_id_to_wire(shot_id),
                 records: vec![HitRecord {
                     normal: [0.0, 1.0, 0.0],
                     target: victim_network_id.0,
@@ -687,7 +735,12 @@ fn connected_client_projectile_declares_later_and_host_applies_authorized_credit
         )
     };
     let mut allocator = NetworkIdAllocator::new();
-    let shot_id = ShotId::from_parts(allocator.stamp(pawn), 9);
+    let shot_id = ShotId::from_parts(
+        (allocator.stamp(pawn)).0,
+        9,
+        postretro_foundation::ActivationLane::Primary,
+        0,
+    );
     let victim_network_id = allocator.stamp(victim);
     let mut host = HostSimulation::new(registry.clone(), CollisionWorld::new(), Vec::new());
     let shot = authorization(&host.tick(&[remote_fire(pawn, weapon, shot_id)], |_, _| {}));
@@ -695,7 +748,7 @@ fn connected_client_projectile_declares_later_and_host_applies_authorized_credit
     owners.set(pawn, CLIENT_ID);
     let mut open = opened(shot);
     let declaration = delivered(HitDeclaration {
-        shot_id: shot_id.raw(),
+        shot_id: crate::wire_convert::shot_id_to_wire(shot_id),
         records: vec![HitRecord {
             normal: [0.0, 1.0, 0.0],
             target: victim_network_id.0,
@@ -804,7 +857,12 @@ fn ready_remote_hit_reaches_retaliation_selection_in_the_same_simulation_tick() 
         (player, victim, attacker, weapon)
     };
     let mut allocator = NetworkIdAllocator::new();
-    let shot_id = ShotId::from_parts(allocator.stamp(attacker), 11);
+    let shot_id = ShotId::from_parts(
+        (allocator.stamp(attacker)).0,
+        11,
+        postretro_foundation::ActivationLane::Primary,
+        0,
+    );
     let victim_network_id = allocator.stamp(victim);
     let mut owners = MovementOwners::new();
     owners.set(attacker, CLIENT_ID);
@@ -826,7 +884,7 @@ fn ready_remote_hit_reaches_retaliation_selection_in_the_same_simulation_tick() 
     pending.push(
         CLIENT_ID,
         HitDeclaration {
-            shot_id: shot_id.raw(),
+            shot_id: crate::wire_convert::shot_id_to_wire(shot_id),
             records: vec![HitRecord {
                 normal: [0.0, 1.0, 0.0],
                 target: victim_network_id.0,

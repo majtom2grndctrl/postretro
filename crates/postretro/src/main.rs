@@ -8,6 +8,7 @@ mod agent_diagnostics;
 mod app;
 mod camera;
 mod frame_eye;
+mod host_activations;
 #[cfg(test)]
 mod candidate_cull {
     pub use postretro_renderer::{GatherStatus, gather_candidate_leaves};
@@ -26,7 +27,9 @@ mod cpu_timing;
 mod door_occluder_diagnostics;
 pub(crate) use postretro_sim::frame_timing;
 use postretro_sim::{impact_effects, impact_policy};
+mod client_weapon;
 mod input;
+mod weapon_observers;
 // App-side lightmap cell-block residency: demand from the baked set, block
 // reads through the shared issuer, and bounded renderer drain batches.
 mod lightmap_streaming;
@@ -249,12 +252,16 @@ fn client_drain_control(app: &mut App, controls: Vec<ServerControlMessage>) {
                     endpoint.demote_client_state(&mut registry);
                     registry.clear_presentation_spawns();
                     drop(registry);
+                    app.client_weapon
+                        .suspend(&session.scripting.script_ctx.registry.borrow());
                     session.gameplay_input_latch.clear();
                     session.presentation_pool.clear_world_instances();
                     session.client_overlay_facts.clear();
                 }
                 app.client_fire_resolutions.clear();
                 app.client_predicted_shots.clear();
+                app.client_weapon.clear();
+                app.observer_weapon_cues.clear();
             }
             ServerControlMessage::Tuning(bytes) => {
                 let script_ctx = app
@@ -856,6 +863,8 @@ pub(crate) struct App {
     /// clients retain the default empty report because they never run the pass.
     trigger_pool_report: trigger_pools::TriggerPoolInstallReport,
 
+    client_weapon: client_weapon::ClientWeaponFrame,
+    observer_weapon_cues: Vec<netcode::weapon_cues::ObserverWeaponCueDelivery>,
     client_fire_resolutions: Vec<weapon::ClientFireResolution>,
     client_predicted_shots: weapon::ClientPredictedShots,
     /// Connected-client reload edges derived from replicated slots.
@@ -1111,6 +1120,72 @@ fn effective_render_yaw(
     settled_camera_yaw + mover_yaw_render_residual(carry_ground, mover_states, alpha)
 }
 
+/// One frame's displayed gameplay aim, before cosmetic view-feel offsets.
+/// Both connected shots and render-eye assembly consume this selected pose.
+#[derive(Clone, Copy)]
+pub(crate) struct PresentedAimPose {
+    position: Vec3,
+    yaw: f32,
+    pitch: f32,
+}
+
+impl PresentedAimPose {
+    fn aim_ray(self) -> (Vec3, Vec3) {
+        Camera::new(self.position, self.yaw, self.pitch).aim_ray()
+    }
+
+    fn frame_eye_inputs(
+        self,
+        aspect: f32,
+        driver: Option<frame_eye::ViewFeelDriver>,
+        movement_edges: &[view_feel::TimedMovementEdge],
+        frame_dt: f32,
+        view_feel_scale: f32,
+    ) -> frame_eye::FrameEyeInputs<'_> {
+        frame_eye::FrameEyeInputs {
+            presented_eye: self.position,
+            aspect,
+            render_yaw: self.yaw,
+            pitch: self.pitch,
+            driver,
+            movement_edges,
+            frame_dt,
+            view_feel_scale,
+        }
+    }
+}
+
+impl App {
+    fn presented_aim_pose(&self, alpha: f32) -> PresentedAimPose {
+        PresentedAimPose {
+            // Timing already carries the connected owner's presentation correction.
+            position: self.frame_timing.interpolated_state().position,
+            yaw: effective_render_yaw(
+                self.camera.yaw,
+                self.mover_yaw_carry_ground,
+                &self.kinematic_mover_tick_states,
+                alpha,
+            ),
+            // Look is render-rate, including frames with no fixed tick.
+            pitch: self.camera.pitch,
+        }
+    }
+
+    fn render_aim_pose(&self, gameplay_aim: PresentedAimPose) -> PresentedAimPose {
+        if self.frontend_menu_is_present() {
+            // The authored menu camera is held independently of a prior rider's
+            // mover carry state, including while a submenu is on top.
+            PresentedAimPose {
+                position: self.camera.position,
+                yaw: self.camera.yaw,
+                pitch: self.camera.pitch,
+            }
+        } else {
+            gameplay_aim
+        }
+    }
+}
+
 /// Reconcile the mover pose table at the same seam that owns camera yaw. The
 /// start-of-tick correction preserves the rider's camera-to-platform offset;
 /// the refreshed tick delta is then committed once by the ordinary input seam.
@@ -1228,6 +1303,12 @@ fn build_sim_command(
         .flatten();
 
     sim::SimCommand {
+        input_tick: 0,
+        secondary_button: postretro_sim::weapon::FireButtonState {
+            pressed: snapshot.button(Action::AltFire) == ButtonState::Pressed,
+            active: snapshot.button(Action::AltFire).is_active(),
+        },
+        activation: postretro_foundation::ActivationInput::default(),
         movement: movement::MovementInput {
             wish_dir: glam::Vec2::new(
                 snapshot.axis_value(Action::MoveRight),
@@ -1251,58 +1332,6 @@ fn build_sim_command(
         use_pressed,
         drop_pressed,
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-struct ClientFrameFireCommand {
-    client_tick: u32,
-    button: weapon::FireButtonState,
-    elapsed_ms: f32,
-}
-
-#[cfg(test)]
-fn client_fire_ticks_for_post_loop(
-    commands: &[ClientFrameFireCommand],
-    weapon: &postretro_entities::components::weapon::WeaponComponent,
-) -> Vec<u32> {
-    client_fire_commands_for_post_loop(commands, weapon)
-        .into_iter()
-        .map(|command| command.client_tick)
-        .collect()
-}
-
-/// Select the logical fire ticks the host will authorize, retaining their
-/// frame-relative simulation times so client bloom can replay the same order.
-fn client_fire_commands_for_post_loop(
-    commands: &[ClientFrameFireCommand],
-    weapon: &postretro_entities::components::weapon::WeaponComponent,
-) -> Vec<ClientFrameFireCommand> {
-    let mut selected = Vec::new();
-    let mut cooldown_ms = weapon.cooldown_remaining_ms.max(0.0);
-    let mut previous_elapsed_ms = 0.0;
-    let stats = weapon.effective();
-
-    for command in commands {
-        let elapsed_delta_ms = (command.elapsed_ms - previous_elapsed_ms).max(0.0);
-        cooldown_ms = (cooldown_ms - elapsed_delta_ms).max(0.0);
-        previous_elapsed_ms = command.elapsed_ms;
-
-        let wants_fire = match stats.fire_mode {
-            postretro_foundation::FireMode::Semi => {
-                command.button.pressed && !weapon.shoot_press_consumed
-            }
-            postretro_foundation::FireMode::Auto => command.button.active,
-        };
-        if weapon.state.allows_fire() && wants_fire && cooldown_ms <= 0.0 {
-            selected.push(*command);
-            cooldown_ms = stats.cooldown_ms;
-            if stats.fire_mode == postretro_foundation::FireMode::Semi {
-                break;
-            }
-        }
-    }
-
-    selected
 }
 
 fn build_post_movement_command(camera: &Camera) -> sim::PostMovementCommand {
@@ -1356,6 +1385,12 @@ fn reconcile_client_weapon_cooldown_from_slot_table(
     else {
         return false;
     };
+    // Slot snapshots have no activation identity. After this instance begins
+    // fixed prediction, only correlated activation outcomes may change recovery.
+    // The replicated slot remains available to presentation/HUD independently.
+    if component.last_activation_tick.is_some() {
+        return false;
+    }
     predicted.reconcile_cooldown(weapon_id, &mut component, cooldown_ms);
     let _ = registry.set_component(weapon_id, component);
     true
@@ -1399,13 +1434,6 @@ fn client_fire_muzzle_terms(
             .copied()
             .map(Vec3::from_array),
     })
-}
-
-fn client_fire_snapshot_for_post_loop<'a>(
-    fixed_tick_snapshot: Option<&'a input::ActionSnapshot>,
-    zero_tick_snapshot: Option<&'a input::ActionSnapshot>,
-) -> Option<&'a input::ActionSnapshot> {
-    fixed_tick_snapshot.or(zero_tick_snapshot)
 }
 
 fn has_player_pawn(registry: &postretro_entities::EntityRegistry) -> bool {
@@ -2039,6 +2067,8 @@ impl ApplicationHandler for App {
                     }
                     if let Some(session) = self.session.as_mut() {
                         session.input_system.clear_all();
+                        self.client_weapon
+                            .suspend(&session.scripting.script_ctx.registry.borrow());
                         session.gameplay_input_latch.clear();
                     }
                     self.diagnostic_inputs.clear_modifiers();
@@ -2378,7 +2408,7 @@ impl ApplicationHandler for App {
                 // Capturing UI still drains raw input to prevent stale deltas from
                 // replaying later, but the consumed look is neutral so player aim
                 // cannot move while a modal owns input.
-                let (gameplay_snapshot, zero_tick_fire_snapshot) = {
+                let gameplay_snapshot = {
                     let session = self.session.as_mut().expect("running session installed");
                     let drained_look = session.input_system.drain_look_inputs();
                     let look = if ui_captures_gameplay {
@@ -2387,6 +2417,12 @@ impl ApplicationHandler for App {
                         drained_look
                     };
                     let frame_snapshot = session.input_system.snapshot();
+                    if ui_captures_gameplay {
+                        let registry = session.scripting.script_ctx.registry.borrow();
+                        self.client_weapon.suspend(&registry);
+                        let token = self.client_weapon.suppressed.map(|(_, token)| token);
+                        session.gameplay_input_latch.activation.set_active(token);
+                    }
                     let gameplay_snapshot = gameplay_snapshot_for_capture_state(
                         &mut session.gameplay_input_latch,
                         &frame_snapshot,
@@ -2425,14 +2461,34 @@ impl ApplicationHandler for App {
                         .scripting
                         .player_hud_state
                         .set_pending_weapon_slot(pending_weapon_slot);
-                    let zero_tick_fire_snapshot =
-                        (!ui_captures_gameplay && ticks == 0).then_some(frame_snapshot);
                     // Apply look rotation once at render rate, not once per tick —
                     // so zero-tick frames still consume accumulated mouse motion.
                     self.camera
                         .rotate(look.yaw_delta(frame_dt), look.pitch_delta(frame_dt));
-                    (gameplay_snapshot, zero_tick_fire_snapshot)
+                    gameplay_snapshot
                 };
+
+                if ticks == 0 && self.is_connected_client() {
+                    let session = self.session.as_mut().expect("running session installed");
+                    if let Some(token) = session.gameplay_input_latch.activation.take_cancel() {
+                        let mut command = build_sim_command(
+                            &input::ActionSnapshot::neutral(),
+                            &self.camera,
+                            false,
+                            false,
+                            false,
+                            false,
+                            false,
+                            false,
+                        );
+                        command.activation.cancel = Some(token);
+                        let _ = netcode::client_send_input_command(
+                            session.net_endpoint.as_mut(),
+                            &command,
+                            self.camera.pitch,
+                        );
+                    }
+                }
 
                 // The script tranche lives on `Session` (built post-first-pixel).
                 // Clone the `ScriptCtx` handle once for this Game-logic phase (cheap
@@ -2488,7 +2544,7 @@ impl ApplicationHandler for App {
                 let mut pending_mover_events = Vec::new();
                 let mut pending_trigger_residuals = Vec::new();
                 let mut repointed_pawns = Vec::new();
-                let mut sent_client_fire_commands: Vec<ClientFrameFireCommand> = Vec::new();
+
                 let mut host_snapshot_due = false;
                 // Death-event names accumulate here and join the sequence-aware
                 // post-tick batch below, so a `progress` reaction naming a sequence
@@ -2636,6 +2692,26 @@ impl ApplicationHandler for App {
                             drop_pressed,
                         );
                         command.select_slot = select_slot;
+                        let input_tick = netcode::client_peek_next_command_tick(
+                            self.session.as_ref().and_then(|s| s.net_endpoint.as_ref()),
+                        );
+                        let active_token = {
+                            let registry = script_ctx.registry.borrow();
+                            local_active_wieldable(&registry).and_then(|(_, id)| registry.get_component::<postretro_entities::components::weapon::WeaponComponent>(id).ok()).and_then(|component| component.state.activation_cursor()).map(|cursor| cursor.token)
+                        };
+                        let capture = &mut self
+                            .session
+                            .as_mut()
+                            .expect("running session installed")
+                            .gameplay_input_latch
+                            .activation;
+                        capture.set_active(active_token);
+                        let input_tick = input_tick.unwrap_or_else(|| capture.next_local_tick());
+                        command.input_tick = input_tick;
+                        command.activation = capture.command(input_tick);
+                        if tick_index > 0 {
+                            command.secondary_button.pressed = false;
+                        }
 
                         // Connected-client prediction (M15 Phase 3 Task 3): send one
                         // Input command and advance ONLY the local pawn's movement
@@ -2674,27 +2750,6 @@ impl ApplicationHandler for App {
                             if let Some(pawn) = repointed {
                                 repointed_pawns.push(pawn);
                             }
-                            let (allows_fire, allows_reload) = {
-                                let registry = script_ctx.registry.borrow();
-                                local_active_wieldable(&registry)
-                                    .and_then(|(_, weapon)| {
-                                        registry
-                                            .get_component::<postretro_entities::components::weapon::WeaponComponent>(weapon)
-                                            .ok()
-                                    })
-                                    .map_or((false, false), |weapon| {
-                                        (weapon.state.allows_fire(), weapon.state.allows_reload())
-                                    })
-                            };
-                            if !allows_fire {
-                                command.fire_button = weapon::FireButtonState {
-                                    pressed: false,
-                                    active: false,
-                                };
-                            }
-                            if !allows_reload {
-                                command.reload = false;
-                            }
                             if switch_accepted && let Some(slot) = command.select_slot {
                                 self.client_declare_switch(slot);
                             }
@@ -2706,6 +2761,11 @@ impl ApplicationHandler for App {
                             let prediction_tick = {
                                 let _scope =
                                     prediction_cpu.scope(cpu_timing::PredictionStage::Movement);
+                                self.predict_client_weapon_command(
+                                    &mut command,
+                                    input_tick,
+                                    tick_dt,
+                                );
                                 self.client_predict_movement_tick(&command, tick_dt)
                             };
                             if let Some(prediction_tick) = prediction_tick {
@@ -2738,11 +2798,6 @@ impl ApplicationHandler for App {
                                             age: (ticks - tick_index - 1) as f32 * tick_dt,
                                         }),
                                 );
-                                sent_client_fire_commands.push(ClientFrameFireCommand {
-                                    client_tick: prediction_tick.client_tick,
-                                    button: command.fire_button,
-                                    elapsed_ms: (tick_index + 1) as f32 * tick_dt * 1000.0,
-                                });
                             }
                             // Tick-rate camera follow tracks the PRESENTED local pose:
                             // the gameplay-authoritative (snapped) registry pose plus the
@@ -2978,10 +3033,10 @@ impl ApplicationHandler for App {
                             &mut session.scripting.slot_accumulator_bindings,
                             tick_dt,
                         );
-                        self.host_record_authorized_shots(&tick_events.authorized_shots);
-                        self.host_send_rejected_projectile_fire_verdicts(
-                            &tick_events.rejected_remote_projectile_fires,
+                        self.host_record_activation_progress(
+                            &tick_events.remote_activation_progress,
                         );
+                        self.host_record_authorized_shots(&tick_events.authorized_shots);
                         self.host_spawn_projectile_presentations(
                             &script_ctx.registry,
                             &tick_events.remote_projectile_presentation_launches,
@@ -3005,6 +3060,7 @@ impl ApplicationHandler for App {
                                 age: (ticks - tick_index - 1) as f32 * tick_dt,
                             },
                         ));
+                        self.publish_observer_weapon_cues(&tick_events.weapon, &tick_events.ai);
                         pending_ai_events.extend(tick_events.ai);
                         append_tick_weapon_script_events(
                             &mut pending_weapon_script_events,
@@ -3047,12 +3103,8 @@ impl ApplicationHandler for App {
 
                 // Regression: a turntable's transform slerps through this tick while
                 // carry_yaw previously held the local view until the next input seam.
-                let render_camera_yaw = effective_render_yaw(
-                    self.camera.yaw,
-                    self.mover_yaw_carry_ground,
-                    &self.kinematic_mover_tick_states,
-                    frame_result.alpha,
-                );
+                let presented_aim = self.presented_aim_pose(frame_result.alpha);
+                let render_camera_yaw = presented_aim.yaw;
 
                 // Task 6 client remote interpolation: sample each remote entity's
                 // buffer at `estimated_server_tick - interpolation_delay` and write the
@@ -3070,11 +3122,9 @@ impl ApplicationHandler for App {
                 self.update_client_presentation_pose_inputs(frame_anim_time, render_camera_yaw);
                 self.update_client_overlay_anchors(&script_ctx, frame_anim_time);
                 self.run_client_fire_path_post_loop(
-                    gameplay_snapshot.as_ref(),
-                    zero_tick_fire_snapshot.as_ref(),
-                    &sent_client_fire_commands,
                     frame_dt,
                     frame_anim_time,
+                    presented_aim,
                     &mut pending_weapon_script_events,
                 );
                 if self.is_connected_client() {
@@ -3188,6 +3238,18 @@ impl ApplicationHandler for App {
                             },
                         ));
                     }
+                    for cue in &self.observer_weapon_cues {
+                        for key in [cue.sound.as_deref(), cue.additional_sound.as_deref()]
+                            .into_iter()
+                            .flatten()
+                        {
+                            requests.push(sound_events::frozen_sound(
+                                key,
+                                &cue.emitter,
+                                &mut scene,
+                            ));
+                        }
+                    }
                     requests.append(&mut client_sounds);
                     (edges, requests, listener_attached)
                 };
@@ -3246,9 +3308,47 @@ impl ApplicationHandler for App {
                         &script_ctx,
                     ));
                     pending_trigger_follow_ups.extend(drain_named_events_with_sequences(
-                        pending_weapon_script_events
+                        pending_ai_events
                             .iter()
-                            .map(|emission| (emission.address, Some(emission.emitter.clone()))),
+                            .filter(|emission| emission.shot_id.is_some())
+                            .flat_map(|emission| {
+                                std::iter::once("activate")
+                                    .chain(
+                                        emission
+                                            .action
+                                            .as_ref()
+                                            .and_then(|a| a.emits.as_ref())
+                                            .and_then(|e| e.activate.as_deref()),
+                                    )
+                                    .map(move |address| (address, Some(emission.emitter.clone())))
+                            }),
+                        &script_ctx.data_registry.borrow(),
+                        &session.scripting.sequence_registry,
+                        &session.scripting.reaction_registry,
+                        &session.scripting.system_registry,
+                        &script_ctx,
+                    ));
+                    pending_trigger_follow_ups.extend(drain_named_events_with_sequences(
+                        self.observer_weapon_cues.iter().flat_map(|cue| {
+                            let builtin = match cue.kind {
+                                netcode::weapon_cues::WeaponCueKind::Activate => "activate",
+                                netcode::weapon_cues::WeaponCueKind::Impact => "impact",
+                            };
+                            std::iter::once(builtin)
+                                .chain(cue.alias.as_deref())
+                                .map(move |address| (address, Some(cue.emitter.clone())))
+                        }),
+                        &script_ctx.data_registry.borrow(),
+                        &session.scripting.sequence_registry,
+                        &session.scripting.reaction_registry,
+                        &session.scripting.system_registry,
+                        &script_ctx,
+                    ));
+                    pending_trigger_follow_ups.extend(drain_named_events_with_sequences(
+                        pending_weapon_script_events.iter().flat_map(|emission| {
+                            sound_events::weapon_emission_addresses(emission)
+                                .map(move |address| (address, Some(emission.emitter.clone())))
+                        }),
                         &script_ctx.data_registry.borrow(),
                         &session.scripting.sequence_registry,
                         &session.scripting.reaction_registry,
@@ -3380,6 +3480,10 @@ impl ApplicationHandler for App {
                     session
                         .scripting
                         .player_hud_state
+                        .set_charge_presentation_suppression(self.client_weapon.suppressed);
+                    session
+                        .scripting
+                        .player_hud_state
                         .tick_for_role_and_report_sampled_weapon(is_connected_client, None)
                 } else {
                     None
@@ -3502,10 +3606,10 @@ impl ApplicationHandler for App {
                 self.reconcile_ui_focus();
                 self.apply_frontend_menu_camera_pose_if_present();
 
-                // Position interpolated from tick-state slots; yaw/pitch from
-                // `self.camera` directly so zero-tick frames still see this
-                // frame's look rotation.
-                let interp = self.frame_timing.interpolated_state();
+                // Gameplay rendering shares the pose used by post-loop shots.
+                // A frontend menu opened by this frame's reactions has its own
+                // camera hold, applied above after the command drains settle.
+                let presented_aim = self.render_aim_pose(presented_aim);
 
                 // M15 Phase 3 Task 5: the connected client's local-pawn presentation
                 // offset is already baked into the camera pose `frame_timing` carries
@@ -3518,7 +3622,7 @@ impl ApplicationHandler for App {
                 // and portal apex continuously across each reconcile snap.
                 // Single-player and the host carry a ZERO offset, so this is the bare
                 // interpolated eye for them, unchanged.
-                let presented_eye = interp.position;
+                let presented_eye = presented_aim.position;
 
                 // View-feel assembly (movement.md D1/D5/D6) runs once per frame,
                 // here, ahead of the audio step: render and the audio listener
@@ -3558,16 +3662,13 @@ impl ApplicationHandler for App {
                     .map(|resolved| resolved.presented_view_feel_scale())
                     .unwrap_or(1.0);
                 let eye = frame_eye::assemble_frame_eye(
-                    frame_eye::FrameEyeInputs {
-                        presented_eye,
-                        aspect: self.camera.aspect(),
-                        render_yaw: render_camera_yaw,
-                        pitch: self.camera.pitch,
-                        driver: view_feel_driver,
-                        movement_edges: &pending_movement_edges,
+                    presented_aim.frame_eye_inputs(
+                        self.camera.aspect(),
+                        view_feel_driver,
+                        &pending_movement_edges,
                         frame_dt,
                         view_feel_scale,
-                    },
+                    ),
                     frame_eye::ViewFeelTracking {
                         state: &mut self.view_feel_state,
                         followed_pawn: &mut self.view_feel_followed_pawn,
@@ -4010,7 +4111,7 @@ impl ApplicationHandler for App {
                             // Camera eye position — the same value that seeds
                             // the portal flood-fill — drives the per-instance
                             // animation time-slicing distance bucket.
-                            interp.position,
+                            render_eye_position,
                             &session.hit_zone_store,
                         );
 
@@ -6123,6 +6224,7 @@ impl App {
     /// into `App`. This is a no-op for single-player and for the host, which
     /// serializes post-loop instead.
     fn net_poll_and_apply(&mut self, frame_dt: f32) {
+        self.observer_weapon_cues.clear();
         let dt = std::time::Duration::from_secs_f32(frame_dt);
         // `net_poll_and_apply` stays on `App` (it drives `net_endpoint`, now
         // session-owned). Clone the `ScriptCtx` handle up front so the
@@ -6617,6 +6719,7 @@ impl App {
                         state_slots,
                         command_queues,
                         pending_hit_declarations,
+                        open_shots,
                         client_id,
                         server_tick,
                         server_now_us,
@@ -6639,7 +6742,7 @@ impl App {
                 // local sim tick is the engine frame counter; the estimator reads
                 // its own monotonic clock for send/receive microseconds.
                 let client_tick = script_ctx.frame.get() as u32;
-                let shot_verdicts = netcode::client_drive_time_sync(client, time_sync, client_tick);
+                let shot_facts = netcode::client_drive_time_sync(client, time_sync, client_tick);
                 let presentation_messages = client.drain_presentation();
                 // Decode + apply every snapshot received this frame through the
                 // Phase 2 client state machine, arm prediction off any `local_player`
@@ -6654,13 +6757,75 @@ impl App {
                 // once per rendered frame before this frame can spawn new ones.
                 sim::advance_client_presentation_effects(&mut registry, frame_dt);
                 let mut slot_table = script_ctx.slot_table.borrow_mut();
-                for verdict in shot_verdicts {
-                    let _ = self.client_predicted_shots.apply_verdict(
-                        &mut registry,
-                        verdict.shot_id,
-                        verdict.accept,
-                        verdict.hit_accepted,
-                    );
+                for outcome in time_sync.drain_activation_outcomes() {
+                    if let Some(effect) = self.client_weapon.records.outcome(&mut registry, outcome)
+                    {
+                        if effect.terminal {
+                            session
+                                .gameplay_input_latch
+                                .activation
+                                .terminal(effect.token);
+                        }
+                        if let Some(recovery) = effect.recovery_ms
+                            && let Ok(postretro_entities::ComponentValue::Weapon(component)) =
+                                registry.get_component_value_mut(
+                                    effect.weapon,
+                                    postretro_entities::ComponentKind::Weapon,
+                                )
+                        {
+                            self.client_predicted_shots.reconcile_cooldown(
+                                effect.weapon,
+                                component,
+                                recovery,
+                            );
+                        }
+                        if effect.rejected {
+                            self.client_weapon.due.retain(|queued| {
+                                queued.weapon != effect.weapon
+                                    || (queued.shot.activation.shot_id.start_tick
+                                        != effect.token.start_tick
+                                        || queued.shot.activation.shot_id.lane != effect.token.lane)
+                            });
+                            let shots: Vec<_> = registry
+                                .iter_with_kind(postretro_entities::ComponentKind::Projectile)
+                                .filter_map(|(_, value)| {
+                                    let postretro_entities::ComponentValue::Projectile(projectile) =
+                                        value
+                                    else {
+                                        return None;
+                                    };
+                                    projectile.predicted_shot_id.filter(|id| {
+                                        id.start_tick == effect.token.start_tick
+                                            && id.lane == effect.token.lane
+                                            && projectile.owner_weapon == effect.weapon
+                                    })
+                                })
+                                .collect();
+                            for id in shots {
+                                let _ = self.client_predicted_shots.apply_verdict(
+                                    &mut registry,
+                                    id,
+                                    false,
+                                    false,
+                                );
+                            }
+                        }
+                    }
+                }
+                for fact in shot_facts {
+                    match fact {
+                        netcode::ClientShotFact::Verdict(verdict) => {
+                            let _ = self.client_predicted_shots.apply_verdict(
+                                &mut registry,
+                                netcode::wire_convert::shot_id_from_wire(verdict.shot_id),
+                                verdict.accept,
+                                verdict.hit_accepted,
+                            );
+                        }
+                        netcode::ClientShotFact::HitRefused(shot_id) => {
+                            let _ = self.client_predicted_shots.refuse_hit(shot_id);
+                        }
+                    }
                 }
                 let mover_target_tick = time_sync
                     .estimated_server_tick()
@@ -6696,6 +6861,22 @@ impl App {
                         *applied_movement_tuning_generation != *tuning_generation,
                     )
                 };
+                // This owner projection can arrive on a zero-tick frame. Death
+                // clears charge feedback/input immediately, without changing
+                // the local health simulation or previously produced flights.
+                self.client_weapon.apply_owner_liveness(
+                    &mut registry,
+                    &slot_table,
+                    &mut session.gameplay_input_latch.activation,
+                );
+                self.observer_weapon_cues
+                    .extend(time_sync.drain_weapon_cues().filter_map(|cue| {
+                        netcode::weapon_cues::materialize_observer_weapon_cue(
+                            cue,
+                            replication,
+                            &registry,
+                        )
+                    }));
                 netcode::ingest_client_presentation_messages(
                     &mut registry,
                     presentation_messages,
@@ -6764,330 +6945,6 @@ impl App {
         // Restore the spawn-point cache taken before the endpoint borrow. The host
         // needs it on every future accept; `mem::take` only borrowed it for this call.
         self.host_spawn_points = host_spawn_points;
-    }
-
-    fn run_client_fire_path_post_loop(
-        &mut self,
-        snapshot: Option<&input::ActionSnapshot>,
-        zero_tick_snapshot: Option<&input::ActionSnapshot>,
-        sent_fire_commands: &[ClientFrameFireCommand],
-        frame_dt: f32,
-        frame_anim_time: f64,
-        pending_weapon_script_events: &mut Vec<postretro_sim::emission::WeaponEmission>,
-    ) {
-        self.client_fire_resolutions.clear();
-        if !self.is_connected_client() {
-            return;
-        }
-        self.run_client_fire_path_post_loop_inner(
-            snapshot,
-            zero_tick_snapshot,
-            sent_fire_commands,
-            frame_dt,
-            frame_anim_time,
-            pending_weapon_script_events,
-        );
-        // Connected clients never enter the host simulation seam. Advance their
-        // locally predicted projectiles once here, after interpolation wrote the
-        // rendered poses, so they cannot double-advance in a catch-up tick.
-        self.advance_client_predicted_projectiles(
-            frame_dt,
-            frame_anim_time,
-            pending_weapon_script_events,
-        );
-    }
-
-    fn run_client_fire_path_post_loop_inner(
-        &mut self,
-        snapshot: Option<&input::ActionSnapshot>,
-        zero_tick_snapshot: Option<&input::ActionSnapshot>,
-        sent_fire_commands: &[ClientFrameFireCommand],
-        frame_dt: f32,
-        frame_anim_time: f64,
-        pending_weapon_script_events: &mut Vec<postretro_sim::emission::WeaponEmission>,
-    ) {
-        let Some(snapshot) = client_fire_snapshot_for_post_loop(snapshot, zero_tick_snapshot)
-        else {
-            return;
-        };
-        let Some(local_pawn_network_id) = netcode::client_local_pawn_network_id(
-            self.session
-                .as_ref()
-                .and_then(|session| session.net_endpoint.as_ref()),
-        ) else {
-            return;
-        };
-
-        let shoot = snapshot.button(Action::Shoot);
-        let button = weapon::FireButtonState {
-            pressed: matches!(shoot, ButtonState::Pressed),
-            active: shoot.is_active(),
-        };
-        let mut zero_tick_fire_command =
-            zero_tick_snapshot
-                .filter(|_| button.pressed)
-                .map(|snapshot| {
-                    build_sim_command(
-                        snapshot,
-                        &self.camera,
-                        false,
-                        false,
-                        true,
-                        false,
-                        false,
-                        false,
-                    )
-                });
-        let Some(session) = self.session.as_ref() else {
-            return;
-        };
-        let script_ctx = session.scripting.script_ctx.clone();
-        let (local_pawn, active_slot, weapon_id, mut component, pellet_salt_name) = {
-            let registry = script_ctx.registry.borrow();
-            let Some((active_slot, weapon_id)) = local_active_wieldable(&registry) else {
-                if zero_tick_fire_command.is_some()
-                    && let Some(session) = self.session.as_mut()
-                {
-                    session.gameplay_input_latch.clear_pressed(Action::Shoot);
-                }
-                return;
-            };
-            let local_pawn = registry
-                .local_player_movement_pawn()
-                .expect("an active local wieldable belongs to the local pawn");
-            let Ok(component) = registry
-                .get_component::<postretro_entities::components::weapon::WeaponComponent>(weapon_id)
-                .cloned()
-            else {
-                return;
-            };
-            let pellet_salt_name = weapon::pellet_salt_name(&registry, weapon_id, &component);
-            (
-                local_pawn,
-                active_slot,
-                weapon_id,
-                component,
-                pellet_salt_name,
-            )
-        };
-        let Some(fire_terms) = session
-            .net_endpoint
-            .as_ref()
-            .and_then(|endpoint| match endpoint {
-                netcode::NetEndpoint::Client { tuning, .. } => tuning.as_deref(),
-                netcode::NetEndpoint::Host { .. } => None,
-            })
-            .and_then(|tuning| client_fire_muzzle_terms(tuning, active_slot))
-        else {
-            return;
-        };
-        if let Some(command) = zero_tick_fire_command.as_mut() {
-            command.firing_slot = u8::try_from(active_slot).unwrap_or_default();
-        }
-        let selected_fire_commands = if zero_tick_fire_command.is_some() {
-            netcode::client_peek_next_command_tick(
-                self.session
-                    .as_ref()
-                    .and_then(|session| session.net_endpoint.as_ref()),
-            )
-            .into_iter()
-            .map(|client_tick| ClientFrameFireCommand {
-                client_tick,
-                button,
-                // A zero-tick input has no earlier logical-tick boundary in
-                // this frame, so it preserves the legacy post-frame timing.
-                elapsed_ms: (frame_dt.max(0.0)) * 1000.0,
-            })
-            .collect::<Vec<_>>()
-        } else {
-            client_fire_commands_for_post_loop(sent_fire_commands, &component)
-        };
-        let logical_tick_elapsed_ms = zero_tick_fire_command
-            .is_some()
-            .then(Vec::new)
-            .unwrap_or_else(|| {
-                sent_fire_commands
-                    .iter()
-                    .map(|command| command.elapsed_ms)
-                    .collect()
-            });
-        let Some(first_selected) = selected_fire_commands.first().copied() else {
-            let _ = weapon::advance_client_fire_state(
-                &mut component,
-                button,
-                frame_dt,
-                &logical_tick_elapsed_ms,
-            );
-            let mut registry = script_ctx.registry.borrow_mut();
-            let _ = registry.set_component(weapon_id, component);
-            if zero_tick_fire_command.is_some() {
-                if let Some(session) = self.session.as_mut() {
-                    session.gameplay_input_latch.clear_pressed(Action::Shoot);
-                }
-            }
-            return;
-        };
-        // Every pull the fire gate passes is predicted and declared below, so
-        // the host applies damage whenever it fires. The replicated magazine
-        // and reload state only choose what the pull presents, and only while
-        // each value describes this client's own active slot.
-        let presentation = weapon::client_pull_presentation(
-            &component,
-            active_slot,
-            &netcode::client_weapon_projection(session.net_endpoint.as_ref()),
-        );
-        let selected_shot_elapsed_ms = selected_fire_commands
-            .iter()
-            .map(|command| command.elapsed_ms)
-            .collect::<Vec<_>>();
-        let (aim_origin, aim_direction) = self.camera.aim_ray();
-        let cooldown_before_ms = component.cooldown_remaining_ms;
-        let resolution = {
-            let registry = script_ctx.registry.borrow();
-            weapon::resolve_client_fire(
-                Some(local_pawn),
-                &mut component,
-                &pellet_salt_name,
-                active_slot,
-                button,
-                aim_origin,
-                aim_direction,
-                &fire_terms.placement,
-                fire_terms.muzzle_offset,
-                first_selected.client_tick,
-                &selected_shot_elapsed_ms,
-                &logical_tick_elapsed_ms,
-                &self.collision_world,
-                &registry,
-                &session.hit_zone_store,
-                frame_anim_time,
-                frame_dt,
-            )
-        };
-        let cooldown_after_ms = component.cooldown_remaining_ms;
-        {
-            let mut registry = script_ctx.registry.borrow_mut();
-            let _ = registry.set_component(weapon_id, component);
-        }
-        if let Some(resolution) = resolution {
-            if let Some(command) = zero_tick_fire_command.as_ref() {
-                let aim_pitch = self.camera.pitch;
-                let sent_tick = netcode::client_send_input_command(
-                    self.session
-                        .as_mut()
-                        .and_then(|session| session.net_endpoint.as_mut()),
-                    command,
-                    aim_pitch,
-                );
-                if sent_tick != Some(resolution.client_tick) {
-                    return;
-                }
-                if let Some(session) = self.session.as_mut() {
-                    session.gameplay_input_latch.clear_pressed(Action::Shoot);
-                }
-            }
-            let shot_id = netcode::shot_id_raw(local_pawn_network_id, resolution.client_tick);
-            let projectile_launch = resolution.projectile_launch.clone();
-            self.client_predicted_shots.predict(
-                shot_id,
-                weapon_id,
-                &resolution,
-                cooldown_before_ms,
-                cooldown_after_ms,
-                presentation,
-            );
-            let (shooter, weapon_name) = {
-                let registry = script_ctx.registry.borrow();
-                (
-                    postretro_sim::emission::entity_emitter(&registry, local_pawn),
-                    postretro_sim::emission::descriptor_name(&registry, weapon_id),
-                )
-            };
-            // The presentation picks the emissions and whether a predicted
-            // projectile is shown; every presentation still declares the shot.
-            // Emissions drain with the shared sequence-aware named-event batch;
-            // a host reject rolls this shot's presentation state back in
-            // reconcile.
-            let contacts = resolution.impact_contacts();
-            let effects = weapon::client_pull_effects(
-                presentation,
-                projectile_launch.is_some(),
-                !contacts.is_empty(),
-            );
-            let mut contacts = Some(contacts);
-            for address in effects.addresses {
-                let emitter = if address == "impact" {
-                    // A predicted hitscan shot's contacts, wall hits included,
-                    // are its one `impact`, heard now at the contact nearest
-                    // the listener.
-                    postretro_sim::emission::Emitter::Contacts(contacts.take().unwrap_or_default())
-                } else {
-                    shooter.clone()
-                };
-                pending_weapon_script_events.push(postretro_sim::emission::WeaponEmission {
-                    address,
-                    emitter,
-                    weapon: weapon_name.clone(),
-                });
-            }
-            let projectile_spawned = effects.spawn_projectile
-                && projectile_launch.is_some_and(|launch| {
-                    sim::spawn_projectile(
-                        &mut script_ctx.registry.borrow_mut(),
-                        local_pawn,
-                        weapon_id,
-                        launch,
-                        Some(shot_id),
-                        sim::ProjectileSource {
-                            weapon: weapon_name,
-                            activation: None,
-                        },
-                    )
-                    .is_some()
-                });
-            let declared = match effects.declaration {
-                weapon::ClientShotDeclaration::ResolvedNow => Some((
-                    resolution.hits.as_slice(),
-                    resolution.world_contacts.as_slice(),
-                )),
-                // A projectile that could not materialize cannot declare later,
-                // so it retires its authorized shot now with the same valid
-                // empty declaration used on normal expiry.
-                weapon::ClientShotDeclaration::OnProjectileResolution if projectile_spawned => None,
-                weapon::ClientShotDeclaration::OnProjectileResolution
-                | weapon::ClientShotDeclaration::EmptyNow => Some((&[][..], &[][..])),
-            };
-            if let Some((hits, world_contacts)) = declared {
-                let _ = netcode::client_send_hit_declaration(
-                    self.session
-                        .as_mut()
-                        .and_then(|session| session.net_endpoint.as_mut()),
-                    shot_id,
-                    hits,
-                    world_contacts,
-                );
-            }
-            // Only the first tick casts a ray (once per frame, at the rendered pose);
-            // each later tick in a multi-tick frame still authorized a host shot, so
-            // send an empty declaration per remaining tick to retire it and keep
-            // shot_id accounting balanced with the host without extra ray casts.
-            for command in selected_fire_commands.iter().skip(1) {
-                let shot_id = netcode::shot_id_raw(local_pawn_network_id, command.client_tick);
-                let _ = netcode::client_send_hit_declaration(
-                    self.session
-                        .as_mut()
-                        .and_then(|session| session.net_endpoint.as_mut()),
-                    shot_id,
-                    &[],
-                    &[],
-                );
-            }
-            self.client_fire_resolutions.push(resolution);
-        } else if zero_tick_fire_command.is_some() {
-            if let Some(session) = self.session.as_mut() {
-                session.gameplay_input_latch.clear_pressed(Action::Shoot);
-            }
-        }
     }
 
     /// Derive the local pawn's reload edges and overheat cue from its
@@ -7205,31 +7062,39 @@ impl App {
                         shot_id,
                         impact,
                         source_weapon,
+                        source_action,
+                        source_sounds,
+                        visible,
                     } => {
                         // The client hears its own predicted projectile land.
-                        pending_weapon_script_events.push(
-                            postretro_sim::emission::WeaponEmission {
-                                address: "impact",
-                                emitter: postretro_sim::emission::Emitter::Contacts(vec![
-                                    postretro_sim::emission::ImpactContact::new(
-                                        impact.point,
-                                        impact.normal,
-                                        impact.target,
-                                    ),
-                                ]),
-                                weapon: source_weapon,
-                            },
-                        );
-                        declarations.push((shot_id, Some(impact)));
+                        if visible {
+                            pending_weapon_script_events.push(
+                                postretro_sim::emission::WeaponEmission {
+                                    sounds: source_sounds,
+                                    action: source_action,
+                                    shot_id: Some(shot_id),
+                                    address: "impact",
+                                    emitter: postretro_sim::emission::Emitter::Contacts(vec![
+                                        postretro_sim::emission::ImpactContact::new(
+                                            impact.point,
+                                            impact.normal,
+                                            impact.target,
+                                        ),
+                                    ]),
+                                    weapon: source_weapon,
+                                },
+                            );
+                        }
+                        declarations.push((shot_id, Some(impact), visible));
                     }
                     sim::PredictedProjectileResolution::Expired { shot_id } => {
-                        declarations.push((shot_id, None));
+                        declarations.push((shot_id, None, false));
                     }
                 },
             );
         }
 
-        for (shot_id, impact) in declarations {
+        for (shot_id, impact, visible) in declarations {
             let predicted_entity_hit = impact
                 .as_ref()
                 .is_some_and(|impact| impact.target.is_some());
@@ -7240,7 +7105,10 @@ impl App {
                 shot_id,
                 impact.as_ref(),
             );
-            if predicted_entity_hit && sent_records.is_some_and(|record_count| record_count > 0) {
+            if visible
+                && predicted_entity_hit
+                && sent_records.is_some_and(|record_count| record_count > 0)
+            {
                 self.client_predicted_shots.mark_hitmarker(shot_id);
             }
         }
@@ -7642,6 +7510,8 @@ impl App {
         let Some(netcode::NetEndpoint::Host {
             allocator,
             weaponless_fire_logged,
+            command_queues,
+            server,
             tick,
             ..
         }) = self
@@ -7652,16 +7522,34 @@ impl App {
             return Vec::new();
         };
 
+        let mut registry = script_ctx.registry.borrow_mut();
         resolved
             .iter()
             .map(|resolved| {
-                Self::prepare_remote_pawn_command(
+                host_activations::observe_lifecycle(
+                    &mut registry,
                     allocator,
-                    &script_ctx.registry.borrow(),
+                    command_queues,
+                    server,
+                    resolved.client_id,
+                    resolved.pawn,
+                    *tick,
+                );
+                let mut command = Self::prepare_remote_pawn_command(
+                    allocator,
+                    &registry,
                     weaponless_fire_logged,
                     *tick,
                     resolved,
-                )
+                );
+                host_activations::guard_initiation(
+                    &registry,
+                    allocator,
+                    command_queues,
+                    server,
+                    &mut command,
+                );
+                command
             })
             .collect()
     }
@@ -7678,8 +7566,11 @@ impl App {
             .get_component::<postretro_entities::components::inventory::Inventory>(resolved.pawn)
             .ok()
             .and_then(|inventory| inventory.wieldables.get(firing_slot).copied().flatten());
-        let wants_fire =
-            resolved.command.fire_button.pressed || resolved.command.fire_button.active;
+        let wants_fire = resolved.command.fire_button.pressed
+            || resolved.command.fire_button.active
+            || resolved.command.secondary_button.pressed
+            || resolved.command.secondary_button.active
+            || resolved.command.activation.initiation.is_some();
         if weapon.is_none() && wants_fire && weaponless_fire_logged.insert(resolved.pawn) {
             log::warn!(
                 "[Net] pawn {} declared unowned firing slot {}; rejecting remote fire",
@@ -7687,12 +7578,21 @@ impl App {
                 resolved.command.firing_slot,
             );
         }
+        // The remote machine reads only this identity's pawn. It derives each
+        // actual shot from the admitted initiation and authored ordinal.
         let shot_id = allocator
             .network_id_for_entity(resolved.pawn)
             .map(|network_id| {
-                postretro_combat_model::ShotId::from_parts(network_id, resolved.client_tick)
+                postretro_combat_model::ShotId::from_parts(
+                    (network_id).0,
+                    resolved.client_tick,
+                    postretro_foundation::ActivationLane::Primary,
+                    0,
+                )
             });
         sim::RemotePawnCommand {
+            real_command: resolved.source == netcode::ResolutionSource::Real,
+            rejected_activation: resolved.rejected_activation,
             pawn: resolved.pawn,
             owner_client_id: resolved.client_id,
             weapon,
@@ -7717,28 +7617,6 @@ impl App {
         };
         for shot in shots {
             open_shots.record(shot.shot.clone(), shot.owner_client_id);
-        }
-    }
-
-    fn host_send_rejected_projectile_fire_verdicts(
-        &mut self,
-        rejections: &[sim::RemoteProjectileFireRejection],
-    ) {
-        let Some(netcode::NetEndpoint::Host { server, .. }) = self
-            .session
-            .as_mut()
-            .and_then(|session| session.net_endpoint.as_mut())
-        else {
-            return;
-        };
-        for rejection in rejections {
-            netcode::send_shot_verdict(
-                server,
-                rejection.owner_client_id,
-                rejection.shot_id.raw(),
-                false,
-                false,
-            );
         }
     }
 
@@ -8296,6 +8174,12 @@ impl App {
         // those modifiers. Accepted because the symmetric stale-state
         // protection is worth more than the one-keystroke regression.
         session.input_system.clear_all();
+        self.client_weapon
+            .suspend(&session.scripting.script_ctx.registry.borrow());
+        session
+            .gameplay_input_latch
+            .activation
+            .set_active(self.client_weapon.suppressed.map(|(_, token)| token));
         session.gameplay_input_latch.clear();
         self.diagnostic_inputs.clear_modifiers();
     }
@@ -9670,8 +9554,11 @@ mod tests {
                 movement_spread_degrees: 0.0,
                 spread_vertical_bias: 0.0,
                 range: 1.0,
-                cooldown_ms: 1.0,
-                fire_mode: postretro_foundation::FireMode::Semi,
+                primary: postretro_foundation::WeaponActivationDescriptor::single(
+                    postretro_foundation::ActivationTrigger::Press,
+                    1.0,
+                ),
+                secondary: None,
                 resolution: postretro_foundation::ResolutionMode::Hitscan,
                 projectile: None,
                 splash: None,
@@ -9818,7 +9705,16 @@ mod tests {
             placement: host_placement.clone(),
             muzzle_offset: Some(host_muzzle),
             range: 64.0,
-            cooldown_ms: 100.0,
+            primary: postretro_foundation::WeaponActivationDescriptor::single(
+                postretro_foundation::ActivationTrigger::Press,
+                100.0,
+            ),
+            secondary: None,
+            damage: 10.0,
+            knockback: None,
+            projectile: None,
+            splash: None,
+            resource: None,
             pellet_count: 1,
             spread_degrees: 0.0,
             bloom_per_shot_degrees: 0.0,
@@ -9827,10 +9723,10 @@ mod tests {
             bloom_decay_delay_ms: 0.0,
             movement_spread_degrees: 0.0,
             spread_vertical_bias: 0.0,
-            fire_mode: postretro_foundation::FireMode::Semi,
             resolution: postretro_foundation::ResolutionMode::Projectile,
             lower_ms: 0,
             raise_ms: 0,
+            block_during_reload: None,
         });
         let initial = postretro_combat_model::TuningPayload::new(None, slots.clone());
         let terms = client_fire_muzzle_terms(&initial, 0).expect("host row exists");
@@ -10144,8 +10040,10 @@ mod tests {
             )
             .unwrap();
         let weapon_id = registry.spawn(postretro_entities::Transform::default());
-        let mut component =
-            weapon::test_fixtures::weapon_component(postretro_foundation::FireMode::Semi, 100.0);
+        let mut component = weapon::test_fixtures::weapon_component(
+            postretro_foundation::ActivationTrigger::Press,
+            100.0,
+        );
         component.cooldown_remaining_ms = 72.0;
         registry.set_component(weapon_id, component).unwrap();
         let mut inventory = postretro_entities::components::inventory::Inventory::default();
@@ -10206,11 +10104,15 @@ mod tests {
             .unwrap();
         let weapon_a = registry.spawn(postretro_entities::Transform::default());
         let weapon_b = registry.spawn(postretro_entities::Transform::default());
-        let mut component_a =
-            weapon::test_fixtures::weapon_component(postretro_foundation::FireMode::Semi, 100.0);
+        let mut component_a = weapon::test_fixtures::weapon_component(
+            postretro_foundation::ActivationTrigger::Press,
+            100.0,
+        );
         component_a.cooldown_remaining_ms = 80.0;
-        let mut component_b =
-            weapon::test_fixtures::weapon_component(postretro_foundation::FireMode::Semi, 100.0);
+        let mut component_b = weapon::test_fixtures::weapon_component(
+            postretro_foundation::ActivationTrigger::Press,
+            100.0,
+        );
         component_b.cooldown_remaining_ms = 11.0;
         registry.set_component(weapon_a, component_a).unwrap();
         registry.set_component(weapon_b, component_b).unwrap();
@@ -10221,8 +10123,14 @@ mod tests {
         registry.set_component(pawn, inventory).unwrap();
 
         let mut predicted = weapon::ClientPredictedShots::new();
-        predicted.predict(
+        let shot_id = postretro_foundation::ShotId::from_parts(
+            4,
             7,
+            postretro_foundation::ActivationLane::Primary,
+            0,
+        );
+        predicted.predict(
+            shot_id,
             weapon_a,
             &weapon::ClientFireResolution {
                 world_contacts: Vec::new(),
@@ -10257,7 +10165,7 @@ mod tests {
             "A's authoritative sample must not overwrite locally-active B"
         );
 
-        let _ = predicted.apply_verdict(&mut registry, 7, false, false);
+        let _ = predicted.apply_verdict(&mut registry, shot_id, false, false);
         assert_eq!(
             registry
                 .get_component::<postretro_entities::components::weapon::WeaponComponent>(weapon_a,)
@@ -10268,410 +10176,7 @@ mod tests {
         );
     }
 
-    #[test]
-    fn zero_tick_frame_shoot_press_reaches_post_loop_client_fire_snapshot() {
-        let mut latch = input::GameplayInputLatch::new();
-        let zero_tick_snapshot =
-            input::ActionSnapshot::with_button_state(Action::Shoot, ButtonState::Pressed);
-
-        let fixed_tick_snapshot = latch.snapshot_for_ticks(&zero_tick_snapshot, 0);
-        assert!(
-            fixed_tick_snapshot.is_none(),
-            "fixed gameplay intentionally waits for a later tick"
-        );
-        let selected = client_fire_snapshot_for_post_loop(
-            fixed_tick_snapshot.as_ref(),
-            Some(&zero_tick_snapshot),
-        )
-        .expect("post-loop client fire still sees the render-frame click");
-
-        assert_eq!(selected.button(Action::Shoot), ButtonState::Pressed);
-    }
-
-    fn client_fire_selection_state(
-        fire_mode: postretro_foundation::FireMode,
-        cooldown_remaining_ms: f32,
-        cooldown_ms: f32,
-    ) -> postretro_entities::components::weapon::WeaponComponent {
-        let mut component = weapon::test_fixtures::weapon_component(fire_mode, cooldown_ms);
-        component.cooldown_remaining_ms = cooldown_remaining_ms;
-        component
-    }
-
-    fn spawn_owned_test_weapon(
-        component: postretro_entities::components::weapon::WeaponComponent,
-    ) -> (
-        std::rc::Rc<std::cell::RefCell<postretro_entities::EntityRegistry>>,
-        postretro_entities::EntityId,
-        postretro_entities::EntityId,
-    ) {
-        use postretro_entities::components::inventory::Inventory;
-
-        let registry = std::rc::Rc::new(std::cell::RefCell::new(
-            postretro_entities::EntityRegistry::new(),
-        ));
-        let (pawn, weapon) = {
-            let mut registry = registry.borrow_mut();
-            let pawn = registry.spawn(postretro_entities::Transform::default());
-            let weapon = registry.spawn(postretro_entities::Transform::default());
-            registry
-                .set_component(weapon, component)
-                .expect("test weapon attaches");
-            let mut inventory = Inventory::default();
-            inventory.wieldables[0] = Some(weapon);
-            registry
-                .set_component(pawn, inventory)
-                .expect("test pawn owns the weapon");
-            (pawn, weapon)
-        };
-        (registry, pawn, weapon)
-    }
-
-    fn run_client_wieldable_prepass(
-        registry: &std::rc::Rc<std::cell::RefCell<postretro_entities::EntityRegistry>>,
-        pawn: postretro_entities::EntityId,
-        button: weapon::FireButtonState,
-        tick_dt: f32,
-    ) {
-        let _ = sim::simulate_client_wieldable_tick(
-            registry.clone(),
-            &collision::CollisionWorld::new(),
-            &scripting_systems::hit_zones::HitZoneStore::new(),
-            Some(pawn),
-            false,
-            None,
-            button,
-            false,
-            0.0,
-            tick_dt,
-        );
-    }
-
-    #[test]
-    fn client_fire_tick_selection_keeps_press_independent_of_pruned_history() {
-        let state = client_fire_selection_state(postretro_foundation::FireMode::Semi, 0.0, 100.0);
-        let commands = [
-            ClientFrameFireCommand {
-                client_tick: 41,
-                button: weapon::FireButtonState {
-                    pressed: true,
-                    active: true,
-                },
-                elapsed_ms: 16.0,
-            },
-            ClientFrameFireCommand {
-                client_tick: 42,
-                button: weapon::FireButtonState {
-                    pressed: false,
-                    active: true,
-                },
-                elapsed_ms: 32.0,
-            },
-        ];
-
-        assert_eq!(client_fire_ticks_for_post_loop(&commands, &state), vec![41]);
-    }
-
-    // Regression: the connected-client wieldable prepass advanced bloom before
-    // the post-loop prediction clock advanced the same 16 ms again.
-    #[test]
-    fn idle_client_wieldable_prepass_and_post_loop_match_host_bloom_clock() {
-        let mut initial =
-            client_fire_selection_state(postretro_foundation::FireMode::Auto, 100.0, 100.0);
-        initial.spread_degrees = 2.0;
-        initial.bloom_accumulator_degrees = 4.0;
-        initial.bloom_decay_degrees_per_second = 10.0;
-        initial.bloom_decay_delay_ms = 30.0;
-        let button = weapon::FireButtonState {
-            pressed: false,
-            active: false,
-        };
-        let world = collision::CollisionWorld::new();
-        let hit_zones = scripting_systems::hit_zones::HitZoneStore::new();
-        let (host_registry, host_pawn, host_weapon) = spawn_owned_test_weapon(initial.clone());
-        let (client_registry, client_pawn, client_weapon) = spawn_owned_test_weapon(initial);
-
-        sim::run_local_weapon_fire_for_test(
-            &host_registry,
-            host_pawn,
-            &weapon::WeaponFireCommand {
-                button,
-                aim_origin: Vec3::ZERO,
-                aim_direction: Vec3::NEG_Z,
-                can_fire: true,
-            },
-            &world,
-            &hit_zones,
-            0.016,
-        );
-        run_client_wieldable_prepass(&client_registry, client_pawn, button, 0.016);
-
-        let mut client_state = client_registry
-            .borrow()
-            .get_component::<postretro_entities::components::weapon::WeaponComponent>(client_weapon)
-            .expect("client weapon persists")
-            .clone();
-        assert!((client_state.bloom_accumulator_degrees - 4.0).abs() < f32::EPSILON);
-        assert!(client_state.bloom_idle_ms.abs() < f32::EPSILON);
-        let _ = weapon::advance_client_fire_state(&mut client_state, button, 0.016, &[16.0]);
-        let host_state = host_registry
-            .borrow()
-            .get_component::<postretro_entities::components::weapon::WeaponComponent>(host_weapon)
-            .expect("host weapon persists")
-            .clone();
-
-        assert!((host_state.bloom_accumulator_degrees - 4.0).abs() < f32::EPSILON);
-        assert!((host_state.bloom_idle_ms - 16.0).abs() < f32::EPSILON);
-        assert!((host_state.effective_spread_degrees(0.0, 0.0) - 6.0).abs() < f32::EPSILON);
-        assert!(
-            (client_state.bloom_accumulator_degrees - host_state.bloom_accumulator_degrees).abs()
-                < 1.0e-6
-        );
-        assert!((client_state.bloom_idle_ms - host_state.bloom_idle_ms).abs() < 1.0e-6);
-        assert!(
-            (client_state.effective_spread_degrees(0.0, 0.0)
-                - host_state.effective_spread_degrees(0.0, 0.0))
-            .abs()
-                < 1.0e-6
-        );
-    }
-
-    // Regression: one frame-wide bloom tick collapsed a delay crossing that the
-    // host evaluated at three fixed logical boundaries.
-    #[test]
-    fn unselected_client_fire_hitch_replays_host_bloom_boundaries() {
-        let mut initial =
-            client_fire_selection_state(postretro_foundation::FireMode::Auto, 100.0, 100.0);
-        initial.spread_degrees = 2.0;
-        initial.bloom_accumulator_degrees = 4.0;
-        initial.bloom_decay_degrees_per_second = 10.0;
-        initial.bloom_decay_delay_ms = 30.0;
-        let commands = [
-            ClientFrameFireCommand {
-                client_tick: 7,
-                button: weapon::FireButtonState {
-                    pressed: true,
-                    active: true,
-                },
-                elapsed_ms: 16.0,
-            },
-            ClientFrameFireCommand {
-                client_tick: 8,
-                button: weapon::FireButtonState {
-                    pressed: false,
-                    active: true,
-                },
-                elapsed_ms: 32.0,
-            },
-            ClientFrameFireCommand {
-                client_tick: 9,
-                button: weapon::FireButtonState {
-                    pressed: false,
-                    active: true,
-                },
-                elapsed_ms: 48.0,
-            },
-        ];
-        assert!(
-            client_fire_commands_for_post_loop(&commands, &initial).is_empty(),
-            "cooldown suppresses every logical fire command"
-        );
-
-        let world = collision::CollisionWorld::new();
-        let hit_zones = scripting_systems::hit_zones::HitZoneStore::new();
-        let (host_registry, host_pawn, host_weapon) = spawn_owned_test_weapon(initial.clone());
-        let (client_registry, client_pawn, client_weapon) = spawn_owned_test_weapon(initial);
-        for command in &commands {
-            sim::run_local_weapon_fire_for_test(
-                &host_registry,
-                host_pawn,
-                &weapon::WeaponFireCommand {
-                    button: command.button,
-                    aim_origin: Vec3::ZERO,
-                    aim_direction: Vec3::NEG_Z,
-                    can_fire: true,
-                },
-                &world,
-                &hit_zones,
-                0.016,
-            );
-            run_client_wieldable_prepass(&client_registry, client_pawn, command.button, 0.016);
-        }
-
-        let mut client_state = client_registry
-            .borrow()
-            .get_component::<postretro_entities::components::weapon::WeaponComponent>(client_weapon)
-            .expect("client weapon persists")
-            .clone();
-        let elapsed = commands.map(|command| command.elapsed_ms);
-        let _ = weapon::advance_client_fire_state(
-            &mut client_state,
-            commands[0].button,
-            0.048,
-            &elapsed,
-        );
-        let host_state = host_registry
-            .borrow()
-            .get_component::<postretro_entities::components::weapon::WeaponComponent>(host_weapon)
-            .expect("host weapon persists")
-            .clone();
-
-        assert!((client_state.bloom_accumulator_degrees - 3.68).abs() < 1.0e-5);
-        assert!((client_state.bloom_idle_ms - 48.0).abs() < 1.0e-5);
-        assert!((client_state.effective_spread_degrees(0.0, 0.0) - 5.68).abs() < 1.0e-5);
-        assert!(
-            (client_state.bloom_accumulator_degrees - host_state.bloom_accumulator_degrees).abs()
-                < 1.0e-5
-        );
-        assert!(
-            (client_state.cooldown_remaining_ms - host_state.cooldown_remaining_ms).abs() < 1.0e-5
-        );
-        assert!((client_state.bloom_idle_ms - host_state.bloom_idle_ms).abs() < 1.0e-5);
-        assert!(
-            (client_state.effective_spread_degrees(0.0, 0.0)
-                - host_state.effective_spread_degrees(0.0, 0.0))
-            .abs()
-                < 1.0e-5
-        );
-    }
-
-    #[test]
-    fn held_auto_fire_hitch_keeps_client_bloom_aligned_with_host() {
-        let mut initial =
-            client_fire_selection_state(postretro_foundation::FireMode::Auto, 0.0, 20.0);
-        initial.spread_degrees = 2.0;
-        initial.bloom_accumulator_degrees = 4.0;
-        initial.bloom_per_shot_degrees = 1.0;
-        initial.bloom_max_degrees = 8.0;
-        initial.bloom_decay_degrees_per_second = 10.0;
-        initial.bloom_decay_delay_ms = 30.0;
-        let commands = [
-            ClientFrameFireCommand {
-                client_tick: 7,
-                button: weapon::FireButtonState {
-                    pressed: true,
-                    active: true,
-                },
-                elapsed_ms: 16.0,
-            },
-            ClientFrameFireCommand {
-                client_tick: 8,
-                button: weapon::FireButtonState {
-                    pressed: false,
-                    active: true,
-                },
-                elapsed_ms: 32.0,
-            },
-            ClientFrameFireCommand {
-                client_tick: 9,
-                button: weapon::FireButtonState {
-                    pressed: false,
-                    active: true,
-                },
-                elapsed_ms: 48.0,
-            },
-        ];
-
-        let selected = client_fire_commands_for_post_loop(&commands, &initial);
-        assert_eq!(
-            selected
-                .iter()
-                .map(|command| command.client_tick)
-                .collect::<Vec<_>>(),
-            vec![7, 9],
-            "the first tick owns the rendered HIT; later eligible auto shots get miss declarations"
-        );
-
-        // Regression: the fire-suppressed client prepass and frame-wide bloom
-        // replay double-advanced the clock during a sustained-fire hitch.
-        let (host_registry, host_pawn, host_weapon) = spawn_owned_test_weapon(initial.clone());
-        let (client_registry, client_pawn, client_weapon) = spawn_owned_test_weapon(initial);
-        let collision_world = collision::CollisionWorld::new();
-        let hit_zone_store = scripting_systems::hit_zones::HitZoneStore::new();
-        for command in &commands {
-            sim::run_local_weapon_fire_for_test(
-                &host_registry,
-                host_pawn,
-                &weapon::WeaponFireCommand {
-                    button: command.button,
-                    aim_origin: Vec3::ZERO,
-                    aim_direction: Vec3::NEG_Z,
-                    can_fire: true,
-                },
-                &collision_world,
-                &hit_zone_store,
-                0.016,
-            );
-            run_client_wieldable_prepass(&client_registry, client_pawn, command.button, 0.016);
-        }
-
-        let mut state = client_registry
-            .borrow()
-            .get_component::<postretro_entities::components::weapon::WeaponComponent>(client_weapon)
-            .expect("client weapon persists")
-            .clone();
-        assert!((state.bloom_accumulator_degrees - 4.0).abs() < f32::EPSILON);
-        assert!(state.bloom_idle_ms.abs() < f32::EPSILON);
-        let selected_shot_elapsed_ms = selected
-            .iter()
-            .map(|command| command.elapsed_ms)
-            .collect::<Vec<_>>();
-        let registry = client_registry.borrow();
-        let resolution = weapon::resolve_client_fire(
-            None,
-            &mut state,
-            "weapon.unknown",
-            0,
-            commands[0].button,
-            Vec3::ZERO,
-            Vec3::NEG_Z,
-            &WeaponPlacementDescriptor::default(),
-            None,
-            selected[0].client_tick,
-            &selected_shot_elapsed_ms,
-            &commands.map(|command| command.elapsed_ms),
-            &collision_world,
-            &registry,
-            &hit_zone_store,
-            0.0,
-            0.048,
-        )
-        .expect("the first selected auto tick resolves the frame's one cast");
-        let host_state = host_registry
-            .borrow()
-            .get_component::<postretro_entities::components::weapon::WeaponComponent>(host_weapon)
-            .expect("host weapon persists")
-            .clone();
-
-        assert_eq!(resolution.client_tick, 7);
-        assert_eq!(state.shells_fired, 1, "only the first selected shot casts");
-        assert_eq!(
-            host_state.shells_fired, 2,
-            "the host resolves both logical shots"
-        );
-        assert!(
-            (state.bloom_accumulator_degrees - 5.84).abs() < 1.0e-5,
-            "the replay preserves the delayed-decay timing between 16ms and 48ms shots"
-        );
-        assert!(
-            (state.bloom_accumulator_degrees - host_state.bloom_accumulator_degrees).abs() < 1.0e-5,
-            "the next client cone matches the host bloom accumulator"
-        );
-        assert!(
-            (state.bloom_idle_ms - host_state.bloom_idle_ms).abs() < 1.0e-5,
-            "the next client decay boundary matches the host idle clock"
-        );
-        assert!(
-            (state.effective_spread_degrees(0.0, 0.0)
-                - host_state.effective_spread_degrees(0.0, 0.0))
-            .abs()
-                < 1.0e-5,
-            "the next client cone and local player.spread match host bloom"
-        );
-        assert_eq!(selected[1].client_tick, 9);
-    }
-
-    fn minimal_player_descriptor() -> PlayerMovementDescriptor {
+    pub(crate) fn minimal_player_descriptor() -> PlayerMovementDescriptor {
         PlayerMovementDescriptor {
             sounds: None,
             knockback: Default::default(),
@@ -10736,7 +10241,7 @@ mod tests {
             .set_component(
                 first,
                 weapon::test_fixtures::weapon_component(
-                    postretro_foundation::FireMode::Semi,
+                    postretro_foundation::ActivationTrigger::Press,
                     100.0,
                 ),
             )
@@ -10745,7 +10250,7 @@ mod tests {
             .set_component(
                 third,
                 weapon::test_fixtures::weapon_component(
-                    postretro_foundation::FireMode::Semi,
+                    postretro_foundation::ActivationTrigger::Press,
                     100.0,
                 ),
             )
@@ -11004,6 +10509,70 @@ mod tests {
         assert!(!frontend_root_is_pushed(&stack, "frontend.menuTree"));
     }
 
+    // Regression: a late frontend camera hold inherited the prior rider's mover yaw residual.
+    #[test]
+    fn frontend_render_eye_uses_authored_camera_without_retained_mover_yaw() {
+        use postretro_ui::modal_stack::ScopeTier;
+
+        let mut app = crate::startup::lifecycle::tests::test_app();
+        app.camera.yaw = 0.3;
+        app.mover_yaw_carry_ground = postretro_foundation::GroundRef::Mover(7);
+        app.kinematic_mover_tick_states = mover_yaw_states(true, Quat::from_rotation_y(0.4));
+        let gameplay_aim = app.presented_aim_pose(0.5);
+        assert!((app.render_aim_pose(gameplay_aim).yaw - 0.5).abs() < 1.0e-5);
+
+        let menu_position = Vec3::new(4.0, 2.0, 8.0);
+        {
+            let session = app.session.as_mut().unwrap();
+            session.frontend = Some(Frontend {
+                menu_tree: "frontend.menuTree".to_string(),
+                background_level: None,
+                camera: MenuCamera {
+                    position: menu_position.to_array(),
+                    yaw: -0.6,
+                    pitch: -0.1,
+                },
+            });
+            let tree = postretro_ui::demo::build_frontend_menu_descriptor();
+            session.modal_stack.registry_mut().register(
+                "frontend.menuTree",
+                tree.clone(),
+                ScopeTier::Mod,
+                false,
+            );
+            session.modal_stack.registry_mut().register(
+                "frontend.options",
+                tree,
+                ScopeTier::Mod,
+                false,
+            );
+            session.modal_stack.push_named("frontend.menuTree", None);
+            session.modal_stack.push_named("frontend.options", None);
+        }
+        // Same late App boundary as rendering after post-loop reaction drains.
+        app.apply_frontend_menu_camera_pose_if_present();
+        let held_aim = app.render_aim_pose(gameplay_aim);
+        let eye = frame_eye::assemble_frame_eye(
+            held_aim.frame_eye_inputs(app.camera.aspect(), None, &[], 0.0, 1.0),
+            frame_eye::ViewFeelTracking {
+                state: &mut app.view_feel_state,
+                followed_pawn: &mut app.view_feel_followed_pawn,
+                descriptor: &mut app.view_feel_descriptor,
+            },
+        );
+        let (authored_eye, authored_forward) = Camera::new(menu_position, -0.6, -0.1).aim_ray();
+        assert!(eye.camera.eye_position.distance(authored_eye) < 1.0e-5);
+        assert!(eye.camera.forward.distance(authored_forward) < 1.0e-5);
+        assert_eq!(
+            app.mover_yaw_carry_ground,
+            postretro_foundation::GroundRef::Mover(7)
+        );
+        assert!(
+            (app.presented_aim_pose(0.5).yaw - held_aim.yaw).abs() > 0.1,
+            "retained mover carry would visibly rotate the held frontend camera"
+        );
+    }
+
     #[test]
     fn sim_catchup_pushes_interpolation_state_per_tick() {
         use std::cell::RefCell;
@@ -11050,6 +10619,12 @@ mod tests {
         let mut mover_states = kinematic_mover::MoverTickStateTable::default();
         let remote_inputs = Vec::new();
         let command = sim::SimCommand {
+            input_tick: 0,
+            secondary_button: postretro_sim::weapon::FireButtonState {
+                pressed: false,
+                active: false,
+            },
+            activation: postretro_foundation::ActivationInput::default(),
             movement: movement::MovementInput {
                 wish_dir: glam::Vec2::ZERO,
                 jump_pressed: false,
@@ -11072,7 +10647,11 @@ mod tests {
         };
 
         let mut pushed_states = Vec::new();
-        for _ in 0..2 {
+        for input_tick in 0..2 {
+            let command = sim::SimCommand {
+                input_tick,
+                ..command.clone()
+            };
             let _events = sim::simulate_tick(
                 registry.clone(),
                 &world,
@@ -11116,6 +10695,9 @@ mod tests {
     fn catch_up_weapon_script_events_preserve_tick_order_and_same_tick_fire_order() {
         let pawn = postretro_entities::EntityId::from_raw(1);
         let from_pawn = |address| postretro_sim::emission::WeaponEmission {
+            sounds: None,
+            action: None,
+            shot_id: None,
             address,
             emitter: postretro_sim::emission::Emitter::Entity {
                 id: pawn,
@@ -11445,7 +11027,7 @@ mod tests {
         let script_ctx = ScriptCtx::new();
         let pawn = script_ctx.registry.borrow_mut().spawn(Transform::default());
         let weapon: postretro_foundation::WeaponDescriptor = serde_json::from_value(serde_json::json!({
-            "damage": 5.0, "range": 50.0, "fireRateMs": 100.0, "fireMode": "semi", "resolution": "hitscan",
+            "damage": 5.0, "range": 50.0, "primary": { "trigger": "press", "recoveryMs": 100.0, "steps": [{ "kind": "shot" }] },  "resolution": "hitscan",
             "sounds": { "fire": "sfx/pistol_fire" }
         }))
         .expect("weapon parses");
@@ -11466,6 +11048,9 @@ mod tests {
             },
         ]);
         let emission = postretro_sim::emission::WeaponEmission {
+            sounds: None,
+            action: None,
+            shot_id: None,
             address: "activate",
             emitter: postretro_sim::emission::entity_emitter(&script_ctx.registry.borrow(), pawn),
             weapon: Some("pistol".to_string()),
@@ -11926,6 +11511,11 @@ mod tests {
         queues.ingest_for_test(
             client_id,
             &postretro_net::wire::InputCommand {
+                secondary_button: postretro_net::wire::WireFireButtonState {
+                    pressed: false,
+                    active: false,
+                },
+                activation: postretro_net::wire::WireActivationInput::default(),
                 client_tick: tick,
                 movement: postretro_net::wire::WireMovementInput {
                     wish_dir: [0.0, 0.0],
@@ -11961,6 +11551,11 @@ mod tests {
         queues.ingest_for_test(
             7,
             &postretro_net::wire::InputCommand {
+                secondary_button: postretro_net::wire::WireFireButtonState {
+                    pressed: false,
+                    active: false,
+                },
+                activation: postretro_net::wire::WireActivationInput::default(),
                 client_tick: 33,
                 movement: postretro_net::wire::WireMovementInput {
                     wish_dir: [0.0, 0.0],
@@ -12043,6 +11638,11 @@ mod tests {
         queues.ingest_for_test(
             7,
             &postretro_net::wire::InputCommand {
+                secondary_button: postretro_net::wire::WireFireButtonState {
+                    pressed: false,
+                    active: false,
+                },
+                activation: postretro_net::wire::WireActivationInput::default(),
                 client_tick: 33,
                 movement: postretro_net::wire::WireMovementInput {
                     wish_dir: [0.0, 0.0],
@@ -12118,6 +11718,12 @@ mod tests {
         let mut mover_states = kinematic_mover::MoverTickStateTable::default();
         let remote_inputs = Vec::new();
         let command = sim::SimCommand {
+            input_tick: 0,
+            secondary_button: postretro_sim::weapon::FireButtonState {
+                pressed: false,
+                active: false,
+            },
+            activation: postretro_foundation::ActivationInput::default(),
             movement: movement::MovementInput {
                 wish_dir: glam::Vec2::ZERO,
                 jump_pressed: false,
@@ -14315,6 +13921,14 @@ mod tests {
             Some(&SlotValue::Boolean(false)),
             "local player.weapon.switching defaults false and is cloned",
         );
+        assert_eq!(
+            snapshot.get("player.weaponCharging"),
+            Some(&SlotValue::Boolean(false)),
+        );
+        assert_eq!(
+            snapshot.get("player.weaponChargeProgress"),
+            Some(&SlotValue::Number(0.0)),
+        );
         // `screen.flash` carries its default transparent value, so it is present.
         assert_eq!(
             snapshot.get("screen.flash"),
@@ -14368,8 +13982,8 @@ mod tests {
         );
         assert_eq!(
             snapshot.len(),
-            39,
-            "only the set player.health and default-valued reload-feedback + local weapon display + weapon-resource kind and overheat latch + player.spread + screen effects + input.mode + ui.textEntry + fifteen options slots + ten accessibility slots appear",
+            41,
+            "only the set player.health and default-valued reload-feedback + local weapon display and charge + weapon-resource kind and overheat latch + player.spread + screen effects + input.mode + ui.textEntry + fifteen options slots + ten accessibility slots appear",
         );
     }
 

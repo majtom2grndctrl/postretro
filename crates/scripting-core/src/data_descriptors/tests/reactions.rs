@@ -1089,6 +1089,15 @@ fn luau_trigger_target_tokens_preserve_wrong_builder_tokens_for_validation() {
     const DATA_SCRIPT_LUAU: &str = include_str!("../../../../../sdk/lib/data_script.luau");
 
     let lua = mlua::Lua::new();
+    let expressions: mlua::Table = lua
+        .load(include_str!(
+            "../../../../../sdk/lib/util/expression_refs.luau"
+        ))
+        .eval()
+        .unwrap();
+    lua.globals()
+        .set("__postretroExpressionRefs", expressions)
+        .unwrap();
     let sdk: mlua::Table = lua
         .load(DATA_SCRIPT_LUAU)
         .set_name("data_script.luau")

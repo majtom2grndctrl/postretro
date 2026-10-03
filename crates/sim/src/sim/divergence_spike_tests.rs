@@ -17,9 +17,8 @@ use postretro_entities::components::inventory::Inventory;
 use postretro_entities::components::weapon::WeaponComponent;
 use postretro_entities::{EntityId, EntityRegistry, Transform};
 use postretro_foundation::{
-    AirParams, CapsuleParams, FallParams, FireMode, ForgivenessParams, GroundParams,
-    PlayerMovementComponent, PlayerMovementDescriptor, ResolutionMode, SpeedParams,
-    WeaponDescriptor,
+    AirParams, CapsuleParams, FallParams, ForgivenessParams, GroundParams, PlayerMovementComponent,
+    PlayerMovementDescriptor, ResolutionMode, SpeedParams, WeaponDescriptor,
 };
 use postretro_scripting_core::reaction_dispatch::ProgressTracker;
 
@@ -58,6 +57,12 @@ struct RecordedCommand {
 impl RecordedCommand {
     fn to_sim_command(self) -> SimCommand {
         SimCommand {
+            input_tick: 0,
+            secondary_button: crate::weapon::FireButtonState {
+                pressed: false,
+                active: false,
+            },
+            activation: postretro_foundation::ActivationInput::default(),
             movement: MovementInput {
                 wish_dir: self.wish_dir,
                 jump_pressed: self.jump_pressed,
@@ -175,8 +180,9 @@ impl SimHarness {
         }
     }
 
-    fn tick(&mut self, command: RecordedCommand) {
-        let sim_command = command.to_sim_command();
+    fn tick(&mut self, input_tick: u32, command: RecordedCommand) {
+        let mut sim_command = command.to_sim_command();
+        sim_command.input_tick = input_tick;
         let _ = simulate_tick(
             self.registry.clone(),
             &self.world,
@@ -269,8 +275,11 @@ fn spawn_weapon(registry: &mut EntityRegistry) -> EntityId {
                 movement_spread_degrees: 0.0,
                 spread_vertical_bias: 0.0,
                 range: 30.0,
-                cooldown_ms: 80.0,
-                fire_mode: FireMode::Semi,
+                primary: postretro_foundation::WeaponActivationDescriptor::single(
+                    postretro_foundation::ActivationTrigger::Press,
+                    80.0,
+                ),
+                secondary: None,
                 resolution: ResolutionMode::Hitscan,
                 projectile: None,
                 splash: None,
@@ -381,8 +390,8 @@ fn measure_forced_rounding_divergence(commands: &[RecordedCommand]) -> Divergenc
     let mut measurement = DivergenceMeasurement::default();
 
     for (tick, command) in commands.iter().copied().enumerate() {
-        baseline.tick(command);
-        rounded.tick(command);
+        baseline.tick(tick as u32, command);
+        rounded.tick(tick as u32, command);
         let current = compare_samples(&baseline.samples(), &rounded.samples());
         measurement.max = measurement.max.max(current);
         measurement.final_sample = current;

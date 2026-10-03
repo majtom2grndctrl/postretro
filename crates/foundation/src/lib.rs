@@ -13,6 +13,8 @@ pub mod pose;
 pub mod presentation;
 pub mod seat;
 pub mod value_types;
+pub mod weapon_activation;
+pub use weapon_activation::*;
 
 pub use brain::{
     ARCHETYPE_TOLERANCE_STATE_FIELD, BRAIN_ACQUISITION_DUE_INPUT, BRAIN_ATTACK_COOLDOWN_MS_INPUT,

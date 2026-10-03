@@ -68,15 +68,21 @@ use postretro_scripting_core::reaction_dispatch::ProgressTracker;
 pub use projectile_stage::advance;
 pub use projectile_stage::{
     PredictedProjectileResolution, ProjectileContactEvent, advance_predicted,
-    projectile_splash_occlusion_origin, resolve_projectile_impact,
+    correct_predicted_projectile, projectile_splash_occlusion_origin, resolve_projectile_impact,
+    set_predicted_projectile_visible,
 };
 pub use weapon_stage::{ProjectileSource, projectile_model_body_rotation, spawn_projectile};
 
 #[derive(Debug, Clone)]
 pub struct SimCommand {
+    /// This pawn/controller's logical input tick, independent of wieldable instance age.
+    /// Remote execution advances on its separate authoritative host fire tick.
+    pub input_tick: u32,
     pub movement: MovementInput,
     pub fire_button: FireButtonState,
     pub reload: bool,
+    pub secondary_button: FireButtonState,
+    pub activation: postretro_foundation::ActivationInput,
     /// Slot the local client declares as the source of fire. The host resolves it
     /// from pawn inventory by possession rather than from its active pointer.
     pub firing_slot: u8,
@@ -166,78 +172,36 @@ pub fn simulate_client_wieldable_tick(
     anim_time: f64,
     tick_dt: f32,
 ) -> (bool, Option<EntityId>) {
-    let mut equip_was_active = false;
-    let mut requested_new_slot = false;
-    let fire_clock_before = pawn.and_then(|pawn| {
-        let registry = registry.borrow();
-        let inventory = registry
+    let requested_new_slot = pawn.is_some_and(|pawn| {
+        registry
+            .borrow()
             .get_component::<postretro_entities::components::inventory::Inventory>(pawn)
-            .ok()?;
-        requested_new_slot = select_slot.is_some_and(|slot| {
-            slot != inventory.active_slot
-                && inventory.switch_target != Some(slot)
-                && inventory.wieldables.get(slot).copied().flatten().is_some()
-        });
-        let weapon = inventory.active_wieldable()?;
-        let component = registry
-            .get_component::<postretro_entities::components::weapon::WeaponComponent>(weapon)
-            .ok()?;
-        equip_was_active = matches!(
-            component.state,
-            postretro_entities::components::wieldable_state::WieldableState::Lowering
-                | postretro_entities::components::wieldable_state::WieldableState::Raising
-        );
-        Some((
-            weapon,
-            component.cooldown_remaining_ms,
-            component.bloom_accumulator_degrees,
-            component.bloom_idle_ms,
-        ))
+            .is_ok_and(|inventory| {
+                select_slot.is_some_and(|slot| {
+                    slot != inventory.active_slot
+                        && inventory.switch_target != Some(slot)
+                        && inventory.wieldables.get(slot).copied().flatten().is_some()
+                })
+            })
     });
-    let machine_button = if select_slot.is_some() || equip_was_active {
-        fire_button
-    } else {
-        crate::weapon::FireButtonState {
-            pressed: false,
-            active: false,
-        }
-    };
-    let machine_reload = (select_slot.is_some() || equip_was_active) && reload_held;
     let command = crate::weapon::WeaponFireCommand {
-        button: machine_button,
+        button: fire_button,
         aim_origin: Vec3::ZERO,
         aim_direction: Vec3::Z,
         can_fire: false,
     };
-    let mut ignore_impact = |_: &mut EntityRegistry| {};
-    let result = weapon_stage::run_local_weapon_command(
+    let _ = reload_held; // Activation prediction owns reload edge/cancellation.
+    let result = weapon_stage::run_client_weapon_equip(
         &registry,
         pawn,
         mod_block_during_reload,
         select_slot,
         &command,
-        machine_reload,
         collision_world,
         hit_zone_store,
         anim_time,
         tick_dt,
-        &mut ignore_impact,
     );
-    // Client fire prediction advances cooldown and bloom once after the
-    // fixed-tick loop. Keep this equip-only pass from charging the same elapsed
-    // time twice while preserving deploy clamps on the incoming instance.
-    if let Some((weapon, cooldown, bloom_accumulator, bloom_idle_ms)) = fire_clock_before {
-        let mut registry = registry.borrow_mut();
-        if let Ok(mut component) = registry
-            .get_component::<postretro_entities::components::weapon::WeaponComponent>(weapon)
-            .cloned()
-        {
-            component.cooldown_remaining_ms = cooldown;
-            component.bloom_accumulator_degrees = bloom_accumulator;
-            component.bloom_idle_ms = bloom_idle_ms;
-            let _ = registry.set_component(weapon, component);
-        }
-    }
     let accepted = requested_new_slot
         && match (pawn, select_slot) {
             (Some(pawn), Some(slot)) => registry
@@ -260,6 +224,8 @@ fn player_is_present_for_trigger_occupancy(
 
 #[derive(Debug, Clone)]
 pub struct RemotePawnCommand {
+    pub real_command: bool,
+    pub rejected_activation: Option<postretro_foundation::ActivationToken>,
     pub pawn: EntityId,
     pub owner_client_id: u64,
     pub weapon: Option<EntityId>,
@@ -271,11 +237,23 @@ pub struct RemotePawnCommand {
     pub command: SimCommand,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct RemoteActivationProgress {
+    pub pawn: EntityId,
+    pub owner_client_id: u64,
+    pub weapon: EntityId,
+    pub tick: u32,
+    pub recovery_ms: f32,
+    pub advance: crate::weapon::execution::WeaponActivationAdvance,
+}
+
 /// A host-only presentation launch for an accepted connected-client projectile
 /// fire. The authoritative hit remains client-declared; this is only the data the
 /// host needs to show that flight to observers through the existing snapshot path.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RemoteProjectilePresentationLaunch {
+    pub action: Option<std::sync::Arc<postretro_foundation::WeaponActivationDescriptor>>,
+    pub model_scale: f32,
     pub owner_client_id: u64,
     pub shot_id: ShotId,
     pub origin: Vec3,
@@ -313,6 +291,7 @@ pub struct TriggerTickContext<'a> {
 
 #[derive(Debug, Default, PartialEq)]
 pub struct TickEvents {
+    pub remote_activation_progress: Vec<RemoteActivationProgress>,
     /// CPU stage values for this tick; empty when timing is off.
     pub cpu: postretro_stage_timing::StageFrame<cpu_stages::SimStage>,
     /// Local-pawn movement events, each on the pawn that raised it.
@@ -852,6 +831,15 @@ where
             anim_time,
             tick_dt,
             &mut on_impact,
+            Some(crate::weapon::execution::ActivationCommand {
+                tick: command.input_tick,
+                pawn: 0,
+                real_command: true,
+                input: command.activation,
+                controller_starts: true,
+                primary: command.fire_button,
+                secondary: command.secondary_button,
+            }),
         );
     let mut reload_deliveries = remote_weapon_result.reload_deliveries;
     reload_deliveries.extend(local_result.reload_deliveries);
@@ -863,7 +851,7 @@ where
     let weapon_impact_points = local_result.weapon_impact_points;
     weapon.extend(remote_weapon_result.weapon_events);
     // Projectile contacts fire `impact` as hitscan contacts do, one per
-    // activation per tick, whoever fired them.
+    // shot per tick, whoever fired them.
     weapon.extend(projectile_stage::projectile_impact_emissions(
         &local_projectile_contacts,
     ));
@@ -898,6 +886,7 @@ where
         weapon_impact_points,
         mover: mover_events,
         death,
+        remote_activation_progress: remote_weapon_result.activation_progress,
         authorized_shots: remote_weapon_result.authorized_shots,
         remote_projectile_presentation_launches: remote_weapon_result
             .projectile_presentation_launches,
@@ -1577,7 +1566,7 @@ fn foot_probe_inverse(
 
 mod host_movement;
 mod reload;
-mod weapon_stage;
+pub(crate) mod weapon_stage;
 
 pub use reload::{ReloadDelivery, ReloadOutcome};
 pub use reload::{
@@ -1758,9 +1747,9 @@ mod tests {
         TriggerFireMode, TriggerVolumeComponent,
     };
     use postretro_foundation::{
-        AirParams, AmmoResource, CapsuleParams, FallParams, FireMode, GroundParams,
-        PlayerMovementComponent, PlayerMovementDescriptor, ReloadStyle, ResolutionMode,
-        SpeedParams, WeaponDescriptor, WeaponResource,
+        AirParams, AmmoResource, CapsuleParams, FallParams, GroundParams, PlayerMovementComponent,
+        PlayerMovementDescriptor, ReloadStyle, ResolutionMode, SpeedParams, WeaponDescriptor,
+        WeaponResource,
     };
     use postretro_net::wire::NetworkId;
     use postretro_scripting_core::reaction_dispatch::{
@@ -1871,8 +1860,11 @@ mod tests {
             movement_spread_degrees: 0.0,
             spread_vertical_bias: 0.0,
             range: 100.0,
-            cooldown_ms: 100.0,
-            fire_mode: FireMode::Semi,
+            primary: postretro_foundation::WeaponActivationDescriptor::single(
+                postretro_foundation::ActivationTrigger::Press,
+                100.0,
+            ),
+            secondary: None,
             resolution: ResolutionMode::Hitscan,
             projectile: None,
             splash: None,
@@ -1907,8 +1899,11 @@ mod tests {
             movement_spread_degrees: 0.0,
             spread_vertical_bias: 0.0,
             range: 100.0,
-            cooldown_ms: 100.0,
-            fire_mode: FireMode::Semi,
+            primary: postretro_foundation::WeaponActivationDescriptor::single(
+                postretro_foundation::ActivationTrigger::Press,
+                100.0,
+            ),
+            secondary: None,
             resolution: ResolutionMode::Hitscan,
             projectile: None,
             splash: None,
@@ -1950,6 +1945,12 @@ mod tests {
 
     pub(super) fn sim_command(fire: bool, reload: bool) -> SimCommand {
         SimCommand {
+            input_tick: 0,
+            secondary_button: crate::weapon::FireButtonState {
+                pressed: false,
+                active: false,
+            },
+            activation: postretro_foundation::ActivationInput::default(),
             movement: zero_movement(),
             fire_button: FireButtonState {
                 pressed: fire,
@@ -1960,6 +1961,13 @@ mod tests {
             select_slot: None,
             use_pressed: false,
             drop_pressed: false,
+        }
+    }
+
+    pub(super) fn sim_command_at(input_tick: u32, fire: bool, reload: bool) -> SimCommand {
+        SimCommand {
+            input_tick,
+            ..sim_command(fire, reload)
         }
     }
 
@@ -2043,6 +2051,171 @@ mod tests {
             "test_model".to_string(),
             MeshAnimation::new(states, "idle".into()),
         )
+    }
+
+    // Regression: held fire on a fresh wieldable reused the outgoing instance's shot identity.
+    #[test]
+    fn local_activation_input_ticks_survive_weapon_switch_and_preserve_authored_waits() {
+        use postretro_foundation::{ActivationLane, ActivationToken};
+
+        for first_tick in [0, u32::MAX - 1] {
+            let descriptor = serde_json::from_value::<WeaponDescriptor>(serde_json::json!({
+                "damage": 10, "range": 100, "resolution": "hitscan",
+                "primary": { "trigger": "hold", "recoveryMs": 0, "steps": [
+                    { "kind": "shot" }, { "kind": "wait", "durationMs": 50 }, { "kind": "shot" }
+                ] },
+                "resource": { "kind": "ammo", "type": "rounds", "magazine": 10, "reserve": 0 },
+                "lowerMs": 0, "raiseMs": 0,
+            }))
+            .unwrap()
+            .validate()
+            .unwrap();
+            let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+            let (pawn, outgoing, incoming) = {
+                let mut world = registry.borrow_mut();
+                let pawn = world.spawn(Transform::default());
+                world.set_component(pawn, trigger_movement()).unwrap();
+                world.mark_local_player_pawn(pawn).unwrap();
+                let outgoing = world.spawn(Transform::default());
+                let incoming = world.spawn(Transform::default());
+                for weapon in [outgoing, incoming] {
+                    world
+                        .set_component(weapon, WeaponComponent::from_descriptor(&descriptor))
+                        .unwrap();
+                }
+                let mut inventory = Inventory::default();
+                inventory.wieldables[0] = Some(outgoing);
+                inventory.wieldables[1] = Some(incoming);
+                world.set_component(pawn, inventory).unwrap();
+                (pawn, outgoing, incoming)
+            };
+            let world = CollisionWorld::new();
+            let hit_zones = HitZoneStore::new();
+            let mut progress = ProgressTracker::new();
+            let mut ai = postretro_ai::AiRuntime::new();
+            let mut movers = MoverTickStateTable::default();
+            let mut run = |offset: u32, select_slot: Option<usize>| {
+                let input_tick = first_tick.wrapping_add(offset);
+                let mut command = sim_command_at(input_tick, false, false);
+                command.select_slot = select_slot;
+                command.fire_button = FireButtonState {
+                    pressed: offset == 0,
+                    active: true,
+                };
+                if offset == 0 {
+                    command.activation.initiation = Some(ActivationToken {
+                        start_tick: input_tick,
+                        lane: ActivationLane::Primary,
+                    });
+                }
+                let events = simulate_tick(
+                    registry.clone(),
+                    &world,
+                    &hit_zones,
+                    None,
+                    0.0,
+                    None,
+                    0.0,
+                    &mut progress,
+                    postretro_ai::test_tick_runner!(&mut ai),
+                    &[],
+                    &mut movers,
+                    &[],
+                    &command,
+                    |_| PostMovementCommand {
+                        aim_origin: Vec3::ZERO,
+                        aim_direction: Vec3::NEG_Z,
+                    },
+                    1.0 / 60.0,
+                    None,
+                    |_| {},
+                );
+                events
+                    .weapon
+                    .into_iter()
+                    .filter(|event| event.address == "activate")
+                    .map(|event| {
+                        event
+                            .shot_id
+                            .expect("local activation emission retains the shot identity")
+                    })
+                    .collect::<Vec<_>>()
+            };
+            let outgoing_shot = run(0, None);
+            assert_eq!(
+                outgoing_shot,
+                [ShotId::from_parts(
+                    0,
+                    first_tick,
+                    ActivationLane::Primary,
+                    0
+                )]
+            );
+            assert!(
+                run(1, Some(1)).is_empty(),
+                "switch cancels the outgoing wait before another shot"
+            );
+            assert_eq!(
+                registry
+                    .borrow()
+                    .get_component::<Inventory>(pawn)
+                    .unwrap()
+                    .active_wieldable(),
+                Some(incoming)
+            );
+            let incoming_start = first_tick.wrapping_add(2);
+            let incoming_shot = run(2, None);
+            assert_eq!(
+                incoming_shot,
+                [ShotId::from_parts(
+                    0,
+                    incoming_start,
+                    ActivationLane::Primary,
+                    0
+                )]
+            );
+            assert_ne!(
+                outgoing_shot, incoming_shot,
+                "a held restart names its actual input tick across instances"
+            );
+            assert!(run(3, None).is_empty());
+            assert!(run(4, None).is_empty());
+            assert_eq!(
+                run(5, None),
+                [ShotId::from_parts(
+                    0,
+                    incoming_start,
+                    ActivationLane::Primary,
+                    1
+                )],
+                "the 50 ms wait remains three fixed ticks across wrap"
+            );
+            assert_eq!(
+                run(6, None),
+                [ShotId::from_parts(
+                    0,
+                    first_tick.wrapping_add(6),
+                    ActivationLane::Primary,
+                    0
+                )],
+                "every held restart receives another logical input identity"
+            );
+            let registry = registry.borrow();
+            assert_eq!(
+                registry
+                    .get_component::<WeaponComponent>(outgoing)
+                    .unwrap()
+                    .magazine,
+                9
+            );
+            assert_eq!(
+                registry
+                    .get_component::<WeaponComponent>(incoming)
+                    .unwrap()
+                    .magazine,
+                7
+            );
+        }
     }
 
     #[test]
@@ -2154,14 +2327,30 @@ mod tests {
         reload: bool,
     ) -> RemotePawnCommand {
         RemotePawnCommand {
+            real_command: true,
+            rejected_activation: None,
             pawn,
             owner_client_id: 7,
             weapon,
-            shot_id: Some(ShotId::from_parts(NetworkId(network_id), client_tick)),
-            fire_tick: 33,
+            shot_id: Some(ShotId::from_parts(
+                (NetworkId(network_id)).0,
+                client_tick,
+                postretro_foundation::ActivationLane::Primary,
+                0,
+            )),
+            fire_tick: client_tick,
             client_tick,
             aim_pitch: 0.0,
-            command: sim_command(fire, reload),
+            command: {
+                let mut command = sim_command(fire, reload);
+                if fire {
+                    command.activation.initiation = Some(postretro_foundation::ActivationToken {
+                        start_tick: client_tick,
+                        lane: postretro_foundation::ActivationLane::Primary,
+                    });
+                }
+                command
+            },
         }
     }
 

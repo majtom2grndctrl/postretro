@@ -47,6 +47,22 @@ pub(super) fn transition_wieldable_state(
 ) -> StateTransition {
     match (component.state, event) {
         (
+            WieldableState::Charging(_) | WieldableState::Executing(_),
+            WieldableStateEvent::BeginLower { duration_ms },
+        ) => {
+            component.cancel_activation();
+            begin_lowering(component, duration_ms);
+            StateTransition::Noop
+        }
+        (
+            WieldableState::Charging(_) | WieldableState::Executing(_),
+            WieldableStateEvent::Cancel { .. },
+        ) => {
+            component.cancel_activation();
+            StateTransition::Noop
+        }
+        (WieldableState::Charging(_) | WieldableState::Executing(_), _) => StateTransition::Noop,
+        (
             WieldableState::Idle,
             WieldableStateEvent::BeginReload {
                 duration_ms,

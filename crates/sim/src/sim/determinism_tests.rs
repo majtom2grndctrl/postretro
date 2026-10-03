@@ -60,8 +60,8 @@ use postretro_entities::{
 use postretro_entities::{SequenceStep, SequenceTarget};
 use postretro_foundation::pose::{FootProbe, MAX_FEET};
 use postretro_foundation::{
-    AirParams, CapsuleParams, FallParams, FireMode, ForgivenessParams, GroundParams, IrNode,
-    IrValue, PlayerMovementComponent, PlayerMovementDescriptor, ResolutionMode, SpeedParams,
+    AirParams, CapsuleParams, FallParams, ForgivenessParams, GroundParams, IrNode, IrValue,
+    PlayerMovementComponent, PlayerMovementDescriptor, ResolutionMode, SpeedParams,
     WeaponDescriptor,
 };
 use postretro_scripting_core::reaction_dispatch::{
@@ -138,6 +138,12 @@ struct RecordedCommand {
 impl RecordedCommand {
     fn to_sim_command(self) -> SimCommand {
         SimCommand {
+            input_tick: 0,
+            secondary_button: crate::weapon::FireButtonState {
+                pressed: false,
+                active: false,
+            },
+            activation: postretro_foundation::ActivationInput::default(),
             movement: MovementInput {
                 wish_dir: self.wish_dir,
                 jump_pressed: self.jump_pressed,
@@ -669,6 +675,7 @@ impl SimHarness {
                 .value = Some(SlotValue::Number(-1.0));
         }
         let mut sim_command = command.to_sim_command();
+        sim_command.input_tick = u32::try_from(self.tick_index).expect("fixture tick fits in u32");
         // The first shell fires from slot zero. Complete a zero-duration switch
         // well before the next shell, so the second same-archetype instance
         // samples with slot one's salt.
@@ -676,6 +683,8 @@ impl SimHarness {
             sim_command.select_slot = Some(1);
         }
         let remote_pawn_commands = [RemotePawnCommand {
+            real_command: true,
+            rejected_activation: None,
             pawn: self.remote_player,
             owner_client_id: 1,
             weapon: None,
@@ -1223,8 +1232,11 @@ fn spawn_weapon(registry: &mut EntityRegistry) -> EntityId {
                 movement_spread_degrees: 0.0,
                 spread_vertical_bias: 0.0,
                 range: 30.0,
-                cooldown_ms: 80.0,
-                fire_mode: FireMode::Semi,
+                primary: postretro_foundation::WeaponActivationDescriptor::single(
+                    postretro_foundation::ActivationTrigger::Press,
+                    80.0,
+                ),
+                secondary: None,
                 resolution: ResolutionMode::Hitscan,
                 projectile: None,
                 splash: None,
@@ -1256,7 +1268,12 @@ fn spawn_determinism_weapon(registry: &mut EntityRegistry) -> EntityId {
     component.bloom_decay_degrees_per_second = 1.0;
     component.bloom_decay_delay_ms = 250.0;
     component.spread_vertical_bias = 0.25;
-    component.fire_mode = FireMode::Auto;
+    std::sync::Arc::make_mut(&mut component.primary).trigger =
+        postretro_foundation::ActivationTrigger::Hold;
+    component.activation_programs = postretro_foundation::WeaponActivationPrograms::install(
+        &component.primary,
+        component.secondary.as_deref(),
+    );
     registry
         .set_component(weapon, component)
         .expect("determinism weapon tuning updates");
@@ -1703,6 +1720,12 @@ fn run_driven_agent_sim_tick(
     mover_states: &mut MoverTickStateTable,
 ) {
     let command = SimCommand {
+        input_tick: 0,
+        secondary_button: crate::weapon::FireButtonState {
+            pressed: false,
+            active: false,
+        },
+        activation: postretro_foundation::ActivationInput::default(),
         movement: MovementInput {
             wish_dir: Vec2::ZERO,
             jump_pressed: false,
@@ -3767,6 +3790,12 @@ fn simulate_tick_uses_sim_command_fire_button_with_callback_aim() {
     let mover_colliders = Vec::new();
     let mut mover_states = MoverTickStateTable::default();
     let command = SimCommand {
+        input_tick: 0,
+        secondary_button: crate::weapon::FireButtonState {
+            pressed: false,
+            active: false,
+        },
+        activation: postretro_foundation::ActivationInput::default(),
         movement: MovementInput {
             wish_dir: Vec2::ZERO,
             jump_pressed: false,
@@ -3843,6 +3872,12 @@ fn simulate_tick_normalizes_callback_aim_direction_before_weapon_fire() {
     let mover_colliders = Vec::new();
     let mut mover_states = MoverTickStateTable::default();
     let command = SimCommand {
+        input_tick: 0,
+        secondary_button: crate::weapon::FireButtonState {
+            pressed: false,
+            active: false,
+        },
+        activation: postretro_foundation::ActivationInput::default(),
         movement: MovementInput {
             wish_dir: Vec2::ZERO,
             jump_pressed: false,
@@ -3925,6 +3960,12 @@ fn simulate_tick_noops_weapon_fire_for_invalid_callback_aim_direction() {
     let mover_colliders = Vec::new();
     let mut mover_states = MoverTickStateTable::default();
     let command = SimCommand {
+        input_tick: 0,
+        secondary_button: crate::weapon::FireButtonState {
+            pressed: false,
+            active: false,
+        },
+        activation: postretro_foundation::ActivationInput::default(),
         movement: MovementInput {
             wish_dir: Vec2::ZERO,
             jump_pressed: false,
@@ -4012,6 +4053,12 @@ fn simulate_tick_noops_weapon_fire_for_non_finite_callback_aim_origin() {
     let mover_colliders = Vec::new();
     let mut mover_states = MoverTickStateTable::default();
     let command = SimCommand {
+        input_tick: 0,
+        secondary_button: crate::weapon::FireButtonState {
+            pressed: false,
+            active: false,
+        },
+        activation: postretro_foundation::ActivationInput::default(),
         movement: MovementInput {
             wish_dir: Vec2::ZERO,
             jump_pressed: false,

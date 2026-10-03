@@ -6,6 +6,13 @@
 
 #![deny(unsafe_code)]
 
+mod activation_edges;
+pub mod activation_ledger;
+mod shot_records;
+#[cfg(test)]
+use shot_records::MAX_PENDING_HIT_DECLARATIONS_PER_CLIENT;
+pub use shot_records::{OpenAuthorizedShots, PendingHitDeclaration, PendingHitDeclarations};
+
 // Simulation dependencies stay private to this crate. The established internal
 // paths keep the moved modules readable without re-exporting sim's API from
 // the higher netcode layer.
@@ -55,7 +62,7 @@ mod seat;
 // trackers stay registry-blind.
 mod state_slots;
 mod tuning_payload;
-mod wire_convert;
+pub mod wire_convert;
 
 // M15 Phase 3 Task 6: the integrated in-memory prediction/reconciliation harness and
 // its shared test scaffolding. Both are test-only — they drive the real Task 1-5 seams
@@ -163,8 +170,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use glam::{Quat, Vec3};
 use postretro_combat_model::{
-    AuthorizedShot, HIT_RANGE_TOLERANCE, OpenAuthorizedShot, ShotId, TuningPayload,
-    WieldableTuningPayload,
+    AuthorizedShot, HIT_RANGE_TOLERANCE, ShotId, TuningPayload, WieldableTuningPayload,
 };
 #[cfg(test)]
 use postretro_combat_model::{
@@ -479,142 +485,6 @@ pub struct NetworkIdAllocator {
     next: u32,
     map: HashMap<EntityId, NetworkId>,
     reverse: HashMap<NetworkId, EntityId>,
-}
-
-const MAX_PENDING_HIT_DECLARATIONS_PER_CLIENT: usize = 64;
-
-#[derive(Debug, Default)]
-pub struct OpenAuthorizedShots {
-    shots: HashMap<ShotId, OpenAuthorizedShot>,
-}
-
-impl OpenAuthorizedShots {
-    pub(crate) fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn record(&mut self, shot: AuthorizedShot, owner_client_id: u64) {
-        self.shots.insert(
-            shot.shot_id,
-            OpenAuthorizedShot {
-                shot,
-                owner_client_id,
-            },
-        );
-    }
-
-    pub(crate) fn get(&self, shot_id: ShotId) -> Option<OpenAuthorizedShot> {
-        self.shots.get(&shot_id).cloned()
-    }
-
-    pub(crate) fn retire(&mut self, shot_id: ShotId) -> Option<OpenAuthorizedShot> {
-        self.shots.remove(&shot_id)
-    }
-
-    pub(crate) fn remove_client(&mut self, client_id: u64) {
-        self.shots
-            .retain(|_, shot| shot.owner_client_id != client_id);
-    }
-
-    pub(crate) fn remove_pawn(&mut self, pawn: EntityId) {
-        self.shots.retain(|_, shot| shot.shot.pawn != pawn);
-    }
-
-    pub(crate) fn prune_stale(&mut self, current_tick: u32) {
-        self.shots.retain(|_, shot| {
-            current_tick.wrapping_sub(shot.shot.fire_tick) <= shot.shot.timeout_budget_ticks
-        });
-    }
-
-    #[cfg(test)]
-    pub(crate) fn len(&self) -> usize {
-        self.shots.len()
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct PendingHitDeclaration {
-    pub client_id: u64,
-    pub declaration: wire::HitDeclaration,
-}
-
-#[derive(Debug, Default)]
-pub struct PendingHitDeclarations {
-    declarations: VecDeque<PendingHitDeclaration>,
-}
-
-impl PendingHitDeclarations {
-    pub(crate) fn new() -> Self {
-        Self::default()
-    }
-
-    pub(crate) fn push(&mut self, client_id: u64, declaration: wire::HitDeclaration) {
-        let retained_for_client = self
-            .declarations
-            .iter()
-            .filter(|pending| pending.client_id == client_id)
-            .count();
-        if retained_for_client >= MAX_PENDING_HIT_DECLARATIONS_PER_CLIENT
-            && let Some(index) = self
-                .declarations
-                .iter()
-                .position(|pending| pending.client_id == client_id)
-        {
-            self.declarations.remove(index);
-        }
-        self.declarations.push_back(PendingHitDeclaration {
-            client_id,
-            declaration,
-        });
-    }
-
-    pub(crate) fn remove_client(&mut self, client_id: u64) {
-        self.declarations
-            .retain(|pending| pending.client_id != client_id);
-    }
-
-    pub(crate) fn remove_pawn_shots(&mut self, allocator: &NetworkIdAllocator, pawn: EntityId) {
-        let Some(pawn_net) = allocator.network_id_for_entity(pawn) else {
-            return;
-        };
-        self.declarations.retain(|pending| {
-            let shot_id = ShotId::from_raw(pending.declaration.shot_id);
-            (shot_id.raw() >> 32) as u32 != pawn_net.0
-        });
-    }
-
-    fn drain_ready(
-        &mut self,
-        command_queues: &HostCommandQueues,
-        open_shots: &OpenAuthorizedShots,
-        current_tick: u32,
-    ) -> Vec<PendingHitDeclaration> {
-        let mut ready = Vec::new();
-        let mut waiting = VecDeque::new();
-        while let Some(pending) = self.declarations.pop_front() {
-            let shot_id = ShotId::from_raw(pending.declaration.shot_id);
-            let open_shot = open_shots.get(shot_id);
-            let shot_open = open_shot.is_some();
-            let projectile_waits_for_later_tick = open_shot.is_some_and(|open| {
-                open.shot.is_projectile && current_tick.wrapping_sub(open.shot.fire_tick) == 0
-            });
-            let resolved_past_shot = command_queues
-                .resolved_cursor(pending.client_id)
-                .is_some_and(|cursor| prediction::client_tick_le(shot_id.client_tick(), cursor));
-            if !projectile_waits_for_later_tick && (shot_open || resolved_past_shot) {
-                ready.push(pending);
-            } else {
-                waiting.push_back(pending);
-            }
-        }
-        self.declarations = waiting;
-        ready
-    }
-
-    #[cfg(test)]
-    fn len(&self) -> usize {
-        self.declarations.len()
-    }
 }
 
 impl NetworkIdAllocator {
@@ -1338,13 +1208,18 @@ pub fn client_weapon_projection(
     }
 }
 
-pub fn shot_id_raw(pawn: NetworkId, client_tick: u32) -> u64 {
-    ShotId::from_parts(pawn, client_tick).raw()
+pub fn shot_id(
+    pawn: NetworkId,
+    start_tick: u32,
+    lane: postretro_foundation::ActivationLane,
+    ordinal: u8,
+) -> ShotId {
+    ShotId::from_parts(pawn.0, start_tick, lane, ordinal)
 }
 
 pub fn client_send_hit_declaration(
     endpoint: Option<&mut NetEndpoint>,
-    shot_id: u64,
+    shot_id: postretro_foundation::ShotId,
     hits: &[weapon::LocalHitRecord],
     world_contacts: &[weapon::WorldContact],
 ) -> Option<usize> {
@@ -1362,7 +1237,10 @@ pub fn client_send_hit_declaration(
     });
     let record_count = records.len();
     client.send_input(wire::encode(&wire::ClientMessage::HitDeclaration(
-        wire::HitDeclaration { shot_id, records },
+        wire::HitDeclaration {
+            shot_id: crate::wire_convert::shot_id_to_wire(shot_id),
+            records,
+        },
     )));
     Some(record_count)
 }
@@ -1373,7 +1251,7 @@ pub fn client_send_hit_declaration(
 /// entity contacts; normal range/ownership checks still gate the declaration.
 pub fn client_send_projectile_resolution_declaration(
     endpoint: Option<&mut NetEndpoint>,
-    shot_id: u64,
+    shot_id: postretro_foundation::ShotId,
     impact: Option<&weapon::WeaponImpact>,
 ) -> Option<usize> {
     let Some(NetEndpoint::Client {
@@ -1401,7 +1279,10 @@ pub fn client_send_projectile_resolution_declaration(
         .unwrap_or_default();
     let record_count = records.len();
     client.send_input(wire::encode(&wire::ClientMessage::HitDeclaration(
-        wire::HitDeclaration { shot_id, records },
+        wire::HitDeclaration {
+            shot_id: crate::wire_convert::shot_id_to_wire(shot_id),
+            records,
+        },
     )));
     Some(record_count)
 }
@@ -1776,6 +1657,7 @@ pub fn host_handle_client_messages(
     state_slots: &mut state_slots::HostStateReplication,
     command_queues: &mut HostCommandQueues,
     pending_hit_declarations: &mut PendingHitDeclarations,
+    open_shots: &mut OpenAuthorizedShots,
     client_id: u64,
     server_tick: u32,
     server_now_us: u64,
@@ -1794,6 +1676,7 @@ pub fn host_handle_client_messages(
             state_slots,
             command_queues,
             Some(&mut *pending_hit_declarations),
+            Some(&mut *open_shots),
             client_id,
             server_tick,
             server_now_us,
@@ -1824,6 +1707,7 @@ pub(crate) fn host_handle_client_message(
         replication,
         state_slots,
         command_queues,
+        None,
         None,
         client_id,
         server_tick,
@@ -1976,12 +1860,15 @@ pub fn host_ingest_ready_hit_declarations(
         send_shot_verdict(
             server,
             pending.client_id,
-            pending.declaration.shot_id,
+            crate::wire_convert::shot_id_from_wire(pending.declaration.shot_id),
             result.fire_accepted,
             result.hit_accepted,
         );
         if let Some(point) = result.projectile_contact {
-            on_projectile_contact(ShotId::from_raw(pending.declaration.shot_id), point);
+            on_projectile_contact(
+                crate::wire_convert::shot_id_from_wire(pending.declaration.shot_id),
+                point,
+            );
         }
         // A remote shot's validated contacts are its one `impact`, as a local
         // activation's are.
@@ -2004,6 +1891,7 @@ fn host_handle_client_message_inner(
     state_slots: &mut state_slots::HostStateReplication,
     command_queues: &mut HostCommandQueues,
     pending_hit_declarations: Option<&mut PendingHitDeclarations>,
+    open_shots: Option<&mut OpenAuthorizedShots>,
     client_id: u64,
     server_tick: u32,
     server_now_us: u64,
@@ -2047,8 +1935,28 @@ fn host_handle_client_message_inner(
             command_queues.ingest(client_id, &input);
         }
         wire::ClientMessage::HitDeclaration(declaration) => {
+            if !wire_convert::valid_wire_shot_id(declaration.shot_id) {
+                return;
+            }
             if let Some(pending) = pending_hit_declarations {
-                pending.push(client_id, declaration);
+                if !pending.push_at(client_id, declaration.clone(), server_tick) {
+                    if let Some(verdict) = open_shots.and_then(|shots| {
+                        shots.refuse_overflowed_hit(
+                            &command_queues.activations,
+                            client_id,
+                            wire_convert::shot_id_from_wire(declaration.shot_id),
+                            server_tick,
+                        )
+                    }) {
+                        send_shot_verdict(
+                            server,
+                            client_id,
+                            wire_convert::shot_id_from_wire(verdict.shot_id),
+                            verdict.accept,
+                            verdict.hit_accepted,
+                        );
+                    }
+                }
             }
         }
         // M15 Phase 3.5: a client missing a replicated state-slot baseline. The state
@@ -2063,7 +1971,7 @@ fn host_handle_client_message_inner(
 pub fn send_shot_verdict(
     server: &mut NetServer,
     client_id: u64,
-    shot_id: u64,
+    shot_id: postretro_foundation::ShotId,
     accept: bool,
     hit_accepted: bool,
 ) {
@@ -2072,7 +1980,7 @@ pub fn send_shot_verdict(
         wire::encode(&wire::ServerMessage::ShotVerdicts(
             wire::ShotVerdictsMessage {
                 verdicts: vec![wire::ShotVerdict {
-                    shot_id,
+                    shot_id: crate::wire_convert::shot_id_to_wire(shot_id),
                     accept,
                     hit_accepted,
                 }],
@@ -2087,7 +1995,10 @@ fn ingest_hit_declaration(
     declaration: &wire::HitDeclaration,
     mut on_impact: impl FnMut(&mut EntityRegistry),
 ) -> HitDeclarationResult {
-    let shot_id = ShotId::from_raw(declaration.shot_id);
+    if !wire_convert::valid_wire_shot_id(declaration.shot_id) {
+        return HitDeclarationResult::default();
+    }
+    let shot_id = crate::wire_convert::shot_id_from_wire(declaration.shot_id);
     let Some(open) = context.open_shots.get(shot_id) else {
         return HitDeclarationResult::default();
     };
@@ -2353,8 +2264,11 @@ pub(crate) fn ingest_hit_declaration_for_test(
     client_id: u64,
     declaration: &wire::HitDeclaration,
 ) -> (bool, bool) {
+    if !wire_convert::valid_wire_shot_id(declaration.shot_id) {
+        return (false, false);
+    }
     let current_tick = open_shots
-        .get(ShotId::from_raw(declaration.shot_id))
+        .get(crate::wire_convert::shot_id_from_wire(declaration.shot_id))
         .map_or(0, |open| open.shot.fire_tick.wrapping_add(1));
     let result = ingest_hit_declaration(
         HostHitIngestContext {
@@ -2501,7 +2415,15 @@ pub fn client_drive_time_sync(
                 time_sync.estimator.ingest_echo(&echo, recv_us);
             }
             Ok(wire::ServerMessage::ShotVerdicts(message)) => {
-                verdicts.extend(message.verdicts);
+                verdicts.extend(
+                    message
+                        .verdicts
+                        .into_iter()
+                        .filter(|v| wire_convert::valid_wire_shot_id(v.shot_id)),
+                );
+            }
+            Ok(wire::ServerMessage::ActivationOutcomes(outcomes)) => {
+                time_sync.retain_activation_outcomes(outcomes);
             }
             Err(err) => {
                 log::warn!("[Net] dropping undecodable server input message: {err}");
@@ -3785,9 +3707,15 @@ mod tests {
     }
 
     #[test]
-    fn shot_id_packs_pawn_network_id_and_client_tick() {
-        let raw = shot_id_raw(NetworkId(0xABCD_EF01), 0x1234_5678);
-        assert_eq!(raw, 0xABCD_EF01_1234_5678);
+    fn shot_id_preserves_pawn_start_lane_and_ordinal() {
+        let raw = shot_id(
+            NetworkId(0xABCD_EF01),
+            0x1234_5678,
+            postretro_foundation::ActivationLane::Primary,
+            0,
+        );
+        assert_eq!(raw.pawn, 0xABCD_EF01);
+        assert_eq!(raw.start_tick, 0x1234_5678);
     }
 
     #[test]
@@ -4018,7 +3946,12 @@ mod tests {
             let mut allocator = NetworkIdAllocator::new();
             let pawn_net = allocator.stamp(pawn);
             let target_net = allocator.stamp(target);
-            let shot_id = ShotId::from_parts(pawn_net, 11);
+            let shot_id = ShotId::from_parts(
+                (pawn_net).0,
+                11,
+                postretro_foundation::ActivationLane::Primary,
+                0,
+            );
             let mut owners = MovementOwners::new();
             owners.set(pawn, 7);
             set_active_inventory(&mut registry, pawn, weapon);
@@ -4045,7 +3978,7 @@ mod tests {
 
         fn declaration(&self, records: Vec<wire::HitRecord>) -> wire::HitDeclaration {
             wire::HitDeclaration {
-                shot_id: self.shot_id.raw(),
+                shot_id: crate::wire_convert::shot_id_to_wire(self.shot_id),
                 records,
             }
         }
@@ -4188,8 +4121,13 @@ mod tests {
         let mut registry = EntityRegistry::new();
         let pawn = registry.spawn(Transform::default());
         let weapon = registry.spawn(Transform::default());
-        let shot_id = ShotId::from_parts(NetworkId(0xABCD_EF01), 0x1234_5678);
-        assert_eq!(shot_id.raw(), 0xABCD_EF01_1234_5678);
+        let shot_id = ShotId::from_parts(
+            (NetworkId(0xABCD_EF01)).0,
+            0x1234_5678,
+            postretro_foundation::ActivationLane::Primary,
+            0,
+        );
+        assert_eq!(shot_id.pawn, 0xABCD_EF01);
 
         let mut shots = OpenAuthorizedShots::new();
         shots.record(
@@ -4212,14 +4150,107 @@ mod tests {
     }
 
     #[test]
+    fn activation_pending_overflow_preserves_owned_fire_acceptance_and_refuses_only_hit() {
+        let pawn = EntityId::from_raw(4);
+        let weapon = EntityId::from_raw(9);
+        let mut shots = OpenAuthorizedShots::new();
+        let mut pending = PendingHitDeclarations::new();
+        let make = |start_tick| wire::HitDeclaration {
+            shot_id: wire::WireShotId {
+                pawn: 4,
+                start_tick,
+                lane: 1,
+                ordinal: 0,
+            },
+            records: Vec::new(),
+        };
+        for tick in 0..64 {
+            assert!(pending.push_at(7, make(tick), 100));
+        }
+        let shot_id = ShotId::from_parts(4, 64, postretro_foundation::ActivationLane::Secondary, 0);
+        shots.record(
+            authorized_test_shot(shot_id, pawn, weapon, 99, 10.0, 10.0),
+            7,
+        );
+        let ledger = activation_ledger::HostActivationLedger::default();
+        // Another owner cannot consume the authorized shot.
+        assert!(
+            !shots
+                .refuse_overflowed_hit(&ledger, 8, shot_id, 100)
+                .unwrap()
+                .accept
+        );
+        assert_eq!(shots.len(), 1);
+        assert!(!pending.push_at(7, make(64), 100));
+        let verdict = shots
+            .refuse_overflowed_hit(&ledger, 7, shot_id, 100)
+            .unwrap();
+        assert!(
+            verdict.accept,
+            "overflow cannot roll back already debited FIRE"
+        );
+        assert!(!verdict.hit_accepted);
+        assert_eq!(verdict.shot_id, make(64).shot_id);
+        assert_eq!(
+            shots.len(),
+            0,
+            "refused HIT consumes its owned authorization"
+        );
+        assert_eq!(pending.len(), 64);
+    }
+
+    #[test]
+    fn activation_pending_overflow_does_not_reject_undecided_future_fire() {
+        let mut ledger = activation_ledger::HostActivationLedger::default();
+        let shot_id = ShotId::from_parts(4, 64, postretro_foundation::ActivationLane::Secondary, 0);
+        let program = postretro_foundation::ActivationProgram::new(
+            vec![postretro_foundation::ActivationStep::Shot],
+            None,
+            18,
+        )
+        .unwrap();
+        assert!(ledger.accept(
+            7,
+            shot_id.activation(),
+            EntityId::from_raw(9),
+            &program,
+            100
+        ));
+        assert!(
+            OpenAuthorizedShots::new()
+                .refuse_overflowed_hit(&ledger, 7, shot_id, 100)
+                .is_none()
+        );
+        assert_eq!(
+            ledger.status(7, shot_id, 100),
+            activation_ledger::OrdinalStatus::Pending { deadline: 220 }
+        );
+    }
+
+    #[test]
     fn open_authorized_shots_prune_stale_and_remove_client_or_pawn_state() {
         let mut registry = EntityRegistry::new();
         let pawn_a = registry.spawn(Transform::default());
         let pawn_b = registry.spawn(Transform::default());
         let weapon = registry.spawn(Transform::default());
-        let stale = ShotId::from_parts(NetworkId(10), 19);
-        let newest_retained = ShotId::from_parts(NetworkId(10), 20);
-        let other_client = ShotId::from_parts(NetworkId(11), 21);
+        let stale = ShotId::from_parts(
+            (NetworkId(10)).0,
+            19,
+            postretro_foundation::ActivationLane::Primary,
+            0,
+        );
+        let newest_retained = ShotId::from_parts(
+            (NetworkId(10)).0,
+            20,
+            postretro_foundation::ActivationLane::Primary,
+            0,
+        );
+        let other_client = ShotId::from_parts(
+            (NetworkId(11)).0,
+            21,
+            postretro_foundation::ActivationLane::Primary,
+            0,
+        );
         let mut shots = OpenAuthorizedShots::new();
         shots.record(
             authorized_test_shot(stale, pawn_a, weapon, 19, 10.0, 10.0),
@@ -4281,8 +4312,18 @@ mod tests {
         let mut registry = EntityRegistry::new();
         let pawn = registry.spawn(Transform::default());
         let weapon = registry.spawn(Transform::default());
-        let kept_id = ShotId::from_parts(NetworkId(12), 10);
-        let expired_id = ShotId::from_parts(NetworkId(12), 11);
+        let kept_id = ShotId::from_parts(
+            (NetworkId(12)).0,
+            10,
+            postretro_foundation::ActivationLane::Primary,
+            0,
+        );
+        let expired_id = ShotId::from_parts(
+            (NetworkId(12)).0,
+            11,
+            postretro_foundation::ActivationLane::Primary,
+            0,
+        );
         let timeout = projectile_timeout_budget_ticks(128.0, 80.0, 4.0, 1.0 / 60.0);
         let mut kept = authorized_test_shot(kept_id, pawn, weapon, 10, 10.0, 128.0);
         kept.is_projectile = true;
@@ -4322,7 +4363,12 @@ mod tests {
             pending.push(
                 7,
                 wire::HitDeclaration {
-                    shot_id: ShotId::from_parts(NetworkId(4), tick as u32).raw(),
+                    shot_id: crate::wire_convert::shot_id_to_wire(ShotId::from_parts(
+                        (NetworkId(4)).0,
+                        tick as u32,
+                        postretro_foundation::ActivationLane::Primary,
+                        0,
+                    )),
                     records: Vec::new(),
                 },
             );
@@ -4330,7 +4376,12 @@ mod tests {
         pending.push(
             8,
             wire::HitDeclaration {
-                shot_id: ShotId::from_parts(NetworkId(5), 1).raw(),
+                shot_id: crate::wire_convert::shot_id_to_wire(ShotId::from_parts(
+                    (NetworkId(5)).0,
+                    1,
+                    postretro_foundation::ActivationLane::Primary,
+                    0,
+                )),
                 records: Vec::new(),
             },
         );
@@ -4349,8 +4400,13 @@ mod tests {
                 .declarations
                 .iter()
                 .all(|declaration| declaration.declaration.shot_id
-                    != ShotId::from_parts(NetworkId(4), 0).raw()),
-            "the oldest declaration for the overflowing client is dropped"
+                    != crate::wire_convert::shot_id_to_wire(ShotId::from_parts(
+                        (NetworkId(4)).0,
+                        MAX_PENDING_HIT_DECLARATIONS_PER_CLIENT as u32,
+                        postretro_foundation::ActivationLane::Primary,
+                        0
+                    ))),
+            "the newest declaration for the overflowing client is rejected"
         );
 
         let mut allocator = NetworkIdAllocator::new();
@@ -4359,7 +4415,12 @@ mod tests {
         pending.push(
             9,
             wire::HitDeclaration {
-                shot_id: ShotId::from_parts(NetworkId(0), 777).raw(),
+                shot_id: crate::wire_convert::shot_id_to_wire(ShotId::from_parts(
+                    (NetworkId(0)).0,
+                    777,
+                    postretro_foundation::ActivationLane::Primary,
+                    0,
+                )),
                 records: Vec::new(),
             },
         );
@@ -4369,7 +4430,12 @@ mod tests {
                 .declarations
                 .iter()
                 .all(|declaration| declaration.declaration.shot_id
-                    != ShotId::from_parts(NetworkId(0), 777).raw())
+                    != crate::wire_convert::shot_id_to_wire(ShotId::from_parts(
+                        (NetworkId(0)).0,
+                        777,
+                        postretro_foundation::ActivationLane::Primary,
+                        0
+                    )))
         );
         pending.remove_client(7);
         assert!(
@@ -6341,3 +6407,17 @@ mod tests {
         assert!(parse_net_config(&argv(&["--host", "--connect", "127.0.0.1:1"])).is_err());
     }
 }
+
+pub fn send_activation_outcome(
+    server: &mut NetServer,
+    client_id: u64,
+    outcome: wire::ActivationOutcome,
+) {
+    server.send_input(
+        client_id,
+        wire::encode(&wire::ServerMessage::ActivationOutcomes(vec![outcome])),
+    );
+}
+
+#[cfg(test)]
+mod activation_harness_test;

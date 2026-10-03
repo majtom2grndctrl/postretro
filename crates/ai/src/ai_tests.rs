@@ -2193,6 +2193,11 @@ fn projectile_peer_hit_reaches_retaliation_selection_in_the_same_simulation_tick
     let mut mover_states = MoverTickStateTable::default();
     let mut touch_system = TouchSystem::default();
     let command = SimCommand {
+        secondary_button: postretro_sim::weapon::FireButtonState {
+            pressed: false,
+            active: false,
+        },
+        activation: postretro_foundation::ActivationInput::default(),
         movement: MovementInput {
             wish_dir: Vec2::ZERO,
             jump_pressed: false,
@@ -2413,6 +2418,11 @@ impl FactionSentimentHarness {
             &mut self.mover_states,
             &[],
             &SimCommand {
+                secondary_button: postretro_sim::weapon::FireButtonState {
+                    pressed: false,
+                    active: false,
+                },
+                activation: postretro_foundation::ActivationInput::default(),
                 movement: MovementInput {
                     wish_dir: Vec2::ZERO,
                     jump_pressed: false,
@@ -2815,6 +2825,11 @@ fn lethal_ready_remote_hit_quiesces_brain_before_same_tick_ai_outcomes() {
         &mut mover_states,
         &[],
         &SimCommand {
+            secondary_button: postretro_sim::weapon::FireButtonState {
+                pressed: false,
+                active: false,
+            },
+            activation: postretro_foundation::ActivationInput::default(),
             movement: MovementInput {
                 wish_dir: Vec2::ZERO,
                 jump_pressed: false,

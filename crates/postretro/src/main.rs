@@ -1228,6 +1228,11 @@ fn build_sim_command(
         .flatten();
 
     sim::SimCommand {
+        secondary_button: postretro_sim::weapon::FireButtonState {
+            pressed: snapshot.button(Action::AltFire) == ButtonState::Pressed,
+            active: snapshot.button(Action::AltFire).is_active(),
+        },
+        activation: postretro_foundation::ActivationInput::default(),
         movement: movement::MovementInput {
             wish_dir: glam::Vec2::new(
                 snapshot.axis_value(Action::MoveRight),
@@ -2434,6 +2439,28 @@ impl ApplicationHandler for App {
                     (gameplay_snapshot, zero_tick_fire_snapshot)
                 };
 
+                if ticks == 0 && self.is_connected_client() {
+                    let session = self.session.as_mut().expect("running session installed");
+                    if let Some(token) = session.gameplay_input_latch.activation.take_cancel() {
+                        let mut command = build_sim_command(
+                            &input::ActionSnapshot::neutral(),
+                            &self.camera,
+                            false,
+                            false,
+                            false,
+                            false,
+                            false,
+                            false,
+                        );
+                        command.activation.cancel = Some(token);
+                        let _ = netcode::client_send_input_command(
+                            session.net_endpoint.as_mut(),
+                            &command,
+                            self.camera.pitch,
+                        );
+                    }
+                }
+
                 // The script tranche lives on `Session` (built post-first-pixel).
                 // Clone the `ScriptCtx` handle once for this Game-logic phase (cheap
                 // `Rc` bump) so the many `script_ctx.*` reads below borrow nothing of
@@ -2636,6 +2663,20 @@ impl ApplicationHandler for App {
                             drop_pressed,
                         );
                         command.select_slot = select_slot;
+                        let input_tick = netcode::client_peek_next_command_tick(
+                            self.session.as_ref().and_then(|s| s.net_endpoint.as_ref()),
+                        );
+                        let capture = &mut self
+                            .session
+                            .as_mut()
+                            .expect("running session installed")
+                            .gameplay_input_latch
+                            .activation;
+                        let input_tick = input_tick.unwrap_or_else(|| capture.next_local_tick());
+                        command.activation = capture.command(input_tick);
+                        if tick_index > 0 {
+                            command.secondary_button.pressed = false;
+                        }
 
                         // Connected-client prediction (M15 Phase 3 Task 3): send one
                         // Input command and advance ONLY the local pawn's movement
@@ -6617,6 +6658,7 @@ impl App {
                         state_slots,
                         command_queues,
                         pending_hit_declarations,
+                        open_shots,
                         client_id,
                         server_tick,
                         server_now_us,
@@ -6657,7 +6699,7 @@ impl App {
                 for verdict in shot_verdicts {
                     let _ = self.client_predicted_shots.apply_verdict(
                         &mut registry,
-                        verdict.shot_id,
+                        netcode::wire_convert::shot_id_from_wire(verdict.shot_id),
                         verdict.accept,
                         verdict.hit_accepted,
                     );
@@ -6986,7 +7028,12 @@ impl App {
                     session.gameplay_input_latch.clear_pressed(Action::Shoot);
                 }
             }
-            let shot_id = netcode::shot_id_raw(local_pawn_network_id, resolution.client_tick);
+            let shot_id = netcode::shot_id(
+                local_pawn_network_id,
+                resolution.client_tick,
+                postretro_foundation::ActivationLane::Primary,
+                0,
+            );
             let projectile_launch = resolution.projectile_launch.clone();
             self.client_predicted_shots.predict(
                 shot_id,
@@ -7072,7 +7119,12 @@ impl App {
             // send an empty declaration per remaining tick to retire it and keep
             // shot_id accounting balanced with the host without extra ray casts.
             for command in selected_fire_commands.iter().skip(1) {
-                let shot_id = netcode::shot_id_raw(local_pawn_network_id, command.client_tick);
+                let shot_id = netcode::shot_id(
+                    local_pawn_network_id,
+                    command.client_tick,
+                    postretro_foundation::ActivationLane::Primary,
+                    0,
+                );
                 let _ = netcode::client_send_hit_declaration(
                     self.session
                         .as_mut()
@@ -7690,7 +7742,12 @@ impl App {
         let shot_id = allocator
             .network_id_for_entity(resolved.pawn)
             .map(|network_id| {
-                postretro_combat_model::ShotId::from_parts(network_id, resolved.client_tick)
+                postretro_combat_model::ShotId::from_parts(
+                    (network_id).0,
+                    resolved.client_tick,
+                    postretro_foundation::ActivationLane::Primary,
+                    0,
+                )
             });
         sim::RemotePawnCommand {
             pawn: resolved.pawn,
@@ -7735,7 +7792,7 @@ impl App {
             netcode::send_shot_verdict(
                 server,
                 rejection.owner_client_id,
-                rejection.shot_id.raw(),
+                rejection.shot_id,
                 false,
                 false,
             );
@@ -10221,8 +10278,14 @@ mod tests {
         registry.set_component(pawn, inventory).unwrap();
 
         let mut predicted = weapon::ClientPredictedShots::new();
-        predicted.predict(
+        let shot_id = postretro_foundation::ShotId::from_parts(
+            4,
             7,
+            postretro_foundation::ActivationLane::Primary,
+            0,
+        );
+        predicted.predict(
+            shot_id,
             weapon_a,
             &weapon::ClientFireResolution {
                 world_contacts: Vec::new(),
@@ -10257,7 +10320,7 @@ mod tests {
             "A's authoritative sample must not overwrite locally-active B"
         );
 
-        let _ = predicted.apply_verdict(&mut registry, 7, false, false);
+        let _ = predicted.apply_verdict(&mut registry, shot_id, false, false);
         assert_eq!(
             registry
                 .get_component::<postretro_entities::components::weapon::WeaponComponent>(weapon_a,)
@@ -11050,6 +11113,11 @@ mod tests {
         let mut mover_states = kinematic_mover::MoverTickStateTable::default();
         let remote_inputs = Vec::new();
         let command = sim::SimCommand {
+            secondary_button: postretro_sim::weapon::FireButtonState {
+                pressed: false,
+                active: false,
+            },
+            activation: postretro_foundation::ActivationInput::default(),
             movement: movement::MovementInput {
                 wish_dir: glam::Vec2::ZERO,
                 jump_pressed: false,
@@ -11926,6 +11994,11 @@ mod tests {
         queues.ingest_for_test(
             client_id,
             &postretro_net::wire::InputCommand {
+                secondary_button: postretro_net::wire::WireFireButtonState {
+                    pressed: false,
+                    active: false,
+                },
+                activation: postretro_net::wire::WireActivationInput::default(),
                 client_tick: tick,
                 movement: postretro_net::wire::WireMovementInput {
                     wish_dir: [0.0, 0.0],
@@ -11961,6 +12034,11 @@ mod tests {
         queues.ingest_for_test(
             7,
             &postretro_net::wire::InputCommand {
+                secondary_button: postretro_net::wire::WireFireButtonState {
+                    pressed: false,
+                    active: false,
+                },
+                activation: postretro_net::wire::WireActivationInput::default(),
                 client_tick: 33,
                 movement: postretro_net::wire::WireMovementInput {
                     wish_dir: [0.0, 0.0],
@@ -12043,6 +12121,11 @@ mod tests {
         queues.ingest_for_test(
             7,
             &postretro_net::wire::InputCommand {
+                secondary_button: postretro_net::wire::WireFireButtonState {
+                    pressed: false,
+                    active: false,
+                },
+                activation: postretro_net::wire::WireActivationInput::default(),
                 client_tick: 33,
                 movement: postretro_net::wire::WireMovementInput {
                     wish_dir: [0.0, 0.0],
@@ -12118,6 +12201,11 @@ mod tests {
         let mut mover_states = kinematic_mover::MoverTickStateTable::default();
         let remote_inputs = Vec::new();
         let command = sim::SimCommand {
+            secondary_button: postretro_sim::weapon::FireButtonState {
+                pressed: false,
+                active: false,
+            },
+            activation: postretro_foundation::ActivationInput::default(),
             movement: movement::MovementInput {
                 wish_dir: glam::Vec2::ZERO,
                 jump_pressed: false,

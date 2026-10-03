@@ -138,6 +138,11 @@ struct RecordedCommand {
 impl RecordedCommand {
     fn to_sim_command(self) -> SimCommand {
         SimCommand {
+            secondary_button: crate::weapon::FireButtonState {
+                pressed: false,
+                active: false,
+            },
+            activation: postretro_foundation::ActivationInput::default(),
             movement: MovementInput {
                 wish_dir: self.wish_dir,
                 jump_pressed: self.jump_pressed,
@@ -1703,6 +1708,11 @@ fn run_driven_agent_sim_tick(
     mover_states: &mut MoverTickStateTable,
 ) {
     let command = SimCommand {
+        secondary_button: crate::weapon::FireButtonState {
+            pressed: false,
+            active: false,
+        },
+        activation: postretro_foundation::ActivationInput::default(),
         movement: MovementInput {
             wish_dir: Vec2::ZERO,
             jump_pressed: false,
@@ -3767,6 +3777,11 @@ fn simulate_tick_uses_sim_command_fire_button_with_callback_aim() {
     let mover_colliders = Vec::new();
     let mut mover_states = MoverTickStateTable::default();
     let command = SimCommand {
+        secondary_button: crate::weapon::FireButtonState {
+            pressed: false,
+            active: false,
+        },
+        activation: postretro_foundation::ActivationInput::default(),
         movement: MovementInput {
             wish_dir: Vec2::ZERO,
             jump_pressed: false,
@@ -3843,6 +3858,11 @@ fn simulate_tick_normalizes_callback_aim_direction_before_weapon_fire() {
     let mover_colliders = Vec::new();
     let mut mover_states = MoverTickStateTable::default();
     let command = SimCommand {
+        secondary_button: crate::weapon::FireButtonState {
+            pressed: false,
+            active: false,
+        },
+        activation: postretro_foundation::ActivationInput::default(),
         movement: MovementInput {
             wish_dir: Vec2::ZERO,
             jump_pressed: false,
@@ -3925,6 +3945,11 @@ fn simulate_tick_noops_weapon_fire_for_invalid_callback_aim_direction() {
     let mover_colliders = Vec::new();
     let mut mover_states = MoverTickStateTable::default();
     let command = SimCommand {
+        secondary_button: crate::weapon::FireButtonState {
+            pressed: false,
+            active: false,
+        },
+        activation: postretro_foundation::ActivationInput::default(),
         movement: MovementInput {
             wish_dir: Vec2::ZERO,
             jump_pressed: false,
@@ -4012,6 +4037,11 @@ fn simulate_tick_noops_weapon_fire_for_non_finite_callback_aim_origin() {
     let mover_colliders = Vec::new();
     let mut mover_states = MoverTickStateTable::default();
     let command = SimCommand {
+        secondary_button: crate::weapon::FireButtonState {
+            pressed: false,
+            active: false,
+        },
+        activation: postretro_foundation::ActivationInput::default(),
         movement: MovementInput {
             wish_dir: Vec2::ZERO,
             jump_pressed: false,

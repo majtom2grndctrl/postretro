@@ -31,11 +31,11 @@ pub struct ProjectileComponent {
     /// The spawn pass clears this without integrating, ensuring a projectile
     /// cannot impact on its fire tick.
     pub spawned: bool,
-    /// Connected-client declaration authority. `Some(0)` is valid: network and
-    /// client tick allocation both begin at zero. Local standalone projectiles
+    /// Connected-client declaration authority. Zero-valued identity fields are valid:
+    /// network and client tick allocation both begin at zero. Local standalone projectiles
     /// use `None`; this distinction never crosses the network wire.
     #[serde(default)]
-    pub predicted_shot_id: Option<u64>,
+    pub predicted_shot_id: Option<postretro_foundation::ShotId>,
     /// Fixed-tick flight time used by a cadence-enabled sprite body. Bodies
     /// without cadence leave this at exactly zero so their packed instance stays
     /// byte-identical to the static billboard path.

@@ -21,6 +21,7 @@ use crate::scripting_systems::hit_zones::{
     EntityRayHit, HitZoneStore, nearest_entity_hit_ignoring,
 };
 
+pub mod activation_prediction;
 mod client_pull;
 mod damage;
 mod impact;
@@ -147,7 +148,7 @@ pub enum PredictedShotStatus {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct PredictedShotRecord {
-    pub(crate) shot_id: u64,
+    pub(crate) shot_id: postretro_foundation::ShotId,
     pub(crate) client_tick: u32,
     pub(crate) weapon: EntityId,
     pub(crate) cooldown_before_ms: f32,
@@ -167,7 +168,7 @@ pub struct PredictedShotRecord {
 
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct ClientPredictedShots {
-    shots: HashMap<u64, PredictedShotRecord>,
+    shots: HashMap<postretro_foundation::ShotId, PredictedShotRecord>,
     cooldown_authority_generation: HashMap<EntityId, u64>,
 }
 
@@ -187,7 +188,7 @@ impl ClientPredictedShots {
     /// before the verdict, since it presented no shot.
     pub fn predict(
         &mut self,
-        shot_id: u64,
+        shot_id: postretro_foundation::ShotId,
         weapon: EntityId,
         resolution: &ClientFireResolution,
         cooldown_before_ms: f32,
@@ -234,7 +235,7 @@ impl ClientPredictedShots {
     pub fn apply_verdict(
         &mut self,
         registry: &mut EntityRegistry,
-        shot_id: u64,
+        shot_id: postretro_foundation::ShotId,
         fire_accepted: bool,
         hit_accepted: bool,
     ) -> Option<PredictedShotRecord> {
@@ -287,7 +288,7 @@ impl ClientPredictedShots {
     /// A predicted projectile only knows whether it hit after its later
     /// frame-driven sweep. The verdict remains the authority that keeps or
     /// clears this local presentation state.
-    pub fn mark_hitmarker(&mut self, shot_id: u64) {
+    pub fn mark_hitmarker(&mut self, shot_id: postretro_foundation::ShotId) {
         if let Some(record) = self.shots.get_mut(&shot_id)
             && record.status == PredictedShotStatus::Pending
         {
@@ -296,7 +297,7 @@ impl ClientPredictedShots {
     }
 
     #[cfg(test)]
-    fn get(&self, shot_id: u64) -> Option<&PredictedShotRecord> {
+    fn get(&self, shot_id: postretro_foundation::ShotId) -> Option<&PredictedShotRecord> {
         self.shots.get(&shot_id)
     }
 }
@@ -2558,14 +2559,16 @@ pub(crate) mod tests {
 
         let mut shots = ClientPredictedShots::new();
         shots.predict(
-            0xD,
+            test_shot_id(0xD),
             EntityId::from_raw(1),
             &resolution,
             0.0,
             weapon.cooldown_remaining_ms,
             presentation,
         );
-        let record = shots.get(0xD).expect("the shot is recorded for reconcile");
+        let record = shots
+            .get(test_shot_id(0xD))
+            .expect("the shot is recorded for reconcile");
         assert_eq!(record.status, PredictedShotStatus::Pending);
         assert_eq!(record.client_tick, 7);
         assert!((record.cooldown_after_ms - 100.0).abs() < f32::EPSILON);
@@ -2575,7 +2578,7 @@ pub(crate) mod tests {
             "a dry click marks no hit before the verdict",
         );
         let reconciled = shots
-            .apply_verdict(&mut registry, 0xD, true, true)
+            .apply_verdict(&mut registry, test_shot_id(0xD), true, true)
             .expect("the host's verdict reconciles the dry pull's shot");
         assert_eq!(reconciled.status, PredictedShotStatus::Accepted);
     }
@@ -3517,7 +3520,7 @@ pub(crate) mod tests {
         let mut predicted = ClientPredictedShots::new();
 
         predicted.predict(
-            0xA,
+            test_shot_id(0xA),
             EntityId::from_raw(1),
             &resolution,
             0.0,
@@ -3525,7 +3528,9 @@ pub(crate) mod tests {
             ClientPullPresentation::Fire,
         );
 
-        let record = predicted.get(0xA).expect("shot should be recorded");
+        let record = predicted
+            .get(test_shot_id(0xA))
+            .expect("shot should be recorded");
         assert_eq!(record.client_tick, 9);
         assert!(record.muzzle_fx_visible);
         assert!(record.hitmarker_visible);
@@ -3538,14 +3543,16 @@ pub(crate) mod tests {
             ClientPullPresentation::Silent,
         ] {
             predicted.predict(
-                0xB,
+                test_shot_id(0xB),
                 EntityId::from_raw(1),
                 &resolution,
                 0.0,
                 100.0,
                 presentation,
             );
-            let record = predicted.get(0xB).expect("shot should be recorded");
+            let record = predicted
+                .get(test_shot_id(0xB))
+                .expect("shot should be recorded");
             assert_eq!(
                 record.status,
                 PredictedShotStatus::Pending,
@@ -3566,7 +3573,7 @@ pub(crate) mod tests {
         };
         let mut predicted = ClientPredictedShots::new();
         predicted.predict(
-            0xA,
+            test_shot_id(0xA),
             EntityId::from_raw(1),
             &resolution,
             0.0,
@@ -3576,14 +3583,14 @@ pub(crate) mod tests {
 
         assert!(
             !predicted
-                .get(0xA)
+                .get(test_shot_id(0xA))
                 .expect("projectile fire is pending")
                 .hitmarker_visible
         );
-        predicted.mark_hitmarker(0xA);
+        predicted.mark_hitmarker(test_shot_id(0xA));
         assert!(
             predicted
-                .get(0xA)
+                .get(test_shot_id(0xA))
                 .expect("projectile remains pending before verdict")
                 .hitmarker_visible
         );
@@ -3606,7 +3613,7 @@ pub(crate) mod tests {
         set_client_cooldown(&mut registry, weapon, 100.0);
         let mut predicted = ClientPredictedShots::new();
         predicted.predict(
-            0xA,
+            test_shot_id(0xA),
             weapon,
             &resolution,
             0.0,
@@ -3615,7 +3622,7 @@ pub(crate) mod tests {
         );
 
         let record = predicted
-            .apply_verdict(&mut registry, 0xA, true, true)
+            .apply_verdict(&mut registry, test_shot_id(0xA), true, true)
             .expect("verdict should match a predicted shot");
 
         assert!(record.muzzle_fx_visible);
@@ -3623,7 +3630,7 @@ pub(crate) mod tests {
         assert_eq!(record.status, PredictedShotStatus::Accepted);
         assert!(approx_eq(client_cooldown(&registry, weapon), 100.0));
         assert!(
-            predicted.get(0xA).is_none(),
+            predicted.get(test_shot_id(0xA)).is_none(),
             "a terminal verdict prunes the record"
         );
     }
@@ -3645,7 +3652,7 @@ pub(crate) mod tests {
         set_client_cooldown(&mut registry, weapon, 100.0);
         let mut predicted = ClientPredictedShots::new();
         predicted.predict(
-            0xA,
+            test_shot_id(0xA),
             weapon,
             &resolution,
             25.0,
@@ -3654,7 +3661,7 @@ pub(crate) mod tests {
         );
 
         let record = predicted
-            .apply_verdict(&mut registry, 0xA, true, false)
+            .apply_verdict(&mut registry, test_shot_id(0xA), true, false)
             .expect("verdict should match a predicted shot");
 
         assert!(record.muzzle_fx_visible);
@@ -3662,7 +3669,7 @@ pub(crate) mod tests {
         assert_eq!(record.status, PredictedShotStatus::Accepted);
         assert!(approx_eq(client_cooldown(&registry, weapon), 100.0));
         assert!(
-            predicted.get(0xA).is_none(),
+            predicted.get(test_shot_id(0xA)).is_none(),
             "a terminal verdict prunes the record"
         );
     }
@@ -3684,7 +3691,7 @@ pub(crate) mod tests {
         set_client_cooldown(&mut registry, weapon, 100.0);
         let mut predicted = ClientPredictedShots::new();
         predicted.predict(
-            0xA,
+            test_shot_id(0xA),
             weapon,
             &resolution,
             25.0,
@@ -3693,7 +3700,7 @@ pub(crate) mod tests {
         );
 
         let record = predicted
-            .apply_verdict(&mut registry, 0xA, false, false)
+            .apply_verdict(&mut registry, test_shot_id(0xA), false, false)
             .expect("verdict should match a predicted shot");
 
         assert!(!record.muzzle_fx_visible);
@@ -3701,7 +3708,7 @@ pub(crate) mod tests {
         assert_eq!(record.status, PredictedShotStatus::Rejected);
         assert!(approx_eq(client_cooldown(&registry, weapon), 25.0));
         assert!(
-            predicted.get(0xA).is_none(),
+            predicted.get(test_shot_id(0xA)).is_none(),
             "a terminal verdict prunes the record"
         );
     }
@@ -3762,11 +3769,11 @@ pub(crate) mod tests {
                 .expect("predicted projectile state attaches");
             projectile
         };
-        let rejected = spawn_predicted(&mut registry, 0xA);
-        let other = spawn_predicted(&mut registry, 0xB);
+        let rejected = spawn_predicted(&mut registry, test_shot_id(0xA));
+        let other = spawn_predicted(&mut registry, test_shot_id(0xB));
         let mut predicted = ClientPredictedShots::new();
         predicted.predict(
-            0xA,
+            test_shot_id(0xA),
             weapon,
             &resolution,
             25.0,
@@ -3775,7 +3782,7 @@ pub(crate) mod tests {
         );
 
         let record = predicted
-            .apply_verdict(&mut registry, 0xA, false, false)
+            .apply_verdict(&mut registry, test_shot_id(0xA), false, false)
             .expect("prompt rejection matches the predicted fire");
 
         assert_eq!(record.status, PredictedShotStatus::Rejected);
@@ -3810,7 +3817,7 @@ pub(crate) mod tests {
         set_client_cooldown(&mut registry, weapon, 100.0);
         let mut predicted = ClientPredictedShots::new();
         predicted.predict(
-            0xA,
+            test_shot_id(0xA),
             weapon,
             &resolution,
             25.0,
@@ -3819,7 +3826,7 @@ pub(crate) mod tests {
         );
 
         let accepted = predicted
-            .apply_verdict(&mut registry, 0xA, true, true)
+            .apply_verdict(&mut registry, test_shot_id(0xA), true, true)
             .expect("accept should match");
         assert_eq!(accepted.status, PredictedShotStatus::Accepted);
         assert!(accepted.muzzle_fx_visible);
@@ -3829,10 +3836,10 @@ pub(crate) mod tests {
         // and cannot undo the accepted shot's cooldown or presentation.
         assert!(
             predicted
-                .apply_verdict(&mut registry, 0xA, false, false)
+                .apply_verdict(&mut registry, test_shot_id(0xA), false, false)
                 .is_none()
         );
-        assert!(predicted.get(0xA).is_none());
+        assert!(predicted.get(test_shot_id(0xA)).is_none());
         assert!(approx_eq(client_cooldown(&registry, weapon), 100.0));
     }
 
@@ -3853,7 +3860,7 @@ pub(crate) mod tests {
         set_client_cooldown(&mut registry, weapon, 100.0);
         let mut predicted = ClientPredictedShots::new();
         predicted.predict(
-            0xA,
+            test_shot_id(0xA),
             weapon,
             &resolution,
             25.0,
@@ -3868,7 +3875,7 @@ pub(crate) mod tests {
         predicted.reconcile_cooldown(weapon, &mut component, 12.0);
         registry.set_component(weapon, component).unwrap();
         let record = predicted
-            .apply_verdict(&mut registry, 0xA, false, false)
+            .apply_verdict(&mut registry, test_shot_id(0xA), false, false)
             .expect("reject should match");
 
         assert_eq!(record.status, PredictedShotStatus::Rejected);
@@ -3879,7 +3886,7 @@ pub(crate) mod tests {
             "fresh owner-private cooldown must win over stale rollback"
         );
         assert!(
-            predicted.get(0xA).is_none(),
+            predicted.get(test_shot_id(0xA)).is_none(),
             "a terminal verdict prunes the record"
         );
     }
@@ -3906,4 +3913,14 @@ pub(crate) mod tests {
             Some(1)
         );
     }
+}
+
+#[cfg(test)]
+fn test_shot_id(tick: u32) -> postretro_foundation::ShotId {
+    postretro_foundation::ShotId::from_parts(
+        4,
+        tick,
+        postretro_foundation::ActivationLane::Primary,
+        0,
+    )
 }

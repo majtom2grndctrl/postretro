@@ -305,6 +305,7 @@ impl MonotonicClock for EngineClock {
 /// estimator (consumed by Task 6 interpolation), and the production monotonic
 /// clock both read through.
 pub struct ClientTimeSync {
+    activation_outcomes: std::collections::VecDeque<postretro_net::wire::ActivationOutcome>,
     pub(crate) clock: EngineClock,
     sender: TimeSyncSender,
     pub(crate) estimator: ClockEstimator,
@@ -322,11 +323,32 @@ impl ClientTimeSync {
             clock: EngineClock {
                 origin: std::time::Instant::now(),
             },
+            activation_outcomes: std::collections::VecDeque::new(),
             sender: TimeSyncSender::new(),
             // The engine sim runs at 60 Hz; the estimator converts microseconds to
             // ticks at the same rate so its offset is in sim ticks.
             estimator: ClockEstimator::new(timesync::DEFAULT_MICROS_PER_TICK),
         }
+    }
+
+    pub(crate) fn retain_activation_outcomes(
+        &mut self,
+        outcomes: Vec<postretro_net::wire::ActivationOutcome>,
+    ) {
+        for outcome in outcomes {
+            if !crate::wire_convert::valid_activation_outcome(&outcome) {
+                continue;
+            }
+            if self.activation_outcomes.len() == 64 {
+                self.activation_outcomes.pop_front();
+            }
+            self.activation_outcomes.push_back(outcome);
+        }
+    }
+    pub fn drain_activation_outcomes(
+        &mut self,
+    ) -> impl Iterator<Item = postretro_net::wire::ActivationOutcome> + '_ {
+        self.activation_outcomes.drain(..)
     }
 
     /// Emit a 5 Hz probe if the cadence is due, recording the issued `sample_id`

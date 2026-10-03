@@ -885,7 +885,12 @@ mod tests {
     #[test]
     fn remote_model_projectile_presentation_preserves_aim_orientation_through_replication() {
         let mut registry = EntityRegistry::new();
-        let shot_id = ShotId::from_parts(postretro_net::wire::NetworkId(4), 31);
+        let shot_id = ShotId::from_parts(
+            (postretro_net::wire::NetworkId(4)).0,
+            31,
+            postretro_foundation::ActivationLane::Primary,
+            0,
+        );
         let direction = Vec3::new(2.0, 1.0, -3.0).normalize();
         let origin = Vec3::new(1.0, 2.0, 3.0);
         let launch = RemoteProjectilePresentationLaunch {
@@ -1459,7 +1464,12 @@ mod tests {
         let mut registry = EntityRegistry::new();
         let pawn = registry.spawn(Transform::default());
         let weapon = registry.spawn(Transform::default());
-        let shot_id = ShotId::from_parts(postretro_net::wire::NetworkId(4), 19);
+        let shot_id = ShotId::from_parts(
+            (postretro_net::wire::NetworkId(4)).0,
+            19,
+            postretro_foundation::ActivationLane::Primary,
+            0,
+        );
         let mut open_shots = OpenAuthorizedShots::new();
         open_shots.record(
             AuthorizedShot {
@@ -1842,7 +1852,12 @@ mod tests {
         let mut registry = EntityRegistry::new();
         let pawn = registry.spawn(Transform::default());
         let weapon = registry.spawn(Transform::default());
-        let shot_id = ShotId::from_parts(postretro_net::wire::NetworkId(4), 42);
+        let shot_id = ShotId::from_parts(
+            (postretro_net::wire::NetworkId(4)).0,
+            42,
+            postretro_foundation::ActivationLane::Primary,
+            0,
+        );
         let mut open_shots = OpenAuthorizedShots::new();
         open_shots.record(
             AuthorizedShot {
@@ -1975,7 +1990,12 @@ mod tests {
         let mut registry = EntityRegistry::new();
         let pawn = registry.spawn(Transform::default());
         let weapon = registry.spawn(Transform::default());
-        let shot_id = ShotId::from_parts(postretro_net::wire::NetworkId(4), 43);
+        let shot_id = ShotId::from_parts(
+            (postretro_net::wire::NetworkId(4)).0,
+            43,
+            postretro_foundation::ActivationLane::Primary,
+            0,
+        );
         let mut open_shots = OpenAuthorizedShots::new();
         open_shots.record(
             AuthorizedShot {
@@ -2341,7 +2361,12 @@ mod tests {
         let mut registry = EntityRegistry::new();
         let pawn = registry.spawn(Transform::default());
         let weapon = registry.spawn(Transform::default());
-        let shot_id = ShotId::from_parts(postretro_net::wire::NetworkId(4), 21);
+        let shot_id = ShotId::from_parts(
+            (postretro_net::wire::NetworkId(4)).0,
+            21,
+            postretro_foundation::ActivationLane::Primary,
+            0,
+        );
         let mut open_shots = OpenAuthorizedShots::new();
         open_shots.record(
             AuthorizedShot {

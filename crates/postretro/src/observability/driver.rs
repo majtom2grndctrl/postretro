@@ -248,6 +248,11 @@ fn run_headless_inner(
         let reload = active.map(|entry| entry.reload).unwrap_or(false);
 
         let command = SimCommand {
+            secondary_button: postretro_sim::weapon::FireButtonState {
+                pressed: false,
+                active: false,
+            },
+            activation: postretro_foundation::ActivationInput::default(),
             movement,
             fire_button,
             reload,

@@ -665,7 +665,7 @@ pub fn spawn_projectile(
     owner_pawn: EntityId,
     owner_weapon: EntityId,
     launch: weapon::ProjectileLaunch,
-    predicted_shot_id: Option<u64>,
+    predicted_shot_id: Option<postretro_foundation::ShotId>,
     source: ProjectileSource,
 ) -> Option<EntityId> {
     // Resolve every hit-time visual before moving the body out of the descriptor

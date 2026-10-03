@@ -1,7 +1,9 @@
 // Input subsystem: action mapping, binding resolution, per-frame snapshots.
 // See: context/lib/input.md
 
+mod activation;
 mod bindings;
+pub use activation::ActivationInputCapture;
 pub mod cursor;
 mod defaults;
 pub mod diagnostics;
@@ -242,6 +244,7 @@ impl ScrollNotchAccumulator {
 /// `Pressed` edge on frames where the accumulator produces zero ticks.
 #[derive(Debug, Default)]
 pub struct GameplayInputLatch {
+    pub activation: ActivationInputCapture,
     pressed_buttons: HashSet<Action>,
     wieldable_selection: WieldableSelection,
 }
@@ -252,6 +255,7 @@ impl GameplayInputLatch {
     }
 
     pub fn clear(&mut self) {
+        self.activation.suspend();
         self.pressed_buttons.clear();
         self.wieldable_selection.clear();
     }
@@ -273,6 +277,7 @@ impl GameplayInputLatch {
         frame_snapshot: &ActionSnapshot,
         ticks: u32,
     ) -> Option<ActionSnapshot> {
+        self.activation.observe(frame_snapshot);
         for (&action, &state) in &frame_snapshot.button_states {
             if state == ButtonState::Pressed {
                 self.pressed_buttons.insert(action);

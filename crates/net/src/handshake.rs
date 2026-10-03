@@ -5,11 +5,9 @@ use crate::wire::{ProtocolVersion, WireError};
 
 pub use crate::wire::{ClosingCause, DivergenceReason, HoldingCause};
 
-/// E16's presentation-event vocabulary.
-///
-/// The dedicated `Channel::Presentation` plus its tagged server message family
-/// changes the application vocabulary.
-pub const PROTOCOL_ID: u32 = 0x_5052_4C37; // "PRL7"
+/// Weapon activation lifecycle outcomes extend the reliable Input vocabulary.
+/// This application magic is independent of the baked PRL file format.
+pub const PROTOCOL_ID: u32 = 0x_5052_4C38; // "PRL8"
 /// E15's admission/parity envelopes and participation-framed traffic layouts.
 /// E17 adds `blocked` to `WireKinematicMoverState`; E16 consumed epoch 16 for
 /// `drop_pressed` on the Input channel and `JoinSeed` advances this to 18. The
@@ -19,8 +17,9 @@ pub const PROTOCOL_ID: u32 = 0x_5052_4C37; // "PRL7"
 /// faction-sentiment sparse snapshot record advances it to 21.
 /// Protected knockback velocity in player movement advances it to 22.
 /// Hit records carrying their contact normal advance it to 23.
+/// Activation input and the four-part shot identity advance it to 24.
 /// The tuning-payload epoch remains independent.
-pub const WIRE_VERSION: u32 = 23;
+pub const WIRE_VERSION: u32 = 24;
 
 #[must_use]
 pub const fn transport_protocol_id() -> u64 {
@@ -101,7 +100,7 @@ mod tests {
     #[test]
     fn hit_record_normals_refuse_the_previous_wire_version() {
         const PRE_CONTACT_NORMAL_WIRE_VERSION: u32 = 22;
-        assert_eq!(WIRE_VERSION, 23, "hit records gained `normal`");
+        assert!(WIRE_VERSION > 22, "hit records gained `normal`");
         assert_ne!(
             transport_protocol_id(),
             ((PROTOCOL_ID as u64) << 32) | u64::from(PRE_CONTACT_NORMAL_WIRE_VERSION),
@@ -112,8 +111,8 @@ mod tests {
     fn knockback_snapshot_layout_refuses_previous_wire_version() {
         const PRE_KNOCKBACK_WIRE_VERSION: u32 = 21;
         assert_eq!(
-            PROTOCOL_ID, 0x_5052_4C37,
-            "presentation vocabulary requires application protocol PRL7"
+            PROTOCOL_ID, 0x_5052_4C38,
+            "presentation vocabulary requires application protocol PRL8"
         );
         const {
             assert!(
@@ -254,5 +253,30 @@ mod tests {
         // the roster boundary.
         let crate::wire::RosterEntry { seat, connected } = entry;
         let _host_minted_or_observed = (seat, connected);
+    }
+}
+
+#[cfg(test)]
+mod activation_epoch_tests {
+    use super::*;
+    #[test]
+    fn activation_records_and_outcomes_reject_previous_layout_and_vocabulary() {
+        assert_eq!(WIRE_VERSION, 24);
+        assert_eq!(PROTOCOL_ID, 0x5052_4c38);
+        for received in [
+            ProtocolVersion {
+                app_protocol_id: PROTOCOL_ID,
+                wire_version: 23,
+            },
+            ProtocolVersion {
+                app_protocol_id: 0x5052_4c37,
+                wire_version: WIRE_VERSION,
+            },
+        ] {
+            assert!(matches!(
+                validate_handshake(protocol_version(), received),
+                Err(ClosingCause::Protocol { .. })
+            ));
+        }
     }
 }

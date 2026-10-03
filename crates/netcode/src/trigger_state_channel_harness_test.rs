@@ -227,6 +227,11 @@ fn fog_volume() -> FogVolumeComponent {
 
 fn idle_command() -> SimCommand {
     SimCommand {
+        secondary_button: crate::weapon::FireButtonState {
+            pressed: false,
+            active: false,
+        },
+        activation: postretro_foundation::ActivationInput::default(),
         movement: MovementInput {
             wish_dir: Vec2::ZERO,
             jump_pressed: false,

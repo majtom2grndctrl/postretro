@@ -58,6 +58,11 @@ struct RecordedCommand {
 impl RecordedCommand {
     fn to_sim_command(self) -> SimCommand {
         SimCommand {
+            secondary_button: crate::weapon::FireButtonState {
+                pressed: false,
+                active: false,
+            },
+            activation: postretro_foundation::ActivationInput::default(),
             movement: MovementInput {
                 wish_dir: self.wish_dir,
                 jump_pressed: self.jump_pressed,

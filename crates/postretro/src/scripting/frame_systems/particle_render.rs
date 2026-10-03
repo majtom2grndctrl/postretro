@@ -770,7 +770,13 @@ mod tests {
 
         let local = spawn_projectile_sprite(&mut registry, Vec3::ZERO, SPRITE);
         let predicted = spawn_projectile_sprite(&mut registry, Vec3::X, SPRITE);
-        for (id, predicted_shot_id) in [(local, None), (predicted, Some(9))] {
+        let shot_id = postretro_foundation::ShotId::from_parts(
+            4,
+            9,
+            postretro_foundation::ActivationLane::Primary,
+            0,
+        );
+        for (id, predicted_shot_id) in [(local, None), (predicted, Some(shot_id))] {
             let mut component = registry
                 .get_component::<ProjectileComponent>(id)
                 .unwrap()

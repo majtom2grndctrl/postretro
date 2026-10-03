@@ -1896,7 +1896,12 @@ mod tests {
             (pawn, weapon, target)
         };
 
-        let shot_id = ShotId::from_parts(NetworkId(42), 9);
+        let shot_id = ShotId::from_parts(
+            (NetworkId(42)).0,
+            9,
+            postretro_foundation::ActivationLane::Primary,
+            0,
+        );
         let events = run_remote_only_tick(
             registry.clone(),
             &[remote_command(pawn, Some(weapon), 42, 9, true, false)],
@@ -2184,7 +2189,12 @@ mod tests {
             events.rejected_remote_projectile_fires,
             vec![crate::sim::RemoteProjectileFireRejection {
                 owner_client_id: 7,
-                shot_id: ShotId::from_parts(NetworkId(42), 9),
+                shot_id: ShotId::from_parts(
+                    (NetworkId(42)).0,
+                    9,
+                    postretro_foundation::ActivationLane::Primary,
+                    0
+                ),
             }],
             "the host emits an immediate owner-private correction instead of waiting for flight expiry"
         );

@@ -77,6 +77,8 @@ pub struct SimCommand {
     pub movement: MovementInput,
     pub fire_button: FireButtonState,
     pub reload: bool,
+    pub secondary_button: FireButtonState,
+    pub activation: postretro_foundation::ActivationInput,
     /// Slot the local client declares as the source of fire. The host resolves it
     /// from pawn inventory by possession rather than from its active pointer.
     pub firing_slot: u8,
@@ -1950,6 +1952,11 @@ mod tests {
 
     pub(super) fn sim_command(fire: bool, reload: bool) -> SimCommand {
         SimCommand {
+            secondary_button: crate::weapon::FireButtonState {
+                pressed: false,
+                active: false,
+            },
+            activation: postretro_foundation::ActivationInput::default(),
             movement: zero_movement(),
             fire_button: FireButtonState {
                 pressed: fire,
@@ -2157,7 +2164,12 @@ mod tests {
             pawn,
             owner_client_id: 7,
             weapon,
-            shot_id: Some(ShotId::from_parts(NetworkId(network_id), client_tick)),
+            shot_id: Some(ShotId::from_parts(
+                (NetworkId(network_id)).0,
+                client_tick,
+                postretro_foundation::ActivationLane::Primary,
+                0,
+            )),
             fire_tick: 33,
             client_tick,
             aim_pitch: 0.0,

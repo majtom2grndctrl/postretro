@@ -1420,7 +1420,12 @@ mod tests {
         owners.set(owner, PREDICTED_OWNER_CLIENT);
         let mut allocator = NetworkIdAllocator::new();
         let owner_network_id = allocator.stamp(owner);
-        let shot_id = ShotId::from_parts(owner_network_id, 17);
+        let shot_id = ShotId::from_parts(
+            (owner_network_id).0,
+            17,
+            postretro_foundation::ActivationLane::Primary,
+            0,
+        );
         let mut open_shots = crate::netcode::OpenAuthorizedShots::new();
         open_shots.record(
             AuthorizedShot {
@@ -1453,7 +1458,7 @@ mod tests {
 
         let declaration = postretro_net::wire::ClientMessage::HitDeclaration(
             postretro_net::wire::HitDeclaration {
-                shot_id: shot_id.raw(),
+                shot_id: crate::wire_convert::shot_id_to_wire(shot_id),
                 records: vec![postretro_net::wire::HitRecord {
                     normal: [0.0, 1.0, 0.0],
                     target: crate::netcode::PRESENTATION_CONTACT_TARGET,

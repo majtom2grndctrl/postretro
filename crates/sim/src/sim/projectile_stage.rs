@@ -49,14 +49,14 @@ enum ProjectileResolution<'a> {
 #[derive(Debug, Clone, PartialEq)]
 pub enum PredictedProjectileResolution {
     Impact {
-        shot_id: u64,
+        shot_id: postretro_foundation::ShotId,
         impact: WeaponImpact,
         /// Weapon descriptor the projectile was fired from, which names its
         /// impact sound.
         source_weapon: Option<String>,
     },
     Expired {
-        shot_id: u64,
+        shot_id: postretro_foundation::ShotId,
     },
 }
 
@@ -1758,7 +1758,7 @@ mod tests {
                 .expect("predicted projectile component attaches")
                 .clone();
             component.flipbook_active = true;
-            component.predicted_shot_id = Some(7);
+            component.predicted_shot_id = Some(test_shot_id(7));
             predicted_registry
                 .borrow_mut()
                 .set_component(predicted, component)
@@ -1850,7 +1850,7 @@ mod tests {
             .get_component::<ProjectileComponent>(projectile)
             .expect("projectile component attaches")
             .clone();
-        component.predicted_shot_id = Some(0);
+        component.predicted_shot_id = Some(test_shot_id(0));
         component.impact_light = Some(impact_light());
         component.splash = Some(SplashDescriptor {
             knockback: None,
@@ -1883,7 +1883,7 @@ mod tests {
             PredictedProjectileResolution::Impact {
                 shot_id, impact, ..
             } => {
-                assert_eq!(*shot_id, 0);
+                assert_eq!(*shot_id, test_shot_id(0));
                 assert_eq!(impact.target, Some(target));
             }
             PredictedProjectileResolution::Expired { .. } => {
@@ -1924,7 +1924,7 @@ mod tests {
             .get_component::<ProjectileComponent>(projectile)
             .expect("projectile component attaches")
             .clone();
-        component.predicted_shot_id = Some(17);
+        component.predicted_shot_id = Some(test_shot_id(17));
         {
             let mut registry = registry.borrow_mut();
             registry
@@ -1964,4 +1964,14 @@ mod tests {
         assert!((midpoint.position.z + 0.5).abs() <= f32::EPSILON);
         assert!((current.position.z + 1.0).abs() <= f32::EPSILON);
     }
+}
+
+#[cfg(test)]
+fn test_shot_id(tick: u32) -> postretro_foundation::ShotId {
+    postretro_foundation::ShotId::from_parts(
+        4,
+        tick,
+        postretro_foundation::ActivationLane::Primary,
+        0,
+    )
 }

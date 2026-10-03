@@ -23,6 +23,11 @@ pub(crate) fn sim_command_to_input(
     aim_pitch: f32,
 ) -> InputCommand {
     InputCommand {
+        secondary_button: WireFireButtonState {
+            pressed: cmd.secondary_button.pressed,
+            active: cmd.secondary_button.active,
+        },
+        activation: activation_input_to_wire(cmd.activation),
         client_tick,
         movement: WireMovementInput {
             wish_dir: [cmd.movement.wish_dir.x, cmd.movement.wish_dir.y],
@@ -55,6 +60,11 @@ pub(crate) fn sim_command_to_input(
 // client commands to its sim).
 pub(crate) fn input_command_to_sim(input: &InputCommand) -> SimCommand {
     SimCommand {
+        secondary_button: FireButtonState {
+            pressed: input.secondary_button.pressed,
+            active: input.secondary_button.active,
+        },
+        activation: activation_input_from_wire(input.activation),
         movement: MovementInput {
             wish_dir: Vec2::new(input.movement.wish_dir[0], input.movement.wish_dir[1]),
             jump_pressed: input.movement.jump_pressed,
@@ -103,6 +113,23 @@ pub(crate) fn sanitize_input_command(cmd: &InputCommand) -> Option<InputCommand>
         return None;
     }
 
+    for token in [
+        cmd.activation.initiation,
+        cmd.activation.release.map(|r| r.token),
+        cmd.activation.cancel,
+    ]
+    .into_iter()
+    .flatten()
+    {
+        postretro_foundation::ActivationLane::from_tag(token.lane)?;
+    }
+    if cmd
+        .activation
+        .initiation
+        .is_some_and(|token| token.start_tick != cmd.client_tick)
+    {
+        return None;
+    }
     let mut sanitized = *cmd;
     sanitized.movement.wish_dir = [wish_right.clamp(-1.0, 1.0), wish_forward.clamp(-1.0, 1.0)];
     Some(sanitized)
@@ -118,8 +145,13 @@ mod tests {
     // §Floating-point).
     const EPSILON: f32 = 1e-6;
 
-    fn sample_sim_command() -> SimCommand {
+    pub(super) fn sample_sim_command() -> SimCommand {
         SimCommand {
+            secondary_button: crate::weapon::FireButtonState {
+                pressed: false,
+                active: false,
+            },
+            activation: postretro_foundation::ActivationInput::default(),
             movement: MovementInput {
                 wish_dir: Vec2::new(0.5, -0.75),
                 jump_pressed: true,
@@ -229,4 +261,116 @@ mod tests {
         assert!((sanitized.movement.aim_pitch - cmd.movement.aim_pitch).abs() < EPSILON);
         assert_eq!(sanitized.reload, cmd.reload);
     }
+}
+
+pub fn shot_id_to_wire(id: postretro_foundation::ShotId) -> postretro_net::wire::WireShotId {
+    postretro_net::wire::WireShotId {
+        pawn: id.pawn,
+        start_tick: id.start_tick,
+        lane: id.lane as u8,
+        ordinal: id.ordinal,
+    }
+}
+/// Call only after intake validation (or for locally produced wire records).
+pub fn shot_id_from_wire(id: postretro_net::wire::WireShotId) -> postretro_foundation::ShotId {
+    postretro_foundation::ShotId::from_parts(
+        id.pawn,
+        id.start_tick,
+        postretro_foundation::ActivationLane::from_tag(id.lane).expect("validated activation lane"),
+        id.ordinal,
+    )
+}
+pub fn valid_wire_shot_id(id: postretro_net::wire::WireShotId) -> bool {
+    id.ordinal < 16 && postretro_foundation::ActivationLane::from_tag(id.lane).is_some()
+}
+fn token_to_wire(
+    token: postretro_foundation::ActivationToken,
+) -> postretro_net::wire::WireActivationToken {
+    postretro_net::wire::WireActivationToken {
+        start_tick: token.start_tick,
+        lane: token.lane as u8,
+    }
+}
+fn token_from_wire(
+    token: postretro_net::wire::WireActivationToken,
+) -> postretro_foundation::ActivationToken {
+    postretro_foundation::ActivationToken {
+        start_tick: token.start_tick,
+        lane: postretro_foundation::ActivationLane::from_tag(token.lane)
+            .expect("validated activation lane"),
+    }
+}
+fn activation_input_to_wire(
+    input: postretro_foundation::ActivationInput,
+) -> postretro_net::wire::WireActivationInput {
+    postretro_net::wire::WireActivationInput {
+        initiation: input.initiation.map(token_to_wire),
+        release: input
+            .release
+            .map(|r| postretro_net::wire::WireActivationRelease {
+                token: token_to_wire(r.token),
+                release_tick: r.release_tick,
+            }),
+        cancel: input.cancel.map(token_to_wire),
+    }
+}
+pub(crate) fn activation_input_from_wire(
+    input: postretro_net::wire::WireActivationInput,
+) -> postretro_foundation::ActivationInput {
+    postretro_foundation::ActivationInput {
+        initiation: input.initiation.map(token_from_wire),
+        release: input
+            .release
+            .map(|r| postretro_foundation::ActivationRelease {
+                token: token_from_wire(r.token),
+                release_tick: r.release_tick,
+            }),
+        cancel: input.cancel.map(token_from_wire),
+    }
+}
+
+#[cfg(test)]
+mod activation_tests {
+    use super::*;
+    #[test]
+    fn activation_wire_rejects_unknown_lane_and_mismatched_initiation_tick() {
+        let mut input = sim_command_to_input(&super::tests::sample_sim_command(), 4, 0.0);
+        input.activation.initiation = Some(postretro_net::wire::WireActivationToken {
+            start_tick: 4,
+            lane: 2,
+        });
+        assert!(sanitize_input_command(&input).is_none());
+        input.activation.initiation = Some(postretro_net::wire::WireActivationToken {
+            start_tick: 3,
+            lane: 0,
+        });
+        assert!(sanitize_input_command(&input).is_none());
+        assert!(!valid_wire_shot_id(postretro_net::wire::WireShotId {
+            pawn: 4,
+            start_tick: 4,
+            lane: 0,
+            ordinal: 16
+        }));
+    }
+}
+
+pub(crate) fn valid_activation_outcome(outcome: &postretro_net::wire::ActivationOutcome) -> bool {
+    use postretro_net::wire::ActivationOutcome;
+    let token = match outcome {
+        ActivationOutcome::InitiationAccepted { token, .. } => *token,
+        ActivationOutcome::InitiationRejected { token, .. } => *token,
+        ActivationOutcome::ExecutionAccepted {
+            token,
+            charge_millionths,
+            ..
+        } => {
+            if *charge_millionths > 1_000_000 {
+                return false;
+            }
+            *token
+        }
+        ActivationOutcome::Cancelled { token, .. } => *token,
+        ActivationOutcome::Completed { token, .. } => *token,
+    };
+    postretro_foundation::ActivationLane::from_tag(token.lane).is_some()
 }

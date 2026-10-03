@@ -1787,6 +1787,11 @@ fn scripted_command(tick: u32) -> SimCommand {
     };
     let facing_yaw = if phase < 80 { 0.0 } else { 0.4 };
     SimCommand {
+        secondary_button: crate::weapon::FireButtonState {
+            pressed: false,
+            active: false,
+        },
+        activation: postretro_foundation::ActivationInput::default(),
         movement: MovementInput {
             wish_dir,
             jump_pressed: false,

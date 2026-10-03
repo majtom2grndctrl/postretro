@@ -1101,6 +1101,61 @@ pub struct InputCommand {
     pub movement: WireMovementInput,
     pub fire_button: WireFireButtonState,
     pub reload: bool,
+    pub secondary_button: WireFireButtonState,
+    pub activation: WireActivationInput,
+}
+
+/// Explicit activation identity mirrors; unknown lane/ordinal tags reject at intake.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Encode, Decode)]
+pub struct WireActivationToken {
+    pub start_tick: u32,
+    pub lane: u8,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Encode, Decode)]
+pub struct WireShotId {
+    pub pawn: u32,
+    pub start_tick: u32,
+    pub lane: u8,
+    pub ordinal: u8,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
+pub struct WireActivationRelease {
+    pub token: WireActivationToken,
+    pub release_tick: u32,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Encode, Decode)]
+pub struct WireActivationInput {
+    pub initiation: Option<WireActivationToken>,
+    pub release: Option<WireActivationRelease>,
+    pub cancel: Option<WireActivationToken>,
+}
+/// Reliable owner-private activation lifecycle. Recovery is whole fixed ticks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
+pub enum ActivationOutcome {
+    InitiationAccepted {
+        token: WireActivationToken,
+        weapon: NetworkId,
+    },
+    InitiationRejected {
+        token: WireActivationToken,
+        recovery_ticks: u32,
+    },
+    ExecutionAccepted {
+        token: WireActivationToken,
+        weapon: NetworkId,
+        charge_millionths: u32,
+        recovery_ticks: u32,
+    },
+    Cancelled {
+        token: WireActivationToken,
+        weapon: NetworkId,
+        recovery_ticks: u32,
+    },
+    Completed {
+        token: WireActivationToken,
+        weapon: NetworkId,
+        recovery_ticks: u32,
+    },
 }
 
 /// One client-declared hit record for a host-authorized shot. `target` is normally
@@ -1123,7 +1178,7 @@ pub struct HitRecord {
 /// authorized `shot_id` (projectile-ready shape).
 #[derive(Debug, Clone, PartialEq, Encode, Decode)]
 pub struct HitDeclaration {
-    pub shot_id: u64,
+    pub shot_id: WireShotId,
     pub records: Vec<HitRecord>,
 }
 
@@ -1243,7 +1298,7 @@ pub enum ClientMessage {
 /// One owner-private server verdict for a client-predicted shot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
 pub struct ShotVerdict {
-    pub shot_id: u64,
+    pub shot_id: WireShotId,
     /// Whether the host authorized the FIRE that minted this shot. `false` means no
     /// host-authorized shot existed, so clients roll back muzzle/cooldown.
     pub accept: bool,
@@ -1267,6 +1322,7 @@ pub struct ShotVerdictsMessage {
 pub enum ServerMessage {
     TimeSync(crate::timesync::TimeSyncEcho),
     ShotVerdicts(ShotVerdictsMessage),
+    ActivationOutcomes(Vec<ActivationOutcome>),
 }
 
 /// Wire codec failure. Today the only failure mode is a bitcode decode error
@@ -1456,6 +1512,11 @@ mod tests {
 
     fn sample_input() -> InputCommand {
         InputCommand {
+            secondary_button: WireFireButtonState {
+                pressed: false,
+                active: false,
+            },
+            activation: WireActivationInput::default(),
             client_tick: 4_242,
             movement: WireMovementInput {
                 wish_dir: [0.5, -0.75],
@@ -1613,13 +1674,23 @@ mod tests {
     #[test]
     fn hit_declaration_round_trips_empty_and_multiple_records() {
         let empty = HitDeclaration {
-            shot_id: 9,
+            shot_id: WireShotId {
+                pawn: 1,
+                start_tick: 9,
+                lane: 0,
+                ordinal: 0,
+            },
             records: Vec::new(),
         };
         assert!(round_trips(&empty));
 
         let declaration = HitDeclaration {
-            shot_id: 0xABCD_EF01_2345_6789,
+            shot_id: WireShotId {
+                pawn: 1,
+                start_tick: 0x2345_6789,
+                lane: 0,
+                ordinal: 0,
+            },
             records: vec![
                 HitRecord {
                     normal: [0.0, 1.0, 0.0],
@@ -1659,12 +1730,22 @@ mod tests {
         let verdicts = ServerMessage::ShotVerdicts(ShotVerdictsMessage {
             verdicts: vec![
                 ShotVerdict {
-                    shot_id: 10,
+                    shot_id: WireShotId {
+                        pawn: 1,
+                        start_tick: 10,
+                        lane: 0,
+                        ordinal: 0,
+                    },
                     accept: true,
                     hit_accepted: true,
                 },
                 ShotVerdict {
-                    shot_id: 11,
+                    shot_id: WireShotId {
+                        pawn: 1,
+                        start_tick: 11,
+                        lane: 0,
+                        ordinal: 0,
+                    },
                     accept: false,
                     hit_accepted: false,
                 },
@@ -1748,7 +1829,12 @@ mod tests {
                 reason: 0,
             }),
             ClientMessage::HitDeclaration(HitDeclaration {
-                shot_id: 99,
+                shot_id: WireShotId {
+                    pawn: 1,
+                    start_tick: 99,
+                    lane: 0,
+                    ordinal: 0,
+                },
                 records: vec![HitRecord {
                     normal: [0.0, 1.0, 0.0],
                     target: 4,
@@ -1774,7 +1860,12 @@ mod tests {
             }),
             ServerMessage::ShotVerdicts(ShotVerdictsMessage {
                 verdicts: vec![ShotVerdict {
-                    shot_id: 8,
+                    shot_id: WireShotId {
+                        pawn: 1,
+                        start_tick: 8,
+                        lane: 0,
+                        ordinal: 0,
+                    },
                     accept: true,
                     hit_accepted: true,
                 }],
@@ -3091,5 +3182,62 @@ mod tests {
                 kinematic_mover: Some(*m),
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod activation_tests {
+    use super::*;
+    #[test]
+    fn activation_wire_round_trips_full_identity_and_terminal_outcomes() {
+        let token = WireActivationToken {
+            start_tick: u32::MAX,
+            lane: 1,
+        };
+        let id = WireShotId {
+            pawn: 41,
+            start_tick: token.start_tick,
+            lane: token.lane,
+            ordinal: 15,
+        };
+        let declaration = HitDeclaration {
+            shot_id: id,
+            records: Vec::new(),
+        };
+        assert_eq!(
+            decode::<HitDeclaration>(&encode(&declaration)).unwrap(),
+            declaration
+        );
+        let message = ServerMessage::ActivationOutcomes(vec![
+            ActivationOutcome::InitiationAccepted {
+                token,
+                weapon: NetworkId(9),
+            },
+            ActivationOutcome::ExecutionAccepted {
+                token,
+                weapon: NetworkId(9),
+                charge_millionths: 1_000_000,
+                recovery_ticks: 18,
+            },
+            ActivationOutcome::Cancelled {
+                token,
+                weapon: NetworkId(9),
+                recovery_ticks: 18,
+            },
+            ActivationOutcome::Completed {
+                token,
+                weapon: NetworkId(9),
+                recovery_ticks: 18,
+            },
+            ActivationOutcome::InitiationRejected {
+                token,
+                recovery_ticks: 18,
+            },
+        ]);
+        assert_eq!(decode::<ServerMessage>(&encode(&message)).unwrap(), message);
+        let other_lane = WireShotId { lane: 0, ..id };
+        let other_ordinal = WireShotId { ordinal: 14, ..id };
+        assert_ne!(id, other_lane);
+        assert_ne!(id, other_ordinal);
     }
 }

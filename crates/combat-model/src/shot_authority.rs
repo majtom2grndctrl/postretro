@@ -4,28 +4,10 @@
 use glam::Vec3;
 use postretro_entities::EntityId;
 use postretro_foundation::{KnockbackDescriptor, SplashDescriptor};
-use postretro_net::wire::NetworkId;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ShotId(u64);
-
-impl ShotId {
-    pub fn from_parts(pawn: NetworkId, client_tick: u32) -> Self {
-        Self((u64::from(pawn.0) << 32) | u64::from(client_tick))
-    }
-
-    pub fn from_raw(raw: u64) -> Self {
-        Self(raw)
-    }
-
-    pub fn raw(self) -> u64 {
-        self.0
-    }
-
-    pub fn client_tick(self) -> u32 {
-        self.0 as u32
-    }
-}
+pub use postretro_foundation::{
+    ActivationId, ActivationInput, ActivationLane, ActivationRelease, ActivationToken, ShotId,
+};
 
 pub const HIT_RANGE_TOLERANCE: f32 = 1.25;
 pub const MAX_OPEN_SHOT_AGE_TICKS: u32 = 180;

@@ -241,6 +241,11 @@ fn net_slot_provenance() -> DescriptorProvenance {
 /// stamps the wire `client_tick` from `ClientPrediction::next_client_tick`.
 pub(crate) fn forward_command(dash_pressed: bool) -> SimCommand {
     SimCommand {
+        secondary_button: crate::weapon::FireButtonState {
+            pressed: false,
+            active: false,
+        },
+        activation: postretro_foundation::ActivationInput::default(),
         movement: MovementInput {
             wish_dir: Vec2::new(0.0, 1.0),
             jump_pressed: false,
@@ -265,6 +270,11 @@ pub(crate) fn forward_command(dash_pressed: bool) -> SimCommand {
 
 pub(crate) fn idle_command() -> SimCommand {
     SimCommand {
+        secondary_button: crate::weapon::FireButtonState {
+            pressed: false,
+            active: false,
+        },
+        activation: postretro_foundation::ActivationInput::default(),
         movement: MovementInput {
             wish_dir: Vec2::ZERO,
             jump_pressed: false,
@@ -302,6 +312,11 @@ pub(crate) fn use_command() -> SimCommand {
 /// `host_handle_client_message` drain seam without going through the conditioner.
 pub(crate) fn input_at(client_tick: u32, wish_forward: f32) -> InputCommand {
     InputCommand {
+        secondary_button: postretro_net::wire::WireFireButtonState {
+            pressed: false,
+            active: false,
+        },
+        activation: postretro_net::wire::WireActivationInput::default(),
         client_tick,
         movement: WireMovementInput {
             wish_dir: [0.0, wish_forward],

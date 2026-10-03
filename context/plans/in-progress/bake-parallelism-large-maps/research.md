@@ -35,13 +35,13 @@ What to do with a finished `measure-hallway.ps1` run. The before run happens onc
 
 | Number | Source | Acceptance row | Before | After |
 |---|---|---|---|---|
-| Total wall time | `summary.txt` | Total wall time | 19,387.7 s (5 h 23 m) | |
+| Total wall time | `summary.txt` | Total wall time | 19,387.7 s (5 h 23 m) |  1,518.0 s |
 | SH Bake wall time | Build Summary | SH Bake, traversal change alone | 11,535.7 s | |
 | Wall time: Lightmap Bake, AnimWeightMaps, ShadowmaskAtlas, Delta SH, Direct SH Delta, Animated Direct | Build Summary | Per-stage wall time and busy cores | 6,310.9 / 664.4 / 210.2 / 150.7 / 321.8 / 24.9 s | |
 | Mean busy cores per stage above | `stats.sh` | Per-stage wall time and busy cores | Lightmap Bake + ShadowmaskAtlas 2.88 (one sampler label, see note) / AnimWeightMaps 1.00 / Delta SH 4.35 / Direct SH Delta 0.67 / Animated Direct 1.34 (3 samples) | |
 | Mean busy cores, Direct SH Delta Bake | `stats.sh` | Direct SH Delta busy cores | 0.67 (p50 0.95, 33 samples) | |
-| Peak working set | `summary.txt` | Peak RSS | 3.62 GiB (3,799,832 KB) | |
-| Mean busy cores, whole build | `summary.txt` | Context | 3.95 of 5 permits | |
+| Peak working set | `summary.txt` | Peak RSS | 3.62 GiB (3,799,832 KB) |  1.74 GiB |
+| Mean busy cores, whole build | `summary.txt` | Context | 3.95 of 5 permits |  2.77 |
 | Cache size at exit | `summary.txt` | Context for the prune rule | 233,110 files, 12.76 GiB | |
 
 **Before run (R0).** `evidence/windows-before/`, the owner's run of 2026-10-01 at 83489c52b. Between it and the pre-lever compiler (1527f5b26) only `level-loader` test code and a doc comment changed, so it is the pre-lever bake. SH Bake ran at 4.86 of 5 permits (sampler label "SH volume bake"). The fused walk's 6,521 s carry one sampler label, "Shadowmask atlas bake", because both stages begin together and the sampler keeps the latest label; its 2.88 cores cover Lightmap Bake and ShadowmaskAtlas together.
@@ -50,17 +50,19 @@ What to do with a finished `measure-hallway.ps1` run. The before run happens onc
 
 | Number | m0 warm, empty cache (pre-lever) | m0c cold (pre-lever) | m1c cold (lever 1) | m2 warm | m3 warm |
 |---|---|---|---|---|---|
-| Evidence | `windows-mini-before/` | `windows-mini-before-cold/` | `windows-mini-after-lever1-cold/` | `windows-mini-after-m2/` | |
+| Evidence | `windows-mini-before/` | `windows-mini-before-cold/` | `windows-mini-after-lever1-cold/` | `windows-mini-after-m2/` |  `windows-mini-after-lever5/` |
 | Total wall time | 2,191.6 s | 1,561.4 s | 1,101.1 s | 1,591.8 s | |
 | Mean busy cores, whole build | 2.65 | 3.71 | 4.37 | 3.05 | |
-| SH Bake | 741.5 s | 707.5 s | 727.4 s | 727.4 s | |
-| Lightmap Bake | 832.0 s | 675.8 s | 182.9 s | 365.7 s | |
-| Busy cores, "Shadowmask atlas bake" label (Lightmap + ShadowmaskAtlas) | 2.20 (82 samples) | 2.65 (68) | 3.85 (19; p50 3.97, p90 4.51) | 2.43 (28; p10 0.00, p50 3.00) | |
-| ShadowmaskAtlas | 6.6 s | 5.6 s | 4.9 s | 5.2 s | |
-| Delta SH / Direct SH Delta / Animated Direct / AnimWeightMaps | 180.1 / 246.9 / 67.7 / 50.9 s | 80.4 / 2.7 / 0.5 / 17.9 s | 81.9 / 2.6 / 0.5 / 17.8 s | 90.1 / 190.4 / 75.9 / 82.7 s | |
-| Packing | 46.4 s | 53.6 s | 65.2 s | 36.3 s | |
+| SH Bake | 741.5 s | 707.5 s | 727.4 s | 727.4 s |  646.9 s |
+| Lightmap Bake | 832.0 s | 675.8 s | 182.9 s | 365.7 s |  266.0 s |
+| Busy cores, "Shadowmask atlas bake" label (Lightmap + ShadowmaskAtlas) | 2.20 (82 samples) | 2.65 (68) | 3.85 (19; p50 3.97, p90 4.51) | 2.43 (28; p10 0.00, p50 3.00) |  2.54 (22; p10 0.00, p50 3.47) |
+| ShadowmaskAtlas | 6.6 s | 5.6 s | 4.9 s | 5.2 s |  4.9 s |
+| Delta SH / Direct SH Delta / Animated Direct / AnimWeightMaps | 180.1 / 246.9 / 67.7 / 50.9 s | 80.4 / 2.7 / 0.5 / 17.9 s | 81.9 / 2.6 / 0.5 / 17.8 s | 90.1 / 190.4 / 75.9 / 82.7 s |  103.5 / 281.4 / 61.5 / 45.2 s |
+| Packing | 46.4 s | 53.6 s | 65.2 s | 36.3 s |  30.9 s |
 | Peak working set | 1.73 GiB | 1.37 GiB | 1.37 GiB | 1.73 GiB | |
-| Cache at exit | 74,227 files, 3.89 GiB | none | none | 74,227 files, 3.89 GiB | |
+| Cache at exit | 74,227 files, 3.89 GiB | none | none | 74,227 files, 3.89 GiB |  74,227 files, 3.89 GiB |
+
+M3 (lever 5 alone, m2 → m3): SH Bake 727.4 s → 646.9 s (−11.1%); output byte-identical to m2's. The Task 10 harness measured −19% on hallway SH groups: warren-mini's smaller tree prunes less, and the stage also carries probe layout and cache I/O. Other ray stages: Lightmap 365.7 → 266.0 s, AnimWeightMaps 82.7 → 45.2 s. Direct SH Delta rose 190.4 → 281.4 s with no change to it: run-to-run put variance on this machine (Task 11b removes those writes).
 
 M2: cold Lightmap Bake 675.8 s → 182.9 s (3.7× faster), busy cores 2.65 → 3.85, peak working set unchanged. Lightmap still runs below 5 permits; the serial in-order fold and per-light consume are the likely remainder.
 

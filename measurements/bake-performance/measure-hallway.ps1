@@ -6,7 +6,7 @@ One warm hallway bake under the pinned conditions of bake-parallelism-large-maps
 .DESCRIPTION
 Builds prl-build in cargo's release profile, bakes the hallway on an empty cache,
 and samples the process every -SampleSeconds into cpu-samples.tsv. Columns 1-5
-match evidence/stats.sh; run it on the TSV from Git Bash or WSL.
+match stats.sh beside this script; run it on the TSV from Git Bash or WSL.
 Run: powershell -ExecutionPolicy Bypass -File measure-hallway.ps1 [-SkipBuild]
 -Cold runs prl-build --release instead: the exact, uncached ship bake (the cold
 Lightmap Bake row). -ReuseCacheDir <dir> runs a second warm build on an existing,

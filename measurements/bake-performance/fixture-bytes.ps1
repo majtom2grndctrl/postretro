@@ -9,8 +9,8 @@ map in four modes and prints one "<mode> <map> <sha256>" line per .prl:
   cold-default  prl-build --release (default -j)
   warm-miss     warm build on an empty cache dir
   warm-hit      warm build of the same map on that now-full cache dir
-Run once on the pre-lever compiler and commit the output as
-fixture-digests-before.txt; after each lever, run again and diff.
+Run once on a baseline compiler and keep the output, such as
+fixture-digests-before.txt; after each change, run again and diff.
 Run: powershell -ExecutionPolicy Bypass -File fixture-bytes.ps1 [-RepoRoot <dir>] [-OutFile <file>] [-SkipBuild]
 #>
 [CmdletBinding()]

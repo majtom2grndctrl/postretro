@@ -235,12 +235,12 @@ declare module "postretro" {
     loadout?: ReadonlyArray<WeaponEntityDescriptor>;
   };
 
-  /** Valid values: `semi`, `auto`. */
-  export type FireMode =
-    /** One shot per press. */
-    | "semi"
-    /** Continuous fire while held. */
-    | "auto";
+  /** Valid values: `press`, `hold`. */
+  export type ActivationTrigger =
+    /** Start once per fresh press. A charged action executes on explicit release; holding at full charge does not fire. */
+    | "press"
+    /** Start again while held after the previous execution and shared recovery finish. Cannot combine with charge. */
+    | "hold";
 
   /** Valid values: `auto`, `press`. */
   export type TouchMode =
@@ -447,7 +447,7 @@ declare module "postretro" {
     /** Refuse fire until heat cools all the way to 0. */
     | "lockout";
 
-  /** Heat tuning for a weapon. Each shot adds heat and heat cools over time. The shot that reaches `overheatAt` still fires, then the weapon overheats: pulls are refused silently until heat cools to exactly 0. The lockout lasts `overheatAt / coolPerSecond` seconds. Heat is a gate on top of `fireRateMs`, not a replacement; both must pass. Heat has no reserve, no pickups and no reload. Every copy of the weapon cools every tick, held or holstered, so switching away to cool a gun works. */
+  /** Heat tuning for a weapon. Each shot adds heat and heat cools over time. The shot that reaches `overheatAt` still fires, then the weapon overheats: pulls are refused silently until heat cools to exactly 0. The lockout lasts `overheatAt / coolPerSecond` seconds. Heat and shared activation recovery must both permit each new execution. Heat has no reserve, no pickups and no reload. Every copy of the weapon cools every tick, held or holstered, so switching away to cool a gun works. */
   export type HeatResource = {
     /** Heat added by each shot. Must be finite, > 0 and <= `overheatAt`. */
     heatPerShot: number;
@@ -510,6 +510,83 @@ declare module "postretro" {
     rotation?: PlacementRotation;
   };
 
+  /** Optional charge timing, valid only with trigger `press`. Release before minMs cancels without firing or spending; full charge does not auto-fire. */
+  export type ActivationCharge = {
+    /** Minimum held duration in milliseconds. Finite and >= 0; must be <= fullMs. */
+    minMs: number;
+    /** Held duration giving normalized charge 1. Finite milliseconds in (0, 60000]; charge grows linearly from zero elapsed time. */
+    fullMs: number;
+  };
+
+  /** Action-specific fire and impact sound keys. Each authored field overrides its weapon default; omission inherits that default. Uses the originating action for delayed impacts. */
+  export type ActivationSounds = {
+    /** Override the weapon fire sound for every accepted shot. A sound key under the mod sounds/ tree, without its extension. */
+    fire?: string;
+    /** Override the weapon impact sound. Existing per-shot/per-tick contact aggregation applies. */
+    impact?: string;
+  };
+
+  /** Optional named reactions dispatched alongside built-in activate/impact events. Aliases must be non-empty and differ from the built-in address. */
+  export type ActivationEmits = {
+    /** Additional activate reaction name, fired once per accepted shot; cannot equal `activate`. */
+    activate?: string;
+    /** Additional impact reaction name with the originating action's provenance; cannot equal `impact`. */
+    impact?: string;
+  };
+
+  /** Raw independent shot multipliers, defaulting to 1. Numeric IR may read only the read-only `charge` input; use activation.shot() to lower fluent NumberRef values. Invalid literals reject content; invalid evaluated or final scaled values cancel execution and warn once per descriptor/field. */
+  export type ShotScaleDescriptor = {
+    /** Direct or splash damage multiplier, applied once. Finite range: [0, 64]; defaults to 1. */
+    damage?: number | RuntimeValue;
+    /** Hitscan distance or projectile travel cap multiplier. Finite range: (0, 64]; defaults to 1. */
+    range?: number | RuntimeValue;
+    /** Projectile travel-speed multiplier. Finite range: (0, 64]; defaults to 1. */
+    projectileSpeed?: number | RuntimeValue;
+    /** Projectile swept collision-radius multiplier. Finite range: (0, 64]; defaults to 1. */
+    projectileRadius?: number | RuntimeValue;
+    /** Projectile visual-size multiplier, independent of collision and splash radius. Finite range: (0, 64]; defaults to 1. */
+    projectileSize?: number | RuntimeValue;
+    /** Direct and splash knockback-speed multiplier. Finite range: [0, 64]; defaults to 1. */
+    knockbackSpeed?: number | RuntimeValue;
+    /** Ammo, heat, or cell cost multiplier per shot. Finite range: (0, 64]; defaults to 1. Positive scaled ammo cost rounds up; heat/cell retain fractional cost. */
+    resourceCost?: number | RuntimeValue;
+  };
+
+  /** One ordinary authored shot attempt. It samples current aim and freezes resolved tuning; there is no burst opcode. */
+  export type ActivationShotStep = {
+    /** Independent multipliers for this shot, defaulting to 1. Use activation.shot() for fluent refs. */
+    scale?: ShotScaleDescriptor;
+  };
+
+  /** Wait before the following shot, advanced by fixed simulation ticks. */
+  export type ActivationWaitStep = {
+    /** Finite wait in milliseconds in (0, 60000], rounded up to whole fixed ticks with a one-tick minimum. Total quantized waits cannot exceed 60 seconds. */
+    durationMs: number;
+  };
+
+  /** Closed action step with kind `shot` or `wait`. At most 64 steps and 16 shots; first and last must be shots, with a positive wait between shots. */
+  export type ActivationStepDescriptor =
+    /** One ordinary shot, with optional independent scale values. */
+    | ({ kind: "shot" } & ActivationShotStep)
+    /** A positive fixed-tick delay in milliseconds. */
+    | ({ kind: "wait" } & ActivationWaitStep);
+
+  /** Bounded primary or secondary action data. At most 64 steps and 16 shots; first/last steps are shots and every pair of shots has a positive wait. One execution owns the weapon; actions share resources and recovery. No callback or runtime repetition is retained. */
+  export type WeaponActivationDescriptor = {
+    /** Press starts once per fresh edge; hold restarts after execution and recovery while held. Charge requires press. */
+    trigger: ActivationTrigger;
+    /** Shared start-gate recovery after each accepted shot, in finite milliseconds [0, 60000]. Zero is allowed; remaining recovery survives completion/cancellation. */
+    recoveryMs: number;
+    /** Closed shot/wait program: at most 64 steps, 16 shots, first and last shots, positive waits between shots, and at most 60 seconds of quantized waits. */
+    steps: ReadonlyArray<ActivationStepDescriptor>;
+    /** Optional charge timing for press only. minMs may be 0 and must be <= fullMs; fullMs is positive and <= 60000. */
+    charge?: ActivationCharge;
+    /** Optional per-action fire/impact overrides of weapon defaults. */
+    sounds?: ActivationSounds;
+    /** Optional named reactions added alongside built-in activate/impact events. */
+    emits?: ActivationEmits;
+  };
+
   /** Authored weapon component preset. Descriptor-owned tuning data; maps do not override these params. Spawn-time player equip materializes a separate wieldable instance entity from this descriptor. */
   export type WeaponDescriptor = {
     /** Optional direct-hit push. Applies per hitscan pellet or projectile entity contact, independently of damage. Composes with splash.knockback when both are authored. */
@@ -534,10 +611,10 @@ declare module "postretro" {
     spreadVerticalBias?: number;
     /** Maximum hitscan distance in metres, or the second travel cap for a projectile. Must be finite and > 0. */
     range: number;
-    /** Minimum interval between shots in milliseconds. Must be finite and > 0. */
-    fireRateMs: number;
-    /** Semi or automatic input gate. */
-    fireMode: FireMode;
+    /** Required primary action. Press/hold trigger, recovery, and bounded shot/wait steps; use activation.shot() and activation.wait(). */
+    primary: WeaponActivationDescriptor;
+    /** Optional alternate-fire action using the same weapon tuning, resource storage, and recovery. Secondary wins simultaneous fresh starts; both wait until the current execution finishes. */
+    secondary?: WeaponActivationDescriptor;
     /** Shot resolution mode. `projectile` requires the descriptor-owned `projectile` block. */
     resolution: ResolutionMode;
     /** Required exactly when `resolution` is `projectile`; omit for hitscan. Projectile tuning is descriptor-owned and never an FGD KVP. */
@@ -566,7 +643,7 @@ declare module "postretro" {
     blockDuringReload?: boolean;
   };
 
-  /** Sound keys for a weapon's events. Every field is optional; an absent one plays nothing. Unknown keys are rejected. Fire, dry fire, overheat and reload play at the firing pawn; impact plays once per activation per tick, at the contact nearest the listener. An unknown sound key warns once when the level installs. */
+  /** Sound keys for a weapon's events. Every field is optional; an absent one plays nothing. Unknown keys are rejected. Fire, dry fire, overheat and reload play at the firing pawn; impact plays once per shot per tick, at the contact nearest the listener. An unknown sound key warns once when the level installs. */
   export type WeaponSounds = {
     /** Played on `activate`. */
     fire?: string;
@@ -1651,7 +1728,7 @@ declare module "postretro" {
   /** Named reaction with a type-only, contravariant dispatch-scope marker. */
   export type Reaction<S = {}> = NamedReactionDescriptor & { readonly [reactionScopeBrand]?: (scope: S) => void };
 
-  // Impact-policy IR skin. This vocabulary lowers to the existing closed
+  // Shared fluent-expression IR skin. This vocabulary lowers to the existing closed
   // RuntimeValue op set; boolean composition is represented exclusively with
   // `select` nodes.
   const numBrand: unique symbol;
@@ -1687,6 +1764,43 @@ declare module "postretro" {
     number(value: RuntimeValue): NumberRef;
     bool(value: RuntimeValue): BoolRef;
   }>;
+  /** Independent shot multipliers. Omitted axes use 1; expressions may read only `activation.charge`. */
+  export type ActivationShotScale = Readonly<{
+    /** Direct or splash damage multiplier, applied once. Finite range: [0, 64]. */
+    damage?: NumberValue;
+    /** Hitscan distance or projectile travel cap multiplier. Finite range: (0, 64]. */
+    range?: NumberValue;
+    /** Projectile travel-speed multiplier. Finite range: (0, 64]. */
+    projectileSpeed?: NumberValue;
+    /** Projectile swept collision-radius multiplier. Finite range: (0, 64]. */
+    projectileRadius?: NumberValue;
+    /** Projectile visual-size multiplier; collision and splash radius are independent. Finite range: (0, 64]. */
+    projectileSize?: NumberValue;
+    /** Direct and splash knockback-speed multiplier. Finite range: [0, 64]. */
+    knockbackSpeed?: NumberValue;
+    /** Per-shot ammo, heat, or cell-cost multiplier. Finite range: (0, 64]; positive ammo costs round up. */
+    resourceCost?: NumberValue;
+  }>;
+
+  /** Shot options. Multipliers accept finite literals, fluent refs, or numeric `runtime.*` IR. */
+  export type ActivationShotOptions = Readonly<{
+    /** Independent multipliers, defaulting to 1. Only the read-only `charge` input is allowed. */
+    scale?: ActivationShotScale;
+  }>;
+
+  /** Closed weapon-action data builders. Programs allow at most 64 steps and 16 shots. */
+  export type Activation = Readonly<{
+    /** Normalized start-to-release charge in [0, 1]; uncharged actions read 1. No state-store reads or writes. */
+    charge: NumberRef;
+    /** Build an ordinary shot. First and last steps must be shots, with a positive wait between shots. */
+    shot(options?: ActivationShotOptions): ActivationStepDescriptor;
+    /** Build a wait in milliseconds: finite (0, 60000], rounded up to whole ticks. Total quantized waits are at most 60 seconds. */
+    wait(durationMs: number): ActivationStepDescriptor;
+  }>;
+
+  /** Pure weapon-action builders; no callbacks or gameplay execution. */
+  export const activation: Activation;
+
   /** Opaque closed impact effect. Construct through TargetHandle, SourceHandle, `set`, or `update`. */
   export interface Effect { readonly [effectBrand]: true; }
   export type GatedEffect = { when?: BoolRef; do: readonly Effect[] };

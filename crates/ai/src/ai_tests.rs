@@ -61,8 +61,8 @@ use postretro_foundation::{
     BehaviorLayerDescriptor, BehaviorSelectorEntry, BehaviorSelectorRow, BindingScope,
     BoundProgram, CANDIDATE_DAMAGE_DEALT_TO_ME_INPUT, CANDIDATE_DIED_INPUT,
     CANDIDATE_DISTANCE_INPUT, CANDIDATE_TIME_SINCE_DAMAGE_FROM_CANDIDATE_INPUT, CURRENT_IR_VERSION,
-    FireMode, GuardedRow, ImpactEventDescriptor, IrNode, IrValue, MotionVerb, PatrolDescriptor,
-    PatrolMode, ProjectileBodyVisual, ProjectileDescriptor, ProjectileVisual, ResolutionMode,
+    GuardedRow, ImpactEventDescriptor, IrNode, IrValue, MotionVerb, PatrolDescriptor, PatrolMode,
+    ProjectileBodyVisual, ProjectileDescriptor, ProjectileVisual, ResolutionMode,
     RetaliationDescriptor, WeaponDescriptor, bind,
 };
 use postretro_scripting_core::data_descriptors::{
@@ -10342,8 +10342,11 @@ fn projectile_weapon_descriptor(
             movement_spread_degrees: 0.0,
             spread_vertical_bias: 0.0,
             range,
-            cooldown_ms,
-            fire_mode: FireMode::Semi,
+            primary: postretro_foundation::WeaponActivationDescriptor::single(
+                postretro_foundation::ActivationTrigger::Press,
+                cooldown_ms,
+            ),
+            secondary: None,
             resolution: ResolutionMode::Projectile,
             projectile: Some(ProjectileDescriptor {
                 speed: 18.0,

@@ -6,13 +6,13 @@ fn weapon_pair(js: &str, lua: &str) -> [Result<EntityTypeDescriptor, DescriptorE
     [
         eval_js(
             &format!(
-                r#"({{ components: {{ weapon: {{ damage: 0, range: 64, fireRateMs: 180, fireMode: "semi", resolution: "hitscan"{js} }} }} }})"#
+                r#"({{ components: {{ weapon: {{ damage: 0, range: 64, primary : {{ trigger : "press", recoveryMs : 180, steps : [{{ kind: "shot" }}] }},  resolution: "hitscan"{js} }} }} }})"#
             ),
             entity_descriptor_from_js,
         ),
         eval_lua(
             &format!(
-                r#"return {{ components = {{ weapon = {{ damage = 0, range = 64, fireRateMs = 180, fireMode = "semi", resolution = "hitscan"{lua} }} }} }}"#
+                r#"return {{ components = {{ weapon = {{ damage = 0, range = 64, primary = {{ trigger = "press", recoveryMs = 180, steps = {{ {{ kind = "shot" }} }} }},  resolution = "hitscan"{lua} }} }} }}"#
             ),
             entity_descriptor_from_lua,
         ),
@@ -65,13 +65,13 @@ fn splash_pair(js: &str, lua: &str) -> [Result<EntityTypeDescriptor, DescriptorE
     [
         eval_js(
             &format!(
-                r#"({{ components: {{ weapon: {{ damage: 0, range: 64, fireRateMs: 180, fireMode: "semi", resolution: "projectile", projectile: {{ speed: 40, radius: 0.1, lifetimeMs: 2000, visual: {{ body: {{ kind: "sprite", sprite: "orb.png" }} }} }}, splash: {{ radius: 6, selfDamage: false, knockback: {js} }} }} }} }})"#
+                r#"({{ components: {{ weapon: {{ damage: 0, range: 64, primary : {{ trigger : "press", recoveryMs : 180, steps : [{{ kind: "shot" }}] }},  resolution: "projectile", projectile: {{ speed: 40, radius: 0.1, lifetimeMs: 2000, visual: {{ body: {{ kind: "sprite", sprite: "orb.png" }} }} }}, splash: {{ radius: 6, selfDamage: false, knockback: {js} }} }} }} }})"#
             ),
             entity_descriptor_from_js,
         ),
         eval_lua(
             &format!(
-                r#"return {{ components = {{ weapon = {{ damage = 0, range = 64, fireRateMs = 180, fireMode = "semi", resolution = "projectile", projectile = {{ speed = 40, radius = 0.1, lifetimeMs = 2000, visual = {{ body = {{ kind = "sprite", sprite = "orb.png" }} }} }}, splash = {{ radius = 6, selfDamage = false, knockback = {lua} }} }} }} }}"#
+                r#"return {{ components = {{ weapon = {{ damage = 0, range = 64, primary = {{ trigger = "press", recoveryMs = 180, steps = {{ {{ kind = "shot" }} }} }},  resolution = "projectile", projectile = {{ speed = 40, radius = 0.1, lifetimeMs = 2000, visual = {{ body = {{ kind = "sprite", sprite = "orb.png" }} }} }}, splash = {{ radius = 6, selfDamage = false, knockback = {lua} }} }} }} }}"#
             ),
             entity_descriptor_from_lua,
         ),

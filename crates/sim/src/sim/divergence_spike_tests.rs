@@ -17,9 +17,8 @@ use postretro_entities::components::inventory::Inventory;
 use postretro_entities::components::weapon::WeaponComponent;
 use postretro_entities::{EntityId, EntityRegistry, Transform};
 use postretro_foundation::{
-    AirParams, CapsuleParams, FallParams, FireMode, ForgivenessParams, GroundParams,
-    PlayerMovementComponent, PlayerMovementDescriptor, ResolutionMode, SpeedParams,
-    WeaponDescriptor,
+    AirParams, CapsuleParams, FallParams, ForgivenessParams, GroundParams, PlayerMovementComponent,
+    PlayerMovementDescriptor, ResolutionMode, SpeedParams, WeaponDescriptor,
 };
 use postretro_scripting_core::reaction_dispatch::ProgressTracker;
 
@@ -274,8 +273,11 @@ fn spawn_weapon(registry: &mut EntityRegistry) -> EntityId {
                 movement_spread_degrees: 0.0,
                 spread_vertical_bias: 0.0,
                 range: 30.0,
-                cooldown_ms: 80.0,
-                fire_mode: FireMode::Semi,
+                primary: postretro_foundation::WeaponActivationDescriptor::single(
+                    postretro_foundation::ActivationTrigger::Press,
+                    80.0,
+                ),
+                secondary: None,
                 resolution: ResolutionMode::Hitscan,
                 projectile: None,
                 splash: None,

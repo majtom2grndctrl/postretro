@@ -1,4 +1,8 @@
 //! Stable activation identities and input facts; no execution policy or VM types.
+mod compiled;
+mod scaled;
+pub use compiled::*;
+pub use scaled::*;
 
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize,
@@ -179,3 +183,6 @@ impl ActivationProgram {
             .count() as u8
     }
 }
+
+#[cfg(test)]
+mod authoring_tests;

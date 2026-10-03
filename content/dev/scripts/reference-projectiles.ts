@@ -1,4 +1,4 @@
-import { defineEntity, defineWeaponPlacement } from "postretro";
+import { activation, defineEntity, defineWeaponPlacement } from "postretro";
 
 const PLASMA_RIFLE_MODEL = "models/cyberpunk_weapons/rpg/model.gltf";
 const ROCKET_LAUNCHER_MODEL = "models/cyberpunk_weapons/sci_fi_weapon/model.gltf";
@@ -25,8 +25,19 @@ export const referencePlasmaBoltEntity = defineEntity({
       damage: 10.0,
       knockback: { speed: 3.0, upwardBias: 0.1 },
       range: 96.0,
-      fireRateMs: 130.0,
-      fireMode: "auto",
+      primary: { trigger: "hold", recoveryMs: 130.0, steps: [activation.shot()] },
+      secondary: {
+        trigger: "press",
+        recoveryMs: 400,
+        charge: { minMs: 200, fullMs: 1000 },
+        steps: [activation.shot({
+          scale: {
+            damage: activation.charge.times(9).plus(1),
+            resourceCost: activation.charge.times(9).plus(1),
+            projectileSize: activation.charge.plus(1),
+          },
+        })],
+      },
       resolution: "projectile",
       thirdPersonModel: PLASMA_RIFLE_MODEL,
       viewmodel: PLASMA_RIFLE_MODEL,
@@ -82,8 +93,7 @@ export const referenceRocketEntity = defineEntity({
     weapon: {
       damage: 36.0,
       range: 128.0,
-      fireRateMs: 750.0,
-      fireMode: "semi",
+      primary: { trigger: "press", recoveryMs: 750.0, steps: [activation.shot()] },
       resolution: "projectile",
       thirdPersonModel: ROCKET_LAUNCHER_MODEL,
       viewmodel: ROCKET_LAUNCHER_MODEL,

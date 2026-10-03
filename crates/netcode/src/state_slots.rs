@@ -2340,6 +2340,14 @@ mod tests {
             .set_component(
                 weapon,
                 WeaponComponent {
+                    primary: std::sync::Arc::new(
+                        postretro_foundation::WeaponActivationDescriptor::single(
+                            postretro_foundation::ActivationTrigger::Press,
+                            250.0,
+                        ),
+                    ),
+                    secondary: None,
+                    activation_programs: Default::default(),
                     knockback: None,
                     damage: 10.0,
                     pellet_count: 1,
@@ -2410,6 +2418,14 @@ mod tests {
             .set_component(
                 weapon,
                 WeaponComponent {
+                    primary: std::sync::Arc::new(
+                        postretro_foundation::WeaponActivationDescriptor::single(
+                            postretro_foundation::ActivationTrigger::Press,
+                            250.0,
+                        ),
+                    ),
+                    secondary: None,
+                    activation_programs: Default::default(),
                     knockback: None,
                     damage: 10.0,
                     pellet_count: 1,

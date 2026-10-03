@@ -61,6 +61,7 @@ mod js {
     pub mod readers;
     pub mod ui_binds;
     pub mod ui_widgets;
+    mod weapon;
 }
 
 mod lua {
@@ -72,6 +73,7 @@ mod lua {
     pub mod reactions;
     pub mod ui_binds;
     pub mod ui_widgets;
+    mod weapon;
 }
 
 // Re-export every submodule item so external references to

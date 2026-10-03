@@ -22,8 +22,8 @@ use postretro_entities::{
     FactionSentimentState, Transform,
 };
 use postretro_foundation::{
-    BehaviorActivityDescriptor, BehaviorGraphDescriptor, BehaviorGraphEnvelope, FireMode,
-    MotionVerb, PlacementOffset, PlacementRotation, ProjectileBodyVisual, ProjectileDescriptor,
+    BehaviorActivityDescriptor, BehaviorGraphDescriptor, BehaviorGraphEnvelope, MotionVerb,
+    PlacementOffset, PlacementRotation, ProjectileBodyVisual, ProjectileDescriptor,
     ProjectileVisual, ResolutionMode, RetaliationDescriptor, SplashDescriptor, WeaponDescriptor,
     WeaponPlacementDescriptor,
 };
@@ -260,8 +260,11 @@ fn projectile_weapon(source: &str) -> WeaponComponent {
         movement_spread_degrees: 0.0,
         spread_vertical_bias: 0.0,
         range: 100.0,
-        cooldown_ms: 100.0,
-        fire_mode: FireMode::Semi,
+        primary: postretro_foundation::WeaponActivationDescriptor::single(
+            postretro_foundation::ActivationTrigger::Press,
+            100.0,
+        ),
+        secondary: None,
         resolution: ResolutionMode::Projectile,
         projectile: Some(ProjectileDescriptor {
             speed: 1.0,
@@ -329,8 +332,11 @@ fn projectile_descriptor() -> WeaponDescriptor {
         movement_spread_degrees: 0.0,
         spread_vertical_bias: 0.0,
         range: 2.0,
-        cooldown_ms: 100.0,
-        fire_mode: FireMode::Semi,
+        primary: postretro_foundation::WeaponActivationDescriptor::single(
+            postretro_foundation::ActivationTrigger::Press,
+            100.0,
+        ),
+        secondary: None,
         resolution: ResolutionMode::Projectile,
         projectile: None,
         splash: None,

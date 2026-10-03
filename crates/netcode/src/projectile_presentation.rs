@@ -680,7 +680,7 @@ mod tests {
     };
     use postretro_entities::{ComponentKind, EntityTypeDescriptor};
     use postretro_foundation::{
-        FireMode, ProjectileBodyVisual, ProjectileImpactLight, ProjectileLight, ProjectileVisual,
+        ProjectileBodyVisual, ProjectileImpactLight, ProjectileLight, ProjectileVisual,
         ResolutionMode, WeaponDescriptor,
     };
     use postretro_test_log_capture::LogCapture;
@@ -753,8 +753,11 @@ mod tests {
                 movement_spread_degrees: 0.0,
                 spread_vertical_bias: 0.0,
                 range: 12.0,
-                cooldown_ms: 1.0,
-                fire_mode: FireMode::Semi,
+                primary: postretro_foundation::WeaponActivationDescriptor::single(
+                    postretro_foundation::ActivationTrigger::Press,
+                    1.0,
+                ),
+                secondary: None,
                 resolution: ResolutionMode::Projectile,
                 projectile: Some(descriptor()),
                 splash: None,

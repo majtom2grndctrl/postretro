@@ -137,7 +137,7 @@ fn clear_feedback_for_consumer(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use postretro_entities::data_descriptors::{FireMode, ResolutionMode, WeaponDescriptor};
+    use postretro_entities::data_descriptors::{ResolutionMode, WeaponDescriptor};
 
     // Regression: exact f32 tick durations widened just below integer millisecond boundaries.
     #[test]
@@ -156,8 +156,11 @@ mod tests {
                 movement_spread_degrees: 0.0,
                 spread_vertical_bias: 0.0,
                 range: 0.0,
-                cooldown_ms: 0.0,
-                fire_mode: FireMode::Semi,
+                primary: postretro_foundation::WeaponActivationDescriptor::single(
+                    postretro_foundation::ActivationTrigger::Press,
+                    0.0,
+                ),
+                secondary: None,
                 resolution: ResolutionMode::Hitscan,
                 projectile: None,
                 splash: None,

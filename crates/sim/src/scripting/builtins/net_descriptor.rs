@@ -361,7 +361,7 @@ fn apply_net_wieldable_tuning(
         return;
     };
     weapon.range = tuning.range;
-    weapon.cooldown_ms = tuning.cooldown_ms;
+    weapon.cooldown_ms = tuning.primary.recovery_ms;
     weapon.pellet_count = tuning.pellet_count.clamp(1, MAX_PELLET_COUNT);
     weapon.spread_degrees = if tuning.spread_degrees.is_finite() {
         tuning
@@ -381,10 +381,40 @@ fn apply_net_wieldable_tuning(
     } else {
         0.0
     };
-    weapon.fire_mode = tuning.fire_mode;
+    weapon.fire_mode = match tuning.primary.trigger {
+        postretro_foundation::ActivationTrigger::Press => postretro_foundation::FireMode::Semi,
+        postretro_foundation::ActivationTrigger::Hold => postretro_foundation::FireMode::Auto,
+    };
     weapon.resolution = tuning.resolution;
     weapon.lower_ms = tuning.lower_ms;
     weapon.raise_ms = tuning.raise_ms;
+    let mut descriptor = tuning.weapon_descriptor();
+    // Sound keys stay local presentation; every gameplay action field comes
+    // from the host row. Preserve only lanes that exist in the host action set.
+    descriptor.primary.sounds = weapon.primary.sounds.clone();
+    if let Some(secondary) = &mut descriptor.secondary {
+        secondary.sounds = weapon
+            .secondary
+            .as_ref()
+            .and_then(|local| local.sounds.clone());
+    }
+    // Keep the established clamp boundary for spread while validating new action/stat data.
+    descriptor.pellet_count = weapon.pellet_count;
+    descriptor.spread_degrees = weapon.spread_degrees;
+    descriptor.bloom_per_shot_degrees = weapon.bloom_per_shot_degrees;
+    descriptor.bloom_max_degrees = weapon.bloom_max_degrees;
+    descriptor.bloom_decay_degrees_per_second = weapon.bloom_decay_degrees_per_second;
+    descriptor.bloom_decay_delay_ms = weapon.bloom_decay_delay_ms;
+    descriptor.movement_spread_degrees = weapon.movement_spread_degrees;
+    descriptor.spread_vertical_bias = weapon.spread_vertical_bias;
+    let descriptor = match descriptor.validate() {
+        Ok(descriptor) => descriptor,
+        Err(error) => {
+            log::warn!("[Net] rejected weapon activation tuning: {error}");
+            return;
+        }
+    };
+    weapon.refresh_from_descriptor(&descriptor);
     let _ = registry.set_component(weapon_id, weapon);
 }
 
@@ -476,8 +506,8 @@ mod tests {
     use postretro_entities::provenance::DescriptorProvenance;
     use postretro_scripting_core::data_descriptors::{
         AirParams, AmmoResource, BehaviorActivityDescriptor, BehaviorGraphDescriptor,
-        BehaviorGraphEnvelope, CapsuleParams, FallParams, FireMode, GroundParams, MeshDescriptor,
-        MotionVerb, PlayerMovementDescriptor, ReloadStyle, ResolutionMode, SpeedParams, TouchMode,
+        BehaviorGraphEnvelope, CapsuleParams, FallParams, GroundParams, MeshDescriptor, MotionVerb,
+        PlayerMovementDescriptor, ReloadStyle, ResolutionMode, SpeedParams, TouchMode,
         TouchableDescriptor, WeaponDescriptor, WeaponResource,
     };
     use postretro_test_log_capture::LogCapture;
@@ -910,8 +940,11 @@ mod tests {
                 movement_spread_degrees: 0.0,
                 spread_vertical_bias: 0.0,
                 range: 64.0,
-                cooldown_ms: 100.0,
-                fire_mode: FireMode::Semi,
+                primary: postretro_foundation::WeaponActivationDescriptor::single(
+                    postretro_foundation::ActivationTrigger::Press,
+                    100.0,
+                ),
+                secondary: None,
                 resolution: ResolutionMode::Hitscan,
                 projectile: None,
                 splash: None,
@@ -1034,7 +1067,16 @@ mod tests {
             placement: postretro_foundation::WeaponPlacementDescriptor::default(),
             muzzle_offset: None,
             range,
-            cooldown_ms,
+            primary: postretro_foundation::WeaponActivationDescriptor::single(
+                postretro_foundation::ActivationTrigger::Hold,
+                cooldown_ms,
+            ),
+            secondary: None,
+            damage: 10.0,
+            knockback: None,
+            projectile: None,
+            splash: None,
+            resource: None,
             pellet_count: 1,
             spread_degrees: 0.0,
             bloom_per_shot_degrees: 0.0,
@@ -1043,10 +1085,10 @@ mod tests {
             bloom_decay_delay_ms: 0.0,
             movement_spread_degrees: 0.0,
             spread_vertical_bias: 0.0,
-            fire_mode: FireMode::Auto,
             resolution: ResolutionMode::Hitscan,
             lower_ms,
             raise_ms,
+            block_during_reload: None,
         });
         TuningPayload::new(None, wieldables)
     }
@@ -1317,7 +1359,16 @@ mod tests {
             placement: postretro_foundation::WeaponPlacementDescriptor::default(),
             muzzle_offset: None,
             range: 64.0,
-            cooldown_ms: 100.0,
+            primary: postretro_foundation::WeaponActivationDescriptor::single(
+                postretro_foundation::ActivationTrigger::Press,
+                100.0,
+            ),
+            secondary: None,
+            damage: 10.0,
+            knockback: None,
+            projectile: None,
+            splash: None,
+            resource: None,
             pellet_count: 1,
             spread_degrees: 0.0,
             bloom_per_shot_degrees: 0.0,
@@ -1326,10 +1377,10 @@ mod tests {
             bloom_decay_delay_ms: 0.0,
             movement_spread_degrees: 0.0,
             spread_vertical_bias: 0.0,
-            fire_mode: FireMode::Semi,
             resolution: ResolutionMode::Hitscan,
             lower_ms: 0,
             raise_ms: 0,
+            block_during_reload: None,
         });
         assert!(materialize_net_local_wieldable_inventory_from_tuning(
             "player",
@@ -1420,7 +1471,13 @@ mod tests {
             placement: postretro_foundation::WeaponPlacementDescriptor::default(),
             muzzle_offset: None,
             range: tuning_weapon.range,
-            cooldown_ms: tuning_weapon.cooldown_ms,
+            primary: (*tuning_weapon.primary).clone(),
+            secondary: tuning_weapon.secondary.as_deref().cloned(),
+            damage: tuning_weapon.damage,
+            knockback: tuning_weapon.knockback,
+            projectile: tuning_weapon.projectile.clone(),
+            splash: tuning_weapon.splash.clone(),
+            resource: WieldableTuningPayload::resource_from_weapon(&tuning_weapon),
             pellet_count: tuning_weapon.pellet_count,
             spread_degrees: tuning_weapon.spread_degrees,
             bloom_per_shot_degrees: tuning_weapon.bloom_per_shot_degrees,
@@ -1429,10 +1486,10 @@ mod tests {
             bloom_decay_delay_ms: tuning_weapon.bloom_decay_delay_ms,
             movement_spread_degrees: tuning_weapon.movement_spread_degrees,
             spread_vertical_bias: tuning_weapon.spread_vertical_bias,
-            fire_mode: tuning_weapon.fire_mode,
             resolution: tuning_weapon.resolution,
             lower_ms: tuning_weapon.lower_ms,
             raise_ms: tuning_weapon.raise_ms,
+            block_during_reload: tuning_weapon.block_during_reload,
         });
         let tuning = TuningPayload::new(None, wieldables);
         assert!(materialize_net_local_wieldable_inventory_from_tuning(
@@ -1722,5 +1779,95 @@ mod tests {
         // Explicit unknown entity_class -> skipped.
         let unknown = spawn_point(&[("entity_class", "no_such_class")]);
         assert!(spawn_net_slot_pawn(&unknown, &descriptors, &mut reg, None).is_none());
+    }
+    #[test]
+    fn net_wieldable_tuning_preserves_host_reload_override_and_local_presentation() {
+        let mut registry = EntityRegistry::new();
+        let weapon_id = registry.spawn(Transform::default());
+        let mut descriptor = weapon_descriptor("reference_pistol");
+        let local = descriptor.weapon.as_mut().unwrap();
+        local.block_during_reload = Some(true);
+        local.credit_source = Some("pistol.primary".into());
+        local.primary.sounds = Some(postretro_foundation::ActivationSounds {
+            fire: Some("sfx/local-primary".into()),
+            impact: None,
+        });
+        let mut secondary = postretro_foundation::WeaponActivationDescriptor::single(
+            postretro_foundation::ActivationTrigger::Press,
+            250.0,
+        );
+        secondary.sounds = Some(postretro_foundation::ActivationSounds {
+            fire: Some("sfx/local-secondary".into()),
+            impact: None,
+        });
+        local.secondary = Some(secondary);
+        let mut weapon = WeaponComponent::from_descriptor(local);
+        weapon.state = postretro_entities::components::wieldable_state::WieldableState::Reloading;
+        registry.set_component(weapon_id, weapon).unwrap();
+        let mut tuning = tuning_for_slot(0, "reference_pistol", 64.0, 100.0, 0, 0);
+        let row = tuning.wieldables[0].as_mut().unwrap();
+        row.block_during_reload = Some(true);
+        row.damage = 30.0;
+        row.primary.recovery_ms = 200.0;
+        row.primary.emits = Some(postretro_foundation::ActivationEmits {
+            activate: Some("host.primary".into()),
+            impact: None,
+        });
+        let mut host_secondary = postretro_foundation::WeaponActivationDescriptor::single(
+            postretro_foundation::ActivationTrigger::Press,
+            450.0,
+        );
+        host_secondary.emits = Some(postretro_foundation::ActivationEmits {
+            activate: Some("host.secondary".into()),
+            impact: None,
+        });
+        row.secondary = Some(host_secondary.clone());
+        apply_net_wieldable_tuning(&mut registry, weapon_id, row);
+        let weapon = registry
+            .get_component::<WeaponComponent>(weapon_id)
+            .unwrap();
+        assert_eq!(weapon.damage, 30.0);
+        assert_eq!(weapon.credit_source, "pistol.primary");
+        assert!(weapon.state.is_reload_activity());
+        assert!(
+            weapon.block_during_reload.unwrap_or(false),
+            "host override blocks reload switching even with mod global false"
+        );
+        assert!(weapon.activation_programs.primary.is_some());
+        assert_eq!(weapon.primary.recovery_ms, 200.0);
+        assert_eq!(weapon.primary.emits, row.primary.emits);
+        assert_eq!(
+            weapon.primary.sounds.as_ref().unwrap().fire.as_deref(),
+            Some("sfx/local-primary")
+        );
+        let secondary = weapon.secondary.as_ref().unwrap();
+        assert_eq!(secondary.recovery_ms, 450.0);
+        assert_eq!(secondary.emits, host_secondary.emits);
+        assert_eq!(
+            secondary.sounds.as_ref().unwrap().fire.as_deref(),
+            Some("sfx/local-secondary")
+        );
+        row.secondary = None;
+        apply_net_wieldable_tuning(&mut registry, weapon_id, row);
+        assert!(
+            registry
+                .get_component::<WeaponComponent>(weapon_id)
+                .unwrap()
+                .secondary
+                .is_none()
+        );
+        row.secondary = Some(host_secondary);
+        apply_net_wieldable_tuning(&mut registry, weapon_id, row);
+        assert!(
+            registry
+                .get_component::<WeaponComponent>(weapon_id)
+                .unwrap()
+                .secondary
+                .as_ref()
+                .unwrap()
+                .sounds
+                .is_none(),
+            "new host lane uses common weapon sound fallback when no local lane exists"
+        );
     }
 }

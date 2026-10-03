@@ -104,8 +104,8 @@ mod tests {
         let mut descriptor: WeaponDescriptor = serde_json::from_value(serde_json::json!({
             "damage": 1.0,
             "range": 64.0,
-            "fireRateMs": 100.0,
-            "fireMode": fire_mode,
+            "primary": { "trigger": if fire_mode == "auto" { "hold" } else { "press" }, "recoveryMs": 100.0, "steps": [{ "kind": "shot" }] },
+
             "resolution": "hitscan",
         }))
         .unwrap();

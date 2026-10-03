@@ -741,7 +741,7 @@ mod tests {
     use postretro_net::slots::{CloseCause, SlotEvent, SlotState, SlotTable};
     use postretro_net::transport::{HandshakeOutcome, NetClient};
     use postretro_net::wire::encode_connect_claim;
-    use postretro_scripting_core::data_descriptors::{FireMode, ResolutionMode, WeaponDescriptor};
+    use postretro_scripting_core::data_descriptors::{ResolutionMode, WeaponDescriptor};
     use postretro_test_log_capture::LogCapture;
 
     fn health(max: f32, current: f32) -> HealthComponent {
@@ -789,8 +789,11 @@ mod tests {
             movement_spread_degrees: 0.0,
             spread_vertical_bias: 0.0,
             range: 20.0,
-            cooldown_ms: 100.0,
-            fire_mode: FireMode::Semi,
+            primary: postretro_foundation::WeaponActivationDescriptor::single(
+                postretro_foundation::ActivationTrigger::Press,
+                100.0,
+            ),
+            secondary: None,
             resolution: ResolutionMode::Hitscan,
             projectile: None,
             splash: None,

@@ -9727,8 +9727,11 @@ mod tests {
                 movement_spread_degrees: 0.0,
                 spread_vertical_bias: 0.0,
                 range: 1.0,
-                cooldown_ms: 1.0,
-                fire_mode: postretro_foundation::FireMode::Semi,
+                primary: postretro_foundation::WeaponActivationDescriptor::single(
+                    postretro_foundation::ActivationTrigger::Press,
+                    1.0,
+                ),
+                secondary: None,
                 resolution: postretro_foundation::ResolutionMode::Hitscan,
                 projectile: None,
                 splash: None,
@@ -9875,7 +9878,16 @@ mod tests {
             placement: host_placement.clone(),
             muzzle_offset: Some(host_muzzle),
             range: 64.0,
-            cooldown_ms: 100.0,
+            primary: postretro_foundation::WeaponActivationDescriptor::single(
+                postretro_foundation::ActivationTrigger::Press,
+                100.0,
+            ),
+            secondary: None,
+            damage: 10.0,
+            knockback: None,
+            projectile: None,
+            splash: None,
+            resource: None,
             pellet_count: 1,
             spread_degrees: 0.0,
             bloom_per_shot_degrees: 0.0,
@@ -9884,10 +9896,10 @@ mod tests {
             bloom_decay_delay_ms: 0.0,
             movement_spread_degrees: 0.0,
             spread_vertical_bias: 0.0,
-            fire_mode: postretro_foundation::FireMode::Semi,
             resolution: postretro_foundation::ResolutionMode::Projectile,
             lower_ms: 0,
             raise_ms: 0,
+            block_during_reload: None,
         });
         let initial = postretro_combat_model::TuningPayload::new(None, slots.clone());
         let terms = client_fire_muzzle_terms(&initial, 0).expect("host row exists");
@@ -11513,7 +11525,7 @@ mod tests {
         let script_ctx = ScriptCtx::new();
         let pawn = script_ctx.registry.borrow_mut().spawn(Transform::default());
         let weapon: postretro_foundation::WeaponDescriptor = serde_json::from_value(serde_json::json!({
-            "damage": 5.0, "range": 50.0, "fireRateMs": 100.0, "fireMode": "semi", "resolution": "hitscan",
+            "damage": 5.0, "range": 50.0, "primary": { "trigger": "press", "recoveryMs": 100.0, "steps": [{ "kind": "shot" }] },  "resolution": "hitscan",
             "sounds": { "fire": "sfx/pistol_fire" }
         }))
         .expect("weapon parses");

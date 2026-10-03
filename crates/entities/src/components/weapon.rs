@@ -16,6 +16,13 @@ use crate::data_descriptors::{
     SplashDescriptor, WeaponDescriptor, WeaponResource,
 };
 
+fn primary_fire_mode(trigger: postretro_foundation::ActivationTrigger) -> FireMode {
+    match trigger {
+        postretro_foundation::ActivationTrigger::Press => FireMode::Semi,
+        postretro_foundation::ActivationTrigger::Hold => FireMode::Auto,
+    }
+}
+
 pub const UNKNOWN_WEAPON_CREDIT_SOURCE: &str = "weapon.unknown";
 /// Engine ceiling for the composed hitscan cone half-angle.
 pub const MAX_EFFECTIVE_SPREAD_DEGREES: f32 = 45.0;
@@ -267,6 +274,10 @@ impl ReloadFeedbackStream {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WeaponComponent {
+    pub primary: std::sync::Arc<postretro_foundation::WeaponActivationDescriptor>,
+    pub secondary: Option<std::sync::Arc<postretro_foundation::WeaponActivationDescriptor>>,
+    #[serde(skip)]
+    pub activation_programs: postretro_foundation::WeaponActivationPrograms,
     pub damage: f32,
     #[serde(default)]
     pub knockback: Option<KnockbackDescriptor>,
@@ -350,6 +361,16 @@ pub struct WeaponComponent {
 }
 
 impl WeaponComponent {
+    /// The generic attachment boundary reinstalls serde-skipped caches after a
+    /// component restore. Normal tick-time component clones already share them.
+    pub fn ensure_activation_programs(&mut self) {
+        if !self.activation_programs.is_installed() {
+            self.activation_programs = postretro_foundation::WeaponActivationPrograms::install(
+                &self.primary,
+                self.secondary.as_deref(),
+            );
+        }
+    }
     pub fn from_descriptor(desc: &WeaponDescriptor) -> Self {
         Self::from_descriptor_with_canonical(desc, None)
     }
@@ -362,6 +383,12 @@ impl WeaponComponent {
         let magazine = ammo.as_ref().map_or(0, |ammo| ammo.capacity);
         let (heat, cell) = fresh_heat_cell(desc);
         Self {
+            primary: std::sync::Arc::new(desc.primary.clone()),
+            secondary: desc.secondary.clone().map(std::sync::Arc::new),
+            activation_programs: postretro_foundation::WeaponActivationPrograms::install(
+                &desc.primary,
+                desc.secondary.as_ref(),
+            ),
             damage: desc.damage,
             pellet_count: desc.pellet_count,
             spread_degrees: desc.spread_degrees,
@@ -372,8 +399,8 @@ impl WeaponComponent {
             movement_spread_degrees: desc.movement_spread_degrees,
             spread_vertical_bias: desc.spread_vertical_bias,
             range: desc.range,
-            cooldown_ms: desc.cooldown_ms,
-            fire_mode: desc.fire_mode,
+            cooldown_ms: desc.primary.recovery_ms,
+            fire_mode: primary_fire_mode(desc.primary.trigger),
             resolution: desc.resolution,
             projectile: desc.projectile.clone(),
             splash: desc.splash.clone(),
@@ -472,8 +499,14 @@ impl WeaponComponent {
         self.movement_spread_degrees = desc.movement_spread_degrees;
         self.spread_vertical_bias = desc.spread_vertical_bias;
         self.range = desc.range;
-        self.cooldown_ms = desc.cooldown_ms;
-        self.fire_mode = desc.fire_mode;
+        self.primary = std::sync::Arc::new(desc.primary.clone());
+        self.secondary = desc.secondary.clone().map(std::sync::Arc::new);
+        self.activation_programs = postretro_foundation::WeaponActivationPrograms::install(
+            &desc.primary,
+            desc.secondary.as_ref(),
+        );
+        self.cooldown_ms = desc.primary.recovery_ms;
+        self.fire_mode = primary_fire_mode(desc.primary.trigger);
         self.resolution = desc.resolution;
         self.projectile = desc.projectile.clone();
         self.splash = desc.splash.clone();
@@ -645,8 +678,11 @@ mod tests {
             movement_spread_degrees: 0.0,
             spread_vertical_bias: 0.0,
             range,
-            cooldown_ms,
-            fire_mode: FireMode::Semi,
+            primary: postretro_foundation::WeaponActivationDescriptor::single(
+                postretro_foundation::ActivationTrigger::Press,
+                cooldown_ms,
+            ),
+            secondary: None,
             resolution: ResolutionMode::Hitscan,
             projectile: None,
             splash: None,
@@ -1272,5 +1308,46 @@ mod tests {
         component.refresh_from_descriptor(&reloaded);
 
         assert_eq!(component.credit_source, "pistol.alt");
+    }
+    #[test]
+    fn activation_cache_clones_share_programs_and_restore_binds_once_on_attachment() {
+        use crate::registry::{ComponentValue, EntityRegistry, Transform};
+        let component = WeaponComponent::from_descriptor(&descriptor(10.0, 20.0, 100.0));
+        let cloned = component.clone();
+        assert!(std::sync::Arc::ptr_eq(
+            component.activation_programs.primary.as_ref().unwrap(),
+            cloned.activation_programs.primary.as_ref().unwrap()
+        ));
+        let json = serde_json::to_string(&component).unwrap();
+        let restored: WeaponComponent = serde_json::from_str(&json).unwrap();
+        assert!(!restored.activation_programs.is_installed());
+        let mut registry = EntityRegistry::new();
+        let entity = registry.spawn(Transform::default());
+        registry
+            .set_component_value(entity, ComponentValue::Weapon(restored))
+            .unwrap();
+        let installed = registry
+            .get_component::<WeaponComponent>(entity)
+            .unwrap()
+            .activation_programs
+            .primary
+            .as_ref()
+            .unwrap()
+            .clone();
+        let attached = registry
+            .get_component::<WeaponComponent>(entity)
+            .unwrap()
+            .clone();
+        registry.set_component(entity, attached).unwrap();
+        assert!(std::sync::Arc::ptr_eq(
+            &installed,
+            registry
+                .get_component::<WeaponComponent>(entity)
+                .unwrap()
+                .activation_programs
+                .primary
+                .as_ref()
+                .unwrap()
+        ));
     }
 }

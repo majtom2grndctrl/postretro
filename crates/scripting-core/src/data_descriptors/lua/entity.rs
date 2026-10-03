@@ -112,27 +112,7 @@ pub fn entity_descriptor_from_lua(
             if components_table.contains_key("weapon").map_err(lua_err)? {
                 let raw: LuaValue = components_table.get("weapon").map_err(lua_err)?;
                 if !matches!(raw, LuaValue::Nil) {
-                    if let LuaValue::Table(weapon_table) = &raw {
-                        validate_optional_weapon_model_paths_lua(weapon_table)?;
-                        validate_optional_weapon_placement_shape_lua(weapon_table)?;
-                        validate_optional_projectile_shapes_lua(weapon_table)?;
-                        validate_optional_weapon_sound_keys_lua(weapon_table)?;
-                    }
-                    let json = conv::lua_to_json(raw).map_err(lua_err)?;
-                    validate_optional_knockback_object(&json, "components.weapon.knockback")?;
-                    if let Some(splash) = json.get("splash") {
-                        validate_optional_knockback_object(
-                            splash,
-                            "components.weapon.splash.knockback",
-                        )?;
-                    }
-                    let descriptor: WeaponDescriptor =
-                        serde_json::from_value(json).map_err(|e| {
-                            DescriptorError::InvalidShape {
-                                reason: format!("`components.weapon` invalid: {e}"),
-                            }
-                        })?;
-                    weapon = Some(descriptor.validate()?);
+                    weapon = Some(super::weapon::weapon_descriptor_from_lua(raw)?);
                 }
             }
             if components_table
@@ -305,30 +285,11 @@ pub fn entity_faction_name_from_lua(value: LuaValue) -> Result<Option<String>, D
 /// Luau's generic JSON bridge maps functions/userdata/threads to JSON null.
 /// Reject those values for optional weapon presentation strings before serde
 /// can mistake malformed supplied input for omission.
-fn validate_optional_weapon_model_paths_lua(weapon: &Table) -> Result<(), DescriptorError> {
-    for field in ["thirdPersonModel", "viewmodel"] {
-        if !weapon.contains_key(field).map_err(lua_err)? {
-            continue;
-        }
-        let raw: LuaValue = weapon.get(field).map_err(lua_err)?;
-        if matches!(&raw, LuaValue::Nil | LuaValue::String(_)) {
-            continue;
-        }
-        return Err(DescriptorError::InvalidShape {
-            reason: format!(
-                "`components.weapon.{field}` must be a string when supplied, got {}",
-                raw.type_name()
-            ),
-        });
-    }
-    Ok(())
-}
-
 /// Reject a supplied unsupported VM value (function, userdata, thread) for an
 /// optional presentation-only string field before Luau's generic JSON bridge
 /// can coerce it to `null` and serde mistakes it for an omitted key. Shared by
 /// the weapon-sound, attack-sound, and behavior-activity-sound guards below.
-fn validate_optional_string_field_lua(
+pub(super) fn validate_optional_string_field_lua(
     table: &Table,
     field: &str,
     path: &str,
@@ -349,30 +310,6 @@ fn validate_optional_string_field_lua(
 /// Reject those values for the weapon's presentation-only sound keys before
 /// serde can mistake malformed supplied input for omission. Mirrors
 /// `validate_optional_weapon_model_paths_lua`.
-fn validate_optional_weapon_sound_keys_lua(weapon: &Table) -> Result<(), DescriptorError> {
-    let Some(sounds) =
-        optional_table_field_lua(weapon, "sounds", "components.weapon.sounds", true)?
-    else {
-        return Ok(());
-    };
-    for field in [
-        "fire",
-        "dryFire",
-        "impact",
-        "reloadStart",
-        "reloadShell",
-        "reloadComplete",
-        "overheat",
-    ] {
-        validate_optional_string_field_lua(
-            &sounds,
-            field,
-            &format!("components.weapon.sounds.{field}"),
-        )?;
-    }
-    Ok(())
-}
-
 /// Mirrors [`validate_optional_weapon_sound_keys_lua`] for the behavior
 /// graph's presentation-only sound keys: `AttackParams.sound` (root-only) and
 /// `BehaviorActivityDescriptor.sound` (every envelope, root and nested
@@ -444,63 +381,6 @@ fn lua_key_to_string(key: &LuaValue) -> String {
 /// Placement is authored presentation data. Reject a supplied unsupported VM
 /// value before the JSON bridge can coerce it to `null` and serde treats it as
 /// an omitted placement.
-fn validate_optional_weapon_placement_shape_lua(weapon: &Table) -> Result<(), DescriptorError> {
-    optional_table_field_lua(weapon, "placement", "components.weapon.placement", true)?;
-    Ok(())
-}
-
-fn validate_optional_projectile_shapes_lua(weapon: &Table) -> Result<(), DescriptorError> {
-    let Some(projectile) =
-        optional_table_field_lua(weapon, "projectile", "components.weapon.projectile", false)?
-    else {
-        return Ok(());
-    };
-    let Some(visual) = optional_table_field_lua(
-        &projectile,
-        "visual",
-        "components.weapon.projectile.visual",
-        false,
-    )?
-    else {
-        return Ok(());
-    };
-    let Some(trail) = optional_table_field_lua(
-        &visual,
-        "trail",
-        "components.weapon.projectile.visual.trail",
-        true,
-    )?
-    else {
-        return Ok(());
-    };
-    optional_table_field_lua(
-        &trail,
-        "spinAnimation",
-        "components.weapon.projectile.visual.trail.spinAnimation",
-        true,
-    )?;
-    Ok(())
-}
-
-fn optional_table_field_lua(
-    parent: &Table,
-    field: &str,
-    path: &str,
-    reject_malformed: bool,
-) -> Result<Option<Table>, DescriptorError> {
-    if !parent.contains_key(field).map_err(lua_err)? {
-        return Ok(None);
-    }
-    match parent.get::<LuaValue>(field).map_err(lua_err)? {
-        LuaValue::Nil => Ok(None),
-        LuaValue::Table(table) => Ok(Some(table)),
-        _ if !reject_malformed => Ok(None),
-        _ => Err(DescriptorError::InvalidShape {
-            reason: format!("`{path}` must be an object when supplied"),
-        }),
-    }
-}
-
 /// Mirror of [`mesh_descriptor_from_js`] for Luau tables. Gathers raw fields
 /// and delegates validation to [`MeshDescriptor::build`].
 pub fn mesh_descriptor_from_lua(table: &Table) -> Result<MeshDescriptor, DescriptorError> {

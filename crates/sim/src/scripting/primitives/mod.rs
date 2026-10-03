@@ -283,9 +283,9 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field("loadout?", "Vec<WeaponEntityDescriptor>", "Ordered references returned by `defineEntity` for descriptors declaring a weapon block. Omission is an empty loadout.")
         .finish();
     registry
-        .register_enum("FireMode")
-        .variant("semi", "One shot per press.")
-        .variant("auto", "Continuous fire while held.")
+        .register_enum("ActivationTrigger")
+        .variant("press", "Start once per fresh press. A charged action executes on explicit release; holding at full charge does not fire.")
+        .variant("hold", "Start again while held after the previous execution and shared recovery finish. Cannot combine with charge.")
         .finish();
     registry
         .register_enum("TouchMode")
@@ -441,7 +441,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .finish();
     registry
         .register_type("HeatResource")
-        .doc("Heat tuning for a weapon. Each shot adds heat and heat cools over time. The shot that reaches `overheatAt` still fires, then the weapon overheats: pulls are refused silently until heat cools to exactly 0. The lockout lasts `overheatAt / coolPerSecond` seconds. Heat is a gate on top of `fireRateMs`, not a replacement; both must pass. Heat has no reserve, no pickups and no reload. Every copy of the weapon cools every tick, held or holstered, so switching away to cool a gun works.")
+        .doc("Heat tuning for a weapon. Each shot adds heat and heat cools over time. The shot that reaches `overheatAt` still fires, then the weapon overheats: pulls are refused silently until heat cools to exactly 0. The lockout lasts `overheatAt / coolPerSecond` seconds. Heat and shared activation recovery must both permit each new execution. Heat has no reserve, no pickups and no reload. Every copy of the weapon cools every tick, held or holstered, so switching away to cool a gun works.")
         .field("heatPerShot", "f32", "Heat added by each shot. Must be finite, > 0 and <= `overheatAt`.")
         .field("overheatAt", "f32", "Heat at which the weapon overheats; also the most heat it can hold. Must be finite and > 0.")
         .field("coolPerSecond", "f32", "Heat removed per second once cooling applies. Must be finite and > 0.")
@@ -485,6 +485,62 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field("rotation?", "PlacementRotation", "Optional camera-relative rotation in degrees. Omit fields for zero rotation.")
         .finish();
     registry
+        .register_type("ActivationCharge")
+        .doc("Optional charge timing, valid only with trigger `press`. Release before minMs cancels without firing or spending; full charge does not auto-fire.")
+        .field("minMs", "f32", "Minimum held duration in milliseconds. Finite and >= 0; must be <= fullMs.")
+        .field("fullMs", "f32", "Held duration giving normalized charge 1. Finite milliseconds in (0, 60000]; charge grows linearly from zero elapsed time.")
+        .finish();
+    registry
+        .register_type("ActivationSounds")
+        .doc("Action-specific fire and impact sound keys. Each authored field overrides its weapon default; omission inherits that default. Uses the originating action for delayed impacts.")
+        .field("fire?", "String", "Override the weapon fire sound for every accepted shot. A sound key under the mod sounds/ tree, without its extension.")
+        .field("impact?", "String", "Override the weapon impact sound. Existing per-shot/per-tick contact aggregation applies.")
+        .finish();
+    registry
+        .register_type("ActivationEmits")
+        .doc("Optional named reactions dispatched alongside built-in activate/impact events. Aliases must be non-empty and differ from the built-in address.")
+        .field("activate?", "String", "Additional activate reaction name, fired once per accepted shot; cannot equal `activate`.")
+        .field("impact?", "String", "Additional impact reaction name with the originating action's provenance; cannot equal `impact`.")
+        .finish();
+    registry
+        .register_type("ShotScaleDescriptor")
+        .doc("Raw independent shot multipliers, defaulting to 1. Numeric IR may read only the read-only `charge` input; use activation.shot() to lower fluent NumberRef values. Invalid literals reject content; invalid evaluated or final scaled values cancel execution and warn once per descriptor/field.")
+        .field("damage?", "NumberOrIr", "Direct or splash damage multiplier, applied once. Finite range: [0, 64]; defaults to 1.")
+        .field("range?", "NumberOrIr", "Hitscan distance or projectile travel cap multiplier. Finite range: (0, 64]; defaults to 1.")
+        .field("projectileSpeed?", "NumberOrIr", "Projectile travel-speed multiplier. Finite range: (0, 64]; defaults to 1.")
+        .field("projectileRadius?", "NumberOrIr", "Projectile swept collision-radius multiplier. Finite range: (0, 64]; defaults to 1.")
+        .field("projectileSize?", "NumberOrIr", "Projectile visual-size multiplier, independent of collision and splash radius. Finite range: (0, 64]; defaults to 1.")
+        .field("knockbackSpeed?", "NumberOrIr", "Direct and splash knockback-speed multiplier. Finite range: [0, 64]; defaults to 1.")
+        .field("resourceCost?", "NumberOrIr", "Ammo, heat, or cell cost multiplier per shot. Finite range: (0, 64]; defaults to 1. Positive scaled ammo cost rounds up; heat/cell retain fractional cost.")
+        .finish();
+    registry
+        .register_type("ActivationShotStep")
+        .doc("One ordinary authored shot attempt. It samples current aim and freezes resolved tuning; there is no burst opcode.")
+        .field("scale?", "ShotScaleDescriptor", "Independent multipliers for this shot, defaulting to 1. Use activation.shot() for fluent refs.")
+        .finish();
+    registry
+        .register_type("ActivationWaitStep")
+        .doc("Wait before the following shot, advanced by fixed simulation ticks.")
+        .field("durationMs", "f32", "Finite wait in milliseconds in (0, 60000], rounded up to whole fixed ticks with a one-tick minimum. Total quantized waits cannot exceed 60 seconds.")
+        .finish();
+    registry
+        .register_tagged_union("ActivationStepDescriptor")
+        .flat()
+        .doc("Closed action step with kind `shot` or `wait`. At most 64 steps and 16 shots; first and last must be shots, with a positive wait between shots.")
+        .variant("shot", "ActivationShotStep", "One ordinary shot, with optional independent scale values.")
+        .variant("wait", "ActivationWaitStep", "A positive fixed-tick delay in milliseconds.")
+        .finish();
+    registry
+        .register_type("WeaponActivationDescriptor")
+        .doc("Bounded primary or secondary action data. At most 64 steps and 16 shots; first/last steps are shots and every pair of shots has a positive wait. One execution owns the weapon; actions share resources and recovery. No callback or runtime repetition is retained.")
+        .field("trigger", "ActivationTrigger", "Press starts once per fresh edge; hold restarts after execution and recovery while held. Charge requires press.")
+        .field("recoveryMs", "f32", "Shared start-gate recovery after each accepted shot, in finite milliseconds [0, 60000]. Zero is allowed; remaining recovery survives completion/cancellation.")
+        .field("steps", "Vec<ActivationStepDescriptor>", "Closed shot/wait program: at most 64 steps, 16 shots, first and last shots, positive waits between shots, and at most 60 seconds of quantized waits.")
+        .field("charge?", "ActivationCharge", "Optional charge timing for press only. minMs may be 0 and must be <= fullMs; fullMs is positive and <= 60000.")
+        .field("sounds?", "ActivationSounds", "Optional per-action fire/impact overrides of weapon defaults.")
+        .field("emits?", "ActivationEmits", "Optional named reactions added alongside built-in activate/impact events.")
+        .finish();
+    registry
         .register_type("WeaponDescriptor")
         .doc("Authored weapon component preset. Descriptor-owned tuning data; maps do not override these params. Spawn-time player equip materializes a separate wieldable instance entity from this descriptor.")
         .field("knockback?", "KnockbackDescriptor", "Optional direct-hit push. Applies per hitscan pellet or projectile entity contact, independently of damage. Composes with splash.knockback when both are authored.")
@@ -498,8 +554,8 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field("movementSpreadDegrees?", "f32", "Maximum movement-derived hitscan spread at authored run speed, in degrees. Range: 0..=45; defaults to 0.")
         .field("spreadVerticalBias?", "f32", "Upward tilt applied to the hitscan spread cone axis. Range: 0..=1; defaults to 0 (no tilt).")
         .field("range", "f32", "Maximum hitscan distance in metres, or the second travel cap for a projectile. Must be finite and > 0.")
-        .field("fireRateMs", "f32", "Minimum interval between shots in milliseconds. Must be finite and > 0.")
-        .field("fireMode", "FireMode", "Semi or automatic input gate.")
+        .field("primary", "WeaponActivationDescriptor", "Required primary action. Press/hold trigger, recovery, and bounded shot/wait steps; use activation.shot() and activation.wait().")
+        .field("secondary?", "WeaponActivationDescriptor", "Optional alternate-fire action using the same weapon tuning, resource storage, and recovery. Secondary wins simultaneous fresh starts; both wait until the current execution finishes.")
         .field("resolution", "ResolutionMode", "Shot resolution mode. `projectile` requires the descriptor-owned `projectile` block.")
         .field("projectile?", "ProjectileDescriptor", "Required exactly when `resolution` is `projectile`; omit for hitscan. Projectile tuning is descriptor-owned and never an FGD KVP.")
         .field("splash?", "SplashDescriptor", "Optional radial damage applied at projectile impact. It is a peer of `projectile`, not projectile travel tuning, and must be omitted for hitscan weapons; `radius` must be finite and greater than 0.")
@@ -516,7 +572,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .finish();
     registry
         .register_type("WeaponSounds")
-        .doc("Sound keys for a weapon's events. Every field is optional; an absent one plays nothing. Unknown keys are rejected. Fire, dry fire, overheat and reload play at the firing pawn; impact plays once per activation per tick, at the contact nearest the listener. An unknown sound key warns once when the level installs.")
+        .doc("Sound keys for a weapon's events. Every field is optional; an absent one plays nothing. Unknown keys are rejected. Fire, dry fire, overheat and reload play at the firing pawn; impact plays once per shot per tick, at the contact nearest the listener. An unknown sound key warns once when the level installs.")
         .field("fire?", "String", "Played on `activate`.")
         .field("dryFire?", "String", "Played on `dry_fire`.")
         .field("impact?", "String", "Played on `impact`, hitscan and projectile alike.")

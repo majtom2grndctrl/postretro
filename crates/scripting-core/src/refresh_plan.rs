@@ -802,8 +802,8 @@ mod tests {
     use crate::components::player_movement::MovementState;
     use crate::components::wieldable_state::WieldableState;
     use crate::data_descriptors::{
-        AirParams, CapsuleParams, DashParams, FallParams, FireMode, GroundParams,
-        PlayerMovementDescriptor, ResolutionMode, SpeedParams, WeaponDescriptor,
+        AirParams, CapsuleParams, DashParams, FallParams, GroundParams, PlayerMovementDescriptor,
+        ResolutionMode, SpeedParams, WeaponDescriptor,
     };
     use crate::provenance::{DescriptorMapOverride, DescriptorSpawnPath};
     use crate::registry::Transform;
@@ -830,8 +830,11 @@ mod tests {
                 movement_spread_degrees: 0.0,
                 spread_vertical_bias: 0.0,
                 range: 100.0,
-                cooldown_ms: 250.0,
-                fire_mode: FireMode::Semi,
+                primary: postretro_foundation::WeaponActivationDescriptor::single(
+                    postretro_foundation::ActivationTrigger::Press,
+                    250.0,
+                ),
+                secondary: None,
                 resolution: ResolutionMode::Hitscan,
                 projectile: None,
                 splash: None,

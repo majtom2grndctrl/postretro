@@ -1420,7 +1420,13 @@ pub fn tuning_payload_for_pawn(
                     ),
                     muzzle_offset: weapon.muzzle_offset.map(|offset| offset.to_array()),
                     range: weapon.range,
-                    cooldown_ms: weapon.cooldown_ms,
+                    primary: (*weapon.primary).clone(),
+                    secondary: weapon.secondary.as_deref().cloned(),
+                    damage: weapon.damage,
+                    knockback: weapon.knockback,
+                    projectile: weapon.projectile.clone(),
+                    splash: weapon.splash.clone(),
+                    resource: WieldableTuningPayload::resource_from_weapon(weapon),
                     pellet_count: weapon.pellet_count,
                     spread_degrees: weapon.spread_degrees,
                     bloom_per_shot_degrees: weapon.bloom_per_shot_degrees,
@@ -1429,10 +1435,10 @@ pub fn tuning_payload_for_pawn(
                     bloom_decay_delay_ms: weapon.bloom_decay_delay_ms,
                     movement_spread_degrees: weapon.movement_spread_degrees,
                     spread_vertical_bias: weapon.spread_vertical_bias,
-                    fire_mode: weapon.fire_mode,
                     resolution: weapon.resolution,
                     lower_ms: weapon.lower_ms,
                     raise_ms: weapon.raise_ms,
+                    block_during_reload: weapon.block_during_reload,
                 })
             })
         })
@@ -2785,7 +2791,16 @@ mod tests {
             placement: WeaponPlacementDescriptor::default(),
             muzzle_offset: None,
             range: 12.0,
-            cooldown_ms: 90.0,
+            primary: postretro_foundation::WeaponActivationDescriptor::single(
+                postretro_foundation::ActivationTrigger::Press,
+                90.0,
+            ),
+            secondary: None,
+            damage: 10.0,
+            knockback: None,
+            projectile: None,
+            splash: None,
+            resource: None,
             pellet_count: 1,
             spread_degrees: 0.0,
             bloom_per_shot_degrees: 0.0,
@@ -2794,10 +2809,10 @@ mod tests {
             bloom_decay_delay_ms: 0.0,
             movement_spread_degrees: 0.0,
             spread_vertical_bias: 0.0,
-            fire_mode: FireMode::Semi,
             resolution: ResolutionMode::Hitscan,
             lower_ms: 25,
             raise_ms: 35,
+            block_during_reload: None,
         });
         let encoded = tuning_payload::encode_tuning_payload(&TuningPayload::new(
             host_player_descriptor().movement,
@@ -2814,6 +2829,15 @@ mod tests {
         let weapon_id = registry.spawn(Transform::default());
         let mut weapon = test_weapon(10.0, 96.0);
         weapon.cooldown_ms = 180.0;
+        weapon.primary =
+            std::sync::Arc::new(postretro_foundation::WeaponActivationDescriptor::single(
+                postretro_foundation::ActivationTrigger::Hold,
+                180.0,
+            ));
+        weapon.activation_programs = postretro_foundation::WeaponActivationPrograms::install(
+            &weapon.primary,
+            weapon.secondary.as_deref(),
+        );
         weapon.pellet_count = 8;
         weapon.spread_degrees = 4.0;
         weapon.bloom_per_shot_degrees = 1.5;
@@ -2858,7 +2882,7 @@ mod tests {
         let slot = payload.wieldables[3].as_ref().unwrap();
         assert_eq!(slot.canonical_name, "live_ion_rifle");
         assert_eq!(slot.range, 96.0);
-        assert_eq!(slot.cooldown_ms, 180.0);
+        assert_eq!(slot.primary.recovery_ms, 180.0);
         assert_eq!(slot.pellet_count, 8);
         const EPSILON: f32 = 1.0e-6;
         assert!((slot.spread_degrees - 4.0).abs() <= EPSILON);
@@ -2868,7 +2892,10 @@ mod tests {
         assert!((slot.bloom_decay_delay_ms - 175.0).abs() <= EPSILON);
         assert!((slot.movement_spread_degrees - 3.0).abs() <= EPSILON);
         assert!((slot.spread_vertical_bias - 0.2).abs() <= EPSILON);
-        assert_eq!(slot.fire_mode, FireMode::Auto);
+        assert_eq!(
+            slot.primary.trigger,
+            postretro_foundation::ActivationTrigger::Hold
+        );
         assert_eq!(slot.lower_ms, 45);
         assert_eq!(slot.raise_ms, 70);
     }
@@ -2955,8 +2982,11 @@ mod tests {
                 movement_spread_degrees: 0.0,
                 spread_vertical_bias: 0.0,
                 range: 96.0,
-                cooldown_ms: 100.0,
-                fire_mode: FireMode::Semi,
+                primary: postretro_foundation::WeaponActivationDescriptor::single(
+                    postretro_foundation::ActivationTrigger::Press,
+                    100.0,
+                ),
+                secondary: None,
                 resolution: ResolutionMode::Hitscan,
                 projectile: None,
                 splash: None,
@@ -3030,8 +3060,11 @@ mod tests {
             movement_spread_degrees: 0.0,
             spread_vertical_bias: 0.0,
             range: 140.0,
-            cooldown_ms: 180.0,
-            fire_mode: FireMode::Auto,
+            primary: postretro_foundation::WeaponActivationDescriptor::single(
+                postretro_foundation::ActivationTrigger::Hold,
+                180.0,
+            ),
+            secondary: None,
             resolution: ResolutionMode::Hitscan,
             projectile: None,
             splash: None,
@@ -3240,8 +3273,11 @@ mod tests {
             movement_spread_degrees: 0.0,
             spread_vertical_bias: 0.0,
             range,
-            cooldown_ms: 100.0,
-            fire_mode: FireMode::Semi,
+            primary: postretro_foundation::WeaponActivationDescriptor::single(
+                postretro_foundation::ActivationTrigger::Press,
+                100.0,
+            ),
+            secondary: None,
             resolution: ResolutionMode::Hitscan,
             projectile: None,
             splash: None,
@@ -3565,8 +3601,11 @@ mod tests {
                 movement_spread_degrees: 0.0,
                 spread_vertical_bias: 0.0,
                 range: 1.0,
-                cooldown_ms: 1.0,
-                fire_mode: FireMode::Semi,
+                primary: postretro_foundation::WeaponActivationDescriptor::single(
+                    postretro_foundation::ActivationTrigger::Press,
+                    1.0,
+                ),
+                secondary: None,
                 resolution: ResolutionMode::Hitscan,
                 projectile: None,
                 splash: None,

@@ -5,7 +5,7 @@
 // Keys under `fixtures/` are generated placeholder tones kept for tests and
 // dev play; weapon keys name curated clips.
 
-import { brain, defineEntity, defineReaction } from "postretro";
+import { activation, brain, defineEntity, defineReaction } from "postretro";
 import type { EmitterParams } from "postretro";
 import { playSound } from "postretro/ui";
 
@@ -21,8 +21,7 @@ export const positionalSoundShotgunEntity = defineEntity({
       pelletCount: 8,
       spreadDegrees: 5,
       range: 64.0,
-      fireRateMs: 700.0,
-      fireMode: "semi",
+      primary: { trigger: "press", recoveryMs: 700.0, steps: [activation.shot()] },
       resolution: "hitscan",
       resource: {
         kind: "ammo",

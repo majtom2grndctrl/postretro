@@ -62,8 +62,18 @@ pub mod test_fixtures {
             movement_spread_degrees: 0.0,
             spread_vertical_bias: 0.0,
             range: 10.0,
-            cooldown_ms,
-            fire_mode,
+            primary: postretro_foundation::WeaponActivationDescriptor::single(
+                match fire_mode {
+                    postretro_foundation::FireMode::Semi => {
+                        postretro_foundation::ActivationTrigger::Press
+                    }
+                    postretro_foundation::FireMode::Auto => {
+                        postretro_foundation::ActivationTrigger::Hold
+                    }
+                },
+                cooldown_ms,
+            ),
+            secondary: None,
             resolution: ResolutionMode::Hitscan,
             projectile: None,
             splash: None,
@@ -1421,8 +1431,18 @@ pub(crate) mod tests {
             movement_spread_degrees: 0.0,
             spread_vertical_bias: 0.0,
             range: 10.0,
-            cooldown_ms,
-            fire_mode,
+            primary: postretro_foundation::WeaponActivationDescriptor::single(
+                match fire_mode {
+                    postretro_foundation::FireMode::Semi => {
+                        postretro_foundation::ActivationTrigger::Press
+                    }
+                    postretro_foundation::FireMode::Auto => {
+                        postretro_foundation::ActivationTrigger::Hold
+                    }
+                },
+                cooldown_ms,
+            ),
+            secondary: None,
             resolution: ResolutionMode::Hitscan,
             projectile: None,
             splash: None,
@@ -1470,8 +1490,18 @@ pub(crate) mod tests {
             movement_spread_degrees: 0.0,
             spread_vertical_bias: 0.0,
             range: 10.0,
-            cooldown_ms,
-            fire_mode,
+            primary: postretro_foundation::WeaponActivationDescriptor::single(
+                match fire_mode {
+                    postretro_foundation::FireMode::Semi => {
+                        postretro_foundation::ActivationTrigger::Press
+                    }
+                    postretro_foundation::FireMode::Auto => {
+                        postretro_foundation::ActivationTrigger::Hold
+                    }
+                },
+                cooldown_ms,
+            ),
+            secondary: None,
             resolution: ResolutionMode::Hitscan,
             projectile: None,
             splash: None,
@@ -3923,4 +3953,64 @@ fn test_shot_id(tick: u32) -> postretro_foundation::ShotId {
         postretro_foundation::ActivationLane::Primary,
         0,
     )
+}
+
+#[cfg(test)]
+mod activation_authoring_tests {
+    #[test]
+    fn compiled_charge_scale_evaluation_and_final_validation_allocate_nothing() {
+        use postretro_foundation::{
+            ActivationStepDescriptor, ActivationTrigger, CompiledActivation, IrNode, IrValue,
+            NumberOrIr, ShotResourceCost, ShotScaleDescriptor, ShotScaleInputs,
+            WeaponActivationDescriptor,
+        };
+        let expression = NumberOrIr::Ir(IrNode::Add {
+            a: Box::new(IrNode::Mul {
+                a: Box::new(IrNode::Input {
+                    name: "charge".into(),
+                    owner: None,
+                }),
+                b: Box::new(IrNode::Const {
+                    value: IrValue::Number(5.0),
+                }),
+            }),
+            b: Box::new(IrNode::Const {
+                value: IrValue::Number(1.0),
+            }),
+        });
+        let mut descriptor = WeaponActivationDescriptor::single(ActivationTrigger::Press, 400.0);
+        descriptor.steps = vec![ActivationStepDescriptor::Shot {
+            scale: ShotScaleDescriptor {
+                damage: expression.clone(),
+                resource_cost: expression,
+                ..Default::default()
+            },
+        }];
+        let compiled = CompiledActivation::compile(&descriptor, "fixture").unwrap();
+        let base = ShotScaleInputs {
+            damage: 10.0,
+            range: 96.0,
+            projectile_speed: Some(40.0),
+            projectile_radius: Some(0.5),
+            projectile_size: Some(1.5),
+            knockback_speed: None,
+            splash_knockback_speed: None,
+            resource_cost: ShotResourceCost::Cell(5.0),
+        };
+        let _ = compiled
+            .resolve_scales(0, 1.0)
+            .unwrap()
+            .apply(base)
+            .unwrap();
+        let snapshot = crate::alloc_probe::AllocSnapshot::arm();
+        let values = compiled
+            .resolve_scales(0, 1.0)
+            .unwrap()
+            .apply(base)
+            .unwrap();
+        let allocations = snapshot.allocs_since();
+        assert_eq!(values.damage, 60.0);
+        assert_eq!(values.resource_cost, ShotResourceCost::Cell(30.0));
+        assert_eq!(allocations, 0);
+    }
 }

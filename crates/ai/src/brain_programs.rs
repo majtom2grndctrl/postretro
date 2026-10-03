@@ -272,7 +272,7 @@ fn resolve_projectile_attacks(
                     canonical_weapon_name: weapon_name.to_string(),
                     range: weapon.range,
                     damage: weapon.damage,
-                    cooldown_ms: weapon.cooldown_ms,
+                    cooldown_ms: weapon.primary.recovery_ms,
                     credit_source: weapon.credit_source.clone(),
                     projectile: projectile.clone(),
                     splash: weapon.splash.clone(),
@@ -445,8 +445,8 @@ mod tests {
     use postretro_entities::Transform;
     use postretro_entities::components::brain::BrainComponent;
     use postretro_foundation::{
-        AttackParams, BehaviorActivityDescriptor, BehaviorGraphEnvelope, FireMode,
-        ProjectileBodyVisual, ProjectileVisual, WeaponDescriptor,
+        AttackParams, BehaviorActivityDescriptor, BehaviorGraphEnvelope, ProjectileBodyVisual,
+        ProjectileVisual, WeaponDescriptor,
     };
     use postretro_test_log_capture::LogCapture;
 
@@ -549,8 +549,11 @@ mod tests {
                 movement_spread_degrees: 0.0,
                 spread_vertical_bias: 0.0,
                 range,
-                cooldown_ms,
-                fire_mode: FireMode::Semi,
+                primary: postretro_foundation::WeaponActivationDescriptor::single(
+                    postretro_foundation::ActivationTrigger::Press,
+                    cooldown_ms,
+                ),
+                secondary: None,
                 resolution: ResolutionMode::Projectile,
                 projectile: Some(projectile_descriptor()),
                 splash: None,

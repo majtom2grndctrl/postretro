@@ -110,8 +110,8 @@ mod tests {
         let descriptor: WeaponDescriptor = serde_json::from_value(serde_json::json!({
             "damage": 10.0,
             "range": 64.0,
-            "fireRateMs": 100.0,
-            "fireMode": "auto",
+            "primary": { "trigger": "hold", "recoveryMs": 100.0, "steps": [{ "kind": "shot" }] },
+
             "resolution": "hitscan",
             "resource": resource,
         }))

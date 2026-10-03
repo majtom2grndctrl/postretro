@@ -317,7 +317,7 @@ mod tests {
     };
     use postretro_entities::{ComponentKind, EntityId, MeshDescriptor, Transform};
     use postretro_foundation::{
-        AirParams, CapsuleParams, FallParams, FireMode, GroundParams, NavAgentParams,
+        AirParams, CapsuleParams, FallParams, GroundParams, NavAgentParams,
         PlayerMovementDescriptor, ProjectileBodyVisual, ProjectileDescriptor,
         ProjectileTrailSpinAnimation, ProjectileTrailVisual, ProjectileVisual, ResolutionMode,
         SpeedParams, WeaponDescriptor,
@@ -424,8 +424,11 @@ mod tests {
             movement_spread_degrees: 0.0,
             spread_vertical_bias: 0.0,
             range: 1.0,
-            cooldown_ms: 1.0,
-            fire_mode: FireMode::Semi,
+            primary: postretro_foundation::WeaponActivationDescriptor::single(
+                postretro_foundation::ActivationTrigger::Press,
+                1.0,
+            ),
+            secondary: None,
             resolution: ResolutionMode::Hitscan,
             projectile: None,
             splash: None,
@@ -458,8 +461,11 @@ mod tests {
             movement_spread_degrees: 0.0,
             spread_vertical_bias: 0.0,
             range: 16.0,
-            cooldown_ms: 1.0,
-            fire_mode: FireMode::Semi,
+            primary: postretro_foundation::WeaponActivationDescriptor::single(
+                postretro_foundation::ActivationTrigger::Press,
+                1.0,
+            ),
+            secondary: None,
             resolution: ResolutionMode::Projectile,
             projectile: Some(ProjectileDescriptor {
                 speed: 8.0,

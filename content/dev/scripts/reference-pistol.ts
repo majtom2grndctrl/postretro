@@ -1,4 +1,4 @@
-import { defineEntity, defineWeaponPlacement } from "postretro";
+import { activation, defineEntity, defineWeaponPlacement } from "postretro";
 
 const pistolPlacement =  defineWeaponPlacement({
   positionFromCenter: { right: 0.25, up: -0.3, forward: 0.5 },
@@ -10,8 +10,7 @@ export const referencePistolEntity = defineEntity({
     weapon: {
       damage: 12.0,
       range: 64.0,
-      fireRateMs: 180.0,
-      fireMode: "semi",
+      primary: { trigger: "press", recoveryMs: 180.0, steps: [activation.shot()] },
       resolution: "hitscan",
       // Rapid trigger pulls briefly widen the cone, but this sidearm recovers
       // faster and caps lower than the rifle.

@@ -424,9 +424,9 @@ mod tests {
     };
     use postretro_foundation::Seat;
     use postretro_scripting_core::data_descriptors::{
-        AirParams, AmmoResource, CapsuleParams, FallParams, FireMode, GroundParams,
-        HealthDescriptor, PlayerMovementDescriptor, ReloadStyle, ResolutionMode, SpeedParams,
-        WeaponDescriptor, WeaponResource,
+        AirParams, AmmoResource, CapsuleParams, FallParams, GroundParams, HealthDescriptor,
+        PlayerMovementDescriptor, ReloadStyle, ResolutionMode, SpeedParams, WeaponDescriptor,
+        WeaponResource,
     };
 
     /// A minimal movement descriptor so a spawned entity qualifies as the pawn
@@ -528,8 +528,11 @@ mod tests {
             movement_spread_degrees: 0.0,
             spread_vertical_bias: 0.0,
             range: 64.0,
-            cooldown_ms: 100.0,
-            fire_mode: FireMode::Semi,
+            primary: postretro_foundation::WeaponActivationDescriptor::single(
+                postretro_foundation::ActivationTrigger::Press,
+                100.0,
+            ),
+            secondary: None,
             resolution: ResolutionMode::Hitscan,
             projectile: None,
             splash: None,
@@ -1179,8 +1182,11 @@ mod tests {
                         movement_spread_degrees: 0.0,
                         spread_vertical_bias: 0.0,
                         range: 64.0,
-                        cooldown_ms: 100.0,
-                        fire_mode: FireMode::Semi,
+                        primary: postretro_foundation::WeaponActivationDescriptor::single(
+                            postretro_foundation::ActivationTrigger::Press,
+                            100.0,
+                        ),
+                        secondary: None,
                         resolution: ResolutionMode::Hitscan,
                         projectile: None,
                         splash: None,
@@ -1619,8 +1625,8 @@ mod tests {
         let mut descriptor: WeaponDescriptor = serde_json::from_value(serde_json::json!({
             "damage": 10.0,
             "range": 64.0,
-            "fireRateMs": 100.0,
-            "fireMode": "auto",
+            "primary": { "trigger": "hold", "recoveryMs": 100.0, "steps": [{ "kind": "shot" }] },
+
             "resolution": "hitscan",
         }))
         .unwrap();

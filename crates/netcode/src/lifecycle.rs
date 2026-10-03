@@ -541,7 +541,7 @@ mod tests {
     use postretro_entities::provenance::{DescriptorProvenance, DescriptorSpawnPath};
     use postretro_entities::{ComponentKind, EntityTypeDescriptor};
     use postretro_foundation::{
-        AirParams, CapsuleParams, FallParams, FireMode, GroundParams, PlayerMovementComponent,
+        AirParams, CapsuleParams, FallParams, GroundParams, PlayerMovementComponent,
         PlayerMovementDescriptor, ResolutionMode, SpeedParams, WeaponDescriptor,
     };
 
@@ -635,8 +635,11 @@ mod tests {
                 movement_spread_degrees: 0.0,
                 spread_vertical_bias: 0.0,
                 range: 64.0,
-                cooldown_ms: 120.0,
-                fire_mode: FireMode::Semi,
+                primary: postretro_foundation::WeaponActivationDescriptor::single(
+                    postretro_foundation::ActivationTrigger::Press,
+                    120.0,
+                ),
+                secondary: None,
                 resolution: ResolutionMode::Hitscan,
                 projectile: None,
                 splash: None,

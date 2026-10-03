@@ -85,26 +85,7 @@ pub fn entity_descriptor_from_js<'js>(
             if components_obj.contains_key("weapon").map_err(js_err)? {
                 let raw: JsValue = components_obj.get("weapon").map_err(js_err)?;
                 if !raw.is_null() && !raw.is_undefined() {
-                    if let Some(weapon_obj) = raw.as_object() {
-                        validate_optional_weapon_model_paths_js(weapon_obj)?;
-                        validate_optional_weapon_placement_shape_js(weapon_obj)?;
-                        validate_optional_projectile_shapes_js(weapon_obj)?;
-                    }
-                    let json = conv::js_to_json(ctx, raw).map_err(js_err)?;
-                    validate_optional_knockback_object(&json, "components.weapon.knockback")?;
-                    if let Some(splash) = json.get("splash") {
-                        validate_optional_knockback_object(
-                            splash,
-                            "components.weapon.splash.knockback",
-                        )?;
-                    }
-                    let descriptor: WeaponDescriptor =
-                        serde_json::from_value(json).map_err(|e| {
-                            DescriptorError::InvalidShape {
-                                reason: format!("`components.weapon` invalid: {e}"),
-                            }
-                        })?;
-                    weapon = Some(descriptor.validate()?);
+                    weapon = Some(super::weapon::weapon_descriptor_from_js(ctx, raw)?);
                 }
             }
             if components_obj.contains_key("touchable").map_err(js_err)? {
@@ -275,93 +256,6 @@ fn has_own_string_key(object: &Object<'_>, wanted: &str) -> Result<bool, Descrip
 /// null for broad descriptor compatibility. These optional strings cannot use
 /// that degradation: a supplied function/symbol would silently disable weapon
 /// presentation after serde interpreted null as `None`.
-fn validate_optional_weapon_model_paths_js<'js>(
-    weapon: &Object<'js>,
-) -> Result<(), DescriptorError> {
-    for field in ["thirdPersonModel", "viewmodel"] {
-        if !weapon.contains_key(field).map_err(js_err)? {
-            continue;
-        }
-        let raw: JsValue = weapon.get(field).map_err(js_err)?;
-        if raw.is_null() || raw.is_undefined() || raw.as_string().is_some() {
-            continue;
-        }
-        return Err(DescriptorError::InvalidShape {
-            reason: format!("`components.weapon.{field}` must be a string when supplied"),
-        });
-    }
-    Ok(())
-}
-
-/// Placement is an authored presentation contract, so a supplied unsupported
-/// VM value must not cross the JSON bridge as `null` and silently become an
-/// omitted placement.
-fn validate_optional_weapon_placement_shape_js<'js>(
-    weapon: &Object<'js>,
-) -> Result<(), DescriptorError> {
-    optional_object_field_js(weapon, "placement", "components.weapon.placement", true)?;
-    Ok(())
-}
-
-fn validate_optional_projectile_shapes_js<'js>(
-    weapon: &Object<'js>,
-) -> Result<(), DescriptorError> {
-    let Some(projectile) =
-        optional_object_field_js(weapon, "projectile", "components.weapon.projectile", false)?
-    else {
-        return Ok(());
-    };
-    let Some(visual) = optional_object_field_js(
-        &projectile,
-        "visual",
-        "components.weapon.projectile.visual",
-        false,
-    )?
-    else {
-        return Ok(());
-    };
-    let Some(trail) = optional_object_field_js(
-        &visual,
-        "trail",
-        "components.weapon.projectile.visual.trail",
-        true,
-    )?
-    else {
-        return Ok(());
-    };
-    optional_object_field_js(
-        &trail,
-        "spinAnimation",
-        "components.weapon.projectile.visual.trail.spinAnimation",
-        true,
-    )?;
-    Ok(())
-}
-
-fn optional_object_field_js<'js>(
-    parent: &Object<'js>,
-    field: &str,
-    path: &str,
-    reject_malformed: bool,
-) -> Result<Option<Object<'js>>, DescriptorError> {
-    if !parent.contains_key(field).map_err(js_err)? {
-        return Ok(None);
-    }
-    let raw: JsValue = parent.get(field).map_err(js_err)?;
-    if raw.is_null() || raw.is_undefined() {
-        return Ok(None);
-    }
-    if raw.type_of() != rquickjs::Type::Object {
-        if reject_malformed {
-            return Err(DescriptorError::InvalidShape {
-                reason: format!("`{path}` must be an object when supplied"),
-            });
-        }
-        return Ok(None);
-    }
-    Ok(raw.as_object().cloned())
-}
-
 /// JavaScript distinguishes arrays from objects. A `move` layer is always a
 /// selector list, so name its path rather than leaving serde to report an
 /// unhelpful untagged-enum failure. Nested graph layers are objects and recurse

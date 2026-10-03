@@ -1,6 +1,9 @@
 // Data-context descriptors: weapon/health/ai descriptors.
 // See: context/lib/scripting.md
 
+mod projectile_validation;
+mod weapon_validation;
+
 use std::collections::HashMap;
 
 use glam::{Quat, Vec3};
@@ -389,7 +392,7 @@ pub fn resolve_weapon_placement(
 /// maps do not override these params, and the runtime materializes a separate
 /// wieldable instance entity from the descriptor at player spawn.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct WeaponDescriptor {
     pub damage: f32,
     /// Optional direct-hit impulse, independent of damage.
@@ -412,9 +415,9 @@ pub struct WeaponDescriptor {
     #[serde(default)]
     pub spread_vertical_bias: f32,
     pub range: f32,
-    #[serde(rename = "fireRateMs")]
-    pub cooldown_ms: f32,
-    pub fire_mode: FireMode,
+    pub primary: crate::WeaponActivationDescriptor,
+    #[serde(default)]
+    pub secondary: Option<crate::WeaponActivationDescriptor>,
     pub resolution: ResolutionMode,
     /// Required when `resolution` is `Projectile`; omitted by all other
     /// resolution modes so existing hitscan descriptors remain unchanged.
@@ -500,473 +503,6 @@ impl WeaponSounds {
         .into_iter()
         .filter_map(|(field, key)| key.map(|key| (field, key)))
     }
-}
-
-impl WeaponDescriptor {
-    pub fn validate(self) -> Result<Self, DescriptorError> {
-        if let Some(knockback) = &self.knockback {
-            knockback.validate("components.weapon.knockback")?;
-        }
-        if !self.damage.is_finite() || self.damage < 0.0 {
-            return Err(DescriptorError::InvalidShape {
-                reason: format!(
-                    "`components.weapon.damage` must be a finite value >= 0.0, got {}",
-                    self.damage
-                ),
-            });
-        }
-        if !(1..=MAX_PELLET_COUNT).contains(&self.pellet_count) {
-            return Err(DescriptorError::InvalidShape {
-                reason: format!(
-                    "`components.weapon.pelletCount` must be in 1..={MAX_PELLET_COUNT}, got {}",
-                    self.pellet_count
-                ),
-            });
-        }
-        if !self.spread_degrees.is_finite() || !(0.0..=45.0).contains(&self.spread_degrees) {
-            return Err(DescriptorError::InvalidShape {
-                reason: format!(
-                    "`components.weapon.spreadDegrees` must be a finite value in 0.0..=45.0, got {}",
-                    self.spread_degrees
-                ),
-            });
-        }
-        for (field, value) in [
-            ("bloomPerShotDegrees", self.bloom_per_shot_degrees),
-            ("bloomMaxDegrees", self.bloom_max_degrees),
-            ("movementSpreadDegrees", self.movement_spread_degrees),
-        ] {
-            if !value.is_finite() || !(0.0..=45.0).contains(&value) {
-                return Err(DescriptorError::InvalidShape {
-                    reason: format!(
-                        "`components.weapon.{field}` must be a finite value in 0.0..=45.0, got {value}"
-                    ),
-                });
-            }
-        }
-        for (field, value) in [
-            (
-                "bloomDecayDegreesPerSecond",
-                self.bloom_decay_degrees_per_second,
-            ),
-            ("bloomDecayDelayMs", self.bloom_decay_delay_ms),
-        ] {
-            if !value.is_finite() || value < 0.0 {
-                return Err(DescriptorError::InvalidShape {
-                    reason: format!(
-                        "`components.weapon.{field}` must be a finite value >= 0.0, got {value}"
-                    ),
-                });
-            }
-        }
-        if !self.spread_vertical_bias.is_finite()
-            || !(0.0..=1.0).contains(&self.spread_vertical_bias)
-        {
-            return Err(DescriptorError::InvalidShape {
-                reason: format!(
-                    "`components.weapon.spreadVerticalBias` must be a finite value in 0.0..=1.0, got {}",
-                    self.spread_vertical_bias
-                ),
-            });
-        }
-        if !self.range.is_finite() || self.range <= 0.0 {
-            return Err(DescriptorError::InvalidShape {
-                reason: format!(
-                    "`components.weapon.range` must be a finite value > 0.0, got {}",
-                    self.range
-                ),
-            });
-        }
-        if !self.cooldown_ms.is_finite() || self.cooldown_ms <= 0.0 {
-            return Err(DescriptorError::InvalidShape {
-                reason: format!(
-                    "`components.weapon.fireRateMs` must be a finite value > 0.0, got {}",
-                    self.cooldown_ms
-                ),
-            });
-        }
-        if self.splash.is_some() && self.resolution != ResolutionMode::Projectile {
-            return Err(DescriptorError::InvalidShape {
-                reason: "`components.weapon.splash` must be omitted unless `components.weapon.resolution` is `projectile`; hitscan splash is not supported"
-                    .to_string(),
-            });
-        }
-        match (self.resolution, self.projectile.as_ref()) {
-            (ResolutionMode::Projectile, Some(projectile)) => {
-                if self.pellet_count != 1 {
-                    return Err(DescriptorError::InvalidShape {
-                        reason: format!(
-                            "`components.weapon.pelletCount` must be exactly 1 when `components.weapon.resolution` is `projectile`, got {}",
-                            self.pellet_count
-                        ),
-                    });
-                }
-                validate_projectile_descriptor(projectile)?;
-            }
-            (ResolutionMode::Projectile, None) => {
-                return Err(DescriptorError::InvalidShape {
-                    reason: "`components.weapon.projectile` is required when `components.weapon.resolution` is `projectile`".to_string(),
-                });
-            }
-            (ResolutionMode::Hitscan, Some(_)) => {
-                return Err(DescriptorError::InvalidShape {
-                    reason: "`components.weapon.projectile` must be omitted when `components.weapon.resolution` is `hitscan`".to_string(),
-                });
-            }
-            (ResolutionMode::Hitscan, None) => {}
-        }
-        if let Some(splash) = self.splash.as_ref() {
-            validate_splash_descriptor(splash)?;
-        }
-        if let Some(credit_source) = self.credit_source.as_deref() {
-            validate_credit_source(credit_source)?;
-        }
-        if let Some(placement) = self.placement.as_ref() {
-            placement.validate()?;
-        }
-        if let Some(muzzle_offset) = self.muzzle_offset {
-            for (index, component) in muzzle_offset.into_iter().enumerate() {
-                if !component.is_finite() {
-                    return Err(DescriptorError::InvalidShape {
-                        reason: format!(
-                            "`components.weapon.muzzleOffset[{index}]` must be a finite value, got {component}"
-                        ),
-                    });
-                }
-            }
-        }
-        for (field, path) in [
-            ("thirdPersonModel", self.third_person_model.as_deref()),
-            ("viewmodel", self.viewmodel.as_deref()),
-        ] {
-            if let Some(path) = path
-                && !is_portable_content_relative_asset_path(path)
-            {
-                return Err(DescriptorError::InvalidShape {
-                    reason: format!(
-                        "`components.weapon.{field}` must be a non-empty, content-relative model path using forward slashes with no parent traversal"
-                    ),
-                });
-            }
-        }
-        if let Some(sounds) = self.sounds.as_ref() {
-            for (field, key) in sounds.keys() {
-                validate_sound_key(&format!("components.weapon.sounds.{field}"), key)?;
-            }
-        }
-        if let Some(WeaponResource::Ammo(ammo)) = self.resource.as_ref() {
-            validate_ascii_identifier("components.weapon.resource.type", &ammo.ammo_type)?;
-            for (field, value) in [
-                ("magazine", ammo.magazine),
-                ("costPerShot", ammo.cost_per_shot),
-                ("reloadMs", ammo.reload_ms),
-            ] {
-                if value < 1 {
-                    return Err(DescriptorError::InvalidShape {
-                        reason: format!(
-                            "`components.weapon.resource.{field}` must be >= 1, got {value}"
-                        ),
-                    });
-                }
-            }
-        }
-        if let Some(WeaponResource::Heat(heat)) = self.resource.as_ref() {
-            heat.validate()?;
-        }
-        if let Some(WeaponResource::Cell(cell)) = self.resource.as_ref() {
-            cell.validate()?;
-        }
-        Ok(self)
-    }
-}
-
-fn validate_splash_descriptor(splash: &SplashDescriptor) -> Result<(), DescriptorError> {
-    if let Some(knockback) = &splash.knockback {
-        knockback.validate("components.weapon.splash.knockback")?;
-    }
-    if !splash.radius.is_finite() || splash.radius <= 0.0 {
-        return Err(DescriptorError::InvalidShape {
-            reason: format!(
-                "`components.weapon.splash.radius` must be a finite value > 0.0, got {}",
-                splash.radius
-            ),
-        });
-    }
-    if !splash.min_fraction.is_finite() || !(0.0..=1.0).contains(&splash.min_fraction) {
-        return Err(DescriptorError::InvalidShape {
-            reason: format!(
-                "`components.weapon.splash.minFraction` must be a finite value in 0.0..=1.0, got {}",
-                splash.min_fraction
-            ),
-        });
-    }
-    Ok(())
-}
-
-fn validate_projectile_descriptor(
-    projectile: &ProjectileDescriptor,
-) -> Result<(), DescriptorError> {
-    for (field, value, valid) in [
-        (
-            "speed",
-            projectile.speed,
-            projectile.speed.is_finite() && projectile.speed > 0.0,
-        ),
-        (
-            "radius",
-            projectile.radius,
-            projectile.radius.is_finite() && projectile.radius >= 0.0,
-        ),
-        (
-            "lifetimeMs",
-            projectile.lifetime_ms,
-            projectile.lifetime_ms.is_finite() && projectile.lifetime_ms > 0.0,
-        ),
-    ] {
-        if !valid {
-            let constraint = if field == "radius" { ">= 0.0" } else { "> 0.0" };
-            return Err(DescriptorError::InvalidShape {
-                reason: format!(
-                    "`components.weapon.projectile.{field}` must be a finite value {constraint}, got {value}"
-                ),
-            });
-        }
-    }
-
-    match &projectile.visual.body {
-        ProjectileBodyVisual::Sprite {
-            sprite,
-            size,
-            opacity,
-            rotation,
-            tint,
-            emissive,
-            frame_duration_ms,
-        } => {
-            validate_projectile_asset_path("body.sprite", sprite)?;
-            for (field, value) in [
-                ("body.size", *size),
-                ("body.opacity", *opacity),
-                ("body.rotation", *rotation),
-            ] {
-                if !value.is_finite() || (field == "body.size" && value <= 0.0) {
-                    return Err(DescriptorError::InvalidShape {
-                        reason: format!(
-                            "`components.weapon.projectile.visual.{field}` must be finite{}",
-                            if field == "body.size" {
-                                " and > 0.0"
-                            } else {
-                                ""
-                            }
-                        ),
-                    });
-                }
-            }
-            if !tint.iter().all(|value| value.is_finite()) {
-                return Err(DescriptorError::InvalidShape {
-                    reason:
-                        "`components.weapon.projectile.visual.body.tint` must contain finite values"
-                            .to_string(),
-                });
-            }
-            if !emissive.is_finite() || *emissive < 0.0 {
-                return Err(DescriptorError::InvalidShape {
-                    reason: format!(
-                        "`components.weapon.projectile.visual.body.emissive` must be finite and >= 0.0, got {emissive}"
-                    ),
-                });
-            }
-            if let Some(frame_duration_ms) = frame_duration_ms
-                && (!frame_duration_ms.is_finite() || *frame_duration_ms <= 0.0)
-            {
-                return Err(DescriptorError::InvalidShape {
-                    reason: format!(
-                        "`components.weapon.projectile.visual.body.frameDurationMs` must be finite and > 0.0, got {frame_duration_ms}"
-                    ),
-                });
-            }
-        }
-        ProjectileBodyVisual::Model { model } => {
-            validate_projectile_asset_path("body.model", model)?
-        }
-    }
-
-    if let Some(trail) = projectile.visual.trail.as_ref() {
-        validate_projectile_asset_path("trail.sprite", &trail.sprite)?;
-        // Keep the shared trail controls aligned with
-        // `BillboardEmitterComponentLit::validate_into`. This descriptor lives
-        // in foundation, below entities, so it mirrors that public contract
-        // rather than depending on the component type. In particular,
-        // buoyancy and spin rate are signed controls.
-        for (field, value, valid) in [
-            (
-                "trail.rate",
-                trail.rate,
-                trail.rate.is_finite() && trail.rate >= 0.0,
-            ),
-            (
-                "trail.lifetime",
-                trail.lifetime,
-                trail.lifetime.is_finite() && trail.lifetime > 0.0,
-            ),
-            (
-                "trail.spread",
-                trail.spread,
-                trail.spread.is_finite() && trail.spread >= 0.0,
-            ),
-            (
-                "trail.drag",
-                trail.drag,
-                trail.drag.is_finite() && trail.drag >= 0.0,
-            ),
-            ("trail.buoyancy", trail.buoyancy, trail.buoyancy.is_finite()),
-            (
-                "trail.spinRate",
-                trail.spin_rate,
-                trail.spin_rate.is_finite(),
-            ),
-        ] {
-            if !valid {
-                return Err(DescriptorError::InvalidShape {
-                    reason: format!(
-                        "`components.weapon.projectile.visual.{field}` has an invalid value {value}"
-                    ),
-                });
-            }
-        }
-        for (field, values) in [
-            ("trail.velocity", trail.velocity.as_slice()),
-            ("trail.color", trail.color.as_slice()),
-            (
-                "trail.sizeOverLifetime",
-                trail.size_over_lifetime.as_slice(),
-            ),
-            (
-                "trail.opacityOverLifetime",
-                trail.opacity_over_lifetime.as_slice(),
-            ),
-        ] {
-            if values.is_empty() {
-                return Err(DescriptorError::InvalidShape {
-                    reason: format!(
-                        "`components.weapon.projectile.visual.{field}` must be non-empty"
-                    ),
-                });
-            }
-            if !values.iter().all(|value| value.is_finite()) {
-                return Err(DescriptorError::InvalidShape {
-                    reason: format!(
-                        "`components.weapon.projectile.visual.{field}` must contain finite values"
-                    ),
-                });
-            }
-        }
-        if let Some(animation) = trail.spin_animation.as_ref() {
-            if !animation.duration.is_finite() || animation.duration <= 0.0 {
-                return Err(DescriptorError::InvalidShape {
-                    reason: format!(
-                        "`components.weapon.projectile.visual.trail.spinAnimation.duration` must be a finite value > 0.0, got {}",
-                        animation.duration
-                    ),
-                });
-            }
-            if animation.rate_curve.is_empty() {
-                return Err(DescriptorError::InvalidShape {
-                    reason: "`components.weapon.projectile.visual.trail.spinAnimation.rateCurve` must be non-empty".to_string(),
-                });
-            }
-        }
-    }
-
-    if let Some(light) = projectile.visual.light.as_ref() {
-        if !light.color.iter().all(|value| value.is_finite()) {
-            return Err(DescriptorError::InvalidShape {
-                reason:
-                    "`components.weapon.projectile.visual.light.color` must contain finite values"
-                        .to_string(),
-            });
-        }
-        for (field, value, valid, constraint) in [
-            (
-                "intensity",
-                light.intensity,
-                light.intensity.is_finite() && light.intensity >= 0.0,
-                ">= 0.0",
-            ),
-            (
-                "falloffRange",
-                light.falloff_range,
-                light.falloff_range.is_finite() && light.falloff_range > 0.0,
-                "> 0.0",
-            ),
-        ] {
-            if !valid {
-                return Err(DescriptorError::InvalidShape {
-                    reason: format!(
-                        "`components.weapon.projectile.visual.light.{field}` must be a finite value {constraint}, got {value}"
-                    ),
-                });
-            }
-        }
-    }
-
-    if let Some(light) = projectile.visual.impact_light.as_ref() {
-        if !light.color.iter().all(|value| value.is_finite()) {
-            return Err(DescriptorError::InvalidShape {
-                reason: "`components.weapon.projectile.visual.impactLight.color` must contain finite values".to_string(),
-            });
-        }
-        for (field, value, valid, constraint) in [
-            (
-                "intensity",
-                light.intensity,
-                light.intensity.is_finite() && light.intensity >= 0.0,
-                ">= 0.0",
-            ),
-            (
-                "radius",
-                light.radius,
-                light.radius.is_finite() && light.radius > 0.0,
-                "> 0.0",
-            ),
-            (
-                "fadeMs",
-                light.fade_ms,
-                light.fade_ms.is_finite() && light.fade_ms > 0.0,
-                "> 0.0",
-            ),
-        ] {
-            if !valid {
-                return Err(DescriptorError::InvalidShape {
-                    reason: format!(
-                        "`components.weapon.projectile.visual.impactLight.{field}` must be a finite value {constraint}, got {value}"
-                    ),
-                });
-            }
-        }
-        if let Some(peak_radius) = light.peak_radius
-            && (!peak_radius.is_finite() || peak_radius < light.radius)
-        {
-            return Err(DescriptorError::InvalidShape {
-                reason: format!(
-                    "`components.weapon.projectile.visual.impactLight.peakRadius` must be a finite value >= radius ({}), got {peak_radius}",
-                    light.radius
-                ),
-            });
-        }
-    }
-    Ok(())
-}
-
-fn validate_projectile_asset_path(field: &str, path: &str) -> Result<(), DescriptorError> {
-    if is_portable_content_relative_asset_path(path) {
-        return Ok(());
-    }
-    Err(DescriptorError::InvalidShape {
-        reason: format!(
-            "`components.weapon.projectile.visual.{field}` must be a non-empty, content-relative asset path using forward slashes with no parent traversal"
-        ),
-    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1111,8 +647,11 @@ mod tests {
             movement_spread_degrees: 0.0,
             spread_vertical_bias: 0.0,
             range: 64.0,
-            cooldown_ms: 180.0,
-            fire_mode: FireMode::Semi,
+            primary: crate::WeaponActivationDescriptor::single(
+                crate::ActivationTrigger::Press,
+                180.0,
+            ),
+            secondary: None,
             resolution: ResolutionMode::Hitscan,
             projectile: None,
             splash: None,
@@ -1866,8 +1405,8 @@ mod tests {
         let parsed: WeaponDescriptor = serde_json::from_value(serde_json::json!({
             "damage": 10.0,
             "range": 64.0,
-            "fireRateMs": 180.0,
-            "fireMode": "semi",
+            "primary": { "trigger": "press", "recoveryMs": 180.0, "steps": [{ "kind": "shot" }] },
+
             "resolution": "hitscan",
             "resource": {
                 "kind": "ammo",

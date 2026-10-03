@@ -331,8 +331,8 @@ mod tests {
     fn weapon_descriptor(name: &str, sounds: WeaponSounds) -> EntityTypeDescriptor {
         let mut weapon: postretro_foundation::WeaponDescriptor =
             serde_json::from_value(serde_json::json!({
-                "damage": 5.0, "range": 50.0, "fireRateMs": 100.0,
-                "fireMode": "semi", "resolution": "hitscan"
+                "damage": 5.0, "range": 50.0, "primary": { "trigger": "press", "recoveryMs": 100.0, "steps": [{ "kind": "shot" }] },
+                 "resolution": "hitscan"
             }))
             .expect("minimal weapon parses");
         weapon.sounds = Some(sounds);

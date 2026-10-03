@@ -15,6 +15,9 @@ export { world } from "./world";
 
 export { runtime } from "./runtime";
 
+export type { Activation, ActivationShotOptions, ActivationShotScale } from "./activation";
+export { activation } from "./activation";
+
 export type { BrainInputs, CandidateInputs } from "./brain";
 export { brain, candidate, state } from "./brain";
 

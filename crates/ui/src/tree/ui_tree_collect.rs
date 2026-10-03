@@ -196,22 +196,22 @@ fn collect_node(
             // pre-resolved to literals at build, so the evaluator's theme arg
             // is inert here. The base color is the resolved `fill` above (a
             // band with no color keeps it).
-            if let Some(ranges) = style_ranges {
-                if let Some(value) = style_value(
+            if let Some(ranges) = style_ranges
+                && let Some(value) = style_value(
                     bind.as_ref(),
                     bind_scope.as_deref(),
                     slot_values,
                     cell_values,
-                ) {
-                    fill = evaluate(
-                        ranges,
-                        value,
-                        fill,
-                        inert_theme,
-                        &mut style_state.borrow_mut(),
-                        time_seconds,
-                    );
-                }
+                )
+            {
+                fill = evaluate(
+                    ranges,
+                    value,
+                    fill,
+                    inert_theme,
+                    &mut style_state.borrow_mut(),
+                    time_seconds,
+                );
             }
             data.push_quad(project_quad(
                 ref_origin,

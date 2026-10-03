@@ -1217,10 +1217,11 @@ pub(crate) fn segment_clear(
             let p0 = Vec3::from(geom.vertices[i0].position);
             let p1 = Vec3::from(geom.vertices[i1].position);
             let p2 = Vec3::from(geom.vertices[i2].position);
-            if let Some(dist) = ray_triangle_hit(origin, dir, p0, p1, p2) {
-                if dist > 0.0 && dist < max_distance {
-                    return false;
-                }
+            if let Some(dist) = ray_triangle_hit(origin, dir, p0, p1, p2)
+                && dist > 0.0
+                && dist < max_distance
+            {
+                return false;
             }
         }
     }
@@ -1262,10 +1263,11 @@ pub(crate) fn segment_clear_full_scan(
             let p0 = Vec3::from(geom.vertices[i0].position);
             let p1 = Vec3::from(geom.vertices[i1].position);
             let p2 = Vec3::from(geom.vertices[i2].position);
-            if let Some(dist) = ray_triangle_hit(origin, dir, p0, p1, p2) {
-                if dist > 0.0 && dist < max_distance {
-                    return false;
-                }
+            if let Some(dist) = ray_triangle_hit(origin, dir, p0, p1, p2)
+                && dist > 0.0
+                && dist < max_distance
+            {
+                return false;
             }
         }
     }

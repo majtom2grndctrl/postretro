@@ -213,7 +213,7 @@ pub(crate) fn prepare_fused_shadowmask<'a>(
     if shared.placements.is_empty() {
         return Ok(no_section(started, ShadowmaskOverlapReport::NoSelection));
     }
-    if shared.atlas_width % 4 != 0 || shared.atlas_height % 4 != 0 {
+    if !shared.atlas_width.is_multiple_of(4) || !shared.atlas_height.is_multiple_of(4) {
         return Err(ShadowmaskBakeError::MisalignedAtlas {
             width: shared.atlas_width,
             height: shared.atlas_height,

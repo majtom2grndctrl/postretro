@@ -131,16 +131,17 @@ where
                     // help — `set_destination` deliberately leaves the plan
                     // intact and `agent_steering::tick` owns the replan — so the
                     // message says which tick it is describing instead.
-                    if let Some(state) = path_state.as_ref() {
-                        if state.blocked && blocked_warned.insert(outcome.id) {
-                            log::warn!(
-                                "[AI] enemy {} entered this tick blocked: as of the last \
+                    if let Some(state) = path_state.as_ref()
+                        && state.blocked
+                        && blocked_warned.insert(outcome.id)
+                    {
+                        log::warn!(
+                            "[AI] enemy {} entered this tick blocked: as of the last \
                                  steering tick its agent had no path to the destination it \
                                  was chasing, so it is holding position. Warned once per \
                                  enemy.",
-                                outcome.id
-                            );
-                        }
+                            outcome.id
+                        );
                     }
                 }
             }

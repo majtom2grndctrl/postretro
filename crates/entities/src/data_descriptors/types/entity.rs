@@ -224,15 +224,15 @@ impl MeshDescriptor {
             // A present `travelSpeed` override must be a finite ground-units /
             // animated-second value strictly greater than zero. Validated here
             // in the shared builder so QuickJS and Luau reject identical inputs.
-            if let Some(travel_speed) = raw.travel_speed {
-                if !travel_speed.is_finite() || travel_speed <= 0.0 {
-                    return Err(DescriptorError::InvalidShape {
-                        reason: format!(
-                            "`components.mesh.animations.{}.travelSpeed` must be a finite value > 0.0, got {}",
-                            raw.name, travel_speed
-                        ),
-                    });
-                }
+            if let Some(travel_speed) = raw.travel_speed
+                && (!travel_speed.is_finite() || travel_speed <= 0.0)
+            {
+                return Err(DescriptorError::InvalidShape {
+                    reason: format!(
+                        "`components.mesh.animations.{}.travelSpeed` must be a finite value > 0.0, got {}",
+                        raw.name, travel_speed
+                    ),
+                });
             }
             animations.insert(
                 raw.name,

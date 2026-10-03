@@ -172,10 +172,10 @@ pub(crate) fn normal_intent(
     // entry blends velocity (retained base + boost), applies `preserve_vertical`,
     // consumes the airborne charge, and arms the cooldown; it returns the seeded
     // `Dash` state for `tick` to apply after the substrate resolves collision.
-    if input.dash_pressed {
-        if let Some(transition) = try_enter_dash(component, input) {
-            return Some(transition);
-        }
+    if input.dash_pressed
+        && let Some(transition) = try_enter_dash(component, input)
+    {
+        return Some(transition);
     }
 
     // `Normal` → `Crouching`: fire on the resolved `crouch_intent` bit when a
@@ -190,10 +190,10 @@ pub(crate) fn normal_intent(
     // tick begins the descent. The carry is `KEEP_ALL`: crouch is a resize, not a
     // velocity reset, so momentum is preserved unchanged (the §6 parity no-op).
     if input.crouch_intent {
-        if component.is_grounded() {
-            if let Some(transition) = try_enter_slide(component, position) {
-                return Some(transition);
-            }
+        if component.is_grounded()
+            && let Some(transition) = try_enter_slide(component, position)
+        {
+            return Some(transition);
         }
         if let Some(crouch) = component.crouch.as_ref() {
             let target_half_height = crouch.half_height;

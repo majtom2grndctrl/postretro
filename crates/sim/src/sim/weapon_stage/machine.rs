@@ -40,8 +40,9 @@ pub(super) fn tick_weapon_machine(
     if let Some(pawn) = pawn {
         let fresh_press = reload && !component.reload_press_consumed;
         component.reload_press_consumed = reload;
-        if fresh_press && component.state.allows_reload() {
-            if let Some((capacity, ammo_type, reload_ms, reload_style)) =
+        if fresh_press
+            && component.state.allows_reload()
+            && let Some((capacity, ammo_type, reload_ms, reload_style)) =
                 component.effective().ammo.map(|ammo| {
                     (
                         ammo.capacity,
@@ -50,40 +51,39 @@ pub(super) fn tick_weapon_machine(
                         ammo.reload_style,
                     )
                 })
+        {
+            if component.magazine >= capacity {
+                deliveries.push(ReloadDelivery {
+                    pawn,
+                    weapon,
+                    outcome: ReloadOutcome::BlockedFull,
+                });
+            } else if registry
+                .get_component::<AmmoReserve>(pawn)
+                .map_or(0, |reserve| reserve.available(&ammo_type))
+                == 0
             {
-                if component.magazine >= capacity {
-                    deliveries.push(ReloadDelivery {
-                        pawn,
-                        weapon,
-                        outcome: ReloadOutcome::BlockedFull,
-                    });
-                } else if registry
-                    .get_component::<AmmoReserve>(pawn)
-                    .map_or(0, |reserve| reserve.available(&ammo_type))
-                    == 0
-                {
-                    deliveries.push(ReloadDelivery {
-                        pawn,
-                        weapon,
-                        outcome: ReloadOutcome::BlockedEmpty,
-                    });
-                } else if transition_wieldable_state(
-                    component,
-                    WieldableStateEvent::BeginReload {
-                        duration_ms: reload_ms,
-                        reload_style,
-                        feedback_tick,
-                    },
-                    None,
-                ) == StateTransition::ReloadStarted
-                {
-                    reload_started_this_tick = true;
-                    deliveries.push(ReloadDelivery {
-                        pawn,
-                        weapon,
-                        outcome: ReloadOutcome::Started,
-                    });
-                }
+                deliveries.push(ReloadDelivery {
+                    pawn,
+                    weapon,
+                    outcome: ReloadOutcome::BlockedEmpty,
+                });
+            } else if transition_wieldable_state(
+                component,
+                WieldableStateEvent::BeginReload {
+                    duration_ms: reload_ms,
+                    reload_style,
+                    feedback_tick,
+                },
+                None,
+            ) == StateTransition::ReloadStarted
+            {
+                reload_started_this_tick = true;
+                deliveries.push(ReloadDelivery {
+                    pawn,
+                    weapon,
+                    outcome: ReloadOutcome::Started,
+                });
             }
         }
     }

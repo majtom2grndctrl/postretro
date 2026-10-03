@@ -487,10 +487,8 @@ pub(crate) fn bake_fused_windowed(
         }
     }
 
-    if compose_lightmap {
-        if let (Some(cache), Some(key)) = (stage_cache, section_key.as_ref()) {
-            cache.put(key, &section.to_bytes());
-        }
+    if compose_lightmap && let (Some(cache), Some(key)) = (stage_cache, section_key.as_ref()) {
+        cache.put(key, &section.to_bytes());
     }
     let shadowmask_bake::FusedShadowmaskOutput {
         section: shadowmask,

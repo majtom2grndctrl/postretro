@@ -156,21 +156,19 @@ pub(crate) fn validate_reaction_bodies_pass_a(script_ctx: &ScriptCtx) {
         if let Some(wait_pos) = steps
             .iter()
             .position(|step| matches!(step.id, SequenceTarget::Wait))
-        {
-            if let Some(offset) = steps[wait_pos + 1..].iter().position(|step| {
+            && let Some(offset) = steps[wait_pos + 1..].iter().position(|step| {
                 matches!(
                     step.id,
                     SequenceTarget::Activators | SequenceTarget::FiredTrigger
                 ) || args_read_emitter(&step.args)
-            }) {
-                let step_index = wait_pos + 1 + offset;
-                log::error!(
-                    "[Scripting] reaction `{name}` step {step_index}: a post-`wait` step reads fire context (`@activators`/`@trigger`, or `at: on.emitter` in its raw args) that no `wait` survives; dropping the reaction (V4a)"
-                );
-                data_registry.reactions[index].descriptor =
-                    ReactionDescriptor::Sequence(Vec::new());
-                continue;
-            }
+            })
+        {
+            let step_index = wait_pos + 1 + offset;
+            log::error!(
+                "[Scripting] reaction `{name}` step {step_index}: a post-`wait` step reads fire context (`@activators`/`@trigger`, or `at: on.emitter` in its raw args) that no `wait` survives; dropping the reaction (V4a)"
+            );
+            data_registry.reactions[index].descriptor = ReactionDescriptor::Sequence(Vec::new());
+            continue;
         }
 
         // V6: a `fire` step naming a reaction absent from the registry drops just

@@ -94,10 +94,10 @@ impl Renderer {
                 render_world,
             )?;
 
-            if self.capture_gpu_timing_state == CaptureGpuTimingState::Active {
-                if let Some(timing) = self.full_mut().frame_timing.as_mut() {
-                    timing.encode_resolve(&mut encoder);
-                }
+            if self.capture_gpu_timing_state == CaptureGpuTimingState::Active
+                && let Some(timing) = self.full_mut().frame_timing.as_mut()
+            {
+                timing.encode_resolve(&mut encoder);
             }
             self.queue.submit(std::iter::once(encoder.finish()));
             self.complete_capture_measurement_submission()

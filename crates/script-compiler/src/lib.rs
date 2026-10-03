@@ -791,11 +791,11 @@ impl VisitMut for ExportSetupLevelToGlobal {
                             .as_ref()
                             .map(export_name_to_string)
                             .unwrap_or_else(|| export_name_to_string(&specifier.orig));
-                        if exported == "setupLevel" {
-                            if let ModuleExportName::Ident(local) = &specifier.orig {
-                                lowered.push(global_assignment("setupLevel", &local.sym));
-                                lowered_setup_level = true;
-                            }
+                        if exported == "setupLevel"
+                            && let ModuleExportName::Ident(local) = &specifier.orig
+                        {
+                            lowered.push(global_assignment("setupLevel", &local.sym));
+                            lowered_setup_level = true;
                         }
                     }
                     if !lowered_setup_level {

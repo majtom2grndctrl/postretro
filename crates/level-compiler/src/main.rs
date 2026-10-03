@@ -1177,10 +1177,10 @@ fn is_compiler_stale(binary_path: &Path) -> bool {
             let path = entry.path();
             if path.is_dir() {
                 stack.push(path);
-            } else if let Ok(metadata) = std::fs::metadata(&path) {
-                if let Ok(mtime) = metadata.modified() {
-                    newest = Some(newest.map_or(mtime, |cur| cur.max(mtime)));
-                }
+            } else if let Ok(metadata) = std::fs::metadata(&path)
+                && let Ok(mtime) = metadata.modified()
+            {
+                newest = Some(newest.map_or(mtime, |cur| cur.max(mtime)));
             }
         }
     }

@@ -660,17 +660,18 @@ fn closest_hit_in_leaf(
         let p1 = Vec3::from(geom.vertices[i1].position);
         let p2 = Vec3::from(geom.vertices[i2].position);
 
-        if let Some((dist, normal)) = ray_triangle_hit(ray_origin, ray_dir, p0, p1, p2) {
-            if dist > RAY_EPSILON && dist < max_distance {
-                let update = best.as_ref().map(|b| dist < b.distance).unwrap_or(true);
-                if update {
-                    *best = Some(Hit {
-                        point: ray_origin + ray_dir * dist,
-                        normal,
-                        distance: dist,
-                    });
-                    changed = true;
-                }
+        if let Some((dist, normal)) = ray_triangle_hit(ray_origin, ray_dir, p0, p1, p2)
+            && dist > RAY_EPSILON
+            && dist < max_distance
+        {
+            let update = best.as_ref().map(|b| dist < b.distance).unwrap_or(true);
+            if update {
+                *best = Some(Hit {
+                    point: ray_origin + ray_dir * dist,
+                    normal,
+                    distance: dist,
+                });
+                changed = true;
             }
         }
     }
@@ -697,10 +698,10 @@ fn closest_hit(
         }
     }
 
-    if let Some(h) = best.as_mut() {
-        if h.distance >= max_distance {
-            return None;
-        }
+    if let Some(h) = best.as_mut()
+        && h.distance >= max_distance
+    {
+        return None;
     }
     best
 }
@@ -763,10 +764,11 @@ fn segment_clear(ctx: &RaytracingCtx<'_>, from: Vec3, to: Vec3) -> bool {
             let p0 = Vec3::from(geom.vertices[i0].position);
             let p1 = Vec3::from(geom.vertices[i1].position);
             let p2 = Vec3::from(geom.vertices[i2].position);
-            if let Some((dist, _)) = ray_triangle_hit(origin, dir, p0, p1, p2) {
-                if dist > 0.0 && dist < max_distance {
-                    return true;
-                }
+            if let Some((dist, _)) = ray_triangle_hit(origin, dir, p0, p1, p2)
+                && dist > 0.0
+                && dist < max_distance
+            {
+                return true;
             }
         }
         false

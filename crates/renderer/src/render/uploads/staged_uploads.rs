@@ -119,7 +119,8 @@ impl StagedUploads {
         if len == 0 {
             return Ok(());
         }
-        if offset % BUFFER_ALIGNMENT as u64 != 0 || len % BUFFER_ALIGNMENT != 0 {
+        if !offset.is_multiple_of(BUFFER_ALIGNMENT as u64) || !len.is_multiple_of(BUFFER_ALIGNMENT)
+        {
             return Err(UploadError::Alignment);
         }
         let size = len as u64;

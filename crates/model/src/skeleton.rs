@@ -79,10 +79,10 @@ impl Skeleton {
 
 fn validate_parent_before_child(joints: &[Joint]) -> Result<(), SkeletonBuildError> {
     for (joint, data) in joints.iter().enumerate() {
-        if let Some(parent) = data.parent {
-            if parent >= joint {
-                return Err(SkeletonBuildError::ParentNotBeforeChild { joint, parent });
-            }
+        if let Some(parent) = data.parent
+            && parent >= joint
+        {
+            return Err(SkeletonBuildError::ParentNotBeforeChild { joint, parent });
         }
     }
     Ok(())

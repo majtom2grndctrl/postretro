@@ -259,10 +259,10 @@ fn clear_layers(layers: &mut [LayerState]) {
 
 fn retain_active_layers(layers: &mut [LayerState], active_keys: &[CacheKey]) {
     for layer in layers {
-        if let Some(key) = layer.key {
-            if !active_keys.contains(&key) {
-                *layer = LayerState::default();
-            }
+        if let Some(key) = layer.key
+            && !active_keys.contains(&key)
+        {
+            *layer = LayerState::default();
         }
     }
 }

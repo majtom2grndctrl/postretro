@@ -97,10 +97,10 @@ pub(crate) fn resolve_axis_values(
     }
 
     // Mouse axis contributions (Displacement source).
-    if let Some(&mouse_val) = mouse_axes.get(&action) {
-        if mouse_val.abs() > acc.displacement.abs() {
-            acc.displacement = mouse_val;
-        }
+    if let Some(&mouse_val) = mouse_axes.get(&action)
+        && mouse_val.abs() > acc.displacement.abs()
+    {
+        acc.displacement = mouse_val;
     }
 
     // Build result: include non-zero sources.

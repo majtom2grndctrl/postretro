@@ -116,15 +116,17 @@ fn distribute_portal(
                 PORTAL_EPSILON,
             );
 
-            if let Some(fw) = front_winding {
-                if fw.len() >= 3 && polygon_area(&fw) >= MIN_PORTAL_AREA_M2 {
-                    distribute_portal(tree, &fw, &split_node.front, back_child, portals);
-                }
+            if let Some(fw) = front_winding
+                && fw.len() >= 3
+                && polygon_area(&fw) >= MIN_PORTAL_AREA_M2
+            {
+                distribute_portal(tree, &fw, &split_node.front, back_child, portals);
             }
-            if let Some(bw) = back_winding {
-                if bw.len() >= 3 && polygon_area(&bw) >= MIN_PORTAL_AREA_M2 {
-                    distribute_portal(tree, &bw, &split_node.back, back_child, portals);
-                }
+            if let Some(bw) = back_winding
+                && bw.len() >= 3
+                && polygon_area(&bw) >= MIN_PORTAL_AREA_M2
+            {
+                distribute_portal(tree, &bw, &split_node.back, back_child, portals);
             }
         }
 
@@ -137,15 +139,17 @@ fn distribute_portal(
                 PORTAL_EPSILON,
             );
 
-            if let Some(fw) = front_winding {
-                if fw.len() >= 3 && polygon_area(&fw) >= MIN_PORTAL_AREA_M2 {
-                    distribute_portal(tree, &fw, front_child, &split_node.front, portals);
-                }
+            if let Some(fw) = front_winding
+                && fw.len() >= 3
+                && polygon_area(&fw) >= MIN_PORTAL_AREA_M2
+            {
+                distribute_portal(tree, &fw, front_child, &split_node.front, portals);
             }
-            if let Some(bw) = back_winding {
-                if bw.len() >= 3 && polygon_area(&bw) >= MIN_PORTAL_AREA_M2 {
-                    distribute_portal(tree, &bw, front_child, &split_node.back, portals);
-                }
+            if let Some(bw) = back_winding
+                && bw.len() >= 3
+                && polygon_area(&bw) >= MIN_PORTAL_AREA_M2
+            {
+                distribute_portal(tree, &bw, front_child, &split_node.back, portals);
             }
         }
     }

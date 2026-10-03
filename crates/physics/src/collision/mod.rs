@@ -262,10 +262,9 @@ fn capsule_walkable_floor_center(
         capsule,
         Vector::new(0.0, -1.0, 0.0),
         max_down,
-    ) {
-        if h.normal2.y >= COS_WALKABLE {
-            return Some(center - glam::Vec3::new(0.0, h.time_of_impact, 0.0));
-        }
+    ) && h.normal2.y >= COS_WALKABLE
+    {
+        return Some(center - glam::Vec3::new(0.0, h.time_of_impact, 0.0));
     }
 
     let ray_max = max_down + placement.half_height + placement.radius;

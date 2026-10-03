@@ -839,24 +839,24 @@ impl RingWidget {
             if *radius > self.diameter / 2.0 {
                 return Err("`ring.radius` must not exceed half of `ring.diameter`".to_string());
             }
-            if let ScalarValue::Literal(thickness) = &self.thickness {
-                if *thickness > *radius {
-                    return Err("`ring.thickness` must not exceed `ring.radius`".to_string());
-                }
+            if let ScalarValue::Literal(thickness) = &self.thickness
+                && *thickness > *radius
+            {
+                return Err("`ring.thickness` must not exceed `ring.radius`".to_string());
             }
         }
-        if let Some(ScalarValue::Literal(start_angle)) = &self.start_angle {
-            if !start_angle.is_finite() {
-                return Err("`ring.startAngle` must be finite".to_string());
-            }
+        if let Some(ScalarValue::Literal(start_angle)) = &self.start_angle
+            && !start_angle.is_finite()
+        {
+            return Err("`ring.startAngle` must be finite".to_string());
         }
         if let Some(start_angle) = &self.start_angle {
             validate_ring_source("startAngle", start_angle)?;
         }
-        if let Some(ScalarValue::Literal(sweep)) = &self.sweep {
-            if !sweep.is_finite() || *sweep <= 0.0 || *sweep > 360.0 {
-                return Err("`ring.sweep` must be finite and within (0, 360]".to_string());
-            }
+        if let Some(ScalarValue::Literal(sweep)) = &self.sweep
+            && (!sweep.is_finite() || *sweep <= 0.0 || *sweep > 360.0)
+        {
+            return Err("`ring.sweep` must be finite and within (0, 360]".to_string());
         }
         if let Some(sweep) = &self.sweep {
             validate_ring_source("sweep", sweep)?;
@@ -928,12 +928,12 @@ fn validate_ring_source(field: &str, value: &ScalarValue) -> Result<(), String> 
 }
 
 fn validate_ring_positive_literal(field: &str, value: &ScalarValue) -> Result<(), String> {
-    if let ScalarValue::Literal(value) = value {
-        if !value.is_finite() || *value <= 0.0 {
-            return Err(format!(
-                "`ring.{field}` must be a finite number greater than zero"
-            ));
-        }
+    if let ScalarValue::Literal(value) = value
+        && (!value.is_finite() || *value <= 0.0)
+    {
+        return Err(format!(
+            "`ring.{field}` must be a finite number greater than zero"
+        ));
     }
     Ok(())
 }

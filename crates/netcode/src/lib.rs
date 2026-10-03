@@ -1086,10 +1086,8 @@ pub fn client_receive_and_apply(
                     agent_params,
                 )
             };
-            if materialized {
-                if let Some(state) = remote.initial_animation_state.as_deref() {
-                    client::apply_mesh_animation_state(registry, remote.entity_id, state, true);
-                }
+            if materialized && let Some(state) = remote.initial_animation_state.as_deref() {
+                client::apply_mesh_animation_state(registry, remote.entity_id, state, true);
             }
             let attachment_changed = remote.weapon_attachment_changed
                 && remote_materialize::update_active_weapon_attachment(

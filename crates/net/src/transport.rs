@@ -441,10 +441,10 @@ impl NetServer {
                 )
             {
                 let previous = self.holding_diagnostics.get(&client_id).cloned();
-                if let Some(cause) = self.reevaluate_parity(Some(client_id)) {
-                    if previous.as_ref() != Some(&cause) {
-                        outcomes.push(HandshakeOutcome::ParityHeld { client_id, cause });
-                    }
+                if let Some(cause) = self.reevaluate_parity(Some(client_id))
+                    && previous.as_ref() != Some(&cause)
+                {
+                    outcomes.push(HandshakeOutcome::ParityHeld { client_id, cause });
                 }
             }
         }
@@ -524,10 +524,10 @@ impl NetServer {
                     }
                 }
                 Some(cause) => {
-                    if matches!(state, Some(SlotState::Participating)) {
-                        if let Some(event) = self.slots.demote(client_id, cause.clone()) {
-                            self.pending_lifecycle.push(event);
-                        }
+                    if matches!(state, Some(SlotState::Participating))
+                        && let Some(event) = self.slots.demote(client_id, cause.clone())
+                    {
+                        self.pending_lifecycle.push(event);
                     }
                     if self.parity_declarations.contains_key(&client_id) {
                         let _ = self.send_divergence(client_id, cause.clone());
@@ -922,38 +922,38 @@ impl NetClient {
         if !self.client.is_connected() {
             return;
         }
-        if !self.admission_sent {
-            if let Some((mod_id, mod_version)) = self.mod_identity.clone() {
+        if !self.admission_sent
+            && let Some((mod_id, mod_version)) = self.mod_identity.clone()
+        {
+            self.client.send_message(
+                Channel::Control,
+                wire::encode(&ClientControlMessage::Admission {
+                    protocol: protocol_version(),
+                    mod_id,
+                    mod_version,
+                }),
+            );
+            self.admission_sent = true;
+        }
+        if !self.parity_sent
+            && let Some(mod_digest) = self.mod_digest
+        {
+            self.client.send_message(
+                Channel::Control,
+                wire::encode(&ClientControlMessage::Parity(ParityDeclaration {
+                    mod_digest,
+                    level: self.level_parity.clone(),
+                })),
+            );
+            self.parity_sent = true;
+            if !self.join_seed_sent {
                 self.client.send_message(
                     Channel::Control,
-                    wire::encode(&ClientControlMessage::Admission {
-                        protocol: protocol_version(),
-                        mod_id,
-                        mod_version,
+                    wire::encode(&ClientControlMessage::JoinSeed {
+                        slots: self.join_seed.clone(),
                     }),
                 );
-                self.admission_sent = true;
-            }
-        }
-        if !self.parity_sent {
-            if let Some(mod_digest) = self.mod_digest {
-                self.client.send_message(
-                    Channel::Control,
-                    wire::encode(&ClientControlMessage::Parity(ParityDeclaration {
-                        mod_digest,
-                        level: self.level_parity.clone(),
-                    })),
-                );
-                self.parity_sent = true;
-                if !self.join_seed_sent {
-                    self.client.send_message(
-                        Channel::Control,
-                        wire::encode(&ClientControlMessage::JoinSeed {
-                            slots: self.join_seed.clone(),
-                        }),
-                    );
-                    self.join_seed_sent = true;
-                }
+                self.join_seed_sent = true;
             }
         }
     }
@@ -1092,10 +1092,9 @@ impl NetClient {
                 if matches!(
                     message,
                     ServerControlMessage::Divergence(DivergenceReason::Holding(_))
-                ) {
-                    if let Some(epoch) = frame.participation_epoch {
-                        self.retire_participation(epoch);
-                    }
+                ) && let Some(epoch) = frame.participation_epoch
+                {
+                    self.retire_participation(epoch);
                 }
                 Some(message)
             })

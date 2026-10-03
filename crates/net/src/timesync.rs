@@ -215,10 +215,10 @@ impl ClockEstimator {
 
         // Stale-echo guard: only a strictly-newer sample advances state. A
         // reordered or duplicated echo is dropped here.
-        if let Some(last) = self.last_sample_id {
-            if echo.sample_id <= last {
-                return false;
-            }
+        if let Some(last) = self.last_sample_id
+            && echo.sample_id <= last
+        {
+            return false;
         }
         self.last_sample_id = Some(echo.sample_id);
 

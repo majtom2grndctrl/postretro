@@ -506,8 +506,8 @@ impl UiTree {
                         diff.content_changed = true;
                         dirty_text.push(node);
                     }
-                    if let Some(bind) = bind {
-                        if drive_text_binding(
+                    if let Some(bind) = bind
+                        && drive_text_binding(
                             bind,
                             bind_scope.as_deref(),
                             content,
@@ -517,10 +517,10 @@ impl UiTree {
                             slot_values,
                             cell_values,
                             clock,
-                        ) {
-                            diff.content_changed = true;
-                            dirty_text.push(node);
-                        }
+                        )
+                    {
+                        diff.content_changed = true;
+                        dirty_text.push(node);
                     }
                     if style_ranges.is_some()
                         && let Some(predicate) = predicate_bind

@@ -67,14 +67,14 @@ pub fn pack_effect_uniform(slot_values: &HashMap<String, SlotValue>) -> EffectUn
     if let Some(v) = slot_vec4(slot_values.get("screen.vignette")) {
         uniform.vignette = v;
     }
-    if let Some(shake) = read_array(slot_values, "screen.shake") {
-        if shake.len() >= 2 {
-            let scale = presented_shake_scale(slot_values);
-            uniform.shake = [
-                shake[0] * scale / SHAKE_REFERENCE_WIDTH,
-                shake[1] * scale / SHAKE_REFERENCE_HEIGHT,
-            ];
-        }
+    if let Some(shake) = read_array(slot_values, "screen.shake")
+        && shake.len() >= 2
+    {
+        let scale = presented_shake_scale(slot_values);
+        uniform.shake = [
+            shake[0] * scale / SHAKE_REFERENCE_WIDTH,
+            shake[1] * scale / SHAKE_REFERENCE_HEIGHT,
+        ];
     }
     uniform
 }

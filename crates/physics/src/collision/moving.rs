@@ -441,28 +441,25 @@ fn sweep_mover_against_capsule(
             &Vector::zeros(),
             capsule,
             options,
-        ) {
-            if hit.time_of_impact.is_finite() && (0.0..=1.0).contains(&hit.time_of_impact) {
-                let hit_t = start_t + (end_t - start_t) * hit.time_of_impact;
-                let hit_transform = mover_sweep_transform(pose, hit_t);
-                let remaining_motion = surface_motion_to_final(
-                    transform_isometry(hit_transform),
-                    final_iso,
-                    hit.witness1,
-                );
-                let normal =
-                    swept_push_normal(*hit.transform1_by(&start_iso).normal1, remaining_motion);
-                let remaining = (1.0 - hit_t).max(0.0);
-                let translation_fallback = pose.tick_delta.length() * remaining;
-                record_swept_push(
-                    deepest,
-                    mover.mover_id,
-                    normal,
-                    remaining_motion,
-                    translation_fallback,
-                    0.0,
-                );
-            }
+        ) && hit.time_of_impact.is_finite()
+            && (0.0..=1.0).contains(&hit.time_of_impact)
+        {
+            let hit_t = start_t + (end_t - start_t) * hit.time_of_impact;
+            let hit_transform = mover_sweep_transform(pose, hit_t);
+            let remaining_motion =
+                surface_motion_to_final(transform_isometry(hit_transform), final_iso, hit.witness1);
+            let normal =
+                swept_push_normal(*hit.transform1_by(&start_iso).normal1, remaining_motion);
+            let remaining = (1.0 - hit_t).max(0.0);
+            let translation_fallback = pose.tick_delta.length() * remaining;
+            record_swept_push(
+                deepest,
+                mover.mover_id,
+                normal,
+                remaining_motion,
+                translation_fallback,
+                0.0,
+            );
         }
 
         // A linear shape cast cannot express angular velocity. Sample each

@@ -210,18 +210,18 @@ fn collect_payloads(
         );
         payloads.push(payload);
     }
-    if let Ok(mesh) = registry.get_component::<MeshComponent>(id) {
-        if let Some(animation) = mesh.animation.as_ref() {
-            let payload = ComponentPayload::MeshAnimationState(WireMeshAnimationState {
-                current_state: animation.current_state.clone(),
-            });
-            debug_assert_eq!(
-                component_kind_discriminant(ComponentKind::Mesh),
-                payload.kind(),
-                "engine/wire mesh discriminant diverged"
-            );
-            payloads.push(payload);
-        }
+    if let Ok(mesh) = registry.get_component::<MeshComponent>(id)
+        && let Some(animation) = mesh.animation.as_ref()
+    {
+        let payload = ComponentPayload::MeshAnimationState(WireMeshAnimationState {
+            current_state: animation.current_state.clone(),
+        });
+        debug_assert_eq!(
+            component_kind_discriminant(ComponentKind::Mesh),
+            payload.kind(),
+            "engine/wire mesh discriminant diverged"
+        );
+        payloads.push(payload);
     }
     payloads
 }

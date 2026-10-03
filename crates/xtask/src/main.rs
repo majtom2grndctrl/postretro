@@ -327,13 +327,12 @@ fn sidecar_cargo_args(cargo_run_args: &[OsString]) -> Vec<OsString> {
             continue;
         }
 
-        if let Some(arg) = arg.to_str() {
-            if arg.starts_with("--profile=")
+        if let Some(arg) = arg.to_str()
+            && (arg.starts_with("--profile=")
                 || arg.starts_with("--target=")
-                || arg.starts_with("--target-dir=")
-            {
-                sidecar_args.push(cargo_run_args[index].clone());
-            }
+                || arg.starts_with("--target-dir="))
+        {
+            sidecar_args.push(cargo_run_args[index].clone());
         }
         index += 1;
     }

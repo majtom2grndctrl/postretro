@@ -37,10 +37,10 @@ impl Renderer {
         // One pair spans the whole pool loop because cached and uncached slots
         // interleave. The label reports an upper bound, including entity passes
         // and promoted work; counters identify the world/cull work actually saved.
-        if !dynamic_cache_plan.spot().is_empty() {
-            if let Some(timing) = &full.frame_timing {
-                timing.write_encoder_start(encoder, TIMING_PAIR_DYNAMIC_SPOT_DEPTH);
-            }
+        if !dynamic_cache_plan.spot().is_empty()
+            && let Some(timing) = &full.frame_timing
+        {
+            timing.write_encoder_start(encoder, TIMING_PAIR_DYNAMIC_SPOT_DEPTH);
         }
         let occupied_slots = full
             .spot_shadow_pool
@@ -56,29 +56,27 @@ impl Renderer {
         // depth: uncached slots and cold cache fills. Warm dynamic-cache slots
         // skip this traversal: cached world depth is copied into the pool before
         // current entity occluders draw.
-        if draw_world {
-            if let Some(shadow_cull) = &full.shadow_cull {
-                full.promoted_depth_cache_cull_dispatch_skips +=
-                    cache_plan.skipped_spot_cull_dispatches(&occupied_slots);
-                full.dynamic_depth_cache_diagnostics
-                    .frame
-                    .cull_dispatch_skips += occupied_slots
-                    .iter()
-                    .enumerate()
-                    .filter(|&(slot, occupied)| {
-                        *occupied && !dynamic_cache_plan.should_dispatch_spot_cull(slot)
-                    })
-                    .count() as u32;
-                shadow_cull.dispatch_occupied_slots_filtered(
-                    queue,
-                    encoder,
-                    &full.spot_shadow_pool.slot_cone_matrices,
-                    |slot| {
-                        cache_plan.should_dispatch_spot_cull(slot)
-                            && dynamic_cache_plan.should_dispatch_spot_cull(slot)
-                    },
-                );
-            }
+        if draw_world && let Some(shadow_cull) = &full.shadow_cull {
+            full.promoted_depth_cache_cull_dispatch_skips +=
+                cache_plan.skipped_spot_cull_dispatches(&occupied_slots);
+            full.dynamic_depth_cache_diagnostics
+                .frame
+                .cull_dispatch_skips += occupied_slots
+                .iter()
+                .enumerate()
+                .filter(|&(slot, occupied)| {
+                    *occupied && !dynamic_cache_plan.should_dispatch_spot_cull(slot)
+                })
+                .count() as u32;
+            shadow_cull.dispatch_occupied_slots_filtered(
+                queue,
+                encoder,
+                &full.spot_shadow_pool.slot_cone_matrices,
+                |slot| {
+                    cache_plan.should_dispatch_spot_cull(slot)
+                        && dynamic_cache_plan.should_dispatch_spot_cull(slot)
+                },
+            );
         }
 
         for (slot, occupied) in occupied_slots.into_iter().enumerate() {
@@ -165,31 +163,16 @@ impl Renderer {
                 });
                 if full.spot_shadow_pool.slot_entity_eligible[slot as usize]
                     && (mesh_frame_plan.is_some() || !full.mover_occluder_aabbs.is_empty())
-                {
-                    if let Some(cone_matrix) =
+                    && let Some(cone_matrix) =
                         full.spot_shadow_pool.slot_cone_matrices[slot as usize]
-                    {
-                        let cone_planes =
-                            postretro_render_data::cone_frustum::cone_frustum_planes(&cone_matrix);
-                        if let Some(mesh_plan) = &mesh_frame_plan {
-                            let submitted = full.mesh_pass.record_skinned_depth(
-                                &mut pass,
-                                mesh_plan,
-                                MeshDepthInstanceFilter::AllRetained,
-                                &full.shadow_vs_bind_group,
-                                slot * stride,
-                                &cone_planes,
-                            );
-                            tally_entity_occluder_submissions(
-                                &mut full.spot_entity_occluders_submitted,
-                                Some(&mut full.promoted_entity_occluders_submitted),
-                                submitted,
-                            );
-                        }
-                        let submitted = full.rigid_occluder_depth.record_kinematic_movers(
+                {
+                    let cone_planes =
+                        postretro_render_data::cone_frustum::cone_frustum_planes(&cone_matrix);
+                    if let Some(mesh_plan) = &mesh_frame_plan {
+                        let submitted = full.mesh_pass.record_skinned_depth(
                             &mut pass,
-                            &full.kinematic_brush,
-                            &full.mover_occluder_aabbs,
+                            mesh_plan,
+                            MeshDepthInstanceFilter::AllRetained,
                             &full.shadow_vs_bind_group,
                             slot * stride,
                             &cone_planes,
@@ -200,6 +183,19 @@ impl Renderer {
                             submitted,
                         );
                     }
+                    let submitted = full.rigid_occluder_depth.record_kinematic_movers(
+                        &mut pass,
+                        &full.kinematic_brush,
+                        &full.mover_occluder_aabbs,
+                        &full.shadow_vs_bind_group,
+                        slot * stride,
+                        &cone_planes,
+                    );
+                    tally_entity_occluder_submissions(
+                        &mut full.spot_entity_occluders_submitted,
+                        Some(&mut full.promoted_entity_occluders_submitted),
+                        submitted,
+                    );
                 }
                 continue;
             }
@@ -272,31 +268,17 @@ impl Renderer {
                     timestamp_writes: None,
                     ..Default::default()
                 });
-                if full.spot_shadow_pool.slot_entity_eligible[slot as usize] {
-                    if let Some(cone_matrix) =
+                if full.spot_shadow_pool.slot_entity_eligible[slot as usize]
+                    && let Some(cone_matrix) =
                         full.spot_shadow_pool.slot_cone_matrices[slot as usize]
-                    {
-                        let cone_planes =
-                            postretro_render_data::cone_frustum::cone_frustum_planes(&cone_matrix);
-                        if let Some(mesh_plan) = &mesh_frame_plan {
-                            let submitted = full.mesh_pass.record_skinned_depth(
-                                &mut pass,
-                                mesh_plan,
-                                MeshDepthInstanceFilter::DynamicCasters,
-                                &full.shadow_vs_bind_group,
-                                slot * stride,
-                                &cone_planes,
-                            );
-                            tally_entity_occluder_submissions(
-                                &mut full.spot_entity_occluders_submitted,
-                                None,
-                                submitted,
-                            );
-                        }
-                        let submitted = full.rigid_occluder_depth.record_kinematic_movers(
+                {
+                    let cone_planes =
+                        postretro_render_data::cone_frustum::cone_frustum_planes(&cone_matrix);
+                    if let Some(mesh_plan) = &mesh_frame_plan {
+                        let submitted = full.mesh_pass.record_skinned_depth(
                             &mut pass,
-                            &full.kinematic_brush,
-                            &full.mover_occluder_aabbs,
+                            mesh_plan,
+                            MeshDepthInstanceFilter::DynamicCasters,
                             &full.shadow_vs_bind_group,
                             slot * stride,
                             &cone_planes,
@@ -307,6 +289,19 @@ impl Renderer {
                             submitted,
                         );
                     }
+                    let submitted = full.rigid_occluder_depth.record_kinematic_movers(
+                        &mut pass,
+                        &full.kinematic_brush,
+                        &full.mover_occluder_aabbs,
+                        &full.shadow_vs_bind_group,
+                        slot * stride,
+                        &cone_planes,
+                    );
+                    tally_entity_occluder_submissions(
+                        &mut full.spot_entity_occluders_submitted,
+                        None,
+                        submitted,
+                    );
                 }
                 continue;
             }
@@ -354,29 +349,16 @@ impl Renderer {
             //      above) but draws ZERO entity occluders.
             //   2. per-occluder cone cull — only bounds intersecting this
             //      slot's cone are submitted.
-            if full.spot_shadow_pool.slot_entity_eligible[slot as usize] {
-                if let Some(cone_matrix) = full.spot_shadow_pool.slot_cone_matrices[slot as usize] {
-                    let cone_planes =
-                        postretro_render_data::cone_frustum::cone_frustum_planes(&cone_matrix);
-                    if let Some(plan) = &mesh_frame_plan {
-                        let submitted = full.mesh_pass.record_skinned_depth(
-                            &mut pass,
-                            plan,
-                            MeshDepthInstanceFilter::DynamicCasters,
-                            &full.shadow_vs_bind_group,
-                            slot * stride,
-                            &cone_planes,
-                        );
-                        tally_entity_occluder_submissions(
-                            &mut full.spot_entity_occluders_submitted,
-                            None,
-                            submitted,
-                        );
-                    }
-                    let submitted = full.rigid_occluder_depth.record_kinematic_movers(
+            if full.spot_shadow_pool.slot_entity_eligible[slot as usize]
+                && let Some(cone_matrix) = full.spot_shadow_pool.slot_cone_matrices[slot as usize]
+            {
+                let cone_planes =
+                    postretro_render_data::cone_frustum::cone_frustum_planes(&cone_matrix);
+                if let Some(plan) = &mesh_frame_plan {
+                    let submitted = full.mesh_pass.record_skinned_depth(
                         &mut pass,
-                        &full.kinematic_brush,
-                        &full.mover_occluder_aabbs,
+                        plan,
+                        MeshDepthInstanceFilter::DynamicCasters,
                         &full.shadow_vs_bind_group,
                         slot * stride,
                         &cone_planes,
@@ -387,12 +369,25 @@ impl Renderer {
                         submitted,
                     );
                 }
+                let submitted = full.rigid_occluder_depth.record_kinematic_movers(
+                    &mut pass,
+                    &full.kinematic_brush,
+                    &full.mover_occluder_aabbs,
+                    &full.shadow_vs_bind_group,
+                    slot * stride,
+                    &cone_planes,
+                );
+                tally_entity_occluder_submissions(
+                    &mut full.spot_entity_occluders_submitted,
+                    None,
+                    submitted,
+                );
             }
         }
-        if !dynamic_cache_plan.spot().is_empty() {
-            if let Some(timing) = &full.frame_timing {
-                timing.write_encoder_end(encoder, TIMING_PAIR_DYNAMIC_SPOT_DEPTH);
-            }
+        if !dynamic_cache_plan.spot().is_empty()
+            && let Some(timing) = &full.frame_timing
+        {
+            timing.write_encoder_end(encoder, TIMING_PAIR_DYNAMIC_SPOT_DEPTH);
         }
     }
 
@@ -414,10 +409,10 @@ impl Renderer {
         let dynamic_cache_plan = full.dynamic_depth_cache_frame_plan;
         full.dynamic_depth_cache_diagnostics.frame.cached_cubes =
             dynamic_cache_plan.cube().len() as u32;
-        if !dynamic_cache_plan.cube().is_empty() {
-            if let Some(timing) = &full.frame_timing {
-                timing.write_encoder_start(encoder, TIMING_PAIR_DYNAMIC_CUBE_DEPTH);
-            }
+        if !dynamic_cache_plan.cube().is_empty()
+            && let Some(timing) = &full.frame_timing
+        {
+            timing.write_encoder_start(encoder, TIMING_PAIR_DYNAMIC_CUBE_DEPTH);
         }
         if let Some(pool) = &full.cube_shadow_pool {
             let stride = full.shadow_vs_stride;
@@ -428,33 +423,31 @@ impl Renderer {
             // layers skip it because cached world depth is copied into the live pool
             // before current entity occluders draw. `pool.face_matrices` remains the source of truth
             // for both cull and VS uniforms.
-            if draw_world {
-                if let Some(cube_cull) = &full.cube_shadow_cull {
-                    let occupied_layers: [bool;
-                        crate::lighting::cube_shadow::CUBE_COUNT
-                            * crate::lighting::cube_shadow::CUBE_FACES] =
-                        std::array::from_fn(|layer| pool.face_matrices[layer].is_some());
-                    full.promoted_depth_cache_cull_dispatch_skips +=
-                        cache_plan.skipped_cube_cull_dispatches(&occupied_layers);
-                    full.dynamic_depth_cache_diagnostics
-                        .frame
-                        .cull_dispatch_skips += occupied_layers
-                        .iter()
-                        .enumerate()
-                        .filter(|&(layer, occupied)| {
-                            *occupied && !dynamic_cache_plan.should_dispatch_cube_cull(layer)
-                        })
-                        .count() as u32;
-                    cube_cull.dispatch_occupied_slots_filtered(
-                        queue,
-                        encoder,
-                        &pool.face_matrices,
-                        |layer| {
-                            cache_plan.should_dispatch_cube_cull(layer)
-                                && dynamic_cache_plan.should_dispatch_cube_cull(layer)
-                        },
-                    );
-                }
+            if draw_world && let Some(cube_cull) = &full.cube_shadow_cull {
+                let occupied_layers: [bool;
+                    crate::lighting::cube_shadow::CUBE_COUNT
+                        * crate::lighting::cube_shadow::CUBE_FACES] =
+                    std::array::from_fn(|layer| pool.face_matrices[layer].is_some());
+                full.promoted_depth_cache_cull_dispatch_skips +=
+                    cache_plan.skipped_cube_cull_dispatches(&occupied_layers);
+                full.dynamic_depth_cache_diagnostics
+                    .frame
+                    .cull_dispatch_skips += occupied_layers
+                    .iter()
+                    .enumerate()
+                    .filter(|&(layer, occupied)| {
+                        *occupied && !dynamic_cache_plan.should_dispatch_cube_cull(layer)
+                    })
+                    .count() as u32;
+                cube_cull.dispatch_occupied_slots_filtered(
+                    queue,
+                    encoder,
+                    &pool.face_matrices,
+                    |layer| {
+                        cache_plan.should_dispatch_cube_cull(layer)
+                            && dynamic_cache_plan.should_dispatch_cube_cull(layer)
+                    },
+                );
             }
 
             for layer in 0..pool.face_matrices.len() {
@@ -777,10 +770,10 @@ impl Renderer {
                 }
             }
         }
-        if !dynamic_cache_plan.cube().is_empty() {
-            if let Some(timing) = &full.frame_timing {
-                timing.write_encoder_end(encoder, TIMING_PAIR_DYNAMIC_CUBE_DEPTH);
-            }
+        if !dynamic_cache_plan.cube().is_empty()
+            && let Some(timing) = &full.frame_timing
+        {
+            timing.write_encoder_end(encoder, TIMING_PAIR_DYNAMIC_CUBE_DEPTH);
         }
         full.dynamic_depth_cache_diagnostics
             .finish_frame(full.frame_timing.is_some());

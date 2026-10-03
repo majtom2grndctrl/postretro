@@ -88,12 +88,10 @@ fn type_receiver(ty: &Type) -> Receiver {
             if matches!(
                 last.ident.to_string().as_str(),
                 "RefCell" | "Box" | "Option" | "Arc"
-            ) {
-                if let syn::PathArguments::AngleBracketed(args) = &last.arguments {
-                    if let Some(syn::GenericArgument::Type(inner)) = args.args.first() {
-                        return type_receiver(inner);
-                    }
-                }
+            ) && let syn::PathArguments::AngleBracketed(args) = &last.arguments
+                && let Some(syn::GenericArgument::Type(inner)) = args.args.first()
+            {
+                return type_receiver(inner);
             }
             named(&last.ident.to_string())
         }
@@ -372,18 +370,18 @@ impl Scanner<'_> {
                     .unwrap_or(Receiver::Unknown)
             }
             Expr::Call(expr) => {
-                if let Expr::Path(path) = expr.func.as_ref() {
-                    if path.path.segments.len() >= 2 {
-                        let mut segments = path.path.segments.iter().rev();
-                        let method = segments.next().unwrap().ident.to_string();
-                        let owner = segments.next().unwrap().ident.to_string();
-                        return self
-                            .types
-                            .returns
-                            .get(&(owner, method))
-                            .cloned()
-                            .unwrap_or(Receiver::Unknown);
-                    }
+                if let Expr::Path(path) = expr.func.as_ref()
+                    && path.path.segments.len() >= 2
+                {
+                    let mut segments = path.path.segments.iter().rev();
+                    let method = segments.next().unwrap().ident.to_string();
+                    let owner = segments.next().unwrap().ident.to_string();
+                    return self
+                        .types
+                        .returns
+                        .get(&(owner, method))
+                        .cloned()
+                        .unwrap_or(Receiver::Unknown);
                 }
                 Receiver::Unknown
             }

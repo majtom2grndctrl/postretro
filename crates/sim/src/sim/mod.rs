@@ -1427,33 +1427,27 @@ fn update_foot_ground_probes(
             registry
                 .get_component::<postretro_entities::Transform>(id)
                 .copied(),
-        ) {
-            if let Some(model_to_world) = model_matrix(&transform, mesh.origin_offset) {
-                if let Some(world_to_model) = foot_probe_inverse(&transform, &model_to_world) {
-                    let world_joints = sample_world_pose_for_probe(
-                        zones,
-                        mesh.animation.as_ref(),
-                        anim_time,
-                        id.to_raw(),
+        ) && let Some(model_to_world) = model_matrix(&transform, mesh.origin_offset)
+            && let Some(world_to_model) = foot_probe_inverse(&transform, &model_to_world)
+        {
+            let world_joints =
+                sample_world_pose_for_probe(zones, mesh.animation.as_ref(), anim_time, id.to_raw());
+            if let Some(world_joints) = world_joints.as_ref() {
+                foot_count = zones.legs.len().min(MAX_FEET);
+                let downward_reach = FOOT_PLANTING_REACH * transform.scale.y;
+                let upward_allowance = FOOT_PENETRATION_ALLOWANCE * transform.scale.y;
+                for (slot, leg) in zones.legs.iter().take(foot_count).enumerate() {
+                    feet[slot] = probe_foot(
+                        leg.foot_joint,
+                        world_joints,
+                        &model_to_world,
+                        &world_to_model,
+                        downward_reach,
+                        upward_allowance,
+                        collision_world,
+                        mover_colliders,
+                        mover_poses,
                     );
-                    if let Some(world_joints) = world_joints.as_ref() {
-                        foot_count = zones.legs.len().min(MAX_FEET);
-                        let downward_reach = FOOT_PLANTING_REACH * transform.scale.y;
-                        let upward_allowance = FOOT_PENETRATION_ALLOWANCE * transform.scale.y;
-                        for (slot, leg) in zones.legs.iter().take(foot_count).enumerate() {
-                            feet[slot] = probe_foot(
-                                leg.foot_joint,
-                                world_joints,
-                                &model_to_world,
-                                &world_to_model,
-                                downward_reach,
-                                upward_allowance,
-                                collision_world,
-                                mover_colliders,
-                                mover_poses,
-                            );
-                        }
-                    }
                 }
             }
         }

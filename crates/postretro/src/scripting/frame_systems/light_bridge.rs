@@ -973,18 +973,18 @@ impl LightBridge {
             // from its own descriptor buffer (group 1 binding 4) — the offsets
             // we just baked point into the shared `anim_samples` scripted
             // region, which both the forward and compose paths sample.
-            if let Some(slot) = self.shape[map_idx].animated_slot {
-                if !self.preserve_baked_descriptors.contains(&id) {
-                    self.staged_compose_descriptor_writes.push((
-                        slot,
-                        pack_compose_animation_descriptor(
-                            component,
-                            snapshot,
-                            brightness_offset,
-                            color_offset,
-                        ),
-                    ));
-                }
+            if let Some(slot) = self.shape[map_idx].animated_slot
+                && !self.preserve_baked_descriptors.contains(&id)
+            {
+                self.staged_compose_descriptor_writes.push((
+                    slot,
+                    pack_compose_animation_descriptor(
+                        component,
+                        snapshot,
+                        brightness_offset,
+                        color_offset,
+                    ),
+                ));
             }
         }
 

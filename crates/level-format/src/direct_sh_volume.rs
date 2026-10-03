@@ -462,7 +462,9 @@ fn validate_stored_atlas_shape(
             "direct sh volume stored atlas layer_count {layer_count} exceeds maximum {MAX_SH_ATLAS_LAYERS}"
         )));
     }
-    if atlas_dimensions[0] % tile_dimension != 0 || atlas_dimensions[1] % tile_dimension != 0 {
+    if !atlas_dimensions[0].is_multiple_of(tile_dimension)
+        || !atlas_dimensions[1].is_multiple_of(tile_dimension)
+    {
         return Err(invalid_data(format!(
             "direct sh volume stored atlas_dimensions {atlas_dimensions:?} must be multiples of tile_dimension {tile_dimension}"
         )));

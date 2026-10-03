@@ -186,10 +186,10 @@ pub(crate) fn crouching_intent(
     // 6. Stand-up decision. The `Dash` transition stays available from
     // `Crouching` (D10) — check it first so a dash press exits crouch into the
     // dash burst regardless of crouch/jump state.
-    if input.dash_pressed {
-        if let Some(transition) = try_enter_dash(component, input) {
-            return Some(transition);
-        }
+    if input.dash_pressed
+        && let Some(transition) = try_enter_dash(component, input)
+    {
+        return Some(transition);
     }
 
     // Crouch-jump (D10): a jump fired this tick while `crouch_intent` is STILL

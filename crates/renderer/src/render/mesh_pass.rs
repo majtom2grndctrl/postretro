@@ -1707,10 +1707,9 @@ impl MeshPass {
                     // sample it below and keep it at frame end. Missing/stale tags are
                     // left unmarked and will fall back during sampling, then evict.
                     if let Some(FadeSource::Snapshot { tag, .. }) = inst.sample.fade.map(|f| f.from)
+                        && snapshot_store.matching(inst.phase_seed, tag).is_some()
                     {
-                        if snapshot_store.matching(inst.phase_seed, tag).is_some() {
-                            active_snapshot_fades.insert(inst.phase_seed, tag);
-                        }
+                        active_snapshot_fades.insert(inst.phase_seed, tag);
                     }
 
                     // Time-slicing decision. Sample when the collector asked

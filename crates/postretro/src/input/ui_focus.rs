@@ -318,11 +318,11 @@ impl UiFocusEngine {
 
         // Drop a focused id that no longer exists in the current rect list (a
         // structural rebuild removed the node); fall back to the initial focus.
-        if let Some(focused) = self.focused_id(active_key) {
-            if !rects.rects.iter().any(|r| r.id == focused) {
-                let initial = initial_focus_id(rects);
-                self.set_focused(active_key, initial);
-            }
+        if let Some(focused) = self.focused_id(active_key)
+            && !rects.rects.iter().any(|r| r.id == focused)
+        {
+            let initial = initial_focus_id(rects);
+            self.set_focused(active_key, initial);
         }
 
         let mut result = FocusTickResult::default();
@@ -332,12 +332,11 @@ impl UiFocusEngine {
         // (hover), then any click below hit-tests and activates. Hover never
         // enqueues an intent (it is tracked cursor state), so it is applied here
         // directly from the tracked position; the click loop runs regardless of mode.
-        if mode == InputMode::Pointer {
-            if let Some(cursor) = cursor {
-                if let Some(hit) = hit_test_topmost(rects, cursor) {
-                    self.set_focused(active_key, Some(hit.to_string()));
-                }
-            }
+        if mode == InputMode::Pointer
+            && let Some(cursor) = cursor
+            && let Some(hit) = hit_test_topmost(rects, cursor)
+        {
+            self.set_focused(active_key, Some(hit.to_string()));
         }
         for click in clicks {
             if let Some(hit) = hit_test_topmost(rects, *click) {
@@ -453,11 +452,11 @@ impl UiFocusEngine {
         // 1) Neighbor override wins — but never onto a disabled node (M13 G2-T3):
         // a disabled target is unreachable, so the override is ignored and the
         // governing group policy resolves the move instead (which also skips it).
-        if let Some(target) = neighbor_override(current, dir) {
-            if rects.rects.iter().any(|r| r.id == target && !r.disabled) {
-                self.set_focused(key, Some(target.to_string()));
-                return;
-            }
+        if let Some(target) = neighbor_override(current, dir)
+            && rects.rects.iter().any(|r| r.id == target && !r.disabled)
+        {
+            self.set_focused(key, Some(target.to_string()));
+            return;
         }
 
         // 2) Governing group policy.
@@ -621,10 +620,10 @@ fn neighbor_override(rect: &FocusRect, dir: Dir) -> Option<&str> {
 /// node in tree order. A `disabled` node is never selected as initial focus
 /// (M13 G2-T3) — even when explicitly named by `initialFocus`.
 fn initial_focus_id(rects: &FocusRectList) -> Option<String> {
-    if let Some(initial) = &rects.initial_focus {
-        if rects.rects.iter().any(|r| &r.id == initial && !r.disabled) {
-            return Some(initial.clone());
-        }
+    if let Some(initial) = &rects.initial_focus
+        && rects.rects.iter().any(|r| &r.id == initial && !r.disabled)
+    {
+        return Some(initial.clone());
     }
     rects
         .rects

@@ -320,11 +320,11 @@ fn stream_detached_bake(
                 printed = true;
             }
             last_progress = snapshot;
-        } else if last_output.elapsed() >= HEARTBEAT {
-            if let Some(line) = detached_progress_line(snapshot, true) {
-                eprintln!("{line}");
-                printed = true;
-            }
+        } else if last_output.elapsed() >= HEARTBEAT
+            && let Some(line) = detached_progress_line(snapshot, true)
+        {
+            eprintln!("{line}");
+            printed = true;
         }
         if printed {
             last_output = Instant::now();

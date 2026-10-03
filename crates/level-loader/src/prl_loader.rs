@@ -471,16 +471,16 @@ fn resolve_kinematic_waypoint_chain(
             ));
         };
         let waypoint = &waypoints[index];
-        if let Some(previous) = positions.last() {
-            if (*previous - waypoint.origin).length() <= KINEMATIC_WAYPOINT_MIN_SEGMENT_LENGTH {
-                return Err(section_validation(
-                    "KinematicGeometry",
-                    format!(
-                        "mover {mover_id} (`{mover_name}`) path has zero-length segment ending at waypoint `{}`",
-                        waypoint.name
-                    ),
-                ));
-            }
+        if let Some(previous) = positions.last()
+            && (*previous - waypoint.origin).length() <= KINEMATIC_WAYPOINT_MIN_SEGMENT_LENGTH
+        {
+            return Err(section_validation(
+                "KinematicGeometry",
+                format!(
+                    "mover {mover_id} (`{mover_name}`) path has zero-length segment ending at waypoint `{}`",
+                    waypoint.name
+                ),
+            ));
         }
         positions.push(waypoint.origin);
         if waypoint.next.is_empty() {
@@ -1181,13 +1181,13 @@ pub(crate) fn validate_cell_draw_index(
             }
 
             // Ascending, non-overlapping `leaf_start` within the cell.
-            if let Some(pe) = prev_end {
-                if leaf_start < pe {
-                    return Err(format!(
-                        "cell {cell} spans out of order / overlapping: span starting \
+            if let Some(pe) = prev_end
+                && leaf_start < pe
+            {
+                return Err(format!(
+                    "cell {cell} spans out of order / overlapping: span starting \
                          {leaf_start} follows a span ending {pe}"
-                    ));
-                }
+                ));
             }
 
             let span_bucket = bvh_leaves[leaf_start as usize].material_bucket_id;
@@ -1233,13 +1233,14 @@ pub(crate) fn validate_cell_draw_index(
 
             // Non-maximal run: an adjacent same-bucket span that abuts the
             // previous one (prev_end == leaf_start) could have been one span.
-            if let (Some(pe), Some(pb)) = (prev_end, prev_bucket) {
-                if pe == leaf_start && pb == span_bucket {
-                    return Err(format!(
-                        "cell {cell} has a non-maximal run: spans abutting at leaf \
+            if let (Some(pe), Some(pb)) = (prev_end, prev_bucket)
+                && pe == leaf_start
+                && pb == span_bucket
+            {
+                return Err(format!(
+                    "cell {cell} has a non-maximal run: spans abutting at leaf \
                          {leaf_start} in bucket {span_bucket} should be one span"
-                    ));
-                }
+                ));
             }
 
             prev_end = Some(span_end);

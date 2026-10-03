@@ -287,10 +287,11 @@ impl ReactionScheduler {
         if state.current_origin.is_some() {
             return state.current_origin;
         }
-        if let Some(resume_key) = &state.currently_resuming {
-            if resume_key.0 == address && resume_key.1 == body_ordinal {
-                return resume_key.2;
-            }
+        if let Some(resume_key) = &state.currently_resuming
+            && resume_key.0 == address
+            && resume_key.1 == body_ordinal
+        {
+            return resume_key.2;
         }
         None
     }

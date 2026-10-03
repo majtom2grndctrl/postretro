@@ -313,10 +313,10 @@ fn validate_text_tween(tween: Option<&TextTween>, field: &str) -> Result<(), Str
         return Ok(());
     };
     validate_non_negative_f32(tween.duration_ms, &format!("{field}.durationMs"))?;
-    if let Some(from) = tween.from {
-        if !from.is_finite() {
-            return Err(format!("{field}.from must be a finite f32"));
-        }
+    if let Some(from) = tween.from
+        && !from.is_finite()
+    {
+        return Err(format!("{field}.from must be a finite f32"));
     }
     Ok(())
 }
@@ -328,10 +328,10 @@ fn validate_style_ranges(ranges: Option<&StyleRanges>, field: &str) -> Result<()
     validate_positive_f32(ranges.max, &format!("{field}.max"))?;
     for (index, entry) in ranges.entries.iter().enumerate() {
         let entry_path = format!("{field}.entries[{index}]");
-        if let Some(up_to) = entry.up_to {
-            if !up_to.is_finite() {
-                return Err(format!("{entry_path}.upTo must be a finite f32"));
-            }
+        if let Some(up_to) = entry.up_to
+            && !up_to.is_finite()
+        {
+            return Err(format!("{entry_path}.upTo must be a finite f32"));
         }
         if let Some(color) = &entry.color {
             validate_color(color, &format!("{entry_path}.color"))?;

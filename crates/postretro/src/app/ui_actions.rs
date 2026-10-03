@@ -333,28 +333,28 @@ impl App {
             .session
             .as_ref()
             .and_then(|session| session.modal_stack.active_on_commit().map(str::to_string));
-        if let Some(on_commit) = on_commit {
-            if let Some(session) = self.session.as_ref() {
-                let script_ctx = &session.scripting.script_ctx;
-                let chained = fire_named_event_with_sequences(
-                    &on_commit,
+        if let Some(on_commit) = on_commit
+            && let Some(session) = self.session.as_ref()
+        {
+            let script_ctx = &session.scripting.script_ctx;
+            let chained = fire_named_event_with_sequences(
+                &on_commit,
+                &script_ctx.data_registry.borrow(),
+                &session.scripting.sequence_registry,
+                &session.scripting.reaction_registry,
+                &session.scripting.system_registry,
+                script_ctx,
+                None,
+            );
+            if !chained.is_empty() {
+                dispatch_deferred_named_events_with_sequences(
+                    chained,
                     &script_ctx.data_registry.borrow(),
                     &session.scripting.sequence_registry,
                     &session.scripting.reaction_registry,
                     &session.scripting.system_registry,
                     script_ctx,
-                    None,
                 );
-                if !chained.is_empty() {
-                    dispatch_deferred_named_events_with_sequences(
-                        chained,
-                        &script_ctx.data_registry.borrow(),
-                        &session.scripting.sequence_registry,
-                        &session.scripting.reaction_registry,
-                        &session.scripting.system_registry,
-                        script_ctx,
-                    );
-                }
             }
         }
         if let Some(session) = self.session.as_mut() {
@@ -438,12 +438,11 @@ impl App {
             .session
             .as_ref()
             .map(|session| (session.input_focus, session.ui_input_mode.cursor_visible()));
-        if let Some((InputFocus::Menu, visible)) = cursor_visible {
-            if want_menu {
-                if let Some(ws) = self.window_state.as_ref() {
-                    ws.window.set_cursor_visible(visible);
-                }
-            }
+        if let Some((InputFocus::Menu, visible)) = cursor_visible
+            && want_menu
+            && let Some(ws) = self.window_state.as_ref()
+        {
+            ws.window.set_cursor_visible(visible);
         }
     }
 }

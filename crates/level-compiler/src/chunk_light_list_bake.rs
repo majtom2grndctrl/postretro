@@ -507,12 +507,11 @@ pub fn bake_chunk_light_list(
                             continue;
                         }
                     }
-                    if !chunk_filter_bypassed {
-                        if let Some(reachable) = &light_reachable[idx] {
-                            if !reachable.contains(&chunk_leaf) {
-                                continue;
-                            }
-                        }
+                    if !chunk_filter_bypassed
+                        && let Some(reachable) = &light_reachable[idx]
+                        && !reachable.contains(&chunk_leaf)
+                    {
+                        continue;
                     }
                     if !any_receiver_unoccluded(
                         inputs.bvh,
@@ -1038,10 +1037,11 @@ fn segment_clear(
             let p0 = Vec3::from(geom.vertices[i0].position);
             let p1 = Vec3::from(geom.vertices[i1].position);
             let p2 = Vec3::from(geom.vertices[i2].position);
-            if let Some(dist) = ray_triangle_hit(origin, dir, p0, p1, p2) {
-                if dist > 0.0 && dist < max_distance {
-                    return false;
-                }
+            if let Some(dist) = ray_triangle_hit(origin, dir, p0, p1, p2)
+                && dist > 0.0
+                && dist < max_distance
+            {
+                return false;
             }
         }
     }
@@ -1103,10 +1103,11 @@ fn segment_clear_full_scan(
             let p0 = Vec3::from(geom.vertices[i0].position);
             let p1 = Vec3::from(geom.vertices[i1].position);
             let p2 = Vec3::from(geom.vertices[i2].position);
-            if let Some(dist) = ray_triangle_hit(origin, dir, p0, p1, p2) {
-                if dist > 0.0 && dist < max_distance {
-                    return false;
-                }
+            if let Some(dist) = ray_triangle_hit(origin, dir, p0, p1, p2)
+                && dist > 0.0
+                && dist < max_distance
+            {
+                return false;
             }
         }
     }

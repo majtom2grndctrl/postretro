@@ -430,7 +430,7 @@ fn validate_triangle_count(
     attribute: &str,
     count: usize,
 ) -> Result<(), ModelLoadError> {
-    if count % 3 == 0 {
+    if count.is_multiple_of(3) {
         return Ok(());
     }
     Err(ModelLoadError::IncompleteTriangleList {
@@ -746,10 +746,10 @@ fn ordered_aim_spine_chain(skeleton: &Skeleton, mask: JointMask) -> Option<Vec<u
 
     let mut children = vec![Vec::new(); skeleton.joints.len()];
     for &joint in &joints {
-        if let Some(parent) = skeleton.joints[joint].parent {
-            if mask.contains(parent) {
-                children[parent].push(joint);
-            }
+        if let Some(parent) = skeleton.joints[joint].parent
+            && mask.contains(parent)
+        {
+            children[parent].push(joint);
         }
     }
     if joints.iter().any(|&joint| children[joint].len() > 1) {
@@ -1976,11 +1976,10 @@ fn load_clip(
                 if let Some((values, mode)) =
                     resolve_keyframes(raw, times.len(), interpolation, &name, "translation")
                         .filter(|(values, _)| validate_vec3_keyframes(values, &name, "translation"))
+                    && let Some(track) = build_track(times, values, mode, &name, "translation")
                 {
-                    if let Some(track) = build_track(times, values, mode, &name, "translation") {
-                        joints[topo_idx].translation = track;
-                        duration = duration.max(channel_duration);
-                    }
+                    joints[topo_idx].translation = track;
+                    duration = duration.max(channel_duration);
                 }
             }
             gltf::animation::util::ReadOutputs::Rotations(it) => {
@@ -1991,11 +1990,10 @@ fn load_clip(
                 if let Some((values, mode)) =
                     resolve_keyframes(raw, times.len(), interpolation, &name, "rotation")
                         .filter(|(values, _)| validate_rotation_keyframes(values, &name))
+                    && let Some(track) = build_track(times, values, mode, &name, "rotation")
                 {
-                    if let Some(track) = build_track(times, values, mode, &name, "rotation") {
-                        joints[topo_idx].rotation = track;
-                        duration = duration.max(channel_duration);
-                    }
+                    joints[topo_idx].rotation = track;
+                    duration = duration.max(channel_duration);
                 }
             }
             gltf::animation::util::ReadOutputs::Scales(it) => {
@@ -2003,11 +2001,10 @@ fn load_clip(
                 if let Some((values, mode)) =
                     resolve_keyframes(raw, times.len(), interpolation, &name, "scale")
                         .filter(|(values, _)| validate_vec3_keyframes(values, &name, "scale"))
+                    && let Some(track) = build_track(times, values, mode, &name, "scale")
                 {
-                    if let Some(track) = build_track(times, values, mode, &name, "scale") {
-                        joints[topo_idx].scale = track;
-                        duration = duration.max(channel_duration);
-                    }
+                    joints[topo_idx].scale = track;
+                    duration = duration.max(channel_duration);
                 }
             }
             gltf::animation::util::ReadOutputs::MorphTargetWeights(_) => {

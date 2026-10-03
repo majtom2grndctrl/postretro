@@ -714,15 +714,13 @@ pub(crate) fn attach_descriptor_components(
         let _ = validate_brain_animation_states(registry, id);
     }
 
-    if attach_weapon {
-        if let Some(weapon_desc) = descriptor.weapon.as_ref() {
-            let component = WeaponComponent::from_descriptor_with_canonical(
-                weapon_desc,
-                descriptor.canonical_name.as_deref(),
-            );
-            let _ = registry.set_component(id, component);
-            owned_components.insert(DescriptorComponentKind::Weapon);
-        }
+    if attach_weapon && let Some(weapon_desc) = descriptor.weapon.as_ref() {
+        let component = WeaponComponent::from_descriptor_with_canonical(
+            weapon_desc,
+            descriptor.canonical_name.as_deref(),
+        );
+        let _ = registry.set_component(id, component);
+        owned_components.insert(DescriptorComponentKind::Weapon);
     }
 
     if let Some(canonical_name) = descriptor.canonical_name.clone() {

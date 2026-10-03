@@ -215,7 +215,11 @@ pub(super) fn acquisition_due(brain: &BrainComponent, distance: Option<f32>) -> 
     distance
         .map(|distance| {
             let stride = think_stride_for_distance(distance);
-            stride <= 1 || brain.think_stride_counter.wrapping_add(1) % stride == 0
+            stride <= 1
+                || brain
+                    .think_stride_counter
+                    .wrapping_add(1)
+                    .is_multiple_of(stride)
         })
         .unwrap_or(true)
 }
@@ -380,16 +384,15 @@ pub(super) fn select_target_with_attacker_ledger(
             });
         }
 
-        if let Some(preferred) = preferred_eligible {
-            if preferred.retaliation.is_some()
+        if let Some(preferred) = preferred_eligible
+            && (preferred.retaliation.is_some()
                 || (preferred.retaliation.is_none()
-                    && is_meaningfully_closer(preferred.candidate.distance, retained.distance))
-            {
-                let retaliation_acquired_target = preferred
-                    .retaliation
-                    .map(|_| preferred.candidate.target.entity);
-                return Some(selection_for(preferred, retaliation_acquired_target));
-            }
+                    && is_meaningfully_closer(preferred.candidate.distance, retained.distance)))
+        {
+            let retaliation_acquired_target = preferred
+                .retaliation
+                .map(|_| preferred.candidate.target.entity);
+            return Some(selection_for(preferred, retaliation_acquired_target));
         }
         return Some(TargetSelection {
             target: retained.target,

@@ -28,7 +28,7 @@ pub(crate) const SNAPSHOT_TICK_INTERVAL: u32 = 2;
 /// while the post-loop serializer consumes the accumulated `snapshot_due` bit once.
 pub fn complete_host_fixed_tick(tick: &mut u32, snapshot_due: &mut bool) {
     *tick = tick.wrapping_add(1);
-    *snapshot_due |= *tick % SNAPSHOT_TICK_INTERVAL == 0;
+    *snapshot_due |= (*tick).is_multiple_of(SNAPSHOT_TICK_INTERVAL);
 }
 
 /// Host-only Phase 2 net-demo fixture state. Activation is a startup decision read
@@ -332,12 +332,12 @@ pub fn host_register_own_pawn(
     // A level reload spawns a fresh host pawn (distinct EntityId). Drop the stale
     // registration before registering the new one so the replicable set never names a
     // despawned id. Re-registering the SAME pawn skips the churn (idempotent install).
-    if let Some(previous) = *host_pawn {
-        if previous != pawn {
-            replicable.unregister(previous);
-            allocator.forget(previous);
-            weapon_owners.remove_pawn(previous);
-        }
+    if let Some(previous) = *host_pawn
+        && previous != pawn
+    {
+        replicable.unregister(previous);
+        allocator.forget(previous);
+        weapon_owners.remove_pawn(previous);
     }
     // Stamp the stable session-monotonic NetworkId and register for replication,
     // mirroring `on_slot_accepted` — but with NO owner mapping, so the host pawn is

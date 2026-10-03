@@ -71,7 +71,7 @@ fn should_resample(distance: f32, frame_index: u64, seed: u32, force: bool) -> b
         return true;
     }
     let stride = resample_stride(distance);
-    (frame_index.wrapping_add(seed as u64)) % stride == 0
+    (frame_index.wrapping_add(seed as u64)).is_multiple_of(stride)
 }
 
 /// Per-frame scratch state for the skinned-mesh render path. Owned by the game

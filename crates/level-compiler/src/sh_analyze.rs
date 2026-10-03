@@ -2029,15 +2029,15 @@ fn check_delta<'a>(
     expected: [u32; 3],
     label: &str,
 ) -> Option<DeltaView<'a>> {
-    if let Some(v) = &view {
-        if v.affinity_dims != expected {
-            log::warn!(
-                "[sh-analyze] {label} affinity_dims {:?} != expected {:?}; skipping this delta section",
-                v.affinity_dims,
-                expected
-            );
-            return None;
-        }
+    if let Some(v) = &view
+        && v.affinity_dims != expected
+    {
+        log::warn!(
+            "[sh-analyze] {label} affinity_dims {:?} != expected {:?}; skipping this delta section",
+            v.affinity_dims,
+            expected
+        );
+        return None;
     }
     view
 }
@@ -2111,11 +2111,11 @@ pub(crate) fn build_brick_tiles(
 
         // Composed = base indirect + base direct + Σ deltas.
         let mut comp = base_ind_tile.clone();
-        if let Some(dir) = inputs.base_direct {
-            if let Some(dt) = decode_base_direct_tile(dir, probe_index, interior, border) {
-                for (a, b) in comp.iter_mut().zip(dt.iter()) {
-                    *a += *b;
-                }
+        if let Some(dir) = inputs.base_direct
+            && let Some(dt) = decode_base_direct_tile(dir, probe_index, interior, border)
+        {
+            for (a, b) in comp.iter_mut().zip(dt.iter()) {
+                *a += *b;
             }
         }
         for (a, d) in comp.iter_mut().zip(delta_acc[local].iter()) {

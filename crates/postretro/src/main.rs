@@ -2166,40 +2166,39 @@ impl ApplicationHandler for App {
                     } = self;
                     let mut nav_seen = false;
                     let mut menu_toggle = false;
-                    if let Some(session) = session.as_mut() {
-                        if let Some(gp) = session.gamepad_system.as_mut() {
-                            let gp_nav = gp.update(&mut session.input_system, nav_stick_tracker);
-                            // Advance any active rumble's timeout in the input stage
-                            // and stop it once its duration elapses (started by a
-                            // drained `Rumble` command on a prior frame).
-                            gp.tick_rumble(frame_dt);
-                            // A confirm (South) RELEASE stops the activation-repeat
-                            // clock — the gamepad twin of the keyboard Enter-release.
-                            if gp_nav.confirm_released {
-                                session.ui_focus.release_confirm_repeat();
+                    if let Some(session) = session.as_mut()
+                        && let Some(gp) = session.gamepad_system.as_mut()
+                    {
+                        let gp_nav = gp.update(&mut session.input_system, nav_stick_tracker);
+                        // Advance any active rumble's timeout in the input stage
+                        // and stop it once its duration elapses (started by a
+                        // drained `Rumble` command on a prior frame).
+                        gp.tick_rumble(frame_dt);
+                        // A confirm (South) RELEASE stops the activation-repeat
+                        // clock — the gamepad twin of the keyboard Enter-release.
+                        if gp_nav.confirm_released {
+                            session.ui_focus.release_confirm_repeat();
+                        }
+                        // No directional input held releases the directional
+                        // hold-to-repeat clock, mirroring the arrow-key-up path.
+                        if gp_nav.directional_released {
+                            session.ui_focus.release_repeat();
+                        }
+                        // Any gamepad nav intent is a `focus`-mode signal.
+                        nav_seen = !gp_nav.nav_intents.is_empty();
+                        // `nav.menu` (gamepad Start) toggles the pause menu via
+                        // the punch-through flag (Passthrough queues nothing);
+                        // other nav intents enqueue only while capturing.
+                        let capture = session.ui_dispatch.mode() == input::UiCaptureMode::Capture;
+                        for intent in gp_nav.nav_intents {
+                            if intent == input::NavIntent::Menu {
+                                menu_toggle = true;
+                                continue;
                             }
-                            // No directional input held releases the directional
-                            // hold-to-repeat clock, mirroring the arrow-key-up path.
-                            if gp_nav.directional_released {
-                                session.ui_focus.release_repeat();
-                            }
-                            // Any gamepad nav intent is a `focus`-mode signal.
-                            nav_seen = !gp_nav.nav_intents.is_empty();
-                            // `nav.menu` (gamepad Start) toggles the pause menu via
-                            // the punch-through flag (Passthrough queues nothing);
-                            // other nav intents enqueue only while capturing.
-                            let capture =
-                                session.ui_dispatch.mode() == input::UiCaptureMode::Capture;
-                            for intent in gp_nav.nav_intents {
-                                if intent == input::NavIntent::Menu {
-                                    menu_toggle = true;
-                                    continue;
-                                }
-                                if capture {
-                                    session
-                                        .ui_dispatch
-                                        .enqueue_intent(input::UiIntentPayload::Nav(intent));
-                                }
+                            if capture {
+                                session
+                                    .ui_dispatch
+                                    .enqueue_intent(input::UiIntentPayload::Nav(intent));
                             }
                         }
                     }
@@ -4575,32 +4574,32 @@ impl ApplicationHandler for App {
                     .renderer
                     .as_ref()
                     .map(|r| if r.vsync_enabled() { "on" } else { "off" });
-                if let Some(ws) = self.window_state.as_ref() {
-                    if self.last_title_update.elapsed() >= Duration::from_millis(250) {
-                        self.last_title_update = Instant::now();
-                        self.title_buffer.clear();
+                if let Some(ws) = self.window_state.as_ref()
+                    && self.last_title_update.elapsed() >= Duration::from_millis(250)
+                {
+                    self.last_title_update = Instant::now();
+                    self.title_buffer.clear();
+                    let _ = write!(
+                        &mut self.title_buffer,
+                        "Postretro | {region_label}:{} path:{path_label} | draw:{} all:{}{walk_reach_col} | pos: ({:.0}, {:.0}, {:.0})",
+                        stats.camera_cell,
+                        stats.drawn_faces,
+                        stats.total_faces,
+                        pos.x,
+                        pos.y,
+                        pos.z,
+                    );
+                    if let Some(label) = vsync_label {
+                        let _ = write!(&mut self.title_buffer, " | vsync:{label}");
+                    }
+                    if let Some(ft) = self.frame_rate_meter.stats() {
                         let _ = write!(
                             &mut self.title_buffer,
-                            "Postretro | {region_label}:{} path:{path_label} | draw:{} all:{}{walk_reach_col} | pos: ({:.0}, {:.0}, {:.0})",
-                            stats.camera_cell,
-                            stats.drawn_faces,
-                            stats.total_faces,
-                            pos.x,
-                            pos.y,
-                            pos.z,
+                            " frame: {:.1}/{:.1}/{:.1} ms",
+                            ft.min_ms, ft.avg_ms, ft.max_ms,
                         );
-                        if let Some(label) = vsync_label {
-                            let _ = write!(&mut self.title_buffer, " | vsync:{label}");
-                        }
-                        if let Some(ft) = self.frame_rate_meter.stats() {
-                            let _ = write!(
-                                &mut self.title_buffer,
-                                " frame: {:.1}/{:.1}/{:.1} ms",
-                                ft.min_ms, ft.avg_ms, ft.max_ms,
-                            );
-                        }
-                        ws.window.set_title(&self.title_buffer);
                     }
+                    ws.window.set_title(&self.title_buffer);
                 }
 
                 // Measure from `now` at handler entry so the sample spans all
@@ -6920,10 +6919,10 @@ impl App {
             );
             let mut registry = script_ctx.registry.borrow_mut();
             let _ = registry.set_component(weapon_id, component);
-            if zero_tick_fire_command.is_some() {
-                if let Some(session) = self.session.as_mut() {
-                    session.gameplay_input_latch.clear_pressed(Action::Shoot);
-                }
+            if zero_tick_fire_command.is_some()
+                && let Some(session) = self.session.as_mut()
+            {
+                session.gameplay_input_latch.clear_pressed(Action::Shoot);
             }
             return;
         };
@@ -7083,10 +7082,10 @@ impl App {
                 );
             }
             self.client_fire_resolutions.push(resolution);
-        } else if zero_tick_fire_command.is_some() {
-            if let Some(session) = self.session.as_mut() {
-                session.gameplay_input_latch.clear_pressed(Action::Shoot);
-            }
+        } else if zero_tick_fire_command.is_some()
+            && let Some(session) = self.session.as_mut()
+        {
+            session.gameplay_input_latch.clear_pressed(Action::Shoot);
         }
     }
 
@@ -9807,7 +9806,7 @@ mod tests {
         let replacement_muzzle = [-0.3, 0.4, -1.2];
         let local_component_muzzle = Vec3::new(9.0, 8.0, 7.0);
         let local_data_placement = placement(8.0, 7.0, 6.0, 45.0);
-        let local_data_registry = vec![weapon_viewmodel_descriptor(
+        let local_data_registry = [weapon_viewmodel_descriptor(
             "reference_pistol",
             Some("models/local/view.gltf"),
             Some(local_data_placement),
@@ -12290,16 +12289,16 @@ mod tests {
             };
             let dest = target_dir.join(name);
             let source = ensure_scripts_build();
-            if let (Ok(cs), Ok(cd)) = (source.canonicalize(), dest.canonicalize()) {
-                if cs == cd {
-                    return true;
-                }
+            if let (Ok(cs), Ok(cd)) = (source.canonicalize(), dest.canonicalize())
+                && cs == cd
+            {
+                return true;
             }
             let modified = |path: &Path| std::fs::metadata(path).and_then(|m| m.modified()).ok();
-            if let (Some(dest_mtime), Some(source_mtime)) = (modified(&dest), modified(&source)) {
-                if dest_mtime >= source_mtime {
-                    return true;
-                }
+            if let (Some(dest_mtime), Some(source_mtime)) = (modified(&dest), modified(&source))
+                && dest_mtime >= source_mtime
+            {
+                return true;
             }
             let staging = dest.with_file_name(format!("{name}.tmp.{}", std::process::id()));
             std::fs::copy(&source, &staging)

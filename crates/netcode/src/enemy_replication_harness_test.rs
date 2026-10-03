@@ -193,10 +193,8 @@ fn materialize_remote_enemy_presentation(
 ) {
     let materialized =
         materialize_armed_remote_enemy(remote, descriptors, registry, Some(agent_params()));
-    if materialized {
-        if let Some(state) = remote.initial_animation_state.as_deref() {
-            super::client::apply_mesh_animation_state(registry, remote.entity_id, state, true);
-        }
+    if materialized && let Some(state) = remote.initial_animation_state.as_deref() {
+        super::client::apply_mesh_animation_state(registry, remote.entity_id, state, true);
     }
 }
 

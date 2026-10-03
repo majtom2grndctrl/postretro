@@ -98,10 +98,10 @@ pub(super) fn weapon_fire_authorization_verdict(
     if !command.can_fire || !wants_fire || weapon.cooldown_remaining_ms > 0.0 {
         return WeaponFireAuthorization::Rejected;
     }
-    if let Some(cost_per_shot) = stats.ammo.as_ref().map(|ammo| ammo.cost_per_shot) {
-        if weapon.magazine < cost_per_shot {
-            return WeaponFireAuthorization::Empty;
-        }
+    if let Some(cost_per_shot) = stats.ammo.as_ref().map(|ammo| ammo.cost_per_shot)
+        && weapon.magazine < cost_per_shot
+    {
+        return WeaponFireAuthorization::Empty;
     }
     if let Some(verdict) = resource_fire_verdict(weapon) {
         return verdict;

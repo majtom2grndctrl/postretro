@@ -385,7 +385,7 @@ fn run(world: &LevelWorld, walk: &Walk, levers: Levers) -> RunReport {
                 &mut scratch,
                 TimingGate::OFF,
             );
-            let camera_cell = visibility.stats.camera_cell as u32;
+            let camera_cell = visibility.stats.camera_cell;
             report.locate_mismatch_frames += u64::from(camera_cell != cell);
             match visibility.stats.path {
                 VisibilityPath::PrlPortal { .. } => report.path_portal += 1,

@@ -185,11 +185,11 @@ impl HostQueueDiag {
             w.lead_last = lead;
         }
         w.trims += ev.trims;
-        if let Some(yaw) = ev.yaw {
-            if w.last_yaw != Some(yaw) {
-                w.yaw_changes += 1;
-                w.last_yaw = Some(yaw);
-            }
+        if let Some(yaw) = ev.yaw
+            && w.last_yaw != Some(yaw)
+        {
+            w.yaw_changes += 1;
+            w.last_yaw = Some(yaw);
         }
 
         // B — jump hold-run + drop accounting.

@@ -568,40 +568,38 @@ impl Renderer {
         // re-upload here — `record_draws` only records draws against the buffers
         // the hoist populated, the SAME buffers the skinned-depth shadow pass
         // read, so an entity and its shadow share one pose (no one-frame lag).
-        if render_world {
-            if let Some(plan) = world_mesh_frame_plan {
-                let _skinned_scope = cpu.scope(RenderStage::SkinnedMesh);
-                let mut mesh_enc = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("Skinned Mesh Pass"),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: &scene_color,
-                        depth_slice: None,
-                        resolve_target: None,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Load,
-                            store: wgpu::StoreOp::Store,
-                        },
-                    })],
-                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                        view: &self.full().depth_view,
-                        depth_ops: Some(wgpu::Operations {
-                            load: wgpu::LoadOp::Load,
-                            store: wgpu::StoreOp::Store,
-                        }),
-                        stencil_ops: None,
+        if render_world && let Some(plan) = world_mesh_frame_plan {
+            let _skinned_scope = cpu.scope(RenderStage::SkinnedMesh);
+            let mut mesh_enc = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Skinned Mesh Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &scene_color,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.full().depth_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
                     }),
-                    timestamp_writes: None,
-                    ..Default::default()
-                });
-                mesh_enc.set_bind_group(0, &self.full().uniform_bind_group, &[]);
-                // Group 4 = SH irradiance volume (baked indirect) + the mesh-only
-                // dynamic-direct params uniform (binding 16). The mesh SUPERSET bind
-                // group: shared SH entries the forward/billboard/fog passes hold PLUS
-                // the dynamic-direct knobs (group 3 = instance data; group 2
-                // unallocated).
-                mesh_enc.set_bind_group(4, self.full().sh_mesh_bind_group(), &[]);
-                self.full_mut().mesh_pass.record_draws(&mut mesh_enc, plan);
-            }
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                ..Default::default()
+            });
+            mesh_enc.set_bind_group(0, &self.full().uniform_bind_group, &[]);
+            // Group 4 = SH irradiance volume (baked indirect) + the mesh-only
+            // dynamic-direct params uniform (binding 16). The mesh SUPERSET bind
+            // group: shared SH entries the forward/billboard/fog passes hold PLUS
+            // the dynamic-direct knobs (group 3 = instance data; group 2
+            // unallocated).
+            mesh_enc.set_bind_group(4, self.full().sh_mesh_bind_group(), &[]);
+            self.full_mut().mesh_pass.record_draws(&mut mesh_enc, plan);
         }
 
         // After opaque forward, before wireframe. Alpha additive; depth test on, write off.
@@ -802,41 +800,39 @@ impl Renderer {
         // cannot clip it, then draw only the structurally separate viewmodel
         // plan. Running after fog/wireframe/debug also preserves their world-depth
         // interpretation; UI remains above this pass as usual.
-        if render_world {
-            if let Some(plan) = viewmodel_mesh_frame_plan {
-                let _viewmodel_scope = cpu.scope(RenderStage::Viewmodel);
-                let mut viewmodel_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("Skinned Viewmodel Pass"),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: &scene_color,
-                        depth_slice: None,
-                        resolve_target: None,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Load,
-                            store: wgpu::StoreOp::Store,
-                        },
-                    })],
-                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                        view: &self.full().depth_view,
-                        depth_ops: Some(wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(1.0),
-                            store: wgpu::StoreOp::Store,
-                        }),
-                        stencil_ops: None,
+        if render_world && let Some(plan) = viewmodel_mesh_frame_plan {
+            let _viewmodel_scope = cpu.scope(RenderStage::Viewmodel);
+            let mut viewmodel_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Skinned Viewmodel Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &scene_color,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.full().depth_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
                     }),
-                    timestamp_writes: None,
-                    ..Default::default()
-                });
-                viewmodel_pass.set_bind_group(
-                    0,
-                    self.full().mesh_pass.viewmodel_uniform_bind_group(),
-                    &[],
-                );
-                viewmodel_pass.set_bind_group(4, self.full().sh_mesh_bind_group(), &[]);
-                self.full_mut()
-                    .mesh_pass
-                    .record_draws(&mut viewmodel_pass, plan);
-            }
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                ..Default::default()
+            });
+            viewmodel_pass.set_bind_group(
+                0,
+                self.full().mesh_pass.viewmodel_uniform_bind_group(),
+                &[],
+            );
+            viewmodel_pass.set_bind_group(4, self.full().sh_mesh_bind_group(), &[]);
+            self.full_mut()
+                .mesh_pass
+                .record_draws(&mut viewmodel_pass, plan);
         }
 
         // Game UI records into its native-res layer, never into `scene_color`,

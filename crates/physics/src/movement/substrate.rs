@@ -206,8 +206,8 @@ pub(super) fn integrate_collision(
     let horiz_vel = Vec3::new(component.velocity.x, 0.0, component.velocity.z);
     let horiz_speed = horiz_vel.length();
     let step_height = component.ground_params.step_height;
-    if component.is_grounded() {
-        if let Some(lifted) = step_up_lift(
+    if component.is_grounded()
+        && let Some(lifted) = step_up_lift(
             collision,
             &capsule,
             current_pos,
@@ -217,9 +217,9 @@ pub(super) fn integrate_collision(
             component.cos_walkable,
             remaining_dt,
             component.capsule.radius,
-        ) {
-            current_pos = lifted;
-        }
+        )
+    {
+        current_pos = lifted;
     }
 
     if component.is_grounded() && component.velocity.y.abs() < 1e-3 {
@@ -458,23 +458,23 @@ pub(super) fn integrate_collision(
                     Vector::new(0.0, -1.0, 0.0),
                     ray_max,
                 );
-                if let Some(h) = ray_hit {
-                    if h.normal.y >= component.cos_walkable {
-                        // Ray TOI is distance from capsule center to the
-                        // surface; the capsule rests with its lower hemisphere
-                        // at `half_height + radius` below center, separated by
-                        // SKIN_DISTANCE.
-                        let target_gap = half_height + radius + SKIN_DISTANCE;
-                        let drop = h.time_of_impact - target_gap;
-                        // Only snap downward, and only if the floor is within
-                        // the same envelope the swept downcast would have
-                        // covered.
-                        if drop > 0.0 && drop <= max_down {
-                            current_pos.y -= drop;
-                            hit_floor_this_tick = true;
-                            last_floor_normal = Some(h.normal);
-                            ground_ref_this_tick = ground_ref_from_hit(h);
-                        }
+                if let Some(h) = ray_hit
+                    && h.normal.y >= component.cos_walkable
+                {
+                    // Ray TOI is distance from capsule center to the
+                    // surface; the capsule rests with its lower hemisphere
+                    // at `half_height + radius` below center, separated by
+                    // SKIN_DISTANCE.
+                    let target_gap = half_height + radius + SKIN_DISTANCE;
+                    let drop = h.time_of_impact - target_gap;
+                    // Only snap downward, and only if the floor is within
+                    // the same envelope the swept downcast would have
+                    // covered.
+                    if drop > 0.0 && drop <= max_down {
+                        current_pos.y -= drop;
+                        hit_floor_this_tick = true;
+                        last_floor_normal = Some(h.normal);
+                        ground_ref_this_tick = ground_ref_from_hit(h);
                     }
                 }
             }

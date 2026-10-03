@@ -8,6 +8,7 @@ pub struct ActivationInputCapture {
     released: [bool; 2],
     active: Option<ActivationToken>,
     pending_cancel: Option<ActivationToken>,
+    cancel_sent: bool,
     local_tick: u32,
 }
 impl ActivationInputCapture {
@@ -18,17 +19,31 @@ impl ActivationInputCapture {
         }
     }
     pub fn suspend(&mut self) {
-        self.pending_cancel = self.active.take().or(self.pending_cancel);
+        if let Some(token) = self.active.take() {
+            if self.pending_cancel != Some(token) {
+                self.pending_cancel = Some(token);
+                self.cancel_sent = false;
+            }
+        }
         self.pressed = [false; 2];
         self.released = [false; 2];
     }
     pub fn take_cancel(&mut self) -> Option<ActivationToken> {
-        self.pending_cancel.take()
+        if self.cancel_sent {
+            return None;
+        }
+        let token = self.pending_cancel?;
+        self.cancel_sent = true;
+        Some(token)
     }
     /// Predicted idle/recovery logic calls this for a held restart; no host path
     /// invents a restart from a synthetic held command.
+    #[cfg(test)]
     pub fn request_restart(&mut self, lane: ActivationLane) {
         self.pressed[lane as usize] = true;
+    }
+    pub fn set_active(&mut self, token: Option<ActivationToken>) {
+        self.active = token.filter(|token| self.pending_cancel != Some(*token));
     }
     pub fn terminal(&mut self, token: ActivationToken) {
         if self.active == Some(token) {
@@ -45,6 +60,7 @@ impl ActivationInputCapture {
             cancel: self.pending_cancel.take(),
             ..ActivationInput::default()
         };
+        self.cancel_sent = false;
         let lane = if self.pressed[1] {
             Some(ActivationLane::Secondary)
         } else if self.pressed[0] {
@@ -97,6 +113,42 @@ mod tests {
         assert_eq!(input.initiation.unwrap().lane, ActivationLane::Secondary);
         assert_eq!(input.release.unwrap().token, input.initiation.unwrap());
         assert!(capture.command(45).initiation.is_none());
+    }
+    #[test]
+    fn activation_capture_rejected_old_token_does_not_capture_new_quick_release() {
+        let mut capture = ActivationInputCapture::default();
+        capture.request_restart(ActivationLane::Primary);
+        let old = capture.command(8).initiation.unwrap();
+        capture.terminal(old);
+        let mut edge = ActionSnapshot::neutral();
+        edge.button_states
+            .insert(Action::AltFire, ButtonState::Pressed);
+        capture.observe(&edge);
+        edge.button_states
+            .insert(Action::AltFire, ButtonState::Released);
+        capture.observe(&edge);
+        let new = capture.command(9);
+        assert_eq!(new.release.unwrap().token, new.initiation.unwrap());
+        capture.terminal(old);
+        assert_eq!(
+            capture.active, new.initiation,
+            "stale terminal cannot clear newer token"
+        );
+    }
+    #[test]
+    fn activation_capture_zero_tick_cancel_sends_once_and_remains_for_fixed_tick() {
+        let mut capture = ActivationInputCapture::default();
+        capture.request_restart(ActivationLane::Primary);
+        let token = capture.command(8).initiation.unwrap();
+        capture.suspend();
+        assert_eq!(capture.take_cancel(), Some(token));
+        assert_eq!(capture.take_cancel(), None);
+        // A UI capture/refocus can repeat without any real command.
+        capture.set_active(Some(token));
+        capture.suspend();
+        assert_eq!(capture.take_cancel(), None);
+        assert_eq!(capture.command(9).cancel, Some(token));
+        assert_eq!(capture.command(10).cancel, None);
     }
     #[test]
     fn activation_capture_suspends_with_correlated_cancel_without_a_tick() {

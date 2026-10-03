@@ -158,9 +158,7 @@ pub fn client_pull_presentation(
 pub enum ClientShotDeclaration {
     /// Declare the resolved hitscan hits and world contacts now.
     ResolvedNow,
-    /// Declare the shot with no hits now. No predicted projectile is shown,
-    /// so none will declare a contact later, and the host's authorized shot
-    /// must still retire. When the host did fire, that shot's damage is lost.
+    /// Declare the shot with no hits now. An actual materialization failure or expiry has no later contact to declare.
     EmptyNow,
     /// The predicted projectile declares its contact or expiry later. If it
     /// fails to materialize, the caller declares [`Self::EmptyNow`] instead.
@@ -183,29 +181,26 @@ pub struct ClientPullEffects {
 /// whether it resolved any hitscan contact.
 ///
 /// Only a [`ClientPullPresentation::Fire`] raises `activate` (muzzle FX), an
-/// `impact` at its contacts, or a predicted projectile. A dry fire raises
+/// `impact` at its contacts, or projectile cosmetics. A dry fire raises
 /// `dry_fire` alone; a silent pull raises nothing. Every presentation still
 /// declares: a hitscan shot declares its resolved hits at once whatever it
-/// presents, and a projectile shot that shows no projectile declares empty.
+/// presents, and every projectile simulates and declares contact regardless of cosmetics.
 pub fn client_pull_effects(
     presentation: ClientPullPresentation,
     has_projectile_launch: bool,
     has_contacts: bool,
 ) -> ClientPullEffects {
-    let shows_fire = presentation == ClientPullPresentation::Fire;
     let addresses = match presentation {
         ClientPullPresentation::Fire if has_contacts => vec!["activate", "impact"],
         ClientPullPresentation::Fire => vec!["activate"],
         ClientPullPresentation::DryFire => vec!["dry_fire"],
         ClientPullPresentation::Silent => Vec::new(),
     };
-    let spawn_projectile = shows_fire && has_projectile_launch;
+    let spawn_projectile = has_projectile_launch;
     let declaration = if !has_projectile_launch {
         ClientShotDeclaration::ResolvedNow
-    } else if spawn_projectile {
-        ClientShotDeclaration::OnProjectileResolution
     } else {
-        ClientShotDeclaration::EmptyNow
+        ClientShotDeclaration::OnProjectileResolution
     };
     ClientPullEffects {
         addresses,
@@ -233,7 +228,7 @@ mod tests {
     #[test]
     fn client_pull_effects_cover_every_presentation_and_resolution() {
         use ClientPullPresentation::{DryFire, Fire, Silent};
-        use ClientShotDeclaration::{EmptyNow, OnProjectileResolution, ResolvedNow};
+        use ClientShotDeclaration::{OnProjectileResolution, ResolvedNow};
         // ((presentation, projectile launch, contacts), effects)
         let table = [
             // Hitscan: every presentation declares its resolved hits now.
@@ -255,10 +250,8 @@ mod tests {
             ),
             ((Silent, false, true), effects(&[], false, ResolvedNow)),
             ((Silent, false, false), effects(&[], false, ResolvedNow)),
-            // Projectile: only a fire shows a projectile, which declares
-            // later; a dry or silent pull declares empty at once. A projectile
-            // resolution carries no same-frame contacts; the `true` rows pin
-            // that a dry or silent pull would raise no impact even so.
+            // Every semantic projectile declares its later resolution. Cosmetic
+            // dry/silent feedback never skips the flight or creates a placeholder.
             (
                 (Fire, true, false),
                 effects(&["activate"], true, OnProjectileResolution),
@@ -269,14 +262,20 @@ mod tests {
             ),
             (
                 (DryFire, true, false),
-                effects(&["dry_fire"], false, EmptyNow),
+                effects(&["dry_fire"], true, OnProjectileResolution),
             ),
             (
                 (DryFire, true, true),
-                effects(&["dry_fire"], false, EmptyNow),
+                effects(&["dry_fire"], true, OnProjectileResolution),
             ),
-            ((Silent, true, false), effects(&[], false, EmptyNow)),
-            ((Silent, true, true), effects(&[], false, EmptyNow)),
+            (
+                (Silent, true, false),
+                effects(&[], true, OnProjectileResolution),
+            ),
+            (
+                (Silent, true, true),
+                effects(&[], true, OnProjectileResolution),
+            ),
         ];
         for ((presentation, launch, contacts), expected) in table {
             assert_eq!(
@@ -428,6 +427,28 @@ mod tests {
         assert_eq!(held.cell_capacity, on_slot(0, None), "not carried");
     }
 
+    fn predicted_due(weapon: &mut WeaponComponent, button: crate::weapon::FireButtonState) -> bool {
+        crate::weapon::activation_prediction::advance_predicted_weapon_tick(
+            weapon,
+            crate::weapon::execution::ActivationCommand {
+                tick: 1,
+                pawn: 0,
+                real_command: true,
+                input: postretro_foundation::ActivationInput::default(),
+                controller_starts: true,
+                primary: button,
+                secondary: crate::weapon::FireButtonState {
+                    pressed: false,
+                    active: false,
+                },
+            },
+            false,
+            1000.0 / 60.0,
+            true,
+        )
+        .shot
+        .is_some()
+    }
     #[test]
     fn client_pull_fire_gate_never_simulates_heat_or_cell() {
         // Connected clients read replicated heat and cell; the local fire gate
@@ -443,12 +464,7 @@ mod tests {
             heat.overheated = true;
             *heat
         };
-        assert!(crate::weapon::advance_client_fire_state(
-            &mut hot,
-            pull,
-            0.5,
-            &[]
-        ));
+        assert!(predicted_due(&mut hot, pull));
         assert_eq!(hot.heat, Some(latched), "no cooling, no latch clear");
 
         let mut drained = cell_weapon();
@@ -457,12 +473,63 @@ mod tests {
             cell.charge = 0.0;
             *cell
         };
-        assert!(crate::weapon::advance_client_fire_state(
-            &mut drained,
-            pull,
-            5.0,
-            &[]
-        ));
+        assert!(predicted_due(&mut drained, pull));
         assert_eq!(drained.cell, Some(empty), "no regeneration");
+    }
+}
+
+/// A stale owner projection chooses cosmetics using the frozen shot's actual cost.
+pub fn client_shot_presentation(
+    weapon: &WeaponComponent,
+    active_slot: usize,
+    projection: &ReplicatedWeaponProjection,
+    shot: &super::ResolvedWeaponShot,
+) -> ClientPullPresentation {
+    use postretro_foundation::ShotResourceCost;
+    match shot.activation.values.resource_cost {
+        ShotResourceCost::Heat(_) => {
+            if sample_for_slot(projection.overheated, active_slot) == Some(true) {
+                ClientPullPresentation::Silent
+            } else {
+                ClientPullPresentation::Fire
+            }
+        }
+        ShotResourceCost::Cell(cost) => {
+            if matches!(sample_for_slot(projection.cell, active_slot), Some(Some(charge)) if charge < cost)
+            {
+                ClientPullPresentation::DryFire
+            } else {
+                ClientPullPresentation::Fire
+            }
+        }
+        ShotResourceCost::Ammo(cost) => {
+            let (Some(Some(magazine)), Some(reload_active)) = (
+                sample_for_slot(projection.magazine, active_slot),
+                sample_for_slot(projection.reload_active, active_slot),
+            ) else {
+                return ClientPullPresentation::Fire;
+            };
+            let reloading = if reload_active {
+                let Some(progress) = sample_for_slot(projection.reload_progress, active_slot)
+                else {
+                    return ClientPullPresentation::Fire;
+                };
+                progress < 1.0
+            } else {
+                false
+            };
+            let per_shell = weapon
+                .effective()
+                .ammo
+                .is_some_and(|ammo| ammo.reload_style == ReloadStyle::PerShell);
+            if reloading && !(per_shell && magazine >= cost as f32) {
+                ClientPullPresentation::Silent
+            } else if magazine >= cost as f32 {
+                ClientPullPresentation::Fire
+            } else {
+                ClientPullPresentation::DryFire
+            }
+        }
+        ShotResourceCost::None => ClientPullPresentation::Fire,
     }
 }

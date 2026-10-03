@@ -29,10 +29,10 @@ fn action(multiplier: f32) -> WeaponActivationDescriptor {
         full_ms: 1000.0,
     });
     result.steps = vec![ActivationStepDescriptor::Shot {
-        scale: ShotScaleDescriptor {
+        scale: Box::new(ShotScaleDescriptor {
             damage: curve(multiplier),
             ..Default::default()
-        },
+        }),
     }];
     result
 }
@@ -133,10 +133,10 @@ fn authoring_rejects_store_owned_boolean_and_overbudget_ir() {
         },
     ] {
         descriptor.steps = vec![ActivationStepDescriptor::Shot {
-            scale: ShotScaleDescriptor {
+            scale: Box::new(ShotScaleDescriptor {
                 damage: NumberOrIr::Ir(node),
                 ..Default::default()
-            },
+            }),
         }];
         assert!(descriptor.validate("fixture").is_err());
     }
@@ -150,10 +150,10 @@ fn authoring_rejects_store_owned_boolean_and_overbudget_ir() {
         };
     }
     descriptor.steps = vec![ActivationStepDescriptor::Shot {
-        scale: ShotScaleDescriptor {
+        scale: Box::new(ShotScaleDescriptor {
             damage: NumberOrIr::Ir(node),
             ..Default::default()
-        },
+        }),
     }];
     assert!(descriptor.validate("fixture").is_err());
     fn tree(depth: usize) -> IrNode {
@@ -167,10 +167,10 @@ fn authoring_rejects_store_owned_boolean_and_overbudget_ir() {
         }
     }
     descriptor.steps = vec![ActivationStepDescriptor::Shot {
-        scale: ShotScaleDescriptor {
+        scale: Box::new(ShotScaleDescriptor {
             damage: NumberOrIr::Ir(tree(8)),
             ..Default::default()
-        },
+        }),
     }];
     assert!(descriptor.validate("fixture").is_err());
 }
@@ -178,10 +178,10 @@ fn authoring_rejects_store_owned_boolean_and_overbudget_ir() {
 fn scaled_values_reject_overflow_and_round_ammo_up_before_debit() {
     let mut descriptor = action(3.0);
     descriptor.steps = vec![ActivationStepDescriptor::Shot {
-        scale: ShotScaleDescriptor {
+        scale: Box::new(ShotScaleDescriptor {
             resource_cost: 0.25.into(),
             ..Default::default()
-        },
+        }),
     }];
     let compiled = CompiledActivation::compile(&descriptor, "fixture").unwrap();
     let scales = compiled.resolve_scales(0, 1.0).unwrap();
@@ -272,7 +272,9 @@ fn invalid_intermediate_arithmetic_cannot_be_hidden_by_later_addition() {
             } else {
                 scale.damage = NumberOrIr::Ir(node.clone());
             }
-            descriptor.steps = vec![ActivationStepDescriptor::Shot { scale }];
+            descriptor.steps = vec![ActivationStepDescriptor::Shot {
+                scale: Box::new(scale),
+            }];
             let compiled = CompiledActivation::compile(&descriptor, "fixture").unwrap();
             assert_eq!(
                 compiled.resolve_scales(0, 1.0).unwrap_err().field,

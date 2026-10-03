@@ -67,7 +67,9 @@ impl Default for ShotScaleDescriptor {
 pub enum ActivationStepDescriptor {
     Shot {
         #[serde(default)]
-        scale: ShotScaleDescriptor,
+        // Authoring-only indirection; serde retains the same scale object.
+        // Fixed-tick execution reads the separately installed compiled program.
+        scale: Box<ShotScaleDescriptor>,
     },
     Wait {
         #[serde(rename = "durationMs")]
@@ -96,7 +98,7 @@ impl WeaponActivationDescriptor {
             trigger,
             recovery_ms,
             steps: vec![ActivationStepDescriptor::Shot {
-                scale: ShotScaleDescriptor::default(),
+                scale: Box::default(),
             }],
             charge: None,
             sounds: None,
@@ -122,11 +124,13 @@ impl WeaponActivationDescriptor {
                 ("impact", emits.impact.as_deref()),
             ] {
                 if let Some(alias) = alias
-                    && (alias.trim().is_empty() || alias == field)
+                    && (alias.trim().is_empty()
+                        || alias.len() > crate::MAX_DESCRIPTOR_CUE_NAME_BYTES
+                        || alias == field)
                 {
                     return Err(DescriptorError::InvalidShape {
                         reason: format!(
-                            "`{path}.emits.{field}` must be non-empty and differ from the built-in `{field}` address"
+                            "`{path}.emits.{field}` must be non-empty, at most 256 UTF-8 bytes, and differ from the built-in `{field}` address"
                         ),
                     });
                 }

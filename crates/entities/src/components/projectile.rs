@@ -15,6 +15,10 @@ use crate::registry::EntityId;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProjectileComponent {
     #[serde(default)]
+    pub source_sounds: Option<std::sync::Arc<postretro_foundation::ActivationSounds>>,
+    #[serde(default = "default_predicted_visible")]
+    pub predicted_visible: bool,
+    #[serde(default)]
     pub source_action: Option<std::sync::Arc<postretro_foundation::WeaponActivationDescriptor>>,
     #[serde(default)]
     pub source_shot: Option<postretro_foundation::ShotId>,
@@ -69,6 +73,10 @@ pub struct ProjectileComponent {
     /// activation's key, so its impacts group by its own id.
     #[serde(default)]
     pub activation: Option<EntityId>,
+}
+
+fn default_predicted_visible() -> bool {
+    true
 }
 
 /// Presentation-only timing for a projectile replicated as a visual entity.

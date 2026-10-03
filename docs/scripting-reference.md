@@ -293,7 +293,9 @@ An action has `{ trigger, recoveryMs, steps, charge?, sounds?, emits? }`:
 | `steps` | `ActivationStepDescriptor[]` | At most 64 steps and 16 shots. First and last must be shots, with at least one positive wait between shots. |
 | `charge` | `{ minMs, fullMs }` (optional) | Finite milliseconds: `0 <= minMs <= fullMs`, `0 < fullMs <= 60000`. Press starts charge; release before `minMs` cancels without spending. Other releases execute using frozen charge. Holding at full charge does not fire. |
 | `sounds` | `{ fire?, impact? }` (optional) | Each authored field overrides the weapon's sound default for that action. A delayed impact uses its originating action's sound. |
-| `emits` | `{ activate?, impact? }` (optional) | Adds named reaction dispatch alongside each built-in event. Aliases must be non-empty and differ from `activate` or `impact` respectively. |
+| `emits` | `{ activate?, impact? }` (optional) | Adds named reaction dispatch alongside each built-in event. Aliases must be non-empty, at most 256 UTF-8 bytes, and differ from `activate` or `impact` respectively. |
+
+Descriptor sound keys, including weapon defaults/action overrides and AI attack sounds, are limited to 256 UTF-8 bytes so reliable observer cues preserve every valid authored key.
 
 `activation.shot({ scale? })` emits `{ kind: "shot", scale? }`.
 `activation.wait(ms)` emits `{ kind: "wait", durationMs: ms }`. Waits must be
@@ -2280,6 +2282,16 @@ so stale feedback does not replay indefinitely. Ammo always publishes the latest
 authoritative count.
 
 ### The readonly weapon-resource slots
+
+`player.weaponCharging` is a local readonly boolean for the active weapon's
+charging action. `player.weaponChargeProgress` is its readonly progress from `0`
+to `1`, sampled from fixed simulation ticks on both host and connected client.
+Bind a `Bar` to the progress with `max: 1` and show it with
+`visibleWhen: stateEquals(player.weaponCharging, true)`. Release, cancellation,
+switching, death, and becoming unarmed clear both values. Input suspension hides
+the captured charge immediately even when a rendered frame runs no simulation
+tick; render-only frames never advance progress. These facts describe action
+charging separately from the weapon's cell resource below.
 
 These slots describe the resource of the weapon you're holding. They are readonly, engine-owned, and visible only to the owning player. They follow the pattern the health bar uses: a raw value plus a companion maximum, so a `Bar` binds the value and takes its `max` from the capacity slot.
 

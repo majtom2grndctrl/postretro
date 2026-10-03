@@ -57,6 +57,7 @@ struct RecordedCommand {
 impl RecordedCommand {
     fn to_sim_command(self) -> SimCommand {
         SimCommand {
+            input_tick: 0,
             secondary_button: crate::weapon::FireButtonState {
                 pressed: false,
                 active: false,
@@ -179,8 +180,9 @@ impl SimHarness {
         }
     }
 
-    fn tick(&mut self, command: RecordedCommand) {
-        let sim_command = command.to_sim_command();
+    fn tick(&mut self, input_tick: u32, command: RecordedCommand) {
+        let mut sim_command = command.to_sim_command();
+        sim_command.input_tick = input_tick;
         let _ = simulate_tick(
             self.registry.clone(),
             &self.world,
@@ -388,8 +390,8 @@ fn measure_forced_rounding_divergence(commands: &[RecordedCommand]) -> Divergenc
     let mut measurement = DivergenceMeasurement::default();
 
     for (tick, command) in commands.iter().copied().enumerate() {
-        baseline.tick(command);
-        rounded.tick(command);
+        baseline.tick(tick as u32, command);
+        rounded.tick(tick as u32, command);
         let current = compare_samples(&baseline.samples(), &rounded.samples());
         measurement.max = measurement.max.max(current);
         measurement.final_sample = current;

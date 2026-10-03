@@ -473,7 +473,7 @@ pub struct WeaponSounds {
     /// Played at the firing pawn on `dry_fire`.
     #[serde(default)]
     pub dry_fire: Option<String>,
-    /// Played once per activation per tick, at the contact nearest the listener.
+    /// Played once per shot per tick, at the contact nearest the listener.
     #[serde(default)]
     pub impact: Option<String>,
     #[serde(default)]

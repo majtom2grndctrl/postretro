@@ -10,6 +10,9 @@ use postretro_foundation::{ActivationId, ActivationToken, activation_duration_ti
 use postretro_net::transport::NetServer;
 use postretro_net::wire;
 
+#[cfg(test)]
+mod conditioned_tests;
+
 fn wire_token(token: ActivationToken) -> wire::WireActivationToken {
     wire::WireActivationToken {
         start_tick: token.start_tick,

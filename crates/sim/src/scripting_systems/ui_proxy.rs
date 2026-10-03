@@ -1,6 +1,6 @@
 // Player state publisher. Host publishes authoritative health at each impact seam and
 // republishes health, ammo, heat/cell, and reload slots for HUD consumers after game logic;
-// every role publishes the local display-only weapon name, spread and resource-kind slots.
+// every role publishes local weapon names, spread, charging and resource-kind slots.
 // See: context/lib/scripting.md §5 "Durable State Store"
 
 use std::collections::HashSet;
@@ -16,6 +16,7 @@ use postretro_entities::ctx::ScriptCtx;
 use postretro_entities::provenance::DescriptorProvenance;
 use postretro_entities::registry::{EntityId, EntityRegistry};
 use postretro_entities::slot_table::{SlotOwnership, SlotValue};
+use postretro_foundation::ActivationToken;
 
 /// Read the current and maximum HP of the player pawn resolved by the local
 /// player marker, with legacy fallback to the first entity carrying
@@ -39,6 +40,7 @@ struct WeaponHudValues {
     reload_progress: f32,
     reload_active: bool,
     effective_spread_degrees: f32,
+    charging: Option<(ActivationToken, f32)>,
 }
 
 /// Heat and cell use the health pattern: raw value plus a companion max.
@@ -89,11 +91,10 @@ fn weapon_hud_values(registry: &EntityRegistry) -> WeaponHudValues {
     let Some(pawn) = registry.local_player_movement_pawn() else {
         return WeaponHudValues::default();
     };
-    let Some(weapon_id) = registry
-        .get_component::<Inventory>(pawn)
-        .ok()
-        .and_then(Inventory::active_wieldable)
-    else {
+    let Ok(inventory) = registry.get_component::<Inventory>(pawn) else {
+        return WeaponHudValues::default();
+    };
+    let Some(weapon_id) = inventory.active_wieldable() else {
         return WeaponHudValues::default();
     };
     let Ok(weapon) = registry.get_component::<WeaponComponent>(weapon_id) else {
@@ -123,7 +124,41 @@ fn weapon_hud_values(registry: &EntityRegistry) -> WeaponHudValues {
         reload_progress: progress,
         reload_active: active,
         effective_spread_degrees: weapon.effective_spread_degrees(horizontal_speed, run_speed),
+        charging: weapon_charge_values(registry, pawn, inventory, weapon),
     }
+}
+
+/// Sample only the installed active lane's fixed-tick cursor. Repeated rendered
+/// frames cannot advance this value, and switching/death clears it before the
+/// simulation has had another opportunity to cancel the component.
+fn weapon_charge_values(
+    registry: &EntityRegistry,
+    pawn: EntityId,
+    inventory: &Inventory,
+    weapon: &WeaponComponent,
+) -> Option<(ActivationToken, f32)> {
+    if inventory.switch_target.is_some()
+        || crate::scripting_systems::health::is_terminally_committed_to_removal(registry, pawn)
+        || registry
+            .get_component::<postretro_entities::components::health::HealthComponent>(pawn)
+            .is_ok_and(|health| health.current <= 0.0 || !health.current.is_finite())
+    {
+        return None;
+    }
+    let postretro_entities::components::wieldable_state::WieldableState::Charging(cursor) =
+        weapon.state
+    else {
+        return None;
+    };
+    let timing = crate::weapon::execution::action_program(weapon, cursor.token.lane)?
+        .timing
+        .charge?;
+    let fixed_tick = cursor.last_advanced_tick.unwrap_or(cursor.accepted_tick);
+    let elapsed_ticks = fixed_tick.wrapping_sub(cursor.accepted_tick);
+    Some((
+        cursor.token,
+        elapsed_ticks.min(timing.full_ticks) as f32 / timing.full_ticks as f32,
+    ))
 }
 
 /// Read the local display-only switching state from the owning pawn's inventory.
@@ -163,6 +198,9 @@ pub struct PlayerHudStatePublisher {
     /// Input-layer cursor selection. It is local on every role and deliberately
     /// never enters `Inventory`, simulation, or replication.
     pending_weapon_slot: Option<usize>,
+    /// Presentation cancellation persists across zero-tick focus-return frames.
+    /// Instance and token matching leaves a newer activation visible.
+    charge_presentation_suppression: Option<(EntityId, ActivationToken)>,
 }
 
 impl PlayerHudStatePublisher {
@@ -173,12 +211,22 @@ impl PlayerHudStatePublisher {
             invalid_max_warned_for: None,
             write_failure_warned_slots: HashSet::new(),
             pending_weapon_slot: None,
+            charge_presentation_suppression: None,
         }
     }
 
     /// Set the input layer's local pending cursor for this frame's HUD publish.
     pub fn set_pending_weapon_slot(&mut self, pending_weapon_slot: Option<usize>) {
         self.pending_weapon_slot = pending_weapon_slot;
+    }
+
+    /// Hide only the captured activation until fixed-tick cancellation settles.
+    /// This changes HUD presentation without advancing or mutating execution.
+    pub fn set_charge_presentation_suppression(
+        &mut self,
+        suppression: Option<(EntityId, ActivationToken)>,
+    ) {
+        self.charge_presentation_suppression = suppression;
     }
 
     fn write_hud_slot(&mut self, name: &'static str, value: SlotValue) -> bool {
@@ -368,6 +416,17 @@ impl PlayerHudStatePublisher {
         self.write_hud_slot(
             "player.spread",
             SlotValue::Number(values.effective_spread_degrees),
+        );
+        let charging = values.charging.filter(|(token, _)| {
+            self.charge_presentation_suppression != values.sampled.map(|weapon| (weapon, *token))
+        });
+        self.write_hud_slot(
+            "player.weaponCharging",
+            SlotValue::Boolean(charging.is_some()),
+        );
+        self.write_hud_slot(
+            "player.weaponChargeProgress",
+            SlotValue::Number(charging.map_or(0.0, |(_, progress)| progress)),
         );
         // The kind follows the local active weapon, like the weapon name: the
         // host's owner-private projection has no per-pawn source for it. With
@@ -1643,6 +1702,321 @@ mod tests {
 
     fn slot(ctx: &ScriptCtx, name: &str) -> Option<SlotValue> {
         ctx.slot_table.borrow().get(name).unwrap().value.clone()
+    }
+
+    fn equip_charged_weapon(ctx: &ScriptCtx, pawn: EntityId) -> EntityId {
+        let descriptor: WeaponDescriptor = serde_json::from_value(serde_json::json!({
+            "damage": 10.0,
+            "range": 64.0,
+            "resolution": "hitscan",
+            "primary": {
+                "trigger": "press", "recoveryMs": 100.0,
+                "charge": { "minMs": 200.0, "fullMs": 1000.0 },
+                "steps": [{ "kind": "shot" }]
+            },
+            "secondary": {
+                "trigger": "press", "recoveryMs": 200.0,
+                "charge": { "minMs": 200.0, "fullMs": 2000.0 },
+                "steps": [{ "kind": "shot" }]
+            }
+        }))
+        .unwrap();
+        let mut registry = ctx.registry.borrow_mut();
+        let weapon = registry.spawn(Transform::default());
+        registry
+            .set_component(weapon, WeaponComponent::from_descriptor(&descriptor))
+            .unwrap();
+        let mut inventory = Inventory::default();
+        inventory.wieldables[0] = Some(weapon);
+        registry.set_component(pawn, inventory).unwrap();
+        weapon
+    }
+
+    fn advance_charge_for_hud(
+        ctx: &ScriptCtx,
+        weapon: EntityId,
+        tick: u32,
+        input: postretro_foundation::ActivationInput,
+    ) -> crate::weapon::execution::WeaponActivationAdvance {
+        use crate::weapon::FireButtonState;
+        use crate::weapon::execution::ActivationCommand;
+        use postretro_foundation::ActivationLane;
+
+        let mut registry = ctx.registry.borrow_mut();
+        let mut component = registry
+            .get_component::<WeaponComponent>(weapon)
+            .unwrap()
+            .clone();
+        let active_lane = input.initiation.map(|token| token.lane).or_else(|| {
+            component
+                .state
+                .activation_cursor()
+                .map(|cursor| cursor.token.lane)
+        });
+        let button = |lane| FireButtonState {
+            pressed: input.initiation.is_some_and(|token| token.lane == lane),
+            active: active_lane == Some(lane) && input.release.is_none() && input.cancel.is_none(),
+        };
+        let result = crate::weapon::activation_prediction::advance_predicted_weapon_tick(
+            &mut component,
+            ActivationCommand {
+                tick,
+                pawn: 1,
+                real_command: true,
+                input,
+                controller_starts: false,
+                primary: button(ActivationLane::Primary),
+                secondary: button(ActivationLane::Secondary),
+            },
+            false,
+            1000.0 / 60.0,
+            true,
+        );
+        registry.set_component(weapon, component).unwrap();
+        result
+    }
+
+    fn hold_charge_for_hud(
+        ctx: &ScriptCtx,
+        weapon: EntityId,
+        token: ActivationToken,
+        held_ticks: u32,
+    ) {
+        for elapsed in 0..=held_ticks {
+            advance_charge_for_hud(
+                ctx,
+                weapon,
+                token.start_tick.wrapping_add(elapsed),
+                postretro_foundation::ActivationInput {
+                    initiation: (elapsed == 0).then_some(token),
+                    ..Default::default()
+                },
+            );
+        }
+    }
+
+    fn assert_charge_hud(ctx: &ScriptCtx, charging: bool, progress: f32) {
+        assert_eq!(
+            slot(ctx, "player.weaponCharging"),
+            Some(SlotValue::Boolean(charging))
+        );
+        let Some(SlotValue::Number(actual)) = slot(ctx, "player.weaponChargeProgress") else {
+            panic!("charge progress must be a number");
+        };
+        assert!((actual - progress).abs() < 1e-6, "{actual} != {progress}");
+    }
+
+    #[test]
+    fn weapon_charge_hud_tracks_fixed_ticks_and_clears_after_release() {
+        use postretro_foundation::{ActivationInput, ActivationLane, ActivationRelease};
+
+        let ctx = ScriptCtx::new();
+        let pawn = spawn_pawn_with_health(&ctx, 100.0);
+        let weapon = equip_charged_weapon(&ctx, pawn);
+        let token = ActivationToken {
+            start_tick: 10,
+            lane: ActivationLane::Primary,
+        };
+        let mut publisher = PlayerHudStatePublisher::new(ctx.clone());
+        hold_charge_for_hud(&ctx, weapon, token, 30);
+        publisher.tick(None);
+        assert_charge_hud(&ctx, true, 0.5);
+
+        for tick in 41..=75 {
+            advance_charge_for_hud(&ctx, weapon, tick, ActivationInput::default());
+        }
+        publisher.tick(None);
+        assert_charge_hud(&ctx, true, 1.0);
+        let released = advance_charge_for_hud(
+            &ctx,
+            weapon,
+            76,
+            ActivationInput {
+                release: Some(ActivationRelease {
+                    token,
+                    release_tick: 76,
+                }),
+                ..Default::default()
+            },
+        );
+        assert!(
+            released.shot.is_some(),
+            "a valid release executes through the shared machine"
+        );
+        publisher.tick(None);
+        assert_charge_hud(&ctx, false, 0.0);
+    }
+
+    #[test]
+    fn weapon_charge_hud_connected_client_reads_secondary_lane_and_clears_cancel() {
+        use postretro_foundation::{ActivationInput, ActivationLane};
+
+        let ctx = ScriptCtx::new();
+        let pawn = spawn_pawn_with_health(&ctx, 100.0);
+        let weapon = equip_charged_weapon(&ctx, pawn);
+        let token = ActivationToken {
+            start_tick: 0,
+            lane: ActivationLane::Secondary,
+        };
+        let mut publisher = PlayerHudStatePublisher::new(ctx.clone());
+        hold_charge_for_hud(&ctx, weapon, token, 60);
+        publisher.tick_for_role(true, None);
+        assert_charge_hud(&ctx, true, 0.5);
+        assert_eq!(
+            slot(&ctx, "player.health"),
+            None,
+            "connected client still suppresses authoritative health writes"
+        );
+
+        let cancelled = advance_charge_for_hud(
+            &ctx,
+            weapon,
+            61,
+            ActivationInput {
+                cancel: Some(token),
+                ..Default::default()
+            },
+        );
+        assert!(cancelled.shot.is_none());
+        publisher.tick_for_role(true, None);
+        assert_charge_hud(&ctx, false, 0.0);
+    }
+
+    #[test]
+    fn weapon_charge_hud_clears_on_switch_unarmed_death_and_early_release() {
+        use postretro_foundation::{ActivationInput, ActivationLane, ActivationRelease};
+
+        for transition in ["switch", "unarmed", "death", "early-release"] {
+            let ctx = ScriptCtx::new();
+            let pawn = spawn_pawn_with_health(&ctx, 100.0);
+            let weapon = equip_charged_weapon(&ctx, pawn);
+            let token = ActivationToken {
+                start_tick: 0,
+                lane: ActivationLane::Primary,
+            };
+            let mut publisher = PlayerHudStatePublisher::new(ctx.clone());
+            hold_charge_for_hud(&ctx, weapon, token, 5);
+            publisher.tick(None);
+            assert_charge_hud(&ctx, true, 5.0 / 60.0);
+            match transition {
+                "switch" => {
+                    let mut registry = ctx.registry.borrow_mut();
+                    let mut inventory = registry.get_component::<Inventory>(pawn).unwrap().clone();
+                    inventory.switch_target = Some(1);
+                    registry.set_component(pawn, inventory).unwrap();
+                }
+                "unarmed" => {
+                    let mut registry = ctx.registry.borrow_mut();
+                    let mut inventory = registry.get_component::<Inventory>(pawn).unwrap().clone();
+                    inventory.wieldables[0] = None;
+                    registry.set_component(pawn, inventory).unwrap();
+                }
+                "death" => {
+                    let mut registry = ctx.registry.borrow_mut();
+                    let mut health = registry
+                        .get_component::<HealthComponent>(pawn)
+                        .unwrap()
+                        .clone();
+                    health.current = 0.0;
+                    registry.set_component(pawn, health).unwrap();
+                }
+                "early-release" => {
+                    let result = advance_charge_for_hud(
+                        &ctx,
+                        weapon,
+                        6,
+                        ActivationInput {
+                            release: Some(ActivationRelease {
+                                token,
+                                release_tick: 6,
+                            }),
+                            ..Default::default()
+                        },
+                    );
+                    assert!(result.shot.is_none());
+                }
+                _ => unreachable!(),
+            }
+            publisher.tick(None);
+            assert_charge_hud(&ctx, false, 0.0);
+        }
+    }
+
+    // Regression: focus return without a fixed tick must not reveal cancelled charge.
+    #[test]
+    fn weapon_charge_hud_zero_tick_suppression_persists_but_new_token_is_visible() {
+        use postretro_foundation::{ActivationInput, ActivationLane};
+
+        let ctx = ScriptCtx::new();
+        let pawn = spawn_pawn_with_health(&ctx, 100.0);
+        let weapon = equip_charged_weapon(&ctx, pawn);
+        let token = ActivationToken {
+            start_tick: 0,
+            lane: ActivationLane::Primary,
+        };
+        hold_charge_for_hud(&ctx, weapon, token, 30);
+        let before = ctx
+            .registry
+            .borrow()
+            .get_component::<WeaponComponent>(weapon)
+            .unwrap()
+            .state;
+        let mut publisher = PlayerHudStatePublisher::new(ctx.clone());
+        publisher.tick_for_role(true, None);
+        assert_charge_hud(&ctx, true, 0.5);
+        publisher.set_charge_presentation_suppression(Some((weapon, token)));
+        for _ in 0..3 {
+            publisher.tick_for_role(true, None);
+            assert_charge_hud(&ctx, false, 0.0);
+        }
+        assert_eq!(
+            ctx.registry
+                .borrow()
+                .get_component::<WeaponComponent>(weapon)
+                .unwrap()
+                .state,
+            before,
+            "HUD publication does not advance or mutate the cursor"
+        );
+
+        advance_charge_for_hud(
+            &ctx,
+            weapon,
+            31,
+            ActivationInput {
+                cancel: Some(token),
+                ..Default::default()
+            },
+        );
+        let newer = ActivationToken {
+            start_tick: 32,
+            ..token
+        };
+        hold_charge_for_hud(&ctx, weapon, newer, 30);
+        publisher.tick_for_role(true, None);
+        assert_charge_hud(&ctx, true, 0.5);
+
+        let replacement = equip_charged_weapon(&ctx, pawn);
+        publisher.set_charge_presentation_suppression(Some((weapon, newer)));
+        hold_charge_for_hud(&ctx, replacement, newer, 30);
+        publisher.tick_for_role(true, None);
+        assert_charge_hud(&ctx, true, 0.5);
+    }
+
+    #[test]
+    fn weapon_charge_hud_uses_wrap_safe_fixed_ticks() {
+        use postretro_foundation::ActivationLane;
+
+        let ctx = ScriptCtx::new();
+        let pawn = spawn_pawn_with_health(&ctx, 100.0);
+        let weapon = equip_charged_weapon(&ctx, pawn);
+        let token = ActivationToken {
+            start_tick: u32::MAX - 15,
+            lane: ActivationLane::Primary,
+        };
+        hold_charge_for_hud(&ctx, weapon, token, 30);
+        PlayerHudStatePublisher::new(ctx.clone()).tick(None);
+        assert_charge_hud(&ctx, true, 0.5);
     }
 
     fn heat_resource() -> serde_json::Value {

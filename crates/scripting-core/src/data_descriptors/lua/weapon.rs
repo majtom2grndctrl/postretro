@@ -24,6 +24,7 @@ pub(super) fn weapon_descriptor_from_lua(
     descriptor.validate()
 }
 
+/// Reject unsupported VM values before the JSON bridge can treat them as omission.
 fn validate_optional_weapon_model_paths_lua(weapon: &Table) -> Result<(), DescriptorError> {
     for field in ["thirdPersonModel", "viewmodel"] {
         if !weapon.contains_key(field).map_err(lua_err)? {
@@ -43,6 +44,7 @@ fn validate_optional_weapon_model_paths_lua(weapon: &Table) -> Result<(), Descri
     Ok(())
 }
 
+/// Preserve malformed sound-key evidence before the JSON bridge coerces it to null.
 fn validate_optional_weapon_sound_keys_lua(weapon: &Table) -> Result<(), DescriptorError> {
     let Some(sounds) =
         optional_table_field_lua(weapon, "sounds", "components.weapon.sounds", true)?
@@ -67,6 +69,7 @@ fn validate_optional_weapon_sound_keys_lua(weapon: &Table) -> Result<(), Descrip
     Ok(())
 }
 
+/// Authored placement must not disappear when unsupported VM values become JSON null.
 fn validate_optional_weapon_placement_shape_lua(weapon: &Table) -> Result<(), DescriptorError> {
     optional_table_field_lua(weapon, "placement", "components.weapon.placement", true)?;
     Ok(())

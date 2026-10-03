@@ -492,13 +492,13 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .finish();
     registry
         .register_type("ActivationSounds")
-        .doc("Action-specific fire and impact sound keys. Each authored field overrides its weapon default; omission inherits that default. Uses the originating action for delayed impacts.")
+        .doc("Action-specific fire and impact sound keys, at most 256 UTF-8 bytes each. Each authored field overrides its weapon default; omission inherits that default. Uses the originating action for delayed impacts.")
         .field("fire?", "String", "Override the weapon fire sound for every accepted shot. A sound key under the mod sounds/ tree, without its extension.")
         .field("impact?", "String", "Override the weapon impact sound. Existing per-shot/per-tick contact aggregation applies.")
         .finish();
     registry
         .register_type("ActivationEmits")
-        .doc("Optional named reactions dispatched alongside built-in activate/impact events. Aliases must be non-empty and differ from the built-in address.")
+        .doc("Optional named reactions dispatched alongside built-in activate/impact events. Aliases must be non-empty, at most 256 UTF-8 bytes, and differ from the built-in address.")
         .field("activate?", "String", "Additional activate reaction name, fired once per accepted shot; cannot equal `activate`.")
         .field("impact?", "String", "Additional impact reaction name with the originating action's provenance; cannot equal `impact`.")
         .finish();
@@ -562,7 +562,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field("creditSource?", "String", "Optional combat attribution source id for this weapon. Must be non-empty ASCII, at most 64 bytes, and use only [A-Za-z0-9_.:-]. Omit to use the resolved canonical weapon name at spawn.")
         .field("thirdPersonModel?", "String", "Optional content-relative rigid prop model mounted in a remote or local player's third-person hand socket. Must be non-empty, use forward slashes, and contain neither an absolute path nor parent traversal.")
         .field("viewmodel?", "String", "Optional content-relative model rendered as this weapon's first-person viewmodel. Must be non-empty, use forward slashes, and contain neither an absolute path nor parent traversal.")
-        .field("sounds?", "WeaponSounds", "Optional sound keys for this weapon's events, played whoever wields it. Each key names a sound under the mod's `sounds/` directory without its extension (`sfx/pistol_fire`). Presentation only; never replicated.")
+        .field("sounds?", "WeaponSounds", "Optional sound keys for this weapon's events, played whoever wields it. Each key names a sound under the mod's `sounds/` directory without its extension (`sfx/pistol_fire`). Presentation only; resolved fire/impact keys accompany observer cues, while weapon tuning excludes sound keys.")
         .field("placement?", "WeaponPlacementDescriptor", "Optional per-weapon first-person placement. Position uses metres from screen center (right/up/forward map to +X/+Y/-Z) and rotation uses degrees. Whole-value resolution is per-instance (future) > this field > character (future) > mod `defaultWeaponPlacement` > legacy BASE_OFFSET with zero rotation. v1 supplies no character or per-instance placement. It never changes the third-person hand socket.")
         .field("muzzleOffset?", "[f32; 3]", "Optional model-local [x, y, z] offset in metres in the viewmodel's own frame. Omit it to spawn projectiles at the camera eye; when set, it moves the projectile spawn to the barrel while still converging on the crosshair. Author values come from the viewmodel rigid `muzzle` socket read.")
         .field("resource?", "WeaponResource", "Optional weapon resource tuning. Omit to preserve unlimited-fire behavior.")

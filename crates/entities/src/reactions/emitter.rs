@@ -53,8 +53,8 @@ impl ImpactContact {
 }
 
 // Named gameplay events paired with their emitters. The simulation hands these
-// to the app drain, which fires each address and resolves each sound from the
-// emitter and the descriptor identity it carries.
+// to the app drain, which fires each address. Weapon fire/impact cues use captured
+// effective sound keys; other cues resolve through the carried descriptor identity.
 
 /// A player-movement event (`landed`, `jumped`, state edges) on its pawn.
 #[derive(Debug, Clone, PartialEq)]
@@ -68,6 +68,7 @@ pub struct MovementEmission {
 /// wielded it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct WeaponEmission {
+    pub sounds: Option<std::sync::Arc<postretro_foundation::ActivationSounds>>,
     pub action: Option<std::sync::Arc<postretro_foundation::WeaponActivationDescriptor>>,
     pub shot_id: Option<postretro_foundation::ShotId>,
     pub address: &'static str,
@@ -80,6 +81,7 @@ pub struct WeaponEmission {
 /// plays on entry regardless.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AiEmission {
+    pub sounds: Option<std::sync::Arc<postretro_foundation::ActivationSounds>>,
     pub action: Option<std::sync::Arc<postretro_foundation::WeaponActivationDescriptor>>,
     pub shot_id: Option<postretro_foundation::ShotId>,
     pub address: Option<Cow<'static, str>>,

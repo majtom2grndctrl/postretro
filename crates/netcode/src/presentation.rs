@@ -1153,6 +1153,7 @@ mod tests {
                 local_player: false,
                 entity_class: Some(entity_class.to_string()),
                 active_weapon_archetype: None,
+                projectile_presentation: None,
                 components: vec![ComponentPayload::Transform(WireTransform {
                     position: position.to_array(),
                     rotation: [0.0, 0.0, 0.0, 1.0],
@@ -1429,6 +1430,7 @@ mod tests {
         let mut open_shots = crate::netcode::OpenAuthorizedShots::new();
         open_shots.record(
             AuthorizedShot {
+                sounds: None,
                 action: None,
                 source_weapon: None,
                 knockback: None,

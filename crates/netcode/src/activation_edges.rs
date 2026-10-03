@@ -82,31 +82,60 @@ impl ActivationEdges {
         self.admitted.push_back(token);
         true
     }
-    pub fn deliver(&mut self, command: &mut ActivationInput, tick: u32) {
+    pub fn deliver(
+        &mut self,
+        command: &mut ActivationInput,
+        tick: u32,
+        live: Option<ActivationToken>,
+    ) {
         self.prune(tick);
         command.release = None;
-        command.cancel = self.overflow_cancel.take();
-        if command.cancel.is_some() {
-            return;
+        command.cancel = None;
+        // Queue admission does not authorize a competing start. Its edges must not
+        // displace the execution actually owned by the host ledger.
+        let cancel_edge = self
+            .edges
+            .iter_mut()
+            .filter(|edge| {
+                edge.cancel && !edge.cancel_delivered && self.admitted.contains(&edge.token)
+            })
+            .min_by_key(|edge| live != Some(edge.token));
+        let prefer_retained = cancel_edge
+            .as_ref()
+            .is_some_and(|edge| live == Some(edge.token))
+            && self.overflow_cancel != live;
+        if self.overflow_cancel.is_some() && !prefer_retained {
+            command.cancel = self.overflow_cancel.take();
+        } else if let Some(edge) = cancel_edge {
+            command.cancel = Some(edge.token);
+            edge.cancel_delivered = true;
+            edge.delivered = true;
         }
-        if let Some(edge) = self.edges.iter_mut().find(|e| {
-            (!e.delivered || (e.cancel && !e.cancel_delivered)) && self.admitted.contains(&e.token)
-        }) {
-            if edge.cancel && !edge.cancel_delivered {
-                command.cancel = Some(edge.token);
-                edge.cancel_delivered = true;
-            } else if let Some(release_tick) = edge.release_tick {
-                command.release = Some(ActivationRelease {
-                    token: edge.token,
-                    release_tick,
-                });
-            }
+        if let Some(edge) = self
+            .edges
+            .iter_mut()
+            .filter(|edge| {
+                !edge.delivered
+                    && !edge.cancel
+                    && command.cancel != Some(edge.token)
+                    && edge.release_tick.is_some()
+                    && self.admitted.contains(&edge.token)
+            })
+            .min_by_key(|edge| live != Some(edge.token))
+        {
+            command.release = edge.release_tick.map(|release_tick| ActivationRelease {
+                token: edge.token,
+                release_tick,
+            });
             edge.delivered = true;
         }
     }
     pub fn terminal(&mut self, token: ActivationToken) {
         self.admitted.retain(|admitted| *admitted != token);
         self.edges.retain(|edge| edge.token != token);
+        if self.overflow_cancel == Some(token) {
+            self.overflow_cancel = None;
+        }
         settle(&mut self.settled_start, token);
     }
     fn is_settled(&self, token: ActivationToken) -> bool {
@@ -171,17 +200,39 @@ mod tests {
         };
         edges.observe(release, 10);
         let mut delivered = ActivationInput::default();
-        edges.deliver(&mut delivered, 10);
+        edges.deliver(&mut delivered, 10, None);
         assert_eq!(delivered.release, release.release);
         let cancel = ActivationInput {
             cancel: Some(token),
             ..ActivationInput::default()
         };
         edges.observe(cancel, 11);
-        edges.deliver(&mut delivered, 11);
+        edges.deliver(&mut delivered, 11, None);
         assert_eq!(delivered.cancel, Some(token));
         edges.observe(cancel, 12);
-        edges.deliver(&mut delivered, 12);
+        edges.deliver(&mut delivered, 12, None);
+        assert_eq!(delivered, ActivationInput::default());
+    }
+    #[test]
+    fn activation_edge_same_token_cancel_suppresses_release_without_redelivery() {
+        let token = token(4);
+        let input = ActivationInput {
+            release: Some(ActivationRelease {
+                token,
+                release_tick: 9,
+            }),
+            cancel: Some(token),
+            ..ActivationInput::default()
+        };
+        let mut edges = ActivationEdges::default();
+        edges.admit(token);
+        edges.observe(input, 0);
+        let mut delivered = ActivationInput::default();
+        edges.deliver(&mut delivered, 1, None);
+        assert_eq!(delivered.cancel, Some(token));
+        assert!(delivered.release.is_none());
+        edges.observe(input, 2);
+        edges.deliver(&mut delivered, 2, None);
         assert_eq!(delivered, ActivationInput::default());
     }
     #[test]
@@ -196,7 +247,7 @@ mod tests {
         edges.observe(input, 119);
         edges.admit(token);
         let mut delivered = ActivationInput::default();
-        edges.deliver(&mut delivered, 120);
+        edges.deliver(&mut delivered, 120, None);
         assert!(delivered.cancel.is_none());
     }
     #[test]
@@ -225,10 +276,10 @@ mod tests {
             1,
         );
         let mut delivered = ActivationInput::default();
-        edges.deliver(&mut delivered, 1);
+        edges.deliver(&mut delivered, 1, None);
         assert_eq!(delivered.cancel, Some(active));
         assert_eq!(edges.edges.len(), 64);
-        edges.deliver(&mut delivered, 2);
+        edges.deliver(&mut delivered, 2, None);
         assert_eq!(delivered.cancel, Some(token(0)));
     }
     #[test]
@@ -247,7 +298,7 @@ mod tests {
             0,
         );
         let mut delivered = ActivationInput::default();
-        edges.deliver(&mut delivered, 1);
+        edges.deliver(&mut delivered, 1, None);
         edges.observe(
             ActivationInput {
                 cancel: Some(token),
@@ -255,7 +306,7 @@ mod tests {
             },
             119,
         );
-        edges.deliver(&mut delivered, 120);
+        edges.deliver(&mut delivered, 120, None);
         assert_eq!(delivered.cancel, Some(token));
         edges.observe(
             ActivationInput {
@@ -264,7 +315,7 @@ mod tests {
             },
             121,
         );
-        edges.deliver(&mut delivered, 121);
+        edges.deliver(&mut delivered, 121, None);
         assert!(delivered.cancel.is_none());
     }
     #[test]
@@ -280,10 +331,10 @@ mod tests {
         let mut edges = ActivationEdges::default();
         edges.observe(release, 0);
         let mut delivered = ActivationInput::default();
-        edges.deliver(&mut delivered, 120);
+        edges.deliver(&mut delivered, 120, None);
         edges.observe(release, 121);
         edges.admit(token);
-        edges.deliver(&mut delivered, 122);
+        edges.deliver(&mut delivered, 122, None);
         assert_eq!(delivered, ActivationInput::default());
         assert!(edges.edges.is_empty());
         assert!(edges.admitted.is_empty());
@@ -302,7 +353,7 @@ mod tests {
         };
         edges.observe(release, 0);
         let mut delivered = ActivationInput::default();
-        edges.deliver(&mut delivered, 1);
+        edges.deliver(&mut delivered, 1, None);
         assert_eq!(delivered.release, release.release);
         edges.observe(
             ActivationInput {
@@ -311,9 +362,9 @@ mod tests {
             },
             0,
         );
-        edges.deliver(&mut delivered, 120);
+        edges.deliver(&mut delivered, 120, None);
         edges.observe(release, 121);
-        edges.deliver(&mut delivered, 121);
+        edges.deliver(&mut delivered, 121, None);
         assert_eq!(delivered, ActivationInput::default());
         edges.observe(
             ActivationInput {
@@ -322,7 +373,7 @@ mod tests {
             },
             122,
         );
-        edges.deliver(&mut delivered, 122);
+        edges.deliver(&mut delivered, 122, None);
         assert_eq!(delivered.cancel, Some(live));
     }
 }

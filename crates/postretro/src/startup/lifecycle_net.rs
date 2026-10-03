@@ -132,6 +132,8 @@ impl App {
         self.trigger_pool_report = TriggerPoolInstallReport::default();
         self.client_fire_resolutions.clear();
         self.client_predicted_shots.clear();
+        self.client_weapon.clear();
+        self.observer_weapon_cues.clear();
         self.client_reload_edges = Default::default();
         self.client_overheat_edge = Default::default();
     }

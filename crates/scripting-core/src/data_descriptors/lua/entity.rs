@@ -282,13 +282,10 @@ pub fn entity_faction_name_from_lua(value: LuaValue) -> Result<Option<String>, D
     Ok(Some(name))
 }
 
-/// Luau's generic JSON bridge maps functions/userdata/threads to JSON null.
-/// Reject those values for optional weapon presentation strings before serde
-/// can mistake malformed supplied input for omission.
 /// Reject a supplied unsupported VM value (function, userdata, thread) for an
 /// optional presentation-only string field before Luau's generic JSON bridge
 /// can coerce it to `null` and serde mistakes it for an omitted key. Shared by
-/// the weapon-sound, attack-sound, and behavior-activity-sound guards below.
+/// the weapon-sound, attack-sound, and behavior-activity-sound guards.
 pub(super) fn validate_optional_string_field_lua(
     table: &Table,
     field: &str,
@@ -306,12 +303,8 @@ pub(super) fn validate_optional_string_field_lua(
     })
 }
 
-/// Luau's generic JSON bridge maps functions/userdata/threads to JSON null.
-/// Reject those values for the weapon's presentation-only sound keys before
-/// serde can mistake malformed supplied input for omission. Mirrors
-/// `validate_optional_weapon_model_paths_lua`.
-/// Mirrors [`validate_optional_weapon_sound_keys_lua`] for the behavior
-/// graph's presentation-only sound keys: `AttackParams.sound` (root-only) and
+/// Validate the behavior graph's presentation-only sound keys:
+/// `AttackParams.sound` (root-only) and
 /// `BehaviorActivityDescriptor.sound` (every envelope, root and nested
 /// layers). Walks the raw Luau tables directly, before the JSON bridge can
 /// launder a function/userdata/thread value into `null`.
@@ -378,9 +371,6 @@ fn lua_key_to_string(key: &LuaValue) -> String {
     }
 }
 
-/// Placement is authored presentation data. Reject a supplied unsupported VM
-/// value before the JSON bridge can coerce it to `null` and serde treats it as
-/// an omitted placement.
 /// Mirror of [`mesh_descriptor_from_js`] for Luau tables. Gathers raw fields
 /// and delegates validation to [`MeshDescriptor::build`].
 pub fn mesh_descriptor_from_lua(table: &Table) -> Result<MeshDescriptor, DescriptorError> {

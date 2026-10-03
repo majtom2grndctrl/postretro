@@ -429,6 +429,8 @@ mod tests {
                 },
             ),
             ComponentKind::Projectile => ComponentValue::Projectile(ProjectileComponent {
+                source_sounds: None,
+                predicted_visible: true,
                 activation: None,
                 source_weapon: None,
                 knockback_impulse: [0.0; 3],

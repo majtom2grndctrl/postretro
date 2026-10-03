@@ -241,6 +241,7 @@ fn net_slot_provenance() -> DescriptorProvenance {
 /// stamps the wire `client_tick` from `ClientPrediction::next_client_tick`.
 pub(crate) fn forward_command(dash_pressed: bool) -> SimCommand {
     SimCommand {
+        input_tick: 0,
         secondary_button: crate::weapon::FireButtonState {
             pressed: false,
             active: false,
@@ -270,6 +271,7 @@ pub(crate) fn forward_command(dash_pressed: bool) -> SimCommand {
 
 pub(crate) fn idle_command() -> SimCommand {
     SimCommand {
+        input_tick: 0,
         secondary_button: crate::weapon::FireButtonState {
             pressed: false,
             active: false,

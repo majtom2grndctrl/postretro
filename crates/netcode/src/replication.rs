@@ -2,7 +2,7 @@
 // Produces owned snapshots for the registry-blind net-crate boundary.
 // See: context/lib/networking.md
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use postretro_net::replication::EntitySnapshot;
 use postretro_net::wire::{ComponentPayload, WireKinematicMoverState, WireMeshAnimationState};
@@ -33,6 +33,7 @@ use super::{
 #[derive(Debug, Default)]
 pub struct ReplicableSet {
     registered: HashSet<EntityId>,
+    projectile_presentations: HashMap<EntityId, postretro_net::wire::WireProjectilePresentation>,
 }
 
 impl ReplicableSet {
@@ -51,6 +52,17 @@ impl ReplicableSet {
     /// Stop replicating an entity (e.g. it despawned in game logic). Idempotent.
     pub(crate) fn unregister(&mut self, id: EntityId) {
         self.registered.remove(&id);
+        self.projectile_presentations.remove(&id);
+    }
+
+    pub(crate) fn register_projectile_presentation(
+        &mut self,
+        id: EntityId,
+        facts: postretro_net::wire::WireProjectilePresentation,
+    ) {
+        debug_assert!(facts.is_valid());
+        self.register(id);
+        self.projectile_presentations.insert(id, facts);
     }
 
     /// Membership test. Only the `is_replicable` predicate and lifecycle tests
@@ -158,6 +170,7 @@ pub(crate) fn produce_owned_snapshots_with_host_aim(
             last_processed_client_tick,
             entity_class,
             active_weapon_archetype,
+            projectile_presentation: set.projectile_presentations.get(&id).copied(),
         });
     }
     snapshots

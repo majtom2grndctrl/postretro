@@ -7,9 +7,11 @@ mod machine;
 pub(crate) mod resource;
 mod state;
 
+#[cfg(any(test, feature = "test-support"))]
+pub(super) use commands::run_local_weapon_command;
 pub(super) use commands::{
     LocalWeaponCommandResult, normalize_all_inventory_liveness, normalize_inventory_liveness,
-    refuse_local_switch, run_local_weapon_command, run_local_weapon_command_with_content,
+    refuse_local_switch, run_client_weapon_equip, run_local_weapon_command_with_content,
     run_remote_weapon_commands, weapon_fire_command,
 };
 pub use commands::{ProjectileSource, projectile_model_body_rotation, spawn_projectile};
@@ -41,8 +43,8 @@ mod tests {
     use crate::kinematic_mover::MoverTickStateTable;
     use crate::scripting_systems::hit_zones::HitZoneStore;
     use crate::sim::tests::{
-        remote_command, run_local_only_tick, run_remote_only_tick, sim_command, spawn_reload_pair,
-        trigger_movement, weapon_component,
+        remote_command, run_local_only_tick, run_remote_only_tick, sim_command, sim_command_at,
+        spawn_reload_pair, trigger_movement, weapon_component,
     };
     use crate::sim::{PostMovementCommand, ReloadDelivery, ReloadOutcome, simulate_tick};
     use crate::sprite_collection::derive_collection_id;
@@ -3839,14 +3841,22 @@ mod tests {
                 outcome: ReloadOutcome::Started,
             }]
         );
-        let advancing =
-            run_local_only_tick(registry.clone(), weapon, &sim_command(false, false), 0.04);
+        let advancing = run_local_only_tick(
+            registry.clone(),
+            weapon,
+            &sim_command_at(1, false, false),
+            0.04,
+        );
         assert!(advancing.reload_deliveries.is_empty());
 
         // Completion is not a new reload start: transfer settles before fire
         // authorization, so this tick may spend from the refilled magazine.
-        let completed_and_fired =
-            run_local_only_tick(registry.clone(), weapon, &sim_command(true, false), 0.021);
+        let completed_and_fired = run_local_only_tick(
+            registry.clone(),
+            weapon,
+            &sim_command_at(2, true, false),
+            0.021,
+        );
         assert_eq!(
             completed_and_fired.reload_deliveries,
             vec![ReloadDelivery {
@@ -3910,6 +3920,7 @@ mod tests {
         assert_eq!(
             started.reload,
             vec![crate::emission::WeaponEmission {
+                sounds: None,
                 action: None,
                 shot_id: None,
                 address: "reload_started",
@@ -3975,13 +3986,21 @@ mod tests {
 
         // The start-tick latch still performs the normal semi-edge bookkeeping,
         // so release before the next press that is allowed to cancel the loop.
-        let released =
-            run_local_only_tick(registry.clone(), weapon, &sim_command(false, false), 0.0);
+        let released = run_local_only_tick(
+            registry.clone(),
+            weapon,
+            &sim_command_at(1, false, false),
+            0.0,
+        );
         assert!(released.weapon.is_empty());
         assert!(released.reload_deliveries.is_empty());
 
-        let cancelled =
-            run_local_only_tick(registry.clone(), weapon, &sim_command(true, false), 0.0);
+        let cancelled = run_local_only_tick(
+            registry.clone(),
+            weapon,
+            &sim_command_at(2, true, false),
+            0.0,
+        );
         assert_eq!(
             crate::emission::weapon_addresses(&cancelled.weapon),
             vec!["activate"]
@@ -4103,7 +4122,7 @@ mod tests {
         let _ = run_local_only_tick(
             local_registry.clone(),
             local_weapon,
-            &sim_command(false, true),
+            &sim_command_at(1, false, true),
             1.0 / 60.0,
         );
         let _ = run_remote_only_tick(
@@ -4121,7 +4140,7 @@ mod tests {
             let _ = run_local_only_tick(
                 local_registry.clone(),
                 local_weapon,
-                &sim_command(false, false),
+                &sim_command_at(tick, false, false),
                 1.0 / 60.0,
             );
             let _ = run_remote_only_tick(
@@ -4756,6 +4775,8 @@ mod tests {
                 .set_component(
                     projectile,
                     postretro_entities::components::projectile::ProjectileComponent {
+                        source_sounds: None,
+                        predicted_visible: true,
                         source_action: None,
                         source_shot: None,
                         direction: Vec3::NEG_X.to_array(),
@@ -4780,8 +4801,12 @@ mod tests {
                 )
                 .unwrap();
         }
-        let events =
-            run_local_only_tick(registry.clone(), weapon, &sim_command(true, false), 0.016);
+        let events = run_local_only_tick(
+            registry.clone(),
+            weapon,
+            &sim_command_at(1, true, false),
+            0.016,
+        );
         assert_eq!(
             registry
                 .borrow()
@@ -4803,7 +4828,12 @@ mod tests {
             assert_eq!(component.state, WieldableState::Idle);
             assert!(component.cooldown_remaining_ms > 0.0);
         }
-        let later = run_local_only_tick(registry.clone(), weapon, &sim_command(true, false), 1.0);
+        let later = run_local_only_tick(
+            registry.clone(),
+            weapon,
+            &sim_command_at(2, true, false),
+            1.0,
+        );
         assert!(!later.weapon.iter().any(|event| event.address == "activate"));
         assert_eq!(
             registry

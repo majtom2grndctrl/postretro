@@ -51,15 +51,16 @@ pub(crate) fn sim_command_to_input(
 
 /// Inverse of [`sim_command_to_input`]: rebuild the engine `SimCommand` from a
 /// wire `InputCommand`. `wish_dir`'s `[right, forward]` array maps back to the
-/// engine `Vec2` (`x = right, y = forward`); the `client_tick` is wire-only
-/// command-history bookkeeping and is not part of the `SimCommand`, so the caller
-/// reads it off the `InputCommand` separately.
+/// engine `Vec2` (`x = right, y = forward`). `client_tick` becomes the controller's
+/// logical `input_tick`; authoritative remote shot timing keeps its separate
+/// host `fire_tick`.
 //
 // Callers: Task 3 client prediction (`netcode::prediction` rebuilds the
 // `MovementInput` for the movement-only replay) and Task 4 (host applies queued
 // client commands to its sim).
 pub(crate) fn input_command_to_sim(input: &InputCommand) -> SimCommand {
     SimCommand {
+        input_tick: input.client_tick,
         secondary_button: FireButtonState {
             pressed: input.secondary_button.pressed,
             active: input.secondary_button.active,
@@ -147,6 +148,7 @@ mod tests {
 
     pub(super) fn sample_sim_command() -> SimCommand {
         SimCommand {
+            input_tick: 0,
             secondary_button: crate::weapon::FireButtonState {
                 pressed: false,
                 active: false,

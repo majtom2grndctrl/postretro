@@ -387,6 +387,7 @@ fn apply_net_wieldable_tuning(
     let mut descriptor = tuning.weapon_descriptor();
     // Sound keys stay local presentation; every gameplay action field comes
     // from the host row. Preserve only lanes that exist in the host action set.
+    descriptor.sounds = weapon.sounds.as_deref().cloned();
     descriptor.primary.sounds = weapon.primary.sounds.clone();
     if let Some(secondary) = &mut descriptor.secondary {
         secondary.sounds = weapon
@@ -1254,7 +1255,7 @@ mod tests {
         assert!((weapon.bloom_decay_delay_ms - 175.0).abs() < f32::EPSILON);
         assert!((weapon.movement_spread_degrees - 3.0).abs() < f32::EPSILON);
         assert!((weapon.spread_vertical_bias - 0.2).abs() < f32::EPSILON);
-        let resolution = crate::weapon::resolve_client_fire(
+        let resolution = crate::weapon::resolve_test_client_shot(
             None,
             &mut weapon,
             "reference_pistol",
@@ -1784,6 +1785,13 @@ mod tests {
         let local = descriptor.weapon.as_mut().unwrap();
         local.block_during_reload = Some(true);
         local.credit_source = Some("pistol.primary".into());
+        local.sounds = Some(postretro_foundation::WeaponSounds {
+            fire: Some("sfx/local-default-fire".into()),
+            impact: Some("sfx/local-default-impact".into()),
+            dry_fire: Some("sfx/local-empty".into()),
+            ..Default::default()
+        });
+        let local_sounds = local.sounds.clone();
         local.primary.sounds = Some(postretro_foundation::ActivationSounds {
             fire: Some("sfx/local-primary".into()),
             impact: None,
@@ -1824,6 +1832,7 @@ mod tests {
             .unwrap();
         assert_eq!(weapon.damage, 30.0);
         assert_eq!(weapon.credit_source, "pistol.primary");
+        assert_eq!(weapon.sounds.as_deref(), local_sounds.as_ref());
         assert!(weapon.state.is_reload_activity());
         assert!(
             weapon.block_during_reload.unwrap_or(false),
@@ -1854,6 +1863,15 @@ mod tests {
         );
         row.secondary = Some(host_secondary);
         apply_net_wieldable_tuning(&mut registry, weapon_id, row);
+        assert_eq!(
+            registry
+                .get_component::<WeaponComponent>(weapon_id)
+                .unwrap()
+                .sounds
+                .as_deref(),
+            local_sounds.as_ref(),
+            "host lane replacement preserves common local sound fallbacks"
+        );
         assert!(
             registry
                 .get_component::<WeaponComponent>(weapon_id)

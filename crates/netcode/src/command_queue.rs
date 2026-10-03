@@ -491,6 +491,10 @@ impl HostCommandQueues {
     /// single far-future command after a silence does NOT trip it — the resume path stays
     /// intact.
     pub(crate) fn resolve_tick(&mut self, client_id: u64) -> Option<ResolvedCommand> {
+        let live_activation = self
+            .activations
+            .live_binding(client_id)
+            .map(|(id, _)| id.token);
         let state = self.clients.get_mut(&client_id)?;
         state.host_tick = state.host_tick.wrapping_add(1);
 
@@ -592,7 +596,7 @@ impl HostCommandQueues {
             state.preserve_due_reload_press(expected, &mut sim);
             state
                 .activation_edges
-                .deliver(&mut sim.activation, state.host_tick);
+                .deliver(&mut sim.activation, state.host_tick, live_activation);
             let diag_lead = state
                 .latest_observed_reload
                 .map(|(newest, _)| expected.wrapping_sub(newest) as i32);
@@ -643,7 +647,7 @@ impl HostCommandQueues {
             };
             state
                 .activation_edges
-                .deliver(&mut sim.activation, state.host_tick);
+                .deliver(&mut sim.activation, state.host_tick, live_activation);
             let diag_lead = state
                 .latest_observed_reload
                 .map(|(newest, _)| expected.wrapping_sub(newest) as i32);
@@ -703,7 +707,7 @@ impl HostCommandQueues {
             let source = ResolutionSource::Held;
             state
                 .activation_edges
-                .deliver(&mut sim.activation, state.host_tick);
+                .deliver(&mut sim.activation, state.host_tick, live_activation);
             let diag_lead = state
                 .latest_observed_reload
                 .map(|(newest, _)| expected.wrapping_sub(newest) as i32);
@@ -767,7 +771,7 @@ impl HostCommandQueues {
         state.preserve_due_reload_press(expected, &mut sim);
         state
             .activation_edges
-            .deliver(&mut sim.activation, state.host_tick);
+            .deliver(&mut sim.activation, state.host_tick, live_activation);
         let diag_lead = state
             .latest_observed_reload
             .map(|(newest, _)| expected.wrapping_sub(newest) as i32);
@@ -860,6 +864,7 @@ fn neutral_sim_command(facing_yaw: f32) -> SimCommand {
     use crate::weapon::FireButtonState;
     use glam::Vec2;
     SimCommand {
+        input_tick: 0,
         secondary_button: crate::weapon::FireButtonState {
             pressed: false,
             active: false,
@@ -887,13 +892,10 @@ fn neutral_sim_command(facing_yaw: f32) -> SimCommand {
     }
 }
 
-/// Build a held-gap command from the previous resolved command, clearing FIRE and
-/// one-tick use/drop edges but carrying movement and `reload` forward unchanged.
-/// The two level fields diverge on purpose: `fire_button` authorizes cooldown and
-/// ammo consumption whenever it resolves `active`, so a held command must not
-/// re-authorize FIRE. `reload` is a level bit; weapon-owned `reload_press_consumed`
-/// deduplicates it while held. Carrying that bit preserves reload intent across a
-/// packet gap without synthesizing another press.
+/// Carry movement and reload across a packet gap without inventing an activation
+/// start or use/drop press. Committed shots advance on their own fixed-tick clock;
+/// retained correlated release/cancel edges are delivered separately. Reload's
+/// weapon-owned press latch prevents the carried level from restarting a reload.
 fn held_gap_sim_command(prev: &InputCommand) -> SimCommand {
     let mut sim = input_command_to_sim(prev);
     sim.fire_button = crate::weapon::FireButtonState {

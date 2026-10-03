@@ -36,7 +36,8 @@ impl OpenAuthorizedShots {
     }
 
     /// Refusing HIT intake cannot undo FIRE authorization or its resource debit.
-    /// A future ordinal has no FIRE decision yet, so its usual outcome settles it later.
+    /// Unknown starts and future ordinals have no FIRE decision yet. Their
+    /// caller sends a HIT-only refusal rather than fabricating a FIRE verdict.
     pub(crate) fn refuse_overflowed_hit(
         &mut self,
         ledger: &activation_ledger::HostActivationLedger,
@@ -48,7 +49,13 @@ impl OpenAuthorizedShots {
             .get(shot_id)
             .is_some_and(|open| open.owner_client_id == client_id);
         let status = ledger.status(client_id, shot_id, tick);
-        if !owned_open && matches!(status, activation_ledger::OrdinalStatus::Pending { .. }) {
+        if !owned_open
+            && matches!(
+                status,
+                activation_ledger::OrdinalStatus::Unknown
+                    | activation_ledger::OrdinalStatus::Pending { .. }
+            )
+        {
             return None;
         }
         if owned_open {
@@ -87,6 +94,10 @@ pub struct PendingHitDeclaration {
     pub client_id: u64,
     pub declaration: wire::HitDeclaration,
     first_received_tick: u32,
+    /// Expiry settles HIT intake without deciding a still-eligible FIRE.
+    pub(crate) undecided_expiry: bool,
+    /// Owner-scoped FIRE authorization captured before its open HIT record can retire.
+    pub(crate) fire_authorized: bool,
 }
 
 #[derive(Debug, Default)]
@@ -132,6 +143,8 @@ impl PendingHitDeclarations {
             client_id,
             declaration,
             first_received_tick: tick,
+            undecided_expiry: false,
+            fire_authorized: false,
         });
         true
     }
@@ -159,11 +172,11 @@ impl PendingHitDeclarations {
     ) -> Vec<PendingHitDeclaration> {
         let mut ready = Vec::new();
         let mut waiting = VecDeque::new();
-        while let Some(pending) = self.declarations.pop_front() {
+        while let Some(mut pending) = self.declarations.pop_front() {
             let shot_id = crate::wire_convert::shot_id_from_wire(pending.declaration.shot_id);
             let open_shot = open_shots.get(shot_id);
             let shot_open = open_shot.is_some();
-            let projectile_waits_for_later_tick = open_shot.is_some_and(|open| {
+            let projectile_waits_for_later_tick = open_shot.as_ref().is_some_and(|open| {
                 open.shot.is_projectile && current_tick.wrapping_sub(open.shot.fire_tick) == 0
             });
             use activation_ledger::OrdinalStatus;
@@ -185,6 +198,11 @@ impl PendingHitDeclarations {
                     || matches!(ordinal, OrdinalStatus::Rejected | OrdinalStatus::Authorized)
                     || expired)
             {
+                pending.undecided_expiry = expired && !shot_open;
+                pending.fire_authorized = matches!(ordinal, OrdinalStatus::Authorized)
+                    || open_shot
+                        .as_ref()
+                        .is_some_and(|open| open.owner_client_id == pending.client_id);
                 ready.push(pending);
             } else {
                 waiting.push_back(pending);
@@ -261,7 +279,10 @@ mod activation_tests {
             "a duplicate does not extend retention"
         );
         assert!(pending.drain_ready(&queues, &shots, 219).is_empty());
-        assert_eq!(pending.drain_ready(&queues, &shots, 220).len(), 1);
+        let expired = pending.drain_ready(&queues, &shots, 220);
+        assert_eq!(expired.len(), 1);
+        assert!(expired[0].undecided_expiry);
+        assert!(!expired[0].fire_authorized);
         assert_eq!(pending.len(), 0);
     }
 
@@ -293,6 +314,35 @@ mod activation_tests {
             ShotId::from_parts(4, 10, ActivationLane::Secondary, 1),
             false,
         );
-        assert_eq!(pending.drain_ready(&queues, &shots, 421).len(), 1);
+        let rejected = pending.drain_ready(&queues, &shots, 421);
+        assert_eq!(rejected.len(), 1);
+        assert!(!rejected[0].undecided_expiry);
+        assert!(!rejected[0].fire_authorized);
+    }
+
+    #[test]
+    fn accepted_undecided_ordinal_expiry_remains_a_hit_only_refusal() {
+        let mut queues = HostCommandQueues::new();
+        let mut pending = PendingHitDeclarations::new();
+        let shots = OpenAuthorizedShots::new();
+        assert!(pending.push_at(7, declaration(10, 0), 0));
+        let shot_id = crate::wire_convert::shot_id_from_wire(declaration(10, 0).shot_id);
+        let program = ActivationProgram::new(vec![ActivationStep::Shot], None, 18).unwrap();
+        assert!(queues.activations.accept(
+            7,
+            shot_id.activation(),
+            EntityId::from_raw(9),
+            &program,
+            300,
+        ));
+        assert!(pending.drain_ready(&queues, &shots, 419).is_empty());
+        let expired = pending.drain_ready(&queues, &shots, 420);
+        assert_eq!(expired.len(), 1);
+        assert!(expired[0].undecided_expiry);
+        assert!(!expired[0].fire_authorized);
+        assert_eq!(
+            queues.activations.status(7, shot_id, 420),
+            activation_ledger::OrdinalStatus::Pending { deadline: 420 }
+        );
     }
 }

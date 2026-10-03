@@ -242,6 +242,7 @@ pub fn advance_weapon_activation(
 }
 
 /// Shell interruption and its first due shot share one evaluation and resource gate.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn advance_weapon_activation_with_shell_preemption(
     weapon: &mut WeaponComponent,
     mut command: ActivationCommand,

@@ -2340,6 +2340,7 @@ mod tests {
             .set_component(
                 weapon,
                 WeaponComponent {
+                    sounds: None,
                     primary: std::sync::Arc::new(
                         postretro_foundation::WeaponActivationDescriptor::single(
                             postretro_foundation::ActivationTrigger::Press,
@@ -2420,6 +2421,7 @@ mod tests {
             .set_component(
                 weapon,
                 WeaponComponent {
+                    sounds: None,
                     primary: std::sync::Arc::new(
                         postretro_foundation::WeaponActivationDescriptor::single(
                             postretro_foundation::ActivationTrigger::Press,

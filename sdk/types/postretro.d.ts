@@ -518,7 +518,7 @@ declare module "postretro" {
     fullMs: number;
   };
 
-  /** Action-specific fire and impact sound keys. Each authored field overrides its weapon default; omission inherits that default. Uses the originating action for delayed impacts. */
+  /** Action-specific fire and impact sound keys, at most 256 UTF-8 bytes each. Each authored field overrides its weapon default; omission inherits that default. Uses the originating action for delayed impacts. */
   export type ActivationSounds = {
     /** Override the weapon fire sound for every accepted shot. A sound key under the mod sounds/ tree, without its extension. */
     fire?: string;
@@ -526,7 +526,7 @@ declare module "postretro" {
     impact?: string;
   };
 
-  /** Optional named reactions dispatched alongside built-in activate/impact events. Aliases must be non-empty and differ from the built-in address. */
+  /** Optional named reactions dispatched alongside built-in activate/impact events. Aliases must be non-empty, at most 256 UTF-8 bytes, and differ from the built-in address. */
   export type ActivationEmits = {
     /** Additional activate reaction name, fired once per accepted shot; cannot equal `activate`. */
     activate?: string;
@@ -627,7 +627,7 @@ declare module "postretro" {
     thirdPersonModel?: string;
     /** Optional content-relative model rendered as this weapon's first-person viewmodel. Must be non-empty, use forward slashes, and contain neither an absolute path nor parent traversal. */
     viewmodel?: string;
-    /** Optional sound keys for this weapon's events, played whoever wields it. Each key names a sound under the mod's `sounds/` directory without its extension (`sfx/pistol_fire`). Presentation only; never replicated. */
+    /** Optional sound keys for this weapon's events, played whoever wields it. Each key names a sound under the mod's `sounds/` directory without its extension (`sfx/pistol_fire`). Presentation only; resolved fire/impact keys accompany observer cues, while weapon tuning excludes sound keys. */
     sounds?: WeaponSounds;
     /** Optional per-weapon first-person placement. Position uses metres from screen center (right/up/forward map to +X/+Y/-Z) and rotation uses degrees. Whole-value resolution is per-instance (future) > this field > character (future) > mod `defaultWeaponPlacement` > legacy BASE_OFFSET with zero rotation. v1 supplies no character or per-instance placement. It never changes the third-person hand socket. */
     placement?: WeaponPlacementDescriptor;
@@ -1431,6 +1431,8 @@ declare module "postretro" {
         readonly pending: ComputedRef<string>;
         readonly switching: ComputedRef<boolean>;
       };
+      readonly weaponChargeProgress: ComputedRef<number>;
+      readonly weaponCharging: ComputedRef<boolean>;
       readonly weaponCooldownMs: ComputedRef<number>;
       readonly weaponResource: ComputedRef<"none" | "ammo" | "heat" | "cell">;
     };

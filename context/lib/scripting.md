@@ -180,6 +180,8 @@ The runtime installs the generated tree before SDK prelude evaluation, captures 
 
 `player.weapon.current`, `player.weapon.pending`, and `player.weapon.switching` are readonly local display slots on every role. `current` names the committed active wieldable and changes only when the inventory repoints; `switching` is true while that inventory has an in-flight target. `pending` is the input-layer cursor's display value and defaults to an empty string until its producer is present. These values are not host-authoritative and do not replicate; HUD crossing behavior follows the local machine's publication cadence.
 
+`player.weaponCharging` and `player.weaponChargeProgress` are readonly local HUD facts for the active weapon on every role. Progress is normalized `[0, 1]`, derived from fixed-tick charge time, and remains full while held. Render-only frames do not advance it. Release, cancellation, switching, death, and input suspension clear charging and reset progress to zero. These facts do not replicate and are distinct from the cell resource's stored charge.
+
 `session.openSeats` is a readonly client-local projection of the host's status roster. It is absent before admission and never carries player claims or display names. The roster Control message remains its only transport path.
 
 ---
@@ -424,7 +426,13 @@ Both primitives call the one grant chokepoint per resolved recipient. Amounts mu
 
 ## 11. Typed Command Buffer
 
-**Weapon activation adopter (approved, implementation pending).** Author-time shot/wait builders produce bounded activation data. Numeric shot scaling uses a read-only scope exposing normalized charge; damage, resource cost, and visual size remain independent authored expressions. Programs bind at install and execute inside the fixed-tick weapon machine. The frame-end reaction scheduler does not drive weapon timing. No burst opcode or retained gameplay closure is introduced.
+**Weapon activation adopter.** Required `primary` and optional `secondary` actions own `trigger`, `recoveryMs`, optional charge tuning, and steps. Weapon-level `fireMode` and `fireRateMs` are rejected. TypeScript and Luau export `activation.shot()` and `activation.wait(ms)` as author-time builders of closed tagged data. Ordinary language composition assembles sequences; no burst opcode, runtime repetition, or retained gameplay closure exists. Programs bind at install and run in the fixed-tick weapon machine, independently of the frame-end reaction scheduler.
+
+`activation.charge` is the only numeric input in this read-only scope: normalized `[0, 1]`, or 1 for an uncharged action. It has no state-store, write, or randomness capability. Shot scales independently multiply damage, range, projectile speed/radius/visual size, knockback speed, and resource cost; omitted scales are 1. Charge works with ammo, heat, cell, or no resource. A 10× charged shot is authored tuning, not an engine charge rule. Visual size changes neither collision nor splash radius.
+
+Programs contain at most 64 steps and 16 shots, begin/end with a shot, and require positive waits between shots. Durations are finite and at most 60000 ms; only recovery and charge minimum may be zero. Charge requires `press` and minimum ≤ full duration. Waits round up to fixed ticks; total quantized waits cannot exceed 60 seconds. Scale expressions bind only this scope and are bounded to depth 32 / 256 nodes. Damage/knockback scales use `[0, 64]`; other scales use `(0, 64]`. Invalid structure or literals reject content. Checked evaluation preserves non-finite arithmetic and division-by-zero failures, then validates final scaled values and integer ammo conversion before debit. Failure cancels execution and warns once per descriptor/field. Positive ammo cost rounds up; heat/cell costs retain fractions.
+
+Action `sounds.fire` / `sounds.impact` override weapon defaults. Action `emits.activate` / `emits.impact` dispatch alongside the built-in address at the same captured emitter; aliases must be nonempty, at most 256 UTF-8 bytes, and differ from that address. Each shot dispatches activate once; impact aggregates that shot's contacts per tick. Originating action and effective sounds survive delayed projectile contacts (`audio.md` §4).
 
 **Authored behavior crosses the FFI as data, never as a retained function.** A closed vocabulary is not a small one. The engine owns the evaluator; the author owns a description the evaluator runs. Expressiveness comes from how rich the vocabulary is, not from shipping code the engine executes at runtime — cf. shader graphs, SQL, GraphQL, the WebGPU command encoder, all arbitrarily expressive yet closed.
 
@@ -458,6 +466,8 @@ The typed command buffer is the shape these already take, extended from a fixed 
 - No wall-clock, no unseeded RNG, no unbounded loops, no per-eval heap allocation.
 - Guaranteed termination. Turing-incompleteness is a feature, not a limitation.
 - A request for a `while` / unbounded-loop node is the signal the design is drifting back toward a forbidden runtime expression language — reject it.
+
+Ordinary evaluation totalizes division by zero and non-finite arithmetic to zero. Activation scaling uses the same bounded walk with checked failure evidence, so numeric faults cancel a shot even when later arithmetic would produce a valid scale. Other adopters retain their existing totalization semantics.
 
 Start the node set minimal: named-input leaves, arithmetic, `clamp`, `lerp`, `select(cond, a, b)`, comparisons. Add richer or stateful nodes only when a concrete use case demands one.
 

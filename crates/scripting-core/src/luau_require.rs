@@ -423,6 +423,7 @@ mod tests {
         assert_exact_string_keys(
             &root,
             &[
+                "activation",
                 "world",
                 "runtime",
                 "getGameState",

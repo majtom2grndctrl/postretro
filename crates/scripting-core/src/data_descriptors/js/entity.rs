@@ -252,10 +252,6 @@ fn has_own_string_key(object: &Object<'_>, wanted: &str) -> Result<bool, Descrip
         })
 }
 
-/// The generic JSON bridge intentionally maps unsupported VM values to JSON
-/// null for broad descriptor compatibility. These optional strings cannot use
-/// that degradation: a supplied function/symbol would silently disable weapon
-/// presentation after serde interpreted null as `None`.
 /// JavaScript distinguishes arrays from objects. A `move` layer is always a
 /// selector list, so name its path rather than leaving serde to report an
 /// unhelpful untagged-enum failure. Nested graph layers are objects and recurse

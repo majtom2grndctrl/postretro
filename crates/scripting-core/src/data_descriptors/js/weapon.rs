@@ -23,6 +23,8 @@ pub(super) fn weapon_descriptor_from_js<'js>(
     descriptor.validate()
 }
 
+/// Reject unsupported VM values before the JSON bridge turns them into null
+/// and silently disables the authored weapon presentation.
 fn validate_optional_weapon_model_paths_js<'js>(
     weapon: &Object<'js>,
 ) -> Result<(), DescriptorError> {

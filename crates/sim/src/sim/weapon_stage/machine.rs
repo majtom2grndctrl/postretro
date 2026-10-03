@@ -72,6 +72,61 @@ pub(super) fn tick_weapon_machine_activation(
     activation_command: ActivationCommand,
     predicted: bool,
 ) -> WeaponMachineTick {
+    tick_weapon_machine_phases(
+        registry,
+        pawn,
+        weapon,
+        component,
+        reload,
+        command,
+        suppress_fire,
+        tick_dt,
+        Some((activation_command, predicted)),
+    )
+}
+
+/// Prediction owns activation/input/resource clocks. The client equip pass only
+/// advances timed lower/raise/reload state and leaves all input latches intact.
+pub(super) fn tick_weapon_equip_only(
+    registry: &mut EntityRegistry,
+    pawn: Option<EntityId>,
+    weapon: EntityId,
+    component: &mut WeaponComponent,
+    tick_dt: f32,
+) -> WeaponMachineTick {
+    tick_weapon_machine_phases(
+        registry,
+        pawn,
+        weapon,
+        component,
+        false,
+        &WeaponFireCommand {
+            button: crate::weapon::FireButtonState {
+                pressed: false,
+                active: false,
+            },
+            aim_origin: glam::Vec3::ZERO,
+            aim_direction: glam::Vec3::Z,
+            can_fire: false,
+        },
+        true,
+        tick_dt,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn tick_weapon_machine_phases(
+    registry: &mut EntityRegistry,
+    pawn: Option<EntityId>,
+    weapon: EntityId,
+    component: &mut WeaponComponent,
+    reload: bool,
+    command: &WeaponFireCommand,
+    suppress_fire: bool,
+    tick_dt: f32,
+    activation_command: Option<(ActivationCommand, bool)>,
+) -> WeaponMachineTick {
     let pawn = pawn.filter(|pawn| registry.exists(*pawn));
     let feedback_tick = component.begin_reload_feedback_tick();
     let mut deliveries = Vec::new();
@@ -81,7 +136,9 @@ pub(super) fn tick_weapon_machine_activation(
 
     // 1. Reload intent. Pawnless ticks intentionally leave the edge untouched:
     // a held level becomes a real rising edge once its pawn returns.
-    if let Some(pawn) = pawn {
+    if activation_command.is_some()
+        && let Some(pawn) = pawn
+    {
         let fresh_press = reload && !component.reload_press_consumed;
         fresh_reload = fresh_press;
         component.reload_press_consumed = reload;
@@ -154,31 +211,37 @@ pub(super) fn tick_weapon_machine_activation(
         );
     }
 
-    let mut activation = advance_weapon_activation_with_shell_preemption(
-        component,
-        activation_command,
-        tick_dt.max(0.0) * 1000.0,
-        predicted,
-        command.can_fire && !suppress_fire && !fresh_reload,
-        command.can_fire && !suppress_fire,
-        !reload_started_this_tick,
-        |component| {
-            let reload_consumed = component.reload_press_consumed;
-            if let StateTransition::ReloadCancelled { transferred } = transition_wieldable_state(
+    let mut activation = activation_command
+        .map(|(activation_command, predicted)| {
+            advance_weapon_activation_with_shell_preemption(
                 component,
-                WieldableStateEvent::Cancel { feedback_tick },
-                None,
-            ) && let Some(pawn) = pawn
-            {
-                deliveries.push(ReloadDelivery {
-                    pawn,
-                    weapon,
-                    outcome: ReloadOutcome::Cancelled { transferred },
-                });
-            }
-            component.reload_press_consumed = reload_consumed;
-        },
-    );
+                activation_command,
+                tick_dt.max(0.0) * 1000.0,
+                predicted,
+                command.can_fire && !suppress_fire && !fresh_reload,
+                command.can_fire && !suppress_fire,
+                !reload_started_this_tick,
+                |component| {
+                    let reload_consumed = component.reload_press_consumed;
+                    if let StateTransition::ReloadCancelled { transferred } =
+                        transition_wieldable_state(
+                            component,
+                            WieldableStateEvent::Cancel { feedback_tick },
+                            None,
+                        )
+                        && let Some(pawn) = pawn
+                    {
+                        deliveries.push(ReloadDelivery {
+                            pawn,
+                            weapon,
+                            outcome: ReloadOutcome::Cancelled { transferred },
+                        });
+                    }
+                    component.reload_press_consumed = reload_consumed;
+                },
+            )
+        })
+        .unwrap_or_default();
     if let Some(token) = cancelled {
         activation.terminal = Some((
             token,

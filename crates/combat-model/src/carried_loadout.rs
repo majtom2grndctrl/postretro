@@ -154,7 +154,8 @@ impl WieldableTuningPayload {
 /// wieldable array is capacity-sized so a slot's identity survives empty
 /// positions. `movement.view_feel` and `movement.sounds` are always cleared
 /// because they are local presentation rather than predicted simulation tuning;
-/// no sound key crosses the wire.
+/// this tuning payload omits sound keys. Observer cues carry frozen effective
+/// sound keys separately.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TuningPayload {
     epoch: u32,

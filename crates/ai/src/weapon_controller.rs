@@ -35,6 +35,7 @@ pub(crate) struct WeaponAttackRequest {
 }
 
 pub(crate) struct CommittedWeaponFire {
+    pub sounds: Arc<postretro_foundation::ActivationSounds>,
     pub action: Arc<WeaponActivationDescriptor>,
     pub shot_id: ShotId,
     pub projectile: EntityId,
@@ -269,6 +270,7 @@ impl AiWeaponControllers {
                     .as_ref()
                     .expect("AI sync admits projectile weapons");
                 let launch = ProjectileLaunch {
+                    sounds: Some(shot.sounds.clone()),
                     origin: aim.origin,
                     direction: aim.direction,
                     speed: projectile.speed,
@@ -298,6 +300,7 @@ impl AiWeaponControllers {
                     host.spawn_projectile(registry, actor, actor, launch, source)
                 {
                     committed = Some(CommittedWeaponFire {
+                        sounds: shot.sounds.clone(),
                         action: Arc::clone(shot.action()),
                         shot_id: shot.activation.shot_id,
                         projectile,

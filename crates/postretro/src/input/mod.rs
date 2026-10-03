@@ -260,10 +260,6 @@ impl GameplayInputLatch {
         self.wieldable_selection.clear();
     }
 
-    pub fn clear_pressed(&mut self, action: Action) {
-        self.pressed_buttons.remove(&action);
-    }
-
     pub fn wieldable_selection_mut(&mut self) -> &mut WieldableSelection {
         &mut self.wieldable_selection
     }

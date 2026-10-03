@@ -227,6 +227,7 @@ fn fog_volume() -> FogVolumeComponent {
 
 fn idle_command() -> SimCommand {
     SimCommand {
+        input_tick: 0,
         secondary_button: crate::weapon::FireButtonState {
             pressed: false,
             active: false,

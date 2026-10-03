@@ -41,7 +41,17 @@ export type Activation = Readonly<{
 export const activation: Activation = Object.freeze({
   charge: numberRef({ op: "input", name: "charge" }),
   shot: (options?: ActivationShotOptions): ActivationStepDescriptor => {
-    if (options?.scale === undefined) return Object.freeze({ kind: "shot" });
+    if (options === undefined) return Object.freeze({ kind: "shot" });
+    if (options === null || typeof options !== "object" || Array.isArray(options)) {
+      throw new Error("activation.shot options must be an object");
+    }
+    if (Object.keys(options).some((key) => key !== "scale")) {
+      throw new Error("activation.shot options only accepts scale");
+    }
+    if (options.scale === undefined) return Object.freeze({ kind: "shot" });
+    if (options.scale === null || typeof options.scale !== "object" || Array.isArray(options.scale)) {
+      throw new Error("activation.shot scale must be an object");
+    }
     const scale: Record<string, number | RuntimeValue> = {};
     for (const [key, value] of Object.entries(options.scale)) {
       if (value !== undefined) scale[key] = typeof value === "number" ? value : numberNode(value);

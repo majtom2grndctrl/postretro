@@ -386,6 +386,7 @@ mod tests {
                 entity_class: String::new(),
                 has_active_weapon_archetype: false,
                 active_weapon_archetype: String::new(),
+                projectile_presentation: None,
                 components: vec![RawComponentPayload {
                     component_kind: COMPONENT_KIND_TRANSFORM,
                     transform: Some(WireTransform {

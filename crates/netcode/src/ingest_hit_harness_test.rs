@@ -130,6 +130,7 @@ impl HostSimulation {
 
 fn neutral_command() -> SimCommand {
     SimCommand {
+        input_tick: 0,
         secondary_button: crate::weapon::FireButtonState {
             pressed: false,
             active: false,
@@ -169,6 +170,7 @@ fn remote_fire(pawn: EntityId, weapon: EntityId, shot_id: ShotId) -> RemotePawnC
         client_tick: shot_id.client_tick(),
         aim_pitch: 0.0,
         command: SimCommand {
+            input_tick: 0,
             activation: postretro_foundation::ActivationInput {
                 initiation: Some(shot_id.activation().token),
                 ..Default::default()

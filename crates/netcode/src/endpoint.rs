@@ -67,7 +67,8 @@ pub enum NetEndpoint {
         /// and retires entries from this store.
         open_shots: OpenAuthorizedShots,
         /// Presentation-only projectile copies for remote observers. Their flight
-        /// state is host-local; clients receive only Transform + descriptor class.
+        /// state is host-local; clients receive transforms, descriptor class,
+        /// frozen visual scale and shot identity.
         projectile_presentations: projectile_presentation::HostProjectilePresentations,
         /// E16 client HIT declarations received before the matching fixed-sim FIRE
         /// authorization has opened its shot. Flushed after host weapon simulation
@@ -306,6 +307,7 @@ impl MonotonicClock for EngineClock {
 /// clock both read through.
 pub struct ClientTimeSync {
     activation_outcomes: std::collections::VecDeque<postretro_net::wire::ActivationOutcome>,
+    weapon_cues: VecDeque<wire::WeaponCue>,
     pub(crate) clock: EngineClock,
     sender: TimeSyncSender,
     pub(crate) estimator: ClockEstimator,
@@ -324,6 +326,7 @@ impl ClientTimeSync {
                 origin: std::time::Instant::now(),
             },
             activation_outcomes: std::collections::VecDeque::new(),
+            weapon_cues: VecDeque::new(),
             sender: TimeSyncSender::new(),
             // The engine sim runs at 60 Hz; the estimator converts microseconds to
             // ticks at the same rate so its offset is in sim ticks.
@@ -349,6 +352,22 @@ impl ClientTimeSync {
         &mut self,
     ) -> impl Iterator<Item = postretro_net::wire::ActivationOutcome> + '_ {
         self.activation_outcomes.drain(..)
+    }
+
+    pub(crate) fn retain_weapon_cues(&mut self, cues: Vec<wire::WeaponCue>) {
+        for cue in cues {
+            if !cue.is_valid() {
+                continue;
+            }
+            if self.weapon_cues.len() == wire::MAX_WEAPON_CUES {
+                break;
+            }
+            self.weapon_cues.push_back(cue);
+        }
+    }
+
+    pub fn drain_weapon_cues(&mut self) -> impl Iterator<Item = wire::WeaponCue> + '_ {
+        self.weapon_cues.drain(..)
     }
 
     /// Emit a 5 Hz probe if the cadence is due, recording the issued `sample_id`
@@ -614,7 +633,9 @@ impl NetEndpoint {
                     WorldLessPoll::Failed
                 }
             },
-            NetEndpoint::Client { client, .. } => {
+            NetEndpoint::Client {
+                client, time_sync, ..
+            } => {
                 if let Err(err) = client.update(dt) {
                     log::error!("[Net] client update failed: {err}");
                     WorldLessPoll::Failed
@@ -623,6 +644,9 @@ impl NetEndpoint {
                     // epoch bytes too: otherwise a snapshot queued between unload
                     // and replacement install can mutate the new world later.
                     discard_world_less_snapshots(client);
+                    // Old-world reliable facts must not wait for a replacement world.
+                    let _ = client.drain_input();
+                    time_sync.weapon_cues.clear();
                     WorldLessPoll::Client(client.drain_control())
                 }
             }
@@ -637,6 +661,7 @@ impl NetEndpoint {
     pub fn reset_level_scoped_client_state(&mut self) {
         let NetEndpoint::Client {
             client,
+            time_sync,
             replication,
             interpolation_delay,
             prediction,
@@ -656,6 +681,7 @@ impl NetEndpoint {
         interpolation_delay.reset_for_level_unload();
         state_slots.reset_schema();
         pending_switch_declarations.clear();
+        time_sync.weapon_cues.clear();
     }
 
     /// Clear state whose entity ids belong to the old host level. This is separate
@@ -727,6 +753,7 @@ impl NetEndpoint {
     pub fn demote_client_state(&mut self, registry: &mut EntityRegistry) {
         let Self::Client {
             replication,
+            time_sync,
             interpolation_delay,
             prediction,
             tuning,
@@ -744,6 +771,7 @@ impl NetEndpoint {
         *tuning = None;
         *applied_movement_tuning_generation = 0;
         pending_switch_declarations.clear();
+        time_sync.weapon_cues.clear();
     }
 
     pub fn install_tuning_payload(
@@ -788,6 +816,52 @@ impl NetEndpoint {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn weapon_cues_receive_queue_is_bounded_and_clears_on_level_and_demotion() {
+        let mut endpoint = NetEndpoint::from_role(
+            &NetRole::Connect {
+                addr: SocketAddr::from((Ipv4Addr::LOCALHOST, 1)),
+            },
+            None,
+        )
+        .unwrap()
+        .unwrap();
+        let cue = wire::WeaponCue {
+            shot_id: wire::WireShotId {
+                pawn: 7,
+                start_tick: 20,
+                lane: 1,
+                ordinal: 0,
+            },
+            kind: wire::WeaponCueKind::Activate,
+            sound: Some("fire".into()),
+            additional_sound: None,
+            alias: None,
+            anchor: wire::WeaponCueAnchor::Entity {
+                entity: NetworkId(7),
+                origin: [0.0; 3],
+            },
+        };
+        let NetEndpoint::Client { time_sync, .. } = &mut endpoint else {
+            unreachable!();
+        };
+        time_sync.retain_weapon_cues(vec![cue.clone(); wire::MAX_WEAPON_CUES]);
+        time_sync.retain_weapon_cues(vec![cue.clone()]);
+        assert_eq!(time_sync.drain_weapon_cues().count(), wire::MAX_WEAPON_CUES);
+        time_sync.retain_weapon_cues(vec![cue.clone()]);
+        endpoint.reset_level_scoped_client_state();
+        let NetEndpoint::Client { time_sync, .. } = &mut endpoint else {
+            unreachable!();
+        };
+        assert_eq!(time_sync.drain_weapon_cues().count(), 0);
+        time_sync.retain_weapon_cues(vec![cue]);
+        endpoint.demote_client_state(&mut EntityRegistry::new());
+        let NetEndpoint::Client { time_sync, .. } = &mut endpoint else {
+            unreachable!();
+        };
+        assert_eq!(time_sync.drain_weapon_cues().count(), 0);
+    }
 
     #[test]
     fn session_roster_retains_and_projects_open_seats_to_ui_state() {

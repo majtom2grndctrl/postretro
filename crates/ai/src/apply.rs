@@ -85,6 +85,7 @@ where
         // action so a reaction reads the state the brain is now IN.
         if let Some(entered) = outcome.entered.take() {
             events.push(AiEmission {
+                sounds: None,
                 action: None,
                 shot_id: None,
                 address: entered.on_enter.map(Cow::Owned),
@@ -243,6 +244,7 @@ where
             };
             if attack_fired {
                 events.push(AiEmission {
+                    sounds: None,
                     action: None,
                     shot_id: None,
                     address: Some(Cow::Borrowed(ENEMY_ATTACK_EVENT)),
@@ -283,6 +285,7 @@ where
                 descriptor_class: fire.canonical_weapon,
             });
             events.push(AiEmission {
+                sounds: Some(fire.sounds),
                 action: Some(fire.action),
                 shot_id: Some(fire.shot_id),
                 address: Some(Cow::Borrowed(ENEMY_ATTACK_EVENT)),

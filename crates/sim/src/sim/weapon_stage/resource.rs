@@ -1,4 +1,4 @@
-// Heat and cell: the per-tick resource update, their fire-gate terms, and per-shot cost.
+// Authoritative passive heat cooling and cell regeneration.
 // See: context/lib/entity_model.md §Components (Weapon resources)
 
 use postretro_entities::components::weapon::WeaponComponent;
@@ -103,6 +103,7 @@ mod tests {
         registry: Rc<RefCell<EntityRegistry>>,
         pawn: EntityId,
         slots: Vec<EntityId>,
+        input_tick: std::cell::Cell<u32>,
     }
 
     impl Loadout {
@@ -128,11 +129,14 @@ mod tests {
                 registry,
                 pawn,
                 slots,
+                input_tick: std::cell::Cell::new(0),
             }
         }
 
         fn tick(&self, fire: bool, select_slot: Option<usize>) -> TickEvents {
             let mut command = sim_command(fire, false);
+            command.input_tick = self.input_tick.get();
+            self.input_tick.set(command.input_tick.wrapping_add(1));
             command.select_slot = select_slot;
             run_local_only_tick(self.registry.clone(), self.slots[0], &command, DT)
         }

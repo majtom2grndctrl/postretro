@@ -17,6 +17,7 @@ pub const PROJECTILE_RTT_MARGIN_TICKS: u32 = 120;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct AuthorizedShot {
+    pub sounds: Option<std::sync::Arc<postretro_foundation::ActivationSounds>>,
     pub action: Option<std::sync::Arc<postretro_foundation::WeaponActivationDescriptor>>,
     pub source_weapon: Option<String>,
     pub shot_id: ShotId,

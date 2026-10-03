@@ -32,6 +32,8 @@ A single action can have multiple physical bindings. W key and left stick Y both
 
 **Button signal width.** Each consumer chooses its own signal width when reading a button action from the snapshot. `is_active()` (Pressed|Held) is a level signal — it fires on every qualifying tick while the button is held. `ButtonState::Pressed` alone is a rising edge — it fires only on the first tick. Use a rising edge when a held input would wrongly re-trigger each qualifying tick: dash uses `ButtonState::Pressed` because a held dash would re-fire every cooldown-ready tick. Jump uses the level signal (`is_active()`) because the movement system self-gates it via a ceiling rule.
 
+**Weapon edges.** `Shoot` and `AltFire` feed primary and secondary actions. Render-rate capture latches both press and release until a real fixed command consumes them, including a press/release pair between ticks. Each initiation names its client tick and lane; release/cancel names that initiation. Held restarts receive fresh requests from the local controller, never from host-synthesized input. Synthetic held/neutral commands carry no activation edges (`networking.md` §Combat authority).
+
 ### Axis source tagging
 
 Axis values carry a source tag that determines how game logic integrates them:
@@ -106,6 +108,8 @@ Raw mouse motion is essential for consistent aiming. OS pointer acceleration var
 Only `Gameplay` captures the cursor (`captures_cursor()` returns true for `Gameplay` only).
 
 **Transitions.** `App::set_input_focus()` changes the stored variant, acquires or releases the cursor, and clears all input state in both directions — returning to `Gameplay` must not see keys held by a UI consumer; entering UI must not leak gameplay chords. `App::reapply_focus()` re-applies the current variant's cursor state without changing it; called on window-focus restoration so cursor mode survives transient OS focus loss.
+
+Gameplay-input suspension, including focus loss and capturing menus, latches an explicit activation cancel and clears gameplay press/release latches. A connected client sends that cancellation reliably even on a frame with no fixed tick. Sending intent does not advance weapon execution; the host applies it on its next simulation tick. Neutral input is never a charge release. Local charge feedback clears immediately on suspension.
 
 **Event gating.** Mouse delta (`device_event`) is only processed when focus is `Gameplay`. Keyboard and mouse-button events honor egui's `consumed` flag when focus is `DevTools` or `Menu`; in `Gameplay` the flag is ignored. `ToggleDebugPanel` punches through the `consumed` gate regardless of focus — it is the chord that opens and closes the panel.
 

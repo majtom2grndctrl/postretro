@@ -2,6 +2,7 @@
 // See: context/lib/entity_model.md §4, §5 · context/lib/networking.md
 use super::*;
 
+#[cfg(any(test, feature = "test-support"))]
 #[allow(clippy::too_many_arguments)]
 pub(in crate::sim) fn run_local_weapon_command(
     registry: &Rc<RefCell<EntityRegistry>>,
@@ -35,9 +36,8 @@ pub(in crate::sim) fn run_local_weapon_command(
 }
 
 /// Local authoritative command with the descriptor context required to resolve
-/// steady placement for a projectile muzzle. The legacy wrapper above keeps
-/// headless test fixtures and the fire-suppressed client equip pass on their
-/// explicit no-content path.
+/// steady placement for a projectile muzzle. The wrapper above keeps headless
+/// test fixtures on their explicit no-content path.
 #[allow(clippy::too_many_arguments)]
 pub(in crate::sim) fn run_local_weapon_command_with_content(
     registry: &Rc<RefCell<EntityRegistry>>,
@@ -54,6 +54,74 @@ pub(in crate::sim) fn run_local_weapon_command_with_content(
     tick_dt: f32,
     on_impact: &mut impl FnMut(&mut EntityRegistry),
     activation: Option<weapon::execution::ActivationCommand>,
+) -> LocalWeaponCommandResult {
+    run_local_weapon_command_inner(
+        registry,
+        pawn,
+        mod_block_during_reload,
+        descriptors,
+        default_weapon_placement,
+        select_slot,
+        command,
+        reload_pressed,
+        collision_world,
+        hit_zone_store,
+        anim_time,
+        tick_dt,
+        on_impact,
+        activation,
+        false,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(in crate::sim) fn run_client_weapon_equip(
+    registry: &Rc<RefCell<EntityRegistry>>,
+    pawn: Option<EntityId>,
+    mod_block_during_reload: bool,
+    select_slot: Option<usize>,
+    command: &WeaponFireCommand,
+    collision_world: &CollisionWorld,
+    hit_zone_store: &HitZoneStore,
+    anim_time: f64,
+    tick_dt: f32,
+) -> LocalWeaponCommandResult {
+    run_local_weapon_command_inner(
+        registry,
+        pawn,
+        mod_block_during_reload,
+        &[],
+        None,
+        select_slot,
+        command,
+        false,
+        collision_world,
+        hit_zone_store,
+        anim_time,
+        tick_dt,
+        &mut |_| {},
+        None,
+        true,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_local_weapon_command_inner(
+    registry: &Rc<RefCell<EntityRegistry>>,
+    pawn: Option<EntityId>,
+    mod_block_during_reload: bool,
+    descriptors: &[EntityTypeDescriptor],
+    default_weapon_placement: Option<&WeaponPlacementDescriptor>,
+    select_slot: Option<usize>,
+    command: &WeaponFireCommand,
+    reload_pressed: bool,
+    collision_world: &CollisionWorld,
+    hit_zone_store: &HitZoneStore,
+    anim_time: f64,
+    tick_dt: f32,
+    on_impact: &mut impl FnMut(&mut EntityRegistry),
+    activation: Option<weapon::execution::ActivationCommand>,
+    equip_only: bool,
 ) -> LocalWeaponCommandResult {
     let mut registry = registry.borrow_mut();
     let mut inventory = pawn.and_then(|pawn| {
@@ -105,7 +173,8 @@ pub(in crate::sim) fn run_local_weapon_command_with_content(
         authored_placement,
         None,
     );
-    let pellet_salt_name = weapon::pellet_salt_name(&registry, weapon_id, &weapon_component);
+    let pellet_salt_name =
+        (!equip_only).then(|| weapon::pellet_salt_name(&registry, weapon_id, &weapon_component));
     // The descriptor override stays unresolved in the component. Only this
     // App-fed local input gate resolves it against the mod-global policy.
     let block_during_reload = weapon_component
@@ -142,7 +211,15 @@ pub(in crate::sim) fn run_local_weapon_command_with_content(
             None,
         );
     }
-    let mut machine = if let Some(activation) = activation {
+    let mut machine = if equip_only {
+        super::super::machine::tick_weapon_equip_only(
+            &mut registry,
+            pawn,
+            weapon_id,
+            &mut weapon_component,
+            tick_dt,
+        )
+    } else if let Some(activation) = activation {
         tick_weapon_machine_activation(
             &mut registry,
             pawn,
@@ -194,7 +271,7 @@ pub(in crate::sim) fn run_local_weapon_command_with_content(
             &registry,
             pawn,
             &mut weapon_component,
-            &pellet_salt_name,
+            pellet_salt_name.as_deref().unwrap_or("weapon.unknown"),
             active_slot,
             command,
             &placement,
@@ -208,7 +285,7 @@ pub(in crate::sim) fn run_local_weapon_command_with_content(
             &registry,
             pawn,
             &mut weapon_component,
-            &pellet_salt_name,
+            pellet_salt_name.as_deref().unwrap_or("weapon.unknown"),
             active_slot,
             command,
             &placement,

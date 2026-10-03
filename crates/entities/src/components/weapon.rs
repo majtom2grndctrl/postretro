@@ -276,6 +276,9 @@ pub struct WeaponComponent {
     pub last_activation_tick: Option<u32>,
     #[serde(default)]
     pub secondary_press_consumed: bool,
+    /// Installed presentation data is shared by tick-time component clones.
+    #[serde(default)]
+    pub sounds: Option<std::sync::Arc<postretro_foundation::WeaponSounds>>,
     pub primary: std::sync::Arc<postretro_foundation::WeaponActivationDescriptor>,
     pub secondary: Option<std::sync::Arc<postretro_foundation::WeaponActivationDescriptor>>,
     #[serde(skip)]
@@ -394,6 +397,7 @@ impl WeaponComponent {
             activation_clock: 0,
             last_activation_tick: None,
             secondary_press_consumed: false,
+            sounds: desc.sounds.clone().map(std::sync::Arc::new),
             primary: std::sync::Arc::new(desc.primary.clone()),
             secondary: desc.secondary.clone().map(std::sync::Arc::new),
             activation_programs: postretro_foundation::WeaponActivationPrograms::install(
@@ -508,6 +512,7 @@ impl WeaponComponent {
         self.movement_spread_degrees = desc.movement_spread_degrees;
         self.spread_vertical_bias = desc.spread_vertical_bias;
         self.range = desc.range;
+        self.sounds = desc.sounds.clone().map(std::sync::Arc::new);
         self.primary = std::sync::Arc::new(desc.primary.clone());
         self.secondary = desc.secondary.clone().map(std::sync::Arc::new);
         self.activation_programs = postretro_foundation::WeaponActivationPrograms::install(
@@ -526,9 +531,8 @@ impl WeaponComponent {
             self.credit_source = credit_source.clone();
         }
         self.refresh_resource(desc);
-        // Cooldown, input edges, magazine, state, timed-state fields, reload credit,
-        // shell counter, and bloom state are live instance state. Hot reload changes authored tuning,
-        // not the active state sample or whether this instance is mid-cooldown. An
+        // Hot reload preserves resources, recovery, equip/reload timing, input edges,
+        // shell counter and bloom; charge/execution was cancelled before installing tuning. An
         // absent `creditSource` also keeps the already-resolved spawn-time default so
         // canonical defaults do not regress to `weapon.unknown` on reload.
     }
@@ -864,6 +868,67 @@ mod tests {
         let restored: WeaponComponent = serde_json::from_value(persisted).unwrap();
         assert!((restored.bloom_accumulator_degrees - 0.0).abs() < f32::EPSILON);
         assert!((restored.bloom_idle_ms - 0.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn weapon_sounds_share_installed_data_and_refresh_preserves_retained_component() {
+        let mut descriptor = descriptor(10.0, 20.0, 100.0);
+        descriptor.sounds = Some(postretro_foundation::WeaponSounds {
+            fire: Some("sfx/original_fire".into()),
+            impact: Some("sfx/original_hit".into()),
+            ..Default::default()
+        });
+        let mut component = WeaponComponent::from_descriptor(&descriptor);
+        let retained = component.clone();
+        assert!(std::sync::Arc::ptr_eq(
+            component.sounds.as_ref().unwrap(),
+            retained.sounds.as_ref().unwrap(),
+        ));
+
+        descriptor.sounds.as_mut().unwrap().impact = Some("sfx/replacement_hit".into());
+        component.refresh_from_descriptor(&descriptor);
+        assert_eq!(
+            component.sounds.as_ref().unwrap().impact.as_deref(),
+            Some("sfx/replacement_hit")
+        );
+        assert_eq!(
+            retained.sounds.as_ref().unwrap().impact.as_deref(),
+            Some("sfx/original_hit")
+        );
+
+        descriptor.sounds = None;
+        component.refresh_from_descriptor(&descriptor);
+        assert!(component.sounds.is_none());
+        assert_eq!(
+            retained.sounds.as_ref().unwrap().fire.as_deref(),
+            Some("sfx/original_fire")
+        );
+    }
+
+    #[test]
+    fn weapon_sounds_persistence_preserves_descriptor_value_shape_and_optional_default() {
+        let sounds = serde_json::json!({
+            "fire": "sfx/fire",
+            "dryFire": "sfx/empty",
+            "impact": "sfx/hit",
+            "reloadStart": "sfx/reload_start",
+            "reloadShell": "sfx/reload_shell",
+            "reloadComplete": "sfx/reload_complete",
+            "overheat": "sfx/overheat",
+        });
+        let mut descriptor = descriptor(10.0, 20.0, 100.0);
+        descriptor.sounds = Some(serde_json::from_value(sounds.clone()).unwrap());
+        let component = WeaponComponent::from_descriptor(&descriptor);
+        let mut persisted = serde_json::to_value(&component).unwrap();
+        assert_eq!(persisted["sounds"], sounds);
+
+        let restored: WeaponComponent = serde_json::from_value(persisted.clone()).unwrap();
+        assert_eq!(restored.sounds.as_deref(), descriptor.sounds.as_ref());
+        assert_eq!(serde_json::to_value(&restored).unwrap()["sounds"], sounds);
+
+        persisted.as_object_mut().unwrap().remove("sounds");
+        let restored: WeaponComponent = serde_json::from_value(persisted).unwrap();
+        assert!(restored.sounds.is_none());
     }
 
     #[test]

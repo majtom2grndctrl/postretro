@@ -506,6 +506,8 @@ mod tests {
             .set_component(
                 id,
                 ProjectileComponent {
+                    source_sounds: None,
+                    predicted_visible: true,
                     source_action: None,
                     source_shot: None,
                     knockback_impulse: [0.0; 3],

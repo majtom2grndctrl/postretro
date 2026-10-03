@@ -39,11 +39,28 @@ export type Activation = {
 }
 
 local function shot(options: ActivationShotOptions?): ActivationStepDescriptor
-  if options == nil or options.scale == nil then
+  if options == nil then
     return table.freeze({ kind = "shot" }) :: any
+  end
+  if type(options) ~= "table" then
+    error("activation.shot options must be an object")
+  end
+  for key in pairs(options :: any) do
+    if key ~= "scale" then
+      error("activation.shot options only accepts scale")
+    end
+  end
+  if options.scale == nil then
+    return table.freeze({ kind = "shot" }) :: any
+  end
+  if type(options.scale) ~= "table" then
+    error("activation.shot scale must be an object")
   end
   local scale: {[string]: any} = {}
   for key, value in pairs(options.scale :: any) do
+    if type(key) ~= "string" then
+      error("activation.shot scale must use string keys")
+    end
     scale[key] = if type(value) == "number" then value else numberNode(value)
   end
   return table.freeze({ kind = "shot", scale = table.freeze(scale) }) :: any

@@ -30,7 +30,9 @@ mod execution_tests;
 mod shot;
 pub use shot::{ResolvedWeaponShot, freeze_weapon_shot};
 mod client_resolution;
-pub use client_resolution::{advance_client_fire_state, resolve_client_fire};
+pub use client_resolution::resolve_client_shot;
+#[cfg(any(test, feature = "test-support"))]
+pub use client_resolution::resolve_test_client_shot;
 mod client_pull;
 mod damage;
 mod impact;
@@ -38,7 +40,7 @@ pub mod spread;
 
 pub use client_pull::{
     ClientPullEffects, ClientPullPresentation, ClientShotDeclaration, ReplicatedWeaponProjection,
-    SlotSample, client_pull_effects, client_pull_presentation,
+    SlotSample, client_pull_effects, client_pull_presentation, client_shot_presentation,
 };
 
 pub use damage::DamagePayload;
@@ -248,36 +250,10 @@ impl ClientPredictedShots {
         fire_accepted: bool,
         hit_accepted: bool,
     ) -> Option<PredictedShotRecord> {
-        // A per-shot verdict is terminal: the record is reconciled exactly once,
-        // so a stored record is always `Pending`. Apply the rollback effects,
-        // then prune it — the map would otherwise grow unbounded across a session
-        // (unlike the age-pruned host mirror). A duplicate or late verdict finds
-        // nothing and is a harmless no-op.
-        let record = self.shots.get_mut(&shot_id)?;
-        if fire_accepted {
-            record.status = PredictedShotStatus::Accepted;
-            record.hitmarker_visible &= hit_accepted;
-        } else {
-            if self
-                .cooldown_authority_generation
-                .get(&record.weapon)
-                .copied()
-                .unwrap_or_default()
-                == record.cooldown_authority_generation
-                && let Ok(mut weapon) = registry
-                    .get_component::<WeaponComponent>(record.weapon)
-                    .cloned()
-            {
-                weapon.cooldown_remaining_ms = record.cooldown_before_ms.max(0.0);
-                let _ = registry.set_component(record.weapon, weapon);
-            }
-            record.muzzle_fx_visible = false;
-            record.hitmarker_visible = false;
-            record.status = PredictedShotStatus::Rejected;
-
-            // A rejected FIRE has no host authority to resolve later. Remove only
-            // this client's matching predicted flight; remote observer entities
-            // carry no ProjectileComponent and other local shots keep their ids.
+        if !fire_accepted {
+            // HIT refusal can already have retired the cosmetic record. The
+            // flight still belongs to this exact shot and must obey real FIRE
+            // denial independently of that bookkeeping.
             let rejected_projectiles = registry
                 .iter_with_kind(ComponentKind::Projectile)
                 .filter_map(|(id, value)| {
@@ -291,7 +267,36 @@ impl ClientPredictedShots {
                 let _ = registry.despawn(projectile);
             }
         }
+        // A per-shot verdict is terminal: the record is reconciled exactly once,
+        // so a stored record is always `Pending`. Apply the rollback effects,
+        // then prune it — the map would otherwise grow unbounded across a session
+        // (unlike the age-pruned host mirror). A duplicate or late verdict finds
+        // nothing and changes no cosmetic record or recovery.
+        let record = self.shots.get_mut(&shot_id)?;
+        if fire_accepted {
+            record.status = PredictedShotStatus::Accepted;
+            record.hitmarker_visible &= hit_accepted;
+        } else {
+            // Recovery is correlated by activation token and captured instance.
+            // A per-shot verdict retracts cosmetics/flight only: restoring an
+            // old pre-shot cooldown could erase a newer activation's recovery.
+            record.muzzle_fx_visible = false;
+            record.hitmarker_visible = false;
+            record.status = PredictedShotStatus::Rejected;
+        }
         self.shots.remove(&shot_id)
+    }
+
+    /// Pending HIT intake can refuse a declaration before FIRE is decided.
+    /// Retire its hit feedback record without deciding FIRE, changing recovery,
+    /// or removing a still-live predicted projectile.
+    pub fn refuse_hit(
+        &mut self,
+        shot_id: postretro_foundation::ShotId,
+    ) -> Option<PredictedShotRecord> {
+        let mut record = self.shots.remove(&shot_id)?;
+        record.hitmarker_visible = false;
+        Some(record)
     }
 
     /// A predicted projectile only knows whether it hit after its later
@@ -341,6 +346,7 @@ pub struct WeaponImpact {
 /// only an immutable registry borrow.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProjectileLaunch {
+    pub sounds: Option<std::sync::Arc<postretro_foundation::ActivationSounds>>,
     pub action: Option<std::sync::Arc<postretro_foundation::WeaponActivationDescriptor>>,
     pub shot_id: Option<postretro_foundation::ShotId>,
     pub model_scale: f32,
@@ -378,6 +384,7 @@ impl ProjectileLaunch {
         splash: Option<SplashDescriptor>,
     ) -> Self {
         Self {
+            sounds: None,
             action: None,
             shot_id: None,
             model_scale: 1.0,
@@ -476,6 +483,7 @@ impl WeaponFireEvents {
     /// events came from.
     pub fn emissions(&self, shooter: &Emitter, weapon: Option<String>) -> Vec<WeaponEmission> {
         let from_shooter = |address| WeaponEmission {
+            sounds: self.resolved_shot.as_ref().map(|shot| shot.sounds.clone()),
             action: if matches!(address, "activate" | "spawned") {
                 self.resolved_shot
                     .as_ref()
@@ -500,6 +508,7 @@ impl WeaponFireEvents {
         }
         if !self.impacts.is_empty() {
             emissions.push(WeaponEmission {
+                sounds: self.resolved_shot.as_ref().map(|shot| shot.sounds.clone()),
                 action: self
                     .resolved_shot
                     .as_ref()
@@ -681,7 +690,36 @@ pub fn resolve_activation_shot(
     anim_time: f64,
     shot: ResolvedWeaponShot,
 ) -> WeaponFireEvents {
-    let mut snapshot = weapon.clone();
+    resolve_activation_shot_owned(
+        registry,
+        owner_pawn,
+        weapon.clone(),
+        pellet_salt_name,
+        active_slot,
+        command,
+        placement,
+        collision_world,
+        hit_zone_store,
+        anim_time,
+        shot,
+    )
+}
+
+/// Consume the frozen producer scratch without cloning another live component.
+#[allow(clippy::too_many_arguments)]
+pub fn resolve_activation_shot_owned(
+    registry: &EntityRegistry,
+    owner_pawn: Option<EntityId>,
+    mut snapshot: WeaponComponent,
+    pellet_salt_name: &str,
+    active_slot: usize,
+    command: &WeaponFireCommand,
+    placement: &WeaponPlacementDescriptor,
+    collision_world: &CollisionWorld,
+    hit_zone_store: &HitZoneStore,
+    anim_time: f64,
+    shot: ResolvedWeaponShot,
+) -> WeaponFireEvents {
     shot.apply_to(&mut snapshot);
     snapshot.shells_fired = shot.activation.shell_counter;
     snapshot.bloom_accumulator_degrees = shot.activation.bloom_degrees;
@@ -699,6 +737,7 @@ pub fn resolve_activation_shot(
         WeaponFireAuthorization::Accepted,
     );
     for launch in &mut events.projectile_launches {
+        launch.sounds = Some(shot.sounds.clone());
         launch.action = Some(shot.activation.action.clone());
         launch.shot_id = Some(shot.activation.shot_id);
         launch.model_scale = shot.projectile_model_scale;
@@ -825,6 +864,7 @@ fn fire_hitscan(
                 return events;
             };
             events.projectile_launches.push(ProjectileLaunch {
+                sounds: None,
                 action: None,
                 shot_id: None,
                 model_scale: 1.0,
@@ -998,15 +1038,6 @@ pub fn pellet_salt_name(
         .or_else(|| (!weapon.credit_source.is_empty()).then_some(weapon.credit_source.as_str()))
         .unwrap_or(UNKNOWN_WEAPON_CREDIT_SOURCE)
         .to_owned()
-}
-
-fn local_hit_record(entity: EntityRayHit) -> LocalHitRecord {
-    LocalHitRecord {
-        target: entity.target,
-        point: entity.point,
-        zone: entity.zone,
-        normal: entity.normal,
-    }
 }
 
 /// A resolved world-geometry point along the fire ray. `toi` is the ray
@@ -1673,7 +1704,7 @@ pub(crate) mod tests {
         };
         let eye = Vec3::new(1.0, 2.0, 3.0);
         let aim = Vec3::new(0.2, -0.1, -0.97).normalize();
-        let resolution = resolve_client_fire(
+        let resolution = resolve_test_client_shot(
             None,
             &mut weapon,
             "weapon.unknown",
@@ -1787,7 +1818,7 @@ pub(crate) mod tests {
             active: true,
         };
 
-        let first = resolve_client_fire(
+        let first = resolve_test_client_shot(
             None,
             &mut state,
             "weapon.unknown",
@@ -1815,7 +1846,7 @@ pub(crate) mod tests {
             "the resolved client shell advances once"
         );
 
-        let blocked = resolve_client_fire(
+        let blocked = resolve_test_client_shot(
             None,
             &mut state,
             "weapon.unknown",
@@ -2029,7 +2060,7 @@ pub(crate) mod tests {
     #[test]
     fn client_hitscan_into_a_wall_keeps_the_world_contact_and_its_normal() {
         let mut weapon = weapon_component(FireMode::Semi, 100.0);
-        let resolution = resolve_client_fire(
+        let resolution = resolve_test_client_shot(
             None,
             &mut weapon,
             "weapon.unknown",
@@ -2309,7 +2340,7 @@ pub(crate) mod tests {
         let mut weapon = ammo_weapon_component(FireMode::Semi, 100.0, 8, 1);
         let presentation = client_pull_presentation(&weapon, 0, &idle_magazine(0.0));
         assert_eq!(presentation, ClientPullPresentation::DryFire);
-        let resolution = resolve_client_fire(
+        let resolution = resolve_test_client_shot(
             None,
             &mut weapon,
             "weapon.unknown",
@@ -2429,7 +2460,7 @@ pub(crate) mod tests {
         weapon.pellet_count = 8;
         weapon.spread_degrees = 4.0;
 
-        let resolution = resolve_client_fire(
+        let resolution = resolve_test_client_shot(
             None,
             &mut weapon,
             "weapon.unknown",
@@ -2483,7 +2514,7 @@ pub(crate) mod tests {
         )
         .expect("the legacy r = 0 entity ray has a target");
 
-        let resolution = resolve_client_fire(
+        let resolution = resolve_test_client_shot(
             None,
             &mut weapon,
             "weapon.unknown",
@@ -2581,7 +2612,7 @@ pub(crate) mod tests {
 
         let mut hitscan = weapon_component(FireMode::Auto, 0.0);
         hitscan.pellet_count = 8;
-        let hits = resolve_client_fire(
+        let hits = resolve_test_client_shot(
             Some(player),
             &mut hitscan,
             "weapon.player",
@@ -2608,7 +2639,7 @@ pub(crate) mod tests {
         assert!(hits.hits.iter().all(|hit| hit.target == target));
 
         let mut projectile = projectile_weapon_component(Some(Vec3::new(0.5, 0.0, -0.4)));
-        let launch = resolve_client_fire(
+        let launch = resolve_test_client_shot(
             Some(player),
             &mut projectile,
             "weapon.player.projectile",
@@ -2646,7 +2677,7 @@ pub(crate) mod tests {
         weapon.shells_fired = 9;
         weapon.cooldown_remaining_ms = 1.0;
 
-        let resolution = resolve_client_fire(
+        let resolution = resolve_test_client_shot(
             None,
             &mut weapon,
             "weapon.unknown",
@@ -2670,23 +2701,6 @@ pub(crate) mod tests {
         );
 
         assert!(resolution.is_none());
-        assert_eq!(weapon.shells_fired, 9);
-    }
-
-    #[test]
-    fn no_tick_client_fire_state_advance_does_not_consume_a_shell_position() {
-        let mut weapon = weapon_component(FireMode::Auto, 100.0);
-        weapon.shells_fired = 9;
-
-        assert!(advance_client_fire_state(
-            &mut weapon,
-            FireButtonState {
-                pressed: false,
-                active: true,
-            },
-            0.0,
-            &[],
-        ));
         assert_eq!(weapon.shells_fired, 9);
     }
 
@@ -3140,7 +3154,7 @@ pub(crate) mod tests {
             "remote client enemies carry no local Health before firing"
         );
 
-        let resolution = resolve_client_fire(
+        let resolution = resolve_test_client_shot(
             None,
             &mut state,
             "weapon.unknown",
@@ -3475,7 +3489,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn shot_verdict_reject_rolls_back_local_presentation_and_cooldown() {
+    fn shot_verdict_reject_retracts_presentation_and_keeps_correlated_recovery() {
         let resolution = ClientFireResolution {
             world_contacts: Vec::new(),
             client_tick: 9,
@@ -3506,7 +3520,7 @@ pub(crate) mod tests {
         assert!(!record.muzzle_fx_visible);
         assert!(!record.hitmarker_visible);
         assert_eq!(record.status, PredictedShotStatus::Rejected);
-        assert!(approx_eq(client_cooldown(&registry, weapon), 25.0));
+        assert!(approx_eq(client_cooldown(&registry, weapon), 100.0));
         assert!(
             predicted.get(test_shot_id(0xA)).is_none(),
             "a terminal verdict prunes the record"
@@ -3546,6 +3560,8 @@ pub(crate) mod tests {
                 .set_component(
                     projectile,
                     ProjectileComponent {
+                        source_sounds: None,
+                        predicted_visible: true,
                         source_action: None,
                         source_shot: None,
                         knockback_impulse: [0.0; 3],
@@ -3643,6 +3659,126 @@ pub(crate) mod tests {
         );
         assert!(predicted.get(test_shot_id(0xA)).is_none());
         assert!(approx_eq(client_cooldown(&registry, weapon), 100.0));
+    }
+
+    // Regression: retiring HIT feedback hid a later FIRE denial from the live flight.
+    #[test]
+    fn hit_refusal_retires_feedback_keeps_flight_and_later_fire_denial_retracts_it() {
+        let resolution = ClientFireResolution {
+            world_contacts: Vec::new(),
+            client_tick: 9,
+            hits: vec![LocalHitRecord {
+                normal: Vec3::Y,
+                target: EntityId::from_raw(2),
+                point: Vec3::ZERO,
+                zone: None,
+            }],
+            projectile_launch: None,
+        };
+        let (mut registry, weapon) = client_weapon_registry();
+        set_client_cooldown(&mut registry, weapon, 100.0);
+        let owner = registry.spawn(Transform::default());
+        let spawn = |registry: &mut EntityRegistry, shot_id| {
+            let entity = registry.spawn(Transform::default());
+            registry
+                .set_component(
+                    entity,
+                    ProjectileComponent {
+                        source_sounds: None,
+                        source_action: None,
+                        source_shot: None,
+                        predicted_visible: false,
+                        knockback_impulse: [0.0; 3],
+                        direction: Vec3::NEG_Z.to_array(),
+                        speed: 10.0,
+                        radius: 0.1,
+                        remaining_range: 100.0,
+                        remaining_lifetime: 10.0,
+                        damage: 25.0,
+                        credit_source: "weapon.refusal".to_string(),
+                        owner_pawn: owner,
+                        owner_weapon: weapon,
+                        spawned: false,
+                        predicted_shot_id: Some(shot_id),
+                        elapsed_flight_age: 0.0,
+                        flipbook_active: false,
+                        impact_light: None,
+                        splash: None,
+                        source_weapon: None,
+                        activation: None,
+                    },
+                )
+                .unwrap();
+            entity
+        };
+        let refused_id = test_shot_id(0xA);
+        let other_id = test_shot_id(0xB);
+        let refused_flight = spawn(&mut registry, refused_id);
+        let other_flight = spawn(&mut registry, other_id);
+        let mut predicted = ClientPredictedShots::new();
+        predicted.predict(
+            refused_id,
+            weapon,
+            &resolution,
+            25.0,
+            100.0,
+            ClientPullPresentation::Fire,
+        );
+        let refused = predicted.refuse_hit(refused_id).unwrap();
+        assert!(
+            refused.muzzle_fx_visible,
+            "HIT refusal does not retract FIRE feedback"
+        );
+        assert!(!refused.hitmarker_visible);
+        assert_eq!(
+            refused.status,
+            PredictedShotStatus::Pending,
+            "FIRE remains undecided"
+        );
+        assert!(predicted.get(refused_id).is_none());
+        assert!(registry.exists(refused_flight));
+        assert!(
+            !registry
+                .get_component::<ProjectileComponent>(refused_flight)
+                .unwrap()
+                .predicted_visible
+        );
+        assert!(approx_eq(client_cooldown(&registry, weapon), 100.0));
+        assert!(
+            predicted.refuse_hit(refused_id).is_none(),
+            "duplicate refusal is inert"
+        );
+        predicted.mark_hitmarker(refused_id);
+        assert!(
+            predicted.get(refused_id).is_none(),
+            "a later contact cannot restore refused feedback"
+        );
+        assert!(
+            predicted
+                .apply_verdict(&mut registry, refused_id, false, false)
+                .is_none()
+        );
+        assert!(
+            !registry.exists(refused_flight),
+            "real FIRE denial removes flight after feedback retired"
+        );
+        assert!(registry.exists(other_flight));
+        assert!(approx_eq(client_cooldown(&registry, weapon), 100.0));
+        predicted.clear();
+        predicted.predict(
+            other_id,
+            weapon,
+            &resolution,
+            25.0,
+            100.0,
+            ClientPullPresentation::Fire,
+        );
+        assert!(
+            predicted.refuse_hit(refused_id).is_none(),
+            "a stale refusal after lifecycle clear cannot hit a new shot"
+        );
+        assert!(predicted.get(other_id).is_some());
+        assert!(registry.exists(other_flight));
     }
 
     #[test]
@@ -3752,11 +3888,11 @@ mod activation_authoring_tests {
         });
         let mut descriptor = WeaponActivationDescriptor::single(ActivationTrigger::Press, 400.0);
         descriptor.steps = vec![ActivationStepDescriptor::Shot {
-            scale: ShotScaleDescriptor {
+            scale: Box::new(ShotScaleDescriptor {
                 damage: expression.clone(),
                 resource_cost: expression,
                 ..Default::default()
-            },
+            }),
         }];
         let compiled = CompiledActivation::compile(&descriptor, "fixture").unwrap();
         let base = ShotScaleInputs {

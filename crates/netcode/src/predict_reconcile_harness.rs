@@ -1790,6 +1790,7 @@ fn scripted_command(tick: u32) -> SimCommand {
     };
     let facing_yaw = if phase < 80 { 0.0 } else { 0.4 };
     SimCommand {
+        input_tick: tick,
         secondary_button: crate::weapon::FireButtonState {
             pressed: false,
             active: false,
@@ -1939,6 +1940,7 @@ fn stale_snapshot_for(h: &LoopbackHarness) -> postretro_net::wire::SnapshotMessa
             // it never exercises client materialization, so no class is stamped.
             entity_class: None,
             active_weapon_archetype: None,
+            projectile_presentation: None,
         }],
         state_schema_fingerprint: [0u8; 32],
         state_records: Vec::new(),

@@ -14,6 +14,7 @@ use postretro_entities::provenance::{DescriptorProvenance, DescriptorSpawnPath};
 use postretro_entities::{EntityId, EntityRegistry, Transform};
 use postretro_foundation::{ProjectileBodyVisual, ProjectileDescriptor, ProjectileImpactLight};
 use postretro_net::replication::ServerReplication;
+use postretro_net::wire::WireProjectilePresentation;
 
 use crate::sim::{
     EnemyProjectilePresentationSpawn, RemoteProjectilePresentationLaunch,
@@ -124,6 +125,17 @@ impl HostProjectilePresentations {
         launch: &RemoteProjectilePresentationLaunch,
         spawn_tick: u32,
     ) {
+        let facts = WireProjectilePresentation {
+            sprite_size: match &launch.projectile.visual.body {
+                ProjectileBodyVisual::Sprite { size, .. } => Some(*size),
+                ProjectileBodyVisual::Model { .. } => None,
+            },
+            model_scale: launch.model_scale,
+            shot_id: Some(super::wire_convert::shot_id_to_wire(launch.shot_id)),
+        };
+        if !facts.is_valid() {
+            return;
+        }
         let Some(id) = spawn_presentation_entity(
             registry,
             Transform {
@@ -132,7 +144,14 @@ impl HostProjectilePresentations {
                     &launch.projectile.visual.body,
                     launch.direction,
                 ),
-                ..Transform::default()
+                scale: if matches!(
+                    launch.projectile.visual.body,
+                    ProjectileBodyVisual::Model { .. }
+                ) {
+                    Vec3::splat(launch.model_scale)
+                } else {
+                    Vec3::ONE
+                },
             },
             &launch.descriptor_class,
             Some(&launch.projectile),
@@ -141,7 +160,7 @@ impl HostProjectilePresentations {
             return;
         };
         let network_id = allocator.stamp(id).0;
-        replicable.register(id);
+        replicable.register_projectile_presentation(id, facts);
         replication.exclude_entity_for_client(launch.owner_client_id, network_id);
         self.flights.insert(
             id,
@@ -206,6 +225,34 @@ impl HostProjectilePresentations {
         let Some(transform) = gameplay_projectile_transform(registry, source.projectile_id) else {
             return;
         };
+        // Canonicalize once while the source owner still has its stable mapping.
+        // Delayed contacts retain this id even if that owner later despawns.
+        let Ok(mut projectile) = registry
+            .get_component::<ProjectileComponent>(source.projectile_id)
+            .cloned()
+        else {
+            return;
+        };
+        if let Some(shot_id) = projectile.source_shot {
+            let shot_id =
+                super::weapon_cues::observer_shot_id(allocator, projectile.owner_pawn, shot_id);
+            projectile.source_shot = Some(shot_id);
+            let _ = registry.set_component(source.projectile_id, projectile.clone());
+        }
+        let facts = WireProjectilePresentation {
+            sprite_size: registry
+                .get_component::<SpriteVisual>(source.projectile_id)
+                .ok()
+                .map(|visual| visual.size),
+            model_scale: transform.scale.x,
+            shot_id: projectile
+                .source_shot
+                .map(super::wire_convert::shot_id_to_wire),
+        };
+        if !facts.is_valid() {
+            return;
+        }
+
         if !replication.has_registered_clients() || source.descriptor_class.is_empty() {
             return;
         }
@@ -219,7 +266,7 @@ impl HostProjectilePresentations {
             return;
         };
         allocator.stamp(id);
-        replicable.register(id);
+        replicable.register_projectile_presentation(id, facts);
         self.flights.insert(
             id,
             PresentationFlight::FollowGameplay {
@@ -556,6 +603,24 @@ fn spawn_presentation_entity(
     Some(id)
 }
 
+/// Apply absolute frozen facts after local assets materialize or a delta arrives.
+/// Sprite rendering reads SpriteVisual.size; mesh rendering reads Transform.scale.
+pub(super) fn apply_projectile_presentation_facts(
+    registry: &mut EntityRegistry,
+    id: EntityId,
+    facts: WireProjectilePresentation,
+) {
+    if let Some(size) = facts.sprite_size {
+        if let Ok(mut visual) = registry.get_component::<SpriteVisual>(id).cloned() {
+            visual.size = size;
+            let _ = registry.set_component(id, visual);
+        }
+    } else if let Ok(mut transform) = registry.get_component::<Transform>(id).copied() {
+        transform.scale = Vec3::splat(facts.model_scale);
+        let _ = registry.set_component(id, transform);
+    }
+}
+
 /// Attach the descriptor's body and optional trail without adding simulation state.
 /// Both host remote-observer entities and client materialized copies use this exact
 /// visual-only shape.
@@ -827,6 +892,8 @@ mod tests {
             .set_component(
                 projectile,
                 ProjectileComponent {
+                    source_sounds: None,
+                    predicted_visible: true,
                     source_action: None,
                     source_shot: None,
                     knockback_impulse: [0.0; 3],
@@ -900,7 +967,7 @@ mod tests {
         let origin = Vec3::new(1.0, 2.0, 3.0);
         let launch = RemoteProjectilePresentationLaunch {
             action: None,
-            model_scale: 1.0,
+            model_scale: 2.0,
             owner_client_id: FIRING_CLIENT,
             shot_id,
             origin,
@@ -935,6 +1002,7 @@ mod tests {
             (initial.rotation * Vec3::Z).distance(direction) <= 1.0e-6,
             "the host presentation aims its model along the remote launch direction"
         );
+        assert!(initial.scale.distance(Vec3::splat(2.0)) < 1.0e-6);
         assert_eq!(
             registry
                 .get_component::<MeshComponent>(visual)
@@ -946,6 +1014,7 @@ mod tests {
         let mut open_shots = OpenAuthorizedShots::new();
         open_shots.record(
             AuthorizedShot {
+                sounds: None,
                 action: None,
                 source_weapon: None,
                 knockback: None,
@@ -1019,14 +1088,253 @@ mod tests {
                 &[model_projectile_visual_descriptor()],
                 &mut observer_registry,
                 0,
+                observer_replication.projectile_presentation(remote.network_id),
             )
         );
         let observer_transform = observer_registry
             .get_component::<Transform>(remote.entity_id)
             .expect("observer applies the host transform");
         assert!(
+            observer_transform.scale.distance(Vec3::splat(2.0)) < 1.0e-6,
+            "model scale applies once"
+        );
+        assert!(
             (observer_transform.rotation * Vec3::Z).distance(direction) <= 1.0e-6,
             "the replicated visual keeps the model aligned with the firing aim"
+        );
+        observer_replication.sample_into_registry(&mut observer_registry, 1.0, 0.0);
+        let presented = observer_registry
+            .interpolated_transform(remote.entity_id, 0.5)
+            .unwrap();
+        assert!(presented.scale.distance(Vec3::splat(2.0)) < 1.0e-6);
+        assert!((presented.rotation * Vec3::Z).distance(direction) < 1.0e-6);
+    }
+
+    #[test]
+    fn charged_projectile_absolute_size_reaches_delta_refresh_and_midflight_late_join() {
+        use postretro_net::wire::{EntityRecord, NetworkId, WireProjectilePresentation};
+        let mut registry = EntityRegistry::new();
+        let mut projectile = descriptor();
+        if let ProjectileBodyVisual::Sprite { size, .. } = &mut projectile.visual.body {
+            *size = 0.4;
+        }
+        let shot_id = ShotId::from_parts(7, 20, postretro_foundation::ActivationLane::Secondary, 0);
+        let launch = RemoteProjectilePresentationLaunch {
+            action: None,
+            model_scale: 2.0,
+            owner_client_id: FIRING_CLIENT,
+            shot_id,
+            origin: Vec3::ZERO,
+            direction: Vec3::NEG_Z,
+            range: 12.0,
+            descriptor_class: "test_remote_projectile".into(),
+            projectile,
+        };
+        let mut allocator = NetworkIdAllocator::new();
+        let mut replicable = ReplicableSet::new();
+        let mut server = ServerReplication::new();
+        server.register_client(OBSERVING_CLIENT);
+        let mut flights = HostProjectilePresentations::default();
+        flights.spawn_remote(
+            &mut registry,
+            &mut allocator,
+            &mut replicable,
+            &mut server,
+            &launch,
+            0,
+        );
+        let visual = *flights.flights.keys().next().unwrap();
+        let network = allocator.network_id_for_entity(visual).unwrap();
+        let mut client_registry = EntityRegistry::new();
+        let mut client = ClientReplication::new();
+        server.ingest_tick(produce_owned_snapshots(
+            &registry,
+            &replicable,
+            &mut allocator,
+            &MovementOwners::new(),
+            &HostCommandQueues::new(),
+        ));
+        flights.mark_current_poses_ingested();
+        let first = server
+            .encode_for_client(OBSERVING_CLIENT, 1)
+            .unwrap()
+            .validate()
+            .unwrap();
+        let outcome = client.apply_snapshot(&mut client_registry, &first);
+        let remote = &outcome.remote_entities[0];
+        assert!(
+            super::super::remote_materialize::materialize_armed_remote_projectile(
+                remote,
+                &[projectile_visual_descriptor()],
+                &mut client_registry,
+                0,
+                client.projectile_presentation(network)
+            )
+        );
+        let client_visual = remote.entity_id;
+        assert!(
+            (client_registry
+                .get_component::<SpriteVisual>(client_visual)
+                .unwrap()
+                .size
+                - 0.4)
+                .abs()
+                < 1.0e-6
+        );
+        let ack = outcome.ack.unwrap();
+        server.apply_ack(
+            OBSERVING_CLIENT,
+            ack.latest_snapshot_sequence,
+            &ack.entity_baselines,
+            &ack.despawn_tombstones,
+        );
+        flights.advance(
+            &mut registry,
+            &mut allocator,
+            &mut replicable,
+            &mut server,
+            &OpenAuthorizedShots::new(),
+            0.25,
+        );
+        let position = registry
+            .get_component::<Transform>(visual)
+            .unwrap()
+            .position;
+        assert!(
+            position.distance(Vec3::NEG_Z) < 1.0e-6,
+            "size does not alter speed/range"
+        );
+        server.ingest_tick(produce_owned_snapshots(
+            &registry,
+            &replicable,
+            &mut allocator,
+            &MovementOwners::new(),
+            &HostCommandQueues::new(),
+        ));
+        flights.mark_current_poses_ingested();
+        let delta = server
+            .encode_for_client(OBSERVING_CLIENT, 2)
+            .unwrap()
+            .validate()
+            .unwrap();
+        assert!(matches!(delta.records[0], EntityRecord::Delta { .. }));
+        let delta_outcome = client.apply_snapshot(&mut client_registry, &delta);
+        assert!(
+            (client_registry
+                .get_component::<SpriteVisual>(client_visual)
+                .unwrap()
+                .size
+                - 0.4)
+                .abs()
+                < 1.0e-6
+        );
+        let ack = delta_outcome.ack.unwrap();
+        server.apply_ack(
+            OBSERVING_CLIENT,
+            ack.latest_snapshot_sequence,
+            &ack.entity_baselines,
+            &ack.despawn_tombstones,
+        );
+        server.register_client(42);
+        let late_seed = server.encode_for_client(42, 2).unwrap().validate().unwrap();
+        let mut late_registry = EntityRegistry::new();
+        let mut late_client = ClientReplication::new();
+        let late_outcome = late_client.apply_snapshot(&mut late_registry, &late_seed);
+        let late_remote = &late_outcome.remote_entities[0];
+        assert!(
+            super::super::remote_materialize::materialize_armed_remote_projectile(
+                late_remote,
+                &[projectile_visual_descriptor()],
+                &mut late_registry,
+                0,
+                late_client.projectile_presentation(network)
+            )
+        );
+        assert!(
+            (late_registry
+                .get_component::<SpriteVisual>(late_remote.entity_id)
+                .unwrap()
+                .size
+                - 0.4)
+                .abs()
+                < 1.0e-6
+        );
+        assert!(
+            late_registry
+                .get_component::<Transform>(late_remote.entity_id)
+                .unwrap()
+                .position
+                .distance(position)
+                < 1.0e-6
+        );
+        assert_eq!(
+            late_client
+                .projectile_presentation(network)
+                .unwrap()
+                .shot_id,
+            Some(super::super::wire_convert::shot_id_to_wire(shot_id))
+        );
+        server.request_refresh(OBSERVING_CLIENT, network.0, 0);
+        let refresh = server
+            .encode_for_client(OBSERVING_CLIENT, 3)
+            .unwrap()
+            .validate()
+            .unwrap();
+        assert!(matches!(
+            refresh.records[0],
+            EntityRecord::FullBaseline { .. }
+        ));
+        client.apply_snapshot(&mut client_registry, &refresh);
+        assert!(
+            (client_registry
+                .get_component::<SpriteVisual>(client_visual)
+                .unwrap()
+                .size
+                - 0.4)
+                .abs()
+                < 1.0e-6,
+            "refresh cannot multiply an existing visual"
+        );
+        let WireProjectilePresentation {
+            shot_id: frozen_id, ..
+        } = client
+            .projectile_presentation(NetworkId(network.0))
+            .unwrap();
+        assert_eq!(
+            frozen_id,
+            Some(super::super::wire_convert::shot_id_to_wire(shot_id))
+        );
+        let mut corrected = client.projectile_presentation(network).unwrap();
+        corrected.sprite_size = Some(0.6);
+        replicable.register_projectile_presentation(visual, corrected);
+        server.ingest_tick(produce_owned_snapshots(
+            &registry,
+            &replicable,
+            &mut allocator,
+            &MovementOwners::new(),
+            &HostCommandQueues::new(),
+        ));
+        let corrected = server
+            .encode_for_client(OBSERVING_CLIENT, 4)
+            .unwrap()
+            .validate()
+            .unwrap();
+        client.apply_snapshot(&mut client_registry, &corrected);
+        assert!(
+            (client_registry
+                .get_component::<SpriteVisual>(client_visual)
+                .unwrap()
+                .size
+                - 0.6)
+                .abs()
+                < 1.0e-6,
+            "changed facts update an already materialized body absolutely"
+        );
+        assert_eq!(
+            client_registry
+                .iter_with_kind(ComponentKind::Projectile)
+                .count(),
+            0
         );
     }
 
@@ -1053,6 +1361,8 @@ mod tests {
             .set_component(
                 source,
                 ProjectileComponent {
+                    source_sounds: None,
+                    predicted_visible: true,
                     source_action: None,
                     source_shot: None,
                     knockback_impulse: [0.0; 3],
@@ -1153,6 +1463,7 @@ mod tests {
                 &[weapon_descriptor],
                 &mut observer_registry,
                 0,
+                observer_replication.projectile_presentation(remote.network_id),
             )
         );
         assert_eq!(
@@ -1183,6 +1494,26 @@ mod tests {
             spawn_enemy_gameplay_projectile(&mut registry, enemy, starts[0]),
             spawn_enemy_gameplay_projectile(&mut registry, enemy, starts[1]),
         ];
+        for (ordinal, (source, size)) in sources.into_iter().zip([0.4, 0.7]).enumerate() {
+            attach_projectile_visual_components(&mut registry, source, &descriptor(), 41);
+            let mut visual = registry
+                .get_component::<SpriteVisual>(source)
+                .unwrap()
+                .clone();
+            visual.size = size;
+            registry.set_component(source, visual).unwrap();
+            let mut projectile = registry
+                .get_component::<ProjectileComponent>(source)
+                .unwrap()
+                .clone();
+            projectile.source_shot = Some(ShotId::from_parts(
+                enemy.to_raw(),
+                41,
+                postretro_foundation::ActivationLane::Primary,
+                ordinal as u8,
+            ));
+            registry.set_component(source, projectile).unwrap();
+        }
         let tick_events = crate::sim::TickEvents {
             enemy_projectile_spawns: vec![
                 EnemyProjectilePresentationSpawn {
@@ -1219,6 +1550,18 @@ mod tests {
         );
         assert_eq!(presentations.flights.len(), 2);
         assert_eq!(replicable.iter().count(), 2);
+        let enemy_network = allocator.network_id_for_entity(enemy).unwrap();
+        for source in sources {
+            assert_eq!(
+                registry
+                    .get_component::<ProjectileComponent>(source)
+                    .unwrap()
+                    .source_shot
+                    .unwrap()
+                    .pawn,
+                enemy_network.0
+            );
+        }
 
         replication.ingest_tick(produce_owned_snapshots(
             &registry,
@@ -1248,6 +1591,7 @@ mod tests {
                     &descriptors,
                     &mut observer_registry,
                     41,
+                    observer_replication.projectile_presentation(remote.network_id),
                 )
             );
             let class = observer_registry
@@ -1258,6 +1602,28 @@ mod tests {
             client_entities.insert(class, (remote.network_id, remote.entity_id));
         }
         assert_eq!(client_entities.len(), 2);
+        for (class, size, ordinal) in [
+            ("enemy_plasma_blue", 0.4, 0),
+            ("enemy_plasma_orange", 0.7, 1),
+        ] {
+            let (network, entity) = client_entities[class];
+            assert!(
+                (observer_registry
+                    .get_component::<SpriteVisual>(entity)
+                    .unwrap()
+                    .size
+                    - size)
+                    .abs()
+                    < 1.0e-6
+            );
+            let id = observer_replication
+                .projectile_presentation(network)
+                .unwrap()
+                .shot_id
+                .unwrap();
+            assert_eq!(id.pawn, enemy_network.0);
+            assert_eq!(id.ordinal, ordinal);
+        }
         for (class, expected_collection) in [
             (
                 "enemy_plasma_blue",
@@ -1484,6 +1850,7 @@ mod tests {
         let mut open_shots = OpenAuthorizedShots::new();
         open_shots.record(
             AuthorizedShot {
+                sounds: None,
                 action: None,
                 source_weapon: None,
                 knockback: None,
@@ -1511,11 +1878,13 @@ mod tests {
         let ProjectileBodyVisual::Sprite {
             emissive,
             frame_duration_ms,
+            size,
             ..
         } = &mut projectile.visual.body
         else {
             unreachable!("the shared remote fixture starts with a sprite body");
         };
+        *size = 0.4;
         *emissive = 3.0;
         *frame_duration_ms = Some(60.0);
         projectile.visual.light = Some(ProjectileLight {
@@ -1666,17 +2035,47 @@ mod tests {
                 .as_mut()
                 .expect("test descriptor carries a weapon")
                 .projectile = Some(projectile.clone());
+            if let ProjectileBodyVisual::Sprite { size, .. } = &mut descriptor
+                .weapon
+                .as_mut()
+                .unwrap()
+                .projectile
+                .as_mut()
+                .unwrap()
+                .visual
+                .body
+            {
+                *size = 0.2;
+            }
             assert!(
                 super::super::remote_materialize::materialize_armed_remote_projectile(
                     remote,
                     &[descriptor],
                     &mut observer_registry,
                     0,
+                    observer_replication.projectile_presentation(remote.network_id),
                 )
             );
             remote.entity_id
         };
         assert!(observer_registry.exists(observer_visual));
+        assert!(
+            (observer_registry
+                .get_component::<SpriteVisual>(observer_visual)
+                .unwrap()
+                .size
+                - 0.4)
+                .abs()
+                < 1.0e-6,
+            "frozen scaled body overrides local common size absolutely"
+        );
+        assert_eq!(
+            observer_replication
+                .projectile_presentation(visual_network_id)
+                .unwrap()
+                .shot_id,
+            Some(super::super::wire_convert::shot_id_to_wire(shot_id))
+        );
         assert_eq!(
             observer_registry
                 .get_component::<SpriteVisual>(observer_visual)
@@ -1876,6 +2275,7 @@ mod tests {
         let mut open_shots = OpenAuthorizedShots::new();
         open_shots.record(
             AuthorizedShot {
+                sounds: None,
                 action: None,
                 source_weapon: None,
                 knockback: None,
@@ -2018,6 +2418,7 @@ mod tests {
         let mut open_shots = OpenAuthorizedShots::new();
         open_shots.record(
             AuthorizedShot {
+                sounds: None,
                 action: None,
                 source_weapon: None,
                 knockback: None,
@@ -2187,6 +2588,8 @@ mod tests {
         let _ = registry.set_component(
             source,
             ProjectileComponent {
+                source_sounds: None,
+                predicted_visible: true,
                 source_action: None,
                 source_shot: None,
                 knockback_impulse: [0.0; 3],
@@ -2329,6 +2732,8 @@ mod tests {
             .set_component(
                 source,
                 ProjectileComponent {
+                    source_sounds: None,
+                    predicted_visible: true,
                     source_action: None,
                     source_shot: None,
                     knockback_impulse: [0.0; 3],
@@ -2397,6 +2802,7 @@ mod tests {
         let mut open_shots = OpenAuthorizedShots::new();
         open_shots.record(
             AuthorizedShot {
+                sounds: None,
                 action: None,
                 source_weapon: None,
                 knockback: None,

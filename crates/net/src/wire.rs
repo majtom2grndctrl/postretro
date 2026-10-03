@@ -93,6 +93,111 @@ pub enum ServerPresentationPayload {
     },
 }
 
+/// Frozen scalar facts for a descriptor-backed observer projectile. Assets stay local.
+#[derive(Debug, Clone, Copy, PartialEq, Encode, Decode)]
+pub struct WireProjectilePresentation {
+    pub sprite_size: Option<f32>,
+    pub model_scale: f32,
+    pub shot_id: Option<WireShotId>,
+}
+
+impl WireProjectilePresentation {
+    pub fn is_valid(&self) -> bool {
+        self.model_scale.is_finite()
+            && self.model_scale > 0.0
+            && self
+                .sprite_size
+                .is_none_or(|size| size.is_finite() && size > 0.0)
+            && self.shot_id.is_none_or(valid_presentation_shot_id)
+    }
+}
+
+pub const MAX_WEAPON_CUES: usize = 64;
+/// Matches the authored hitscan pellet bound; aggregation remains per shot.
+pub const MAX_WEAPON_CUE_CONTACTS: usize = 32;
+/// Mirrored authored cue bound; netcode asserts compatibility without coupling floors.
+pub const MAX_WEAPON_CUE_NAME_BYTES: usize = 256;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
+pub enum WeaponCueKind {
+    Activate,
+    Impact,
+}
+
+#[derive(Debug, Clone, PartialEq, Encode, Decode)]
+pub struct WeaponCueContact {
+    pub point: [f32; 3],
+    pub normal: [f32; 3],
+    pub target: Option<NetworkId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Encode, Decode)]
+pub enum WeaponCueAnchor {
+    Entity { entity: NetworkId, origin: [f32; 3] },
+    Contacts(Vec<WeaponCueContact>),
+}
+
+/// The producer freezes sound keys and aliases before descriptor replacement/despawn.
+#[derive(Debug, Clone, PartialEq, Encode, Decode)]
+pub struct WeaponCue {
+    pub shot_id: WireShotId,
+    pub kind: WeaponCueKind,
+    pub sound: Option<String>,
+    pub additional_sound: Option<String>,
+    pub alias: Option<String>,
+    pub anchor: WeaponCueAnchor,
+}
+
+impl WeaponCue {
+    pub fn is_valid(&self) -> bool {
+        let name = |value: &Option<String>| {
+            value.as_ref().is_none_or(|value| {
+                !value.trim().is_empty() && value.len() <= MAX_WEAPON_CUE_NAME_BYTES
+            })
+        };
+        let builtin = match self.kind {
+            WeaponCueKind::Activate => "activate",
+            WeaponCueKind::Impact => "impact",
+        };
+        valid_presentation_shot_id(self.shot_id)
+            && name(&self.sound)
+            && name(&self.additional_sound)
+            && name(&self.alias)
+            && self.alias.as_deref() != Some(builtin)
+            && match &self.anchor {
+                WeaponCueAnchor::Entity { origin, .. } => origin.iter().all(|v| v.is_finite()),
+                WeaponCueAnchor::Contacts(contacts) => {
+                    !contacts.is_empty()
+                        && contacts.len() <= MAX_WEAPON_CUE_CONTACTS
+                        && contacts.iter().all(|contact| {
+                            contact
+                                .point
+                                .iter()
+                                .chain(&contact.normal)
+                                .all(|v| v.is_finite())
+                        })
+                }
+            }
+    }
+}
+
+fn valid_presentation_shot_id(id: WireShotId) -> bool {
+    id.lane <= 1 && id.ordinal < 16
+}
+
+/// Reliable cues are participation-framed independently of owner-private Input facts.
+#[derive(Debug, Clone, PartialEq, Encode, Decode)]
+pub struct WeaponCuesMessage {
+    pub participation_epoch: u64,
+    pub cues: Vec<WeaponCue>,
+}
+
+impl WeaponCuesMessage {
+    pub fn is_valid(&self) -> bool {
+        self.cues.len() <= MAX_WEAPON_CUES && self.cues.iter().all(WeaponCue::is_valid)
+    }
+}
+
 /// Pinned snapshot wire-format version. Carried in `RawSnapshotMessage.version`
 /// and asserted *after* the two handshake gates, so a Phase 1 peer is already
 /// refused by the gates before any Phase 2 snapshot reaches this check.
@@ -148,7 +253,8 @@ pub enum ServerPresentationPayload {
 /// set rides the snapshot envelope and has its own baseline/delta state machine.
 ///
 /// Bumped to 16 for the protected knockback velocity in player movement state.
-pub const SNAPSHOT_VERSION: u16 = 16;
+/// Bumped to 17 for frozen projectile body size, model scale, and shot provenance.
+pub const SNAPSHOT_VERSION: u16 = 17;
 
 /// `record_kind` discriminant for a full-baseline (spawn / join / refresh) record.
 pub const RECORD_KIND_FULL_BASELINE: u16 = 0;
@@ -486,6 +592,7 @@ pub struct RawEntityRecord {
     /// is currently equipped.
     pub active_weapon_archetype: String,
     pub components: Vec<RawComponentPayload>,
+    pub projectile_presentation: Option<WireProjectilePresentation>,
 }
 
 /// Raw snapshot envelope as it crosses the wire. `version` is checked against
@@ -573,6 +680,7 @@ pub enum EntityRecord {
         /// `PlayerMovementState` (enforced at `validate`).
         active_weapon_archetype: Option<String>,
         components: Vec<ComponentPayload>,
+        projectile_presentation: Option<WireProjectilePresentation>,
     },
     Delta {
         network_id: u32,
@@ -587,6 +695,7 @@ pub enum EntityRecord {
         /// See `FullBaseline::active_weapon_archetype`.
         active_weapon_archetype: Option<String>,
         components: Vec<ComponentPayload>,
+        projectile_presentation: Option<WireProjectilePresentation>,
     },
     Despawn {
         network_id: u32,
@@ -627,7 +736,10 @@ pub struct SnapshotMessage {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ValidationError {
     /// `RawSnapshotMessage.version` did not equal [`SNAPSHOT_VERSION`].
-    VersionMismatch { expected: u16, received: u16 },
+    VersionMismatch {
+        expected: u16,
+        received: u16,
+    },
     /// `record_kind` was not one of the defined record discriminants.
     UnknownRecordKind(u16),
     /// `component_kind` was not one of the defined component discriminants.
@@ -645,7 +757,9 @@ pub enum ValidationError {
     MovementMetadataWithoutMovement,
     /// `has_last_processed_client_tick` was `false` but `last_processed_client_tick`
     /// was nonzero — the "absent" flag cannot ride a real tick value.
-    MalformedTickMetadata { last_processed_client_tick: u32 },
+    MalformedTickMetadata {
+        last_processed_client_tick: u32,
+    },
     /// A despawn record carried movement-authority metadata, an `entity_class`, or
     /// active-weapon metadata. A tombstone has no pawn state or presentation identity.
     MetadataOnDespawn,
@@ -686,6 +800,7 @@ pub enum ValidationError {
     /// A `KinematicMoverState` payload carried an invalid `direction` or `mode`
     /// tag. Loaded-mover existence is intentionally not checked in this crate.
     InvalidKinematicMoverState,
+    InvalidProjectilePresentation,
 }
 
 impl std::fmt::Display for ValidationError {
@@ -694,6 +809,10 @@ impl std::fmt::Display for ValidationError {
             ValidationError::VersionMismatch { expected, received } => write!(
                 f,
                 "snapshot version mismatch: expected {expected}, received {received}"
+            ),
+            ValidationError::InvalidProjectilePresentation => write!(
+                f,
+                "invalid projectile presentation facts or missing finite descriptor pose"
             ),
             ValidationError::UnknownRecordKind(k) => write!(f, "unknown record_kind {k}"),
             ValidationError::UnknownComponentKind(k) => write!(f, "unknown component_kind {k}"),
@@ -859,6 +978,7 @@ impl RawEntityRecord {
                 let last_processed_client_tick = self.validate_movement_metadata(&components)?;
                 let entity_class = self.validate_entity_class(&components)?;
                 let active_weapon_archetype = self.validate_active_weapon_metadata(&components)?;
+                self.validate_projectile_presentation(&components, entity_class.as_deref())?;
                 Ok(EntityRecord::FullBaseline {
                     network_id: self.network_id,
                     baseline_id: self.baseline_id_or_ref,
@@ -867,6 +987,7 @@ impl RawEntityRecord {
                     entity_class,
                     active_weapon_archetype,
                     components,
+                    projectile_presentation: self.projectile_presentation,
                 })
             }
             RECORD_KIND_DELTA => {
@@ -874,6 +995,7 @@ impl RawEntityRecord {
                 let last_processed_client_tick = self.validate_movement_metadata(&components)?;
                 let entity_class = self.validate_entity_class(&components)?;
                 let active_weapon_archetype = self.validate_active_weapon_metadata(&components)?;
+                self.validate_projectile_presentation(&components, entity_class.as_deref())?;
                 Ok(EntityRecord::Delta {
                     network_id: self.network_id,
                     baseline_ref: self.baseline_id_or_ref,
@@ -883,6 +1005,7 @@ impl RawEntityRecord {
                     entity_class,
                     active_weapon_archetype,
                     components,
+                    projectile_presentation: self.projectile_presentation,
                 })
             }
             // Despawn is tombstone-only. It carries no component state and no
@@ -895,6 +1018,7 @@ impl RawEntityRecord {
                     || !self.entity_class.is_empty()
                     || self.has_active_weapon_archetype
                     || !self.active_weapon_archetype.is_empty()
+                    || self.projectile_presentation.is_some()
                 {
                     return Err(ValidationError::MetadataOnDespawn);
                 }
@@ -909,6 +1033,23 @@ impl RawEntityRecord {
             }
             other => Err(ValidationError::UnknownRecordKind(other)),
         }
+    }
+
+    fn validate_projectile_presentation(
+        &self,
+        components: &[ComponentPayload],
+        entity_class: Option<&str>,
+    ) -> Result<(), ValidationError> {
+        if let Some(facts) = self.projectile_presentation
+            && (!facts.is_valid()
+                || entity_class.is_none()
+                || !components
+                    .iter()
+                    .any(|p| matches!(p, ComponentPayload::Transform(t) if t.all_finite())))
+        {
+            return Err(ValidationError::InvalidProjectilePresentation);
+        }
+        Ok(())
     }
 
     fn validate_components(&self) -> Result<Vec<ComponentPayload>, ValidationError> {
@@ -1300,7 +1441,8 @@ pub enum ClientMessage {
 pub struct ShotVerdict {
     pub shot_id: WireShotId,
     /// Whether the host authorized the FIRE that minted this shot. `false` means no
-    /// host-authorized shot existed, so clients roll back muzzle/cooldown.
+    /// host-authorized shot existed, so clients retract muzzle/flight. Recovery
+    /// correction comes from the correlated activation outcome.
     pub accept: bool,
     /// Whether at least one declared HIT record validated and applied. This is
     /// separate from FIRE authorization so an authorized miss does not look like a
@@ -1318,11 +1460,15 @@ pub struct ShotVerdictsMessage {
 /// Server -> client reliable input-channel envelope. This wraps time-sync echoes
 /// and future owner-private facts so clients can decode one tagged message family
 /// from `Channel::Input`.
-#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+#[derive(Debug, Clone, PartialEq, Encode, Decode)]
 pub enum ServerMessage {
     TimeSync(crate::timesync::TimeSyncEcho),
     ShotVerdicts(ShotVerdictsMessage),
     ActivationOutcomes(Vec<ActivationOutcome>),
+    WeaponCues(WeaponCuesMessage),
+    /// A HIT declaration exceeded its owner's pending limit or expired while
+    /// FIRE was undecided. Settles HIT bookkeeping without deciding FIRE.
+    HitRefused(WireShotId),
 }
 
 /// Wire codec failure. Today the only failure mode is a bitcode decode error
@@ -1486,6 +1632,7 @@ mod tests {
             entity_class: String::new(),
             has_active_weapon_archetype: false,
             active_weapon_archetype: String::new(),
+            projectile_presentation: None,
             components,
         }
     }
@@ -1755,6 +1902,22 @@ mod tests {
     }
 
     #[test]
+    fn hit_refusal_server_message_preserves_identity_and_rejects_truncation() {
+        let message = ServerMessage::HitRefused(WireShotId {
+            pawn: u32::MAX,
+            start_tick: u32::MAX - 1,
+            lane: 1,
+            ordinal: 15,
+        });
+        let bytes = encode(&message);
+        assert_eq!(decode::<ServerMessage>(&bytes).unwrap(), message);
+        assert!(matches!(
+            decode::<ServerMessage>(&bytes[..bytes.len() - 1]),
+            Err(WireError::Decode(_))
+        ));
+    }
+
+    #[test]
     fn ack_message_round_trips() {
         let ack = AckMessage {
             latest_snapshot_sequence: 17,
@@ -1879,8 +2042,8 @@ mod tests {
     #[test]
     fn presentation_message_payloads_round_trip_on_current_snapshot_version() {
         assert_eq!(
-            SNAPSHOT_VERSION, 16,
-            "the protected knockback snapshot layout requires snapshot version 16"
+            SNAPSHOT_VERSION, 17,
+            "the protected knockback snapshot layout requires snapshot version 17"
         );
 
         let spawn = ServerPresentationMessage {
@@ -1955,6 +2118,7 @@ mod tests {
                 local_player: false,
                 entity_class: None,
                 active_weapon_archetype: None,
+                projectile_presentation: None,
                 components: vec![
                     ComponentPayload::Transform(sample_transform()),
                     ComponentPayload::PlayerMovementState(sample_movement()),
@@ -1992,6 +2156,7 @@ mod tests {
                 local_player: false,
                 entity_class: None,
                 active_weapon_archetype: None,
+                projectile_presentation: None,
                 components: vec![ComponentPayload::Transform(sample_transform())],
             }]
         );
@@ -2195,8 +2360,8 @@ mod tests {
     fn knockback_snapshot_version_rejects_immediately_previous_layout() {
         const PRE_KNOCKBACK_SNAPSHOT_VERSION: u16 = 15;
         assert_eq!(
-            SNAPSHOT_VERSION, 16,
-            "protected knockback state requires snapshot version 16"
+            SNAPSHOT_VERSION, 17,
+            "protected knockback state requires snapshot version 17"
         );
         let raw = RawSnapshotMessage {
             version: PRE_KNOCKBACK_SNAPSHOT_VERSION,
@@ -2284,6 +2449,7 @@ mod tests {
                 local_player: false,
                 entity_class: None,
                 active_weapon_archetype: None,
+                projectile_presentation: None,
                 components: vec![
                     ComponentPayload::Transform(sample_transform()),
                     ComponentPayload::KinematicMoverState(sample_mover_state()),
@@ -2297,6 +2463,7 @@ mod tests {
                 local_player: false,
                 entity_class: None,
                 active_weapon_archetype: None,
+                projectile_presentation: None,
                 components: vec![
                     ComponentPayload::Transform(sample_transform()),
                     ComponentPayload::KinematicMoverState(sample_mover_state()),
@@ -2420,6 +2587,7 @@ mod tests {
                 local_player: true,
                 entity_class: None,
                 active_weapon_archetype: Some("reference_pistol".to_string()),
+                projectile_presentation: None,
                 components: vec![
                     ComponentPayload::Transform(sample_transform()),
                     ComponentPayload::PlayerMovementState(sample_movement()),
@@ -2450,6 +2618,7 @@ mod tests {
                 local_player: false,
                 entity_class: None,
                 active_weapon_archetype: None,
+                projectile_presentation: None,
                 components: vec![ComponentPayload::PlayerMovementState(sample_movement())],
             }
         );
@@ -2637,6 +2806,7 @@ mod tests {
                 local_player: true,
                 entity_class: Some("player".to_string()),
                 active_weapon_archetype: None,
+                projectile_presentation: None,
                 components: vec![
                     ComponentPayload::Transform(sample_transform()),
                     ComponentPayload::PlayerMovementState(sample_movement()),
@@ -2663,6 +2833,7 @@ mod tests {
                 local_player: false,
                 entity_class: Some("boomer".to_string()),
                 active_weapon_archetype: None,
+                projectile_presentation: None,
                 components: vec![ComponentPayload::Transform(sample_transform())],
             }
         );
@@ -2696,6 +2867,7 @@ mod tests {
                 local_player: false,
                 entity_class: Some("boomer".to_string()),
                 active_weapon_archetype: None,
+                projectile_presentation: None,
                 components: vec![ComponentPayload::Transform(sample_transform())],
             }
         );
@@ -3148,6 +3320,171 @@ mod tests {
                 !matches!(state, WireMovementState::Normal)
             );
         }
+    }
+
+    fn projectile_facts() -> WireProjectilePresentation {
+        WireProjectilePresentation {
+            sprite_size: Some(0.4),
+            model_scale: 2.0,
+            shot_id: Some(WireShotId {
+                pawn: 41,
+                start_tick: 12,
+                lane: 1,
+                ordinal: 2,
+            }),
+        }
+    }
+
+    #[test]
+    fn projectile_presentation_rejects_malformed_scalars_identity_and_record_shape() {
+        let mut record = raw_record(
+            RECORD_KIND_FULL_BASELINE,
+            4,
+            1,
+            0,
+            0,
+            vec![raw_transform_payload()],
+        );
+        record.has_entity_class = true;
+        record.entity_class = "projectile:plasma".into();
+        record.projectile_presentation = Some(projectile_facts());
+        assert!(record.validate().is_ok());
+        for value in [f32::NAN, f32::INFINITY, 0.0, -1.0] {
+            record.projectile_presentation = Some(WireProjectilePresentation {
+                sprite_size: Some(value),
+                ..projectile_facts()
+            });
+            assert_eq!(
+                record.validate(),
+                Err(ValidationError::InvalidProjectilePresentation)
+            );
+            record.projectile_presentation = Some(WireProjectilePresentation {
+                model_scale: value,
+                ..projectile_facts()
+            });
+            assert_eq!(
+                record.validate(),
+                Err(ValidationError::InvalidProjectilePresentation)
+            );
+        }
+        for id in [
+            WireShotId {
+                lane: 2,
+                ..projectile_facts().shot_id.unwrap()
+            },
+            WireShotId {
+                ordinal: 16,
+                ..projectile_facts().shot_id.unwrap()
+            },
+        ] {
+            record.projectile_presentation = Some(WireProjectilePresentation {
+                shot_id: Some(id),
+                ..projectile_facts()
+            });
+            assert_eq!(
+                record.validate(),
+                Err(ValidationError::InvalidProjectilePresentation)
+            );
+        }
+        record.projectile_presentation = Some(projectile_facts());
+        record.components.clear();
+        assert!(record.validate().is_err());
+        record.record_kind = RECORD_KIND_DESPAWN;
+        assert_eq!(record.validate(), Err(ValidationError::MetadataOnDespawn));
+    }
+
+    fn weapon_cue() -> WeaponCue {
+        WeaponCue {
+            shot_id: projectile_facts().shot_id.unwrap(),
+            kind: WeaponCueKind::Impact,
+            sound: Some("old_impact".into()),
+            additional_sound: None,
+            alias: Some("alt_impact".into()),
+            anchor: WeaponCueAnchor::Contacts(vec![WeaponCueContact {
+                point: [1.0, 2.0, 3.0],
+                normal: [0.0, 1.0, 0.0],
+                target: Some(NetworkId(7)),
+            }]),
+        }
+    }
+
+    #[test]
+    fn weapon_cue_wire_rejects_invalid_identity_names_contact_facts_and_bounds() {
+        let message = ServerMessage::WeaponCues(WeaponCuesMessage {
+            participation_epoch: 7,
+            cues: vec![weapon_cue()],
+        });
+        assert!(round_trips(&message));
+        for lane in [2, 255] {
+            let mut cue = weapon_cue();
+            cue.shot_id.lane = lane;
+            assert!(!cue.is_valid());
+        }
+        let mut cue = weapon_cue();
+        cue.shot_id.ordinal = 16;
+        assert!(!cue.is_valid());
+        for value in [
+            "".to_string(),
+            "  ".to_string(),
+            "x".repeat(MAX_WEAPON_CUE_NAME_BYTES + 1),
+        ] {
+            let mut cue = weapon_cue();
+            cue.sound = Some(value.clone());
+            assert!(!cue.is_valid());
+            let mut cue = weapon_cue();
+            cue.alias = Some(value);
+            assert!(!cue.is_valid());
+        }
+        let mut cue = weapon_cue();
+        cue.alias = Some("impact".into());
+        assert!(!cue.is_valid());
+        let mut cue = weapon_cue();
+        cue.anchor = WeaponCueAnchor::Entity {
+            entity: NetworkId(1),
+            origin: [f32::NAN, 0.0, 0.0],
+        };
+        assert!(!cue.is_valid());
+        let mut cue = weapon_cue();
+        cue.anchor = WeaponCueAnchor::Contacts(Vec::new());
+        assert!(!cue.is_valid());
+        let mut cue = weapon_cue();
+        cue.anchor = WeaponCueAnchor::Contacts(vec![WeaponCueContact {
+            point: [0.0; 3],
+            normal: [f32::INFINITY; 3],
+            target: None,
+        }]);
+        assert!(!cue.is_valid());
+        let mut cue = weapon_cue();
+        cue.anchor = WeaponCueAnchor::Contacts(vec![
+            WeaponCueContact {
+                point: [0.0; 3],
+                normal: [0.0; 3],
+                target: None
+            };
+            MAX_WEAPON_CUE_CONTACTS + 1
+        ]);
+        assert!(!cue.is_valid());
+        assert!(
+            !WeaponCuesMessage {
+                participation_epoch: 7,
+                cues: vec![weapon_cue(); MAX_WEAPON_CUES + 1]
+            }
+            .is_valid()
+        );
+    }
+
+    #[test]
+    fn projectile_presentation_rejects_previous_snapshot_epoch() {
+        assert_eq!(raw_snapshot(1, 2, Vec::new()).version, SNAPSHOT_VERSION);
+        let mut raw = raw_snapshot(1, 2, Vec::new());
+        raw.version = 16;
+        assert_eq!(
+            raw.validate(),
+            Err(ValidationError::VersionMismatch {
+                expected: 17,
+                received: 16
+            })
+        );
     }
 
     /// Re-encode a typed payload into its raw envelope form for round-trip guards.

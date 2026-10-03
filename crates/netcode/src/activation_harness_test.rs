@@ -27,6 +27,7 @@ fn program(charge: bool) -> ActivationProgram {
 }
 fn command(tick: u32, activation: ActivationInput) -> wire::InputCommand {
     let command = SimCommand {
+        input_tick: 0,
         movement: crate::movement::MovementInput {
             wish_dir: glam::Vec2::ZERO,
             jump_pressed: false,
@@ -59,6 +60,58 @@ fn token(start_tick: u32) -> ActivationToken {
         start_tick,
         lane: ActivationLane::Secondary,
     }
+}
+
+fn queued_live_activation_fixture(
+    charge: bool,
+) -> (
+    HostCommandQueues,
+    ActivationProgram,
+    postretro_foundation::ActivationCursor,
+    postretro_foundation::ActivationId,
+) {
+    let program = program(charge);
+    let mut queues = HostCommandQueues::new();
+    for tick in 100..=101 {
+        assert!(queues.ingest(
+            7,
+            &command(
+                tick,
+                ActivationInput {
+                    initiation: (tick == 100).then_some(token(100)),
+                    ..ActivationInput::default()
+                }
+            )
+        ));
+    }
+    let initial = queues.resolve_tick(7).unwrap();
+    assert_eq!(initial.source, command_queue::ResolutionSource::Real);
+    let id = postretro_foundation::ActivationId {
+        pawn: 4,
+        token: initial.command.activation.initiation.unwrap(),
+    };
+    assert!(queues.activations.accept(
+        7,
+        id,
+        postretro_entities::EntityId::from_raw(9),
+        &program,
+        100
+    ));
+    let mut cursor = start_activation(id.token, id.pawn, 100, &program);
+    let first = advance_activation(&mut cursor, &program, 100, true, initial.command.activation);
+    if charge {
+        assert!(first.shot.is_none());
+    } else {
+        assert_eq!(first.shot.unwrap().shot_id.ordinal, 0);
+    }
+    let waiting = queues.resolve_tick(7).unwrap();
+    assert_eq!(waiting.source, command_queue::ResolutionSource::Real);
+    assert!(
+        advance_activation(&mut cursor, &program, 101, true, waiting.command.activation)
+            .shot
+            .is_none()
+    );
+    (queues, program, cursor, id)
 }
 
 #[test]
@@ -209,6 +262,304 @@ fn activation_release_received_before_start_and_stale_drop_is_delivered_once() {
             .activation
             .cancel
             .is_none()
+    );
+}
+
+#[test]
+fn activation_competing_release_delivers_live_cancel_before_due_shot() {
+    let program = program(false);
+    let live = token(10);
+    let competing = token(12);
+    let id = postretro_foundation::ActivationId {
+        pawn: 4,
+        token: live,
+    };
+    let mut queues = HostCommandQueues::new();
+    assert!(queues.ingest(
+        7,
+        &command(
+            10,
+            ActivationInput {
+                initiation: Some(live),
+                ..ActivationInput::default()
+            }
+        )
+    ));
+    assert!(queues.ingest(7, &command(11, ActivationInput::default())));
+    let initial = queues.resolve_tick(7).unwrap();
+    assert_eq!(initial.source, command_queue::ResolutionSource::Real);
+    assert_eq!(initial.command.activation.initiation, Some(live));
+    assert!(queues.activations.accept(
+        7,
+        id,
+        postretro_entities::EntityId::from_raw(9),
+        &program,
+        100
+    ));
+    let mut cursor = start_activation(live, id.pawn, 100, &program);
+    let first = advance_activation(&mut cursor, &program, 100, true, initial.command.activation);
+    assert_eq!(first.shot.unwrap().shot_id.ordinal, 0);
+    let waiting = queues.resolve_tick(7).unwrap();
+    assert!(
+        advance_activation(
+            &mut cursor,
+            &program,
+            101,
+            waiting.source == command_queue::ResolutionSource::Real,
+            waiting.command.activation,
+        )
+        .shot
+        .is_none()
+    );
+
+    // Regression: the competing release consumed the live cancellation's delivery
+    // slot, allowing the already-due second shot before cancellation on the next tick.
+    let input = ActivationInput {
+        initiation: Some(competing),
+        release: Some(ActivationRelease {
+            token: competing,
+            release_tick: competing.start_tick,
+        }),
+        cancel: Some(live),
+    };
+    assert!(queues.ingest(7, &command(competing.start_tick, input)));
+    let mut resolved = queues.resolve_tick(7).unwrap();
+    assert_eq!(resolved.source, command_queue::ResolutionSource::Real);
+    assert_eq!(resolved.command.activation.initiation, Some(competing));
+    assert_eq!(resolved.command.activation.release, input.release);
+    assert_eq!(resolved.command.activation.cancel, Some(live));
+    // Command admission precedes the host's concurrency guard. B is refused while
+    // the correlated cancellation must still reach A in this same fixed tick.
+    assert!(!queues.activations.can_accept(
+        7,
+        postretro_foundation::ActivationId {
+            pawn: id.pawn,
+            token: competing,
+        },
+        102
+    ));
+    resolved.command.activation.initiation = None;
+    let cancelled = advance_activation(
+        &mut cursor,
+        &program,
+        102,
+        true,
+        resolved.command.activation,
+    );
+    assert!(cancelled.shot.is_none());
+    assert_eq!(
+        cancelled.terminal,
+        Some(postretro_combat_model::activation::ActivationTermination::Cancelled)
+    );
+    assert_eq!(cursor.ordinal, 1);
+    assert_eq!(
+        queues.resolve_tick(7).unwrap().command.activation,
+        ActivationInput::default()
+    );
+}
+
+#[test]
+fn activation_competing_cancel_cannot_delay_live_cancel_before_due_shot() {
+    let (mut queues, program, mut cursor, live) = queued_live_activation_fixture(false);
+    let competing = postretro_foundation::ActivationId {
+        pawn: live.pawn,
+        token: ActivationToken {
+            start_tick: 102,
+            lane: ActivationLane::Primary,
+        },
+    };
+    // Regression: B's earlier cancellation occupied the cancel slot even though
+    // the ledger owned A, whose cancellation had also arrived before its due shot.
+    assert!(queues.ingest(
+        7,
+        &command(
+            102,
+            ActivationInput {
+                initiation: Some(competing.token),
+                cancel: Some(competing.token),
+                ..ActivationInput::default()
+            }
+        )
+    ));
+    assert!(queues.ingest(
+        7,
+        &command(
+            103,
+            ActivationInput {
+                cancel: Some(live.token),
+                ..ActivationInput::default()
+            }
+        )
+    ));
+    let mut resolved = queues.resolve_tick(7).unwrap();
+    assert_eq!(resolved.source, command_queue::ResolutionSource::Real);
+    assert_eq!(
+        resolved.command.activation.initiation,
+        Some(competing.token)
+    );
+    assert_eq!(resolved.command.activation.cancel, Some(live.token));
+    assert!(!queues.activations.can_accept(7, competing, 102));
+    resolved.command.activation.initiation = None;
+    let cancelled = advance_activation(
+        &mut cursor,
+        &program,
+        102,
+        true,
+        resolved.command.activation,
+    );
+    assert!(cancelled.shot.is_none());
+    assert_eq!(
+        cancelled.terminal,
+        Some(postretro_combat_model::activation::ActivationTermination::Cancelled)
+    );
+    assert_eq!(cursor.ordinal, 1);
+    queues.activations.terminal(7, competing, 102);
+    queues.activation_terminal(7, competing.token);
+    queues.activations.terminal(7, live, 102);
+    queues.activation_terminal(7, live.token);
+    assert_eq!(
+        queues.resolve_tick(7).unwrap().command.activation,
+        ActivationInput::default()
+    );
+}
+
+#[test]
+fn activation_competing_release_cannot_delay_live_charge_release() {
+    let (mut queues, program, mut cursor, live) = queued_live_activation_fixture(true);
+    let competing = postretro_foundation::ActivationId {
+        pawn: live.pawn,
+        token: ActivationToken {
+            start_tick: 102,
+            lane: ActivationLane::Primary,
+        },
+    };
+    assert!(queues.ingest(
+        7,
+        &command(
+            102,
+            ActivationInput {
+                initiation: Some(competing.token),
+                release: Some(ActivationRelease {
+                    token: competing.token,
+                    release_tick: 102,
+                }),
+                ..ActivationInput::default()
+            }
+        )
+    ));
+    let release = ActivationRelease {
+        token: live.token,
+        release_tick: 103,
+    };
+    assert!(queues.ingest(
+        7,
+        &command(
+            103,
+            ActivationInput {
+                release: Some(release),
+                ..ActivationInput::default()
+            }
+        )
+    ));
+    let mut resolved = queues.resolve_tick(7).unwrap();
+    assert_eq!(resolved.source, command_queue::ResolutionSource::Real);
+    assert_eq!(resolved.command.activation.release, Some(release));
+    assert!(!queues.activations.can_accept(7, competing, 102));
+    resolved.command.activation.initiation = None;
+    let released = advance_activation(
+        &mut cursor,
+        &program,
+        102,
+        true,
+        resolved.command.activation,
+    );
+    assert_eq!(released.shot.unwrap().shot_id.activation(), live);
+    assert!((released.execution_charge.unwrap() - 0.5).abs() < 1e-6);
+    queues.activations.terminal(7, competing, 102);
+    queues.activation_terminal(7, competing.token);
+    assert_eq!(
+        queues.resolve_tick(7).unwrap().command.activation,
+        ActivationInput::default()
+    );
+}
+
+#[test]
+fn activation_live_overflow_cancel_precedes_competing_admitted_cancel() {
+    let (mut queues, program, mut cursor, live) = queued_live_activation_fixture(false);
+    let competing = postretro_foundation::ActivationId {
+        pawn: live.pawn,
+        token: ActivationToken {
+            start_tick: 102,
+            lane: ActivationLane::Primary,
+        },
+    };
+    // Stale commands still feed retained edges. Fill the bound while B remains
+    // unknown; overflowing A's later release must cancel the admitted live A.
+    for offset in 0..64 {
+        let unknown = if offset == 0 {
+            competing.token
+        } else {
+            token(199 + offset)
+        };
+        assert!(!queues.ingest(
+            7,
+            &command(
+                101,
+                ActivationInput {
+                    cancel: Some(unknown),
+                    ..ActivationInput::default()
+                }
+            )
+        ));
+    }
+    assert!(!queues.ingest(
+        7,
+        &command(
+            101,
+            ActivationInput {
+                release: Some(ActivationRelease {
+                    token: live.token,
+                    release_tick: 102,
+                }),
+                ..ActivationInput::default()
+            }
+        )
+    ));
+    assert!(queues.ingest(
+        7,
+        &command(
+            102,
+            ActivationInput {
+                initiation: Some(competing.token),
+                ..ActivationInput::default()
+            }
+        )
+    ));
+    let mut resolved = queues.resolve_tick(7).unwrap();
+    assert_eq!(resolved.source, command_queue::ResolutionSource::Real);
+    assert_eq!(resolved.command.activation.cancel, Some(live.token));
+    assert!(resolved.command.activation.release.is_none());
+    assert!(!queues.activations.can_accept(7, competing, 102));
+    resolved.command.activation.initiation = None;
+    let cancelled = advance_activation(
+        &mut cursor,
+        &program,
+        102,
+        true,
+        resolved.command.activation,
+    );
+    assert!(cancelled.shot.is_none());
+    assert_eq!(
+        cancelled.terminal,
+        Some(postretro_combat_model::activation::ActivationTermination::Cancelled)
+    );
+    queues.activations.terminal(7, competing, 102);
+    queues.activation_terminal(7, competing.token);
+    queues.activations.terminal(7, live, 102);
+    queues.activation_terminal(7, live.token);
+    assert_eq!(
+        queues.resolve_tick(7).unwrap().command.activation,
+        ActivationInput::default()
     );
 }
 

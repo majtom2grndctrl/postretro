@@ -842,6 +842,7 @@ mod tests {
         );
         open_shots.record(
             AuthorizedShot {
+                sounds: None,
                 action: None,
                 source_weapon: None,
                 knockback: None,
@@ -1134,6 +1135,7 @@ mod tests {
         );
         open_shots.record(
             AuthorizedShot {
+                sounds: None,
                 action: None,
                 source_weapon: None,
                 knockback: None,

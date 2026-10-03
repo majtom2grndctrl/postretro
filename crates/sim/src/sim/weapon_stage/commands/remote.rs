@@ -133,6 +133,7 @@ pub(in crate::sim) fn run_remote_weapon_commands(
         let _ = registry.set_component(weapon, weapon_component);
         // A remote pawn's shot sounds from that pawn, with its weapon's sounds.
         let remote_emission = |address| WeaponEmission {
+            sounds: frozen.as_ref().map(|shot| shot.sounds.clone()),
             action: if address == "activate" {
                 frozen.as_ref().map(|shot| shot.action().clone())
             } else {
@@ -282,6 +283,7 @@ pub(in crate::sim) fn run_remote_weapon_commands(
         };
         authorized.push(OpenAuthorizedShot {
             shot: AuthorizedShot {
+                sounds: frozen.as_ref().map(|shot| shot.sounds.clone()),
                 action: frozen.as_ref().map(|shot| shot.action().clone()),
                 source_weapon: descriptor_name(&registry, weapon),
                 shot_id,

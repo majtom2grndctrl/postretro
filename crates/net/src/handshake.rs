@@ -7,7 +7,7 @@ pub use crate::wire::{ClosingCause, DivergenceReason, HoldingCause};
 
 /// Weapon activation lifecycle outcomes extend the reliable Input vocabulary.
 /// This application magic is independent of the baked PRL file format.
-pub const PROTOCOL_ID: u32 = 0x_5052_4C38; // "PRL8"
+pub const PROTOCOL_ID: u32 = 0x_5052_4C39; // "PRL9"
 /// E15's admission/parity envelopes and participation-framed traffic layouts.
 /// E17 adds `blocked` to `WireKinematicMoverState`; E16 consumed epoch 16 for
 /// `drop_pressed` on the Input channel and `JoinSeed` advances this to 18. The
@@ -19,7 +19,8 @@ pub const PROTOCOL_ID: u32 = 0x_5052_4C38; // "PRL8"
 /// Hit records carrying their contact normal advance it to 23.
 /// Activation input and the four-part shot identity advance it to 24.
 /// The tuning-payload epoch remains independent.
-pub const WIRE_VERSION: u32 = 24;
+/// Frozen projectile facts and reliable observer cues advance this to 25.
+pub const WIRE_VERSION: u32 = 25;
 
 #[must_use]
 pub const fn transport_protocol_id() -> u64 {
@@ -111,8 +112,8 @@ mod tests {
     fn knockback_snapshot_layout_refuses_previous_wire_version() {
         const PRE_KNOCKBACK_WIRE_VERSION: u32 = 21;
         assert_eq!(
-            PROTOCOL_ID, 0x_5052_4C38,
-            "presentation vocabulary requires application protocol PRL8"
+            PROTOCOL_ID, 0x_5052_4C39,
+            "presentation vocabulary requires application protocol PRL9"
         );
         const {
             assert!(
@@ -259,10 +260,74 @@ mod tests {
 #[cfg(test)]
 mod activation_epoch_tests {
     use super::*;
+    use bitcode::{Decode, Encode};
+
+    #[derive(Clone, Encode, Decode)]
+    enum PreCueServerMessage {
+        TimeSync(crate::timesync::TimeSyncEcho),
+        ShotVerdicts(crate::wire::ShotVerdictsMessage),
+        ActivationOutcomes(Vec<crate::wire::ActivationOutcome>),
+    }
+
+    #[test]
+    fn observer_cue_append_preserves_shipped_server_message_tags() {
+        use crate::wire::{ServerMessage, ShotVerdictsMessage};
+        let echo = crate::timesync::TimeSyncEcho {
+            sample_id: 7,
+            client_send_tick: 8,
+            client_send_time_us: 9,
+            server_tick: 10,
+            server_echo_time_us: 11,
+        };
+        let verdicts = ShotVerdictsMessage {
+            verdicts: Vec::new(),
+        };
+        let cases = [
+            (
+                PreCueServerMessage::TimeSync(echo.clone()),
+                ServerMessage::TimeSync(echo),
+            ),
+            (
+                PreCueServerMessage::ShotVerdicts(verdicts.clone()),
+                ServerMessage::ShotVerdicts(verdicts),
+            ),
+            (
+                PreCueServerMessage::ActivationOutcomes(Vec::new()),
+                ServerMessage::ActivationOutcomes(Vec::new()),
+            ),
+        ];
+        for (historical, current) in cases {
+            assert_eq!(
+                crate::wire::encode(&historical),
+                crate::wire::encode(&current),
+                "append must preserve existing field/tag order"
+            );
+        }
+    }
+
+    #[test]
+    fn observer_cues_and_projectile_facts_refuse_previous_epochs() {
+        for received in [
+            ProtocolVersion {
+                app_protocol_id: PROTOCOL_ID,
+                wire_version: 24,
+            },
+            ProtocolVersion {
+                app_protocol_id: 0x5052_4c38,
+                wire_version: WIRE_VERSION,
+            },
+        ] {
+            assert!(matches!(
+                validate_handshake(protocol_version(), received),
+                Err(ClosingCause::Protocol { .. })
+            ));
+        }
+    }
+
     #[test]
     fn activation_records_and_outcomes_reject_previous_layout_and_vocabulary() {
-        assert_eq!(WIRE_VERSION, 24);
-        assert_eq!(PROTOCOL_ID, 0x5052_4c38);
+        assert_eq!(WIRE_VERSION, 25);
+        assert_eq!(PROTOCOL_ID, 0x5052_4c39);
         for received in [
             ProtocolVersion {
                 app_protocol_id: PROTOCOL_ID,

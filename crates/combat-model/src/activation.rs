@@ -125,8 +125,8 @@ pub fn advance_activation(
     if host_tick.wrapping_sub(cursor.due_tick) >= 1 << 31 {
         return result;
     }
-    // Structural validation bounds this loop to 64 steps and one shot per tick.
-    while let Some(step) = program.steps.get(usize::from(cursor.step)) {
+    // Positive waits between authored shots limit advancement to one shot per tick.
+    if let Some(step) = program.steps.get(usize::from(cursor.step)) {
         cursor.step += 1;
         match step {
             ActivationStep::Wait { ticks } => {

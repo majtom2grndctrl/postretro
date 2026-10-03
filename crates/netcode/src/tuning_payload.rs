@@ -254,7 +254,8 @@ mod tests {
         let encoded = encode_tuning_payload(&payload);
         let json: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
         assert!(json["movement"]["view_feel"].is_null());
-        // No sound key crosses the wire (`audio.md` §4).
+        // This tuning payload omits sound keys; observer cues transport frozen
+        // effective keys separately (`audio.md` §4).
         assert!(json["movement"]["sounds"].is_null());
         assert_eq!(json["movement"]["slide"]["min_speed"], 8.0);
         let wieldables = json["wieldables"].as_array().unwrap();
@@ -393,7 +394,7 @@ mod tests {
             full_ms: 1000.0,
         });
         secondary.steps = vec![ActivationStepDescriptor::Shot {
-            scale: ShotScaleDescriptor {
+            scale: Box::new(ShotScaleDescriptor {
                 damage: NumberOrIr::Ir(IrNode::Add {
                     a: Box::new(IrNode::Mul {
                         a: Box::new(IrNode::Input {
@@ -409,7 +410,7 @@ mod tests {
                     }),
                 }),
                 ..Default::default()
-            },
+            }),
         }];
         row.secondary = Some(secondary);
         let encoded = encode_tuning_payload(&payload);

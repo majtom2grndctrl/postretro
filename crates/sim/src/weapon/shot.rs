@@ -11,6 +11,7 @@ use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ResolvedWeaponShot {
+    pub sounds: std::sync::Arc<postretro_foundation::ActivationSounds>,
     pub activation: ResolvedActivationShot,
     pub pellet_count: u32,
     pub spread_degrees: f32,
@@ -56,7 +57,22 @@ pub fn freeze_weapon_shot(
     if let Some(knockback) = splash.as_mut().and_then(|s| s.knockback.as_mut()) {
         knockback.speed = values.splash_knockback_speed.unwrap_or(knockback.speed);
     }
+    let sounds = std::sync::Arc::new(postretro_foundation::ActivationSounds {
+        fire: activation
+            .action
+            .sounds
+            .as_ref()
+            .and_then(|s| s.fire.clone())
+            .or_else(|| weapon.sounds.as_ref().and_then(|s| s.fire.clone())),
+        impact: activation
+            .action
+            .sounds
+            .as_ref()
+            .and_then(|s| s.impact.clone())
+            .or_else(|| weapon.sounds.as_ref().and_then(|s| s.impact.clone())),
+    });
     ResolvedWeaponShot {
+        sounds,
         activation,
         pellet_count: weapon.pellet_count,
         spread_degrees: weapon.spread_degrees,

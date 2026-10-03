@@ -633,6 +633,67 @@ struct Hit {
     distance: f32,
 }
 
+// TEMPORARY (bake-parallelism-large-maps Task 10 profile): selects the
+// traversal `closest_hit` and `segment_clear` use in test builds.
+// 0 = stock iterator, 1 = bounded query on the stock iterator, 2 = near-first.
+#[cfg(test)]
+thread_local! {
+    pub(crate) static TRAVERSAL_MODE: std::cell::Cell<u8> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+fn traversal_mode() -> u8 {
+    TRAVERSAL_MODE.with(std::cell::Cell::get)
+}
+
+#[cfg(not(test))]
+fn traversal_mode() -> u8 {
+    0
+}
+
+/// Test one leaf's triangles against the ray; keeps the nearest hit in
+/// `best`, with a later equal-distance hit never replacing an earlier one.
+/// Returns whether `best` changed.
+fn closest_hit_in_leaf(
+    ctx: &RaytracingCtx<'_>,
+    prim: &BvhPrimitive,
+    ray_origin: Vec3,
+    ray_dir: Vec3,
+    max_distance: f32,
+    best: &mut Option<Hit>,
+) -> bool {
+    let geom = &ctx.geometry.geometry;
+    let start = prim.index_offset as usize;
+    let end = start + prim.index_count as usize;
+    let mut tri = start;
+    let mut changed = false;
+    while tri + 3 <= end {
+        let i0 = geom.indices[tri] as usize;
+        let i1 = geom.indices[tri + 1] as usize;
+        let i2 = geom.indices[tri + 2] as usize;
+        tri += 3;
+
+        let p0 = Vec3::from(geom.vertices[i0].position);
+        let p1 = Vec3::from(geom.vertices[i1].position);
+        let p2 = Vec3::from(geom.vertices[i2].position);
+
+        if let Some((dist, normal)) = ray_triangle_hit(ray_origin, ray_dir, p0, p1, p2) {
+            if dist > RAY_EPSILON && dist < max_distance {
+                let update = best.as_ref().map(|b| dist < b.distance).unwrap_or(true);
+                if update {
+                    *best = Some(Hit {
+                        point: ray_origin + ray_dir * dist,
+                        normal,
+                        distance: dist,
+                    });
+                    changed = true;
+                }
+            }
+        }
+    }
+    changed
+}
+
 fn closest_hit(
     ctx: &RaytracingCtx<'_>,
     ray_origin: Vec3,
@@ -643,34 +704,61 @@ fn closest_hit(
         Point3::new(ray_origin.x, ray_origin.y, ray_origin.z),
         Vector3::new(ray_dir.x, ray_dir.y, ray_dir.z),
     );
-    let geom = &ctx.geometry.geometry;
     let mut best: Option<Hit> = None;
 
-    for prim in ctx.bvh.traverse_iterator(&ray, ctx.primitives) {
-        let start = prim.index_offset as usize;
-        let end = start + prim.index_count as usize;
-        let mut tri = start;
-        while tri + 3 <= end {
-            let i0 = geom.indices[tri] as usize;
-            let i1 = geom.indices[tri + 1] as usize;
-            let i2 = geom.indices[tri + 2] as usize;
-            tri += 3;
-
-            let p0 = Vec3::from(geom.vertices[i0].position);
-            let p1 = Vec3::from(geom.vertices[i1].position);
-            let p2 = Vec3::from(geom.vertices[i2].position);
-
-            if let Some((dist, normal)) = ray_triangle_hit(ray_origin, ray_dir, p0, p1, p2) {
-                if dist > RAY_EPSILON && dist < max_distance {
-                    let update = best.as_ref().map(|b| dist < b.distance).unwrap_or(true);
-                    if update {
-                        best = Some(Hit {
-                            point: ray_origin + ray_dir * dist,
-                            normal,
-                            distance: dist,
-                        });
-                    }
+    match traversal_mode() {
+        1 => {
+            let bound = std::cell::Cell::new(max_distance);
+            let query = crate::ray_traversal::BoundedRay {
+                ray: &ray,
+                bound: &bound,
+            };
+            for prim in ctx.bvh.traverse_iterator(&query, ctx.primitives) {
+                if closest_hit_in_leaf(ctx, prim, ray_origin, ray_dir, max_distance, &mut best) {
+                    bound.set(best.as_ref().map_or(max_distance, |h| h.distance));
                 }
+            }
+        }
+        2 => {
+            // Tie key: (distance, leaf rank in stock visit order, triangle order).
+            let bound = std::cell::Cell::new(max_distance);
+            let mut best_rank = usize::MAX;
+            crate::ray_traversal::walk_near_first(
+                ctx.bvh,
+                ctx.primitives,
+                &ray,
+                &bound,
+                |shape, rank| {
+                    let mut leaf_best: Option<Hit> = None;
+                    closest_hit_in_leaf(
+                        ctx,
+                        &ctx.primitives[shape],
+                        ray_origin,
+                        ray_dir,
+                        max_distance,
+                        &mut leaf_best,
+                    );
+                    if let Some(hit) = leaf_best {
+                        let better = match &best {
+                            None => true,
+                            Some(b) => {
+                                hit.distance < b.distance
+                                    || (hit.distance == b.distance && rank < best_rank)
+                            }
+                        };
+                        if better {
+                            bound.set(hit.distance);
+                            best = Some(hit);
+                            best_rank = rank;
+                        }
+                    }
+                    std::ops::ControlFlow::Continue(())
+                },
+            );
+        }
+        _ => {
+            for prim in ctx.bvh.traverse_iterator(&ray, ctx.primitives) {
+                closest_hit_in_leaf(ctx, prim, ray_origin, ray_dir, max_distance, &mut best);
             }
         }
     }
@@ -729,7 +817,7 @@ fn segment_clear(ctx: &RaytracingCtx<'_>, from: Vec3, to: Vec3) -> bool {
     );
     let max_distance = length - RAY_EPSILON;
     let geom = &ctx.geometry.geometry;
-    for prim in ctx.bvh.traverse_iterator(&ray, ctx.primitives) {
+    let blocks = |prim: &BvhPrimitive| {
         let start = prim.index_offset as usize;
         let end = start + prim.index_count as usize;
         let mut tri = start;
@@ -743,12 +831,44 @@ fn segment_clear(ctx: &RaytracingCtx<'_>, from: Vec3, to: Vec3) -> bool {
             let p2 = Vec3::from(geom.vertices[i2].position);
             if let Some((dist, _)) = ray_triangle_hit(origin, dir, p0, p1, p2) {
                 if dist > 0.0 && dist < max_distance {
-                    return false;
+                    return true;
                 }
             }
         }
+        false
+    };
+    match traversal_mode() {
+        1 => {
+            let bound = std::cell::Cell::new(max_distance);
+            let query = crate::ray_traversal::BoundedRay {
+                ray: &ray,
+                bound: &bound,
+            };
+            !ctx.bvh
+                .traverse_iterator(&query, ctx.primitives)
+                .any(blocks)
+        }
+        2 => {
+            let bound = std::cell::Cell::new(max_distance);
+            let mut clear = true;
+            crate::ray_traversal::walk_near_first(
+                ctx.bvh,
+                ctx.primitives,
+                &ray,
+                &bound,
+                |shape, _| {
+                    if blocks(&ctx.primitives[shape]) {
+                        clear = false;
+                        std::ops::ControlFlow::Break(())
+                    } else {
+                        std::ops::ControlFlow::Continue(())
+                    }
+                },
+            );
+            clear
+        }
+        _ => !ctx.bvh.traverse_iterator(&ray, ctx.primitives).any(blocks),
     }
-    true
 }
 
 /// Normal-free incident radiance reaching `point` from `light`, plus the unit

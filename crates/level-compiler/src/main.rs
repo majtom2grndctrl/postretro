@@ -48,6 +48,7 @@ pub mod parse;
 pub mod partition;
 pub mod pipeline;
 pub mod portals;
+pub mod ray_traversal;
 pub mod reporter;
 pub mod script_light_membership;
 pub mod sdf_bake;

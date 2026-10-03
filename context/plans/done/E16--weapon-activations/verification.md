@@ -2,7 +2,7 @@
 
 Branch: `codex/weapon-activations`.
 Baseline: `1c7bda3c7`.
-Status: automated checks, code review and final runnable build passed. Manual visual/audio proof remains open.
+Status: automated checks, code review and final runnable build passed. Owner accepted manual visual/audio play test on 2026-10-03.
 
 ## Behavior
 
@@ -27,11 +27,11 @@ Status: automated checks, code review and final runnable build passed. Manual vi
 | Generated SDK types | 38 passed |
 | Installed scale evaluation/validation | Zero allocations in the focused probe |
 
-The transport fixture exercises real packets, queues, admission, simulation, resource debit, reliable outcomes and client correction. It covers accepted backlog charge clamping, exact authored cadence, delayed/duplicate claims, expiry, overflow and stale projections. It does not replace manual visual/audio testing.
+The transport fixture exercises real packets, queues, admission, simulation, resource debit, reliable outcomes and client correction. It covers accepted backlog charge clamping, exact authored cadence, delayed/duplicate claims, expiry, overflow and stale projections. Owner manual visual/audio acceptance is recorded below.
 
 ## Review
 
-The panel partitions the feature into 20 slices. Each logic slice has depth review and independent breadth review. Three end-to-end traces cover authority/settlement, authored tuning/install/execution, and shot provenance/presentation. Repairs have focused tests and independent rechecks. Code review verdict: approve, with no open in-scope findings. Manual acceptance remains separate.
+The panel partitions the feature into 20 slices. Each logic slice has depth review and independent breadth review. Three end-to-end traces cover authority/settlement, authored tuning/install/execution, and shot provenance/presentation. Repairs have focused tests and independent rechecks. Code review verdict: approve, with no open in-scope findings. Owner manual visual/audio acceptance is recorded below.
 
 Resolved findings include competing cancellation order, HIT-only refusal versus FIRE denial, retained authorization after HIT retirement, presented aim consistency, projectile registry borrow lifetime, malformed SDK helper shapes, local identity across weapon switches, and incomplete network/slot-reuse fixtures.
 
@@ -58,4 +58,4 @@ All workload assertions passed. Earlier optimized comparisons gave +6.7–6.9% a
 
 The final build and launch used `cargo run -p xtask -- run --features observability,observe-live -- content/dev/maps/combat-demo.prl`. It compiled the modified diagnostic tick producer, then reached GPU/window initialization on Metal. No reference-weapon gameplay, HUD, sound or observer presentation pass is inferred from that launch or from headless tests.
 
-Remaining check: rifle alternate three-shot cadence; plasma partial/full charge and larger fully charged shot; charge cancellation on switching; HUD clearing; owner/remote audio and effects. Use the final runnable build.
+Owner reported a successful manual play test on 2026-10-03: everything looked and sounded good with the available assets. This closes owner visual/audio acceptance. The report does not separately establish a multiplayer observer play test or enumerate every scenario.

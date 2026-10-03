@@ -1,6 +1,6 @@
 # Weapon activations — execution record
 
-Status: done by owner approval; automated checks, review and runnable build passed. Manual visual/audio proof remains pending.
+Status: done by owner approval; automated checks, review and runnable build passed. Owner accepted manual visual/audio play test on 2026-10-03.
 Latest results: [verification](verification.md).
 Branch: `codex/weapon-activations`.
 Owner approved the public API and network migration. The demo multiplier remains authored data.
@@ -117,3 +117,5 @@ No runtime implementation or performance result is implied by approval of the de
 ## Landing
 
 Owner approved landing on 2026-10-03. Plan moved to done; charge-on-activation and secondary activation marked done on the roadmap. Tracked deployables remain separate. Manual visual/audio proof remains outstanding as recorded in verification.md. Session temporary probes and build artifacts cleaned; unrelated drafts and worktrees preserved.
+
+Owner subsequently reported a successful manual visual/audio play test with the available assets on 2026-10-03. Verification records the report and its scope.

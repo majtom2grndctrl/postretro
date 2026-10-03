@@ -96,4 +96,3 @@ export function boolRef(node: RuntimeValue): BoolRef {
   boolNodes.set(ref, node);
   return Object.freeze(ref);
 }
-

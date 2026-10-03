@@ -50,6 +50,7 @@ use crate::chart_raster::{CHART_PADDING_TEXELS, ChartPlacement};
 use crate::geometry::GeometryResult;
 use crate::light_namespaces::StaticBakedLights;
 use crate::map_data::{FalloffModel, LightType, MapLight, MapLightmapScaleRegion};
+use crate::ray_traversal::BoundedRay;
 
 /// Default atlas texel density: 4 cm per texel.
 pub const DEFAULT_TEXEL_DENSITY_METERS: f32 = 0.04;
@@ -1184,6 +1185,52 @@ fn orthonormal_basis(n: Vec3) -> (Vec3, Vec3) {
 }
 
 pub(crate) fn segment_clear(
+    bvh: &Bvh<f32, 3>,
+    primitives: &[BvhPrimitive],
+    geometry: &GeometryResult,
+    from: Vec3,
+    to: Vec3,
+) -> bool {
+    let delta = to - from;
+    let length = delta.length();
+    if length < RAY_EPSILON {
+        return true;
+    }
+    let dir = delta / length;
+    let origin = from + dir * RAY_EPSILON;
+    let ray = Ray::new(
+        Point3::new(origin.x, origin.y, origin.z),
+        Vector3::new(dir.x, dir.y, dir.z),
+    );
+    let max_distance = length - RAY_EPSILON;
+    let geom = &geometry.geometry;
+    let query = BoundedRay::new(&ray, max_distance);
+    for prim in bvh.traverse_iterator(&query, primitives) {
+        let start = prim.index_offset as usize;
+        let end = start + prim.index_count as usize;
+        let mut tri = start;
+        while tri + 3 <= end {
+            let i0 = geom.indices[tri] as usize;
+            let i1 = geom.indices[tri + 1] as usize;
+            let i2 = geom.indices[tri + 2] as usize;
+            tri += 3;
+            let p0 = Vec3::from(geom.vertices[i0].position);
+            let p1 = Vec3::from(geom.vertices[i1].position);
+            let p2 = Vec3::from(geom.vertices[i2].position);
+            if let Some(dist) = ray_triangle_hit(origin, dir, p0, p1, p2) {
+                if dist > 0.0 && dist < max_distance {
+                    return false;
+                }
+            }
+        }
+    }
+    true
+}
+
+/// Today's unbounded occlusion scan: the reference for [`segment_clear`]
+/// (bake-parallelism-large-maps A4).
+#[cfg(test)]
+pub(crate) fn segment_clear_full_scan(
     bvh: &Bvh<f32, 3>,
     primitives: &[BvhPrimitive],
     geometry: &GeometryResult,

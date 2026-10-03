@@ -20,6 +20,7 @@ use crate::lightmap_bake;
 use crate::map_data::{LightType, MapLight, ShadowType};
 use crate::partition::{BspChild, BspTree, find_leaf_for_point};
 use crate::portals::Portal;
+use crate::ray_traversal::BoundedRay;
 
 /// Default chunk edge length in meters. Small enough that per-chunk buckets
 /// stay sparse; large enough that the grid does not explode on larger maps.
@@ -1024,7 +1025,8 @@ fn segment_clear(
         return true;
     }
     let geom = &geometry.geometry;
-    for prim in bvh.traverse_iterator(&ray, primitives) {
+    let query = BoundedRay::new(&ray, max_distance);
+    for prim in bvh.traverse_iterator(&query, primitives) {
         let start = prim.index_offset as usize;
         let end = start + prim.index_count as usize;
         let mut tri = start;

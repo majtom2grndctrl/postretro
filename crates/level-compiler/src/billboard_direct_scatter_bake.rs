@@ -31,6 +31,7 @@ use crate::sh_bake::{
     probe_grid_layout, static_light_refs, vec3_from,
 };
 use crate::sh_group::geometry_content_hash;
+use crate::ray_traversal::BoundedRay;
 
 /// Cache stage for dense, normal-free static billboard scatter.
 pub const BILLBOARD_DIRECT_SCATTER_STAGE_ID: &str = "billboard_direct_scatter";
@@ -600,7 +601,8 @@ fn segment_clear(ctx: &RaytracingCtx<'_>, from: Vec3, to: Vec3) -> bool {
     );
     let max_distance = length - RAY_EPSILON;
     let geometry = &ctx.geometry.geometry;
-    for primitive in ctx.bvh.traverse_iterator(&ray, ctx.primitives) {
+    let query = BoundedRay::new(&ray, max_distance);
+    for primitive in ctx.bvh.traverse_iterator(&query, ctx.primitives) {
         let mut triangle = primitive.index_offset as usize;
         let end = triangle + primitive.index_count as usize;
         while triangle + 3 <= end {

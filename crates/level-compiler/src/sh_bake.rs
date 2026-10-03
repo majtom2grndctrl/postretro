@@ -31,6 +31,7 @@ use crate::light_namespaces::{AnimatedBakedLights, StaticBakedLights};
 use crate::lightmap_bake::soft_visibility;
 use crate::map_data::{FalloffModel, LightAnimation, LightType, MapLight};
 use crate::partition::{BspTree, find_leaf_for_point};
+use crate::ray_traversal::BoundedRay;
 
 /// Default grid cell size in meters. Overridden by `--probe-spacing`.
 pub const DEFAULT_PROBE_SPACING: f32 = 1.0;
@@ -633,24 +634,6 @@ struct Hit {
     distance: f32,
 }
 
-// TEMPORARY (bake-parallelism-large-maps Task 10 profile): selects the
-// traversal `closest_hit` and `segment_clear` use in test builds.
-// 0 = stock iterator, 1 = bounded query on the stock iterator, 2 = near-first.
-#[cfg(test)]
-thread_local! {
-    pub(crate) static TRAVERSAL_MODE: std::cell::Cell<u8> = const { std::cell::Cell::new(0) };
-}
-
-#[cfg(test)]
-fn traversal_mode() -> u8 {
-    TRAVERSAL_MODE.with(std::cell::Cell::get)
-}
-
-#[cfg(not(test))]
-fn traversal_mode() -> u8 {
-    0
-}
-
 /// Test one leaf's triangles against the ray; keeps the nearest hit in
 /// `best`, with a later equal-distance hit never replacing an earlier one.
 /// Returns whether `best` changed.
@@ -704,62 +687,13 @@ fn closest_hit(
         Point3::new(ray_origin.x, ray_origin.y, ray_origin.z),
         Vector3::new(ray_dir.x, ray_dir.y, ray_dir.z),
     );
+    let query = BoundedRay::new(&ray, max_distance);
     let mut best: Option<Hit> = None;
-
-    match traversal_mode() {
-        1 => {
-            let bound = std::cell::Cell::new(max_distance);
-            let query = crate::ray_traversal::BoundedRay {
-                ray: &ray,
-                bound: &bound,
-            };
-            for prim in ctx.bvh.traverse_iterator(&query, ctx.primitives) {
-                if closest_hit_in_leaf(ctx, prim, ray_origin, ray_dir, max_distance, &mut best) {
-                    bound.set(best.as_ref().map_or(max_distance, |h| h.distance));
-                }
-            }
-        }
-        2 => {
-            // Tie key: (distance, leaf rank in stock visit order, triangle order).
-            let bound = std::cell::Cell::new(max_distance);
-            let mut best_rank = usize::MAX;
-            crate::ray_traversal::walk_near_first(
-                ctx.bvh,
-                ctx.primitives,
-                &ray,
-                &bound,
-                |shape, rank| {
-                    let mut leaf_best: Option<Hit> = None;
-                    closest_hit_in_leaf(
-                        ctx,
-                        &ctx.primitives[shape],
-                        ray_origin,
-                        ray_dir,
-                        max_distance,
-                        &mut leaf_best,
-                    );
-                    if let Some(hit) = leaf_best {
-                        let better = match &best {
-                            None => true,
-                            Some(b) => {
-                                hit.distance < b.distance
-                                    || (hit.distance == b.distance && rank < best_rank)
-                            }
-                        };
-                        if better {
-                            bound.set(hit.distance);
-                            best = Some(hit);
-                            best_rank = rank;
-                        }
-                    }
-                    std::ops::ControlFlow::Continue(())
-                },
-            );
-        }
-        _ => {
-            for prim in ctx.bvh.traverse_iterator(&ray, ctx.primitives) {
-                closest_hit_in_leaf(ctx, prim, ray_origin, ray_dir, max_distance, &mut best);
-            }
+    for prim in ctx.bvh.traverse_iterator(&query, ctx.primitives) {
+        if closest_hit_in_leaf(ctx, prim, ray_origin, ray_dir, max_distance, &mut best)
+            && let Some(hit) = &best
+        {
+            query.shrink_to(hit.distance);
         }
     }
 
@@ -837,38 +771,55 @@ fn segment_clear(ctx: &RaytracingCtx<'_>, from: Vec3, to: Vec3) -> bool {
         }
         false
     };
-    match traversal_mode() {
-        1 => {
-            let bound = std::cell::Cell::new(max_distance);
-            let query = crate::ray_traversal::BoundedRay {
-                ray: &ray,
-                bound: &bound,
-            };
-            !ctx.bvh
-                .traverse_iterator(&query, ctx.primitives)
-                .any(blocks)
-        }
-        2 => {
-            let bound = std::cell::Cell::new(max_distance);
-            let mut clear = true;
-            crate::ray_traversal::walk_near_first(
-                ctx.bvh,
-                ctx.primitives,
-                &ray,
-                &bound,
-                |shape, _| {
-                    if blocks(&ctx.primitives[shape]) {
-                        clear = false;
-                        std::ops::ControlFlow::Break(())
-                    } else {
-                        std::ops::ControlFlow::Continue(())
-                    }
-                },
-            );
-            clear
-        }
-        _ => !ctx.bvh.traverse_iterator(&ray, ctx.primitives).any(blocks),
+    let query = BoundedRay::new(&ray, max_distance);
+    !ctx.bvh.traverse_iterator(&query, ctx.primitives).any(blocks)
+}
+
+/// Today's unbounded closest-hit scan: the reference the bounded query must
+/// match (bake-parallelism-large-maps A4, A5).
+#[cfg(test)]
+fn closest_hit_full_scan(
+    ctx: &RaytracingCtx<'_>,
+    ray_origin: Vec3,
+    ray_dir: Vec3,
+    max_distance: f32,
+) -> Option<Hit> {
+    let ray = Ray::new(
+        Point3::new(ray_origin.x, ray_origin.y, ray_origin.z),
+        Vector3::new(ray_dir.x, ray_dir.y, ray_dir.z),
+    );
+    let mut best: Option<Hit> = None;
+    for prim in ctx.bvh.traverse_iterator(&ray, ctx.primitives) {
+        closest_hit_in_leaf(ctx, prim, ray_origin, ray_dir, max_distance, &mut best);
     }
+    best.filter(|h| h.distance < max_distance)
+}
+
+/// Today's unbounded occlusion scan: the reference for [`segment_clear`].
+#[cfg(test)]
+fn segment_clear_full_scan(ctx: &RaytracingCtx<'_>, from: Vec3, to: Vec3) -> bool {
+    let delta = to - from;
+    let length = delta.length();
+    if length < RAY_EPSILON {
+        return true;
+    }
+    let dir = delta / length;
+    let origin = from + dir * RAY_EPSILON;
+    let ray = Ray::new(
+        Point3::new(origin.x, origin.y, origin.z),
+        Vector3::new(dir.x, dir.y, dir.z),
+    );
+    let max_distance = length - RAY_EPSILON;
+    let geom = &ctx.geometry.geometry;
+    !ctx.bvh.traverse_iterator(&ray, ctx.primitives).any(|prim| {
+        let start = prim.index_offset as usize;
+        let end = start + prim.index_count as usize;
+        (start..end).step_by(3).filter(|tri| tri + 3 <= end).any(|tri| {
+            let p = |k: usize| Vec3::from(geom.vertices[geom.indices[tri + k] as usize].position);
+            ray_triangle_hit(origin, dir, p(0), p(1), p(2))
+                .is_some_and(|(dist, _)| dist > 0.0 && dist < max_distance)
+        })
+    })
 }
 
 /// Normal-free incident radiance reaching `point` from `light`, plus the unit
@@ -3339,5 +3290,200 @@ mod tests {
         );
         let hits = bvh.traverse(&ray, &prims);
         assert!(!hits.is_empty(), "ray should hit the triangle face AABB");
+    }
+
+    /// Two triangles creased along the shared edge x = 0, y = 0 (z in -1..1),
+    /// opening upward (left face y = -x, right face y = x), in one face (one
+    /// BVH leaf) or as two faces (two leaves). A far floor, a far wall and
+    /// scattered tiles give the tree nodes for the bound to prune.
+    fn crease_geometry(shared_leaf: bool) -> GeometryResult {
+        let left = [[0.0, 0.0, -1.0], [0.0, 0.0, 1.0], [-1.0, 1.0, 0.0]];
+        let right = [[0.0, 0.0, -1.0], [0.0, 0.0, 1.0], [1.0, 1.0, 0.0]];
+        let mut triangles = vec![
+            left,
+            right,
+            [[-20.0, -6.0, -20.0], [20.0, -6.0, -20.0], [20.0, -6.0, 20.0]],
+            [[-20.0, -6.0, -20.0], [20.0, -6.0, 20.0], [-20.0, -6.0, 20.0]],
+            [[8.0, -6.0, -20.0], [8.0, 10.0, -20.0], [8.0, 10.0, 20.0]],
+        ];
+        for k in 0..12 {
+            let x = -7.0 + k as f32 * 1.25;
+            triangles.push([[x, -3.0, -4.0], [x + 0.5, -3.0, -4.0], [x, -2.5, -3.5]]);
+        }
+        let mut geometry = multi_triangle_geometry(&triangles);
+        if shared_leaf {
+            geometry.face_index_ranges[0].index_count = 6;
+            geometry.face_index_ranges.remove(1);
+            geometry.geometry.faces.remove(1);
+        }
+        geometry
+    }
+
+    fn hit_parts(hit: Option<Hit>) -> Option<(f32, Vec3, Vec3)> {
+        hit.map(|h| (h.distance, h.normal, h.point))
+    }
+
+    /// Rays aimed at points on the crease edge from several origins.
+    fn crease_edge_rays() -> Vec<(Vec3, Vec3)> {
+        let origins = [
+            Vec3::new(0.0, 5.0, 0.0),
+            Vec3::new(3.0, 4.0, 1.0),
+            Vec3::new(-2.0, 3.0, -1.0),
+            Vec3::new(0.25, 6.0, -0.5),
+        ];
+        let mut rays = Vec::new();
+        for origin in origins {
+            for z in [-0.75, -0.3, 0.0, 0.4, 0.9] {
+                rays.push((origin, (Vec3::new(0.0, 0.0, z) - origin).normalize()));
+            }
+        }
+        rays
+    }
+
+    #[test]
+    fn bounded_closest_hit_matches_full_scan_on_shared_crease_edges() {
+        for shared_leaf in [true, false] {
+            let geo = crease_geometry(shared_leaf);
+            let (bvh, prims, _) = build_bvh(&geo).unwrap();
+            let ctx = RaytracingCtx {
+                bvh: &bvh,
+                primitives: &prims,
+                geometry: &geo,
+            };
+            let mut edge_hits = 0;
+            for (origin, dir) in crease_edge_rays() {
+                let full = hit_parts(closest_hit_full_scan(&ctx, origin, dir, f32::INFINITY));
+                let bounded = hit_parts(closest_hit(&ctx, origin, dir, f32::INFINITY));
+                assert_eq!(bounded, full, "shared_leaf {shared_leaf}, ray {origin} {dir}");
+                let Some((distance, _, point)) = full else {
+                    panic!("ray {origin} {dir} must hit the crease");
+                };
+                if point.x.abs() < 1e-4 && point.y.abs() < 1e-4 {
+                    edge_hits += 1;
+                }
+                // Finite bounds at, just under and just over the hit distance.
+                for max in [distance, distance.next_down(), distance.next_up(), distance * 0.5] {
+                    assert_eq!(
+                        hit_parts(closest_hit(&ctx, origin, dir, max)),
+                        hit_parts(closest_hit_full_scan(&ctx, origin, dir, max)),
+                        "shared_leaf {shared_leaf}, ray {origin} {dir}, max {max}"
+                    );
+                }
+            }
+            // A ray exactly on the shared edge can slip between the two
+            // triangles and hit something farther; most must land on the edge so
+            // the tie is exercised.
+            assert!(edge_hits * 2 > crease_edge_rays().len(), "{edge_hits} rays landed on the edge");
+        }
+    }
+
+    #[test]
+    fn bounded_segment_clear_matches_full_scan_at_segment_end() {
+        let geo = crease_geometry(false);
+        let (bvh, prims, _) = build_bvh(&geo).unwrap();
+        let ctx = RaytracingCtx {
+            bvh: &bvh,
+            primitives: &prims,
+            geometry: &geo,
+        };
+        let (mut clear, mut blocked) = (0, 0);
+        for x in [-0.6f32, -0.2, 0.0, 0.2, 0.55] {
+            let from = Vec3::new(x, 5.0, 0.3);
+            // The crease surface under `from` sits at y = |x|.
+            let surface = x.abs();
+            for end_y in [
+                surface + 0.01,
+                surface + RAY_EPSILON,
+                surface.next_up(),
+                surface,
+                surface.next_down(),
+                surface - RAY_EPSILON,
+                surface - 0.01,
+                -1.0,
+                -6.0,
+                -7.0,
+            ] {
+                let to = Vec3::new(x, end_y, 0.3);
+                let full = segment_clear_full_scan(&ctx, from, to);
+                assert_eq!(segment_clear(&ctx, from, to), full, "sh: {from} -> {to}");
+                assert_eq!(
+                    crate::lightmap_bake::segment_clear(&bvh, &prims, &geo, from, to),
+                    crate::lightmap_bake::segment_clear_full_scan(&bvh, &prims, &geo, from, to),
+                    "lightmap: {from} -> {to}"
+                );
+                if full {
+                    clear += 1;
+                } else {
+                    blocked += 1;
+                }
+            }
+        }
+        assert!(clear > 0 && blocked > 0, "{clear} clear, {blocked} blocked");
+    }
+
+    #[test]
+    fn bounded_traversal_keeps_undefined_slab_node() {
+        // Rays lying in a box face plane, parallel to it: the floor's flat box
+        // (y = -6), the wall's (x = 8), and the crease leaf's top face (y = 1).
+        // The stock slab test sees NaN there; the bounded query must answer as
+        // today's scan does.
+        let geo = crease_geometry(true);
+        let (bvh, prims, _) = build_bvh(&geo).unwrap();
+        let ctx = RaytracingCtx {
+            bvh: &bvh,
+            primitives: &prims,
+            geometry: &geo,
+        };
+        let rays = [
+            (Vec3::new(-30.0, -6.0, 0.0), Vec3::X),
+            (Vec3::new(8.0, 2.0, -30.0), Vec3::Z),
+            (Vec3::new(-5.0, 1.0, 0.0), Vec3::X),
+            (Vec3::new(0.0, 1.0, -5.0), Vec3::Z),
+        ];
+        for (origin, dir) in rays {
+            for max in [f32::INFINITY, 12.0] {
+                assert_eq!(
+                    hit_parts(closest_hit(&ctx, origin, dir, max)),
+                    hit_parts(closest_hit_full_scan(&ctx, origin, dir, max)),
+                    "ray {origin} {dir}, max {max}"
+                );
+            }
+            let to = origin + dir * 40.0;
+            assert_eq!(
+                segment_clear(&ctx, origin, to),
+                segment_clear_full_scan(&ctx, origin, to),
+                "segment {origin} -> {to}"
+            );
+        }
+    }
+
+    #[test]
+    fn sub_epsilon_start_hit_never_tightens_bound() {
+        // Each ray starts on the triangle the traversal reaches first, so that
+        // triangle reports a hit under RAY_EPSILON. Closest-hit ignores it; were
+        // it to shrink the bound, the farther real hit would be pruned.
+        let geo = crease_geometry(true);
+        let (bvh, prims, _) = build_bvh(&geo).unwrap();
+        let ctx = RaytracingCtx {
+            bvh: &bvh,
+            primitives: &prims,
+            geometry: &geo,
+        };
+        let starts = [
+            (Vec3::new(0.5, 0.5, 0.0), Vec3::new(-0.3, -1.0, 0.1)),
+            (Vec3::new(-0.4, 0.4, 0.2), Vec3::new(0.2, -1.0, -0.1)),
+            (Vec3::new(0.25, 0.25, -0.5), Vec3::new(0.0, -1.0, 0.0)),
+        ];
+        for (origin, toward) in starts {
+            let dir = toward.normalize();
+            let bounded = hit_parts(closest_hit(&ctx, origin, dir, f32::INFINITY));
+            assert_eq!(
+                bounded,
+                hit_parts(closest_hit_full_scan(&ctx, origin, dir, f32::INFINITY)),
+                "ray {origin} {dir}"
+            );
+            let (distance, _, _) = bounded.expect("the ray reaches the floor or a tile");
+            assert!(distance > 1.0, "kept hit {distance} is past the start triangle");
+        }
     }
 }

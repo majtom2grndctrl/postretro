@@ -842,6 +842,8 @@ mod tests {
         );
         open_shots.record(
             AuthorizedShot {
+                action: None,
+                source_weapon: None,
                 knockback: None,
                 shot_id,
                 pawn,
@@ -1132,6 +1134,8 @@ mod tests {
         );
         open_shots.record(
             AuthorizedShot {
+                action: None,
+                source_weapon: None,
                 knockback: None,
                 shot_id,
                 pawn: old_pawn,

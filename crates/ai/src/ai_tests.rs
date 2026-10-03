@@ -2181,6 +2181,8 @@ fn projectile_peer_hit_reaches_retaliation_selection_in_the_same_simulation_tick
                 impact_light: None,
                 splash: None,
                 source_weapon: Some("enemy.rifle".to_string()),
+                source_action: None,
+                source_shot: None,
                 activation: None,
             },
         )
@@ -2504,6 +2506,8 @@ impl FactionSentimentHarness {
                     impact_light: None,
                     splash: None,
                     source_weapon: None,
+                    source_action: None,
+                    source_shot: None,
                     activation: None,
                 },
             )
@@ -10707,13 +10711,16 @@ fn projectile_weapon_attack_uses_resolved_range_and_damages_on_later_projectile_
 #[test]
 fn registry_exhaustion_rejects_projectile_attack_without_fire_side_effects() {
     let graph = standing_projectile_attack_graph("enemy.rifle");
-    let descriptors = [projectile_weapon_descriptor(
-        "enemy.rifle",
-        2.0,
-        13.0,
-        300.0,
-    )];
+    let mut descriptor = projectile_weapon_descriptor("enemy.rifle", 2.0, 13.0, 300.0);
+    descriptor.weapon.as_mut().unwrap().resource = Some(
+        serde_json::from_value(serde_json::json!({
+            "kind": "ammo", "type": "bullets", "magazine": 3, "reserve": 0
+        }))
+        .unwrap(),
+    );
+    let descriptors = [descriptor];
     let mut registry = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
     let _pawn = spawn_player(&mut registry, Vec3::X);
     let enemy = spawn_enemy(
         &mut registry,
@@ -10726,7 +10733,7 @@ fn registry_exhaustion_rejects_projectile_attack_without_fire_side_effects() {
     let capture = LogCapture::start();
     let result = run_ai_tick_with_navigation_and_impact(
         &mut registry,
-        &mut AiRuntime::new(),
+        &mut runtime,
         0.016,
         AiTickInputs {
             nav_graph: None,
@@ -10751,6 +10758,27 @@ fn registry_exhaustion_rejects_projectile_attack_without_fire_side_effects() {
         .expect("rejected actor keeps its brain");
     assert_eq!(brain.activity_attack_count(0), Some(0));
     assert!(!brain.attack_cooldown_remaining_ms.contains_key("attack"));
+    let weapon = runtime.weapons.weapon(enemy, "enemy.rifle").unwrap();
+    assert_eq!(weapon.magazine, 3);
+    assert_eq!(
+        weapon.state,
+        postretro_entities::components::wieldable_state::WieldableState::Idle
+    );
+    assert!(weapon.cooldown_remaining_ms.abs() <= EPS);
+    assert!(weapon.bloom_idle_ms.abs() <= EPS);
+    assert_eq!(weapon.shells_fired, 0);
+    assert!(weapon.activation_programs.primary.is_some());
+    let installed = std::sync::Arc::clone(weapon.activation_programs.primary.as_ref().unwrap());
+    registry.set_test_capacity_limit(3);
+    let retried = tick_persistent_enemy_weapon(&mut registry, &mut runtime, &descriptors, 1);
+    assert_eq!(retried.projectile_spawns.len(), 1);
+    let weapon = runtime.weapons.weapon(enemy, "enemy.rifle").unwrap();
+    assert_eq!(weapon.magazine, 2);
+    assert_eq!(weapon.shells_fired, 1);
+    assert!(std::sync::Arc::ptr_eq(
+        weapon.activation_programs.primary.as_ref().unwrap(),
+        &installed
+    ));
 }
 
 #[test]
@@ -10819,7 +10847,9 @@ fn live_projectile_attack_refreshes_reloaded_weapon_and_disables_invalid_replace
     let refreshed = run_ai_tick_with_navigation_and_impact(
         &mut registry,
         &mut runtime,
-        0.016,
+        // The canonical component preserves the earlier 500 ms recovery even
+        // though this fixture cleared the separate brain attack latch.
+        0.5,
         AiTickInputs {
             nav_graph: None,
             collision_world: Some(&CollisionWorld::new()),
@@ -10940,6 +10970,289 @@ fn live_projectile_attack_refreshes_reloaded_weapon_and_disables_invalid_replace
             .attack_cooldown_remaining_ms
             .contains_key("attack"),
         "invalid reload does not consume cooldown"
+    );
+}
+
+fn tick_persistent_enemy_weapon(
+    registry: &mut EntityRegistry,
+    runtime: &mut AiRuntime,
+    descriptors: &[EntityTypeDescriptor],
+    generation: u64,
+) -> AiTickResult {
+    run_ai_tick_with_navigation_and_impact(
+        registry,
+        runtime,
+        1.0 / 60.0,
+        AiTickInputs {
+            nav_graph: None,
+            collision_world: Some(&CollisionWorld::new()),
+            descriptors,
+            descriptor_generation: generation,
+            factions: &FactionRegistry::default(),
+            faction_sentiment: &RefCell::new(FactionSentimentState::default()),
+        },
+        |_| {},
+    )
+}
+
+#[test]
+fn persistent_enemy_weapon_commits_waits_and_spends_each_accepted_shot() {
+    let graph = standing_projectile_attack_graph("enemy.rifle");
+    let mut descriptor = projectile_weapon_descriptor("enemy.rifle", 2.0, 13.0, 300.0);
+    let weapon = descriptor.weapon.as_mut().unwrap();
+    weapon.primary = serde_json::from_value(serde_json::json!({
+        "trigger": "press", "recoveryMs": 300,
+        "steps": [{"kind":"shot"}, {"kind":"wait", "durationMs":20},
+            {"kind":"shot"}, {"kind":"wait", "durationMs":20}, {"kind":"shot"}]
+    }))
+    .unwrap();
+    weapon.resource = Some(
+        serde_json::from_value(serde_json::json!({
+            "kind": "ammo", "type": "bullets", "magazine": 2, "reserve": 0
+        }))
+        .unwrap(),
+    );
+    let descriptors = [descriptor];
+    let mut registry = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    spawn_player(&mut registry, Vec3::X);
+    let enemy = spawn_enemy(
+        &mut registry,
+        Vec3::ZERO,
+        authored_brain(&graph, "strike"),
+        50.0,
+    );
+    let mut shots = Vec::new();
+    for tick in 0..8 {
+        let result = tick_persistent_enemy_weapon(&mut registry, &mut runtime, &descriptors, 1);
+        for spawn in result.projectile_spawns {
+            let projectile = registry
+                .get_component::<ProjectileComponent>(spawn.projectile)
+                .unwrap();
+            shots.push((tick, projectile.source_shot.unwrap()));
+        }
+    }
+    assert_eq!(
+        shots.iter().map(|(tick, _)| *tick).collect::<Vec<_>>(),
+        vec![0, 2]
+    );
+    assert_eq!(
+        shots.iter().map(|(_, id)| id.ordinal).collect::<Vec<_>>(),
+        vec![0, 1]
+    );
+    assert_eq!(shots[0].1.activation(), shots[1].1.activation());
+    let weapon = runtime.weapons.weapon(enemy, "enemy.rifle").unwrap();
+    assert_eq!(weapon.magazine, 0);
+    assert_eq!(weapon.shells_fired, 2);
+    assert!(weapon.state.activation_cursor().is_none());
+    assert!(weapon.cooldown_remaining_ms > 0.0);
+    assert_eq!(
+        registry
+            .get_component::<BrainComponent>(enemy)
+            .unwrap()
+            .activity_attack_count(0),
+        Some(2)
+    );
+}
+
+#[test]
+fn persistent_enemy_weapon_shared_attack_aliases_release_at_full_and_regenerate_once_per_tick() {
+    // Regression: separate descriptor Arcs for two attack aliases repeatedly
+    // refreshed/cancelled their one canonical component before charge completed.
+    let mut graph = standing_projectile_attack_graph("enemy.rifle");
+    graph
+        .attacks
+        .insert("same-weapon".to_string(), graph.attacks["attack"].clone());
+    let mut descriptor = projectile_weapon_descriptor("enemy.rifle", 2.0, 10.0, 300.0);
+    let weapon = descriptor.weapon.as_mut().unwrap();
+    weapon.primary = serde_json::from_value(serde_json::json!({
+        "trigger": "press", "recoveryMs": 300,
+        "charge": {"minMs": 0, "fullMs": 50},
+        "steps": [{"kind":"shot", "scale":{"damage":3}}]
+    }))
+    .unwrap();
+    weapon.resource = Some(
+        serde_json::from_value(serde_json::json!({
+            "kind":"cell", "capacity":10, "costPerShot":2,
+            "regenPerSecond":60, "regenDelayMs":0
+        }))
+        .unwrap(),
+    );
+    let descriptors = [descriptor];
+    let mut registry = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    spawn_player(&mut registry, Vec3::X);
+    let enemy = spawn_enemy(
+        &mut registry,
+        Vec3::ZERO,
+        authored_brain(&graph, "strike"),
+        50.0,
+    );
+    let first = tick_persistent_enemy_weapon(&mut registry, &mut runtime, &descriptors, 1);
+    assert!(first.projectile_spawns.is_empty());
+    runtime
+        .weapons
+        .weapon_mut(enemy, "enemy.rifle")
+        .unwrap()
+        .cell
+        .as_mut()
+        .unwrap()
+        .charge = 0.0;
+    for _ in 0..2 {
+        assert!(
+            tick_persistent_enemy_weapon(&mut registry, &mut runtime, &descriptors, 1)
+                .projectile_spawns
+                .is_empty()
+        );
+    }
+    let fired = tick_persistent_enemy_weapon(&mut registry, &mut runtime, &descriptors, 1);
+    let [spawn] = fired.projectile_spawns.as_slice() else {
+        panic!("one full-charge launch")
+    };
+    let projectile = registry
+        .get_component::<ProjectileComponent>(spawn.projectile)
+        .unwrap();
+    assert!((projectile.damage - 30.0).abs() <= EPS);
+    assert!(projectile.source_action.as_ref().unwrap().charge.is_some());
+    let weapon = runtime.weapons.weapon(enemy, "enemy.rifle").unwrap();
+    assert!((weapon.cell.unwrap().charge - 1.0).abs() <= EPS);
+    assert_eq!(weapon.shells_fired, 1);
+    assert!(weapon.state.activation_cursor().is_none());
+    assert_eq!(
+        registry
+            .get_component::<BrainComponent>(enemy)
+            .unwrap()
+            .activity_attack_count(0),
+        Some(1)
+    );
+}
+
+#[test]
+fn persistent_enemy_weapon_replacement_cancels_waits_and_death_releases_storage() {
+    let graph = standing_projectile_attack_graph("enemy.rifle");
+    let mut descriptor = projectile_weapon_descriptor("enemy.rifle", 2.0, 13.0, 300.0);
+    let weapon = descriptor.weapon.as_mut().unwrap();
+    weapon.primary = serde_json::from_value(serde_json::json!({
+        "trigger":"press", "recoveryMs":300,
+        "steps":[{"kind":"shot"}, {"kind":"wait", "durationMs":80}, {"kind":"shot"}]
+    }))
+    .unwrap();
+    weapon.resource = Some(
+        serde_json::from_value(serde_json::json!({
+            "kind":"ammo", "type":"bullets", "magazine":5, "reserve":0
+        }))
+        .unwrap(),
+    );
+    let mut descriptors = [descriptor];
+    let mut registry = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    spawn_player(&mut registry, Vec3::X);
+    let enemy = spawn_enemy(
+        &mut registry,
+        Vec3::ZERO,
+        authored_brain(&graph, "strike"),
+        50.0,
+    );
+    let first = tick_persistent_enemy_weapon(&mut registry, &mut runtime, &descriptors, 1);
+    let launched = first.projectile_spawns[0].projectile;
+    let original_action = registry
+        .get_component::<ProjectileComponent>(launched)
+        .unwrap()
+        .source_action
+        .clone()
+        .unwrap();
+    descriptors[0].weapon.as_mut().unwrap().damage = 50.0;
+    for _ in 0..8 {
+        assert!(
+            tick_persistent_enemy_weapon(&mut registry, &mut runtime, &descriptors, 2)
+                .projectile_spawns
+                .is_empty()
+        );
+    }
+    let weapon = runtime.weapons.weapon(enemy, "enemy.rifle").unwrap();
+    assert_eq!(weapon.magazine, 4);
+    assert!(weapon.state.activation_cursor().is_none());
+    assert!(weapon.cooldown_remaining_ms > 0.0);
+    let projectile = registry
+        .get_component::<ProjectileComponent>(launched)
+        .unwrap();
+    assert!((projectile.damage - 13.0).abs() <= EPS);
+    assert!(std::sync::Arc::ptr_eq(
+        projectile.source_action.as_ref().unwrap(),
+        &original_action
+    ));
+    let mut health = registry
+        .get_component::<HealthComponent>(enemy)
+        .unwrap()
+        .clone();
+    health.current = 0.0;
+    registry.set_component(enemy, health).unwrap();
+    assert!(
+        tick_persistent_enemy_weapon(&mut registry, &mut runtime, &descriptors, 2)
+            .projectile_spawns
+            .is_empty()
+    );
+    assert!(runtime.weapons.weapon(enemy, "enemy.rifle").is_none());
+}
+
+#[test]
+fn persistent_enemy_weapon_suspension_cancels_without_refund_or_reinstall() {
+    let graph = standing_projectile_attack_graph("enemy.rifle");
+    let mut descriptor = projectile_weapon_descriptor("enemy.rifle", 2.0, 13.0, 300.0);
+    let weapon = descriptor.weapon.as_mut().unwrap();
+    weapon.primary = serde_json::from_value(serde_json::json!({
+        "trigger":"press", "recoveryMs":300,
+        "steps":[{"kind":"shot"}, {"kind":"wait", "durationMs":80}, {"kind":"shot"}]
+    }))
+    .unwrap();
+    weapon.resource = Some(
+        serde_json::from_value(serde_json::json!({
+            "kind":"ammo", "type":"bullets", "magazine":5, "reserve":0
+        }))
+        .unwrap(),
+    );
+    let descriptors = [descriptor];
+    let mut registry = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    spawn_player(&mut registry, Vec3::X);
+    let enemy = spawn_enemy(
+        &mut registry,
+        Vec3::ZERO,
+        authored_brain(&graph, "strike"),
+        50.0,
+    );
+    assert_eq!(
+        tick_persistent_enemy_weapon(&mut registry, &mut runtime, &descriptors, 1)
+            .projectile_spawns
+            .len(),
+        1
+    );
+    let weapon = runtime.weapons.weapon(enemy, "enemy.rifle").unwrap();
+    let installed = std::sync::Arc::clone(weapon.activation_programs.primary.as_ref().unwrap());
+    let recovery = weapon.cooldown_remaining_ms;
+    runtime.cancel_weapon_activations();
+    let weapon = runtime.weapons.weapon(enemy, "enemy.rifle").unwrap();
+    assert_eq!(weapon.magazine, 4);
+    assert!((weapon.cooldown_remaining_ms - recovery).abs() <= EPS);
+    assert!(weapon.state.activation_cursor().is_none());
+    assert!(std::sync::Arc::ptr_eq(
+        weapon.activation_programs.primary.as_ref().unwrap(),
+        &installed
+    ));
+    for _ in 0..8 {
+        assert!(
+            tick_persistent_enemy_weapon(&mut registry, &mut runtime, &descriptors, 1)
+                .projectile_spawns
+                .is_empty()
+        );
+    }
+    assert_eq!(
+        runtime
+            .weapons
+            .weapon(enemy, "enemy.rifle")
+            .unwrap()
+            .magazine,
+        4
     );
 }
 
@@ -11109,6 +11422,14 @@ fn enemy_projectile_attack_emits_its_attack_cue_and_records_its_weapon() {
         )
         .expect("the attack spawned a projectile");
     assert_eq!(component.source_weapon.as_deref(), Some("enemy.rifle"));
+    assert_eq!(attack.shot_id, component.source_shot);
+    assert!(std::sync::Arc::ptr_eq(
+        attack.action.as_ref().expect("fire retains its action"),
+        component
+            .source_action
+            .as_ref()
+            .expect("flight retains its action"),
+    ));
 }
 
 #[test]

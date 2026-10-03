@@ -1,6 +1,8 @@
 // Weapon fire tick, hitscan/local hit resolution, and client fire prediction: owns fire commands, local hit records, and predicted-shot reconciliation state.
 // See: context/lib/entity_model.md §5, §7
 
+#[cfg(test)]
+use postretro_foundation::FireMode;
 use std::collections::HashMap;
 
 use glam::Vec3;
@@ -10,7 +12,7 @@ use postretro_entities::provenance::DescriptorProvenance;
 use postretro_entities::registry::{ComponentKind, ComponentValue, EntityId, EntityRegistry};
 use postretro_entities::{Emitter, ImpactContact, WeaponEmission};
 use postretro_foundation::{
-    FireMode, KnockbackDescriptor, ProjectileDescriptor, ResolutionMode, SplashDescriptor,
+    KnockbackDescriptor, ProjectileDescriptor, ResolutionMode, SplashDescriptor,
     WeaponPlacementDescriptor,
 };
 
@@ -22,6 +24,13 @@ use crate::scripting_systems::hit_zones::{
 };
 
 pub mod activation_prediction;
+pub mod execution;
+#[cfg(test)]
+mod execution_tests;
+mod shot;
+pub use shot::{ResolvedWeaponShot, freeze_weapon_shot};
+mod client_resolution;
+pub use client_resolution::{advance_client_fire_state, resolve_client_fire};
 mod client_pull;
 mod damage;
 mod impact;
@@ -46,9 +55,9 @@ pub use impact::{
 #[cfg(feature = "test-support")]
 pub mod test_fixtures {
     use postretro_entities::components::weapon::WeaponComponent;
-    use postretro_foundation::{FireMode, ResolutionMode, WeaponDescriptor};
+    use postretro_foundation::{ActivationTrigger, ResolutionMode, WeaponDescriptor};
 
-    pub fn weapon_component(fire_mode: FireMode, cooldown_ms: f32) -> WeaponComponent {
+    pub fn weapon_component(trigger: ActivationTrigger, cooldown_ms: f32) -> WeaponComponent {
         WeaponComponent::from_descriptor(&WeaponDescriptor {
             sounds: None,
             knockback: None,
@@ -62,17 +71,7 @@ pub mod test_fixtures {
             movement_spread_degrees: 0.0,
             spread_vertical_bias: 0.0,
             range: 10.0,
-            primary: postretro_foundation::WeaponActivationDescriptor::single(
-                match fire_mode {
-                    postretro_foundation::FireMode::Semi => {
-                        postretro_foundation::ActivationTrigger::Press
-                    }
-                    postretro_foundation::FireMode::Auto => {
-                        postretro_foundation::ActivationTrigger::Hold
-                    }
-                },
-                cooldown_ms,
-            ),
+            primary: postretro_foundation::WeaponActivationDescriptor::single(trigger, cooldown_ms),
             secondary: None,
             resolution: ResolutionMode::Hitscan,
             projectile: None,
@@ -342,6 +341,9 @@ pub struct WeaponImpact {
 /// only an immutable registry borrow.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProjectileLaunch {
+    pub action: Option<std::sync::Arc<postretro_foundation::WeaponActivationDescriptor>>,
+    pub shot_id: Option<postretro_foundation::ShotId>,
+    pub model_scale: f32,
     pub origin: Vec3,
     pub direction: Vec3,
     pub speed: f32,
@@ -376,6 +378,9 @@ impl ProjectileLaunch {
         splash: Option<SplashDescriptor>,
     ) -> Self {
         Self {
+            action: None,
+            shot_id: None,
+            model_scale: 1.0,
             origin,
             direction,
             speed,
@@ -429,6 +434,7 @@ pub fn muzzle_world_origin(
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct WeaponFireEvents {
+    pub resolved_shot: Option<ResolvedWeaponShot>,
     pub(crate) activate: Option<WeaponActivation>,
     pub(crate) impacts: Vec<WeaponImpact>,
     pub(crate) projectile_launches: Vec<ProjectileLaunch>,
@@ -470,6 +476,17 @@ impl WeaponFireEvents {
     /// events came from.
     pub fn emissions(&self, shooter: &Emitter, weapon: Option<String>) -> Vec<WeaponEmission> {
         let from_shooter = |address| WeaponEmission {
+            action: if matches!(address, "activate" | "spawned") {
+                self.resolved_shot
+                    .as_ref()
+                    .map(|shot| shot.action().clone())
+            } else {
+                None
+            },
+            shot_id: self
+                .resolved_shot
+                .as_ref()
+                .map(|shot| shot.activation.shot_id),
             address,
             emitter: shooter.clone(),
             weapon: weapon.clone(),
@@ -483,6 +500,14 @@ impl WeaponFireEvents {
         }
         if !self.impacts.is_empty() {
             emissions.push(WeaponEmission {
+                action: self
+                    .resolved_shot
+                    .as_ref()
+                    .map(|shot| shot.action().clone()),
+                shot_id: self
+                    .resolved_shot
+                    .as_ref()
+                    .map(|shot| shot.activation.shot_id),
                 address: "impact",
                 emitter: Emitter::Contacts(
                     self.impacts
@@ -641,6 +666,47 @@ pub fn tick_resolved_component(
     }
 }
 
+/// Resolve a frozen fixed-tick shot against the caller's current aim and target pose.
+#[allow(clippy::too_many_arguments)]
+pub fn resolve_activation_shot(
+    registry: &EntityRegistry,
+    owner_pawn: Option<EntityId>,
+    weapon: &mut WeaponComponent,
+    pellet_salt_name: &str,
+    active_slot: usize,
+    command: &WeaponFireCommand,
+    placement: &WeaponPlacementDescriptor,
+    collision_world: &CollisionWorld,
+    hit_zone_store: &HitZoneStore,
+    anim_time: f64,
+    shot: ResolvedWeaponShot,
+) -> WeaponFireEvents {
+    let mut snapshot = weapon.clone();
+    shot.apply_to(&mut snapshot);
+    snapshot.shells_fired = shot.activation.shell_counter;
+    snapshot.bloom_accumulator_degrees = shot.activation.bloom_degrees;
+    let mut events = tick_resolved_component(
+        registry,
+        owner_pawn,
+        &mut snapshot,
+        pellet_salt_name,
+        active_slot,
+        command,
+        placement,
+        collision_world,
+        hit_zone_store,
+        anim_time,
+        WeaponFireAuthorization::Accepted,
+    );
+    for launch in &mut events.projectile_launches {
+        launch.action = Some(shot.activation.action.clone());
+        launch.shot_id = Some(shot.activation.shot_id);
+        launch.model_scale = shot.projectile_model_scale;
+    }
+    events.resolved_shot = Some(shot);
+    events
+}
+
 /// Compose the dynamic hitscan cone identically for host simulation and client
 /// prediction. The movement component is absent for non-pawn owners, where
 /// movement accuracy contributes nothing.
@@ -693,6 +759,7 @@ fn fire_hitscan(
     active_slot: usize,
 ) -> WeaponFireEvents {
     let mut events = WeaponFireEvents {
+        resolved_shot: None,
         activate: Some(WeaponActivation { origin, direction }),
         impacts: Vec::with_capacity(pellet_count as usize),
         projectile_launches: Vec::new(),
@@ -758,6 +825,9 @@ fn fire_hitscan(
                 return events;
             };
             events.projectile_launches.push(ProjectileLaunch {
+                action: None,
+                shot_id: None,
+                model_scale: 1.0,
                 origin,
                 direction,
                 speed: projectile.speed,
@@ -780,306 +850,6 @@ fn fire_hitscan(
     }
 
     events
-}
-
-#[allow(clippy::too_many_arguments)] // mirrors the host/single-player hitscan inputs.
-pub fn resolve_client_fire(
-    owner_pawn: Option<EntityId>,
-    weapon: &mut WeaponComponent,
-    pellet_salt_name: &str,
-    active_slot: usize,
-    button: FireButtonState,
-    aim_origin: Vec3,
-    aim_direction: Vec3,
-    placement: &WeaponPlacementDescriptor,
-    muzzle_offset: Option<Vec3>,
-    client_tick: u32,
-    selected_shot_elapsed_ms: &[f32],
-    logical_tick_elapsed_ms: &[f32],
-    collision_world: &CollisionWorld,
-    registry: &EntityRegistry,
-    hit_zone_store: &HitZoneStore,
-    anim_time: f64,
-    frame_dt: f32,
-) -> Option<ClientFireResolution> {
-    let frame_dt_ms = (frame_dt.max(0.0)) * 1000.0;
-    if !advance_client_fire_gate(weapon, button, frame_dt_ms) {
-        tick_client_bloom_for_frame(weapon, frame_dt_ms, logical_tick_elapsed_ms);
-        return None;
-    }
-
-    // As on the local path, consume one deterministic shell position only after
-    // this frame has an authorized cast. A send failure deliberately does not
-    // roll this back: the next shell must use the next fan.
-    let shell_counter = weapon.shells_fired;
-    weapon.shells_fired = weapon.shells_fired.wrapping_add(1);
-    let (
-        cooldown_ms,
-        pellet_count,
-        range,
-        resolution,
-        projectile,
-        splash,
-        damage,
-        knockback,
-        credit_source,
-    ) = {
-        let stats = weapon.effective();
-        (
-            stats.cooldown_ms,
-            stats.pellet_count,
-            stats.range,
-            stats.resolution,
-            stats.projectile.cloned(),
-            stats.splash.cloned(),
-            stats.damage,
-            stats.knockback,
-            stats.credit_source.to_string(),
-        )
-    };
-    let mut replayed_bloom_until_ms = 0.0;
-    let (spread_radians, hitscan_direction) = if resolution == ResolutionMode::Hitscan {
-        // The post-loop path casts one rendered-pose ray, but the host has run
-        // every selected logical tick. Replay bloom through the first selected
-        // tick before sampling its cone; the remaining selected ticks advance
-        // below without consuming a client ray, shell position, or RNG fan.
-        replayed_bloom_until_ms = selected_shot_elapsed_ms
-            .first()
-            .copied()
-            .unwrap_or(frame_dt_ms)
-            .clamp(0.0, frame_dt_ms);
-        let mut previous_logical_tick_ms = 0.0;
-        for &elapsed_ms in logical_tick_elapsed_ms {
-            let elapsed_ms = elapsed_ms.clamp(previous_logical_tick_ms, frame_dt_ms);
-            if elapsed_ms > replayed_bloom_until_ms {
-                break;
-            }
-            weapon.tick_bloom(elapsed_ms - previous_logical_tick_ms);
-            previous_logical_tick_ms = elapsed_ms;
-        }
-        weapon.tick_bloom(replayed_bloom_until_ms - previous_logical_tick_ms);
-        composed_hitscan_cone(registry, owner_pawn, weapon, aim_direction)
-    } else {
-        weapon.tick_bloom(frame_dt_ms);
-        (weapon.spread_degrees.to_radians(), aim_direction)
-    };
-    weapon.cooldown_remaining_ms = cooldown_ms;
-    let ((hits, world_contacts), projectile_launch) = match resolution {
-        ResolutionMode::Hitscan => (
-            resolve_client_hitscan(
-                owner_pawn,
-                aim_origin,
-                hitscan_direction,
-                collision_world,
-                registry,
-                hit_zone_store,
-                anim_time,
-                pellet_count,
-                spread_radians,
-                range,
-                resolution,
-                shell_counter,
-                pellet_salt_name,
-                active_slot,
-            ),
-            None,
-        ),
-        ResolutionMode::Projectile => {
-            let projectile = projectile?;
-            let (origin, direction) = resolve_projectile_launch_pose(
-                owner_pawn,
-                aim_origin,
-                aim_direction,
-                placement,
-                muzzle_offset,
-                projectile.radius,
-                collision_world,
-                registry,
-                hit_zone_store,
-                anim_time,
-                range,
-            );
-            (
-                (Vec::new(), Vec::new()),
-                Some(ProjectileLaunch {
-                    knockback_impulse: knockback.map_or(Vec3::ZERO, |push| {
-                        postretro_foundation::knockback_impulse(
-                            push.speed,
-                            push.upward_bias,
-                            direction,
-                        )
-                    }),
-                    origin,
-                    direction,
-                    speed: projectile.speed,
-                    radius: projectile.radius,
-                    range,
-                    lifetime: projectile.lifetime_ms / 1000.0,
-                    damage,
-                    credit_source,
-                    descriptor: projectile,
-                    splash,
-                }),
-            )
-        }
-    };
-    if resolution == ResolutionMode::Hitscan {
-        // Each trailing selected shot runs after the intervening logical-tick
-        // bloom decay. It has an empty declaration, so no client ray, shell
-        // position, or RNG fan is consumed for it.
-        weapon.apply_bloom_shot();
-        let first_selected_shot_ms = replayed_bloom_until_ms;
-        let mut logical_ticks = logical_tick_elapsed_ms
-            .iter()
-            .copied()
-            .map(|elapsed_ms| elapsed_ms.clamp(first_selected_shot_ms, frame_dt_ms))
-            .peekable();
-        while logical_ticks
-            .peek()
-            .is_some_and(|elapsed_ms| *elapsed_ms <= replayed_bloom_until_ms)
-        {
-            let _ = logical_ticks.next();
-        }
-        let mut trailing_selected_shots =
-            selected_shot_elapsed_ms.iter().copied().skip(1).peekable();
-        for elapsed_ms in logical_ticks {
-            weapon.tick_bloom(elapsed_ms - replayed_bloom_until_ms);
-            replayed_bloom_until_ms = elapsed_ms;
-            while trailing_selected_shots
-                .peek()
-                .is_some_and(|selected_ms| *selected_ms <= elapsed_ms)
-            {
-                weapon.apply_bloom_shot();
-                let _ = trailing_selected_shots.next();
-            }
-        }
-        for elapsed_ms in trailing_selected_shots {
-            let elapsed_ms = elapsed_ms.clamp(replayed_bloom_until_ms, frame_dt_ms);
-            weapon.tick_bloom(elapsed_ms - replayed_bloom_until_ms);
-            weapon.apply_bloom_shot();
-            replayed_bloom_until_ms = elapsed_ms;
-        }
-        // Preserve decay after the final selected fire tick until the rendered
-        // frame ends, including a partial fixed-tick remainder.
-        weapon.tick_bloom(frame_dt_ms - replayed_bloom_until_ms);
-    }
-    Some(ClientFireResolution {
-        client_tick,
-        hits,
-        world_contacts,
-        projectile_launch,
-    })
-}
-
-pub fn advance_client_fire_state(
-    weapon: &mut WeaponComponent,
-    button: FireButtonState,
-    frame_dt: f32,
-    logical_tick_elapsed_ms: &[f32],
-) -> bool {
-    let dt_ms = (frame_dt.max(0.0)) * 1000.0;
-    tick_client_bloom_for_frame(weapon, dt_ms, logical_tick_elapsed_ms);
-    advance_client_fire_gate(weapon, button, dt_ms)
-}
-
-fn tick_client_bloom_for_frame(
-    weapon: &mut WeaponComponent,
-    frame_dt_ms: f32,
-    logical_tick_elapsed_ms: &[f32],
-) {
-    let mut previous_elapsed_ms = 0.0;
-    for &elapsed_ms in logical_tick_elapsed_ms {
-        let elapsed_ms = elapsed_ms.clamp(previous_elapsed_ms, frame_dt_ms);
-        weapon.tick_bloom(elapsed_ms - previous_elapsed_ms);
-        previous_elapsed_ms = elapsed_ms;
-    }
-    weapon.tick_bloom(frame_dt_ms - previous_elapsed_ms);
-}
-
-fn advance_client_fire_gate(
-    weapon: &mut WeaponComponent,
-    button: FireButtonState,
-    dt_ms: f32,
-) -> bool {
-    weapon.cooldown_remaining_ms = (weapon.cooldown_remaining_ms - dt_ms).max(0.0);
-
-    let fire_mode = weapon.effective().fire_mode;
-    let wants_fire = match fire_mode {
-        FireMode::Semi => button.pressed && !weapon.shoot_press_consumed,
-        FireMode::Auto => button.active,
-    };
-    if fire_mode == FireMode::Semi && button.pressed {
-        weapon.shoot_press_consumed = true;
-    } else if !button.active {
-        weapon.shoot_press_consumed = false;
-    }
-
-    if !weapon.state.allows_fire() || !wants_fire || weapon.cooldown_remaining_ms > 0.0 {
-        return false;
-    }
-    true
-}
-
-#[allow(clippy::too_many_arguments)] // mirrors the local fire query inputs without a throwaway struct.
-fn resolve_client_hitscan(
-    owner_pawn: Option<EntityId>,
-    origin: Vec3,
-    direction: Vec3,
-    collision_world: &CollisionWorld,
-    registry: &EntityRegistry,
-    hit_zone_store: &HitZoneStore,
-    anim_time: f64,
-    pellet_count: u32,
-    spread_radians: f32,
-    range: f32,
-    resolution: ResolutionMode,
-    shell_counter: u32,
-    pellet_salt_name: &str,
-    active_slot: usize,
-) -> (Vec<LocalHitRecord>, Vec<WorldContact>) {
-    match resolution {
-        ResolutionMode::Hitscan => {
-            let mut hits = Vec::with_capacity(pellet_count as usize);
-            let mut world_contacts = Vec::new();
-            let mut pellet_rng = spread::PelletRng::new(spread::pellet_rng_seed(
-                shell_counter,
-                pellet_salt_name,
-                active_slot,
-            ));
-            for _ in 0..pellet_count {
-                let pellet_direction = spread::sample_cone_direction(
-                    direction,
-                    spread_radians,
-                    pellet_rng.next_f32(),
-                    pellet_rng.next_f32(),
-                );
-                // An entity hit is a damage claim; a nearer world hit is a
-                // presentation-only contact the client still plays and declares.
-                match resolve_nearest_hit(NearestHitQuery {
-                    owner_pawn,
-                    origin,
-                    direction: pellet_direction,
-                    collision_world,
-                    registry,
-                    hit_zone_store,
-                    anim_time,
-                    range,
-                }) {
-                    Some(NearestHit::Entity(entity)) => hits.push(local_hit_record(entity)),
-                    Some(NearestHit::World(world)) => world_contacts.push(WorldContact {
-                        point: world.point,
-                        normal: world.normal,
-                    }),
-                    None => {}
-                }
-            }
-            (hits, world_contacts)
-        }
-        // Projectile flight is materialized by the connected client's mutable
-        // post-loop path. This ray-resolution helper emits no same-frame hit;
-        // the projectile declares its later collision or expiry instead.
-        ResolutionMode::Projectile => (Vec::new(), Vec::new()),
-    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3776,6 +3546,8 @@ pub(crate) mod tests {
                 .set_component(
                     projectile,
                     ProjectileComponent {
+                        source_action: None,
+                        source_shot: None,
                         knockback_impulse: [0.0; 3],
                         direction: Vec3::NEG_Z.to_array(),
                         speed: 10.0,

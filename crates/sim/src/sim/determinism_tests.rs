@@ -60,8 +60,8 @@ use postretro_entities::{
 use postretro_entities::{SequenceStep, SequenceTarget};
 use postretro_foundation::pose::{FootProbe, MAX_FEET};
 use postretro_foundation::{
-    AirParams, CapsuleParams, FallParams, FireMode, ForgivenessParams, GroundParams, IrNode,
-    IrValue, PlayerMovementComponent, PlayerMovementDescriptor, ResolutionMode, SpeedParams,
+    AirParams, CapsuleParams, FallParams, ForgivenessParams, GroundParams, IrNode, IrValue,
+    PlayerMovementComponent, PlayerMovementDescriptor, ResolutionMode, SpeedParams,
     WeaponDescriptor,
 };
 use postretro_scripting_core::reaction_dispatch::{
@@ -681,6 +681,8 @@ impl SimHarness {
             sim_command.select_slot = Some(1);
         }
         let remote_pawn_commands = [RemotePawnCommand {
+            real_command: true,
+            rejected_activation: None,
             pawn: self.remote_player,
             owner_client_id: 1,
             weapon: None,
@@ -1264,7 +1266,12 @@ fn spawn_determinism_weapon(registry: &mut EntityRegistry) -> EntityId {
     component.bloom_decay_degrees_per_second = 1.0;
     component.bloom_decay_delay_ms = 250.0;
     component.spread_vertical_bias = 0.25;
-    component.fire_mode = FireMode::Auto;
+    std::sync::Arc::make_mut(&mut component.primary).trigger =
+        postretro_foundation::ActivationTrigger::Hold;
+    component.activation_programs = postretro_foundation::WeaponActivationPrograms::install(
+        &component.primary,
+        component.secondary.as_deref(),
+    );
     registry
         .set_component(weapon, component)
         .expect("determinism weapon tuning updates");

@@ -262,6 +262,8 @@ fn player_is_present_for_trigger_occupancy(
 
 #[derive(Debug, Clone)]
 pub struct RemotePawnCommand {
+    pub real_command: bool,
+    pub rejected_activation: Option<postretro_foundation::ActivationToken>,
     pub pawn: EntityId,
     pub owner_client_id: u64,
     pub weapon: Option<EntityId>,
@@ -273,11 +275,23 @@ pub struct RemotePawnCommand {
     pub command: SimCommand,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct RemoteActivationProgress {
+    pub pawn: EntityId,
+    pub owner_client_id: u64,
+    pub weapon: EntityId,
+    pub tick: u32,
+    pub recovery_ms: f32,
+    pub advance: crate::weapon::execution::WeaponActivationAdvance,
+}
+
 /// A host-only presentation launch for an accepted connected-client projectile
 /// fire. The authoritative hit remains client-declared; this is only the data the
 /// host needs to show that flight to observers through the existing snapshot path.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RemoteProjectilePresentationLaunch {
+    pub action: Option<std::sync::Arc<postretro_foundation::WeaponActivationDescriptor>>,
+    pub model_scale: f32,
     pub owner_client_id: u64,
     pub shot_id: ShotId,
     pub origin: Vec3,
@@ -315,6 +329,7 @@ pub struct TriggerTickContext<'a> {
 
 #[derive(Debug, Default, PartialEq)]
 pub struct TickEvents {
+    pub remote_activation_progress: Vec<RemoteActivationProgress>,
     /// CPU stage values for this tick; empty when timing is off.
     pub cpu: postretro_stage_timing::StageFrame<cpu_stages::SimStage>,
     /// Local-pawn movement events, each on the pawn that raised it.
@@ -854,6 +869,11 @@ where
             anim_time,
             tick_dt,
             &mut on_impact,
+            Some(crate::weapon::execution::ActivationCommand {
+                tick: own_pawn.and_then(|pawn| registry.borrow().get_component::<postretro_entities::components::inventory::Inventory>(pawn).ok().and_then(|inventory| inventory.active_wieldable())).and_then(|weapon| registry.borrow().get_component::<postretro_entities::components::weapon::WeaponComponent>(weapon).ok().map(|component| component.activation_clock)).unwrap_or(0),
+                pawn: 0, real_command: true, input: command.activation, controller_starts: true,
+                primary: command.fire_button, secondary: command.secondary_button,
+            }),
         );
     let mut reload_deliveries = remote_weapon_result.reload_deliveries;
     reload_deliveries.extend(local_result.reload_deliveries);
@@ -900,6 +920,7 @@ where
         weapon_impact_points,
         mover: mover_events,
         death,
+        remote_activation_progress: remote_weapon_result.activation_progress,
         authorized_shots: remote_weapon_result.authorized_shots,
         remote_projectile_presentation_launches: remote_weapon_result
             .projectile_presentation_launches,
@@ -1579,7 +1600,7 @@ fn foot_probe_inverse(
 
 mod host_movement;
 mod reload;
-mod weapon_stage;
+pub(crate) mod weapon_stage;
 
 pub use reload::{ReloadDelivery, ReloadOutcome};
 pub use reload::{
@@ -2167,6 +2188,8 @@ mod tests {
         reload: bool,
     ) -> RemotePawnCommand {
         RemotePawnCommand {
+            real_command: true,
+            rejected_activation: None,
             pawn,
             owner_client_id: 7,
             weapon,
@@ -2176,10 +2199,19 @@ mod tests {
                 postretro_foundation::ActivationLane::Primary,
                 0,
             )),
-            fire_tick: 33,
+            fire_tick: client_tick,
             client_tick,
             aim_pitch: 0.0,
-            command: sim_command(fire, reload),
+            command: {
+                let mut command = sim_command(fire, reload);
+                if fire {
+                    command.activation.initiation = Some(postretro_foundation::ActivationToken {
+                        start_tick: client_tick,
+                        lane: postretro_foundation::ActivationLane::Primary,
+                    });
+                }
+                command
+            },
         }
     }
 

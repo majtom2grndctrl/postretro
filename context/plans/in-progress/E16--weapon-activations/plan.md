@@ -16,8 +16,8 @@ Plan promotion and claim are committed and published on main through `1c7bda3c7`
 |---|---|---|---|
 | 1. Network timing and shared kernel | activation_timing | complete | 64 sim weapon regressions, 4 kernel tests, 2 wire/version tests, 19 netcode tests, 2 input tests passed; production check passed; independent review fixes verified |
 | 2. Descriptor and SDK | authoring_prepare | complete | Foundation 6, legacy IR 10, component restore 1, scripting activation 6/weapon 33, sim allocation 1/tuning 4/typegen 38, netcode tuning 8/fixture 1, compiler Luau 7 passed; final production check passed |
-| 3. Shared weapon execution | execution_prepare | next | Pending |
-| 4. Prediction and presentation | unassigned | waiting for execution | Pending |
+| 3. Shared weapon execution | execution_prepare | complete | Component weapon 28, weapon-stage 89, central execution 15, AI 14, final sim activation 22, lifecycle 3, netcode 31, host outcomes 7 passed; production check and independent review passed |
+| 4. Prediction and presentation | authoring_prepare | implementation | Client resolution, HUD/cues, and observer snapshot partitions prepared |
 | 5. Verification and review | coordinator | preparing runbook | Pending |
 
 ## Acceptance proof
@@ -50,3 +50,9 @@ No runtime implementation or performance result is implied by approval of the de
 - Allocation proof can reuse the existing `sim::alloc_probe::AllocSnapshot` after installation and warmup around activation advancement and bound expression evaluation. Its allocator is existing approved code; no new unsafe instrumentation is needed. Full simulation allocations are a separate measurement from the activation hot-path claim.
 - Task 2 independent review found that shared IR arithmetic totalization could hide overflow and reconstructed host tuning could erase a reload-switch override. Checked activation evaluation now retains invalid intermediate evidence using the existing evaluator walk; legacy evaluation keeps its semantics. Host tuning transports the optional reload-switch override. Reviewer verified both repairs.
 - Task 2 scale evaluation allocation probe reported zero allocations. Host tuning preserves local lane sound overrides while applying host gameplay actions, including lane removal/addition. SDK helper extraction also updates the independent script-compiler Luau prelude consumer; its seven focused tests passed. Final `cargo check -p postretro-sim -p postretro-netcode -p postretro --quiet` passed. Only the documented unintegrated capture lifecycle methods remain unused until Tasks 3–4.
+- Task 3 review fixed local death-before-weapon-stage firing and AI attack aliases repeatedly refreshing one canonical weapon. Independent reviewer verified both repairs. Coordinator review also unified shell interruption with admission/resource rules, removed repeated invalid-warning allocations, and required fixed-tick bloom/counter reservation plus originating compiled-program/base snapshots for charge correction.
+- Task 3 initial proof: central execution 11 passed (including allocation-free normal advancement and repeated invalid retries), production consumers 3 passed (shell suppression/hold, death before local due shot, remote authored 6×/3× and sequence exhaustion). Later reservation/correction additions still need their final run.
+
+- Task 3 later proof: 28 component weapon, 89 shared weapon-stage, 15 central execution, 4 persistent AI, and 6 projectile AI transaction tests passed. Shell interruption now preserves the consumed reload level so a still-held reload cannot cancel the new sequence on the next tick; regression rerun passed.
+
+- Task 3 final batch: sim activation 22, drop 1, death 1, descriptor replacement 1, netcode activation 23, pending declarations 2, hit ingestion 6, and host outcome/lifecycle 7 passed. AI brain binding 4 passed in addition to the earlier 10 AI checks. Final `cargo check -p postretro --quiet` passed. Independent recheck found no new correctness defects in reload consumption, frozen shell/bloom reservations, or host outcome ordering. The remaining capture-method warnings belong to Task 4 integration.

@@ -4,13 +4,16 @@ use postretro_entities::{AmmoReserve, EntityId, EntityRegistry};
 use crate::weapon::{WeaponFireAuthorization, WeaponFireCommand};
 
 use super::super::{ReloadDelivery, ReloadOutcome};
-use super::fire::{FireAuthorizationContext, authorize_fire};
 use super::state::{
     StateTransition, WieldableStateEvent, resolve_expired_state, transition_wieldable_state,
+};
+use crate::weapon::execution::{
+    ActivationCommand, WeaponActivationAdvance, advance_weapon_activation_with_shell_preemption,
 };
 
 pub(super) struct WeaponMachineTick {
     pub(super) authorization: WeaponFireAuthorization,
+    pub(super) activation: WeaponActivationAdvance,
     pub(super) deliveries: Vec<ReloadDelivery>,
     pub(super) lowered: bool,
     /// This tick's accepted shot latched the weapon overheated.
@@ -30,16 +33,61 @@ pub(super) fn tick_weapon_machine(
     suppress_fire: bool,
     tick_dt: f32,
 ) -> WeaponMachineTick {
+    let activation = ActivationCommand {
+        tick: component.activation_clock,
+        pawn: 0,
+        real_command: true,
+        input: Default::default(),
+        controller_starts: true,
+        primary: command.button,
+        secondary: crate::weapon::FireButtonState {
+            pressed: false,
+            active: false,
+        },
+    };
+    tick_weapon_machine_activation(
+        registry,
+        pawn,
+        weapon,
+        component,
+        reload,
+        command,
+        suppress_fire,
+        tick_dt,
+        activation,
+        false,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn tick_weapon_machine_activation(
+    registry: &mut EntityRegistry,
+    pawn: Option<EntityId>,
+    weapon: EntityId,
+    component: &mut WeaponComponent,
+    reload: bool,
+    command: &WeaponFireCommand,
+    suppress_fire: bool,
+    tick_dt: f32,
+    activation_command: ActivationCommand,
+    predicted: bool,
+) -> WeaponMachineTick {
     let pawn = pawn.filter(|pawn| registry.exists(*pawn));
     let feedback_tick = component.begin_reload_feedback_tick();
     let mut deliveries = Vec::new();
     let mut reload_started_this_tick = false;
+    let mut cancelled = None;
+    let mut fresh_reload = false;
 
     // 1. Reload intent. Pawnless ticks intentionally leave the edge untouched:
     // a held level becomes a real rising edge once its pawn returns.
     if let Some(pawn) = pawn {
         let fresh_press = reload && !component.reload_press_consumed;
+        fresh_reload = fresh_press;
         component.reload_press_consumed = reload;
+        if fresh_press {
+            cancelled = component.cancel_activation();
+        }
         if fresh_press && component.state.allows_reload() {
             if let Some((capacity, ammo_type, reload_ms, reload_style)) =
                 component.effective().ammo.map(|ammo| {
@@ -106,29 +154,44 @@ pub(super) fn tick_weapon_machine(
         );
     }
 
-    // 4. Fire intent. Cooldown remains orthogonal to wieldable state.
-    let fire_command = WeaponFireCommand {
-        can_fire: command.can_fire && !suppress_fire,
-        ..*command
-    };
-    let authorization = authorize_fire(
+    let mut activation = advance_weapon_activation_with_shell_preemption(
         component,
-        &fire_command,
-        FireAuthorizationContext {
-            tick_dt,
-            reload_started_this_tick,
-            feedback_tick,
-            pawn,
-            weapon,
-            deliveries: &mut deliveries,
+        activation_command,
+        tick_dt.max(0.0) * 1000.0,
+        predicted,
+        command.can_fire && !suppress_fire && !fresh_reload,
+        command.can_fire && !suppress_fire,
+        !reload_started_this_tick,
+        |component| {
+            let reload_consumed = component.reload_press_consumed;
+            if let StateTransition::ReloadCancelled { transferred } = transition_wieldable_state(
+                component,
+                WieldableStateEvent::Cancel { feedback_tick },
+                None,
+            ) && let Some(pawn) = pawn
+            {
+                deliveries.push(ReloadDelivery {
+                    pawn,
+                    weapon,
+                    outcome: ReloadOutcome::Cancelled { transferred },
+                });
+            }
+            component.reload_press_consumed = reload_consumed;
         },
     );
-    // An overheated weapon is never Accepted, so an accepted shot that leaves
-    // the latch set is the crossing shot.
-    let overheat = authorization == WeaponFireAuthorization::Accepted
-        && component.heat.is_some_and(|heat| heat.overheated);
+    if let Some(token) = cancelled {
+        activation.terminal = Some((
+            token,
+            postretro_combat_model::activation::ActivationTermination::Cancelled,
+        ));
+    }
+    let authorization = activation
+        .authorization
+        .unwrap_or(WeaponFireAuthorization::Rejected);
+    let overheat = activation.overheat;
     WeaponMachineTick {
         authorization,
+        activation,
         deliveries,
         lowered,
         overheat,

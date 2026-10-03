@@ -8,6 +8,7 @@ mod agent_diagnostics;
 mod app;
 mod camera;
 mod frame_eye;
+mod host_activations;
 #[cfg(test)]
 mod candidate_cull {
     pub use postretro_renderer::{GatherStatus, gather_candidate_leaves};
@@ -1292,16 +1293,16 @@ fn client_fire_commands_for_post_loop(
         cooldown_ms = (cooldown_ms - elapsed_delta_ms).max(0.0);
         previous_elapsed_ms = command.elapsed_ms;
 
-        let wants_fire = match stats.fire_mode {
-            postretro_foundation::FireMode::Semi => {
+        let wants_fire = match stats.primary.trigger {
+            postretro_foundation::ActivationTrigger::Press => {
                 command.button.pressed && !weapon.shoot_press_consumed
             }
-            postretro_foundation::FireMode::Auto => command.button.active,
+            postretro_foundation::ActivationTrigger::Hold => command.button.active,
         };
         if weapon.state.allows_fire() && wants_fire && cooldown_ms <= 0.0 {
             selected.push(*command);
-            cooldown_ms = stats.cooldown_ms;
-            if stats.fire_mode == postretro_foundation::FireMode::Semi {
+            cooldown_ms = stats.primary.recovery_ms;
+            if stats.primary.trigger == postretro_foundation::ActivationTrigger::Press {
                 break;
             }
         }
@@ -3019,10 +3020,10 @@ impl ApplicationHandler for App {
                             &mut session.scripting.slot_accumulator_bindings,
                             tick_dt,
                         );
-                        self.host_record_authorized_shots(&tick_events.authorized_shots);
-                        self.host_send_rejected_projectile_fire_verdicts(
-                            &tick_events.rejected_remote_projectile_fires,
+                        self.host_record_activation_progress(
+                            &tick_events.remote_activation_progress,
                         );
+                        self.host_record_authorized_shots(&tick_events.authorized_shots);
                         self.host_spawn_projectile_presentations(
                             &script_ctx.registry,
                             &tick_events.remote_projectile_presentation_launches,
@@ -7072,6 +7073,8 @@ impl App {
                     shooter.clone()
                 };
                 pending_weapon_script_events.push(postretro_sim::emission::WeaponEmission {
+                    action: None,
+                    shot_id: None,
                     address,
                     emitter,
                     weapon: weapon_name.clone(),
@@ -7257,10 +7260,13 @@ impl App {
                         shot_id,
                         impact,
                         source_weapon,
+                        source_action,
                     } => {
                         // The client hears its own predicted projectile land.
                         pending_weapon_script_events.push(
                             postretro_sim::emission::WeaponEmission {
+                                action: source_action,
+                                shot_id: Some(shot_id),
                                 address: "impact",
                                 emitter: postretro_sim::emission::Emitter::Contacts(vec![
                                     postretro_sim::emission::ImpactContact::new(
@@ -7694,6 +7700,8 @@ impl App {
         let Some(netcode::NetEndpoint::Host {
             allocator,
             weaponless_fire_logged,
+            command_queues,
+            server,
             tick,
             ..
         }) = self
@@ -7704,16 +7712,34 @@ impl App {
             return Vec::new();
         };
 
+        let mut registry = script_ctx.registry.borrow_mut();
         resolved
             .iter()
             .map(|resolved| {
-                Self::prepare_remote_pawn_command(
+                host_activations::observe_lifecycle(
+                    &mut registry,
                     allocator,
-                    &script_ctx.registry.borrow(),
+                    command_queues,
+                    server,
+                    resolved.client_id,
+                    resolved.pawn,
+                    *tick,
+                );
+                let mut command = Self::prepare_remote_pawn_command(
+                    allocator,
+                    &registry,
                     weaponless_fire_logged,
                     *tick,
                     resolved,
-                )
+                );
+                host_activations::guard_initiation(
+                    &registry,
+                    allocator,
+                    command_queues,
+                    server,
+                    &mut command,
+                );
+                command
             })
             .collect()
     }
@@ -7730,8 +7756,11 @@ impl App {
             .get_component::<postretro_entities::components::inventory::Inventory>(resolved.pawn)
             .ok()
             .and_then(|inventory| inventory.wieldables.get(firing_slot).copied().flatten());
-        let wants_fire =
-            resolved.command.fire_button.pressed || resolved.command.fire_button.active;
+        let wants_fire = resolved.command.fire_button.pressed
+            || resolved.command.fire_button.active
+            || resolved.command.secondary_button.pressed
+            || resolved.command.secondary_button.active
+            || resolved.command.activation.initiation.is_some();
         if weapon.is_none() && wants_fire && weaponless_fire_logged.insert(resolved.pawn) {
             log::warn!(
                 "[Net] pawn {} declared unowned firing slot {}; rejecting remote fire",
@@ -7739,6 +7768,8 @@ impl App {
                 resolved.command.firing_slot,
             );
         }
+        // The remote machine reads only this identity's pawn. It derives each
+        // actual shot from the admitted initiation and authored ordinal.
         let shot_id = allocator
             .network_id_for_entity(resolved.pawn)
             .map(|network_id| {
@@ -7750,6 +7781,8 @@ impl App {
                 )
             });
         sim::RemotePawnCommand {
+            real_command: resolved.source == netcode::ResolutionSource::Real,
+            rejected_activation: resolved.rejected_activation,
             pawn: resolved.pawn,
             owner_client_id: resolved.client_id,
             weapon,
@@ -7774,28 +7807,6 @@ impl App {
         };
         for shot in shots {
             open_shots.record(shot.shot.clone(), shot.owner_client_id);
-        }
-    }
-
-    fn host_send_rejected_projectile_fire_verdicts(
-        &mut self,
-        rejections: &[sim::RemoteProjectileFireRejection],
-    ) {
-        let Some(netcode::NetEndpoint::Host { server, .. }) = self
-            .session
-            .as_mut()
-            .and_then(|session| session.net_endpoint.as_mut())
-        else {
-            return;
-        };
-        for rejection in rejections {
-            netcode::send_shot_verdict(
-                server,
-                rejection.owner_client_id,
-                rejection.shot_id,
-                false,
-                false,
-            );
         }
     }
 
@@ -10213,8 +10224,10 @@ mod tests {
             )
             .unwrap();
         let weapon_id = registry.spawn(postretro_entities::Transform::default());
-        let mut component =
-            weapon::test_fixtures::weapon_component(postretro_foundation::FireMode::Semi, 100.0);
+        let mut component = weapon::test_fixtures::weapon_component(
+            postretro_foundation::ActivationTrigger::Press,
+            100.0,
+        );
         component.cooldown_remaining_ms = 72.0;
         registry.set_component(weapon_id, component).unwrap();
         let mut inventory = postretro_entities::components::inventory::Inventory::default();
@@ -10275,11 +10288,15 @@ mod tests {
             .unwrap();
         let weapon_a = registry.spawn(postretro_entities::Transform::default());
         let weapon_b = registry.spawn(postretro_entities::Transform::default());
-        let mut component_a =
-            weapon::test_fixtures::weapon_component(postretro_foundation::FireMode::Semi, 100.0);
+        let mut component_a = weapon::test_fixtures::weapon_component(
+            postretro_foundation::ActivationTrigger::Press,
+            100.0,
+        );
         component_a.cooldown_remaining_ms = 80.0;
-        let mut component_b =
-            weapon::test_fixtures::weapon_component(postretro_foundation::FireMode::Semi, 100.0);
+        let mut component_b = weapon::test_fixtures::weapon_component(
+            postretro_foundation::ActivationTrigger::Press,
+            100.0,
+        );
         component_b.cooldown_remaining_ms = 11.0;
         registry.set_component(weapon_a, component_a).unwrap();
         registry.set_component(weapon_b, component_b).unwrap();
@@ -10364,11 +10381,11 @@ mod tests {
     }
 
     fn client_fire_selection_state(
-        fire_mode: postretro_foundation::FireMode,
+        trigger: postretro_foundation::ActivationTrigger,
         cooldown_remaining_ms: f32,
         cooldown_ms: f32,
     ) -> postretro_entities::components::weapon::WeaponComponent {
-        let mut component = weapon::test_fixtures::weapon_component(fire_mode, cooldown_ms);
+        let mut component = weapon::test_fixtures::weapon_component(trigger, cooldown_ms);
         component.cooldown_remaining_ms = cooldown_remaining_ms;
         component
     }
@@ -10424,7 +10441,8 @@ mod tests {
 
     #[test]
     fn client_fire_tick_selection_keeps_press_independent_of_pruned_history() {
-        let state = client_fire_selection_state(postretro_foundation::FireMode::Semi, 0.0, 100.0);
+        let state =
+            client_fire_selection_state(postretro_foundation::ActivationTrigger::Press, 0.0, 100.0);
         let commands = [
             ClientFrameFireCommand {
                 client_tick: 41,
@@ -10451,8 +10469,11 @@ mod tests {
     // the post-loop prediction clock advanced the same 16 ms again.
     #[test]
     fn idle_client_wieldable_prepass_and_post_loop_match_host_bloom_clock() {
-        let mut initial =
-            client_fire_selection_state(postretro_foundation::FireMode::Auto, 100.0, 100.0);
+        let mut initial = client_fire_selection_state(
+            postretro_foundation::ActivationTrigger::Hold,
+            100.0,
+            100.0,
+        );
         initial.spread_degrees = 2.0;
         initial.bloom_accumulator_degrees = 4.0;
         initial.bloom_decay_degrees_per_second = 10.0;
@@ -10515,8 +10536,11 @@ mod tests {
     // host evaluated at three fixed logical boundaries.
     #[test]
     fn unselected_client_fire_hitch_replays_host_bloom_boundaries() {
-        let mut initial =
-            client_fire_selection_state(postretro_foundation::FireMode::Auto, 100.0, 100.0);
+        let mut initial = client_fire_selection_state(
+            postretro_foundation::ActivationTrigger::Hold,
+            100.0,
+            100.0,
+        );
         initial.spread_degrees = 2.0;
         initial.bloom_accumulator_degrees = 4.0;
         initial.bloom_decay_degrees_per_second = 10.0;
@@ -10613,7 +10637,7 @@ mod tests {
     #[test]
     fn held_auto_fire_hitch_keeps_client_bloom_aligned_with_host() {
         let mut initial =
-            client_fire_selection_state(postretro_foundation::FireMode::Auto, 0.0, 20.0);
+            client_fire_selection_state(postretro_foundation::ActivationTrigger::Hold, 0.0, 20.0);
         initial.spread_degrees = 2.0;
         initial.bloom_accumulator_degrees = 4.0;
         initial.bloom_per_shot_degrees = 1.0;
@@ -10811,7 +10835,7 @@ mod tests {
             .set_component(
                 first,
                 weapon::test_fixtures::weapon_component(
-                    postretro_foundation::FireMode::Semi,
+                    postretro_foundation::ActivationTrigger::Press,
                     100.0,
                 ),
             )
@@ -10820,7 +10844,7 @@ mod tests {
             .set_component(
                 third,
                 weapon::test_fixtures::weapon_component(
-                    postretro_foundation::FireMode::Semi,
+                    postretro_foundation::ActivationTrigger::Press,
                     100.0,
                 ),
             )
@@ -11196,6 +11220,8 @@ mod tests {
     fn catch_up_weapon_script_events_preserve_tick_order_and_same_tick_fire_order() {
         let pawn = postretro_entities::EntityId::from_raw(1);
         let from_pawn = |address| postretro_sim::emission::WeaponEmission {
+            action: None,
+            shot_id: None,
             address,
             emitter: postretro_sim::emission::Emitter::Entity {
                 id: pawn,
@@ -11546,6 +11572,8 @@ mod tests {
             },
         ]);
         let emission = postretro_sim::emission::WeaponEmission {
+            action: None,
+            shot_id: None,
             address: "activate",
             emitter: postretro_sim::emission::entity_emitter(&script_ctx.registry.borrow(), pawn),
             weapon: Some("pistol".to_string()),

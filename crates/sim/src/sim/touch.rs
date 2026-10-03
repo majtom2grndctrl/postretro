@@ -331,12 +331,13 @@ impl TouchSystem {
             }
 
             if let Ok(mut weapon) = registry.get_component::<WeaponComponent>(item).cloned() {
-                // A dropped weapon must match a fresh component in every
-                // live-state field while preserving its descriptor tuning and
-                // magazine. Add future live state here with the same rule.
+                // Cancel future work only after the physical drop succeeds.
+                // Resources and recovery remain owed by this instance, even
+                // when its execution completed before it was dropped.
+                weapon.cancel_activation();
                 transition_to_idle(&mut weapon);
-                weapon.cooldown_remaining_ms = 0.0;
                 weapon.shoot_press_consumed = false;
+                weapon.secondary_press_consumed = false;
                 weapon.reload_press_consumed = false;
                 weapon.reload_feedback = Default::default();
                 let _ = registry.set_component(item, weapon);
@@ -1507,6 +1508,126 @@ mod tests {
     }
 
     #[test]
+    fn drop_cancels_charge_and_future_shots_without_refunding_resources_or_recovery() {
+        use postretro_entities::components::projectile::ProjectileComponent;
+        use postretro_entities::components::weapon_resource::{WeaponCell, WeaponHeat};
+        use postretro_foundation::{
+            ActivationCursor, ActivationLane, ActivationPhase, ActivationToken, CellResource,
+            HeatResource,
+        };
+
+        for charging in [true, false] {
+            for resource in 0..4 {
+                let mut registry = EntityRegistry::new();
+                let pawn = spawn_player(&mut registry, Vec3::new(0.0, 2.0, 0.0));
+                let item = spawn_item(
+                    &mut registry,
+                    "ion",
+                    Vec3::new(10.0, 2.0, 0.0),
+                    TouchMode::Auto,
+                    7,
+                );
+                held_item(&mut registry, pawn, item);
+                let mut weapon = registry
+                    .get_component::<WeaponComponent>(item)
+                    .unwrap()
+                    .clone();
+                if resource != 1 {
+                    weapon.ammo = None;
+                }
+                if resource == 2 {
+                    let mut heat = WeaponHeat::fresh(HeatResource {
+                        heat_per_shot: 10.0,
+                        overheat_at: 100.0,
+                        cool_per_second: 5.0,
+                        cool_delay_ms: 200.0,
+                        overheat_behavior: Default::default(),
+                    });
+                    heat.heat = 40.0;
+                    heat.idle_ms = 20.0;
+                    weapon.heat = Some(heat);
+                }
+                if resource == 3 {
+                    weapon.cell = Some(WeaponCell {
+                        tuning: CellResource {
+                            capacity: 100.0,
+                            cost_per_shot: 10.0,
+                            regen_per_second: 5.0,
+                            regen_delay_ms: 200.0,
+                        },
+                        charge: 35.0,
+                        idle_ms: 20.0,
+                    });
+                }
+                let cursor = ActivationCursor {
+                    token: ActivationToken {
+                        start_tick: 12,
+                        lane: ActivationLane::Secondary,
+                    },
+                    pawn: 1,
+                    accepted_tick: 12,
+                    last_real_tick: 13,
+                    last_advanced_tick: Some(13),
+                    phase: if charging {
+                        ActivationPhase::Charging
+                    } else {
+                        ActivationPhase::Executing
+                    },
+                    step: 2,
+                    ordinal: 1,
+                    due_tick: 20,
+                    charge: 0.5,
+                };
+                weapon.state = if charging {
+                    WieldableState::Charging(cursor)
+                } else {
+                    WieldableState::Executing(cursor)
+                };
+                weapon.cooldown_remaining_ms = 87.0;
+                weapon.secondary_press_consumed = true;
+                let before = weapon.clone();
+                registry.set_component(item, weapon).unwrap();
+                let projectile = registry.spawn(Transform::default());
+                let snapshot: ProjectileComponent = serde_json::from_value(serde_json::json!({
+                    "direction": [0.0, 0.0, -1.0], "speed": 30.0, "radius": 0.2,
+                    "remaining_range": 45.0, "remaining_lifetime": 2.0, "damage": 100.0,
+                    "credit_source": "ion", "owner_pawn": pawn, "owner_weapon": item,
+                    "spawned": false, "source_weapon": "ion",
+                }))
+                .unwrap();
+                registry
+                    .set_component(projectile, snapshot.clone())
+                    .unwrap();
+
+                let events = tick_with_edges(
+                    &mut TouchSystem::default(),
+                    &mut registry,
+                    &floor_world(),
+                    &[drop_descriptor("ion", TouchMode::Auto, 1.0)],
+                    &players(&[(PlayerId::Local(pawn), pawn)]),
+                    &[],
+                    &[(PlayerId::Local(pawn), true)],
+                );
+
+                assert_eq!(events.repointed_pawns, vec![pawn]);
+                let dropped = registry.get_component::<WeaponComponent>(item).unwrap();
+                assert_eq!(dropped.state, WieldableState::Idle);
+                assert_eq!(dropped.cooldown_remaining_ms, before.cooldown_remaining_ms);
+                assert_eq!(dropped.magazine, before.magazine);
+                assert_eq!(dropped.heat, before.heat);
+                assert_eq!(dropped.cell, before.cell);
+                assert!(!dropped.secondary_press_consumed);
+                assert_eq!(
+                    registry
+                        .get_component::<ProjectileComponent>(projectile)
+                        .unwrap(),
+                    &snapshot
+                );
+            }
+        }
+    }
+
+    #[test]
     fn drop_resets_live_weapon_state_preserves_reserve_and_seeds_auto_occupancy() {
         let mut registry = EntityRegistry::new();
         let pawn = spawn_player(&mut registry, Vec3::new(0.0, 2.0, 0.0));
@@ -1607,9 +1728,9 @@ mod tests {
             "drop resets fractional weapon-state progress"
         );
         assert_eq!(weapon.reload_credited, 0);
-        assert!(
-            weapon.cooldown_remaining_ms.abs() < 1.0e-6,
-            "drop resets weapon cooldown"
+        assert_eq!(
+            weapon.cooldown_remaining_ms, 90.0,
+            "drop preserves recovery already owed by the live instance"
         );
         assert!(!weapon.shoot_press_consumed);
         assert!(!weapon.reload_press_consumed);
@@ -2349,6 +2470,28 @@ mod tests {
             7,
         );
         held_item(&mut registry, pawn, item);
+        let mut before = registry
+            .get_component::<WeaponComponent>(item)
+            .unwrap()
+            .clone();
+        let cursor = postretro_foundation::ActivationCursor {
+            token: postretro_foundation::ActivationToken {
+                start_tick: 12,
+                lane: postretro_foundation::ActivationLane::Primary,
+            },
+            pawn: pawn.to_raw(),
+            accepted_tick: 12,
+            last_real_tick: 13,
+            last_advanced_tick: Some(13),
+            phase: postretro_foundation::ActivationPhase::Executing,
+            step: 2,
+            ordinal: 1,
+            due_tick: 20,
+            charge: 1.0,
+        };
+        before.state = WieldableState::Executing(cursor);
+        before.cooldown_remaining_ms = 87.0;
+        registry.set_component(item, before.clone()).unwrap();
         let descriptors = [drop_descriptor("ion", TouchMode::Auto, 0.1)];
         let players = players(&[(PlayerId::Local(pawn), pawn)]);
         let mut system = TouchSystem::default();
@@ -2377,6 +2520,11 @@ mod tests {
                 .has_component_kind(item, ComponentKind::Touchable)
                 .unwrap(),
             "the held item stays out of world touch evaluation"
+        );
+        assert_eq!(
+            registry.get_component::<WeaponComponent>(item).unwrap(),
+            &before,
+            "a failed physical drop does not cancel or refund the live execution"
         );
     }
 

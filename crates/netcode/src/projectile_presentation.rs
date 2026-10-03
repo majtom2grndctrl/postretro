@@ -827,6 +827,8 @@ mod tests {
             .set_component(
                 projectile,
                 ProjectileComponent {
+                    source_action: None,
+                    source_shot: None,
                     knockback_impulse: [0.0; 3],
                     direction: Vec3::NEG_Z.to_array(),
                     speed: 4.0,
@@ -897,6 +899,8 @@ mod tests {
         let direction = Vec3::new(2.0, 1.0, -3.0).normalize();
         let origin = Vec3::new(1.0, 2.0, 3.0);
         let launch = RemoteProjectilePresentationLaunch {
+            action: None,
+            model_scale: 1.0,
             owner_client_id: FIRING_CLIENT,
             shot_id,
             origin,
@@ -942,6 +946,8 @@ mod tests {
         let mut open_shots = OpenAuthorizedShots::new();
         open_shots.record(
             AuthorizedShot {
+                action: None,
+                source_weapon: None,
                 knockback: None,
                 shot_id,
                 pawn: EntityId::from_raw(1),
@@ -1047,6 +1053,8 @@ mod tests {
             .set_component(
                 source,
                 ProjectileComponent {
+                    source_action: None,
+                    source_shot: None,
                     knockback_impulse: [0.0; 3],
                     direction: Vec3::NEG_Z.to_array(),
                     speed: 4.0,
@@ -1476,6 +1484,8 @@ mod tests {
         let mut open_shots = OpenAuthorizedShots::new();
         open_shots.record(
             AuthorizedShot {
+                action: None,
+                source_weapon: None,
                 knockback: None,
                 shot_id,
                 pawn,
@@ -1564,6 +1574,8 @@ mod tests {
             "the host local shooter derives the collection from its descriptor"
         );
         let launch = RemoteProjectilePresentationLaunch {
+            action: None,
+            model_scale: 1.0,
             owner_client_id: FIRING_CLIENT,
             shot_id,
             origin: Vec3::new(1.0, 2.0, 3.0),
@@ -1864,6 +1876,8 @@ mod tests {
         let mut open_shots = OpenAuthorizedShots::new();
         open_shots.record(
             AuthorizedShot {
+                action: None,
+                source_weapon: None,
                 knockback: None,
                 shot_id,
                 pawn,
@@ -1895,6 +1909,8 @@ mod tests {
         let mut projectile = descriptor();
         projectile.visual.impact_light = Some(impact_light.clone());
         let launch = RemoteProjectilePresentationLaunch {
+            action: None,
+            model_scale: 1.0,
             owner_client_id: FIRING_CLIENT,
             shot_id,
             origin: Vec3::ZERO,
@@ -2002,6 +2018,8 @@ mod tests {
         let mut open_shots = OpenAuthorizedShots::new();
         open_shots.record(
             AuthorizedShot {
+                action: None,
+                source_weapon: None,
                 knockback: None,
                 shot_id,
                 pawn,
@@ -2032,6 +2050,8 @@ mod tests {
             fade_ms: 240.0,
         });
         let launch = RemoteProjectilePresentationLaunch {
+            action: None,
+            model_scale: 1.0,
             owner_client_id: FIRING_CLIENT,
             shot_id,
             origin: Vec3::ZERO,
@@ -2167,6 +2187,8 @@ mod tests {
         let _ = registry.set_component(
             source,
             ProjectileComponent {
+                source_action: None,
+                source_shot: None,
                 knockback_impulse: [0.0; 3],
                 direction: Vec3::NEG_Z.to_array(),
                 speed: 4.0,
@@ -2307,6 +2329,8 @@ mod tests {
             .set_component(
                 source,
                 ProjectileComponent {
+                    source_action: None,
+                    source_shot: None,
                     knockback_impulse: [0.0; 3],
                     direction: Vec3::NEG_Z.to_array(),
                     speed: 4.0,
@@ -2373,6 +2397,8 @@ mod tests {
         let mut open_shots = OpenAuthorizedShots::new();
         open_shots.record(
             AuthorizedShot {
+                action: None,
+                source_weapon: None,
                 knockback: None,
                 shot_id,
                 pawn,
@@ -2405,6 +2431,8 @@ mod tests {
             fade_ms: 240.0,
         });
         let launch = RemoteProjectilePresentationLaunch {
+            action: None,
+            model_scale: 1.0,
             owner_client_id: FIRING_CLIENT,
             shot_id,
             origin: Vec3::ZERO,

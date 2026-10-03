@@ -1,3 +1,8 @@
+mod local;
+mod remote;
+pub(in crate::sim) use local::{run_local_weapon_command, run_local_weapon_command_with_content};
+pub(in crate::sim) use remote::run_remote_weapon_commands;
+
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -23,16 +28,14 @@ use postretro_entities::components::weapon::WeaponComponent;
 use postretro_entities::components::wieldable_state::WieldableState;
 use postretro_entities::provenance::DescriptorProvenance;
 use postretro_entities::{EntityId, EntityRegistry, EntityTypeDescriptor, Transform};
-use postretro_foundation::{
-    FireMode, ProjectileBodyVisual, ResolutionMode, WeaponPlacementDescriptor,
-};
+use postretro_foundation::{ProjectileBodyVisual, ResolutionMode, WeaponPlacementDescriptor};
 
 use super::super::{
     PostMovementCommand, ReloadDelivery, RemotePawnCommand, RemoteProjectileFireRejection,
     RemoteProjectilePresentationLaunch,
 };
 use super::impact::apply_authorized_weapon_impact_damage;
-use super::machine::tick_weapon_machine;
+use super::machine::{tick_weapon_machine, tick_weapon_machine_activation};
 use super::state::{
     WieldableStateEvent, begin_raising, finish_lowering, transition_wieldable_state,
 };
@@ -51,6 +54,7 @@ pub(in crate::sim) struct LocalWeaponCommandResult {
 
 #[derive(Debug, Default)]
 pub(in crate::sim) struct RemoteWeaponCommandResult {
+    pub(in crate::sim) activation_progress: Vec<super::super::RemoteActivationProgress>,
     pub(in crate::sim) authorized_shots: Vec<OpenAuthorizedShot>,
     pub(in crate::sim) projectile_presentation_launches: Vec<RemoteProjectilePresentationLaunch>,
     pub(in crate::sim) rejected_projectile_fires: Vec<RemoteProjectileFireRejection>,
@@ -97,560 +101,6 @@ fn normalize_aim_direction(direction: Vec3) -> Option<Vec3> {
     Some(direction / length_squared.sqrt())
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(in crate::sim) fn run_remote_weapon_commands(
-    registry: &Rc<RefCell<EntityRegistry>>,
-    remote_pawn_commands: &[RemotePawnCommand],
-    descriptors: &[EntityTypeDescriptor],
-    default_weapon_placement: Option<&WeaponPlacementDescriptor>,
-    collision_world: &CollisionWorld,
-    hit_zone_store: &HitZoneStore,
-    anim_time: f64,
-    tick_dt: f32,
-) -> RemoteWeaponCommandResult {
-    let mut registry = registry.borrow_mut();
-    let mut authorized = Vec::new();
-    let mut projectile_presentations = Vec::new();
-    let mut rejected_projectile_fires = Vec::new();
-    let mut reload_deliveries = Vec::new();
-    let mut reload_emissions = Vec::new();
-    let mut weapon_events = Vec::new();
-
-    for remote in remote_pawn_commands {
-        // Remote authorization requires live ownership. A delayed command for a
-        // despawned pawn must not mutate its former weapon or mint an open shot.
-        if !registry.exists(remote.pawn) {
-            continue;
-        }
-        let Some(weapon) = remote.weapon else {
-            continue;
-        };
-        let Ok(mut weapon_component) = registry.get_component::<WeaponComponent>(weapon).cloned()
-        else {
-            continue;
-        };
-        let projectile_fire_intended = {
-            let effective = weapon_component.effective();
-            matches!(effective.resolution, ResolutionMode::Projectile)
-                && match effective.fire_mode {
-                    FireMode::Semi => remote.command.fire_button.pressed,
-                    FireMode::Auto => remote.command.fire_button.active,
-                }
-        };
-        let command = WeaponFireCommand {
-            button: remote.command.fire_button,
-            aim_origin: Vec3::ZERO,
-            aim_direction: Vec3::Z,
-            // Repurposes `can_fire` (elsewhere "aim valid") to mean "pawn has a NetworkId";
-            // the real fire gate is `button` -> `wants_fire`. The host casts no local aim ray.
-            can_fire: remote.shot_id.is_some(),
-        };
-        let machine = tick_weapon_machine(
-            &mut registry,
-            Some(remote.pawn),
-            weapon,
-            &mut weapon_component,
-            remote.command.reload,
-            &command,
-            false,
-            tick_dt,
-        );
-        reload_emissions.extend(
-            machine
-                .deliveries
-                .iter()
-                .map(|delivery| reload_emission(&registry, delivery)),
-        );
-        reload_deliveries.extend(machine.deliveries);
-        let effective = weapon_component.effective();
-        let damage = effective.damage;
-        let knockback = effective.knockback;
-        let range = effective.range;
-        let pellet_count = effective.pellet_count as usize;
-        let credit_source = effective.credit_source.to_string();
-        let resolution = effective.resolution;
-        let projectile = effective.projectile.cloned();
-        let splash = effective.splash.cloned();
-        // Projectile fire origins deliberately read the live host component,
-        // which is the host-spawned source for authored muzzle content.
-        let muzzle_offset = weapon_component.muzzle_offset;
-        let _ = registry.set_component(weapon, weapon_component);
-        // A remote pawn's shot sounds from that pawn, with its weapon's sounds.
-        let remote_emission = |address| WeaponEmission {
-            address,
-            emitter: entity_emitter(&registry, remote.pawn),
-            weapon: descriptor_name(&registry, weapon),
-        };
-        match machine.authorization {
-            WeaponFireAuthorization::Accepted => {
-                weapon_events.push(remote_emission("activate"));
-                if machine.overheat {
-                    weapon_events.push(remote_emission("overheat"));
-                }
-            }
-            WeaponFireAuthorization::Empty => {
-                weapon_events.push(remote_emission("dry_fire"));
-                if projectile_fire_intended && let Some(shot_id) = remote.shot_id {
-                    rejected_projectile_fires.push(RemoteProjectileFireRejection {
-                        owner_client_id: remote.owner_client_id,
-                        shot_id,
-                    });
-                }
-                continue;
-            }
-            WeaponFireAuthorization::Rejected => {
-                if projectile_fire_intended && let Some(shot_id) = remote.shot_id {
-                    rejected_projectile_fires.push(RemoteProjectileFireRejection {
-                        owner_client_id: remote.owner_client_id,
-                        shot_id,
-                    });
-                }
-                continue;
-            }
-        }
-        let Some(shot_id) = remote.shot_id else {
-            continue;
-        };
-        let (
-            is_projectile,
-            fire_origin,
-            projectile_direction,
-            timeout_budget_ticks,
-            projectile_presentation,
-        ) = match resolution {
-            ResolutionMode::Hitscan => {
-                // Freeze direction's origin with the shot. The later declaration
-                // still validates LOS/range from the live eye, but strafing after
-                // FIRE must not rotate its knockback.
-                let fire_origin = match remote_projectile_aim(&registry, remote) {
-                    Some((eye, _)) => eye,
-                    // Amount-only FIRE can still be authorized before a pawn
-                    // has movement; existing HIT validation requires its eye.
-                    None if knockback.is_none() => Vec3::ZERO,
-                    None => continue,
-                };
-                (false, fire_origin, None, MAX_OPEN_SHOT_AGE_TICKS, None)
-            }
-            ResolutionMode::Projectile => {
-                let Some(projectile) = projectile.as_ref() else {
-                    log::warn!(
-                        "[Net] authorized projectile weapon has no projectile descriptor; dropping shot"
-                    );
-                    rejected_projectile_fires.push(RemoteProjectileFireRejection {
-                        owner_client_id: remote.owner_client_id,
-                        shot_id,
-                    });
-                    continue;
-                };
-                let Some((eye, direction)) = remote_projectile_aim(&registry, remote) else {
-                    log::warn!(
-                        "[Net] remote projectile fire has no valid live pawn aim; dropping shot"
-                    );
-                    rejected_projectile_fires.push(RemoteProjectileFireRejection {
-                        owner_client_id: remote.owner_client_id,
-                        shot_id,
-                    });
-                    continue;
-                };
-                let descriptor_class = registry
-                    .get_component::<DescriptorProvenance>(weapon)
-                    .ok()
-                    .map(|provenance| provenance.canonical_name.clone())
-                    .unwrap_or_default();
-                let authored_placement = descriptors
-                    .iter()
-                    .find(|descriptor| {
-                        descriptor.canonical_name.as_deref() == Some(descriptor_class.as_str())
-                    })
-                    .and_then(|descriptor| descriptor.weapon.as_ref())
-                    .and_then(|weapon| weapon.placement.as_ref());
-                let placement = postretro_foundation::resolve_weapon_placement(
-                    default_weapon_placement,
-                    None,
-                    authored_placement,
-                    None,
-                );
-                // Authorization, observer presentation, and host replay freeze
-                // the pose reconstructed from the same authored rules as prediction.
-                let (fire_origin, projectile_direction) = weapon::resolve_projectile_launch_pose(
-                    Some(remote.pawn),
-                    eye,
-                    direction,
-                    &placement,
-                    muzzle_offset,
-                    projectile.radius,
-                    collision_world,
-                    &registry,
-                    hit_zone_store,
-                    anim_time,
-                    range,
-                );
-                let projectile_presentation =
-                    (!descriptor_class.is_empty()).then_some(RemoteProjectilePresentationLaunch {
-                        owner_client_id: remote.owner_client_id,
-                        shot_id,
-                        origin: fire_origin,
-                        direction: projectile_direction,
-                        range,
-                        descriptor_class,
-                        projectile: projectile.clone(),
-                    });
-                (
-                    true,
-                    fire_origin,
-                    Some(projectile_direction),
-                    projectile_timeout_budget_ticks(
-                        range,
-                        projectile.speed,
-                        projectile.lifetime_ms / 1000.0,
-                        tick_dt,
-                    ),
-                    projectile_presentation,
-                )
-            }
-        };
-        let projectile_radius = if is_projectile {
-            projectile.as_ref().map(|projectile| projectile.radius)
-        } else {
-            None
-        };
-        authorized.push(OpenAuthorizedShot {
-            shot: AuthorizedShot {
-                shot_id,
-                pawn: remote.pawn,
-                weapon,
-                fire_tick: remote.fire_tick,
-                damage,
-                knockback,
-                range,
-                pellet_count,
-                credit_source,
-                splash,
-                projectile_radius,
-                projectile_direction,
-                projectile_speed: projectile.as_ref().map(|projectile| projectile.speed),
-                projectile_lifetime_seconds: projectile
-                    .as_ref()
-                    .map(|projectile| projectile.lifetime_ms / 1_000.0),
-                projectile_tick_seconds: is_projectile.then_some(tick_dt),
-                is_projectile,
-                fire_origin,
-                timeout_budget_ticks,
-            },
-            owner_client_id: remote.owner_client_id,
-        });
-        if let Some(presentation) = projectile_presentation {
-            projectile_presentations.push(presentation);
-        }
-    }
-
-    RemoteWeaponCommandResult {
-        authorized_shots: authorized,
-        projectile_presentation_launches: projectile_presentations,
-        rejected_projectile_fires,
-        reload_deliveries,
-        reload_emissions,
-        weapon_events,
-    }
-}
-
-fn remote_projectile_aim(
-    registry: &EntityRegistry,
-    remote: &RemotePawnCommand,
-) -> Option<(Vec3, Vec3)> {
-    let transform = registry.get_component::<Transform>(remote.pawn).ok()?;
-    let movement = registry
-        .get_component::<PlayerMovementComponent>(remote.pawn)
-        .ok()?;
-    let yaw = remote.command.movement.facing_yaw;
-    let pitch = remote.aim_pitch;
-    if !yaw.is_finite() || !pitch.is_finite() {
-        return None;
-    }
-    let direction = Vec3::new(
-        -yaw.sin() * pitch.cos(),
-        pitch.sin(),
-        -yaw.cos() * pitch.cos(),
-    );
-    let length_squared = direction.length_squared();
-    if !length_squared.is_finite() || length_squared <= 1.0e-12 {
-        return None;
-    }
-    Some((
-        transform.position + Vec3::Y * movement.capsule.eye_height,
-        direction / length_squared.sqrt(),
-    ))
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(in crate::sim) fn run_local_weapon_command(
-    registry: &Rc<RefCell<EntityRegistry>>,
-    pawn: Option<EntityId>,
-    mod_block_during_reload: bool,
-    select_slot: Option<usize>,
-    command: &WeaponFireCommand,
-    reload_pressed: bool,
-    collision_world: &CollisionWorld,
-    hit_zone_store: &HitZoneStore,
-    anim_time: f64,
-    tick_dt: f32,
-    on_impact: &mut impl FnMut(&mut EntityRegistry),
-) -> LocalWeaponCommandResult {
-    run_local_weapon_command_with_content(
-        registry,
-        pawn,
-        mod_block_during_reload,
-        &[],
-        None,
-        select_slot,
-        command,
-        reload_pressed,
-        collision_world,
-        hit_zone_store,
-        anim_time,
-        tick_dt,
-        on_impact,
-    )
-}
-
-/// Local authoritative command with the descriptor context required to resolve
-/// steady placement for a projectile muzzle. The legacy wrapper above keeps
-/// headless test fixtures and the fire-suppressed client equip pass on their
-/// explicit no-content path.
-#[allow(clippy::too_many_arguments)]
-pub(in crate::sim) fn run_local_weapon_command_with_content(
-    registry: &Rc<RefCell<EntityRegistry>>,
-    pawn: Option<EntityId>,
-    mod_block_during_reload: bool,
-    descriptors: &[EntityTypeDescriptor],
-    default_weapon_placement: Option<&WeaponPlacementDescriptor>,
-    select_slot: Option<usize>,
-    command: &WeaponFireCommand,
-    reload_pressed: bool,
-    collision_world: &CollisionWorld,
-    hit_zone_store: &HitZoneStore,
-    anim_time: f64,
-    tick_dt: f32,
-    on_impact: &mut impl FnMut(&mut EntityRegistry),
-) -> LocalWeaponCommandResult {
-    let mut registry = registry.borrow_mut();
-    let mut inventory = pawn.and_then(|pawn| {
-        normalize_inventory_liveness(&mut registry, pawn).map(|(inventory, _)| inventory)
-    });
-    let weapon_id = inventory.as_ref().and_then(Inventory::active_wieldable);
-    let Some(weapon_id) = weapon_id else {
-        return LocalWeaponCommandResult::default();
-    };
-    let Ok(mut weapon_component) = registry
-        .get_component::<WeaponComponent>(weapon_id)
-        .cloned()
-    else {
-        return LocalWeaponCommandResult::default();
-    };
-    let active_slot = inventory
-        .as_ref()
-        .map_or(0, |inventory| inventory.active_slot);
-    let authored_placement = registry
-        .get_component::<DescriptorProvenance>(weapon_id)
-        .ok()
-        .and_then(|provenance| {
-            descriptors.iter().find(|descriptor| {
-                descriptor.canonical_name.as_deref() == Some(provenance.canonical_name.as_str())
-            })
-        })
-        .and_then(|descriptor| descriptor.weapon.as_ref())
-        .and_then(|weapon| weapon.placement.as_ref());
-    // Resolve from the pre-switch active weapon captured above. A same-tick
-    // switch may repoint inventory later, but it cannot change this shot.
-    let placement = postretro_foundation::resolve_weapon_placement(
-        default_weapon_placement,
-        None,
-        authored_placement,
-        None,
-    );
-    let pellet_salt_name = weapon::pellet_salt_name(&registry, weapon_id, &weapon_component);
-    // The descriptor override stays unresolved in the component. Only this
-    // App-fed local input gate resolves it against the mod-global policy.
-    let block_during_reload = weapon_component
-        .block_during_reload
-        .unwrap_or(mod_block_during_reload);
-    let begin_lower = inventory.as_ref().is_some_and(|inventory| {
-        select_slot.is_some_and(|slot| {
-            slot < inventory.wieldables.len()
-                && slot != inventory.active_slot
-                && inventory.wieldables[slot].is_some()
-                && inventory.switch_target != Some(slot)
-                && !(block_during_reload && weapon_component.state.is_reload_activity())
-        })
-    });
-    // An atomic reload already due this tick resolves before the accepted switch
-    // owns the state machine. This preserves its credit and terminal delivery;
-    // non-expired reloads still take the normal preempt-to-lower path below.
-    let complete_reload_before_lower = begin_lower
-        && weapon_component.state == WieldableState::Reloading
-        && super::super::reload::timer_expires_this_tick(&weapon_component, tick_dt);
-    if begin_lower && let Some(inventory) = inventory.as_mut() {
-        // Each accepted declaration supersedes the rollback origin retained for
-        // the prior one. Correlated refusals ignore the older declaration.
-        inventory.switch_origin = Some(inventory.active_slot);
-        inventory.switch_target = select_slot;
-    }
-    if begin_lower && !complete_reload_before_lower {
-        let lower_ms = weapon_component.lower_ms;
-        let _ = transition_wieldable_state(
-            &mut weapon_component,
-            WieldableStateEvent::BeginLower {
-                duration_ms: lower_ms,
-            },
-            None,
-        );
-    }
-    let mut machine = tick_weapon_machine(
-        &mut registry,
-        pawn,
-        weapon_id,
-        &mut weapon_component,
-        reload_pressed,
-        command,
-        begin_lower,
-        tick_dt,
-    );
-    // Credit belongs to the weapon that passed the firing state machine, even
-    // when this same tick completes a lower or an impact policy repoints the
-    // inventory before later pellets land.
-    let fire_snapshot = (
-        weapon_id,
-        weapon_component.effective().credit_source.to_string(),
-    );
-    if complete_reload_before_lower {
-        let lower_ms = weapon_component.lower_ms;
-        let _ = transition_wieldable_state(
-            &mut weapon_component,
-            WieldableStateEvent::BeginLower {
-                duration_ms: lower_ms,
-            },
-            None,
-        );
-        // The outgoing instance has not been ticked as Lowering yet. A zero
-        // lower therefore resolves exactly once here, without a second machine
-        // pass that would advance cooldown or fire input a second time.
-        machine.lowered = lower_ms == 0;
-    }
-    let mut events = weapon::tick_resolved_component(
-        &registry,
-        pawn,
-        &mut weapon_component,
-        &pellet_salt_name,
-        active_slot,
-        command,
-        &placement,
-        collision_world,
-        hit_zone_store,
-        anim_time,
-        machine.authorization,
-    );
-    events.overheat = machine.overheat;
-    #[cfg(test)]
-    // Determinism tests compare the cast set, including pellets a policy makes
-    // inapplicable. Capture it before the first policy runs.
-    let weapon_impact_points = events.impacts.iter().map(|impact| impact.point).collect();
-    let mut repointed_pawn = None;
-    if machine.lowered {
-        if let (Some(pawn), Some(inventory)) = (pawn, inventory.as_mut())
-            && let Some(target_slot) = inventory.switch_target
-            && let Some(incoming_id) = inventory.wieldables[target_slot]
-            && let Ok(mut incoming) = registry
-                .get_component::<WeaponComponent>(incoming_id)
-                .cloned()
-        {
-            finish_lowering(&mut weapon_component);
-            incoming.reload_press_consumed = reload_pressed;
-            incoming.cooldown_remaining_ms =
-                incoming.cooldown_remaining_ms.max(incoming.raise_ms as f32);
-            begin_raising(&mut incoming);
-            inventory.active_slot = target_slot;
-            inventory.switch_target = None;
-            let _ = registry.set_component(incoming_id, incoming);
-            let _ = registry.set_component(pawn, inventory.clone());
-            repointed_pawn = Some(pawn);
-        }
-    } else if begin_lower {
-        if let (Some(pawn), Some(inventory)) = (pawn, inventory) {
-            let _ = registry.set_component(pawn, inventory);
-        }
-    }
-    let _ = registry.set_component(weapon_id, weapon_component);
-    // Fire, dry fire and spawn sound from the firing pawn (the weapon itself
-    // when no pawn holds it); impacts carry their contacts instead.
-    let shooter = entity_emitter(&registry, pawn.unwrap_or(weapon_id));
-    let weapon_name = descriptor_name(&registry, weapon_id);
-    let reload_emissions = machine
-        .deliveries
-        .iter()
-        .map(|delivery| reload_emission(&registry, delivery))
-        .collect();
-    let mut projectile_spawns = Vec::new();
-    if let Some(pawn) = pawn {
-        let mut activation = None;
-        for launch in std::mem::take(&mut events.projectile_launches) {
-            let source = ProjectileSource {
-                weapon: weapon_name.clone(),
-                activation,
-            };
-            if let Some(projectile_id) =
-                spawn_projectile(&mut registry, pawn, weapon_id, launch, None, source)
-            {
-                activation.get_or_insert(projectile_id);
-                events
-                    .spawned
-                    .push(weapon::ActivationOutcome::Spawned(projectile_id));
-                projectile_spawns.push(projectile_id);
-            }
-        }
-    }
-    for impact in &events.impacts {
-        weapon::spawn_impact_effect_at(&mut registry, impact.point, impact.normal);
-
-        if let Some(target) = impact.target {
-            // Match the host's per-record target check. A policy run for an
-            // earlier pellet may have removed the shooter or committed the
-            // target to removal; the cast keeps its FX but does no later damage
-            // or policy work.
-            if !pawn.is_some_and(|pawn| registry.exists(pawn)) {
-                continue;
-            }
-            if !registry.exists(target)
-                || registry.get_component::<HealthComponent>(target).is_err()
-                || crate::scripting_systems::health::is_terminally_committed_to_removal(
-                    &registry, target,
-                )
-            {
-                continue;
-            }
-        }
-        if let weapon::ActivationOutcome::Hit(payload) = impact.outcome {
-            apply_authorized_weapon_impact_damage(
-                &mut registry,
-                fire_snapshot.0,
-                pawn,
-                impact,
-                fire_snapshot.1.clone(),
-                payload.amount,
-            );
-        }
-        on_impact(&mut registry);
-    }
-    LocalWeaponCommandResult {
-        reload_deliveries: machine.deliveries,
-        reload_emissions,
-        weapon_events: events.emissions(&shooter, weapon_name),
-        repointed_pawn,
-        projectile_spawns,
-        #[cfg(test)]
-        weapon_impact_points,
-    }
-}
-
 /// Where a projectile came from, recorded at spawn for its contact
 /// presentation: the weapon descriptor it was fired from, and the first
 /// projectile of its activation (`None` for the first, or a lone projectile).
@@ -675,6 +125,7 @@ pub fn spawn_projectile(
     let Some(projectile_id) = registry.try_spawn(
         Transform {
             position: launch.origin,
+            scale: Vec3::splat(launch.model_scale),
             rotation: projectile_model_body_rotation(
                 &launch.descriptor.visual.body,
                 launch.direction,
@@ -688,6 +139,8 @@ pub fn spawn_projectile(
     };
 
     let component = ProjectileComponent {
+        source_action: launch.action,
+        source_shot: launch.shot_id,
         direction: launch.direction.to_array(),
         speed: launch.speed,
         radius: launch.radius,
@@ -954,6 +407,9 @@ mod projectile_spawn_tests {
 
     fn launch(visual: ProjectileVisual) -> weapon::ProjectileLaunch {
         weapon::ProjectileLaunch {
+            action: None,
+            shot_id: None,
+            model_scale: 1.0,
             knockback_impulse: glam::Vec3::ZERO,
             origin: Vec3::new(1.0, 2.0, 3.0),
             direction: Vec3::NEG_Z,

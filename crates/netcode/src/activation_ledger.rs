@@ -38,6 +38,31 @@ pub struct HostActivationLedger {
     clients: HashMap<u64, ClientLedger>,
 }
 impl HostActivationLedger {
+    /// Check replay/concurrency admission before the weapon machine can debit a
+    /// shot. Only its successful initiation subsequently creates a live record.
+    pub fn can_accept(&self, client: u64, id: ActivationId, tick: u32) -> bool {
+        self.clients.get(&client).is_none_or(|state| {
+            state.live.is_none()
+                && !state.terminal.iter().any(|record| {
+                    record.live.id == id
+                        && tick.wrapping_sub(record.terminated_tick) < RETENTION_TICKS
+                })
+                && !state
+                    .settled_start
+                    .is_some_and(|watermark| tick_le(id.token.start_tick, watermark))
+        })
+    }
+
+    /// The one instance owned by this client's current execution. Terminal
+    /// bindings are deliberately excluded from command routing.
+    pub fn live_binding(
+        &self,
+        client: u64,
+    ) -> Option<(ActivationId, postretro_entities::EntityId)> {
+        let live = self.clients.get(&client)?.live.as_ref()?;
+        Some((live.id, live.weapon?))
+    }
+
     /// Bind an admitted initiation to the instance outside this pure identity ledger.
     /// Returning false prevents replay and concurrent execution; it never replaces a live activation.
     pub fn accept(
@@ -48,16 +73,11 @@ impl HostActivationLedger {
         program: &ActivationProgram,
         tick: u32,
     ) -> bool {
-        let state = self.clients.entry(client).or_default();
-        prune(state, tick);
-        if state.live.is_some()
-            || state.terminal.iter().any(|t| t.live.id == id)
-            || state
-                .settled_start
-                .is_some_and(|watermark| tick_le(id.token.start_tick, watermark))
-        {
+        if !self.can_accept(client, id, tick) {
             return false;
         }
+        let state = self.clients.entry(client).or_default();
+        prune(state, tick);
         let lifetime = program.charge.map_or(0, |c| c.full_ticks + 3600);
         let mut live = LiveActivation {
             id,
@@ -265,6 +285,82 @@ mod tests {
     fn shot(id: ActivationId, ordinal: u8) -> ShotId {
         ShotId::from_parts(id.pawn, id.token.start_tick, id.token.lane, ordinal)
     }
+    #[test]
+    fn activation_ledger_admission_guard_tracks_only_the_actual_bound_execution() {
+        let mut ledger = HostActivationLedger::default();
+        let weapon = postretro_entities::EntityId::from_raw(9);
+        assert!(ledger.can_accept(7, id(10), 100));
+        assert!(
+            ledger.live_binding(7).is_none(),
+            "checking admission does not start execution"
+        );
+        assert!(ledger.accept(7, id(10), weapon, &program(), 100));
+        assert_eq!(ledger.live_binding(7), Some((id(10), weapon)));
+        assert!(!ledger.can_accept(7, id(11), 100));
+        assert!(!ledger.accept(
+            7,
+            id(11),
+            postretro_entities::EntityId::from_raw(10),
+            &program(),
+            100
+        ));
+        assert_eq!(
+            ledger.live_binding(7),
+            Some((id(10), weapon)),
+            "refusing another request cannot repoint the live binding"
+        );
+        ledger.settle_shot(7, shot(id(10), 0), true);
+        ledger.terminal(7, id(10), 101);
+        assert!(ledger.live_binding(7).is_none());
+        assert_eq!(ledger.bound_weapon(7, id(10)), Some(weapon));
+        assert!(!ledger.can_accept(7, id(10), 101));
+        assert!(ledger.can_accept(7, id(11), 101));
+        assert_eq!(
+            ledger.status(7, shot(id(10), 0), 101),
+            OrdinalStatus::Authorized
+        );
+    }
+
+    #[test]
+    fn activation_ledger_charge_release_schedules_actual_future_ordinals() {
+        let mut ledger = HostActivationLedger::default();
+        let mut charged = program();
+        charged.charge = Some(postretro_foundation::ChargeTiming {
+            min_ticks: 2,
+            full_ticks: 60,
+        });
+        assert!(ledger.accept(
+            7,
+            id(10),
+            postretro_entities::EntityId::from_raw(9),
+            &charged,
+            100
+        ));
+        assert_eq!(
+            ledger.status(7, shot(id(10), 1), 101),
+            OrdinalStatus::Pending { deadline: 3880 }
+        );
+        ledger.execution(7, id(10).token, &charged, 140);
+        assert_eq!(
+            ledger.status(7, shot(id(10), 0), 140),
+            OrdinalStatus::Pending { deadline: 260 }
+        );
+        assert_eq!(
+            ledger.status(7, shot(id(10), 1), 140),
+            OrdinalStatus::Pending { deadline: 262 }
+        );
+        ledger.settle_shot(7, shot(id(10), 0), false);
+        ledger.terminal(7, id(10), 140);
+        assert_eq!(
+            ledger.status(7, shot(id(10), 0), 140),
+            OrdinalStatus::Rejected
+        );
+        assert_eq!(
+            ledger.status(7, shot(id(10), 1), 140),
+            OrdinalStatus::Rejected
+        );
+    }
+
     #[test]
     fn activation_ledger_terminal_preserves_authorized_and_rejects_future_ordinals() {
         let mut ledger = HostActivationLedger::default();

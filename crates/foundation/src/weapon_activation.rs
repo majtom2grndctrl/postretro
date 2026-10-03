@@ -82,13 +82,13 @@ impl ActivationInput {
 
 /// POD execution cursor suitable for central weapon-state payloads. Immutable
 /// installed programs share storage across component clones.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ActivationPhase {
     Charging,
     Executing,
     Terminal,
 }
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ActivationCursor {
     pub token: ActivationToken,
     pub pawn: u32,

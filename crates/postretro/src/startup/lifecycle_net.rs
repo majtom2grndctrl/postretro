@@ -86,6 +86,7 @@ impl App {
     }
 
     pub(crate) fn clear_surface_lifetime_level_state(&mut self) {
+        self.ai_runtime.cancel_weapon_activations();
         // Fog- and trigger-volume entities live in the script registry;
         // clearing their bridge id tables and trigger state prevents stale
         // slots or bindings if a future surface re-creation re-runs
@@ -95,6 +96,9 @@ impl App {
         // path (session may be absent if suspend arrives pre-install), so the
         // session-owned state clears are guarded — a no-op with no session yet.
         if let Some(session) = self.session.as_mut() {
+            postretro_sim::weapon::execution::cancel_weapon_activations(
+                &mut session.scripting.script_ctx.registry.borrow_mut(),
+            );
             session.scripting.command_diagnostics.clear();
             session.scripting.auto_close_timers.clear();
             session.scripting.spawn_context.clear();

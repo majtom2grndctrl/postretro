@@ -1429,6 +1429,8 @@ mod tests {
         let mut open_shots = crate::netcode::OpenAuthorizedShots::new();
         open_shots.record(
             AuthorizedShot {
+                action: None,
+                source_weapon: None,
                 knockback: None,
                 shot_id,
                 pawn: owner,

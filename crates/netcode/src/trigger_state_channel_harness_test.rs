@@ -522,6 +522,8 @@ impl PersistentAtmosphereHarness {
             &[],
             &mut mover_states,
             &[RemotePawnCommand {
+                real_command: true,
+                rejected_activation: None,
                 pawn: self.host_remote_pawn,
                 owner_client_id: CLIENT_ID,
                 weapon: None,

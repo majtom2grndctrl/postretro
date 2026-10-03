@@ -159,6 +159,8 @@ fn neutral_command() -> SimCommand {
 
 fn remote_fire(pawn: EntityId, weapon: EntityId, shot_id: ShotId) -> RemotePawnCommand {
     RemotePawnCommand {
+        real_command: true,
+        rejected_activation: None,
         pawn,
         owner_client_id: CLIENT_ID,
         weapon: Some(weapon),
@@ -167,6 +169,10 @@ fn remote_fire(pawn: EntityId, weapon: EntityId, shot_id: ShotId) -> RemotePawnC
         client_tick: shot_id.client_tick(),
         aim_pitch: 0.0,
         command: SimCommand {
+            activation: postretro_foundation::ActivationInput {
+                initiation: Some(shot_id.activation().token),
+                ..Default::default()
+            },
             fire_button: FireButtonState {
                 pressed: true,
                 active: true,
@@ -669,7 +675,16 @@ fn rejected_remote_projectile_fire_cannot_later_declare_plausible_damage() {
     let mut host = HostSimulation::new(registry.clone(), CollisionWorld::new(), Vec::new());
     let events = host.tick(&[remote_fire(pawn, weapon, shot_id)], |_, _| {});
     assert!(events.authorized_shots.is_empty());
-    assert_eq!(events.rejected_remote_projectile_fires[0].shot_id, shot_id);
+    assert_eq!(
+        events.remote_activation_progress[0].advance.rejected,
+        Some(shot_id.activation().token)
+    );
+    assert!(
+        events.remote_activation_progress[0]
+            .advance
+            .attempted
+            .is_none()
+    );
     let mut owners = MovementOwners::new();
     owners.set(pawn, CLIENT_ID);
     assert_eq!(

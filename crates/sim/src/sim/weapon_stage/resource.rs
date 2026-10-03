@@ -4,8 +4,6 @@
 use postretro_entities::components::weapon::WeaponComponent;
 use postretro_entities::registry::{ComponentKind, ComponentValue, EntityRegistry};
 
-use crate::weapon::WeaponFireAuthorization;
-
 /// Advance every heat and cell instance by one fixed tick: wielded, holstered
 /// and unowned alike, so swapping away to cool a gun is a real tactic. Runs on
 /// the authoritative path only, once per tick, before any fire gate; connected
@@ -22,7 +20,7 @@ pub(in crate::sim) fn tick_weapon_resources(registry: &mut EntityRegistry, tick_
 
 /// Idle-then-apply, the `tick_bloom` shape: the whole `dt` applies once the
 /// delay is met, with no partial-tick splitting.
-fn advance_weapon_resource(weapon: &mut WeaponComponent, dt_ms: f32) {
+pub(crate) fn advance_weapon_resource(weapon: &mut WeaponComponent, dt_ms: f32) {
     let stats = weapon.effective();
     let (heat_stats, cell_stats) = (stats.heat, stats.cell);
     if let (Some(heat), Some(stats)) = (weapon.heat.as_mut(), heat_stats) {
@@ -41,40 +39,6 @@ fn advance_weapon_resource(weapon: &mut WeaponComponent, dt_ms: f32) {
             cell.charge =
                 (cell.charge + stats.regen_per_second * (dt_ms / 1000.0)).min(stats.capacity);
         }
-    }
-}
-
-/// The heat/cell term of the state-blind fire verdict, beside the magazine
-/// check. An overheat refuses silently (one cue per latch, not a click per
-/// pull); a short cell dry-fires exactly as an empty magazine does.
-pub(super) fn resource_fire_verdict(weapon: &WeaponComponent) -> Option<WeaponFireAuthorization> {
-    if weapon.heat.is_some_and(|heat| heat.overheated) {
-        return Some(WeaponFireAuthorization::Rejected);
-    }
-    if let (Some(cell), Some(stats)) = (weapon.cell, weapon.effective().cell)
-        && cell.charge < stats.cost_per_shot
-    {
-        return Some(WeaponFireAuthorization::Empty);
-    }
-    None
-}
-
-/// Charge an accepted shot to its heat or cell. The shot that reaches
-/// `overheat_at` still fires; it latches the weapon afterward.
-pub(super) fn spend_shot_resource(weapon: &mut WeaponComponent) {
-    let stats = weapon.effective();
-    let (heat_stats, cell_stats) = (stats.heat, stats.cell);
-    if let (Some(heat), Some(stats)) = (weapon.heat.as_mut(), heat_stats) {
-        heat.heat += stats.heat_per_shot;
-        if heat.heat >= stats.overheat_at {
-            heat.heat = stats.overheat_at;
-            heat.overheated = true;
-        }
-        heat.idle_ms = 0.0;
-    }
-    if let (Some(cell), Some(stats)) = (weapon.cell.as_mut(), cell_stats) {
-        cell.charge = (cell.charge - stats.cost_per_shot).max(0.0);
-        cell.idle_ms = 0.0;
     }
 }
 
@@ -370,7 +334,9 @@ mod tests {
 
         assert_eq!(addresses(&loadout.tick(true, None)), vec!["dry_fire"]);
         let component = loadout.weapon(0);
-        assert!((component.cooldown_remaining_ms - component.cooldown_ms).abs() < f32::EPSILON);
+        assert!(
+            (component.cooldown_remaining_ms - component.primary.recovery_ms).abs() < f32::EPSILON
+        );
         assert!(component.cell.unwrap().charge.abs() < f32::EPSILON);
     }
 

@@ -101,7 +101,7 @@ mod snapshot_regression_harness_test;
 
 pub use client::{ClientPresentationInputs, ClientReplication, MoverCorrection};
 pub use command_queue::{
-    HostCommandQueues, MovementOwners, ResolvedPawnCommand, WeaponOwners,
+    HostCommandQueues, MovementOwners, ResolutionSource, ResolvedPawnCommand, WeaponOwners,
     active_wieldable_for_pawn, host_resolve_remote_commands,
 };
 pub use endpoint::{
@@ -508,7 +508,7 @@ impl NetworkIdAllocator {
 
     /// Stamp `id` with its stable `NetworkId`, allocating a fresh one on first
     /// sight. Monotonic counter; never recycled.
-    pub(crate) fn stamp(&mut self, id: EntityId) -> NetworkId {
+    pub fn stamp(&mut self, id: EntityId) -> NetworkId {
         if let Some(net_id) = self.map.get(&id) {
             return *net_id;
         }
@@ -1524,6 +1524,12 @@ fn apply_host_switch_declaration(
         return HostSwitchDecision::Refused;
     }
 
+    if let Some(outgoing) = inventory.active_wieldable()
+        && let Ok(postretro_entities::ComponentValue::Weapon(component)) =
+            registry.get_component_value_mut(outgoing, postretro_entities::ComponentKind::Weapon)
+    {
+        component.cancel_activation();
+    }
     inventory.active_slot = target_slot;
     inventory.switch_target = None;
     inventory.switch_origin = None;
@@ -1735,6 +1741,7 @@ struct HostHitIngestContext<'a> {
 
 #[derive(Debug, Default, Clone, PartialEq)]
 struct HitDeclarationResult {
+    action: Option<std::sync::Arc<postretro_foundation::WeaponActivationDescriptor>>,
     fire_accepted: bool,
     hit_accepted: bool,
     projectile_contact: Option<Vec3>,
@@ -1880,6 +1887,10 @@ pub fn host_ingest_ready_hit_declarations(
         // activation's are.
         if !result.contacts.is_empty() {
             on_remote_impact(emission::WeaponEmission {
+                action: result.action,
+                shot_id: Some(crate::wire_convert::shot_id_from_wire(
+                    pending.declaration.shot_id,
+                )),
                 address: "impact",
                 emitter: emission::Emitter::Contacts(result.contacts),
                 weapon: result.weapon,
@@ -2020,10 +2031,16 @@ fn ingest_hit_declaration(
     // The peek above already confirmed the entry; nothing mutates the store between,
     // so retire for its removal side effect and reuse the peeked shot.
     context.open_shots.retire(shot_id);
-    let weapon = emission::descriptor_name(context.registry, open.shot.weapon);
+    let weapon = open
+        .shot
+        .source_weapon
+        .clone()
+        .or_else(|| emission::descriptor_name(context.registry, open.shot.weapon));
+    let action = open.shot.action.clone();
     let pellet_count = open.shot.pellet_count;
     if pellet_count == 0 {
         return HitDeclarationResult {
+            action,
             fire_accepted: true,
             hit_accepted: false,
             projectile_contact: None,
@@ -2042,6 +2059,7 @@ fn ingest_hit_declaration(
             .any(|record| valid_projectile_contact(&open.shot, record));
         if !declared_contact {
             return HitDeclarationResult {
+                action,
                 fire_accepted: true,
                 hit_accepted: false,
                 projectile_contact: None,
@@ -2051,6 +2069,7 @@ fn ingest_hit_declaration(
         }
         let Some(impact) = resolve_authorized_splash_projectile_impact(&context, &open.shot) else {
             return HitDeclarationResult {
+                action,
                 fire_accepted: true,
                 hit_accepted: false,
                 projectile_contact: None,
@@ -2108,6 +2127,7 @@ fn ingest_hit_declaration(
             &mut on_impact,
         );
         return HitDeclarationResult {
+            action,
             fire_accepted: true,
             hit_accepted,
             projectile_contact: Some(point),
@@ -2191,6 +2211,7 @@ fn ingest_hit_declaration(
     }
 
     HitDeclarationResult {
+        action,
         fire_accepted: true,
         hit_accepted,
         projectile_contact: projectile_record.map(|record| Vec3::from_array(record.point)),
@@ -2545,7 +2566,7 @@ mod tests {
     use postretro_entities::components::weapon::{ReloadFeedback, WeaponComponent};
     use postretro_entities::provenance::{DescriptorComponentKind, DescriptorSpawnPath};
     use postretro_foundation::{
-        FireMode, KnockbackDescriptor, ResolutionMode, SplashDescriptor, WeaponDescriptor,
+        KnockbackDescriptor, ResolutionMode, SplashDescriptor, WeaponDescriptor,
     };
 
     // Float epsilon for transform round-trips (testing_guide §Floating-point:
@@ -2828,7 +2849,6 @@ mod tests {
         let pawn = registry.spawn(Transform::default());
         let weapon_id = registry.spawn(Transform::default());
         let mut weapon = test_weapon(10.0, 96.0);
-        weapon.cooldown_ms = 180.0;
         weapon.primary =
             std::sync::Arc::new(postretro_foundation::WeaponActivationDescriptor::single(
                 postretro_foundation::ActivationTrigger::Hold,
@@ -2846,7 +2866,6 @@ mod tests {
         weapon.bloom_decay_delay_ms = 175.0;
         weapon.movement_spread_degrees = 3.0;
         weapon.spread_vertical_bias = 0.2;
-        weapon.fire_mode = FireMode::Auto;
         weapon.lower_ms = 45;
         weapon.raise_ms = 70;
         registry.set_component(weapon_id, weapon).unwrap();
@@ -3669,6 +3688,8 @@ mod tests {
         range: f32,
     ) -> AuthorizedShot {
         AuthorizedShot {
+            action: None,
+            source_weapon: None,
             knockback: None,
             shot_id,
             pawn,
@@ -4066,6 +4087,8 @@ mod tests {
             self.open_shots.retire(self.shot_id);
             self.open_shots.record(
                 AuthorizedShot {
+                    action: None,
+                    source_weapon: None,
                     knockback: stats.knockback,
                     shot_id: self.shot_id,
                     pawn: self.pawn,

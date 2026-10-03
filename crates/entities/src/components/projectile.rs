@@ -14,6 +14,10 @@ use crate::registry::EntityId;
 /// without re-resolving mutable weapon tuning or attribution data.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProjectileComponent {
+    #[serde(default)]
+    pub source_action: Option<std::sync::Arc<postretro_foundation::WeaponActivationDescriptor>>,
+    #[serde(default)]
+    pub source_shot: Option<postretro_foundation::ShotId>,
     /// Unit direction of travel, stored as an array for compact serde parity
     /// with the other gameplay components.
     pub direction: [f32; 3],

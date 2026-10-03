@@ -360,8 +360,8 @@ fn apply_net_wieldable_tuning(
     else {
         return;
     };
+    weapon.cancel_activation();
     weapon.range = tuning.range;
-    weapon.cooldown_ms = tuning.primary.recovery_ms;
     weapon.pellet_count = tuning.pellet_count.clamp(1, MAX_PELLET_COUNT);
     weapon.spread_degrees = if tuning.spread_degrees.is_finite() {
         tuning
@@ -380,10 +380,6 @@ fn apply_net_wieldable_tuning(
         tuning.spread_vertical_bias.clamp(0.0, 1.0)
     } else {
         0.0
-    };
-    weapon.fire_mode = match tuning.primary.trigger {
-        postretro_foundation::ActivationTrigger::Press => postretro_foundation::FireMode::Semi,
-        postretro_foundation::ActivationTrigger::Hold => postretro_foundation::FireMode::Auto,
     };
     weapon.resolution = tuning.resolution;
     weapon.lower_ms = tuning.lower_ms;
@@ -1317,7 +1313,7 @@ mod tests {
         );
         let weapon = reg.get_component::<WeaponComponent>(weapon_id).unwrap();
         assert_eq!(weapon.range, 220.0);
-        assert_eq!(weapon.cooldown_ms, 340.0);
+        assert_eq!(weapon.primary.recovery_ms, 340.0);
         assert_eq!(weapon.lower_ms, 55);
         assert_eq!(weapon.raise_ms, 80);
         assert!(reg.get_component::<MeshComponent>(weapon_id).is_err());
@@ -1657,7 +1653,7 @@ mod tests {
         );
         let after = reg.get_component::<WeaponComponent>(weapon_id).unwrap();
         assert_eq!(after.range, 144.0);
-        assert_eq!(after.cooldown_ms, 215.0);
+        assert_eq!(after.primary.recovery_ms, 215.0);
         assert_eq!(after.lower_ms, 70);
         assert_eq!(after.raise_ms, 95);
         assert_eq!(after.magazine, 3);

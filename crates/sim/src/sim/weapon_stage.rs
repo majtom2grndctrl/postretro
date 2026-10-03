@@ -2,10 +2,9 @@
 // See: context/lib/entity_model.md §5 · context/lib/networking.md
 
 mod commands;
-mod fire;
 mod impact;
 mod machine;
-mod resource;
+pub(crate) mod resource;
 mod state;
 
 pub(super) use commands::{
@@ -1916,7 +1915,7 @@ mod tests {
         assert_eq!(events.authorized_shots.len(), 1);
         assert_eq!(events.authorized_shots[0].shot.shot_id, shot_id);
         assert_eq!(events.authorized_shots[0].shot.pawn, pawn);
-        assert_eq!(events.authorized_shots[0].shot.fire_tick, 33);
+        assert_eq!(events.authorized_shots[0].shot.fire_tick, 9);
         assert_eq!(events.authorized_shots[0].shot.pellet_count, 8);
         assert_eq!(events.authorized_shots[0].owner_client_id, 7);
         assert!(
@@ -1931,8 +1930,8 @@ mod tests {
         let weapon_state = registry.get_component::<WeaponComponent>(weapon).unwrap();
         assert!((weapon_state.cooldown_remaining_ms - 100.0).abs() < f32::EPSILON);
         assert_eq!(
-            weapon_state.shells_fired, 0,
-            "the host mints remote authorization but never samples the client's pellet fan"
+            weapon_state.shells_fired, 1,
+            "the host reserves the logical shell without raycasting the client pellet fan"
         );
         let health = registry.get_component::<HealthComponent>(target).unwrap();
         assert!((health.current - 100.0).abs() < f32::EPSILON);
@@ -2192,17 +2191,17 @@ mod tests {
         assert!(events.authorized_shots.is_empty());
         assert!(events.remote_projectile_presentation_launches.is_empty());
         assert_eq!(
-            events.rejected_remote_projectile_fires,
-            vec![crate::sim::RemoteProjectileFireRejection {
-                owner_client_id: 7,
-                shot_id: ShotId::from_parts(
-                    (NetworkId(42)).0,
-                    9,
-                    postretro_foundation::ActivationLane::Primary,
-                    0
-                ),
-            }],
-            "the host emits an immediate owner-private correction instead of waiting for flight expiry"
+            events.remote_activation_progress[0].advance.rejected,
+            Some(postretro_foundation::ActivationToken {
+                start_tick: 9,
+                lane: postretro_foundation::ActivationLane::Primary
+            })
+        );
+        assert!(
+            events.remote_activation_progress[0]
+                .advance
+                .attempted
+                .is_none()
         );
         assert!(events.weapon.is_empty());
     }
@@ -2350,8 +2349,13 @@ mod tests {
                 .get_component::<WeaponComponent>(weapon)
                 .unwrap()
                 .clone();
-            component.fire_mode = FireMode::Auto;
-            component.cooldown_ms = 45.0;
+            std::sync::Arc::make_mut(&mut component.primary).trigger =
+                postretro_foundation::ActivationTrigger::Hold;
+            std::sync::Arc::make_mut(&mut component.primary).recovery_ms = 45.0;
+            component.activation_programs = postretro_foundation::WeaponActivationPrograms::install(
+                &component.primary,
+                component.secondary.as_deref(),
+            );
             registry.set_component(weapon, component).unwrap();
             (pawn, weapon)
         };
@@ -3248,7 +3252,7 @@ mod tests {
     }
 
     #[test]
-    fn held_reload_restarts_a_per_shell_loop_on_the_tick_after_cancel() {
+    fn activation_held_reload_requires_a_new_edge_after_shell_interruption() {
         let mut registry = EntityRegistry::new();
         let (pawn, weapon) = spawn_reload_pair(&mut registry, 10, 8, 100, 2);
         set_reload_style(&mut registry, weapon, ReloadStyle::PerShell);
@@ -3288,12 +3292,36 @@ mod tests {
             }]
         );
         assert!(
-            !registry
+            registry
                 .get_component::<WeaponComponent>(weapon)
                 .unwrap()
                 .reload_press_consumed
         );
 
+        let held = tick_machine(
+            &mut registry,
+            Some(pawn),
+            weapon,
+            true,
+            &fire_command(false, false),
+            0.0,
+        );
+        assert!(held.deliveries.is_empty());
+        assert_eq!(
+            registry
+                .get_component::<WeaponComponent>(weapon)
+                .unwrap()
+                .state,
+            WieldableState::Idle
+        );
+        tick_machine(
+            &mut registry,
+            Some(pawn),
+            weapon,
+            false,
+            &fire_command(false, false),
+            0.0,
+        );
         let restarted = tick_machine(
             &mut registry,
             Some(pawn),
@@ -3882,6 +3910,8 @@ mod tests {
         assert_eq!(
             started.reload,
             vec![crate::emission::WeaponEmission {
+                action: None,
+                shot_id: None,
                 address: "reload_started",
                 emitter: crate::emission::Emitter::Entity { id: pawn, origin },
                 weapon: Some("reload_rifle".to_string()),
@@ -4596,4 +4626,280 @@ mod tests {
         assert!(health.contributor_ledger.entries().is_empty());
         assert!(health.contributor_ledger.overflow().is_none());
     }
+    #[test]
+    fn activation_shell_reload_interrupt_requires_the_same_admitted_fire_gate() {
+        let mut registry = EntityRegistry::new();
+        let (pawn, weapon) = spawn_reload_pair(&mut registry, 10, 8, 1000, 2);
+        let mut component = registry
+            .get_component::<WeaponComponent>(weapon)
+            .unwrap()
+            .clone();
+        component.primary=std::sync::Arc::new(serde_json::from_value(serde_json::json!({"trigger":"hold","recoveryMs":100,"steps":[{"kind":"shot"},{"kind":"wait","durationMs":16},{"kind":"shot"}]})).unwrap());
+        component.reload_press_consumed = true;
+        component.activation_programs =
+            postretro_foundation::WeaponActivationPrograms::install(&component.primary, None);
+        component.state = WieldableState::ShellLoading;
+        component.state_remaining_ms = 1000;
+        component.state_total_ms = 1000;
+        component.cooldown_remaining_ms = 10.0;
+        let mut command = fire_command(false, true);
+        command.can_fire = false;
+        let blocked = tick_weapon_machine(
+            &mut registry,
+            Some(pawn),
+            weapon,
+            &mut component,
+            true,
+            &command,
+            false,
+            0.020,
+        );
+        assert_eq!(component.state, WieldableState::ShellLoading);
+        assert_eq!(component.magazine, 2);
+        assert!(blocked.deliveries.is_empty());
+        command.can_fire = true;
+        let suppressed = tick_weapon_machine(
+            &mut registry,
+            Some(pawn),
+            weapon,
+            &mut component,
+            true,
+            &command,
+            true,
+            0.020,
+        );
+        assert_eq!(component.state, WieldableState::ShellLoading);
+        assert!(suppressed.deliveries.is_empty());
+        let fired = tick_weapon_machine(
+            &mut registry,
+            Some(pawn),
+            weapon,
+            &mut component,
+            true,
+            &command,
+            false,
+            0.020,
+        );
+        assert!(fired.activation.shot.is_some());
+        assert_eq!(component.magazine, 1);
+        assert!(component.state.activation_cursor().is_some());
+        assert!(component.reload_press_consumed);
+        let continued = tick_weapon_machine(
+            &mut registry,
+            Some(pawn),
+            weapon,
+            &mut component,
+            true,
+            &command,
+            false,
+            0.020,
+        );
+        assert!(continued.activation.shot.is_some());
+        assert_eq!(continued.activation.attempted.unwrap().ordinal, 1);
+        assert_eq!(component.state, WieldableState::Idle);
+        assert_eq!(component.magazine, 0);
+        assert!(
+            fired
+                .deliveries
+                .iter()
+                .any(|delivery| matches!(delivery.outcome, ReloadOutcome::Cancelled { .. }))
+        );
+    }
+
+    #[test]
+    fn activation_local_death_before_due_shot_cancels_and_blocks_later_held_starts() {
+        let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let (pawn, weapon) = {
+            let mut world = registry.borrow_mut();
+            let pair = spawn_reload_pair(&mut world, 10, 8, 1000, 10);
+            let mut component = world
+                .get_component::<WeaponComponent>(pair.1)
+                .unwrap()
+                .clone();
+            component.primary=std::sync::Arc::new(serde_json::from_value(serde_json::json!({"trigger":"hold","recoveryMs":300,"steps":[{"kind":"shot"},{"kind":"wait","durationMs":16},{"kind":"shot"}]})).unwrap());
+            component.activation_programs =
+                postretro_foundation::WeaponActivationPrograms::install(&component.primary, None);
+            world.set_component(pair.1, component).unwrap();
+            world.set_component(pair.0, trigger_movement()).unwrap();
+            world.mark_local_player_pawn(pair.0).unwrap();
+            world
+                .set_component(
+                    pair.0,
+                    HealthComponent {
+                        max: 100.0,
+                        current: 100.0,
+                        hitbox: Some(Hitbox {
+                            half_extents: Vec3::splat(0.4),
+                            offset: Vec3::ZERO,
+                        }),
+                        death_handled: false,
+                        pending_kill_credit: None,
+                        zone_multipliers: Default::default(),
+                        contributor_ledger: Default::default(),
+                    },
+                )
+                .unwrap();
+            pair
+        };
+        run_local_only_tick(registry.clone(), weapon, &sim_command(true, false), 0.016);
+        {
+            let mut world = registry.borrow_mut();
+            let attacker = world.spawn(Transform {
+                position: Vec3::X * 5.0,
+                ..Default::default()
+            });
+            let projectile = world.spawn(Transform {
+                position: Vec3::X,
+                ..Default::default()
+            });
+            world
+                .set_component(
+                    projectile,
+                    postretro_entities::components::projectile::ProjectileComponent {
+                        source_action: None,
+                        source_shot: None,
+                        direction: Vec3::NEG_X.to_array(),
+                        speed: 100.0,
+                        radius: 0.1,
+                        remaining_range: 100.0,
+                        remaining_lifetime: 2.0,
+                        damage: 100.0,
+                        knockback_impulse: [0.0; 3],
+                        credit_source: "death-ordering".into(),
+                        owner_pawn: attacker,
+                        owner_weapon: weapon,
+                        spawned: false,
+                        predicted_shot_id: None,
+                        elapsed_flight_age: 0.0,
+                        flipbook_active: false,
+                        impact_light: None,
+                        splash: None,
+                        source_weapon: None,
+                        activation: None,
+                    },
+                )
+                .unwrap();
+        }
+        let events =
+            run_local_only_tick(registry.clone(), weapon, &sim_command(true, false), 0.016);
+        assert_eq!(
+            registry
+                .borrow()
+                .get_component::<HealthComponent>(pawn)
+                .unwrap()
+                .current,
+            0.0
+        );
+        assert!(
+            !events
+                .weapon
+                .iter()
+                .any(|event| event.address == "activate")
+        );
+        {
+            let world = registry.borrow();
+            let component = world.get_component::<WeaponComponent>(weapon).unwrap();
+            assert_eq!(component.magazine, 9);
+            assert_eq!(component.state, WieldableState::Idle);
+            assert!(component.cooldown_remaining_ms > 0.0);
+        }
+        let later = run_local_only_tick(registry.clone(), weapon, &sim_command(true, false), 1.0);
+        assert!(!later.weapon.iter().any(|event| event.address == "activate"));
+        assert_eq!(
+            registry
+                .borrow()
+                .get_component::<WeaponComponent>(weapon)
+                .unwrap()
+                .magazine,
+            9
+        );
+    }
+
+    #[test]
+    fn activation_remote_consumer_charge_release_and_partial_burst_use_scaled_frozen_shots() {
+        let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let (pawn, weapon) = {
+            let mut world = registry.borrow_mut();
+            let pair = spawn_reload_pair(&mut world, 10, 8, 1000, 2);
+            let mut component = world
+                .get_component::<WeaponComponent>(pair.1)
+                .unwrap()
+                .clone();
+            component.secondary=Some(std::sync::Arc::new(serde_json::from_value(serde_json::json!({"trigger":"press","recoveryMs":300,"charge":{"minMs":16,"fullMs":32},"steps":[{"kind":"shot","scale":{"damage":6}},{"kind":"wait","durationMs":16},{"kind":"shot","scale":{"damage":3}},{"kind":"wait","durationMs":16},{"kind":"shot"}]})).unwrap()));
+            component.activation_programs = postretro_foundation::WeaponActivationPrograms::install(
+                &component.primary,
+                component.secondary.as_deref(),
+            );
+            world.set_component(pair.1, component).unwrap();
+            pair
+        };
+        let token = postretro_foundation::ActivationToken {
+            start_tick: 10,
+            lane: postretro_foundation::ActivationLane::Secondary,
+        };
+        let mut command = remote_command(pawn, Some(weapon), 42, 10, false, false);
+        command.command.activation.initiation = Some(token);
+        let charge = run_remote_only_tick(registry.clone(), &[command]);
+        assert!(charge.authorized_shots.is_empty());
+        assert_eq!(
+            charge.remote_activation_progress[0].advance.initiated,
+            Some(token)
+        );
+        let wait = remote_command(pawn, Some(weapon), 42, 11, false, false);
+        assert!(
+            run_remote_only_tick(registry.clone(), &[wait])
+                .authorized_shots
+                .is_empty()
+        );
+        let mut release = remote_command(pawn, Some(weapon), 42, 12, false, false);
+        release.command.activation.release = Some(postretro_foundation::ActivationRelease {
+            token,
+            release_tick: 12,
+        });
+        let first = run_remote_only_tick(registry.clone(), &[release]);
+        assert_eq!(first.authorized_shots[0].shot.damage, 60.0);
+        assert_eq!(first.authorized_shots[0].shot.shot_id.ordinal, 0);
+        assert_eq!(
+            first.remote_activation_progress[0].advance.execution_charge,
+            Some(1.0)
+        );
+        assert!(first.authorized_shots[0].shot.action.is_some());
+        let second = run_remote_only_tick(
+            registry.clone(),
+            &[remote_command(pawn, Some(weapon), 42, 13, false, false)],
+        );
+        assert_eq!(second.authorized_shots[0].shot.damage, 30.0);
+        assert_eq!(second.authorized_shots[0].shot.shot_id.ordinal, 1);
+        let empty = run_remote_only_tick(
+            registry.clone(),
+            &[remote_command(pawn, Some(weapon), 42, 14, false, false)],
+        );
+        let progress = &empty.remote_activation_progress[0].advance;
+        assert!(empty.authorized_shots.is_empty());
+        assert_eq!(progress.attempted.unwrap().ordinal, 2);
+        assert_eq!(progress.authorization, Some(WeaponFireAuthorization::Empty));
+        assert!(progress.terminal.is_some());
+        assert_eq!(
+            registry
+                .borrow()
+                .get_component::<WeaponComponent>(weapon)
+                .unwrap()
+                .magazine,
+            0
+        );
+    }
+}
+
+/// Predicted shell interruption shares the canonical transition and feedback reset.
+pub(crate) fn cancel_predicted_shell_reload(
+    component: &mut postretro_entities::components::weapon::WeaponComponent,
+) {
+    let reload_consumed = component.reload_press_consumed;
+    let feedback_tick = component.begin_reload_feedback_tick();
+    state::transition_wieldable_state(
+        component,
+        state::WieldableStateEvent::Cancel { feedback_tick },
+        None,
+    );
+    component.reload_press_consumed = reload_consumed;
 }

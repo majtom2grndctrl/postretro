@@ -440,6 +440,8 @@ mod tests {
         }
 
         let impact = WeaponEmission {
+            action: None,
+            shot_id: None,
             address: "impact",
             emitter: Emitter::Contacts(vec![
                 ImpactContact::new(Vec3::X, Vec3::Z, None),
@@ -509,6 +511,8 @@ mod tests {
             movers: &mut movers,
         };
         let attack = AiEmission {
+            action: None,
+            shot_id: None,
             address: Some("enemyAttack".into()),
             emitter: emitter(&registry, enemy),
             cue: AiCue::Attack {
@@ -530,6 +534,8 @@ mod tests {
         );
 
         let contact = WeaponEmission {
+            action: None,
+            shot_id: None,
             address: "impact",
             emitter: Emitter::Contacts(vec![ImpactContact {
                 point: Vec3::new(0.0, 1.0, 0.0),
@@ -579,6 +585,8 @@ mod tests {
             .position(|name| name == "alerted")
             .expect("fixture declares alerted");
         let entry = AiEmission {
+            action: None,
+            shot_id: None,
             address: None,
             emitter: emitter(&registry, enemy),
             cue: AiCue::Entered {

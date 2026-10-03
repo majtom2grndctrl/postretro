@@ -54,6 +54,7 @@ pub enum PredictedProjectileResolution {
         /// Weapon descriptor the projectile was fired from, which names its
         /// impact sound.
         source_weapon: Option<String>,
+        source_action: Option<std::sync::Arc<postretro_foundation::WeaponActivationDescriptor>>,
     },
     Expired {
         shot_id: postretro_foundation::ShotId,
@@ -70,6 +71,8 @@ pub struct ProjectileContactEvent {
     pub target: Option<EntityId>,
     /// Weapon descriptor the projectile was fired from.
     pub source_weapon: Option<String>,
+    pub source_action: Option<std::sync::Arc<postretro_foundation::WeaponActivationDescriptor>>,
+    pub source_shot: Option<postretro_foundation::ShotId>,
     /// The first projectile of its activation; contacts sharing it on one tick
     /// are one impact.
     pub activation: EntityId,
@@ -97,6 +100,8 @@ pub(crate) fn projectile_impact_emissions(
             _ => emissions.push((
                 contact.activation,
                 WeaponEmission {
+                    action: contact.source_action.clone(),
+                    shot_id: contact.source_shot,
                     address: "impact",
                     emitter: Emitter::Contacts(vec![impact]),
                     weapon: contact.source_weapon.clone(),
@@ -165,6 +170,8 @@ pub fn advance(
                 normal: impact.normal,
                 target: impact.target,
                 source_weapon: component.source_weapon.clone(),
+                source_action: component.source_action.clone(),
+                source_shot: component.source_shot,
                 activation: component.activation.unwrap_or(projectile),
             });
             weapon::spawn_impact_effect_at(registry, impact.point, impact.normal);
@@ -306,6 +313,7 @@ pub fn advance_predicted(
                         .expect("predicted advance filters to declaration-authorized projectiles"),
                     impact: impact.clone(),
                     source_weapon: component.source_weapon.clone(),
+                    source_action: component.source_action.clone(),
                 });
             }
             ProjectileResolution::Expire { component, .. } => {
@@ -659,6 +667,8 @@ mod tests {
             .set_component(
                 projectile,
                 ProjectileComponent {
+                    source_action: None,
+                    source_shot: None,
                     knockback_impulse: [0.0; 3],
                     direction: Vec3::NEG_Z.to_array(),
                     speed: 1.0,
@@ -1386,6 +1396,8 @@ mod tests {
             normal: Vec3::Z,
             target: None,
             source_weapon: Some(weapon.to_string()),
+            source_action: None,
+            source_shot: None,
             activation: EntityId::from_raw(activation),
         }
     }

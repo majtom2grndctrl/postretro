@@ -68,6 +68,8 @@ pub struct MovementEmission {
 /// wielded it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct WeaponEmission {
+    pub action: Option<std::sync::Arc<postretro_foundation::WeaponActivationDescriptor>>,
+    pub shot_id: Option<postretro_foundation::ShotId>,
     pub address: &'static str,
     pub emitter: Emitter,
     pub weapon: Option<String>,
@@ -78,6 +80,8 @@ pub struct WeaponEmission {
 /// plays on entry regardless.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AiEmission {
+    pub action: Option<std::sync::Arc<postretro_foundation::WeaponActivationDescriptor>>,
+    pub shot_id: Option<postretro_foundation::ShotId>,
     pub address: Option<Cow<'static, str>>,
     pub emitter: Emitter,
     pub cue: AiCue,

@@ -180,17 +180,10 @@ impl PendingHitDeclarations {
                 }
                 _ => false,
             };
-            // Integration seam for immediate fire until Task3 admits all starts into
-            // the ledger. It applies only to unknown starts, never live future ordinals.
-            let settled_unknown_start = matches!(ordinal, OrdinalStatus::Unknown)
-                && command_queues
-                    .resolved_cursor(pending.client_id)
-                    .is_some_and(|cursor| prediction::client_tick_le(shot_id.start_tick, cursor));
             if !projectile_waits_for_later_tick
                 && (shot_open
                     || matches!(ordinal, OrdinalStatus::Rejected | OrdinalStatus::Authorized)
-                    || expired
-                    || settled_unknown_start)
+                    || expired)
             {
                 ready.push(pending);
             } else {
@@ -204,5 +197,102 @@ impl PendingHitDeclarations {
     #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
         self.declarations.len()
+    }
+}
+
+#[cfg(test)]
+mod activation_tests {
+    use super::*;
+    use postretro_foundation::{ActivationLane, ActivationProgram, ActivationStep};
+
+    fn declaration(start_tick: u32, ordinal: u8) -> wire::HitDeclaration {
+        wire::HitDeclaration {
+            shot_id: wire::WireShotId {
+                pawn: 4,
+                start_tick,
+                lane: 1,
+                ordinal,
+            },
+            records: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn unknown_activation_declarations_ignore_movement_progress_and_expire_from_first_receipt() {
+        let mut queues = HostCommandQueues::new();
+        for tick in 10..13 {
+            assert!(queues.ingest(
+                7,
+                &wire::InputCommand {
+                    client_tick: tick,
+                    movement: wire::WireMovementInput {
+                        wish_dir: [0.0, 0.0],
+                        jump_pressed: false,
+                        dash_pressed: false,
+                        running: false,
+                        crouch_intent: false,
+                        facing_yaw: 0.0,
+                        use_pressed: false,
+                        drop_pressed: false,
+                        aim_pitch: 0.0,
+                        firing_slot: 0,
+                    },
+                    fire_button: wire::WireFireButtonState {
+                        pressed: false,
+                        active: false
+                    },
+                    secondary_button: wire::WireFireButtonState {
+                        pressed: false,
+                        active: false
+                    },
+                    activation: wire::WireActivationInput::default(),
+                    reload: false,
+                }
+            ));
+        }
+        assert!(queues.resolve_tick(7).is_some());
+        assert!(queues.resolved_cursor(7).is_some_and(|tick| tick >= 9));
+        let mut pending = PendingHitDeclarations::new();
+        let shots = OpenAuthorizedShots::new();
+        assert!(pending.push_at(7, declaration(9, 0), 100));
+        assert!(pending.drain_ready(&queues, &shots, 100).is_empty());
+        assert!(
+            pending.push_at(7, declaration(9, 0), 219),
+            "a duplicate does not extend retention"
+        );
+        assert!(pending.drain_ready(&queues, &shots, 219).is_empty());
+        assert_eq!(pending.drain_ready(&queues, &shots, 220).len(), 1);
+        assert_eq!(pending.len(), 0);
+    }
+
+    #[test]
+    fn accepted_future_ordinal_waits_for_its_decision_instead_of_unknown_start_expiry() {
+        let mut queues = HostCommandQueues::new();
+        let mut pending = PendingHitDeclarations::new();
+        let shots = OpenAuthorizedShots::new();
+        assert!(pending.push_at(7, declaration(10, 1), 0));
+        let id = crate::wire_convert::shot_id_from_wire(declaration(10, 1).shot_id).activation();
+        let program = ActivationProgram::new(
+            vec![
+                ActivationStep::Shot,
+                ActivationStep::Wait { ticks: 2 },
+                ActivationStep::Shot,
+            ],
+            None,
+            18,
+        )
+        .unwrap();
+        assert!(
+            queues
+                .activations
+                .accept(7, id, EntityId::from_raw(9), &program, 300)
+        );
+        assert!(pending.drain_ready(&queues, &shots, 421).is_empty());
+        queues.activations.settle_shot(
+            7,
+            ShotId::from_parts(4, 10, ActivationLane::Secondary, 1),
+            false,
+        );
+        assert_eq!(pending.drain_ready(&queues, &shots, 421).len(), 1);
     }
 }

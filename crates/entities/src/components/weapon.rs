@@ -12,16 +12,9 @@ use crate::components::weapon_resource::{
 };
 use crate::components::wieldable_state::WieldableState;
 use crate::data_descriptors::{
-    FireMode, KnockbackDescriptor, ProjectileDescriptor, ReloadStyle, ResolutionMode,
-    SplashDescriptor, WeaponDescriptor, WeaponResource,
+    KnockbackDescriptor, ProjectileDescriptor, ReloadStyle, ResolutionMode, SplashDescriptor,
+    WeaponDescriptor, WeaponResource,
 };
-
-fn primary_fire_mode(trigger: postretro_foundation::ActivationTrigger) -> FireMode {
-    match trigger {
-        postretro_foundation::ActivationTrigger::Press => FireMode::Semi,
-        postretro_foundation::ActivationTrigger::Hold => FireMode::Auto,
-    }
-}
 
 pub const UNKNOWN_WEAPON_CREDIT_SOURCE: &str = "weapon.unknown";
 /// Engine ceiling for the composed hitscan cone half-angle.
@@ -46,8 +39,7 @@ pub struct EffectiveStats<'a> {
     pub pellet_count: u32,
     pub spread_degrees: f32,
     pub range: f32,
-    pub cooldown_ms: f32,
-    pub fire_mode: FireMode,
+    pub primary: &'a postretro_foundation::WeaponActivationDescriptor,
     pub resolution: ResolutionMode,
     pub projectile: Option<&'a ProjectileDescriptor>,
     pub splash: Option<&'a SplashDescriptor>,
@@ -274,6 +266,16 @@ impl ReloadFeedbackStream {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WeaponComponent {
+    /// Canonical installed descriptor identity, distinct from authored damage credit.
+    #[serde(default)]
+    pub descriptor_identity: std::sync::Arc<str>,
+    /// Controller clock for the active instance, independent of movement command progress.
+    #[serde(default)]
+    pub activation_clock: u32,
+    #[serde(default)]
+    pub last_activation_tick: Option<u32>,
+    #[serde(default)]
+    pub secondary_press_consumed: bool,
     pub primary: std::sync::Arc<postretro_foundation::WeaponActivationDescriptor>,
     pub secondary: Option<std::sync::Arc<postretro_foundation::WeaponActivationDescriptor>>,
     #[serde(skip)]
@@ -298,8 +300,6 @@ pub struct WeaponComponent {
     #[serde(default)]
     pub spread_vertical_bias: f32,
     pub range: f32,
-    pub cooldown_ms: f32,
-    pub fire_mode: FireMode,
     pub resolution: ResolutionMode,
     #[serde(default)]
     pub projectile: Option<ProjectileDescriptor>,
@@ -361,6 +361,13 @@ pub struct WeaponComponent {
 }
 
 impl WeaponComponent {
+    /// Cancel only future activation work, preserving resources and recovery.
+    pub fn cancel_activation(&mut self) -> Option<postretro_foundation::ActivationToken> {
+        let cursor = self.state.activation_cursor()?;
+        self.state = WieldableState::Idle;
+        Some(cursor.token)
+    }
+
     /// The generic attachment boundary reinstalls serde-skipped caches after a
     /// component restore. Normal tick-time component clones already share them.
     pub fn ensure_activation_programs(&mut self) {
@@ -383,6 +390,10 @@ impl WeaponComponent {
         let magazine = ammo.as_ref().map_or(0, |ammo| ammo.capacity);
         let (heat, cell) = fresh_heat_cell(desc);
         Self {
+            descriptor_identity: canonical_name.unwrap_or("weapon.unknown").into(),
+            activation_clock: 0,
+            last_activation_tick: None,
+            secondary_press_consumed: false,
             primary: std::sync::Arc::new(desc.primary.clone()),
             secondary: desc.secondary.clone().map(std::sync::Arc::new),
             activation_programs: postretro_foundation::WeaponActivationPrograms::install(
@@ -399,8 +410,6 @@ impl WeaponComponent {
             movement_spread_degrees: desc.movement_spread_degrees,
             spread_vertical_bias: desc.spread_vertical_bias,
             range: desc.range,
-            cooldown_ms: desc.primary.recovery_ms,
-            fire_mode: primary_fire_mode(desc.primary.trigger),
             resolution: desc.resolution,
             projectile: desc.projectile.clone(),
             splash: desc.splash.clone(),
@@ -435,8 +444,7 @@ impl WeaponComponent {
             pellet_count: self.pellet_count,
             spread_degrees: self.spread_degrees,
             range: self.range,
-            cooldown_ms: self.cooldown_ms,
-            fire_mode: self.fire_mode,
+            primary: &self.primary,
             resolution: self.resolution,
             projectile: self.projectile.as_ref(),
             splash: self.splash.as_ref(),
@@ -489,6 +497,7 @@ impl WeaponComponent {
     }
 
     pub fn refresh_from_descriptor(&mut self, desc: &WeaponDescriptor) {
+        self.cancel_activation();
         self.damage = desc.damage;
         self.pellet_count = desc.pellet_count;
         self.spread_degrees = desc.spread_degrees;
@@ -505,8 +514,6 @@ impl WeaponComponent {
             &desc.primary,
             desc.secondary.as_ref(),
         );
-        self.cooldown_ms = desc.primary.recovery_ms;
-        self.fire_mode = primary_fire_mode(desc.primary.trigger);
         self.resolution = desc.resolution;
         self.projectile = desc.projectile.clone();
         self.splash = desc.splash.clone();
@@ -1216,7 +1223,7 @@ mod tests {
         assert!((component.movement_spread_degrees - 2.5).abs() < f32::EPSILON);
         assert!((component.spread_vertical_bias - 0.25).abs() < f32::EPSILON);
         assert!((component.range - 80.0).abs() < f32::EPSILON);
-        assert!((component.cooldown_ms - 250.0).abs() < f32::EPSILON);
+        assert!((component.primary.recovery_ms - 250.0).abs() < f32::EPSILON);
         assert!((component.cooldown_remaining_ms - 42.0).abs() < f32::EPSILON);
         assert!(component.shoot_press_consumed);
         assert_eq!(component.state, WieldableState::Reloading);

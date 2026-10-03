@@ -79,8 +79,9 @@ fn activation_fixture_real_queue_and_client_catch_up_preserve_every_ordinal() {
             )
         ));
     }
-    let mut client = ClientActivationTiming::default();
-    assert!(client.start(start, 4, 100, &program));
+    let mut client = ClientActivationTiming;
+    let mut client_state = postretro_entities::components::wieldable_state::WieldableState::Idle;
+    assert!(client.start(&mut client_state, start, 4, 100, &program));
     let mut host = None;
     let mut host_shots = Vec::new();
     let mut client_shots = Vec::new();
@@ -104,7 +105,12 @@ fn activation_fixture_real_queue_and_client_catch_up_preserve_every_ordinal() {
                 host_shots.push(shot.shot_id);
             }
         }
-        let result = client.tick(&program, tick, ActivationInput::default());
+        let result = client.tick(
+            &mut client_state,
+            &program,
+            tick,
+            ActivationInput::default(),
+        );
         if let Some(shot) = result.shot {
             client_shots.push(shot.shot_id);
         }
@@ -121,7 +127,7 @@ fn activation_fixture_real_queue_and_client_catch_up_preserve_every_ordinal() {
     );
     assert!(
         client
-            .tick(&program, 106, ActivationInput::default())
+            .tick(&mut client_state, &program, 106, ActivationInput::default())
             .shot
             .is_none()
     );

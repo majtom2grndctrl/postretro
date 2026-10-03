@@ -811,6 +811,7 @@ mod tests {
             );
         }
 
+        #[allow(clippy::too_many_arguments)]
         fn insert_rotating_pose(
             &mut self,
             mover_id: u32,

@@ -233,6 +233,7 @@ pub(super) fn selected_target_alive(registry: &EntityRegistry, target: EntityId)
 /// untouched for stride pricing. The retained candidate is deliberately supplied
 /// separately and never passes either fresh-acquisition gate.
 #[cfg(test)]
+#[allow(clippy::too_many_arguments)]
 pub(super) fn select_target(
     retained: Option<TargetCandidate>,
     offers: &TargetOffers,

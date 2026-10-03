@@ -26,8 +26,7 @@ mod session_hooks;
 mod tests;
 
 #[cfg(test)]
-#[path = "../../sh_streaming/sync_manifest_test_fixture.rs"]
-pub(in crate::session) mod sync_manifest_test_fixture;
+pub(in crate::session) use crate::sh_streaming::sync_manifest_test_fixture;
 
 /// Controller state whose lifetime belongs to one loaded session, never to the
 /// renderer. A distinct loaded manifest replaces this object before any new

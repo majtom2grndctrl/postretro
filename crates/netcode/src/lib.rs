@@ -2328,6 +2328,7 @@ fn resolve_authorized_splash_projectile_impact(
 /// same ingester through [`host_ingest_ready_hit_declarations`]; this keeps tests from
 /// duplicating its authorization and damage rules just to observe the result.
 #[cfg(test)]
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn ingest_hit_declaration_for_test(
     registry: &mut EntityRegistry,
     collision_world: &CollisionWorld,

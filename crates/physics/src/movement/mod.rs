@@ -554,6 +554,7 @@ mod tests {
             );
         }
 
+        #[allow(clippy::too_many_arguments)]
         fn set_pose(
             &mut self,
             mover_id: u32,

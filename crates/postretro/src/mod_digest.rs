@@ -987,6 +987,7 @@ pub(crate) mod tests {
     // enum variant is added; update the recipe and this sentinel together, never
     // widen either destructuring pattern with `..` or a wildcard arm.
     #[allow(dead_code)]
+    #[allow(clippy::too_many_arguments)]
     fn exhaustive_domain_sentinel(
         scoped: ScopedCrossing,
         crossing: CrossingDescriptor,

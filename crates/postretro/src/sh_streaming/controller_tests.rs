@@ -9,8 +9,7 @@ use postretro_test_log_capture::LogCapture;
 use postretro_visibility::VisibleCells;
 use std::sync::Arc;
 
-#[path = "sync_manifest_test_fixture.rs"]
-mod sync_manifest_test_fixture;
+use crate::sh_streaming::sync_manifest_test_fixture;
 
 pub(super) fn topology(
     cell_to_cluster: Vec<u32>,

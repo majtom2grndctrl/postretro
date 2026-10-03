@@ -659,6 +659,7 @@ mod tests {
     /// every other test in this module, so without this a bad edit to it sits
     /// dormant until someone flips the switch.
     #[test]
+    #[allow(clippy::type_complexity)]
     fn every_carving_material_in_either_unit_bounds_its_march() {
         let tables: [(fn(Material) -> SurfaceDepth, f32, &str); 2] = [
             (

@@ -21,6 +21,48 @@ Setup: 2026-10-01, release, Auto, 1280×720 logical, Metal System Trace, 30 s re
 - Owner visual A/B on campaign-test: no flicker, seams, stepping or brightness pops.
 - Re-recorded runs: one CPU pair was discarded because the screen locked (§12: no frames render while locked), and another for contention. Frame-regime differences did not reproduce across run orders.
 
+## Perf-floor measurement
+
+Gates the default (index.md Decisions). Setup: 2026-10-03, branch `spike/sh-compose-half-rate-on-main` (fc6c515ac: the spike commit cherry-picked onto main d82e590cb), release, campaign-test, GTX 1660 Super, `POSTRETRO_GPU_TIMING=1` per-pass timing. Full and half ran the same binary; `POSTRETRO_SPIKE_SH_HALF_RATE=1` selects half. One owner reading per mode.
+
+| Pass | Full | Half |
+|---|---|---|
+| sh_compose (streamed indirect) | 0.40 ms | 0.23 ms |
+| animated_direct_sh_compose (Pass B) | 0.56 ms | 0.33 ms |
+| forward | 3.23 ms | 3.37 ms |
+| Sum of all timed passes | 5.03 ms | 4.86 ms |
+
+- Both compose passes drop by about 42%, in line with the Mac. The combined saving is 0.40 ms.
+- The two compose passes are about 19% of timed GPU work at full, against about a third of the frame on the 5300M.
+- The 1660's whole timed frame is about 5 ms, far from GPU-bound at 60 Hz, so the 0.40 ms buys no visible frame-time change on the perf floor.
+- Forward moved +0.14 ms and the spot-shadow sample count differed (52/120 vs 62/120). That is view or run drift, not the rate, which forward does not read.
+
+### stress-warren-hallway-inspection
+
+2026-10-03, same branch, vsync off, one owner reading per mode. The machine was not recorded.
+
+| Pass | Full | Half |
+|---|---|---|
+| sh_compose | 0.38 ms | 0.38 ms |
+| animated_direct_sh_compose | 0.49 ms | 0.48 ms |
+| forward | 2.65 ms | 2.67 ms |
+
+- Half saves nothing here. The hallway's compose cost is not the steady-state animated-delta rows the rate holds back. The likely cause is residency rows, which always compose, plus fixed per-dispatch cost, but the `[SH streaming]` rows-composed line was not captured to confirm it.
+- On the Mac the hallway is over budget, and turning off light terms in the developer toolbar did not lower frame time (owner test). The map is CPU-bound there, so no GPU-side compose saving can reach its frame time.
+
+## Ordering pins
+
+From `/review-brief` (rows lens), 2026-10-03. Acceptance rows cite these by id.
+
+| id | scenario | ordering | expected outcome |
+|---|---|---|---|
+| P1 | Bridge writes a compose descriptor; the same frame's uniform update uploads the mirror; the frame then plans, recorded or skipped | bridge write → descriptor upload (clears dirty) → acquire → plan (records_compose false on a failed acquire) | The step belongs to the frame whose upload carried the change. A write made after that frame's upload is the next frame's step, never this one's. A skipped frame keeps the latch. |
+| P2 | Animated promotion weights change on a frame that records no compose; the next frame records with steady weights | weight change (skipped frame) → recorded frame | The Pass B weight-change exemption carries to the next recorded frame, as a step does: every stale gated Pass B row composes there. Today `snapshot_changed` consumes the change before the `records_compose` early return. |
+| P3 | A finite-playCount curve (the a11y strobe light pads) plays at half | each new cycle repacks the compose descriptor | Every period starts with a step frame at full rate, so the strobe A/B sees splits only between cycle starts. A playCount-null chase (campaign-test arena sweeps) has no such step and is the clean fast-curve case. |
+| P4 | No previous-frame snapshot exists: first recorded frame after full→half, after a level install, after a session clear | snapshot missing → plan | A missing snapshot counts as "behind": a gated row that re-enters the gate on that frame composes, whatever its phase. |
+| P5 | At half, a pass's only stale gated rows are all off-phase, so its plan is empty; or the frame records no compose | plan (empty) → dispatch skipped | The gauge is set at plan time and reports the held-back rows even when nothing dispatches. On a frame that records no compose it reads zero, because the rate held nothing back. |
+| P6 | Rate set to half, then a level change installs new geometry | set rate → level install (streaming state and planner rebuilt) → first recorded frame | The rate survives the level change. Phase, latched step and previous-frame snapshot start fresh with the new planner. |
+
 ## Why the stored value survives a skipped frame
 
 - A row the plan omits is never committed, so `is_stale` stays true and the row is planned again on a later frame.

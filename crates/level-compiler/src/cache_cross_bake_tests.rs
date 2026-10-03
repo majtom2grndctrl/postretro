@@ -680,8 +680,8 @@ const PRE_ATLAS_MEMO_STAGE_IDS: [&str; 6] = [
     CHUNK_LIGHT_LIST_STAGE_ID,
 ];
 
-/// Delta stages that bake uncached (owner ruling 2026-10-02): their entries
-/// cost more to cache than to compute.
+/// Delta stages that bake uncached: their entries cost more to cache than to
+/// compute.
 const UNCACHED_DELTA_STAGE_IDS: [&str; 2] =
     [ANIMATED_DIRECT_DELTA_SH_STAGE_ID, DIRECT_SH_DELTA_STAGE_ID];
 
@@ -909,7 +909,7 @@ fn run_pre_atlas_and_fused_cache_fixture(
 }
 
 #[test]
-fn p3_p6_p7_p8_p12_delta_cache_locality_progress_stats_and_policy_identity() {
+fn delta_bakes_keep_indirect_locality_progress_stats_and_policy_identity() {
     let lights = delta_lights();
     let (dir, cache) = fresh_cache("delta_pipeline_pins");
     let cold = bake_deltas(&lights, None);
@@ -940,7 +940,7 @@ fn p3_p6_p7_p8_p12_delta_cache_locality_progress_stats_and_policy_identity() {
     );
     assert_eq!(
         first.direct_stats, cold.direct_stats,
-        "P3 cache-miss stats match --no-cache stats"
+        "P3 first-build stats match --no-cache stats"
     );
     assert_eq!(
         warm.direct_stats, cold.direct_stats,
@@ -1033,7 +1033,7 @@ fn p3_p6_p7_p8_p12_delta_cache_locality_progress_stats_and_policy_identity() {
     assert_eq!(
         finalized_delta_bytes(partial),
         finalized_delta_bytes(partial_cold),
-        "P7 static-light partial hit stays byte-identical through the downstream pipeline"
+        "P7 static-light edit stays byte-identical to --no-cache through the downstream pipeline"
     );
     assert_eq!(
         finalized_delta_bytes(cold),
@@ -1079,9 +1079,8 @@ fn bake_deltas_empty_animated(
     )
 }
 
-/// A15: Direct SH Delta and Animated Direct SH Delta bake uncached (owner
-/// ruling 2026-10-02) and still emit the --no-cache bytes; Delta SH keeps its
-/// per-entry cache.
+/// Direct SH Delta and Animated Direct SH Delta bake uncached and still emit
+/// the --no-cache bytes; Delta SH keeps its per-entry cache.
 #[test]
 fn direct_and_animated_direct_delta_bake_uncached() {
     let lights = delta_lights();
@@ -1168,7 +1167,7 @@ fn p11_direct_stats_observe_raw_zero_entries_before_selection_retention_drop() {
 }
 
 #[test]
-fn p13_source_index_shift_reseeds_uncached_animated_direct() {
+fn source_index_shift_reseeds_uncached_animated_direct() {
     let lights = delta_lights();
     let (dir, cache) = fresh_cache("animated_direct_source_index");
     bake_deltas(&lights, Some(&cache));

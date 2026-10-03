@@ -856,7 +856,7 @@ fn zero_chunks(count: usize) -> Vec<AnimatedLightChunk> {
     ]
 }
 
-/// The pairwise half-open test the overlap assert has always applied.
+/// The pairwise half-open overlap test.
 fn pairwise_overlap(results: &[ChunkBakeResult]) -> bool {
     results.iter().enumerate().any(|(i, a)| {
         results[i + 1..].iter().any(|b| {

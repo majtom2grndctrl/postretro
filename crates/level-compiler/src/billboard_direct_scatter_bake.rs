@@ -621,6 +621,42 @@ fn segment_clear(ctx: &RaytracingCtx<'_>, from: Vec3, to: Vec3) -> bool {
     true
 }
 
+/// The unbounded reference scan: the occlusion answer [`segment_clear`] must
+/// match.
+#[cfg(test)]
+fn segment_clear_full_scan(ctx: &RaytracingCtx<'_>, from: Vec3, to: Vec3) -> bool {
+    let delta = to - from;
+    let length = delta.length();
+    if length < RAY_EPSILON {
+        return true;
+    }
+    let direction = delta / length;
+    let origin = from + direction * RAY_EPSILON;
+    let ray = Ray::new(
+        Point3::new(origin.x, origin.y, origin.z),
+        Vector3::new(direction.x, direction.y, direction.z),
+    );
+    let max_distance = length - RAY_EPSILON;
+    let geometry = &ctx.geometry.geometry;
+    for primitive in ctx.bvh.traverse_iterator(&ray, ctx.primitives) {
+        let mut triangle = primitive.index_offset as usize;
+        let end = triangle + primitive.index_count as usize;
+        while triangle + 3 <= end {
+            let a = Vec3::from(geometry.vertices[geometry.indices[triangle] as usize].position);
+            let b = Vec3::from(geometry.vertices[geometry.indices[triangle + 1] as usize].position);
+            let c = Vec3::from(geometry.vertices[geometry.indices[triangle + 2] as usize].position);
+            triangle += 3;
+            if let Some(distance) = ray_triangle_distance(origin, direction, a, b, c)
+                && distance > 0.0
+                && distance < max_distance
+            {
+                return false;
+            }
+        }
+    }
+    true
+}
+
 fn ray_triangle_distance(origin: Vec3, direction: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Option<f32> {
     let edge_one = b - a;
     let edge_two = c - a;
@@ -1009,5 +1045,105 @@ mod tests {
             &direct,
             &animated_sdf_namespace
         ));
+    }
+
+    /// Geometry from a list of triangles, one BVH face per triangle.
+    fn triangle_geometry(triangles: &[[[f32; 3]; 3]]) -> GeometryResult {
+        let vertices = triangles
+            .iter()
+            .flatten()
+            .map(|&position| {
+                Vertex::new(
+                    position,
+                    [0.0, 0.0],
+                    [0.0, 1.0, 0.0],
+                    [1.0, 0.0, 0.0],
+                    true,
+                    [0.0, 0.0],
+                    0,
+                )
+            })
+            .collect();
+        let count = triangles.len() as u32;
+        GeometryResult {
+            geometry: GeometrySection {
+                vertices,
+                indices: (0..count * 3).collect(),
+                faces: (0..count)
+                    .map(|_| FaceMeta {
+                        leaf_index: 0,
+                        texture_index: 0,
+                    })
+                    .collect(),
+            },
+            texture_names: TextureNamesSection { names: Vec::new() },
+            face_index_ranges: (0..count)
+                .map(|face| FaceIndexRange {
+                    index_offset: face * 3,
+                    index_count: 3,
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn bounded_segment_clear_matches_full_scan_around_a_blocker() {
+        // A blocker quad at y = 0 (x, z in [-1, 1]) split on its x = z
+        // diagonal, plus tiles and a far floor below it: tree nodes past the
+        // segment ends for the bound to prune.
+        let mut triangles = vec![
+            [[-1.0, 0.0, -1.0], [1.0, 0.0, -1.0], [1.0, 0.0, 1.0]],
+            [[-1.0, 0.0, -1.0], [1.0, 0.0, 1.0], [-1.0, 0.0, 1.0]],
+            [
+                [-30.0, -12.0, -30.0],
+                [30.0, -12.0, -30.0],
+                [30.0, -12.0, 30.0],
+            ],
+            [
+                [-30.0, -12.0, -30.0],
+                [30.0, -12.0, 30.0],
+                [-30.0, -12.0, 30.0],
+            ],
+        ];
+        for k in 0..10 {
+            let x = -6.0 + k as f32 * 1.3;
+            triangles.push([[x, -5.0, -2.0], [x + 0.6, -5.0, -2.0], [x, -5.5, -1.4]]);
+        }
+        let geometry = triangle_geometry(&triangles);
+        let (bvh, primitives, _) = build_bvh(&geometry).expect("fixture geometry must build a BVH");
+        let ctx = RaytracingCtx {
+            bvh: &bvh,
+            primitives: &primitives,
+            geometry: &geometry,
+        };
+        let (mut clear, mut blocked) = (0, 0);
+        // Inside the blocker, on its shared diagonal, and beside it.
+        for (x, z) in [(0.1, -0.6), (0.4, 0.4), (-0.3, -0.3), (1.5, 0.2)] {
+            for from in [Vec3::new(x, 4.0, z), Vec3::new(x + 1.5, 4.0, z - 2.0)] {
+                // Ends short of, at, and past the blocker, then the tiles and floor.
+                for end_y in [
+                    0.01,
+                    RAY_EPSILON,
+                    1.0e-6,
+                    0.0,
+                    -1.0e-6,
+                    -RAY_EPSILON,
+                    -0.01,
+                    -5.0,
+                    -12.0,
+                    -13.0,
+                ] {
+                    let to = Vec3::new(x, end_y, z);
+                    let full = segment_clear_full_scan(&ctx, from, to);
+                    assert_eq!(segment_clear(&ctx, from, to), full, "{from} -> {to}");
+                    if full {
+                        clear += 1;
+                    } else {
+                        blocked += 1;
+                    }
+                }
+            }
+        }
+        assert!(clear > 0 && blocked > 0, "{clear} clear, {blocked} blocked");
     }
 }

@@ -1,5 +1,7 @@
-//! Light-axis window orderings: fold order (P1), throttle and pause (P3), cache
-//! I/O outside permits (P11), and the resident-partition bound.
+//! Lightmap partition-window behavior: fold order, throttle and pause, cache I/O
+//! outside permits, the resident bound, chart-cull byte identity, and a memo-hit
+//! rebuild followed by a one-light edit.
+//! Governing context: `context/lib/build_pipeline.md` §Build Cache.
 
 use super::*;
 use std::sync::mpsc;
@@ -128,8 +130,8 @@ impl Gate {
     }
 }
 
-// P1: light 1's partition is ready before light 0's; fold and consume still
-// run in global light order, and the bytes equal the window-1 bake.
+// Light 1's partition is ready before light 0's; fold and consume still run in
+// global light order, and the bytes equal the window-1 bake.
 #[test]
 fn lightmap_window_folds_in_global_light_order_when_later_light_finishes_first() {
     let lights = window_lights(3);
@@ -229,8 +231,8 @@ fn lightmap_window_resident_partitions_reach_and_never_exceed_window() {
     }
 }
 
-// P3: permits drop to one while the window is partly admitted, then pause
-// holds admission; a bake started at one permit matches too.
+// Permits drop to one while the window is partly admitted, then pause holds
+// admission; a bake started at one permit matches too.
 #[test]
 fn lightmap_window_throttle_and_pause_admit_one_item_and_keep_bytes() {
     let lights = window_lights(5);
@@ -322,8 +324,160 @@ fn lightmap_window_throttle_and_pause_admit_one_item_and_keep_bytes() {
     );
 }
 
-// P5: a light that reaches some charts plus a directional light that reaches
-// all. The cull skips charts out of the point light's range, yet every cached
+/// Chart-cull fixture: the window quads, all on one bake layer.
+fn cull_quads() -> GeometryResult {
+    quads_in_one_cell(WINDOW_QUADS)
+}
+
+/// One cached, culled bake of a fixture, and what unculled bakes of the same
+/// lights produce.
+struct CullRun {
+    /// `(light, layer, chart)` for every chart the cull let through, sorted.
+    baked: Vec<(usize, u32, usize)>,
+    /// Bake layers the fixture atlas holds.
+    layer_count: u32,
+    /// Texels each light's unculled partitions light, summed over layers.
+    lit_texels: Vec<usize>,
+}
+
+/// The fixture's charts in face order. Chart planning never reads the lights,
+/// so a placeholder light stands in for the real set.
+fn fixture_charts(build: fn() -> GeometryResult) -> Vec<lightmap_bake::Chart> {
+    let mut geometry = build();
+    let placeholder = vec![point_light(DVec3::ZERO, [1.0, 1.0, 1.0])];
+    let static_lights = StaticBakedLights::from_lights(&placeholder);
+    lightmap_bake::prepare_atlas(
+        &mut geometry,
+        &static_lights,
+        config(false).lightmap_density,
+        &[],
+    )
+    .expect("cull fixture atlas")
+    .charts
+}
+
+/// Bake `lights` through the window with the chart cull active and a cache,
+/// then assert progress completes at its published total and every cached
+/// partition equals the unculled per-light, per-layer bake.
+fn cull_bake_matches_unculled(
+    build: fn() -> GeometryResult,
+    lights: &[MapLight],
+    label: &str,
+) -> CullRun {
+    let args = test_args();
+    let config = config(false);
+    let dir = fresh_cache_dir(label);
+    let cache = StageCache::new(&dir).expect("cull cache");
+    let baked = Arc::new(Mutex::new(Vec::new()));
+    let mut window = sized(2);
+    let record = Arc::clone(&baked);
+    window.hooks.before_chart = Some(Arc::new(move |light, layer, chart| {
+        record.lock().unwrap().push((light, layer, chart));
+    }));
+    let progress = StageProgress::indeterminate();
+
+    let mut geometry = build();
+    let (bvh, primitives, _) = build_bvh(&geometry).expect("cull fixture BVH");
+    let static_lights = StaticBakedLights::from_lights(lights);
+    let alpha_lights = AlphaLightsNs::from_lights(lights);
+    let control = BakeControl::new(Arc::new(Governor::new(4, false)), &progress);
+    let placements = ThreadPoolBuilder::new()
+        .num_threads(4)
+        .build()
+        .expect("cull fixture pool")
+        .install(|| {
+            let prepared = lightmap_bake::prepare_atlas(
+                &mut geometry,
+                &static_lights,
+                config.lightmap_density,
+                &[],
+            )
+            .expect("cull fixture atlas");
+            let placements = prepared.placements.len();
+            bake_fused_windowed(
+                &args,
+                Some(&cache),
+                &control,
+                &BakeControl::unrestricted(),
+                &mut geometry,
+                &static_lights,
+                &alpha_lights,
+                None,
+                &bvh,
+                &primitives,
+                &config,
+                prepared,
+                &window,
+            )
+            .expect("cull fixture bake");
+            placements
+        });
+    let published = progress.total().expect("lightmap total is published");
+    assert_eq!(published, placements * lights.len());
+    assert_eq!(progress.completed(), published);
+    let mut baked = baked.lock().unwrap().clone();
+    baked.sort_unstable();
+
+    // Each cached partition equals an unculled bake of that light and layer.
+    let mut geometry = build();
+    let (bvh, primitives, _) = build_bvh(&geometry).unwrap();
+    let static_lights = StaticBakedLights::from_lights(lights);
+    let prepared =
+        lightmap_bake::prepare_atlas(&mut geometry, &static_lights, config.lightmap_density, &[])
+            .unwrap();
+    let shared = SharedAtlas {
+        charts: &prepared.charts,
+        placements: &prepared.placements,
+        atlas_width: prepared.atlas_width,
+        atlas_height: prepared.atlas_height,
+        layout: &prepared.layout,
+    };
+    let mut lit_texels = vec![0; lights.len()];
+    for (index, light) in lights.iter().enumerate() {
+        for layer in 0..prepared.layer_count {
+            let key = CacheKey::new(
+                "lightmap_layer",
+                lightmap_layer::LAYER_FORMAT_VERSION,
+                &lightmap_layer::layer_input_hash(
+                    light,
+                    &shared,
+                    &primitives,
+                    &geometry,
+                    config.lightmap_density,
+                    args.soft_shadow_samples,
+                    layer,
+                ),
+            );
+            let unculled = lightmap_layer::bake_light_layer_controlled(
+                light,
+                &shared,
+                &bvh,
+                &primitives,
+                &geometry,
+                layer,
+                args.soft_shadow_samples,
+                &BakeControl::unrestricted(),
+            );
+            lit_texels[index] += unculled.texels.len();
+            assert_eq!(
+                cache.get(&key),
+                Some(unculled.to_bytes()),
+                "light {index} layer {layer}: culled partition differs from the unculled bake"
+            );
+        }
+    }
+    let layer_count = prepared.layer_count;
+    drop(cache);
+    let _ = std::fs::remove_dir_all(&dir);
+    CullRun {
+        baked,
+        layer_count,
+        lit_texels,
+    }
+}
+
+// A light that reaches some charts plus a directional light that reaches all.
+// The cull skips charts out of the point light's range, yet every cached
 // partition equals the unculled per-light bake, and progress completes at the
 // published total.
 #[test]
@@ -335,85 +489,193 @@ fn chart_cull_is_byte_identical_and_progress_completes() {
     sun.cone_direction = Some([0.2, -1.0, 0.1]);
     let lights = vec![near, sun];
 
-    let dir = fresh_cache_dir("chart_cull");
-    let cache = StageCache::new(&dir).expect("cull cache");
-    let baked_charts = Arc::new(Mutex::new(Vec::new()));
-    let mut window = sized(2);
-    let record = Arc::clone(&baked_charts);
-    window.hooks.before_chart = Some(Arc::new(move |light, _layer, chart| {
-        record.lock().unwrap().push((light, chart));
-    }));
-    let progress = StageProgress::indeterminate();
-    bake_window(
-        &lights,
-        Some(&cache),
-        &window,
-        Arc::new(Governor::new(4, false)),
-        &progress,
-    );
-    let published = progress.total().expect("lightmap total is published");
-    assert_eq!(published, WINDOW_QUADS * lights.len());
-    assert_eq!(progress.completed(), published);
-    let baked = baked_charts.lock().unwrap().clone();
+    let run = cull_bake_matches_unculled(cull_quads, &lights, "chart_cull");
+
     assert_eq!(
-        baked.iter().filter(|(light, _)| *light == 0).count(),
+        run.baked.iter().filter(|(light, _, _)| *light == 0).count(),
         1,
-        "the near light reaches one quad: {baked:?}"
+        "the near light reaches one quad: {:?}",
+        run.baked
     );
     assert_eq!(
-        baked.iter().filter(|(light, _)| *light == 1).count(),
+        run.baked.iter().filter(|(light, _, _)| *light == 1).count(),
         WINDOW_QUADS,
         "the directional light reaches every quad"
     );
-
-    // Each cached partition equals an unculled bake of that light.
-    let args = test_args();
-    let config = config(false);
-    let mut geometry = quads_in_one_cell(WINDOW_QUADS);
-    let (bvh, primitives, _) = build_bvh(&geometry).unwrap();
-    let static_lights = StaticBakedLights::from_lights(&lights);
-    let prepared =
-        lightmap_bake::prepare_atlas(&mut geometry, &static_lights, config.lightmap_density, &[])
-            .unwrap();
-    let shared = SharedAtlas {
-        charts: &prepared.charts,
-        placements: &prepared.placements,
-        atlas_width: prepared.atlas_width,
-        atlas_height: prepared.atlas_height,
-        layout: &prepared.layout,
-    };
-    for light in &lights {
-        let key = CacheKey::new(
-            "lightmap_layer",
-            lightmap_layer::LAYER_FORMAT_VERSION,
-            &lightmap_layer::layer_input_hash(
-                light,
-                &shared,
-                &primitives,
-                &geometry,
-                config.lightmap_density,
-                args.soft_shadow_samples,
-                0,
-            ),
-        );
-        let unculled = lightmap_layer::bake_light_layer_controlled(
-            light,
-            &shared,
-            &bvh,
-            &primitives,
-            &geometry,
-            0,
-            args.soft_shadow_samples,
-            &BakeControl::unrestricted(),
-        );
-        assert!(!unculled.texels.is_empty(), "each light lights something");
-        assert_eq!(cache.get(&key), Some(unculled.to_bytes()));
-    }
-    drop(cache);
-    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        run.lit_texels.iter().all(|&lit| lit > 0),
+        "each light lights something"
+    );
 }
 
-// P11: at one permit, a held partition put (or get) holds no permit: another
+// The cull keeps a chart at distance == falloff_range, so a texel exactly
+// there still lights under the inverse models and is zero under Linear.
+#[test]
+fn chart_cull_keeps_chart_whose_nearest_texel_is_at_falloff_range() {
+    let charts = fixture_charts(cull_quads);
+    let texel = crate::chart_raster::chart_texel_world_position(&charts[0], 0, 0);
+    let models = [
+        ("linear", FalloffModel::Linear, false),
+        ("inverse_distance", FalloffModel::InverseDistance, true),
+        ("inverse_squared", FalloffModel::InverseSquared, true),
+    ];
+    for (label, model, lights_at_range) in models {
+        // Straight above the texel, so no other texel is nearer.
+        let origin = DVec3::new(
+            f64::from(texel.x),
+            f64::from(texel.y + 4.0),
+            f64::from(texel.z),
+        );
+        let mut light = point_light(origin, [1.0, 0.6, 0.3]);
+        light.falloff_model = model;
+        // The bake measures from the f32 origin, so use that exact distance.
+        light.falloff_range = origin.as_vec3().distance(texel);
+        let at_range = lightmap_bake::falloff(&light, light.falloff_range);
+
+        let run = cull_bake_matches_unculled(
+            cull_quads,
+            std::slice::from_ref(&light),
+            &format!("chart_cull_texel_range_{label}"),
+        );
+
+        assert_eq!(
+            run.baked,
+            vec![(0, 0, 0)],
+            "{label}: only the chart at range"
+        );
+        if lights_at_range {
+            assert!(at_range > 0.0, "{label}: falloff at range");
+            assert!(run.lit_texels[0] > 0, "{label}: texel at range lights");
+        } else {
+            assert!(at_range < 1.0e-6, "{label}: falloff at range");
+            assert_eq!(run.lit_texels[0], 0, "{label}: nothing lights");
+        }
+    }
+}
+
+// The cull compares the padded texel bounds with `<=`: a chart whose padded
+// bounds are exactly falloff_range away is baked, one ulp short it is not.
+// Neither lights a texel, since the padding puts every texel beyond the range.
+#[test]
+fn chart_cull_keeps_chart_at_padded_bounds_range_and_drops_it_one_ulp_beyond() {
+    let charts = fixture_charts(cull_quads);
+    let (min, max) = chart_texel_bounds(&charts[0]).expect("fixture chart has texels");
+    let origin = Vec3::new((min.x + max.x) * 0.5, max.y + 3.0, (min.z + max.z) * 0.5);
+    let at_bounds = origin.distance(Vec3::new(origin.x, max.y, origin.z));
+    let one_ulp_short = f32::from_bits(at_bounds.to_bits() - 1);
+    for (label, range, kept) in [("at", at_bounds, true), ("beyond", one_ulp_short, false)] {
+        let mut light = point_light(
+            DVec3::new(
+                f64::from(origin.x),
+                f64::from(origin.y),
+                f64::from(origin.z),
+            ),
+            [1.0, 0.6, 0.3],
+        );
+        light.falloff_model = FalloffModel::InverseSquared;
+        light.falloff_range = range;
+
+        let run = cull_bake_matches_unculled(
+            cull_quads,
+            std::slice::from_ref(&light),
+            &format!("chart_cull_bounds_range_{label}"),
+        );
+
+        let expected = if kept { vec![(0, 0, 0)] } else { Vec::new() };
+        assert_eq!(run.baked, expected, "{label}: baked charts");
+        assert_eq!(
+            run.lit_texels[0], 0,
+            "{label}: padded texels are out of range"
+        );
+    }
+}
+
+// The cull reads only distance, never a spot's cone: charts the cone points
+// away from are still baked, and they bake to nothing, matching the unculled
+// bake.
+#[test]
+fn chart_cull_bakes_charts_a_spot_cone_points_away_from_to_unculled_bytes() {
+    let spot = |direction: [f32; 3]| {
+        let mut light = point_light(DVec3::new(20.0, 6.0, 6.0), [1.0, 0.8, 0.5]);
+        light.light_type = LightType::Spot;
+        light.falloff_range = 40.0;
+        light.cone_direction = Some(direction);
+        light.cone_angle_inner = Some(0.1);
+        light.cone_angle_outer = Some(0.3);
+        light
+    };
+    // Down lights part of the quad below the spot; up lights nothing.
+    let lights = vec![spot([0.0, -1.0, 0.0]), spot([0.0, 1.0, 0.0])];
+
+    let run = cull_bake_matches_unculled(cull_quads, &lights, "chart_cull_spot");
+
+    let every_quad_per_light: Vec<_> = (0..lights.len())
+        .flat_map(|light| (0..WINDOW_QUADS).map(move |chart| (light, 0, chart)))
+        .collect();
+    assert_eq!(run.baked, every_quad_per_light, "every quad is in range");
+    assert!(run.lit_texels[0] > 0, "the downward cone lights a quad");
+    assert_eq!(run.lit_texels[1], 0, "the upward cone lights nothing");
+}
+
+// A zero or negative falloff_range clamps to a tiny positive range: a light
+// away from the surface reaches no chart, and one inside a chart's bounds
+// reaches only that chart. Neither lights a texel.
+#[test]
+fn chart_cull_reaches_only_enclosing_chart_when_falloff_range_is_not_positive() {
+    let light_at = |origin: DVec3, range: f32| {
+        let mut light = point_light(origin, [1.0, 0.6, 0.3]);
+        light.falloff_range = range;
+        light
+    };
+    let above = DVec3::new(6.0, 3.0, 6.0);
+    let in_chart_zero = DVec3::new(6.0, 0.0, 6.0);
+    let lights = vec![
+        light_at(above, 0.0),
+        light_at(above, -5.0),
+        light_at(in_chart_zero, 0.0),
+        light_at(in_chart_zero, -5.0),
+    ];
+
+    let run = cull_bake_matches_unculled(cull_quads, &lights, "chart_cull_range_not_positive");
+
+    assert_eq!(
+        run.baked,
+        vec![(2, 0, 0), (3, 0, 0)],
+        "only the lights inside chart 0's bounds bake it"
+    );
+    assert!(run.lit_texels.iter().all(|&lit| lit == 0), "nothing lights");
+}
+
+// Charts on two bake layers: each (layer, light) item culls only its own
+// layer's charts, and every cached partition still equals the unculled bake.
+#[test]
+fn chart_cull_is_byte_identical_when_charts_span_two_bake_layers() {
+    let mut first = point_light(DVec3::new(6.0, 3.0, 6.0), [1.0, 0.6, 0.3]);
+    first.falloff_range = 6.0;
+    let mut second = point_light(DVec3::new(22.0, 3.0, 6.0), [0.3, 0.6, 1.0]);
+    second.falloff_range = 6.0;
+    let lights = vec![first, second];
+
+    let run = cull_bake_matches_unculled(two_layer_geometry, &lights, "chart_cull_two_layers");
+
+    assert_eq!(run.layer_count, 2, "fixture must exercise two bake layers");
+    let reached: Vec<_> = run
+        .baked
+        .iter()
+        .map(|&(light, _, chart)| (light, chart))
+        .collect();
+    assert_eq!(reached, vec![(0, 0), (1, 1)], "each light reaches its quad");
+    assert_ne!(
+        run.baked[0].1, run.baked[1].1,
+        "the reached charts sit on different bake layers"
+    );
+    assert!(
+        run.lit_texels.iter().all(|&lit| lit > 0),
+        "each light lights"
+    );
+}
+
+// At one permit, a held partition put (or get) holds no permit: another
 // light's chart work admits and runs before the I/O is released.
 #[test]
 fn lightmap_window_cache_io_holds_no_permit() {
@@ -527,7 +789,7 @@ fn lightmap_window_cache_io_holds_no_permit() {
     }
 }
 
-// P8: a no-edit rebuild hits both section memos and reads no partition, yet its
+// A no-edit rebuild hits both section memos and reads no partition, yet its
 // use record keeps every partition the memos summarize. The next build's
 // prune, under a budget smaller than the set, spares them, so a one-light edit
 // re-bakes only that light.

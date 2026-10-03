@@ -1227,8 +1227,8 @@ pub(crate) fn segment_clear(
     true
 }
 
-/// Today's unbounded occlusion scan: the reference for [`segment_clear`]
-/// (bake-parallelism-large-maps A4).
+/// The unbounded reference scan: the occlusion answer [`segment_clear`] must
+/// match.
 #[cfg(test)]
 pub(crate) fn segment_clear_full_scan(
     bvh: &Bvh<f32, 3>,

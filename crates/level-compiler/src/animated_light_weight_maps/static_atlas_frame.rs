@@ -178,10 +178,9 @@ pub(super) fn chunk_atlas_rect(
 /// this must not be limited to sibling chunks of one face.
 ///
 /// Each layer is checked by marking its rects in an occupancy bitmap, linear
-/// in the texels the bake already visited; a pairwise scan was quadratic in
-/// chunks per layer, hundreds of seconds on a map with ~10⁵ min-extent chunks
-/// on one layer. A layer the bitmap flags goes to the pairwise scan, which
-/// panics naming the same first overlapping pair it always named.
+/// in the texels the bake already visited; a pairwise scan would be quadratic
+/// in chunks per layer. A layer the bitmap flags goes to the pairwise scan,
+/// which panics naming the first overlapping pair in index order.
 pub(super) fn assert_no_overlapping_rects_per_layer(
     chunks: &[postretro_level_format::animated_light_chunks::AnimatedLightChunk],
     per_chunk: &[ChunkBakeResult],

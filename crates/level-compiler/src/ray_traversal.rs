@@ -7,14 +7,18 @@ use bvh::aabb::{Aabb, IntersectsAabb};
 use bvh::ray::Ray;
 
 /// A ray query for `Bvh::traverse_iterator` that accepts exactly the boxes
-/// the stock ray accepts, minus those it enters beyond `bound`. The iterator's
-/// visit order is unchanged, so the hit a caller keeps on a distance tie is
-/// unchanged too. A closest-hit caller shrinks the bound as nearer hits land;
-/// an occlusion caller fixes it at the segment end.
+/// the stock ray accepts, minus those it enters clearly beyond `bound`. The
+/// iterator's visit order is unchanged, so the hit a caller keeps on a distance
+/// tie is unchanged too. A closest-hit caller shrinks the bound as nearer hits
+/// land; an occlusion caller fixes it at the segment end.
 ///
-/// Measured on the hallway's SH groups (bake-parallelism-large-maps Task 10):
-/// 19% faster than the unbounded iterator, and faster than a near-child-first
-/// walk, whose extra child-entry work outweighed its earlier pruning.
+/// A box is pruned only past [`prune_limit`]'s slack, so the answer should
+/// equal the unbounded traversal's. That equality is verified by the fixture
+/// digest gate and the full-scan parity tests, not proven for every float
+/// input: a pathological grazing sliver can exceed any finite slack.
+///
+/// Faster on large maps than a near-child-first walk, whose extra child-entry
+/// work outweighs its earlier pruning.
 pub(crate) struct BoundedRay<'a> {
     ray: &'a Ray<f32, 3>,
     bound: Cell<f32>,
@@ -47,11 +51,18 @@ impl IntersectsAabb<f32, 3> for BoundedRay<'_> {
     }
 }
 
-/// Bound used for pruning: a hit inside a box can compute a box entry a few
-/// ulps past its own distance, so a box is skipped only when it starts clearly
-/// beyond the bound. An infinite bound prunes nothing.
+/// Bound used for pruning. A box is skipped only when it starts clearly beyond
+/// the bound, because two rounding errors can put a hit's computed distance
+/// below the computed entry of the box holding it: the slab test's entry
+/// rounding (a few ulps, covered by the relative term), and Möller–Trumbore's
+/// own `t` error, which grows with the distance from the ray origin to the
+/// triangle, as the ray grazes it, and as its narrowest angle shrinks. The
+/// 1 cm absolute term covers that error for well-shaped triangles at ordinary
+/// angles, at little pruning cost: it keeps only boxes that start within about
+/// 1 cm of the bound. Long grazing rays near a sliver's ends can exceed it. An
+/// infinite bound prunes nothing.
 fn prune_limit(bound: f32) -> f32 {
-    bound + bound.abs() * 1e-5 + 1e-5
+    bound + bound.abs() * 1e-4 + 1e-2
 }
 
 /// Distance along `ray` at which it enters `aabb`; negative when the origin

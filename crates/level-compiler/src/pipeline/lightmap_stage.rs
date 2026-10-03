@@ -1,5 +1,5 @@
 //! Lightmap stage orchestration, isolated from the top-level compiler pipeline.
-//! See: context/lib/build_pipeline.md.
+//! See: context/lib/build_pipeline.md §Compiler pipeline.
 
 use std::time::Duration;
 
@@ -332,10 +332,12 @@ pub(crate) fn bake_fused_windowed(
     let section = if let Some(section) = cached_section {
         section
     } else {
-        // Every bake layer is composed, dilated, encoded, and sliced into its
-        // blocks before the next begins. With no direct layer-bearing light
-        // (all static lights resolve through the SDF) the fold is empty and
-        // every block encodes zero irradiance and neutral direction.
+        // Every bake layer is folded, dilated, encoded, and sliced into its
+        // blocks before the next layer's first partition is folded (that
+        // layer's partitions may already be baking). With no direct
+        // layer-bearing light (all static lights resolve through the SDF) the
+        // fold is empty and every block encodes zero irradiance and neutral
+        // direction.
         let mut builder = lightmap_bake::BlockSectionBuilder::new(
             &prepared.layout,
             config.uncompressed_irradiance,
@@ -381,6 +383,12 @@ pub(crate) fn bake_fused_windowed(
                 items.len(),
                 window.size,
                 |item, partition| {
+                    // The consumer runs on whichever worker holds its lock, beside
+                    // up to `permits` chart tasks; without a permit, `-j 1` would
+                    // run two busy cores (fold, dilate, whole-layer encode). The
+                    // wait is safe: no chart task waits on the consumer, and the
+                    // permit drops on return, before the window admits new items.
+                    let _permit = lightmap_control.governor().enter();
                     let (layer, light) = items[item];
                     if open
                         .as_ref()
@@ -442,12 +450,16 @@ pub(crate) fn bake_fused_windowed(
             items.len(),
             window.size,
             |item, partition| {
+                // Permitted for the same reason as the compose pass's consumer.
+                let _permit = lightmap_control.governor().enter();
                 let (_, light) = items[item];
                 shadowmask.consume_partition(layer_lights[light].source_index, &partition);
             },
             #[cfg(test)]
             window.probe.clone(),
         );
+        // This pass consumes only shadowmask-selected partitions, so the rest
+        // of the published `total` is completed here to leave progress at 100%.
         if completed_work < total {
             lightmap_control.advance(total - completed_work);
         }
@@ -513,7 +525,10 @@ fn layer_key_hashes(
 }
 
 /// World bounds of a chart's texel centres, padded by
-/// `AABB_PADDING_METERS` to absorb `f32` rounding in the texel walk.
+/// `AABB_PADDING_METERS` to absorb `f32` rounding in the texel walk. The pad
+/// (0.5 m, borrowed from `affinity_grid`) is deliberately generous and only
+/// makes the reach cull more conservative; a smaller pad would cull more, and
+/// must still exceed the `f32` rounding error of the texel positions.
 fn chart_texel_bounds(chart: &lightmap_bake::Chart) -> Option<(Vec3, Vec3)> {
     if chart.uv_extent[0] <= 0.0 || chart.uv_extent[1] <= 0.0 {
         return None;
@@ -1487,8 +1502,8 @@ mod tests {
         );
     }
 
-    // A11: the window's resident partitions are charged, growing with the
-    // window; a window of one adds exactly one partition to the old terms.
+    // The window's resident partitions are charged, growing with the window;
+    // a window of one adds exactly one partition to the old terms.
     #[test]
     fn predicted_peak_charges_window_partitions() {
         let mut geometry = quads_in_one_cell(3);

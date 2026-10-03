@@ -347,9 +347,9 @@ pub fn layer_influence_aabb(light: &MapLight, world_aabb: (DVec3, DVec3)) -> (DV
 /// Bake one light's contribution layer across the shared atlas.
 ///
 /// Mirrors `bake_face_chart`'s per-texel structure exactly but for a single
-/// light: same chart interior walk, same `chart_texel_seed`, same
-/// `light_texel_contribution_and_visibility` helper (which shares the
-/// monolithic Lambert + soft-visibility math). Directional lights are
+/// light: same chart interior walk, same `chart_texel_seed`, same Lambert +
+/// soft-visibility math (`light_texel_contribution_and_visibility_with`, fed a
+/// `SoftProbes` built once per chart rather than per texel). Directional lights are
 /// evaluated across every chart texel, but sparse records are emitted only for
 /// analytically reached, contributing samples.
 ///

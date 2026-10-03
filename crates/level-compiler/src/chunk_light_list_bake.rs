@@ -1048,6 +1048,71 @@ fn segment_clear(
     true
 }
 
+/// The unbounded reference scan: the occlusion answer [`segment_clear`] must
+/// match.
+#[cfg(test)]
+fn segment_clear_full_scan(
+    bvh: &Bvh<f32, 3>,
+    primitives: &[BvhPrimitive],
+    geometry: &GeometryResult,
+    light: &MapLight,
+    sample: Vec3,
+) -> bool {
+    let (from, to) = match light.light_type {
+        LightType::Point | LightType::Spot => (
+            Vec3::new(
+                light.origin.x as f32,
+                light.origin.y as f32,
+                light.origin.z as f32,
+            ),
+            sample,
+        ),
+        LightType::Directional => {
+            let aim =
+                Vec3::from(light.cone_direction.unwrap_or([0.0, -1.0, 0.0])).normalize_or_zero();
+            let to_light = -aim;
+            (sample + to_light * 10_000.0, sample)
+        }
+    };
+
+    let delta = to - from;
+    let length = delta.length();
+    if length < RAY_EPSILON {
+        return true;
+    }
+    let dir = delta / length;
+    let origin = from + dir * RAY_EPSILON;
+    let ray = Ray::new(
+        Point3::new(origin.x, origin.y, origin.z),
+        Vector3::new(dir.x, dir.y, dir.z),
+    );
+    let max_distance = length - SAMPLE_END_TOLERANCE_METERS.max(RAY_EPSILON);
+    if max_distance <= 0.0 {
+        return true;
+    }
+    let geom = &geometry.geometry;
+    for prim in bvh.traverse_iterator(&ray, primitives) {
+        let start = prim.index_offset as usize;
+        let end = start + prim.index_count as usize;
+        let mut tri = start;
+        while tri + 3 <= end {
+            let i0 = geom.indices[tri] as usize;
+            let i1 = geom.indices[tri + 1] as usize;
+            let i2 = geom.indices[tri + 2] as usize;
+            tri += 3;
+            let p0 = Vec3::from(geom.vertices[i0].position);
+            let p1 = Vec3::from(geom.vertices[i1].position);
+            let p2 = Vec3::from(geom.vertices[i2].position);
+            if let Some(dist) = ray_triangle_hit(origin, dir, p0, p1, p2) {
+                if dist > 0.0 && dist < max_distance {
+                    return false;
+                }
+            }
+        }
+    }
+    true
+}
+
 fn ray_triangle_hit(origin: Vec3, dir: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Option<f32> {
     let edge1 = b - a;
     let edge2 = c - a;
@@ -3340,5 +3405,79 @@ mod tests {
             false_negatives.is_empty(),
             "campaign-test omitted visible static-light receiver pairs: {false_negatives:?}"
         );
+    }
+
+    #[test]
+    fn bounded_segment_clear_matches_full_scan_around_a_blocker() {
+        // A blocker quad at y = 2 split on its x = z diagonal, plus tiles and a
+        // far floor below it: tree nodes past the segment ends to prune.
+        let mut triangles = Vec::new();
+        push_quad(
+            &mut triangles,
+            [
+                [-1.0, 2.0, -1.0],
+                [1.0, 2.0, -1.0],
+                [1.0, 2.0, 1.0],
+                [-1.0, 2.0, 1.0],
+            ],
+        );
+        push_quad(
+            &mut triangles,
+            [
+                [-30.0, -10.0, -30.0],
+                [30.0, -10.0, -30.0],
+                [30.0, -10.0, 30.0],
+                [-30.0, -10.0, 30.0],
+            ],
+        );
+        for k in 0..10 {
+            let x = -6.0 + k as f32 * 1.3;
+            triangles.push([[x, -5.0, -2.0], [x + 0.6, -5.0, -2.0], [x, -5.5, -1.4]]);
+        }
+        let geo = triangle_geometry(&triangles);
+        let (bvh, prims, _) = build_bvh(&geo).unwrap();
+        let lights = [
+            point_light(DVec3::new(0.2, 6.0, 0.1), 20.0),
+            // Its segment starts 10,000 m from the sample.
+            directional_light([0.1, -1.0, 0.05]),
+        ];
+        let tolerance = SAMPLE_END_TOLERANCE_METERS;
+        for (light_index, light) in lights.iter().enumerate() {
+            let (mut clear, mut blocked) = (0, 0);
+            // Inside the blocker, on its shared diagonal, and beside it.
+            for (x, z) in [(0.1, -0.6), (0.4, 0.4), (-0.3, -0.3), (1.5, 0.2)] {
+                // Samples above, on, and within the end tolerance of the
+                // blocker, past it, then on and past the floor.
+                for y in [
+                    2.5,
+                    2.001,
+                    2.0,
+                    2.0 - tolerance + RAY_EPSILON,
+                    2.0 - tolerance,
+                    2.0 - tolerance - 1.0e-3,
+                    1.0,
+                    -10.0,
+                    -10.0 - tolerance,
+                    -11.0,
+                ] {
+                    let sample = Vec3::new(x, y, z);
+                    let full = segment_clear_full_scan(&bvh, &prims, &geo, light, sample);
+                    assert_eq!(
+                        segment_clear(&bvh, &prims, &geo, light, sample),
+                        full,
+                        "light {light_index}, sample {sample}"
+                    );
+                    if full {
+                        clear += 1;
+                    } else {
+                        blocked += 1;
+                    }
+                }
+            }
+            assert!(
+                clear > 0 && blocked > 0,
+                "light {light_index}: {clear} clear, {blocked} blocked"
+            );
+        }
     }
 }

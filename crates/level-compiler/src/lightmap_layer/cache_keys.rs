@@ -205,6 +205,8 @@ pub struct LayerKeyContext {
 }
 
 impl LayerKeyContext {
+    /// Computes the world AABB and hashes the atlas layout fingerprint once per
+    /// bake; per-light prefixes come from `light_prefix`.
     pub fn new(
         atlas: &SharedAtlas<'_>,
         geometry: &GeometryResult,

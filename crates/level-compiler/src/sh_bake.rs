@@ -777,8 +777,7 @@ fn segment_clear(ctx: &RaytracingCtx<'_>, from: Vec3, to: Vec3) -> bool {
         .any(blocks)
 }
 
-/// Today's unbounded closest-hit scan: the reference the bounded query must
-/// match (bake-parallelism-large-maps A4, A5).
+/// The unbounded reference scan: the closest hit [`closest_hit`] must match.
 #[cfg(test)]
 fn closest_hit_full_scan(
     ctx: &RaytracingCtx<'_>,
@@ -797,7 +796,8 @@ fn closest_hit_full_scan(
     best.filter(|h| h.distance < max_distance)
 }
 
-/// Today's unbounded occlusion scan: the reference for [`segment_clear`].
+/// The unbounded reference scan: the occlusion answer [`segment_clear`] must
+/// match.
 #[cfg(test)]
 fn segment_clear_full_scan(ctx: &RaytracingCtx<'_>, from: Vec3, to: Vec3) -> bool {
     let delta = to - from;
@@ -3447,11 +3447,11 @@ mod tests {
     }
 
     #[test]
-    fn bounded_traversal_keeps_undefined_slab_node() {
+    fn bounded_traversal_matches_stock_rejection_of_undefined_slab() {
         // Rays lying in a box face plane, parallel to it: the floor's flat box
         // (y = -6), the wall's (x = 8), and the crease leaf's top face (y = 1).
-        // The stock slab test sees NaN there; the bounded query must answer as
-        // today's scan does.
+        // The stock slab test sees NaN there and rejects the box; the bounded
+        // query must answer as the unbounded reference scan does.
         let geo = crease_geometry(true);
         let (bvh, prims, _) = build_bvh(&geo).unwrap();
         let ctx = RaytracingCtx {
@@ -3513,5 +3513,253 @@ mod tests {
                 "kept hit {distance} is past the start triangle"
             );
         }
+    }
+
+    /// xorshift64: deterministic, no dependency.
+    struct XorShift(u64);
+
+    impl XorShift {
+        fn unit(&mut self) -> f32 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            (self.0 >> 40) as f32 / (1u64 << 24) as f32
+        }
+
+        fn range(&mut self, lo: f32, hi: f32) -> f32 {
+            lo + (hi - lo) * self.unit()
+        }
+
+        /// Log-uniform in `[10^lo, 10^hi]`.
+        fn log_range(&mut self, lo: f32, hi: f32) -> f32 {
+            10f32.powf(self.range(lo, hi))
+        }
+
+        fn index(&mut self, len: usize) -> usize {
+            ((self.unit() * len as f32) as usize).min(len - 1)
+        }
+
+        fn sign(&mut self) -> f32 {
+            if self.unit() < 0.5 { -1.0 } else { 1.0 }
+        }
+
+        fn unit_vec(&mut self) -> Vec3 {
+            loop {
+                let v = Vec3::new(
+                    self.range(-1.0, 1.0),
+                    self.range(-1.0, 1.0),
+                    self.range(-1.0, 1.0),
+                );
+                let len = v.length();
+                if len > 0.1 && len <= 1.0 {
+                    return v / len;
+                }
+            }
+        }
+    }
+
+    /// Cut offsets across a sloped face. Each 3 cm strip is a sliver: split on
+    /// its diagonal over the 30 m strip length, each triangle is ~1:1000.
+    const STRIP_CUTS: [f32; 15] = [
+        -20.0, -16.0, -15.97, -12.0, -8.0, -7.97, -4.0, 0.0, 0.03, 4.0, 8.0, 8.03, 12.0, 16.0, 20.0,
+    ];
+
+    /// Cuts with a wide strip on both sides.
+    const WIDE_STRIP_CUTS: [f32; 5] = [-12.0, -4.0, 4.0, 12.0, 16.0];
+
+    /// A sloped face `y = centre.y + a (x - centre.x) + b (z - centre.z)`, cut
+    /// into strips along `x = const` planes (`cut_x`) or `z = const` planes.
+    /// Strips span 30 m along the cuts.
+    #[derive(Clone, Copy)]
+    struct SlopedFace {
+        centre: Vec3,
+        a: f32,
+        b: f32,
+        cut_x: bool,
+    }
+
+    impl SlopedFace {
+        fn point(&self, x: f32, z: f32) -> Vec3 {
+            let y = self.centre.y + self.a * (x - self.centre.x) + self.b * (z - self.centre.z);
+            Vec3::new(x, y, z)
+        }
+
+        fn normal(&self) -> Vec3 {
+            Vec3::new(-self.a, 1.0, -self.b).normalize()
+        }
+
+        /// The face point `cut` across the cuts and `along` them, both offsets
+        /// from the centre. Shared edge vertices come out bit-identical.
+        fn at(&self, cut: f32, along: f32) -> Vec3 {
+            if self.cut_x {
+                self.point(self.centre.x + cut, self.centre.z + along)
+            } else {
+                self.point(self.centre.x + along, self.centre.z + cut)
+            }
+        }
+
+        fn strip_triangles(&self) -> Vec<[[f32; 3]; 3]> {
+            let mut triangles = Vec::new();
+            for pair in STRIP_CUTS.windows(2) {
+                let (c0, c1) = (pair[0], pair[1]);
+                let p00 = self.at(c0, -15.0).to_array();
+                let p10 = self.at(c1, -15.0).to_array();
+                let p11 = self.at(c1, 15.0).to_array();
+                let p01 = self.at(c0, 15.0).to_array();
+                triangles.push([p00, p10, p11]);
+                triangles.push([p00, p11, p01]);
+            }
+            triangles
+        }
+    }
+
+    /// Randomized parity against the unbounded reference scans, on geometry
+    /// that stresses Möller–Trumbore rounding: vertices 100–500 m from the
+    /// origin, large rotated triangles, and two crossing sloped faces cut into
+    /// strips along axis-aligned planes, as BSP splits leave them, with 3 cm
+    /// slivers sharing the cut edges. Rays graze toward shared edges, the
+    /// faces' crossing line (two hits millimetres apart) and large triangles;
+    /// segments end just short of, at and just past the nearest hit.
+    ///
+    /// The rays stay inside the prune slack's envelope. On a sliver, MT's `t`
+    /// error grows with ray length over graze, so rays toward the sloped faces
+    /// keep `length <= 100 m * graze`, and near misses past a strip's outer end
+    /// aim only at wide strips: near a sliver's ends the error reaches metres,
+    /// past any finite slack. That is the open case the fixture digest gate
+    /// watches.
+    #[test]
+    fn bounded_queries_match_full_scan_on_random_rounding_stress() {
+        let mut rng = XorShift(0x2545_F491_4F6C_DD1D);
+        let centre = Vec3::new(210.0, 190.0, -260.0);
+        let faces = [
+            SlopedFace {
+                centre,
+                a: 0.37,
+                b: -0.21,
+                cut_x: true,
+            },
+            SlopedFace {
+                centre,
+                a: 0.33,
+                b: -0.18,
+                cut_x: false,
+            },
+        ];
+        let mut triangles: Vec<[[f32; 3]; 3]> =
+            faces.iter().flat_map(SlopedFace::strip_triangles).collect();
+        let large_start = triangles.len();
+        let large_count = 48;
+        for _ in 0..large_count {
+            let centre_dir = rng.unit_vec();
+            triangles.push([(); 3].map(|()| {
+                let dir = (centre_dir + rng.unit_vec() * 0.35).normalize();
+                (dir * rng.range(100.0, 500.0)).to_array()
+            }));
+        }
+        let geo = multi_triangle_geometry(&triangles);
+        let (bvh, prims, _) = build_bvh(&geo).unwrap();
+        let ctx = RaytracingCtx {
+            bvh: &bvh,
+            primitives: &prims,
+            geometry: &geo,
+        };
+
+        let (mut hits, mut misses, mut clear, mut blocked) = (0, 0, 0, 0);
+        for i in 0..3_000 {
+            let (origin, dir) = if i < 1_600 {
+                // Near-grazing toward a shared cut edge, or just past a wide
+                // strip's outer end.
+                let face = faces[rng.index(2)];
+                let jitter = [0.0, 0.0, 1e-5, -1e-5, 1e-3, -1e-3][rng.index(6)];
+                let (cut, along) = if rng.unit() < 0.25 {
+                    let cut = WIDE_STRIP_CUTS[rng.index(WIDE_STRIP_CUTS.len())];
+                    (cut, rng.sign() * (15.0 + rng.log_range(-4.0, -1.0)))
+                } else {
+                    let cut = STRIP_CUTS[1 + rng.index(STRIP_CUTS.len() - 2)];
+                    (cut, rng.range(-14.0, 14.0))
+                };
+                let target = face.at(cut + jitter, along);
+                let theta = rng.range(0.0, std::f32::consts::TAU);
+                let tangent = (Vec3::new(1.0, face.a, 0.0) * theta.cos()
+                    + Vec3::new(0.0, face.b, 1.0) * theta.sin())
+                .normalize();
+                let graze = rng.log_range(-2.0, -0.5);
+                let dir = (tangent + face.normal() * (graze * rng.sign())).normalize();
+                (target - dir * rng.range(0.5, 100.0 * graze), dir)
+            } else if i < 2_300 {
+                // Toward the faces' crossing line, where 0.04 dx = 0.03 dz.
+                let k = rng.range(-11.0, 11.0);
+                let target = faces[0].point(centre.x + k, centre.z + k * 4.0 / 3.0);
+                let dir = loop {
+                    let dir = rng.unit_vec();
+                    if faces.iter().all(|f| dir.dot(f.normal()).abs() >= 0.1) {
+                        break dir;
+                    }
+                };
+                (target - dir * rng.range(0.5, 10.0), dir)
+            } else {
+                // Toward a large triangle's interior or edge, grazing to 1e-3.
+                let [p0, p1, p2] = triangles[large_start + rng.index(large_count)].map(Vec3::from);
+                let (mut w1, mut w2) = (rng.unit(), rng.unit());
+                if w1 + w2 > 1.0 {
+                    (w1, w2) = (1.0 - w1, 1.0 - w2);
+                }
+                if rng.unit() < 0.3 {
+                    w2 = 1.0 - w1;
+                }
+                let target = p0 + (p1 - p0) * w1 + (p2 - p0) * w2;
+                let normal = (p1 - p0).cross(p2 - p0).normalize();
+                let (e0, e1) = normal.any_orthonormal_pair();
+                let theta = rng.range(0.0, std::f32::consts::TAU);
+                let tangent = e0 * theta.cos() + e1 * theta.sin();
+                let graze = rng.log_range(-3.0, 0.0);
+                let dir = (tangent + normal * (graze * rng.sign())).normalize();
+                (target - dir * rng.range(1.0, 200.0), dir)
+            };
+
+            let full = hit_parts(closest_hit_full_scan(&ctx, origin, dir, f32::INFINITY));
+            assert_eq!(
+                hit_parts(closest_hit(&ctx, origin, dir, f32::INFINITY)),
+                full,
+                "ray {i}: {origin} {dir}"
+            );
+            let ends = if let Some((distance, _, _)) = full {
+                hits += 1;
+                for max in [distance, distance.next_up()] {
+                    assert_eq!(
+                        hit_parts(closest_hit(&ctx, origin, dir, max)),
+                        hit_parts(closest_hit_full_scan(&ctx, origin, dir, max)),
+                        "ray {i}: {origin} {dir}, max {max}"
+                    );
+                }
+                [distance - 1e-3, distance, distance + 1e-3, distance + 2e-2]
+            } else {
+                misses += 1;
+                [1.0, 50.0, 400.0, 1_000.0]
+            };
+            for end in ends {
+                let to = origin + dir * end;
+                let full_clear = segment_clear_full_scan(&ctx, origin, to);
+                assert_eq!(
+                    segment_clear(&ctx, origin, to),
+                    full_clear,
+                    "sh, ray {i}: {origin} -> {to}"
+                );
+                assert_eq!(
+                    crate::lightmap_bake::segment_clear(&bvh, &prims, &geo, origin, to),
+                    crate::lightmap_bake::segment_clear_full_scan(&bvh, &prims, &geo, origin, to),
+                    "lightmap, ray {i}: {origin} -> {to}"
+                );
+                if full_clear {
+                    clear += 1;
+                } else {
+                    blocked += 1;
+                }
+            }
+        }
+        assert!(
+            hits > 2_000 && misses > 100 && clear > 3_000 && blocked > 3_000,
+            "{hits} hits, {misses} misses, {clear} clear, {blocked} blocked"
+        );
     }
 }

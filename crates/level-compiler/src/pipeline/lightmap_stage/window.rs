@@ -1,15 +1,5 @@
-//! Bounded sliding window over (layer, light) lightmap partitions, consumed in
-//! item order. See: context/lib/build_pipeline.md §Progress reporting.
-//!
-//! Each admitted item either loads its partition or fans out one task per
-//! chart; each chart task enters the governor once, and nothing else here holds
-//! a permit. The worker that completes an item's last chart assembles the
-//! partition and runs the source's `finish` (the cache put) outside any permit.
-//! Finished partitions wait in a ready set; whichever worker completes the next
-//! item in order takes the consumer lock and drains the ready set in order, then
-//! admits new items. No worker waits on another: a worker that cannot take the
-//! consumer lock leaves its partition for the current holder, which re-checks
-//! the ready set after releasing the lock.
+//! Bounded sliding window over (layer, light) lightmap partitions, consumed in item order.
+//! See: context/lib/build_pipeline.md §Progress reporting, controls, and logging.
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -102,6 +92,13 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 
 /// Produce one partition per item and hand each to `consume` in item order,
 /// with at most `window` items admitted but not yet consumed.
+///
+/// `consume` folds in strictly ascending item order, so output bytes do not
+/// depend on worker timing. Any worker that finishes an item publishes it to the
+/// ready set and `try_lock`s the consumer; the holder drains the consecutively
+/// ready items, then admits new ones. A worker that loses `try_lock` leaves, and
+/// the holder re-checks the ready set after unlocking, so no partition is
+/// stranded. Only chart tasks hold governor permits; cache get/put do not.
 pub(super) fn consume_in_order<S, F>(
     source: &S,
     governor: &Governor,
@@ -147,14 +144,16 @@ where
     F: FnMut(usize, LightmapLayer) + Send,
 {
     fn start<'s>(&'s self, scope: &ScopeFifo<'s>, item: usize) {
+        // Before `load`, which reports a hit as complete progress: a paused bake
+        // must not count hits. Holds no permit, so the cache get stays outside one.
+        self.governor.checkpoint();
         if let Some(partition) = self.source.load(item) {
-            // A hit holds no permit; it still honours pause.
-            self.governor.checkpoint();
             self.ready(scope, item, partition);
             return;
         }
         let charts = self.source.plan_charts(item);
         if charts.is_empty() {
+            // Still finished (and cached) so the next build hits this partition.
             let partition = self.source.finish(item, Vec::new());
             self.ready(scope, item, partition);
             return;
@@ -169,10 +168,17 @@ where
                 let texels = self.source.bake_chart(item, chart);
                 lock(&in_flight.slots)[ordinal] = Some(texels);
                 if in_flight.remaining.fetch_sub(1, Ordering::AcqRel) == 1 {
-                    let texels: Vec<LayerTexel> = std::mem::take(&mut *lock(&in_flight.slots))
-                        .into_iter()
-                        .flat_map(|slot| slot.expect("every chart slot is filled"))
-                        .collect();
+                    let slots = std::mem::take(&mut *lock(&in_flight.slots));
+                    // Exact capacity: a parked partition keeps its slack, and
+                    // `predicted_peak` charges 2x per texel, not more.
+                    let total: usize = slots
+                        .iter()
+                        .map(|slot| slot.as_ref().expect("every chart slot is filled").len())
+                        .sum();
+                    let mut texels: Vec<LayerTexel> = Vec::with_capacity(total);
+                    for slot in slots {
+                        texels.extend(slot.expect("every chart slot is filled"));
+                    }
                     self.mark_resident(item);
                     let partition = self.source.finish(item, texels);
                     self.ready_marked(scope, item, partition);

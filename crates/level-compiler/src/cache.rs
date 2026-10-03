@@ -4,9 +4,9 @@
 use std::fs;
 use std::io::{self, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex};
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 use std::{collections::HashMap, fmt};
 
 mod records;
@@ -34,6 +34,14 @@ const HEADER_BYTES: usize = ENTRY_MAGIC.len() + LENGTH_PREFIX_BYTES + HASH_BYTES
 /// Write buffer for streamed entries, so a payload streamed in small pieces
 /// reaches the file in few writes.
 const STREAM_BUFFER_BYTES: usize = 64 * 1024;
+/// Age past which the prune deletes a `*.tmp` stage file. A live build's
+/// in-flight stage is seconds old (or minutes for a very large streamed
+/// entry), so a day-old stage can only be debris from a killed build; younger
+/// ones are left alone and merely counted toward the directory total.
+const STALE_STAGE_AGE: Duration = Duration::from_secs(24 * 60 * 60);
+/// Process-wide counter that makes each writer's stage file name unique, so
+/// two writers of the same key never share a temp file.
+static STAGE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Identifier for a single cache entry. Hashes `(stage_id, stage_version,
 /// input_hash)` so unrelated stages and incompatible bakers never collide on
@@ -122,7 +130,7 @@ impl StageCache {
     ) -> io::Result<Self> {
         let mut cache = Self::new(path)?;
         cache.prune_to_budget(max_bytes);
-        match Journal::begin(cache.dir.as_path(), &records::map_id(input)) {
+        match Journal::begin(cache.dir.as_path(), input) {
             Ok(journal) => cache.journal = Some(Arc::new(journal)),
             Err(err) => log::warn!(
                 "[cache] cannot start a use journal in {} ({err}); the next prune may evict this build's entries",
@@ -238,9 +246,9 @@ impl StageCache {
     /// Write an entry atomically. Best-effort: any error is logged and
     /// swallowed so a flaky cache directory cannot break a build.
     ///
-    /// The entry is staged to `<digest>.tmp` and renamed into place, without
-    /// a sync: a killed or torn write leaves a temp file or a hash mismatch,
-    /// so the next build misses rather than hits wrong.
+    /// The entry is staged to a per-writer `<digest>.<pid>-<n>.tmp` and renamed
+    /// into place, without a sync: a killed or torn write leaves a temp file or
+    /// a hash mismatch, so the next build misses rather than hits wrong.
     pub fn put(&self, key: &CacheKey, bytes: &[u8]) {
         self.publish(key, bytes.len() as u64, |tmp_path| {
             let header = entry_header(bytes.len() as u64, blake3::hash(bytes));
@@ -276,8 +284,13 @@ impl StageCache {
         write_tmp: impl FnOnce(&Path) -> io::Result<()>,
     ) {
         let final_path = self.entry_path(key);
-        // Distinct keys produce distinct hex filenames (no extension), so `<digest>.tmp` is unique per key — parallel group bakes never collide here.
-        let tmp_path = final_path.with_extension("tmp");
+        // The stage name is unique per writer, not per key: concurrent writers of
+        // the same key (identical lights in one window) would otherwise truncate
+        // each other's bytes and race the rename. The process id separates
+        // processes sharing a cache directory; the counter separates writers
+        // within one. The `.tmp` suffix is what the prune matches.
+        let stage_id = STAGE_COUNTER.fetch_add(1, AtomicOrdering::Relaxed);
+        let tmp_path = final_path.with_extension(format!("{}-{stage_id}.tmp", std::process::id()));
 
         if let Err(err) = write_tmp(&tmp_path) {
             log::warn!(
@@ -322,6 +335,29 @@ impl StageCache {
             .clear();
     }
 
+    /// Every stage's access tally, keyed by stage id.
+    #[cfg(test)]
+    #[allow(dead_code)] // Consumed by binary-only cache tests, not the library test target.
+    pub(crate) fn test_accesses_by_stage(&self) -> HashMap<String, CacheTestAccess> {
+        self.test_accesses
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    /// This build's use set (entries read, written, or marked used) as entry
+    /// file names.
+    #[cfg(test)]
+    #[allow(dead_code)] // Consumed by binary-only cache tests, not the library test target.
+    pub(crate) fn test_live_entry_names(&self) -> std::collections::HashSet<String> {
+        self.live_entries
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .keys()
+            .map(|digest| hex_encode(digest))
+            .collect()
+    }
+
     /// Count an entry this build used without reading it: a section-memo hit
     /// stands in for the per-light partitions it summarizes. A missing entry
     /// is ignored.
@@ -352,9 +388,10 @@ impl StageCache {
     }
 
     /// The entries the next prune spares: every map's record on disk plus
-    /// this build's read/write set.
+    /// this build's read/write set. Unreadable records count as none here;
+    /// the prune that met them already warned and evicted nothing.
     fn spared_set(&self) -> SparedSet {
-        let mut spared = records::read_spared(self.dir.as_path());
+        let mut spared = records::read_spared(self.dir.as_path()).unwrap_or_default();
         spared.extend(
             self.live_entries
                 .lock()
@@ -365,7 +402,8 @@ impl StageCache {
         spared
     }
 
-    /// Unique cache entries successfully read or written by this build.
+    /// Unique cache entries successfully read or written by this build: this
+    /// build's own use set, while the budget warning reports the larger spared set.
     pub fn live_set(&self) -> CacheLiveSet {
         let entries = self
             .live_entries
@@ -410,8 +448,14 @@ impl StageCache {
     /// prune moves on. A failure to reclaim enough never fails the build — the
     /// cache is always safe to leave larger than the budget. Entries are deleted
     /// oldest-first only as far as needed; if the total already fits, nothing is
-    /// touched. `*.tmp` files (in-flight `put` stages) are skipped so a
-    /// concurrent write is never corrupted.
+    /// touched. `*.tmp` files (`put` stages) are never evicted as entries and
+    /// never spared by records: one older than [`STALE_STAGE_AGE`] is debris
+    /// from a killed build and is deleted, and a younger one is a live write,
+    /// left alone but counted toward the total.
+    ///
+    /// If the records cannot be read, no map's set is known, so the prune
+    /// warns and evicts nothing this build: the cache may stay over budget,
+    /// which costs disk, where evicting on a guess could cost a re-bake.
     pub fn prune_to_budget(&self, max_bytes: u64) {
         let read_dir = match fs::read_dir(self.dir.as_path()) {
             Ok(rd) => rd,
@@ -424,13 +468,23 @@ impl StageCache {
             }
         };
 
-        let spared: std::collections::HashSet<String> = records::read_spared(self.dir.as_path())
-            .keys()
-            .map(|digest| hex_encode(digest))
-            .collect();
+        // `None` when the records cannot be read: stale stages are still
+        // cleaned up, but no entry is evicted.
+        let spared: Option<std::collections::HashSet<String>> = match records::read_spared(
+            self.dir.as_path(),
+        ) {
+            Ok(spared) => Some(spared.keys().map(|digest| hex_encode(digest)).collect()),
+            Err(err) => {
+                log::warn!(
+                    "[cache] prune skipped eviction: {err}; the cache may stay over budget this build"
+                );
+                None
+            }
+        };
 
-        // Gather (mtime, size, path) for every entry file. Skip non-files and
-        // in-flight `.tmp` stages; a metadata failure drops just that entry.
+        // Gather (mtime, size, path) for every entry file. Skip non-files;
+        // `.tmp` stages are handled apart from entries; a metadata failure
+        // drops just that entry.
         struct Entry {
             mtime: SystemTime,
             size: u64,
@@ -438,6 +492,9 @@ impl StageCache {
         }
         let mut entries: Vec<Entry> = Vec::new();
         let mut total: u64 = 0;
+        let now = SystemTime::now();
+        let mut stale_stages_removed: usize = 0;
+        let mut stale_stages_failed: usize = 0;
         for dir_entry in read_dir {
             let dir_entry = match dir_entry {
                 Ok(e) => e,
@@ -447,9 +504,6 @@ impl StageCache {
                 }
             };
             let path = dir_entry.path();
-            if path.extension().is_some_and(|ext| ext == "tmp") {
-                continue;
-            }
             let meta = match dir_entry.metadata() {
                 Ok(m) => m,
                 Err(err) => {
@@ -462,19 +516,50 @@ impl StageCache {
             }
             let mtime = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
             let size = meta.len();
+            if path.extension().is_some_and(|ext| ext == "tmp") {
+                // A stage is never an entry. Debris from a killed build is
+                // deleted; a younger one may be a live write, so it is left
+                // alone but still occupies the directory.
+                let stale = now
+                    .duration_since(mtime)
+                    .is_ok_and(|age| age > STALE_STAGE_AGE);
+                if stale {
+                    match fs::remove_file(&path) {
+                        Ok(()) => stale_stages_removed += 1,
+                        Err(_) => {
+                            stale_stages_failed += 1;
+                            total = total.saturating_add(size);
+                        }
+                    }
+                } else {
+                    total = total.saturating_add(size);
+                }
+                continue;
+            }
             total = total.saturating_add(size);
             let name = dir_entry.file_name();
-            if spared.contains(name.to_string_lossy().as_ref()) {
+            if spared
+                .as_ref()
+                .is_some_and(|spared| spared.contains(name.to_string_lossy().as_ref()))
+            {
                 continue;
             }
             entries.push(Entry { mtime, size, path });
         }
 
-        if total <= max_bytes {
+        if stale_stages_removed > 0 {
+            log::info!("[cache] prune: removed {stale_stages_removed} stale stage files");
+        }
+        if stale_stages_failed > 0 {
+            log::warn!("[cache] prune: failed to remove {stale_stages_failed} stale stage files");
+        }
+
+        if spared.is_none() || total <= max_bytes {
             return;
         }
 
-        // Oldest first, so we evict the least-recently-used generations.
+        // Oldest write first: use is recorded in the journals, so an entry's
+        // mtime is its write time, and the oldest orphaned generations go first.
         entries.sort_by_key(|e| e.mtime);
 
         let mut reclaimed: u64 = 0;
@@ -715,6 +800,19 @@ mod tests {
         dir
     }
 
+    /// Every `*.tmp` stage file directly in `dir`.
+    fn stage_files(dir: &Path) -> Vec<PathBuf> {
+        fs::read_dir(dir)
+            .map(|read_dir| {
+                read_dir
+                    .filter_map(Result::ok)
+                    .map(|entry| entry.path())
+                    .filter(|path| path.extension().is_some_and(|ext| ext == "tmp"))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     #[test]
     fn cache_roundtrip_stores_and_retrieves_bytes() {
         let dir = fresh_temp_dir("roundtrip");
@@ -826,7 +924,7 @@ mod tests {
         cache.put_streamed(&key, 6, |writer| writer.write_all(b"short"));
 
         assert!(cache.get(&key).is_none());
-        assert!(!dir.join(key.as_filename()).with_extension("tmp").exists());
+        assert!(stage_files(&dir).is_empty(), "the stage must be cleaned up");
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -844,7 +942,32 @@ mod tests {
         });
 
         assert_eq!(cache.get(&key), Some(b"published".to_vec()));
-        assert!(!dir.join(key.as_filename()).with_extension("tmp").exists());
+        assert!(stage_files(&dir).is_empty(), "the stage must be cleaned up");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Concurrent writers of one key stage to distinct files, so none truncates
+    /// another's bytes; whichever publishes last, the entry reads back whole.
+    #[test]
+    fn concurrent_writers_of_one_key_publish_a_whole_entry() {
+        let dir = fresh_temp_dir("same_key_writers");
+        let cache = StageCache::new(&dir).expect("create cache dir");
+        let key = CacheKey::new("lightmap_layer", 1, b"shared");
+        let payload = vec![9u8; 256 * 1024];
+
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                scope.spawn(|| {
+                    for _ in 0..20 {
+                        cache.put(&key, &payload);
+                    }
+                });
+            }
+        });
+
+        assert_eq!(cache.get(&key), Some(payload));
+        assert!(stage_files(&dir).is_empty(), "no stage may be left behind");
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -906,9 +1029,7 @@ mod tests {
     /// instead of depending on wall-clock write order.
     ///
     /// Opened for writing, not with `File::open`: Windows refuses to set a file
-    /// time through a read-only handle. The read-only version of this helper
-    /// failed on Windows for the same reason `StageCache::touch_for_lru` did,
-    /// which is what kept that production defect looking like a test artifact.
+    /// time through a read-only handle.
     fn set_mtime(path: &Path, t: SystemTime) {
         fs::OpenOptions::new()
             .write(true)
@@ -919,8 +1040,8 @@ mod tests {
     }
 
     #[test]
-    fn prune_evicts_least_recently_used_until_under_budget() {
-        let dir = fresh_temp_dir("prune_lru");
+    fn prune_evicts_oldest_written_until_under_budget() {
+        let dir = fresh_temp_dir("prune_oldest_written");
         let cache = StageCache::new(&dir).expect("create cache dir");
 
         // Three 100-byte entries with distinct ages: a oldest, c newest.
@@ -1015,7 +1136,42 @@ mod tests {
         // Budget 0 forces eviction of everything prune is willing to delete.
         cache.prune_to_budget(0);
 
-        assert!(tmp.is_file(), ".tmp stage files must be left untouched");
+        assert!(
+            tmp.is_file(),
+            "a young .tmp stage file must be left untouched"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn prune_deletes_stale_tmp_stages_and_counts_young_ones() {
+        let dir = fresh_temp_dir("prune_stale_tmp");
+        let cache = StageCache::new(&dir).expect("create cache dir");
+        let payload = vec![0u8; 100];
+        let entry_len = (HEADER_BYTES + payload.len()) as u64;
+        let key = CacheKey::new("lightmap_layer", 1, b"entry");
+        cache.put(&key, &payload);
+
+        // Debris from a killed build: older than the stale-stage age.
+        let stale = dir.join("deadbeef.1-0.tmp");
+        fs::write(&stale, vec![0u8; 4096]).expect("write stale stage");
+        set_mtime(
+            &stale,
+            SystemTime::now() - STALE_STAGE_AGE - Duration::from_secs(60),
+        );
+        // A live write: young, so left alone, but it occupies the directory.
+        let young = dir.join("cafef00d.2-1.tmp");
+        fs::write(&young, vec![0u8; 4096]).expect("write young stage");
+
+        // The entry alone fits this budget; entry plus the young stage does not.
+        cache.prune_to_budget(entry_len + 10);
+
+        assert!(!stale.exists(), "a stale stage must be deleted");
+        assert!(young.is_file(), "a young stage must be left untouched");
+        assert!(
+            cache.get(&key).is_none(),
+            "the young stage counts toward the total, so the entry is evicted"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -1042,12 +1198,12 @@ mod tests {
         unreachable!("the parent kills the child mid-write");
     }
 
-    // A13 regression guard: durability is by verification, not sync. A deleted
-    // or truncated entry, or a write killed before it published, reads back as
-    // a miss, never as a wrong hit.
+    // Regression guard: durability is by verification, not sync. A deleted,
+    // truncated, or zeroed entry, or a write killed before it published, reads
+    // back as a miss, never as a wrong hit.
     #[test]
     fn cache_deleted_truncated_or_killed_entry_is_a_miss() {
-        let dir = fresh_temp_dir("a13_guard");
+        let dir = fresh_temp_dir("durability_guard");
         let cache = StageCache::new(&dir).expect("create cache dir");
         let payload = vec![42u8; 4096];
 
@@ -1071,6 +1227,26 @@ mod tests {
                 "truncated to {keep} must miss"
             );
         }
+
+        // Power loss after the rename can leave a right-length file whose
+        // payload never reached disk (zeros). Magic, length, and file size all
+        // still agree, so only the blake3 check can reject it.
+        let zeroed = CacheKey::new("lightmap_layer", 1, b"zeroed");
+        cache.put(&zeroed, &payload);
+        let zeroed_path = dir.join(zeroed.as_filename());
+        let mut bytes = fs::read(&zeroed_path).expect("read entry");
+        let original_len = bytes.len();
+        bytes[HEADER_BYTES + 10..HEADER_BYTES + 200].fill(0);
+        fs::write(&zeroed_path, &bytes).expect("overwrite payload with zeros");
+        assert_eq!(
+            fs::metadata(&zeroed_path).expect("stat entry").len(),
+            original_len as u64,
+            "the zeroed entry keeps its length"
+        );
+        assert!(
+            cache.get(&zeroed).is_none(),
+            "a right-length entry with a zeroed payload must miss on the hash"
+        );
 
         let child_dir = dir.join("killed");
         let mut child = std::process::Command::new(std::env::current_exe().unwrap())

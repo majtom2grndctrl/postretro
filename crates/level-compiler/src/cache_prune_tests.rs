@@ -1,10 +1,16 @@
 //! Build-start prune under the per-map use record, through prl-build's own
-//! cache construction (`construct_stage_cache`). Each budget is smaller than
-//! the map's set unless a test says otherwise.
+//! cache construction (`construct_stage_cache`).
+//! See: context/lib/build_pipeline.md �Build Cache
+//!
+//! Each budget is smaller than the map's set unless a test says otherwise.
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime};
+use std::sync::Arc;
+use std::time::{Duration, Instant, SystemTime};
+
+use log::Level;
+use postretro_test_log_capture::LogCapture;
 
 use crate::cache::{CacheKey, StageCache};
 
@@ -102,7 +108,7 @@ fn entries_bytes(cache_dir: &Path) -> u64 {
         .sum()
 }
 
-// P6: build N spares every entry the previous successful build wrote and every
+// Build N spares every entry the previous successful build wrote and every
 // entry it only read, including one written before that build began and older
 // than everything else; an entry neither touched is evicted.
 #[test]
@@ -134,7 +140,7 @@ fn prune_spares_previous_success_reads_and_writes() {
     let _ = fs::remove_dir_all(&root);
 }
 
-// P7: a build stopped before its end-of-build step still spares everything it
+// A build stopped before its end-of-build step still spares everything it
 // read or wrote, alongside the last successful build's record.
 #[test]
 fn prune_spares_stopped_build_touches_and_last_success() {
@@ -158,7 +164,7 @@ fn prune_spares_stopped_build_touches_and_last_success() {
     let _ = fs::remove_dir_all(&root);
 }
 
-// P9: building another map in between exposes neither map's set.
+// Building another map in between exposes neither map's set.
 #[test]
 fn interleaved_maps_keep_each_record() {
     let root = temp_dir("p9");
@@ -187,8 +193,8 @@ fn interleaved_maps_keep_each_record() {
     let _ = fs::remove_dir_all(&root);
 }
 
-// P10: a build that fails at parse prunes and touches nothing, then fails; the
-// next build ends with the same entries as without it, and misses nothing.
+// A build that fails at parse prunes only unspared entries and records nothing;
+// the next build ends with the same entries as without it, and misses nothing.
 #[test]
 fn parse_failed_build_leaves_record_unchanged() {
     let set = ["a1", "a2", "a3"];
@@ -259,5 +265,218 @@ fn orphaning_builds_stay_within_budget() {
         touch(&build, &[], &names);
         build.finish_successful_build(budget);
     }
+    let _ = fs::remove_dir_all(&root);
+}
+
+/// Create a map file at `root/name`, so its record stores the map's path.
+fn map_file(root: &Path, name: &str) -> PathBuf {
+    fs::create_dir_all(root).expect("create test root");
+    let map = root.join(name);
+    fs::write(&map, b"// prune test map").expect("write map file");
+    map
+}
+
+/// Every map's record directory under `records/`.
+fn record_dirs(cache_dir: &Path) -> Vec<PathBuf> {
+    fs::read_dir(cache_dir.join("records"))
+        .expect("list records")
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir())
+        .collect()
+}
+
+// A record whose map file was deleted no longer spares its entries, so they
+// become evictable under the budget, and the record directory goes with them.
+#[test]
+fn deleted_map_record_stops_sparing_its_entries() {
+    let root = temp_dir("retired");
+    let (gone, kept) = (map_file(&root, "gone.map"), map_file(&root, "kept.map"));
+    let cache = root.join("cache");
+
+    let build = open(&gone, &cache, 1);
+    touch(&build, &[], &["g1", "g2"]);
+    build.finish_successful_build(1);
+    let build = open(&kept, &cache, 1);
+    assert!(
+        exists(&cache, "g1") && exists(&cache, "g2"),
+        "a live map's record spares its entries"
+    );
+    build.finish_successful_build(1);
+
+    fs::remove_file(&gone).expect("delete map file");
+    let _next = open(&kept, &cache, 1);
+    assert!(
+        !exists(&cache, "g1") && !exists(&cache, "g2"),
+        "a deleted map's entries must be evictable"
+    );
+    assert_eq!(
+        record_dirs(&cache).len(),
+        1,
+        "only the live map's record remains"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+// A record directory written before map paths were stored has no path to
+// check, so it stays spared even after its map file is gone.
+#[test]
+fn record_without_stored_map_path_stays_spared() {
+    let root = temp_dir("legacy-record");
+    let (gone, other) = (map_file(&root, "gone.map"), map_file(&root, "other.map"));
+    let cache = root.join("cache");
+
+    let build = open(&gone, &cache, 1);
+    touch(&build, &[], &["l1", "l2"]);
+    build.finish_successful_build(1);
+    let mut removed = 0;
+    for dir in record_dirs(&cache) {
+        if fs::remove_file(dir.join("map-path")).is_ok() {
+            removed += 1;
+        }
+    }
+    assert_eq!(removed, 1, "the build stored its map's path");
+    fs::remove_file(&gone).expect("delete map file");
+
+    let _next = open(&other, &cache, 1);
+    assert!(
+        exists(&cache, "l1") && exists(&cache, "l2"),
+        "a record without a stored path must stay spared"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+// When the records directory exists but cannot be listed, no map's set is
+// known: the prune warns and evicts nothing, though the cache is over budget.
+#[test]
+fn unlistable_records_dir_skips_eviction_and_warns() {
+    let root = temp_dir("unlistable");
+    let (map, cache) = (root.join("a.map"), root.join("cache"));
+    let build = open(&map, &cache, 1);
+    touch(&build, &[], &["a1"]);
+    build.finish_successful_build(1);
+    orphan(&cache, "o1");
+
+    // Listing a file as a directory fails with an error other than NotFound.
+    fs::remove_dir_all(cache.join("records")).expect("remove records");
+    fs::write(cache.join("records"), b"").expect("replace records with a file");
+    let capture = LogCapture::start();
+    let _blocked = open(&map, &cache, 1);
+
+    capture.assert_logged_once(Level::Warn, "[cache] prune skipped eviction");
+    assert!(exists(&cache, "a1"), "the recorded entry must survive");
+    assert!(
+        exists(&cache, "o1"),
+        "an unrecorded entry must survive while no set is known"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+// A successful build supersedes only the journals that existed when it began.
+// A journal a concurrent build of the same map began later keeps sparing that
+// build's entries.
+#[test]
+fn promote_keeps_journal_begun_after_this_build() {
+    let root = temp_dir("concurrent");
+    let (map, cache) = (root.join("a.map"), root.join("cache"));
+
+    let build = open(&map, &cache, 1);
+    touch(&build, &[], &["mine"]);
+    let concurrent = open(&map, &cache, u64::MAX);
+    touch(&concurrent, &[], &["theirs"]);
+    build.finish_successful_build(1);
+    drop(concurrent);
+    orphan(&cache, "o1");
+
+    let _next = open(&map, &cache, 1);
+    assert!(exists(&cache, "mine"), "the promoted set must survive");
+    assert!(
+        exists(&cache, "theirs"),
+        "the concurrent build's journal must survive the promote"
+    );
+    assert!(!exists(&cache, "o1"), "the unrecorded entry must go");
+    let _ = fs::remove_dir_all(&root);
+}
+
+/// One warm build of `map` through the full pipeline, its cache opened as
+/// prl-build opens it. Returns the cache handle the build used.
+fn bake(map: &Path, cache_dir: &Path, baked_root: &Path, output: &Path) -> StageCache {
+    let args = crate::parse_args_from(
+        [
+            map.to_string_lossy().into_owned(),
+            "--cache-dir".to_owned(),
+            cache_dir.to_string_lossy().into_owned(),
+            "--baked-root".to_owned(),
+            baked_root.to_string_lossy().into_owned(),
+            "-o".to_owned(),
+            output.to_string_lossy().into_owned(),
+        ]
+        .into_iter(),
+    )
+    .expect("warm bake arguments parse");
+    let cache = crate::construct_stage_cache(&args).expect("cache is enabled");
+    let started = Instant::now();
+    let reporter: Arc<dyn crate::reporter::Reporter> = Arc::new(
+        crate::reporter::PlainReporter::new(started, crate::logger::LogSink::default()),
+    );
+    crate::pipeline::run(
+        &args,
+        Some(cache.clone()),
+        started,
+        reporter,
+        Arc::new(crate::governor::Governor::new(1, false)),
+    )
+    .expect("fixture compiles");
+    cache
+}
+
+// A warm all-hit bake emits the all-miss bake's bytes with zero misses, and
+// the entries it reads, plus the per-light partitions its section-memo hits
+// mark as used, cover every entry the all-miss bake wrote, so its record
+// spares them all. Matching the pre-change warm bytes is the fixture digest
+// gate's job.
+#[test]
+fn warm_all_hit_covers_all_miss_writes_with_zero_misses() {
+    let root = temp_dir("all-hit");
+    fs::create_dir_all(&root).expect("create test root");
+    let map = crate::fixture_pipeline::fixture_path("test_animated_weight_maps_mixed");
+    let (cache, baked) = (root.join("cache"), root.join("baked"));
+    let (miss_prl, hit_prl) = (root.join("all-miss.prl"), root.join("all-hit.prl"));
+
+    bake(&map, &cache, &baked, &miss_prl);
+    // The all-miss bake started from an empty cache, so every entry on disk
+    // is one it wrote.
+    let written = entries(&cache);
+    assert!(!written.is_empty(), "the all-miss bake must write entries");
+
+    let all_hit = bake(&map, &cache, &baked, &hit_prl);
+    assert!(
+        fs::read(&miss_prl).expect("read all-miss output")
+            == fs::read(&hit_prl).expect("read all-hit output"),
+        "the all-hit bake must emit the all-miss bake's bytes"
+    );
+    let accesses = all_hit.test_accesses_by_stage();
+    for (stage, access) in &accesses {
+        assert_eq!(
+            access.read_hits, access.read_attempts,
+            "{stage}: every request must hit"
+        );
+        assert_eq!(access.writes, 0, "{stage}: nothing may re-bake");
+    }
+    assert!(
+        accesses.values().any(|access| access.read_hits > 0),
+        "the all-hit bake must read the cache"
+    );
+    let used = all_hit.test_live_entry_names();
+    let uncovered: Vec<&String> = written
+        .iter()
+        .filter(|name| !used.contains(*name))
+        .collect();
+    assert!(
+        uncovered.is_empty(),
+        "{} of {} all-miss entries are outside the all-hit use set: {uncovered:?}",
+        uncovered.len(),
+        written.len()
+    );
     let _ = fs::remove_dir_all(&root);
 }

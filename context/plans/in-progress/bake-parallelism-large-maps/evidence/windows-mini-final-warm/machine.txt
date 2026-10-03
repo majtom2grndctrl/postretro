@@ -1,0 +1,13 @@
+cpu: Intel(R) Core(TM) i5-9400F CPU @ 2.90GHz
+physical_cores: 6
+logical_processors: 6
+ram_gib: 15.9
+os: Microsoft Windows 11 Home 10.0.26300 build 26300
+out_dir_volume: C:\ NTFS, 98 GiB free
+git_head: 5488b77d5503acb818f64a851fa177c0fc5197eb
+git_status_porcelain: clean
+rustc: rustc 1.95.0 (59807616e 2026-04-14)
+default_jobs: 5 (binary help); 5 (default_jobs_for rule, 6 logical)
+command: "C:\Users\danhi\Projects\Personal\postretro\target\release\prl-build.exe" "C:\Users\danhi\Projects\Personal\postretro\content\dev\maps\stress-warren-mini.map" -o "C:\Users\danhi\Projects\Personal\postretro\target\bake-measure\stress-warren-mini-20261002-201942\stress-warren-mini.prl" --cache-dir "C:\Users\danhi\Projects\Personal\postretro\target\bake-measure\stress-warren-mini-20261002-201942\prl-cache" --no-tui
+sample_seconds: 10
+mode: warm, empty cache

@@ -70,6 +70,25 @@ m0's warm build is 630 s slower than m0c's cold build. The gap sits in the stage
 
 Byte check: m1c's `.prl` differs from m0c's only by the embedded absolute data-script path (`…\postretro-baseline\…` vs `…\postretro\…`, 9 bytes): the path's length prefix, 11 section-table offsets (each 9 lower), and nothing else; the 168 MB after the path is identical. `evidence/prl-pathdiff.py` performs this check. Byte comparisons across checkouts must normalize that path.
 
+**Final warren-mini runs (Task 11b, 2026-10-02, 5488b77d5: levers 1, 2, 4, 5 and the uncached direct and animated-direct deltas).** All exit 0, clean, `-j` 5. Each output is byte-identical to the same-checkout run before it (m4 = m3, m4c = m1c, m4r = m2r) and differs from the pre-lever runs only by the embedded path.
+
+| Number | Cold: m0c → m4c | Warm, empty cache: m0 → m4 | Warm rebuild, one light moved: m0r → m2r → m4r |
+|---|---|---|---|
+| Evidence | `windows-mini-before-cold/` → `windows-mini-final-cold/` | `windows-mini-before/` → `windows-mini-final-warm/` | `windows-mini-rebuild-before/` → `-after/` → `windows-mini-final-rebuild/` |
+| Total wall time | 1,561.4 → **990.6 s (−37%)** | 2,191.6 → **1,164.6 s (−47%)** | 1,802.6 → 622.4 → **507.8 s (−72%)** |
+| Mean busy cores | 3.71 → 4.25 | 2.65 → 3.54 | 2.62 → 2.56 → 2.76 |
+| SH Bake | 707.5 → 640.8 s | 741.5 → 636.3 s | 731.0 → 340.2 → 367.3 s |
+| Lightmap Bake | 675.8 → 137.3 s | 832.0 → 218.1 s | 304.7 → 29.8 → 49.8 s |
+| Delta SH / Direct SH Delta / Animated Direct | 80.4 / 2.7 / 0.5 → 71.0 / 2.5 / 0.5 s | 180.1 / 246.9 / 67.7 → 84.2 / 2.6 / 0.5 s | 145.5 / 126.6 / 20.2 → 10.8 / 122.3 / 8.7 → 11.3 / 2.6 / 0.5 s |
+| AnimWeightMaps | 17.9 → 15.8 s | 50.9 → 55.6 s | 2.0 → 2.0 → 2.0 s (hit) |
+| Packing | 53.6 → 101.3 s | 46.4 → 64.5 s | 228.8 → 53.5 → 6.6 s |
+| Peak working set | 1.37 → 1.37 GiB | 1.73 → 1.51 GiB | 1.51 → 1.75 → 1.51 GiB |
+| Cache at exit | none | 74,227 files, 3.89 GiB → 20,114 files, 3.19 GiB | 74,250 → 79,388 → 23,355 files |
+
+- **Rebuild, m2r → m4r:** Direct SH Delta 122.3 → 2.6 s and Packing 53.5 → 6.6 s; SH Bake rose 340.2 → 367.3 s (4.05 cores against 4.31) and Lightmap 29.8 → 49.8 s (1.39 cores), both stages that write cache entries while they work. One run each; cause not isolated.
+- **m4's Direct SH Bake (41.4 s, against 3.5–4.7 s before):** its compute finished in about 3 s, then about 37 s at 0% CPU on its one cache put while the disk and Defender drained Delta SH's write burst. In m3 the same stall landed in Animated Direct, the next stage that wrote (about 60 s under 0.8 cores). A write backlog on this machine, not a Direct SH change.
+- **Packing** varies 46–101 s across runs with unchanged packing code: it is the 712 MB `.prl` write.
+
 **Lever 4 profile (Task 7, 2026-10-02).** Taken from R0's CPU samples, logs and cache rather than new bakes. Warren-mini cannot show it: its 977 animated chunks never split (1.00 light per covered texel), while the hallway's faces under five overlapping animated lights subdivide to the min-extent floor.
 
 | Candidate | Evidence | Finding |

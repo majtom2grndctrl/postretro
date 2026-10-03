@@ -145,14 +145,20 @@ pub(crate) type ChartHook = std::sync::Arc<dyn Fn(usize, u32, usize) + Send + Sy
 #[cfg(test)]
 pub(crate) type PartitionIoHook = std::sync::Arc<dyn Fn(usize, u32) + Send + Sync>;
 
-/// Test holds at a partition's chart bake and cache I/O. Each receives the
-/// light's position in the stage's layer-light list and the target layer.
+/// A test hold inside the consumer's permit, before it folds: (item index).
+#[cfg(test)]
+pub(crate) type ConsumeHook = std::sync::Arc<dyn Fn(usize) + Send + Sync>;
+
+/// Test holds at a partition's chart bake and cache I/O, and in the consumer.
+/// The chart and I/O hooks receive the light's position in the stage's
+/// layer-light list and the target layer.
 #[cfg(test)]
 #[derive(Clone, Default)]
 pub(crate) struct PartitionHooks {
     pub(crate) before_chart: Option<ChartHook>,
     pub(crate) before_get: Option<PartitionIoHook>,
     pub(crate) before_put: Option<PartitionIoHook>,
+    pub(crate) in_consume: Option<ConsumeHook>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -344,6 +350,9 @@ pub(crate) fn bake_fused_windowed(
         );
         if layer_lights.is_empty() {
             for target_layer in 0..prepared.layer_count {
+                // Dilate and whole-layer encode are CPU work bounded by `-j`,
+                // like every other layer close.
+                let _permit = lightmap_control.governor().enter();
                 let mut plane =
                     lightmap_layer::empty_composite(prepared.atlas_width, prepared.atlas_height);
                 plane.dilate();
@@ -384,11 +393,17 @@ pub(crate) fn bake_fused_windowed(
                 window.size,
                 |item, partition| {
                     // The consumer runs on whichever worker holds its lock, beside
-                    // up to `permits` chart tasks; without a permit, `-j 1` would
-                    // run two busy cores (fold, dilate, whole-layer encode). The
-                    // wait is safe: no chart task waits on the consumer, and the
-                    // permit drops on return, before the window admits new items.
+                    // up to `permits` chart tasks. Its fold, dilate, and
+                    // whole-layer encode are CPU work bounded by `-j`, not ray
+                    // work; without a permit, `-j 1` would run two busy cores.
+                    // It waits only for a free permit, never on a chart task, and
+                    // no chart task waits on it; the permit drops on return,
+                    // before the window admits new items.
                     let _permit = lightmap_control.governor().enter();
+                    #[cfg(test)]
+                    if let Some(hook) = &window.hooks.in_consume {
+                        hook(item);
+                    }
                     let (layer, light) = items[item];
                     if open
                         .as_ref()
@@ -413,6 +428,9 @@ pub(crate) fn bake_fused_windowed(
                 window.probe.clone(),
             );
             if let Some(done) = open.take() {
+                // The last layer closes after the window drains: one permit,
+                // as for every close the consumer runs.
+                let _permit = lightmap_control.governor().enter();
                 close_layer(done);
             }
         }
@@ -452,6 +470,10 @@ pub(crate) fn bake_fused_windowed(
             |item, partition| {
                 // Permitted for the same reason as the compose pass's consumer.
                 let _permit = lightmap_control.governor().enter();
+                #[cfg(test)]
+                if let Some(hook) = &window.hooks.in_consume {
+                    hook(item);
+                }
                 let (_, light) = items[item];
                 shadowmask.consume_partition(layer_lights[light].source_index, &partition);
             },

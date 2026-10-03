@@ -94,6 +94,13 @@ Review panel round 1 (11 agents: 3 slices + seam; Opus depth, Sonnet hygiene). N
 Not acted on (recorded): shadowmask prepare derives selected-light keys a second time (correct today); spared-set warning counts entries deleted by hand; concurrent different-map prune race (miss only); read-only cache dir log volume (pre-existing).
 Gate after fixes: bin 1468, `--lib` 186, `compiler_cli_contract` 6; digests 44/44 identical.
 
+Review panel round 2 (4 agents on the round-1 fix diff; no wrong hit, deadlock, nested permit or byte change). Mutation check: the rounding-stress test fails with the old 1e-5 slack and passes with the new one. Fixed:
+- Records: a record whose stored map path is missing stays spared until the path has been missing 24 hours (`missing-since` marker), then retires with a warning; a map that reappears clears the marker — clarification of owner ruling R1 so a branch switch, unplugged drive or delete-then-rename save cannot drop a live set. The end-of-build budget report only reads records (never retires) and warns when it cannot read them. Live journals hold an OS lock on a sidecar `.lock` file; promote keeps a superseded journal whose lock is held. Day-old record debris is swept.
+- Acceptance row 2 test also checks the promoted on-disk record.
+- Lightmap window: every layer close holds one permit (also after the walk and for empty-light layers); tests `lightmap_window_consumer_permit_keeps_chart_work_out_of_fold_at_one_permit` and `lightmap_window_paused_warm_hits_advance_no_progress_until_resume`, each mutation-checked (removing the consumer permit / moving the checkpoint after load fails it; an unpause guard keeps a failure from hanging the run).
+- Drift: `build_pipeline.md` (stage files, superseded journals, unreadable records, retirement grace, governor and consumer permit), `ray_traversal.rs` slack wording, cache docs, corrupted header character.
+Owner ruling (2026-10-03): workspace MSRV raised from 1.85 to 1.89 for `File::try_lock`, with the clippy modernizations it surfaces (let-chains, `is_multiple_of`) fixed in this branch.
+
 ## Tasks
 
 Hallway runs (R*) and warren-mini runs (m*, `-Map stress-warren-mini`) use `measure-hallway.ps1` on this machine with nothing else running, from a clean checkout at the stated commit; results go to `evidence/windows-<label>/` per research §Baseline record. The owner launches every run in their terminal; the executor does no other CPU work meanwhile. Every code task ends with the Task 0 digest diff and its focused tests.

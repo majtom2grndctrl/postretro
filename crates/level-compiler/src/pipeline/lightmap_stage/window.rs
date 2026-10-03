@@ -98,7 +98,8 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 /// ready set and `try_lock`s the consumer; the holder drains the consecutively
 /// ready items, then admits new ones. A worker that loses `try_lock` leaves, and
 /// the holder re-checks the ready set after unlocking, so no partition is
-/// stranded. Only chart tasks hold governor permits; cache get/put do not.
+/// stranded. Chart tasks hold governor permits, and so may `consume`, which
+/// must never wait on a chart task; cache get/put hold none.
 pub(super) fn consume_in_order<S, F>(
     source: &S,
     governor: &Governor,

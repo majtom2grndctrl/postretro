@@ -1,8 +1,5 @@
-//! Build-start prune under the per-map use record, through prl-build's own
-//! cache construction (`construct_stage_cache`).
-//! See: context/lib/build_pipeline.md �Build Cache
-//!
-//! Each budget is smaller than the map's set unless a test says otherwise.
+//! Build-start prune under the per-map use records, through prl-build's own cache construction.
+//! See: context/lib/build_pipeline.md §Build Cache
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -44,6 +41,7 @@ fn args(map: &Path, cache_dir: &Path, budget: u64) -> crate::Args {
 }
 
 /// Start one build of `map` the way prl-build does: open, prune, journal.
+/// Each test's budget is smaller than the map's set unless it says otherwise.
 fn open(map: &Path, cache_dir: &Path, budget: u64) -> StageCache {
     crate::construct_stage_cache(&args(map, cache_dir, budget)).expect("cache is enabled")
 }
@@ -56,13 +54,22 @@ fn exists(cache_dir: &Path, name: &str) -> bool {
     cache_dir.join(key(name).as_filename()).is_file()
 }
 
-fn set_age(cache_dir: &Path, name: &str, seconds: u64) {
+/// More than a day, the grace a missing map's record and record debris get.
+const DAY_AND_AN_HOUR: u64 = 25 * 60 * 60;
+
+/// Set a file's mtime `seconds` into the past. Opened for writing: Windows
+/// refuses to set a file time through a read-only handle.
+fn set_file_age(path: &Path, seconds: u64) {
     fs::OpenOptions::new()
         .write(true)
-        .open(cache_dir.join(key(name).as_filename()))
-        .expect("open entry to age it")
+        .open(path)
+        .expect("open file to age it")
         .set_modified(SystemTime::now() - Duration::from_secs(seconds))
-        .expect("age entry");
+        .expect("age file");
+}
+
+fn set_age(cache_dir: &Path, name: &str, seconds: u64) {
+    set_file_age(&cache_dir.join(key(name).as_filename()), seconds);
 }
 
 /// Read each of `reads`, writing any that miss, then write each of `writes`.
@@ -113,7 +120,7 @@ fn entries_bytes(cache_dir: &Path) -> u64 {
 // than everything else; an entry neither touched is evicted.
 #[test]
 fn prune_spares_previous_success_reads_and_writes() {
-    let root = temp_dir("p6");
+    let root = temp_dir("spares-previous-success");
     let (map, cache) = (root.join("a.map"), root.join("cache"));
 
     let first = open(&map, &cache, 1);
@@ -144,7 +151,7 @@ fn prune_spares_previous_success_reads_and_writes() {
 // read or wrote, alongside the last successful build's record.
 #[test]
 fn prune_spares_stopped_build_touches_and_last_success() {
-    let root = temp_dir("p7");
+    let root = temp_dir("spares-stopped-build");
     let (map, cache) = (root.join("a.map"), root.join("cache"));
 
     let success = open(&map, &cache, 1);
@@ -167,7 +174,7 @@ fn prune_spares_stopped_build_touches_and_last_success() {
 // Building another map in between exposes neither map's set.
 #[test]
 fn interleaved_maps_keep_each_record() {
-    let root = temp_dir("p9");
+    let root = temp_dir("interleaved-maps");
     let (map_a, map_b, cache) = (root.join("a.map"), root.join("b.map"), root.join("cache"));
     let set_a = ["a1", "a2", "a3", "a4"];
     let set_b = ["b1", "b2", "b3", "b4"];
@@ -201,9 +208,9 @@ fn parse_failed_build_leaves_record_unchanged() {
     let mut survivors = Vec::new();
     for with_failure in [false, true] {
         let root = temp_dir(if with_failure {
-            "p10-failed"
+            "parse-failed"
         } else {
-            "p10-clean"
+            "parse-clean"
         });
         let (map, cache) = (root.join("a.map"), root.join("cache"));
         let build = open(&map, &cache, 1);
@@ -286,35 +293,200 @@ fn record_dirs(cache_dir: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
-// A record whose map file was deleted no longer spares its entries, so they
-// become evictable under the budget, and the record directory goes with them.
+/// The record directory whose stored path is `map`'s; `map` must exist.
+fn record_dir_of(cache_dir: &Path, map: &Path) -> PathBuf {
+    let canonical = fs::canonicalize(map).expect("canonicalize map path");
+    record_dirs(cache_dir)
+        .into_iter()
+        .find(|dir| {
+            fs::read_to_string(dir.join("map-path"))
+                .is_ok_and(|stored| Path::new(&stored) == canonical)
+        })
+        .expect("the map's record stores its path")
+}
+
+/// Every file under the records whose name satisfies `matches`.
+fn record_files(cache_dir: &Path, matches: impl Fn(&str) -> bool) -> Vec<PathBuf> {
+    record_dirs(cache_dir)
+        .iter()
+        .flat_map(|dir| fs::read_dir(dir).expect("list record").flatten())
+        .map(|file| file.path())
+        .filter(|path| matches(&path.file_name().unwrap().to_string_lossy()))
+        .collect()
+}
+
+fn journals(cache_dir: &Path) -> Vec<PathBuf> {
+    record_files(cache_dir, |name| {
+        name.starts_with("journal-") && !name.ends_with(".lock")
+    })
+}
+
+fn lock_files(cache_dir: &Path) -> Vec<PathBuf> {
+    record_files(cache_dir, |name| name.ends_with(".lock"))
+}
+
+fn modified(path: &Path) -> SystemTime {
+    fs::metadata(path)
+        .and_then(|metadata| metadata.modified())
+        .expect("read mtime")
+}
+
+// A record whose map file goes missing stays spared through the first prune
+// that finds it missing, which marks the record. Once the mark is more than a
+// day old, the next prune retires the record and its entries become evictable.
 #[test]
-fn deleted_map_record_stops_sparing_its_entries() {
-    let root = temp_dir("retired");
+fn missing_map_record_retires_only_after_a_day_missing() {
+    let root = temp_dir("missing-map-retires");
     let (gone, kept) = (map_file(&root, "gone.map"), map_file(&root, "kept.map"));
     let cache = root.join("cache");
 
     let build = open(&gone, &cache, 1);
     touch(&build, &[], &["g1", "g2"]);
     build.finish_successful_build(1);
-    let build = open(&kept, &cache, 1);
-    assert!(
-        exists(&cache, "g1") && exists(&cache, "g2"),
-        "a live map's record spares its entries"
-    );
-    build.finish_successful_build(1);
+    let gone_record = record_dir_of(&cache, &gone);
+    let marker = gone_record.join("missing-since");
 
     fs::remove_file(&gone).expect("delete map file");
+    let capture = LogCapture::start();
+    let build = open(&kept, &cache, 1);
+    capture.assert_logged_once(Level::Info, "of a use record is missing");
+    assert!(
+        exists(&cache, "g1") && exists(&cache, "g2"),
+        "a map missing for under a day keeps its entries spared"
+    );
+    assert!(
+        marker.is_file(),
+        "the first prune to find the map missing marks its record"
+    );
+    build.finish_successful_build(1);
+    capture.assert_not_logged(Level::Warn, "[cache] retiring use record");
+
+    set_file_age(&marker, DAY_AND_AN_HOUR);
     let _next = open(&kept, &cache, 1);
+    capture.assert_logged_once(Level::Warn, "[cache] retiring use record for missing map");
     assert!(
         !exists(&cache, "g1") && !exists(&cache, "g2"),
-        "a deleted map's entries must be evictable"
+        "a map missing for a day must leave its entries evictable"
     );
+    assert!(!gone_record.exists(), "the retired record is deleted");
     assert_eq!(
         record_dirs(&cache).len(),
         1,
         "only the live map's record remains"
     );
+    let _ = fs::remove_dir_all(&root);
+}
+
+// A map that comes back before its record retires clears the mark, even one
+// past the grace, so its entries stay spared and a later absence starts a
+// fresh day.
+#[test]
+fn reappearing_map_clears_missing_mark() {
+    let root = temp_dir("missing-map-returns");
+    let (map, other) = (map_file(&root, "a.map"), map_file(&root, "other.map"));
+    let cache = root.join("cache");
+
+    let build = open(&map, &cache, 1);
+    touch(&build, &[], &["a1", "a2"]);
+    build.finish_successful_build(1);
+    let marker = record_dir_of(&cache, &map).join("missing-since");
+
+    fs::remove_file(&map).expect("delete map file");
+    drop(open(&other, &cache, 1));
+    assert!(marker.is_file(), "the prune marks the missing map's record");
+
+    map_file(&root, "a.map");
+    set_file_age(&marker, DAY_AND_AN_HOUR);
+    let _next = open(&other, &cache, 1);
+    assert!(!marker.exists(), "a map that is back clears its mark");
+    assert!(
+        exists(&cache, "a1") && exists(&cache, "a2"),
+        "a map that is back keeps its entries spared"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+// The end-of-build budget report only reads the records. It neither retires a
+// record whose map has been missing for over a day nor marks one whose map
+// just went missing; the next prune does both.
+#[test]
+fn budget_report_leaves_missing_map_records_unchanged() {
+    let root = temp_dir("report-reads-only");
+    let (overdue, fresh, kept) = (
+        map_file(&root, "overdue.map"),
+        map_file(&root, "fresh.map"),
+        map_file(&root, "kept.map"),
+    );
+    let cache = root.join("cache");
+    for (map, name) in [(&overdue, "o1"), (&fresh, "f1")] {
+        let build = open(map, &cache, u64::MAX);
+        touch(&build, &[], &[name]);
+        build.finish_successful_build(u64::MAX);
+    }
+    let (overdue_record, fresh_record) = (
+        record_dir_of(&cache, &overdue),
+        record_dir_of(&cache, &fresh),
+    );
+    let overdue_marker = overdue_record.join("missing-since");
+
+    fs::remove_file(&overdue).expect("delete map file");
+    let build = open(&kept, &cache, 1);
+    set_file_age(&overdue_marker, DAY_AND_AN_HOUR);
+    let marked_at = modified(&overdue_marker);
+    fs::remove_file(&fresh).expect("delete map file");
+    build.finish_successful_build(1);
+
+    assert!(
+        overdue_record.join("last-success").is_file(),
+        "the report must not retire a record"
+    );
+    assert_eq!(
+        modified(&overdue_marker),
+        marked_at,
+        "the report must not touch a mark"
+    );
+    assert!(
+        !fresh_record.join("missing-since").exists(),
+        "the report must not mark a record"
+    );
+
+    let _next = open(&kept, &cache, 1);
+    assert!(
+        !overdue_record.exists(),
+        "the next prune retires the record"
+    );
+    assert!(
+        fresh_record.join("missing-since").is_file(),
+        "the next prune marks the record"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+// Record stage files and orphaned journal lock files older than a day are
+// debris from killed builds, and the prune deletes them; younger ones may
+// belong to a running build and stay.
+#[test]
+fn prune_deletes_day_old_record_debris_and_keeps_young() {
+    let root = temp_dir("record-debris");
+    let (map, cache) = (map_file(&root, "a.map"), root.join("cache"));
+    open(&map, &cache, u64::MAX).finish_successful_build(u64::MAX);
+    let record = record_dir_of(&cache, &map);
+    let stale_stage = record.join("last-success.1-1.tmp");
+    let stale_lock = record.join("journal-1-1-1.lock");
+    let young_stage = record.join("map-path.1-2.tmp");
+    for debris in [&stale_stage, &stale_lock, &young_stage] {
+        fs::write(debris, b"").expect("write debris");
+    }
+    set_file_age(&stale_stage, DAY_AND_AN_HOUR);
+    set_file_age(&stale_lock, DAY_AND_AN_HOUR);
+
+    let _next = open(&map, &cache, u64::MAX);
+    assert!(!stale_stage.exists(), "a day-old stage file is deleted");
+    assert!(
+        !stale_lock.exists(),
+        "a day-old lock file without its journal is deleted"
+    );
+    assert!(young_stage.exists(), "a young stage file stays");
     let _ = fs::remove_dir_all(&root);
 }
 
@@ -361,9 +533,14 @@ fn unlistable_records_dir_skips_eviction_and_warns() {
     fs::remove_dir_all(cache.join("records")).expect("remove records");
     fs::write(cache.join("records"), b"").expect("replace records with a file");
     let capture = LogCapture::start();
-    let _blocked = open(&map, &cache, 1);
+    let blocked = open(&map, &cache, 1);
 
     capture.assert_logged_once(Level::Warn, "[cache] prune skipped eviction");
+    blocked.finish_successful_build(1);
+    capture.assert_logged_once(
+        Level::Warn,
+        "[cache] budget report: cannot read use records",
+    );
     assert!(exists(&cache, "a1"), "the recorded entry must survive");
     assert!(
         exists(&cache, "o1"),
@@ -398,7 +575,56 @@ fn promote_keeps_journal_begun_after_this_build() {
     let _ = fs::remove_dir_all(&root);
 }
 
-/// One warm build of `map` through the full pipeline, its cache opened as
+// A successful build deletes the journal of an earlier build of the same map
+// only once that build has stopped. While the earlier build runs, its journal
+// stays readable to the prune, survives the promote, and keeps sparing what
+// that build touches afterwards.
+#[test]
+fn promote_keeps_running_earlier_journal_and_deletes_stopped_one() {
+    let root = temp_dir("earlier-journal");
+    let (map, cache) = (map_file(&root, "a.map"), root.join("cache"));
+
+    let earlier = open(&map, &cache, u64::MAX);
+    touch(&earlier, &[], &["early"]);
+    orphan(&cache, "o1");
+    let later = open(&map, &cache, 1);
+    assert!(
+        exists(&cache, "early"),
+        "a running build's journal spares its entries"
+    );
+    assert!(
+        !exists(&cache, "o1"),
+        "a running build's journal is readable, so the prune still evicts"
+    );
+    touch(&later, &[], &["late"]);
+    later.finish_successful_build(1);
+    assert_eq!(
+        journals(&cache).len(),
+        1,
+        "the running earlier build's journal survives the promote"
+    );
+    touch(&earlier, &[], &["early-after"]);
+    orphan(&cache, "o2");
+    drop(earlier);
+
+    let next = open(&map, &cache, 1);
+    for name in ["early", "early-after", "late"] {
+        assert!(exists(&cache, name), "{name} must survive");
+    }
+    assert!(!exists(&cache, "o2"), "the unrecorded entry must go");
+    next.finish_successful_build(1);
+    assert!(
+        journals(&cache).is_empty(),
+        "the stopped earlier build's journal is deleted"
+    );
+    assert!(
+        lock_files(&cache).is_empty(),
+        "every journal's lock file goes with it"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+/// A warm build of `map` through the full pipeline, its cache opened as
 /// prl-build opens it. Returns the cache handle the build used.
 fn bake(map: &Path, cache_dir: &Path, baked_root: &Path, output: &Path) -> StageCache {
     let args = crate::parse_args_from(
@@ -432,9 +658,9 @@ fn bake(map: &Path, cache_dir: &Path, baked_root: &Path, output: &Path) -> Stage
 
 // A warm all-hit bake emits the all-miss bake's bytes with zero misses, and
 // the entries it reads, plus the per-light partitions its section-memo hits
-// mark as used, cover every entry the all-miss bake wrote, so its record
-// spares them all. Matching the pre-change warm bytes is the fixture digest
-// gate's job.
+// mark as used, cover every entry the all-miss bake wrote, so the record it
+// promotes spares them all. Byte equality with the cold reference is the
+// fixture digest gate's job.
 #[test]
 fn warm_all_hit_covers_all_miss_writes_with_zero_misses() {
     let root = temp_dir("all-hit");
@@ -476,6 +702,19 @@ fn warm_all_hit_covers_all_miss_writes_with_zero_misses() {
         uncovered.is_empty(),
         "{} of {} all-miss entries are outside the all-hit use set: {uncovered:?}",
         uncovered.len(),
+        written.len()
+    );
+    // The in-memory set alone would pass even if the promote failed.
+    let promoted = StageCache::test_last_success_entry_names(&cache, &map)
+        .expect("read the all-hit build's promoted record");
+    let unrecorded: Vec<&String> = written
+        .iter()
+        .filter(|name| !promoted.contains(*name))
+        .collect();
+    assert!(
+        unrecorded.is_empty(),
+        "{} of {} all-miss entries are missing from the promoted record: {unrecorded:?}",
+        unrecorded.len(),
         written.len()
     );
     let _ = fs::remove_dir_all(&root);

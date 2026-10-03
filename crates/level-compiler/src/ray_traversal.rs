@@ -59,7 +59,7 @@ impl IntersectsAabb<f32, 3> for BoundedRay<'_> {
 /// triangle, as the ray grazes it, and as its narrowest angle shrinks. The
 /// 1 cm absolute term covers that error for well-shaped triangles at ordinary
 /// angles, at little pruning cost: it keeps only boxes that start within about
-/// 1 cm of the bound. Long grazing rays near a sliver's ends can exceed it. An
+/// 1 cm plus 0.01% of the bound. Long grazing rays near a sliver's ends can exceed it. An
 /// infinite bound prunes nothing.
 fn prune_limit(bound: f32) -> f32 {
     bound + bound.abs() * 1e-4 + 1e-2

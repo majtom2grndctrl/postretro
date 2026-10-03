@@ -4,21 +4,23 @@
 //! Each map has a directory under `records/` in the cache directory, named by
 //! a digest of its input path and holding that path. A build appends every
 //! entry it reads or writes to its own journal as it goes, so a killed build's
-//! touches persist. A successful build replaces the map's `last-success`
-//! record with its own set and deletes the journals it supersedes. The prune
-//! spares, for every map whose file still exists, the last success plus every
-//! journal written since.
+//! touches persist, and holds a lock on the journal's sidecar lock file while
+//! it runs. A successful build replaces the map's `last-success` record with
+//! its own set and deletes the journals it supersedes that are no longer live.
+//! The prune spares, for every live map, the last success plus every journal
+//! written since. A map whose file stays missing for a day retires.
 
 use std::collections::HashMap;
+use std::ffi::OsString;
 use std::fmt;
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::atomic::Ordering as AtomicOrdering;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use super::{HASH_BYTES, STAGE_COUNTER};
+use super::{HASH_BYTES, STAGE_COUNTER, STALE_STAGE_AGE};
 
 /// Spared entries: digest → entry size on disk, as recorded when touched.
 pub(super) type SparedSet = HashMap<[u8; HASH_BYTES], u64>;
@@ -28,12 +30,32 @@ pub(super) type SparedSet = HashMap<[u8; HASH_BYTES], u64>;
 const RECORDS_DIR: &str = "records";
 const SUCCESS_FILE: &str = "last-success";
 const JOURNAL_PREFIX: &str = "journal-";
+/// Suffix of a journal's sidecar lock file, which its build holds locked while
+/// it runs.
+const LOCK_SUFFIX: &str = ".lock";
 /// The map's resolved input path, UTF-8. A record directory without one
 /// predates stored paths and is always spared.
 const MAP_PATH_FILE: &str = "map-path";
+/// Empty marker whose mtime is when a prune first found the map path missing.
+const MISSING_SINCE_FILE: &str = "missing-since";
+/// How long a map path must stay missing before its record retires. A map
+/// can vanish and come back: an editor's delete-then-rename save, a branch
+/// switch, an unplugged drive or network share (which reads as missing, not
+/// as an error). Retiring on first sight would evict a set that can take
+/// hours to re-bake; a day of grace costs only disk.
+const MISSING_MAP_GRACE: Duration = Duration::from_secs(24 * 60 * 60);
 /// One record: entry digest, then its size as `u64` little endian. A trailing
 /// partial record (a build killed mid-append) is ignored.
 const RECORD_BYTES: usize = HASH_BYTES + 8;
+
+/// Which read of the records is running.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Pass {
+    /// The start-of-build prune: marks, retires, and sweeps as it reads.
+    Prune,
+    /// The end-of-build budget report: reads only.
+    Report,
+}
 
 /// The records could not be read, so no map's set is known and the prune
 /// must not evict on a guess.
@@ -79,14 +101,52 @@ fn map_id(map_path: &Path) -> String {
     super::hex_encode(&digest.as_bytes()[..16])
 }
 
+fn is_journal(name: &str) -> bool {
+    name.starts_with(JOURNAL_PREFIX) && !name.ends_with(LOCK_SUFFIX)
+}
+
+fn lock_path(journal: &Path) -> PathBuf {
+    let mut path = OsString::from(journal.as_os_str());
+    path.push(LOCK_SUFFIX);
+    PathBuf::from(path)
+}
+
+/// Whether `path` was last modified more than `age` ago. A file whose time
+/// cannot be read counts as young, so it is left alone.
+fn older_than(path: &Path, age: Duration) -> bool {
+    fs::metadata(path)
+        .and_then(|metadata| metadata.modified())
+        .is_ok_and(|modified| {
+            SystemTime::now()
+                .duration_since(modified)
+                .is_ok_and(|elapsed| elapsed > age)
+        })
+}
+
+/// The start-of-build prune's read: every live map's spared entries.
+///
+/// It also maintains the records. A map first found missing is marked and
+/// stays spared; one missing for [`MISSING_MAP_GRACE`] is retired (not
+/// spared, and deleted on a best-effort basis); one that is back loses its
+/// mark. Stage files older than a day, and lock files whose journal is gone,
+/// are debris from killed builds and are deleted.
+pub(super) fn read_spared_for_prune(cache_dir: &Path) -> Result<SparedSet, RecordsUnreadable> {
+    read_spared(cache_dir, Pass::Prune)
+}
+
+/// The entries the next prune would spare, read without changing anything on
+/// disk. A record the next prune would retire is left out. Telling whether a
+/// journal's build still runs takes its lock for an instant, nothing more.
+pub(super) fn read_spared_for_report(cache_dir: &Path) -> Result<SparedSet, RecordsUnreadable> {
+    read_spared(cache_dir, Pass::Report)
+}
+
 /// Every live map's spared entries: its last success plus every journal since.
 ///
 /// A missing records directory means no build has recorded anything yet.
 /// Any other failure to list the records, or to read one, is an error: the
-/// caller cannot know that map's set, so it must not evict this build. A
-/// record whose stored map path no longer exists is retired: not spared, and
-/// deleted on a best-effort basis.
-pub(super) fn read_spared(cache_dir: &Path) -> Result<SparedSet, RecordsUnreadable> {
+/// caller cannot know that map's set, so it must not evict this build.
+fn read_spared(cache_dir: &Path, pass: Pass) -> Result<SparedSet, RecordsUnreadable> {
     let records_dir = cache_dir.join(RECORDS_DIR);
     let mut spared = SparedSet::new();
     let maps = match fs::read_dir(&records_dir) {
@@ -102,18 +162,20 @@ pub(super) fn read_spared(cache_dir: &Path) -> Result<SparedSet, RecordsUnreadab
             Err(err) => return Err(unreadable(&map.path(), err)),
         }
         let map_dir = map.path();
-        if map_retired(&map_dir) {
-            // A failed delete leaves the record for a later prune to retire.
-            let _ = fs::remove_dir_all(&map_dir);
-            continue;
+        if record_kept(&map_dir, pass) {
+            read_map_records(&map_dir, pass, &mut spared)?;
         }
-        read_map_records(&map_dir, &mut spared)?;
     }
     Ok(spared)
 }
 
-/// One map's last success plus its journals.
-fn read_map_records(map_dir: &Path, into: &mut SparedSet) -> Result<(), RecordsUnreadable> {
+/// One map's last success plus its journals. The prune pass also deletes
+/// stale debris it meets.
+fn read_map_records(
+    map_dir: &Path,
+    pass: Pass,
+    into: &mut SparedSet,
+) -> Result<(), RecordsUnreadable> {
     let files = match fs::read_dir(map_dir) {
         Ok(files) => files,
         // Retired by a concurrent prune since the records were listed.
@@ -123,16 +185,22 @@ fn read_map_records(map_dir: &Path, into: &mut SparedSet) -> Result<(), RecordsU
     let mut journal_vanished = false;
     for file in files {
         let file = file.map_err(|err| unreadable(map_dir, err))?;
+        let path = file.path();
         let name = file.file_name();
         let name = name.to_string_lossy();
-        let is_journal = name.starts_with(JOURNAL_PREFIX);
-        if name != SUCCESS_FILE && !is_journal {
+        if pass == Pass::Prune && is_debris(&path, &name) {
+            // Best effort: a failed delete is retried by a later prune.
+            let _ = fs::remove_file(&path);
             continue;
         }
-        match read_records(&file.path(), into) {
+        let journal = is_journal(&name);
+        if name != SUCCESS_FILE && !journal {
+            continue;
+        }
+        match read_records(&path, into) {
             Ok(()) => {}
-            Err(err) if err.kind() == io::ErrorKind::NotFound => journal_vanished |= is_journal,
-            Err(err) => return Err(unreadable(&file.path(), err)),
+            Err(err) if err.kind() == io::ErrorKind::NotFound => journal_vanished |= journal,
+            Err(err) => return Err(unreadable(&path, err)),
         }
     }
     // A successful build of this map deleted a journal since the listing. It
@@ -149,15 +217,138 @@ fn read_map_records(map_dir: &Path, into: &mut SparedSet) -> Result<(), RecordsU
     Ok(())
 }
 
-/// Whether a record directory's map is gone. Only a stored path that
-/// definitely no longer exists retires a record. A directory without one,
-/// written before paths were stored or by a build whose input did not exist,
-/// stays spared, as does one whose path cannot be checked.
-fn map_retired(map_dir: &Path) -> bool {
-    let Ok(stored) = fs::read_to_string(map_dir.join(MAP_PATH_FILE)) else {
-        return false;
+/// A record-file stage (`last-success.<pid>-<n>.tmp`, `map-path.<pid>-<n>.tmp`)
+/// or a journal's lock file whose journal is gone, older than a day: left by a
+/// build killed between creating it and renaming or deleting it. A younger
+/// one may belong to a running build.
+fn is_debris(path: &Path, name: &str) -> bool {
+    let orphan = if name.ends_with(".tmp") {
+        true
+    } else if let Some(journal) = name.strip_suffix(LOCK_SUFFIX) {
+        name.starts_with(JOURNAL_PREFIX) && !path.with_file_name(journal).exists()
+    } else {
+        false
     };
-    !stored.is_empty() && matches!(Path::new(&stored).try_exists(), Ok(false))
+    orphan && older_than(path, STALE_STAGE_AGE)
+}
+
+/// Whether a record still spares its entries. Only a stored path that
+/// definitely does not exist counts as missing. A directory without one,
+/// written before paths were stored or by a build whose input did not exist,
+/// is always kept, as is one whose path cannot be checked.
+fn record_kept(map_dir: &Path, pass: Pass) -> bool {
+    let Ok(stored) = fs::read_to_string(map_dir.join(MAP_PATH_FILE)) else {
+        return true;
+    };
+    if stored.is_empty() {
+        return true;
+    }
+    let marker = map_dir.join(MISSING_SINCE_FILE);
+    match Path::new(&stored).try_exists() {
+        Ok(true) => {
+            if pass == Pass::Prune && fs::remove_file(&marker).is_ok() {
+                log::info!(
+                    "[cache] map {stored} is back; its use record no longer counts down to retirement"
+                );
+            }
+            true
+        }
+        Ok(false) => missing_map_record_kept(map_dir, &stored, &marker, pass),
+        Err(_) => true,
+    }
+}
+
+/// Whether the record of a map whose file is missing is still spared: until
+/// the map has been missing for [`MISSING_MAP_GRACE`], dated by the marker the
+/// prune writes on first sight. The prune retires one past it.
+fn missing_map_record_kept(map_dir: &Path, stored: &str, marker: &Path, pass: Pass) -> bool {
+    let since = match fs::metadata(marker).and_then(|metadata| metadata.modified()) {
+        Ok(since) => since,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => {
+            // A failed marker write leaves the next prune to try again; until
+            // one succeeds, the record stays spared.
+            if pass == Pass::Prune
+                && fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(marker)
+                    .is_ok()
+            {
+                log::info!(
+                    "[cache] map {stored} of a use record is missing; its entries stay spared until it has been missing for 24 hours"
+                );
+            }
+            return true;
+        }
+        // A marker that cannot be dated cannot start the countdown.
+        Err(_) => return true,
+    };
+    let missing_long_enough = SystemTime::now()
+        .duration_since(since)
+        .is_ok_and(|elapsed| elapsed >= MISSING_MAP_GRACE);
+    // A build of the map still running, however long the file has been gone,
+    // keeps its record.
+    if !missing_long_enough || has_live_journal(map_dir) {
+        return true;
+    }
+    if pass == Pass::Prune {
+        log::warn!(
+            "[cache] retiring use record for missing map {stored}; its entries are no longer spared"
+        );
+        retire(map_dir);
+    }
+    false
+}
+
+/// Delete a retired record, best effort. The stored path and marker go last:
+/// a partial failure leaves a record that still retires, never one that has
+/// lost its path and would be spared forever.
+fn retire(map_dir: &Path) {
+    let Ok(files) = fs::read_dir(map_dir) else {
+        return;
+    };
+    let mut cleared = true;
+    for file in files.flatten() {
+        let name = file.file_name();
+        if name == MAP_PATH_FILE || name == MISSING_SINCE_FILE {
+            continue;
+        }
+        cleared &= fs::remove_file(file.path()).is_ok();
+    }
+    if cleared {
+        let _ = fs::remove_dir_all(map_dir);
+    }
+}
+
+fn has_live_journal(map_dir: &Path) -> bool {
+    list_journals(map_dir)
+        .iter()
+        .any(|journal| journal_stopped(journal) != Some(true))
+}
+
+/// Whether the build that owns `journal` has stopped; `None` when that cannot
+/// be told.
+///
+/// A build holds an exclusive lock on its journal's sidecar lock file until
+/// the handle closes, which the OS does when the process exits or is killed.
+/// The lock is on a sidecar, not the journal, because Windows locks are
+/// mandatory: a lock on the journal would make every other build's read of
+/// it fail, and the prune would skip eviction whenever a build was running.
+fn journal_stopped(journal: &Path) -> Option<bool> {
+    match fs::File::open(lock_path(journal)) {
+        Ok(lock) => match lock.try_lock() {
+            // Released when `lock` closes; nothing re-locks a stopped build's file.
+            Ok(()) => Some(true),
+            Err(fs::TryLockError::WouldBlock) => Some(false),
+            // The file system cannot lock, so its builds hold no locks either;
+            // keeping their journals would spare stale entries forever.
+            Err(fs::TryLockError::Error(_)) => Some(true),
+        },
+        // No lock file: a journal written before locks, or whose build could
+        // not lock.
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Some(true),
+        Err(_) => None,
+    }
 }
 
 fn read_records(path: &Path, into: &mut SparedSet) -> io::Result<()> {
@@ -211,13 +402,35 @@ fn list_journals(map_dir: &Path) -> Vec<PathBuf> {
     };
     files
         .flatten()
-        .filter(|file| {
-            file.file_name()
-                .to_string_lossy()
-                .starts_with(JOURNAL_PREFIX)
-        })
+        .filter(|file| is_journal(&file.file_name().to_string_lossy()))
         .map(|file| file.path())
         .collect()
+}
+
+/// Create and lock `journal`'s sidecar lock file. `None` when either fails:
+/// the build then runs with its journal unmarked, which a concurrent
+/// successful build of the map may delete.
+fn lock_journal(journal: &Path) -> Option<fs::File> {
+    let path = lock_path(journal);
+    let locked = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .and_then(|lock| match lock.try_lock() {
+            Ok(()) => Ok(lock),
+            Err(fs::TryLockError::WouldBlock) => Err(io::Error::from(io::ErrorKind::WouldBlock)),
+            Err(fs::TryLockError::Error(err)) => Err(err),
+        });
+    match locked {
+        Ok(lock) => Some(lock),
+        Err(err) => {
+            log::info!(
+                "[cache] cannot lock use journal {} ({err}); a concurrent successful build of this map may delete it",
+                journal.display()
+            );
+            None
+        }
+    }
 }
 
 /// One build's append-only journal for one map.
@@ -230,6 +443,8 @@ pub(super) struct Journal {
     superseded: Vec<PathBuf>,
     /// `None` once a write fails: the build continues unrecorded.
     file: Mutex<Option<fs::File>>,
+    /// The locked sidecar that marks this journal live; `None` once released.
+    lock: Mutex<Option<fs::File>>,
 }
 
 impl Journal {
@@ -263,15 +478,29 @@ impl Journal {
             std::process::id(),
             STAGE_COUNTER.fetch_add(1, AtomicOrdering::Relaxed)
         ));
-        let file = fs::OpenOptions::new()
+        // Locked before the journal exists, so no build ever sees it unlocked
+        // while this one runs.
+        let lock = lock_journal(&path);
+        let file = match fs::OpenOptions::new()
             .create_new(true)
             .append(true)
-            .open(&path)?;
+            .open(&path)
+        {
+            Ok(file) => file,
+            Err(err) => {
+                if lock.is_some() {
+                    drop(lock);
+                    let _ = fs::remove_file(lock_path(&path));
+                }
+                return Err(err);
+            }
+        };
         Ok(Self {
             map_dir,
             path,
             superseded,
             file: Mutex::new(Some(file)),
+            lock: Mutex::new(lock),
         })
     }
 
@@ -293,8 +522,10 @@ impl Journal {
         }
     }
 
-    /// A successful build's set becomes the map's record; the journals it
-    /// supersedes, this one included, are deleted.
+    /// A successful build's set becomes the map's record. Its own journal and
+    /// every superseded journal whose build has stopped are deleted; a journal
+    /// of an earlier build still running is kept, since that build still
+    /// appends to it.
     pub(super) fn promote(&self, entries: &SparedSet) -> io::Result<()> {
         *self
             .file
@@ -307,9 +538,34 @@ impl Journal {
             bytes.extend_from_slice(&encode(digest, size));
         }
         publish_synced(&self.map_dir, SUCCESS_FILE, &bytes)?;
-        for journal in self.superseded.iter().chain(std::iter::once(&self.path)) {
-            let _ = fs::remove_file(journal);
+        for journal in &self.superseded {
+            if journal_stopped(journal) == Some(true) {
+                let _ = fs::remove_file(journal);
+                let _ = fs::remove_file(lock_path(journal));
+            }
         }
+        // Released before the delete, so no handle keeps the lock file alive.
+        *self
+            .lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        let _ = fs::remove_file(&self.path);
+        let _ = fs::remove_file(lock_path(&self.path));
         Ok(())
     }
+}
+
+/// The map at `input`'s `last-success` record alone, without its journals.
+#[cfg(test)]
+pub(super) fn read_last_success(cache_dir: &Path, input: &Path) -> io::Result<SparedSet> {
+    let (map_path, _) = resolve_map_path(input);
+    let mut entries = SparedSet::new();
+    read_records(
+        &cache_dir
+            .join(RECORDS_DIR)
+            .join(map_id(&map_path))
+            .join(SUCCESS_FILE),
+        &mut entries,
+    )?;
+    Ok(entries)
 }

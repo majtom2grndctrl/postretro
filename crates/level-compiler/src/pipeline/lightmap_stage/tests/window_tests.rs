@@ -1,6 +1,7 @@
 //! Lightmap partition-window behavior: fold order, throttle and pause, cache I/O
-//! outside permits, the resident bound, chart-cull byte identity, and a memo-hit
-//! rebuild followed by a one-light edit.
+//! outside permits, the consumer's permit, paused cache hits, the resident
+//! bound, chart-cull byte identity, and a memo-hit rebuild followed by a
+//! one-light edit.
 //! Governing context: `context/lib/build_pipeline.md` §Build Cache.
 
 use super::*;
@@ -41,8 +42,21 @@ fn bake_window(
     governor: Arc<Governor>,
     progress: &StageProgress,
 ) -> (Vec<u8>, Vec<u8>) {
+    bake_window_with_irradiance(lights, cache, window, governor, progress, false)
+}
+
+/// [`bake_window`] with a chosen irradiance encoding. The encoding keys the
+/// lightmap section memo but no partition.
+fn bake_window_with_irradiance(
+    lights: &[MapLight],
+    cache: Option<&StageCache>,
+    window: &PartitionWindow,
+    governor: Arc<Governor>,
+    progress: &StageProgress,
+    uncompressed_irradiance: bool,
+) -> (Vec<u8>, Vec<u8>) {
     let args = test_args();
-    let config = config(false);
+    let config = config(uncompressed_irradiance);
     let selection = selection();
     let mut geometry = quads_in_one_cell(WINDOW_QUADS);
     let (bvh, primitives, _) = build_bvh(&geometry).expect("window fixture BVH");
@@ -117,6 +131,10 @@ impl Gate {
     fn open(&self) {
         *self.open.lock().unwrap_or_else(|p| p.into_inner()) = true;
         self.changed.notify_all();
+    }
+
+    fn is_open(&self) -> bool {
+        *self.open.lock().unwrap_or_else(|p| p.into_inner())
     }
 
     /// Wait until opened; false on timeout.
@@ -787,6 +805,211 @@ fn lightmap_window_cache_io_holds_no_permit() {
         drop(cache);
         let _ = std::fs::remove_dir_all(&dir);
     }
+}
+
+// At one permit, a chart released while the consumer is inside its permit is
+// not admitted until the consumer returns, so fold and layer close never run
+// beside chart ray work. Light 1's first chart waits, outside any permit, until
+// the consumer starts item 0, so a chart necessarily reaches `enter()` during
+// the hold. Were the consumer's `enter()` removed, the consumer would hold no
+// permit: that chart (and any light-1 chart already parked in `enter()`) would
+// admit at once, the enter hook would count it, and the zero-admissions
+// assertion would fail.
+#[test]
+fn lightmap_window_consumer_permit_keeps_chart_work_out_of_fold_at_one_permit() {
+    let lights = window_lights(3);
+    let baseline = unthrottled(&lights);
+
+    let governor = Arc::new(Governor::new(1, false));
+    let consuming = Arc::new(Gate::default());
+    let consume_released = Arc::new(Gate::default());
+    let chart_entering = Arc::new(Gate::default());
+    let admitted_during_consume = Arc::new(AtomicU64::new(0));
+    let hook_consuming = Arc::clone(&consuming);
+    let hook_released = Arc::clone(&consume_released);
+    let hook_admitted = Arc::clone(&admitted_during_consume);
+    governor.set_enter_hook(Arc::new(move || {
+        // The consumer's own entry returns before it opens `consuming`, so only
+        // chart entries count.
+        if hook_consuming.is_open() && !hook_released.is_open() {
+            hook_admitted.fetch_add(1, Ordering::SeqCst);
+        }
+    }));
+
+    let mut window = sized(2);
+    let held = Arc::new(Mutex::new(false));
+    let chart_consuming = Arc::clone(&consuming);
+    let chart_signal = Arc::clone(&chart_entering);
+    window.hooks.before_chart = Some(Arc::new(move |light, _layer, _chart| {
+        if light == 0 {
+            return;
+        }
+        // Holding one chart blocks one worker, so light 0 still bakes; item 1
+        // cannot finish before the consumer starts item 0.
+        let mut held = held.lock().unwrap();
+        if !*held {
+            *held = true;
+            drop(held);
+            assert!(chart_consuming.wait(), "the consumer never started item 0");
+        }
+        // This chart now calls `enter()` while the consumer holds item 0.
+        if chart_consuming.is_open() {
+            chart_signal.open();
+        }
+    }));
+    let consume_consuming = Arc::clone(&consuming);
+    let consume_entering = Arc::clone(&chart_entering);
+    let consume_release = Arc::clone(&consume_released);
+    window.hooks.in_consume = Some(Arc::new(move |item| {
+        if item != 0 {
+            return;
+        }
+        consume_consuming.open();
+        assert!(
+            consume_entering.wait(),
+            "no chart reached its permit while the consumer held one"
+        );
+        // Room for that chart to be admitted, were the consumer unpermitted.
+        thread::sleep(QUIET);
+        consume_release.open();
+    }));
+
+    let bytes = bake_window(
+        &lights,
+        None,
+        &window,
+        Arc::clone(&governor),
+        &StageProgress::indeterminate(),
+    );
+
+    assert!(consume_released.is_open(), "the consumer never held item 0");
+    assert_eq!(
+        admitted_during_consume.load(Ordering::SeqCst),
+        0,
+        "chart ray work was admitted while the consumer held its permit"
+    );
+    assert_eq!(bytes, baseline, "consumer-held bytes");
+}
+
+// A paused warm bake whose partitions all hit the cache advances no progress
+// while paused, and completes after resume. The pause lands inside the last
+// partition-key admission; the bake then looks up the section memo (a miss:
+// the seed used the other irradiance encoding, which keys no partition) and
+// starts the window. Were `start`'s checkpoint after `source.load`, the
+// admitted items would load their hits and advance progress by their chart
+// counts while paused, failing the zero-progress and zero-read assertions.
+/// Releases a pause when dropped, including while a failed assertion unwinds.
+struct UnpauseOnDrop<'a>(&'a Governor);
+
+impl Drop for UnpauseOnDrop<'_> {
+    fn drop(&mut self) {
+        self.0.set_paused(false);
+    }
+}
+
+#[test]
+fn lightmap_window_paused_warm_hits_advance_no_progress_until_resume() {
+    let lights = window_lights(3);
+    let baseline = unthrottled(&lights);
+    let dir = fresh_cache_dir("window_paused_hits");
+    let cache = StageCache::new(&dir).expect("paused hits cache");
+    bake_window_with_irradiance(
+        &lights,
+        Some(&cache),
+        &sized(2),
+        Arc::new(Governor::new(4, false)),
+        &StageProgress::indeterminate(),
+        true,
+    );
+    cache.clear_test_accesses();
+
+    let governor = Arc::new(Governor::new(4, false));
+    let progress = StageProgress::indeterminate();
+    // Partition keys hash as one governed item per light: the governor's first
+    // admissions in this stage.
+    let key_items = lights.len() as u64;
+    let admissions = Arc::new(AtomicU64::new(0));
+    let hook_governor = Arc::downgrade(&governor);
+    let hook_admissions = Arc::clone(&admissions);
+    governor.set_enter_hook(Arc::new(move || {
+        if hook_admissions.fetch_add(1, Ordering::SeqCst) + 1 == key_items {
+            hook_governor
+                .upgrade()
+                .expect("governor outlives the bake")
+                .set_paused(true);
+        }
+    }));
+    let gets = Arc::new(AtomicU64::new(0));
+    let mut window = sized(2);
+    let hook_gets = Arc::clone(&gets);
+    window.hooks.before_get = Some(Arc::new(move |_light, _layer| {
+        hook_gets.fetch_add(1, Ordering::SeqCst);
+    }));
+
+    let (done_tx, done_rx) = mpsc::channel();
+    thread::scope(|scope| {
+        // A failed assertion below must not hang the run: the scope joins the
+        // bake thread before re-raising, and a paused bake never finishes.
+        let _unpause = UnpauseOnDrop(&governor);
+        let bake_governor = Arc::clone(&governor);
+        let bake_progress = progress.clone();
+        let (lights, window, cache) = (&lights, &window, &cache);
+        scope.spawn(move || {
+            done_tx
+                .send(bake_window(
+                    lights,
+                    Some(cache),
+                    window,
+                    bake_governor,
+                    &bake_progress,
+                ))
+                .unwrap();
+        });
+
+        // The section memo lookup follows key hashing, so reaching it proves
+        // the pause parked nothing before the window.
+        let deadline = std::time::Instant::now() + TIMEOUT;
+        while cache.test_access("lightmap_section").read_attempts == 0
+            && std::time::Instant::now() < deadline
+        {
+            thread::yield_now();
+        }
+        assert_eq!(
+            cache.test_access("lightmap_section").read_attempts,
+            1,
+            "the bake never reached the section memo"
+        );
+        assert!(governor.is_paused(), "the pause lands before the window");
+        let while_paused = done_rx.recv_timeout(QUIET);
+        assert!(
+            matches!(while_paused, Err(mpsc::RecvTimeoutError::Timeout)),
+            "a paused bake finished"
+        );
+        assert_eq!(
+            progress.completed(),
+            0,
+            "paused cache hits advanced progress"
+        );
+        assert_eq!(
+            gets.load(Ordering::SeqCst),
+            0,
+            "a paused window read a partition"
+        );
+
+        governor.set_paused(false);
+        let bytes = done_rx.recv_timeout(TIMEOUT).expect("resumed bake stalled");
+        assert_eq!(bytes, baseline, "resumed bytes");
+    });
+    assert_eq!(
+        Some(progress.completed()),
+        progress.total(),
+        "progress completes after resume"
+    );
+    let layers = cache.test_access("lightmap_layer");
+    assert_eq!(layers.read_hits, lights.len(), "every partition hits");
+    assert_eq!(layers.writes, 0, "no partition re-bakes");
+    drop(cache);
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 // A no-edit rebuild hits both section memos and reads no partition, yet its

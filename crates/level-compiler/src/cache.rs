@@ -14,12 +14,13 @@ mod records;
 use records::{Journal, SparedSet};
 
 /// Default size budget for the on-disk stage cache, in bytes (2 GiB). The
-/// start-of-build prune spares every map's use record (the entries its last
-/// successful build read or wrote, plus every entry later builds of it read or
-/// wrote) and evicts everything else, oldest first, down to this budget unless
-/// `--cache-max-size` overrides it. Content addressing never reclaims orphaned
-/// generations on its own, so this bound is what stops the cache from growing
-/// without limit; the cache can still exceed it by the spared set.
+/// start-of-build prune spares every live map's use record (the entries its
+/// last successful build read or wrote, plus every entry later builds of it
+/// read or wrote) and evicts everything else, oldest first, down to this
+/// budget unless `--cache-max-size` overrides it. Content addressing never
+/// reclaims orphaned generations on its own, so this bound is what stops the
+/// cache from growing without limit; the cache can still exceed it by the
+/// spared set.
 pub const DEFAULT_MAX_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
 /// Cache-entry format marker. Entries without this marker predate the 64-bit
@@ -119,10 +120,11 @@ impl StageCache {
         })
     }
 
-    /// Open the cache for one build of the map at `input`: prune to `max_bytes`
-    /// while sparing every map's use record, then start this build's journal.
-    /// The prune reads the records before this build records anything, so it
-    /// spares the map's last success and any stopped build since.
+    /// Open the cache for one build of the map at `input`: prune to
+    /// `max_bytes` while sparing every live map's use record, then start this
+    /// build's journal. The prune reads the records before this build records
+    /// anything, so it spares the map's last success and any stopped build
+    /// since.
     pub fn open_for_build(
         path: impl AsRef<Path>,
         input: &Path,
@@ -358,6 +360,20 @@ impl StageCache {
             .collect()
     }
 
+    /// The `last-success` record of the map at `input`, alone, as entry file
+    /// names: what the map's last successful build promoted.
+    #[cfg(test)]
+    #[allow(dead_code)] // Consumed by binary-only cache tests, not the library test target.
+    pub(crate) fn test_last_success_entry_names(
+        cache_dir: &Path,
+        input: &Path,
+    ) -> io::Result<std::collections::HashSet<String>> {
+        Ok(records::read_last_success(cache_dir, input)?
+            .keys()
+            .map(|digest| hex_encode(digest))
+            .collect())
+    }
+
     /// Count an entry this build used without reading it: a section-memo hit
     /// stands in for the per-light partitions it summarizes. A missing entry
     /// is ignored.
@@ -368,8 +384,8 @@ impl StageCache {
     }
 
     /// End a successful build: its read/write set replaces the map's use
-    /// record, superseding any stopped build's journal, then the spared-set
-    /// warning runs.
+    /// record, superseding the journals that predate this build and are no
+    /// longer live, then the spared-set warning runs.
     pub fn finish_successful_build(&self, budget_bytes: u64) {
         if let Some(journal) = &self.journal {
             let entries = self
@@ -387,11 +403,20 @@ impl StageCache {
         self.warn_if_live_set_exceeds(budget_bytes);
     }
 
-    /// The entries the next prune spares: every map's record on disk plus
-    /// this build's read/write set. Unreadable records count as none here;
-    /// the prune that met them already warned and evicted nothing.
+    /// The entries the next prune would spare: every live map's record on
+    /// disk plus this build's read/write set. The records are only read, never
+    /// retired or marked. When they cannot be read, the set is this build's
+    /// alone, and a warning says so.
     fn spared_set(&self) -> SparedSet {
-        let mut spared = records::read_spared(self.dir.as_path()).unwrap_or_default();
+        let mut spared = match records::read_spared_for_report(self.dir.as_path()) {
+            Ok(spared) => spared,
+            Err(err) => {
+                log::warn!(
+                    "[cache] budget report: {err}; it counts only this build's entries against the budget"
+                );
+                SparedSet::new()
+            }
+        };
         spared.extend(
             self.live_entries
                 .lock()
@@ -415,10 +440,11 @@ impl StageCache {
         }
     }
 
-    /// Warn once when the spared set (every map's use record plus this
+    /// Warn once when the spared set (every live map's use record plus this
     /// build's read/write set) is larger than the configured cache budget.
     /// The prune keeps the spared set whole, so the cache then outgrows its
-    /// budget. Reporting never prunes or changes the build.
+    /// budget. Reporting only reads: it never prunes, retires or marks a
+    /// record, or changes the build.
     pub fn warn_if_live_set_exceeds(&self, budget_bytes: u64) {
         let spared = self.spared_set();
         let total = spared.values().copied().fold(0u64, u64::saturating_add);
@@ -426,23 +452,24 @@ impl StageCache {
             return;
         }
         log::warn!(
-            "[cache] spared set {} across {} entries (every map's last-build record) exceeds cache budget {}; the cache keeps the spared set and evicts only entries outside it",
+            "[cache] spared set {} across {} entries (every live map's use record plus this build's) exceeds cache budget {}; the cache keeps the spared set and evicts only entries outside it",
             ByteCount(total),
             spared.len(),
             ByteCount(budget_bytes),
         );
     }
 
-    /// Evict entries outside every map's use record, oldest write first, until
-    /// the cache directory's total size is at or below `max_bytes` or nothing
-    /// unspared remains. Run once at build start, before any bake writes a
-    /// fresh generation, so the directory stays bounded across builds.
+    /// Evict entries outside every live map's use record, oldest write first,
+    /// until the cache directory's total size is at or below `max_bytes` or
+    /// nothing unspared remains. Run once at build start, before any bake
+    /// writes a fresh generation, so the directory stays bounded across builds.
     ///
-    /// A spared entry is one a map's last successful build read or wrote, or
-    /// one a later build of that map read or wrote (see `records`). Everything
-    /// else is the orphaned-generation tail content addressing leaves behind,
-    /// aged by its write time. Within the same mtime, eviction order is
-    /// unspecified.
+    /// A spared entry is one a live map's last successful build read or wrote,
+    /// or one a later build of that map read or wrote (see `records`, which
+    /// also retires the record of a map missing for a day and sweeps record
+    /// debris on this read). Everything else is the orphaned-generation tail
+    /// content addressing leaves behind, aged by its write time. Within the
+    /// same mtime, eviction order is unspecified.
     ///
     /// Best-effort: any I/O error while scanning or deleting is logged and the
     /// prune moves on. A failure to reclaim enough never fails the build — the
@@ -470,9 +497,8 @@ impl StageCache {
 
         // `None` when the records cannot be read: stale stages are still
         // cleaned up, but no entry is evicted.
-        let spared: Option<std::collections::HashSet<String>> = match records::read_spared(
-            self.dir.as_path(),
-        ) {
+        let spared_records = records::read_spared_for_prune(self.dir.as_path());
+        let spared: Option<std::collections::HashSet<String>> = match spared_records {
             Ok(spared) => Some(spared.keys().map(|digest| hex_encode(digest)).collect()),
             Err(err) => {
                 log::warn!(

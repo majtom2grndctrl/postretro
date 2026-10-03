@@ -531,7 +531,7 @@ fn construct_stage_cache(args: &Args) -> Option<cache::StageCache> {
     });
     // Bound the cache before this build writes a fresh generation: content
     // addressing never reclaims orphaned generations, so the build-start prune
-    // is what keeps the directory from growing without limit. It spares every
+    // is what keeps the directory from growing without limit. It spares every live
     // map's use record, so a stopped or failed build, or a build of another
     // map, never costs this map's work. Off the bake path (one readdir, the
     // records, a few unlinks); best-effort, never fails the build.
@@ -735,8 +735,9 @@ pub struct Args {
     /// same directory — see `resolve_prm_root`.
     baked_root: Option<PathBuf>,
     /// Size budget for the stage cache, in bytes. The build-start prune spares
-    /// every map's use record (its last successful build's entries plus any
-    /// later build's) and evicts the rest, oldest first, down to this. Defaults
+    /// every live map's use record (its last successful build's entries plus
+    /// any later build's; a record retires a day after its map file goes
+    /// missing) and evicts the rest, oldest first, down to this. Defaults
     /// to `cache::DEFAULT_MAX_BYTES`; ignored when the cache is disabled.
     cache_max_bytes: u64,
     /// Compiler-only limits for the three baked delta sections. The raw-payload

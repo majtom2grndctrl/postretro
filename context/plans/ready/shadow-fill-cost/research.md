@@ -64,7 +64,7 @@ Cell bounds do not contain their leaves.
 - `bvh_build::flatten` sorts only the leaf array, never the index buffer.
 - So a cell's leaves span one contiguous index range, and consecutive cell ids abut.
 - `leaf_face_ranges_are_contiguous` pins only face order inside `extract_geometry`. Nothing pins it across face cuts or at load.
-- Derive each cell's range from `full.bvh_leaves` through `full.cell_draw_index` spans. Don't use `BspLeafRecord.face_start`: it predates face cuts.
+- Group each cell's leaves from `full.bvh_leaves` by `cell_id`, so a level without the per-cell draw index still works (O8). Don't use `BspLeafRecord.face_start`: it predates face cuts.
 
 ## Shadow depth pipeline
 - `full.shadow_depth_pipeline` (`spot_shadow.wgsl`) serves spot and cube.

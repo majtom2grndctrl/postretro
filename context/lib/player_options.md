@@ -92,7 +92,18 @@ Bindings live in this store, per player, in `settings.toml`. Every action is rem
 
 ---
 
-## 7. Non-Goals
+## 7. Window Modes (decided, not yet built)
+
+`window_mode` — windowed, borderless, exclusive — is a top-level key; absent or unrecognized loads windowed, and first launch is windowed. The exclusive display mode persists as size, refresh, bit depth and monitor name, and every apply re-finds it in a fresh enumeration of the window's current monitor, so an unlisted mode never reaches winit. No match, or Wayland (which ignores exclusive), falls back to borderless for the session and keeps the stored mode. winit panics when the OS refuses a mode change; that crash is accepted, since an unconfirmed mode is never saved.
+
+- **Boot.** Options load once before the window and pass into `Session::build`; device-identity generation and the first-launch save stay post-first-pixel (`boot_sequence.md` §1). `--windowed` forces windowed for the session and writes nothing.
+- **Confirm.** A live change into or between exclusive modes shows an engine confirm (`ui.md` §4.1). Unconfirmed within 15 s, cancelled, or removed by a level load, the prior mode returns. No save — settled, menu-close or exit flush — writes an unconfirmed mode, and every other mode change is refused while one is pending.
+- **Readback.** The window's actual mode is compared once per frame with a baseline the window-mode chokepoint keeps, never with the store. Each request opens a settle window whose readings write nothing; a failed or dropped entry is treated like the fallback. Outside it, a difference is OS-driven (macOS green button) and persists like a menu write.
+- **Ownership.** One app-side chokepoint makes every fullscreen, monitor and video-mode call; the options store and UI never call winit. It is not the render profile: a mode change is a window call, not a renderer setter.
+
+---
+
+## 8. Non-Goals
 
 - **Direct scripting access to the persisted store.** `PlayerOptions` and its Rust enums remain engine-internal; scripts receive only typed `options.*` state refs generated from the engine-state catalog, never the TOML store or save API.
 - **Game-save store.** Separate spec.

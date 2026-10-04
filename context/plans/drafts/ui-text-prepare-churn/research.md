@@ -56,13 +56,13 @@ Read in `~/.cargo/registry/src/*/glyphon-0.11.0/src`.
 
 Change-gate `prepare` per span slot, in `UiTextRenderer`:
 
-- Keep one slot per span index: its `TextRenderer`, its shaped cosmic-text buffers, and a hash of what `prepare` read.
+- Keep one slot per (layer, span index within the layer): its `TextRenderer`, its shaped cosmic-text buffers, and a hash of what `prepare` read. A slot not drawn on a frame forgets its hash.
 - Each frame, hash the span's inputs. Equal → skip shaping and `prepare`; `render_batch` draws the retained vertices. Different → reshape the span's texts, `prepare`, store the hash.
-- Trim only on a frame that prepared every span (a *full-prepare frame*). Force a full-prepare frame at a fixed cadence and immediately when any `prepare` returns `AtlasFull` (trim, then prepare every span again in the same frame). Between reclaims `glyphs_in_use` holds every glyph touched since the last one, so growth is bounded by that set, which for a HUD is digits and labels at a few sizes, times cosmic-text's four subpixel bins per axis.
+- Trim only as the first step of a reclaim: trim, then prepare every live span, in one prepare phase. Reclaim at a fixed cadence and immediately when any `prepare` returns `AtlasFull`. Trimming after the prepares would be wrong: trim clears `glyphs_in_use`, and `try_allocate` silently evicts LRU glyphs outside that set before it grows or reports `AtlasFull`, so the next frame's skipped spans would be unprotected (`text_atlas.rs`, `try_allocate` and `trim`). With trim first, between reclaims `glyphs_in_use` holds every glyph touched since the last one, so growth is bounded by that set, which for a HUD is digits and labels at a few sizes, times cosmic-text's four subpixel bins per axis.
 
 On the idle HUD this removes every text write and every reshape. In combat the presentation spans still change every frame (world-anchored positions), so one or two writes remain; health and ammo spans change on damage and fire, not per frame. That residue is measured, not assumed.
 
-Granularity is the span, not the text node. Spans are one to three texts; a per-node shaped-buffer cache would have to re-plumb `Attrs::metadata` (the global text index that the depth closure reads) and buy little. The sibling's "caching shaped cosmic-text `Buffer`s" is folded into the span cache.
+Granularity is the span, not the text node. A span is a run of consecutive text items in one layer, ending at a shape or a layer boundary; on the dev HUD they hold one to three texts. A per-node shaped-buffer cache would have to re-plumb `Attrs::metadata` (the global text index that the depth closure reads) and buy little. The sibling's "caching shaped cosmic-text `Buffer`s" is folded into the span cache.
 
 ## What the key must cover
 
@@ -73,10 +73,11 @@ Everything `prepare` reads, so a change in any of it re-prepares that span and n
 | `content`, `family`, `font_size` | bound values, text scale (E23 U2 multiplies the device font size through the measure path, `ui.md` §1), font tokens | hashed per text |
 | `color` | theme variant selection, high contrast (`ui.md` §2) | hashed per text |
 | `position` | layout, presentation projection, resize | hashed per text, as bit patterns |
-| painter depth | a shape inserted before the span, layer push or pop | hashed per text |
+| depth within the layer's band | a shape inserted before the span in the same layer | hashed per text; bands are fixed by stack position, so other layers and pushes above never move it |
+| layout box and wrap width | text scale's authored max width (`ui.md` §1), resize | the whole text record and its layout box are hashed |
 | viewport | resize, scale factor (`rendering_pipeline.md` §7.8) | hashed per span; also bounds clipping |
 | font database | `register_font` at mod init or reload | a generation counter bumped by `register_font` |
-| slot identity | a span index reused by different text after a level change or pop | the hash differs; a slot beyond the current span count is never rendered |
+| slot identity | a slot reused by different text after a level change or pop, or a slot that returns with identical text after being away | a slot not drawn on a frame forgets its hash, so a returning slot always prepares; a slot beyond the current span count is never rendered |
 
 Text scale and theme variants are decided, not built (`ui.md` §1, §2). They need no hook here: both reach the composition as a different `font_size` or `color`, and the key already covers those.
 
@@ -103,6 +104,33 @@ Text scale and theme variants are decided, not built (`ui.md` §1, §2). They ne
 - `renderer_ui_layer.rs` folds the presentation layer first, then the modal stack, into one composition, and span slots are positional across it.
 - So a damage number spawning or despawning, or a HUD meter toggling, changes every span's depth or slot, and a global key would re-prepare everything in combat. Per-layer slots and per-layer depth bands confine a change to its own layer.
 - `done/ui-render-path-robustness-text-shaping` Task C (`research.md` §Cache key and namespacing) reached the same per-layer scoping for its `NodeId` cache.
+
+## Ordering pins
+Acceptance rows cite these ids.
+
+| id | scenario | ordering | expected outcome |
+|---|---|---|---|
+| O1 | Reclaim frame, at the cadence or after an atlas-full report | the in-use set is cleared, then every live span prepares, then the pass draws; no trim follows the prepares | after a reclaim the in-use set holds every live span's glyphs; until the next reclaim an allocation can evict only glyphs no live span drew since the last reclaim |
+| O2 | A changed span needs a new glyph with the packer full, on a frame where other spans were skipped | glyphon evicts LRU glyphs not in use before it grows or reports full | no glyph a skipped span draws is evicted; the static span's pixels hold on every frame between reclaims |
+| O3 | The atlas reports full partway through a prepare, on a frame that skipped some spans | span k fails, the in-use set is cleared, every live span prepares again in the same encode, then the pass draws | every span that fits draws; the recovery is one prepare phase for the once-per-submit guard |
+| O4 | A prepare still fails after recovery | glyphon cleared and partly refilled the span's vertex list and returned before writing the buffer | the span draws nothing that frame, never the stale buffer under a partial count; it keeps no key and prepares again next frame |
+| O5 | A slot leaves and returns with an equal key: the pause menu closes and reopens, a layer's span count shrinks then grows, zero text then text | the slot is not drawn on one or more encodes | on return it prepares again; its text is correct even if a reclaim or atlas pressure happened while it was away |
+| O6 | The viewport changes while a slot is away, then returns to the slot's stored size before the slot does | live spans move glyphon's shared viewport uniform; a zero-text frame does not | covered by O5: the returning slot prepares again |
+| O7 | A span changes and reverts across frames (A, B, A) | the key compares only against the span's last prepare | the span prepares on both changes; a change and revert within one frame is invisible, because the gate reads only the composition at encode |
+| O8 | A cadence reclaim lands on a frame with a content change | O1 order | each live span prepares once, the changed span included; the count equals the live span count |
+| O9 | A reclaim falls due on a zero-text frame, or while the UI pass does not run | the cadence counts encodes with text | the reclaim moves to the next encode with text; a zero-text frame neither prepares nor trims |
+| O10 | A modal pushes or pops | bands are fixed by stack position | a push prepares only the pushed layer; a pop prepares nothing in layers that stayed visible; layers revealed by `hideBelow` prepare on return (O5) |
+| O11 | Two adjacent layers with text on both sides of the boundary (`hud.ammo` then `hud.openSeats`, or the two-layer golden) | today one span crosses the boundary | a layer boundary always ends a span; a change in one layer prepares nothing in the other |
+| O12 | A shape appears or disappears in one layer (the reload meter or cell bar) | that layer's in-band orders shift | only spans in that layer whose depth or slot moved prepare; no other layer prepares |
+| O13 | A damage number spawns or despawns in the presentation layer, folded first | the presentation layer's span count changes | no span in the HUD or a modal prepares |
+| O14 | A font registers on the frame a span first uses its family | the font generation is read at encode | the span is shaped against the new face by the next encode at the latest; every span prepares once |
+| O15 | The viewport and a span's content change on the same frame | — | every span prepares once; the next frame prepares none |
+| O16 | The level changes while a menu is open | HUD and presentation inputs change; the menu's hold | menu spans prepare nothing; changed HUD and presentation spans prepare |
+| O17 | The UI pass is skipped for some frames (no surface, minimised), then resumes | no encode, prepare or trim runs while skipped | on resume unchanged keys skip; a resized window prepares every span |
+| O18 | A tween that moves text finishes, or reduce motion snaps it | the tween clamps to its final value | positions settle bit-identical; the next frame prepares nothing |
+| O19 | The theme generation changes | theme reaches spans as colour or family | spans whose colour or family changed prepare; the rest skip |
+| O20 | Two compositions encode before one submit; the first skips span j and the second prepares it | the queue-timeline write lands before both draws | the debug guard trips whether or not either encode prepared, because it counts encodes, not prepares |
+| O21 | Count on an atlas-full recovery frame | spans prepared before the overflow prepare again | the count reports spans prepared, each live span once |
 
 ## Stale or wrong claims in the sibling research
 

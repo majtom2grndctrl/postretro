@@ -35,7 +35,7 @@ read at: 423aae2a5
 | 13 first launch under new name writes defaults + fresh `player_id` there, `postretro/` byte-identical (P1) | `first_launch_under_a_new_app_name_leaves_the_postretro_directory_untouched`, `a_game_app_name_shares_no_directory_with_postretro` | automated | pass |
 | M1 payload launcher, `postretro-tool run`, SDK launcher, `xtask run` write under the right directory | owner, on-machine (the `[Engine] Player data:` log line names the directories) | manual | outstanding |
 
-Gate: `cargo test -p postretro -p postretro-sim -p postretro-tool -p xtask` — 1153 + 1244 + 157 + 19 + 7 + 3 passed, 0 failed. `cargo clippy -p postretro -p postretro-sim --all-targets` clean in touched code (4 pre-existing `chunks_exact_to_as_chunks` warnings in `light_bridge.rs` / `particle_render.rs`, untouched). `/preflight` is owner-invoked only — not yet run.
+Gate: `cargo test -p postretro -p postretro-sim -p postretro-tool -p xtask` — 1153 + 1244 + 157 + 19 + 7 + 3 passed, 0 failed. `cargo clippy -p postretro -p postretro-sim --all-targets` clean in touched code (4 pre-existing `chunks_exact_to_as_chunks` warnings in `light_bridge.rs` / `particle_render.rs`, untouched). `/preflight` (owner-invoked): fmt ✓, clippy `-D warnings` ✓, `cargo test` ✓ (9283 passed, 0 failed), `cargo check --release` ✓, crate-graph ✓.
 
 ## Review loop
 - Panel 1 (tracer, contract verifier, adversarial — opus; hygiene/drift — sonnet): 1 🟡 found by 3 lenses (padded `.`/`..` names), 3 🟡 docs, ~6 🟢. All mechanical findings fixed in `3d40871fd`.

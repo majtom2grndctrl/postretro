@@ -58,7 +58,7 @@ The runtime options bridge saves accepted menu changes after a deterministic 250
 
 `view_feel_scale` (`[0, 1]`, default `1.0`) is an accessibility scale for view-feel responsiveness. Clamped on load. Multiplies presented bob, tilt, sway, and state-transition FOV/pitch/roll impulses and sustained slide dip/FOV at render assembly. `0` suppresses all view-feel presentation; impulse integration continues.
 
-An `accessibility` group in `PlayerOptions` holds the player's accommodations: reduce motion and its per-effect scales, the flash limiter, and bus volumes and mono. `view_feel_scale` joins the group but keeps its top-level key. Theme variant, text scale, captions and cues, and remapped input bindings are further accommodations their owning units add to the same group later (§6; `ui.md` §1, §2). The panel (`ui.md` §4.1) carries every field the group currently holds.
+An `accessibility` group in `PlayerOptions` holds the player's accommodations: reduce motion and its per-effect scales, the flash limiter, and bus volumes and mono. `view_feel_scale` joins the group but keeps its top-level key. Theme variant, text scale, captions and cues, and the input hold-timing scale are further accommodations their owning units add to the same group later (`ui.md` §1, §2; §6). Remapped bindings are not in the group: a binding is a diff over one mod's defaults with no resolved value for a slot (§6). The panel (`ui.md` §4.1) carries every field the group currently holds.
 
 **OS seeding and resolution.** An OS-seedable field stores *unset* until the player changes it. Resolution: **player-set > OS value > engine default**. OS change events update unset fields live; an OS change never overrides a player-set value. A menu write or panel action marks a field player-set, even one that writes the value the field already resolves to; an OS value leaves it unset. Unset is an absent key: saving never writes a resolved value, and an unrecognized stored value in an OS-seedable field resolves as unset. An OS-seedable toggle cycles System → On → Off, so a player can always return to following the OS. Reduce motion is the one OS-seedable field today. The OS reader sits behind an app-side seam, polled once per frame; it reads reduced motion, OS contrast, and Windows text scale, but only reduced motion resolves an accessibility field so far — contrast and text scale are read into the same feed for the theme variant and text scale to consume once those ship (`ui.md` §1, §2). OS flashing-lights, caption, mono-audio, and screen-reader flags have no safe API and are not read; those are in-game options only.
 
@@ -73,7 +73,7 @@ An `accessibility` group in `PlayerOptions` holds the player's accommodations: r
 
 **Client-local presentation.** Preferences apply only where presentation runs on the affected player's machine — UI, screen effects, audio, captions. Simulation never reads them, and no `accessibility.*` slot or accessibility working copy replicates. In co-op each machine applies its own settings to its own screen.
 
-**Storage shape.** The accessibility fields live in an `[accessibility]` table; `view_feel_scale` keeps its top-level key. Scales and bus volumes clamp into `[0, 1]` on load. Bus volumes are linear `[0, 1]`, default 1.0, step 0.05 on the panel, mapped to decibels at the audio seam (`audio.md` §1); the App applies them at session build and on each resolved change.
+**Storage shape.** The accessibility fields live in an `[accessibility]` table; `view_feel_scale` keeps its top-level key. Scales and bus volumes clamp into `[0, 1]` on load. Decided, not yet built: `hold_timing_scale` is the first group field with its own range, `[1, 3]`, default 1.0. A motor accommodation lengthens tap and hold thresholds and never shortens them. Bus volumes are linear `[0, 1]`, default 1.0, step 0.05 on the panel, mapped to decibels at the audio seam (`audio.md` §1); the App applies them at session build and on each resolved change.
 
 **Every panel write persists like a menu write.** A panel action — the limiter's included — writes the store, marks the field written, and schedules the bridge's settled save; closing the panel flushes a pending save. A file that cannot be replaced (unreadable, or not valid TOML) takes no write: the save is a no-op, and the in-memory value still applies for the session.
 
@@ -83,12 +83,15 @@ An `accessibility` group in `PlayerOptions` holds the player's accommodations: r
 
 ## 6. Input Bindings (decided, not yet built)
 
-Bindings live in this store, per player, in `settings.toml`. Every action is remappable — keyboard/mouse and gamepad, UI navigation actions included. The action set stays engine-closed; players remap it, mods do not extend it.
+Three layers resolve each binding, per command and device class: the player's override, else the mod author's default, else the engine default (`input.md` §2). Every command is remappable — keyboard/mouse and gamepad, UI navigation included. The command set stays engine-closed. A mod picks which commands its game uses and sets their defaults in its manifest; it does not add commands.
 
-- **Per-binding fallback.** An unknown key string falls back to that binding's default without discarding other bindings or settings.
-- **Conflicts and reset.** A conflicting assignment is reported before it applies. Reset restores defaults.
-- **Guards.** Confirm and cancel can be moved but never left unbound.
+- **Game-scoped diff.** Player overrides live at `[game."<mod_id>".bindings.<device_class>]` (`keyboard_mouse`, `gamepad`), keyed by command ID, each a list of input strings. Rows store keys only, never activators: players rebind keys, and a rebound key keeps its slot's author-set activator. A missing row follows the author default, so a changed default reaches players who never rebound that command. An empty list is unbound. A row naming an unknown command is kept and ignored. The table is keyed by mod id because a diff means something only against one mod's defaults, and bare and xtask runs share the `postretro` directory. `[game."<mod_id>"]` is the home for later game-scoped settings too; top-level keys stay per app, with no `[machine]` section.
+- **Per-slot fallback.** An unknown input string falls back to that slot's author default without discarding other bindings or settings.
+- **The player wins collisions.** When a later author default lands on a key a player binding uses, the player keeps the key, the author default is suppressed there, and the remapping panel flags the displaced command. Nothing the player chose changes silently.
+- **Conflicts and reset.** Conflicts are checked among commands live in the same context and reported before they apply. Reset restores the author's defaults.
+- **Guards.** Confirm, cancel, and menu can be moved but never left unbound on a device class.
 - **Capture.** A rebind capture receives raw input the UI otherwise swallows (`input.md` §5).
+- **Neighbouring options.** `gamepad_look_sensitivity`, `gamepad_look_dead_zone`, `gamepad_invert_y`, `sprint_mode` (`hold`/`toggle`), and `swap_confirm_cancel` are top-level keys beside their mouse and crouch siblings, not group fields.
 
 ---
 

@@ -185,8 +185,9 @@ Limiter write verdicts (AC 7):
 - Nested focus groups reachable by navigation: a focus-policy container inside another group is today reachable only by pointer, `focusNeighbors`, or `initialFocus`, and focus cannot leave it by policy. The tabbed pattern (tab strip group above a panel group) is the first consumer and pins the enter/exit rule.
 - Device-family button-prompt glyphs following input mode; confirm/cancel layout swap option; on-screen-keyboard shortcuts.
 - Confirmation dialogs for destructive actions, default focus on the safe choice.
-- Full remapping — keyboard/mouse and gamepad, UI nav actions included — with conflict detection, reset, a guard keeping confirm and cancel bound (AC 21), and a raw-capture input path. UI dispatch still precedes action mapping; it reads nav intents from the binding table (Prior commitments, `input.md` §7).
-- Gamepad look sensitivity, dead zone, invert-Y; generalized hold/toggle (sprint) on the crouch-mode pattern.
+- Full remapping — keyboard/mouse and gamepad, UI nav actions included — with conflict detection, reset, a guard keeping confirm, cancel, and menu bound (AC 21), and a raw-capture input path. UI dispatch still precedes action mapping; it reads nav intents from the binding table (Prior commitments, `input.md` §7).
+- A game-author binding layer (owner, 2026-10-04): a manifest `input` block picks the game's commands and sets default bindings per device class, each with an activator (press, release, tap, hold) that the author fixes; relevance is derived from the mod's descriptors with an author override; players rebind keys on top, saved as a per-mod diff under `[game."<mod_id>"]`. The command set stays engine-closed (Out of scope). Decisions in the U3 brief.
+- Gamepad look sensitivity, look-stick dead zone, invert-Y; generalized hold/toggle (sprint) on the crouch-mode pattern.
 
 **Depends on.** Nothing in this epic. Baseline: focus-group fix landed pre-epic (direct build). Bindings and gamepad options are fields on U1's substrate; U1 and U4 run concurrently (Concurrent landing).
 
@@ -194,9 +195,9 @@ Limiter write verdicts (AC 7):
 
 **Key acceptance.** AC 19–25; AC 2, 3a–3c, and 10 for any `accessibility` group fields it adds; AC 13's replication clause for its own fields; AC 33 if U3 lands after U4.
 
-**Brief.** `context/plans/drafts/E23--gamepad-input/` — drafted when the unit comes up.
+**Brief.** `context/plans/ready/E23--gamepad-input/`.
 
-**Brief form.** Resumable brief (`/draft-brief`): the brief's plan review sequences menu conventions (restore-on-return, engine repeat, slider acceleration, nested groups, tabs, scroll container, confirmation dialogs, glyphs, on-screen-keyboard shortcuts; AC 19, 20, 23, 24, 25) and input remapping (binding table, persisted `[bindings]`, raw capture, conflict detection, guards, gamepad look options, hold/toggle; AC 21, 22) as checkpointed stages.
+**Brief form.** Resumable brief (`/draft-brief`): the brief's plan review sequences menu conventions (restore-on-return, engine repeat, slider acceleration, nested groups, tabs, scroll container, confirmation dialogs, glyphs, on-screen-keyboard shortcuts; AC 19, 20, 23, 24, 25) and input remapping (author binding layer, binding table, per-game persisted bindings, activators, raw capture, conflict detection, guards, gamepad look options, hold/toggle; AC 21, 22) as checkpointed stages.
 
 ### U4 — Screen reader
 
@@ -279,8 +280,8 @@ Unit tag in brackets. "Manual" clauses are verified by a person on real hardware
 **U3**
 - [ ] 19. [U3] Closing a submenu returns focus to the widget that opened it with no authoring; a tree that opts out lands on its initial focus. Reopening a closed tree lands on its initial focus, not the focus it had when closed: a confirmation whose destructive choice was taken last time opens on the safe choice.
 - [ ] 20. [U3] A tap on a nav direction moves focus one step with zero repeats. A hold moves one step, then repeats after the delay at the interval, and stops on release — with no container authoring. A held slider step accelerates with hold time and clamps at its bounds without overshoot.
-- [ ] 21. [U3] A remapped binding round-trips through `settings.toml`. A UI nav action remapped to a new key or button drives menu navigation from the new input and no longer from the old one. An unknown key string falls back to that binding's default without discarding other bindings or settings. Unbinding the last confirm or last cancel binding is refused. A conflicting assignment is reported in the remapping menu before it applies. Reset restores defaults. The capture prompt receives keys and buttons the UI otherwise swallows, gamepad Select/Back included.
-- [ ] 22. [U3] Gamepad look sensitivity, the look-stick dead zone, and invert-Y change gamepad look and leave mouse look and the move stick's dead zone unchanged. Sprint in toggle mode latches on press and releases on the next press; in hold mode it follows the button.
+- [ ] 21. [U3] A remapped binding round-trips through `settings.toml` as a per-game diff over the mod author's defaults: a command the player never rebound follows a changed author default. A mod's `input` block sets the game's default bindings and activators; a command its descriptors make irrelevant is unbound and absent from the remapping menu. A UI nav action remapped to a new key or button drives menu navigation from the new input and no longer from the old one. An unknown key string falls back to that binding's default without discarding other bindings or settings. Unbinding the last confirm, cancel, or menu binding is refused. A conflicting assignment is reported in the remapping menu before it applies. Reset restores the author's defaults. The capture prompt receives keys and buttons the UI otherwise swallows, gamepad Select/Back included.
+- [ ] 22. [U3] Gamepad look sensitivity, the look-stick dead zone, and invert-Y change gamepad look and leave mouse look and the move stick's dead zone unchanged. Sprint in toggle mode latches when the command goes down and releases the next time it does; in hold mode it follows the command. The command goes down when its binding's activator resolves, so a `hold` binding latches at its threshold.
 - [ ] 23. [U3] Button-prompt glyphs match the device family of the last input and switch on the first input from another family. The confirm/cancel swap option swaps both the behavior and the glyphs.
 - [ ] 24. [U3] LB/RB switches tabs in a tabbed menu. In that menu, directional nav moves focus from the tab strip into the panel group and back out to the tab strip, with no `focusNeighbors`, `initialFocus`, or pointer. Moving focus to an off-screen child of a scroll container scrolls it into view. EXIT and QUIT open a confirmation with focus on the safe choice; cancel dismisses without acting. On-screen-keyboard shortcut buttons act without moving focus to the key they stand for.
 - [ ] 25. [U3] Manual: a gamepad-only pass completes every dev menu on Xbox and on PlayStation or Nintendo layouts.
@@ -382,10 +383,12 @@ Existing convention: TOML keys snake_case (`player_options.md` §2); slots camel
 | Focus visual field and kinds | — | — | — | U2 | names |
 | New theme tokens (text, button, panel, slider) | — | — | — | U2 | names |
 | Screen-effect color token | — | `flashScreen` and `vignette` color argument accepts a theme token beside a literal tuple | — | U2 | argument shape |
-| Gamepad look | `gamepad_look_sensitivity`, `gamepad_dead_zone`, `gamepad_invert_y` | `options.gamepadLookSensitivity`, `options.gamepadDeadZone`, `options.gamepadInvertY` | pinned by U3 brief | U3 | ranges; `accessibility` group membership |
-| Sprint mode | `sprint_mode` (`hold` / `toggle`) | `options.sprintMode` | pinned by U3 brief | U3 | `accessibility` group membership |
-| Confirm/cancel swap | `swap_confirm_cancel` | `options.swapConfirmCancel` | pinned by U3 brief | U3 | `accessibility` group membership |
-| Bindings | `[bindings]` table | — | — | U3 | table shape; physical-input string vocabulary |
+| Gamepad look | `gamepad_look_sensitivity`, `gamepad_look_dead_zone`, `gamepad_invert_y` (top-level, not in the group) | `options.gamepadLookSensitivity`, `options.gamepadLookDeadZone`, `options.gamepadInvertY` | — | U3 | ranges |
+| Sprint mode | `sprint_mode` (`hold` / `toggle`; top-level beside `crouch_mode`) | `options.sprintMode` | — | U3 | — |
+| Confirm/cancel swap | `swap_confirm_cancel` (top-level) | `options.swapConfirmCancel` | — | U3 | — |
+| Hold timing scale | `accessibility.hold_timing_scale` (in the group) | `options.holdTimingScale` | `accessibility.holdTimingScale` | U3 | range |
+| Bindings | `[game."<mod_id>".bindings.<device_class>]` rows keyed by command ID, keys only (U3 brief) | — | — | U3 | command-ID table |
+| Author binding layer | `ModManifest.input` (U3 brief §Scripting surface) | — | — | U3 | — |
 | Scroll container widget | — | — | — | U3 | names and shape |
 | Tabbed pattern / tab strip | — | — | — | U3 | names and shape |
 | Tab nav intents (LB/RB) | — | — | — | U3 | names and shape |

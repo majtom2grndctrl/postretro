@@ -38,7 +38,7 @@
 - **Where `.prm` sidecars live / materials-root derivation / mod root shape / `--baked-root` / game content in a repo outside the engine install** → `build_pipeline.md` §Baked texture mips
 - **Input format adapters / adding a new map source format / what Quake or TrenchBroom vocabulary may cross into shared compiler stages** → `build_pipeline.md` §Source-format neutrality
 - **Input handling / gamepad** → `input.md`
-- **Remapping / rebinding / key bindings / UI nav from the binding table / console menu conventions (restore focus, hold-to-repeat)** → `player_options.md` §6 · `input.md` §5, §7
+- **Remapping / rebinding / key bindings / author default bindings / command relevance / tap-hold activators / UI nav from the binding table / console menu conventions (restore focus, hold-to-repeat, tabs, scroll, glyphs)** → `player_options.md` §6 · `input.md` §2, §5, §7 · `ui.md` §4
 - **Player options / settings persistence / mouse sensitivity / invert-Y / view_feel_scale** → `player_options.md`
 - **Window modes / fullscreen / exclusive display mode / mode confirm / `--windowed`** → `player_options.md` §7 · `boot_sequence.md` §1 (Window mode) · `ui.md` §4.1
 - **Accessibility preferences / OS preference seeding / `accessibility.*` slots / reduce motion / per-field settings fallback** → `player_options.md` §5, §2

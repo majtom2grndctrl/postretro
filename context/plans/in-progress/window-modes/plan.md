@@ -84,8 +84,8 @@ All automated proofs below are planned, not run. Extend existing scenario covera
 
 | # | Task | Owner | Depends on | Status |
 |---|---|---|---|---|
-| 1 | Thin boot slice: one settings read, pending-store handoff, borderless after visibility and `--windowed` | integrating executor | — | in progress |
-| 2 | Display-mode store, fresh enumeration/re-find policy and window slot catalog | integrating executor | 1 | pending |
+| 1 | Thin boot slice: one settings read, pending-store handoff, borderless after visibility and `--windowed` | integrating executor | — | automated complete; macOS visual result pending |
+| 2 | Display-mode store, fresh enumeration/re-find policy and window slot catalog | integrating executor | 1 | in progress |
 | 3 | Live requests, engine confirm, revert lifecycle and persistence isolation | integrating executor | 2 | pending |
 | 4 | OS readback, bounded settle/fallback and generation-safe reseeding | integrating executor | 3 | pending |
 | 5 | TS/Luau action surface, generated types and dev options-menu rows | integrating executor | 4 | pending |
@@ -149,4 +149,8 @@ Use a disposable app name `postretro-window-modes-test` so the normal game's set
 
 ## Resumption
 
-Owner approval is recorded; resume Task 1. No Task is complete yet and no AC has a pass result. Check workspace free space after each numbered task/checkpoint; below 15 GB clear only Cargo incremental caches in active/workflow-owned targets, then downloaded crate archives if necessary, and recheck. Initial available space: 45 GiB.
+Owner approval is recorded. Task 1 automated proof passes; its native visual trial is pending. Resume Task 2 while collecting that external result. Check workspace free space after each numbered task/checkpoint; below 15 GB clear only Cargo incremental caches in active/workflow-owned targets, then downloaded crate archives if necessary, and recheck. Initial available space: 45 GiB.
+
+## Task proof
+
+- Task 1: `cargo check -p postretro` passed; options filter: 61 tests; session/startup filter: 58 tests; boot-mode ordering filter: 1 test; render-extent filter: 4 tests, all passed. Sandbox launch reported macOS service errors; stopped only that workflow process and relaunched with desktop access. Disposable settings under `postretro-window-modes-test`; visual outcome is not inferred from logs.

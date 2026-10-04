@@ -98,7 +98,7 @@ enum PoolSeedArg {
 /// Deferred-startup owner. Carries the raw inputs needed to construct the entire
 /// `Session` after the first visible logo frame paints. It hands its raw argv to
 /// [`Session::build`], the sole session construction site, which builds every
-/// session-lifetime field (options I/O, audio, the scripting core, input/UI/modal
+/// session-lifetime field (options completion, audio, the scripting core, input/UI/modal
 /// group, and the net endpoint). It is taken and consumed exactly once by
 /// `App::install_pending_session`; suspend/resume keeps it unconsumed until the
 /// install commits, so a resume that re-enters the splash loop never runs deferred
@@ -111,12 +111,17 @@ pub(crate) struct PendingSessionInit {
     /// Per-user directories resolved once at stage 1; every settings and
     /// `state.json` read and write takes them from here, never re-resolving.
     app_dirs: AppDirs,
+    boot_options: crate::options::boot::BootOptions,
 }
 
 impl PendingSessionInit {
+    pub(crate) fn player_options(&self) -> &crate::options::PlayerOptions {
+        self.boot_options.options()
+    }
+
     /// Construct the whole `Session` after the first logo frame and install it
     /// into `app.session`. `Session::build` runs synchronously, whole-or-nothing:
-    /// it builds options I/O, the fault-tolerant audio subsystem, the scripting
+    /// it builds options completion, the fault-tolerant audio subsystem, the scripting
     /// core + input/UI/modal group, and the net endpoint (degrading to
     /// single-player on parse/transport failure). It records the
     /// `audio_init_complete`, `script_runtime_ctor`, and `net_endpoint_complete`
@@ -139,6 +144,7 @@ impl PendingSessionInit {
             &self.raw_args,
             &app.core_root,
             &self.app_dirs,
+            self.boot_options,
             &mut app.boot_timings,
         )
         .context("failed to build session")?;
@@ -155,7 +161,7 @@ impl PendingSessionInit {
 /// Ordering: minimal pre-event-loop work (logging, boot-timing setup, raw arg
 /// collection, content-root / boot-map selection, app-name / per-user directory
 /// resolution — which can fail boot) runs first, THEN
-/// `EventLoop::new`. The entire `Session` (options I/O, audio, the scripting
+/// `EventLoop::new`. The entire `Session` (options completion, audio, the scripting
 /// bootstrap, the input/UI/modal group, and the net endpoint) is constructed
 /// post-first-pixel by `Session::build` through `PendingSessionInit`. Mod init,
 /// the hot-reload watcher, debug-UI lazy-init, and the level-load worker spawn
@@ -224,6 +230,8 @@ pub(crate) fn build_session() -> Result<BootSession> {
     let content_root = resolve_content_root(&args, map_arg.as_deref())?;
     let map_path = boot_map_path(&args, map_arg.as_deref(), &content_root)?;
     let app_dirs = resolve_app_dirs(&args)?;
+    let boot_options = crate::options::boot::BootOptions::load(app_dirs.settings_path());
+    let windowed = args.iter().any(|arg| arg == "--windowed");
     // Logged because a mismatch between this and the directory `prl-build` wrote
     // into surfaces only as per-texture placeholder warnings; the two paths in
     // the log are what makes that diagnosable.
@@ -244,7 +252,7 @@ pub(crate) fn build_session() -> Result<BootSession> {
     }
     boot_timings.record("args_parsed");
 
-    // Event loop is created AHEAD of the whole session build (options I/O, audio,
+    // Event loop is created AHEAD of the whole session build (options completion, audio,
     // the scripting bootstrap, and net-endpoint setup) so the window can come up
     // as early as practical. The entire `Session` is built post-first-pixel by
     // `PendingSessionInit::install`. See: context/lib/boot_sequence.md §1.
@@ -277,6 +285,7 @@ pub(crate) fn build_session() -> Result<BootSession> {
     let app = App {
         renderer: None,
         window_state: None,
+        window_modes: crate::app::window_modes::WindowModes::new(windowed),
         level: None,
         nav_graph: None,
         map_path,
@@ -357,6 +366,7 @@ pub(crate) fn build_session() -> Result<BootSession> {
         pending_session: Some(PendingSessionInit {
             raw_args: args,
             app_dirs,
+            boot_options,
         }),
         #[cfg(feature = "dev-tools")]
         debug_chase_agent: None,

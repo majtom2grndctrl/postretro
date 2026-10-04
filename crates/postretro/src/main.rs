@@ -666,6 +666,7 @@ pub(crate) struct App {
     renderer: Option<Renderer>,
 
     window_state: Option<WindowState>,
+    window_modes: app::window_modes::WindowModes,
     level: Option<postretro_level_loader::LevelWorld>,
     /// Runtime navigation graph, built once when a level with a baked navmesh
     /// loads. `None` when the map has no navmesh bake. Pathfinding reads this in
@@ -1780,6 +1781,18 @@ impl ApplicationHandler for App {
         // resume (resume resets to Booting and recreates the window).
         // See: context/lib/boot_sequence.md §1.
         self.boot_timings.record("window_created");
+        let options = self
+            .session
+            .as_ref()
+            .map(|session| &session.player_options)
+            .or_else(|| {
+                self.pending_session
+                    .as_ref()
+                    .map(|pending| pending.player_options())
+            });
+        if let Some(options) = options {
+            self.window_modes.apply_boot(&window, options);
+        }
 
         let mut renderer = match Renderer::new(&window) {
             Ok(r) => r,

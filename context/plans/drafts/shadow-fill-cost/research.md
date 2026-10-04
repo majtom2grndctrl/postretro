@@ -7,7 +7,9 @@ This brief merges two drafts:
 - `shadow-span-draws`, split out of `visible-span-draws` on 2026-10-03.
 - `shadow-cone-cull-parallel-dispatch`, from the #311 audit. Its full text is in history: `git show 2a4bd9eb3:context/plans/drafts/shadow-cone-cull-parallel-dispatch/index.md`.
 
-The first draft (2c9a7ca2c) restricted shadow draws to reached cells' spans, kept the GPU cull, and gated a flat per-leaf cull on measurement. `/validate-plan` returned *Reshape*: once draws are limited to reached cells, the GPU cull has almost nothing left to cull. The owner chose to make the CPU the only culler, with direct draws.
+The first draft (2c9a7ca2c) restricted shadow draws to reached cells' spans, kept the GPU cull, and gated a flat per-leaf cull on measurement. `/validate-plan` returned *Reshape*: once draws are limited to reached cells, the GPU cull has almost nothing left to cull. The owner chose to make the CPU the only culler, with direct draws (a6a67bcce).
+
+Re-validation returned *Direction sound*, with one main finding: a flat per-cell test is O(cells) per region. The owner chose the hierarchical BVH walk, with the planner in `render-cpu`.
 
 ## When a slot draws world depth
 - A warm slot skips the cull dispatch and the world draw. The skip comes from `should_dispatch_spot_cull` / `should_dispatch_cube_cull` on both frame plans, applied through the filter passed to `ShadowCullPipeline::dispatch_occupied_slots_filtered`.
@@ -54,7 +56,7 @@ Cell bounds do not contain their leaves.
 - Cell bounds come from the cell polytope: `brush_bsp.rs::make_leaf` → `leaf_bounds` → `RegionPolytope::vertex_aabb`. They have no padding and pass unchanged into `CellData`.
 - Faces are clipped by `geometry_utils::split_polygon` with `SPLIT_EPSILON = 0.1`. A vertex within 0.1 m of a splitter counts as on the plane and keeps its position, so a face can extend up to 0.1 m past its cell's polytope.
 - No test asserts that a leaf lies inside its cell. There are no orphan leaves: `every_drawable_leaf_covered_exactly_once`.
-- A union of a cell's leaf AABBs contains every triangle in the cell, so a cell whose union misses the frustum contributes no depth.
+- So reach tests leaf AABBs, which bound their triangles exactly, through the BVH walk. It never tests `CellData` bounds.
 
 ## Index contiguity
 - `geometry.rs::build_leaf_ordered_faces` emits faces in cell order, and `extract_geometry` appends indices in that order.
@@ -71,10 +73,20 @@ Cell bounds do not contain their leaves.
 - Skinned and rigid occluders (`record_skinned_depth`, `record_kinematic_movers`) set their own pipeline and buffers, cull on the CPU against `cone_frustum_planes`, and share only the light-space bind group.
 
 ## Rivals
-- **Keep the GPU cull and restrict its draws to reached spans** (the first draft). Rejected:
+Chosen: a hierarchical CPU walk of the baked BVH. The bake emits `BvhTree` (`render-data`) as a flat depth-first array. Each node has an AABB, a `skip_index` and a leaf flag; each leaf has a `cell_id` and an index range. `ComputeCullPipeline` already keeps CPU clones of the nodes and leaves. Walk cost follows reach.
+
+Rejected:
+- **A flat test of every cell's leaf-union box** (the second draft). It is O(cells) per drawing region: about 34k box tests for the hallway lift light, an estimated 0.3–0.7 ms, and milliseconds on community maps with 50k–131k cells. That repeats the Problem with a smaller constant (re-validation finding).
+- **Keep the GPU cull and restrict its draws to reached spans** (the first draft):
   - with about 1.5 leaves per cell on the hallway, the cull drops few leaves inside a reached cell;
   - a leaf it zeroes still costs a Metal draw;
   - it keeps the serial walk, about 22 MB of per-region buffers, a CPU/GPU agreement margin, and a stale-slot argument.
+- **A backend split: GPU multi-draw-indirect on Vulkan/DX12, the CPU path on Metal.** It keeps two culling paths alive for a gain nobody has measured.
+- **Light-side portal reach** (as id Tech 4 does it). It is exact for occlusion through walls, but:
+  - walk cost on slab-heavy maps is an open problem (`portal-walk-bounded-regions`);
+  - blocked portals would tie the cache key to door state.
+
+  It can be added later as a filter on top of frustum reach, and it is the natural lever if shadow-depth GPU time rises.
 - **One install-time indirect buffer holding every leaf's record** (about 165 KB). It keeps shadows on the indirect path, at one draw per leaf rather than per run.
 - **A per-region GPU candidate gather.** Rejected: new per-region GPU state.
 - **Baked padded cell bounds.** Rejected: a format change for derivable data.

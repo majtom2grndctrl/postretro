@@ -1,0 +1,6 @@
+runs/*.log
+runs/*.trace-status.txt
+runs/*.sample.txt
+runs/suspect/
+raw/
+__pycache__/

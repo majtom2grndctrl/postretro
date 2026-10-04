@@ -1,0 +1,39 @@
+{
+  "label": "campaign-before-sample",
+  "main_thread_samples": 7349,
+  "frame_ms": 17.051,
+  "paths": {
+    "hal_draw_indexed_indirect": {
+      "samples": 18,
+      "ms_per_frame": 0.0418
+    },
+    "hal_multi_draw_indexed_indirect": {
+      "samples": 0,
+      "ms_per_frame": 0.0
+    },
+    "hal_draw_indexed": {
+      "samples": 0,
+      "ms_per_frame": 0.0
+    },
+    "core_encode_render_pass": {
+      "samples": 838,
+      "ms_per_frame": 1.9443
+    },
+    "core_command_encoder_finish": {
+      "samples": 1006,
+      "ms_per_frame": 2.3341
+    },
+    "record_spot_shadow_depth": {
+      "samples": 1,
+      "ms_per_frame": 0.0023
+    },
+    "record_cube_shadow_depth": {
+      "samples": 0,
+      "ms_per_frame": 0.0
+    },
+    "shadow_reach_walk": {
+      "samples": 0,
+      "ms_per_frame": 0.0
+    }
+  }
+}

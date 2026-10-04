@@ -1,0 +1,63 @@
+{
+  "source": "/private/tmp/claude-501/-Users-dhiester-Projects-Personal-postretro/e258fc14-1482-41d9-87ad-a61aae53ee1f/scratchpad/traces/campaign-before-cleantrace-gpu.xml",
+  "camera_frames": 200,
+  "shadow_passes": {
+    "Dynamic Spot Entity Shadow Depth Pass": {
+      "count": 176,
+      "total_ms": 2.22,
+      "per_frame_ms": 0.0111
+    },
+    "Dynamic Spot World Depth Cache Pass": {
+      "count": 9,
+      "total_ms": 0.905,
+      "per_frame_ms": 0.0045
+    },
+    "Promoted Cube Entity Shadow Depth Pass": {
+      "count": 1200,
+      "total_ms": 17.682,
+      "per_frame_ms": 0.0884
+    },
+    "Promoted Spot Entity Shadow Depth Pass": {
+      "count": 200,
+      "total_ms": 11.005,
+      "per_frame_ms": 0.055
+    },
+    "Shadow Cull Pass": {
+      "count": 9,
+      "total_ms": 9.771,
+      "per_frame_ms": 0.0489
+    }
+  },
+  "shadow_total_per_frame_ms": 0.2079,
+  "all_passes_per_frame_ms": {
+    "Streamed Animated Direct SH": 3.5796,
+    "Fog Raymarch Pass": 3.2398,
+    "Textured Pass": 3.2194,
+    "Streamed SH Compose": 3.1043,
+    "Skinned Viewmodel Pass": 2.3757,
+    "GPU Execution": 2.2749,
+    "Kinematic Brush Pass": 1.786,
+    "GL/CL": 0.398,
+    "Animated LM Compose": 0.3209,
+    "Bloom Bright Pass": 0.1825,
+    "Per-frame Upload Copies": 0.1775,
+    "Bloom Horizontal Gaussian Pass": 0.1333,
+    "Candidate Cull Pass": 0.13,
+    "UI Pass": 0.0958,
+    "Promoted Cube Entity Shadow Depth Pass": 0.0884,
+    "Fog Composite Pass": 0.0812,
+    "Promoted Spot Entity Shadow Depth Pass": 0.055,
+    "Billboard Direct Scatter Compose": 0.0549,
+    "Bloom Vertical Gaussian Pass": 0.0545,
+    "Bloom Scene Composite Pass": 0.0537,
+    "Shadow Cull Pass": 0.0489,
+    "Depth Pre-Pass": 0.0484,
+    "Frame Encoder": 0.0467,
+    "Bloom Downsample Pass": 0.0384,
+    "Bloom Upsample Pass": 0.0367,
+    "(wgpu internal) PendingWrites": 0.0305,
+    "Dynamic Spot Entity Shadow Depth Pass": 0.0111,
+    "Skinned Mesh Pass": 0.0084,
+    "Dynamic Spot World Depth Cache Pass": 0.0045
+  }
+}

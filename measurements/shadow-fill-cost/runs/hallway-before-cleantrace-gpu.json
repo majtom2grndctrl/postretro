@@ -1,0 +1,63 @@
+{
+  "source": "/private/tmp/claude-501/-Users-dhiester-Projects-Personal-postretro/e258fc14-1482-41d9-87ad-a61aae53ee1f/scratchpad/traces/hallway-before-cleantrace-gpu.xml",
+  "camera_frames": 95,
+  "shadow_passes": {
+    "Dynamic Cube Entity Shadow Depth Pass": {
+      "count": 660,
+      "total_ms": 29.895,
+      "per_frame_ms": 0.3147
+    },
+    "Dynamic Cube World Depth Cache Pass": {
+      "count": 522,
+      "total_ms": 454.098,
+      "per_frame_ms": 4.78
+    },
+    "Promoted Spot Entity Shadow Depth Pass": {
+      "count": 868,
+      "total_ms": 36.212,
+      "per_frame_ms": 0.3812
+    },
+    "Promoted Spot World Depth Cache Pass": {
+      "count": 2,
+      "total_ms": 1.728,
+      "per_frame_ms": 0.0182
+    },
+    "Shadow Cull Pass": {
+      "count": 89,
+      "total_ms": 200.349,
+      "per_frame_ms": 2.1089
+    }
+  },
+  "shadow_total_per_frame_ms": 7.603,
+  "all_passes_per_frame_ms": {
+    "Bloom Bright Pass": 8.7832,
+    "GPU Execution": 7.9578,
+    "Textured Pass": 5.7273,
+    "Skinned Mesh Pass": 5.4928,
+    "Dynamic Cube World Depth Cache Pass": 4.78,
+    "Shadow Cull Pass": 2.1089,
+    "Skinned Viewmodel Pass": 1.9875,
+    "Kinematic Brush Pass": 1.7014,
+    "Streamed SH Compose": 1.5493,
+    "Streamed Animated Direct SH": 1.4509,
+    "UI Pass": 0.9265,
+    "Billboard Direct Scatter Compose": 0.5389,
+    "GL/CL": 0.4824,
+    "Promoted Spot Entity Shadow Depth Pass": 0.3812,
+    "Bloom Horizontal Gaussian Pass": 0.3403,
+    "Per-frame Upload Copies": 0.3211,
+    "Dynamic Cube Entity Shadow Depth Pass": 0.3147,
+    "Streamed Direct SH Promotion": 0.2094,
+    "Frame Encoder": 0.1957,
+    "Candidate Cull Pass": 0.1123,
+    "Bloom Scene Composite Pass": 0.0896,
+    "Bloom Vertical Gaussian Pass": 0.0748,
+    "Bloom Downsample Pass": 0.055,
+    "Bloom Upsample Pass": 0.0516,
+    "(wgpu internal) PendingWrites": 0.0453,
+    "Depth Pre-Pass": 0.04,
+    "Promoted Spot World Depth Cache Pass": 0.0182,
+    "Streamed SH Upload Copies": 0.0017,
+    "Streamed Lightmap Drain": 0.0014
+  }
+}

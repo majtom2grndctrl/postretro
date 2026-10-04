@@ -1,0 +1,127 @@
+{
+  "label": "campaign-after-clean1",
+  "binary": "/private/tmp/claude-501/-Users-dhiester-Projects-Personal-postretro/e258fc14-1482-41d9-87ad-a61aae53ee1f/scratchpad/after/postretro",
+  "map": "campaign-test.prl",
+  "engine_args": [],
+  "elapsed": 19.95,
+  "exit": -15,
+  "timing_windows": 8,
+  "foreground_all": true,
+  "screensaver_seen": false,
+  "foreground_checks": [
+    {
+      "elapsed": 0.1,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false
+    },
+    {
+      "elapsed": 1.25,
+      "windows": 0,
+      "foreground": true,
+      "screensaver": false
+    },
+    {
+      "elapsed": 2.35,
+      "windows": 0,
+      "foreground": true,
+      "screensaver": false
+    },
+    {
+      "elapsed": 3.44,
+      "windows": 0,
+      "foreground": true,
+      "screensaver": false
+    },
+    {
+      "elapsed": 4.54,
+      "windows": 0,
+      "foreground": true,
+      "screensaver": false
+    },
+    {
+      "elapsed": 5.63,
+      "windows": 1,
+      "foreground": true,
+      "screensaver": false
+    },
+    {
+      "elapsed": 6.73,
+      "windows": 1,
+      "foreground": true,
+      "screensaver": false
+    },
+    {
+      "elapsed": 7.83,
+      "windows": 2,
+      "foreground": true,
+      "screensaver": false
+    },
+    {
+      "elapsed": 8.92,
+      "windows": 2,
+      "foreground": true,
+      "screensaver": false
+    },
+    {
+      "elapsed": 10.02,
+      "windows": 3,
+      "foreground": true,
+      "screensaver": false
+    },
+    {
+      "elapsed": 11.11,
+      "windows": 4,
+      "foreground": true,
+      "screensaver": false
+    },
+    {
+      "elapsed": 12.21,
+      "windows": 4,
+      "foreground": true,
+      "screensaver": false
+    },
+    {
+      "elapsed": 13.3,
+      "windows": 5,
+      "foreground": true,
+      "screensaver": false
+    },
+    {
+      "elapsed": 14.4,
+      "windows": 5,
+      "foreground": true,
+      "screensaver": false
+    },
+    {
+      "elapsed": 15.49,
+      "windows": 6,
+      "foreground": true,
+      "screensaver": false
+    },
+    {
+      "elapsed": 16.6,
+      "windows": 6,
+      "foreground": true,
+      "screensaver": false
+    },
+    {
+      "elapsed": 17.7,
+      "windows": 7,
+      "foreground": true,
+      "screensaver": false
+    },
+    {
+      "elapsed": 18.79,
+      "windows": 7,
+      "foreground": true,
+      "screensaver": false
+    },
+    {
+      "elapsed": 19.88,
+      "windows": 8,
+      "foreground": true,
+      "screensaver": false
+    }
+  ]
+}

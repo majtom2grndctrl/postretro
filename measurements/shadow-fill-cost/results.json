@@ -1,0 +1,292 @@
+{
+  "hallway": {
+    "before": {
+      "runs": [
+        {
+          "total": 32.183,
+          "wait_acquire": 21.63,
+          "work": 10.47,
+          "render_submit": 5.554,
+          "rec_shadow_depth": 0.096,
+          "label": "hallway-before-clean1",
+          "windows_used": 6
+        },
+        {
+          "total": 32.056,
+          "wait_acquire": 21.4645,
+          "work": 10.5205,
+          "render_submit": 5.541,
+          "rec_shadow_depth": 0.0975,
+          "label": "hallway-before-clean2",
+          "windows_used": 6
+        },
+        {
+          "total": 32.491,
+          "wait_acquire": 21.6535,
+          "work": 10.561,
+          "render_submit": 5.5685,
+          "rec_shadow_depth": 0.097,
+          "label": "hallway-before-clean3",
+          "windows_used": 6
+        }
+      ],
+      "excluded": [],
+      "median_across_runs_ms": {
+        "total": 32.183,
+        "wait_acquire": 21.63,
+        "work": 10.5205,
+        "render_submit": 5.554,
+        "rec_shadow_depth": 0.097
+      },
+      "trace": {
+        "camera_frames": 95,
+        "screensaver_seen": false,
+        "shadow_total_per_frame_ms": 7.603,
+        "shadow_passes": {
+          "Dynamic Cube Entity Shadow Depth Pass": {
+            "count": 660,
+            "total_ms": 29.895,
+            "per_frame_ms": 0.3147
+          },
+          "Dynamic Cube World Depth Cache Pass": {
+            "count": 522,
+            "total_ms": 454.098,
+            "per_frame_ms": 4.78
+          },
+          "Promoted Spot Entity Shadow Depth Pass": {
+            "count": 868,
+            "total_ms": 36.212,
+            "per_frame_ms": 0.3812
+          },
+          "Promoted Spot World Depth Cache Pass": {
+            "count": 2,
+            "total_ms": 1.728,
+            "per_frame_ms": 0.0182
+          },
+          "Shadow Cull Pass": {
+            "count": 89,
+            "total_ms": 200.349,
+            "per_frame_ms": 2.1089
+          }
+        },
+        "sum_all_passes_per_frame_ms": 45.739
+      }
+    },
+    "after": {
+      "runs": [
+        {
+          "total": 26.221,
+          "wait_acquire": 17.886,
+          "work": 8.479,
+          "render_submit": 3.9025,
+          "rec_shadow_depth": 0.127,
+          "rec_shadow_reach": 0.0475,
+          "label": "hallway-after-clean1",
+          "windows_used": 6
+        },
+        {
+          "total": 25.953,
+          "wait_acquire": 17.6755,
+          "work": 8.3285,
+          "render_submit": 3.8625,
+          "rec_shadow_depth": 0.118,
+          "rec_shadow_reach": 0.047,
+          "label": "hallway-after-clean2",
+          "windows_used": 6
+        },
+        {
+          "total": 26.2165,
+          "wait_acquire": 17.8915,
+          "work": 8.343,
+          "render_submit": 3.855,
+          "rec_shadow_depth": 0.117,
+          "rec_shadow_reach": 0.046,
+          "label": "hallway-after-clean3",
+          "windows_used": 6
+        }
+      ],
+      "excluded": [],
+      "median_across_runs_ms": {
+        "total": 26.2165,
+        "wait_acquire": 17.886,
+        "work": 8.343,
+        "render_submit": 3.8625,
+        "rec_shadow_depth": 0.118,
+        "rec_shadow_reach": 0.047
+      },
+      "trace": {
+        "camera_frames": 96,
+        "screensaver_seen": false,
+        "shadow_total_per_frame_ms": 1.0872,
+        "shadow_passes": {
+          "Dynamic Cube Entity Shadow Depth Pass": {
+            "count": 816,
+            "total_ms": 40.413,
+            "per_frame_ms": 0.421
+          },
+          "Dynamic Cube World Depth Cache Pass": {
+            "count": 599,
+            "total_ms": 13.978,
+            "per_frame_ms": 0.1456
+          },
+          "Promoted Spot Entity Shadow Depth Pass": {
+            "count": 1064,
+            "total_ms": 49.944,
+            "per_frame_ms": 0.5203
+          },
+          "Promoted Spot World Depth Cache Pass": {
+            "count": 2,
+            "total_ms": 0.031,
+            "per_frame_ms": 0.0003
+          }
+        },
+        "sum_all_passes_per_frame_ms": 46.184
+      }
+    }
+  },
+  "campaign": {
+    "before": {
+      "runs": [
+        {
+          "total": 17.033,
+          "wait_acquire": 10.0125,
+          "work": 7.0095,
+          "render_submit": 3.426,
+          "rec_shadow_depth": 0.05,
+          "label": "campaign-before-clean1",
+          "windows_used": 6
+        },
+        {
+          "total": 17.051,
+          "wait_acquire": 9.8435,
+          "work": 7.2385,
+          "render_submit": 3.367,
+          "rec_shadow_depth": 0.0475,
+          "label": "campaign-before-clean2",
+          "windows_used": 6
+        },
+        {
+          "total": 17.062,
+          "wait_acquire": 10.1065,
+          "work": 7.016,
+          "render_submit": 3.4315,
+          "rec_shadow_depth": 0.05,
+          "label": "campaign-before-clean3",
+          "windows_used": 6
+        }
+      ],
+      "excluded": [],
+      "median_across_runs_ms": {
+        "total": 17.051,
+        "wait_acquire": 10.0125,
+        "work": 7.016,
+        "render_submit": 3.426,
+        "rec_shadow_depth": 0.05
+      },
+      "trace": {
+        "camera_frames": 200,
+        "screensaver_seen": false,
+        "shadow_total_per_frame_ms": 0.2079,
+        "shadow_passes": {
+          "Dynamic Spot Entity Shadow Depth Pass": {
+            "count": 176,
+            "total_ms": 2.22,
+            "per_frame_ms": 0.0111
+          },
+          "Dynamic Spot World Depth Cache Pass": {
+            "count": 9,
+            "total_ms": 0.905,
+            "per_frame_ms": 0.0045
+          },
+          "Promoted Cube Entity Shadow Depth Pass": {
+            "count": 1200,
+            "total_ms": 17.682,
+            "per_frame_ms": 0.0884
+          },
+          "Promoted Spot Entity Shadow Depth Pass": {
+            "count": 200,
+            "total_ms": 11.005,
+            "per_frame_ms": 0.055
+          },
+          "Shadow Cull Pass": {
+            "count": 9,
+            "total_ms": 9.771,
+            "per_frame_ms": 0.0489
+          }
+        },
+        "sum_all_passes_per_frame_ms": 21.679
+      }
+    },
+    "after": {
+      "runs": [
+        {
+          "total": 16.99,
+          "wait_acquire": 9.7625,
+          "work": 7.216,
+          "render_submit": 3.4755,
+          "rec_shadow_depth": 0.0485,
+          "rec_shadow_reach": 0.026,
+          "label": "campaign-after-clean1",
+          "windows_used": 6
+        },
+        {
+          "total": 16.983,
+          "wait_acquire": 9.939,
+          "work": 7.067,
+          "render_submit": 3.456,
+          "rec_shadow_depth": 0.0505,
+          "rec_shadow_reach": 0.024,
+          "label": "campaign-after-clean2",
+          "windows_used": 6
+        },
+        {
+          "total": 17.0445,
+          "wait_acquire": 9.8135,
+          "work": 7.1535,
+          "render_submit": 3.504,
+          "rec_shadow_depth": 0.0495,
+          "rec_shadow_reach": 0.025,
+          "label": "campaign-after-clean3",
+          "windows_used": 6
+        }
+      ],
+      "excluded": [],
+      "median_across_runs_ms": {
+        "total": 16.99,
+        "wait_acquire": 9.8135,
+        "work": 7.1535,
+        "render_submit": 3.4755,
+        "rec_shadow_depth": 0.0495,
+        "rec_shadow_reach": 0.025
+      },
+      "trace": {
+        "camera_frames": 200,
+        "screensaver_seen": false,
+        "shadow_total_per_frame_ms": 0.1645,
+        "shadow_passes": {
+          "Dynamic Spot Entity Shadow Depth Pass": {
+            "count": 175,
+            "total_ms": 2.484,
+            "per_frame_ms": 0.0124
+          },
+          "Dynamic Spot World Depth Cache Pass": {
+            "count": 9,
+            "total_ms": 0.242,
+            "per_frame_ms": 0.0012
+          },
+          "Promoted Cube Entity Shadow Depth Pass": {
+            "count": 1206,
+            "total_ms": 18.02,
+            "per_frame_ms": 0.0901
+          },
+          "Promoted Spot Entity Shadow Depth Pass": {
+            "count": 201,
+            "total_ms": 12.162,
+            "per_frame_ms": 0.0608
+          }
+        },
+        "sum_all_passes_per_frame_ms": 21.701
+      }
+    }
+  }
+}

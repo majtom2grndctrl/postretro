@@ -1,0 +1,219 @@
+{
+  "label": "hallway-before-clean2",
+  "binary": "/private/tmp/claude-501/-Users-dhiester-Projects-Personal-postretro/e258fc14-1482-41d9-87ad-a61aae53ee1f/scratchpad/before/postretro",
+  "map": "stress-warren-hallway-inspection.prl",
+  "engine_args": [
+    "--start-pose=0,3.05,105.664,0,0"
+  ],
+  "elapsed": 36.35,
+  "exit": -15,
+  "timing_windows": 8,
+  "foreground_all": true,
+  "screensaver_seen": false,
+  "foreground_checks": [
+    {
+      "elapsed": 0.1,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false
+    },
+    {
+      "elapsed": 1.2,
+      "windows": 0,
+      "foreground": true,
+      "screensaver": false
+    },
+    {
+      "elapsed": 2.31,
+      "windows": 0,
+      "foreground": true,
+      "screensaver": false
+    },
+    {
+      "elapsed": 3.4,
+      "windows": 0,
+      "foreground": true,
+      "screensaver": false
+    },
+    {
+      "elapsed": 4.49,
+      "windows": 0,
+      "foreground": true,
+      "screensaver": false
+    },
+    {
+      "elapsed": 5.59,
+      "windows": 0,
+      "foreground": true,
+      "screensaver": false
+    },
+    {
+      "elapsed": 6.68,
+      "windows": 0,
+      "foreground": true,
+      "screensaver": false
+    },
+    {
+      "elapsed": 7.78,
+      "windows": 0,
+      "foreground": true,
+      "screensaver": false
+    },
+    {
+      "elapsed": 8.87,
+      "windows": 0,
+      "foreground": true,
+      "screensaver": false
+    },
+    {
+      "elapsed": 9.97,
+      "windows": 1,
+      "foreground": true,
+      "screensaver": false
+    },
+    {
+      "elapsed": 11.06,
+      "windows": 1,
+      "foreground": true,
+      "screensaver": false
+    },
+    {
+      "elapsed": 12.15,
+      "windows": 1,
+      "foreground": true,
+      "screensaver": false
+    },
+    {
+      "elapsed": 13.25,
+      "windows": 2,
+      "foreground": true,
+      "screensaver": false
+    },
+    {
+      "elapsed": 14.34,
+      "windows": 2,
+      "foreground": true,
+      "screensaver": false
+    },
+    {
+      "elapsed": 15.43,
+      "windows": 2,
+      "foreground": true,
+      "screensaver": false
+    },
+    {
+      "elapsed": 16.53,
+      "windows": 2,
+      "foreground": true,
+      "screensaver": false
+    },
+    {
+      "elapsed": 17.62,
+      "windows": 3,
+      "foreground": true,
+      "screensaver": false
+    },
+    {
+      "elapsed": 18.71,
+      "windows": 3,
+      "foreground": true,
+      "screensaver": false
+    },
+    {
+      "elapsed": 19.8,
+      "windows": 3,
+      "foreground": true,
+      "screensaver": false
+    },
+    {
+      "elapsed": 20.9,
+      "windows": 4,
+      "foreground": true,
+      "screensaver": false
+    },
+    {
+      "elapsed": 21.99,
+      "windows": 4,
+      "foreground": true,
+      "screensaver": false
+    },
+    {
+      "elapsed": 23.08,
+      "windows": 4,
+      "foreground": true,
+      "screensaver": false
+    },
+    {
+      "elapsed": 24.18,
+      "windows": 4,
+      "foreground": true,
+      "screensaver": false
+    },
+    {
+      "elapsed": 25.27,
+      "windows": 5,
+      "foreground": true,
+      "screensaver": false
+    },
+    {
+      "elapsed": 26.37,
+      "windows": 5,
+      "foreground": true,
+      "screensaver": false
+    },
+    {
+      "elapsed": 27.47,
+      "windows": 5,
+      "foreground": true,
+      "screensaver": false
+    },
+    {
+      "elapsed": 28.56,
+      "windows": 6,
+      "foreground": true,
+      "screensaver": false
+    },
+    {
+      "elapsed": 29.66,
+      "windows": 6,
+      "foreground": true,
+      "screensaver": false
+    },
+    {
+      "elapsed": 30.75,
+      "windows": 6,
+      "foreground": true,
+      "screensaver": false
+    },
+    {
+      "elapsed": 31.85,
+      "windows": 6,
+      "foreground": true,
+      "screensaver": false
+    },
+    {
+      "elapsed": 32.94,
+      "windows": 7,
+      "foreground": true,
+      "screensaver": false
+    },
+    {
+      "elapsed": 34.04,
+      "windows": 7,
+      "foreground": true,
+      "screensaver": false
+    },
+    {
+      "elapsed": 35.13,
+      "windows": 7,
+      "foreground": true,
+      "screensaver": false
+    },
+    {
+      "elapsed": 36.22,
+      "windows": 8,
+      "foreground": true,
+      "screensaver": false
+    }
+  ]
+}

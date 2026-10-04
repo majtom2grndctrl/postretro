@@ -1,0 +1,58 @@
+{
+  "source": "/private/tmp/claude-501/-Users-dhiester-Projects-Personal-postretro/e258fc14-1482-41d9-87ad-a61aae53ee1f/scratchpad/traces/hallway-after-cleantrace-gpu.xml",
+  "camera_frames": 96,
+  "shadow_passes": {
+    "Dynamic Cube Entity Shadow Depth Pass": {
+      "count": 816,
+      "total_ms": 40.413,
+      "per_frame_ms": 0.421
+    },
+    "Dynamic Cube World Depth Cache Pass": {
+      "count": 599,
+      "total_ms": 13.978,
+      "per_frame_ms": 0.1456
+    },
+    "Promoted Spot Entity Shadow Depth Pass": {
+      "count": 1064,
+      "total_ms": 49.944,
+      "per_frame_ms": 0.5203
+    },
+    "Promoted Spot World Depth Cache Pass": {
+      "count": 2,
+      "total_ms": 0.031,
+      "per_frame_ms": 0.0003
+    }
+  },
+  "shadow_total_per_frame_ms": 1.0872,
+  "all_passes_per_frame_ms": {
+    "Bloom Bright Pass": 9.4986,
+    "GPU Execution": 9.0875,
+    "Skinned Mesh Pass": 8.6477,
+    "Textured Pass": 5.699,
+    "Kinematic Brush Pass": 3.4656,
+    "Skinned Viewmodel Pass": 2.8101,
+    "Streamed SH Compose": 1.4425,
+    "Streamed Animated Direct SH": 1.1415,
+    "GL/CL": 0.5897,
+    "Promoted Spot Entity Shadow Depth Pass": 0.5203,
+    "Billboard Direct Scatter Compose": 0.5062,
+    "UI Pass": 0.456,
+    "Dynamic Cube Entity Shadow Depth Pass": 0.421,
+    "Per-frame Upload Copies": 0.3654,
+    "Bloom Horizontal Gaussian Pass": 0.3158,
+    "Streamed Direct SH Promotion": 0.3001,
+    "Frame Encoder": 0.2381,
+    "Dynamic Cube World Depth Cache Pass": 0.1456,
+    "Bloom Scene Composite Pass": 0.1247,
+    "Candidate Cull Pass": 0.0911,
+    "Bloom Vertical Gaussian Pass": 0.0841,
+    "Bloom Downsample Pass": 0.0617,
+    "Bloom Upsample Pass": 0.0609,
+    "Depth Pre-Pass": 0.0579,
+    "(wgpu internal) PendingWrites": 0.0507,
+    "Streamed SH Upload Copies": 0.0018,
+    "Promoted Spot World Depth Cache Pass": 0.0003,
+    "Streamed Lightmap Drain": 0.0001,
+    "(wgpu internal) Signal": 0.0001
+  }
+}

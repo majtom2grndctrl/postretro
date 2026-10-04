@@ -1,0 +1,189 @@
+{
+  "label": "hallway-after-clean3",
+  "binary": "/private/tmp/claude-501/-Users-dhiester-Projects-Personal-postretro/e258fc14-1482-41d9-87ad-a61aae53ee1f/scratchpad/after/postretro",
+  "map": "stress-warren-hallway-inspection.prl",
+  "engine_args": [
+    "--start-pose=0,3.05,105.664,0,0"
+  ],
+  "elapsed": 30.92,
+  "exit": -15,
+  "timing_windows": 8,
+  "foreground_all": true,
+  "screensaver_seen": false,
+  "foreground_checks": [
+    {
+      "elapsed": 0.1,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false
+    },
+    {
+      "elapsed": 1.22,
+      "windows": 0,
+      "foreground": true,
+      "screensaver": false
+    },
+    {
+      "elapsed": 2.32,
+      "windows": 0,
+      "foreground": true,
+      "screensaver": false
+    },
+    {
+      "elapsed": 3.4,
+      "windows": 0,
+      "foreground": true,
+      "screensaver": false
+    },
+    {
+      "elapsed": 4.5,
+      "windows": 0,
+      "foreground": true,
+      "screensaver": false
+    },
+    {
+      "elapsed": 5.59,
+      "windows": 0,
+      "foreground": true,
+      "screensaver": false
+    },
+    {
+      "elapsed": 6.69,
+      "windows": 0,
+      "foreground": true,
+      "screensaver": false
+    },
+    {
+      "elapsed": 7.78,
+      "windows": 0,
+      "foreground": true,
+      "screensaver": false
+    },
+    {
+      "elapsed": 8.88,
+      "windows": 1,
+      "foreground": true,
+      "screensaver": false
+    },
+    {
+      "elapsed": 9.97,
+      "windows": 1,
+      "foreground": true,
+      "screensaver": false
+    },
+    {
+      "elapsed": 11.07,
+      "windows": 1,
+      "foreground": true,
+      "screensaver": false
+    },
+    {
+      "elapsed": 12.16,
+      "windows": 2,
+      "foreground": true,
+      "screensaver": false
+    },
+    {
+      "elapsed": 13.26,
+      "windows": 2,
+      "foreground": true,
+      "screensaver": false
+    },
+    {
+      "elapsed": 14.36,
+      "windows": 2,
+      "foreground": true,
+      "screensaver": false
+    },
+    {
+      "elapsed": 15.45,
+      "windows": 3,
+      "foreground": true,
+      "screensaver": false
+    },
+    {
+      "elapsed": 16.55,
+      "windows": 3,
+      "foreground": true,
+      "screensaver": false
+    },
+    {
+      "elapsed": 17.65,
+      "windows": 3,
+      "foreground": true,
+      "screensaver": false
+    },
+    {
+      "elapsed": 18.74,
+      "windows": 4,
+      "foreground": true,
+      "screensaver": false
+    },
+    {
+      "elapsed": 19.84,
+      "windows": 4,
+      "foreground": true,
+      "screensaver": false
+    },
+    {
+      "elapsed": 20.94,
+      "windows": 5,
+      "foreground": true,
+      "screensaver": false
+    },
+    {
+      "elapsed": 22.03,
+      "windows": 5,
+      "foreground": true,
+      "screensaver": false
+    },
+    {
+      "elapsed": 23.13,
+      "windows": 5,
+      "foreground": true,
+      "screensaver": false
+    },
+    {
+      "elapsed": 24.23,
+      "windows": 6,
+      "foreground": true,
+      "screensaver": false
+    },
+    {
+      "elapsed": 25.32,
+      "windows": 6,
+      "foreground": true,
+      "screensaver": false
+    },
+    {
+      "elapsed": 26.42,
+      "windows": 6,
+      "foreground": true,
+      "screensaver": false
+    },
+    {
+      "elapsed": 27.51,
+      "windows": 7,
+      "foreground": true,
+      "screensaver": false
+    },
+    {
+      "elapsed": 28.6,
+      "windows": 7,
+      "foreground": true,
+      "screensaver": false
+    },
+    {
+      "elapsed": 29.7,
+      "windows": 7,
+      "foreground": true,
+      "screensaver": false
+    },
+    {
+      "elapsed": 30.8,
+      "windows": 8,
+      "foreground": true,
+      "screensaver": false
+    }
+  ]
+}

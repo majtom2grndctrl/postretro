@@ -1,0 +1,39 @@
+{
+  "label": "hallway-after-sample",
+  "main_thread_samples": 7345,
+  "frame_ms": 26.2165,
+  "paths": {
+    "hal_draw_indexed_indirect": {
+      "samples": 3,
+      "ms_per_frame": 0.0107
+    },
+    "hal_multi_draw_indexed_indirect": {
+      "samples": 0,
+      "ms_per_frame": 0.0
+    },
+    "hal_draw_indexed": {
+      "samples": 0,
+      "ms_per_frame": 0.0
+    },
+    "core_encode_render_pass": {
+      "samples": 653,
+      "ms_per_frame": 2.3308
+    },
+    "core_command_encoder_finish": {
+      "samples": 775,
+      "ms_per_frame": 2.7662
+    },
+    "record_spot_shadow_depth": {
+      "samples": 0,
+      "ms_per_frame": 0.0
+    },
+    "record_cube_shadow_depth": {
+      "samples": 0,
+      "ms_per_frame": 0.0
+    },
+    "shadow_reach_walk": {
+      "samples": 8,
+      "ms_per_frame": 0.0286
+    }
+  }
+}

@@ -122,6 +122,16 @@ Or start the launcher (`<package name>-sdk.bat` on Windows). Either way the
 working directory ends up pinned to the bundle root, which is what makes the
 content paths resolve.
 
+## Where the bundle keeps its data
+
+The bundle is its own project: the `postretro.toml` at its root names the
+package `<package name>-sdk`, the bundle's folder name. Its launcher and
+`bin/postretro-tool run` keep settings and saved state under that name — see
+"Where player data lives" in [docs/distribution.md](distribution.md) for the
+directory on each platform. Your test runs therefore never touch the saves of
+the installed game, and the bundle does not start with that game's settings
+either.
+
 ## The authoring loop
 
 1. **Author a level in TrenchBroom.** Load `sdk/TrenchBroom/postretro.fgd` as
@@ -228,6 +238,13 @@ bin/postretro-tool dist
 ```
 
 That is the whole command. No repository, no toolchain — the tool runs the
-binaries already sitting in `bin/`. See [docs/distribution.md](distribution.md)
+binaries already sitting in `bin/`.
+
+**Rename the package first if you are shipping your own game.** A payload built
+from the bundle as it arrives is named `<package name>-sdk`, and its players'
+settings and saves live under that name. Set `name` in the bundle's
+`postretro.toml` to your game's own name before your first release: renaming it
+afterwards strands every player's settings, `player_id` and saves under the old
+name. See [docs/distribution.md](distribution.md)
 for choosing levels, zipping and sending the payload, and what recipients should
 expect.

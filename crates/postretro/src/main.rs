@@ -1683,7 +1683,7 @@ fn save_connected_client_per_owner_state(session: &mut crate::session::Session) 
         return;
     };
     let mod_id = mod_id.to_owned();
-    let Some(state_path) = state_path(&mod_id) else {
+    let Some(state_path) = state_path(session.data_dir.as_deref(), &mod_id) else {
         if session.state_store_lifecycle.disable_persistence() {
             log::warn!(
                 "[State] platform data directory is unavailable; persistent state is disabled for this run"
@@ -4805,7 +4805,7 @@ impl ApplicationHandler for App {
                     .committed_store_slots()
                     .clone();
                 let script_ctx = session.scripting.script_ctx.clone();
-                if let Some(state_path) = state_path(&mod_id) {
+                if let Some(state_path) = state_path(session.data_dir.as_deref(), &mod_id) {
                     let mut collected = collect_persisted_state(
                         &script_ctx.slot_table.borrow(),
                         identity.as_ref(),

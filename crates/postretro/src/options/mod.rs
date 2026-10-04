@@ -6,7 +6,6 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 
 use crate::input::DEFAULT_MOUSE_SENSITIVITY;
@@ -49,8 +48,9 @@ pub(crate) mod keys {
     pub(crate) const ACCESSIBILITY_PANEL_SHOWN: &str = "accessibility_panel_shown";
 }
 
-/// Filename written into the platform config directory.
-const SETTINGS_FILENAME: &str = "settings.toml";
+/// Filename written into the platform config directory
+/// (`startup::app_dirs::AppDirs::settings_path`).
+pub(crate) const SETTINGS_FILENAME: &str = "settings.toml";
 const DEFAULT_SCROLL_NOTCH_PIXELS: f32 = 120.0;
 const MAX_SCROLL_NOTCH_PIXELS: f32 = 4_096.0;
 const MAX_SWITCH_CYCLE_DWELL_MS: u32 = 60_000;
@@ -448,15 +448,6 @@ fn tmp_path_for(path: &Path) -> PathBuf {
     let mut name = path.file_name().unwrap_or_default().to_os_string();
     name.push(".tmp");
     path.with_file_name(name)
-}
-
-/// Resolve the on-disk settings path: `<platform config dir>/settings.toml`.
-///
-/// Kept separate from `load`/`save` so tests inject a temp path instead of
-/// touching the real user config directory. Returns `None` if the platform
-/// provides no config directory (rare; caller decides the fallback).
-pub fn settings_path() -> Option<PathBuf> {
-    ProjectDirs::from("", "", "postretro").map(|dirs| dirs.config_dir().join(SETTINGS_FILENAME))
 }
 
 #[cfg(test)]

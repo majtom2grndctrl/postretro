@@ -4445,7 +4445,6 @@ dependencies = [
 name = "postretro-sim"
 version = "0.1.0"
 dependencies = [
- "directories",
  "env_logger",
  "glam",
  "log",

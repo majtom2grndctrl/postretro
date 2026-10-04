@@ -501,7 +501,7 @@ impl App {
                         .script_runtime
                         .committed_store_slots()
                         .clone();
-                    if let Some(state_path) = state_path(&mod_id) {
+                    if let Some(state_path) = state_path(session.data_dir.as_deref(), &mod_id) {
                         match load_persisted_state(&state_path) {
                             Ok(Some(persisted)) => {
                                 let is_connected_client = matches!(

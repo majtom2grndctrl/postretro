@@ -1,11 +1,11 @@
 # window-modes — plan of record
 
 mode: resumable
-status: proposed
+status: approved
 read at: 2a4bd9eb3
 branch: window-modes
 
-Implementation waits for the owner's plan skim under `build-brief`. The claim was pushed to `main` as `2a4bd9eb3`. Decisions and Acceptance remain the brief's contract; the identifiers below are planning labels, not rewritten acceptance.
+Owner approved this plan in chat on 2026-10-04. The claim was pushed to `main` as `2a4bd9eb3`. Decisions and Acceptance remain the brief's contract; the identifiers below are planning labels, not rewritten acceptance.
 
 ## Corrections
 
@@ -84,7 +84,7 @@ All automated proofs below are planned, not run. Extend existing scenario covera
 
 | # | Task | Owner | Depends on | Status |
 |---|---|---|---|---|
-| 1 | Thin boot slice: one settings read, pending-store handoff, borderless after visibility and `--windowed` | integrating executor | — | pending owner approval |
+| 1 | Thin boot slice: one settings read, pending-store handoff, borderless after visibility and `--windowed` | integrating executor | — | in progress |
 | 2 | Display-mode store, fresh enumeration/re-find policy and window slot catalog | integrating executor | 1 | pending |
 | 3 | Live requests, engine confirm, revert lifecycle and persistence isolation | integrating executor | 2 | pending |
 | 4 | OS readback, bounded settle/fallback and generation-safe reseeding | integrating executor | 3 | pending |
@@ -149,4 +149,4 @@ Use a disposable app name `postretro-window-modes-test` so the normal game's set
 
 ## Resumption
 
-The next action is the owner's plan review. After approval, commit `status: approved` before Task 1. No Task is complete yet and no AC has a pass result. Check workspace free space after each numbered task/checkpoint; below 15 GB clear only Cargo incremental caches in active/workflow-owned targets, then downloaded crate archives if necessary, and recheck. Initial available space: 45 GiB.
+Owner approval is recorded; resume Task 1. No Task is complete yet and no AC has a pass result. Check workspace free space after each numbered task/checkpoint; below 15 GB clear only Cargo incremental caches in active/workflow-owned targets, then downloaded crate archives if necessary, and recheck. Initial available space: 45 GiB.

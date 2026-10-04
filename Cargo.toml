@@ -164,9 +164,9 @@ windows = { version = "0.62", features = ["UI_ViewManagement"] }
 # Scripting runtimes (embedded). Default features; `parallel` OFF — scripting
 # is single-threaded, `Runtime: Send` is not required. See
 # context/plans/in-progress/scripting-foundation/plan-1-runtime-foundation.md §Sub-plan 2.
-rquickjs = { version = "0.11", default-features = true }
+rquickjs = { version = "0.14", default-features = true }
 # `luau` auto-enables vendored mode; do NOT list `vendored` redundantly.
-mlua = { version = "0.11", features = ["luau", "serde"] }
+mlua = { version = "0.12", features = ["luau", "serde"] }
 
 # Filesystem watcher (dev-mode hot reload). See
 # context/plans/in-progress/scripting-foundation/plan-1-runtime-foundation.md §Sub-plan 7.

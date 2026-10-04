@@ -741,16 +741,17 @@ fn run_staged_mod_init_luau(
         require_tracker,
     )?;
 
-    let bytecode = mlua::Compiler::new()
-        .compile(source)
-        .map_err(|e| ScriptError::ScriptThrew {
-            msg: e.to_string(),
-            source_name: source_path.to_string(),
-        })?;
+    let bytecode =
+        mlua::chunk::Compiler::new()
+            .compile(source)
+            .map_err(|e| ScriptError::ScriptThrew {
+                msg: e.to_string(),
+                source_name: source_path.to_string(),
+            })?;
     let returned = lua
         .load(&bytecode)
         .set_name(source_path)
-        .set_mode(mlua::ChunkMode::Binary)
+        .set_mode(mlua::chunk::ChunkMode::Binary)
         .eval::<mlua::Value>()
         .map_err(|e| ScriptError::ScriptThrew {
             msg: format!("returned mod manifest initialization failed: {e}"),

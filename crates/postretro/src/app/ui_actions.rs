@@ -67,10 +67,11 @@ pub(crate) fn apply_pause_menu_nav_policy(modal_stack: &mut postretro_ui::modal_
     }
 }
 
-/// Running `nav.cancel`: close the active `pauseMenu` or accessibility panel,
-/// or a submenu pushed above the pause menu or the frontend root — the same
-/// rule the frontend uses, so a submenu opened from the pause menu (the options
-/// screen) returns to it. Other trees own their own cancel policy.
+/// Running `nav.cancel`: close the active `pauseMenu`, accessibility panel, or
+/// engine display-mode confirmation (reverting its pending change); also close
+/// a submenu pushed above the pause menu or frontend root. A submenu opened from
+/// the pause menu (the options screen) returns to it. Other trees own their own
+/// cancel policy.
 /// `close_frontend_submenu` is the frontend's verdict: its root is pushed and is
 /// not on top.
 pub(crate) fn apply_running_cancel_policy(
@@ -171,6 +172,17 @@ impl App {
     /// named-reaction path, so gamepad confirm and pointer click produce the same
     /// observable effect.
     pub(crate) fn fire_focused_button_activation(&mut self, focused_id: Option<&str>) {
+        self.fire_focused_button_activation_with_display_mode(focused_id, |app, action| {
+            app.apply_display_mode_action(action);
+        });
+    }
+
+    /// Keep activation routing shared with adapters that supply a window backend.
+    pub(crate) fn fire_focused_button_activation_with_display_mode(
+        &mut self,
+        focused_id: Option<&str>,
+        apply_display_mode: impl FnOnce(&mut Self, postretro_ui::actions::DisplayModeAction),
+    ) {
         let on_press = focused_button_on_press(
             self.session
                 .as_ref()
@@ -179,13 +191,13 @@ impl App {
         );
         if let Some(on_press) = on_press {
             if let Some(action) = postretro_ui::actions::parse_display_mode_action(&on_press) {
-                self.apply_display_mode_action(action.op());
+                apply_display_mode(self, action);
                 return;
             }
             if on_press == postretro_ui::actions::CLOSE_DIALOG_ACTION
                 && self.display_mode_confirm_is_top()
             {
-                self.apply_display_mode_action("revert");
+                apply_display_mode(self, postretro_ui::actions::DisplayModeAction::Revert);
                 return;
             }
             if on_press == postretro_ui::actions::OPEN_ACCESSIBILITY_ACTION {

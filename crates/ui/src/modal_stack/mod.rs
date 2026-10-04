@@ -18,13 +18,15 @@ use super::descriptor::{AnchoredTree, CaptureMode};
 use postretro_scripting_core::data_descriptors::RegisteredUiTree;
 pub use registry::{ScopeTier, UiTreeRegistry};
 
+/// Opaque identity for one modal-stack push. Clearing and reopening a tree
+/// creates a new instance, so an old identity cannot refer to the new push.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ModalInstance(u64);
+
 /// One tree currently on the modal stack: its registry name, the descriptor
 /// instance pushed, and the optional `onCommit` reaction carried from the
 /// `PushTree` that opened it. `on_commit` is carried on the stack entry; the App
 /// fires it from the text-entry commit path.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ModalInstance(u64);
-
 #[derive(Debug, Clone, PartialEq)]
 struct StackedTree {
     instance: ModalInstance,

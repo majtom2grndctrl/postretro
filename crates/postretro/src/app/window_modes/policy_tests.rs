@@ -5,7 +5,7 @@ use super::policy::*;
 use crate::options::{DisplayMode, PlayerOptions, WindowMode};
 use std::{cell::RefCell, time::Instant};
 
-fn mode(width: u32, rate: u32, monitor: &str) -> DisplayMode {
+pub(super) fn mode(width: u32, rate: u32, monitor: &str) -> DisplayMode {
     DisplayMode {
         width,
         height: 720,
@@ -16,11 +16,11 @@ fn mode(width: u32, rate: u32, monitor: &str) -> DisplayMode {
 }
 
 #[derive(Default)]
-struct FakeBackend {
-    modes: RefCell<Vec<DisplayMode>>,
-    actual: Target,
-    requests: Vec<Target>,
-    wayland: bool,
+pub(super) struct FakeBackend {
+    pub(super) modes: RefCell<Vec<DisplayMode>>,
+    pub(super) actual: Target,
+    pub(super) requests: Vec<Target>,
+    pub(super) wayland: bool,
 }
 impl Backend for FakeBackend {
     fn enumerate(&self) -> Vec<DisplayMode> {

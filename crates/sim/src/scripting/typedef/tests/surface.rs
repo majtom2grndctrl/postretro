@@ -1,5 +1,50 @@
 use super::*;
 
+// Regression: stripping UI globals removed the display-mode declaration used
+// by the generated module's typeof, leaving its closed operation type unresolved.
+#[test]
+fn display_mode_typedefs_preserve_closed_operations_without_bare_global_references() {
+    let registry = mini_registry();
+    let ts = generate_typescript(&registry);
+    let luau = generate_luau(&registry);
+    let sdk = include_str!("../../../../../../sdk/lib/ui/reactions.luau");
+    let alias_prefix = "export type DisplayModeOperation = ";
+    let sdk_alias = sdk
+        .lines()
+        .find(|line| line.starts_with(alias_prefix))
+        .expect("runtime SDK declares its display-mode operation vocabulary");
+
+    for output in [&ts, &luau] {
+        let aliases: Vec<_> = output
+            .lines()
+            .map(str::trim)
+            .filter(|line| line.starts_with(alias_prefix))
+            .collect();
+        assert_eq!(aliases.len(), 1, "operation alias must be declared once");
+        assert_eq!(
+            aliases[0].trim_end_matches(';'),
+            sdk_alias,
+            "generated operations must match the runtime SDK's closed vocabulary"
+        );
+    }
+
+    assert!(
+        luau.contains("displayModeAction: (op: DisplayModeOperation) -> string,"),
+        "the Luau module member must reference the surviving operation alias directly"
+    );
+    assert!(
+        !luau.contains("typeof(displayModeAction)")
+            && !luau.contains("declare function displayModeAction("),
+        "the Luau UI helper must not depend on or expose a bare global"
+    );
+    assert!(
+        ts_module_block(&ts, "postretro/ui").contains(
+            "export function displayModeAction<O extends DisplayModeOperation>(op: O): `ui.displayMode.${O}`;"
+        ),
+        "TypeScript must preserve the selected operation in the action wire type"
+    );
+}
+
 /// `defineReaction` (M13 G1a) widens to accept an optional `name`: both the
 /// `(body)` overload (deterministic auto-id) and the `(name, body)` overload
 /// surface in the root TypeScript output, and the Luau UI module prop types

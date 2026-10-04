@@ -667,9 +667,9 @@ impl Session {
     }
 }
 
-/// Load persisted options and ensure a durable device identity exists when it
-/// can be saved. Called only by [`Session::build`], never by `PlayerOptions::load`,
-/// so pure loading and sanitization remain deterministic.
+/// Test helper that completes a boot-options preload, including identity and
+/// persistence behavior. Production consumes the preloaded owner after the
+/// first present; pure `PlayerOptions::load` remains deterministic.
 #[cfg(test)]
 fn load_player_options(settings_path: Option<&Path>) -> options::PlayerOptions {
     options::boot::BootOptions::load(settings_path.map(Path::to_path_buf))

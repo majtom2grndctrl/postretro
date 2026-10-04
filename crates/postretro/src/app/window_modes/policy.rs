@@ -61,14 +61,18 @@ impl Controller {
     }
 
     pub(super) fn refresh(&mut self, backend: &impl Backend, options: &PlayerOptions) {
-        self.choices = backend.enumerate();
-        self.choices.sort();
-        self.choices.dedup();
+        self.refresh_choices(backend);
         self.picked = options
             .display_mode
             .as_ref()
             .filter(|mode| self.choices.contains(mode))
             .cloned();
+    }
+
+    fn refresh_choices(&mut self, backend: &impl Backend) {
+        self.choices = backend.enumerate();
+        self.choices.sort();
+        self.choices.dedup();
     }
 
     pub(super) fn apply(&mut self, backend: &mut impl Backend, target: Target, now: Instant) {
@@ -77,6 +81,9 @@ impl Controller {
         self.effective = if applied {
             target
         } else {
+            log::warn!(
+                "[Window] exclusive display mode is unavailable on the current monitor; using borderless for this session"
+            );
             Target {
                 mode: WindowMode::Borderless,
                 display: None,
@@ -216,7 +223,11 @@ impl Controller {
             return Change::None;
         };
         self.apply(backend, pending.prior, now);
-        self.picked = pending.prior_picked;
+        // The prior display may have disappeared while the confirm was open.
+        self.refresh_choices(backend);
+        self.picked = pending
+            .prior_picked
+            .filter(|mode| self.choices.contains(mode));
         Change::Reverted
     }
 
@@ -269,11 +280,13 @@ impl Controller {
         if self.pending.is_some() || self.fallback || *actual == self.baseline {
             return Change::None;
         }
-        self.baseline.clone_from(actual);
-        self.effective.clone_from(actual);
         let Some(options) = options else {
+            // Before session installation, keep this reading available for the
+            // first frame that can accept and save it.
             return Change::None;
         };
+        self.baseline.clone_from(actual);
+        self.effective.clone_from(actual);
         options.window_mode = actual.mode;
         options.mark_written(crate::options::keys::WINDOW_MODE);
         if let Some(mode) = &actual.display {

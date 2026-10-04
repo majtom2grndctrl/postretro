@@ -1855,7 +1855,7 @@ impl ApplicationHandler for App {
     }
 
     fn suspended(&mut self, _event_loop: &ActiveEventLoop) {
-        self.apply_display_mode_action("revert");
+        self.apply_display_mode_action(postretro_ui::actions::DisplayModeAction::Revert);
         // Audit which boot phase a suspend interrupts. The resume path resets to
         // `Booting` and re-drives the splash loop; the single-commit guards
         // (`pending_session.take`, renderer full-ready idempotence) keep session
@@ -2101,12 +2101,12 @@ impl ApplicationHandler for App {
                 // CPU stage timing: frontend and early-returned frames never
                 // commit. See: context/lib/rendering_pipeline.md §12
                 self.cpu_timer.begin_frame(now);
+                let cpu_stages = self.cpu_timer.stages();
+                let stage_scope = cpu_stages.scope(cpu_timing::FrameStage::Housekeeping);
                 // OS preference replies land ahead of the Input stage, so a
                 // player write later this frame wins over them (UO1).
                 self.poll_os_preferences();
                 self.poll_window_mode_readback();
-                let cpu_stages = self.cpu_timer.stages();
-                let stage_scope = cpu_stages.scope(cpu_timing::FrameStage::Housekeeping);
 
                 #[cfg(feature = "observe-live")]
                 self.drain_observe_live_requests();
@@ -12449,8 +12449,13 @@ mod tests {
                 "optionsTabGraphics",
                 "graphics",
                 "optionsPanelGraphics",
-                8,
+                12,
                 &[
+                    "optionsWindowed",
+                    "optionsBorderless",
+                    "optionsExclusive",
+                    "displayModePrev",
+                    "displayModeNext",
                     "optionsShadowLow",
                     "optionsShadowMedium",
                     "optionsShadowHigh",
@@ -12667,6 +12672,77 @@ mod tests {
             }
         );
         assert_eq!(checked.equals, Some(PredicateValue::String("high".into())));
+
+        let graphics_panel = find_by_id(&options_tree.root, "optionsPanelGraphics")
+            .expect("graphics panel is in the options tree");
+        for (id, value) in [
+            ("optionsWindowed", "windowed"),
+            ("optionsBorderless", "borderless"),
+            ("optionsExclusive", "exclusive"),
+        ] {
+            let button = find_button(graphics_panel, id)
+                .unwrap_or_else(|| panic!("{id} is a window-mode radio button"));
+            assert_eq!(button.role, Some(Role::Radio));
+            let checked = button
+                .checked
+                .as_ref()
+                .expect("radio exposes checked state");
+            assert_eq!(button.bind.as_ref(), Some(checked));
+            assert_eq!(
+                checked.source,
+                BindSource::Slot {
+                    slot: "options.windowMode".into()
+                }
+            );
+            assert_eq!(checked.equals, Some(PredicateValue::String(value.into())));
+            assert_eq!(
+                button.on_press,
+                format!("frontend.options.windowMode.{value}")
+            );
+            let reaction = manifest
+                .reactions
+                .iter()
+                .find(|reaction| reaction.reaction.name == button.on_press)
+                .unwrap_or_else(|| panic!("{id} names a registered reaction"));
+            let ReactionDescriptor::Primitive(primitive) = &reaction.reaction.descriptor else {
+                panic!("{id} reaction is a primitive");
+            };
+            assert_eq!(primitive.primitive, "setState");
+            assert_eq!(
+                primitive.args,
+                serde_json::json!({ "slot": "options.windowMode", "value": value })
+            );
+        }
+        for (id, action) in [
+            ("displayModePrev", "ui.displayMode.previous"),
+            ("displayModeNext", "ui.displayMode.next"),
+        ] {
+            assert_eq!(button_action(graphics_panel, id), Some(action));
+        }
+        assert!(find_by_id(graphics_panel, "optionsDisplayModeLabel").is_some());
+        let mut display_bindings = Vec::new();
+        let mut panel_widgets = Vec::new();
+        collect_widgets(graphics_panel, &mut panel_widgets);
+        for widget in panel_widgets {
+            if let Widget::Text(text) = widget {
+                if let Some(bind) = &text.bind {
+                    if let BindSource::Slot { slot } = &bind.source {
+                        if slot.starts_with("window.displayMode") {
+                            display_bindings.push(slot.as_str());
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            display_bindings,
+            [
+                "window.displayModeWidth",
+                "window.displayModeHeight",
+                "window.displayModeRefreshHz"
+            ],
+            "the display-mode row presents its size and refresh from readonly window slots",
+        );
 
         let reaction = manifest
             .reactions
@@ -13963,6 +14039,29 @@ mod tests {
             Some(&SlotValue::String(String::new())),
             "engine-owned ui.textEntry defaults to empty string and is cloned",
         );
+        assert_eq!(
+            snapshot.get("options.windowMode"),
+            Some(&SlotValue::Enum("windowed".to_string())),
+            "window-mode working copy defaults to the windowed enum",
+        );
+        for slot in [
+            "window.displayModeWidth",
+            "window.displayModeHeight",
+            "window.displayModeRefreshHz",
+            "window.displayModeBitDepth",
+            "window.displayModeRevertSeconds",
+        ] {
+            assert_eq!(
+                snapshot.get(slot),
+                Some(&SlotValue::Number(0.0)),
+                "engine-owned {slot} is a value-bearing number defaulting to zero",
+            );
+        }
+        assert_eq!(
+            snapshot.get("window.displayModeMonitor"),
+            Some(&SlotValue::String(String::new())),
+            "engine-owned window.displayModeMonitor is an empty string when no mode is picked",
+        );
         // `screen.vignette`/`screen.shake` default to zeroed arrays, so they are
         // value-bearing and present (the screen-effects resolve reads them).
         assert_eq!(
@@ -13997,8 +14096,8 @@ mod tests {
         );
         assert_eq!(
             snapshot.len(),
-            41,
-            "only the set player.health and default-valued reload-feedback + local weapon display and charge + weapon-resource kind and overheat latch + player.spread + screen effects + input.mode + ui.textEntry + fifteen options slots + ten accessibility slots appear",
+            48,
+            "only value-bearing player, screen, input, UI, options, accessibility and window slots appear, plus the explicitly set player.health",
         );
     }
 

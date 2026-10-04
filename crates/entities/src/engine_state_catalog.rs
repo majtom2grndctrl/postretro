@@ -1205,6 +1205,7 @@ mod tests {
                 "options.surfaceDepthQuality",
                 "options.uiVolume",
                 "options.viewFeelScale",
+                "options.windowMode",
                 "player.ammo",
                 "player.ammoReserve",
                 "player.cell",
@@ -1229,6 +1230,12 @@ mod tests {
                 "screen.vignette",
                 "session.openSeats",
                 "ui.textEntry",
+                "window.displayModeBitDepth",
+                "window.displayModeHeight",
+                "window.displayModeMonitor",
+                "window.displayModeRefreshHz",
+                "window.displayModeRevertSeconds",
+                "window.displayModeWidth",
             ]
         );
 
@@ -1255,6 +1262,7 @@ mod tests {
             "options.musicVolume",
             "options.uiVolume",
             "options.monoAudio",
+            "options.windowMode",
         ] {
             let entry = entries
                 .iter()
@@ -1263,6 +1271,74 @@ mod tests {
             assert_eq!(entry.capability, EngineStateCapability::Writable);
             assert_eq!(entry.network, ReplicationScope::None);
             assert!(!entry.persist, "PlayerOptions owns settings persistence");
+        }
+
+        let window_mode = entries
+            .iter()
+            .find(|entry| entry.wire_name == "options.windowMode")
+            .unwrap();
+        assert_eq!(window_mode.sdk_path, &["options", "windowMode"]);
+        assert_eq!(
+            window_mode.value_type,
+            EngineStateValueType::Enum {
+                values: &["windowed", "borderless", "exclusive"]
+            }
+        );
+        assert_eq!(window_mode.default, EngineStateDefault::Enum("windowed"));
+        assert_eq!(window_mode.range, None);
+        assert_eq!(window_mode.capability, EngineStateCapability::Writable);
+        assert_eq!(window_mode.network, ReplicationScope::None);
+        assert!(!window_mode.persist);
+
+        for (wire_name, sdk_path, value_type, default) in [
+            (
+                "window.displayModeWidth",
+                &["window", "displayModeWidth"][..],
+                EngineStateValueType::Number,
+                EngineStateDefault::Number(0.0),
+            ),
+            (
+                "window.displayModeHeight",
+                &["window", "displayModeHeight"][..],
+                EngineStateValueType::Number,
+                EngineStateDefault::Number(0.0),
+            ),
+            (
+                "window.displayModeRefreshHz",
+                &["window", "displayModeRefreshHz"][..],
+                EngineStateValueType::Number,
+                EngineStateDefault::Number(0.0),
+            ),
+            (
+                "window.displayModeBitDepth",
+                &["window", "displayModeBitDepth"][..],
+                EngineStateValueType::Number,
+                EngineStateDefault::Number(0.0),
+            ),
+            (
+                "window.displayModeMonitor",
+                &["window", "displayModeMonitor"][..],
+                EngineStateValueType::String,
+                EngineStateDefault::String(""),
+            ),
+            (
+                "window.displayModeRevertSeconds",
+                &["window", "displayModeRevertSeconds"][..],
+                EngineStateValueType::Number,
+                EngineStateDefault::Number(0.0),
+            ),
+        ] {
+            let entry = entries
+                .iter()
+                .find(|entry| entry.wire_name == wire_name)
+                .unwrap();
+            assert_eq!(entry.sdk_path, sdk_path);
+            assert_eq!(entry.value_type, value_type);
+            assert_eq!(entry.default, default);
+            assert_eq!(entry.range, None);
+            assert!(!entry.persist, "{wire_name} is transient engine UI state");
+            assert_eq!(entry.capability, EngineStateCapability::Readonly);
+            assert_eq!(entry.network, ReplicationScope::None);
         }
 
         let player_max_health = entries

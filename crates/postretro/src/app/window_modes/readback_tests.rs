@@ -5,6 +5,7 @@ use crate::input::{InputSystem, default_bindings};
 use crate::options::OptionsBridge;
 use postretro_entities::ScriptCtx;
 use postretro_scripting_core::store_bridge::write_state_slot_json;
+use postretro_test_log_capture::LogCapture;
 use std::time::Duration;
 
 #[test]
@@ -68,6 +69,144 @@ fn os_readback_persists_once_and_reseed_emits_no_request() {
             .write_generation(),
         generation
     );
+}
+
+#[test]
+fn pre_session_os_readback_waits_for_options_then_persists_without_feedback() {
+    // Regression: an early splash reading consumed the baseline before options existed.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("settings.toml");
+    let mut options = PlayerOptions::default();
+    options.save(&path).unwrap();
+    let ctx = ScriptCtx::new();
+    let mut bridge = OptionsBridge::new();
+    let mut input = InputSystem::new(default_bindings());
+    bridge.seed_on_open(&mut ctx.slot_table.borrow_mut(), &options);
+    let mut controller = Controller::new(false);
+    let mut backend = FakeBackend::default();
+    let now = Instant::now();
+    controller.boot(&mut backend, &options, now);
+    backend.actual.mode = WindowMode::Borderless;
+    for _ in 0..2 {
+        assert_eq!(controller.observe(&mut backend, None, now), Change::None);
+    }
+    assert_eq!(options.window_mode, WindowMode::Windowed);
+    assert_eq!(
+        controller.observe(&mut backend, Some(&mut options), now),
+        Change::Accepted
+    );
+    bridge.reseed_window_mode(&mut ctx.slot_table.borrow_mut(), options.window_mode);
+    bridge.schedule_save(Some(&path));
+    let generation = ctx
+        .slot_table
+        .borrow()
+        .get("options.windowMode")
+        .unwrap()
+        .write_generation();
+    for _ in 0..2 {
+        assert_eq!(
+            controller.observe(&mut backend, Some(&mut options), now),
+            Change::None
+        );
+        let effects = bridge.update(
+            0.3,
+            &mut ctx.slot_table.borrow_mut(),
+            &mut options,
+            &mut input,
+            Some(&path),
+        );
+        assert!(effects.window_mode.is_none());
+    }
+    assert!(backend.requests.is_empty());
+    assert_eq!(
+        PlayerOptions::load(&path).window_mode,
+        WindowMode::Borderless
+    );
+    assert_eq!(
+        ctx.slot_table
+            .borrow()
+            .get("options.windowMode")
+            .unwrap()
+            .write_generation(),
+        generation
+    );
+}
+
+#[test]
+fn settle_closure_without_session_still_adopts_an_unwritten_baseline() {
+    let mut options = PlayerOptions::default();
+    options.window_mode = WindowMode::Borderless;
+    let mut controller = Controller::new(false);
+    let mut backend = FakeBackend::default();
+    let now = Instant::now();
+    controller.boot(&mut backend, &options, now);
+    // A failed boot entry must not replace its saved preference at installation.
+    backend.actual = Target::default();
+    assert_eq!(
+        controller.observe(&mut backend, None, now + SETTLE_TIME),
+        Change::None
+    );
+    assert_eq!(
+        controller.observe(&mut backend, Some(&mut options), now + SETTLE_TIME),
+        Change::None
+    );
+    assert_eq!(options.window_mode, WindowMode::Borderless);
+}
+
+#[test]
+fn revert_refinds_missing_prior_mode_and_zeroes_projection_without_saving_candidate() {
+    // Regression: fallback on revert still projected the unavailable prior tuple.
+    for empty in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.toml");
+        let old = mode(1280, 60000, "current");
+        let new = mode(1920, 144000, "current");
+        let mut options = PlayerOptions::default();
+        options.window_mode = WindowMode::Exclusive;
+        options.set_display_mode(old.clone());
+        options.save(&path).unwrap();
+        let saved = PlayerOptions::load(&path);
+        let mut controller = Controller::new(false);
+        let mut backend = FakeBackend::default();
+        *backend.modes.borrow_mut() = vec![old, new.clone()];
+        let now = Instant::now();
+        controller.boot(&mut backend, &options, now);
+        assert_eq!(
+            controller.step(&mut backend, &mut options, true, now),
+            Change::OpenConfirm
+        );
+        *backend.modes.borrow_mut() = if empty { Vec::new() } else { vec![new] };
+        assert_eq!(controller.revert(&mut backend, now), Change::Reverted);
+        assert_eq!(backend.actual.mode, WindowMode::Borderless);
+        assert!(controller.fallback);
+        let ctx = ScriptCtx::new();
+        super::super::projection::project(&controller, &mut ctx.slot_table.borrow_mut(), now);
+        for name in [
+            "window.displayModeWidth",
+            "window.displayModeHeight",
+            "window.displayModeRefreshHz",
+            "window.displayModeBitDepth",
+        ] {
+            assert!(
+                matches!(ctx.slot_table.borrow().get(name).unwrap().value.as_ref(), Some(postretro_entities::SlotValue::Number(value)) if value.abs() < f32::EPSILON)
+            );
+        }
+        assert!(
+            matches!(ctx.slot_table.borrow().get("window.displayModeMonitor").unwrap().value.as_ref(), Some(postretro_entities::SlotValue::String(value)) if value.is_empty())
+        );
+        for seconds in [3, 4] {
+            assert_eq!(
+                controller.observe(
+                    &mut backend,
+                    Some(&mut options),
+                    now + Duration::from_secs(seconds)
+                ),
+                Change::None
+            );
+        }
+        options.save(&path).unwrap();
+        assert_eq!(PlayerOptions::load(&path), saved);
+    }
 }
 
 #[test]
@@ -166,6 +305,7 @@ fn pending_and_fallback_readback_never_persist_even_after_settling() {
 
 #[test]
 fn same_saved_slot_request_under_escape_and_fallback_reapplies() {
+    const FALLBACK_WARNING: &str = "[Window] exclusive display mode is unavailable on the current monitor; using borderless for this session";
     for escape in [false, true] {
         for matching in [false, true] {
             let mut options = PlayerOptions::default();
@@ -179,6 +319,7 @@ fn same_saved_slot_request_under_escape_and_fallback_reapplies() {
             let mut backend = FakeBackend::default();
             let now = Instant::now();
             controller.boot(&mut backend, &options, now);
+            let capture = LogCapture::start();
             if matching {
                 backend
                     .modes
@@ -213,6 +354,21 @@ fn same_saved_slot_request_under_escape_and_fallback_reapplies() {
             );
             assert_eq!(controller.fallback, !matching);
             assert!(!controller.escape);
+            for seconds in [1, 3, 4, 8] {
+                assert_eq!(
+                    controller.observe(
+                        &mut backend,
+                        Some(&mut options),
+                        now + Duration::from_secs(seconds)
+                    ),
+                    Change::None
+                );
+            }
+            if matching {
+                capture.assert_not_logged(log::Level::Warn, FALLBACK_WARNING);
+            } else {
+                capture.assert_logged_once(log::Level::Warn, FALLBACK_WARNING);
+            }
         }
     }
 }

@@ -1411,6 +1411,7 @@ export type GameStateRefs = {
     surfaceDepthQuality: Ref<"off" | "on">,
     uiVolume: Ref<number>,
     viewFeelScale: Ref<number>,
+    windowMode: Ref<"windowed" | "borderless" | "exclusive">,
   },
   player: {
     ammo: ComputedRef<number>,
@@ -1445,6 +1446,14 @@ export type GameStateRefs = {
   },
   ui: {
     textEntry: Ref<string>,
+  },
+  window: {
+    displayModeBitDepth: ComputedRef<number>,
+    displayModeHeight: ComputedRef<number>,
+    displayModeMonitor: ComputedRef<string>,
+    displayModeRefreshHz: ComputedRef<number>,
+    displayModeRevertSeconds: ComputedRef<number>,
+    displayModeWidth: ComputedRef<number>,
   },
 }
 
@@ -2784,6 +2793,9 @@ export type AccessibilityToggleField = "reduceMotion" | "flashLimiter" | "monoAu
 --- Accessibility numeric fields a mod menu button may step, each within [0, 1].
 export type AccessibilityNumericField = "screenShakeScale" | "viewFeelScale" | "masterVolume" | "sfxVolume" | "musicVolume" | "uiVolume"
 
+--- Reserved operations for the engine display-mode picker and confirmation.
+export type DisplayModeOperation = "next" | "previous" | "keep" | "revert"
+
 export type PostretroUiModule = {
   --- Build a `text` widget descriptor. `props.content` is fallback text; optional `bind` can replace rendered content from state.
   Text: (props: TextProps) -> WidgetDescriptor,
@@ -2880,6 +2892,8 @@ export type PostretroUiModule = {
   QUIT_TO_MENU_ACTION: "ui.quitToMenu",
   --- Reserved button `onPress` action that opens the engine accessibility panel.
   OPEN_ACCESSIBILITY_ACTION: "ui.openAccessibility",
+  --- Build a reserved `ui.displayMode.<op>` action; the engine owns apply and persistence.
+  displayModeAction: (op: DisplayModeOperation) -> string,
   --- The reserved `onPress` action for one accessibility field. Toggles `cycle`; numeric fields `increase` or `decrease`.
   accessibilityAction: ((field: AccessibilityToggleField, op: "cycle") -> string) & ((field: AccessibilityNumericField, op: "increase" | "decrease") -> string),
   --- Write a literal or runtime value at game-logic time. Runtime values may read known Number/Boolean slots, including readonly slots; unknown/nonprojectable inputs and readonly output targets reject.

@@ -35,17 +35,26 @@ pub(super) fn is_wayland(event_loop: &ActiveEventLoop) -> bool {
     }
 }
 
+fn normalize_refresh(reported: u32, monitor_refresh: Option<u32>) -> u32 {
+    if reported == 0 {
+        monitor_refresh.unwrap_or(0)
+    } else {
+        reported
+    }
+}
+
 fn describe(mode: &VideoModeHandle) -> DisplayMode {
     let monitor = mode.monitor();
     let reported = mode.refresh_rate_millihertz();
+    let monitor_refresh = if reported == 0 {
+        monitor.refresh_rate_millihertz()
+    } else {
+        None
+    };
     DisplayMode {
         width: mode.size().width,
         height: mode.size().height,
-        refresh_millihertz: if reported == 0 {
-            monitor.refresh_rate_millihertz().unwrap_or(0)
-        } else {
-            reported
-        },
+        refresh_millihertz: normalize_refresh(reported, monitor_refresh),
         bit_depth: mode.bit_depth(),
         monitor: monitor.name().unwrap_or_default(),
     }
@@ -86,9 +95,6 @@ impl Backend for WinitBackend<'_> {
                 match found {
                     Some((_, handle)) => Some(Fullscreen::Exclusive(handle)),
                     None => {
-                        log::warn!(
-                            "[Window] exclusive display mode is unavailable on the current monitor; using borderless for this session"
-                        );
                         self.window.set_fullscreen(Some(Fullscreen::Borderless(
                             self.window.current_monitor(),
                         )));
@@ -119,5 +125,39 @@ impl Backend for WinitBackend<'_> {
             self.cache.initialized = true;
         }
         &self.cache.target
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_refresh;
+    use crate::options::DisplayMode;
+
+    #[test]
+    fn describe_normalizes_refresh_before_mode_deduplication() {
+        assert_eq!(normalize_refresh(0, Some(60_000)), 60_000);
+        assert_eq!(normalize_refresh(60_000, Some(60_000)), 60_000);
+        assert_eq!(normalize_refresh(0, None), 0);
+        assert_eq!(normalize_refresh(0, Some(0)), 0);
+        assert_eq!(normalize_refresh(59_940, Some(60_000)), 59_940);
+
+        let mode = |refresh_millihertz, bit_depth| DisplayMode {
+            width: 1920,
+            height: 1080,
+            refresh_millihertz,
+            bit_depth,
+            monitor: "test monitor".into(),
+        };
+        let mut modes = vec![
+            mode(normalize_refresh(0, Some(60_000)), 32),
+            mode(normalize_refresh(60_000, Some(60_000)), 32),
+            mode(normalize_refresh(0, Some(60_000)), 24),
+        ];
+        modes.sort();
+        modes.dedup();
+
+        assert_eq!(modes.len(), 2);
+        assert!(modes.contains(&mode(60_000, 24)));
+        assert!(modes.contains(&mode(60_000, 32)));
     }
 }

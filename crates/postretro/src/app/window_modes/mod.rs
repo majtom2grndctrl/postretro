@@ -2,6 +2,8 @@
 // See: context/lib/player_options.md §7
 
 mod backend;
+#[cfg(test)]
+mod menu_tests;
 mod policy;
 #[cfg(test)]
 mod policy_tests;
@@ -10,6 +12,7 @@ mod projection;
 use crate::options::PlayerOptions;
 use backend::{ReadbackCache, WinitBackend};
 use policy::Controller;
+use postretro_ui::actions::DisplayModeAction;
 use std::time::Instant;
 use winit::{event_loop::ActiveEventLoop, window::Window};
 
@@ -64,6 +67,69 @@ mod boot_tests {
                 < startup.find("let event_loop = EventLoop::new()").unwrap()
         );
     }
+}
+
+fn request_mode(
+    controller: &mut Controller,
+    session: &mut crate::session::Session,
+    backend: &mut impl policy::Backend,
+    mode: crate::options::WindowMode,
+    now: Instant,
+) -> policy::Change {
+    let change = controller.request_mode(backend, &mut session.player_options, mode, now);
+    if change == policy::Change::None {
+        let visible = if controller.pending.is_some() {
+            crate::options::WindowMode::Exclusive
+        } else {
+            session.player_options.window_mode
+        };
+        session.options_bridge.reseed_window_mode(
+            &mut session.scripting.script_ctx.slot_table.borrow_mut(),
+            visible,
+        );
+    }
+    change
+}
+
+fn dispatch_display_mode_action(
+    controller: &mut Controller,
+    confirm_instance: Option<postretro_ui::modal_stack::ModalInstance>,
+    session: &mut crate::session::Session,
+    backend: &mut impl policy::Backend,
+    action: DisplayModeAction,
+    now: Instant,
+) -> policy::Change {
+    // A removed confirm cannot be kept by a later queued activation.
+    let invalid = controller.pending.is_some()
+        && !confirm_instance
+            .is_some_and(|instance| session.modal_stack.contains_instance(instance));
+    if invalid {
+        return controller.revert(backend, now);
+    }
+    match action {
+        DisplayModeAction::Keep => controller.keep(&mut session.player_options),
+        DisplayModeAction::Revert => controller.revert(backend, now),
+        DisplayModeAction::Next | DisplayModeAction::Previous => controller.step(
+            backend,
+            &mut session.player_options,
+            action == DisplayModeAction::Next,
+            now,
+        ),
+    }
+}
+
+fn service(
+    controller: &mut Controller,
+    confirm_instance: Option<postretro_ui::modal_stack::ModalInstance>,
+    session: &crate::session::Session,
+    backend: &mut impl policy::Backend,
+    now: Instant,
+) -> policy::Change {
+    controller.service(
+        backend,
+        confirm_instance.is_some_and(|instance| session.modal_stack.contains_instance(instance)),
+        now,
+    )
 }
 
 impl crate::App {
@@ -121,23 +187,13 @@ impl crate::App {
             wayland: self.window_modes.wayland,
             cache: &mut self.window_modes.cache,
         };
-        let change = self.window_modes.controller.request_mode(
+        let change = request_mode(
+            &mut self.window_modes.controller,
+            session,
             &mut backend,
-            &mut session.player_options,
             mode,
             Instant::now(),
         );
-        if change == policy::Change::None {
-            let visible = if self.window_modes.controller.pending.is_some() {
-                crate::options::WindowMode::Exclusive
-            } else {
-                session.player_options.window_mode
-            };
-            session.options_bridge.reseed_window_mode(
-                &mut session.scripting.script_ctx.slot_table.borrow_mut(),
-                visible,
-            );
-        }
         self.finish_window_change(change);
     }
 
@@ -163,7 +219,7 @@ impl crate::App {
         );
     }
 
-    pub(crate) fn apply_display_mode_action(&mut self, op: &str) {
+    pub(crate) fn apply_display_mode_action(&mut self, action: DisplayModeAction) {
         let (Some(ws), Some(session)) = (self.window_state.as_ref(), self.session.as_mut()) else {
             return;
         };
@@ -172,31 +228,14 @@ impl crate::App {
             wayland: self.window_modes.wayland,
             cache: &mut self.window_modes.cache,
         };
-        let now = Instant::now();
-        // A removed confirm cannot be kept by a later queued activation.
-        let invalid = self.window_modes.controller.pending.is_some()
-            && !self
-                .window_modes
-                .confirm_instance
-                .is_some_and(|instance| session.modal_stack.contains_instance(instance));
-        let change = if invalid {
-            self.window_modes.controller.revert(&mut backend, now)
-        } else {
-            match op {
-                "keep" => self
-                    .window_modes
-                    .controller
-                    .keep(&mut session.player_options),
-                "revert" => self.window_modes.controller.revert(&mut backend, now),
-                "next" | "previous" => self.window_modes.controller.step(
-                    &mut backend,
-                    &mut session.player_options,
-                    op == "next",
-                    now,
-                ),
-                _ => policy::Change::None,
-            }
-        };
+        let change = dispatch_display_mode_action(
+            &mut self.window_modes.controller,
+            self.window_modes.confirm_instance,
+            session,
+            &mut backend,
+            action,
+            Instant::now(),
+        );
         self.finish_window_change(change);
     }
 
@@ -209,11 +248,11 @@ impl crate::App {
             wayland: self.window_modes.wayland,
             cache: &mut self.window_modes.cache,
         };
-        let change = self.window_modes.controller.service(
+        let change = service(
+            &mut self.window_modes.controller,
+            self.window_modes.confirm_instance,
+            session,
             &mut backend,
-            self.window_modes
-                .confirm_instance
-                .is_some_and(|instance| session.modal_stack.contains_instance(instance)),
             Instant::now(),
         );
         self.finish_window_change(change);

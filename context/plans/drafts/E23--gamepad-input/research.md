@@ -115,4 +115,50 @@ The owner also reopened seed D8: authors fix activator kinds, and players rebind
 - **Physical key names.** Godot `physical_keycode`, Unity `<Keyboard>/a`, Bevy `KeyCode`. W3C `KeyboardEvent.code` names match winit `KeyCode`.
 - **Rebind menus.** They list a declared, labeled subset: Source `kb_act.lst`, Steam In-Game Actions manifest.
 - **Thresholds.** Unreal and Unity tap ≤ 0.2 s. Their holds (0.4 s and 1.0 s) are too slow for sprint in a fast shooter.
-- **Device families.** Sony's USB vendor id is `0x054C` and Nintendo's is `0x057E`. Any other vendor gets the Xbox layout. Not yet verified: that the pinned gilrs version exposes `Gamepad::vendor_id` on every platform. The executor confirms it.
+- **Device families.** Sony's USB vendor id is `0x054C` and Nintendo's is `0x057E`. Any other vendor gets the Xbox layout. gilrs 0.11.1 exposes `Gamepad::vendor_id` on macOS, Linux, and Windows WGI (the default backend); only the non-default xinput backend returns `None`.
+
+## 8. Detail review (review-brief, 2026-10-04)
+
+The premise, rows, and subtract lenses ran once. The owner kept one brief and all four activators, and accepted the remaining recommendations. Decisions changed as a result: context-scoped conflicts (Escape), `move_up` as dev-only, a 1–3 range for `hold_timing_scale`, a fixed analog polarity, per-slot fallback for unknown inputs, a tree-level `restoreOnReturn`, half-axis stick inputs, swap-aware capture, collision and fallback rules, no `input.deviceFamily` slot, and a client-side activator wire decision. Source facts behind them:
+- `nav_intent_for_key` maps Escape to Cancel under a capturing tree and to Menu otherwise.
+- The accessibility numeric fields clamp to 0–1 in `options/accessibility.rs` and `options/panel_actions.rs`.
+- `any_restore_on_return` ORs the flag across containers, and both SDKs and the Rust serializer drop `false`.
+- The default bindings carry polarity in `Binding.scale`: mouse X is -1 for yaw, and right stick X is +1.
+- The dev level select is a linear-focus `VStack` of sections.
+- The text-entry commit pops the tree before the focus tick reads the layout.
+- Key state is a level per key, so a press and a release between two frames leave no edge.
+
+## Pinned orderings
+
+Each row is cited by an Acceptance row in the brief.
+
+| id | Scenario | Ordering | Expected outcome |
+|---|---|---|---|
+| P1 | A key is pressed and released between two frames | press → release → frame snapshot | On a shared tap/hold key, the tap fires once and the hold never fires. A lone `press` or `tap` binding fires once. |
+| P2 | Two bindings of one command resolve on one frame | key A resolves → key B resolves → snapshot | The command fires once. |
+| P3 | A hold crosses its threshold on a frame with zero ticks, and the key is released before the next tick | threshold passes (0 ticks) → key up → next tick | The hold reaches the simulation once: toggle-mode sprint latches, hold-mode sprint is active for that tick, and the shared tap never fires. |
+| P4 | The binding table rebuilds while a key is held or a resolution is pending (hot reload, rebind, tuning install, swap toggle) | key down → rebuild → threshold or release | A resolution already made stands until release. A pending resolution on a key whose bindings changed is cancelled, and neither binding fires. A held key that the rebuild newly binds fires nothing until it is pressed again. A key whose bindings did not change resolves as if no rebuild happened. |
+| P5 | A co-op client leaves participation | tuning installed → demote or disconnect (tuning cleared) → binding table | Commands that were relevant only through host tuning are unbound again. The table rebuilds when tuning clears, not only when it installs. |
+| P6 | The frontend opens the controls panel before any level loads | mod init commits the registry → derivation → panel opens | The panel lists the commands derived from the committed registry. Derivation never runs against an empty registry. |
+| P7 | The capture prompt opens | confirm at N → prompt opens at N+1 → presses at N+1 and later | The press that opened the prompt is never captured, and neither is its OS key repeat or anything pressed on the frame the prompt opens. The first new press on a later frame is captured. An axis already off rest when the prompt opens is captured only after it returns to rest and moves again. |
+| P8 | A captured press would also be a UI input | capture decided at N → the same press's nav intent resolves at N+1; Start/Escape set the menu toggle at N | A press the capture consumes reaches no other consumer, on its press frame or its release: no nav intent, no pause toggle, no options open, and no answer to a conflict question the capture raised. |
+| P9 | The confirm/cancel swap is toggled while a confirm repeat is held, or with the button that toggles it | toggle press → swap applies → release → next press | The toggling press acts once, as confirm. Its release neither confirms nor cancels. The new mapping applies from the next press. A confirm repeat stops on the release of whichever button confirm is bound to now. |
+| P10 | A nav direction or confirm is remapped, then held | remap → press → hold → release | The hold repeats on the remapped input and stops on its release. Releasing an input no longer bound to that command does not stop it. |
+| P11 | A tree is popped earlier in the frame than focus resolution (text-entry commit or cancel) | pop → focus resolution against the popped tree's layout → next frame | The revealed tree keeps its saved focus. The stale layout neither resets nor overwrites it. |
+| P12 | A tree is closed and reopened on one frame | pop → push of the same name → focus resolution | It lands on its initial focus, as a fresh push does (O14). |
+| P13 | A saved focus was rebuilt away or is now disabled | save focus → rebuild → return, or re-entry of a nested group | On return the tree lands on its initial focus. Re-entering a group whose last-focused member is gone or disabled lands on the group's first enabled member. |
+| P14 | A direction is held while a tree is pushed or popped | direction down → push or pop → still held | Focus does not move in the newly active tree until the direction is pressed again. A held stick has to return to rest first. |
+| P15 | A held direction or slider step spans a long frame | hold → 1 s frame → next frame | At most one repeat fires per frame, so the step never lands past what the player saw. |
+| P16 | An authored repeat has a zero delay or a zero interval | the container authors repeat → hold | A zero delay never repeats, even though an engine default exists. A container that authors no repeat repeats at the engine default. |
+| P17 | A slider is held while an external write lands on its slot | step computed from v → external write w → both drain | The slot never ends at v plus a step. It ends at w, or at w plus the steps taken after the write. |
+| P18 | A scroll container's content shrinks while the container is scrolled | scrolled to end → content shrinks → draw | The offset clamps on that frame, with no empty band. Under `maxHeight`, the container shrinks to its content. The focused child stays visible. |
+| P19 | Pointer input or a return lands on a scroll container's clipped region | scroll → click or return on a clipped child | A click on the clipped area activates nothing hidden there. A restored focus outside the viewport scrolls into view by the minimum distance. |
+| P20 | Tab intents meet an edge-case tablist | RB/LB with: one tab; none selected; a disabled tab; two intents on one frame; a dialog above the tabbed tree | One tab: no activation, and focus moves to that tab. None selected: RB activates the first tab and LB the last. A disabled tab is skipped. Two intents on one frame advance two tabs. With a dialog on top, the bumpers act on the dialog only. |
+| P21 | A directional move off-axis in a nested linear group | focus in a horizontal linear strip → Down | A linear group answers only its own axis. A cross-axis move leaves the group, and wrap applies only along the axis. |
+| P22 | Input from two device families arrives in one frame, or a resting device drifts | key + pad in one frame; stick drift inside its dead zone; small mouse motion | One family per frame. Input inside a dead zone never changes the family. Mouse motion changes it only past the pointer-mode debounce. |
+| P23 | `hold_timing_scale` changes while a key is held | key down → scale changes → release | The pending resolution keeps the threshold that applied when the key went down. |
+| P24 | A key is held across a capturing menu's close | key down in gameplay → menu opens (cancels) → menu closes, key still down | The key does nothing until it is released and pressed again. |
+| P25 | A rebuild or demote removes the command a capture prompt is waiting on | prompt open for dash → dash becomes irrelevant | The prompt closes, binds nothing, and saves nothing. The panel keeps focus on the nearest remaining row. |
+| P26 | A text-entry commit and a shortcut land on one frame | commit pops the tree → `text_space` resolves | The shortcut adds nothing to the committed text. Shortcuts do nothing while no text-entry tree is on top. |
+| P27 | Confirm is pressed twice on the dev EXIT or QUIT | confirm at N → dialog opens → confirm at N+1 | The second confirm lands on the safe choice. The game never exits. |
+| P28 | A key is remapped while a text-entry tree is on top | remap Q to `nav_down` → open text entry → press Q | Q types `q`. No nav intent is produced. |

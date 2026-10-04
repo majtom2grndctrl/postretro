@@ -114,7 +114,11 @@ When this is done:
 - **Tabs are an authored pattern on existing roles.** A tab strip is a container with `role: "tablist"` whose `role: "tab"` buttons carry `selected`.
   - `nav_tab_next` and `nav_tab_prev` (LB/RB) activate the adjacent tab in the top tree's tablist, wrapping, and move focus to it.
   - In a tree with no tablist they keep today's Next/Prev behavior, so existing trees are unchanged. This is the divergence from `done/M13--input-breadth`, argued here: the bumpers are console tab keys.
-- **A new `Scroll` widget** is a vertical container with a fixed viewport height that clips its children. It is neither a focus stop nor a focus group. Focusing a child outside the viewport scrolls it into view by the minimum distance, and the pointer wheel scrolls it.
+- **Scrolling is a container attribute, not a widget** (owner): `scroll: { maxHeight }` in the props shared by containers, accepted on `VStack` and `Grid`. Container behavior already lives there (`focus`, `restoreOnReturn`, `role`), and the spatial level-select grid needs it too, so a wrapper widget would add a node and duplicate the container's props.
+  - The container sizes to its content up to `maxHeight`, then clips and scrolls vertically.
+  - Focusing a child outside the viewport scrolls it into view by the minimum distance, and the pointer wheel scrolls it.
+  - `scroll` creates neither a focus stop nor a focus group; a group still comes only from `focus`.
+  - On an `HStack` it is a load-time error.
 - **Device family follows the last input.** The families are `keyboardMouse`, `xbox`, `playstation`, and `nintendo`; a gamepad's family comes from its vendor id, and unknown vendors are `xbox`. A readonly slot `input.deviceFamily` exposes it.
   - **Glyph widget.** `Glyph({ command })` draws the glyph for the command's first effective binding on the current family, using the mod's glyph art.
   - **Fallback:** missing art draws the input's name as text.
@@ -144,7 +148,7 @@ export default defineMod({
 });
 
 HStack({ gap: 8 }, [Glyph({ command: "nav_confirm" }), Text({ content: "SELECT" })]);
-Scroll({ height: 320 }, levelButtons);
+Grid({ cols: 3, scroll: { maxHeight: 320 }, focus: { policy: "spatial" } }, levelButtons);
 Button({ id: "controls", label: "CONTROLS", onPress: OPEN_CONTROLS_ACTION });   // "ui.openControls"
 ```
 The Luau mirror ships with the same names (Boundary inventory).
@@ -157,6 +161,7 @@ The Luau mirror ships with the same names (Boundary inventory).
 - **Per-level relevance.**
 - **Steam Input API integration** (`input.md` §9).
 - **Migrating saved bindings.** None exist today.
+- **Horizontal scrolling.** No current menu overflows horizontally, and the attribute shape leaves room for it.
 
 ## Acceptance
 Epic AC 19–25, as amended with this brief, are the unit's rows, together with AC 2, 3a–3c, and 10 for `hold_timing_scale`. AC 33 applies if U3 lands after U4. The rows below add what the epic's rows do not pin.
@@ -256,6 +261,7 @@ Rust ↔ TS/Luau ↔ TOML. Both SDKs ship every modder-facing row.
 | Confirm/cancel swap | — | `swap_confirm_cancel` | `options.swapConfirmCancel` | top-level |
 | Device family | — | — | `input.deviceFamily` (readonly) | `keyboardMouse`/`xbox`/`playstation`/`nintendo` |
 | Controls panel | `OPEN_CONTROLS_ACTION` = `ui.openControls` | — | — | reserved registry name |
-| Widgets | `Glyph({ command })`, `Scroll({ height }, children)` | — | — | — |
+| Glyph widget | `Glyph({ command })` | — | — | — |
+| Scroll attribute | `scroll: { maxHeight }` on `VStack` and `Grid` props | — | — | vertical only; error on `HStack` |
 | Tab commands | `nav_tab_next`, `nav_tab_prev` | row keys | — | UI set |
 | On-screen keyboard shortcuts | `text_backspace`, `text_space`, `text_commit` | row keys | — | UI set |

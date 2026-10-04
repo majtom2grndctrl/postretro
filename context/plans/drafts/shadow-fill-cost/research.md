@@ -105,6 +105,20 @@ Rejected:
   - Retarget the nested-binding fixtures to the camera `draw_indirect`.
   - The scanner records only names containing "indirect", so direct draws need no rule.
 
+## Ordering pins
+Acceptance rows cite these ids.
+
+| id | scenario | ordering | expected outcome |
+|---|---|---|---|
+| O1 | Two regions whose frusta share cells: two overlapping spot cones, or two adjacent faces of one cube light | Both draw world in one frame. The second region's walk runs after the first's, against the same dedupe state | Each draws every shared cell. Neither draws a cell that only the other reached |
+| O2 | One region whose reach shrinks | Frame N reaches a set of cells. On frame N+1 the same region reaches a strict subset | N+1 draws only its own reach. No cell from N's reach outside it is drawn |
+| O3 | A cache layer freed and re-tenanted in one frame | Frame N: light A is warm in layer k. Frame N+1: A re-keys or leaves, so planning frees layer k and gives it to a new key before the shadow passes | Layer k cold-fills with the new tenant's reach, from that frame's matrix. A dynamic light that keeps its matrix but moves to another pool slot stays warm: no reach, no world draw |
+| O4 | Empty reach on a pass that must clear | A cold fill whose layer held another tenant's depth, or an uncached live region, has a frustum that reaches no leaf | The layer is still cleared to far depth. A cache layer then becomes warm. No depth from the previous tenant survives |
+| O5 | Mixed frame | One frame holds: a warm promoted region; a warm dynamic region; a dynamic cold fill; a promoted cold fill; an uncached live region (a dynamic light past cache capacity) whose matrix is unchanged since the last frame; a promoted light the cache drops over capacity | Reach is computed exactly once for each cold fill and for the uncached region, and for nothing else. The uncached region draws its reach again on the next frame. A cold fill draws world once, into its cache layer; its live layer gets world depth by copy |
+| O6 | A spot region and a cube face with the same region number | The spot loop records before the cube loop in the same frame | Each draws its own reach |
+| O7 | Level switch | Install BVH level A and draw. Install level B with no BVH and draw. Install a BVH level and draw | B draws all of its world geometry and no range from A. Every issued range lies within the installed index buffer. The later BVH level draws reach on its first fill |
+| O8 | A BVH with no per-cell draw index | A level is installed with BVH leaves but without the per-cell draw index. The renderer accepts this; the packer never writes it | Each region still draws its reach, derived from the leaves |
+
 ## Headless capture
 - `--capture` skips every `is_dynamic` light (`capture_static_lights_and_shadow_selection`; test `capture_lights_remain_static_only_and_remap_shadow_selection`).
 - Movers stay at their spawn pose.

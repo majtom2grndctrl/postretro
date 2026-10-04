@@ -46,29 +46,40 @@ A `visible-span-draws` review finding, confirmed in source: a shadow region that
 ### Automated
 Reach:
 - [ ] A spot region draws the index ranges of exactly the cells that own at least one leaf whose AABB intersects its frustum. Each of a cube light's six faces does the same against its own face frustum.
-- [ ] The walk's reached-cell set equals a brute-force test over every leaf, in both directions. This holds over randomized frusta on synthetic worlds (fixed seed and count) and at the on-demand stress-map probes, including the hallway lift light's faces at several lift heights.
+- [ ] The walk's reached-cell set equals a brute-force test over every leaf, in both directions. This holds over randomized frusta on synthetic worlds (fixed seed and count) and at the on-demand stress-map probes, including the hallway lift light's faces at several lift heights, built from the same face matrices the cube pool uploads.
 - [ ] A leaf whose geometry extends past its cell's baked bounds, under a frustum that touches only that overhang, has its cell drawn.
 - [ ] A cell whose leaves all lie outside the frustum is not drawn. A cell with one leaf inside is drawn.
-- [ ] A frustum that reaches no leaf issues no world draws and no error, including on the frame after a nonempty reach. A frustum that reaches every leaf draws every drawable leaf's indices exactly once.
+- [ ] A frustum that reaches no leaf issues no world draws and no error, including on the frame after a nonempty reach. A nonempty reach on the frame after an empty one draws in full. A frustum that reaches every leaf draws every drawable leaf's indices exactly once.
 - [ ] A cell outside the camera's visible set but inside the frustum is drawn. A cell the camera sees but the frustum misses is not.
+- [ ] In a recorded frame, a cell outside the camera's visible set and fog reach but inside the frustum is drawn. A cell the camera sees or fog reaches, but the frustum misses, is not.
+- [ ] In a recorded frame on a BVH level, a region whose frustum misses part of the world issues world draws covering only its reach, never the whole index buffer. The adapter proof that today asserts whole-bucket shadow draws asserts this instead.
+- [ ] A cold fill or uncached live region whose reach is empty still clears its layer to far depth, and a cache layer then becomes warm. No depth from the layer's previous tenant survives (O4).
 
 Draw shape:
 - [ ] Abutting reached ranges go out as one draw, and a gap of even one index splits them. A region issues at most one draw per maximal run of reached ranges.
 - [ ] A synthetic cell whose leaves aren't contiguous draws each leaf's range, and no index outside its leaves.
-- [ ] On compiled levels, face-cut faces included, each cell's leaves form one contiguous index range.
-- [ ] Shadow passes issue no indirect draw and bind no material. No frame records a shadow-cull compute pass, and level install creates no per-region shadow indirect buffer.
+- [ ] On compiled levels, face-cut faces included, each cell's leaves form one contiguous index range. A synthetic face-cut fixture proves it in routine tests, and the compiled stress maps prove it on demand.
+- [ ] Shadow passes issue no indirect draw and bind no material. No frame records a shadow-cull compute pass, and level install creates no per-region shadow indirect buffer. This is a source and inventory gate, not a behavior test.
 
 Per-region state and ordering:
 - [ ] Two regions that draw world in one frame with disjoint frusta each draw their own reach.
-- [ ] Across consecutive frames with a moving light, each frame draws the reach of that frame's matrix.
-- [ ] A cold fill, dynamic or promoted, draws its reach into its cache layer. The next warm frame computes no reach and issues no world draw. A re-key after warm frames draws reach again.
+- [ ] Two regions whose frusta overlap in one frame, including adjacent faces of one cube light, each draw every cell they share. Neither draws a cell that only the other reached (O1).
+- [ ] A spot region and a cube face that share a region number in one frame each draw their own reach (O6).
+- [ ] Take one frame holding warm promoted and dynamic regions, a dynamic and a promoted cold fill, an uncached live region whose matrix is unchanged since the last frame, and a promoted light dropped over capacity. Reach is computed exactly once for each cold fill and for the uncached region, and for nothing else. The uncached region draws its reach again on the next frame. A cold fill draws world once, into its cache layer (O5).
+- [ ] A cache layer freed and given to a new tenant in the same frame cold-fills with the new tenant's reach, from that frame's matrix. A dynamic light that keeps its matrix but changes pool slot stays warm: it computes no reach and issues no world draw (O3).
+- [ ] Across consecutive frames with a moving light, each frame draws the reach of that frame's matrix, including a frame whose reach is a strict subset of the frame before's (O2).
+- [ ] A cold fill, dynamic or promoted, draws its reach into its cache layer. The next warm frame computes no reach and issues no world draw. A re-key after warm frames, or a light re-lit after dropping below the brightness gate, draws reach again.
 - [ ] After a level install, the first shadow fill uses the new level's BVH and ranges, even when a region's matrix is unchanged.
 - [ ] A level with no BVH draws all world geometry in its shadow passes.
+- [ ] Installing a level with no BVH after one with a BVH draws all of the new level's world geometry and no range of the old one. A BVH level installed after that draws reach on its first fill. Every range a region issues lies within the installed index buffer (O7).
+- [ ] A level installed with a BVH but no per-cell draw index draws each region's reach, as one with the index does (O8).
 - [ ] Skinned and rigid occluders still draw into every region that draws them today (regression guard).
 
 Bounds and contract:
 - [ ] The walk never descends below a node whose bounds miss the frustum. On a synthetic world, adding cells outside a fixed frustum leaves the walk's visited-node count unchanged once the tree has the same shape inside the frustum.
-- [ ] After warm-up, building draw lists for any frame allocates nothing.
+- [ ] On the same synthetic world, adding cells outside the frustum leaves unchanged the number of cells a region collects and resets after its walk.
+- [ ] Every Reach, Draw shape and Bounds row is proven by a test that runs without a GPU adapter. None passes by skipping.
+- [ ] After warm-up, building draw lists for any frame allocates nothing, including a frame whose reach is larger than any earlier frame's.
 - [ ] The indirect-contract scanner passes. Its camera rules and inventory are unchanged, its shadow entries are gone, and its nested-binding fixtures exercise the camera draw. This is a diff gate and a release-safety review, not a behavior test.
 
 ### Manual

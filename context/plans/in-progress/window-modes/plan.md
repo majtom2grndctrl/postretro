@@ -193,4 +193,4 @@ The completed continuation of the final gate passed:
 | Luau static analyzer | unavailable; dual-runtime and generated declaration checks passed |
 | Native macOS/Windows M1–M6 | outstanding; blocks landing |
 
-Final full-test log: `/tmp/window-modes-preflight-tests-complete.log`; final lint log: `/tmp/window-modes-preflight-clippy-final.log`. Earlier failed-attempt logs and native sample are retained as session proof until landing cleanup. Branch changes are committed locally; landing/push and durable context reconciliation await native results and the owner's landing direction.
+Final full-test log: `/tmp/window-modes-preflight-tests-complete.log`; final lint log: `/tmp/window-modes-preflight-clippy-final.log`. Earlier failed-attempt logs and native sample are retained as session proof until landing cleanup. The owner requested publishing `window-modes` to `origin` for testing on both computers. This testing handoff keeps the brief test-ready; landing and durable context reconciliation await native results and the owner's landing direction.

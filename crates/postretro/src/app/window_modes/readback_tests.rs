@@ -173,6 +173,10 @@ fn revert_refinds_missing_prior_mode_and_zeroes_projection_without_saving_candid
         controller.boot(&mut backend, &options, now);
         assert_eq!(
             controller.step(&mut backend, &mut options, true, now),
+            Change::SelectionChanged
+        );
+        assert_eq!(
+            controller.apply_selected(&mut backend, &mut options, now),
             Change::OpenConfirm
         );
         *backend.modes.borrow_mut() = if empty { Vec::new() } else { vec![new] };
@@ -443,8 +447,11 @@ fn display_steps_project_size_refresh_and_monitor_into_readonly_refs() {
     for (width, hz) in [(1280.0, 60.0), (1920.0, 144.0)] {
         assert_eq!(
             controller.step(&mut backend, &mut options, true, now),
-            Change::Accepted
+            Change::SelectionChanged
         );
+        assert!(options.display_mode.is_none());
+        assert!(backend.requests.is_empty());
+        assert!(controller.pending.is_none());
         super::super::projection::project(&controller, &mut ctx.slot_table.borrow_mut(), now);
         for (name, expected) in [
             ("window.displayModeWidth", width),

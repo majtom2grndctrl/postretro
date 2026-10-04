@@ -18,6 +18,7 @@ pub(super) fn mode(width: u32, rate: u32, monitor: &str) -> DisplayMode {
 #[derive(Default)]
 pub(super) struct FakeBackend {
     pub(super) modes: RefCell<Vec<DisplayMode>>,
+    pub(super) desktop: Option<DisplayMode>,
     pub(super) actual: Target,
     pub(super) requests: Vec<Target>,
     pub(super) wayland: bool,
@@ -29,6 +30,12 @@ impl Backend for FakeBackend {
         } else {
             self.modes.borrow().clone()
         }
+    }
+    fn desktop_mode(&self, choices: &[DisplayMode]) -> Option<DisplayMode> {
+        self.desktop
+            .as_ref()
+            .filter(|mode| choices.contains(mode))
+            .cloned()
     }
     fn apply(&mut self, target: &Target) -> bool {
         let applied = target.mode != WindowMode::Exclusive
@@ -174,7 +181,15 @@ fn live_confirm_isolated_from_every_save_path_and_keep_wins_expiry_tick() {
         controller.boot(&mut backend, &options, now);
         bridge.schedule_save(Some(&path));
         let change = if stepping {
-            controller.step(&mut backend, &mut options, true, now)
+            assert_eq!(
+                controller.step(&mut backend, &mut options, true, now),
+                Change::SelectionChanged
+            );
+            assert_eq!(
+                options, prior,
+                "browsing keeps the accepted tuple out of every save"
+            );
+            controller.apply_selected(&mut backend, &mut options, now)
         } else {
             write_state_slot_json(&ctx, "options.windowMode", &serde_json::json!("exclusive"))
                 .unwrap();
@@ -283,23 +298,63 @@ fn removed_confirm_instance_and_loading_deadline_revert_without_persistence() {
 }
 
 #[test]
-fn display_step_changes_store_without_window_request_until_exclusive() {
+fn display_steps_browse_until_apply_and_borderless_refuses_selection() {
     let mut options = PlayerOptions::default();
     let mut backend = FakeBackend::default();
-    backend.modes.borrow_mut().push(mode(1280, 0, "current"));
+    let old = mode(1280, 60_000, "current");
+    let new = mode(1920, 144_000, "current");
+    *backend.modes.borrow_mut() = vec![old.clone(), new.clone()];
     let mut controller = Controller::new(false);
     let now = Instant::now();
-    for window_mode in [WindowMode::Windowed, WindowMode::Borderless] {
-        controller.request_mode(&mut backend, &mut options, window_mode, now);
+    for window_mode in [WindowMode::Windowed, WindowMode::Exclusive] {
+        options.window_mode = window_mode;
+        options.set_display_mode(old.clone());
+        controller.boot(&mut backend, &options, now);
         let requests = backend.requests.len();
-        assert_eq!(
-            controller.step(&mut backend, &mut options, true, now),
-            Change::Accepted
-        );
+        let accepted = options.clone();
+        for expected in [&new, &old, &new] {
+            assert_eq!(
+                controller.step(&mut backend, &mut options, true, now),
+                Change::SelectionChanged
+            );
+            assert_eq!(controller.picked.as_ref(), Some(expected));
+            assert_eq!(options, accepted);
+        }
         assert_eq!(backend.requests.len(), requests);
         assert!(controller.pending.is_none());
-        assert!(options.display_mode.is_some());
+        assert_eq!(
+            controller.apply_selected(&mut backend, &mut options, now),
+            if window_mode == WindowMode::Exclusive {
+                Change::OpenConfirm
+            } else {
+                Change::Accepted
+            }
+        );
+        if window_mode == WindowMode::Exclusive {
+            assert_eq!(options, accepted);
+            assert_eq!(controller.revert(&mut backend, now), Change::Reverted);
+            assert_eq!(controller.picked, Some(old.clone()));
+            assert_eq!(options, accepted);
+        } else {
+            assert_eq!(options.display_mode, Some(new.clone()));
+            assert_eq!(backend.requests.len(), requests);
+        }
     }
+    controller.request_mode(&mut backend, &mut options, WindowMode::Borderless, now);
+    let prior = options.clone();
+    let requests = backend.requests.len();
+    assert_eq!(
+        controller.step(&mut backend, &mut options, true, now),
+        Change::None
+    );
+    assert_eq!(
+        controller.apply_selected(&mut backend, &mut options, now),
+        Change::None
+    );
+    assert_eq!(backend.requests.len(), requests);
+    assert_eq!(options, prior);
+
+    controller.request_mode(&mut backend, &mut options, WindowMode::Windowed, now);
     backend.modes.borrow_mut().clear();
     let prior = options.clone();
     let requests = backend.requests.len();
@@ -309,6 +364,77 @@ fn display_step_changes_store_without_window_request_until_exclusive() {
     );
     assert_eq!(backend.requests.len(), requests);
     assert_eq!(options, prior);
+}
+
+#[test]
+fn unset_display_mode_uses_launch_default_without_saving_until_keep() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("settings.toml");
+    let desktop = mode(1920, 144_000, "current");
+    let mut backend = FakeBackend::default();
+    backend.desktop = Some(desktop.clone());
+    backend.modes.borrow_mut().push(desktop.clone());
+    let mut options = PlayerOptions::default();
+    options.save(&path).unwrap();
+    let prior = options.clone();
+    let now = Instant::now();
+    let mut controller = Controller::new(false);
+    controller.boot(&mut backend, &options, now);
+    assert_eq!(controller.picked, Some(desktop.clone()));
+    assert!(backend.requests.is_empty());
+    assert_eq!(options, prior);
+    assert_eq!(PlayerOptions::load(&path), prior);
+    assert_eq!(
+        controller.request_mode(&mut backend, &mut options, WindowMode::Exclusive, now),
+        Change::OpenConfirm
+    );
+    assert_eq!(
+        backend.requests.last().unwrap().display,
+        Some(desktop.clone())
+    );
+    assert_eq!(options, prior);
+    assert_eq!(controller.revert(&mut backend, now), Change::Reverted);
+    assert_eq!(controller.picked, Some(desktop.clone()));
+    assert_eq!(options, prior);
+    assert_eq!(
+        controller.request_mode(&mut backend, &mut options, WindowMode::Exclusive, now),
+        Change::OpenConfirm
+    );
+    assert_eq!(controller.keep(&mut options), Change::Accepted);
+    options.save(&path).unwrap();
+    assert_eq!(
+        PlayerOptions::load(&path).display_mode,
+        Some(desktop.clone())
+    );
+
+    let mut unset_exclusive = PlayerOptions::default();
+    unset_exclusive.window_mode = WindowMode::Exclusive;
+    let mut launch = Controller::new(false);
+    launch.boot(&mut backend, &unset_exclusive, now);
+    assert_eq!(launch.effective.mode, WindowMode::Exclusive);
+    assert_eq!(backend.requests.last().unwrap().display, Some(desktop));
+    assert!(
+        launch.pending.is_none(),
+        "saved exclusive boot does not show a live confirm"
+    );
+    assert!(
+        unset_exclusive.display_mode.is_none(),
+        "boot never writes the resolved default to the store"
+    );
+
+    // A missing saved tuple still earns the fallback rather than being replaced
+    // by the desktop default. The boot escape never changes that preference.
+    options.set_display_mode(mode(1280, 60_000, "disconnected"));
+    let saved = options.clone();
+    controller.boot(&mut backend, &options, now);
+    assert!(controller.fallback);
+    assert_eq!(controller.picked, None);
+    assert_eq!(options, saved);
+    let mut escape = Controller::new(true);
+    let requests = backend.requests.len();
+    escape.boot(&mut backend, &options, now);
+    assert_eq!(backend.requests.len(), requests);
+    assert_eq!(options, saved);
 }
 
 #[path = "readback_tests.rs"]

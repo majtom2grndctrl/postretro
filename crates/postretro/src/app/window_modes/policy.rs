@@ -14,6 +14,10 @@ pub(super) struct Target {
 
 pub(super) trait Backend {
     fn enumerate(&self) -> Vec<DisplayMode>;
+    /// Choose only an enumerated tuple matching the monitor's current size.
+    fn desktop_mode(&self, _choices: &[DisplayMode]) -> Option<DisplayMode> {
+        None
+    }
     /// Re-find an exclusive handle in a fresh enumeration. False means the
     /// adapter applied borderless fallback and never submitted an unlisted mode.
     fn apply(&mut self, target: &Target) -> bool;
@@ -30,6 +34,7 @@ pub(super) struct Pending {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Change {
     None,
+    SelectionChanged,
     OpenConfirm,
     Accepted,
     Reverted,
@@ -38,6 +43,8 @@ pub(super) enum Change {
 pub(super) struct Controller {
     pub(super) choices: Vec<DisplayMode>,
     pub(super) picked: Option<DisplayMode>,
+    launch_default: Option<DisplayMode>,
+    selection_dirty: bool,
     pub(super) effective: Target,
     baseline: Target,
     pub(super) fallback: bool,
@@ -51,6 +58,8 @@ impl Controller {
         Self {
             choices: Vec::new(),
             picked: None,
+            launch_default: None,
+            selection_dirty: false,
             effective: Target::default(),
             baseline: Target::default(),
             fallback: false,
@@ -62,11 +71,24 @@ impl Controller {
 
     pub(super) fn refresh(&mut self, backend: &impl Backend, options: &PlayerOptions) {
         self.refresh_choices(backend);
-        self.picked = options
+        if !self.selection_dirty
+            || !self
+                .picked
+                .as_ref()
+                .is_some_and(|mode| self.choices.contains(mode))
+        {
+            self.picked = self.accepted_pick(options);
+            self.selection_dirty = false;
+        }
+    }
+
+    fn accepted_pick(&self, options: &PlayerOptions) -> Option<DisplayMode> {
+        options
             .display_mode
             .as_ref()
+            .or(self.launch_default.as_ref())
             .filter(|mode| self.choices.contains(mode))
-            .cloned();
+            .cloned()
     }
 
     fn refresh_choices(&mut self, backend: &impl Backend) {
@@ -77,6 +99,14 @@ impl Controller {
 
     pub(super) fn apply(&mut self, backend: &mut impl Backend, target: Target, now: Instant) {
         let applied = backend.apply(&target);
+        if !applied {
+            self.refresh_choices(backend);
+            self.picked = self
+                .picked
+                .take()
+                .filter(|mode| self.choices.contains(mode));
+            self.selection_dirty = false;
+        }
         self.fallback = !applied;
         self.effective = if applied {
             target
@@ -102,13 +132,19 @@ impl Controller {
         self.effective = Target::default();
         self.settle_until = None;
         self.fallback = false;
-        self.refresh(backend, options);
+        self.refresh_choices(backend);
+        self.launch_default = backend.desktop_mode(&self.choices);
+        self.selection_dirty = false;
+        self.picked = self.accepted_pick(options);
         let target = if self.escape {
             Target::default()
         } else {
             Target {
                 mode: options.window_mode,
-                display: options.display_mode.clone(),
+                display: options
+                    .display_mode
+                    .clone()
+                    .or_else(|| self.launch_default.clone()),
             }
         };
         if target.mode != WindowMode::Windowed {
@@ -131,7 +167,11 @@ impl Controller {
         self.refresh(backend, options);
         let target = Target {
             mode,
-            display: options.display_mode.clone(),
+            display: if mode == WindowMode::Exclusive {
+                self.picked.clone().or_else(|| options.display_mode.clone())
+            } else {
+                options.display_mode.clone()
+            },
         };
         self.request(backend, options, target, now)
     }
@@ -144,11 +184,12 @@ impl Controller {
         now: Instant,
     ) -> Change {
         let prior = self.effective.clone();
-        let prior_picked = self.picked.clone();
+        let prior_picked = self.accepted_pick(options);
         self.escape = false;
         self.apply(backend, target.clone(), now);
         if target.mode == WindowMode::Exclusive && !self.fallback {
             self.picked.clone_from(&target.display);
+            self.selection_dirty = false;
             self.pending = Some(Pending {
                 prior,
                 prior_picked,
@@ -168,9 +209,9 @@ impl Controller {
         backend: &mut impl Backend,
         options: &mut PlayerOptions,
         next: bool,
-        now: Instant,
+        _now: Instant,
     ) -> Change {
-        if self.pending.is_some() {
+        if self.pending.is_some() || options.window_mode == WindowMode::Borderless {
             return Change::None;
         }
         self.refresh(backend, options);
@@ -188,9 +229,26 @@ impl Controller {
             (None, true) => 0,
             (None, false) => count - 1,
         };
-        let selected = self.choices[index].clone();
-        if self.effective.mode == WindowMode::Exclusive {
-            self.request(
+        self.picked = Some(self.choices[index].clone());
+        self.selection_dirty = true;
+        Change::SelectionChanged
+    }
+
+    pub(super) fn apply_selected(
+        &mut self,
+        backend: &mut impl Backend,
+        options: &mut PlayerOptions,
+        now: Instant,
+    ) -> Change {
+        if self.pending.is_some() || options.window_mode == WindowMode::Borderless {
+            return Change::None;
+        }
+        let Some(selected) = self.picked.clone() else {
+            return Change::None;
+        };
+        self.refresh_choices(backend);
+        if options.window_mode == WindowMode::Exclusive {
+            return self.request(
                 backend,
                 options,
                 Target {
@@ -198,12 +256,16 @@ impl Controller {
                     display: Some(selected),
                 },
                 now,
-            )
-        } else {
-            self.picked = Some(selected.clone());
-            options.set_display_mode(selected);
-            Change::Accepted
+            );
         }
+        if !self.choices.contains(&selected) {
+            self.picked = self.accepted_pick(options);
+            self.selection_dirty = false;
+            return Change::SelectionChanged;
+        }
+        options.set_display_mode(selected);
+        self.selection_dirty = false;
+        Change::Accepted
     }
 
     pub(super) fn keep(&mut self, options: &mut PlayerOptions) -> Change {
@@ -211,6 +273,7 @@ impl Controller {
             return Change::None;
         };
         options.window_mode = pending.candidate.mode;
+        self.selection_dirty = false;
         options.mark_written(crate::options::keys::WINDOW_MODE);
         if let Some(mode) = pending.candidate.display {
             options.set_display_mode(mode);
@@ -228,6 +291,7 @@ impl Controller {
         self.picked = pending
             .prior_picked
             .filter(|mode| self.choices.contains(mode));
+        self.selection_dirty = false;
         Change::Reverted
     }
 
@@ -292,6 +356,7 @@ impl Controller {
         if let Some(mode) = &actual.display {
             options.set_display_mode(mode.clone());
             self.picked = Some(mode.clone());
+            self.selection_dirty = false;
         }
         Change::Accepted
     }

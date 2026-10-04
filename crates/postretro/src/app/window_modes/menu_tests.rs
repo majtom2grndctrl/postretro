@@ -11,7 +11,7 @@ use postretro_ui::demo::DISPLAY_MODE_CONFIRM_NAME;
 use postretro_ui::descriptor::AnchoredTree;
 use postretro_ui::modal_stack::ScopeTier;
 use postretro_ui::theme::UiTheme;
-use postretro_ui::tree::{FocusRectOwner, ImageSizes, UiTree};
+use postretro_ui::tree::{FocusRectOwner, ImageSizes, UiDrawData, UiTree};
 use std::path::Path;
 use std::time::Instant;
 
@@ -130,7 +130,7 @@ fn update_options(app: &mut App, backend: &mut FakeBackend, dt: f32, now: Instan
 
 /// Snapshot the session's real slots and local cells, evaluate the visible
 /// shipped tree, and export the focus rectangles consumed by activation.
-fn draw(app: &mut App) -> Vec<String> {
+fn draw_data(app: &mut App) -> UiDrawData {
     let session = app.session.as_mut().unwrap();
     let snapshot = App::build_ui_read_snapshot(
         &session.modal_stack,
@@ -162,7 +162,15 @@ fn draw(app: &mut App) -> Vec<String> {
         tier: top.tier,
     });
     session.ui_focus_rects = Some(rects);
-    drawn.texts.into_iter().map(|text| text.content).collect()
+    drawn
+}
+
+fn draw(app: &mut App) -> Vec<String> {
+    draw_data(app)
+        .texts
+        .into_iter()
+        .map(|text| text.content)
+        .collect()
 }
 
 fn assert_live_mode(texts: &[String], width: u32, hz: u32) {
@@ -182,12 +190,12 @@ fn shipped_menu_activations_drive_policy_bridge_bindings_and_saved_choice() {
     let old = mode(1280, 60000, "current");
     let new = mode(1920, 144000, "current");
     let mut backend = FakeBackend::default();
+    backend.desktop = Some(old.clone());
     *backend.modes.borrow_mut() = vec![old.clone(), new.clone()];
     let now = Instant::now();
     {
         let session = app.session.as_mut().unwrap();
         session.settings_path = Some(path.clone());
-        session.player_options.set_display_mode(old.clone());
         session.player_options.save(&path).unwrap();
         app.window_modes
             .controller
@@ -217,19 +225,25 @@ fn shipped_menu_activations_drive_policy_bridge_bindings_and_saved_choice() {
     assert_live_mode(&draw(&mut app), 1920, 144);
     assert_eq!(
         app.session.as_ref().unwrap().player_options.display_mode,
-        Some(new)
+        None,
+        "browsing does not commit the draft",
     );
     activate(&mut app, &mut backend, "displayModePrev", now);
     update_options(&mut app, &mut backend, 0.0, now);
     assert_live_mode(&draw(&mut app), 1280, 60);
     assert_eq!(
         app.session.as_ref().unwrap().player_options.display_mode,
-        Some(old.clone())
+        None,
+        "the launch default remains unset in settings until Apply or Keep",
     );
     assert!(
         backend.requests.is_empty(),
         "windowed picks do not apply exclusive modes"
     );
+    activate(&mut app, &mut backend, "displayModeApply", now);
+    update_options(&mut app, &mut backend, 0.3, now);
+    assert!(backend.requests.is_empty());
+    assert_eq!(PlayerOptions::load(&path).display_mode, Some(old.clone()));
 
     // The row's real named reaction writes the working copy; the bridge then
     // requests the picked exclusive tuple and opens the engine-owned confirm.
@@ -268,5 +282,107 @@ fn shipped_menu_activations_drive_policy_bridge_bindings_and_saved_choice() {
     );
     let saved = PlayerOptions::load(&path);
     assert_eq!(saved.window_mode, WindowMode::Exclusive);
-    assert_eq!(saved.display_mode, Some(old));
+    assert_eq!(saved.display_mode, Some(old.clone()));
+
+    // Exclusive browsing used to switch resolution on every arrow press.
+    for (id, width, hz) in [
+        ("displayModeNextExclusive", 1920, 144),
+        ("displayModePrevExclusive", 1280, 60),
+        ("displayModeNextExclusive", 1920, 144),
+    ] {
+        activate(&mut app, &mut backend, id, now);
+        update_options(&mut app, &mut backend, 0.3, now);
+        assert_live_mode(&draw(&mut app), width, hz);
+        assert_eq!(backend.requests.len(), 1);
+        assert_eq!(PlayerOptions::load(&path), saved);
+        assert!(app.window_modes.controller.pending.is_none());
+    }
+    activate(&mut app, &mut backend, "displayModeApplyExclusive", now);
+    update_options(&mut app, &mut backend, 0.3, now);
+    assert_eq!(backend.requests.len(), 2);
+    assert_eq!(backend.requests.last().unwrap().display, Some(new.clone()));
+    assert!(app.display_mode_confirm_is_top());
+    assert_eq!(PlayerOptions::load(&path), saved);
+    update_options(
+        &mut app,
+        &mut backend,
+        0.3,
+        now + std::time::Duration::from_secs(15),
+    );
+    assert!(app.options_menu_is_top());
+    assert_live_mode(&draw(&mut app), 1280, 60);
+    assert_eq!(backend.requests.len(), 3);
+    assert_eq!(backend.requests.last().unwrap().display, Some(old.clone()));
+    assert_eq!(PlayerOptions::load(&path), saved);
+
+    activate(&mut app, &mut backend, "optionsBorderless", now);
+    update_options(&mut app, &mut backend, 0.3, now);
+    update_options(&mut app, &mut backend, 0.3, now);
+    let drawn = draw_data(&mut app);
+    for content in [
+        "DISPLAY MODE",
+        "<",
+        "1280x",
+        "720",
+        " @ 60 Hz",
+        ">",
+        "APPLY RESOLUTION",
+    ] {
+        let text = drawn
+            .texts
+            .iter()
+            .find(|text| text.content == content)
+            .unwrap();
+        assert_eq!(text.color[3], 204, "{content} draws at 80% opacity");
+    }
+    let requests = backend.requests.len();
+    let saved_borderless = PlayerOptions::load(&path);
+    for id in [
+        "displayModePrevBorderless",
+        "displayModeNextBorderless",
+        "displayModeApplyBorderless",
+    ] {
+        let rects = app
+            .session
+            .as_ref()
+            .unwrap()
+            .ui_focus_rects
+            .as_ref()
+            .unwrap();
+        assert!(
+            rects
+                .rects
+                .iter()
+                .any(|rect| rect.id == id && rect.disabled)
+        );
+        app.fire_focused_button_activation_with_display_mode(Some(id), |_, _| {
+            panic!("disabled controls cannot dispatch")
+        });
+    }
+    update_options(&mut app, &mut backend, 0.3, now);
+    assert_eq!(backend.requests.len(), requests);
+    assert_eq!(PlayerOptions::load(&path), saved_borderless);
+    activate(&mut app, &mut backend, "optionsWindowed", now);
+    update_options(&mut app, &mut backend, 0.0, now);
+    let drawn = draw_data(&mut app);
+    assert!(
+        app.session
+            .as_ref()
+            .unwrap()
+            .ui_focus_rects
+            .as_ref()
+            .unwrap()
+            .rects
+            .iter()
+            .any(|rect| rect.id == "displayModeApply" && !rect.disabled)
+    );
+    assert_eq!(
+        drawn
+            .texts
+            .iter()
+            .find(|text| text.content == "APPLY RESOLUTION")
+            .unwrap()
+            .color[3],
+        255
+    );
 }

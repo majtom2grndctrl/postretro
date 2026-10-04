@@ -2665,8 +2665,11 @@ declare module "postretro/ui" {
   /** Accessibility numeric fields a mod menu button may step, each within [0, 1]. */
   export type AccessibilityNumericField = "screenShakeScale" | "viewFeelScale" | "masterVolume" | "sfxVolume" | "musicVolume" | "uiVolume";
   /** Reserved operations for the engine display-mode picker and confirmation. */
-  export type DisplayModeOperation = "next" | "previous" | "keep" | "revert";
-  /** Build a reserved `ui.displayMode.<op>` action; the engine owns apply and persistence. */
+  export type DisplayModeOperation = "next" | "previous" | "apply" | "keep" | "revert";
+  /**
+   * Build a reserved `ui.displayMode.<op>` action. `next`/`previous` browse without saving;
+   * `apply` commits the selection (exclusive opens the engine confirmation).
+   */
   export function displayModeAction<O extends DisplayModeOperation>(op: O): `ui.displayMode.${O}`;
 
   /** The reserved `onPress` action for one accessibility field. Toggles `cycle`; numeric fields `increase` or `decrease`. */

@@ -12719,30 +12719,117 @@ mod tests {
         ] {
             assert_eq!(button_action(graphics_panel, id), Some(action));
         }
-        assert!(find_by_id(graphics_panel, "optionsDisplayModeLabel").is_some());
-        let mut display_bindings = Vec::new();
-        let mut panel_widgets = Vec::new();
-        collect_widgets(graphics_panel, &mut panel_widgets);
-        for widget in panel_widgets {
-            if let Widget::Text(text) = widget {
-                if let Some(bind) = &text.bind {
-                    if let BindSource::Slot { slot } = &bind.source {
-                        if slot.starts_with("window.displayMode") {
-                            display_bindings.push(slot.as_str());
+        let display_label = find_by_id(graphics_panel, "optionsDisplayModeLabel")
+            .expect("display-mode label is in the graphics panel");
+        let Widget::VStack(display_label) = display_label else {
+            panic!("display-mode label groups the three mode-specific labels");
+        };
+        let expected_slots = [
+            "window.displayModeWidth",
+            "window.displayModeHeight",
+            "window.displayModeRefreshHz",
+        ];
+        for (value, suffix, opacity) in [
+            ("windowed", "", 1.0),
+            ("exclusive", "Exclusive", 1.0),
+            ("borderless", "Borderless", 0.8),
+        ] {
+            let visible_when = Predicate {
+                source: BindSource::Slot {
+                    slot: "options.windowMode".into(),
+                },
+                equals: Some(PredicateValue::String(value.into())),
+            };
+            let label = display_label
+                .children
+                .iter()
+                .find_map(|widget| match widget {
+                    Widget::Text(text) if text.visible_when.as_ref() == Some(&visible_when) => {
+                        Some(text)
+                    }
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("{value} display-mode label has its own visibility"));
+            assert_eq!(
+                label.color,
+                postretro_ui::descriptor::ColorValue::Literal([1.0, 1.0, 1.0, opacity])
+            );
+
+            let mut panel_widgets = Vec::new();
+            collect_widgets(graphics_panel, &mut panel_widgets);
+            let controls = panel_widgets
+                .iter()
+                .filter_map(|widget| match widget {
+                    Widget::VStack(container)
+                        if container.visible_when.as_ref() == Some(&visible_when) =>
+                    {
+                        Some(*widget)
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                controls.len(),
+                1,
+                "one display-mode control group is shown for {value}"
+            );
+            let mut control_widgets = Vec::new();
+            collect_widgets(controls[0], &mut control_widgets);
+            for (base_id, action) in [
+                ("displayModePrev", "ui.displayMode.previous"),
+                ("displayModeNext", "ui.displayMode.next"),
+                ("displayModeApply", "ui.displayMode.apply"),
+            ] {
+                let id = format!("{base_id}{suffix}");
+                let button = find_button(controls[0], &id)
+                    .unwrap_or_else(|| panic!("{value} display-mode group includes {id}"));
+                assert_eq!(button.on_press, action);
+                assert_eq!(
+                    button.visible_when, None,
+                    "the parent control group owns {value} visibility",
+                );
+                assert_eq!(button.bind.as_ref(), Some(&visible_when));
+                assert_eq!(button.disabled, value == "borderless");
+                let color = button
+                    .style_ranges
+                    .as_ref()
+                    .and_then(|ranges| ranges.entries.first())
+                    .and_then(|entry| entry.color.as_ref())
+                    .expect("display-mode buttons set their mode-specific opacity");
+                assert_eq!(
+                    color,
+                    &postretro_ui::descriptor::ColorValue::Literal([1.0, 1.0, 1.0, opacity])
+                );
+            }
+
+            let mut display_bindings = Vec::new();
+            for widget in &control_widgets {
+                if let Widget::Text(text) = widget {
+                    if let Some(bind) = &text.bind {
+                        if let BindSource::Slot { slot } = &bind.source {
+                            if slot.starts_with("window.displayMode") {
+                                display_bindings.push(slot.as_str());
+                                assert_eq!(
+                                    text.visible_when, None,
+                                    "the parent control group owns {value} text visibility",
+                                );
+                                assert_eq!(
+                                    text.color,
+                                    postretro_ui::descriptor::ColorValue::Literal([
+                                        1.0, 1.0, 1.0, opacity,
+                                    ]),
+                                    "{value} display text uses the branch opacity",
+                                );
+                            }
                         }
                     }
                 }
             }
+            assert_eq!(
+                display_bindings, expected_slots,
+                "{value} display-mode row binds size and refresh to readonly window slots",
+            );
         }
-        assert_eq!(
-            display_bindings,
-            [
-                "window.displayModeWidth",
-                "window.displayModeHeight",
-                "window.displayModeRefreshHz"
-            ],
-            "the display-mode row presents its size and refresh from readonly window slots",
-        );
 
         let reaction = manifest
             .reactions

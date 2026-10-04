@@ -4,6 +4,8 @@ use super::*;
 // by the generated module's typeof, leaving its closed operation type unresolved.
 #[test]
 fn display_mode_typedefs_preserve_closed_operations_without_bare_global_references() {
+    use postretro_ui::actions::{DisplayModeAction, parse_display_mode_action};
+
     let registry = mini_registry();
     let ts = generate_typescript(&registry);
     let luau = generate_luau(&registry);
@@ -13,6 +15,34 @@ fn display_mode_typedefs_preserve_closed_operations_without_bare_global_referenc
         .lines()
         .find(|line| line.starts_with(alias_prefix))
         .expect("runtime SDK declares its display-mode operation vocabulary");
+    let expected_ops = [
+        DisplayModeAction::Next,
+        DisplayModeAction::Previous,
+        DisplayModeAction::Apply,
+        DisplayModeAction::Keep,
+        DisplayModeAction::Revert,
+    ]
+    .map(|action| {
+        // Exhaustiveness makes a new Rust action require an SDK contract review.
+        let op = match action {
+            DisplayModeAction::Next => "next",
+            DisplayModeAction::Previous => "previous",
+            DisplayModeAction::Apply => "apply",
+            DisplayModeAction::Keep => "keep",
+            DisplayModeAction::Revert => "revert",
+        };
+        assert_eq!(action.op(), op);
+        assert_eq!(
+            parse_display_mode_action(&format!("ui.displayMode.{op}")),
+            Some(action)
+        );
+        format!("\"{op}\"")
+    });
+    assert_eq!(
+        sdk_alias.strip_prefix(alias_prefix).unwrap(),
+        expected_ops.join(" | "),
+        "runtime SDK operations must match the Rust action vocabulary"
+    );
 
     for output in [&ts, &luau] {
         let aliases: Vec<_> = output

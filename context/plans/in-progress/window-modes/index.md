@@ -10,6 +10,7 @@ Requested capability, raised by the developer. A player can only play in a windo
 - **Exclusive earns its place by changing the display mode.** Rival: borderless plus `render_resolution`, which already gives the low-resolution look. Rejected because only a real mode change gives monitor-side scaling and a refresh-rate choice. winit's Windows exclusive is a display-settings change plus a topmost window, not DXGI exclusive ownership, so it is not claimed as a latency or presentation win.
 - **Exclusive display mode is re-found, never remembered.** It persists as size, refresh, bit depth and monitor name, and every apply matches it against a fresh enumeration of the window's current monitor, so an un-enumerated mode never reaches winit. No match → borderless for the session with a warning; the stored mode stays, so the monitor's return restores it at the next apply. winit panics when the OS refuses a mode change, listed or not; that crash is accepted, because the live path's confirm never persisted the mode and `--windowed` recovers the boot path.
 - **No exclusive on Wayland.** Wayland lists modes but ignores an exclusive request, so there the enumeration reads empty and exclusive takes the fallback.
+- **Picker default and Apply (owner amendment, 2026-10-04).** With no saved display tuple, seed the picker from an enumerated mode matching the monitor's resolution at launch, preferring its current refresh rate. This does not overwrite an unavailable saved tuple or save before first presentation. Next/previous only browse a session-local selection; Apply Resolution commits it while windowed or requests it with the existing confirmation while exclusive. Selecting Exclusive itself uses the picked/default tuple and confirms. Borderless does not change display resolution, so its picker and Apply button are disabled and drawn at 80% opacity.
 - **Revert countdown.** A live change into exclusive, or between exclusive modes, shows an engine-owned confirm. Unconfirmed after 15 s, or cancelled, the prior mode returns and nothing persists. A misreported mode would otherwise strand the player on a black screen. While a confirm is pending, every other mode change is refused and writes nothing, so "the prior mode" stays defined. Changes to windowed or borderless apply and persist without a prompt, as does the saved mode at boot. The confirm is a `core/ui/` descriptor under a reserved, non-shadowable registry name, so no mod tree can replace the dialog whose focus guards a blind confirm. Diverges from `ui.md` §1.1's single exempt name; amended at promotion. It follows U3's confirmation-dialog convention, focus opening on revert (`ready/E23--accessibility` AC 19); built before U3, it keeps that rule and U3 aligns its shape.
 - **One settings read, before the window.** `PlayerOptions` loads once before the window exists and passes to `Session::build` through the pending-session owner; `player_id` generation and the first-launch save stay after the first pixel. Diverges from `boot_sequence.md` §1's "no session-lifetime work pre-window", and partly reverses `done/boot-session-boundary` Task 3, which moved `player_options` out of the pre-window services. The read is cheap and side-effect free, `Session` stays the sole owner, and the alternative switches modes mid-splash on every fullscreen launch. The doc is amended at promotion.
 - **Mode applies after visibility, before the first redraw request.** Never as a creation attribute on a hidden window: winit leaves hidden + fullscreen unguarded on macOS, and U4 (`ready/E23--accessibility`) creates the window hidden. The rule holds with or without U4, preserving `boot_sequence.md` §Window visibility.
@@ -44,6 +45,7 @@ HStack({}, [
   Text({ content: "", bind: bindState(window.displayModeHeight) }),
   Text({ content: "", bind: bindState(window.displayModeRefreshHz, { format: " @ {} Hz", decimalPlaces: 0 }) }),
   Button({ id: "displayModeNext", label: ">", onPress: displayModeAction("next") }),
+  Button({ id: "displayModeApply", label: "APPLY RESOLUTION", onPress: displayModeAction("apply") }),
 ]);
 // Also readonly: window.displayModeBitDepth (number), window.displayModeMonitor (string, "" when none).
 
@@ -52,7 +54,7 @@ displayModeAction("keep");   // "ui.displayMode.keep"
 displayModeAction("revert"); // "ui.displayMode.revert"
 // window.displayModeRevertSeconds: readonly number, 0 while no confirm is pending.
 ```
-`ui.displayMode.<op>` joins the closed reserved `ui.*` set (`ui.md` §4); the Luau mirror ships with it (Boundary inventory). The `window.displayMode*` fields describe the picked mode, which is the stored mode except while a confirm is pending. Stepping while windowed or borderless changes the stored mode; while exclusive it applies through the confirm. The `content/dev` menu shows size and refresh.
+`ui.displayMode.<op>` joins the closed reserved `ui.*` set (`ui.md` §4); the Luau mirror ships with it (Boundary inventory). The `window.displayMode*` fields describe the picked mode: the saved choice, launch default, browsed draft or pending confirm candidate. Stepping changes only the draft; Apply accepts it while windowed or applies through the confirm while exclusive. Borderless refuses stepping and Apply. The `content/dev` menu shows size and refresh.
 
 ## Acceptance
 ### Automated
@@ -69,11 +71,11 @@ displayModeAction("revert"); // "ui.displayMode.revert"
 - [ ] Keep before expiry persists the new mode; expiry or revert restores the prior mode and writes nothing (P4).
 - [ ] An OS readback during a pending confirm does not persist (P3).
 - [ ] A change to windowed or borderless persists with no confirm.
-- [ ] While a confirm is pending, no save writes the unconfirmed mode, whether it came from the window-mode row or a display-mode step: not the menu-close flush its opening triggers, not a settled save, not the exit flush; a relaunch after quitting mid-confirm boots the prior mode (P5, P6, P7).
+- [ ] While a confirm is pending, no save writes the unconfirmed mode, whether it came from the window-mode row or display-mode Apply: not the menu-close flush its opening triggers, not a settled save, not the exit flush; a relaunch after quitting mid-confirm boots the prior mode (P5, P6, P7).
 - [ ] A confirm removed by a level load, restart or return to the frontend never confirms; the prior mode returns within 15 s of the change, Loading frames counted, and nothing persists (P8).
 - [ ] Keep or revert with no confirm pending writes nothing and changes no mode (P9).
 - [ ] While a confirm is pending, a display-mode step or a script write of the window mode is refused and writes nothing; revert restores the mode from before the confirm.
-- [ ] Stepping while windowed or borderless changes the stored display mode and requests no mode change; stepping while exclusive opens the confirm, and the stored display mode changes only on keep.
+- [ ] Stepping while windowed or exclusive changes only the session-local picked display mode: no window request and no save. Apply while windowed accepts it without a window request; Apply while exclusive opens the confirm, and the stored display mode changes only on keep. Borderless refuses both stepping and Apply.
 - [ ] The confirm opens with focus on revert.
 - [ ] A mod or level tree registered under the confirm's name is rejected with a load-time diagnostic, and the engine confirm still shows.
 **Boot and readback**
@@ -89,6 +91,8 @@ displayModeAction("revert"); // "ui.displayMode.revert"
 **Surface**
 - [ ] The Scripting surface example runs as `content/dev` options-menu rows: stepping changes the shown size and refresh, and the window-mode rows write the slot.
 - [ ] The Luau SDK carries the display-mode action helper and the window-mode and display-mode slots with the same ops, values and types as TypeScript.
+- [ ] With no saved display tuple, launch seeds an enumerated monitor-resolution default; entering Exclusive uses it and shows the confirm. An unavailable saved tuple keeps its fallback behavior, and no boot seeding writes settings.
+- [ ] The dev menu disables display-mode arrows and Apply while Borderless is selected, with the entire display-mode setting drawn at 80% opacity; returning to Windowed or Exclusive enables it.
 ### Manual
 - [ ] Windows: boot into each saved mode; the first splash frame shows that mode.
 - [ ] macOS: boot into each saved mode with no windowed splash frame after the first; a native Space transition starting at the first frame passes.
@@ -120,7 +124,7 @@ displayModeAction("revert"); // "ui.displayMode.revert"
 | Stored display mode | engine struct | top-level keys, shape delegated | n/a | n/a |
 | Picked-mode fields | engine-owned readonly slots | n/a | `window.displayModeWidth`, `…Height`, `…RefreshHz`, `…BitDepth` (number), `…Monitor` (string) | same |
 | Revert countdown | engine-owned readonly slot | n/a | `window.displayModeRevertSeconds` (number) | same |
-| Display-mode actions | App-intercepted `ui.*` family | n/a | `"ui.displayMode.next"` / `previous` / `keep` / `revert`; helper `displayModeAction(op)` | same strings; helper `displayModeAction` |
+| Display-mode actions | App-intercepted `ui.*` family | n/a | `"ui.displayMode.next"` / `previous` / `apply` / `keep` / `revert`; helper `displayModeAction(op)` | same strings; helper `displayModeAction` |
 | Confirm tree | reserved registry name, `core/ui/` | n/a | not registrable | not registrable |
 | Boot escape | stage-1 flag `--windowed` | n/a | n/a | n/a |
 

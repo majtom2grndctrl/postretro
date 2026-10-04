@@ -300,9 +300,12 @@ export function showDialog(
 }
 
 /** Reserved operations for the engine display-mode picker and confirmation. */
-export type DisplayModeOperation = "next" | "previous" | "keep" | "revert";
+export type DisplayModeOperation = "next" | "previous" | "apply" | "keep" | "revert";
 
-/** Build a reserved display-mode action; the engine owns apply and persistence. */
+/**
+ * Build a reserved display-mode action. `next`/`previous` browse without saving;
+ * `apply` commits the selection (exclusive opens the engine confirmation).
+ */
 export function displayModeAction<O extends DisplayModeOperation>(op: O): `ui.displayMode.${O}` {
   return `ui.displayMode.${op}`;
 }

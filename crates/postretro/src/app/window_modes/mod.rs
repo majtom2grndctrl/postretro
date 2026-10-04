@@ -109,6 +109,9 @@ fn dispatch_display_mode_action(
     match action {
         DisplayModeAction::Keep => controller.keep(&mut session.player_options),
         DisplayModeAction::Revert => controller.revert(backend, now),
+        DisplayModeAction::Apply => {
+            controller.apply_selected(backend, &mut session.player_options, now)
+        }
         DisplayModeAction::Next | DisplayModeAction::Previous => controller.step(
             backend,
             &mut session.player_options,
@@ -146,7 +149,7 @@ impl crate::App {
             return;
         };
         match change {
-            Change::None => {}
+            Change::None | Change::SelectionChanged => {}
             Change::OpenConfirm => {
                 session
                     .modal_stack

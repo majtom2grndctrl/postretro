@@ -8,14 +8,14 @@ fn display_mode_actions_and_slot_refs_match_both_sdk_runtimes() {
         r#"
         import { displayModeAction, getGameState } from "postretro/ui";
         const { options, window } = getGameState();
-        JSON.stringify({ actions: ["next", "previous", "keep", "revert"].map(displayModeAction), options, window });
+        JSON.stringify({ actions: ["next", "previous", "apply", "keep", "revert"].map(displayModeAction), options, window });
     "#,
     );
     let luau = luau_fixture_value(
         r#"
         local Ui = require("postretro/ui")
         local refs = Ui.getGameState()
-        return { actions = { Ui.displayModeAction("next"), Ui.displayModeAction("previous"), Ui.displayModeAction("keep"), Ui.displayModeAction("revert") }, options = refs.options, window = refs.window }
+        return { actions = { Ui.displayModeAction("next"), Ui.displayModeAction("previous"), Ui.displayModeAction("apply"), Ui.displayModeAction("keep"), Ui.displayModeAction("revert") }, options = refs.options, window = refs.window }
     "#,
     );
     assert_eq!(ts, luau);
@@ -24,6 +24,7 @@ fn display_mode_actions_and_slot_refs_match_both_sdk_runtimes() {
         serde_json::json!([
             "ui.displayMode.next",
             "ui.displayMode.previous",
+            "ui.displayMode.apply",
             "ui.displayMode.keep",
             "ui.displayMode.revert"
         ])
@@ -65,6 +66,7 @@ fn shipped_frontend_window_controls_compile_and_evaluate() {
     for wire in [
         "ui.displayMode.next",
         "ui.displayMode.previous",
+        "ui.displayMode.apply",
         "window.displayModeWidth",
         "window.displayModeHeight",
         "window.displayModeRefreshHz",

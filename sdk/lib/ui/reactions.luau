@@ -273,9 +273,10 @@ function UiReactionsSdk.showDialog(tree: string, onCommit: string?): PrimitiveRe
   return { primitive = "showDialog", args = args }
 end
 
-export type DisplayModeOperation = "next" | "previous" | "keep" | "revert"
+export type DisplayModeOperation = "next" | "previous" | "apply" | "keep" | "revert"
 
---- Build a reserved display-mode action; the engine owns apply and persistence.
+--- Build a reserved display-mode action. `next`/`previous` browse without saving;
+--- `apply` commits the selection (exclusive opens the engine confirmation).
 function UiReactionsSdk.displayModeAction(op: DisplayModeOperation): string
   return `ui.displayMode.{op}`
 end

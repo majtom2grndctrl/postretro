@@ -60,6 +60,25 @@ fn describe(mode: &VideoModeHandle) -> DisplayMode {
     }
 }
 
+fn desktop_choice(
+    choices: &[DisplayMode],
+    size: [u32; 2],
+    refresh: Option<u32>,
+    monitor: &str,
+) -> Option<DisplayMode> {
+    choices
+        .iter()
+        .filter(|mode| mode.width == size[0] && mode.height == size[1] && mode.monitor == monitor)
+        .min_by_key(|mode| {
+            (
+                refresh.map_or(0, |rate| mode.refresh_millihertz.abs_diff(rate)),
+                std::cmp::Reverse(mode.bit_depth),
+                mode.refresh_millihertz,
+            )
+        })
+        .cloned()
+}
+
 impl WinitBackend<'_> {
     fn modes(&self) -> Vec<(DisplayMode, VideoModeHandle)> {
         if self.wayland {
@@ -81,6 +100,17 @@ impl WinitBackend<'_> {
 impl Backend for WinitBackend<'_> {
     fn enumerate(&self) -> Vec<DisplayMode> {
         self.modes().into_iter().map(|(mode, _)| mode).collect()
+    }
+
+    fn desktop_mode(&self, choices: &[DisplayMode]) -> Option<DisplayMode> {
+        let monitor = self.window.current_monitor()?;
+        let size = monitor.size();
+        desktop_choice(
+            choices,
+            [size.width, size.height],
+            monitor.refresh_rate_millihertz(),
+            &monitor.name().unwrap_or_default(),
+        )
     }
 
     fn apply(&mut self, target: &Target) -> bool {
@@ -130,7 +160,7 @@ impl Backend for WinitBackend<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::normalize_refresh;
+    use super::{desktop_choice, normalize_refresh};
     use crate::options::DisplayMode;
 
     #[test]
@@ -159,5 +189,24 @@ mod tests {
         assert_eq!(modes.len(), 2);
         assert!(modes.contains(&mode(60_000, 24)));
         assert!(modes.contains(&mode(60_000, 32)));
+
+        assert_eq!(
+            desktop_choice(&modes, [1920, 1080], Some(60_000), "test monitor"),
+            Some(mode(60_000, 32)),
+        );
+        modes.push(mode(144_000, 32));
+        assert_eq!(
+            desktop_choice(&modes, [1920, 1080], Some(144_000), "test monitor"),
+            Some(mode(144_000, 32)),
+        );
+        assert_eq!(
+            desktop_choice(&modes, [1280, 720], Some(60_000), "test monitor"),
+            None
+        );
+        assert_eq!(
+            desktop_choice(&modes, [1920, 1080], Some(60_000), "other monitor"),
+            None
+        );
+        assert!(desktop_choice(&[], [1920, 1080], None, "test monitor").is_none());
     }
 }

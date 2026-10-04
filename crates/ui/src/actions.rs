@@ -72,6 +72,7 @@ mod tests {
         for action in [
             DisplayModeAction::Next,
             DisplayModeAction::Previous,
+            DisplayModeAction::Apply,
             DisplayModeAction::Keep,
             DisplayModeAction::Revert,
         ] {
@@ -116,6 +117,7 @@ mod tests {
 pub enum DisplayModeAction {
     Next,
     Previous,
+    Apply,
     Keep,
     Revert,
 }
@@ -125,6 +127,7 @@ impl DisplayModeAction {
         match self {
             Self::Next => "next",
             Self::Previous => "previous",
+            Self::Apply => "apply",
             Self::Keep => "keep",
             Self::Revert => "revert",
         }
@@ -135,6 +138,7 @@ pub fn parse_display_mode_action(action: &str) -> Option<DisplayModeAction> {
     match action {
         "ui.displayMode.next" => Some(DisplayModeAction::Next),
         "ui.displayMode.previous" => Some(DisplayModeAction::Previous),
+        "ui.displayMode.apply" => Some(DisplayModeAction::Apply),
         "ui.displayMode.keep" => Some(DisplayModeAction::Keep),
         "ui.displayMode.revert" => Some(DisplayModeAction::Revert),
         _ => None,

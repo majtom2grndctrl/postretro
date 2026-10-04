@@ -379,20 +379,44 @@ const controlsPanel = optionsPanel("optionsPanelControls", [
   ]),
 ]);
 
+function displayModeControls(value: (typeof WINDOW_MODE_CHOICES)[number]["value"]) {
+  const disabled = value === "borderless";
+  const color: [number, number, number, number] = [1, 1, 1, disabled ? 0.8 : 1];
+  const visibleWhen = stateEquals(options.windowMode, value);
+  const suffix = value === "windowed" ? "" : value === "exclusive" ? "Exclusive" : "Borderless";
+  const button = (id: string, label: string, op: "previous" | "next" | "apply") => Button({
+    id: `${id}${suffix}`,
+    label,
+    onPress: displayModeAction(op),
+    disabled,
+    bind: visibleWhen,
+    styleRanges: { max: 1, entries: [{ color }] },
+  });
+  return VStack({ gap: 6, align: "start", visibleWhen }, [
+    HStack({ gap: 4, align: "center" }, [
+      button("displayModePrev", "<", "previous"),
+      Text({ content: "", color, bind: bindState(window.displayModeWidth, { format: "{}x", decimalPlaces: 0 }) }),
+      Text({ content: "", color, bind: bindState(window.displayModeHeight, { decimalPlaces: 0 }) }),
+      Text({ content: "", color, bind: bindState(window.displayModeRefreshHz, { format: " @ {} Hz", decimalPlaces: 0 }) }),
+      button("displayModeNext", ">", "next"),
+    ]),
+    button("displayModeApply", "APPLY RESOLUTION", "apply"),
+  ]);
+}
+
 const graphicsPanel = optionsPanel("optionsPanelGraphics", [
   Grid({ gap: 12, align: "stretch", cols: 2 }, [
     optionLabel("optionsWindowModeLabel", "WINDOW MODE"),
     optionChoices(WINDOW_MODE_CHOICES.map(({ value, id, label }) =>
       radioChoice(id, label, stateEquals(options.windowMode, value), `frontend.options.windowMode.${value}`),
     )),
-    optionLabel("optionsDisplayModeLabel", "DISPLAY MODE"),
-    optionValue(HStack({ gap: 4, align: "center" }, [
-      Button({ id: "displayModePrev", label: "<", onPress: displayModeAction("previous") }),
-      Text({ content: "", bind: bindState(window.displayModeWidth, { format: "{}x", decimalPlaces: 0 }) }),
-      Text({ content: "", bind: bindState(window.displayModeHeight, { decimalPlaces: 0 }) }),
-      Text({ content: "", bind: bindState(window.displayModeRefreshHz, { format: " @ {} Hz", decimalPlaces: 0 }) }),
-      Button({ id: "displayModeNext", label: ">", onPress: displayModeAction("next") }),
-    ])),
+    VStack({ id: "optionsDisplayModeLabel", align: "start" }, WINDOW_MODE_CHOICES.map(({ value }) => Text({
+      content: "DISPLAY MODE",
+      fontSize: 14,
+      color: [1, 1, 1, value === "borderless" ? 0.8 : 1],
+      visibleWhen: stateEquals(options.windowMode, value),
+    }))),
+    optionValue(VStack({ align: "start" }, WINDOW_MODE_CHOICES.map(({ value }) => displayModeControls(value)))),
     optionLabel("optionsShadowQualityLabel", "SHADOW QUALITY", "Applies after reload"),
     optionChoices([
       radioChoice(

@@ -1703,7 +1703,7 @@ mod tests {
             local Ui = require("postretro/ui")
             local openAction = Ui.OPEN_ACCESSIBILITY_ACTION
             local fieldAction = Ui.accessibilityAction("reduceMotion", "cycle")
-            for _, op in { "next", "previous", "keep", "revert" } do
+            for _, op in { "next", "previous", "apply", "keep", "revert" } do
               if Ui.displayModeAction(op) ~= `ui.displayMode.{op}` then
                 error("postretro/ui display-mode actions missing")
               end

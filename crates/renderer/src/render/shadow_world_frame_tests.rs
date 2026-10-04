@@ -249,10 +249,8 @@ fn frame(
             .any(Option::is_some),
         "the frame must occupy a shadow slot"
     );
-    assert_eq!(
-        full.shadow_world.walks as usize,
-        full.shadow_world.trace.len()
-    );
+    // Every BVH-level world draw is one walk; a no-BVH draw walks nothing.
+    assert!(full.shadow_world.walks as usize <= full.shadow_world.trace.len());
     full.shadow_world
         .trace
         .iter()

@@ -53,9 +53,8 @@ impl Renderer {
             .slot_cone_matrices
             .map(|matrix| matrix.is_some());
 
-        // Reset the per-frame entity-occluder counter; the per-slot cull
-        // tallies into it below. Mirrors `shadow-cone-cull`'s submitted
-        // counter — pure CPU, no GPU readback.
+        // Reset the per-frame entity-occluder counter; the per-slot entity
+        // cone cull tallies into it below — pure CPU, no GPU readback.
         full.spot_entity_occluders_submitted = 0;
 
         for (slot, occupied) in occupied_slots.into_iter().enumerate() {
@@ -66,12 +65,7 @@ impl Renderer {
             let Some(cone_matrix) = full.spot_shadow_pool.slot_cone_matrices[slot as usize] else {
                 continue;
             };
-            let region_world = classify_spot(
-                slot,
-                full.spot_shadow_pool.slot_promoted[slot as usize],
-                cache_plan,
-                &dynamic_cache_plan,
-            );
+            let region_world = classify_spot(slot, cache_plan, &dynamic_cache_plan);
             if let RegionWorld::Promoted(plan) = region_world {
                 // Open the coarse promoted-depth-cache GPU-timing pair lazily on the
                 // first promoted slot; it closes at the end of the cube loop.
@@ -89,7 +83,7 @@ impl Renderer {
                     }
                     full.promoted_depth_cache_timing_open = true;
                 }
-                if plan.needs_world_render {
+                if region_world.draws_world() {
                     {
                         let cache_view = full
                             .promoted_depth_cache
@@ -187,7 +181,7 @@ impl Renderer {
             }
 
             if let RegionWorld::Dynamic(plan) = region_world {
-                if plan.needs_world_render {
+                if region_world.draws_world() {
                     {
                         let cache_view = full.dynamic_depth_cache.spot_view(plan);
                         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -305,10 +299,8 @@ impl Renderer {
                 timestamp_writes: None,
                 ..Default::default()
             });
-            // An uncached live slot draws its reach every frame. A dropped
-            // promoted slot keeps its clear and entity draws but no world: its
-            // light's weight is zero this frame.
-            if draw_world && region_world.draws_world() {
+            // An uncached live slot draws its reach every frame.
+            if draw_world {
                 full.shadow_world.record(
                     &mut pass,
                     cpu_frame,
@@ -418,12 +410,7 @@ impl Renderer {
                 let face_matrix = face_matrix_opt.expect("face_needs_clear implies occupied");
                 let slot = layer / crate::lighting::cube_shadow::CUBE_FACES;
                 let face = layer % crate::lighting::cube_shadow::CUBE_FACES;
-                let region_world = classify_cube(
-                    slot as u32,
-                    pool.slot_promoted[slot],
-                    cache_plan,
-                    &dynamic_cache_plan,
-                );
+                let region_world = classify_cube(slot as u32, cache_plan, &dynamic_cache_plan);
 
                 if let RegionWorld::Promoted(plan) = region_world {
                     // Same coarse promoted-depth-cache timing pair as the spot loop
@@ -435,7 +422,7 @@ impl Renderer {
                         }
                         full.promoted_depth_cache_timing_open = true;
                     }
-                    if plan.needs_world_render {
+                    if region_world.draws_world() {
                         {
                             let cache_view = full
                                 .promoted_depth_cache
@@ -536,7 +523,7 @@ impl Renderer {
                 }
 
                 if let RegionWorld::Dynamic(plan) = region_world {
-                    if plan.needs_world_render {
+                    if region_world.draws_world() {
                         {
                             let cache_view = full.dynamic_depth_cache.cube_view(plan, face);
                             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -662,8 +649,8 @@ impl Renderer {
                 // under pooled dynamic spots. Same depth-only pipeline; the
                 // face's light-space matrix is selected via the cube VS
                 // uniform's dynamic offset, and its reach comes from the same
-                // matrix. A dropped promoted slot draws no world.
-                if draw_world && region_world.draws_world() {
+                // matrix.
+                if draw_world {
                     full.shadow_world.record(
                         &mut pass,
                         cpu_frame,

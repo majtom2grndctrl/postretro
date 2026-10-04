@@ -616,6 +616,15 @@ fn indirect_contract_scanner_rejects_new_owners_calls_and_wrong_bound_indices() 
     for binding in ["full.index_buffer.slice(4..)", "other_buffer.slice(..)"] {
         assert!(!rust_violations(&[Source::fixture(path, &fixture(binding))]).is_empty());
     }
+    // Shadow passes draw direct: a correctly bound camera draw issued from the
+    // shadow-depth recorder is still a new indirect consumer.
+    assert!(
+        !rust_violations(&[Source::fixture(
+            "render/renderer_dynamic_shadow_passes.rs",
+            &fixture("full.index_buffer.slice(..)")
+        )])
+        .is_empty()
+    );
     assert!(!rust_violations(&[Source::fixture(path, "impl Renderer { fn record_depth_and_sdf_passes() { cull.draw_indirect(&mut pass, None); } }")]).is_empty());
 }
 

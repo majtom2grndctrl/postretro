@@ -498,7 +498,6 @@ impl Renderer {
                     continue;
                 }
                 pool.slot_entity_eligible[slot] = false;
-                pool.slot_promoted[slot] = false;
                 for face in 0..crate::lighting::cube_shadow::CUBE_FACES {
                     let layer =
                         crate::lighting::cube_shadow::CubeShadowPool::face_layer(slot as u32, face);
@@ -630,8 +629,6 @@ impl Renderer {
             [None; crate::lighting::spot_shadow::SHADOW_POOL_SIZE];
         full.spot_shadow_pool.slot_entity_eligible =
             [false; crate::lighting::spot_shadow::SHADOW_POOL_SIZE];
-        full.spot_shadow_pool.slot_promoted =
-            [false; crate::lighting::spot_shadow::SHADOW_POOL_SIZE];
         for (light_idx, &slot) in slot_assignment.iter().enumerate() {
             if slot == crate::lighting::spot_shadow::NO_SHADOW_SLOT {
                 continue;
@@ -653,7 +650,6 @@ impl Renderer {
             );
             full.spot_shadow_pool.slot_entity_eligible[slot as usize] =
                 postretro_lighting::entity_occluder_eligible(candidate, promoted_baked);
-            full.spot_shadow_pool.slot_promoted[slot as usize] = promoted_baked;
             let cols = m.to_cols_array();
             let mut bytes = [0u8; MAT_BYTES];
             for (i, v) in cols.iter().enumerate() {
@@ -1034,7 +1030,7 @@ impl Renderer {
     ///
     /// Shares the spot path's per-light eligibility (`visible_lights`) and the
     /// SHARED scoring/drop ranking core, so cube and spot slot assignment cannot
-    /// drift. Cube faces render WORLD geometry (per-face cone-culled, mirroring
+    /// drift. Cube faces render WORLD geometry (each face's CPU reach, mirroring
     /// the spot depth pass) plus entity occluders; `slot_entity_eligible` gates
     /// only the entity draw, exactly like the spot path's per-slot entity gate.
     ///
@@ -1089,7 +1085,6 @@ impl Renderer {
         for e in pool.slot_entity_eligible.iter_mut() {
             *e = false;
         }
-        pool.slot_promoted.fill(false);
 
         let mut vertex_uniforms = vec![0u8; stride * face_count];
         for (light_idx, &slot) in slot_assignment.iter().enumerate() {
@@ -1098,9 +1093,9 @@ impl Renderer {
             }
             let candidate = &full.shadow_candidate_lights[light_idx];
             // EVERY ranked slot gets face matrices: the depth loop clears each
-            // occupied face to the far plane and renders cone-culled WORLD
-            // geometry into it every frame (same Clear(1.0)+world baseline as
-            // an occupied spot slot), so the shader may sample any ranked slot.
+            // occupied face to the far plane and gives it world depth every
+            // frame — drawn from its reach, or copied from a warm cache layer —
+            // so the shader may sample any ranked slot.
             // `slot_entity_eligible` gates only whether skinned ENTITY
             // occluders are additionally drawn into the faces — the same
             // occluder split as the spot path.
@@ -1111,7 +1106,6 @@ impl Renderer {
             );
             pool.slot_entity_eligible[slot as usize] =
                 postretro_lighting::entity_occluder_eligible(candidate, promoted_baked);
-            pool.slot_promoted[slot as usize] = promoted_baked;
             let face_mats = cube_shadow::cube_face_matrices(candidate);
             for (face, m) in face_mats.iter().enumerate() {
                 let layer = cube_shadow::CubeShadowPool::face_layer(slot, face);
@@ -2257,6 +2251,11 @@ mod tests {
             "dropped records must not pack a metadata tail"
         );
         assert_eq!(plan.counters.promoted_count, 0);
+        // The zeroed weight then frees the light's pool slot, so a dropped
+        // light holds no shadow region and draws no world depth.
+        let mut assignment = [3];
+        clear_zero_weight_promoted_assignments(&[Some(0)], &weights, &[None], &[], &mut assignment);
+        assert_eq!(assignment, [postretro_lighting::NO_SHADOW_SLOT]);
     }
 
     #[test]

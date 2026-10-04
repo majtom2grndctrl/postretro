@@ -1,6 +1,6 @@
 // Dynamic point-light cube-array shadow pool: per-light 6-face omnidirectional
 // depth, ranked into a fixed-capacity cube-array. Each occupied face renders
-// cone-culled WORLD geometry (static occluders — crates, pillars) plus skinned
+// its reached WORLD geometry (static occluders — crates, pillars) plus skinned
 // entity occluders, mirroring the spot pool's occluder split.
 //
 // WHY per-face world draws fit the budget: a naive world draw costs 6 full
@@ -21,7 +21,7 @@ pub const CUBE_NEAR_CLIP: f32 = 0.1;
 
 /// Number of cube slots in the pool, sized to realistic concurrent demand after
 /// PVS culling + influence ranking — NOT worst case. Each occupied slot draws
-/// cone-culled world geometry + entity occluders into 6 faces, so the cost
+/// reached world geometry + entity occluders into 6 faces, so the cost
 /// (and the VRAM) scales with this.
 ///
 /// VRAM justification: a `Depth32Float` cube-array is
@@ -147,9 +147,6 @@ pub struct CubeShadowPool {
     /// entity draw — every occupied face renders its world-depth baseline
     /// regardless, exactly like the spot pool's per-slot entity gate.
     pub slot_entity_eligible: Vec<bool>,
-    /// Per-slot promoted-baked occupant flag, written alongside
-    /// `slot_entity_eligible`; the cube counterpart of the spot pool's.
-    pub slot_promoted: Vec<bool>,
 }
 
 impl CubeShadowPool {
@@ -217,7 +214,6 @@ impl CubeShadowPool {
             face_matrices: vec![None; CUBE_COUNT * CUBE_FACES],
             slot_assignment: Vec::new(),
             slot_entity_eligible: vec![false; CUBE_COUNT],
-            slot_promoted: vec![false; CUBE_COUNT],
         })
     }
 
@@ -235,7 +231,6 @@ impl CubeShadowPool {
     pub fn clear_occupancy(&mut self) {
         self.face_matrices.fill(None);
         self.slot_entity_eligible.fill(false);
-        self.slot_promoted.fill(false);
         self.slot_assignment.clear();
     }
 }

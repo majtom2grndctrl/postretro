@@ -22,11 +22,10 @@ pub(super) enum RegionWorld<P, D> {
     Promoted(P),
     /// A dynamic light holding a dynamic-cache layer: world only on a cold fill.
     Dynamic(D),
-    /// A dynamic light past cache capacity: world into the live layer every frame.
+    /// A dynamic light past cache capacity: world into the live layer every
+    /// frame. A promoted light the cache drops has zero weight and holds no
+    /// slot (`clear_zero_weight_promoted_assignments`), so it never lands here.
     Live,
-    /// A promoted light whose record the promoted cache dropped this frame. Its
-    /// weight is zero, so nothing samples the slot: no world.
-    Dropped,
 }
 
 pub(super) type SpotRegionWorld = RegionWorld<PromotedSpotCachePlan, DynamicSpotPlan>;
@@ -59,27 +58,23 @@ impl WorldFill for DynamicCubePlan {
 }
 
 impl<P: WorldFill, D: WorldFill> RegionWorld<P, D> {
-    /// Whether this region draws static world, so walks its reach, this frame.
+    /// Whether this region draws static world (and so walks its reach) this frame.
     pub fn draws_world(self) -> bool {
         match self {
             Self::Promoted(plan) => plan.needs_world_render(),
             Self::Dynamic(plan) => plan.needs_world_render(),
             Self::Live => true,
-            Self::Dropped => false,
         }
     }
 }
 
 pub(super) fn classify_spot(
     slot: u32,
-    slot_promoted: bool,
     promoted: &PromotedDepthCacheFramePlan,
     dynamic: &DynamicDepthCachePlan,
 ) -> SpotRegionWorld {
     if let Some(plan) = promoted.spot_for_slot(slot) {
         RegionWorld::Promoted(plan)
-    } else if slot_promoted {
-        RegionWorld::Dropped
     } else if let Some(plan) = dynamic.spot_for_slot(slot) {
         RegionWorld::Dynamic(plan)
     } else {
@@ -89,14 +84,11 @@ pub(super) fn classify_spot(
 
 pub(super) fn classify_cube(
     slot: u32,
-    slot_promoted: bool,
     promoted: &PromotedDepthCacheFramePlan,
     dynamic: &DynamicDepthCachePlan,
 ) -> CubeRegionWorld {
     if let Some(plan) = promoted.cube_for_slot(slot) {
         RegionWorld::Promoted(plan)
-    } else if slot_promoted {
-        RegionWorld::Dropped
     } else if let Some(plan) = dynamic.cube_for_slot(slot) {
         RegionWorld::Dynamic(plan)
     } else {
@@ -137,7 +129,7 @@ pub(super) struct ShadowWorldDraws {
     scratch: ShadowReachScratch,
     /// `0..index_count`, the no-BVH draw.
     all: Range<u32>,
-    /// Walks since the frame's counters were taken.
+    /// BVH walks since the frame began; a no-BVH draw is not a walk.
     pub walks: u32,
     #[cfg(test)]
     pub trace: Vec<WorldDrawTrace>,
@@ -147,14 +139,14 @@ impl ShadowWorldDraws {
     /// Reach data for a newly installed level. Replaces the previous level's
     /// index and scratch, so no range from it survives the install.
     pub fn install(bvh: Option<&BvhTree>, index_count: u32) -> Self {
+        // Nothing draws without indices, so an empty level builds no reach.
+        let bvh = bvh.filter(|bvh| !bvh.leaves.is_empty() && index_count > 0);
         // Leaf ranges were checked against the index array before install
         // (§5 Indirect-args invariant 2), so every reach range lies inside it.
         debug_assert!(bvh.is_none_or(|bvh| bvh.leaves.iter().all(|leaf| {
             u64::from(leaf.index_offset) + u64::from(leaf.index_count) <= u64::from(index_count)
         })));
-        let reach = bvh
-            .filter(|bvh| !bvh.leaves.is_empty())
-            .map(|bvh| ShadowReachIndex::new(&bvh.nodes, &bvh.leaves));
+        let reach = bvh.map(|bvh| ShadowReachIndex::new(&bvh.nodes, &bvh.leaves));
         let scratch = reach
             .as_ref()
             .map(ShadowReachIndex::scratch)
@@ -183,9 +175,12 @@ impl ShadowWorldDraws {
     pub fn ranges(&mut self, region: ShadowRegion, matrix: &Mat4) -> &[Range<u32>] {
         #[cfg(not(test))]
         let _ = region;
-        self.walks += 1;
         let ranges: &[Range<u32>] = match &self.reach {
-            Some(reach) => reach.reach(&cone_frustum_planes(matrix), &mut self.scratch),
+            Some(reach) => {
+                self.walks += 1;
+                reach.reach(&cone_frustum_planes(matrix), &mut self.scratch)
+            }
+            None if self.all.is_empty() => &[],
             None => std::slice::from_ref(&self.all),
         };
         #[cfg(test)]
@@ -207,7 +202,11 @@ impl ShadowWorldDraws {
         bindings: WorldDepthBindings<'_>,
     ) {
         let ranges = {
-            let _reach_scope = cpu.scope(RenderStage::ShadowReach);
+            // Only a BVH walk is reach work; the no-BVH whole-buffer draw is not.
+            let _reach_scope = self
+                .reach
+                .is_some()
+                .then(|| cpu.scope(RenderStage::ShadowReach));
             self.ranges(region, matrix)
         };
         if ranges.is_empty() {

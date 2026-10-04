@@ -505,7 +505,6 @@ mod tests {
         assert!(
             !crate::render::shadow_world_draws::classify_spot(
                 7,
-                false,
                 &crate::render::promoted_depth_cache::PromotedDepthCacheFramePlan::default(),
                 &warm,
             )
@@ -533,7 +532,6 @@ mod tests {
         assert!(
             !crate::render::shadow_world_draws::classify_cube(
                 2,
-                false,
                 &crate::render::promoted_depth_cache::PromotedDepthCacheFramePlan::default(),
                 &warm,
             )

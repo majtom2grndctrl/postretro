@@ -424,7 +424,7 @@ impl CandidateCullPipeline {
     /// `indirect_buffer`, `cull_status_buffer`, and `leaf_buffer` are the
     /// camera cull's existing global buffers, threaded in so the candidate path
     /// writes the same per-leaf slots. Clearing only `total_leaves * stride`
-    /// bytes leaves any future shadow/entity/packed non-camera regions of a
+    /// bytes leaves any future entity/packed non-camera regions of a
     /// shared buffer untouched.
     ///
     /// The candidate leaves come from this pipeline's own [`Self::gather`]

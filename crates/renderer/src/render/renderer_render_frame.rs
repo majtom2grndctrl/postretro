@@ -385,7 +385,7 @@ impl Renderer {
 
         // --- Cube point-light shadow depth loop -------------------------------
         // For each occupied cube slot, CLEAR all 6 live-pool faces to the far
-        // plane (1.0). Uncached slots render cone-culled WORLD geometry plus
+        // plane (1.0). Uncached slots render their reached WORLD geometry plus
         // eligible entity occluders. Cached slots render static world only into
         // a cold cache layer, then clear and redraw live entity occluders in the
         // pool. Per face: a depth render pass into the

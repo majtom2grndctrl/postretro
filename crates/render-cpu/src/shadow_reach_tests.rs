@@ -554,6 +554,47 @@ fn malformed_skip_or_leaf_slot_ends_or_skips_without_reaching_out_of_range() {
 }
 
 #[test]
+fn zero_count_leaf_reaches_its_cell_without_adding_a_range() {
+    // Cell 1's only in-frustum leaf is empty; its other leaf lies outside but
+    // still draws, because reach is per cell.
+    let index = index_of(&[
+        L {
+            min: [0.0, 0.0, 0.0],
+            max: [1.0, 1.0, 1.0],
+            cell: 0,
+            offset: 0,
+            count: 3,
+        },
+        L {
+            min: [2.0, 0.0, 0.0],
+            max: [3.0, 1.0, 1.0],
+            cell: 1,
+            offset: 3,
+            count: 0,
+        },
+        L {
+            min: [40.0, 0.0, 0.0],
+            max: [41.0, 1.0, 1.0],
+            cell: 1,
+            offset: 3,
+            count: 3,
+        },
+    ]);
+    let mut scratch = index.scratch();
+    assert_eq!(index.reach(&slab(2.2, 2.8), &mut scratch), &[3..6]);
+    assert_eq!(scratch.cells(), &[1]);
+}
+
+#[test]
+fn scratch_from_a_larger_level_walks_a_smaller_one() {
+    let large = index_of(&row(200));
+    let small = index_of(&row(3));
+    let mut scratch = large.scratch();
+    assert_eq!(large.reach(&slab(150.2, 151.8), &mut scratch), &[450..456]);
+    assert_eq!(small.reach(&slab(-1.0, 4.0), &mut scratch), &[0..9]);
+}
+
+#[test]
 fn scratch_from_a_smaller_level_refits_before_walking() {
     let small = index_of(&row(2));
     let large = index_of(&row(200));

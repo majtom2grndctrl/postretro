@@ -150,9 +150,9 @@ pub fn extract_frustum_planes_for_gpu(view_proj: &Mat4) -> [[f32; 4]; 6] {
 /// behind a plane (`dot(normal, p) + d < 0`), the whole box is outside that
 /// plane, hence outside the frustum.
 ///
-/// Shared by CPU caster culls and regression tests: entity bounds use it
-/// directly, and world-BVH tests replay the GPU cone-cull predicate. Keeping
-/// one CPU predicate aligned with the GPU convention makes those paths agree.
+/// Shared by the CPU shadow world reach (`render-cpu` `shadow_reach`), entity
+/// caster culls and their tests. Keeping one CPU predicate aligned with the
+/// camera cull's GPU convention makes those paths agree.
 pub fn aabb_intersects_frustum(aabb: &Aabb, planes: &[Vec4; 6]) -> bool {
     for plane in planes {
         let normal = plane.truncate();

@@ -293,13 +293,13 @@ fn reach_built_from_leaves_alone_needs_no_cell_draw_index() {
 /// occupied spot slot and walk reach for exactly those that draw world.
 fn record_spot_frame(
     draws: &mut ShadowWorldDraws,
-    slots: &[(u32, bool, Mat4)],
+    slots: &[(u32, Mat4)],
     promoted: &PromotedDepthCacheFramePlan,
     dynamic: &DynamicDepthCachePlan,
 ) -> Vec<u32> {
     draws.begin_frame();
-    for &(slot, slot_promoted, matrix) in slots {
-        if classify_spot(slot, slot_promoted, promoted, dynamic).draws_world() {
+    for &(slot, matrix) in slots {
+        if classify_spot(slot, promoted, dynamic).draws_world() {
             draws.ranges(ShadowRegion::Spot(slot), &matrix);
         }
     }
@@ -333,8 +333,10 @@ fn promoted_plan(spots: &[(u32, bool)]) -> PromotedDepthCacheFramePlan {
 #[test]
 fn mixed_frame_walks_reach_once_per_cold_fill_and_uncached_region_only() {
     // O5. Slots: 0 promoted warm, 1 dynamic (warm next frame), 2 dynamic,
-    // 3 promoted cold, 4 dynamic, 5 dynamic past the 3-layer cache, 7 a
-    // promoted light the promoted cache dropped.
+    // 3 promoted cold, 4 dynamic, 5 dynamic past the 3-layer cache. A
+    // promoted light the promoted cache drops holds no slot at all, so it
+    // never reaches the recorder (`renderer_light_slots`
+    // `missing_cache_plan_layer_drops_record_and_zeros_weight_before_metadata_pack`).
     let tree = axes();
     let mut draws = ShadowWorldDraws::install(Some(&tree), index_count(&tree));
     let m = |direction: Vec3| spot(Vec3::ZERO, direction);
@@ -352,13 +354,12 @@ fn mixed_frame_walks_reach_once_per_cold_fill_and_uncached_region_only() {
     assert_eq!(dynamic.spot().len(), 3, "slot 5 is past capacity");
     let promoted = promoted_plan(&[(0, false), (3, true)]);
     let slots = [
-        (0, true, m(Vec3::Y)),
-        (1, false, m(Vec3::X)),
-        (2, false, m(Vec3::NEG_X)),
-        (3, true, m(Vec3::NEG_Y)),
-        (4, false, m(Vec3::Z)),
-        (5, false, m(Vec3::NEG_Z)),
-        (7, true, m(Vec3::X)),
+        (0, m(Vec3::Y)),
+        (1, m(Vec3::X)),
+        (2, m(Vec3::NEG_X)),
+        (3, m(Vec3::NEG_Y)),
+        (4, m(Vec3::Z)),
+        (5, m(Vec3::NEG_Z)),
     ];
     let walked = record_spot_frame(&mut draws, &slots, &promoted, &dynamic);
     assert_eq!(walked, vec![2, 3, 4, 5]);
@@ -393,7 +394,7 @@ fn retenanted_layer_cold_fills_from_its_new_tenants_matrix() {
     let next = cache.plan_frame(&[(0, 20, toward_z)], &[]);
     assert_eq!(next.spot()[0].cache_layer, first.spot()[0].cache_layer);
     assert_eq!(
-        record_spot_frame(&mut draws, &[(0, false, toward_z)], &promoted, &next),
+        record_spot_frame(&mut draws, &[(0, toward_z)], &promoted, &next),
         vec![0]
     );
     assert_eq!(cells_of(&draws.trace[0].ranges), vec![4]);
@@ -401,7 +402,7 @@ fn retenanted_layer_cold_fills_from_its_new_tenants_matrix() {
     // Light 20 keeps its matrix but moves to slot 6: still warm, no walk.
     cache.mark_spot_world_rendered(next.spot()[0]);
     let moved = cache.plan_frame(&[(6, 20, toward_z)], &[]);
-    assert!(record_spot_frame(&mut draws, &[(6, false, toward_z)], &promoted, &moved).is_empty());
+    assert!(record_spot_frame(&mut draws, &[(6, toward_z)], &promoted, &moved).is_empty());
 }
 
 #[test]
@@ -414,10 +415,7 @@ fn cold_fill_then_warm_then_rekey_or_relight_draws_reach_again() {
     let mut cache = DynamicDepthCache::default();
     let mut frame = |cache: &mut DynamicDepthCache, inputs: &[(u32, usize, Mat4)]| {
         let plan = cache.plan_frame(inputs, &[]);
-        let slots: Vec<_> = inputs
-            .iter()
-            .map(|&(slot, _, m)| (slot, false, m))
-            .collect();
+        let slots: Vec<_> = inputs.iter().map(|&(slot, _, m)| (slot, m)).collect();
         let walked = record_spot_frame(&mut draws, &slots, &promoted, &plan);
         for spot_plan in plan.spot() {
             cache.mark_spot_world_rendered(*spot_plan);

@@ -68,10 +68,6 @@ pub struct SpotShadowPool {
     /// shadow but draws zero entity occluders. Separate from pool-slot
     /// eligibility (which still admits non-entity dynamic spots to a slot).
     pub slot_entity_eligible: [bool; SHADOW_POOL_SIZE],
-    /// Per-slot promoted-baked occupant flag, written alongside
-    /// `slot_entity_eligible`. A promoted slot the promoted cache dropped this
-    /// frame has no cache plan; this keeps it off the uncached world path.
-    pub slot_promoted: [bool; SHADOW_POOL_SIZE],
 }
 
 impl SpotShadowPool {
@@ -84,7 +80,6 @@ impl SpotShadowPool {
     pub fn clear_occupancy(&mut self) {
         self.slot_cone_matrices = [None; SHADOW_POOL_SIZE];
         self.slot_entity_eligible = [false; SHADOW_POOL_SIZE];
-        self.slot_promoted = [false; SHADOW_POOL_SIZE];
         self.slot_assignment.clear();
     }
 
@@ -316,7 +311,6 @@ impl SpotShadowPool {
             slot_assignment: Vec::new(),
             slot_cone_matrices: [None; SHADOW_POOL_SIZE],
             slot_entity_eligible: [false; SHADOW_POOL_SIZE],
-            slot_promoted: [false; SHADOW_POOL_SIZE],
         }
     }
 
@@ -548,7 +542,7 @@ mod tests {
 
     /// AC#2: a world AABB inside the cone is classified inside; one fully
     /// outside the cone (behind the light, opposite the aim) is classified
-    /// outside. Same predicate the GPU per-slot cull mirrors.
+    /// outside. Same predicate the CPU shadow world reach walks with.
     #[test]
     fn cone_frustum_classifies_inside_and_outside_aabbs() {
         let light = spot_down_neg_z();

@@ -358,7 +358,6 @@ mod tests {
     fn spot_draws_world(plan: &PromotedDepthCacheFramePlan, slot: u32) -> bool {
         crate::render::shadow_world_draws::classify_spot(
             slot,
-            true,
             plan,
             &crate::render::dynamic_depth_cache::DynamicDepthCachePlan::default(),
         )
@@ -395,7 +394,6 @@ mod tests {
         assert!(
             !crate::render::shadow_world_draws::classify_cube(
                 2,
-                true,
                 &second,
                 &crate::render::dynamic_depth_cache::DynamicDepthCachePlan::default(),
             )

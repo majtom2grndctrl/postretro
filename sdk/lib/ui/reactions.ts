@@ -299,6 +299,14 @@ export function showDialog(
   return { primitive: "showDialog", args };
 }
 
+/** Reserved operations for the engine display-mode picker and confirmation. */
+export type DisplayModeOperation = "next" | "previous" | "keep" | "revert";
+
+/** Build a reserved display-mode action; the engine owns apply and persistence. */
+export function displayModeAction<O extends DisplayModeOperation>(op: O): `ui.displayMode.${O}` {
+  return `ui.displayMode.${op}`;
+}
+
 /**
  * The engine-shipped on-screen keyboard's registry name. `openTextEntry` opens
  * this tree; the engine loads its descriptor from `core/ui/keyboard.json`

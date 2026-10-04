@@ -1412,6 +1412,7 @@ declare module "postretro" {
       readonly surfaceDepthQuality: Ref<"off" | "on">;
       readonly uiVolume: Ref<number>;
       readonly viewFeelScale: Ref<number>;
+      readonly windowMode: Ref<"windowed" | "borderless" | "exclusive">;
     };
     readonly player: {
       readonly ammo: ComputedRef<number>;
@@ -1446,6 +1447,14 @@ declare module "postretro" {
     };
     readonly ui: {
       readonly textEntry: Ref<string>;
+    };
+    readonly window: {
+      readonly displayModeBitDepth: ComputedRef<number>;
+      readonly displayModeHeight: ComputedRef<number>;
+      readonly displayModeMonitor: ComputedRef<string>;
+      readonly displayModeRefreshHz: ComputedRef<number>;
+      readonly displayModeRevertSeconds: ComputedRef<number>;
+      readonly displayModeWidth: ComputedRef<number>;
     };
   };
 
@@ -2656,6 +2665,9 @@ declare module "postretro/ui" {
   /** Accessibility numeric fields a mod menu button may step, each within [0, 1]. */
   export type AccessibilityNumericField = "screenShakeScale" | "viewFeelScale" | "masterVolume" | "sfxVolume" | "musicVolume" | "uiVolume";
   /** The reserved `onPress` action for one accessibility field. Toggles `cycle`; numeric fields `increase` or `decrease`. */
+  export type DisplayModeOperation = "next" | "previous" | "keep" | "revert";
+  export function displayModeAction<O extends DisplayModeOperation>(op: O): `ui.displayMode.${O}`;
+
   export function accessibilityAction<F extends AccessibilityToggleField>(field: F, op: "cycle"): `ui.accessibility.cycle.${F}`;
   export function accessibilityAction<F extends AccessibilityNumericField, O extends "increase" | "decrease">(field: F, op: O): `ui.accessibility.${O}.${F}`;
   /** Open the engine keyboard modal. Optional `onCommit` names a reaction fired when text entry commits. */

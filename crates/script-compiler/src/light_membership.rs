@@ -583,6 +583,7 @@ fn install_lua_prelude(lua: &Lua, mod_root: &Path) -> mlua::Result<()> {
             "QUIT_TO_MENU_ACTION",
             "OPEN_ACCESSIBILITY_ACTION",
             "accessibilityAction",
+            "displayModeAction",
             "loadLevel",
             "restartLevel",
             "returnToFrontend",
@@ -1696,12 +1697,17 @@ mod tests {
     // `UI.accessibilityAction(...)` failed at prl-build with "attempt to call
     // a nil value" while the same script worked fine at runtime.
     #[test]
-    fn luau_virtual_ui_module_exports_accessibility_actions() {
+    fn luau_virtual_ui_module_exports_accessibility_and_display_actions() {
         let source = r#"
             local Postretro = require("postretro")
             local Ui = require("postretro/ui")
             local openAction = Ui.OPEN_ACCESSIBILITY_ACTION
             local fieldAction = Ui.accessibilityAction("reduceMotion", "cycle")
+            for _, op in { "next", "previous", "keep", "revert" } do
+              if Ui.displayModeAction(op) ~= `ui.displayMode.{op}` then
+                error("postretro/ui display-mode actions missing")
+              end
+            end
             function setupLevel(_)
               if type(openAction) ~= "string" or type(fieldAction) ~= "string" then
                 error("postretro/ui accessibility action exports missing")

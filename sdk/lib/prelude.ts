@@ -111,6 +111,7 @@ export type {
   CrossingOptions,
   CrossingDescriptor,
   PlaySoundOptions,
+  DisplayModeOperation,
 } from "./ui/reactions";
 export {
   onStateCrossing,
@@ -127,6 +128,7 @@ export {
   QUIT_TO_MENU_ACTION,
   OPEN_ACCESSIBILITY_ACTION,
   accessibilityAction,
+  displayModeAction,
   openMenu,
   closeDialog,
   loadLevel,

@@ -821,6 +821,9 @@ declare OPEN_ACCESSIBILITY_ACTION: "ui.openAccessibility"
 --- `AccessibilityNumericField` are declared in virtual_module.luau — they type
 --- `PostretroUiModule.accessibilityAction` too, and this bare declaration falls
 --- inside the stripped UI range, while the two type aliases must survive it.
+export type DisplayModeOperation = "next" | "previous" | "keep" | "revert"
+declare function displayModeAction(op: DisplayModeOperation): string
+
 declare accessibilityAction: ((field: AccessibilityToggleField, op: "cycle") -> string) & ((field: AccessibilityNumericField, op: "increase" | "decrease") -> string)
 
 --- Reserved button `onPress` action that returns to the frontend menu. The App

@@ -16,6 +16,8 @@ import {
   Tree,
   VStack,
   accessibilityAction,
+  bindState,
+  displayModeAction,
   defineUiTree,
   getGameState,
   loadLevel,
@@ -174,7 +176,13 @@ export const frontendMenu = defineUiTree({
   ),
 });
 
-const options = getGameState().options;
+const { options, window } = getGameState();
+
+const WINDOW_MODE_CHOICES = [
+  { value: "windowed", id: "optionsWindowed", label: "WINDOWED" },
+  { value: "borderless", id: "optionsBorderless", label: "BORDERLESS" },
+  { value: "exclusive", id: "optionsExclusive", label: "EXCLUSIVE" },
+] as const;
 
 /// Render resolution choices, in display order. ASCII fractions render in every
 /// bundled typeface.
@@ -187,6 +195,9 @@ const RENDER_RESOLUTION_CHOICES = [
 ] as const;
 
 const optionReactions: NamedReactionDescriptor[] = [
+  ...WINDOW_MODE_CHOICES.map(({ value }) =>
+    defineReaction(`frontend.options.windowMode.${value}`, updateState(options.windowMode, value)),
+  ),
   defineReaction("frontend.options.invertY.off", updateState(options.invertY, false)),
   defineReaction("frontend.options.invertY.on", updateState(options.invertY, true)),
   defineReaction("frontend.options.crouchMode.hold", updateState(options.crouchMode, "hold")),
@@ -370,6 +381,18 @@ const controlsPanel = optionsPanel("optionsPanelControls", [
 
 const graphicsPanel = optionsPanel("optionsPanelGraphics", [
   Grid({ gap: 12, align: "stretch", cols: 2 }, [
+    optionLabel("optionsWindowModeLabel", "WINDOW MODE"),
+    optionChoices(WINDOW_MODE_CHOICES.map(({ value, id, label }) =>
+      radioChoice(id, label, stateEquals(options.windowMode, value), `frontend.options.windowMode.${value}`),
+    )),
+    optionLabel("optionsDisplayModeLabel", "DISPLAY MODE"),
+    optionValue(HStack({ gap: 4, align: "center" }, [
+      Button({ id: "displayModePrev", label: "<", onPress: displayModeAction("previous") }),
+      Text({ content: "", bind: bindState(window.displayModeWidth, { format: "{}x", decimalPlaces: 0 }) }),
+      Text({ content: "", bind: bindState(window.displayModeHeight, { decimalPlaces: 0 }) }),
+      Text({ content: "", bind: bindState(window.displayModeRefreshHz, { format: " @ {} Hz", decimalPlaces: 0 }) }),
+      Button({ id: "displayModeNext", label: ">", onPress: displayModeAction("next") }),
+    ])),
     optionLabel("optionsShadowQualityLabel", "SHADOW QUALITY", "Applies after reload"),
     optionChoices([
       radioChoice(

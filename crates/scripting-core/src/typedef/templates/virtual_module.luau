@@ -108,6 +108,7 @@ export type PostretroUiModule = {
   --- Reserved button `onPress` action that opens the engine accessibility panel.
   OPEN_ACCESSIBILITY_ACTION: "ui.openAccessibility",
   --- The reserved `onPress` action for one accessibility field. Toggles `cycle`; numeric fields `increase` or `decrease`.
+  displayModeAction: typeof(displayModeAction),
   accessibilityAction: ((field: AccessibilityToggleField, op: "cycle") -> string) & ((field: AccessibilityNumericField, op: "increase" | "decrease") -> string),
   --- Write a literal or runtime value at game-logic time. Runtime values may read known Number/Boolean slots, including readonly slots; unknown/nonprojectable inputs and readonly output targets reject.
   updateState: <T>(ref: Ref<T>, value: T | RuntimeValue) -> PrimitiveReactionDescriptor,

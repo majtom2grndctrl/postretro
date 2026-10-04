@@ -88,8 +88,8 @@ All automated proofs below are planned, not run. Extend existing scenario covera
 | 2 | Display-mode store, fresh enumeration/re-find policy and window slot catalog | integrating executor | 1 | complete: check + 26 matched window-filter tests |
 | 3 | Live requests, engine confirm, revert lifecycle and persistence isolation | integrating executor | 2 | complete |
 | 4 | OS readback, bounded settle/fallback and generation-safe reseeding | integrating executor | 3 | complete |
-| 5 | TS/Luau action surface, generated types and dev options-menu rows | integrating executor | 4 | in progress |
-| 6 | Integration gate, review/fix loop, final preflight and platform acceptance report | integrating executor | 5 | pending |
+| 5 | TS/Luau action surface, generated types and dev options-menu rows | integrating executor | 4 | complete |
+| 6 | Integration gate, review/fix loop, final preflight and platform acceptance report | integrating executor | 5 | in progress |
 
 ### 1. Thin boot slice
 
@@ -149,7 +149,7 @@ Use a disposable app name `postretro-window-modes-test` so the normal game's set
 
 ## Resumption
 
-Owner approval is recorded. Task 1 automated proof passes; its native visual trial is pending. Resume Task 2 while collecting that external result. Check workspace free space after each numbered task/checkpoint; below 15 GB clear only Cargo incremental caches in active/workflow-owned targets, then downloaded crate archives if necessary, and recheck. Initial available space: 45 GiB.
+Owner approval is recorded. Tasks 1–5 are implemented; platform visual proof remains pending. Resume Task 6’s review/fix loop and final preflight. Check workspace free space after each numbered task/checkpoint; below 15 GB clear only Cargo incremental caches in active/workflow-owned targets, then downloaded crate archives if necessary, and recheck. Initial available space: 45 GiB.
 
 ## Task proof
 
@@ -160,3 +160,5 @@ Owner approval is recorded. Task 1 automated proof passes; its native visual tri
 - Task 3: Controller filter: 8 tests; options bridge: 17 tests; render extents: 4 tests; confirm focus/action descriptor: 1 test; reserved registration boundary: 1 test, all passed. Confirmation uses an opaque modal instance, so clear/reopen cannot keep an old transaction. Borderless and windowed native boot trials both reached window/renderer initialization but did not present; both workflow processes were stopped. This does not establish a fullscreen failure or a visual pass; platform acceptance remains outstanding.
 
 - Task 4: `cargo check -p postretro` passed without warnings; window-controller filter: 14 matched tests passed. Traces prove pending/fallback isolation through actual save/reload, stale/failed-entry baseline adoption, OS persistence without feedback requests, same-saved-value requests under escape/fallback, and zero idle projection writes. Three seconds is the provisional bounded settle interval; native timing and CPU samples were unavailable because both native trials stalled before first presentation. The manual runbook must validate the bound. Idle inspection: one cached fullscreen read, no mode enumeration or formatting, no allocation for an equal reading or unchanged projection.
+
+- Task 5: Production TypeScript menu evaluation and TS/Luau SDK parity: 2 tests passed; compiler-time Luau UI export: 1 test; generated SDK snapshot drift: 1 test; closed action parser: 1 test, all passed. Regenerated both committed types with `gen-script-types`. Focused strict TypeScript compilation of the new op/readonly/mode tests and shipped menu passes with `skipLibCheck`; the aggregate SDK suite has four existing diagnostics (E10 guard fixture, unused directive, ambient `declare`, missing `Effect`), reproduced unchanged using the starting commit’s declarations/fixtures. These are recorded, not claimed as passing or changed by this feature.

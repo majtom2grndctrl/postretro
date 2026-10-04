@@ -1,8 +1,8 @@
 // Readback traces cover asynchronous/failed requests and persistence feedback.
 // See: context/lib/player_options.md §7
 use super::*;
-use crate::options::OptionsBridge;
 use crate::input::{InputSystem, default_bindings};
+use crate::options::OptionsBridge;
 use postretro_entities::ScriptCtx;
 use postretro_scripting_core::store_bridge::write_state_slot_json;
 use std::time::Duration;
@@ -274,4 +274,41 @@ fn every_redraw_reads_once_before_boot_and_loading_services_deadline() {
         early_return.find("self.service_window_modes();").unwrap()
             < early_return.find("return;").unwrap()
     );
+}
+
+#[test]
+fn display_steps_project_size_refresh_and_monitor_into_readonly_refs() {
+    let ctx = ScriptCtx::new();
+    let mut options = PlayerOptions::default();
+    let mut backend = FakeBackend::default();
+    *backend.modes.borrow_mut() = vec![mode(1280, 60000, "current"), mode(1920, 144000, "current")];
+    let mut controller = Controller::new(false);
+    let now = Instant::now();
+    for (width, hz) in [(1280.0, 60.0), (1920.0, 144.0)] {
+        assert_eq!(
+            controller.step(&mut backend, &mut options, true, now),
+            Change::Accepted
+        );
+        super::super::projection::project(&controller, &mut ctx.slot_table.borrow_mut(), now);
+        for (name, expected) in [
+            ("window.displayModeWidth", width),
+            ("window.displayModeRefreshHz", hz),
+        ] {
+            let table = ctx.slot_table.borrow();
+            let slot = table.get(name).unwrap();
+            assert!(slot.schema.readonly);
+            assert!(
+                matches!(slot.value.as_ref(), Some(postretro_entities::SlotValue::Number(value)) if (*value - expected).abs() < f32::EPSILON)
+            );
+        }
+        assert_eq!(
+            ctx.slot_table
+                .borrow()
+                .get("window.displayModeMonitor")
+                .unwrap()
+                .value,
+            Some(postretro_entities::SlotValue::String("current".into()))
+        );
+    }
+    assert!(backend.requests.is_empty());
 }

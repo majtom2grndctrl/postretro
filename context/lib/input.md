@@ -28,7 +28,17 @@ Physical inputs map to logical actions. Game logic never queries "is W pressed" 
 | Button | Binary on/off, with pressed/held/released states | Shoot, jump, use, reload |
 | Axis | Scalar value in [-1, 1] | Move forward/back, strafe left/right, look yaw, look pitch |
 
-A single action can have multiple physical bindings. W key and left stick Y both map to the forward/back movement axis. Bindings are data, not code. Decided, not yet built: they are player data — remappable and persisted per player, UI navigation included (`player_options.md` §6).
+A single action can have multiple physical bindings. W key and left stick Y both map to the forward/back movement axis. Bindings are data, not code.
+
+### Commands, activators, and layering (decided, not yet built)
+
+- **Commands.** Bindings name commands by stable snake_case ID: gameplay commands from the closed action set, UI commands from the nav intents. An axis action splits into digital per-direction commands (`move_forward`) and an analog command (`look_x`); a digital command accepts keys, buttons, and half-axis stick inputs (`left_stick_up`), and an analog command accepts axes only. Engine IDs never contain `.`; `<mod_id>.<name>` is reserved for mod-defined commands, split at the last `.`.
+- **Inputs by physical position.** Keyboard keys use W3C `KeyboardEvent.code` names, mouse inputs fixed snake_case names, and gamepad buttons and axes position names (`south`, `left_shoulder`). Analog polarity is a fixed engine table per source. Labels and glyphs resolve at display time.
+- **Layering.** The effective binding is the player override, else the author default from the manifest `input` block, else the engine default (`player_options.md` §6). The table rebuilds at mod init, on hot reload, on rebind, and when co-op host tuning installs or clears. A pending resolution on a key whose bindings changed is cancelled, and a held key the rebuild newly binds waits for a fresh press.
+- **Relevance.** Which commands a game uses is derived from its descriptors by an exhaustive match, so an unclassified command fails to compile: dash and crouch from movement descriptors, reload from a magazine weapon, alt-fire from a secondary activation. While participating in co-op, relevance also follows the installed host tuning. An irrelevant command is unbound, unlisted, and never part of a conflict. The author's manifest can force a command shown or hidden.
+- **Activators.** Each binding carries an activator: `press`, `release`, `tap` (max time), or `hold` (min time). Authors set them; each command accepts a fixed set (shoot and alt-fire `press` only, because charge requires it; sprint and crouch `press` or `hold`). Activators resolve client-side into the Pressed → Held → Released phases commands already read; the wire carries resolved intent and gains nothing. Hold/toggle modes apply on top of the resolved phases. Thresholds are scaled by `hold_timing_scale` (`player_options.md` §5).
+- **Shared keys (Steam rule).** Within a context, a key carries at most one short binding (`press`, `release`, or `tap`) plus one `hold`. On a shared key, the hold fires at its min and the short binding never does. A release before the min fires the short binding, within the tap's max for a `tap`. A release between a tap's max and a hold's min fires nothing. Press-only commands never share a key.
+- **Contexts.** Gameplay and UI commands are separate sets, and conflicts are checked only among commands live in the same context: South may be both jump and confirm, and Escape is `nav_menu` with no capturing tree and `nav_cancel` under one.
 
 **Button signal width.** Each consumer chooses its own signal width when reading a button action from the snapshot. `is_active()` (Pressed|Held) is a level signal — it fires on every qualifying tick while the button is held. `ButtonState::Pressed` alone is a rising edge — it fires only on the first tick. Use a rising edge when a held input would wrongly re-trigger each qualifying tick: dash uses `ButtonState::Pressed` because a held dash would re-fire every cooldown-ready tick. Jump uses the level signal (`is_active()`) because the movement system self-gates it via a ceiling rule.
 
@@ -119,7 +129,7 @@ Gameplay-input suspension, including focus loss and capturing menus, latches an 
 
 **Frames that draw no UI drop UI input.** Booting, Splash, and Loading frames draw no UI, so any UI input pressed on them — `nav.menu` included — is dropped, never delivered later: queued intents, the latched menu toggle, and buffered gamepad events alike. A buffered gamepad cancel therefore cannot close the first-launch panel on its first frame.
 
-**Console conventions (decided, not yet built).** Where a tree authors none, the focus engine supplies console defaults: focus restores to the opener on return (a pop that reveals the tree again), while a fresh push of a previously visited tree lands on its initial focus; directional nav gets an engine-default hold-to-repeat, and a held slider step accelerates and clamps at its bounds. Nested focus groups are reachable by directional nav.
+**Console conventions (decided, not yet built).** Where a tree authors none, the focus engine supplies console defaults: focus restores to the opener on return (a pop that reveals the tree again), while a fresh push of a previously visited tree lands on its initial focus; directional nav gets an engine-default hold-to-repeat, and a held slider step accelerates and clamps at its bounds. Nested focus groups are reachable by directional nav: a move a group cannot answer continues in the enclosing group, a linear group answers only its own axis, and entering a group lands on its last-focused member. The bumpers become tab commands (`nav_tab_next`, `nav_tab_prev`) that activate the adjacent tab in the top tree's `tablist`, and keep Next/Prev in a tree with no tablist. `restoreOnReturn` moves to the tree, where an explicit `false` opts out. The capture prompt for rebinding takes the next raw input, Escape, Start, and Select/Back included, and has no time limit.
 
 **Adding a new focus mode.** Add the variant to `input/focus.rs`, update the `captures_cursor` match and its exhaustive-match test, wire `set_input_focus` and `reapply_focus` in `main.rs`.
 
@@ -132,7 +142,7 @@ gilrs provides a unified gamepad API across platforms.
 | Concern | Approach |
 |---------|----------|
 | Dead zones | Per-stick radial dead zone. Inputs below the threshold read as zero. Configurable per player preference. |
-| Look options | Decided, not yet built: gamepad look sensitivity, look-stick dead zone, and invert-Y are player options separate from mouse look and the move stick. Sprint gains hold/toggle modes on the crouch-mode pattern. |
+| Look options | Decided, not yet built: gamepad look sensitivity, look dead zone, and invert-Y are player options separate from mouse look and the move stick. The look dead zone follows whichever stick is bound to look. Sprint gains hold/toggle modes on the crouch-mode pattern. |
 | Triggers | Analog axis in [0, 1]. Map to axis actions (e.g., analog acceleration) or threshold to button actions. |
 | Action parity | Gamepad bindings map to the same actions as keyboard/mouse. Switching input device mid-play requires no mode change. |
 
@@ -148,7 +158,7 @@ The input subsystem produces one thing: an action-state snapshot per frame. Game
 |---------------|-----------|
 | Snapshot is the only output | Game logic depends on action semantics, not input hardware |
 | App composition writes cross-subsystem state | Store slots driven by input observation (e.g. `input.mode`) are written by App-side code in the input phase, not by the subsystem — the subsystem's output stays the snapshot |
-| UI dispatch precedes action mapping | Events a capturing UI tree consumes ride the `input/ui_dispatch.rs` queue (kinded intents) and reach game logic no earlier than the next frame; all intent sources, including gamepad and assistive-technology actions (`ui.md` §4.2), must enqueue before the frame's `take_ready`/`advance_frame` pair. Decided, not yet built: nav intents resolve from the rebindable binding table rather than fixed keys and buttons; UI dispatch still runs first. |
+| UI dispatch precedes action mapping | Events a capturing UI tree consumes ride the `input/ui_dispatch.rs` queue (kinded intents) and reach game logic no earlier than the next frame; all intent sources, including gamepad and assistive-technology actions (`ui.md` §4.2), must enqueue before the frame's `take_ready`/`advance_frame` pair. Decided, not yet built: nav intents resolve from the UI command set's effective bindings rather than fixed keys and buttons; UI dispatch still runs first. |
 | No wgpu dependency | Input has no rendering concern. Keeps the module testable without a GPU context. |
 | No reverse dependency | Game logic never pushes state back into input mid-frame. Information flows one direction. |
 | Configurable bindings are input's concern | Game logic does not know which key maps to which action |

@@ -48,7 +48,44 @@ Gates the default (index.md Decisions). Setup: 2026-10-03, branch `spike/sh-comp
 | forward | 2.65 ms | 2.67 ms |
 
 - Half saves nothing here. The hallway's compose cost is not the steady-state animated-delta rows the rate holds back. The likely cause is residency rows, which always compose, plus fixed per-dispatch cost, but the `[SH streaming]` rows-composed line was not captured to confirm it.
-- On the Mac the hallway is over budget, and turning off light terms in the developer toolbar did not lower frame time (owner test). The map is CPU-bound there, so no GPU-side compose saving can reach its frame time.
+- On the Mac, turning off light terms in the developer toolbar did not lower frame time at the owner's test pose, which was CPU-bound. That does not hold map-wide: the large arena is GPU-bound, with compose its top GPU cost (§Mac compose cost).
+
+## Mac compose cost
+
+Measured 2026-10-04 during `shadow-fill-cost`. The protocol, run records and scripts are in its `measurements/shadow-fill-cost/` (on that PR's branch until it merges).
+
+**Setup.**
+- Radeon Pro 5300M, release builds from `shadow-fill-cost` 6c7f0a1aa (CPU shadow world reach).
+- Exclusive window, render resolution `half`, shadow and fog quality `low`, vsync on.
+- Frame and GPU wait: medians of three clean runs per pose (the arena: one run).
+- Pass times: one 4 s Metal System Trace per pose. Labelled-pass time is divided by the frame count, taken as the largest count among once-per-frame passes.
+
+| Pose | Frame | GPU wait | Pass B | Indirect | Direct SH promotion | Animated LM | Textured Pass |
+|---|---|---|---|---|---|---|---|
+| hallway, large arena west end (`--start-pose=21.13,2.44,30.48,0,0`) | 28.7 | 20.8 | 7.63 | 6.73 | — | — | 0.86 |
+| hallway, on the lift (`0,3.05,105.664,0,0`) | 26.2 | 17.9 | 0.81 | 1.02 | 0.21 | — | 4.02 |
+| kinematic-platform, spawn | 32.0 | 21.4 | 10.82 | 9.61 | 4.74 | 1.56 | 4.48 |
+| kinematic-platform, promotion station (`-6.5,1.22,-27.94,0,0`) | 34.0 | 26.2 | 10.99 | 9.77 | 3.38 | 1.58 | 5.93 |
+| campaign-test, spawn | 17.0 (vsync) | 9.8 | 3.56 | 3.11 | — | 0.32 | 3.03 |
+
+All values are ms per frame. "Pass B" is Streamed Animated Direct SH and "Indirect" is Streamed SH Compose.
+
+- **The revive condition is met.** The arena and kinematic-platform are GPU-bound on the Mac, and compose is their top GPU cost:
+  - arena: 14.4 ms of 28.5 ms labelled GPU time;
+  - kinematic-platform: 20–25 ms of 37–39 ms.
+- **Cost follows pose.** On one map, compose costs 1.8 ms at the lift and 14.4 ms in the arena 25 m away. Sampled rows scale with the visible probe volume.
+- **The CPU side is small in the arena:** planning 0.22 ms, compose recording 0.07 ms.
+- **Kinematic-platform is a CPU exception, from animated lightmap compose, not SH.** An owner dev-tools run showed `rec_animated_lm` at 4.06 ms per frame. It was 3.84 ms with every light term but the ambient floor off.
+  - The map's newest animated light is the gable's `style 2` pulse spot, with a 900-unit range across the 87.9 m cut wall.
+  - Animated lightmap memory is 96 MiB there, against 24 MiB on the hallway.
+- **Light terms gate part of the GPU cost.** Owner test on kinematic-platform with every term but the ambient floor off: GPU wait 15.1 → 10.4 ms, frame 30.3 → 25.3 ms.
+- **The shadow change did not move compose.** Kinematic-platform compose before and after `shadow-fill-cost` agree within 0.2 ms per pass.
+- **Unmeasured: rows composed per pass at these poses.** The `[SH streaming]` rows-composed line was not captured, as on 10-03. It decides the lever:
+  - residency rows always compose;
+  - steady animated-delta rows are what rate limiting or per-light scoping can skip.
+
+  The 1660 hallway result above (`half` saved nothing) hints that residency rows dominate there.
+- **The §10 premise has changed.** Since 0f988c7bf, `rendering_pipeline.md` §10 names the 5300M class a perf-tuned Mac target, not a must-run floor. The Default decision in `index.md` still cites the older wording. A revival should rule on it again.
 
 ## Ordering pins
 

@@ -5,11 +5,13 @@ Brief · compact · reads: `context/lib/rendering_pipeline.md` §4 (Cluster SH r
 > **Status: parked (owner, 2026-10-03).** Do not promote. No measured target shows a player-visible win (`research.md` §Perf-floor measurement):
 > - On the GTX 1660 Super, `half` saves 0.40 ms of a ~5 ms GPU frame on campaign-test, which is far from GPU-bound.
 > - On the Mac, campaign-test stays vsync-capped either way.
-> - On stress-warren-hallway-inspection, the one map over budget on the Mac, `half` saves nothing, and that map is CPU-bound there.
+> - On stress-warren-hallway-inspection, `half` saves nothing on the 1660, and the owner's Mac test pose was CPU-bound.
 >
 > Meanwhile the brief adds a player setting, departs from the §4 exactness rule, and needs step and weight-carry machinery to avoid split frames.
 >
 > **Revive when** a measured GPU-bound target, on a map or hardware tier the owner targets, shows streamed SH compose among its top GPU costs.
+>
+> **Condition met (2026-10-04)** on the Mac. Compose is the top GPU cost in the hallway's large arena (14.4 of 28.5 ms) and on kinematic-platform (20–25 ms). See `research.md` §Mac compose cost, which also flags the changed §10 premise behind the Default decision. Revival is still the owner's call, and the per-light scoping below comes first.
 >
 > **Weigh first:** per-light change scoping, the follow-up `done/perf-sh-compose-sampled-row-gating` named. It composes only the rows a changed light touches. It is exact and helps every player, with no setting, step latch or lag rule.
 >

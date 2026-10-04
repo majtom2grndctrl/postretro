@@ -57,7 +57,7 @@ Unit tests are adapter-free unless marked *adapter*. Adapter tests run on this M
 | M3 Metal System Trace: shadow-depth + former shadow-cull GPU time does not rise | owner, in-engine | manual | pass: hallway 7.60 → 1.09 ms/frame, campaign 0.21 → 0.16 ms/frame |
 | M4 Windows GPU-timing handoff | owner, Windows | manual (not a gate) | outstanding (Windows handoff, not a gate) |
 | M5 GPU memory freed on the hallway | computed from the deleted buffer sizes + install log | manual | computed, not measured: ≈21.4 MiB freed on the hallway (168,960 B × 132 regions of indirect args + 67 KB status scratch + 32 KB all-ones masks + 12.7 KB uniforms, at 8,437 leaves) |
-| M6 forced-promotion headless capture byte-identical before/after | capture A/B | manual | outstanding (owner) |
+| M6 forced-promotion headless capture byte-identical before/after | capture A/B | manual | pass: spawner-test `alarm_light` with prop receiver, forced w = 0 / 0.5 / 1.0, PNG bytes identical before/after and repeatable (`measurements/shadow-fill-cost/capture/`) |
 | M7 visual: hallway lift cycle, crates room with > 4 point lights | owner, in-engine | manual | outstanding (owner) |
 
 ## Tasks

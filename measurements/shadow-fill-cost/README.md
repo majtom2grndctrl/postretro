@@ -33,6 +33,12 @@ A timing value is the median over windows 3+ of each run's `[CpuTiming]` window 
 - **M3:** summed shadow-depth GPU time, including the former shadow-cull pass, falls on both maps.
 - **M5:** about 21.4 MiB of GPU buffers freed on the hallway. This is computed from the deleted allocations (168,960 B × 132 regions plus scratch), not measured.
 
+## Forced-promotion capture (M6)
+
+The fixture is `content/dev/maps/spawner-test.map`, baked to a temporary `.spawner-test-sfc.prl` beside its source, as the capture tests do. Its `alarm_light` has a `prop_mesh` receiver in reach. Scenes set `force_active` red and `force_promotion` to w = 0, 0.5 and 1.0, using the camera from `capture_frame.rs`'s receiver golden. Both builds were capture-enabled release builds, run with `POSTRETRO_SH_STREAMING=sync-proof`.
+
+**Result:** every weight is byte-identical before and after, and the before build reproduces itself exactly (`capture/sha256.txt`). The three weights produce three distinct images, so the promoted slot's depth is in the frame. The promoted cold fill's world depth in the after build comes only from the CPU reach path.
+
 ## Discarded runs
 
 The first measurements are in `runs/suspect/`. A screen saver ran during some of them, and they can't be told apart afterwards. They showed a bogus steady 23.4 ms "regime" that stayed with vsync off. The screen-saver check and `caffeinate` exist because of this.

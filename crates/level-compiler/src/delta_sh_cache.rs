@@ -287,7 +287,9 @@ fn decode_subblock(bytes: &[u8], expected_f16_len: usize) -> Option<Vec<u16>> {
     }
     Some(
         bytes
-            .chunks_exact(std::mem::size_of::<u16>())
+            .as_chunks::<{ std::mem::size_of::<u16>() }>()
+            .0
+            .iter()
             .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
             .collect(),
     )

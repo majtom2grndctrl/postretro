@@ -82,6 +82,11 @@ pub struct ComputeCullPipeline {
     bucket_ranges: Vec<BucketRange>,
 
     has_multi_draw_indirect: bool,
+    camera_ranges: crate::VisibleSpanRanges,
+    #[cfg(test)]
+    pub(crate) range_builds: u32,
+    #[cfg(test)]
+    pub(crate) draw_trace: std::cell::RefCell<Vec<Vec<IndirectDrawCommand>>>,
 
     /// Per-leaf: 0 = portal-culled, 1 = frustum-culled, 2 = visible/rendered.
     cull_status_buffer: wgpu::Buffer,
@@ -258,6 +263,11 @@ impl ComputeCullPipeline {
             total_leaves,
             bucket_ranges,
             has_multi_draw_indirect,
+            camera_ranges: crate::VisibleSpanRanges::default(),
+            #[cfg(test)]
+            range_builds: 0,
+            #[cfg(test)]
+            draw_trace: std::cell::RefCell::default(),
             cull_status_buffer,
             visible_bitmask_scratch: vec![0u32; VISIBLE_CELLS_WORDS],
             bvh_nodes: bvh.nodes.clone(),
@@ -361,6 +371,25 @@ impl ComputeCullPipeline {
         compute_pass.dispatch_workgroups(1, 1, 1);
     }
 
+    pub(crate) fn prepare_camera_ranges(
+        &mut self,
+        index: Option<&postretro_level_loader::CellDrawIndex>,
+        visible: &postretro_visibility::VisibleCells,
+    ) {
+        self.camera_ranges
+            .rebuild(index, visible, &self.bucket_ranges);
+        #[cfg(test)]
+        {
+            self.range_builds += 1;
+            self.draw_trace.borrow_mut().clear();
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn camera_ranges(&self) -> &[BucketRange] {
+        self.camera_ranges.ranges()
+    }
+
     /// Pass `set_texture_fn = None` for depth-only passes (e.g. depth pre-pass)
     /// whose pipeline layout has no group 1 slot — binding one would fail wgpu validation.
     pub fn draw_indirect<'a>(
@@ -368,11 +397,23 @@ impl ComputeCullPipeline {
         render_pass: &mut wgpu::RenderPass<'a>,
         set_texture_fn: Option<&SetTextureFn<'a>>,
     ) {
+        #[cfg(test)]
+        {
+            let mut commands = Vec::new();
+            IndirectDrawPlan::new(
+                self.camera_ranges.ranges(),
+                0,
+                self.has_multi_draw_indirect,
+                set_texture_fn.is_some(),
+            )
+            .visit(|command| commands.push(command));
+            self.draw_trace.borrow_mut().push(commands);
+        }
         draw_indirect_buckets(
             render_pass,
             &self.indirect_buffer,
             0,
-            &self.bucket_ranges,
+            self.camera_ranges.ranges(),
             self.has_multi_draw_indirect,
             set_texture_fn,
         );
@@ -384,8 +425,8 @@ impl ComputeCullPipeline {
 
     /// The global per-leaf indirect draw buffer. The candidate-cull path
     /// (`CandidateCullPipeline`) writes the SAME slots in this buffer that the
-    /// tree walk does, so the draw path (`bucket_ranges` / `draw_indirect_buckets`)
-    /// is byte-for-byte identical regardless of which cull ran.
+    /// tree walk does. Both camera passes consume the same visible ranges,
+    /// independently of which cull ran.
     pub(crate) fn indirect_buffer(&self) -> &wgpu::Buffer {
         &self.indirect_buffer
     }
@@ -697,18 +738,65 @@ fn estimate_bvh_cull_with_planes(
     diagnostics
 }
 
-/// Issue one `multi_draw_indexed_indirect` (or a fallback loop of
-/// `draw_indexed_indirect`) per material bucket over a slice of an indirect
-/// buffer. `region_byte_offset` is the byte offset of the slot's per-leaf
-/// region within the indirect buffer (0 for the camera path's single region;
-/// `slot * region_stride_bytes` for the shadow owner's per-slot sub-regions,
-/// where `region_stride_bytes = (total_leaves * DRAW_INDIRECT_SIZE).next_multiple_of(256)`
-/// — padded to 256 bytes to satisfy `min_storage_buffer_offset_alignment`).
-/// The per-bucket `first_leaf`/`leaf_count` layout is identical across regions,
-/// so the bucket-offset table is shared.
-///
-/// `set_texture_fn = None` skips the group-1 material bind (depth-only passes,
-/// including the spot-shadow depth pass, have no group-1 slot).
+/// GPU-free ordered binds and draws over the frame's range list. Expansion
+/// is lazy, so adapters without multi-draw need no per-slot scratch allocation.
+pub(crate) struct IndirectDrawPlan<'a> {
+    ranges: &'a [BucketRange],
+    region_byte_offset: u64,
+    multi_draw: bool,
+    bind_material: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum IndirectDrawCommand {
+    BindMaterial(u32),
+    MultiDraw { byte_offset: u64, count: u32 },
+    Draw { byte_offset: u64 },
+}
+
+impl<'a> IndirectDrawPlan<'a> {
+    pub(crate) fn new(
+        ranges: &'a [BucketRange],
+        region_byte_offset: u64,
+        multi_draw: bool,
+        bind_material: bool,
+    ) -> Self {
+        Self {
+            ranges,
+            region_byte_offset,
+            multi_draw,
+            bind_material,
+        }
+    }
+
+    pub(crate) fn visit(&self, mut issue: impl FnMut(IndirectDrawCommand)) {
+        let mut bound_bucket = None;
+        for range in self.ranges.iter().filter(|range| range.leaf_count > 0) {
+            if self.bind_material && bound_bucket != Some(range.material_bucket_id) {
+                issue(IndirectDrawCommand::BindMaterial(range.material_bucket_id));
+                bound_bucket = Some(range.material_bucket_id);
+            }
+            let byte_offset =
+                self.region_byte_offset + u64::from(range.first_leaf) * DRAW_INDIRECT_SIZE;
+            if self.multi_draw {
+                issue(IndirectDrawCommand::MultiDraw {
+                    byte_offset,
+                    count: range.leaf_count,
+                });
+            } else {
+                for slot in 0..range.leaf_count {
+                    issue(IndirectDrawCommand::Draw {
+                        byte_offset: byte_offset + u64::from(slot) * DRAW_INDIRECT_SIZE,
+                    });
+                }
+            }
+        }
+    }
+}
+
+/// Execute the pure plan one to one. Camera ranges are visible runs; shadows
+/// supply whole buckets and their aligned indirect sub-region offset.
+/// Depth-only pipelines have no group-1 material slot, so omit that bind.
 pub(crate) fn draw_indirect_buckets<'a>(
     render_pass: &mut wgpu::RenderPass<'a>,
     indirect_buffer: &'a wgpu::Buffer,
@@ -717,25 +805,25 @@ pub(crate) fn draw_indirect_buckets<'a>(
     has_multi_draw_indirect: bool,
     set_texture_fn: Option<&SetTextureFn<'a>>,
 ) {
-    for range in bucket_ranges {
-        if range.leaf_count == 0 {
-            continue;
-        }
-
-        if let Some(f) = set_texture_fn {
-            f(render_pass, range.material_bucket_id);
-        }
-        let byte_offset = region_byte_offset + (range.first_leaf as u64) * DRAW_INDIRECT_SIZE;
-
-        if has_multi_draw_indirect {
-            render_pass.multi_draw_indexed_indirect(indirect_buffer, byte_offset, range.leaf_count);
-        } else {
-            for i in 0..range.leaf_count {
-                let offset = byte_offset + (i as u64) * DRAW_INDIRECT_SIZE;
-                render_pass.draw_indexed_indirect(indirect_buffer, offset);
+    let plan = IndirectDrawPlan::new(
+        bucket_ranges,
+        region_byte_offset,
+        has_multi_draw_indirect,
+        set_texture_fn.is_some(),
+    );
+    plan.visit(|command| match command {
+        IndirectDrawCommand::BindMaterial(bucket) => {
+            if let Some(bind) = set_texture_fn {
+                bind(render_pass, bucket);
             }
         }
-    }
+        IndirectDrawCommand::MultiDraw { byte_offset, count } => {
+            render_pass.multi_draw_indexed_indirect(indirect_buffer, byte_offset, count);
+        }
+        IndirectDrawCommand::Draw { byte_offset } => {
+            render_pass.draw_indexed_indirect(indirect_buffer, byte_offset);
+        }
+    });
 }
 
 pub(crate) const CULL_UNIFORMS_SIZE: usize = 96;
@@ -1222,5 +1310,108 @@ mod tests {
         assert_eq!(bytes.len(), tree.nodes.len() * 40);
         let leaf_bytes = serialize_bvh_leaves(&tree.leaves);
         assert_eq!(leaf_bytes.len(), tree.leaves.len() * 48);
+    }
+}
+
+#[cfg(test)]
+mod draw_plan_tests {
+    use super::*;
+
+    fn commands(ranges: &[BucketRange], multi: bool, material: bool) -> Vec<IndirectDrawCommand> {
+        let mut out = Vec::new();
+        IndirectDrawPlan::new(ranges, 256, multi, material).visit(|c| out.push(c));
+        out
+    }
+
+    #[test]
+    fn visible_runs_bind_once_per_bucket_and_expand_identically_without_multi_draw() {
+        let ranges = [
+            BucketRange {
+                material_bucket_id: 2,
+                first_leaf: 3,
+                leaf_count: 2,
+            },
+            BucketRange {
+                material_bucket_id: 2,
+                first_leaf: 6,
+                leaf_count: 1,
+            },
+            BucketRange {
+                material_bucket_id: 7,
+                first_leaf: 8,
+                leaf_count: 2,
+            },
+        ];
+        use IndirectDrawCommand::*;
+        assert_eq!(
+            commands(&ranges, true, true),
+            vec![
+                BindMaterial(2),
+                MultiDraw {
+                    byte_offset: 316,
+                    count: 2
+                },
+                MultiDraw {
+                    byte_offset: 376,
+                    count: 1
+                },
+                BindMaterial(7),
+                MultiDraw {
+                    byte_offset: 416,
+                    count: 2
+                },
+            ]
+        );
+        assert_eq!(
+            commands(&ranges, false, true),
+            vec![
+                BindMaterial(2),
+                Draw { byte_offset: 316 },
+                Draw { byte_offset: 336 },
+                Draw { byte_offset: 376 },
+                BindMaterial(7),
+                Draw { byte_offset: 416 },
+                Draw { byte_offset: 436 },
+            ]
+        );
+        for multi in [false, true] {
+            let forward = commands(&ranges, multi, true);
+            let draws: Vec<_> = forward
+                .into_iter()
+                .filter(|c| !matches!(c, BindMaterial(_)))
+                .collect();
+            assert_eq!(commands(&ranges, multi, false), draws);
+            assert!(commands(&[], multi, true).is_empty());
+        }
+    }
+
+    #[test]
+    fn whole_bucket_shadow_plan_keeps_all_slots_and_region_offset() {
+        let buckets = [
+            BucketRange {
+                material_bucket_id: 0,
+                first_leaf: 0,
+                leaf_count: 3,
+            },
+            BucketRange {
+                material_bucket_id: 1,
+                first_leaf: 3,
+                leaf_count: 2,
+            },
+        ];
+        assert_eq!(
+            commands(&buckets, true, false),
+            vec![
+                IndirectDrawCommand::MultiDraw {
+                    byte_offset: 256,
+                    count: 3
+                },
+                IndirectDrawCommand::MultiDraw {
+                    byte_offset: 316,
+                    count: 2
+                },
+            ]
+        );
+        assert_eq!(commands(&buckets, false, false).len(), 5);
     }
 }

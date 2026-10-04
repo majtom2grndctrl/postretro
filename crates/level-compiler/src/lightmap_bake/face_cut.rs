@@ -246,7 +246,14 @@ pub(crate) fn apply_face_cuts(
 /// vertex loop.
 fn fan_polygon(face_indices: &[u32], vertices: &[Vertex]) -> Vec<Vertex> {
     let mut loop_indices = vec![face_indices[0], face_indices[1], face_indices[2]];
-    loop_indices.extend(face_indices.chunks_exact(3).skip(1).map(|tri| tri[2]));
+    loop_indices.extend(
+        face_indices
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .skip(1)
+            .map(|tri| tri[2]),
+    );
     loop_indices
         .into_iter()
         .map(|index| vertices[index as usize].clone())

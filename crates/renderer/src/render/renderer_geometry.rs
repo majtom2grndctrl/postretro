@@ -47,7 +47,7 @@ pub(crate) fn cast_world_vertices_to_bytes(
 pub(crate) fn build_line_indices_from_triangles(tri_indices: &[u32]) -> Vec<u32> {
     let tri_count = tri_indices.len() / 3;
     let mut lines = Vec::with_capacity(tri_count * 6);
-    for tri in tri_indices.chunks_exact(3) {
+    for tri in tri_indices.as_chunks::<3>().0 {
         let (a, b, c) = (tri[0], tri[1], tri[2]);
         lines.push(a);
         lines.push(b);

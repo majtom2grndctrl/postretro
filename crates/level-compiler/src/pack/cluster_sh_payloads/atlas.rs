@@ -201,8 +201,8 @@ fn encode_isolated_atlas_payload(
             let mut encoded = Vec::new();
             for layer in rgba.chunks_exact(layer_bytes) {
                 let mut f32_rgba = Vec::with_capacity(layer.len() / 2);
-                for channels in layer.chunks_exact(8) {
-                    for channel in channels.chunks_exact(2) {
+                for channels in layer.as_chunks::<8>().0 {
+                    for channel in channels.as_chunks::<2>().0 {
                         f32_rgba.push(crate::sh_bake::f16_bits_to_f32(u16::from_le_bytes([
                             channel[0], channel[1],
                         ])));

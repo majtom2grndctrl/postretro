@@ -27,6 +27,7 @@ use crate::candidate_cull::{GatherStatus, gather_candidate_leaves};
 use postretro_level_loader::CellDrawIndex;
 use postretro_render_data::cone_frustum::extract_frustum_planes_for_gpu;
 use postretro_render_data::geometry::{BucketRange, BvhLeaf, BvhTree};
+use postretro_renderer::VisibleSpanRanges;
 use postretro_visibility::VisibleCells;
 
 use postretro_level_format::cell_draw_index::{CellDrawIndexSection, Span};
@@ -76,6 +77,79 @@ pub(crate) struct CullMirror {
 }
 
 impl CullMirror {
+    /// Check the production range builder against independent slot membership.
+    /// This proves coverage of cull submissions and exact drawn slots, including
+    /// frustum-rejected leaves inside a visible span (which still cost a draw).
+    pub fn assert_visible_span_coverage(
+        &self,
+        world: &SyntheticWorld,
+        visible: &VisibleCells,
+    ) -> (usize, u32) {
+        let mut ranges = VisibleSpanRanges::default();
+        ranges.rebuild(Some(&world.index), visible, &self.bucket_ranges);
+        let ranges = ranges.ranges();
+        let fallback = match visible {
+            VisibleCells::DrawAll => true,
+            VisibleCells::Culled(cells) => cells.iter().any(|&c| c >= world.index.cell_count),
+        };
+        let mut drawn = vec![false; world.leaves.len()];
+        for range in ranges {
+            assert!(
+                self.bucket_ranges.iter().any(|bucket| {
+                    range.material_bucket_id == bucket.material_bucket_id
+                        && range.first_leaf >= bucket.first_leaf
+                        && range.first_leaf + range.leaf_count
+                            <= bucket.first_leaf + bucket.leaf_count
+                }),
+                "draw range escapes its material bucket"
+            );
+            for slot in range.first_leaf..range.first_leaf + range.leaf_count {
+                assert!(!drawn[slot as usize], "slot {slot} drawn twice");
+                drawn[slot as usize] = true;
+            }
+        }
+        for (slot, leaf) in world.leaves.iter().enumerate() {
+            let expected = fallback
+                || (world.leaf_drawable(slot)
+                    && match visible {
+                        VisibleCells::Culled(cells) => cells.contains(&leaf.cell_id),
+                        VisibleCells::DrawAll => unreachable!(),
+                    });
+            assert_eq!(
+                drawn[slot], expected,
+                "slot {slot}: visible span membership differs"
+            );
+        }
+        for &submitted in &self.submitted {
+            assert!(
+                drawn[submitted as usize],
+                "submitted leaf {submitted} has no draw range"
+            );
+        }
+        let drawn_slots = ranges.iter().map(|range| range.leaf_count).sum();
+        if let VisibleCells::Culled(cells) = visible
+            && !fallback
+        {
+            let distinct: HashSet<_> = cells.iter().copied().collect();
+            let span_slots: u32 = distinct
+                .iter()
+                .map(|&cell| {
+                    let start = world.index.cell_span_offset[cell as usize] as usize;
+                    let end = world.index.cell_span_offset[cell as usize + 1] as usize;
+                    world.index.spans[start..end]
+                        .iter()
+                        .map(|span| span.leaf_count)
+                        .sum::<u32>()
+                })
+                .sum();
+            assert_eq!(
+                drawn_slots, span_slots,
+                "drawn slots differ from visible span lengths"
+            );
+        }
+        (ranges.len(), drawn_slots)
+    }
+
     /// Assert this mirror matches `other` under the normalized comparison
     /// semantics from the AC. The draw path consumes only submitted slots, so
     /// equivalence is defined on those plus the zeroed `index_count` of the
@@ -456,6 +530,157 @@ mod tests {
     use super::*;
     use glam::Vec3;
 
+    /// Drive real visibility provenance on a small world. Eight parallel
+    /// portals exhaust the bounded chain walk without compiling a stress map.
+    fn coverage_visibility_world(
+        portal_count: u32,
+        camera_cell: usize,
+    ) -> postretro_level_loader::LevelWorld {
+        use postretro_level_loader::{CellData, CellLocatorChild, LevelWorld, PortalData};
+        let mut cells: Vec<_> = (0..5)
+            .map(|id| CellData {
+                bounds_min: Vec3::new(-10.0, -10.0, -60.0),
+                bounds_max: Vec3::new(10.0, 10.0, if id == 4 { 10.0 } else { -20.0 }),
+                face_start: id,
+                face_count: u32::from(id < 4),
+                portal_ref_start: if id == 1 { portal_count } else { 0 },
+                portal_ref_count: if id < 2 { portal_count } else { 0 },
+                is_solid: false,
+                is_exterior: false,
+                is_drawable: id < 4,
+            })
+            .collect();
+        // A drawable cell behind the camera must be excluded by fallback cull.
+        cells[3].bounds_min.z = 20.0;
+        cells[3].bounds_max.z = 60.0;
+        let portals = (0..portal_count)
+            .map(|_| PortalData {
+                polygon: vec![
+                    Vec3::new(-5.0, -5.0, -10.0),
+                    Vec3::new(5.0, -5.0, -10.0),
+                    Vec3::new(5.0, 5.0, -10.0),
+                    Vec3::new(-5.0, 5.0, -10.0),
+                ],
+                front_cell: 0,
+                back_cell: 1,
+            })
+            .collect();
+        LevelWorld::new_visibility_only(
+            cells,
+            (0..portal_count).chain(0..portal_count).collect(),
+            CellLocatorChild::Cell(camera_cell),
+            vec![],
+            portals,
+            portal_count > 0,
+        )
+        .expect("valid coverage visibility fixture")
+    }
+
+    #[test]
+    fn visible_span_coverage_on_every_concrete_visibility_path() {
+        use postretro_visibility::{TimingGate, VisibilityPath, determine_visible_cells};
+        let (mn, mx) = in_front(-60.0, -40.0);
+        // Two abutting cells in each bucket, plus one hidden cell and one
+        // frustum reject. The spans at the bucket boundary must stay separate.
+        let world = synthetic_world(
+            vec![
+                leaf(0, 0, mn, mx, 0, 6),
+                leaf(1, 0, mn, mx, 6, 6),
+                leaf(0, 1, mn, mx, 12, 6),
+                leaf(1, 1, mn, mx, 18, 6),
+                leaf(2, 1, mn, mx, 24, 6),
+                leaf(3, 1, [-10.0, -10.0, 20.0], [10.0, 10.0, 60.0], 30, 6),
+            ],
+            5,
+            vec![true, true, true, true, false],
+        );
+        let vp = forward_view_proj();
+        for expected in [
+            VisibilityPath::PrlPortal { walk_reach: 2 },
+            VisibilityPath::PortalStepLimitFallback {
+                considered: 0,
+                accepted: 0,
+            },
+            VisibilityPath::SolidCellFallback,
+            VisibilityPath::ExteriorCellFallback,
+            VisibilityPath::NoPortalsFallback,
+        ] {
+            let mut level = match expected {
+                VisibilityPath::PrlPortal { .. } => coverage_visibility_world(1, 0),
+                VisibilityPath::PortalStepLimitFallback { .. } => coverage_visibility_world(8, 0),
+                VisibilityPath::SolidCellFallback => {
+                    let mut level = coverage_visibility_world(1, 4);
+                    level.cells[4].is_solid = true;
+                    level
+                }
+                VisibilityPath::ExteriorCellFallback => {
+                    let mut level = coverage_visibility_world(1, 4);
+                    level.cells[4].is_exterior = true;
+                    level
+                }
+                _ => coverage_visibility_world(0, 0),
+            };
+            // The locator supplies the camera cell; its bounds include the eye.
+            if matches!(
+                expected,
+                VisibilityPath::PrlPortal { .. } | VisibilityPath::PortalStepLimitFallback { .. }
+            ) {
+                level.cells[0].bounds_max.z = 10.0;
+            }
+            let (vis, _) = determine_visible_cells(
+                Vec3::ZERO,
+                vp,
+                &level,
+                &[],
+                false,
+                &mut Vec::new(),
+                TimingGate::OFF,
+            );
+            assert_eq!(
+                std::mem::discriminant(&vis.stats.path),
+                std::mem::discriminant(&expected),
+                "visibility fixture took unexpected path: {:?}",
+                vis.stats.path
+            );
+            let tree = tree_walk_mirror(&world, &vis.visible_cells, &vp);
+            let (runs, slots) = tree.assert_visible_span_coverage(&world, &vis.visible_cells);
+            assert_eq!(runs, 2, "abutting spans merge only inside a bucket");
+            assert_eq!(
+                slots,
+                if matches!(expected, VisibilityPath::PrlPortal { .. }) {
+                    4
+                } else {
+                    5
+                }
+            );
+            if postretro_renderer::visibility_path_uses_candidate_cull(vis.stats.path) {
+                let candidate =
+                    candidate_mirror(&world, &vis.visible_cells, &vp).expect("candidate path");
+                candidate.assert_matches(&tree);
+                assert_eq!(
+                    candidate.assert_visible_span_coverage(&world, &vis.visible_cells),
+                    (runs, slots)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn visible_span_coverage_duplicate_empty_all_and_invalid_sets() {
+        let world = three_cell_world();
+        let vp = forward_view_proj();
+        for visible in [
+            VisibleCells::Culled(vec![0, 0, 2]),
+            VisibleCells::Culled(vec![]),
+            VisibleCells::Culled(vec![0, 1, 2]),
+            VisibleCells::Culled(vec![9, 0]),
+            VisibleCells::Culled(vec![0, 9]),
+            VisibleCells::DrawAll,
+        ] {
+            tree_walk_mirror(&world, &visible, &vp).assert_visible_span_coverage(&world, &visible);
+        }
+    }
+
     /// Camera at origin looking down -Z, wide FOV. A box in front of the camera
     /// passes the frustum; a box behind it (+Z) is frustum-rejected.
     fn forward_view_proj() -> Mat4 {
@@ -591,8 +816,8 @@ mod tests {
 
         cand.assert_matches(&tree);
         assert_eq!(cand.submitted, vec![0, 2, 3]);
-        // Global bucket ranges span ALL leaves, including the hidden one — the
-        // draw path is unchanged and never compacts.
+        // Cull slots remain global even when camera draws use visible spans;
+        // the cull never compacts the indirect buffer.
         assert_eq!(cand.bucket_ranges.len(), 2);
         assert_eq!(cand.bucket_ranges[0].leaf_count, 2);
         assert_eq!(cand.bucket_ranges[1].leaf_count, 2);

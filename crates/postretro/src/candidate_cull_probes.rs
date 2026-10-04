@@ -5,7 +5,7 @@
 // reads the table (a cheap data test) but never compiles or loads the maps —
 // `stress-warren`, `stress-warren-crates`, and `campaign-test` are large and
 // their cold bake is ~1h (testing_guide.md "Slow / cold-bake suites"). The
-// heavy test that actually compiles + loads a map and runs the CPU mirror is
+// heavy test that loads a prebuilt map (or compiles a missing one) and runs the CPU mirror is
 // `#[ignore]` / on-demand; compact synthetic fixtures in
 // `candidate_cull_mirror` cover the same equivalence contract in the routine
 // suite.
@@ -21,7 +21,7 @@ pub(crate) enum ComparisonMode {
 }
 
 /// One camera probe over a named map. Camera origin is in engine/PRL space
-/// (TrenchBroom map units, matching the player_spawn origin in the `.map`);
+/// (meters, converted from the player_spawn origin in the `.map`);
 /// `yaw`/`pitch` follow the engine camera convention (`yaw = 0` faces -Z,
 /// `render_view_matrix`). Projection is given explicitly so the heavy test
 /// builds the view-projection without any game-state plumbing.
@@ -41,13 +41,14 @@ pub(crate) struct CameraProbe {
     pub mode: ComparisonMode,
 }
 
-/// The checked-in probe table. Origins are the maps' `player_spawn` positions;
-/// the wall-facing yaw is the spawn `angle`. These are the three maps the plan
-/// calls out for deterministic stress-map equivalence probes.
+/// The checked-in probe table. Origins are converted from authored `.map`
+/// positions to engine meters; yaw follows the engine convention, with the sign
+/// reversed from Quake's spawn angle. These are the four maps the plan calls out
+/// for deterministic stress-map equivalence probes.
 pub(crate) const PROBES: &[CameraProbe] = &[
     CameraProbe {
         map: "stress-warren",
-        origin: [-3840.0, -3200.0, 96.0],
+        origin: [81.28, 2.4384, 97.536],
         yaw_radians: 0.0, // spawn angle 0
         pitch_radians: 0.0,
         hfov_radians: std::f32::consts::FRAC_PI_2,
@@ -58,7 +59,7 @@ pub(crate) const PROBES: &[CameraProbe] = &[
     },
     CameraProbe {
         map: "stress-warren-crates",
-        origin: [-2560.0, -1920.0, 96.0],
+        origin: [48.768, 2.4384, 65.024],
         yaw_radians: 0.0, // spawn angle 0
         pitch_radians: 0.0,
         hfov_radians: std::f32::consts::FRAC_PI_2,
@@ -68,9 +69,21 @@ pub(crate) const PROBES: &[CameraProbe] = &[
         mode: ComparisonMode::CandidateMatchesTreeWalk,
     },
     CameraProbe {
+        map: "stress-warren-hallway-inspection",
+        // Authored spawn (-2496, -1664, 96), engine (-qy, qz, -qx) × 0.0254.
+        origin: [42.2656, 2.4384, 63.3984],
+        yaw_radians: 0.0,
+        pitch_radians: 0.0,
+        hfov_radians: std::f32::consts::FRAC_PI_2,
+        aspect: 16.0 / 9.0,
+        near: 0.1,
+        far: 8192.0,
+        mode: ComparisonMode::CandidateMatchesTreeWalk,
+    },
+    CameraProbe {
         map: "campaign-test",
-        origin: [1808.0, 2592.0, 72.0],
-        yaw_radians: std::f32::consts::FRAC_PI_2, // spawn angle 90
+        origin: [-65.8368, 1.8288, -45.9232],
+        yaw_radians: -std::f32::consts::FRAC_PI_2, // Quake angle 90 → engine yaw -90
         pitch_radians: 0.0,
         hfov_radians: std::f32::consts::FRAC_PI_2,
         aspect: 16.0 / 9.0,
@@ -84,14 +97,15 @@ pub(crate) const PROBES: &[CameraProbe] = &[
 mod tests {
     use super::*;
 
-    /// Routine, cheap: the probe table is well-formed and covers the three
+    /// Routine, cheap: the probe table is well-formed and covers the four
     /// named maps. Compiles/loads nothing.
     #[test]
-    fn probe_table_covers_the_three_stress_maps() {
+    fn probe_table_covers_the_four_stress_maps() {
         let maps: Vec<&str> = PROBES.iter().map(|p| p.map).collect();
         assert!(maps.contains(&"stress-warren"));
         assert!(maps.contains(&"stress-warren-crates"));
         assert!(maps.contains(&"campaign-test"));
+        assert!(maps.contains(&"stress-warren-hallway-inspection"));
         for p in PROBES {
             assert!(p.near > 0.0 && p.far > p.near, "{}: bad near/far", p.map);
             assert!(p.aspect > 0.0, "{}: bad aspect", p.map);
@@ -99,21 +113,31 @@ mod tests {
         }
     }
 
-    /// Heavy / on-demand: compile each probe's `.map`, load the `.prl`, run
-    /// portal visibility from the probe camera, then assert the candidate path
-    /// submits the same leaves (and identical global `bucket_ranges`) as the
-    /// tree walk. `#[ignore]` because compiling these maps is a multi-minute-to
-    /// -hour cold bake — never part of routine `cargo test`. Run with:
+    /// Heavy / on-demand: load each probe PRL, compiling only missing maps,
+    /// then check cull parity and exact visible-span coverage from the camera.
+    /// `#[ignore]` because missing maps require expensive bakes. Run with:
     ///   cargo test -p postretro --bin postretro -- --ignored stress_map_probes
     ///
-    /// Requires `prl-build` on `PATH` (or a prebuilt `.prl` alongside the map).
+    /// Reuses a prebuilt `.prl` alongside the map, or compiles with Cargo if
+    /// absent. Set `POSTRETRO_PROBE_MAPS=campaign-test,stress-warren-hallway-inspection`
+    /// to run only those prebuilt poses; omit it to prove all four maps.
+    /// Add `--nocapture` to see paths, total leaves, runs and slots per pass.
     #[test]
     #[ignore = "compiles + loads large stress maps; on-demand only"]
     fn stress_map_probes_candidate_matches_tree_walk() {
         use crate::candidate_cull_mirror::{SyntheticWorld, candidate_mirror, tree_walk_mirror};
         use glam::{Mat4, Vec3};
 
+        let selected = std::env::var("POSTRETRO_PROBE_MAPS").ok();
+        let mut probed = 0;
         for probe in PROBES {
+            if selected
+                .as_ref()
+                .is_some_and(|maps| !maps.split(',').any(|map| map == probe.map))
+            {
+                continue;
+            }
+            probed += 1;
             let prl_path = compile_probe_map(probe.map);
             let world = postretro_level_loader::load_prl(&prl_path)
                 .unwrap_or_else(|e| panic!("{}: load_prl failed: {e:?}", probe.map));
@@ -136,30 +160,50 @@ mod tests {
                 postretro_visibility::TimingGate::OFF,
             );
 
-            // Exact portal provenance is required: these spawn poses stay
-            // within the step budget, so the probe covers the exact portal
-            // path by comparing the candidate cull against the tree walk on
-            // the same set. The step-limit path is covered separately by the
-            // candidate-cull mirror test.
+            // Every concrete drawable set must restrict draws to its spans,
+            // including over-budget portal walks and tree-walk fallbacks.
             assert!(
                 matches!(
-                    vis.stats.path,
-                    postretro_visibility::VisibilityPath::PrlPortal { .. }
+                    vis.visible_cells,
+                    postretro_visibility::VisibleCells::Culled(_)
                 ),
-                "{}: expected portal path, got {:?}",
-                probe.map,
-                vis.stats.path,
+                "{}: probe produced no concrete visible set",
+                probe.map
             );
 
             let mirror_world = SyntheticWorld::from_level_world(&world, index);
             let tree = tree_walk_mirror(&mirror_world, &vis.visible_cells, &view_proj);
-            let cand = candidate_mirror(&mirror_world, &vis.visible_cells, &view_proj)
-                .unwrap_or_else(|| panic!("{}: candidate path declined", probe.map));
-
-            match probe.mode {
-                ComparisonMode::CandidateMatchesTreeWalk => cand.assert_matches(&tree),
+            let (runs, slots) =
+                tree.assert_visible_span_coverage(&mirror_world, &vis.visible_cells);
+            if postretro_renderer::visibility_path_uses_candidate_cull(vis.stats.path) {
+                let cand = candidate_mirror(&mirror_world, &vis.visible_cells, &view_proj)
+                    .unwrap_or_else(|| panic!("{}: candidate path declined", probe.map));
+                match probe.mode {
+                    ComparisonMode::CandidateMatchesTreeWalk => cand.assert_matches(&tree),
+                }
+                assert_eq!(
+                    cand.assert_visible_span_coverage(&mirror_world, &vis.visible_cells),
+                    (runs, slots)
+                );
             }
+            println!(
+                "{}: prl={} pose={:?} yaw={} pitch={} path={:?} total_leaves={} coalesced_runs_per_camera_pass={} drawn_slots_per_camera_pass={} submitted_leaves={}",
+                probe.map,
+                prl_path,
+                probe.origin,
+                probe.yaw_radians.to_degrees(),
+                probe.pitch_radians.to_degrees(),
+                vis.stats.path,
+                mirror_world.leaves.len(),
+                runs,
+                slots,
+                tree.submitted.len()
+            );
         }
+        assert!(
+            probed > 0,
+            "POSTRETRO_PROBE_MAPS selected no known probe maps"
+        );
 
         // Pose → view-projection in the engine camera convention.
         fn probe_view_proj(probe: &CameraProbe) -> Mat4 {
@@ -268,11 +312,17 @@ mod tests {
         assert!(!results.is_empty(), "no open drawable cell to probe");
     }
 
-    /// Compile `content/dev/maps/<map>.map` to a temp `.prl` via `prl-build`,
-    /// returning the output path. On-demand helper for the `#[ignore]` probe.
+    /// Prefer the prebuilt PRL; compile a missing map to a temporary PRL.
+    /// Loading validation rejects stale or invalid prebuilt draw indexes.
     fn compile_probe_map(map: &str) -> String {
         let manifest = env!("CARGO_MANIFEST_DIR");
         let map_path = format!("{manifest}/../../content/dev/maps/{map}.map");
+        let prebuilt = format!("{manifest}/../../content/dev/maps/{map}.prl");
+        if std::path::Path::new(&prebuilt).is_file() {
+            // The caller loads and validates the complete PRL, including the
+            // required CellDrawIndex, before using any of its ranges.
+            return prebuilt;
+        }
         let out_path = std::env::temp_dir()
             .join(format!("postretro-probe-{map}.prl"))
             .to_string_lossy()
@@ -290,6 +340,8 @@ mod tests {
                 &out_path,
                 "--sh-probe-spacing",
                 "10.0",
+                "--lightmap-density",
+                "0.5",
             ])
             .status()
             .unwrap_or_else(|e| panic!("{map}: failed to spawn prl-build: {e}"));

@@ -6,6 +6,9 @@ mod compute_cull;
 mod lighting;
 mod render;
 mod shadow_cull;
+mod visible_span_draws;
+
+pub use visible_span_draws::VisibleSpanRanges;
 
 #[cfg(test)]
 #[global_allocator]

@@ -375,7 +375,7 @@ fn journal_stopped(journal: &Path) -> Option<bool> {
 fn read_records(path: &Path, into: &mut SparedSet) -> io::Result<()> {
     let mut bytes = Vec::new();
     fs::File::open(path)?.read_to_end(&mut bytes)?;
-    for record in bytes.chunks_exact(RECORD_BYTES) {
+    for record in bytes.as_chunks::<RECORD_BYTES>().0 {
         let digest: [u8; HASH_BYTES] = record[..HASH_BYTES].try_into().expect("digest width");
         let size = u64::from_le_bytes(record[HASH_BYTES..].try_into().expect("size width"));
         into.insert(digest, size);

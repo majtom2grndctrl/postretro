@@ -59,7 +59,7 @@ impl EntityShadowLightsSection {
         }
 
         let mut light_indices = Vec::with_capacity(count as usize);
-        for chunk in bytes[4..].chunks_exact(4) {
+        for chunk in bytes[4..].as_chunks::<4>().0 {
             let next = u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
             if let Some(&prev) = light_indices.last()
                 && next <= prev

@@ -1,7 +1,7 @@
 # shadow-fill-cost — plan of record
 
 mode: compact
-status: active
+status: done (landed 2026-10-04; M7 visual and M4 Windows handoff outstanding, M2 campaign waiver requested)
 read at: 94cea2ea7
 
 No renderer, render-cpu, render-data, lighting, level-compiler or level-format source changed between the brief's `a6a67bcce` and `94cea2ea7`, so the grounded Decision reads stand.

@@ -1,12 +1,12 @@
 # Testing Guide
 
-> **Read this when:** writing new tests, deciding what to test, or reasoning about test strategy.
+> **Read this when:** adding, updating, or removing tests, deciding what to test, or reasoning about test strategy.
 > **Key invariant:** tests document Postretro-specific behavior and cross-subsystem interactions — not language features or crate internals.
 > **Related:** [Development Guide](./development_guide.md)
 
 ---
 
-## 1. Test Targets
+## 1. Test Selection
 
 ### Priority targets
 
@@ -25,7 +25,15 @@ Test it if **all** of these hold:
 - Crosses a boundary or shows how the system behaves at a seam
 - Captures a real scenario or documents a contract for future readers
 
-Skip it otherwise.
+Apply these criteria to new and existing tests.
+
+### Existing coverage
+
+When adding coverage, review existing tests for the affected behavior in the same change.
+
+Extend an existing test when old and new behavior belong to the same scenario or contract. Preserve assertions for existing behavior; update the name if its scope changes. Add a separate test when combining scenarios would obscure intent or make failures harder to diagnose.
+
+Remove tests that duplicate retained coverage, exercise retired behavior, or no longer meet the decision criteria. Before removing one, confirm it protects no distinct contract, boundary, edge case, or regression that still matters. Move any useful assertions into retained tests first. Similar setup alone does not make tests redundant.
 
 ---
 

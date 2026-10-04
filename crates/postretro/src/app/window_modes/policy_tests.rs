@@ -522,3 +522,36 @@ fn filtered_browse_keeps_raw_boot_and_revert_modes_and_exact_saved_refresh() {
     assert!(!controller.can_apply());
     assert_eq!(controller.picked, Some(large));
 }
+
+#[test]
+fn boot_interim_shows_saved_exclusive_as_borderless_only_when_deferred() {
+    let mut options = PlayerOptions::default();
+    options.window_mode = WindowMode::Exclusive;
+    let controller = Controller::new(false);
+    assert_eq!(
+        controller.boot_interim(&options, true),
+        Some(Target {
+            mode: WindowMode::Borderless,
+            display: None,
+        })
+    );
+    assert_eq!(controller.boot_interim(&options, false), None);
+}
+
+#[test]
+fn boot_interim_leaves_non_exclusive_modes_to_boot() {
+    let controller = Controller::new(false);
+    for mode in [WindowMode::Windowed, WindowMode::Borderless] {
+        let mut options = PlayerOptions::default();
+        options.window_mode = mode;
+        assert_eq!(controller.boot_interim(&options, true), None);
+    }
+}
+
+#[test]
+fn boot_interim_respects_windowed_escape() {
+    let mut options = PlayerOptions::default();
+    options.window_mode = WindowMode::Exclusive;
+    let controller = Controller::new(true);
+    assert_eq!(controller.boot_interim(&options, true), None);
+}

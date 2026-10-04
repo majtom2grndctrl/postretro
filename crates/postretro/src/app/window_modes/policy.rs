@@ -181,6 +181,23 @@ impl Controller {
             self.apply(backend, target, now);
         }
     }
+
+    /// The mode to show until the renderer has a surface, when a saved
+    /// exclusive mode must wait for one. `None` means boot applies the saved
+    /// mode at once. Borderless covers the same monitor without a display-mode
+    /// change.
+    pub(super) fn boot_interim(
+        &self,
+        options: &PlayerOptions,
+        defer_exclusive: bool,
+    ) -> Option<Target> {
+        (defer_exclusive && !self.escape && options.window_mode == WindowMode::Exclusive).then_some(
+            Target {
+                mode: WindowMode::Borderless,
+                display: None,
+            },
+        )
+    }
 }
 
 impl Controller {

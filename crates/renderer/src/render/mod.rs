@@ -52,6 +52,8 @@ pub(crate) mod uploads;
 mod animated_atlas_parity_test;
 #[cfg(test)]
 mod curve_eval_test;
+#[cfg(all(test, windows))]
+mod dx12_fxc_test;
 /// Shared headless GPU harness for offscreen readback tests: the `pollster`
 /// device init (self-skip on no adapter) and texture readback. See
 /// `testing_guide.md` §3/§4.

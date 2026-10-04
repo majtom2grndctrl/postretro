@@ -1,7 +1,7 @@
 # visible-span-draws — plan of record
 
 mode: compact
-status: test-ready
+status: landed-with-gaps
 read at: 1b1c1caeb
 
 ## Corrections
@@ -45,10 +45,10 @@ read at: 1b1c1caeb
 | 24. Shadow passes still draw whole buckets (regression guard). | `visible_ranges` + `draw_plan_tests` | achievable as stated | pass |
 | 25. Once the builder has handled a visible set at least as large, rebuilding the ranges for any set, changed or unchanged, allocates nothing. | `visible_ranges` + `draw_plan_tests` | achievable as stated | pass |
 | 26. The indirect-contract scanner passes, and its owner rules and inventory counts are unchanged from the read revision. This is a diff gate on `indirect_contract_tests.rs`, not a behavior test. | `indirect_contract` (12) plus unchanged-file diff gate | achievable as stated | pass |
-| 27. On this Mac, in a release build with the Auto preset, indirect validation at its release default (off, `WGPU_VALIDATION_INDIRECT_CALL` unset), the window in front and no tracer attached, record the `[CpuTiming]` `render_submit` and `work` medians on stress-warren-hallway-inspection and campaign-test, before and after. Use at least five windows under the same recorded shadow-cache state, as in `release-indirect-validation`. `render_submit` falls on stress-warren-hallway-inspection and does not rise on campaign-test. Record the numbers in the plan of record. | owner, release in-engine runbook | manual proof blocks landing | outstanding manual proof |
-| 28. A `sample` profile of render-pass encoding on both maps, before and after on the same build base, shows the time in wgpu-hal Metal `draw_indexed_indirect` (the `drawIndexedPrimitives` loop) falling. Report the before and after figures. At 4278d8789 the reconciled baselines were about 0.83 ms and 0.08 ms. | owner, release in-engine runbook | manual proof blocks landing | outstanding manual proof |
-| 29. Headless captures at fixed poses are byte-identical before and after: a portal-walk pose on each map, plus one solid-cell or exterior pose. | owner, release in-engine runbook | manual proof blocks landing | outstanding manual proof |
-| 30. No visual change in play on either map. | owner, release in-engine runbook | manual proof blocks landing | outstanding manual proof |
+| 27. On this Mac, in a release build with the Auto preset, indirect validation at its release default (off, `WGPU_VALIDATION_INDIRECT_CALL` unset), the window in front and no tracer attached, record the `[CpuTiming]` `render_submit` and `work` medians on stress-warren-hallway-inspection and campaign-test, before and after. Use at least five windows under the same recorded shadow-cache state, as in `release-indirect-validation`. `render_submit` falls on stress-warren-hallway-inspection and does not rise on campaign-test. Record the numbers in the plan of record. | owner, release in-engine runbook | owner waived landing gate | outstanding manual proof; not claimed as pass |
+| 28. A `sample` profile of render-pass encoding on both maps, before and after on the same build base, shows the time in wgpu-hal Metal `draw_indexed_indirect` (the `drawIndexedPrimitives` loop) falling. Report the before and after figures. At 4278d8789 the reconciled baselines were about 0.83 ms and 0.08 ms. | owner, release in-engine runbook | owner waived landing gate | outstanding manual proof; not claimed as pass |
+| 29. Headless captures at fixed poses are byte-identical before and after: a portal-walk pose on each map, plus one solid-cell or exterior pose. | owner, release in-engine runbook | owner waived landing gate | outstanding manual proof; not claimed as pass |
+| 30. No visual change in play on either map. | owner, release in-engine runbook | owner waived landing gate | outstanding manual proof; not claimed as pass |
 
 ## Tasks
 
@@ -58,11 +58,11 @@ read at: 1b1c1caeb
 | 2 | Shared camera range lifecycle and pure draw plan; preserve whole-bucket shadows | integrating executor | 1 | done — two pure draw-plan tests and 12 unchanged indirect-contract tests pass |
 | 3 | Synthetic cull coverage and stress-map probes with counts | bounded probe worker | 1 | done — 10 mirror tests, 1 probe-table test, 2 selected ignored probe runs pass over all four table poses |
 | 4 | Headless frame ordering, path switches, reinstall and shadow interleave proofs | integrating executor | 2 | done — two production headless tests ran 35 adapter frames, including an occupied shadow slot |
-| 5 | Focused readiness, review/fix loop, final preflight and AC results | integrating executor | 3, 4 | done — review/fix loop clean, final preflight passes, all four on-demand poses pass; AC27–30 await manual proof |
+| 5 | Focused readiness, review/fix loop, final preflight and AC results | integrating executor | 3, 4 | done — review/fix loop clean, final preflight passes, all four on-demand poses pass; owner approved landing with AC27–30 proof gaps |
 
 ## Manual runbook
 
-Manual rows block landing. At the same fixed poses on campaign-test and stress-warren-hallway-inspection, use release Auto, WGPU_VALIDATION_INDIRECT_CALL unset, window foreground and no tracer during timing. Record at least five complete 120-frame CpuTiming windows with the same recorded shadow-cache state, report medians of render_submit and work for baseline 1b1c1caeb and feature. Separately record sample profiles on each build/map and report the Metal draw_indexed_indirect time. Compare byte-identical headless captures at both portal poses plus a solid/exterior pose. Owner plays both maps and confirms no visual change. Measured probe counts are recorded below. Reproduction commands (workspace root):
+Owner approved landing with AC27–30 unverified. Retain this runbook for formal measurements. At the same fixed poses on campaign-test and stress-warren-hallway-inspection, use release Auto, WGPU_VALIDATION_INDIRECT_CALL unset, window foreground and no tracer during timing. Record at least five complete 120-frame CpuTiming windows with the same recorded shadow-cache state, report medians of render_submit and work for baseline 1b1c1caeb and feature. Separately record sample profiles on each build/map and report the Metal draw_indexed_indirect time. Compare byte-identical headless captures at both portal poses plus a solid/exterior pose. Owner plays both maps and confirms no visual change. Measured probe counts are recorded below. Reproduction commands (workspace root):
 
 ```sh
 # Build baseline 1b1c1caeb and the feature revision separately, preserving both
@@ -121,6 +121,10 @@ All four maps prove exact distinct-visible-cell span lengths and coverage of eve
 
 ## Landing state
 
-All 26 automated Acceptance rows pass. AC27–30 remain outstanding manual proof and block landing: paired release timings, paired Metal profiles, byte-identical captures, and owner live play on both measured maps. Keep the brief in `in-progress/`; wait for those results and the owner’s “land the plane.”
+All 26 automated Acceptance rows pass. After being told the four manual proofs remained, the owner instructed “Land the plane!” on 2026-10-03. This authorizes landing with AC27–30 gaps; those rows remain unverified, not passed. Formal paired release timings, paired Metal profiles, byte-identical captures, and both-map visual confirmation were not supplied.
+
+Owner observation on this Mac: stress hallways with v-sync off runs around 8–9 ms away from the large open arena; the arena runs around 25 ms, about 5 ms below the remembered previous run. This is an informal frame-time observation, not the controlled render_submit/work medians or paired profile required by AC27–28.
+
+Landing updates the durable camera-range contract, archives the brief under `done/`, cleans session artifacts and heavy-churn crate builds, and pushes `codex/visible-span-draws`. The roadmap contains no entry for this brief.
 
 No source changes followed final verification. A concurrent edit to `context/lib/testing_guide.md` appeared during verification and is excluded from this feature commit.

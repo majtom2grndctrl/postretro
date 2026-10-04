@@ -1,7 +1,7 @@
 # game-user-dirs — plan of record
 
 mode: compact
-status: active
+status: landed
 read at: 423aae2a5
 
 ## Corrections
@@ -39,7 +39,7 @@ Gate: `cargo test -p postretro -p postretro-sim -p postretro-tool -p xtask` — 
 
 ## Review loop
 - Panel 1 (tracer, contract verifier, adversarial — opus; hygiene/drift — sonnet): 1 🟡 found by 3 lenses (padded `.`/`..` names), 3 🟡 docs, ~6 🟢. All mechanical findings fixed in `3d40871fd`.
-- Not fixed — owner call, would extend the Decision's invalid-value list: names that case-fold to `postretro` (e.g. `PostRetro`) share the bare-launch directory; Windows-reserved names and characters (`CON`, `<>|?*`, trailing `.`) are accepted. Both are now documented in `docs/distribution.md`.
+- Owner ruled out of scope (2026-10-04: PostRetro is the engine, not a game name, so a package case-folding to `postretro` is not a realistic scenario); left documented, not refused: names that case-fold to `postretro` (e.g. `PostRetro`) share the bare-launch directory; Windows-reserved names and characters (`CON`, `<>|?*`, trailing `.`) are accepted. Both are now documented in `docs/distribution.md`.
 
 ## Tasks
 

@@ -402,7 +402,6 @@ impl ComputeCullPipeline {
             let mut commands = Vec::new();
             IndirectDrawPlan::new(
                 self.camera_ranges.ranges(),
-                0,
                 self.has_multi_draw_indirect,
                 set_texture_fn.is_some(),
             )
@@ -412,7 +411,6 @@ impl ComputeCullPipeline {
         draw_indirect_buckets(
             render_pass,
             &self.indirect_buffer,
-            0,
             self.camera_ranges.ranges(),
             self.has_multi_draw_indirect,
             set_texture_fn,
@@ -431,28 +429,13 @@ impl ComputeCullPipeline {
         &self.indirect_buffer
     }
 
-    /// Read-only BVH node storage buffer, uploaded once at level load. The
-    /// shadow cull owner (`ShadowCullPipeline`) binds the SAME buffer rather
-    /// than re-serializing the BVH per slot.
-    pub(crate) fn node_buffer(&self) -> &wgpu::Buffer {
-        &self.node_buffer
-    }
-
-    /// Read-only BVH leaf storage buffer, shared with the shadow cull owner.
+    /// Read-only BVH leaf storage buffer, shared with the candidate cull.
     pub(crate) fn leaf_buffer(&self) -> &wgpu::Buffer {
         &self.leaf_buffer
     }
 
     pub(crate) fn total_leaves(&self) -> u32 {
         self.total_leaves
-    }
-
-    pub(crate) fn bucket_ranges(&self) -> &[BucketRange] {
-        &self.bucket_ranges
-    }
-
-    pub(crate) fn has_multi_draw_indirect(&self) -> bool {
-        self.has_multi_draw_indirect
     }
 
     pub fn debug_bitmask_fingerprint(&self) -> (u32, u32) {
@@ -742,7 +725,6 @@ fn estimate_bvh_cull_with_planes(
 /// is lazy, so adapters without multi-draw need no per-slot scratch allocation.
 pub(crate) struct IndirectDrawPlan<'a> {
     ranges: &'a [BucketRange],
-    region_byte_offset: u64,
     multi_draw: bool,
     bind_material: bool,
 }
@@ -755,15 +737,9 @@ pub(crate) enum IndirectDrawCommand {
 }
 
 impl<'a> IndirectDrawPlan<'a> {
-    pub(crate) fn new(
-        ranges: &'a [BucketRange],
-        region_byte_offset: u64,
-        multi_draw: bool,
-        bind_material: bool,
-    ) -> Self {
+    pub(crate) fn new(ranges: &'a [BucketRange], multi_draw: bool, bind_material: bool) -> Self {
         Self {
             ranges,
-            region_byte_offset,
             multi_draw,
             bind_material,
         }
@@ -776,8 +752,7 @@ impl<'a> IndirectDrawPlan<'a> {
                 issue(IndirectDrawCommand::BindMaterial(range.material_bucket_id));
                 bound_bucket = Some(range.material_bucket_id);
             }
-            let byte_offset =
-                self.region_byte_offset + u64::from(range.first_leaf) * DRAW_INDIRECT_SIZE;
+            let byte_offset = u64::from(range.first_leaf) * DRAW_INDIRECT_SIZE;
             if self.multi_draw {
                 issue(IndirectDrawCommand::MultiDraw {
                     byte_offset,
@@ -794,20 +769,17 @@ impl<'a> IndirectDrawPlan<'a> {
     }
 }
 
-/// Execute the pure plan one to one. Camera ranges are visible runs; shadows
-/// supply whole buckets and their aligned indirect sub-region offset.
+/// Execute the pure plan one to one over the camera's visible runs.
 /// Depth-only pipelines have no group-1 material slot, so omit that bind.
 pub(crate) fn draw_indirect_buckets<'a>(
     render_pass: &mut wgpu::RenderPass<'a>,
     indirect_buffer: &'a wgpu::Buffer,
-    region_byte_offset: u64,
     bucket_ranges: &[BucketRange],
     has_multi_draw_indirect: bool,
     set_texture_fn: Option<&SetTextureFn<'a>>,
 ) {
     let plan = IndirectDrawPlan::new(
         bucket_ranges,
-        region_byte_offset,
         has_multi_draw_indirect,
         set_texture_fn.is_some(),
     );
@@ -1319,7 +1291,7 @@ mod draw_plan_tests {
 
     fn commands(ranges: &[BucketRange], multi: bool, material: bool) -> Vec<IndirectDrawCommand> {
         let mut out = Vec::new();
-        IndirectDrawPlan::new(ranges, 256, multi, material).visit(|c| out.push(c));
+        IndirectDrawPlan::new(ranges, multi, material).visit(|c| out.push(c));
         out
     }
 
@@ -1348,16 +1320,16 @@ mod draw_plan_tests {
             vec![
                 BindMaterial(2),
                 MultiDraw {
-                    byte_offset: 316,
+                    byte_offset: 60,
                     count: 2
                 },
                 MultiDraw {
-                    byte_offset: 376,
+                    byte_offset: 120,
                     count: 1
                 },
                 BindMaterial(7),
                 MultiDraw {
-                    byte_offset: 416,
+                    byte_offset: 160,
                     count: 2
                 },
             ]
@@ -1366,12 +1338,12 @@ mod draw_plan_tests {
             commands(&ranges, false, true),
             vec![
                 BindMaterial(2),
-                Draw { byte_offset: 316 },
-                Draw { byte_offset: 336 },
-                Draw { byte_offset: 376 },
+                Draw { byte_offset: 60 },
+                Draw { byte_offset: 80 },
+                Draw { byte_offset: 120 },
                 BindMaterial(7),
-                Draw { byte_offset: 416 },
-                Draw { byte_offset: 436 },
+                Draw { byte_offset: 160 },
+                Draw { byte_offset: 180 },
             ]
         );
         for multi in [false, true] {
@@ -1383,35 +1355,5 @@ mod draw_plan_tests {
             assert_eq!(commands(&ranges, multi, false), draws);
             assert!(commands(&[], multi, true).is_empty());
         }
-    }
-
-    #[test]
-    fn whole_bucket_shadow_plan_keeps_all_slots_and_region_offset() {
-        let buckets = [
-            BucketRange {
-                material_bucket_id: 0,
-                first_leaf: 0,
-                leaf_count: 3,
-            },
-            BucketRange {
-                material_bucket_id: 1,
-                first_leaf: 3,
-                leaf_count: 2,
-            },
-        ];
-        assert_eq!(
-            commands(&buckets, true, false),
-            vec![
-                IndirectDrawCommand::MultiDraw {
-                    byte_offset: 256,
-                    count: 3
-                },
-                IndirectDrawCommand::MultiDraw {
-                    byte_offset: 316,
-                    count: 2
-                },
-            ]
-        );
-        assert_eq!(commands(&buckets, false, false).len(), 5);
     }
 }

@@ -57,8 +57,8 @@ pub struct SpotShadowPool {
     /// Per-slot light-space matrix for the occupant of each shadow slot, written
     /// during `update_dynamic_light_slots`. This is the SAME
     /// `light_space_matrix(candidate)` value uploaded to bind-group-5's matrices
-    /// buffer — one source of truth, read by the shadow-depth render loop to
-    /// build the slot's GPU cone-cull frustum planes. `None` = slot unoccupied.
+    /// buffer — one source of truth, read by the shadow-depth render loop for
+    /// the slot's world reach and entity cone cull. `None` = slot unoccupied.
     pub slot_cone_matrices: [Option<Mat4>; SHADOW_POOL_SIZE],
     /// Per-slot entity-occluder gate, written alongside `slot_cone_matrices` in
     /// `update_dynamic_light_slots`. `true` only when the slot's occupant passes
@@ -68,6 +68,10 @@ pub struct SpotShadowPool {
     /// shadow but draws zero entity occluders. Separate from pool-slot
     /// eligibility (which still admits non-entity dynamic spots to a slot).
     pub slot_entity_eligible: [bool; SHADOW_POOL_SIZE],
+    /// Per-slot promoted-baked occupant flag, written alongside
+    /// `slot_entity_eligible`. A promoted slot the promoted cache dropped this
+    /// frame has no cache plan; this keeps it off the uncached world path.
+    pub slot_promoted: [bool; SHADOW_POOL_SIZE],
 }
 
 impl SpotShadowPool {
@@ -80,6 +84,7 @@ impl SpotShadowPool {
     pub fn clear_occupancy(&mut self) {
         self.slot_cone_matrices = [None; SHADOW_POOL_SIZE];
         self.slot_entity_eligible = [false; SHADOW_POOL_SIZE];
+        self.slot_promoted = [false; SHADOW_POOL_SIZE];
         self.slot_assignment.clear();
     }
 
@@ -177,7 +182,7 @@ impl SpotShadowPool {
         // (`CubeShadowPool::sampling_view`). Sampled by the forward pass via
         // `textureSampleCompareLevel` (reusing the binding-1 comparison
         // sampler); BOUND but not sampled by the fog pass. FRAGMENT only —
-        // the COMPUTE-visible shadow consumers (cone cull) never read it.
+        // the COMPUTE-visible shadow consumers never read it.
         //
         // Present ONLY when `cube_array_supported`: a `CubeArray` BGL entry
         // requires `DownlevelFlags::CUBE_ARRAY_TEXTURES`, so omitting it lets the
@@ -311,6 +316,7 @@ impl SpotShadowPool {
             slot_assignment: Vec::new(),
             slot_cone_matrices: [None; SHADOW_POOL_SIZE],
             slot_entity_eligible: [false; SHADOW_POOL_SIZE],
+            slot_promoted: [false; SHADOW_POOL_SIZE],
         }
     }
 

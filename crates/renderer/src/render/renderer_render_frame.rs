@@ -370,10 +370,10 @@ impl Renderer {
             let full = self.full_mut();
             full.spot_entity_occluders_submitted = 0;
             full.dynamic_depth_cache_diagnostics.frame = Default::default();
+            full.shadow_world.begin_frame();
             full.promoted_depth_cache_frame_plan = PromotedDepthCacheFramePlan::default();
             full.promoted_depth_cache_promoted_count = 0;
             full.promoted_depth_cache_world_render_skips = 0;
-            full.promoted_depth_cache_cull_dispatch_skips = 0;
             full.promoted_entity_occluders_submitted = 0;
             full.promoted_depth_cache_timing_open = false;
         }
@@ -391,9 +391,9 @@ impl Renderer {
         // pool. Per face: a depth render pass into the
         // `slot*6 + face` D2Array view, projecting by that face's light-space
         // matrix (group 0, dynamic offset into the cube VS uniform buffer). The
-        // world draw pulls from that face's `cube_shadow_cull` indirect
-        // sub-region (per-face 90° frustum, all-cells); entity instances are
-        // CPU-culled inside `record_skinned_depth` against the same planes.
+        // world draw covers the cells that face's 90° frustum reaches, walked
+        // on the CPU; entity instances are CPU-culled inside
+        // `record_skinned_depth` against the same planes.
         // Reuses the SAME depth pipeline as the spot path.
         //
         // CRITICAL: the per-face Clear(1.0) baseline must run for EVERY occupied

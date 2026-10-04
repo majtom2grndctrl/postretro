@@ -46,11 +46,11 @@ Unit tests are adapter-free unless marked *adapter*. Adapter tests run on this M
 | P9 no-BVH level draws all world geometry | renderer adapter-free glue test (no index → `0..index_count`) | achievable as stated |
 | P10 O7 BVH → no-BVH → BVH level switch | *adapter* install sequence test, ranges within installed index buffer | achievable as stated |
 | P11 O8 BVH without per-cell draw index draws reach | renderer adapter-free (index built from leaves only) · *adapter* install with the draw index absent | achievable as stated |
-| P12 skinned and rigid occluders still draw into every region they do today | existing occluder tests rerun · *adapter* trace asserts the entity pass after each region kind | achievable as stated |
+| P12 skinned and rigid occluders still draw into every region they do today | existing occluder tests rerun · diff review: every entity branch keeps its gates; a dropped promoted slot keeps today's uncached entity draw | achievable as stated |
 | B1 walk never descends below a rejected node; visited-node count unchanged by outside cells | `render-cpu` test | achievable as stated |
 | B2 collected and reset cell counts unchanged by outside cells | `render-cpu` test | achievable as stated |
 | B3 every Reach, Draw shape, Bounds row has an adapter-free test | this table (see Corrections) | achievable (see Corrections) |
-| B4 building draw lists allocates nothing after warm-up, incl. a record reach | `render-cpu` integration test with a thread-local counting allocator | achievable as stated |
+| B4 building draw lists allocates nothing after warm-up, incl. a record reach | renderer `building_draw_lists_after_warmup_allocates_nothing_even_for_a_record_reach` (renderer already installs the counting allocator; render-cpu has none) | achievable as stated |
 | B5 indirect-contract scanner passes; camera rules and inventory unchanged; shadow entries gone; nested-binding fixtures on the camera draw | `indirect_contract_tests` + diff review | achievable as stated |
 | M1 baseline (pre-change build) on campaign-test and hallway lift pose | owner, in-engine (pre-change build from `main`) | manual |
 | M2 hallway `render_submit` falls; campaign does not rise; report walk cost (`rec_shadow_reach`) | owner, in-engine | manual |
@@ -64,10 +64,10 @@ Unit tests are adapter-free unless marked *adapter*. Adapter tests run on this M
 
 | # | Task | Owner | Depends on | Status |
 |---|---|---|---|---|
-| 1 | `render-cpu::shadow_reach`: per-cell leaf groups from loaded leaves, CPU BVH walk with bitset dedupe, merged ranges, brute-force oracle; tests R1–R5, D1, D2, B1, B2, B4 | integrating executor | — | |
-| 2 | `level-compiler` cell-major contiguity pin over a synthetic face-cut fixture (D3 routine) | worker | — | |
-| 3 | Renderer: delete `shadow_cull.rs` and its wiring; `shadow_world_draws.rs` classifier + glue; `slot_promoted`; counters, log, `rec_shadow_reach`; install/release; dead accessors; stale comments | integrating executor | 1 | |
-| 4 | Indirect-contract and uploads inventory updates; nested-binding fixtures on the camera draw (D4, B5) | integrating executor | 3 | |
-| 5 | Renderer adapter-free tests R6, P1–P7, P9, P11 and adapter tests R7–R9, P8, P10–P12 | integrating executor | 3 | |
+| 1 | `render-cpu::shadow_reach`: per-cell leaf groups from loaded leaves, CPU BVH walk with bitset dedupe, merged ranges, brute-force oracle; tests R1–R5, D1, D2, B1, B2 | integrating executor | — | done: 10 tests in `shadow_reach_tests.rs`; mutation (no subtree skip) fails the bound test |
+| 2 | `level-compiler` cell-major contiguity pin over a synthetic face-cut fixture (D3 routine) | worker | — | done: `atlas_stage::tests::face_cut_bvh_leaves_keep_each_cell_one_contiguous_index_range` (runs the real cut → `rebuild_face_identity` → BVH rebuild chain) |
+| 3 | Renderer: delete `shadow_cull.rs` and its wiring; `shadow_world_draws.rs` classifier + glue; `slot_promoted`; counters, log, `rec_shadow_reach`; install/release; dead accessors; stale comments | integrating executor | 1 | done |
+| 4 | Indirect-contract and uploads inventory updates; nested-binding fixtures on the camera draw (D4, B5) | integrating executor | 3 | done: `indirect_contract` 11 tests pass |
+| 5 | Renderer adapter-free tests R6, P1–P7, P9, P11 and adapter tests R7–R9, P8, P10–P12 | integrating executor | 3 | done: 10 in `shadow_world_draws_tests.rs`, 4 adapter in `shadow_world_frame_tests.rs` (ran on Metal); P12 = existing occluder tests + diff review (entity gates unchanged) |
 | 6 | On-demand stress probes: contiguity + walk == brute force incl. lift faces (R2, D3) | worker | 1 | |
 | 7 | Preflight, review panel, fix loop; `rendering_pipeline.md` §12 counter wording | integrating executor | 2–6 | |

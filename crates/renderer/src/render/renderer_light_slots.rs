@@ -273,7 +273,7 @@ impl Renderer {
         // AABBs of the WIDER portal-reachable set, including empty
         // `face_count == 0` cells) — NOT when the light's own cell is in the
         // camera PVS. The light is a shadow caster (onto receivers the camera
-        // sees); like a world occluder (`shadow_cull.rs`) it need not sit in the
+        // sees); like a world occluder (§7.1 step 6 reach) it need not sit in the
         // camera PVS itself. The prior own-cell-PVS gate dropped a light whose
         // cell left the shrinking PVS on pitch-down even though it still lit and
         // shadowed geometry in view, so entity shadows vanished.
@@ -498,6 +498,7 @@ impl Renderer {
                     continue;
                 }
                 pool.slot_entity_eligible[slot] = false;
+                pool.slot_promoted[slot] = false;
                 for face in 0..crate::lighting::cube_shadow::CUBE_FACES {
                     let layer =
                         crate::lighting::cube_shadow::CubeShadowPool::face_layer(slot as u32, face);
@@ -623,11 +624,13 @@ impl Renderer {
         let mut vertex_uniforms =
             vec![0u8; stride * crate::lighting::spot_shadow::SHADOW_POOL_SIZE];
         // Reset the per-slot cone-matrix stash; reoccupied slots overwrite, the
-        // rest stay `None` so the GPU cone cull skips them this frame. The
+        // rest stay `None` so the shadow-depth loop skips them this frame. The
         // entity-occluder gate resets to `false` in lockstep.
         full.spot_shadow_pool.slot_cone_matrices =
             [None; crate::lighting::spot_shadow::SHADOW_POOL_SIZE];
         full.spot_shadow_pool.slot_entity_eligible =
+            [false; crate::lighting::spot_shadow::SHADOW_POOL_SIZE];
+        full.spot_shadow_pool.slot_promoted =
             [false; crate::lighting::spot_shadow::SHADOW_POOL_SIZE];
         for (light_idx, &slot) in slot_assignment.iter().enumerate() {
             if slot == crate::lighting::spot_shadow::NO_SHADOW_SLOT {
@@ -650,6 +653,7 @@ impl Renderer {
             );
             full.spot_shadow_pool.slot_entity_eligible[slot as usize] =
                 postretro_lighting::entity_occluder_eligible(candidate, promoted_baked);
+            full.spot_shadow_pool.slot_promoted[slot as usize] = promoted_baked;
             let cols = m.to_cols_array();
             let mut bytes = [0u8; MAT_BYTES];
             for (i, v) in cols.iter().enumerate() {
@@ -1085,6 +1089,7 @@ impl Renderer {
         for e in pool.slot_entity_eligible.iter_mut() {
             *e = false;
         }
+        pool.slot_promoted.fill(false);
 
         let mut vertex_uniforms = vec![0u8; stride * face_count];
         for (light_idx, &slot) in slot_assignment.iter().enumerate() {
@@ -1106,6 +1111,7 @@ impl Renderer {
             );
             pool.slot_entity_eligible[slot as usize] =
                 postretro_lighting::entity_occluder_eligible(candidate, promoted_baked);
+            pool.slot_promoted[slot as usize] = promoted_baked;
             let face_mats = cube_shadow::cube_face_matrices(candidate);
             for (face, m) in face_mats.iter().enumerate() {
                 let layer = cube_shadow::CubeShadowPool::face_layer(slot, face);
@@ -1318,8 +1324,6 @@ impl Renderer {
             }
             full.promoted_depth_cache_promoted_count = plan.counters.promoted_count;
             full.promoted_depth_cache_world_render_skips = plan.counters.cached_world_render_skips;
-            // The shadow passes accumulate these after planning their world/cache work.
-            full.promoted_depth_cache_cull_dispatch_skips = 0;
             full.promoted_entity_occluders_submitted = 0;
             full.promoted_depth_cache_frame_plan = plan;
         } else {
@@ -1331,7 +1335,6 @@ impl Renderer {
             full.promoted_depth_cache_frame_plan = PromotedDepthCacheFramePlan::default();
             full.promoted_depth_cache_promoted_count = 0;
             full.promoted_depth_cache_world_render_skips = 0;
-            full.promoted_depth_cache_cull_dispatch_skips = 0;
             full.promoted_entity_occluders_submitted = 0;
         }
 

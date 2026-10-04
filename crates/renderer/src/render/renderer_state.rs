@@ -259,11 +259,6 @@ impl Renderer {
     }
 
     #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
-    pub fn promoted_depth_cache_cull_dispatch_skips(&self) -> u32 {
-        self.full().promoted_depth_cache_cull_dispatch_skips
-    }
-
-    #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
     pub fn promoted_entity_occluders_submitted(&self) -> u32 {
         self.full().promoted_entity_occluders_submitted
     }

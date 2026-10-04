@@ -663,3 +663,138 @@ fn animated_reach_past_the_block_cap_fails_by_name_at_atlas_preparation() {
     assert!(error.contains("exceeds the block-table cap"), "{error}");
     assert!(error.contains(&ANIMATED_BLOCK_CAP.to_string()), "{error}");
 }
+
+/// A `size`-metre floor quad at `x`, facing `+Y`, as brush-side projection
+/// emits it: engine-space winding, no geometry or index ranges yet.
+fn floor_face(x: f64, size: f64, texture: &str) -> crate::map_data::Face {
+    crate::map_data::Face {
+        vertices: [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]
+            .into_iter()
+            .map(|[dx, dz]| DVec3::new(x + dx * size, 0.0, dz * size))
+            .collect(),
+        normal: DVec3::Y,
+        distance: 0.0,
+        texture: texture.to_string(),
+        tex_projection: crate::map_data::TextureProjection::Standard {
+            u_offset: 0.0,
+            v_offset: 0.0,
+            angle: 0.0,
+            scale_u: 1.0,
+            scale_v: 1.0,
+        },
+        brush_index: 0,
+    }
+}
+
+/// Each cell's leaves, sorted by offset, abut into one range; consecutive
+/// cells' ranges abut; and the leaves cover every index exactly once.
+fn assert_cell_major_leaf_ranges(
+    leaves: &[postretro_level_format::bvh::BvhLeaf],
+    index_count: usize,
+) {
+    let mut by_cell: std::collections::BTreeMap<u32, Vec<(u32, u32)>> = Default::default();
+    for leaf in leaves {
+        by_cell
+            .entry(leaf.cell_id)
+            .or_default()
+            .push((leaf.index_offset, leaf.index_count));
+    }
+    let mut next_cell_start = 0;
+    for (cell, ranges) in &mut by_cell {
+        ranges.sort_unstable();
+        for pair in ranges.windows(2) {
+            assert_eq!(
+                pair[0].0 + pair[0].1,
+                pair[1].0,
+                "cell {cell}: leaf ranges {pair:?} leave a gap or overlap"
+            );
+        }
+        assert_eq!(
+            ranges[0].0, next_cell_start,
+            "cell {cell} does not start where the previous cell ended"
+        );
+        let (last_offset, last_count) = *ranges.last().expect("a grouped cell has a leaf");
+        next_cell_start = last_offset + last_count;
+    }
+    assert_eq!(next_cell_start as usize, index_count);
+
+    let mut coverage = vec![0u32; index_count];
+    for leaf in leaves {
+        for slot in leaf.index_offset..leaf.index_offset + leaf.index_count {
+            coverage[slot as usize] += 1;
+        }
+    }
+    assert!(
+        coverage.iter().all(|&count| count == 1),
+        "every index is covered by exactly one leaf: {coverage:?}"
+    );
+}
+
+// D3 (shadow-fill-cost): runtime shadow reach (`render-cpu` `shadow_reach`)
+// merges each reached cell's leaf ranges into one draw on this cell-major order.
+#[test]
+fn face_cut_bvh_leaves_keep_each_cell_one_contiguous_index_range() {
+    use crate::partition::{Aabb, BspLeaf, BspTree};
+
+    // Input order fixes texture indices, so material buckets (`ceiling` 0,
+    // `floor` 1, `trim` 2) cut across cell order. Cell 1 holds three faces
+    // with the 9 m floor, cut at a 64-texel pool edge, in the middle.
+    let faces = vec![
+        floor_face(40.0, 1.0, "ceiling"),
+        floor_face(0.0, 1.0, "floor"),
+        floor_face(2.0, 9.0, "floor"),
+        floor_face(12.0, 1.0, "trim"),
+        floor_face(20.0, 1.0, "trim"),
+        floor_face(22.0, 1.0, "ceiling"),
+    ];
+    let leaf = |face_indices: Vec<usize>, is_solid| BspLeaf {
+        face_indices,
+        bounds: Aabb {
+            min: DVec3::splat(-50.0),
+            max: DVec3::splat(50.0),
+        },
+        is_solid,
+        defining_planes: Vec::new(),
+    };
+    let tree = BspTree {
+        nodes: Vec::new(),
+        leaves: vec![
+            leaf(Vec::new(), true),
+            leaf(vec![1, 2, 3], false),
+            leaf(vec![4, 5], false),
+            leaf(vec![0], false),
+        ],
+    };
+
+    // Production order: leaves and geometry from the tree, the pre-atlas
+    // BVH, then atlas preparation's cut and face-identity rebuild.
+    let exterior = std::collections::HashSet::new();
+    let mut leaves = crate::visibility::encode_vis(&tree, &exterior).leaves_section;
+    let mut geometry = crate::geometry::extract_geometry(&faces, &tree, &exterior);
+    let faces_before = geometry.face_index_ranges.len();
+    let (_, _, bvh_before) = build_bvh(&geometry).unwrap();
+    assert_cell_major_leaf_ranges(&bvh_before.leaves, geometry.geometry.indices.len());
+
+    let (_, rebuilt) = cut_and_rebuild(&mut geometry, &mut leaves, 64);
+    let rebuilt = rebuilt.expect("the 9 m floor is cut");
+    let cell_one_faces = geometry
+        .geometry
+        .faces
+        .iter()
+        .filter(|face| face.leaf_index == 1)
+        .count();
+    assert!(
+        geometry.face_index_ranges.len() > faces_before && cell_one_faces > 3,
+        "the cut emits sub-faces in cell 1: {cell_one_faces} faces there"
+    );
+
+    let bvh_leaves = &rebuilt.bvh_section.leaves;
+    assert_eq!(bvh_leaves.len(), geometry.face_index_ranges.len());
+    assert!(
+        bvh_leaves
+            .windows(2)
+            .any(|pair| pair[0].cell_id > pair[1].cell_id),
+        "bucket-sorted leaves must not already be in cell order"
+    );
+    assert_cell_major_leaf_ranges(bvh_leaves, geometry.geometry.indices.len());
+}

@@ -81,23 +81,8 @@ impl DynamicDepthCachePlan {
         self.spot().iter().copied().find(|plan| plan.slot == slot)
     }
 
-    pub fn should_dispatch_spot_cull(&self, slot: usize) -> bool {
-        !self
-            .spot()
-            .iter()
-            .any(|plan| plan.slot as usize == slot && !plan.needs_world_render)
-    }
-
     pub fn cube_for_slot(&self, slot: u32) -> Option<DynamicCubePlan> {
         self.cube().iter().copied().find(|plan| plan.slot == slot)
-    }
-
-    pub fn should_dispatch_cube_cull(&self, layer: usize) -> bool {
-        let slot = layer / CUBE_FACES;
-        !self
-            .cube()
-            .iter()
-            .any(|plan| plan.slot as usize == slot && !plan.needs_world_render)
     }
 }
 
@@ -106,7 +91,8 @@ pub(super) struct DynamicCacheCounters {
     pub cached_spots: u32,
     pub cached_cubes: u32,
     pub world_pass_skips: u32,
-    pub cull_dispatch_skips: u32,
+    /// Spot slots and cube faces that walked their world reach, every tier.
+    pub reach_walks: u32,
 }
 
 #[derive(Default)]
@@ -124,16 +110,16 @@ impl DynamicCacheDiagnostics {
         self.accumulated.cached_spots += self.frame.cached_spots;
         self.accumulated.cached_cubes += self.frame.cached_cubes;
         self.accumulated.world_pass_skips += self.frame.world_pass_skips;
-        self.accumulated.cull_dispatch_skips += self.frame.cull_dispatch_skips;
+        self.accumulated.reach_walks += self.frame.reach_walks;
         self.frames += 1;
         if self.frames == 120 {
             log::info!(
-                "[Renderer] Dynamic depth cache (avg over {} rendered frames): cached spots {:.2}, cached cubes {:.2}, world-pass skips {:.2}, cull-dispatch skips {:.2}",
+                "[Renderer] Dynamic depth cache (avg over {} rendered frames): cached spots {:.2}, cached cubes {:.2}, world-pass skips {:.2}, reach walks {:.2}",
                 self.frames,
                 self.accumulated.cached_spots as f32 / self.frames as f32,
                 self.accumulated.cached_cubes as f32 / self.frames as f32,
                 self.accumulated.world_pass_skips as f32 / self.frames as f32,
-                self.accumulated.cull_dispatch_skips as f32 / self.frames as f32,
+                self.accumulated.reach_walks as f32 / self.frames as f32,
             );
             self.accumulated = DynamicCacheCounters::default();
             self.frames = 0;
@@ -510,13 +496,21 @@ mod tests {
     }
 
     #[test]
-    fn warm_dynamic_spot_skips_world_render_and_cull() {
+    fn warm_dynamic_spot_skips_world_render_and_reach() {
         let mut cache = DynamicDepthCache::default();
         let cold = cache.plan_frame(&[(7, 10, matrix(1.0))], &[]);
         cache.mark_spot_world_rendered(cold.spot()[0]);
         let warm = cache.plan_frame(&[(7, 10, matrix(1.0))], &[]);
         assert!(!warm.spot()[0].needs_world_render);
-        assert!(!warm.should_dispatch_spot_cull(7));
+        assert!(
+            !crate::render::shadow_world_draws::classify_spot(
+                7,
+                false,
+                &crate::render::promoted_depth_cache::PromotedDepthCacheFramePlan::default(),
+                &warm,
+            )
+            .draws_world()
+        );
     }
 
     #[test]
@@ -536,9 +530,15 @@ mod tests {
         cache.mark_cube_world_rendered(cold.cube()[0]);
         let warm = cache.plan_frame(&[], &[(2, 7, faces)]);
         assert!(!warm.cube()[0].needs_world_render);
-        for face in 0..CUBE_FACES {
-            assert!(!warm.should_dispatch_cube_cull(2 * CUBE_FACES + face));
-        }
+        assert!(
+            !crate::render::shadow_world_draws::classify_cube(
+                2,
+                false,
+                &crate::render::promoted_depth_cache::PromotedDepthCacheFramePlan::default(),
+                &warm,
+            )
+            .draws_world()
+        );
     }
 
     #[test]

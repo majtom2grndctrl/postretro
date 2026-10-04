@@ -4,11 +4,9 @@
 // entity occluders, mirroring the spot pool's occluder split.
 //
 // WHY per-face world draws fit the budget: a naive world draw costs 6 full
-// world-BVH rasterizations per point light. The per-region GPU frustum cull
-// (`shadow_cull.rs`, one indirect sub-region per (slot, face) gated by that
-// face's 90° frustum) bounds the world cost to the geometry each face can
-// actually see, which is what lets dynamic point lights shadow static geometry
-// under a predictable budget.
+// world rasterizations per point light. Each face draws only the cells its 90°
+// frustum reaches, walked on the CPU (`shadow_world_draws.rs`), which is what
+// lets dynamic point lights shadow static geometry under a predictable budget.
 //
 // See: context/lib/rendering_pipeline.md §7.1 (shadow passes), §4 (lighting)
 
@@ -149,6 +147,9 @@ pub struct CubeShadowPool {
     /// entity draw — every occupied face renders its world-depth baseline
     /// regardless, exactly like the spot pool's per-slot entity gate.
     pub slot_entity_eligible: Vec<bool>,
+    /// Per-slot promoted-baked occupant flag, written alongside
+    /// `slot_entity_eligible`; the cube counterpart of the spot pool's.
+    pub slot_promoted: Vec<bool>,
 }
 
 impl CubeShadowPool {
@@ -216,6 +217,7 @@ impl CubeShadowPool {
             face_matrices: vec![None; CUBE_COUNT * CUBE_FACES],
             slot_assignment: Vec::new(),
             slot_entity_eligible: vec![false; CUBE_COUNT],
+            slot_promoted: vec![false; CUBE_COUNT],
         })
     }
 
@@ -233,6 +235,7 @@ impl CubeShadowPool {
     pub fn clear_occupancy(&mut self) {
         self.face_matrices.fill(None);
         self.slot_entity_eligible.fill(false);
+        self.slot_promoted.fill(false);
         self.slot_assignment.clear();
     }
 }

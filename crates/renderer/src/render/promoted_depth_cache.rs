@@ -82,37 +82,6 @@ impl PromotedDepthCacheFramePlan {
     pub fn cube_for_slot(&self, slot: u32) -> Option<PromotedCubeCachePlan> {
         self.cube.iter().copied().find(|plan| plan.slot == slot)
     }
-
-    pub fn should_dispatch_spot_cull(&self, slot: usize) -> bool {
-        !self
-            .spot
-            .iter()
-            .any(|plan| plan.slot as usize == slot && plan.is_warm())
-    }
-
-    pub fn should_dispatch_cube_cull(&self, layer: usize) -> bool {
-        let slot = layer / CUBE_FACES;
-        !self
-            .cube
-            .iter()
-            .any(|plan| plan.slot as usize == slot && plan.is_warm())
-    }
-
-    pub fn skipped_spot_cull_dispatches(&self, occupied_slots: &[bool]) -> u32 {
-        occupied_slots
-            .iter()
-            .enumerate()
-            .filter(|(slot, occupied)| **occupied && !self.should_dispatch_spot_cull(*slot))
-            .count() as u32
-    }
-
-    pub fn skipped_cube_cull_dispatches(&self, occupied_layers: &[bool]) -> u32 {
-        occupied_layers
-            .iter()
-            .enumerate()
-            .filter(|(layer, occupied)| **occupied && !self.should_dispatch_cube_cull(*layer))
-            .count() as u32
-    }
 }
 
 pub(super) struct PromotedDepthCache {
@@ -396,8 +365,18 @@ mod tests {
         );
     }
 
+    fn spot_draws_world(plan: &PromotedDepthCacheFramePlan, slot: u32) -> bool {
+        crate::render::shadow_world_draws::classify_spot(
+            slot,
+            true,
+            plan,
+            &crate::render::dynamic_depth_cache::DynamicDepthCachePlan::default(),
+        )
+        .draws_world()
+    }
+
     #[test]
-    fn warm_promoted_spot_skips_world_render_and_cull_dispatch() {
+    fn warm_promoted_spot_skips_world_render_and_reach() {
         let (mut spot_layers, mut cube_layers) = cache_without_gpu();
         let records = [record(0, PromotedShadowPoolKind::Spot, 7)];
 
@@ -407,17 +386,14 @@ mod tests {
 
         let second = plan_with_layers(&mut spot_layers, &mut cube_layers, &records);
         assert!(second.spot[0].is_warm());
-        assert!(!second.should_dispatch_spot_cull(7));
+        assert!(!spot_draws_world(&second, 7));
         assert_eq!(second.counters.cached_world_render_skips, 1);
-        let mut occupied = vec![false; crate::lighting::spot_shadow::SHADOW_POOL_SIZE];
-        occupied[7] = true;
-        assert_eq!(second.skipped_spot_cull_dispatches(&occupied), 1);
 
         first.spot.clear();
     }
 
     #[test]
-    fn cube_warm_skip_counts_each_face_sub_region() {
+    fn cube_warm_skip_counts_each_face() {
         let (mut spot_layers, mut cube_layers) = cache_without_gpu();
         let records = [record(1, PromotedShadowPoolKind::Cube, 2)];
 
@@ -426,30 +402,16 @@ mod tests {
 
         let second = plan_with_layers(&mut spot_layers, &mut cube_layers, &records);
         assert!(second.cube[0].is_warm());
-        let mut occupied = vec![false; crate::lighting::cube_shadow::CUBE_COUNT * CUBE_FACES];
-        for face in 0..CUBE_FACES {
-            let layer = 2 * CUBE_FACES + face;
-            assert!(!second.should_dispatch_cube_cull(layer));
-            occupied[layer] = true;
-        }
-        assert_eq!(second.counters.cached_world_render_skips, CUBE_FACES as u32);
-        assert_eq!(
-            second.skipped_cube_cull_dispatches(&occupied),
-            CUBE_FACES as u32,
+        assert!(
+            !crate::render::shadow_world_draws::classify_cube(
+                2,
+                true,
+                &second,
+                &crate::render::dynamic_depth_cache::DynamicDepthCachePlan::default(),
+            )
+            .draws_world()
         );
-    }
-
-    #[test]
-    fn warm_cache_does_not_count_cull_skip_without_occupied_cull_work() {
-        let (mut spot_layers, mut cube_layers) = cache_without_gpu();
-        let records = [record(0, PromotedShadowPoolKind::Spot, 7)];
-        let first = plan_with_layers(&mut spot_layers, &mut cube_layers, &records);
-        spot_layers[first.spot[0].cache_layer as usize].warm = true;
-
-        let second = plan_with_layers(&mut spot_layers, &mut cube_layers, &records);
-
-        assert_eq!(second.counters.cached_world_render_skips, 1);
-        assert_eq!(second.skipped_spot_cull_dispatches(&[]), 0);
+        assert_eq!(second.counters.cached_world_render_skips, CUBE_FACES as u32);
     }
 
     #[test]
@@ -462,7 +424,7 @@ mod tests {
         let reassigned = [record(0, PromotedShadowPoolKind::Spot, 4)];
         let second = plan_with_layers(&mut spot_layers, &mut cube_layers, &reassigned);
         assert!(second.spot[0].needs_world_render);
-        assert!(second.should_dispatch_spot_cull(4));
+        assert!(spot_draws_world(&second, 4));
     }
 
     #[test]
@@ -477,11 +439,11 @@ mod tests {
         spot_layers[first.spot[0].cache_layer as usize].warm = true;
 
         // The same raw AnimatedBakedLights record remains warm on the next
-        // frame: static world cull/render is skipped while the depth pass still
+        // frame: static world reach/render is skipped while the depth pass still
         // runs its per-frame entity branch for the occupied slot.
         let second = plan_with_layers(&mut spot_layers, &mut cube_layers, &records);
         assert!(second.spot[0].is_warm());
-        assert!(!second.should_dispatch_spot_cull(2));
+        assert!(!spot_draws_world(&second, 2));
         assert_eq!(second.counters.cached_world_render_skips, 1);
     }
 

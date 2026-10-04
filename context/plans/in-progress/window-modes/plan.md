@@ -85,8 +85,8 @@ All automated proofs below are planned, not run. Extend existing scenario covera
 | # | Task | Owner | Depends on | Status |
 |---|---|---|---|---|
 | 1 | Thin boot slice: one settings read, pending-store handoff, borderless after visibility and `--windowed` | integrating executor | — | automated complete; macOS visual result pending |
-| 2 | Display-mode store, fresh enumeration/re-find policy and window slot catalog | integrating executor | 1 | in progress |
-| 3 | Live requests, engine confirm, revert lifecycle and persistence isolation | integrating executor | 2 | pending |
+| 2 | Display-mode store, fresh enumeration/re-find policy and window slot catalog | integrating executor | 1 | complete: check + 26 matched window-filter tests |
+| 3 | Live requests, engine confirm, revert lifecycle and persistence isolation | integrating executor | 2 | in progress |
 | 4 | OS readback, bounded settle/fallback and generation-safe reseeding | integrating executor | 3 | pending |
 | 5 | TS/Luau action surface, generated types and dev options-menu rows | integrating executor | 4 | pending |
 | 6 | Integration gate, review/fix loop, final preflight and platform acceptance report | integrating executor | 5 | pending |
@@ -154,3 +154,5 @@ Owner approval is recorded. Task 1 automated proof passes; its native visual tri
 ## Task proof
 
 - Task 1: `cargo check -p postretro` passed; options filter: 61 tests; session/startup filter: 58 tests; boot-mode ordering filter: 1 test; render-extent filter: 4 tests, all passed. Sandbox launch reported macOS service errors; stopped only that workflow process and relaunched with desktop access. Disposable settings under `postretro-window-modes-test`; visual outcome is not inferred from logs.
+
+- Task 2: `cargo check -p postretro` passed. `cargo test -p postretro --bin postretro window -- --nocapture`: 26 matched tests passed, including persistence/tolerance, current-monitor re-find, empty Wayland choices, duplicates/zero refresh, escape and the all-crates window-call ownership gate. Readback wiring is implemented in the adapter but awaits Tasks 3/4, producing temporary dead-code warnings at this checkpoint.

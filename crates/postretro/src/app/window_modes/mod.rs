@@ -1,42 +1,37 @@
 // Window-mode request owner; all fullscreen, monitor and video-mode calls live here.
 // See: context/lib/player_options.md §7
 
-use crate::options::{PlayerOptions, WindowMode};
-use winit::window::{Fullscreen, Window};
+mod backend;
+mod policy;
+#[cfg(test)]
+mod policy_tests;
+
+use std::time::Instant;
+use crate::options::PlayerOptions;
+use winit::{event_loop::ActiveEventLoop, window::Window};
+use backend::{ReadbackCache, WinitBackend};
+use policy::Controller;
 
 pub(crate) struct WindowModes {
-    force_windowed: bool,
+    controller: Controller,
+    cache: ReadbackCache,
+    wayland: bool,
 }
 
 impl WindowModes {
     pub(crate) fn new(force_windowed: bool) -> Self {
-        Self { force_windowed }
+        Self { controller: Controller::new(force_windowed), cache: ReadbackCache::default(), wayland: false }
     }
 
-    pub(crate) fn apply_boot(&mut self, window: &Window, options: &PlayerOptions) {
-        let mode = if self.force_windowed {
-            WindowMode::Windowed
-        } else {
-            options.window_mode
-        };
-        let fullscreen = match mode {
-            WindowMode::Windowed => None,
-            WindowMode::Borderless => Some(Fullscreen::Borderless(None)),
-            WindowMode::Exclusive => {
-                log::warn!(
-                    "[Window] exclusive display mode is unavailable; using borderless for this session"
-                );
-                Some(Fullscreen::Borderless(None))
-            }
-        };
-        if fullscreen.is_some() {
-            window.set_fullscreen(fullscreen);
-        }
+    pub(crate) fn apply_boot(&mut self, window: &Window, event_loop: &ActiveEventLoop, options: &PlayerOptions) {
+        self.wayland = backend::is_wayland(event_loop);
+        let mut backend = WinitBackend { window, wayland: self.wayland, cache: &mut self.cache };
+        self.controller.boot(&mut backend, options, Instant::now());
     }
 }
 
 #[cfg(test)]
-mod tests {
+mod boot_tests {
     #[test]
     fn boot_mode_applies_after_visible_creation_before_first_redraw() {
         let main = include_str!("../../main.rs");

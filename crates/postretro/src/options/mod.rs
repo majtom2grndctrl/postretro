@@ -25,7 +25,7 @@ use document::{DocumentWriter, FieldReader, StoredDocument};
 pub use graphics::{FogQuality, RenderResolution, ShadowQuality, SurfaceDepthQuality};
 pub(crate) use panel_actions::{PanelActionOutcome, apply_panel_action, is_numeric_field};
 pub(crate) use resolved::{OsPreferences, apply_to_audio, reduce_motion_from_slots};
-pub(crate) use window::WindowMode;
+pub(crate) use window::{DisplayMode, WindowMode};
 
 /// Registered dev-mod options tree whose open/close boundaries seed and flush
 /// the session-owned settings bridge.
@@ -141,6 +141,7 @@ pub struct PlayerOptions {
     pub render_resolution: RenderResolution,
 
     pub(crate) window_mode: WindowMode,
+    pub(crate) display_mode: Option<DisplayMode>,
 
     /// Optional local override for the mod's cycle-selection dwell. `None`
     /// preserves the mod policy; an explicit zero selects immediately.
@@ -176,6 +177,7 @@ impl PartialEq for PlayerOptions {
             && self.surface_depth_quality == other.surface_depth_quality
             && self.render_resolution == other.render_resolution
             && self.window_mode == other.window_mode
+            && self.display_mode == other.display_mode
             && self.switch_cycle_dwell_ms == other.switch_cycle_dwell_ms
             && self.scroll_notch_pixels == other.scroll_notch_pixels
             && self.accessibility == other.accessibility
@@ -219,6 +221,7 @@ impl Default for PlayerOptions {
             surface_depth_quality: SurfaceDepthQuality::default(),
             render_resolution: RenderResolution::default(),
             window_mode: WindowMode::default(),
+            display_mode: None,
             switch_cycle_dwell_ms: None,
             scroll_notch_pixels: default_scroll_notch_pixels(),
             accessibility: AccessibilityOptions::default(),
@@ -366,6 +369,7 @@ impl PlayerOptions {
                 .read(keys::SURFACE_DEPTH_QUALITY)
                 .unwrap_or(defaults.surface_depth_quality),
             window_mode: reader.read(keys::WINDOW_MODE).unwrap_or_default(),
+            display_mode: DisplayMode::read(&mut reader),
             render_resolution: reader
                 .read(keys::RENDER_RESOLUTION)
                 .unwrap_or(defaults.render_resolution),
@@ -399,6 +403,7 @@ impl PlayerOptions {
         );
         writer.put(keys::RENDER_RESOLUTION, Some(&self.render_resolution));
         writer.put(keys::WINDOW_MODE, Some(&self.window_mode));
+        if let Some(mode) = &self.display_mode { mode.write(&mut writer); }
         writer.put(
             keys::SWITCH_CYCLE_DWELL_MS,
             self.switch_cycle_dwell_ms.as_ref(),

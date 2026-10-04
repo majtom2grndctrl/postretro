@@ -1791,7 +1791,7 @@ impl ApplicationHandler for App {
                     .map(|pending| pending.player_options())
             });
         if let Some(options) = options {
-            self.window_modes.apply_boot(&window, options);
+            self.window_modes.apply_boot(&window, event_loop, options);
         }
 
         let mut renderer = match Renderer::new(&window) {

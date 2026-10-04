@@ -95,6 +95,14 @@ Text scale and theme variants are decided, not built (`ui.md` §1, §2). They ne
 | One `TextRenderer` for all text | all but one write | breaks mixed paint order: a shape between text runs must start a new span (`ui.md` §5) |
 | `write_buffer_with` or a `StagingBelt` | nothing | same per-call staging allocation in wgpu 29; `StagingBelt` is grep-gated |
 | Per-node shaped-buffer cache | the reshape only | the write is the larger cost; metadata re-plumbing for little gain |
+| Engine-owned glyph path: cosmic-text and swash rasterize into an engine atlas; glyphs are UI instances in the upload batch | every direct text write on every backend, changing spans included; no fork; the span concept | owning atlas packing, eviction and growth is too large for the idle-HUD stake; the better next step than a fork if the combat residue matters |
+| Reuse the whole UI layer when nothing changed | all UI work on a settled frame | the reticle ring is bound to `player.spread` through a tween and changes most frames, so whole-layer reuse rarely fires; per-span granularity is why the gate works |
+
+## Key scoping (direction-review finding)
+- `painter_depth` in `render/ui/mod.rs` is `1 - (order + 1) / (order_count + 1)` over the whole frame's paint order.
+- `renderer_ui_layer.rs` folds the presentation layer first, then the modal stack, into one composition, and span slots are positional across it.
+- So a damage number spawning or despawning, or a HUD meter toggling, changes every span's depth or slot, and a global key would re-prepare everything in combat. Per-layer slots and per-layer depth bands confine a change to its own layer.
+- `done/ui-render-path-robustness-text-shaping` Task C (`research.md` §Cache key and namespacing) reached the same per-layer scoping for its `NodeId` cache.
 
 ## Stale or wrong claims in the sibling research
 

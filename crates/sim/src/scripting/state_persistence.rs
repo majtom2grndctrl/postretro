@@ -7,7 +7,6 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -98,15 +97,11 @@ impl PerOwnerSaveTimer {
     }
 }
 
-/// Resolve one mod's state file under the platform data directory. The project
-/// name is already the final `postretro` component of `data_dir`; do not add it
-/// again here.
-pub fn state_path(mod_id: &str) -> Option<PathBuf> {
-    let project_dirs = ProjectDirs::from("", "", "postretro");
-    state_path_from_data_dir(project_dirs.as_ref().map(|dirs| dirs.data_dir()), mod_id)
-}
-
-fn state_path_from_data_dir(data_dir: Option<&Path>, mod_id: &str) -> Option<PathBuf> {
+/// Resolve one mod's state file under the per-user data directory the engine
+/// resolved once at boot from the app name. That directory already ends in the
+/// app name; do not add it again here. Sim parses no arguments and resolves no
+/// platform directory of its own.
+pub fn state_path(data_dir: Option<&Path>, mod_id: &str) -> Option<PathBuf> {
     data_dir.map(|data_dir| data_dir.join(mod_id).join(STATE_FILENAME))
 }
 
@@ -2137,8 +2132,8 @@ mod tests {
     #[test]
     fn platform_state_paths_are_per_mod_without_double_nesting_postretro() {
         let data_dir = Path::new("/tmp/postretro-test-data/postretro");
-        let first = state_path_from_data_dir(Some(data_dir), "first.mod").unwrap();
-        let second = state_path_from_data_dir(Some(data_dir), "second.mod").unwrap();
+        let first = state_path(Some(data_dir), "first.mod").unwrap();
+        let second = state_path(Some(data_dir), "second.mod").unwrap();
 
         assert_ne!(first, second);
         assert_eq!(first, data_dir.join("first.mod/state.json"));
@@ -2150,7 +2145,7 @@ mod tests {
             1
         );
         assert!(
-            state_path_from_data_dir(None, "first.mod").is_none(),
+            state_path(None, "first.mod").is_none(),
             "an unavailable platform data directory must not fall back to cwd"
         );
     }

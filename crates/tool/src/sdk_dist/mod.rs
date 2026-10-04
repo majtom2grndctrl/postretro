@@ -16,6 +16,8 @@
 //! The bundle is a project in its own right: it carries a `postretro.toml`, so
 //! its recipient can produce a player payload from it with no repository, no
 //! Rust toolchain, and no cargo — which is the whole point of shipping the tool.
+//! That marker names the package `<package>-sdk`, so every launch from the
+//! bundle keeps its player data apart from the installed game's.
 //!
 //! It reuses the player payload's stages and its containment and
 //! completion-gate machinery. The one invariant separating the two outputs is
@@ -53,7 +55,7 @@ pub(crate) fn run(args: Vec<OsString>) -> Result<i32, String> {
     // recipe source that lives outside the shipped mod tree — a bundle the
     // recipient's own `dist` could not build from — so that failure lands here,
     // on the author's machine, rather than after a broken tree has been written.
-    let bundle_manifest = readme::render_bundle_manifest(project.manifest())?;
+    let bundle_manifest = readme::render_bundle_manifest(project.manifest(), &bundle_name)?;
 
     guard_payload_root(&bundle_root, project.root())
         .map_err(|error| format!("sdk-dist: {error}"))?;
@@ -126,8 +128,11 @@ pub(crate) fn run(args: Vec<OsString>) -> Result<i32, String> {
     Ok(0)
 }
 
-/// The SDK bundle root name: the player payload name plus a `-sdk` suffix so the
-/// two never collide under the same output directory.
+/// The SDK bundle's name: its root under `dist/`, its launcher, and the package
+/// its own marker declares — one helper, so the three cannot drift. The `-sdk`
+/// suffix keeps the bundle from colliding with the player payload under the
+/// same output directory and, as the app name, with the installed game's
+/// settings and saves.
 fn sdk_bundle_root_name(package_name: &str) -> String {
     format!("{package_name}-sdk")
 }
@@ -149,6 +154,43 @@ mod tests {
     fn sdk_bundle_root_name_appends_sdk_suffix() {
         assert_eq!(sdk_bundle_root_name("postretro-dev"), "postretro-dev-sdk");
         assert_eq!(sdk_bundle_root_name("dev"), "dev-sdk");
+    }
+
+    /// The bundle's launcher and its marker name the same app, so a bundle
+    /// launch and the bundle's own `run` keep one set of settings and saves —
+    /// never the installed game's.
+    #[test]
+    fn bundle_launcher_and_marker_both_name_the_sdk_package() {
+        let manifest = crate::manifest::Manifest::parse(
+            "[package]\nname = \"postretro-dev\"\nmod = \"dev\"\n",
+        )
+        .expect("manifest parses");
+        let bundle_name = sdk_bundle_root_name(&manifest.package.name);
+        let marker = readme::render_bundle_manifest(&manifest, &bundle_name)
+            .expect("the bundle marker renders");
+        let bundle_package = crate::manifest::Manifest::parse(&marker)
+            .expect("the bundle marker parses")
+            .package
+            .name;
+        assert_eq!(bundle_package, "postretro-dev-sdk");
+
+        let bundle_root =
+            std::env::temp_dir().join(format!("postretro-sdk-launcher-{}", std::process::id()));
+        fs::create_dir_all(&bundle_root).expect("temporary bundle root created");
+        crate::dist::launcher::emit_launcher(&bundle_root, &bundle_name, "dev")
+            .expect("the bundle launcher is written");
+        let launcher = fs::read_to_string(
+            bundle_root.join(crate::dist::launcher::launcher_file_name(&bundle_name)),
+        )
+        .expect("the launcher is named after the bundle");
+        let _ = fs::remove_dir_all(&bundle_root);
+
+        let expected = if cfg!(windows) {
+            format!("--app-name \"{bundle_package}\"")
+        } else {
+            format!("--app-name '{bundle_package}'")
+        };
+        assert!(launcher.contains(&expected), "{launcher}");
     }
 
     /// The tool's default helper search walks from its own directory, so the

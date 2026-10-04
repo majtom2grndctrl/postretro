@@ -5,6 +5,7 @@ use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+pub(crate) mod app_dirs;
 pub(crate) mod audio_profile;
 pub(crate) mod first_launch_hold;
 pub(crate) mod lifecycle;

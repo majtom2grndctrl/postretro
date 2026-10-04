@@ -2,25 +2,58 @@
 //!
 //! The launcher's job is the working directory. Every content path the engine
 //! resolves is joined against it, so the launcher pins it to its own directory
-//! rather than trusting the caller's, and mounts the mod the payload published.
-//! It passes no map argument, so the mod's frontend drives the first screen.
+//! rather than trusting the caller's, and mounts the mod the payload published
+//! under the package's app name. It passes no map argument, so the mod's
+//! frontend drives the first screen.
 //!
 //! See: context/lib/build_pipeline.md §Distribution packaging
 
 use std::fs;
 use std::path::Path;
 
+/// The shell a launcher is written for. Only the host's is ever emitted — a
+/// payload targets the machine that produced it — but both render on every
+/// host, so each one's quoting is tested wherever the suite runs.
+#[derive(Debug, Clone, Copy)]
+enum LauncherShell {
+    Posix,
+    Batch,
+}
+
+const HOST_SHELL: LauncherShell = if cfg!(windows) {
+    LauncherShell::Batch
+} else {
+    LauncherShell::Posix
+};
+
+impl LauncherShell {
+    fn extension(self) -> &'static str {
+        match self {
+            Self::Posix => "sh",
+            Self::Batch => "bat",
+        }
+    }
+
+    fn contents(self, app_name: &str, mod_name: &str) -> String {
+        match self {
+            Self::Posix => posix_launcher_contents(app_name, mod_name),
+            Self::Batch => batch_launcher_contents(app_name, mod_name),
+        }
+    }
+}
+
 /// Emit the host-native launcher for a completed distribution payload.
 ///
-/// `mod_name` is the mod's name, not its path: the engine's `--mod` places it
-/// under `content/` itself.
+/// `package_name` names the launcher file and is the `--app-name` the engine
+/// keeps this game's settings and saves under. `mod_name` is the mod's name,
+/// not its path: the engine's `--mod` places it under `content/` itself.
 pub(crate) fn emit_launcher(
     payload_root: &Path,
     package_name: &str,
     mod_name: &str,
 ) -> Result<(), String> {
-    let path = payload_root.join(format!("{package_name}.{}", launcher_extension()));
-    fs::write(&path, launcher_contents(mod_name))
+    let path = payload_root.join(launcher_file_name(package_name));
+    fs::write(&path, HOST_SHELL.contents(package_name, mod_name))
         .map_err(|error| format!("stage 5: write launcher {}: {error}", path.display()))?;
 
     #[cfg(not(windows))]
@@ -46,15 +79,12 @@ pub(crate) fn emit_launcher(
     Ok(())
 }
 
-fn launcher_extension() -> &'static str {
-    if cfg!(windows) { "bat" } else { "sh" }
+/// The host launcher's file name for a package, as [`emit_launcher`] writes it.
+pub(crate) fn launcher_file_name(package_name: &str) -> String {
+    format!("{package_name}.{}", HOST_SHELL.extension())
 }
 
-#[cfg(windows)]
-fn launcher_contents(mod_name: &str) -> String {
-    // `%` expands environment variables in a batch file even inside quotes.
-    // Doubling it keeps the manifest value intact when cmd executes the launcher.
-    let batch_mod_name = mod_name.replace('%', "%%");
+fn batch_launcher_contents(app_name: &str, mod_name: &str) -> String {
     // The engine is named by `%~dp0`, the launcher's own directory, rather than
     // bare: a bare name is resolved against PATH and — only sometimes — the
     // current directory. Git for Windows exports
@@ -66,19 +96,27 @@ fn launcher_contents(mod_name: &str) -> String {
     // against.
     format!(
         "@echo off\r\nsetlocal DisableDelayedExpansion\r\ncd /d \"%~dp0\"\r\n\
-         \"%~dp0postretro.exe\" --mod \"{batch_mod_name}\"\r\n"
+         \"%~dp0postretro.exe\" --mod \"{}\" --app-name \"{}\"\r\n",
+        batch_escaped(mod_name),
+        batch_escaped(app_name)
     )
 }
 
-#[cfg(not(windows))]
-fn launcher_contents(mod_name: &str) -> String {
+fn posix_launcher_contents(app_name: &str, mod_name: &str) -> String {
     format!(
-        "#!/bin/sh\nset -eu\ncd \"$(dirname \"$0\")\"\nexec ./postretro --mod '{}'\n",
-        posix_single_quoted(mod_name)
+        "#!/bin/sh\nset -eu\ncd \"$(dirname \"$0\")\"\n\
+         exec ./postretro --mod '{}' --app-name '{}'\n",
+        posix_single_quoted(mod_name),
+        posix_single_quoted(app_name)
     )
 }
 
-#[cfg(not(windows))]
+fn batch_escaped(value: &str) -> String {
+    // `%` expands environment variables in a batch file even inside quotes.
+    // Doubling it keeps the manifest value intact when cmd executes the launcher.
+    value.replace('%', "%%")
+}
+
 fn posix_single_quoted(value: &str) -> String {
     // A single quote ends the surrounding shell string. Reopen it after emitting the
     // quote itself from a double-quoted fragment: 'foo'"'"'bar'.
@@ -89,26 +127,35 @@ fn posix_single_quoted(value: &str) -> String {
 mod tests {
     use super::*;
 
-    /// A representative mod name; the launcher just echoes whatever mod the
+    /// A representative package and mod; the launcher just echoes whatever the
     /// payload published.
+    const SAMPLE_PACKAGE_NAME: &str = "my-game";
     const SAMPLE_MOD_NAME: &str = "dev";
 
     /// Whatever the project calls its mod, the payload's launcher mounts it by
     /// name — never by a `content/` path, which the engine's `--mod` refuses —
+    /// names the package as the app name the engine keeps player data under,
     /// and pins the working directory first, because a payload is correct only
     /// as a whole tree.
     #[test]
-    fn launcher_pins_its_own_directory_and_mounts_the_published_mod_by_name() {
-        let contents = launcher_contents(SAMPLE_MOD_NAME);
-        #[cfg(windows)]
-        assert!(contents.contains("--mod \"dev\""), "{contents}");
-        #[cfg(not(windows))]
-        assert!(contents.contains("--mod 'dev'"), "{contents}");
-        assert!(!contents.contains("content/"), "{contents}");
+    fn launcher_pins_its_own_directory_and_mounts_the_published_mod_under_the_package() {
+        let posix = LauncherShell::Posix.contents(SAMPLE_PACKAGE_NAME, SAMPLE_MOD_NAME);
         assert!(
-            contents.contains("%~dp0") || contents.contains("dirname"),
-            "the launcher must pin its own directory: {contents}"
+            posix.contains("--mod 'dev' --app-name 'my-game'"),
+            "{posix}"
         );
+        assert!(posix.contains("dirname"), "{posix}");
+
+        let batch = LauncherShell::Batch.contents(SAMPLE_PACKAGE_NAME, SAMPLE_MOD_NAME);
+        assert!(
+            batch.contains("--mod \"dev\" --app-name \"my-game\""),
+            "{batch}"
+        );
+        assert!(batch.contains("cd /d \"%~dp0\""), "{batch}");
+
+        for contents in [&posix, &batch] {
+            assert!(!contents.contains("content/"), "{contents}");
+        }
     }
 
     /// Regression: the launcher named the engine bare, so it resolved against
@@ -118,28 +165,35 @@ mod tests {
     /// external command" while the payload beside it was perfectly good.
     #[test]
     fn the_launcher_names_the_engine_by_path_not_by_bare_name() {
-        let contents = launcher_contents(SAMPLE_MOD_NAME);
-        #[cfg(windows)]
+        let batch = LauncherShell::Batch.contents(SAMPLE_PACKAGE_NAME, SAMPLE_MOD_NAME);
         assert!(
-            contents.contains("\"%~dp0postretro.exe\""),
-            "the engine must be named relative to the launcher: {contents}"
+            batch.contains("\"%~dp0postretro.exe\""),
+            "the engine must be named relative to the launcher: {batch}"
         );
-        #[cfg(not(windows))]
+        let posix = LauncherShell::Posix.contents(SAMPLE_PACKAGE_NAME, SAMPLE_MOD_NAME);
         assert!(
-            contents.contains("./postretro"),
-            "the engine must be named relative to the launcher: {contents}"
+            posix.contains("exec ./postretro "),
+            "the engine must be named relative to the launcher: {posix}"
         );
     }
 
-    #[cfg(windows)]
+    /// Both values cross the same shell, so both take the same quoting.
     #[test]
-    fn percent_signs_survive_batch_expansion() {
-        assert!(launcher_contents("50%off").contains("\"50%%off\""));
+    fn percent_signs_survive_batch_expansion_in_both_values() {
+        let batch = LauncherShell::Batch.contents("50%game", "50%off");
+        assert!(
+            batch.contains("--mod \"50%%off\" --app-name \"50%%game\""),
+            "{batch}"
+        );
     }
 
-    #[cfg(not(windows))]
     #[test]
-    fn quotes_apostrophes_for_posix_shell() {
+    fn apostrophes_survive_the_posix_shell_in_both_values() {
         assert_eq!(posix_single_quoted("runner's-mod"), "runner'\"'\"'s-mod");
+        let posix = LauncherShell::Posix.contents("runner's-game", "runner's-mod");
+        assert!(
+            posix.contains("--mod 'runner'\"'\"'s-mod' --app-name 'runner'\"'\"'s-game'"),
+            "{posix}"
+        );
     }
 }

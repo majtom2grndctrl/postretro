@@ -36,7 +36,7 @@ read at: 423aae2a5
 
 | # | Task | Owner | Depends on | Status |
 |---|---|---|---|---|
-| 1 | Engine chokepoint: `startup/app_dirs.rs`, `--app-name` stage-1 parse, thread dirs through `PendingSessionInit` → `Session`, sim `state_path(data_dir, mod)`, gates, P1 test | integrating executor | — | |
-| 2 | Shared case table | integrating executor | — | |
-| 3 | Tool: package-name rule, launcher `--app-name` (both renderers), `run` prepend, SDK marker `<package>-sdk` + README | worker | 2 | |
-| 4 | Docs: `build_pipeline.md`, `boot_sequence.md`, `player_options.md`, `docs/distribution.md`, `docs/modding.md` | integrating executor | 1, 3 | |
+| 1 | Engine chokepoint: `startup/app_dirs.rs`, `--app-name` stage-1 parse, thread dirs through `PendingSessionInit` → `Session`, sim `state_path(data_dir, mod)`, gates, P1 test | integrating executor | — | done — `app_dirs` 6, session/arg/P1 22, sim 1 passing |
+| 2 | Shared case table | integrating executor | — | done |
+| 3 | Tool: package-name rule, launcher `--app-name` (both renderers), `run` prepend, SDK marker `<package>-sdk` + README | worker | 2 | done — `postretro-tool` 157/157, clippy clean |
+| 4 | Docs: `docs/distribution.md`, `docs/modding.md` now; `build_pipeline.md`, `boot_sequence.md`, `player_options.md` at land-the-plane | integrating executor | 1, 3 | `docs/` done; context/lib pending landing |

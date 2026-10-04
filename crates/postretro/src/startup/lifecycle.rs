@@ -1624,6 +1624,7 @@ pub(crate) mod tests {
                 os_preferences: crate::os_preferences::OsPreferenceFeed::fake().0,
                 player_options: options::PlayerOptions::default(),
                 settings_path: None,
+                data_dir: None,
                 frontend: None,
                 accessibility_entry_check: Default::default(),
                 net_endpoint: None,

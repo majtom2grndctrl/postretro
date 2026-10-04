@@ -65,8 +65,15 @@ name = "my-game"
 mod = "base"
 ```
 
-`name` is the payload's folder name. It must be a single path component — no
-slashes, no `..`.
+`name` is the payload's folder name, and it is also where your players' data
+lives: the launcher passes it to the engine as `--app-name`, which names the
+directory holding their settings and saved state (see "Where player data
+lives" below). It must be a single path component — no slashes, backslashes or
+colons, not `.` or `..`, not blank, and not starting with `-`.
+
+**Choose `name` before your first release, and keep it.** Renaming it later
+moves the directory, so every player starts over: their settings, their
+`player_id`, and their saves stay behind under the old name.
 
 `mod` is your mod's name: the directory under the project's `content/` that
 holds your authored content, so `mod = "base"` means `content/base`. It is a
@@ -76,7 +83,9 @@ material sidecars by walking up two levels from the mod it mounted, which lands
 at the project root only for `content/<mod>`.
 
 An SDK bundle ships its own `postretro.toml` at the bundle root, already
-correct, so the bundle is a project you can build from immediately.
+correct, so the bundle is a project you can build from immediately. Its `name`
+is the bundle's folder name, `<name>-sdk`, so the bundle keeps its own player
+data apart from the installed game's (see [docs/modding.md](modding.md)).
 
 ## Make a payload
 
@@ -130,7 +139,8 @@ set.
 ```
 dist/<name>/
   postretro[.exe]          the release engine
-  <name>.{bat,sh}          launcher: pins the working directory, mounts the game
+  <name>.{bat,sh}          launcher: pins the working directory, mounts the game,
+                           names its player-data directory
   core/                    engine-owned assets: UI descriptors, splash, licences
   content/base/            your game's content, with baked levels and entry script
   baked/materials/         .prm material sidecars
@@ -230,7 +240,31 @@ trust.
 
 The game requires a graphics adapter that supports DirectX 12 or Vulkan. On its
 first run it writes editable player settings under
-`%APPDATA%\postretro\config\settings.toml`.
+`%APPDATA%\<name>\config\settings.toml` — `<name>` being the manifest's
+`name` — so two games built on Postretro never share settings or saves.
+
+## Where player data lives
+
+Each game keeps its players' settings (`settings.toml`, which also holds the
+player's `player_id`) and saved state (`state.json`, one per mod) in its own
+per-user directory, named by the manifest's `name`. The launcher passes that name
+to the engine; `bin/postretro-tool run` passes it too, so an authoring run reads
+and writes exactly what your players' first launch will. Each platform spells
+the directory its own way:
+
+| Platform | Settings | Saved state |
+|---|---|---|
+| Windows | `%APPDATA%\<name>\config\settings.toml` | `%APPDATA%\<name>\data\<mod>\state.json` |
+| macOS | `~/Library/Application Support/<name>/settings.toml` | `~/Library/Application Support/<name>/<mod>/state.json` |
+| Linux | `~/.config/<name>/settings.toml` | `~/.local/share/<name>/<mod>/state.json` |
+
+macOS replaces each space in `<name>` with `-`. Linux lowercases it and drops
+its whitespace, so `My Game` and `mygame` share one directory there; Linux also
+honours `XDG_CONFIG_HOME` and `XDG_DATA_HOME`. Windows uses `<name>` as written.
+
+Starting the engine binary directly, without the launcher, uses the directory
+named `postretro` — and, for most games, fails to find the game anyway. Start a
+payload through its launcher.
 
 On Windows there can be a brief white flash when the window is created, before
 the splash is first presented. This is a cosmetic startup artifact; the window

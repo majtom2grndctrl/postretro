@@ -318,6 +318,41 @@ mod tests {
         args.iter().map(OsString::from).collect()
     }
 
+    /// `dist` opens the project — reading and validating its manifest — before
+    /// any stage runs, so a package name the engine's `--app-name` would refuse
+    /// at boot never reaches a launcher. An accepted name opens.
+    #[test]
+    fn dist_refuses_a_flag_shaped_package_name_when_opening_the_project() {
+        let temp = std::env::temp_dir().join(format!(
+            "postretro-dist-package-name-{}",
+            std::process::id()
+        ));
+        for (name, accepted) in [("-x", false), ("my.game", true)] {
+            fs::create_dir_all(&temp).expect("temporary project created");
+            fs::write(
+                temp.join(crate::project::MARKER_FILE),
+                format!("[package]\nname = \"{name}\"\nmod = \"base\"\n"),
+            )
+            .expect("marker written");
+            let cli = parse_args(
+                vec![OsString::from("--project"), temp.clone().into_os_string()],
+                "dist",
+            )
+            .expect("dist arguments parse");
+            match cli.project() {
+                Ok(project) => {
+                    assert!(accepted, "{name} opened");
+                    assert_eq!(project.manifest().package.name, name);
+                }
+                Err(error) => {
+                    assert!(!accepted, "{name}: {error}");
+                    assert!(error.contains("--app-name"), "{error}");
+                }
+            }
+        }
+        let _ = fs::remove_dir_all(&temp);
+    }
+
     /// Regression: `--install-root` and `--out` were matched only in their
     /// split form, so `dist`/`sdk-dist` refused the equals form outright as
     /// an unknown argument — loud, unlike `run`'s silent forwarding, but still

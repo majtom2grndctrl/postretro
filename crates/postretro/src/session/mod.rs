@@ -232,6 +232,13 @@ pub(crate) struct Session {
     /// See: context/lib/player_options.md
     pub(crate) settings_path: Option<PathBuf>,
 
+    /// Per-user data directory each mod's `state.json` lives under, resolved with
+    /// `settings_path` from the one app name at boot stage 1 so per-player rows
+    /// stay keyed by this settings file's `player_id`. `None` when the platform
+    /// exposes no data directory; persistence is then disabled for the run.
+    /// See: context/lib/build_pipeline.md §Distribution packaging
+    pub(crate) data_dir: Option<PathBuf>,
+
     /// Currently committed mod frontend declaration. Successful staged mod-init
     /// commits replace this snapshot. Inner `Option` is genuine runtime absence:
     /// `None` falls back to the engine/default frontend behavior.
@@ -417,6 +424,7 @@ impl Session {
     pub(crate) fn build(
         raw_args: &[String],
         core_root: &postretro_ui::CoreRoot,
+        app_dirs: &crate::startup::app_dirs::AppDirs,
         boot_timings: &mut StartupTimings,
     ) -> Result<Self> {
         // 1. Player options load first so the loaded look preferences seed the
@@ -425,7 +433,7 @@ impl Session {
         //    changes save after the debounce window and flush on options close or
         //    clean exit. A missing config dir or save failure is logged, not fatal:
         //    boot proceeds on in-memory defaults. See: context/lib/player_options.md §3.
-        let settings_path = options::settings_path();
+        let settings_path = app_dirs.settings_path();
         let player_options = load_player_options(settings_path.as_deref());
 
         // 2. Audio: fault-tolerant. A kira/device failure logs and runs silent
@@ -640,6 +648,7 @@ impl Session {
             options_bridge,
             os_preferences,
             settings_path,
+            data_dir: app_dirs.data_dir().map(Path::to_path_buf),
             // Committed by mod-init later this same install frame; engine/default
             // frontend until then.
             frontend: None,
@@ -1126,6 +1135,79 @@ mod tests {
 
         let reloaded = options::PlayerOptions::load(&path);
         assert_eq!(reloaded.player_id, generated.player_id);
+    }
+
+    /// Every file under `root`, by path, with its bytes.
+    fn snapshot(root: &Path) -> std::collections::BTreeMap<PathBuf, Vec<u8>> {
+        let mut files = std::collections::BTreeMap::new();
+        let mut pending = vec![root.to_path_buf()];
+        while let Some(dir) = pending.pop() {
+            for entry in std::fs::read_dir(&dir).expect("read snapshot directory") {
+                let path = entry.expect("snapshot entry").path();
+                if path.is_dir() {
+                    pending.push(path);
+                } else {
+                    let bytes = std::fs::read(&path).expect("read snapshot file");
+                    files.insert(path, bytes);
+                }
+            }
+        }
+        files
+    }
+
+    /// P1: a game's first launch, with the bare-launch directory already holding
+    /// settings and state, starts from defaults and a fresh `player_id` under its
+    /// own name — so the accessibility panel shows again — and reads or writes
+    /// nothing under `postretro/`.
+    #[test]
+    fn first_launch_under_a_new_app_name_leaves_the_postretro_directory_untouched() {
+        use crate::scripting::state_persistence::{load_persisted_state, state_path};
+        use crate::startup::app_dirs::AppDirs;
+
+        let home = tempdir().expect("temporary home directory");
+        let bare_root = home.path().join("postretro");
+        let bare = AppDirs::at(&bare_root.join("config"), &bare_root.join("data"));
+        let game = AppDirs::at(
+            &home.path().join("my-game/config"),
+            &home.path().join("my-game/data"),
+        );
+
+        // An earlier bare launch: customized settings with an identity and a
+        // shown panel, plus a mod's saved state.
+        let bare_settings = bare.settings_path().expect("bare settings path");
+        std::fs::create_dir_all(bare_settings.parent().unwrap()).unwrap();
+        std::fs::write(
+            &bare_settings,
+            "invert_y = true\naccessibility_panel_shown = true\n",
+        )
+        .unwrap();
+        let bare_options = load_player_options(Some(&bare_settings));
+        let bare_state = state_path(bare.data_dir(), "dev").expect("bare state path");
+        std::fs::create_dir_all(bare_state.parent().unwrap()).unwrap();
+        std::fs::write(&bare_state, r#"{"version":4,"slots":{}}"#).unwrap();
+        let before = snapshot(&bare_root);
+
+        let game_settings = game.settings_path().expect("game settings path");
+        let game_options = load_player_options(Some(&game_settings));
+        let game_state = state_path(game.data_dir(), "dev").expect("game state path");
+
+        assert!(game_settings.exists(), "first launch writes defaults");
+        assert!(!game_options.invert_y);
+        assert!(!game_options.accessibility_panel_shown);
+        assert!(game_options.player_id.is_some());
+        assert_ne!(game_options.player_id, bare_options.player_id);
+        assert_eq!(
+            options::PlayerOptions::load(&game_settings).player_id,
+            game_options.player_id,
+            "the fresh identity is persisted under the new name"
+        );
+        assert!(
+            load_persisted_state(&game_state)
+                .expect("an absent state file is not an error")
+                .is_none(),
+            "restore under the new name finds no state"
+        );
+        assert_eq!(snapshot(&bare_root), before);
     }
 
     #[test]

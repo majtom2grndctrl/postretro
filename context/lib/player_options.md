@@ -21,7 +21,7 @@ Do not merge these stores. The formats, lifecycles, and ownership are incompatib
 
 ## 2. Format and Persistence
 
-Options persist as `settings.toml` in the platform config directory (e.g. `~/.config/postretro/settings.toml` on Linux). Format rationale:
+Options persist as `settings.toml` in the platform config directory (e.g. `~/.config/postretro/settings.toml` on Linux). Per-game directories are decided, not yet built: the directory will resolve from `--app-name`, so a shipped game keeps its own `settings.toml` and `player_id` becomes per game rather than per device (`build_pipeline.md` §Distribution packaging). Format rationale:
 
 - **TOML** — human-editable config. Snake_case keys (not camelCase — this is a player config file, not a script object).
 - **Schema evolution** — every field carries `serde(default)`, so partial or older files load cleanly; absent fields fall back to defaults.

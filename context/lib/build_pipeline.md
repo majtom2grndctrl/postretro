@@ -701,6 +701,10 @@ Content and engine assets are two independent lookups here, exactly as they are 
 
 The engine learns nothing about `postretro.toml` — it keeps plain flags, so changing the manifest schema stays a tool change. What the command removes is the three paths a modder would otherwise type on every launch, none of whose failure modes is an error: a wrong materials root is the silent placeholder degradation §Baked texture mips describes, and an unreachable `core/` is four warnings and four missing surfaces. The tool has no single-level build, so a direct `prl-build` invocation is the one place an author still supplies `--baked-root` and `--cache-dir` by hand.
 
+### Player-data directory (decided, not yet built)
+
+The package name is a game's player-data identity. Every launch that knows its project — the payload launcher, `postretro-tool run`, an SDK bundle's launcher — passes `--app-name <package name>`, and the engine resolves its config and data directories from it at boot stage 1 (`boot_sequence.md` §1) through `ProjectDirs::from`, so each platform normalizes the name its own way. A bare engine launch, `cargo run -p xtask -- run` included, uses `postretro`. The flag is the whole interface: the engine still learns nothing about `postretro.toml`. An SDK bundle is its own project — its marker names the package `<package>-sdk` — so a modder's runs never touch the installed game's saves. From a game's first release, renaming `[package].name` strands its players' settings, `player_id` and saves; `dist` and `sdk-dist` refuse a package name the engine's `--app-name` rule rejects.
+
 ### Output-root containment
 
 Every payload root lies strictly under `<project>/dist/`, the project being the marker's directory. A guard proves it before the first build and again immediately before the delete, since the filesystem can change under a multi-minute build. It refuses on the first of these to trip:

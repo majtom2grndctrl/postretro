@@ -23,7 +23,7 @@ Requested capability, raised by the developer. A player can only play in a windo
   - Reacting when the exclusive monitor disconnects mid-session: winit's reading is cached and cannot see it; the next apply or launch re-finds.
   - An author-set first-launch mode: it would need a launch-time input before the window, and no game asks for one.
   - Persisted windowed size and position: leaving fullscreen restores the prior size within a session, and the default size covers launch.
-  - Settings scope and the `[game."<mod_id>"]` layer: `drafts/E23--gamepad-input` owns them. Per-game user directories: `drafts/game-user-dirs`.
+  - Settings scope and the `[game."<mod_id>"]` layer: `drafts/E23--gamepad-input` owns them. Per-game user directories: `ready/game-user-dirs`.
 
 ### Scripting surface
 ```ts
@@ -100,11 +100,11 @@ displayModeAction("revert"); // "ui.displayMode.revert"
 ## Path
 - macOS: borderless is the recommended fullscreen there; exclusive switches the display mode and locks out Spaces.
 - `--windowed` parses at boot stage 1 with `--mod` (`mod_arg`, `startup/session.rs`).
-- The settings path comes from `drafts/game-user-dirs`' directory chokepoint once that lands.
+- The settings path comes from `ready/game-user-dirs`' directory chokepoint once that lands.
 - Precedents: `render_resolution` end to end for the enum slot; `ui.accessibility.<op>.<field>` and `options/panel_actions.rs` for the intercepted action family; `core/ui/accessibilityPanel.json` and its reserved-name handling for the confirm.
 - Boot: `window_attributes()` and `resumed` (main.rs); `PendingSessionInit` carries the loaded store into `Session::build` → `load_player_options`.
 - Live apply in `App::update_player_options`; readback beside `App::commit_render_extents`. Mind the source-order tests in `app/render_extents.rs`.
-- Either order with `drafts/game-user-dirs`: whichever lands second routes the pre-window read through its directory chokepoint.
+- Either order with `ready/game-user-dirs`: whichever lands second routes the pre-window read through its directory chokepoint.
 - Modes differing only in bit depth step as separate entries; a menu showing size and refresh alone shows them as repeats.
 - macOS borderless is native fullscreen, an animated Space; `set_simple_fullscreen` avoids Spaces but fails while the window is already in native fullscreen (green button). The first slice shows which the boot AC needs.
 - Rivals rejected: a string-list slot plus a repeat widget for the picker (`research.md` §Picker surface); a narrow pre-window read of the window fields alone, which parses twice and leaves two documents to reconcile at save.

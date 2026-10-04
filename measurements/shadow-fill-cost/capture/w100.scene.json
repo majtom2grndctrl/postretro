@@ -14,7 +14,7 @@
   640,
   480
  ],
- "output": "measurements/shadow-fill-cost/capture/w100.png",
+ "output": "measurements/shadow-fill-cost/capture/out/w100.png",
  "force_active": [
   {
    "tag": "alarm_light",

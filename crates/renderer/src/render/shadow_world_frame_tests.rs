@@ -203,9 +203,11 @@ impl World {
 }
 
 /// Record one production frame. Returns the frame's shadow world draws:
-/// `(region, ranges)` for every region that walked reach.
+/// `(region, ranges)` for every region that drew world. `bvh` says whether the
+/// installed level has a reach index, so every draw is also one walk.
 fn frame(
     renderer: &mut Renderer,
+    bvh: bool,
     camera: VisibleCells,
     fog: &[u32],
 ) -> Vec<(ShadowRegion, Vec<Range<u32>>)> {
@@ -250,7 +252,12 @@ fn frame(
         "the frame must occupy a shadow slot"
     );
     // Every BVH-level world draw is one walk; a no-BVH draw walks nothing.
-    assert!(full.shadow_world.walks as usize <= full.shadow_world.trace.len());
+    let expected_walks = if bvh {
+        full.shadow_world.trace.len()
+    } else {
+        0
+    };
+    assert_eq!(full.shadow_world.walks as usize, expected_walks);
     full.shadow_world
         .trace
         .iter()
@@ -284,7 +291,7 @@ fn recorded_frame_draws_reach_beyond_camera_and_fog_and_only_reach() {
     world.install(&mut renderer, true);
     // The camera sees cell 3 and fog reaches cell 4, both behind the light.
     // Cells 0–2 are in neither set but in the cone.
-    let draws = frame(&mut renderer, VisibleCells::Culled(vec![3]), &[4]);
+    let draws = frame(&mut renderer, true, VisibleCells::Culled(vec![3]), &[4]);
     assert_eq!(draws.len(), 1, "one dynamic cold fill: {draws:?}");
     let (region, ranges) = &draws[0];
     assert!(matches!(region, ShadowRegion::Spot(_)));
@@ -292,7 +299,7 @@ fn recorded_frame_draws_reach_beyond_camera_and_fog_and_only_reach() {
     assert_ne!(ranges, &vec![0..world.index_count()]);
 
     // The cold fill warmed its layer: the next frame walks nothing.
-    assert!(frame(&mut renderer, VisibleCells::Culled(vec![3]), &[4]).is_empty());
+    assert!(frame(&mut renderer, true, VisibleCells::Culled(vec![3]), &[4]).is_empty());
     eprintln!("[ShadowWorldFrameProof] reach beyond camera and fog: 2 adapter frames executed");
 }
 
@@ -306,14 +313,14 @@ fn recorded_cold_fill_with_empty_reach_still_records_its_cleared_pass() {
     world.lights.clear();
     let world = world.with_spot(Vec3::new(0.0, 0.0, 1.0), Vec3::X);
     world.install(&mut renderer, true);
-    let draws = frame(&mut renderer, VisibleCells::Culled(vec![0]), &[]);
+    let draws = frame(&mut renderer, true, VisibleCells::Culled(vec![0]), &[]);
     // The cold fill walked once and drew nothing; its cache pass (LoadOp
     // Clear to far depth) still ran, and the layer is now warm.
     assert_eq!(draws.len(), 1, "{draws:?}");
     assert!(draws[0].1.is_empty());
     let cold = &renderer.full().dynamic_depth_cache_frame_plan;
     assert!(!cold.spot().is_empty() && cold.spot().iter().all(|plan| plan.needs_world_render));
-    assert!(frame(&mut renderer, VisibleCells::Culled(vec![0]), &[]).is_empty());
+    assert!(frame(&mut renderer, true, VisibleCells::Culled(vec![0]), &[]).is_empty());
     assert!(
         renderer
             .full()
@@ -335,7 +342,7 @@ fn recorded_level_switches_draw_each_installed_levels_own_world() {
     // with the same light pose throughout.
     let first = cone_world(true);
     first.install(&mut renderer, true);
-    let draws = frame(&mut renderer, VisibleCells::Culled(vec![0]), &[]);
+    let draws = frame(&mut renderer, true, VisibleCells::Culled(vec![0]), &[]);
     assert_eq!(draws[0].1, vec![0..9]);
 
     let flat = World::new(
@@ -344,7 +351,7 @@ fn recorded_level_switches_draw_each_installed_levels_own_world() {
     )
     .with_spot(Vec3::new(0.0, 0.0, 1.0), Vec3::NEG_Z);
     flat.install(&mut renderer, true);
-    let draws = frame(&mut renderer, VisibleCells::DrawAll, &[]);
+    let draws = frame(&mut renderer, false, VisibleCells::DrawAll, &[]);
     assert_eq!(draws.len(), 1, "{draws:?}");
     assert_eq!(draws[0].1, vec![0..flat.index_count()]);
 
@@ -359,7 +366,7 @@ fn recorded_level_switches_draw_each_installed_levels_own_world() {
     )
     .with_spot(Vec3::new(0.0, 0.0, 1.0), Vec3::NEG_Z);
     second.install(&mut renderer, true);
-    let draws = frame(&mut renderer, VisibleCells::Culled(vec![1]), &[]);
+    let draws = frame(&mut renderer, true, VisibleCells::Culled(vec![1]), &[]);
     assert_eq!(draws.len(), 1, "{draws:?}");
     assert_eq!(draws[0].1, vec![3..9]);
     for (_, ranges) in &draws {
@@ -376,7 +383,7 @@ fn recorded_frame_without_cell_draw_index_draws_reach() {
     // O8: BVH leaves present, per-cell draw index absent.
     let world = cone_world(true);
     world.install(&mut renderer, false);
-    let draws = frame(&mut renderer, VisibleCells::DrawAll, &[]);
+    let draws = frame(&mut renderer, true, VisibleCells::DrawAll, &[]);
     assert_eq!(draws.len(), 1, "{draws:?}");
     assert_eq!(draws[0].1, vec![0..9]);
     eprintln!("[ShadowWorldFrameProof] no cell draw index: 1 adapter frame executed");

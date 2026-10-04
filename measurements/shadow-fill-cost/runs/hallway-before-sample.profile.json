@@ -7,10 +7,6 @@
       "samples": 412,
       "ms_per_frame": 1.7964
     },
-    "hal_multi_draw_indexed_indirect": {
-      "samples": 0,
-      "ms_per_frame": 0.0
-    },
     "hal_draw_indexed": {
       "samples": 0,
       "ms_per_frame": 0.0
@@ -22,14 +18,6 @@
     "core_command_encoder_finish": {
       "samples": 1093,
       "ms_per_frame": 4.7658
-    },
-    "record_spot_shadow_depth": {
-      "samples": 0,
-      "ms_per_frame": 0.0
-    },
-    "record_cube_shadow_depth": {
-      "samples": 1,
-      "ms_per_frame": 0.0044
     },
     "shadow_reach_walk": {
       "samples": 0,

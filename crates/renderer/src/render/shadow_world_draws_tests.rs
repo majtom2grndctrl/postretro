@@ -273,6 +273,7 @@ fn level_without_bvh_draws_its_whole_index_buffer() {
             draws.ranges(ShadowRegion::Spot(0), &spot(Vec3::ZERO, Vec3::NEG_Z)),
             &[0..42]
         );
+        assert_eq!(draws.walks, 0, "a whole-buffer draw is not a walk");
     }
 }
 

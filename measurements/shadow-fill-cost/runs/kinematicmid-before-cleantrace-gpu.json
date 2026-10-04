@@ -1,0 +1,80 @@
+{
+  "source": "/private/tmp/claude-501/-Users-dhiester-Projects-Personal-postretro/e258fc14-1482-41d9-87ad-a61aae53ee1f/scratchpad/traces/kinematicmid-before-cleantrace-gpu.xml",
+  "camera_frames": 123,
+  "frame_count_pass": "UI Pass",
+  "once_per_frame_counts": {
+    "UI Pass": 123,
+    "Screen Effects Resolve Pass": 0,
+    "Textured Pass": 123,
+    "Depth Pre-Pass": 123
+  },
+  "shadow_passes": {
+    "Dynamic Cube Entity Shadow Depth Pass": {
+      "count": 1476,
+      "total_ms": 22.345,
+      "per_frame_ms": 0.1817
+    },
+    "Dynamic Cube World Depth Cache Pass": {
+      "count": 1349,
+      "total_ms": 21.029,
+      "per_frame_ms": 0.171
+    },
+    "Dynamic Spot Entity Shadow Depth Pass": {
+      "count": 123,
+      "total_ms": 3.415,
+      "per_frame_ms": 0.0278
+    },
+    "Dynamic Spot World Depth Cache Pass": {
+      "count": 111,
+      "total_ms": 2.888,
+      "per_frame_ms": 0.0235
+    },
+    "Promoted Spot Entity Shadow Depth Pass": {
+      "count": 977,
+      "total_ms": 69.307,
+      "per_frame_ms": 0.5635
+    },
+    "Promoted Spot World Depth Cache Pass": {
+      "count": 2,
+      "total_ms": 0.063,
+      "per_frame_ms": 0.0005
+    },
+    "Shadow Cull Pass": {
+      "count": 234,
+      "total_ms": 75.067,
+      "per_frame_ms": 0.6103
+    }
+  },
+  "shadow_total_per_frame_ms": 1.5782,
+  "sum_labelled_passes_per_frame_ms": 35.0111,
+  "all_passes_per_frame_ms": {
+    "Streamed Animated Direct SH": 9.0007,
+    "Streamed SH Compose": 7.9466,
+    "Textured Pass": 5.9855,
+    "Skinned Viewmodel Pass": 4.0678,
+    "Streamed Direct SH Promotion": 3.1152,
+    "Animated LM Compose": 1.1049,
+    "Shadow Cull Pass": 0.6103,
+    "Promoted Spot Entity Shadow Depth Pass": 0.5635,
+    "Kinematic Brush Pass": 0.5544,
+    "Per-frame Upload Copies": 0.311,
+    "Frame Encoder": 0.286,
+    "Bloom Horizontal Gaussian Pass": 0.2646,
+    "UI Pass": 0.1853,
+    "Dynamic Cube Entity Shadow Depth Pass": 0.1817,
+    "Dynamic Cube World Depth Cache Pass": 0.171,
+    "Bloom Bright Pass": 0.1316,
+    "Bloom Scene Composite Pass": 0.1,
+    "Bloom Vertical Gaussian Pass": 0.0628,
+    "Skinned Mesh Pass": 0.058,
+    "Candidate Cull Pass": 0.0575,
+    "Billboard Direct Scatter Compose": 0.048,
+    "Bloom Downsample Pass": 0.047,
+    "Bloom Upsample Pass": 0.0444,
+    "Depth Pre-Pass": 0.0382,
+    "Dynamic Spot Entity Shadow Depth Pass": 0.0278,
+    "Dynamic Spot World Depth Cache Pass": 0.0235,
+    "(wgpu internal) PendingWrites": 0.0234,
+    "Promoted Spot World Depth Cache Pass": 0.0005
+  }
+}

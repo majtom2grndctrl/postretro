@@ -1,6 +1,13 @@
 {
-  "source": "/private/tmp/claude-501/-Users-dhiester-Projects-Personal-postretro/e258fc14-1482-41d9-87ad-a61aae53ee1f/scratchpad/traces/campaign-before-cleantrace-gpu.xml",
+  "source": "raw/campaign-before-cleantrace-gpu.xml.gz",
   "camera_frames": 200,
+  "frame_count_pass": "Textured Pass",
+  "once_per_frame_counts": {
+    "UI Pass": 199,
+    "Screen Effects Resolve Pass": 0,
+    "Textured Pass": 200,
+    "Depth Pre-Pass": 200
+  },
   "shadow_passes": {
     "Dynamic Spot Entity Shadow Depth Pass": {
       "count": 176,
@@ -29,15 +36,14 @@
     }
   },
   "shadow_total_per_frame_ms": 0.2079,
+  "sum_labelled_passes_per_frame_ms": 19.0062,
   "all_passes_per_frame_ms": {
     "Streamed Animated Direct SH": 3.5796,
     "Fog Raymarch Pass": 3.2398,
     "Textured Pass": 3.2194,
     "Streamed SH Compose": 3.1043,
     "Skinned Viewmodel Pass": 2.3757,
-    "GPU Execution": 2.2749,
     "Kinematic Brush Pass": 1.786,
-    "GL/CL": 0.398,
     "Animated LM Compose": 0.3209,
     "Bloom Bright Pass": 0.1825,
     "Per-frame Upload Copies": 0.1775,
@@ -53,7 +59,7 @@
     "Shadow Cull Pass": 0.0489,
     "Depth Pre-Pass": 0.0484,
     "Frame Encoder": 0.0467,
-    "Bloom Downsample Pass": 0.0384,
+    "Bloom Downsample Pass": 0.0385,
     "Bloom Upsample Pass": 0.0367,
     "(wgpu internal) PendingWrites": 0.0305,
     "Dynamic Spot Entity Shadow Depth Pass": 0.0111,

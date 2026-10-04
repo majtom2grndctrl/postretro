@@ -79,9 +79,11 @@ impl ShadowReachScratch {
 }
 
 impl ShadowReachIndex {
-    /// Inputs are a loader-validated flat BVH: leaf ranges inside the index
-    /// array without overflow, and `cell_id` below the level's cell count,
-    /// which sizes the dedupe bitset.
+    /// Inputs are a flat BVH the loader has validated (`prl_loader`
+    /// `validate_bvh_structure` and `validate_bvh_leaf_cells`): leaf ranges
+    /// inside the index array without overflow, and `cell_id` below the
+    /// level's cell count, which sizes the dedupe bitset. The saturating range
+    /// end below is defence in depth, not a substitute for that validation.
     pub fn new(nodes: &[BvhNode], leaves: &[BvhLeaf]) -> Self {
         let reach_leaves: Vec<ReachLeaf> = leaves
             .iter()

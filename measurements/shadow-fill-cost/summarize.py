@@ -19,12 +19,15 @@ for key in sys.argv[1:]:
         for record in sorted(runs.glob(f"{key}-{build}-clean[0-9].run.json")):
             meta = json.loads(record.read_text())
             label = meta["label"]
-            if meta.get("screensaver_seen") or not meta["foreground_all"]:
+            if not meta.get("valid", meta["foreground_all"] and not meta.get("screensaver_seen")):
                 excluded.append(label)
                 continue
             timing = json.loads(subprocess.run(
                 ["python3", str(here / "timing.py"), str(runs / f"{label}.log"), "2"],
                 capture_output=True, text=True, check=True).stdout)
+            # Per-window values, committed so medians can be checked without the
+            # gitignored logs.
+            (runs / f"{label}.timing.json").write_text(json.dumps(timing, indent=2) + "\n")
             per_run.append({s: timing["stages"][s]["median_avg_ms"]
                             for s in STAGES if s in timing["stages"]} |
                            {"label": label, "windows_used": timing["windows_used"]})
@@ -41,7 +44,8 @@ for key in sys.argv[1:]:
                 "screensaver_seen": json.loads(trace_meta.read_text()).get("screensaver_seen"),
                 "shadow_total_per_frame_ms": gpu["shadow_total_per_frame_ms"],
                 "shadow_passes": gpu["shadow_passes"],
-                "sum_all_passes_per_frame_ms": round(sum(v for v in gpu["all_passes_per_frame_ms"].values() if v), 3),
+                "frame_count_pass": gpu["frame_count_pass"],
+                "sum_labelled_passes_per_frame_ms": gpu["sum_labelled_passes_per_frame_ms"],
             },
         }
 print(json.dumps(out, indent=2))

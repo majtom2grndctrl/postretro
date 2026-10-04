@@ -1188,9 +1188,10 @@ pub(super) struct FullRenderer {
 
     /// CPU-side count of skinned and rigid ENTITY occluders submitted into spot
     /// shadow slots last frame, summed across slots (each counted once per slot
-    /// it casts into) — no GPU readback. Verifies the "enemy outside the cone is not drawn"
-    /// acceptance criterion: an occluder the per-light cone cull rejects is never
-    /// added here. Reset to 0 at the start of the spot-shadow depth loop.
+    /// it casts into) — no GPU readback. Verifies the "enemy outside the cone is
+    /// not drawn" acceptance criterion: an occluder the per-light cone cull
+    /// rejects is never added here. Reset to 0 at the start of the spot-shadow
+    /// depth loop.
     pub(super) spot_entity_occluders_submitted: u32,
 
     /// CPU-side count of skinned and rigid ENTITY occluders submitted into CUBE

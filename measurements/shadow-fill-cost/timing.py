@@ -1,13 +1,14 @@
 """Median CPU stage averages over a run's complete [CpuTiming] windows.
 
-usage: timing.py <run.log> [discard=3]
+usage: timing.py <run.log> [discard=2]
+Discarding 2 keeps windows 3+, the README's rule.
 A stage's avg covers only the frames it ran in; `(ran/frames)` is reported.
 """
 import json, re, statistics, sys
 
 STAGES = ["work", "render_record", "rec_shadow_depth", "rec_shadow_reach", "rec_cull",
           "render_submit", "wait_acquire", "total"]
-path, discard = sys.argv[1], int(sys.argv[2]) if len(sys.argv) > 2 else 3
+path, discard = sys.argv[1], int(sys.argv[2]) if len(sys.argv) > 2 else 2
 windows = [line for line in open(path, errors="replace") if "[CpuTiming]" in line]
 kept = windows[discard:]
 result = {"windows_total": len(windows), "windows_used": len(kept), "stages": {}}

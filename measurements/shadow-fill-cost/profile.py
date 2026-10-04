@@ -14,13 +14,11 @@ tree = text.split("Total number in stack")[0]
 main = int(re.search(r"^\s+(\d+) Thread_\d+(?:: main|\s+DispatchQueue_\d+: com.apple.main-thread)",
                      tree, re.M)[1])
 PATTERNS = {
-    "hal_draw_indexed_indirect": r"DynCommandEncoder\d+draw_indexed_indirect",
-    "hal_multi_draw_indexed_indirect": r"DynCommandEncoder\d+draw_indexed_indirect_count|DynCommandEncoder\d+multi_draw_indexed_indirect",
+    # wgpu-hal's Metal multi-draw expands to these per-slot calls.
+    "hal_draw_indexed_indirect": r"DynCommandEncoder\d+draw_indexed_indirect(?!_)",
     "hal_draw_indexed": r"DynCommandEncoder\d+draw_indexed(?!_)",
     "core_encode_render_pass": r"wgpu_core\S*encode_render_pass",
     "core_command_encoder_finish": r"wgpu_core\S*command_encoder_finish",
-    "record_spot_shadow_depth": r"record_spot_shadow_depth",
-    "record_cube_shadow_depth": r"record_cube_shadow_depth",
     "shadow_reach_walk": r"ShadowReachIndex\S*5reach",
 }
 result = {"label": label, "main_thread_samples": main, "frame_ms": frame_ms, "paths": {}}

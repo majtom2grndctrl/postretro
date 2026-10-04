@@ -2312,6 +2312,16 @@ mod tests {
         assert_eq!(animated_states[0].weight, 0.1);
         assert_eq!(animated_states[1].weight, 0.2);
         assert_eq!(plan.counters.promoted_count, 0);
+        // The reset state frees the light's pool slot, as the static drop does.
+        let mut assignment = [3];
+        clear_zero_weight_promoted_assignments(
+            &[None],
+            &selected_static_weights,
+            &[Some(2)],
+            &animated_states,
+            &mut assignment,
+        );
+        assert_eq!(assignment, [postretro_lighting::NO_SHADOW_SLOT]);
     }
 
     #[test]

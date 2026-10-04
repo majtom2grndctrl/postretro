@@ -107,7 +107,9 @@ impl CollisionWorld {
 
         let triangles: Vec<[u32; 3]> = world
             .indices
-            .chunks_exact(3)
+            .as_chunks::<3>()
+            .0
+            .iter()
             .map(|chunk| [chunk[0], chunk[1], chunk[2]])
             .collect();
 

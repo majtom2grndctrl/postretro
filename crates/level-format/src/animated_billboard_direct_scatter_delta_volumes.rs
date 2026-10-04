@@ -377,7 +377,9 @@ impl AnimatedBillboardDirectScatterDeltaVolumesSection {
         }
         for (sample, rgba) in self
             .delta_rgba
-            .chunks_exact(BILLBOARD_DIRECT_SCATTER_DELTA_RGBA_F16_COUNT)
+            .as_chunks::<BILLBOARD_DIRECT_SCATTER_DELTA_RGBA_F16_COUNT>()
+            .0
+            .iter()
             .enumerate()
         {
             if rgba[3] != 0 {

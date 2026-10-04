@@ -363,6 +363,12 @@ impl Renderer {
                     .map(|cull| cull.estimate_diagnostics(visible, &view_proj));
             }
 
+            // Both camera passes share this frame's drawable set, independently
+            // of cull routing and fog reach. Build before any later compose exit.
+            if let Some(cull) = &mut full.compute_cull {
+                cull.prepare_camera_ranges(full.cell_draw_index.as_ref(), visible);
+            }
+
             // Candidate-cull routing. Eligible iff ALL hold:
             //   * a valid loaded `CellDrawIndex`,
             //   * `VisibleCells::Culled` (a concrete visible-cell set), AND

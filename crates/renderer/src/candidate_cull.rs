@@ -1,14 +1,6 @@
-// GPU candidate cull: gather only visible cells' owned BVH leaves (from the
-// baked `CellDrawIndex` CSR) and dispatch one invocation per candidate leaf,
-// instead of the legacy whole-BVH tree walk. Writes the SAME global per-leaf
-// indirect/status slots as `ComputeCullPipeline`, so the draw path
-// (`bucket_ranges` / `draw_indirect_buckets`) is byte-for-byte unchanged.
+// GPU candidate cull gathers visible cells into the shared global leaf slots.
+// Both camera passes draw one visible range list independent of cull routing.
 // See: context/lib/rendering_pipeline.md §7.1
-//
-// This module is split per development_guide.md §4.1:
-//   * `gather_candidate_leaves` — pure, GPU-free data-logic (dedupe visible
-//     cell ids, CSR expansion). Unit-tested without a GPU.
-//   * `CandidateCullPipeline` — the wgpu dispatch layer.
 
 use std::collections::HashSet;
 #[cfg(feature = "dev-tools")]

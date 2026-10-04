@@ -747,7 +747,7 @@ fn build_receiver_triangle_bins(
     let mut bins = vec![Vec::new(); nx * ny * nz];
     let vertices = &geometry.geometry.vertices;
 
-    for indices in geometry.geometry.indices.chunks_exact(3) {
+    for indices in geometry.geometry.indices.as_chunks::<3>().0 {
         let triangle = ReceiverTriangle {
             vertices: [
                 Vec3::from(vertices[indices[0] as usize].position),

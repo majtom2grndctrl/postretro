@@ -122,7 +122,12 @@ impl LightmapStreamState {
         }
         for write in &plan.table_writes {
             let mut entry = [0u8; BLOCK_TABLE_ENTRY_BYTES];
-            for (bytes, word) in entry.chunks_exact_mut(4).zip(write.entry.to_words()) {
+            for (bytes, word) in entry
+                .as_chunks_mut::<4>()
+                .0
+                .iter_mut()
+                .zip(write.entry.to_words())
+            {
                 bytes.copy_from_slice(&word.to_ne_bytes());
             }
             let offset = u64::from(write.index) * BLOCK_TABLE_ENTRY_BYTES as u64;

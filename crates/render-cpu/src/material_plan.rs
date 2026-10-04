@@ -326,10 +326,8 @@ pub fn parse_blake3_key(hex: &str) -> [u8; 32] {
         return [0u8; 32];
     }
 
-    for (byte, pair) in key.iter_mut().zip(hex.as_bytes().chunks_exact(2)) {
-        let [high, low] = pair else {
-            return [0u8; 32];
-        };
+    for (byte, pair) in key.iter_mut().zip(hex.as_bytes().as_chunks::<2>().0.iter()) {
+        let [high, low] = pair;
         let (Some(high), Some(low)) = (ascii_hex_nibble(*high), ascii_hex_nibble(*low)) else {
             return [0u8; 32];
         };

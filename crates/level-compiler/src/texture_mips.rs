@@ -224,7 +224,7 @@ pub(super) fn build_diffuse_chain_impl(
 
     // Decode source PNG into linear-f32 buffer (RGB through LUT, A direct).
     let mut linear: Vec<f32> = Vec::with_capacity((width * height) as usize * channels);
-    for chunk in rgba.chunks_exact(4) {
+    for chunk in rgba.as_chunks::<4>().0 {
         linear.push(lut[chunk[0] as usize]);
         linear.push(lut[chunk[1] as usize]);
         linear.push(lut[chunk[2] as usize]);
@@ -255,7 +255,7 @@ pub(super) fn build_diffuse_chain_impl(
 /// Encode a linear-RGBA `f32` buffer to sRGB-tagged Rgba8 bytes, appending to
 /// the supplied payload.
 fn encode_diffuse_into(linear: &[f32], out: &mut Vec<u8>) {
-    for chunk in linear.chunks_exact(4) {
+    for chunk in linear.as_chunks::<4>().0 {
         out.push(linear_to_srgb_u8(chunk[0]));
         out.push(linear_to_srgb_u8(chunk[1]));
         out.push(linear_to_srgb_u8(chunk[2]));
@@ -346,7 +346,7 @@ pub(super) fn build_normal_bc5_chain_impl(rgba: &[u8], width: u32, height: u32) 
 
     // Decode source RGB into the [-1, 1] interval (alpha kept in [0, 1]).
     let mut linear: Vec<f32> = Vec::with_capacity((width * height) as usize * channels);
-    for chunk in rgba.chunks_exact(4) {
+    for chunk in rgba.as_chunks::<4>().0 {
         linear.push((chunk[0] as f32) / 255.0 * 2.0 - 1.0);
         linear.push((chunk[1] as f32) / 255.0 * 2.0 - 1.0);
         linear.push((chunk[2] as f32) / 255.0 * 2.0 - 1.0);
@@ -395,7 +395,7 @@ pub(super) fn build_normal_bc5_chain_impl(rgba: &[u8], width: u32, height: u32) 
 /// but B and A are still written so the buffer is a valid Rgba8 level.
 fn renormalize_to_rgba8(linear: &[f32]) -> Vec<u8> {
     let mut out = Vec::with_capacity(linear.len());
-    for chunk in linear.chunks_exact(4) {
+    for chunk in linear.as_chunks::<4>().0 {
         let mut n = [chunk[0], chunk[1], chunk[2]];
         let len_sq = n[0] * n[0] + n[1] * n[1] + n[2] * n[2];
         let len = len_sq.sqrt();
@@ -696,8 +696,13 @@ pub fn bake_sprite_collection(
                 Ok(spec_frames) if frames_share_dimensions(&spec_frames, width, height) => {
                     let mut payload = Vec::new();
                     for frame in spec_frames {
-                        let r8: Vec<u8> =
-                            frame.rgba.chunks_exact(4).map(|pixel| pixel[0]).collect();
+                        let r8: Vec<u8> = frame
+                            .rgba
+                            .as_chunks::<4>()
+                            .0
+                            .iter()
+                            .map(|pixel| pixel[0])
+                            .collect();
                         payload.extend_from_slice(&build_specular_chain(&r8, width, height));
                     }
                     slots[1] = Some(PrmSlot {
@@ -1091,12 +1096,17 @@ pub fn bake_world_texture_mips(
                 // The stored channel is depth BELOW the surface, so invert
                 // here — that is what makes "no height sibling" and "depth 0"
                 // the same thing at sample time.
-                let depth: Vec<u8> = height_rgba.chunks_exact(4).map(|c| 255 - c[0]).collect();
+                let depth: Vec<u8> = height_rgba
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .map(|c| 255 - c[0])
+                    .collect();
 
                 let specular: Vec<u8> = match spec_bytes.as_deref().zip(spec_path.as_ref()) {
                     Some((sb, sp)) => {
                         let (spec_rgba, _, _) = decode_png_rgba(sb, sp)?;
-                        spec_rgba.chunks_exact(4).map(|c| c[0]).collect()
+                        spec_rgba.as_chunks::<4>().0.iter().map(|c| c[0]).collect()
                     }
                     None => vec![0u8; depth.len()],
                 };
@@ -1122,7 +1132,7 @@ pub fn bake_world_texture_mips(
                     // Decode as RGBA; flatten to R8 (PNG authoring is typically L8 or
                     // RGBA8 with the spec data in R). We accept either.
                     let (rgba, w, h) = decode_png_rgba(b, p)?;
-                    let r8: Vec<u8> = rgba.chunks_exact(4).map(|c| c[0]).collect();
+                    let r8: Vec<u8> = rgba.as_chunks::<4>().0.iter().map(|c| c[0]).collect();
                     let payload = build_specular_chain(&r8, w, h);
                     slots_arr[1] = Some(PrmSlot {
                         format: PrmFormat::R8Unorm,

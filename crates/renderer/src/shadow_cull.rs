@@ -58,6 +58,9 @@ pub struct ShadowCullPipeline {
     total_leaves: u32,
     bucket_ranges: Vec<BucketRange>,
     has_multi_draw_indirect: bool,
+    #[cfg(test)]
+    pub(crate) draw_trace:
+        std::cell::RefCell<Vec<(u32, Vec<crate::compute_cull::IndirectDrawCommand>)>>,
 }
 
 impl ShadowCullPipeline {
@@ -230,6 +233,8 @@ impl ShadowCullPipeline {
             total_leaves,
             bucket_ranges,
             has_multi_draw_indirect,
+            #[cfg(test)]
+            draw_trace: std::cell::RefCell::default(),
         }
     }
 
@@ -314,6 +319,18 @@ impl ShadowCullPipeline {
         // First-frame/reload safety comes from wgpu zero-initializing the buffer
         // — the same property that makes the camera draw path correct.
         let region_byte_offset = slot as u64 * self.region_stride_bytes;
+        #[cfg(test)]
+        {
+            let mut commands = Vec::new();
+            crate::compute_cull::IndirectDrawPlan::new(
+                &self.bucket_ranges,
+                region_byte_offset,
+                self.has_multi_draw_indirect,
+                set_texture_fn.is_some(),
+            )
+            .visit(|command| commands.push(command));
+            self.draw_trace.borrow_mut().push((slot, commands));
+        }
         draw_indirect_buckets(
             render_pass,
             &self.indirect_buffer,

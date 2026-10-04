@@ -97,6 +97,8 @@ mod renderer_splash;
 mod renderer_state;
 mod renderer_types;
 mod renderer_ui_layer;
+#[cfg(test)]
+mod visible_span_frame_tests;
 
 #[cfg(test)]
 mod tests;

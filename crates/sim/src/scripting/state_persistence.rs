@@ -778,7 +778,7 @@ pub(crate) fn decode_player_claim_id(encoded: &str) -> Option<PlayerClaimId> {
     }
 
     let mut player_id = [0; 16];
-    for (index, pair) in encoded.as_bytes().chunks_exact(2).enumerate() {
+    for (index, pair) in encoded.as_bytes().as_chunks::<2>().0.iter().enumerate() {
         let high = hex_nibble(pair[0])?;
         let low = hex_nibble(pair[1])?;
         player_id[index] = (high << 4) | low;

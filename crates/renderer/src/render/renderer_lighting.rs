@@ -175,8 +175,10 @@ fn bridge_descriptors_fit_produced_samples(
     };
 
     forward_descriptors
-        .chunks_exact(sh_volume::ANIMATION_DESCRIPTOR_SIZE)
-        .all(descriptor_fits)
+        .as_chunks::<{ sh_volume::ANIMATION_DESCRIPTOR_SIZE }>()
+        .0
+        .iter()
+        .all(|descriptor| descriptor_fits(descriptor))
         && compose_descriptor_writes
             .iter()
             .all(|(_, descriptor)| descriptor_fits(descriptor))

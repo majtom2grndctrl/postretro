@@ -53,9 +53,11 @@ pub(super) fn encode_blocks_bc5(
                 &mut image[row_index * texture_width as usize * 4..][..texture_width as usize * 4];
             let (left, right) = image_row.split_at_mut(width as usize * 4);
             for ((texel, left), right) in raw_row
-                .chunks_exact(4)
-                .zip(left.chunks_exact_mut(4))
-                .zip(right.chunks_exact_mut(4))
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .zip(left.as_chunks_mut::<4>().0.iter_mut())
+                .zip(right.as_chunks_mut::<4>().0.iter_mut())
             {
                 left[0] = texel[0];
                 left[1] = texel[1];

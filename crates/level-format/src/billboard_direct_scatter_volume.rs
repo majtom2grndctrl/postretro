@@ -177,7 +177,9 @@ impl BillboardDirectScatterVolumeSection {
         }
         for (probe, rgba) in self
             .scatter_rgba
-            .chunks_exact(BILLBOARD_DIRECT_SCATTER_RGBA_F16_COUNT)
+            .as_chunks::<BILLBOARD_DIRECT_SCATTER_RGBA_F16_COUNT>()
+            .0
+            .iter()
             .enumerate()
         {
             if rgba[3] != 0 && rgba[3] != BILLBOARD_DIRECT_SCATTER_VALIDITY_ONE_F16 {

@@ -158,7 +158,7 @@ fn collect_triangles(geo: &GeometryResult) -> Vec<Triangle> {
     let verts = &geo.geometry.vertices;
     let indices = &geo.geometry.indices;
     let mut triangles = Vec::with_capacity(indices.len() / 3);
-    for tri in indices.chunks_exact(3) {
+    for tri in indices.as_chunks::<3>().0 {
         let a = Vec3::from(verts[tri[0] as usize].position);
         let b = Vec3::from(verts[tri[1] as usize].position);
         let c = Vec3::from(verts[tri[2] as usize].position);

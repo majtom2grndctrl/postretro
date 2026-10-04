@@ -135,8 +135,8 @@ pub(super) struct WorldDepthBindings<'a> {
 pub(super) struct ShadowWorldDraws {
     reach: Option<ShadowReachIndex>,
     scratch: ShadowReachScratch,
-    /// `[0..index_count]`, the no-BVH draw.
-    all: [Range<u32>; 1],
+    /// `0..index_count`, the no-BVH draw.
+    all: Range<u32>,
     /// Walks since the frame's counters were taken.
     pub walks: u32,
     #[cfg(test)]
@@ -162,7 +162,7 @@ impl ShadowWorldDraws {
         Self {
             reach,
             scratch,
-            all: [0..index_count],
+            all: 0..index_count,
             walks: 0,
             #[cfg(test)]
             trace: Vec::new(),
@@ -186,7 +186,7 @@ impl ShadowWorldDraws {
         self.walks += 1;
         let ranges: &[Range<u32>] = match &self.reach {
             Some(reach) => reach.reach(&cone_frustum_planes(matrix), &mut self.scratch),
-            None => &self.all,
+            None => std::slice::from_ref(&self.all),
         };
         #[cfg(test)]
         self.trace.push(WorldDrawTrace {

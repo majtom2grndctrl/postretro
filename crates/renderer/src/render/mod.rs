@@ -97,6 +97,8 @@ mod renderer_splash;
 mod renderer_state;
 mod renderer_types;
 mod renderer_ui_layer;
+#[cfg(test)]
+mod shadow_reach_probes;
 mod shadow_world_draws;
 #[cfg(test)]
 mod shadow_world_frame_tests;

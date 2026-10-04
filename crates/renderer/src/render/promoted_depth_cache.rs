@@ -38,12 +38,6 @@ pub(super) struct PromotedSpotCachePlan {
     pub needs_world_render: bool,
 }
 
-impl PromotedSpotCachePlan {
-    pub fn is_warm(self) -> bool {
-        !self.needs_world_render
-    }
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct PromotedCubeCachePlan {
     pub slot: u32,
@@ -52,10 +46,6 @@ pub(super) struct PromotedCubeCachePlan {
 }
 
 impl PromotedCubeCachePlan {
-    pub fn is_warm(self) -> bool {
-        !self.needs_world_render
-    }
-
     pub fn cache_layer(self, face: usize) -> u32 {
         self.cache_layer_base + face as u32
     }
@@ -385,7 +375,7 @@ mod tests {
         spot_layers[first.spot[0].cache_layer as usize].warm = true;
 
         let second = plan_with_layers(&mut spot_layers, &mut cube_layers, &records);
-        assert!(second.spot[0].is_warm());
+        assert!(!second.spot[0].needs_world_render);
         assert!(!spot_draws_world(&second, 7));
         assert_eq!(second.counters.cached_world_render_skips, 1);
 
@@ -401,7 +391,7 @@ mod tests {
         cube_layers[first.cube[0].cache_layer_base as usize / CUBE_FACES].warm = true;
 
         let second = plan_with_layers(&mut spot_layers, &mut cube_layers, &records);
-        assert!(second.cube[0].is_warm());
+        assert!(!second.cube[0].needs_world_render);
         assert!(
             !crate::render::shadow_world_draws::classify_cube(
                 2,
@@ -442,7 +432,7 @@ mod tests {
         // frame: static world reach/render is skipped while the depth pass still
         // runs its per-frame entity branch for the occupied slot.
         let second = plan_with_layers(&mut spot_layers, &mut cube_layers, &records);
-        assert!(second.spot[0].is_warm());
+        assert!(!second.spot[0].needs_world_render);
         assert!(!spot_draws_world(&second, 2));
         assert_eq!(second.counters.cached_world_render_skips, 1);
     }

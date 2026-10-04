@@ -69,5 +69,5 @@ Unit tests are adapter-free unless marked *adapter*. Adapter tests run on this M
 | 3 | Renderer: delete `shadow_cull.rs` and its wiring; `shadow_world_draws.rs` classifier + glue; `slot_promoted`; counters, log, `rec_shadow_reach`; install/release; dead accessors; stale comments | integrating executor | 1 | done |
 | 4 | Indirect-contract and uploads inventory updates; nested-binding fixtures on the camera draw (D4, B5) | integrating executor | 3 | done: `indirect_contract` 11 tests pass |
 | 5 | Renderer adapter-free tests R6, P1–P7, P9, P11 and adapter tests R7–R9, P8, P10–P12 | integrating executor | 3 | done: 10 in `shadow_world_draws_tests.rs`, 4 adapter in `shadow_world_frame_tests.rs` (ran on Metal); P12 = existing occluder tests + diff review (entity gates unchanged) |
-| 6 | On-demand stress probes: contiguity + walk == brute force incl. lift faces (R2, D3) | worker | 1 | |
-| 7 | Preflight, review panel, fix loop; `rendering_pipeline.md` §12 counter wording | integrating executor | 2–6 | |
+| 6 | On-demand stress probes: contiguity + walk == brute force incl. lift faces (R2, D3) | worker | 1 | done: `render/shadow_reach_probes.rs` (2 `#[ignore]` tests, live in the renderer for `cube_face_matrices`); hallway/campaign/mini: 0 mismatches, 0 contiguity violations; lift light 30–41 draws per moving frame vs 50,622 |
+| 7 | Preflight, review panel, fix loop; `rendering_pipeline.md` §12 counter wording | integrating executor | 2–6 | preflight ✓ (fmt, clippy -D warnings, full cargo test, check --release, crate-graph) |

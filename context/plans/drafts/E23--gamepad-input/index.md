@@ -2,7 +2,7 @@
 
 Seed · `/draft-session` complete; next step is `/draft-brief` for E23 U3 · read at 1527f5b26
 
-This is the session handoff for the input-binding half of U3 (`ready/E23--accessibility/index.md` §U3), recorded so a later session can pick it up. The owner folded a game-author binding layer and tap/hold triggers into U3. U3's menu-conventions stage is unchanged and is not covered here. Settings scope (machine vs game) is owned by `drafts/window-modes`.
+This is the session handoff for the input-binding half of U3 (`ready/E23--accessibility/index.md` §U3), recorded so a later session can pick it up. The owner folded a game-author binding layer and tap/hold triggers into U3. U3's menu-conventions stage is unchanged and is not covered here. U3 also owns settings scope (machine vs game), taken over from `drafts/window-modes` (§Settings scope).
 
 ## Problem
 Every game built on PostRetro gets the same hardcoded keys (`input/defaults.rs`: Shift→Sprint, F→Dash). A game author can't pick which commands their game uses or set its default keyboard and gamepad bindings, and nothing skips the commands a game doesn't use. A dash-less game still has F bound to a dead command, and that dead binding can still collide with other keys. Player rebinding is planned in U3 but has no author layer under it, and today one tap or hold of a key can't drive two commands.
@@ -24,7 +24,7 @@ Game authors pick their game's commands and set default bindings (keyboard/mouse
   - AltFire has no consumer (`FireMode` is Semi|Auto).
   - MoveUp is read only by the fly-cam when no pawn exists.
 - Movement descriptors resolve at spawn via `player_spawn` `entity_class`. A mod may define several, and the rebind menu can open from the frontend before any spawn.
-- `ModManifestResult.id` is required (`validate_mod_manifest_id`) and frozen at first commit across hot reload. Persisted mod state is already keyed by it (`state_persistence::state_path`). What happens when two games share an id is a `drafts/window-modes` question.
+- `ModManifestResult.id` is required (`validate_mod_manifest_id`) and frozen at first commit across hot reload. Persisted mod state is already keyed by it (`state_persistence::state_path`). What happens when two games share an id is a §Settings scope question.
 - Settings are one file per OS user: `ProjectDirs("", "", "postretro")` → `settings.toml`, shared by every game built on the engine.
 
 ## Not verified
@@ -46,7 +46,7 @@ Game authors pick their game's commands and set default bindings (keyboard/mouse
    - An irrelevant command is unbound, absent from the rebind menu, and never part of a conflict.
    - Mod-global descriptors are the intended authoring pattern (owner).
 5. **Effective binding.** Player override, else author default, else engine default; resolved per (command, device class). A runtime `set_bindings`-style rebuild runs at mod init, on hot reload, and on rebind, keeping input state and preferences.
-6. **Saved data is a diff, scoped per game:** `[game."<mod_id>".bindings.<device_class>]` rows keyed by command ID. The mod id is quoted because ids may contain `.` (the dev mod's is `postretro.dev`). This is the per-game section layout `drafts/window-modes` adopts for settings scope.
+6. **Saved data is a diff, scoped per game:** `[game."<mod_id>".bindings.<device_class>]` rows keyed by command ID. The mod id is quoted because ids may contain `.` (the dev mod's is `postretro.dev`). U3 builds the `[game."<mod_id>"]` reader, read at mod init once the id is known; later game-scoped settings join the same section.
    - A missing row follows the author's default, so a later change to a default reaches players who never rebound that command.
    - An empty list means explicitly unbound.
    - Rows naming unknown commands are kept on disk and ignored.
@@ -71,7 +71,14 @@ Game authors pick their game's commands and set default bindings (keyboard/mouse
 - A press-then-hold trigger (owner chose the Steam rule only).
 - Per-level relevance. Use, Drop, and weapon slots depend on level content and stay always relevant.
 - Steam Input API integration (`input.md` §9).
-- Settings scope beyond bindings (owned by `drafts/window-modes`).
+
+## Settings scope
+Taken over from `drafts/window-modes`, which kept only window modes; per-game user directories went to `drafts/game-user-dirs`. Candidates, not decided:
+- Top-level keys stay the implicit machine scope; no `[machine]` section, no migration. Saving already preserves unknown tables (`DocumentWriter`).
+- Classification. Machine/person: graphics quality and `render_resolution`, `window_mode`, the `[accessibility]` group with `view_feel_scale`, `mouse_sensitivity`, `invert_y`, `scroll_notch_pixels`, `crouch_mode` and the planned `sprint_mode`, `player_id`, `accessibility_panel_shown`, `switch_cycle_dwell_ms` (a player preference; the window-modes validation agreed). Game: bindings. U2's `theme_variant` is machine-scoped but stores a per-mod variant id.
+- Mod-declared gameplay settings are persisted mod-state slots, not `settings.toml` entries.
+- Two games sharing a mod id share per-game data; changing an id drops it. Once `drafts/game-user-dirs` gives each shipped game its own directory, this matters only in the shared `postretro` directory (dev and SDK runs, a future multi-mod hub).
+- Record the outcome in `player_options.md`.
 
 ## Proof
 Automated:

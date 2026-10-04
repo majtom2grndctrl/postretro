@@ -9,4 +9,4 @@
 | P3 | `--app-name a --app-name b` | stage-1 scan, first occurrence wins (as `--mod`) | Directories resolve under `a` |
 | P4 | Launcher argument shape with no map: `--mod <m> --app-name <name>` | `resolve_map_path` scan steps over the `--app-name` value | No boot map; frontend shown. `--app-name <name> maps/x.prl` loads `maps/x.prl` |
 | P5 | `--app-name` bare, `--app-name=`, or `--app-name` followed by another flag | stage 1 | Boot error naming the flag; no fallback to `postretro` |
-| P6 | SDK bundle assembled by `sdk-dist` through the shared `emit_launcher` | launcher emission | Emitted launcher carries no `--app-name`; a bundle launch writes under `postretro` |
+| P6 | SDK bundle assembled by `sdk-dist` through the shared `emit_launcher` | launcher emission | Bundle marker names the package `<package>-sdk`; emitted launcher carries `--app-name <package>-sdk`; a bundle launch never writes under the game's directory |

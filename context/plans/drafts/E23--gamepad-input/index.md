@@ -77,7 +77,7 @@ Taken over from `drafts/window-modes`, which kept only window modes; per-game us
 - Top-level keys stay the implicit machine scope; no `[machine]` section, no migration. Saving already preserves unknown tables (`DocumentWriter`).
 - Classification. Machine/person: graphics quality and `render_resolution`, `window_mode`, the `[accessibility]` group with `view_feel_scale`, `mouse_sensitivity`, `invert_y`, `scroll_notch_pixels`, `crouch_mode` and the planned `sprint_mode`, `player_id`, `accessibility_panel_shown`, `switch_cycle_dwell_ms` (a player preference; the window-modes validation agreed). Game: bindings. U2's `theme_variant` is machine-scoped but stores a per-mod variant id.
 - Mod-declared gameplay settings are persisted mod-state slots, not `settings.toml` entries.
-- Two games sharing a mod id share per-game data; changing an id drops it. Once `drafts/game-user-dirs` gives each shipped game its own directory, this matters only in the shared `postretro` directory (dev and SDK runs, a future multi-mod hub).
+- Two games sharing a mod id share per-game data; changing an id drops it. Once `drafts/game-user-dirs` gives each shipped game its own directory, this matters only where projects share a directory: the `postretro` directory of bare engine and `xtask` runs, and a future multi-mod hub. Authoring and SDK runs get their project's own directory.
 - Record the outcome in `player_options.md`.
 
 ## Proof

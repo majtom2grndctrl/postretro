@@ -7,24 +7,28 @@ use std::time::Instant;
 
 pub(super) fn project(controller: &Controller, table: &mut SlotTable, now: Instant) {
     let mode = controller.picked.as_ref();
-    for (suffix, value) in [
-        ("Width", mode.map_or(0.0, |mode| mode.width as f32)),
-        ("Height", mode.map_or(0.0, |mode| mode.height as f32)),
+    for (name, value) in [
         (
-            "RefreshHz",
+            "window.displayModeWidth",
+            mode.map_or(0.0, |mode| mode.width as f32),
+        ),
+        (
+            "window.displayModeHeight",
+            mode.map_or(0.0, |mode| mode.height as f32),
+        ),
+        (
+            "window.displayModeRefreshHz",
             mode.map_or(0.0, |mode| mode.refresh_millihertz as f32 / 1000.0),
         ),
-        ("BitDepth", mode.map_or(0.0, |mode| mode.bit_depth as f32)),
-        ("RevertSeconds", controller.seconds_remaining(now)),
+        (
+            "window.displayModeBitDepth",
+            mode.map_or(0.0, |mode| mode.bit_depth as f32),
+        ),
+        (
+            "window.displayModeRevertSeconds",
+            controller.seconds_remaining(now),
+        ),
     ] {
-        let name = match suffix {
-            "Width" => "window.displayModeWidth",
-            "Height" => "window.displayModeHeight",
-            "RefreshHz" => "window.displayModeRefreshHz",
-            "BitDepth" => "window.displayModeBitDepth",
-            "RevertSeconds" => "window.displayModeRevertSeconds",
-            _ => unreachable!(),
-        };
         let slot = table.get_mut(name).expect("catalog declares display slots");
         let changed = !matches!(slot.value.as_ref(), Some(SlotValue::Number(current)) if (*current - value).abs() < f32::EPSILON);
         if changed {

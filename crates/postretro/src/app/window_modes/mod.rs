@@ -219,3 +219,24 @@ impl crate::App {
         self.finish_window_change(change);
     }
 }
+
+impl crate::App {
+    pub(crate) fn poll_window_mode_readback(&mut self) {
+        let Some(ws) = self.window_state.as_ref() else {
+            return;
+        };
+        let mut backend = WinitBackend {
+            window: &ws.window,
+            wayland: self.window_modes.wayland,
+            cache: &mut self.window_modes.cache,
+        };
+        let change = self.window_modes.controller.observe(
+            &mut backend,
+            self.session
+                .as_mut()
+                .map(|session| &mut session.player_options),
+            Instant::now(),
+        );
+        self.finish_window_change(change);
+    }
+}

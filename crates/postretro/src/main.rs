@@ -2104,6 +2104,7 @@ impl ApplicationHandler for App {
                 // OS preference replies land ahead of the Input stage, so a
                 // player write later this frame wins over them (UO1).
                 self.poll_os_preferences();
+                self.poll_window_mode_readback();
                 let cpu_stages = self.cpu_timer.stages();
                 let stage_scope = cpu_stages.scope(cpu_timing::FrameStage::Housekeeping);
 

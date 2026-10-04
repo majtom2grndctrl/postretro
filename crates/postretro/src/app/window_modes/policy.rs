@@ -39,6 +39,7 @@ pub(super) struct Controller {
     pub(super) choices: Vec<DisplayMode>,
     pub(super) picked: Option<DisplayMode>,
     pub(super) effective: Target,
+    baseline: Target,
     pub(super) fallback: bool,
     pub(super) escape: bool,
     pub(super) settle_until: Option<Instant>,
@@ -51,6 +52,7 @@ impl Controller {
             choices: Vec::new(),
             picked: None,
             effective: Target::default(),
+            baseline: Target::default(),
             fallback: false,
             escape,
             settle_until: None,
@@ -89,6 +91,10 @@ impl Controller {
         options: &PlayerOptions,
         now: Instant,
     ) {
+        self.baseline = Target::default();
+        self.effective = Target::default();
+        self.settle_until = None;
+        self.fallback = false;
         self.refresh(backend, options);
         let target = if self.escape {
             Target::default()
@@ -239,5 +245,41 @@ impl Controller {
                 .as_secs_f32()
                 .ceil()
         })
+    }
+}
+
+impl Controller {
+    /// Read once on every redraw, even before session installation and during
+    /// Loading. Settling adopts an unwritten actual baseline, never a preference.
+    pub(super) fn observe(
+        &mut self,
+        backend: &mut impl Backend,
+        options: Option<&mut PlayerOptions>,
+        now: Instant,
+    ) -> Change {
+        let actual = backend.readback();
+        if let Some(until) = self.settle_until {
+            if now >= until {
+                self.baseline.clone_from(actual);
+                self.effective.clone_from(actual);
+                self.settle_until = None;
+            }
+            return Change::None;
+        }
+        if self.pending.is_some() || self.fallback || *actual == self.baseline {
+            return Change::None;
+        }
+        self.baseline.clone_from(actual);
+        self.effective.clone_from(actual);
+        let Some(options) = options else {
+            return Change::None;
+        };
+        options.window_mode = actual.mode;
+        options.mark_written(crate::options::keys::WINDOW_MODE);
+        if let Some(mode) = &actual.display {
+            options.set_display_mode(mode.clone());
+            self.picked = Some(mode.clone());
+        }
+        Change::Accepted
     }
 }

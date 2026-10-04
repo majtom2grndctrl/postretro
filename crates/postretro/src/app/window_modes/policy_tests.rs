@@ -310,3 +310,6 @@ fn display_step_changes_store_without_window_request_until_exclusive() {
     assert_eq!(backend.requests.len(), requests);
     assert_eq!(options, prior);
 }
+
+#[path = "readback_tests.rs"]
+mod readback;

@@ -114,6 +114,13 @@ Two bakes in this session produced identical images. Its `alarm_light` has a `pr
 - So the scene does see the promoted world depth, but only in that small region. Byte identity there is the evidence that reach draws what the GPU cull drew.
 - The committed `capture/w*.png` are the after build's images.
 
+## Large arena (follow-up)
+
+After landing, the owner asked whether animated SH compose slows the hallway's large arena. One valid after-build timing run and one trace were taken at the arena's west end (`--start-pose=21.13,2.44,30.48,0,0`; `runs/arena-*`).
+- The frame is GPU-bound: 28.7 ms in total, 20.8 ms GPU wait, 7.8 ms CPU work.
+- Streamed Animated Direct SH (7.63 ms) and Streamed SH Compose (6.73 ms) are its top GPU passes, 14.4 of 28.5 ms. Shadows cost 0.43 ms.
+- This evidence lives in `drafts/animated-light-update-rate/research.md` §Mac compose cost.
+
 ## Discarded runs
 
 `runs/suspect/` holds two discarded sets:

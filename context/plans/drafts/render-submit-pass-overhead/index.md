@@ -11,6 +11,7 @@ Developer profiling on the compatibility-floor Mac. `render_submit` is the large
 - **Coverage is guarded from source.** A pass the count misses makes every µs-per-pass figure wrong, so a source-derived guard lists every pass site in renderer non-test source and fails on an uncounted one (`context/lib/testing_guide.md` §3 Drift guards derive from the source).
 - **Per-pass cost is measured by subtraction with the existing bloom switch.** `POSTRETRO_BLOOM=0` removes the bloom chain, the largest pass group, with no draw content to confound the delta. No new switch and no code change per candidate lever: a throwaway toggle per hypothesis is scope, and §6.4 wants diagnostics uniform.
 - **Non-goal: restructuring passes or patching wgpu here.** Which lever (bloom chain consolidation, skipping clear-only promoted shadow passes, a lazy Metal command buffer in wgpu-hal, merging same-attachment passes) is the findings note's output. The wgpu-hal change is a dependency fork and an owner door.
+- **No patched wgpu-hal build in this spike.** The recorded profile already sizes the empty transition command buffers at about 0.4–0.5 ms. Whether to carry a dependency patch is decided after the findings note, not measured here.
 - **Non-goal: glyphon staging churn.** `plans/done/per-frame-upload-batching` Decisions "Direct writes left" chose to leave glyphon's writes direct. The finding is recorded in `research.md` and sized in the findings note; fixing it is a sibling brief.
 - **Measurement conditions pin to `plans/done/release-indirect-validation`** (same binary, eight 120-frame windows, median of the final five, foreground checks, idle `ioreg` snapshots, §12 confounders) plus the thermal record from `plans/done/per-frame-upload-batching`, on both maps, vsync on and off. Mac/Metal only; Windows is a handoff.
 
@@ -39,7 +40,6 @@ Non-binding.
 - `renderer_render_frame.rs` is past the file-size guidance; the spike adds only count calls, so no split unless the chokepoint shape is chosen.
 
 ## Open questions
-- Should the spike include a locally patched wgpu-hal build (lazy `MTLCommandBuffer`) to measure the transition-buffer half directly? — owner: Dan — **blocks build**. Recommendation: exclude; the profile already sizes it at ≈ 0.4–0.5 ms, and carrying a dependency patch is a decision for after the findings.
 - Should a sibling seed be filed for glyphon staging churn (≈ 0.8 ms of `render_submit` plus ≈ 0.3 ms of `rec_ui` on both maps)? — owner: Dan. Recommendation: yes; it is the largest single bucket on campaign and independent of pass count.
 - Method for counting draw-less entity shadow passes (existing occluder tallies versus a trace query) — **delegated**.
 - Whether Vulkan or DX12 on the Windows machine shows the same per-pass share — **delegated**: reported as a handoff in the findings note, not measured here.

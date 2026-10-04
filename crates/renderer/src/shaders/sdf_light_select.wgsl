@@ -121,14 +121,19 @@ fn sdf_select_chunk_window(world: vec3<f32>) -> SdfChunkWindow {
 // if it outranks the current Kth. This is the deterministic comparator the
 // host-side Rust reference comparator mirrors exactly.
 fn select_sdf_lights(world: vec3<f32>) -> SdfLightSelection {
-    var sel: SdfLightSelection;
-    sel.indices = array<u32, 4>(
+    // The kept slots live in plain local arrays and are copied into the returned
+    // struct once, at the end. FXC (the DX12 fallback compiler) cannot write a
+    // dynamically indexed array that sits inside a struct: writing
+    // `sel.indices[s]` directly in the shift loop would force it to unroll the
+    // enclosing loops, which fails (X3511) because they have no static trip
+    // count. See: context/lib/rendering_pipeline.md §8
+    var indices = array<u32, 4>(
         SDF_SELECT_NONE,
         SDF_SELECT_NONE,
         SDF_SELECT_NONE,
         SDF_SELECT_NONE,
     );
-    sel.count = 0u;
+    var count: u32 = 0u;
 
     // Parallel influence array for the kept slots (indices[i] ↔ infl[i]).
     var infl = array<f32, 4>(0.0, 0.0, 0.0, 0.0);
@@ -153,13 +158,13 @@ fn select_sdf_lights(world: vec3<f32>) -> SdfLightSelection {
         // influence and a smaller light index.
         var insert_at: u32 = SDF_SELECT_K;
         for (var s: u32 = 0u; s < SDF_SELECT_K; s = s + 1u) {
-            let occupied = s < sel.count;
+            let occupied = s < count;
             if (!occupied) {
                 insert_at = s;
                 break;
             }
             let outranks = influence > infl[s]
-                || (influence == infl[s] && light_idx < sel.indices[s]);
+                || (influence == infl[s] && light_idx < indices[s]);
             if (outranks) {
                 insert_at = s;
                 break;
@@ -171,20 +176,23 @@ fn select_sdf_lights(world: vec3<f32>) -> SdfLightSelection {
 
         // Shift lower-ranked kept slots down by one (drop the last if full),
         // then place the candidate at insert_at.
-        let new_count = min(sel.count + 1u, SDF_SELECT_K);
+        let new_count = min(count + 1u, SDF_SELECT_K);
         var s: u32 = SDF_SELECT_K - 1u;
         loop {
             if (s <= insert_at) {
                 break;
             }
-            sel.indices[s] = sel.indices[s - 1u];
+            indices[s] = indices[s - 1u];
             infl[s] = infl[s - 1u];
             s = s - 1u;
         }
-        sel.indices[insert_at] = light_idx;
+        indices[insert_at] = light_idx;
         infl[insert_at] = influence;
-        sel.count = new_count;
+        count = new_count;
     }
 
+    var sel: SdfLightSelection;
+    sel.indices = indices;
+    sel.count = count;
     return sel;
 }

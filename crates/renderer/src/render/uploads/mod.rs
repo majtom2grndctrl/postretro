@@ -49,6 +49,21 @@ pub(crate) struct WriterCount {
     pub writes: u64,
 }
 
+#[cfg(test)]
+impl WriterCount {
+    /// Whether this writer sits at `line` of a file ending in `suffix`.
+    pub(crate) fn is_at(&self, suffix: &str, line: u32) -> bool {
+        self.site.line() == line && site_file_ends_with(self.site.file(), suffix)
+    }
+}
+
+/// Suffix match for a `Location::file` path against a `/`-separated suffix.
+/// `Location::file` uses the host separator, so Windows paths carry `\`.
+#[cfg(test)]
+pub(crate) fn site_file_ends_with(file: &str, suffix: &str) -> bool {
+    file.replace('\\', "/").ends_with(suffix)
+}
+
 pub(crate) struct UploadQueue {
     device: wgpu::Device,
     raw: wgpu::Queue,

@@ -45,7 +45,7 @@ fn assert_staged_writer_site(
     let writes: u64 = queue
         .writer_counts()
         .iter()
-        .filter(|writer| writer.site.file().ends_with(file) && writer.site.line() == line)
+        .filter(|writer| writer.is_at(file, line))
         .map(|writer| writer.writes)
         .sum();
     assert_eq!(writes, expected, "actual staged writer {file}:{line}");

@@ -1,7 +1,9 @@
 // Promoted static-depth cache shadow samplers for entity receivers.
 // The cache holds static world depth; the live pool holds entity depth.
 // Combine both comparisons per PCF tap so either occluder shadows the receiver.
-// See: context/lib/rendering_pipeline.md §4
+// Taps use the explicit-level compare (both arrays are single-mip): an
+// implicit-derivative sample inside a light loop fails to compile under FXC.
+// See: context/lib/rendering_pipeline.md §4, §8
 
 fn sample_spot_shadow_with_static(
     slot_index: u32,
@@ -41,7 +43,7 @@ fn sample_spot_shadow_with_static(
     for (var dy = -1; dy <= 1; dy = dy + 1) {
         for (var dx = -1; dx <= 1; dx = dx + 1) {
             let offset = vec2<f32>(f32(dx), f32(dy)) * step;
-            let pool = textureSampleCompare(
+            let pool = textureSampleCompareLevel(
                 spot_shadow_depth,
                 spot_shadow_compare,
                 uv + offset,
@@ -50,7 +52,7 @@ fn sample_spot_shadow_with_static(
             );
             var static_world = 1.0;
             if cache_layer >= 0 {
-                static_world = textureSampleCompare(
+                static_world = textureSampleCompareLevel(
                     promoted_spot_depth_cache,
                     spot_shadow_compare,
                     uv + offset,

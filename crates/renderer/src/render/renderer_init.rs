@@ -170,7 +170,6 @@ impl Renderer {
     /// path deliberately creates neither a window nor a `wgpu::Surface`; the
     /// scene target is the capture output and no present path is available.
     pub fn new_offscreen(capture_width: u32, capture_height: u32) -> Result<Self> {
-        validate_offscreen_capture_dimensions(capture_width, capture_height)?;
         let backends = renderer_backends_from_env()?;
         log::info!("[Renderer] wgpu backend selection: {backends:?}");
 
@@ -179,6 +178,17 @@ impl Renderer {
             flags: renderer_instance_flags_from_env(),
             ..wgpu::InstanceDescriptor::new_without_display_handle()
         });
+        Self::new_offscreen_on(&instance, capture_width, capture_height)
+    }
+
+    /// `new_offscreen` against a caller-built instance. Tests use it to pin a
+    /// backend and its options without touching process environment.
+    pub(in crate::render) fn new_offscreen_on(
+        instance: &wgpu::Instance,
+        capture_width: u32,
+        capture_height: u32,
+    ) -> Result<Self> {
+        validate_offscreen_capture_dimensions(capture_width, capture_height)?;
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::default(),
             compatible_surface: None,

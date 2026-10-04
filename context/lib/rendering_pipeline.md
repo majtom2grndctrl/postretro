@@ -708,6 +708,8 @@ Shared WGSL helpers are appended to consumer shader source via string concatenat
 
 There is no shader-variant system: the only permutation mechanism is `strip_point_shadow_cube`'s marker-comment string surgery. Anything that must differ per material is therefore a **data-driven branch in one shader**, not a compile-time variant — Surface Depth (§7.3) branches on a per-material uniform flag for exactly this reason.
 
+**DX12 portability (FXC).** Without `dxcompiler.dll`, wgpu's DX12 backend compiles shaders with FXC. FXC refuses a loop it must unroll but cannot (X3511), and naga's loop-bound guard makes every WGSL loop non-unrollable. Two shapes force that unroll, so shaders avoid both: an implicit-derivative sample (`textureSample`, `textureSampleCompare`) inside a varying-length loop or a helper such a loop calls — use the `Level`/`Grad` forms; and a dynamically indexed write into an array nested in a struct — keep the array a plain local and copy it into the struct once. Vulkan and Metal accept both, so only a DX12 pipeline build catches them: `dx12_fxc_test` (Windows, `#[ignore]`-gated) builds every full-init pipeline under FXC. Pipelines built at level install from level geometry (the cull passes, direct-SH promotion compose) need a DX12 engine launch with a level.
+
 `surface_depth.wgsl` is a load-bearing parity seam: the same source string is concatenated into both the forward pipeline (`pipeline_layout.rs`) and the kinematic brush mover pipeline (`kinematic_brush.rs`). Those two shaders already keep duplicate `sample_post_retro` bodies that can drift; the parallax march must never become a second such copy, and a test pins that neither consumer redeclares it.
 
 ---

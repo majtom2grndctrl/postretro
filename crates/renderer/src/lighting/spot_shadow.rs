@@ -266,7 +266,7 @@ impl SpotShadowPool {
             ..Default::default()
         });
 
-        // `CompareFunction::Less`: textureSampleCompare returns 1.0 (lit)
+        // `CompareFunction::Less`: textureSampleCompareLevel returns 1.0 (lit)
         // when the fragment's depth is less than the stored (light-nearest)
         // depth — i.e. the fragment is closer than the shadow caster, so
         // it's not occluded.

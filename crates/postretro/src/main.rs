@@ -1803,6 +1803,10 @@ impl ApplicationHandler for App {
             }
         };
         self.boot_timings.record("wgpu_init");
+        // A saved exclusive mode may wait for the surface (window_modes).
+        if let Some(options) = options {
+            self.window_modes.finish_boot(&window, options);
+        }
         renderer.set_cpu_timing(self.cpu_timer.gate());
 
         // Splash decode + upload is deferred to the first Splash frame's

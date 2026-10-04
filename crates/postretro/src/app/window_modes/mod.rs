@@ -12,15 +12,26 @@ mod projection;
 
 use crate::options::PlayerOptions;
 use backend::{ReadbackCache, WinitBackend};
-use policy::Controller;
+use policy::{Backend, Controller};
 use postretro_ui::actions::DisplayModeAction;
 use std::time::Instant;
 use winit::{event_loop::ActiveEventLoop, window::Window};
+
+/// Whether boot holds a saved exclusive mode until the renderer has a surface.
+/// Observed on DX12 (root cause unconfirmed): wgpu's default HWND swapchain
+/// creation fails with `DXGI_ERROR_INVALID_CALL` once the window holds an
+/// exclusive display mode, while a swapchain created first resizes through
+/// the change as on a live switch. wgpu's DirectComposition swapchain avoids
+/// the failure but changes every frame's present path. Gated on Windows, not
+/// DX12: the backend is unknown until the renderer picks an adapter, and
+/// wgpu falls back to DX12 wherever Vulkan is missing.
+const DEFER_BOOT_EXCLUSIVE: bool = cfg!(windows);
 
 pub(crate) struct WindowModes {
     controller: Controller,
     cache: ReadbackCache,
     wayland: bool,
+    boot_exclusive_deferred: bool,
     confirm_instance: Option<postretro_ui::modal_stack::ModalInstance>,
 }
 
@@ -30,10 +41,14 @@ impl WindowModes {
             controller: Controller::new(force_windowed),
             cache: ReadbackCache::default(),
             wayland: false,
+            boot_exclusive_deferred: false,
             confirm_instance: None,
         }
     }
 
+    /// Apply the saved mode to the new window, before the renderer exists.
+    /// Where exclusive is deferred, the window shows borderless on its monitor
+    /// until [`Self::finish_boot`] applies the saved mode.
     pub(crate) fn apply_boot(
         &mut self,
         window: &Window,
@@ -41,6 +56,28 @@ impl WindowModes {
         options: &PlayerOptions,
     ) {
         self.wayland = backend::is_wayland(event_loop);
+        if let Some(interim) = self.controller.boot_interim(options, DEFER_BOOT_EXCLUSIVE) {
+            self.boot_exclusive_deferred = true;
+            let mut backend = WinitBackend {
+                window,
+                wayland: self.wayland,
+                cache: &mut self.cache,
+            };
+            backend.apply(&interim);
+            return;
+        }
+        self.boot(window, options);
+    }
+
+    /// Apply an exclusive mode `apply_boot` deferred, once the renderer has
+    /// created its surface. A no-op for every other boot.
+    pub(crate) fn finish_boot(&mut self, window: &Window, options: &PlayerOptions) {
+        if std::mem::take(&mut self.boot_exclusive_deferred) {
+            self.boot(window, options);
+        }
+    }
+
+    fn boot(&mut self, window: &Window, options: &PlayerOptions) {
         let mut backend = WinitBackend {
             window,
             wayland: self.wayland,
@@ -59,8 +96,11 @@ mod boot_tests {
         let body = &main[start..main[start..].find("fn suspended(").unwrap() + start];
         let create = body.find("create_window(window_attributes())").unwrap();
         let apply = body.find("self.window_modes.apply_boot(").unwrap();
+        let renderer = body.find("Renderer::new(&window)").unwrap();
+        let finish = body.find("self.window_modes.finish_boot(").unwrap();
         let redraw = body.find("ws.window.request_redraw();").unwrap();
-        assert!(create < apply && apply < redraw);
+        // A deferred exclusive mode lands only once the renderer owns a surface.
+        assert!(create < apply && apply < renderer && renderer < finish && finish < redraw);
         assert!(!main.contains(".with_fullscreen("));
         let startup = include_str!("../../startup/session.rs");
         assert!(

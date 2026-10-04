@@ -18,22 +18,28 @@ read at: 423aae2a5
 
 ## AC-to-proof
 
-| AC | Proof | Status |
-|---|---|---|
-| 1 `--app-name` resolves to `ProjectDirs::from`'s dirs; absent → `postretro` | `app_dirs` resolver tests | achievable as stated |
-| 2 invalid forms are boot errors naming the flag; `.`/`-`/`_` inside accepted | `app_dirs` / `session` arg tests over the shared table | achievable as stated |
-| 3 Unix + Windows launchers pass `--app-name`, quoted like `--mod` (`'`, `%` survive) | `dist::launcher` tests (both renderers) | achievable as stated |
-| 4 `dist` refuses leading `-` package; an accepted name assembles | `manifest` tests (dist reads the manifest first) | achievable as stated |
-| 5 grep gate: no `ProjectDirs::from` outside the chokepoint | source-scan test | achievable as stated |
-| 6 grep gate: default literal only in chokepoint; settings/state consumers take stage-1 dirs | source-scan test + signatures (no zero-arg resolver remains) | achievable as stated |
-| 7 one case table, same verdict from engine and tool checks | table-driven tests in both crates | achievable as stated |
-| 8 bare / `=` / followed-by-flag → boot error naming the flag (P5) | `session` arg tests | achievable as stated |
-| 9 given twice → first occurrence (P3) | `session` arg test | achievable as stated |
-| 10 `--mod m --app-name n` → no map; `--app-name n maps/x.prl` → map (P4) | `resolve_map_path` tests | achievable as stated |
-| 11 `postretro-tool run` passes `--app-name` unless caller named it; `xtask run` passes none | `run::engine_arguments` tests; xtask `split_run_args` tests | achievable as stated |
-| 12 SDK marker names `<package>-sdk`; bundle launcher passes it (P6) | `sdk_dist::readme` marker test + launcher test on the bundle name | achievable as stated |
-| 13 first launch under new name writes defaults + fresh `player_id` there, `postretro/` byte-identical (P1) | session first-launch test over temp dirs | achievable as stated |
-| M1 payload launcher, `postretro-tool run`, SDK launcher, `xtask run` write under the right directory | owner, on-machine | manual |
+| AC | Proof | Status | Result |
+|---|---|---|---|
+| 1 `--app-name` resolves to `ProjectDirs::from`'s dirs; absent → `postretro` | `app_name_resolves_both_directories_through_project_dirs`, `absent_app_name_resolves_both_directories_under_postretro`, `app_name_flag_resolves_the_named_directories_in_both_forms` | automated | pass |
+| 2 invalid forms are boot errors naming the flag; `.`/`-`/`_` inside accepted | `an_invalid_app_name_is_refused_naming_the_flag`, `app_name_check_matches_the_shared_case_table` | automated | pass |
+| 3 Unix + Windows launchers pass `--app-name`, quoted like `--mod` (`'`, `%` survive) | `launcher_pins_its_own_directory_and_mounts_the_published_mod_under_the_package`, `apostrophes_survive_the_posix_shell_in_both_values`, `percent_signs_survive_batch_expansion_in_both_values` (both shells render on every host) | automated | pass |
+| 4 `dist` refuses leading `-` package; an accepted name assembles | `dist_refuses_a_flag_shaped_package_name_when_opening_the_project`, `manifest_refuses_a_flag_shaped_package_name_and_accepts_punctuation_inside` | automated | pass |
+| 5 grep gate: no `ProjectDirs::from` outside the chokepoint | `no_crate_resolves_project_dirs_outside_the_chokepoint` | automated | pass |
+| 6 grep gate: default literal only in chokepoint; settings/state consumers take stage-1 dirs | `the_default_app_name_literal_appears_only_in_the_chokepoint`; zero-arg `settings_path()` / `state_path(mod_id)` removed (compile-enforced) | automated | pass |
+| 7 one case table, same verdict from engine and tool checks | `app_name_check_matches_the_shared_case_table` (engine), `package_name_check_matches_the_engines_app_name_verdicts` (tool) over `app_name_cases.toml` | automated | pass |
+| 8 bare / `=` / followed-by-flag → boot error naming the flag (P5) | `an_app_name_flag_without_a_name_is_refused` | automated | pass |
+| 9 given twice → first occurrence (P3) | `app_name_given_twice_resolves_under_the_first` | automated | pass |
+| 10 `--mod m --app-name n` → no map; `--app-name n maps/x.prl` → map (P4) | `app_name_value_is_not_mistaken_for_the_map_path`, `resolve_map_path_skips_every_directory_naming_flag` | automated | pass |
+| 11 `postretro-tool run` passes `--app-name` unless caller named it; `xtask run` passes none | `launch_supplies_the_mod_the_app_name_the_baked_root_and_the_core_root`, `an_explicit_flag_wins_rather_than_being_shadowed`; xtask `split_run_args_*` (engine args forwarded verbatim) | automated | pass |
+| 12 SDK marker names `<package>-sdk`; bundle launcher passes it (P6) | `bundle_launcher_and_marker_both_name_the_sdk_package`, `bundle_manifest_publishes_the_projects_own_mod` | automated | pass |
+| 13 first launch under new name writes defaults + fresh `player_id` there, `postretro/` byte-identical (P1) | `first_launch_under_a_new_app_name_leaves_the_postretro_directory_untouched`, `a_game_app_name_shares_no_directory_with_postretro` | automated | pass |
+| M1 payload launcher, `postretro-tool run`, SDK launcher, `xtask run` write under the right directory | owner, on-machine (the `[Engine] Player data:` log line names the directories) | manual | outstanding |
+
+Gate: `cargo test -p postretro -p postretro-sim -p postretro-tool -p xtask` — 1153 + 1244 + 157 + 19 + 7 + 3 passed, 0 failed. `cargo clippy -p postretro -p postretro-sim --all-targets` clean in touched code (4 pre-existing `chunks_exact_to_as_chunks` warnings in `light_bridge.rs` / `particle_render.rs`, untouched). `/preflight` is owner-invoked only — not yet run.
+
+## Review loop
+- Panel 1 (tracer, contract verifier, adversarial — opus; hygiene/drift — sonnet): 1 🟡 found by 3 lenses (padded `.`/`..` names), 3 🟡 docs, ~6 🟢. All mechanical findings fixed in `3d40871fd`.
+- Not fixed — owner call, would extend the Decision's invalid-value list: names that case-fold to `postretro` (e.g. `PostRetro`) share the bare-launch directory; Windows-reserved names and characters (`CON`, `<>|?*`, trailing `.`) are accepted. Both are now documented in `docs/distribution.md`.
 
 ## Tasks
 

@@ -60,50 +60,50 @@ displayModeAction("revert"); // "ui.displayMode.revert"
 ## Acceptance
 ### Automated
 **Store**
-- [ ] `window_mode` and the display mode round-trip through save and load; an absent, unknown or malformed value loads windowed for that field alone and every other setting loads intact.
-- [ ] The slot vocabulary matches the store's modes, and the chokepoint maps each mode exhaustively.
-- [ ] No fullscreen, monitor or video-mode call exists outside the window-mode chokepoint (grep gate).
+- [x] `window_mode` and the display mode round-trip through save and load; an absent, unknown or malformed value loads windowed for that field alone and every other setting loads intact.
+- [x] The slot vocabulary matches the store's modes, and the chokepoint maps each mode exhaustively.
+- [x] No fullscreen, monitor or video-mode call exists outside the window-mode chokepoint (grep gate).
 **Re-find**
-- [ ] A stored mode present in the current monitor's enumeration is chosen; an absent one, or the same size and refresh stored for another monitor, yields borderless and leaves the stored mode unchanged.
-- [ ] Duplicate enumeration entries and a 0 Hz report each resolve to one choice.
-- [ ] An empty enumeration yields borderless, zeroed and empty picked-mode fields, and step actions that write nothing.
-- [ ] On Wayland the enumeration reads empty and exclusive takes the fallback.
+- [x] A stored mode present in the current monitor's enumeration is chosen; an absent one, or the same size and refresh stored for another monitor, yields borderless and leaves the stored mode unchanged.
+- [x] Duplicate enumeration entries and a 0 Hz report each resolve to one choice.
+- [x] An empty enumeration yields borderless, zeroed and empty picked-mode fields, and step actions that write nothing.
+- [x] On Wayland the enumeration reads empty and exclusive takes the fallback.
 **Revert**
-- [ ] Keep before expiry persists the new mode; expiry or revert restores the prior mode and writes nothing (P4).
-- [ ] An OS readback during a pending confirm does not persist (P3).
-- [ ] A change to windowed or borderless persists with no confirm.
-- [ ] While a confirm is pending, no save writes the unconfirmed mode, whether it came from the window-mode row or display-mode Apply: not the menu-close flush its opening triggers, not a settled save, not the exit flush; a relaunch after quitting mid-confirm boots the prior mode (P5, P6, P7).
-- [ ] A confirm removed by a level load, restart or return to the frontend never confirms; the prior mode returns within 15 s of the change, Loading frames counted, and nothing persists (P8).
-- [ ] Keep or revert with no confirm pending writes nothing and changes no mode (P9).
-- [ ] While a confirm is pending, a display-mode step or a script write of the window mode is refused and writes nothing; revert restores the mode from before the confirm.
-- [ ] Stepping while windowed or exclusive changes only the session-local picked display mode: no window request and no save. Apply while windowed accepts it without a window request; Apply while exclusive opens the confirm, and the stored display mode changes only on keep. Borderless refuses both stepping and Apply.
-- [ ] The confirm opens with focus on revert.
-- [ ] A mod or level tree registered under the confirm's name is rejected with a load-time diagnostic, and the engine confirm still shows.
+- [x] Keep before expiry persists the new mode; expiry or revert restores the prior mode and writes nothing (P4).
+- [x] An OS readback during a pending confirm does not persist (P3).
+- [x] A change to windowed or borderless persists with no confirm.
+- [x] While a confirm is pending, no save writes the unconfirmed mode, whether it came from the window-mode row or display-mode Apply: not the menu-close flush its opening triggers, not a settled save, not the exit flush; a relaunch after quitting mid-confirm boots the prior mode (P5, P6, P7).
+- [x] A confirm removed by a level load, restart or return to the frontend never confirms; the prior mode returns within 15 s of the change, Loading frames counted, and nothing persists (P8).
+- [x] Keep or revert with no confirm pending writes nothing and changes no mode (P9).
+- [x] While a confirm is pending, a display-mode step or a script write of the window mode is refused and writes nothing; revert restores the mode from before the confirm.
+- [x] Stepping while windowed or exclusive changes only the session-local picked display mode: no window request and no save. Apply while windowed accepts it without a window request; Apply while exclusive opens the confirm, and the stored display mode changes only on keep. Borderless refuses both stepping and Apply.
+- [x] The confirm opens with focus on revert.
+- [x] A mod or level tree registered under the confirm's name is rejected with a load-time diagnostic, and the engine confirm still shows.
 **Boot and readback**
-- [ ] Settings load once per launch, before the window; no settings write precedes the first presented frame (P1, P2).
-- [ ] A saved borderless or exclusive mode is requested once through the chokepoint at boot, after the window is visible and before the first redraw request; the window is never created with a fullscreen attribute (grep gate) (P1).
-- [ ] Outside a settle window, a readback differing from the baseline persists it and reseeds the working copy; an equal readback writes nothing.
-- [ ] The readback reseed is not observed as a menu write and raises no live apply or second mode request.
-- [ ] While the fallback is active, readback writes nothing and the stored exclusive mode survives across frames and a relaunch.
-- [ ] Readings taken mid-transition write nothing; the menu's requested mode persists, not the transition's stale reading.
-- [ ] A request whose entry fails inside its settle window, the reading returning to windowed, writes nothing and keeps the stored mode; an OS-driven change after the window closes persists as usual.
-- [ ] `--windowed` boots windowed over a saved fullscreen mode and leaves the store unchanged; a menu change in that session persists.
-- [ ] Under `--windowed` or the fallback, choosing the saved mode itself applies it: exclusive with the confirm when the mode matches, the fallback and its warning when it does not (P10).
+- [x] Settings load once per launch, before the window; no settings write precedes the first presented frame (P1, P2).
+- [x] A saved borderless or exclusive mode is requested once through the chokepoint at boot, after the window is visible and before the first redraw request; the window is never created with a fullscreen attribute (grep gate) (P1).
+- [x] Outside a settle window, a readback differing from the baseline persists it and reseeds the working copy; an equal readback writes nothing.
+- [x] The readback reseed is not observed as a menu write and raises no live apply or second mode request.
+- [x] While the fallback is active, readback writes nothing and the stored exclusive mode survives across frames and a relaunch.
+- [x] Readings taken mid-transition write nothing; the menu's requested mode persists, not the transition's stale reading.
+- [x] A request whose entry fails inside its settle window, the reading returning to windowed, writes nothing and keeps the stored mode; an OS-driven change after the window closes persists as usual.
+- [x] `--windowed` boots windowed over a saved fullscreen mode and leaves the store unchanged; a menu change in that session persists.
+- [x] Under `--windowed` or the fallback, choosing the saved mode itself applies it: exclusive with the confirm when the mode matches, the fallback and its warning when it does not (P10).
 **Surface**
-- [ ] The Scripting surface example runs as `content/dev` options-menu rows: stepping changes the shown size and refresh, and the window-mode rows write the slot.
-- [ ] The Luau SDK carries the display-mode action helper and the window-mode and display-mode slots with the same ops, values and types as TypeScript.
-- [ ] With no saved display tuple, launch seeds an enumerated monitor-resolution default; entering Exclusive uses it and shows the confirm. An unavailable saved tuple keeps its fallback behavior, and no boot seeding writes settings.
-- [ ] The dev menu disables display-mode arrows and Apply while Borderless is selected, with the entire display-mode setting drawn at 80% opacity; returning to Windowed or Exclusive enables the arrows, while Apply follows selection eligibility.
-- [ ] Browsing contains only modes matching the current monitor aspect ratio within 0.1% and supported common refresh rates; duplicate nominal rates collapse per size, bit depth and monitor. Saved boot and revert still match exact modes against the full enumeration.
-- [ ] Driver refresh rates within 1 Hz of a common rate display that common rate, including 59→60 and 119→120; Apply/Keep persists the exact enumerated millihertz.
-- [ ] Apply Resolution starts disabled, enables only for a different browsed choice, disables when browsing returns to the accepted choice, and disables after Apply/Keep/revert; pending confirmation and Borderless refuse it. Its readonly eligibility slot agrees with the shipped button's focus/activation behavior.
+- [x] The Scripting surface example runs as `content/dev` options-menu rows: stepping changes the shown size and refresh, and the window-mode rows write the slot.
+- [x] The Luau SDK carries the display-mode action helper and the window-mode and display-mode slots with the same ops, values and types as TypeScript.
+- [x] With no saved display tuple, launch seeds an enumerated monitor-resolution default; entering Exclusive uses it and shows the confirm. An unavailable saved tuple keeps its fallback behavior, and no boot seeding writes settings.
+- [x] The dev menu disables display-mode arrows and Apply while Borderless is selected, with the entire display-mode setting drawn at 80% opacity; returning to Windowed or Exclusive enables the arrows, while Apply follows selection eligibility.
+- [x] Browsing contains only modes matching the current monitor aspect ratio within 0.1% and supported common refresh rates; duplicate nominal rates collapse per size, bit depth and monitor. Saved boot and revert still match exact modes against the full enumeration.
+- [x] Driver refresh rates within 1 Hz of a common rate display that common rate, including 59→60 and 119→120; Apply/Keep persists the exact enumerated millihertz.
+- [x] Apply Resolution starts disabled, enables only for a different browsed choice, disables when browsing returns to the accepted choice, and disables after Apply/Keep/revert; pending confirmation and Borderless refuse it. Its readonly eligibility slot agrees with the shipped button's focus/activation behavior.
 ### Manual
-- [ ] Windows: boot into each saved mode; the first splash frame shows that mode.
-- [ ] macOS: boot into each saved mode with no windowed splash frame after the first; a native Space transition starting at the first frame passes.
-- [ ] macOS and Windows: switch live among all three, both directions; leaving exclusive restores the desktop resolution and the prior window size.
-- [ ] macOS and Windows: exclusive confirm keeps; expiry reverts.
-- [ ] macOS: the green button enters and leaves fullscreen; the menu reflects it, and the next launch matches.
-- [ ] Windows: boot reaches the frontend in every saved mode; repeat once U4 lands.
+- [x] Windows: boot into each saved mode; the first splash frame shows that mode.
+- [x] macOS: boot into each saved mode with no windowed splash frame after the first; a native Space transition starting at the first frame passes.
+- [x] macOS and Windows: switch live among all three, both directions; leaving exclusive restores the desktop resolution and the prior window size.
+- [x] macOS and Windows: exclusive confirm keeps; expiry reverts.
+- [x] macOS: the green button enters and leaves fullscreen; the menu reflects it, and the next launch matches.
+- [x] Windows: boot reaches the frontend in every saved mode; repeat once U4 lands. Current feature accepted by owner; the U4 repeat remains a future follow-up.
 
 ## Path
 - macOS: borderless is the recommended fullscreen there; exclusive switches the display mode and locks out Spaces.
@@ -136,3 +136,7 @@ displayModeAction("revert"); // "ui.displayMode.revert"
 ## Open questions
 - Stored display-mode key shape. — **delegated**
 - macOS borderless as native Space or simple fullscreen, from the first slice's evidence. — **delegated**: reported at the resumable plan review
+
+## Completion
+
+Owner manually tested on Mac and Windows and approved landing on 2026-10-04. Automated proof and owner acceptance are recorded in `plan.md`. Future U4 hidden-window adapter integration repeats the Windows saved-mode boot matrix; that future run is not claimed as passed.

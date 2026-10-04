@@ -1,7 +1,7 @@
 # window-modes — plan of record
 
 mode: resumable
-status: test-ready
+status: done
 read at: 2a4bd9eb3
 branch: window-modes
 
@@ -82,25 +82,25 @@ Focused automated proofs below have passed; the final workspace gate is recorded
 | A31 | Browsing contains only modes matching the current monitor aspect ratio within 0.1% and supported common refresh rates; duplicate nominal rates collapse per size, bit depth and monitor. Saved boot and revert still match exact modes against the full enumeration. | Adapter filtering and production controller browse/apply/revert traces | achievable as stated | pass — production aspect/nominal filtering boundary and raw legacy boot/revert seam; monitor-change draft rejection |
 | A32 | Driver refresh rates within 1 Hz of a common rate display that common rate, including 59→60 and 119→120; Apply/Keep persists the exact enumerated millihertz. | Shipped menu text plus real-file save/reload after Apply/Keep | achievable as stated | pass — shipped 59/119 labels as 60/120; Windowed Apply and Exclusive Keep save/reload exact driver tuples |
 | A33 | Apply Resolution starts disabled, enables only for a different browsed choice, disables when browsing returns to the accepted choice, and disables after Apply/Keep/revert; pending confirmation and Borderless refuse it. Its readonly eligibility slot agrees with the shipped button's focus/activation behavior. | Shipped draw/focus/activation and policy scenarios; generated readonly boolean surface parity | achievable as stated | pass — shipped draw/focus/activation matches cached eligibility through browse/return/apply/keep/revert and Borderless; readonly boolean parity |
-| M1 | Windows: boot into each saved mode; the first splash frame shows that mode. | Owner in-engine runbook below; record OS, display, GPU, build and observed outcome | manual; blocks landing | outstanding — external manual proof |
-| M2 | macOS: boot into each saved mode with no windowed splash frame after the first; a native Space transition starting at the first frame passes. | Owner in-engine runbook below; record OS, display, GPU, build and observed outcome | manual; blocks landing | outstanding — external manual proof |
-| M3 | macOS and Windows: switch live among all three, both directions; leaving exclusive restores the desktop resolution and the prior window size. | Owner in-engine runbook below; record OS, display, GPU, build and observed outcome | manual; blocks landing | outstanding — external manual proof |
-| M4 | macOS and Windows: exclusive confirm keeps; expiry reverts. | Owner in-engine runbook below; record OS, display, GPU, build and observed outcome | manual; blocks landing | outstanding — external manual proof |
-| M5 | macOS: the green button enters and leaves fullscreen; the menu reflects it, and the next launch matches. | Owner in-engine runbook below; record OS, display, GPU, build and observed outcome | manual; blocks landing | outstanding — external manual proof |
-| M6 | Windows: boot reaches the frontend in every saved mode; repeat once U4 lands. | Owner in-engine runbook below; record OS, display, GPU, build and observed outcome | manual; blocks landing | outstanding — external manual proof |
+| M1 | Windows: boot into each saved mode; the first splash frame shows that mode. | Owner in-engine runbook below; record OS, display, GPU, build and observed outcome | manual; owner accepted | owner acceptance — tested on Mac and Windows, approved 2026-10-04 |
+| M2 | macOS: boot into each saved mode with no windowed splash frame after the first; a native Space transition starting at the first frame passes. | Owner in-engine runbook below; record OS, display, GPU, build and observed outcome | manual; owner accepted | owner acceptance — tested on Mac and Windows, approved 2026-10-04 |
+| M3 | macOS and Windows: switch live among all three, both directions; leaving exclusive restores the desktop resolution and the prior window size. | Owner in-engine runbook below; record OS, display, GPU, build and observed outcome | manual; owner accepted | owner acceptance — tested on Mac and Windows, approved 2026-10-04 |
+| M4 | macOS and Windows: exclusive confirm keeps; expiry reverts. | Owner in-engine runbook below; record OS, display, GPU, build and observed outcome | manual; owner accepted | owner acceptance — tested on Mac and Windows, approved 2026-10-04 |
+| M5 | macOS: the green button enters and leaves fullscreen; the menu reflects it, and the next launch matches. | Owner in-engine runbook below; record OS, display, GPU, build and observed outcome | manual; owner accepted | owner acceptance — tested on Mac and Windows, approved 2026-10-04 |
+| M6 | Windows: boot reaches the frontend in every saved mode; repeat once U4 lands. | Owner in-engine runbook below; record OS, display, GPU, build and observed outcome | manual; owner accepted | owner acceptance — tested on Mac and Windows, approved 2026-10-04; future U4 boot repeat remains a follow-up |
 
 ## Tasks
 
 | # | Task | Owner | Depends on | Status |
 |---|---|---|---|---|
-| 1 | Thin boot slice: one settings read, pending-store handoff, borderless after visibility and `--windowed` | integrating executor | — | automated complete; macOS visual result pending |
+| 1 | Thin boot slice: one settings read, pending-store handoff, borderless after visibility and `--windowed` | integrating executor | — | complete; owner accepted native testing on Mac and Windows |
 | 2 | Display-mode store, fresh enumeration/re-find policy and window slot catalog | integrating executor | 1 | complete: check + 26 matched window-filter tests |
 | 3 | Live requests, engine confirm, revert lifecycle and persistence isolation | integrating executor | 2 | complete |
 | 4 | OS readback, bounded settle/fallback and generation-safe reseeding | integrating executor | 3 | complete |
 | 5 | TS/Luau action surface, generated types and dev options-menu rows | integrating executor | 4 | complete |
-| 6 | Integration gate, review/fix loop, final preflight and platform acceptance report | integrating executor | 5 | automated complete; test-ready, M1–M6 block landing |
-| 7 | Owner amendment: launch default, browse/Apply separation and disabled Borderless picker | integrating executor | 6 | complete: focused proof, four-lens review and final preflight passed; native proof outstanding |
-| 8 | Owner amendment: aspect/common-rate picker filtering, nominal labels and Apply eligibility | integrating executor | 7 | complete: focused proof, four-lens review and final preflight passed; native proof outstanding |
+| 6 | Integration gate, review/fix loop, final preflight and platform acceptance report | integrating executor | 5 | complete; automated proof and owner native acceptance recorded |
+| 7 | Owner amendment: launch default, browse/Apply separation and disabled Borderless picker | integrating executor | 6 | complete: focused proof, four-lens review and final preflight passed; owner native acceptance recorded |
+| 8 | Owner amendment: aspect/common-rate picker filtering, nominal labels and Apply eligibility | integrating executor | 7 | complete: focused proof, four-lens review and final preflight passed; owner native acceptance recorded |
 
 ### 1. Thin boot slice
 
@@ -176,11 +176,13 @@ Use a disposable app name `postretro-window-modes-test` so the normal game's set
 4. M5: On macOS enter and leave fullscreen with the green button, outside an app-request settle interval. Check the menu reflects each OS change and relaunch matches it without a second mode request caused by reseeding.
 5. M6: On Windows verify frontend arrival for every saved mode. When E23 U4's hidden-window accessibility adapter lands, repeat this boot matrix and append its build identity and results; do not infer the future integration's success. Until U4 exists, record that repeat as outstanding explicitly.
 
-## Resumption
+## Completion
 
-Owner approval and both directly requested amendments are recorded. Tasks 1–8 are complete and test-ready. Task 8 passed focused readiness, independent review and final preflight; earlier gates are historical. Collect M1–M6 native results and the owner’s landing direction before landing. Do not infer native success from automated tests or general positive feedback. Preserve the owner's uncommitted testing-guide and unrelated work.
+Tasks 1–8 are complete. On 2026-10-04 the owner reported manual testing on both Mac and Windows and approved the feature, following the explicit “land the plane” direction. This is owner acceptance of the current native checks, not an agent-observed per-case measurement. No unreported OS versions, monitor/driver details or outcomes are invented. The future hidden-window screen-reader-adapter repeat in M6 cannot be run before U4 exists; it remains a follow-up in the roadmap and boot contract.
 
-Check workspace free space after each numbered task/checkpoint; below 15 GB clear only Cargo incremental caches in active/workflow-owned targets, then downloaded crate archives if necessary, and recheck. Initial available space: 45 GiB; latest Task 8 checkpoint: 19 GiB. Only Cargo incremental caches were cleared during this workflow; full target directories remain.
+Landing reconciles `context/lib/player_options.md`, `boot_sequence.md` and `ui.md`, moves this brief to `done/`, and pushes `window-modes`. Review and full preflight remain the Task 8 proof; documentation-only landing changes pass format and whitespace checks. The owner’s unrelated testing-guide edit remains excluded. This is feature-branch landing; no merge to `main` is claimed.
+
+Landing cleanup removes workflow-owned temporary logs/configs/fixtures and package artifacts for the heavily changed engine, entities, sim and scripting-core crates in the development and clippy targets. Historical log paths below describe the completed runs and are not permanent attachments. No session worktree exists. Keep full target directories and unrelated files.
 
 ## Task proof
 
@@ -255,7 +257,7 @@ Readiness logs: `/tmp/window-modes-picker-readiness-*.log`; touched compile log:
 Task 8 final gate initially passed format and lint, then the full parallel suite stopped at two unchanged `postretro-tool` payload fixtures: completion-marker installation lost its destination, and the simulated marker-failure fixture observed an unexpected marker. Partial result: 8,944 passed, 2 failed, 42 ignored across 34 groups. The fixtures derive temp-directory names from process ID and wall-clock timestamps; source inspection suggests concurrent fixtures collided. No production or test code is changed for this unrelated failure. The focused serial payload run passed 17 tests; the full serial retry passed all 9,315 tests with zero failures. This supports the concurrency diagnosis without claiming a source-level repair. Initial log: `/tmp/window-modes-picker-preflight-tests.log`.
 
 
-## Task 8 current gate and testing handoff
+## Task 8 final gate and testing handoff (before owner acceptance)
 
 The amended picker passed touched-crate compilation, format, 52 focused tests across nine nonzero filters, strict focused TypeScript, and an isolated four-lens review with zero code or comment-drift findings. The final preflight passed format and isolated clippy; the full suite passed on a serial retry after the unrelated parallel payload-fixture failure described above. All A1–A33 have automated proof. M1–M6 remain outstanding external proof and block landing; no native outcome is inferred. The owner’s existing push authorization covers this testing handoff to `origin/window-modes`.
 
@@ -269,3 +271,7 @@ The amended picker passed touched-crate compilation, format, 52 focused tests ac
 | Native macOS/Windows M1–M6 | outstanding; blocks landing |
 
 Final logs: `/tmp/window-modes-picker-preflight-fmt.log`, `/tmp/window-modes-picker-preflight-clippy.log`, `/tmp/window-modes-picker-preflight-tests-serial.log`. Failed parallel-run and serial payload-diagnostic logs are retained as described above until landing cleanup. The prior aggregate TS baseline diagnostics and unavailable Luau analyzer remain recorded in Task 6; current dual-runtime and generated-declaration guards passed. Only the workflow’s files belong in this Task 8 commit; preserve the owner’s unrelated testing-guide edit.
+
+## Landing record
+
+Owner evidence: “I did manual testing on both Mac and Windows, and I approve of the feature!” Recorded 2026-10-04 against the testing handoff `bdaf2f058`. All 33 automated acceptance rows passed; current native acceptance is owner-reported. Four final review lenses found zero issues; format and clippy passed, and full tests passed 9,315 / 0 failed / 42 ignored across 60 groups on the serial retry. No implementation changed during landing. Future U4 integration repeats the Windows saved-mode boot matrix; it is not marked passed.

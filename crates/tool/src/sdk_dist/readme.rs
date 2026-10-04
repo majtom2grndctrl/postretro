@@ -115,7 +115,9 @@ The bundle is itself a Postretro project: `postretro.toml` at this root marks\n\
 it, the mod lives at `{mod_root}/`, and `{BIN_DIR}/{tool}` builds a\n\
 player distribution from it with no repository and no Rust toolchain. Its\n\
 package is `{bundle_name}`, so it keeps its own settings and saves under\n\
-`{bundle_name}`, separate from an installed `{package_name}`.\n\
+`{bundle_name}`, separate from an installed `{package_name}`. On macOS and\n\
+Linux the directory name is the platform's normalized form of that name; see\n\
+\"Where player data lives\" in `docs/distribution.md` for the exact directory.\n\
 \n\
 ## Host-native caveat\n\
 \n\

@@ -146,15 +146,22 @@ fn validate_package(package: &RawPackage) -> Result<String, String> {
 /// a looser one — a name it refuses would ship a launcher that fails at boot.
 /// `crates/postretro/src/startup/app_name_cases.toml` holds both checks to the
 /// same verdicts.
+///
+/// Blank, `.` and `..` are judged after whitespace is removed: Linux strips all
+/// whitespace from the name before naming the directory, so `" "` becomes an
+/// empty name and `". ."` or `" .."` become `..` — the parent of the config
+/// directory.
 fn validate_package_name(name: &str) -> Result<(), String> {
+    let stripped: String = name.split_whitespace().collect();
     if name.starts_with('-') {
         Err(format!(
-            "package `{name}`: a package name cannot start with `-`, since \
-             `--app-name {name}` reads as a flag"
+            "package `{name}`: a package name cannot start with `-`, since the engine \
+             refuses a launcher's `--app-name {name}` at boot: the value looks like a flag"
         ))
-    } else if name.trim().is_empty() {
+    } else if matches!(stripped.as_str(), "" | "." | "..") {
         Err(format!(
-            "package `{name}`: name cannot be empty or only whitespace"
+            "package `{name}`: name cannot be blank, `.` or `..`, even with whitespace \
+             around or between the dots — Linux drops whitespace when naming the directory"
         ))
     } else if is_normal_component(name) {
         Ok(())
@@ -356,6 +363,7 @@ args = ["--lightmap-density", "0.02"]
             "nested\\\\name",
             "",
             " ",
+            " ..",
             "-x",
         ] {
             let input = format!("[package]\nname = \"{name}\"\nmod = \"dev\"\n");

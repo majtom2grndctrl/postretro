@@ -153,7 +153,8 @@ impl PendingSessionInit {
 /// event loop, returning the constructed `App` in the `Booting` state.
 ///
 /// Ordering: minimal pre-event-loop work (logging, boot-timing setup, raw arg
-/// collection, content-root / boot-map selection) runs first, THEN
+/// collection, content-root / boot-map selection, app-name / per-user directory
+/// resolution — which can fail boot) runs first, THEN
 /// `EventLoop::new`. The entire `Session` (options I/O, audio, the scripting
 /// bootstrap, the input/UI/modal group, and the net endpoint) is constructed
 /// post-first-pixel by `Session::build` through `PendingSessionInit`. Mod init,
@@ -168,8 +169,8 @@ pub(crate) fn build_session() -> Result<BootSession> {
     let mut boot_timings = StartupTimings::new();
 
     // Minimal pre-event-loop work: raw args plus just enough parsing to identify
-    // the content root and optional boot map. Net role is intentionally NOT
-    // parsed here — it defers into `PendingSessionInit`.
+    // the content root, optional boot map, and per-user directories. Net role is
+    // intentionally NOT parsed here — it defers into `PendingSessionInit`.
     let args: Vec<String> = std::env::args().collect();
     // Parse once before either windowed or headless execution branches. The
     // resolved policy itself is chosen at each install so windowed restarts get
@@ -364,9 +365,10 @@ pub(crate) fn build_session() -> Result<BootSession> {
     Ok(BootSession { event_loop, app })
 }
 
-/// Every flag naming a directory — `--mod` names one by its name under
-/// `content/`, `--app-name` the per-user ones by theirs — in one list, read by the scanners that extract a value and by
-/// the positional-map scan that must step over one.
+/// Every flag naming a directory, in one list, read by the scanners that extract
+/// a value and by the positional-map scan that must step over one. `--mod` names
+/// a directory under `content/` and `--app-name` the per-user config and data
+/// directories, each by name.
 ///
 /// Keeping it in one place is what holds the invariant. A flag added to only
 /// half of them leaves its *value* exposed to `resolve_map_path`, which then
@@ -417,13 +419,17 @@ pub(crate) fn resolve_map_path(args: &[String]) -> Option<String> {
     None
 }
 
-/// Read the value of one directory-naming flag, in `--flag <dir>` or
-/// `--flag=<dir>` form.
+/// Read the value of one [`PATH_FLAGS`] flag, in `--flag <value>` or
+/// `--flag=<value>` form. The value is a directory path, or a bare name for
+/// `--mod` and `--app-name`.
 ///
-/// Shared by every flag in [`PATH_FLAGS`] so they cannot drift apart. Absent, or
-/// present with no value, yields `None` — a bare flag never silently resolves to
-/// the current directory, and an empty value is treated as absence. The scan
-/// steps over the other path flags' values so one flag never swallows another's.
+/// Shared by every flag in [`PATH_FLAGS`] so they cannot drift apart. The first
+/// occurrence of the flag decides: absent, or present with no value — bare,
+/// `--flag=`, or followed by another flag — yields `None`, and a later
+/// occurrence is never consulted. A bare flag never silently resolves to the
+/// current directory; callers that must refuse a nameless flag tell it from an
+/// absent one with `names_flag`. The scan steps over the other path flags'
+/// values so one flag never swallows another's.
 fn path_flag_value(args: &[String], flag: &str) -> Option<PathBuf> {
     debug_assert!(
         PATH_FLAGS.contains(&flag),
@@ -438,10 +444,9 @@ fn path_flag_value(args: &[String], flag: &str) -> Option<PathBuf> {
                 .map(PathBuf::from);
         }
         if let Some(value) = arg.strip_prefix(equals_form.as_str()) {
-            if !value.is_empty() {
-                return Some(PathBuf::from(value));
-            }
-            continue;
+            // An empty `--flag=` is the first occurrence like any other, so it
+            // yields `None` here rather than letting a later occurrence win.
+            return (!value.is_empty()).then(|| PathBuf::from(value));
         }
         if PATH_FLAGS.contains(&arg.as_str())
             && iter.peek().is_some_and(|value| !value.starts_with("--"))
@@ -1278,6 +1283,7 @@ mod tests {
         for args in [
             &["--mod"][..],
             &["--mod="][..],
+            &["--mod=", "--mod", "dev"][..],
             &["--mod", "--baked-root", "/project/baked"][..],
             &["--mod", "", "maps/dev.prl"][..],
         ] {
@@ -1658,6 +1664,7 @@ mod tests {
         for args in [
             &["--app-name"][..],
             &["--app-name="][..],
+            &["--app-name=", "--app-name", "foo"][..],
             &["--app-name", "--mod", "dev"][..],
             &["--app-name", "", "maps/x.prl"][..],
         ] {

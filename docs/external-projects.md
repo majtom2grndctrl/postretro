@@ -120,6 +120,11 @@ A level path is relative to your mod's folder, not the project root, so there is
 no `content/base/` to type. Engine flags you pass yourself win over the tool's
 defaults rather than being shadowed.
 
+The tool also passes your package name to the engine as `--app-name`, so an
+authoring run reads and writes the same settings and saves your shipped game's
+players will. The exact per-platform directory is under "Where player data
+lives" in [distribution.md](distribution.md).
+
 To recompile one level, call the compiler directly:
 
 ```bash

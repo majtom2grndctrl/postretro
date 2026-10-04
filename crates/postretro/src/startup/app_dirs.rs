@@ -83,14 +83,14 @@ impl AppDirs {
 /// Refuse an app name that cannot be one directory name, or that a launcher
 /// would pass as something other than the flag's value.
 ///
-/// The same values `--mod` refuses, plus a whitespace-only one, which some
-/// platforms would normalize to an empty directory name. `postretro-tool`
-/// mirrors this for package names; `app_name_cases.toml` holds both to one
-/// verdict per case.
+/// The same values `--mod` refuses, judged after whitespace is removed: Linux
+/// strips all whitespace from the name before naming the directory, so `" "`
+/// becomes an empty name and `". ."` or `" .."` become `..` — the parent of
+/// the config directory. `postretro-tool` mirrors this for package names;
+/// `app_name_cases.toml` holds both to one verdict per case.
 pub(crate) fn validate_app_name(name: &str) -> Result<(), String> {
-    let is_plain_name = !name.trim().is_empty()
-        && name != "."
-        && name != ".."
+    let stripped: String = name.split_whitespace().collect();
+    let is_plain_name = !matches!(stripped.as_str(), "" | "." | "..")
         && !name.starts_with('-')
         && !name.contains(['/', '\\', ':']);
     if is_plain_name {
@@ -98,7 +98,8 @@ pub(crate) fn validate_app_name(name: &str) -> Result<(), String> {
     } else {
         Err(format!(
             "{APP_NAME_FLAG} takes a name for this game's settings and save directory — not a \
-             path, not blank, and not starting with `-`; got `{name}`"
+             path, not blank, not `.` or `..` once whitespace is removed, and not starting \
+             with `-`; got `{name}`"
         ))
     }
 }

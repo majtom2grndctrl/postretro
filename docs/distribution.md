@@ -241,7 +241,12 @@ trust.
 The game requires a graphics adapter that supports DirectX 12 or Vulkan. On its
 first run it writes editable player settings under
 `%APPDATA%\<name>\config\settings.toml` — `<name>` being the manifest's
-`name` — so two games built on Postretro never share settings or saves.
+`name` — so games with different names keep separate settings and saves.
+
+On Windows there can be a brief white flash when the window is created, before
+the splash is first presented. This is a cosmetic startup artifact; the window
+intentionally stays visible, because hiding it before the first frame can stop
+Windows delivering the redraw that starts boot.
 
 ## Where player data lives
 
@@ -254,19 +259,21 @@ the directory its own way:
 
 | Platform | Settings | Saved state |
 |---|---|---|
-| Windows | `%APPDATA%\<name>\config\settings.toml` | `%APPDATA%\<name>\data\<mod>\state.json` |
-| macOS | `~/Library/Application Support/<name>/settings.toml` | `~/Library/Application Support/<name>/<mod>/state.json` |
-| Linux | `~/.config/<name>/settings.toml` | `~/.local/share/<name>/<mod>/state.json` |
+| Windows | `%APPDATA%\<name>\config\settings.toml` | `%APPDATA%\<name>\data\<mod id>\state.json` |
+| macOS | `~/Library/Application Support/<name>/settings.toml` | `~/Library/Application Support/<name>/<mod id>/state.json` |
+| Linux | `~/.config/<name>/settings.toml` | `~/.local/share/<name>/<mod id>/state.json` |
+
+`<mod id>` is the `id` your mod's manifest declares, not the `mod` directory name.
 
 macOS replaces each space in `<name>` with `-`. Linux lowercases it and drops
-its whitespace, so `My Game` and `mygame` share one directory there; Linux also
-honours `XDG_CONFIG_HOME` and `XDG_DATA_HOME`. Windows uses `<name>` as written.
+its whitespace, honouring `XDG_CONFIG_HOME` and `XDG_DATA_HOME`. Windows and
+macOS file systems are case-insensitive by default, so names differing only in
+case share a directory there (and on Linux, which lowercases): a package named
+`PostRetro` shares the `postretro` directory a bare engine launch uses. Windows
+also drops a trailing `.` or space from a directory name, so `my-game.` and
+`my-game` share one. Pick a name distinct from other games' and from `postretro`,
+ignoring case.
 
 Starting the engine binary directly, without the launcher, uses the directory
 named `postretro` — and, for most games, fails to find the game anyway. Start a
 payload through its launcher.
-
-On Windows there can be a brief white flash when the window is created, before
-the splash is first presented. This is a cosmetic startup artifact; the window
-intentionally stays visible, because hiding it before the first frame can stop
-Windows delivering the redraw that starts boot.

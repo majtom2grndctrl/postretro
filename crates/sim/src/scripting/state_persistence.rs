@@ -97,10 +97,9 @@ impl PerOwnerSaveTimer {
     }
 }
 
-/// Resolve one mod's state file under the per-user data directory the engine
-/// resolved once at boot from the app name. That directory already ends in the
-/// app name; do not add it again here. Sim parses no arguments and resolves no
-/// platform directory of its own.
+/// Join `<mod_id>/state.json` onto the data directory it is given (the engine
+/// resolves that directory once at boot from the app name). Sim parses no
+/// arguments and resolves no platform directory.
 pub fn state_path(data_dir: Option<&Path>, mod_id: &str) -> Option<PathBuf> {
     data_dir.map(|data_dir| data_dir.join(mod_id).join(STATE_FILENAME))
 }
@@ -2130,17 +2129,18 @@ mod tests {
     }
 
     #[test]
-    fn platform_state_paths_are_per_mod_without_double_nesting_postretro() {
-        let data_dir = Path::new("/tmp/postretro-test-data/postretro");
+    fn state_paths_are_per_mod_under_the_given_data_dir() {
+        let data_dir = Path::new("/tmp/state-test-data/my-game");
         let first = state_path(Some(data_dir), "first.mod").unwrap();
         let second = state_path(Some(data_dir), "second.mod").unwrap();
 
         assert_ne!(first, second);
         assert_eq!(first, data_dir.join("first.mod/state.json"));
+        assert_eq!(second, data_dir.join("second.mod/state.json"));
         assert_eq!(
             first
                 .components()
-                .filter(|component| component.as_os_str() == "postretro")
+                .filter(|component| component.as_os_str() == "my-game")
                 .count(),
             1
         );

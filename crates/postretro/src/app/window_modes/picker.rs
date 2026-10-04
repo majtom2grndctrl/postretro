@@ -107,9 +107,15 @@ mod tests {
             vec![mode(1280, 1024, 60_000, 32)]
         );
         let portrait = mode(720, 1280, 75_000, 32);
-        assert_eq!(choices(&[portrait.clone()], [1080, 1920]), vec![portrait]);
+        assert_eq!(
+            choices(std::slice::from_ref(&portrait), [1080, 1920]),
+            vec![portrait]
+        );
         let wide = mode(1720, 720, 165_000, 32);
-        assert_eq!(choices(&[wide.clone()], [3440, 1440]), vec![wide]);
+        assert_eq!(
+            choices(std::slice::from_ref(&wide), [3440, 1440]),
+            vec![wide]
+        );
         for (raw, nominal) in [
             (29_000, Some(30)),
             (59_000, Some(60)),

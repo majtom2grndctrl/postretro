@@ -4611,17 +4611,17 @@ impl ApplicationHandler for App {
 
                         #[cfg(feature = "dev-tools")]
                         {
-                            if let Some((textures_delta, paint_jobs, scale)) = debug_ui_frame {
-                                if let Err(err) = renderer.render_debug_ui(
+                            if let Some((textures_delta, paint_jobs, scale)) = debug_ui_frame
+                                && let Err(err) = renderer.render_debug_ui(
                                     &mut present_handle,
                                     textures_delta,
                                     paint_jobs,
                                     scale,
-                                ) {
-                                    self.exit_result = Err(err);
-                                    event_loop.exit();
-                                    return;
-                                }
+                                )
+                            {
+                                self.exit_result = Err(err);
+                                event_loop.exit();
+                                return;
                             }
                         }
                         let present_start = self.cpu_timer.gate().is_enabled().then(Instant::now);
@@ -12842,25 +12842,21 @@ mod tests {
 
             let mut display_bindings = Vec::new();
             for widget in &control_widgets {
-                if let Widget::Text(text) = widget {
-                    if let Some(bind) = &text.bind {
-                        if let BindSource::Slot { slot } = &bind.source {
-                            if slot.starts_with("window.displayMode") {
-                                display_bindings.push(slot.as_str());
-                                assert_eq!(
-                                    text.visible_when, None,
-                                    "the parent control group owns {value} text visibility",
-                                );
-                                assert_eq!(
-                                    text.color,
-                                    postretro_ui::descriptor::ColorValue::Literal([
-                                        1.0, 1.0, 1.0, opacity,
-                                    ]),
-                                    "{value} display text uses the branch opacity",
-                                );
-                            }
-                        }
-                    }
+                if let Widget::Text(text) = widget
+                    && let Some(bind) = &text.bind
+                    && let BindSource::Slot { slot } = &bind.source
+                    && slot.starts_with("window.displayMode")
+                {
+                    display_bindings.push(slot.as_str());
+                    assert_eq!(
+                        text.visible_when, None,
+                        "the parent control group owns {value} text visibility",
+                    );
+                    assert_eq!(
+                        text.color,
+                        postretro_ui::descriptor::ColorValue::Literal([1.0, 1.0, 1.0, opacity]),
+                        "{value} display text uses the branch opacity",
+                    );
                 }
             }
             assert_eq!(

@@ -1136,7 +1136,9 @@ fn p11_direct_stats_observe_raw_zero_entries_before_selection_retention_drop() {
     );
     assert!(
         raw.delta_subblocks
-            .chunks_exact(DELTA_TILE_TEXEL_F16_COUNT)
+            .as_chunks::<DELTA_TILE_TEXEL_F16_COUNT>()
+            .0
+            .iter()
             .all(|rgb| rgb.iter().all(|value| *value & 0x7fff == 0)),
         "zero authored intensity must produce zero RGB direct deltas"
     );

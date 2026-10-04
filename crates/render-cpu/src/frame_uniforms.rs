@@ -592,8 +592,8 @@ mod tests {
         });
 
         let mut floats = Vec::new();
-        for chunk in data.chunks_exact(4).take(16) {
-            floats.push(f32::from_ne_bytes(chunk.try_into().unwrap()));
+        for chunk in data.as_chunks::<4>().0.iter().take(16) {
+            floats.push(f32::from_ne_bytes(*chunk));
         }
         let identity = Mat4::IDENTITY.to_cols_array();
         for i in 0..16 {

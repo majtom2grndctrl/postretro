@@ -1295,11 +1295,11 @@ fn draw_spatial_tab(ui: &mut egui::Ui, state: &mut DiagnosticsState, renderer: &
             ui.label(format!("Total BVH leaves: {}", diag.total_leaves));
             ui.label(format!("Submitted BVH leaves: {}", diag.submitted_leaves));
             // Candidate vs total exposes future indirect-compaction headroom.
-            if let Some(candidates) = diag.candidate_leaves() {
-                if diag.total_leaves > 0 {
-                    let pct = 100.0 * candidates as f32 / diag.total_leaves as f32;
-                    ui.label(format!("Candidate / total: {pct:.1}%"));
-                }
+            if let Some(candidates) = diag.candidate_leaves()
+                && diag.total_leaves > 0
+            {
+                let pct = 100.0 * candidates as f32 / diag.total_leaves as f32;
+                ui.label(format!("Candidate / total: {pct:.1}%"));
             }
         });
 }

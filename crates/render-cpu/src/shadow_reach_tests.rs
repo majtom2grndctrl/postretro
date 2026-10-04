@@ -307,7 +307,10 @@ fn leaf_overhanging_its_cell_bounds_reaches_its_cell() {
     ]);
     let planes = slab(1.02, 1.06);
     let mut scratch = index.scratch();
-    assert_eq!(index.reach(&planes, &mut scratch), &[0..3]);
+    assert_eq!(
+        index.reach(&planes, &mut scratch),
+        std::slice::from_ref(&(0..3))
+    );
     assert_eq!(scratch.cells(), &[0]);
 }
 
@@ -360,7 +363,10 @@ fn empty_and_full_reach_transitions_through_one_scratch() {
     let all = slab(-1.0, 9.0);
 
     assert!(index.reach(&miss, &mut scratch).is_empty(), "empty first");
-    assert_eq!(index.reach(&part, &mut scratch), &[6..15]);
+    assert_eq!(
+        index.reach(&part, &mut scratch),
+        std::slice::from_ref(&(6..15))
+    );
     assert!(
         index.reach(&miss, &mut scratch).is_empty(),
         "empty after nonempty"
@@ -368,7 +374,7 @@ fn empty_and_full_reach_transitions_through_one_scratch() {
     assert_eq!(scratch.stats().collected_cells, 0);
     assert_eq!(
         index.reach(&part, &mut scratch),
-        &[6..15],
+        std::slice::from_ref(&(6..15)),
         "nonempty after empty draws in full"
     );
     // Every drawable leaf's indices exactly once.
@@ -581,7 +587,10 @@ fn zero_count_leaf_reaches_its_cell_without_adding_a_range() {
         },
     ]);
     let mut scratch = index.scratch();
-    assert_eq!(index.reach(&slab(2.2, 2.8), &mut scratch), &[3..6]);
+    assert_eq!(
+        index.reach(&slab(2.2, 2.8), &mut scratch),
+        std::slice::from_ref(&(3..6))
+    );
     assert_eq!(scratch.cells(), &[1]);
 }
 
@@ -590,8 +599,14 @@ fn scratch_from_a_larger_level_walks_a_smaller_one() {
     let large = index_of(&row(200));
     let small = index_of(&row(3));
     let mut scratch = large.scratch();
-    assert_eq!(large.reach(&slab(150.2, 151.8), &mut scratch), &[450..456]);
-    assert_eq!(small.reach(&slab(-1.0, 4.0), &mut scratch), &[0..9]);
+    assert_eq!(
+        large.reach(&slab(150.2, 151.8), &mut scratch),
+        std::slice::from_ref(&(450..456))
+    );
+    assert_eq!(
+        small.reach(&slab(-1.0, 4.0), &mut scratch),
+        std::slice::from_ref(&(0..9))
+    );
 }
 
 #[test]
@@ -599,5 +614,8 @@ fn scratch_from_a_smaller_level_refits_before_walking() {
     let small = index_of(&row(2));
     let large = index_of(&row(200));
     let mut scratch = small.scratch();
-    assert_eq!(large.reach(&slab(150.2, 151.8), &mut scratch), &[450..456]);
+    assert_eq!(
+        large.reach(&slab(150.2, 151.8), &mut scratch),
+        std::slice::from_ref(&(450..456))
+    );
 }

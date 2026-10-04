@@ -1105,8 +1105,10 @@ mod tests {
     fn decode_block_slots(groups: &[Vec<u8>; 2], width: u32, height: u32) -> Vec<[u8; 4]> {
         let a = crate::bc5::decode_bc5_rg(&groups[0], width, height);
         let b = crate::bc5::decode_bc5_rg(&groups[1], width, height);
-        a.chunks_exact(2)
-            .zip(b.chunks_exact(2))
+        a.as_chunks::<2>()
+            .0
+            .iter()
+            .zip(b.as_chunks::<2>().0.iter())
             .map(|(a, b)| [a[0], a[1], b[0], b[1]])
             .collect()
     }
@@ -1360,8 +1362,10 @@ mod tests {
         assert!(
             first.lightmap.section.blocks[0]
                 .direction
-                .chunks_exact(2)
-                .all(|texel| texel == [128, 255]),
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .all(|texel| *texel == [128, 255]),
             "an all-SDF bake keeps its block with neutral direction"
         );
         assert_eq!(
@@ -1643,7 +1647,9 @@ mod tests {
         // The penumbra must reach the floor, or seeds never matter.
         let red: Vec<u16> = alone
             .irradiance
-            .chunks_exact(8)
+            .as_chunks::<8>()
+            .0
+            .iter()
             .map(|texel| u16::from_le_bytes([texel[0], texel[1]]))
             .collect();
         let (lo, hi) = (*red.iter().min().unwrap(), *red.iter().max().unwrap());

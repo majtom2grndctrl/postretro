@@ -834,7 +834,7 @@ mod tests {
             .get(SPRITE)
             .expect("all three bodies share the animated collection");
         assert_eq!(bytes.len(), 3 * SPRITE_INSTANCE_SIZE);
-        for instance in bytes.chunks_exact(SPRITE_INSTANCE_SIZE) {
+        for instance in bytes.as_chunks::<SPRITE_INSTANCE_SIZE>().0 {
             let age = f32::from_ne_bytes(instance[12..16].try_into().unwrap());
             assert!(
                 (age - elapsed).abs() < 1e-6,

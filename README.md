@@ -161,7 +161,7 @@ Three experimental variants exist alongside their parents and are selected delib
 
 ## Tech Stack
 
-- **Language:** Rust (edition 2024, MSRV 1.89)
+- **Language:** Rust (edition 2024, MSRV 1.99)
 - **Renderer:** wgpu
 - **Windowing:** winit
 - **Math:** glam

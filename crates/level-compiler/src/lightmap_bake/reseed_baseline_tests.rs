@@ -55,7 +55,7 @@ fn block_irradiance(section: &LightmapSection, block: usize) -> Vec<[f32; 3]> {
     let (w, h) = (usize::from(b.width), usize::from(b.height));
     let mut texels = vec![[0.0; 3]; w * h];
     if section.irradiance_format == 0 {
-        for (i, texel) in b.irradiance.chunks_exact(8).enumerate() {
+        for (i, texel) in b.irradiance.as_chunks::<8>().0.iter().enumerate() {
             for c in 0..3 {
                 texels[i][c] =
                     f16_bits_to_f32(u16::from_le_bytes([texel[2 * c], texel[2 * c + 1]]));
@@ -63,9 +63,9 @@ fn block_irradiance(section: &LightmapSection, block: usize) -> Vec<[f32; 3]> {
         }
         return texels;
     }
-    for (bi, encoded) in b.irradiance.chunks_exact(16).enumerate() {
+    for (bi, encoded) in b.irradiance.as_chunks::<16>().0.iter().enumerate() {
         let (bx, by) = ((bi % (w / 4)) * 4, (bi / (w / 4)) * 4);
-        let decoded = decode_bc6h_block_for_tests(encoded.try_into().expect("16-byte block"));
+        let decoded = decode_bc6h_block_for_tests(encoded);
         for (k, texel) in decoded.iter().enumerate() {
             let (x, y) = (bx + k % 4, by + k / 4);
             for c in 0..3 {

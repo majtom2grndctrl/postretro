@@ -295,8 +295,15 @@ fn recorded_frame_draws_reach_beyond_camera_and_fog_and_only_reach() {
     assert_eq!(draws.len(), 1, "one dynamic cold fill: {draws:?}");
     let (region, ranges) = &draws[0];
     assert!(matches!(region, ShadowRegion::Spot(_)));
-    assert_eq!(ranges, &vec![0..9], "cells 0–2 in one run, nothing else");
-    assert_ne!(ranges, &vec![0..world.index_count()]);
+    assert_eq!(
+        ranges.as_slice(),
+        std::slice::from_ref(&(0..9)),
+        "cells 0–2 in one run, nothing else"
+    );
+    assert_ne!(
+        ranges.as_slice(),
+        std::slice::from_ref(&(0..world.index_count()))
+    );
 
     // The cold fill warmed its layer: the next frame walks nothing.
     assert!(frame(&mut renderer, true, VisibleCells::Culled(vec![3]), &[4]).is_empty());

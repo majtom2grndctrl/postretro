@@ -240,9 +240,11 @@ fn shipped_menu_activations_drive_policy_bridge_bindings_and_saved_choice() {
     new.height = 1080;
     let off_aspect = mode(1024, 60000, "current");
     let uncommon = mode(1280, 63000, "current");
-    let mut backend = FakeBackend::default();
-    backend.desktop = Some(old.clone());
-    backend.monitor_size = Some([1280, 720]);
+    let mut backend = FakeBackend {
+        desktop: Some(old.clone()),
+        monitor_size: Some([1280, 720]),
+        ..FakeBackend::default()
+    };
     *backend.modes.borrow_mut() = vec![off_aspect, uncommon, old.clone(), new.clone()];
     let now = Instant::now();
     {

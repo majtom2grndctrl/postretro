@@ -182,8 +182,8 @@ pub fn widget_a11y_state(
     };
     match widget {
         Widget::Button(w) => (
-            w.selected.as_ref().map(&resolve),
-            w.checked.as_ref().map(&resolve),
+            w.selected.as_ref().map(resolve),
+            w.checked.as_ref().map(resolve),
             w.disabled,
         ),
         Widget::Slider(w) => (None, None, w.disabled),

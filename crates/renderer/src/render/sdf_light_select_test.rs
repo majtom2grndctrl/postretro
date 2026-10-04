@@ -380,13 +380,17 @@ fn run_select(ctx: &GpuCtx, lights: &[TestLight], worlds: &[[f32; 3]]) -> Vec<(V
     rx.recv().expect("map channel").expect("map ok");
     let data = slice.get_mapped_range();
     let raw: Vec<u32> = data
-        .chunks_exact(4)
-        .map(|c| u32::from_ne_bytes(c.try_into().unwrap()))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|c| u32::from_ne_bytes(*c))
         .collect();
     drop(data);
     readback.unmap();
 
-    raw.chunks_exact(5)
+    raw.as_chunks::<5>()
+        .0
+        .iter()
         .map(|c| (vec![c[0], c[1], c[2], c[3]], c[4]))
         .collect()
 }

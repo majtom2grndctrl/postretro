@@ -42,15 +42,13 @@ impl App {
                 // binds it, so a targeted check here is unambiguous.
                 // See: context/lib/input.md §7
                 #[cfg(feature = "dev-tools")]
-                if !is_modifier_key {
-                    if let Some(action) =
+                if !is_modifier_key
+                    && let Some(action) =
                         self.diagnostic_inputs
                             .handle_key(code, pressed, key_event.repeat)
-                    {
-                        if action == DiagnosticAction::ToggleDebugPanel {
-                            self.handle_diagnostic_action(action);
-                        }
-                    }
+                    && action == DiagnosticAction::ToggleDebugPanel
+                {
+                    self.handle_diagnostic_action(action);
                 }
                 return;
             }

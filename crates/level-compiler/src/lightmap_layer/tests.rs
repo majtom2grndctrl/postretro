@@ -790,7 +790,9 @@ fn empty_sparse_partition_roundtrips_and_has_no_fold_effect() {
     assert!(
         folded
             .irradiance
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .all(|rgba| rgba[..3].iter().all(|value| value.to_bits() == 0))
     );
 }
@@ -1112,8 +1114,10 @@ fn all_sdf_fallback_encodes_every_block_uncovered() {
         assert!(
             block
                 .direction
-                .chunks_exact(2)
-                .all(|texel| texel == [128, 255])
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .all(|texel| *texel == [128, 255])
         );
     }
 }

@@ -2496,8 +2496,10 @@ fn shadowmask_bc5_encode_error_on_fixture_bakes() {
         used_channels.sort_unstable();
         used_channels.dedup();
         let errors: Vec<u8> = raw
-            .chunks_exact(4)
-            .zip(decoded.chunks_exact(4))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(decoded.as_chunks::<4>().0.iter())
             .flat_map(|(raw, decoded)| {
                 used_channels
                     .iter()

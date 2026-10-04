@@ -65,7 +65,9 @@ fn face_area(geometry: &GeometryResult, face: usize) -> f32 {
     let range = geometry.face_index_ranges[face];
     let start = range.index_offset as usize;
     geometry.geometry.indices[start..start + range.index_count as usize]
-        .chunks_exact(3)
+        .as_chunks::<3>()
+        .0
+        .iter()
         .map(|tri| {
             let p = |i: u32| Vec3::from(geometry.geometry.vertices[i as usize].position);
             (p(tri[1]) - p(tri[0]))
@@ -691,9 +693,9 @@ fn encoded_step_across_a_cut_stays_within_bc6h_noise() {
         .map(|block| {
             let (w, h) = (usize::from(block.width), usize::from(block.height));
             let mut texels = vec![[0.0; 3]; w * h];
-            for (bi, encoded) in block.irradiance.chunks_exact(16).enumerate() {
+            for (bi, encoded) in block.irradiance.as_chunks::<16>().0.iter().enumerate() {
                 let (bx, by) = ((bi % (w / 4)) * 4, (bi / (w / 4)) * 4);
-                let block = decode_bc6h_block_for_tests(encoded.try_into().unwrap());
+                let block = decode_bc6h_block_for_tests(encoded);
                 for (k, texel) in block.iter().enumerate() {
                     texels[(by + k / 4) * w + bx + k % 4] = texel.map(f16_bits_to_f32);
                 }

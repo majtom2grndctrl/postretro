@@ -386,8 +386,10 @@ fn unset_display_mode_uses_launch_default_without_saving_until_keep() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("settings.toml");
     let desktop = mode(1920, 144_000, "current");
-    let mut backend = FakeBackend::default();
-    backend.desktop = Some(desktop.clone());
+    let mut backend = FakeBackend {
+        desktop: Some(desktop.clone()),
+        ..FakeBackend::default()
+    };
     backend.modes.borrow_mut().push(desktop.clone());
     let mut options = PlayerOptions::default();
     options.save(&path).unwrap();
@@ -462,8 +464,10 @@ fn filtered_browse_keeps_raw_boot_and_revert_modes_and_exact_saved_refresh() {
     let small = mode(1280, 59_000, "current");
     let mut large = mode(1920, 119_000, "current");
     large.height = 1080;
-    let mut backend = FakeBackend::default();
-    backend.monitor_size = Some([1920, 1080]);
+    let mut backend = FakeBackend {
+        monitor_size: Some([1920, 1080]),
+        ..FakeBackend::default()
+    };
     *backend.modes.borrow_mut() = vec![legacy.clone(), small.clone(), large.clone()];
     let mut options = PlayerOptions::default();
     options.window_mode = WindowMode::Exclusive;

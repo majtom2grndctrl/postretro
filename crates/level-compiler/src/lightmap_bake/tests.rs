@@ -370,7 +370,7 @@ fn single_static_light_produces_nonzero_irradiance() {
     }
     let irradiance = all_irradiance(&section);
     let mut has_nonzero = false;
-    for chunk in irradiance.chunks_exact(2).step_by(4) {
+    for chunk in irradiance.as_chunks::<2>().0.iter().step_by(4) {
         let bits = u16::from_le_bytes([chunk[0], chunk[1]]);
         if bits != 0 {
             has_nonzero = true;
@@ -427,7 +427,12 @@ fn sdf_typed_light_excluded_from_direct_lightmap() {
     .unwrap()
     .section;
     let mut has_nonzero = false;
-    for chunk in all_irradiance(&section).chunks_exact(2).step_by(4) {
+    for chunk in all_irradiance(&section)
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .step_by(4)
+    {
         let bits = u16::from_le_bytes([chunk[0], chunk[1]]);
         if bits != 0 {
             has_nonzero = true;
@@ -2762,7 +2767,9 @@ fn soft_overhead_light() -> MapLight {
 /// Decode every block's irradiance texels (R channel) from an RGBA16F section.
 fn floor_irradiance_r(section: &LightmapSection) -> Vec<f32> {
     all_irradiance(section)
-        .chunks_exact(8)
+        .as_chunks::<8>()
+        .0
+        .iter()
         .map(|texel| f16_bits_to_f32(u16::from_le_bytes([texel[0], texel[1]])))
         .collect()
 }
@@ -3117,7 +3124,9 @@ fn moved_and_renumbered_chart_bakes_identical_texels() {
     // some irradiance texels sit strictly between the darkest and brightest.
     let red: Vec<f32> = before
         .irradiance
-        .chunks_exact(8)
+        .as_chunks::<8>()
+        .0
+        .iter()
         .map(|texel| f16_bits_to_f32(u16::from_le_bytes([texel[0], texel[1]])))
         .collect();
     let (lo, hi) = red

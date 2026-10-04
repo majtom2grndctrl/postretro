@@ -1503,7 +1503,8 @@ mod tests {
         assert_eq!(diffuse.payload.len(), per_layer_bytes * 2);
         for (layer, color) in [[255, 0, 0, 255], [0, 0, 255, 255]].iter().enumerate() {
             for pixel in diffuse.payload[layer * per_layer_bytes..(layer + 1) * per_layer_bytes]
-                .chunks_exact(4)
+                .as_chunks::<4>()
+                .0
             {
                 assert_eq!(pixel, color, "layer {layer} lost its frame identity");
             }
@@ -1977,7 +1978,7 @@ mod tests {
         // sRGB (the LUT round-trip introduces ±1 LSB on quantisation).
         // Total length should be 64 + 16 + 4 = 84 bytes.
         assert_eq!(payload.len(), 64 + 16 + 4);
-        for chunk in payload.chunks_exact(4) {
+        for chunk in payload.as_chunks::<4>().0 {
             for &c in &chunk[0..3] {
                 assert!(
                     (c as i32 - 128).abs() <= 1,
@@ -2036,7 +2037,7 @@ mod tests {
         let rgba8 = renormalize_to_rgba8(&linear);
         assert_eq!(rgba8.len(), 4 * 4 * 4);
 
-        for chunk in rgba8.chunks_exact(4) {
+        for chunk in rgba8.as_chunks::<4>().0 {
             let nx = (chunk[0] as f32) / 255.0 * 2.0 - 1.0;
             let ny = (chunk[1] as f32) / 255.0 * 2.0 - 1.0;
             let nz = (chunk[2] as f32) / 255.0 * 2.0 - 1.0;
@@ -2428,7 +2429,7 @@ mod tests {
         assert_eq!(header.expect("header parses").slot_mask, PrmSlots::SPECULAR);
         let slot = slots[1].as_ref().expect("surface-map slot parses");
         assert_eq!(slot.format, PrmFormat::Rg8Unorm);
-        for texel in slot.payload[..2 * 2 * 2].chunks_exact(2) {
+        for texel in slot.payload[..2 * 2 * 2].as_chunks::<2>().0 {
             assert_eq!(texel[0], 0);
             assert_eq!(texel[1], 245, "depth = 255 - 10");
         }
@@ -2654,7 +2655,7 @@ mod tests {
         assert_eq!(slot.level_count, expected_level_count(4, 4));
 
         // Mip 0 is the source interleave, untouched by filtering.
-        for texel in slot.payload[..4 * 4 * 2].chunks_exact(2) {
+        for texel in slot.payload[..4 * 4 * 2].as_chunks::<2>().0 {
             assert_eq!(texel[0], 200, "R keeps the authored specular");
             assert_eq!(texel[1], 255 - 60, "G is depth = 255 - authored height");
         }
@@ -2696,7 +2697,7 @@ mod tests {
         );
         let slot = slots[1].as_ref().expect("surface-map slot parses");
         assert_eq!(slot.format, PrmFormat::Rg8Unorm);
-        for texel in slot.payload[..4 * 4 * 2].chunks_exact(2) {
+        for texel in slot.payload[..4 * 4 * 2].as_chunks::<2>().0 {
             assert_eq!(texel[0], 0, "absent _s.png reads as zero specular");
             // Fully white height (raised) carves to zero depth: flat.
             assert_eq!(texel[1], 0, "white height is depth 0 — a true no-op");
@@ -2819,7 +2820,12 @@ mod tests {
         let surface_chain = build_surface_chain_impl(&rg, w, h);
 
         assert_eq!(surface_chain.len(), specular_chain.len() * 2);
-        let reds: Vec<u8> = surface_chain.chunks_exact(2).map(|t| t[0]).collect();
+        let reds: Vec<u8> = surface_chain
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|t| t[0])
+            .collect();
         assert_eq!(
             reds, specular_chain,
             "the surface map's R channel must filter exactly as R8 specular does"

@@ -384,13 +384,13 @@ function displayModeControls(value: (typeof WINDOW_MODE_CHOICES)[number]["value"
   const color: [number, number, number, number] = [1, 1, 1, disabled ? 0.8 : 1];
   const visibleWhen = stateEquals(options.windowMode, value);
   const suffix = value === "windowed" ? "" : value === "exclusive" ? "Exclusive" : "Borderless";
-  const button = (id: string, label: string, op: "previous" | "next" | "apply") => Button({
+  const button = (id: string, label: string, op: "previous" | "next" | "apply", inactive = false) => Button({
     id: `${id}${suffix}`,
     label,
     onPress: displayModeAction(op),
-    disabled,
+    disabled: disabled || inactive,
     bind: visibleWhen,
-    styleRanges: { max: 1, entries: [{ color }] },
+    styleRanges: { max: 1, entries: [{ color: inactive ? [1, 1, 1, 0.8] : color }] },
   });
   return VStack({ gap: 6, align: "start", visibleWhen }, [
     HStack({ gap: 4, align: "center" }, [
@@ -400,7 +400,14 @@ function displayModeControls(value: (typeof WINDOW_MODE_CHOICES)[number]["value"
       Text({ content: "", color, bind: bindState(window.displayModeRefreshHz, { format: " @ {} Hz", decimalPlaces: 0 }) }),
       button("displayModeNext", ">", "next"),
     ]),
-    button("displayModeApply", "APPLY RESOLUTION", "apply"),
+    ...(disabled ? [button("displayModeApply", "APPLY RESOLUTION", "apply")] : [
+      VStack({ visibleWhen: stateEquals(window.displayModeCanApply, true) }, [
+        button("displayModeApply", "APPLY RESOLUTION", "apply"),
+      ]),
+      VStack({ visibleWhen: stateEquals(window.displayModeCanApply, false) }, [
+        button("displayModeApplyDisabled", "APPLY RESOLUTION", "apply", true),
+      ]),
+    ]),
   ]);
 }
 

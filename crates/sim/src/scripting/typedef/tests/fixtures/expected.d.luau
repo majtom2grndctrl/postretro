@@ -1449,6 +1449,7 @@ export type GameStateRefs = {
   },
   window: {
     displayModeBitDepth: ComputedRef<number>,
+    displayModeCanApply: ComputedRef<boolean>,
     displayModeHeight: ComputedRef<number>,
     displayModeMonitor: ComputedRef<string>,
     displayModeRefreshHz: ComputedRef<number>,

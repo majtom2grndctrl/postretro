@@ -1450,6 +1450,7 @@ declare module "postretro" {
     };
     readonly window: {
       readonly displayModeBitDepth: ComputedRef<number>;
+      readonly displayModeCanApply: ComputedRef<boolean>;
       readonly displayModeHeight: ComputedRef<number>;
       readonly displayModeMonitor: ComputedRef<string>;
       readonly displayModeRefreshHz: ComputedRef<number>;

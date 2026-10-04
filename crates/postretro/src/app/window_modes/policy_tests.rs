@@ -19,6 +19,7 @@ pub(super) fn mode(width: u32, rate: u32, monitor: &str) -> DisplayMode {
 pub(super) struct FakeBackend {
     pub(super) modes: RefCell<Vec<DisplayMode>>,
     pub(super) desktop: Option<DisplayMode>,
+    pub(super) monitor_size: Option<[u32; 2]>,
     pub(super) actual: Target,
     pub(super) requests: Vec<Target>,
     pub(super) wayland: bool,
@@ -36,6 +37,12 @@ impl Backend for FakeBackend {
             .as_ref()
             .filter(|mode| choices.contains(mode))
             .cloned()
+    }
+    fn picker_choices(&self, available: &[DisplayMode]) -> Vec<DisplayMode> {
+        self.monitor_size.map_or_else(
+            || available.to_vec(),
+            |size| super::picker::choices(available, size),
+        )
     }
     fn apply(&mut self, target: &Target) -> bool {
         let applied = target.mode != WindowMode::Exclusive
@@ -179,6 +186,11 @@ fn live_confirm_isolated_from_every_save_path_and_keep_wins_expiry_tick() {
         let now = Instant::now();
         let mut controller = Controller::new(false);
         controller.boot(&mut backend, &options, now);
+        assert!(!controller.can_apply());
+        assert_eq!(
+            controller.apply_selected(&mut backend, &mut options, now),
+            Change::None
+        );
         bridge.schedule_save(Some(&path));
         let change = if stepping {
             assert_eq!(
@@ -319,6 +331,7 @@ fn display_steps_browse_until_apply_and_borderless_refuses_selection() {
             );
             assert_eq!(controller.picked.as_ref(), Some(expected));
             assert_eq!(options, accepted);
+            assert_eq!(controller.can_apply(), expected != &old);
         }
         assert_eq!(backend.requests.len(), requests);
         assert!(controller.pending.is_none());
@@ -334,9 +347,11 @@ fn display_steps_browse_until_apply_and_borderless_refuses_selection() {
             assert_eq!(options, accepted);
             assert_eq!(controller.revert(&mut backend, now), Change::Reverted);
             assert_eq!(controller.picked, Some(old.clone()));
+            assert!(!controller.can_apply());
             assert_eq!(options, accepted);
         } else {
             assert_eq!(options.display_mode, Some(new.clone()));
+            assert!(!controller.can_apply());
             assert_eq!(backend.requests.len(), requests);
         }
     }
@@ -439,3 +454,71 @@ fn unset_display_mode_uses_launch_default_without_saving_until_keep() {
 
 #[path = "readback_tests.rs"]
 mod readback;
+
+#[test]
+fn filtered_browse_keeps_raw_boot_and_revert_modes_and_exact_saved_refresh() {
+    let mut legacy = mode(1280, 65_000, "current");
+    legacy.height = 1024;
+    let small = mode(1280, 59_000, "current");
+    let mut large = mode(1920, 119_000, "current");
+    large.height = 1080;
+    let mut backend = FakeBackend::default();
+    backend.monitor_size = Some([1920, 1080]);
+    *backend.modes.borrow_mut() = vec![legacy.clone(), small.clone(), large.clone()];
+    let mut options = PlayerOptions::default();
+    options.window_mode = WindowMode::Exclusive;
+    options.set_display_mode(legacy.clone());
+    let mut controller = Controller::new(false);
+    let now = Instant::now();
+    controller.boot(&mut backend, &options, now);
+    assert_eq!(
+        backend.requests.last().unwrap().display,
+        Some(legacy.clone())
+    );
+    assert!(!controller.fallback);
+    assert!(!controller.can_apply());
+    assert_eq!(
+        controller.step(&mut backend, &mut options, true, now),
+        Change::SelectionChanged
+    );
+    assert_eq!(controller.picked, Some(small.clone()));
+    assert!(controller.can_apply());
+    assert_eq!(
+        controller.apply_selected(&mut backend, &mut options, now),
+        Change::OpenConfirm
+    );
+    assert!(!controller.can_apply());
+    assert_eq!(controller.revert(&mut backend, now), Change::Reverted);
+    assert_eq!(backend.requests.last().unwrap().display, Some(legacy));
+    assert!(!controller.can_apply());
+    for expected in [&large, &small, &large] {
+        assert_eq!(
+            controller.step(&mut backend, &mut options, false, now),
+            Change::SelectionChanged
+        );
+        assert_eq!(controller.picked.as_ref(), Some(expected));
+    }
+    assert_eq!(
+        controller.apply_selected(&mut backend, &mut options, now),
+        Change::OpenConfirm
+    );
+    assert_eq!(controller.keep(&mut options), Change::Accepted);
+    assert!(!controller.can_apply());
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("settings.toml");
+    options.save(&path).unwrap();
+    assert_eq!(PlayerOptions::load(&path).display_mode, Some(large.clone()));
+
+    // A changed monitor aspect invalidates the draft but not the accepted tuple.
+    controller.step(&mut backend, &mut options, true, now);
+    assert!(controller.can_apply());
+    backend.monitor_size = Some([1280, 1024]);
+    let requests = backend.requests.len();
+    assert_eq!(
+        controller.apply_selected(&mut backend, &mut options, now),
+        Change::SelectionChanged
+    );
+    assert_eq!(backend.requests.len(), requests);
+    assert!(!controller.can_apply());
+    assert_eq!(controller.picked, Some(large));
+}

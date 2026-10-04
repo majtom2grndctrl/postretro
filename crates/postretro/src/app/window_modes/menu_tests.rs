@@ -173,12 +173,60 @@ fn draw(app: &mut App) -> Vec<String> {
         .collect()
 }
 
-fn assert_live_mode(texts: &[String], width: u32, hz: u32) {
-    for expected in [format!("{width}x"), "720".into(), format!(" @ {hz} Hz")] {
+fn assert_live_mode(texts: &[String], width: u32, height: u32, hz: u32) {
+    for expected in [
+        format!("{width}x"),
+        height.to_string(),
+        format!(" @ {hz} Hz"),
+    ] {
         assert!(
             texts.contains(&expected),
             "missing {expected:?} in {texts:?}"
         );
+    }
+}
+
+fn assert_apply(app: &mut App, suffix: &str, enabled: bool) {
+    let drawn = draw_data(app);
+    let enabled_id = format!("displayModeApply{suffix}");
+    let disabled_id = format!("displayModeApplyDisabled{suffix}");
+    let rects = &app
+        .session
+        .as_ref()
+        .unwrap()
+        .ui_focus_rects
+        .as_ref()
+        .unwrap()
+        .rects;
+    let (visible_id, hidden_id) = if enabled {
+        (&enabled_id, &disabled_id)
+    } else {
+        (&disabled_id, &enabled_id)
+    };
+    assert!(
+        rects
+            .iter()
+            .any(|rect| rect.id == *visible_id && rect.disabled != enabled)
+    );
+    assert!(!rects.iter().any(|rect| rect.id == *hidden_id));
+    assert_eq!(
+        drawn
+            .texts
+            .iter()
+            .find(|text| text.content == "APPLY RESOLUTION")
+            .unwrap()
+            .color[3],
+        if enabled { 255 } else { 204 }
+    );
+    assert!(
+        matches!(app.session.as_ref().unwrap().scripting.script_ctx.slot_table.borrow()
+        .get("window.displayModeCanApply").unwrap().value.as_ref(),
+        Some(postretro_entities::SlotValue::Boolean(value)) if *value == enabled)
+    );
+    if !enabled {
+        app.fire_focused_button_activation_with_display_mode(Some(&disabled_id), |_, _| {
+            panic!("disabled Apply cannot dispatch")
+        });
     }
 }
 
@@ -187,11 +235,15 @@ fn shipped_menu_activations_drive_policy_bridge_bindings_and_saved_choice() {
     let mut app = test_app();
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("settings.toml");
-    let old = mode(1280, 60000, "current");
-    let new = mode(1920, 144000, "current");
+    let old = mode(1280, 59000, "current");
+    let mut new = mode(1920, 119000, "current");
+    new.height = 1080;
+    let off_aspect = mode(1024, 60000, "current");
+    let uncommon = mode(1280, 63000, "current");
     let mut backend = FakeBackend::default();
     backend.desktop = Some(old.clone());
-    *backend.modes.borrow_mut() = vec![old.clone(), new.clone()];
+    backend.monitor_size = Some([1280, 720]);
+    *backend.modes.borrow_mut() = vec![off_aspect, uncommon, old.clone(), new.clone()];
     let now = Instant::now();
     {
         let session = app.session.as_mut().unwrap();
@@ -218,11 +270,13 @@ fn shipped_menu_activations_drive_policy_bridge_bindings_and_saved_choice() {
     draw(&mut app);
     activate(&mut app, &mut backend, "optionsTabGraphics", now);
     update_options(&mut app, &mut backend, 0.0, now);
-    assert_live_mode(&draw(&mut app), 1280, 60);
+    assert_live_mode(&draw(&mut app), 1280, 720, 60);
+    assert_apply(&mut app, "", false);
 
     activate(&mut app, &mut backend, "displayModeNext", now);
     update_options(&mut app, &mut backend, 0.0, now);
-    assert_live_mode(&draw(&mut app), 1920, 144);
+    assert_live_mode(&draw(&mut app), 1920, 1080, 120);
+    assert_apply(&mut app, "", true);
     assert_eq!(
         app.session.as_ref().unwrap().player_options.display_mode,
         None,
@@ -230,7 +284,7 @@ fn shipped_menu_activations_drive_policy_bridge_bindings_and_saved_choice() {
     );
     activate(&mut app, &mut backend, "displayModePrev", now);
     update_options(&mut app, &mut backend, 0.0, now);
-    assert_live_mode(&draw(&mut app), 1280, 60);
+    assert_live_mode(&draw(&mut app), 1280, 720, 60);
     assert_eq!(
         app.session.as_ref().unwrap().player_options.display_mode,
         None,
@@ -240,10 +294,24 @@ fn shipped_menu_activations_drive_policy_bridge_bindings_and_saved_choice() {
         backend.requests.is_empty(),
         "windowed picks do not apply exclusive modes"
     );
+    assert_apply(&mut app, "", false);
+    update_options(&mut app, &mut backend, 0.3, now);
+    assert_eq!(PlayerOptions::load(&path).display_mode, None);
+    activate(&mut app, &mut backend, "displayModeNext", now);
+    update_options(&mut app, &mut backend, 0.0, now);
+    assert_apply(&mut app, "", true);
+    activate(&mut app, &mut backend, "displayModeApply", now);
+    update_options(&mut app, &mut backend, 0.3, now);
+    assert_eq!(PlayerOptions::load(&path).display_mode, Some(new.clone()));
+    assert_apply(&mut app, "", false);
+    activate(&mut app, &mut backend, "displayModePrev", now);
+    update_options(&mut app, &mut backend, 0.0, now);
+    assert_apply(&mut app, "", true);
     activate(&mut app, &mut backend, "displayModeApply", now);
     update_options(&mut app, &mut backend, 0.3, now);
     assert!(backend.requests.is_empty());
     assert_eq!(PlayerOptions::load(&path).display_mode, Some(old.clone()));
+    assert_apply(&mut app, "", false);
 
     // The row's real named reaction writes the working copy; the bridge then
     // requests the picked exclusive tuple and opens the engine-owned confirm.
@@ -274,7 +342,7 @@ fn shipped_menu_activations_drive_policy_bridge_bindings_and_saved_choice() {
     update_options(&mut app, &mut backend, 0.3, now);
     assert!(app.window_modes.controller.pending.is_none());
     assert!(app.options_menu_is_top());
-    assert_live_mode(&draw(&mut app), 1280, 60);
+    assert_live_mode(&draw(&mut app), 1280, 720, 60);
     assert_eq!(
         backend.requests.len(),
         1,
@@ -284,15 +352,18 @@ fn shipped_menu_activations_drive_policy_bridge_bindings_and_saved_choice() {
     assert_eq!(saved.window_mode, WindowMode::Exclusive);
     assert_eq!(saved.display_mode, Some(old.clone()));
 
+    assert_apply(&mut app, "Exclusive", false);
+
     // Exclusive browsing used to switch resolution on every arrow press.
-    for (id, width, hz) in [
-        ("displayModeNextExclusive", 1920, 144),
-        ("displayModePrevExclusive", 1280, 60),
-        ("displayModeNextExclusive", 1920, 144),
+    for (id, width, height, hz, enabled) in [
+        ("displayModeNextExclusive", 1920, 1080, 120, true),
+        ("displayModePrevExclusive", 1280, 720, 60, false),
+        ("displayModeNextExclusive", 1920, 1080, 120, true),
     ] {
         activate(&mut app, &mut backend, id, now);
         update_options(&mut app, &mut backend, 0.3, now);
-        assert_live_mode(&draw(&mut app), width, hz);
+        assert_live_mode(&draw(&mut app), width, height, hz);
+        assert_apply(&mut app, "Exclusive", enabled);
         assert_eq!(backend.requests.len(), 1);
         assert_eq!(PlayerOptions::load(&path), saved);
         assert!(app.window_modes.controller.pending.is_none());
@@ -310,10 +381,11 @@ fn shipped_menu_activations_drive_policy_bridge_bindings_and_saved_choice() {
         now + std::time::Duration::from_secs(15),
     );
     assert!(app.options_menu_is_top());
-    assert_live_mode(&draw(&mut app), 1280, 60);
+    assert_live_mode(&draw(&mut app), 1280, 720, 60);
     assert_eq!(backend.requests.len(), 3);
     assert_eq!(backend.requests.last().unwrap().display, Some(old.clone()));
     assert_eq!(PlayerOptions::load(&path), saved);
+    assert_apply(&mut app, "Exclusive", false);
 
     activate(&mut app, &mut backend, "optionsBorderless", now);
     update_options(&mut app, &mut backend, 0.3, now);
@@ -364,25 +436,20 @@ fn shipped_menu_activations_drive_policy_bridge_bindings_and_saved_choice() {
     assert_eq!(PlayerOptions::load(&path), saved_borderless);
     activate(&mut app, &mut backend, "optionsWindowed", now);
     update_options(&mut app, &mut backend, 0.0, now);
-    let drawn = draw_data(&mut app);
-    assert!(
-        app.session
-            .as_ref()
-            .unwrap()
-            .ui_focus_rects
-            .as_ref()
-            .unwrap()
-            .rects
-            .iter()
-            .any(|rect| rect.id == "displayModeApply" && !rect.disabled)
-    );
-    assert_eq!(
-        drawn
-            .texts
-            .iter()
-            .find(|text| text.content == "APPLY RESOLUTION")
-            .unwrap()
-            .color[3],
-        255
-    );
+    assert_apply(&mut app, "", false);
+    let rects = &app
+        .session
+        .as_ref()
+        .unwrap()
+        .ui_focus_rects
+        .as_ref()
+        .unwrap()
+        .rects;
+    for id in ["displayModePrev", "displayModeNext"] {
+        assert!(rects.iter().any(|rect| rect.id == id && !rect.disabled));
+    }
+    activate(&mut app, &mut backend, "displayModeNext", now);
+    update_options(&mut app, &mut backend, 0.0, now);
+    assert_live_mode(&draw(&mut app), 1920, 1080, 120);
+    assert_apply(&mut app, "", true);
 }

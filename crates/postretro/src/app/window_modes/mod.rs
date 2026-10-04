@@ -4,6 +4,7 @@
 mod backend;
 #[cfg(test)]
 mod menu_tests;
+mod picker;
 mod policy;
 #[cfg(test)]
 mod policy_tests;

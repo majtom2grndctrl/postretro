@@ -859,6 +859,16 @@ const BUILTIN_ENGINE_STATE: &[EngineStateCatalogEntry<'static>] = &[
         network: ReplicationScope::None,
     },
     EngineStateCatalogEntry {
+        wire_name: "window.displayModeCanApply",
+        sdk_path: &["window", "displayModeCanApply"],
+        value_type: EngineStateValueType::Boolean,
+        default: EngineStateDefault::Boolean(false),
+        range: None,
+        persist: false,
+        capability: EngineStateCapability::Readonly,
+        network: ReplicationScope::None,
+    },
+    EngineStateCatalogEntry {
         wire_name: "window.displayModeWidth",
         sdk_path: &["window", "displayModeWidth"],
         value_type: EngineStateValueType::Number,
@@ -1231,6 +1241,7 @@ mod tests {
                 "session.openSeats",
                 "ui.textEntry",
                 "window.displayModeBitDepth",
+                "window.displayModeCanApply",
                 "window.displayModeHeight",
                 "window.displayModeMonitor",
                 "window.displayModeRefreshHz",
@@ -1291,6 +1302,12 @@ mod tests {
         assert!(!window_mode.persist);
 
         for (wire_name, sdk_path, value_type, default) in [
+            (
+                "window.displayModeCanApply",
+                &["window", "displayModeCanApply"][..],
+                EngineStateValueType::Boolean,
+                EngineStateDefault::Boolean(false),
+            ),
             (
                 "window.displayModeWidth",
                 &["window", "displayModeWidth"][..],

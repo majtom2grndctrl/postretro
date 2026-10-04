@@ -37,6 +37,7 @@ fn display_mode_actions_and_slot_refs_match_both_sdk_runtimes() {
         "BitDepth",
         "Monitor",
         "RevertSeconds",
+        "CanApply",
     ] {
         assert_eq!(
             ts["window"][format!("displayMode{field}")]["slot"],
@@ -70,6 +71,7 @@ fn shipped_frontend_window_controls_compile_and_evaluate() {
         "window.displayModeWidth",
         "window.displayModeHeight",
         "window.displayModeRefreshHz",
+        "window.displayModeCanApply",
     ] {
         assert!(menu.contains(wire), "compiled menu missing {wire}");
     }

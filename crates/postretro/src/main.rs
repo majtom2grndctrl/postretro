@@ -12778,28 +12778,62 @@ mod tests {
             for (base_id, action) in [
                 ("displayModePrev", "ui.displayMode.previous"),
                 ("displayModeNext", "ui.displayMode.next"),
-                ("displayModeApply", "ui.displayMode.apply"),
             ] {
                 let id = format!("{base_id}{suffix}");
                 let button = find_button(controls[0], &id)
                     .unwrap_or_else(|| panic!("{value} display-mode group includes {id}"));
                 assert_eq!(button.on_press, action);
-                assert_eq!(
-                    button.visible_when, None,
-                    "the parent control group owns {value} visibility",
-                );
+                assert_eq!(button.visible_when, None);
                 assert_eq!(button.bind.as_ref(), Some(&visible_when));
                 assert_eq!(button.disabled, value == "borderless");
-                let color = button
-                    .style_ranges
+                let color = button.style_ranges.as_ref().unwrap().entries[0]
+                    .color
                     .as_ref()
-                    .and_then(|ranges| ranges.entries.first())
-                    .and_then(|entry| entry.color.as_ref())
-                    .expect("display-mode buttons set their mode-specific opacity");
+                    .unwrap();
                 assert_eq!(
                     color,
                     &postretro_ui::descriptor::ColorValue::Literal([1.0, 1.0, 1.0, opacity])
                 );
+            }
+            let apply_variants: &[(&str, bool, f32)] = if value == "borderless" {
+                &[("displayModeApply", true, 0.8)]
+            } else {
+                &[
+                    ("displayModeApply", false, 1.0),
+                    ("displayModeApplyDisabled", true, 0.8),
+                ]
+            };
+            for (base_id, disabled, alpha) in apply_variants {
+                let id = format!("{base_id}{suffix}");
+                let button = find_button(controls[0], &id).unwrap();
+                assert_eq!(button.on_press, "ui.displayMode.apply");
+                assert_eq!(button.visible_when, None);
+                assert_eq!(button.bind.as_ref(), Some(&visible_when));
+                assert_eq!(button.disabled, *disabled);
+                assert_eq!(
+                    button.style_ranges.as_ref().unwrap().entries[0]
+                        .color
+                        .as_ref()
+                        .unwrap(),
+                    &postretro_ui::descriptor::ColorValue::Literal([1.0, 1.0, 1.0, *alpha])
+                );
+                if value != "borderless" {
+                    let predicate = Predicate {
+                        source: BindSource::Slot {
+                            slot: "window.displayModeCanApply".into(),
+                        },
+                        equals: Some(PredicateValue::Boolean(!*disabled)),
+                    };
+                    assert!(
+                        control_widgets.iter().any(|widget| match widget {
+                            Widget::VStack(container)
+                                if container.visible_when.as_ref() == Some(&predicate) =>
+                                find_button(widget, &id).is_some(),
+                            _ => false,
+                        }),
+                        "{id} is guarded by its eligibility predicate"
+                    );
+                }
             }
 
             let mut display_bindings = Vec::new();
@@ -14149,6 +14183,18 @@ mod tests {
             Some(&SlotValue::String(String::new())),
             "engine-owned window.displayModeMonitor is an empty string when no mode is picked",
         );
+        assert_eq!(
+            snapshot.get("window.displayModeCanApply"),
+            Some(&SlotValue::Boolean(false)),
+            "engine-owned Apply eligibility defaults false and is cloned",
+        );
+        assert!(
+            table
+                .get("window.displayModeCanApply")
+                .unwrap()
+                .schema
+                .readonly
+        );
         // `screen.vignette`/`screen.shake` default to zeroed arrays, so they are
         // value-bearing and present (the screen-effects resolve reads them).
         assert_eq!(
@@ -14183,7 +14229,7 @@ mod tests {
         );
         assert_eq!(
             snapshot.len(),
-            48,
+            49,
             "only value-bearing player, screen, input, UI, options, accessibility and window slots appear, plus the explicitly set player.health",
         );
     }

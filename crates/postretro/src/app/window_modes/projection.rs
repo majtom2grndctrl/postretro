@@ -18,7 +18,7 @@ pub(super) fn project(controller: &Controller, table: &mut SlotTable, now: Insta
         ),
         (
             "window.displayModeRefreshHz",
-            mode.map_or(0.0, |mode| mode.refresh_millihertz as f32 / 1000.0),
+            mode.map_or(0.0, super::picker::display_refresh),
         ),
         (
             "window.displayModeBitDepth",
@@ -34,6 +34,13 @@ pub(super) fn project(controller: &Controller, table: &mut SlotTable, now: Insta
         if changed {
             slot.write_value(Some(SlotValue::Number(value)));
         }
+    }
+    let can_apply = controller.can_apply();
+    let slot = table
+        .get_mut("window.displayModeCanApply")
+        .expect("catalog declares display eligibility");
+    if !matches!(slot.value.as_ref(), Some(SlotValue::Boolean(current)) if *current == can_apply) {
+        slot.write_value(Some(SlotValue::Boolean(can_apply)));
     }
     let monitor = mode.map_or("", |mode| mode.monitor.as_str());
     let slot = table

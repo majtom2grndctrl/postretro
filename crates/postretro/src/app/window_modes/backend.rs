@@ -102,6 +102,14 @@ impl Backend for WinitBackend<'_> {
         self.modes().into_iter().map(|(mode, _)| mode).collect()
     }
 
+    fn picker_choices(&self, available: &[DisplayMode]) -> Vec<DisplayMode> {
+        let Some(monitor) = self.window.current_monitor() else {
+            return Vec::new();
+        };
+        let size = monitor.size();
+        super::picker::choices(available, [size.width, size.height])
+    }
+
     fn desktop_mode(&self, choices: &[DisplayMode]) -> Option<DisplayMode> {
         let monitor = self.window.current_monitor()?;
         let size = monitor.size();

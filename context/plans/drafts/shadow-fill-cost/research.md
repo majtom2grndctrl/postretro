@@ -1,16 +1,13 @@
 # shadow-fill-cost — research
 
-Read at 2a4bd9eb3. Findings that inform the brief and decide nothing on their own.
+Read at 2c9a7ca2c. Findings that inform the brief and decide nothing on their own.
 
 ## Origin
 This brief merges two drafts:
 - `shadow-span-draws`, split out of `visible-span-draws` on 2026-10-03.
-- `shadow-cone-cull-parallel-dispatch`, from the #311 BVH/culling audit (2026-07-24).
+- `shadow-cone-cull-parallel-dispatch`, from the #311 audit. Its full text is in history: `git show 2a4bd9eb3:context/plans/drafts/shadow-cone-cull-parallel-dispatch/index.md`.
 
-The second draft's task list survives in history: `git show 2a4bd9eb3:context/plans/drafts/shadow-cone-cull-parallel-dispatch/index.md`. Its stale facts:
-- It named the struct `ShadowCull`; the struct is `ShadowCullPipeline`.
-- It gated on `stress-warren-lit`, which has no dynamic lights.
-- Its proof needed GPU timestamps, which the owner's Mac lacks.
+The first draft (2c9a7ca2c) restricted shadow draws to reached cells' spans, kept the GPU cull, and gated a flat per-leaf cull on measurement. `/validate-plan` returned *Reshape*: once draws are limited to reached cells, the GPU cull has almost nothing left to cull. The owner chose to make the CPU the only culler, with direct draws.
 
 ## When a slot draws world depth
 - A warm slot skips the cull dispatch and the world draw. The skip comes from `should_dispatch_spot_cull` / `should_dispatch_cube_cull` on both frame plans, applied through the filter passed to `ShadowCullPipeline::dispatch_occupied_slots_filtered`.
@@ -21,55 +18,82 @@ The second draft's task list survives in history: `git show 2a4bd9eb3:context/pl
   - an uncached live-pool slot (a dynamic light past cache capacity);
   - a dynamic cold fill (a new key: the light moved, or it was re-lit after its brightness fell below 0.01);
   - a promoted cold fill (on assignment).
-- The six `draw_slot_indirect` call sites in `renderer_dynamic_shadow_passes.rs` are these three cases, once each for spot and once for cube.
-- Both frame plans are set in `update_dynamic_light_slots_with_capture_overrides`, before `record_spot_shadow_depth` / `record_cube_shadow_depth` run.
+- The six `draw_slot_indirect` sites in `renderer_dynamic_shadow_passes.rs` are these three cases, once each for spot and once for cube.
+- A light holds a slot only if its influence reaches a portal-reachable cell (`update_dynamic_light_slots_with_capture_overrides`).
 
 ## Frequency in content
-- **campaign-test:** 0 slots refill per frame. Its `arena-lights.ts` pulses lights to 0, so each one cold-fills once per pulse.
-- **stress-warren-hallway-inspection:** its only dynamic light (entity 825) is a `light_dynamic` point light (cube shadow) with `carrier` `warren_lift_0`.
+- **campaign-test:** 0 slots refill per frame. Its pulsing lights cold-fill once per pulse, which recorded runs show as 0.044–0.048 refreshes per frame.
+- **stress-warren-hallway-inspection:** entity 825 is a `light_dynamic` point light (cube shadow) with `carrier` `warren_lift_0`.
   - The lift is a ping-pong `kinematic_mover`: speed 6, a 1,400 ms wait at each end, `start_on_spawn 1`, about 16 m of travel.
-  - On every moving frame the cube key changes, so all six faces cold-fill.
-  - The map has 5,671 cells and L = 8,437 leaves (`spatial-residency--lightmap-cell-blocks/findings.md`, `bvh-leaf-clustering/research.md`).
+  - While the light holds a slot, every moving frame changes its cube key, so all six faces cold-fill.
+  - Recorded spawn-pose runs saw no hallway refreshes, probably because the light fails the reach gate from spawn. The proof pose must be near the lift.
+  - The map has 5,671 cells and 8,437 leaves.
 - **kinematic-platform:** all three dynamic lights are on movers.
-- **stress-warren-crates (37 dynamic lights), -mini (21) and -showcase (45):** several regions refill per frame whenever more than 3 spot or 4 point lights pass the reachability gate at once. How often depends on the pose and was not measured. Showcase has no local bake.
-- **Runtime-spawned lights** (projectiles, impact flashes, the enemy rifle) cast no pool shadow (`rendering_pipeline.md` §4).
+- **stress-warren-crates (37 dynamic lights) and -mini (21):** several regions refill per frame whenever more than 3 spot or 4 point lights pass the reach gate at once. Showcase has no local bake.
+- **Runtime-spawned lights** cast no pool shadow (`rendering_pipeline.md` §4).
 
-## Cost model (extrapolated, not measured)
-- `draw_slot_indirect` passes whole `bucket_ranges`. wgpu-hal Metal expands a multi-draw of N into N `drawIndexedPrimitives`, so a region costs L driver draws and a cube light costs 6·L.
-- The 49 ns per draw is 0.83 ms over 16,874 camera draws (`visible-span-draws/research.md` §Measurements). The hallway lift light comes out at 6 × 8,437 × 49 ns ≈ 2.5 ms per moving frame.
-- The draw cost lands in `render_submit` (`CommandEncoder::finish` → `encode_render_pass`), not in `rec_shadow_depth`.
-- **GPU cull.** `bvh_cull.wgsl` `cull_main` runs at `@workgroup_size(1)`, one dispatch per region, in one compute pass labelled "Shadow Cull Pass" with no timestamps. It has never been measured. `build_frame_timing` has no entry for it.
+## Cost model
+Measured: `[CpuTiming]` medians at `dcde8f292` (2026-10-01), before `visible-span-draws`, release, vsync on, warm shadow cache, spawn pose. The local logs are under `measurements/release-indirect-validation/runtime/`.
+
+| stage (ms) | hallway | campaign |
+|---|---|---|
+| work | 7.46 | 7.14 |
+| render_record | 1.09 | 1.23 |
+| — rec_shadow_depth | 0.041 | 0.042 |
+| — rec_cull | 0.029 | 0.036 |
+| render_submit | 3.81 | 3.48 |
+
+Extrapolated, not measured:
+- A region draws whole `bucket_ranges`, and wgpu-hal Metal expands a multi-draw of N into N `drawIndexedPrimitives`. A region therefore costs L draws, and a cube light costs 6·L.
+- The 49 ns per draw is 0.83 ms over 16,874 camera draws (`visible-span-draws/research.md` §Measurements). That puts the lift light at about 2.5 ms per moving frame, landing in `render_submit` (`CommandEncoder::finish` → `encode_render_pass`) rather than `rec_shadow_depth`.
+- No uncached shadow fill has ever been measured.
+- The GPU cull, `bvh_cull.wgsl` `cull_main` at `@workgroup_size(1)`, has never been timed.
 
 ## Containment
 Cell bounds do not contain their leaves.
 - Cell bounds come from the cell polytope: `brush_bsp.rs::make_leaf` → `leaf_bounds` → `RegionPolytope::vertex_aabb`. They have no padding and pass unchanged into `CellData`.
-- Faces are clipped down the tree by `geometry_utils::split_polygon` with `SPLIT_EPSILON = 0.1`. A vertex within 0.1 m of a splitter counts as on the plane and stays at its original position, so a face can extend up to 0.1 m past its cell's polytope. On an axis-aligned splitter that puts it outside the cell's AABB.
-- No test asserts leaf ⊆ cell.
-- There are no orphan leaves: `every_drawable_leaf_covered_exactly_once`.
-- A per-cell union of leaf AABBs is the exact box the GPU cull tests leaf by leaf.
+- Faces are clipped by `geometry_utils::split_polygon` with `SPLIT_EPSILON = 0.1`. A vertex within 0.1 m of a splitter counts as on the plane and keeps its position, so a face can extend up to 0.1 m past its cell's polytope.
+- No test asserts that a leaf lies inside its cell. There are no orphan leaves: `every_drawable_leaf_covered_exactly_once`.
+- A union of a cell's leaf AABBs contains every triangle in the cell, so a cell whose union misses the frustum contributes no depth.
 
-## Plane and test identity
-- `extract_frustum_planes_for_gpu` (`render-data/src/cone_frustum.rs`) builds the per-region uniform. `cone_frustum_planes` delegates to it.
-- `aabb_intersects_frustum` mirrors the WGSL `is_aabb_outside_frustum` (positive vertex, `< 0.0`, no epsilon). Its callers are `instance_casts_into_cone` and `mover_occluders_in_cone`.
-- The test is monotone in the box, so a union box that fails a plane means every leaf inside it fails that plane too.
-- The one gap is rounding: the GPU may contract the plane dot into a fused multiply-add. A small margin on the CPU side covers it.
+## Index contiguity
+- `geometry.rs::build_leaf_ordered_faces` emits faces in cell order, and `extract_geometry` appends indices in that order.
+- `face_cut.rs::apply_face_cuts` rebuilds indices but keeps face order and `leaf_index`.
+- `bvh_build::flatten` sorts only the leaf array, never the index buffer.
+- So a cell's leaves span one contiguous index range, and consecutive cell ids abut.
+- `leaf_face_ranges_are_contiguous` pins only face order inside `extract_geometry`. Nothing pins it across face cuts or at load.
+- Derive each cell's range from `full.bvh_leaves` through `full.cell_draw_index` spans. Don't use `BspLeafRecord.face_start`: it predates face cuts.
 
-## Stale slots
-- On rejecting an inner node, the tree walk leaves the slots of the leaves beneath it untouched, and they keep an earlier value. It zeroes only a rejected leaf node.
-- `draw_slot_indirect` documents why that is safe: those leaves lie outside the region's frustum and clip out against its projection.
-- Span draws keep that argument. A stale slot inside a drawn span is still a leaf outside this frame's frustum.
+## Shadow depth pipeline
+- `full.shadow_depth_pipeline` (`spot_shadow.wgsl`) serves spot and cube.
+- Its vertex input is a single `Float32x3` position, with `fragment: None` and one uniform bind group with a dynamic offset.
+- `draw_slot_indirect` binds no material, and `visible_span_frame_tests.rs` asserts "depth-only shadow must not bind materials".
+- Skinned and rigid occluders (`record_skinned_depth`, `record_kinematic_movers`) set their own pipeline and buffers, cull on the CPU against `cone_frustum_planes`, and share only the light-space bind group.
 
 ## Rivals
-- **Per-slot candidate gather on the GPU.** Reuse `CandidateCullPipeline` per region, using the reach set as candidates. Rejected because it needs per-region uniform, candidate and params buffers, per-region bind groups with offsets, and a mandatory region clear. That is new persistent GPU state, bought to save arithmetic a flat dispatch over about 8.4k leaves (about 132 workgroups) does cheaply.
-- **Baked padded cell bounds.** Rejected: a format change for data the load can derive.
-- **Bridging gaps between spans.** Rejected for the same reason `visible-span-draws` rejected it.
+- **Keep the GPU cull and restrict its draws to reached spans** (the first draft). Rejected:
+  - with about 1.5 leaves per cell on the hallway, the cull drops few leaves inside a reached cell;
+  - a leaf it zeroes still costs a Metal draw;
+  - it keeps the serial walk, about 22 MB of per-region buffers, a CPU/GPU agreement margin, and a stale-slot argument.
+- **One install-time indirect buffer holding every leaf's record** (about 165 KB). It keeps shadows on the indirect path, at one draw per leaf rather than per run.
+- **A per-region GPU candidate gather.** Rejected: new per-region GPU state.
+- **Baked padded cell bounds.** Rejected: a format change for derivable data.
+
+## Deletion
+- **Memory:** a region is `total_leaves × 20` bytes rounded up to 256. On the hallway that is 168,960 B × 132 regions ≈ 22.3 MB, plus two status scratch buffers, two all-ones visible-cell buffers, and per-region uniforms.
+- **Users of `ShadowCullPipeline`:** construction in `renderer_full_init.rs` and `renderer_resources.rs`, the fields in `renderer_types.rs`, `lib.rs` `mod shadow_cull`, `visible_span_frame_tests.rs`, and the uniform-buffer entry in `renderer_tests/inventory.rs`. Nothing in wireframe, cull-status, capture or diagnostics uses it.
+- **Accessors left with no callers:** `ComputeCullPipeline::node_buffer`, `bucket_ranges` and `has_multi_draw_indirect`.
+- **Counters that change meaning:**
+  - `should_dispatch_{spot,cube}_cull` and `skipped_*_cull_dispatches` in both cache plans;
+  - the `cull_dispatch_skips` log counter;
+  - `promoted_depth_cache_cull_dispatch_skips`, whose accessor has no callers.
+- **Stale comments:** `lighting/src/lib.rs`, `cube_shadow.rs`, `renderer_light_slots.rs`, `renderer_render_frame.rs`, `compute_cull.rs`. Docs: `rendering_pipeline.md` §7.1 step 6.
+- **`indirect_contract_tests.rs`:**
+  - Remove these shadow pieces: the `INDIRECT` owner `ShadowCullPipeline::new` and its constructor sites; the `draw_slot_indirect` owner and match arm; the reference and import bans; the inventory entries (`INDIRECT` count 2 → 1, `ShadowCullPipeline::new` 4, `draw_slot_indirect` 6); the required install and boot strings.
+  - Retarget the nested-binding fixtures to the camera `draw_indirect`.
+  - The scanner records only names containing "indirect", so direct draws need no rule.
 
 ## Headless capture
-- `--capture` skips every `is_dynamic` light (`capture_static_lights_and_shadow_selection`; regression test `capture_lights_remain_static_only_and_remap_shadow_selection`).
+- `--capture` skips every `is_dynamic` light (`capture_static_lights_and_shadow_selection`; test `capture_lights_remain_static_only_and_remap_shadow_selection`).
 - Movers stay at their spawn pose.
-- So no existing capture shows a dynamic-light shadow, and there is no byte-identical before/after for this brief.
-
-## Adjacent and not verified
-- The camera's fallback paths (solid-cell, exterior, no-portals, step-limit) cull cells by `CellData` AABB against the frustum.
-- Given §Containment, a leaf extending up to 0.1 m past a culled cell's AABB could be missing at the frustum edge.
-- If that is real, it predates span draws, because the tree walk already gated on the cell bit.
+- So no existing capture shows a dynamic-light shadow.

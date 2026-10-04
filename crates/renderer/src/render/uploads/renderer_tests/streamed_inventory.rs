@@ -262,7 +262,10 @@ fn real_map_streamed_scene_stages_every_indirect_promotion_and_animated_writer()
     let before_grid_calls: u64 = baseline
         .iter()
         .filter(|(file, line, _)| {
-            file.ends_with("sh_streaming/direct_compose/passes.rs") && *line == shared_grid_line
+            crate::render::uploads::site_file_ends_with(
+                file,
+                "sh_streaming/direct_compose/passes.rs",
+            ) && *line == shared_grid_line
         })
         .map(|(_, _, count)| *count)
         .sum();

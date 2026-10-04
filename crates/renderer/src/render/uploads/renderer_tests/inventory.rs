@@ -732,7 +732,7 @@ pub(super) fn require_site(
         .queue
         .writer_counts()
         .iter()
-        .filter(|writer| writer.site.file().ends_with(file) && writer.site.line() == line)
+        .filter(|writer| writer.is_at(file, line))
         .map(|writer| {
             writer.writes
                 - baseline

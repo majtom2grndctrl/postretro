@@ -585,7 +585,9 @@ fn indirect_contract_override_has_one_production_reader_in_workspace() {
                 // Only the variable's readers matter here, so avoid resolving
                 // unrelated crates' module paths or parsing their entire trees.
                 if text.contains("WGPU_VALIDATION_INDIRECT_CALL") {
-                    output.push(Source::fixture(path.to_str().unwrap(), &text));
+                    // `/`-separated like the `INIT` suffix, on Windows too.
+                    let path = path.to_str().unwrap().replace('\\', "/");
+                    output.push(Source::fixture(&path, &text));
                 }
             }
         }

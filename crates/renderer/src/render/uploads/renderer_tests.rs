@@ -61,7 +61,7 @@ fn site_writes(renderer: &Renderer, file: &str, source: &str, needle: &str) -> u
         .queue
         .writer_counts()
         .iter()
-        .filter(|writer| writer.site.file().ends_with(file) && writer.site.line() == line)
+        .filter(|writer| writer.is_at(file, line))
         .map(|writer| writer.writes)
         .sum()
 }

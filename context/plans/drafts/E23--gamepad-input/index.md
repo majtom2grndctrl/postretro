@@ -1,131 +1,261 @@
 # E23--gamepad-input
 
-Seed · `/draft-session` complete; next step is `/draft-brief` for E23 U3 · read at 1527f5b26
-
-This is the session handoff for the input-binding half of U3 (`ready/E23--accessibility/index.md` §U3), recorded so a later session can pick it up. The owner folded a game-author binding layer and tap/hold triggers into U3. U3's menu-conventions stage is unchanged and is not covered here. U3 also owns settings scope (machine vs game), taken over from `drafts/window-modes` (§Settings scope).
+Brief · resumable · Epic 23 (U3) · reads: `context/lib/input.md` §2, §5, §7 · `player_options.md` §2, §4–§6 · `ui.md` §4, §5 · `networking.md` §What gates, and what replicates instead · read at 2a4bd9eb3 (source at af1d3c1b5)
 
 ## Problem
-Every game built on PostRetro gets the same hardcoded keys (`input/defaults.rs`: Shift→Sprint, F→Dash). A game author can't pick which commands their game uses or set its default keyboard and gamepad bindings, and nothing skips the commands a game doesn't use. A dash-less game still has F bound to a dead command, and that dead binding can still collide with other keys. Player rebinding is planned in U3 but has no author layer under it, and today one tap or hold of a key can't drive two commands.
+A requested capability: epic U3 (D8), widened by the owner to add a game-author binding layer. Players cannot remap anything. Gamepad menus also miss console conventions:
+- focus is not restored on return
+- nothing repeats unless the author sets it up
+- nested groups trap focus
+- there is no scrolling
+- there are no device-aware button prompts
+- destructive exits are not confirmed
 
-## Outcome
-Game authors pick their game's commands and set default bindings (keyboard/mouse and gamepad), including tap/hold triggers. Which commands are relevant is derived from the mod's data, and authors can override it. Players rebind key and trigger on top. Their changes are saved per game, as a diff over the author's defaults. The API is shaped so mod-defined custom commands can be added later without a migration.
+Game authors cannot choose their game's commands or defaults. Every game gets the bindings in `input/defaults.rs`, so a game without dash still has F bound to a dead command, and once rebinding exists that dead binding blocks F for anything else. One key cannot drive both a tap command and a hold command.
 
-## Verified facts
-- Commands are already separate from keys. `Action` (closed enum, `input/types.rs`) is read via `ActionSnapshot`; `Binding{input: PhysicalInput, action, scale}` maps keys to commands. Bindings are fixed at `InputSystem::new` (no setter; the `unique_actions` cache comment expects one).
-- `Action` is used only inside the postretro crate; no serde on `Action` or `PhysicalInput`.
-- The wire carries resolved intent, not commands: `net::wire::InputCommand` → `WireMovementInput{dash_pressed, running, crouch_intent, …}`, built by `build_sim_command`. Bindings and triggers are client-local; the wire is unchanged.
-- UI nav bypasses the binding table: `nav_intent_for_key`, `nav_intent_for_gamepad_button`, and `StickNavTracker` (`input/ui_nav.rs`). South is both Jump and Confirm.
-- Dash reads only the press edge, on `tick_index == 0`; Sprint is a held-state read (`main.rs`). Crouch hold/toggle is resolved upstream of the simulation (`resolve_crouch_intent`). Input-layer timing precedent: the `WieldableSelection` dwell timer, tuned from `SwitchingDescriptor`.
-- There's no author input surface. `postretro.toml` is read only by the tooling (`crates/tool/src/manifest.rs`). `ModManifest` → `ModManifestResult` has no input field; it's committed at mod init and hot-reloads.
-- Capability switches:
-  - `PlayerMovementDescriptor.dash` / `.crouch: Option<..>`: absent means disabled.
-  - Reload is meaningful only for magazine-type `WeaponResource`.
-  - `ground.speed.run` is required, so Sprint has no switch.
-  - AltFire has no consumer (`FireMode` is Semi|Auto).
-  - MoveUp is read only by the fly-cam when no pawn exists.
-- Movement descriptors resolve at spawn via `player_spawn` `entity_class`. A mod may define several, and the rebind menu can open from the frontend before any spawn.
-- `ModManifestResult.id` is required (`validate_mod_manifest_id`) and frozen at first commit across hot reload. Persisted mod state is already keyed by it (`state_persistence::state_path`). What happens when two games share an id is a §Settings scope question.
-- Settings are one file per OS user: `ProjectDirs("", "", "postretro")` → `settings.toml`, shared by every game built on the engine.
-
-## Not verified
-- Whether `air.jumps = 0` disables jumping (Jump is treated as always relevant).
-- Use/Drop semantics beyond the `sim/touch.rs` names.
+When this is done:
+- Authors pick their game's commands and its default keyboard/mouse and gamepad bindings, each with an activator.
+- Relevance is derived from the mod's data, and authors can override it.
+- Players rebind keys, UI navigation included, and the result is saved as a diff over the author's defaults for that mod.
+- Gamepad menus follow console conventions, and button prompts follow both the device and the bindings.
 
 ## Decisions
-1. **Fold into U3** (owner). U3's remapping stage grows to cover the author layer, tap/hold triggers, and per-game player overrides. Amend the U3 contents and acceptance criteria in the epic index.
-2. **Authors pick commands and set defaults; no custom commands yet** (owner). The API assumes custom commands are coming:
-   - Commands are identified by stable snake_case string IDs (`dash`, `wieldable_select_3`); the engine enum converts to and from them.
-   - Engine commands are built-in entries in a command registry. Mod commands later take a `<mod_id>.<name>` ID in the same key space.
-   - Saved files and the manifest never use enum indices.
-3. **Author surface.** An optional `input` block on `ModManifest`, validated at mod init and hot-reloadable. Per command it carries an optional label, category, menu order, a forced show/hide, and default bindings per device class, each with a trigger. With no block, the engine default table applies, so the dev mod keeps working.
-4. **Relevance is derived, with an author override** (owner):
-   - At mod init, take the union over all of the mod's descriptors: Dash if any descriptor has dash, Crouch likewise, Reload if any weapon has a magazine resource.
-   - AltFire and MoveUp are never relevant in shipped play (no consumer, and fly-cam only).
-   - Every other command is relevant.
-   - The input block can force a command shown or hidden.
-   - An irrelevant command is unbound, absent from the rebind menu, and never part of a conflict.
-   - Mod-global descriptors are the intended authoring pattern (owner).
-5. **Effective binding.** Player override, else author default, else engine default; resolved per (command, device class). A runtime `set_bindings`-style rebuild runs at mod init, on hot reload, and on rebind, keeping input state and preferences.
-6. **Saved data is a diff, scoped per game:** `[game."<mod_id>".bindings.<device_class>]` rows keyed by command ID. The mod id is quoted because ids may contain `.` (the dev mod's is `postretro.dev`). U3 builds the `[game."<mod_id>"]` reader, read at mod init once the id is known; later game-scoped settings join the same section.
-   - A missing row follows the author's default, so a later change to a default reaches players who never rebound that command.
-   - An empty list means explicitly unbound.
-   - Rows naming unknown commands are kept on disk and ignored.
-   - An unknown key string falls back to the default for that binding only (I7).
-7. **Keys are saved by physical position.** Keyboard keys use W3C `KeyboardEvent.code` (`KeyW`, `ShiftLeft`, which winit `KeyCode` mirrors). Gamepad buttons are named by position (`south`, `east`, `left_shoulder`). Glyphs and labels are worked out at display time (U3 glyph work).
-8. **Triggers live on bindings, not commands:** `press` (default), `release`, `tap{max}`, `hold{min}`.
-   - Authors set defaults.
-   - Players can change key and trigger kind per binding (owner).
-   - Thresholds come from author defaults, scaled by one global accessibility setting for hold timing (a field in the `[accessibility]` group).
-   - Starting defaults: tap ≤ 0.2 s, hold ≥ 0.2 s.
-9. **Sharing a key uses the Steam rule** (owner). When tap and hold bindings share a key, neither fires until release (under the threshold: the tap) or the threshold passes (the hold, never the tap).
-   - A `press` sharing a key with a `hold` is held back the same way.
-   - A key with a single binding fires on the press edge with no added delay.
-   - A trigger resolves to a one-shot that `build_sim_command` reads, so a dash resolved on release survives a frame with zero ticks.
-   - A focus change mid-hold cancels the pending resolution: neither command fires.
-10. **Command sets.** Gameplay and UI nav are separate sets, and conflicts are checked only within a set, so South as both Jump and Confirm stays legal. Nav commands are always relevant, can't be hidden, and keep U3's confirm/cancel guard. Author defaults are validated against that guard at mod init.
-11. **Docs.** In the same change, amend `player_options.md` §6 ("mods do not extend" becomes "authors pick and set defaults; custom commands later") and `input.md` §2/§7 with the layering, trigger, and command-set contracts.
 
-## Non-goals
-- Mod-defined custom commands (the shape is reserved by decisions 2 and 6).
-- Chord/modifier bindings and double-tap. The trigger enum stays open for them; double-tap adds a second delay window.
-- A press-then-hold trigger (owner chose the Steam rule only).
-- Per-level relevance. Use, Drop, and weapon slots depend on level content and stay always relevant.
-- Steam Input API integration (`input.md` §9).
+**Prior commitments this brief diverges from.** Each is argued in its bullet below.
+- `player_options.md` §5 puts remapped bindings in the `[accessibility]` group.
+- `player_options.md` §6 says mods do not extend the action set. Authors still cannot add commands, but they now pick commands and set defaults.
+- `done/M13--input-breadth` binds LB/RB to Next/Prev and makes `restoreOnReturn` and repeat opt-in (epic Prior commitments already argue the latter two).
+- The epic's "persisted `[bindings]`" table.
 
-## Settings scope
-Taken over from `drafts/window-modes`, which kept only window modes; per-game user directories went to `ready/game-user-dirs`. Candidates, not decided:
-- Top-level keys stay the implicit machine scope; no `[machine]` section, no migration. Saving already preserves unknown tables (`DocumentWriter`).
-- Classification. Machine/person: graphics quality and `render_resolution`, `window_mode`, the `[accessibility]` group with `view_feel_scale`, `mouse_sensitivity`, `invert_y`, `scroll_notch_pixels`, `crouch_mode` and the planned `sprint_mode`, `player_id`, `accessibility_panel_shown`, `switch_cycle_dwell_ms` (a player preference; the window-modes validation agreed). Game: bindings. U2's `theme_variant` is machine-scoped but stores a per-mod variant id.
-- Mod-declared gameplay settings are persisted mod-state slots, not `settings.toml` entries.
-- Two games sharing a mod id share per-game data; changing an id drops it. Once `ready/game-user-dirs` gives each shipped game its own directory, this matters only where projects share a directory: the `postretro` directory of bare engine and `xtask` runs, and a future multi-mod hub. Authoring and SDK runs get their project's own directory.
-- Record the outcome in `player_options.md`.
+### Commands and relevance
+- **Commands are stable snake_case IDs.** They map one-to-one to the closed `Action` set. Engine IDs never contain `.`. Later mod-defined commands take the form `<mod_id>.<name>` and are split at the last `.`, because mod ids contain dots (`postretro.dev`). Saved data and the manifest never use enum indices. The command set stays engine-closed (epic §Out of scope), so mod-defined commands are a non-goal and only their ID space is reserved.
+- **Axis actions split by input kind.** Each axis action exposes one digital command per direction (`move_forward`, `move_back`) and one analog command for axis sources (`look_x`). A digital command accepts keys and buttons; an analog command accepts axes only. A stick swap is therefore an ordinary rebind.
+- **Two command sets: gameplay and UI nav.** Conflicts are checked only within a set, so South as both `jump` and `nav_confirm` stays legal. Nav commands are always relevant and cannot be hidden. Layer placement: UI dispatch still runs first (`input.md` §7) and resolves nav intents from the nav set's effective bindings.
+- **Relevance is derived at mod init by an exhaustive match over the commands.** A new command fails to compile until someone classifies it, the denylist recipe of `networking.md` §What gates. A "default to relevant" rule would fail open.
+  - `dash` and `crouch` are relevant if any movement descriptor in the registry has them.
+  - `reload` is relevant if any weapon's resource is the magazine kind.
+  - `alt_fire` is relevant if any weapon declares a `secondary` activation.
+  - `move_up` is never relevant (fly-cam only).
+  - Every other command is classified relevant by name. Per-level relevance is a non-goal: use, drop, and slot selection depend on level content.
+  - Relevance is recomputed when entity descriptors hot-reload.
+- **In co-op, relevance follows the host.** While participating, relevance is the union of local derivation and the installed host tuning, recomputed when tuning installs. Tuning sites keep no local fallback (`networking.md`), so a client whose registry lacks dash would otherwise leave the host's live dash unbound.
+- **An author override beats derivation.** The `input` block can force a command shown or hidden. An irrelevant command is unbound, absent from the rebind panel, never part of a conflict, and draws no glyph.
 
-## Proof
-Automated:
-- No input block: effective bindings equal `default_bindings()`, and the dev mod's behavior is unchanged.
-- Author binds `ShiftLeft`→dash and gives sprint no default: Shift drives `dash_pressed`, F drives nothing, `running` stays false.
-- Relevance:
-  - A mod with no dash descriptor: Dash is unbound, missing from the rebind list, and its engine default key doesn't conflict with an author binding on F.
-  - A mod where one of two descriptors has dash: Dash is relevant.
-  - Force-show and force-hide overrides each flip the derived answer.
-- Diff layering:
-  - An unrebound command follows a changed author default after reload; a rebound one keeps the player's key.
-  - An empty-list row stays unbound across save and load.
-  - An unknown command row survives a save untouched.
-  - An unknown key string falls back for that binding only.
-- Per-game scope: game A's overrides don't apply when game B loads from the same `settings.toml`.
-- Tap/hold on one key:
-  - Released before the threshold: the tap fires once, the hold never.
-  - Held past the threshold: the hold fires, the tap never.
-  - Release exactly at the threshold: pin the inclusive side.
-  - Release and re-press within one frame.
-  - A frame with zero ticks still delivers the tap one-shot.
-  - A focus change mid-hold: neither fires.
-- A single-binding dash key fires on the press frame, with no delay.
-- The global accessibility hold-timing scale moves both thresholds.
-- Player trigger-kind changes round-trip through `settings.toml`.
-- Hot reload of the input block recomputes effective bindings and keeps player overrides.
-- Command sets: South bound to both Jump and Confirm is not a conflict; two gameplay commands on one key with the same trigger is a conflict, reported before it applies.
-- Mod-init validation rejects author defaults that leave confirm or cancel unbound.
-- Encoding of `InputCommand` and `WireMovementInput` is unchanged (no `wire.rs` diff).
+### Bindings and activators
+- **Activators live on bindings.** The kinds are `press` (the default), `release`, `tap` (a max time), and `hold` (a min time). The field is named `activator` (owner) so it doesn't clash with the weapon descriptor's `trigger`. Authors set activators. **Players rebind keys only** (owner). A rebound key inherits the activator of its slot; a slot past the end of the author's list takes `press`.
+- **Each command accepts a fixed set of activator kinds.**
+  - `shoot` and `alt_fire` accept `press` only, because charge requires `press` (`entity_model.md` §Weapon activations).
+  - `sprint` and `crouch` accept `press` or `hold`.
+  - Analog and wheel-notch commands accept `press`.
+  - Every other command accepts any kind.
+- **Shared keys follow the Steam rule.** Within a set, one key may carry at most one short binding (`press` or `tap`) plus one `hold`; any other combination is a conflict.
+  - On a shared key, neither binding fires until the key is released before the threshold (the short binding fires) or the threshold passes (the hold fires and the short binding never does).
+  - A press-only command never joins a shared key.
+  - A `tap` with no hold partner on its key fires on the press edge, so a single-binding key never adds delay.
+  - If focus is lost or the UI captures input mid-resolution, the pending resolution is cancelled and neither binding fires.
+  - Threshold edge: release at exactly the threshold counts as the tap.
+- **Activators emit phases, not one-shots.** A resolution produces the Pressed → Held → Released sequence the snapshot already carries, through the existing render-rate latch (`input.md` §2). Edge commands read Pressed and sprint reads the held state. An edge resolved on release still survives a frame with zero ticks. `crouch_mode` and the new `sprint_mode` apply on top: the activator decides when a command goes down and up, and the mode decides whether that latches.
+- **Thresholds are author-set and player-scaled.** Each binding's threshold is set by the author; the engine default is 0.2 s for both tap and hold. One `hold_timing_scale` field in the `[accessibility]` group scales every threshold. Being in the group, it gets the U1 obligations: an `accessibility.*` slot, a panel entry, and epic AC 2, 3a–3c, and 10.
+- **The guard covers `nav_confirm`, `nav_cancel`, and `nav_menu`.** Each keeps at least one binding per device class. The rebind panel refuses a change that breaks this, and author defaults that break it are diagnosed. Epic AC 21 names only confirm and cancel; `nav_menu` is added because it is the only route to the pause menu and its exits.
 
-Manual:
-- Playtest tap-Shift dash plus hold-Shift sprint on keyboard and gamepad: dash timing feel at 0.2 s, and the sprint start doesn't stutter.
-- The rebind menu shows only relevant commands, with author labels and categories, and lets the player pick a trigger kind.
-- Gamepad-only rebinding pass (folds into U3 AC 25).
+### Author surface
+- **An optional `input` block on `ModManifest`, in both SDKs.**
+  - **Per command:** a label, category, order, `show` override, and default bindings per device class (`keyboardMouse`, `gamepad`). Each binding gives an input, an activator, and an optional threshold.
+  - **Fallbacks:** a device class that is absent keeps the engine default, and an empty list means unbound. With no block at all, the engine default table applies, so the dev mod is unchanged until it opts in.
+  - **Glyph art:** the block also names glyph art per device family.
+- **Validation at mod init degrades per command.** Precedent: a malformed optional manifest block warns and falls back. Each of these gets a diagnostic, and that command's defaults for that device class fall back to the engine default while the rest of the block applies:
+  - an unknown command ID
+  - an unknown input string
+  - an activator the command doesn't accept
+  - a conflict within a set
+  - a guard violation
 
-## Open owner questions
-None for the binding layer.
+  Hot reload re-validates the block and recomputes effective bindings.
 
-## Route
-Brief: the U3 resumable brief at this path, replacing this seed. The owner folded this work into U3. The saved `[game."<mod_id>".bindings]` shape, the manifest `input` block, and the command-ID vocabulary are surfaces players and modders depend on, and they're one-way doors, so they need review before code. One integrating executor owns how the work splits into tasks.
+### Player data
+- **Bindings are saved as a diff, scoped by mod id.** Rows live at `[game."<mod_id>".bindings.<device_class>]`, keyed by command ID, each a list of input strings. Rows store keys only, never activators.
+  - **Not in `[accessibility]`:** this diverges from `player_options.md` §5. A binding is a diff over one mod's defaults, and it has no resolved value to put in an `accessibility.*` slot.
+  - **Keyed by mod id:** each game already has its own directory (`done/game-user-dirs`), but bare and xtask runs share the `postretro` directory. The key matches `state_persistence::state_path`.
+  - **Row rules:**
+    - A missing row follows the author default, so a later change to a default reaches players who never rebound that command.
+    - An empty list means unbound.
+    - A row naming an unknown command is kept on disk and ignored.
+    - An unknown input string drops that entry alone (I7).
+  - **The reader:** U3 builds the `[game."<mod_id>"]` reader, read at mod init once the id is known. Later game-scoped settings join the same section.
+- **On a collision with a changed default, the player wins** (owner). If a player's binding and a later author default land on the same key with the same activator, the player's binding keeps the key. The author default is suppressed on that key, and the rebind panel flags the displaced command as needing a key. Nothing the player chose changes silently.
+- **Inputs are named by physical position.**
+  - **Keyboard:** W3C `KeyboardEvent.code` names (`KeyW`, `ShiftLeft`), which winit `KeyCode` mirrors.
+  - **Mouse:** `mouse_left`, `mouse_right`, `mouse_middle`, `mouse_back`, `mouse_forward`, `wheel_up`, `wheel_down`, `mouse_x`, `mouse_y`.
+  - **Gamepad:** named by position, e.g. `south`, `left_shoulder`, `left_trigger`, `left_stick_press`, `left_stick_x`.
+  - Labels and glyphs are resolved at display time.
+- **Effective binding** is resolved per (command, device class): player override, else author default, else engine default. The confirm/cancel swap is then applied to the gamepad nav bindings. The binding table is rebuilt at mod init, on hot reload, on rebind, and when tuning installs, and the rebuild keeps input state and preferences.
+- **Settings scope.** Top-level `settings.toml` keys are per app, because each app has its own directory. There is no `[machine]` section and no migration. Game-scoped data lives under `[game."<mod_id>"]`, with bindings as the first content. New fields:
+  - `gamepad_look_sensitivity`, `gamepad_look_dead_zone` (look stick only; the move stick keeps its dead zone), and `gamepad_invert_y` are top-level, beside `mouse_sensitivity` and `invert_y`.
+  - `sprint_mode` is top-level, beside `crouch_mode`.
+  - `swap_confirm_cancel` is top-level.
 
-## Grounding: precedent survey
-- Every engine surveyed puts triggers on the binding. Unreal Enhanced Input uses Triggers on mappings; Unity uses Interactions on bindings.
-- Saved player changes:
-  - Unity `SaveBindingOverridesAsJson` stores only the diff.
-  - Unreal `EnhancedInputUserSettings` keys mappings by (mapping name, slot).
-- Shared-key rule: from Steam Input activators. An interruptible press is held back until release or the long-press threshold.
-- Physical key names: Godot `physical_keycode`, Unity `<Keyboard>/a`, and Bevy `KeyCode`.
-- The rebind menu lists a declared subset with labels in Source `kb_act.lst` and Steam's In-Game Actions (IGA) manifest.
-- Default thresholds: Unreal and Unity both use tap ≤ 0.2 s. Unity's hold is 0.4 s and Unreal's 1.0 s; both are too slow for a sprint in a fast-paced shooter.
+  Only `hold_timing_scale` joins the `[accessibility]` group. The gamepad look fields are tuning preferences with no OS value; putting them in the group would add panel entries and slots that serve nothing.
+
+### Remapping UI
+- **An engine-owned controls panel.** It is a `core/ui/` tree generated from the effective command list, opened by the reserved action `ui.openControls`. Its registry name is reserved the same way the accessibility panel's is (`ui.md` §1.1), and it uses the mod's theme tokens.
+  - **Why the engine owns it:** mods cannot author rows over a command list that is computed at mod init, and owning the panel keeps the guard and conflict rules out of mod scripts.
+  - **Contents:** relevant commands grouped by author category and ordered by the author's order, with each binding's activator shown read-only.
+  - **Actions:** per-command reset and reset-all.
+  - **Conflicts** are reported before they apply. The player either replaces the binding (unbinding the other command) or cancels.
+- **Raw capture.** The capture prompt receives the next key, button, or axis, including inputs the UI otherwise swallows: Escape, Start, Select/Back.
+  - The capture is decided App-side after that frame's activations, and only while the prompt is the active tree (epic `research.md` §Brief pins, raw-capture decision stage).
+  - The prompt has no time limit, and every input can be captured.
+
+### Menu conventions (epic §U3; AC 19, 20, 23–25)
+- **Restore on return** is on by default. It applies only on a return, meaning a pop that reveals the tree again. A fresh push lands on initial focus (O14). `restoreOnReturn: false` opts a tree out.
+- **Engine-default hold-to-repeat** applies where a container authors none. An authored repeat wins, and an authored zero delay still means no repeat.
+- **A held slider step repeats and accelerates** with hold time, then clamps at its bounds without overshoot. If an external write to the slot lands during a hold, the next step continues from the new value.
+- **Nested groups.** When a directional move finds no target in the current group, it continues in the enclosing group, which treats each nested group as one candidate by its bounds. Entering a group lands on its last-focused member, else its initial focus. Linear Next/Prev stay within the group, and `focusNeighbors` still overrides. I5 holds: the new containers admit only interactive widgets.
+- **Tabs are an authored pattern on existing roles.** A tab strip is a container with `role: "tablist"` whose `role: "tab"` buttons carry `selected`.
+  - `nav_tab_next` and `nav_tab_prev` (LB/RB) activate the adjacent tab in the top tree's tablist, wrapping, and move focus to it.
+  - In a tree with no tablist they keep today's Next/Prev behavior, so existing trees are unchanged. This is the divergence from `done/M13--input-breadth`, argued here: the bumpers are console tab keys.
+- **A new `Scroll` widget** is a vertical container with a fixed viewport height that clips its children. It is neither a focus stop nor a focus group. Focusing a child outside the viewport scrolls it into view by the minimum distance, and the pointer wheel scrolls it.
+- **Device family follows the last input.** The families are `keyboardMouse`, `xbox`, `playstation`, and `nintendo`; a gamepad's family comes from its vendor id, and unknown vendors are `xbox`. A readonly slot `input.deviceFamily` exposes it.
+  - **Glyph widget.** `Glyph({ command })` draws the glyph for the command's first effective binding on the current family, using the mod's glyph art.
+  - **Fallback:** missing art draws the input's name as text.
+  - Glyphs follow rebinding and the swap with no extra authoring.
+- **The confirm/cancel swap** exchanges the gamepad bindings of `nav_confirm` and `nav_cancel`. Glyphs follow because they read effective bindings. A swap chosen automatically by device family is a non-goal: the player chooses.
+- **A confirmation dialog is an authored pattern, not a new primitive.** It is a dialog tree with `initialFocus` on the safe choice, pushed by `showDialog`; the precedent is `core/ui/displayModeConfirm.json`. AC 19's fresh-push rule makes a reopened dialog land on the safe choice. The dev EXIT and QUIT actions each gain one.
+- **On-screen keyboard shortcuts.** The UI commands `text_backspace`, `text_space`, and `text_commit` are live while a text-entry tree is on top. Each activates its key button without moving focus to it.
+
+### Scripting surface
+```ts
+export default defineMod({
+  id: "acme.neon",
+  input: {
+    commands: {
+      dash: {
+        label: "Dash", category: "Movement", order: 30,
+        keyboardMouse: [{ input: "ShiftLeft", activator: "tap", threshold: 0.2 }],
+        gamepad: [{ input: "left_stick_press" }],          // activator defaults to "press"
+      },
+      sprint: { keyboardMouse: [{ input: "ShiftLeft", activator: "hold" }], gamepad: [] },
+      alt_fire: { show: false },                              // force-hide a derived-relevant command
+    },
+    glyphs: { keyboardMouse: "ui/glyphs/kbm", xbox: "ui/glyphs/xbox",
+              playstation: "ui/glyphs/ps", nintendo: "ui/glyphs/nx" },  // asset = <dir>/<input>
+  },
+  // ...
+});
+
+HStack({ gap: 8 }, [Glyph({ command: "nav_confirm" }), Text({ content: "SELECT" })]);
+Scroll({ height: 320 }, levelButtons);
+Button({ id: "controls", label: "CONTROLS", onPress: OPEN_CONTROLS_ACTION });   // "ui.openControls"
+```
+The Luau mirror ships with the same names (Boundary inventory).
+
+### Non-goals
+- **Mod-defined commands.** Their ID form is reserved.
+- **Chord and modifier bindings, and double-tap.** The activator set stays open to them.
+- **Players choosing activator kinds** (owner).
+- **A press-then-hold activator** (owner chose the Steam rule).
+- **Per-level relevance.**
+- **Steam Input API integration** (`input.md` §9).
+- **Migrating saved bindings.** None exist today.
+
+## Acceptance
+Epic AC 19–25, as amended with this brief, are the unit's rows, together with AC 2, 3a–3c, and 10 for `hold_timing_scale`. AC 33 applies if U3 lands after U4. The rows below add what the epic's rows do not pin.
+
+### Automated
+**Author layer**
+- [ ] With no `input` block, effective bindings equal today's defaults, and the dev mod's command reads are unchanged.
+- [ ] An author binding of `ShiftLeft` to dash, with no default for sprint: Shift drives dash, F drives nothing, and the run state stays false.
+- [ ] Every activator a command accepts is accepted, and every other is diagnosed. Pinned pairs: `tap` on shoot is diagnosed and `press` on shoot is accepted; `hold` on sprint is accepted and `tap` on sprint is diagnosed. A diagnosed entry falls back to the engine default for that command and device class only.
+- [ ] Author defaults that leave confirm, cancel, or menu unbound on a device class are diagnosed and fall back. Defaults that keep each one bound are accepted.
+- [ ] Hot-reloading the block recomputes effective bindings and keeps player overrides.
+
+**Relevance**
+- [ ] A mod with no dash descriptor: dash is unbound, missing from the controls panel, and does not conflict with an author binding on F. A mod where one of two descriptors has dash: dash is relevant.
+- [ ] alt_fire is relevant for a mod with a weapon that declares a secondary activation, and irrelevant for a mod with none.
+- [ ] Force-show and force-hide each flip the derived answer.
+- [ ] A co-op client whose local registry lacks dash gets dash relevant and bound once host tuning that has dash installs.
+- [ ] Adding a command without classifying its relevance fails to compile. Review gate: no wildcard arm in the derivation.
+
+**Player data**
+- [ ] A command the player never rebound follows a changed author default after reload; a rebound command keeps the player's key.
+- [ ] An empty-list row stays unbound across save and load.
+- [ ] An unknown command row survives a save byte-identical.
+- [ ] An unknown input string drops that entry alone, and every other binding and setting loads.
+- [ ] A player rebinding of Q to dash, followed by an author default of Q for reload: Q drives dash only, and reload is flagged in the panel. Without the player row, Q drives reload.
+- [ ] Two mod ids in one shared settings file keep separate rows, and A's overrides do not apply while B is loaded.
+- [ ] A rebound key keeps its slot's author activator.
+
+**Activators**
+- [ ] Tap and hold on one key:
+  - released before the threshold, the tap fires once and the hold never fires;
+  - held past the threshold, the hold fires and the tap never fires;
+  - released at exactly the threshold, the tap fires;
+  - released and pressed again within one frame, both cycles resolve;
+  - the tap still reaches the simulation on a frame with zero ticks;
+  - losing focus or opening a capturing menu mid-hold means neither fires.
+- [ ] A dash key with a single `press` or unpartnered `tap` binding fires on the press frame.
+- [ ] Hold-Shift sprint shows a held state every frame past the threshold and releases on key-up. In `sprint_mode` toggle, it latches on the hold resolution and releases on the next one.
+- [ ] Raising `hold_timing_scale` moves both thresholds.
+- [ ] Conflicts: South bound to both jump and confirm is not a conflict. Two gameplay commands on one key with the same activator are a conflict, reported before the change applies. Shoot sharing a key with a hold binding is a conflict.
+
+**Menus, glyphs, and wire**
+- [ ] In a tree with no tablist, the bumpers still step Next/Prev.
+- [ ] Glyphs follow the last device family and a rebinding: rebinding confirm to West changes the confirm glyph on the next frame.
+- [ ] The confirm/cancel swap applies after player overrides, so a player who rebinds confirm still has the swap honored.
+- [ ] Encoding of the movement input on the wire is unchanged. Review gate: no diff to the wire module.
+- [ ] The Scripting surface example runs as a `content/dev` fixture in both SDKs.
+
+### Manual
+- [ ] Playtest tap-Shift dash and hold-Shift sprint on keyboard and on gamepad: dash timing feels right at 0.2 s, and sprint starts without a stutter.
+- [ ] The controls panel shows only relevant commands, with author labels, categories, and order, and each binding's activator read-only.
+- [ ] Epic AC 25: a gamepad-only pass completes every dev menu, the controls panel included, on Xbox and on PlayStation or Nintendo layouts, with the matching glyph art.
+
+## Path
+- **Stage order** is set at plan review. A suggested order:
+  1. The binding layer: command IDs, relevance, effective bindings, activators, persistence, the controls panel, and raw capture.
+  2. The menu conventions.
+  3. Glyphs and the swap, which read effective bindings.
+- **First slice:** the activator resolver on one shared key (tap-dash and hold-sprint on Shift) through `GameplayInputLatch`. This falsifies the riskiest assumption, that phases can ride the latch without disturbing the tick-0 edge reads in `build_sim_command`.
+- **Seams:**
+  - `InputSystem` gains a rebuild that also refreshes the `unique_actions` cache, as its comment asks.
+  - `ui_nav.rs`'s hardcoded mappers become lookups over the nav set.
+  - `UiIntentPayload` (`input/ui_dispatch.rs`) gains the raw-capture path.
+  - `commit_staged_manifest_result` gains the `input` block.
+  - The `[game]` reader sits beside `FieldReader` (`options/document.rs`).
+  - Relevance reads `DataRegistry.entities` and the installed `TuningPayload`.
+  - Device family is read from the gilrs vendor id.
+  - The controls panel follows the accessibility panel's registration and reservation in `crates/ui/src/modal_stack/registry.rs`.
+- **Rejected rival:** activators on commands instead of bindings (action-level triggers). A tap/hold pair on one key needs two bindings with different activators.
+- **Split first,** behavior-preserving and in its own commit: `input/ui_focus.rs` (shared with U4, epic §Concurrent landing), `input/mod.rs`, `options/mod.rs`, and `options/bridge/mod.rs`. Extend `main.rs` only through the `app/` seams U1 opened.
+- Source map and the precedent survey: `research.md`.
+
+## Open questions
+- The full command-ID table, the gamepad position names, and the gilrs mapping — **delegated**: pinned in the plan for the owner's plan review, then recorded in `input.md`.
+- Repeat delay and interval, slider acceleration curve, and the ranges for the new numeric fields — **delegated**.
+- How the player abandons a capture without binding anything — **delegated**, under the constraints that the prompt has no time limit and every input can be captured.
+- Default buttons for the keyboard tab commands and the on-screen keyboard shortcuts — **delegated**, conflict-free within the UI set.
+- GAG tier labels for hold-to-toggle and multiple input devices (epic open question) — **delegated**: confirm on the live pages before docs cite a tier.
+
+## Boundary inventory
+Rust ↔ TS/Luau ↔ TOML. Both SDKs ship every modder-facing row.
+
+| Name | Manifest / SDK | TOML | Slot | Notes |
+|---|---|---|---|---|
+| Input block | `ModManifest.input` (`input` in Luau) | — | — | optional; per-command diagnostics |
+| Command entry fields | `label`, `category`, `order`, `show`, `keyboardMouse`, `gamepad` | — | — | `show`: `true` forces shown, `false` forces hidden |
+| Binding entry | `{ input, activator?, threshold? }` | — | — | `threshold` in seconds |
+| Activator values | `"press"`, `"release"`, `"tap"`, `"hold"` | — | — | — |
+| Glyph art | `input.glyphs.{keyboardMouse,xbox,playstation,nintendo}` | — | — | asset id `<dir>/<input>` |
+| Command IDs | snake_case strings, e.g. `dash`, `nav_confirm`, `look_x` | row keys | — | table pinned at plan review |
+| Device classes | `keyboardMouse`, `gamepad` | `keyboard_mouse`, `gamepad` | — | — |
+| Input strings | W3C codes, mouse names, gamepad position names | row values | — | same strings in manifest and TOML |
+| Per-game bindings | — | `[game."<mod_id>".bindings.<device_class>]` | — | keys only |
+| Hold timing scale | — | `accessibility.hold_timing_scale` | `options.holdTimingScale`, `accessibility.holdTimingScale` | in the group; panel entry |
+| Gamepad look | — | `gamepad_look_sensitivity`, `gamepad_look_dead_zone`, `gamepad_invert_y` | `options.gamepadLookSensitivity`, `options.gamepadLookDeadZone`, `options.gamepadInvertY` | top-level |
+| Sprint mode | — | `sprint_mode` (`hold`/`toggle`) | `options.sprintMode` | top-level |
+| Confirm/cancel swap | — | `swap_confirm_cancel` | `options.swapConfirmCancel` | top-level |
+| Device family | — | — | `input.deviceFamily` (readonly) | `keyboardMouse`/`xbox`/`playstation`/`nintendo` |
+| Controls panel | `OPEN_CONTROLS_ACTION` = `ui.openControls` | — | — | reserved registry name |
+| Widgets | `Glyph({ command })`, `Scroll({ height }, children)` | — | — | — |
+| Tab commands | `nav_tab_next`, `nav_tab_prev` | row keys | — | UI set |
+| On-screen keyboard shortcuts | `text_backspace`, `text_space`, `text_commit` | row keys | — | UI set |

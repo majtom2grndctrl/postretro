@@ -504,6 +504,10 @@ impl Session {
                 "keyboard.json",
                 false,
             );
+            postretro_ui::tree_asset::register_tree_from_disk(
+                registry, core_root, postretro_ui::demo::DISPLAY_MODE_CONFIRM_NAME,
+                "displayModeConfirm.json", false,
+            );
             // The engine accessibility panel: reserved name, never shadowed.
             postretro_ui::tree_asset::register_tree_from_disk(
                 registry,

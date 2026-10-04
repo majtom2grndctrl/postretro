@@ -14,10 +14,19 @@ pub(crate) enum WindowMode {
 
 impl WindowMode {
     pub(crate) fn slot_value(self) -> &'static str {
-        match self { Self::Windowed => "windowed", Self::Borderless => "borderless", Self::Exclusive => "exclusive" }
+        match self {
+            Self::Windowed => "windowed",
+            Self::Borderless => "borderless",
+            Self::Exclusive => "exclusive",
+        }
     }
     pub(crate) fn from_slot_value(value: &str) -> Option<Self> {
-        match value { "windowed" => Some(Self::Windowed), "borderless" => Some(Self::Borderless), "exclusive" => Some(Self::Exclusive), _ => None }
+        match value {
+            "windowed" => Some(Self::Windowed),
+            "borderless" => Some(Self::Borderless),
+            "exclusive" => Some(Self::Exclusive),
+            _ => None,
+        }
     }
 }
 
@@ -31,8 +40,11 @@ pub(crate) struct DisplayMode {
 }
 
 pub(super) const DISPLAY_KEYS: [&str; 5] = [
-    "display_mode_width", "display_mode_height", "display_mode_refresh_millihertz",
-    "display_mode_bit_depth", "display_mode_monitor",
+    "display_mode_width",
+    "display_mode_height",
+    "display_mode_refresh_millihertz",
+    "display_mode_bit_depth",
+    "display_mode_monitor",
 ];
 
 impl DisplayMode {
@@ -42,9 +54,17 @@ impl DisplayMode {
         let refresh = reader.read::<u32>(DISPLAY_KEYS[2]);
         let depth = reader.read::<u16>(DISPLAY_KEYS[3]);
         let monitor = reader.read::<String>(DISPLAY_KEYS[4]);
-        let mode = Self { width: width?, height: height?, refresh_millihertz: refresh?, bit_depth: depth?, monitor: monitor? };
+        let mode = Self {
+            width: width?,
+            height: height?,
+            refresh_millihertz: refresh?,
+            bit_depth: depth?,
+            monitor: monitor?,
+        };
         if mode.width == 0 || mode.height == 0 || mode.bit_depth == 0 {
-            log::warn!("[Options] unusable stored display mode; keeping its text and using the session fallback");
+            log::warn!(
+                "[Options] unusable stored display mode; keeping its text and using the session fallback"
+            );
             return None;
         }
         Some(mode)
@@ -61,7 +81,9 @@ impl DisplayMode {
 impl super::PlayerOptions {
     pub(crate) fn set_display_mode(&mut self, mode: DisplayMode) {
         self.display_mode = Some(mode);
-        for key in DISPLAY_KEYS { self.mark_written(key); }
+        for key in DISPLAY_KEYS {
+            self.mark_written(key);
+        }
     }
 }
 
@@ -112,12 +134,22 @@ mod display_tests {
     fn display_mode_round_trip_and_partial_tuple_preserve_loaded_document() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("settings.toml");
-        let mode = DisplayMode { width: 1920, height: 1080, refresh_millihertz: 59940, bit_depth: 32, monitor: "test monitor".into() };
+        let mode = DisplayMode {
+            width: 1920,
+            height: 1080,
+            refresh_millihertz: 59940,
+            bit_depth: 32,
+            monitor: "test monitor".into(),
+        };
         let mut options = PlayerOptions::default();
         options.set_display_mode(mode.clone());
         options.save(&path).unwrap();
         assert_eq!(PlayerOptions::load(&path).display_mode, Some(mode.clone()));
-        std::fs::write(&path, "invert_y = true\ndisplay_mode_width = 1920\ndisplay_mode_monitor = 42\n").unwrap();
+        std::fs::write(
+            &path,
+            "invert_y = true\ndisplay_mode_width = 1920\ndisplay_mode_monitor = 42\n",
+        )
+        .unwrap();
         let mut loaded = PlayerOptions::load(&path);
         assert!(loaded.invert_y);
         assert_eq!(loaded.display_mode, None);
@@ -132,19 +164,39 @@ mod display_tests {
 
     #[test]
     fn window_mode_catalog_matches_persisted_vocabulary_and_capability() {
-        use postretro_entities::{engine_state_catalog, EngineStateValueType, EngineStateCapability};
+        use postretro_entities::{
+            EngineStateCapability, EngineStateValueType, engine_state_catalog,
+        };
         let catalog = engine_state_catalog().unwrap();
-        let entry = catalog.entries().iter().find(|entry| entry.wire_name == "options.windowMode").unwrap();
-        let EngineStateValueType::Enum { values } = entry.value_type else { panic!("window mode is enum"); };
+        let entry = catalog
+            .entries()
+            .iter()
+            .find(|entry| entry.wire_name == "options.windowMode")
+            .unwrap();
+        let EngineStateValueType::Enum { values } = entry.value_type else {
+            panic!("window mode is enum");
+        };
         assert_eq!(entry.capability, EngineStateCapability::Writable);
         assert_eq!(values.len(), 3);
-        for mode in [WindowMode::Windowed, WindowMode::Borderless, WindowMode::Exclusive] {
-            let wire = match mode { WindowMode::Windowed => "windowed", WindowMode::Borderless => "borderless", WindowMode::Exclusive => "exclusive" };
+        for mode in [
+            WindowMode::Windowed,
+            WindowMode::Borderless,
+            WindowMode::Exclusive,
+        ] {
+            let wire = match mode {
+                WindowMode::Windowed => "windowed",
+                WindowMode::Borderless => "borderless",
+                WindowMode::Exclusive => "exclusive",
+            };
             assert!(values.contains(&wire));
             assert_eq!(WindowMode::from_slot_value(wire), Some(mode));
             assert_eq!(mode.slot_value(), wire);
         }
-        for entry in catalog.entries().iter().filter(|entry| entry.wire_name.starts_with("window.displayMode")) {
+        for entry in catalog
+            .entries()
+            .iter()
+            .filter(|entry| entry.wire_name.starts_with("window.displayMode"))
+        {
             assert_eq!(entry.capability, EngineStateCapability::Readonly);
             assert!(!entry.persist);
         }

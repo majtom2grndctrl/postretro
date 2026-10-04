@@ -1,0 +1,58 @@
+{
+  "anchor": "center",
+  "offset": [
+    0,
+    0
+  ],
+  "captureMode": "capture",
+  "initialFocus": "displayModeRevert",
+  "root": {
+    "kind": "vstack",
+    "gap": 14,
+    "padding": 20,
+    "align": "start",
+    "fill": "panel.default",
+    "focus": {
+      "policy": "linear"
+    },
+    "children": [
+      {
+        "kind": "text",
+        "content": "KEEP THIS DISPLAY MODE?",
+        "fontSize": 24,
+        "color": "ok",
+        "font": "mono"
+      },
+      {
+        "kind": "text",
+        "content": "",
+        "fontSize": 16,
+        "color": "ok",
+        "bind": {
+          "slot": "window.displayModeRevertSeconds",
+          "format": "Reverting in {} seconds"
+        }
+      },
+      {
+        "kind": "hstack",
+        "gap": 12,
+        "padding": 0,
+        "align": "start",
+        "children": [
+          {
+            "kind": "button",
+            "id": "displayModeRevert",
+            "label": "REVERT",
+            "onPress": "ui.displayMode.revert"
+          },
+          {
+            "kind": "button",
+            "id": "displayModeKeep",
+            "label": "KEEP",
+            "onPress": "ui.displayMode.keep"
+          }
+        ]
+      }
+    ]
+  }
+}

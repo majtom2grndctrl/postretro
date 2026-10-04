@@ -40,6 +40,7 @@ impl App {
             &mut scripting.script_ctx.slot_table.borrow_mut(),
             player_options,
         );
+        self.refresh_window_modes();
     }
 
     /// Apply accepted option-slot writes after the frame's command drains.
@@ -68,6 +69,11 @@ impl App {
             )
         };
 
+        if let Some(mode) = effects.window_mode {
+            self.request_window_mode(mode);
+        }
+        // UI actions on this tick have run, so keep wins over same-tick expiry.
+        self.service_window_modes();
         if let Some(quality) = effects.fog_quality {
             self.apply_player_fog_quality(quality);
         }

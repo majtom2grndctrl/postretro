@@ -81,6 +81,7 @@ pub(crate) fn apply_running_cancel_policy(
     let pause_submenu = active != Some(postretro_ui::demo::PAUSE_MENU_NAME)
         && modal_stack.contains_pushed(postretro_ui::demo::PAUSE_MENU_NAME);
     if active == Some(postretro_ui::demo::PAUSE_MENU_NAME)
+        || active == Some(postretro_ui::demo::DISPLAY_MODE_CONFIRM_NAME)
         || active == Some(postretro_ui::demo::ACCESSIBILITY_PANEL_NAME)
         || pause_submenu
         || close_frontend_submenu
@@ -177,6 +178,16 @@ impl App {
             focused_id,
         );
         if let Some(on_press) = on_press {
+            if let Some(action) = postretro_ui::actions::parse_display_mode_action(&on_press) {
+                self.apply_display_mode_action(action.op());
+                return;
+            }
+            if on_press == postretro_ui::actions::CLOSE_DIALOG_ACTION
+                && self.display_mode_confirm_is_top()
+            {
+                self.apply_display_mode_action("revert");
+                return;
+            }
             if on_press == postretro_ui::actions::OPEN_ACCESSIBILITY_ACTION {
                 self.open_accessibility_panel();
                 return;

@@ -22,8 +22,12 @@ pub use registry::{ScopeTier, UiTreeRegistry};
 /// instance pushed, and the optional `onCommit` reaction carried from the
 /// `PushTree` that opened it. `on_commit` is carried on the stack entry; the App
 /// fires it from the text-entry commit path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ModalInstance(u64);
+
 #[derive(Debug, Clone, PartialEq)]
 struct StackedTree {
+    instance: ModalInstance,
     name: String,
     descriptor: AnchoredTree,
     tier: ScopeTier,
@@ -45,9 +49,28 @@ struct StackedTree {
 pub struct ModalStack {
     registry: UiTreeRegistry,
     stack: Vec<StackedTree>,
+    next_instance: u64,
 }
 
 impl ModalStack {
+    fn new_instance(&mut self) -> ModalInstance {
+        self.next_instance = self
+            .next_instance
+            .checked_add(1)
+            .expect("modal instance counter exhausted");
+        ModalInstance(self.next_instance)
+    }
+
+    pub fn active_instance(&self) -> Option<ModalInstance> {
+        self.stack.last().map(|tree| tree.instance)
+    }
+    pub fn contains_instance(&self, instance: ModalInstance) -> bool {
+        self.stack.iter().any(|tree| tree.instance == instance)
+    }
+    pub fn remove_instance(&mut self, instance: ModalInstance) {
+        self.stack.retain(|tree| tree.instance != instance);
+    }
+
     pub fn new() -> Self {
         Self::default()
     }
@@ -159,7 +182,9 @@ impl ModalStack {
             );
             return;
         };
+        let instance = self.new_instance();
         self.stack.push(StackedTree {
+            instance,
             name: name.to_string(),
             descriptor,
             tier,
@@ -182,7 +207,9 @@ impl ModalStack {
             return false;
         };
         descriptor.capture_mode = CaptureMode::Capture;
+        let instance = self.new_instance();
         self.stack.push(StackedTree {
+            instance,
             name: name.to_string(),
             descriptor,
             tier,
@@ -219,7 +246,9 @@ impl ModalStack {
     /// Engine push API: push a descriptor tree directly (pause/dialog opened from
     /// Rust, not via a registered name). `name` labels the entry for diagnostics.
     pub fn push(&mut self, name: impl Into<String>, descriptor: AnchoredTree) {
+        let instance = self.new_instance();
         self.stack.push(StackedTree {
+            instance,
             name: name.into(),
             descriptor,
             tier: ScopeTier::Engine,
@@ -1115,8 +1144,8 @@ mod tests {
     /// rejected on every registration path, and the engine panel remains. Other
     /// built-in names keep their shadowing.
     #[test]
-    fn the_accessibility_panel_name_is_reserved_on_every_registration_path() {
-        use crate::demo::{ACCESSIBILITY_PANEL_NAME, PAUSE_MENU_NAME};
+    fn engine_panel_and_confirm_names_are_reserved_on_every_registration_path() {
+        use crate::demo::{ACCESSIBILITY_PANEL_NAME, DISPLAY_MODE_CONFIRM_NAME, PAUSE_MENU_NAME};
         use log::Level;
         use postretro_test_log_capture::LogCapture;
 
@@ -1134,30 +1163,23 @@ mod tests {
 
         let capture = LogCapture::start();
         let mut stack = ModalStack::new();
-        stack.registry_mut().register(
-            ACCESSIBILITY_PANEL_NAME,
-            engine.clone(),
-            ScopeTier::Engine,
-            false,
-        );
         stack
             .registry_mut()
             .register(PAUSE_MENU_NAME, engine.clone(), ScopeTier::Engine, false);
-
-        stack.register_script_trees([script(ACCESSIBILITY_PANEL_NAME)], ScopeTier::Mod);
-        stack.register_script_trees([script(ACCESSIBILITY_PANEL_NAME)], ScopeTier::Level);
-        stack.replace_script_tree_tier(
-            [script(ACCESSIBILITY_PANEL_NAME), script(PAUSE_MENU_NAME)],
-            ScopeTier::Mod,
-        );
-
-        let (tier, panel) = stack.resolve_with_tier(ACCESSIBILITY_PANEL_NAME).unwrap();
-        assert_eq!(tier, ScopeTier::Engine);
-        assert_eq!(
-            panel.capture_mode,
-            CaptureMode::Capture,
-            "the engine panel remains"
-        );
+        for name in [ACCESSIBILITY_PANEL_NAME, DISPLAY_MODE_CONFIRM_NAME] {
+            stack
+                .registry_mut()
+                .register(name, engine.clone(), ScopeTier::Engine, false);
+            stack.register_script_trees([script(name)], ScopeTier::Mod);
+            stack.register_script_trees([script(name)], ScopeTier::Level);
+            stack.replace_script_tree_tier([script(name), script(PAUSE_MENU_NAME)], ScopeTier::Mod);
+            let (tier, panel) = stack.resolve_with_tier(name).unwrap();
+            assert_eq!(tier, ScopeTier::Engine);
+            assert_eq!(panel.capture_mode, CaptureMode::Capture);
+            stack.push_named(name, None);
+            assert_eq!(stack.active_name(), Some(name));
+            stack.pop();
+        }
         let (pause_tier, _) = stack.resolve_with_tier(PAUSE_MENU_NAME).unwrap();
         assert_eq!(pause_tier, ScopeTier::Mod, "pauseMenu still shadows");
 
@@ -1171,7 +1193,7 @@ mod tests {
             })
             .count();
         assert_eq!(
-            rejections, 3,
+            rejections, 6,
             "mod init, level load and staged reload each warn"
         );
     }

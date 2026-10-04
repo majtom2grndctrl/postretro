@@ -849,7 +849,9 @@ const BUILTIN_ENGINE_STATE: &[EngineStateCatalogEntry<'static>] = &[
     EngineStateCatalogEntry {
         wire_name: "options.windowMode",
         sdk_path: &["options", "windowMode"],
-        value_type: EngineStateValueType::Enum { values: &["windowed", "borderless", "exclusive"] },
+        value_type: EngineStateValueType::Enum {
+            values: &["windowed", "borderless", "exclusive"],
+        },
         default: EngineStateDefault::Enum("windowed"),
         range: None,
         persist: false,

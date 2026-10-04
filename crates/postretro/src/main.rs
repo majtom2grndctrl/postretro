@@ -1855,6 +1855,7 @@ impl ApplicationHandler for App {
     }
 
     fn suspended(&mut self, _event_loop: &ActiveEventLoop) {
+        self.apply_display_mode_action("revert");
         // Audit which boot phase a suspend interrupts. The resume path resets to
         // `Booting` and re-drives the splash loop; the single-commit guards
         // (`pending_session.take`, renderer full-ready idempotence) keep session
@@ -2134,6 +2135,7 @@ impl ApplicationHandler for App {
                 }
 
                 if !self.drive_boot_state_for_redraw(event_loop, frame_dt) {
+                    self.service_window_modes();
                     return;
                 }
 

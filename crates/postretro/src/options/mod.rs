@@ -403,7 +403,9 @@ impl PlayerOptions {
         );
         writer.put(keys::RENDER_RESOLUTION, Some(&self.render_resolution));
         writer.put(keys::WINDOW_MODE, Some(&self.window_mode));
-        if let Some(mode) = &self.display_mode { mode.write(&mut writer); }
+        if let Some(mode) = &self.display_mode {
+            mode.write(&mut writer);
+        }
         writer.put(
             keys::SWITCH_CYCLE_DWELL_MS,
             self.switch_cycle_dwell_ms.as_ref(),

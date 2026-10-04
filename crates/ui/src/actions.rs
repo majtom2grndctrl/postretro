@@ -87,3 +87,32 @@ mod tests {
         }
     }
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DisplayModeAction {
+    Next,
+    Previous,
+    Keep,
+    Revert,
+}
+
+impl DisplayModeAction {
+    pub fn op(self) -> &'static str {
+        match self {
+            Self::Next => "next",
+            Self::Previous => "previous",
+            Self::Keep => "keep",
+            Self::Revert => "revert",
+        }
+    }
+}
+
+pub fn parse_display_mode_action(action: &str) -> Option<DisplayModeAction> {
+    match action {
+        "ui.displayMode.next" => Some(DisplayModeAction::Next),
+        "ui.displayMode.previous" => Some(DisplayModeAction::Previous),
+        "ui.displayMode.keep" => Some(DisplayModeAction::Keep),
+        "ui.displayMode.revert" => Some(DisplayModeAction::Revert),
+        _ => None,
+    }
+}

@@ -894,3 +894,31 @@ fn focus_authoring_warns_on_duplicate_interactive_id() {
     register("titleMenu", distinct);
     capture.assert_not_logged(Level::Warn, "registered more than once");
 }
+
+#[test]
+fn shipped_display_confirm_exports_revert_focus_and_only_reserved_actions() {
+    let source = include_str!("../../../../../core/ui/displayModeConfirm.json");
+    let descriptor: AnchoredTree = serde_json::from_str(source).unwrap();
+    let mut ui = UiTree::from_descriptor(&descriptor, &theme());
+    let mut fonts = font_system();
+    ui.build_draw_data([1280, 720], &mut fonts, &no_images(), &no_slots());
+    let focus = ui.export_focus_rects(&descriptor, [1280, 720], &no_slots(), &no_cells());
+    assert_eq!(focus.initial_focus.as_deref(), Some("displayModeRevert"));
+    let actions: Vec<_> = focus
+        .rects
+        .iter()
+        .filter_map(|rect| match &rect.interaction {
+            Some(NodeInteraction::Button { on_press, .. }) => {
+                Some((rect.id.as_str(), on_press.as_str()))
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        actions,
+        vec![
+            ("displayModeRevert", "ui.displayMode.revert"),
+            ("displayModeKeep", "ui.displayMode.keep")
+        ]
+    );
+}

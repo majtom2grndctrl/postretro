@@ -341,7 +341,6 @@ impl Renderer {
         full.promoted_depth_cache_missing_layer_warned = false;
         full.promoted_depth_cache_promoted_count = 0;
         full.promoted_depth_cache_world_render_skips = 0;
-        full.promoted_depth_cache_cull_dispatch_skips = 0;
         full.promoted_depth_cache_timing_open = false;
         full.dynamic_depth_cache.reset_level(
             device,
@@ -763,38 +762,12 @@ impl Renderer {
             .as_ref()
             .map(|c| crate::candidate_cull::CandidateCullPipeline::new(device, c.total_leaves()));
 
-        // Rebuild both shadow cull owners against the freshly-uploaded BVH
-        // buffers — their per-region bind groups reference the camera cull's
-        // node/leaf storage, so a stale reference would point at the old BVH.
-        // Spot: one region per pool slot. Cube: one region per (slot, face)
-        // layer, only when the cube pool exists (adapter CUBE_ARRAY_TEXTURES).
-        full.shadow_cull = full.compute_cull.as_ref().map(|c| {
-            crate::shadow_cull::ShadowCullPipeline::new(
-                device,
-                c.node_buffer(),
-                c.leaf_buffer(),
-                c.total_leaves(),
-                c.bucket_ranges().to_vec(),
-                c.has_multi_draw_indirect(),
-                crate::lighting::spot_shadow::SHADOW_POOL_SIZE,
-            )
-        });
-        full.cube_shadow_cull = if full.cube_shadow_pool.is_some() {
-            full.compute_cull.as_ref().map(|c| {
-                crate::shadow_cull::ShadowCullPipeline::new(
-                    device,
-                    c.node_buffer(),
-                    c.leaf_buffer(),
-                    c.total_leaves(),
-                    c.bucket_ranges().to_vec(),
-                    c.has_multi_draw_indirect(),
-                    crate::lighting::cube_shadow::CUBE_COUNT
-                        * crate::lighting::cube_shadow::CUBE_FACES,
-                )
-            })
-        } else {
-            None
-        };
+        // Shadow reach follows the installed BVH: the first fill after install
+        // walks this level's tree, and no range from the previous level survives.
+        full.shadow_world = super::shadow_world_draws::ShadowWorldDraws::install(
+            Some(geometry.bvh),
+            full.index_count,
+        );
 
         full.has_geometry = has_geometry;
         full.last_lights_upload.clear();

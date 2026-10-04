@@ -567,12 +567,6 @@ fn real_map_steady_state_stages_binary_prewrites_and_window_only_writers() {
             0,
         ),
         (
-            "shadow_cull.rs",
-            include_str!("../../../shadow_cull.rs"),
-            "&self.slot_uniform_buffers",
-            0,
-        ),
-        (
             "fog_pass.rs",
             include_str!("../../fog_pass.rs"),
             "&self.volumes_buffer",

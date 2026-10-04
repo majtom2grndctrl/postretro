@@ -1,0 +1,34 @@
+{
+ "map": "content/dev/maps/.spawner-test-sfc.prl",
+ "camera": {
+  "position": [
+   6.1,
+   2.2,
+   -2.5
+  ],
+  "yaw_deg": 77.0,
+  "pitch_deg": -12.0,
+  "fov_deg": 90.0
+ },
+ "resolution": [
+  640,
+  480
+ ],
+ "output": "measurements/shadow-fill-cost/capture/out/w100.png",
+ "force_active": [
+  {
+   "tag": "alarm_light",
+   "radiance": [
+    4.0,
+    0.0,
+    0.0
+   ]
+  }
+ ],
+ "force_promotion": [
+  {
+   "tag": "alarm_light",
+   "weight": 1.0
+  }
+ ]
+}

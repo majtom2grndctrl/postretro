@@ -421,38 +421,18 @@ fn headless_level_reinstall_and_occupied_shadow_preserve_current_camera_ranges()
             .any(Option::is_some),
         "real frame must occupy a shadow slot"
     );
-    let shadow = renderer.full().shadow_cull.as_ref().unwrap();
-    let shadow_trace = shadow.draw_trace.borrow();
+    // Shadow depth draws its CPU reach directly: no indirect slots, no
+    // material binds, and the camera's range list is untouched (asserted by
+    // `frame` above). Every leaf here shares one box, so the cone reaches all
+    // of them; partial reach is proven in `shadow_world_frame_tests`.
+    let shadow = &renderer.full().shadow_world;
     assert!(
-        !shadow_trace.is_empty(),
+        !shadow.trace.is_empty(),
         "real frame must record shadow world depth"
     );
-    let expected_slots: Vec<_> = (0..replacement.bvh.leaves.len() as u32).collect();
-    for (slot, commands) in shadow_trace.iter() {
-        let stride = (replacement.bvh.leaves.len() as u64 * 20).next_multiple_of(256);
-        let base = u64::from(*slot) * stride;
-        let relative: Vec<_> = commands
-            .iter()
-            .map(|command| match *command {
-                IndirectDrawCommand::MultiDraw { byte_offset, count } => {
-                    IndirectDrawCommand::MultiDraw {
-                        byte_offset: byte_offset - base,
-                        count,
-                    }
-                }
-                IndirectDrawCommand::Draw { byte_offset } => IndirectDrawCommand::Draw {
-                    byte_offset: byte_offset - base,
-                },
-                IndirectDrawCommand::BindMaterial(_) => {
-                    panic!("depth-only shadow must not bind materials")
-                }
-            })
-            .collect();
-        assert_eq!(
-            drawn_slots(&relative),
-            expected_slots,
-            "shadow still draws every whole bucket"
-        );
+    let index_count = replacement.bvh.leaves.len() as u32 * 3;
+    for entry in &shadow.trace {
+        assert_eq!(entry.ranges, vec![0..index_count], "{:?}", entry.region);
     }
     eprintln!("[VisibleSpanFrameProof] reinstall and occupied shadow: 5 adapter frames executed");
 }

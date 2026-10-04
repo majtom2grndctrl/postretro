@@ -532,9 +532,9 @@ fn plan_instance_group(
 /// its model's conservative LOCAL-space pose envelope, transformed by the
 /// instance's world matrix,
 /// must intersect the slot's cone frustum. Pure CPU data logic (no GPU, no BVH —
-/// entities are not in the world BVH), mirroring the GPU cone-cull convention via
-/// the shared `aabb_intersects_frustum`, so the caster cull provably agrees with
-/// the world cull's frustum test.
+/// entities are not in the world BVH), through the shared
+/// `aabb_intersects_frustum`, so the caster cull provably agrees with the shadow
+/// world reach's frustum test.
 ///
 /// The renderer records only instances this returns `true` for into a given
 /// slot's depth layer; an enemy whose transformed bound lies outside the cone is

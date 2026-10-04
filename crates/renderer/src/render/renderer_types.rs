@@ -1005,7 +1005,6 @@ pub(super) struct FullRenderer {
     pub(super) promoted_depth_cache_frame_plan: PromotedDepthCacheFramePlan,
     pub(super) promoted_depth_cache_promoted_count: u32,
     pub(super) promoted_depth_cache_world_render_skips: u32,
-    pub(super) promoted_depth_cache_cull_dispatch_skips: u32,
     pub(super) promoted_depth_cache_timing_open: bool,
     pub(super) dynamic_depth_cache: DynamicDepthCacheGpu,
     pub(super) dynamic_depth_cache_frame_plan: DynamicDepthCachePlan,
@@ -1062,17 +1061,10 @@ pub(super) struct FullRenderer {
     /// `PortalStepLimitFallback`),
     /// otherwise the whole-BVH tree walk runs. `None` for maps with no BVH.
     pub(super) candidate_cull: Option<crate::candidate_cull::CandidateCullPipeline>,
-    /// Per-slot cone cull for the spot-shadow depth passes. Sibling to
-    /// `compute_cull`, sharing its read-only BVH node/leaf buffers. `None` for
-    /// maps with no BVH (kept in lockstep with `compute_cull`).
-    pub(super) shadow_cull: Option<crate::shadow_cull::ShadowCullPipeline>,
-    /// Per-FACE frustum cull for the point cube-shadow depth passes: one
-    /// indirect sub-region per `(cube slot, face)` layer
-    /// (`CUBE_COUNT × CUBE_FACES` regions), planes from that face's 90°
-    /// perspective matrix. Same construction and lockstep-rebuild contract as
-    /// `shadow_cull`; additionally `None` when the cube pool itself is off
-    /// (adapter lacks `CUBE_ARRAY_TEXTURES`).
-    pub(super) cube_shadow_cull: Option<crate::shadow_cull::ShadowCullPipeline>,
+    /// CPU reach for shadow world depth: the installed level's reach index and
+    /// the walk scratch every spot slot and cube face reuses. Rebuilt by every
+    /// level install.
+    pub(super) shadow_world: super::shadow_world_draws::ShadowWorldDraws,
 
     pub(super) wireframe_cull_status_pipeline: wgpu::RenderPipeline,
     pub(super) wireframe_visible_pipeline: wgpu::RenderPipeline,
@@ -1196,10 +1188,10 @@ pub(super) struct FullRenderer {
 
     /// CPU-side count of skinned and rigid ENTITY occluders submitted into spot
     /// shadow slots last frame, summed across slots (each counted once per slot
-    /// it casts into). Mirrors `shadow-cone-cull`'s submitted-instance counter —
-    /// no GPU readback. Verifies the "enemy outside the cone is not drawn"
-    /// acceptance criterion: an occluder the per-light cone cull rejects is never
-    /// added here. Reset to 0 at the start of the spot-shadow depth loop.
+    /// it casts into) — no GPU readback. Verifies the "enemy outside the cone is
+    /// not drawn" acceptance criterion: an occluder the per-light cone cull
+    /// rejects is never added here. Reset to 0 at the start of the spot-shadow
+    /// depth loop.
     pub(super) spot_entity_occluders_submitted: u32,
 
     /// CPU-side count of skinned and rigid ENTITY occluders submitted into CUBE

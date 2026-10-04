@@ -1,14 +1,12 @@
 // Dynamic point-light cube-array shadow pool: per-light 6-face omnidirectional
 // depth, ranked into a fixed-capacity cube-array. Each occupied face renders
-// cone-culled WORLD geometry (static occluders — crates, pillars) plus skinned
+// its reached WORLD geometry (static occluders — crates, pillars) plus skinned
 // entity occluders, mirroring the spot pool's occluder split.
 //
 // WHY per-face world draws fit the budget: a naive world draw costs 6 full
-// world-BVH rasterizations per point light. The per-region GPU frustum cull
-// (`shadow_cull.rs`, one indirect sub-region per (slot, face) gated by that
-// face's 90° frustum) bounds the world cost to the geometry each face can
-// actually see, which is what lets dynamic point lights shadow static geometry
-// under a predictable budget.
+// world rasterizations per point light. Each face draws only the cells its 90°
+// frustum reaches, walked on the CPU (`shadow_world_draws.rs`), which is what
+// lets dynamic point lights shadow static geometry under a predictable budget.
 //
 // See: context/lib/rendering_pipeline.md §7.1 (shadow passes), §4 (lighting)
 
@@ -23,7 +21,7 @@ pub const CUBE_NEAR_CLIP: f32 = 0.1;
 
 /// Number of cube slots in the pool, sized to realistic concurrent demand after
 /// PVS culling + influence ranking — NOT worst case. Each occupied slot draws
-/// cone-culled world geometry + entity occluders into 6 faces, so the cost
+/// reached world geometry + entity occluders into 6 faces, so the cost
 /// (and the VRAM) scales with this.
 ///
 /// VRAM justification: a `Depth32Float` cube-array is

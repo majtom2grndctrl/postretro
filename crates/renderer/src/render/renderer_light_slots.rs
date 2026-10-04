@@ -273,7 +273,7 @@ impl Renderer {
         // AABBs of the WIDER portal-reachable set, including empty
         // `face_count == 0` cells) — NOT when the light's own cell is in the
         // camera PVS. The light is a shadow caster (onto receivers the camera
-        // sees); like a world occluder (`shadow_cull.rs`) it need not sit in the
+        // sees); like a world occluder (§7.1 step 6 reach) it need not sit in the
         // camera PVS itself. The prior own-cell-PVS gate dropped a light whose
         // cell left the shrinking PVS on pitch-down even though it still lit and
         // shadowed geometry in view, so entity shadows vanished.
@@ -623,7 +623,7 @@ impl Renderer {
         let mut vertex_uniforms =
             vec![0u8; stride * crate::lighting::spot_shadow::SHADOW_POOL_SIZE];
         // Reset the per-slot cone-matrix stash; reoccupied slots overwrite, the
-        // rest stay `None` so the GPU cone cull skips them this frame. The
+        // rest stay `None` so the shadow-depth loop skips them this frame. The
         // entity-occluder gate resets to `false` in lockstep.
         full.spot_shadow_pool.slot_cone_matrices =
             [None; crate::lighting::spot_shadow::SHADOW_POOL_SIZE];
@@ -1030,7 +1030,7 @@ impl Renderer {
     ///
     /// Shares the spot path's per-light eligibility (`visible_lights`) and the
     /// SHARED scoring/drop ranking core, so cube and spot slot assignment cannot
-    /// drift. Cube faces render WORLD geometry (per-face cone-culled, mirroring
+    /// drift. Cube faces render WORLD geometry (each face's CPU reach, mirroring
     /// the spot depth pass) plus entity occluders; `slot_entity_eligible` gates
     /// only the entity draw, exactly like the spot path's per-slot entity gate.
     ///
@@ -1093,9 +1093,9 @@ impl Renderer {
             }
             let candidate = &full.shadow_candidate_lights[light_idx];
             // EVERY ranked slot gets face matrices: the depth loop clears each
-            // occupied face to the far plane and renders cone-culled WORLD
-            // geometry into it every frame (same Clear(1.0)+world baseline as
-            // an occupied spot slot), so the shader may sample any ranked slot.
+            // occupied face to the far plane and gives it world depth every
+            // frame — drawn from its reach, or copied from a warm cache layer —
+            // so the shader may sample any ranked slot.
             // `slot_entity_eligible` gates only whether skinned ENTITY
             // occluders are additionally drawn into the faces — the same
             // occluder split as the spot path.
@@ -1318,8 +1318,6 @@ impl Renderer {
             }
             full.promoted_depth_cache_promoted_count = plan.counters.promoted_count;
             full.promoted_depth_cache_world_render_skips = plan.counters.cached_world_render_skips;
-            // The shadow passes accumulate these after planning their world/cache work.
-            full.promoted_depth_cache_cull_dispatch_skips = 0;
             full.promoted_entity_occluders_submitted = 0;
             full.promoted_depth_cache_frame_plan = plan;
         } else {
@@ -1331,7 +1329,6 @@ impl Renderer {
             full.promoted_depth_cache_frame_plan = PromotedDepthCacheFramePlan::default();
             full.promoted_depth_cache_promoted_count = 0;
             full.promoted_depth_cache_world_render_skips = 0;
-            full.promoted_depth_cache_cull_dispatch_skips = 0;
             full.promoted_entity_occluders_submitted = 0;
         }
 
@@ -2254,6 +2251,11 @@ mod tests {
             "dropped records must not pack a metadata tail"
         );
         assert_eq!(plan.counters.promoted_count, 0);
+        // The zeroed weight then frees the light's pool slot, so a dropped
+        // light holds no shadow region and draws no world depth.
+        let mut assignment = [3];
+        clear_zero_weight_promoted_assignments(&[Some(0)], &weights, &[None], &[], &mut assignment);
+        assert_eq!(assignment, [postretro_lighting::NO_SHADOW_SLOT]);
     }
 
     #[test]
@@ -2310,6 +2312,16 @@ mod tests {
         assert_eq!(animated_states[0].weight, 0.1);
         assert_eq!(animated_states[1].weight, 0.2);
         assert_eq!(plan.counters.promoted_count, 0);
+        // The reset state frees the light's pool slot, as the static drop does.
+        let mut assignment = [3];
+        clear_zero_weight_promoted_assignments(
+            &[None],
+            &selected_static_weights,
+            &[Some(2)],
+            &animated_states,
+            &mut assignment,
+        );
+        assert_eq!(assignment, [postretro_lighting::NO_SHADOW_SLOT]);
     }
 
     #[test]

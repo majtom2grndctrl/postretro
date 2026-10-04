@@ -5,7 +5,6 @@ mod candidate_cull;
 mod compute_cull;
 mod lighting;
 mod render;
-mod shadow_cull;
 mod visible_span_draws;
 
 pub use visible_span_draws::VisibleSpanRanges;

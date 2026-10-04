@@ -31,11 +31,10 @@ fn rust_violations(sources: &[Source]) -> Vec<String> {
         let allowed = match (site.kind, name) {
             ("path" | "macro" | "import", "INDIRECT") => {
                 site.kind == "path"
-                    && (is_owner(site, "compute_cull.rs", "ComputeCullPipeline", "new")
-                        || is_owner(site, "shadow_cull.rs", "ShadowCullPipeline", "new"))
+                    && is_owner(site, "compute_cull.rs", "ComputeCullPipeline", "new")
             }
             ("path" | "macro" | "import", "INDIRECT_FIRST_INSTANCE") => false,
-            ("call", "ComputeCullPipeline::new" | "ShadowCullPipeline::new") => {
+            ("call", "ComputeCullPipeline::new") => {
                 is_owner(site, INSTALL, "Renderer", "install_level_geometry")
                     || is_owner(site, BOOT, "", "build_full_renderer")
             }
@@ -50,19 +49,12 @@ fn rust_violations(sources: &[Source]) -> Vec<String> {
                 is_owner(site, INSTALL, "Renderer", "install_level_geometry")
                     && format!("{};", site.text) == compact(WORLD_INDEX_UPLOAD)
             }
-            ("call", "draw_indirect_buckets") => {
-                is_owner(
-                    site,
-                    "compute_cull.rs",
-                    "ComputeCullPipeline",
-                    "draw_indirect",
-                ) || is_owner(
-                    site,
-                    "shadow_cull.rs",
-                    "ShadowCullPipeline",
-                    "draw_slot_indirect",
-                )
-            }
+            ("call", "draw_indirect_buckets") => is_owner(
+                site,
+                "compute_cull.rs",
+                "ComputeCullPipeline",
+                "draw_indirect",
+            ),
             ("method", "indirect_buffer") => {
                 is_owner(
                     site,
@@ -73,7 +65,6 @@ fn rust_violations(sources: &[Source]) -> Vec<String> {
             }
             ("reference", _)
                 if name.ends_with("ComputeCullPipeline::new")
-                    || name.ends_with("ShadowCullPipeline::new")
                     || name.ends_with("draw_indirect_buckets")
                     || name.ends_with("build_world_vertex_buffers")
                     || name.ends_with("dispatch_workgroups_indirect")
@@ -83,33 +74,19 @@ fn rust_violations(sources: &[Source]) -> Vec<String> {
             {
                 false
             }
-            ("method", "draw_indirect" | "draw_slot_indirect") => {
+            ("method", "draw_indirect") => {
                 let whole = matches!(
                     site.index_binding.as_deref(),
                     Some("full.index_buffer.slice(..)" | "self.full().index_buffer.slice(..)")
                 );
-                let pipeline = match name {
-                    "draw_slot_indirect" => {
-                        site.pipeline.as_deref() == Some("&full.shadow_depth_pipeline")
-                    }
-                    _ => matches!(
-                        site.pipeline.as_deref(),
-                        Some("&full.depth_prepass_pipeline" | "&self.full().pipeline")
-                    ),
-                };
-                let consumer = match name {
-                    "draw_slot_indirect" => {
-                        site.path == "render/renderer_dynamic_shadow_passes.rs"
-                            && matches!(
-                                site.function.as_str(),
-                                "record_spot_shadow_depth" | "record_cube_shadow_depth"
-                            )
-                    }
-                    _ => matches!(
-                        site.path.as_str(),
-                        "render/renderer_shadow_passes.rs" | "render/renderer_render_frame.rs"
-                    ),
-                };
+                let pipeline = matches!(
+                    site.pipeline.as_deref(),
+                    Some("&full.depth_prepass_pipeline" | "&self.full().pipeline")
+                );
+                let consumer = matches!(
+                    site.path.as_str(),
+                    "render/renderer_shadow_passes.rs" | "render/renderer_render_frame.rs"
+                );
                 whole && pipeline && consumer
             }
             ("method" | "call" | "macro", _)
@@ -136,10 +113,7 @@ fn rust_violations(sources: &[Source]) -> Vec<String> {
             ("path" | "import", "Instance") => !site.text.starts_with("wgpu::Instance"),
             (
                 "import",
-                "ComputeCullPipeline"
-                | "ShadowCullPipeline"
-                | "draw_indirect_buckets"
-                | "build_world_vertex_buffers",
+                "ComputeCullPipeline" | "draw_indirect_buckets" | "build_world_vertex_buffers",
             ) => !site.text.contains("as"),
             ("call", "renderer_instance_flags_from_env") => {
                 site.path == INIT
@@ -395,11 +369,9 @@ fn indirect_contract_production_consumers_keep_guarded_ownership() {
     let (_, sites) = scan(&sources);
     // Inventory is discovered; counts keep removing a checked seam from passing.
     for (kind, name, count) in [
-        ("path", "INDIRECT", 2),
+        ("path", "INDIRECT", 1),
         ("call", "ComputeCullPipeline::new", 2),
-        ("call", "ShadowCullPipeline::new", 4),
         ("method", "draw_indirect", 2),
-        ("method", "draw_slot_indirect", 6),
         ("call", "Instance::new", 2),
         ("call", "renderer_instance_flags_from_env", 2),
         ("literal", "WGPU_VALIDATION_INDIRECT_CALL", 1),
@@ -480,22 +452,11 @@ fn indirect_contract_install_recreates_culls_for_checked_full_index_array() {
             "let (vertex_data, index_data, index_count) = if has_geometry { let count = geometry.indices.len() as u32; (cast_world_vertices_to_bytes(geometry.vertices), bytemuck_cast_slice_u32(geometry.indices), count,) } else { (vec![0u8; postretro_render_data::geometry::WorldVertex::STRIDE], vec![0u8; 4], 0u32,) };",
             WORLD_INDEX_UPLOAD,
             "full.compute_cull = if !full.bvh_leaves.is_empty() { Some(ComputeCullPipeline::new(device, geometry.bvh, has_multi_draw_indirect,)) } else { None };",
-            "full.shadow_cull = full.compute_cull.as_ref().map(|c|",
-            "full.cube_shadow_cull = if full.cube_shadow_pool.is_some() { full.compute_cull.as_ref().map(|c|",
             "full.index_count = index_count;",
             "full.bvh_leaves = bvh_leaves;",
             "let bvh_leaves: Vec<postretro_render_data::geometry::BvhLeaf> = geometry.bvh.leaves.clone();",
         ],
     );
-    for constructor in [
-        "ShadowCullPipeline::new(device,c.node_buffer(),c.leaf_buffer(),c.total_leaves(),c.bucket_ranges().to_vec(),c.has_multi_draw_indirect(),crate::lighting::spot_shadow::SHADOW_POOL_SIZE,)",
-        "ShadowCullPipeline::new(device,c.node_buffer(),c.leaf_buffer(),c.total_leaves(),c.bucket_ranges().to_vec(),c.has_multi_draw_indirect(),crate::lighting::cube_shadow::CUBE_COUNT*crate::lighting::cube_shadow::CUBE_FACES,)",
-    ] {
-        assert!(
-            install.contains(&compact(constructor)),
-            "shadow cull must share fresh checked BVH: {constructor}"
-        );
-    }
     assert!(
         install.find("full.index_buffer=").unwrap() < install.find("full.compute_cull=").unwrap()
     );
@@ -507,8 +468,6 @@ fn indirect_contract_install_recreates_culls_for_checked_full_index_array() {
         &[
             "let geometry: Option<&LevelGeometry> = None;",
             "let compute_cull = geometry.filter(|g| !g.bvh.leaves.is_empty()).map(|g| ComputeCullPipeline::new(device, g.bvh, has_multi_draw_indirect));",
-            "let shadow_cull = compute_cull.as_ref().map(|c|",
-            "let cube_shadow_cull = if cube_array_supported { compute_cull.as_ref().map(|c|",
             "} = build_world_vertex_buffers(device, geometry);",
         ],
     );
@@ -628,7 +587,6 @@ fn indirect_contract_scanner_rejects_new_owners_calls_and_wrong_bound_indices() 
         "fn bad() { wgpu::ComputePass::dispatch_workgroups_indirect(&mut pass, &buffer, 0); }",
         "fn bad() { let dispatch = wgpu::ComputePass::dispatch_workgroups_indirect; }",
         "fn bad() { let cull = ComputeCullPipeline::new(device, bvh, true); }",
-        "fn bad() { let ctor = ShadowCullPipeline::new; }",
         "fn bad() { let instance = wgpu::Instance::new(desc); }",
         "use wgpu::Instance as Aliased; fn bad() { let instance = Aliased::new(desc); }",
         "fn bad() { let override_value = std::env::var_os(\"WGPU_VALIDATION_INDIRECT_CALL\"); }",
@@ -644,10 +602,10 @@ fn indirect_contract_scanner_rejects_new_owners_calls_and_wrong_bound_indices() 
     }
     let fixture = |binding: &str| {
         format!(
-            "impl Renderer {{ fn record_spot_shadow_depth() {{ pass.set_pipeline(&full.shadow_depth_pipeline); pass.set_index_buffer({binding}, wgpu::IndexFormat::Uint32); if let Some(cull) = cull {{ cull.draw_slot_indirect(&mut pass, 0, None); }} }} }}"
+            "impl Renderer {{ fn record_depth_and_sdf_passes() {{ pass.set_pipeline(&full.depth_prepass_pipeline); pass.set_index_buffer({binding}, wgpu::IndexFormat::Uint32); if let Some(cull) = cull {{ cull.draw_indirect(&mut pass, None); }} }} }}"
         )
     };
-    let path = "render/renderer_dynamic_shadow_passes.rs";
+    let path = "render/renderer_shadow_passes.rs";
     assert!(
         rust_violations(&[Source::fixture(
             path,
@@ -658,20 +616,29 @@ fn indirect_contract_scanner_rejects_new_owners_calls_and_wrong_bound_indices() 
     for binding in ["full.index_buffer.slice(4..)", "other_buffer.slice(..)"] {
         assert!(!rust_violations(&[Source::fixture(path, &fixture(binding))]).is_empty());
     }
-    assert!(!rust_violations(&[Source::fixture(path, "impl Renderer { fn record_spot_shadow_depth() { cull.draw_slot_indirect(&mut pass, 0, None); } }")]).is_empty());
+    // Shadow passes draw direct: a correctly bound camera draw issued from the
+    // shadow-depth recorder is still a new indirect consumer.
+    assert!(
+        !rust_violations(&[Source::fixture(
+            "render/renderer_dynamic_shadow_passes.rs",
+            &fixture("full.index_buffer.slice(..)")
+        )])
+        .is_empty()
+    );
+    assert!(!rust_violations(&[Source::fixture(path, "impl Renderer { fn record_depth_and_sdf_passes() { cull.draw_indirect(&mut pass, None); } }")]).is_empty());
 }
 
 // Regression: exiting a nested block restored stale bindings on the outer pass.
 #[test]
 fn indirect_contract_scanner_tracks_nested_pass_binding_changes_and_local_shadowing() {
-    let path = "render/renderer_dynamic_shadow_passes.rs";
+    let path = "render/renderer_shadow_passes.rs";
     let fixture = |nested: &str| {
         format!(
-            "impl Renderer {{ fn record_spot_shadow_depth() {{
-                pass.set_pipeline(&full.shadow_depth_pipeline);
+            "impl Renderer {{ fn record_depth_and_sdf_passes() {{
+                pass.set_pipeline(&full.depth_prepass_pipeline);
                 pass.set_index_buffer(full.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
                 {nested}
-                cull.draw_slot_indirect(&mut pass, 0, None);
+                cull.draw_indirect(&mut pass, None);
             }} }}"
         )
     };
@@ -679,7 +646,7 @@ fn indirect_contract_scanner_tracks_nested_pass_binding_changes_and_local_shadow
         "{ pass.set_index_buffer(full.index_buffer.slice(4..), wgpu::IndexFormat::Uint32); }",
         "{ pass.set_pipeline(&other_pipeline); }",
         "if changed { pass.set_index_buffer(full.index_buffer.slice(4..), wgpu::IndexFormat::Uint32); } else { pass.set_index_buffer(full.index_buffer.slice(..), wgpu::IndexFormat::Uint32); }",
-        "{ let mut pass = encoder.begin_render_pass(&descriptor); cull.draw_slot_indirect(&mut pass, 0, None); }",
+        "{ let mut pass = encoder.begin_render_pass(&descriptor); cull.draw_indirect(&mut pass, None); }",
         "{ pass.set_index_buffer(full.index_buffer.slice(4..), wgpu::IndexFormat::Uint32); let mut pass = encoder.begin_render_pass(&descriptor); }",
     ] {
         assert!(
@@ -689,7 +656,7 @@ fn indirect_contract_scanner_tracks_nested_pass_binding_changes_and_local_shadow
     }
     for nested in [
         "{ let mut pass = encoder.begin_render_pass(&descriptor); pass.set_pipeline(&other_pipeline); pass.set_index_buffer(other_buffer.slice(..), wgpu::IndexFormat::Uint32); }",
-        "{ let mut pass: RenderPass = encoder.begin_render_pass(&descriptor); pass.set_pipeline(&full.shadow_depth_pipeline); pass.set_index_buffer(full.index_buffer.slice(..), wgpu::IndexFormat::Uint32); cull.draw_slot_indirect(&mut pass, 0, None); }",
+        "{ let mut pass: RenderPass = encoder.begin_render_pass(&descriptor); pass.set_pipeline(&full.depth_prepass_pipeline); pass.set_index_buffer(full.index_buffer.slice(..), wgpu::IndexFormat::Uint32); cull.draw_indirect(&mut pass, None); }",
         "{ let (mut pass, other) = pair; pass.set_pipeline(&other_pipeline); }",
     ] {
         assert!(

@@ -1,0 +1,102 @@
+{
+  "windows_total": 8,
+  "windows_used": 6,
+  "stages": {
+    "work": {
+      "median_avg_ms": 8.343,
+      "window_avgs_ms": [
+        8.246,
+        8.345,
+        8.971,
+        8.16,
+        9.307,
+        8.341
+      ],
+      "median_frames_ran": 120.0
+    },
+    "render_record": {
+      "median_avg_ms": 1.3765,
+      "window_avgs_ms": [
+        1.359,
+        1.383,
+        1.37,
+        1.364,
+        1.402,
+        1.389
+      ],
+      "median_frames_ran": 120.0
+    },
+    "rec_shadow_depth": {
+      "median_avg_ms": 0.117,
+      "window_avgs_ms": [
+        0.109,
+        0.116,
+        0.123,
+        0.119,
+        0.118,
+        0.11
+      ],
+      "median_frames_ran": 120.0
+    },
+    "rec_shadow_reach": {
+      "median_avg_ms": 0.046,
+      "window_avgs_ms": [
+        0.046,
+        0.051,
+        0.046,
+        0.046,
+        0.053,
+        0.045
+      ],
+      "median_frames_ran": 79.5
+    },
+    "rec_cull": {
+      "median_avg_ms": 0.0375,
+      "window_avgs_ms": [
+        0.04,
+        0.038,
+        0.037,
+        0.036,
+        0.039,
+        0.037
+      ],
+      "median_frames_ran": 120.0
+    },
+    "render_submit": {
+      "median_avg_ms": 3.855,
+      "window_avgs_ms": [
+        3.818,
+        3.835,
+        3.888,
+        3.831,
+        3.921,
+        3.875
+      ],
+      "median_frames_ran": 120.0
+    },
+    "wait_acquire": {
+      "median_avg_ms": 17.8915,
+      "window_avgs_ms": [
+        18.047,
+        18.997,
+        15.595,
+        16.115,
+        18.978,
+        17.736
+      ],
+      "median_frames_ran": 120.0
+    },
+    "total": {
+      "median_avg_ms": 26.2165,
+      "window_avgs_ms": [
+        26.324,
+        27.373,
+        24.596,
+        24.307,
+        28.316,
+        26.109
+      ],
+      "median_frames_ran": 120.0
+    }
+  }
+}

@@ -294,6 +294,7 @@ fn full_small_pool_transitions_to_allocation_free_larger_frames() {
     const WARMUP: usize = 32;
     const MEASURED: usize = 128;
     const LARGE_BYTES: usize = 1024 * 1024;
+    const FRAMES_IN_FLIGHT: usize = 2;
     let Some(ctx) = try_init_gpu() else {
         return;
     };
@@ -330,13 +331,14 @@ fn full_small_pool_transitions_to_allocation_free_larger_frames() {
     assert_eq!(queue.pool_counts().1, FRAME_STAGING_MAX_BUFFERS as u64);
 
     let bytes = vec![7u8; LARGE_BYTES];
-    let mut submissions: [Option<wgpu::SubmissionIndex>; 2] = std::array::from_fn(|_| None);
+    let mut submissions: [Option<wgpu::SubmissionIndex>; FRAMES_IN_FLIGHT] =
+        std::array::from_fn(|_| None);
     let mut warmed_created = 0;
     let mut warmed_capacities = None;
     let mut proof_before = None;
     let mut writer_allocs = 0;
     for frame in 0..WARMUP + MEASURED {
-        if let Some(index) = submissions[frame % 2].take() {
+        if let Some(index) = submissions[frame % FRAMES_IN_FLIGHT].take() {
             ctx.device
                 .poll(wgpu::PollType::Wait {
                     submission_index: Some(index),
@@ -354,14 +356,20 @@ fn full_small_pool_transitions_to_allocation_free_larger_frames() {
         if frame >= WARMUP {
             writer_allocs += allocs;
         }
-        submissions[frame % 2] = Some(queue.submit(std::iter::empty()));
+        submissions[frame % FRAMES_IN_FLIGHT] = Some(queue.submit(std::iter::empty()));
         let free = queue.pool.borrow().free_storage();
         assert!(free.0 <= FRAME_STAGING_MAX_BUFFERS);
         assert_eq!(free.1, FRAME_STAGING_MAX_BUFFERS);
         assert!(free.2 <= FRAME_STAGING_MAX_BYTES);
         if frame >= WARMUP {
             assert_eq!(queue.pool_counts().1, warmed_created);
-            assert!(queue.pool_counts().2 <= FRAME_STAGING_MAX_BUFFERS as u64);
+            // The cap bounds free storage, not live buffers (free + in flight). Small
+            // buffers are evicted only when a return finds the free list full, so
+            // whether frame 1's map callback lands before frame 2 acquires decides if
+            // live settles at four or five. Both are allocation-free; bound the
+            // buffers in flight instead.
+            let checked_out = queue.pool_counts().2 - free.0 as u64;
+            assert!(checked_out <= FRAMES_IN_FLIGHT as u64);
             assert_eq!(
                 queue.batch.borrow().storage_capacities(),
                 warmed_capacities.unwrap()

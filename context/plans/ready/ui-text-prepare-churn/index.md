@@ -12,15 +12,15 @@ Developer profiling on the compatibility-floor Mac, through `drafts/render-submi
 ## Decisions
 - **Gate glyphon's prepare per span, in the UI pass.** An unchanged span draws from its retained vertices; glyphon's render reads only retained state (`research.md` §glyphon at 0.11.0). This follows the "writes driven by change" rule (`development_guide.md` §1.4) and the settled-frame rule (`ui.md` §3), and it stays inside the renderer.
 - **Supersedes `done/ui-render-path-robustness-text-shaping` Task C.** Today's profile crosses Task C's landing threshold. The vertex write outweighs the reshape, so this brief gates at prepare instead of caching shaped buffers per node. It keeps Task C's per-layer scoping.
-- **Everything is scoped per layer.** A layer boundary ends a text span. A slot is (layer, span index within that layer). Text and shapes in each layer paint inside a depth band fixed by the layer's stack position, under a stated bound on stack depth. So no layer's keys move when another layer's spans change, or when a modal is pushed or popped above it.
+- **Everything is scoped per layer.** A layer boundary ends a text span. A slot is (layer, span index within that layer). Text and shapes in each layer paint inside a depth band fixed by the layer's stack position, so no layer's keys move when another layer's spans change, or when a modal is pushed or popped above it. A slot's text index and depths are slot-local, never frame-wide. The modal stack has no cap, so a frame whose layer count exceeds the band bound falls back to whole-frame painter depth for every layer, and that frame re-prepares everything.
 - **The key is everything prepare reads, and any key change reshapes:**
-  - the whole text record plus its layout box;
+  - the whole text record, plus the extent it is shaped and clipped against (today the viewport);
   - its depth within the layer's band;
   - the viewport;
   - a font-registration generation.
   
-  Text scale reaches the key as a size or a wrap width, and theme variants as a colour.
-- **A slot that is not drawn on a frame forgets its key.** When it returns, it prepares again, even with identical text. A span whose prepare fails draws nothing and prepares again on the next frame.
+  Text scale reaches the key as a size, or as a future wrap width carried on the text record. Theme variants reach it as a colour.
+- **A slot that an encode does not draw forgets its key.** When it returns, it prepares again, even with identical text. A span whose prepare fails draws nothing and prepares again on the next frame.
 - **Reclaim is trim first, then every live span prepared, in one prepare phase.** It runs at a fixed cadence and at once when glyphon reports the atlas full; no other frame trims. Glyphon silently evicts glyphs outside its in-use set before it grows or reports full, and trim empties that set. Trimming first keeps every live span's glyphs protected until the next reclaim.
 - **One count, under the UI stage: spans prepared this frame.** It is present at zero whenever the UI pass ran, in every build, behind the timing env var (`development_guide.md` §6.4, `rendering_pipeline.md` §12).
 - **At promotion, `ui.md` §5 is restated.** Changed spans prepare before the pass opens, and unchanged spans draw from retained vertices. A layer boundary ends a span. Glyphon's vertex writes go direct, an exception to the frame upload batch.
@@ -50,6 +50,8 @@ Developer profiling on the compatibility-floor Mac, through `drafts/render-submi
 - [ ] Opening a pause menu over a visible HUD prepares only the menu's spans on that frame. Closing it prepares nothing in the layers that stayed visible (O10).
 - [ ] With depth assigned per layer, an opaque panel in an upper layer still hides a lower layer's text where they overlap. Each layer's text still draws over its own panel.
 - [ ] A layer that closes and later reopens with identical text, such as the pause menu, prepares its spans again on reopening. Its text is correct even if a reclaim, an atlas-full recovery or a viewport change happened while it was closed (O5, O6). A slot beyond the current span count draws nothing.
+- [ ] A reclaim, and an atlas-full recovery, on a frame after a lower layer's text count changed leave every unchanged span's text at its own depth: an upper layer's panel still hides lower text, and each layer's text still draws over its own panel.
+- [ ] A frame whose layer count exceeds the band bound draws every layer in paint order with correct occlusion, and the next frame within the bound prepares every span once.
 - [ ] A span whose prepare fails draws nothing that frame, and prepares again on the next frame though its text is unchanged (O4).
 - [ ] Once a tween that moves text finishes, or reduce motion snaps it, the next frame prepares no span (O18).
 - [ ] With CPU timing on, each UI frame's timing record carries the prepare count under the UI stage.
@@ -82,7 +84,9 @@ Non-binding.
   - `painter_depth` (`render/ui/mod.rs`) becomes per-layer banding for quads, rings and text.
   - `UiPass::encode` calls the gate and adds the count.
   - `RenderStage` gains a count variant under `Ui`, after the precedent `MeshPoseSamples`.
-- Each slot keeps its `TextRenderer`, shaped buffers and key. Shaping stamps a frame-wide text index that the depth lookup reads, so any key change reshapes, or the index becomes slot-local.
+- Each slot keeps its `TextRenderer`, shaped buffers and key. Today shaping stamps a frame-wide text index into `Attrs::metadata`, and the depth lookup reads it (`text.rs`). A reclaim re-prepares unchanged spans from retained buffers, so that index must become slot-local.
+- The once-per-submit debug guard counts once per encode, at encode entry, not per prepare call (O20).
+- `register_font` bumps the font generation on every call, because a `false` return can still add faces.
 - Shape: rival is an engine-owned glyph path (`research.md` §Rivals).
 - First slice: the gate, its tallies, and the static-label-beside-a-new-glyph-counter golden with the atlas pinned. That falsifies the riskiest assumption, that skipped spans survive eviction and reclaim.
 - Harness:
@@ -93,5 +97,5 @@ Non-binding.
 
 ## Open questions
 - Reclaim cadence: a frame count, and its value — **delegated** (recommendation: a named constant near one timing window).
-- The stack-depth bound for per-layer bands — **delegated**: the smallest bound the modal stack can reach, as a named constant.
+- The band bound, as a named constant, and how bands divide the depth range — **delegated**.
 - If the combat residue still leaves a measurable staging-free share, fork glyphon onto the upload batch, or own the glyph path? — owner: Dan — after measurement. Recommendation: own the glyph path over a fork, and neither until the residue is measured.

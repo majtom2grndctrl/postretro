@@ -125,11 +125,13 @@ Acceptance rows cite these ids.
 | O13 | A damage number spawns or despawns in the presentation layer, folded first | the presentation layer's span count changes | no span in the HUD or a modal prepares |
 | O14 | A font registers on the frame a span first uses its family | the font generation is read at encode | the span is shaped against the new face by the next encode at the latest; every span prepares once |
 | O15 | The viewport and a span's content change on the same frame | — | every span prepares once; the next frame prepares none |
-| O16 | The level changes while a menu is open | HUD and presentation inputs change; the menu's hold | menu spans prepare nothing; changed HUD and presentation spans prepare |
+| O16 | The level changes while a menu is open | HUD and presentation inputs change; the menu's hold | changed HUD and presentation spans prepare; menu spans prepare only if the menu's stack position moved (the frontend menu dropping base layers, a change in the always-on set, or a tier clear mid-stack all move it) |
 | O17 | The UI pass is skipped for some frames (no surface, minimised), then resumes | no encode, prepare or trim runs while skipped | on resume unchanged keys skip; a resized window prepares every span |
 | O18 | A tween that moves text finishes, or reduce motion snaps it | the tween clamps to its final value | positions settle bit-identical; the next frame prepares nothing |
 | O19 | The theme generation changes | theme reaches spans as colour or family | spans whose colour or family changed prepare; the rest skip |
 | O20 | Two compositions encode before one submit; the first skips span j and the second prepares it | the queue-timeline write lands before both draws | the debug guard trips whether or not either encode prepared, because it counts encodes, not prepares |
+| O22 | A reclaim on a frame after a lower layer's text count changed | unchanged spans re-prepare from retained buffers | each keeps its own depth, because its text index is slot-local |
+| O23 | The layer count exceeds the band bound | a push past the bound | that frame falls back to whole-frame painter depth for every layer and re-prepares everything; occlusion holds |
 | O21 | Count on an atlas-full recovery frame | spans prepared before the overflow prepare again | the count reports spans prepared, each live span once |
 
 ## Stale or wrong claims in the sibling research

@@ -1896,3 +1896,6 @@ fn authored_name_validation_diagnostics_match_across_runtimes() {
     assert_eq!(typescript["computedStoreName"], "");
     assert_eq!(typescript["computedImpactId"], "");
 }
+
+#[path = "window_mode_sdk_tests.rs"]
+mod window_mode_sdk;

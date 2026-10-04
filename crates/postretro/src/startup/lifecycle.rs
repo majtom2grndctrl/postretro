@@ -1534,6 +1534,7 @@ pub(crate) mod tests {
         App {
             renderer: None,
             window_state: None,
+            window_modes: crate::app::window_modes::WindowModes::new(false),
             level: None,
             nav_graph: None,
             map_path: None,

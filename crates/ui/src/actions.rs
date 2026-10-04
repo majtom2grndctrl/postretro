@@ -68,6 +68,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn display_mode_actions_accept_only_closed_operations() {
+        for action in [
+            DisplayModeAction::Next,
+            DisplayModeAction::Previous,
+            DisplayModeAction::Apply,
+            DisplayModeAction::Keep,
+            DisplayModeAction::Revert,
+        ] {
+            assert_eq!(
+                parse_display_mode_action(&format!("ui.displayMode.{}", action.op())),
+                Some(action)
+            );
+        }
+        for action in [
+            "ui.displayMode",
+            "ui.displayMode.",
+            "ui.displayMode.toggle",
+            "ui.displayMode.next.extra",
+            "frontend.displayMode.next",
+        ] {
+            assert_eq!(parse_display_mode_action(action), None);
+        }
+    }
+
+    #[test]
     fn accessibility_field_actions_parse_op_and_field() {
         assert_eq!(
             parse_accessibility_field_action("ui.accessibility.cycle.reduceMotion"),
@@ -85,5 +110,37 @@ mod tests {
         ] {
             assert_eq!(parse_accessibility_field_action(other), None, "{other}");
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DisplayModeAction {
+    Next,
+    Previous,
+    Apply,
+    Keep,
+    Revert,
+}
+
+impl DisplayModeAction {
+    pub fn op(self) -> &'static str {
+        match self {
+            Self::Next => "next",
+            Self::Previous => "previous",
+            Self::Apply => "apply",
+            Self::Keep => "keep",
+            Self::Revert => "revert",
+        }
+    }
+}
+
+pub fn parse_display_mode_action(action: &str) -> Option<DisplayModeAction> {
+    match action {
+        "ui.displayMode.next" => Some(DisplayModeAction::Next),
+        "ui.displayMode.previous" => Some(DisplayModeAction::Previous),
+        "ui.displayMode.apply" => Some(DisplayModeAction::Apply),
+        "ui.displayMode.keep" => Some(DisplayModeAction::Keep),
+        "ui.displayMode.revert" => Some(DisplayModeAction::Revert),
+        _ => None,
     }
 }

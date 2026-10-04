@@ -14,3 +14,5 @@ pub(crate) mod ui_actions;
 pub(crate) mod ui_input_frames;
 #[cfg(test)]
 mod ui_input_frames_tests;
+
+pub(crate) mod window_modes;

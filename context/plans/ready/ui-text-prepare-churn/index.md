@@ -18,7 +18,7 @@ Developer profiling on the compatibility-floor Mac, through `drafts/render-submi
   - its depth within the layer's band;
   - the viewport;
   - a font-registration generation.
-  
+
   Text scale reaches the key as a size, or as a future wrap width carried on the text record. Theme variants reach it as a colour.
 - **A slot that an encode does not draw forgets its key.** When it returns, it prepares again, even with identical text. A span whose prepare fails draws nothing and prepares again on the next frame.
 - **Reclaim is trim first, then every live span prepared, in one prepare phase.** It runs at a fixed cadence and at once when glyphon reports the atlas full; no other frame trims. Glyphon silently evicts glyphs outside its in-use set before it grows or reports full, and trim empties that set. Trimming first keeps every live span's glyphs protected until the next reclaim.

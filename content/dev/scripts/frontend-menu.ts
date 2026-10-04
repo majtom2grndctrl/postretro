@@ -16,6 +16,8 @@ import {
   Tree,
   VStack,
   accessibilityAction,
+  bindState,
+  displayModeAction,
   defineUiTree,
   getGameState,
   loadLevel,
@@ -174,7 +176,13 @@ export const frontendMenu = defineUiTree({
   ),
 });
 
-const options = getGameState().options;
+const { options, window } = getGameState();
+
+const WINDOW_MODE_CHOICES = [
+  { value: "windowed", id: "optionsWindowed", label: "WINDOWED" },
+  { value: "borderless", id: "optionsBorderless", label: "BORDERLESS" },
+  { value: "exclusive", id: "optionsExclusive", label: "EXCLUSIVE" },
+] as const;
 
 /// Render resolution choices, in display order. ASCII fractions render in every
 /// bundled typeface.
@@ -187,6 +195,9 @@ const RENDER_RESOLUTION_CHOICES = [
 ] as const;
 
 const optionReactions: NamedReactionDescriptor[] = [
+  ...WINDOW_MODE_CHOICES.map(({ value }) =>
+    defineReaction(`frontend.options.windowMode.${value}`, updateState(options.windowMode, value)),
+  ),
   defineReaction("frontend.options.invertY.off", updateState(options.invertY, false)),
   defineReaction("frontend.options.invertY.on", updateState(options.invertY, true)),
   defineReaction("frontend.options.crouchMode.hold", updateState(options.crouchMode, "hold")),
@@ -368,8 +379,51 @@ const controlsPanel = optionsPanel("optionsPanelControls", [
   ]),
 ]);
 
+function displayModeControls(value: (typeof WINDOW_MODE_CHOICES)[number]["value"]) {
+  const disabled = value === "borderless";
+  const color: [number, number, number, number] = [1, 1, 1, disabled ? 0.8 : 1];
+  const visibleWhen = stateEquals(options.windowMode, value);
+  const suffix = value === "windowed" ? "" : value === "exclusive" ? "Exclusive" : "Borderless";
+  const button = (id: string, label: string, op: "previous" | "next" | "apply", inactive = false) => Button({
+    id: `${id}${suffix}`,
+    label,
+    onPress: displayModeAction(op),
+    disabled: disabled || inactive,
+    bind: visibleWhen,
+    styleRanges: { max: 1, entries: [{ color: inactive ? [1, 1, 1, 0.8] : color }] },
+  });
+  return VStack({ gap: 6, align: "start", visibleWhen }, [
+    HStack({ gap: 4, align: "center" }, [
+      button("displayModePrev", "<", "previous"),
+      Text({ content: "", color, bind: bindState(window.displayModeWidth, { format: "{}x", decimalPlaces: 0 }) }),
+      Text({ content: "", color, bind: bindState(window.displayModeHeight, { decimalPlaces: 0 }) }),
+      Text({ content: "", color, bind: bindState(window.displayModeRefreshHz, { format: " @ {} Hz", decimalPlaces: 0 }) }),
+      button("displayModeNext", ">", "next"),
+    ]),
+    ...(disabled ? [button("displayModeApply", "APPLY RESOLUTION", "apply")] : [
+      VStack({ visibleWhen: stateEquals(window.displayModeCanApply, true) }, [
+        button("displayModeApply", "APPLY RESOLUTION", "apply"),
+      ]),
+      VStack({ visibleWhen: stateEquals(window.displayModeCanApply, false) }, [
+        button("displayModeApplyDisabled", "APPLY RESOLUTION", "apply", true),
+      ]),
+    ]),
+  ]);
+}
+
 const graphicsPanel = optionsPanel("optionsPanelGraphics", [
   Grid({ gap: 12, align: "stretch", cols: 2 }, [
+    optionLabel("optionsWindowModeLabel", "WINDOW MODE"),
+    optionChoices(WINDOW_MODE_CHOICES.map(({ value, id, label }) =>
+      radioChoice(id, label, stateEquals(options.windowMode, value), `frontend.options.windowMode.${value}`),
+    )),
+    VStack({ id: "optionsDisplayModeLabel", align: "start" }, WINDOW_MODE_CHOICES.map(({ value }) => Text({
+      content: "DISPLAY MODE",
+      fontSize: 14,
+      color: [1, 1, 1, value === "borderless" ? 0.8 : 1],
+      visibleWhen: stateEquals(options.windowMode, value),
+    }))),
+    optionValue(VStack({ align: "start" }, WINDOW_MODE_CHOICES.map(({ value }) => displayModeControls(value)))),
     optionLabel("optionsShadowQualityLabel", "SHADOW QUALITY", "Applies after reload"),
     optionChoices([
       radioChoice(

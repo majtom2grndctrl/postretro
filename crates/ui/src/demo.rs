@@ -15,6 +15,7 @@ pub const FRONTEND_MENU_NAME: &str = "frontendMenu";
 /// (`core/ui/accessibilityPanel.json`). A mod- or level-scope registration
 /// under it is rejected.
 pub const ACCESSIBILITY_PANEL_NAME: &str = "accessibilityPanel";
+pub const DISPLAY_MODE_CONFIRM_NAME: &str = "displayModeConfirm";
 
 /// Read a committed UI descriptor JSON anchored to the repo root (NOT runtime
 /// cwd, so it passes under `cargo test`, which runs from the crate dir). Mirrors

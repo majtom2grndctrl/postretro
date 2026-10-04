@@ -273,6 +273,14 @@ function UiReactionsSdk.showDialog(tree: string, onCommit: string?): PrimitiveRe
   return { primitive = "showDialog", args = args }
 end
 
+export type DisplayModeOperation = "next" | "previous" | "apply" | "keep" | "revert"
+
+--- Build a reserved display-mode action. `next`/`previous` browse without saving;
+--- `apply` commits the selection (exclusive opens the engine confirmation).
+function UiReactionsSdk.displayModeAction(op: DisplayModeOperation): string
+  return `ui.displayMode.{op}`
+end
+
 --- The engine-shipped on-screen keyboard's registry name. `openTextEntry` opens
 --- this tree; the engine loads its descriptor from `core/ui/keyboard.json`
 --- at boot. The keyboard edits the `ui.textEntry` writable String slot.

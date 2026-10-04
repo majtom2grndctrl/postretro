@@ -11,11 +11,13 @@ use serde::{Deserialize, Serialize};
 use crate::input::DEFAULT_MOUSE_SENSITIVITY;
 
 mod accessibility;
+pub(crate) mod boot;
 mod bridge;
 mod document;
 mod graphics;
 mod panel_actions;
 mod resolved;
+mod window;
 
 pub use accessibility::AccessibilityOptions;
 pub(crate) use bridge::OptionsBridge;
@@ -23,6 +25,7 @@ use document::{DocumentWriter, FieldReader, StoredDocument};
 pub use graphics::{FogQuality, RenderResolution, ShadowQuality, SurfaceDepthQuality};
 pub(crate) use panel_actions::{PanelActionOutcome, apply_panel_action, is_numeric_field};
 pub(crate) use resolved::{OsPreferences, apply_to_audio, reduce_motion_from_slots};
+pub(crate) use window::{DisplayMode, WindowMode};
 
 /// Registered dev-mod options tree whose open/close boundaries seed and flush
 /// the session-owned settings bridge.
@@ -42,6 +45,7 @@ pub(crate) mod keys {
     pub(crate) const SHADOW_QUALITY: &str = "shadow_quality";
     pub(crate) const FOG_QUALITY: &str = "fog_quality";
     pub(crate) const SURFACE_DEPTH_QUALITY: &str = "surface_depth_quality";
+    pub(crate) const WINDOW_MODE: &str = "window_mode";
     pub(crate) const RENDER_RESOLUTION: &str = "render_resolution";
     pub(crate) const SWITCH_CYCLE_DWELL_MS: &str = "switch_cycle_dwell_ms";
     pub(crate) const SCROLL_NOTCH_PIXELS: &str = "scroll_notch_pixels";
@@ -136,6 +140,9 @@ pub struct PlayerOptions {
     /// full-init before the scene targets are built.
     pub render_resolution: RenderResolution,
 
+    pub(crate) window_mode: WindowMode,
+    pub(crate) display_mode: Option<DisplayMode>,
+
     /// Optional local override for the mod's cycle-selection dwell. `None`
     /// preserves the mod policy; an explicit zero selects immediately.
     pub switch_cycle_dwell_ms: Option<u32>,
@@ -169,6 +176,8 @@ impl PartialEq for PlayerOptions {
             && self.fog_quality == other.fog_quality
             && self.surface_depth_quality == other.surface_depth_quality
             && self.render_resolution == other.render_resolution
+            && self.window_mode == other.window_mode
+            && self.display_mode == other.display_mode
             && self.switch_cycle_dwell_ms == other.switch_cycle_dwell_ms
             && self.scroll_notch_pixels == other.scroll_notch_pixels
             && self.accessibility == other.accessibility
@@ -211,6 +220,8 @@ impl Default for PlayerOptions {
             fog_quality: FogQuality::default(),
             surface_depth_quality: SurfaceDepthQuality::default(),
             render_resolution: RenderResolution::default(),
+            window_mode: WindowMode::default(),
+            display_mode: None,
             switch_cycle_dwell_ms: None,
             scroll_notch_pixels: default_scroll_notch_pixels(),
             accessibility: AccessibilityOptions::default(),
@@ -357,6 +368,8 @@ impl PlayerOptions {
             surface_depth_quality: reader
                 .read(keys::SURFACE_DEPTH_QUALITY)
                 .unwrap_or(defaults.surface_depth_quality),
+            window_mode: reader.read(keys::WINDOW_MODE).unwrap_or_default(),
+            display_mode: DisplayMode::read(&mut reader),
             render_resolution: reader
                 .read(keys::RENDER_RESOLUTION)
                 .unwrap_or(defaults.render_resolution),
@@ -389,6 +402,10 @@ impl PlayerOptions {
             Some(&self.surface_depth_quality),
         );
         writer.put(keys::RENDER_RESOLUTION, Some(&self.render_resolution));
+        writer.put(keys::WINDOW_MODE, Some(&self.window_mode));
+        if let Some(mode) = &self.display_mode {
+            mode.write(&mut writer);
+        }
         writer.put(
             keys::SWITCH_CYCLE_DWELL_MS,
             self.switch_cycle_dwell_ms.as_ref(),

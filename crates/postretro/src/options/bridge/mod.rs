@@ -38,6 +38,7 @@ struct ObservedGenerations {
     fog_quality: u64,
     surface_depth_quality: u64,
     render_resolution: u64,
+    window_mode: u64,
 }
 
 /// Live subsystem effects produced by accepted option-slot changes.
@@ -53,6 +54,7 @@ pub(crate) struct OptionsApplyEffects {
     pub(crate) fog_quality: Option<FogQuality>,
     pub(crate) surface_depth_quality: Option<SurfaceDepthQuality>,
     pub(crate) render_resolution: Option<RenderResolution>,
+    pub(crate) window_mode: Option<super::WindowMode>,
     /// The resolved accessibility preferences, when they changed this frame.
     pub(crate) accessibility: Option<ResolvedAccessibility>,
 }
@@ -68,6 +70,14 @@ pub(crate) struct OptionsBridge {
 }
 
 impl OptionsBridge {
+    pub(crate) fn reseed_window_mode(&mut self, table: &mut SlotTable, mode: super::WindowMode) {
+        self.observed.window_mode = seed_slot(
+            table,
+            "options.windowMode",
+            SlotValue::Enum(mode.slot_value().into()),
+        );
+    }
+
     pub(crate) fn new() -> Self {
         Self::default()
     }
@@ -108,6 +118,7 @@ impl OptionsBridge {
             RENDER_RESOLUTION_SLOT,
             SlotValue::Enum(options.render_resolution.slot_value().to_string()),
         );
+        self.reseed_window_mode(table, options.window_mode);
         self.accessibility.seed_all(table, options, &self.os);
     }
 
@@ -214,6 +225,12 @@ impl OptionsBridge {
         effects: &mut OptionsApplyEffects,
     ) -> bool {
         let mut changed = false;
+        if let Some((generation, SlotValue::Enum(value))) =
+            changed_value(table, "options.windowMode", &mut self.observed.window_mode)
+        {
+            effects.window_mode = super::WindowMode::from_slot_value(value);
+            self.observed.window_mode = generation;
+        }
 
         if let Some((generation, SlotValue::Number(value))) = changed_value(
             table,

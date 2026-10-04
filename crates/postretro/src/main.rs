@@ -666,6 +666,7 @@ pub(crate) struct App {
     renderer: Option<Renderer>,
 
     window_state: Option<WindowState>,
+    window_modes: app::window_modes::WindowModes,
     level: Option<postretro_level_loader::LevelWorld>,
     /// Runtime navigation graph, built once when a level with a baked navmesh
     /// loads. `None` when the map has no navmesh bake. Pathfinding reads this in
@@ -1780,6 +1781,18 @@ impl ApplicationHandler for App {
         // resume (resume resets to Booting and recreates the window).
         // See: context/lib/boot_sequence.md §1.
         self.boot_timings.record("window_created");
+        let options = self
+            .session
+            .as_ref()
+            .map(|session| &session.player_options)
+            .or_else(|| {
+                self.pending_session
+                    .as_ref()
+                    .map(|pending| pending.player_options())
+            });
+        if let Some(options) = options {
+            self.window_modes.apply_boot(&window, event_loop, options);
+        }
 
         let mut renderer = match Renderer::new(&window) {
             Ok(r) => r,
@@ -1842,6 +1855,7 @@ impl ApplicationHandler for App {
     }
 
     fn suspended(&mut self, _event_loop: &ActiveEventLoop) {
+        self.apply_display_mode_action(postretro_ui::actions::DisplayModeAction::Revert);
         // Audit which boot phase a suspend interrupts. The resume path resets to
         // `Booting` and re-drives the splash loop; the single-commit guards
         // (`pending_session.take`, renderer full-ready idempotence) keep session
@@ -2087,11 +2101,12 @@ impl ApplicationHandler for App {
                 // CPU stage timing: frontend and early-returned frames never
                 // commit. See: context/lib/rendering_pipeline.md §12
                 self.cpu_timer.begin_frame(now);
+                let cpu_stages = self.cpu_timer.stages();
+                let stage_scope = cpu_stages.scope(cpu_timing::FrameStage::Housekeeping);
                 // OS preference replies land ahead of the Input stage, so a
                 // player write later this frame wins over them (UO1).
                 self.poll_os_preferences();
-                let cpu_stages = self.cpu_timer.stages();
-                let stage_scope = cpu_stages.scope(cpu_timing::FrameStage::Housekeeping);
+                self.poll_window_mode_readback();
 
                 #[cfg(feature = "observe-live")]
                 self.drain_observe_live_requests();
@@ -2121,6 +2136,7 @@ impl ApplicationHandler for App {
                 }
 
                 if !self.drive_boot_state_for_redraw(event_loop, frame_dt) {
+                    self.service_window_modes();
                     return;
                 }
 
@@ -12433,8 +12449,13 @@ mod tests {
                 "optionsTabGraphics",
                 "graphics",
                 "optionsPanelGraphics",
-                8,
+                12,
                 &[
+                    "optionsWindowed",
+                    "optionsBorderless",
+                    "optionsExclusive",
+                    "displayModePrev",
+                    "displayModeNext",
                     "optionsShadowLow",
                     "optionsShadowMedium",
                     "optionsShadowHigh",
@@ -12651,6 +12672,198 @@ mod tests {
             }
         );
         assert_eq!(checked.equals, Some(PredicateValue::String("high".into())));
+
+        let graphics_panel = find_by_id(&options_tree.root, "optionsPanelGraphics")
+            .expect("graphics panel is in the options tree");
+        for (id, value) in [
+            ("optionsWindowed", "windowed"),
+            ("optionsBorderless", "borderless"),
+            ("optionsExclusive", "exclusive"),
+        ] {
+            let button = find_button(graphics_panel, id)
+                .unwrap_or_else(|| panic!("{id} is a window-mode radio button"));
+            assert_eq!(button.role, Some(Role::Radio));
+            let checked = button
+                .checked
+                .as_ref()
+                .expect("radio exposes checked state");
+            assert_eq!(button.bind.as_ref(), Some(checked));
+            assert_eq!(
+                checked.source,
+                BindSource::Slot {
+                    slot: "options.windowMode".into()
+                }
+            );
+            assert_eq!(checked.equals, Some(PredicateValue::String(value.into())));
+            assert_eq!(
+                button.on_press,
+                format!("frontend.options.windowMode.{value}")
+            );
+            let reaction = manifest
+                .reactions
+                .iter()
+                .find(|reaction| reaction.reaction.name == button.on_press)
+                .unwrap_or_else(|| panic!("{id} names a registered reaction"));
+            let ReactionDescriptor::Primitive(primitive) = &reaction.reaction.descriptor else {
+                panic!("{id} reaction is a primitive");
+            };
+            assert_eq!(primitive.primitive, "setState");
+            assert_eq!(
+                primitive.args,
+                serde_json::json!({ "slot": "options.windowMode", "value": value })
+            );
+        }
+        for (id, action) in [
+            ("displayModePrev", "ui.displayMode.previous"),
+            ("displayModeNext", "ui.displayMode.next"),
+        ] {
+            assert_eq!(button_action(graphics_panel, id), Some(action));
+        }
+        let display_label = find_by_id(graphics_panel, "optionsDisplayModeLabel")
+            .expect("display-mode label is in the graphics panel");
+        let Widget::VStack(display_label) = display_label else {
+            panic!("display-mode label groups the three mode-specific labels");
+        };
+        let expected_slots = [
+            "window.displayModeWidth",
+            "window.displayModeHeight",
+            "window.displayModeRefreshHz",
+        ];
+        for (value, suffix, opacity) in [
+            ("windowed", "", 1.0),
+            ("exclusive", "Exclusive", 1.0),
+            ("borderless", "Borderless", 0.8),
+        ] {
+            let visible_when = Predicate {
+                source: BindSource::Slot {
+                    slot: "options.windowMode".into(),
+                },
+                equals: Some(PredicateValue::String(value.into())),
+            };
+            let label = display_label
+                .children
+                .iter()
+                .find_map(|widget| match widget {
+                    Widget::Text(text) if text.visible_when.as_ref() == Some(&visible_when) => {
+                        Some(text)
+                    }
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("{value} display-mode label has its own visibility"));
+            assert_eq!(
+                label.color,
+                postretro_ui::descriptor::ColorValue::Literal([1.0, 1.0, 1.0, opacity])
+            );
+
+            let mut panel_widgets = Vec::new();
+            collect_widgets(graphics_panel, &mut panel_widgets);
+            let controls = panel_widgets
+                .iter()
+                .filter_map(|widget| match widget {
+                    Widget::VStack(container)
+                        if container.visible_when.as_ref() == Some(&visible_when) =>
+                    {
+                        Some(*widget)
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                controls.len(),
+                1,
+                "one display-mode control group is shown for {value}"
+            );
+            let mut control_widgets = Vec::new();
+            collect_widgets(controls[0], &mut control_widgets);
+            for (base_id, action) in [
+                ("displayModePrev", "ui.displayMode.previous"),
+                ("displayModeNext", "ui.displayMode.next"),
+            ] {
+                let id = format!("{base_id}{suffix}");
+                let button = find_button(controls[0], &id)
+                    .unwrap_or_else(|| panic!("{value} display-mode group includes {id}"));
+                assert_eq!(button.on_press, action);
+                assert_eq!(button.visible_when, None);
+                assert_eq!(button.bind.as_ref(), Some(&visible_when));
+                assert_eq!(button.disabled, value == "borderless");
+                let color = button.style_ranges.as_ref().unwrap().entries[0]
+                    .color
+                    .as_ref()
+                    .unwrap();
+                assert_eq!(
+                    color,
+                    &postretro_ui::descriptor::ColorValue::Literal([1.0, 1.0, 1.0, opacity])
+                );
+            }
+            let apply_variants: &[(&str, bool, f32)] = if value == "borderless" {
+                &[("displayModeApply", true, 0.8)]
+            } else {
+                &[
+                    ("displayModeApply", false, 1.0),
+                    ("displayModeApplyDisabled", true, 0.8),
+                ]
+            };
+            for (base_id, disabled, alpha) in apply_variants {
+                let id = format!("{base_id}{suffix}");
+                let button = find_button(controls[0], &id).unwrap();
+                assert_eq!(button.on_press, "ui.displayMode.apply");
+                assert_eq!(button.visible_when, None);
+                assert_eq!(button.bind.as_ref(), Some(&visible_when));
+                assert_eq!(button.disabled, *disabled);
+                assert_eq!(
+                    button.style_ranges.as_ref().unwrap().entries[0]
+                        .color
+                        .as_ref()
+                        .unwrap(),
+                    &postretro_ui::descriptor::ColorValue::Literal([1.0, 1.0, 1.0, *alpha])
+                );
+                if value != "borderless" {
+                    let predicate = Predicate {
+                        source: BindSource::Slot {
+                            slot: "window.displayModeCanApply".into(),
+                        },
+                        equals: Some(PredicateValue::Boolean(!*disabled)),
+                    };
+                    assert!(
+                        control_widgets.iter().any(|widget| match widget {
+                            Widget::VStack(container)
+                                if container.visible_when.as_ref() == Some(&predicate) =>
+                                find_button(widget, &id).is_some(),
+                            _ => false,
+                        }),
+                        "{id} is guarded by its eligibility predicate"
+                    );
+                }
+            }
+
+            let mut display_bindings = Vec::new();
+            for widget in &control_widgets {
+                if let Widget::Text(text) = widget {
+                    if let Some(bind) = &text.bind {
+                        if let BindSource::Slot { slot } = &bind.source {
+                            if slot.starts_with("window.displayMode") {
+                                display_bindings.push(slot.as_str());
+                                assert_eq!(
+                                    text.visible_when, None,
+                                    "the parent control group owns {value} text visibility",
+                                );
+                                assert_eq!(
+                                    text.color,
+                                    postretro_ui::descriptor::ColorValue::Literal([
+                                        1.0, 1.0, 1.0, opacity,
+                                    ]),
+                                    "{value} display text uses the branch opacity",
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+            assert_eq!(
+                display_bindings, expected_slots,
+                "{value} display-mode row binds size and refresh to readonly window slots",
+            );
+        }
 
         let reaction = manifest
             .reactions
@@ -13947,6 +14160,41 @@ mod tests {
             Some(&SlotValue::String(String::new())),
             "engine-owned ui.textEntry defaults to empty string and is cloned",
         );
+        assert_eq!(
+            snapshot.get("options.windowMode"),
+            Some(&SlotValue::Enum("windowed".to_string())),
+            "window-mode working copy defaults to the windowed enum",
+        );
+        for slot in [
+            "window.displayModeWidth",
+            "window.displayModeHeight",
+            "window.displayModeRefreshHz",
+            "window.displayModeBitDepth",
+            "window.displayModeRevertSeconds",
+        ] {
+            assert_eq!(
+                snapshot.get(slot),
+                Some(&SlotValue::Number(0.0)),
+                "engine-owned {slot} is a value-bearing number defaulting to zero",
+            );
+        }
+        assert_eq!(
+            snapshot.get("window.displayModeMonitor"),
+            Some(&SlotValue::String(String::new())),
+            "engine-owned window.displayModeMonitor is an empty string when no mode is picked",
+        );
+        assert_eq!(
+            snapshot.get("window.displayModeCanApply"),
+            Some(&SlotValue::Boolean(false)),
+            "engine-owned Apply eligibility defaults false and is cloned",
+        );
+        assert!(
+            table
+                .get("window.displayModeCanApply")
+                .unwrap()
+                .schema
+                .readonly
+        );
         // `screen.vignette`/`screen.shake` default to zeroed arrays, so they are
         // value-bearing and present (the screen-effects resolve reads them).
         assert_eq!(
@@ -13981,8 +14229,8 @@ mod tests {
         );
         assert_eq!(
             snapshot.len(),
-            41,
-            "only the set player.health and default-valued reload-feedback + local weapon display and charge + weapon-resource kind and overheat latch + player.spread + screen effects + input.mode + ui.textEntry + fifteen options slots + ten accessibility slots appear",
+            49,
+            "only value-bearing player, screen, input, UI, options, accessibility and window slots appear, plus the explicitly set player.health",
         );
     }
 

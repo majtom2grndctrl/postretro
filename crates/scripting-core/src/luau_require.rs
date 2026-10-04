@@ -511,6 +511,7 @@ mod tests {
                 "QUIT_TO_MENU_ACTION",
                 "OPEN_ACCESSIBILITY_ACTION",
                 "accessibilityAction",
+                "displayModeAction",
                 "loadLevel",
                 "restartLevel",
                 "returnToFrontend",

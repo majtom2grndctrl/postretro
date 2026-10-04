@@ -40,12 +40,32 @@ impl App {
             &mut scripting.script_ctx.slot_table.borrow_mut(),
             player_options,
         );
+        self.refresh_window_modes();
     }
 
     /// Apply accepted option-slot writes after the frame's command drains.
     /// Closing flushes only after those writes settle, so a change and Back in
     /// the same frame cannot strand a pending value behind the debounce.
     pub(crate) fn update_player_options(&mut self, frame_dt: f32, options_menu_was_open: bool) {
+        self.update_player_options_with_window_modes(
+            frame_dt,
+            options_menu_was_open,
+            |app, mode| {
+                if let Some(mode) = mode {
+                    app.request_window_mode(mode);
+                }
+                app.service_window_modes();
+            },
+        );
+    }
+
+    /// Apply window effects through their adapter after the working-copy bridge.
+    pub(crate) fn update_player_options_with_window_modes(
+        &mut self,
+        frame_dt: f32,
+        options_menu_was_open: bool,
+        apply_window_modes: impl FnOnce(&mut Self, Option<options::WindowMode>),
+    ) {
         let effects = {
             let Some(session) = self.session.as_mut() else {
                 return;
@@ -68,6 +88,8 @@ impl App {
             )
         };
 
+        // UI actions on this tick have run, so keep wins over same-tick expiry.
+        apply_window_modes(self, effects.window_mode);
         if let Some(quality) = effects.fog_quality {
             self.apply_player_fog_quality(quality);
         }

@@ -399,7 +399,7 @@ impl Session {
     /// install redraw — no `await`, no yield. This is the sole session
     /// construction site; all `ScriptCtx` clones are distributed here. It
     /// builds, in boot-order:
-    /// 1. player options I/O (load + first-run default write), seeding input;
+    /// 1. finish preloaded player options (identity + first-run write), seeding input;
     /// 2. the fault-tolerant audio subsystem (silent on kira failure);
     /// 3. the scripting bootstrap (`ScriptCtx::new` / `register_all` /
     ///    `ScriptRuntime::new` / SDK-type emission), the Rust-side registries,
@@ -425,16 +425,12 @@ impl Session {
         raw_args: &[String],
         core_root: &postretro_ui::CoreRoot,
         app_dirs: &crate::startup::app_dirs::AppDirs,
+        boot_options: options::boot::BootOptions,
         boot_timings: &mut StartupTimings,
     ) -> Result<Self> {
-        // 1. Player options load first so the loaded look preferences seed the
-        //    `InputSystem` constructed below. On first boot (no file present),
-        //    write defaults so the human gets an editable starting file. Runtime
-        //    changes save after the debounce window and flush on options close or
-        //    clean exit. A missing config dir or save failure is logged, not fatal:
-        //    boot proceeds on in-memory defaults. See: context/lib/player_options.md §3.
-        let settings_path = app_dirs.settings_path();
-        let player_options = load_player_options(settings_path.as_deref());
+        // The document was read before window creation. Identity and first-run
+        // writes stay here, after the splash has presented.
+        let (player_options, settings_path) = boot_options.finish();
 
         // 2. Audio: fault-tolerant. A kira/device failure logs and runs silent
         //    (`audio` stays `None`) — never a crash. `audio_init_complete` is
@@ -506,6 +502,13 @@ impl Session {
                 core_root,
                 postretro_ui::keyboard_asset::KEYBOARD_TREE_NAME,
                 "keyboard.json",
+                false,
+            );
+            postretro_ui::tree_asset::register_tree_from_disk(
+                registry,
+                core_root,
+                postretro_ui::demo::DISPLAY_MODE_CONFIRM_NAME,
+                "displayModeConfirm.json",
                 false,
             );
             // The engine accessibility panel: reserved name, never shadowed.
@@ -664,57 +667,14 @@ impl Session {
     }
 }
 
-/// Load persisted options and ensure a durable device identity exists when it
-/// can be saved. Called only by [`Session::build`], never by `PlayerOptions::load`,
-/// so pure loading and sanitization remain deterministic.
+/// Test helper that completes a boot-options preload, including identity and
+/// persistence behavior. Production consumes the preloaded owner after the
+/// first present; pure `PlayerOptions::load` remains deterministic.
+#[cfg(test)]
 fn load_player_options(settings_path: Option<&Path>) -> options::PlayerOptions {
-    let Some(path) = settings_path else {
-        log::warn!(
-            "[Options] no platform config directory; running on in-memory defaults without persistence"
-        );
-        return options::PlayerOptions::default();
-    };
-
-    let (mut player_options, load_status) = options::PlayerOptions::load_with_status(path);
-    let missing_settings = load_status == options::PlayerOptionsLoadStatus::Missing;
-    let can_persist = load_status != options::PlayerOptionsLoadStatus::Unavailable;
-    let mut generated_identity = false;
-
-    if player_options.player_id.is_none() && can_persist {
-        let mut player_id = [0; 16];
-        match getrandom::fill(&mut player_id) {
-            Ok(()) => {
-                player_options.player_id = Some(player_id);
-                // An unreadable stored id is useless; the new one replaces it.
-                player_options.mark_written(options::keys::PLAYER_ID);
-                generated_identity = true;
-            }
-            Err(err) => log::warn!(
-                "[Options] failed to generate device identity: {err}; connecting anonymously"
-            ),
-        }
-    }
-
-    if missing_settings || generated_identity {
-        match player_options.save(path) {
-            Ok(()) if missing_settings => log::info!(
-                "[Options] no settings file found; wrote defaults to {}",
-                path.display()
-            ),
-            Ok(()) => {}
-            Err(err) => {
-                log::warn!(
-                    "[Options] failed to persist device identity to {}: {err}; connecting anonymously",
-                    path.display()
-                );
-                if generated_identity {
-                    player_options.player_id = None;
-                }
-            }
-        }
-    }
-
-    player_options
+    options::boot::BootOptions::load(settings_path.map(Path::to_path_buf))
+        .finish()
+        .0
 }
 
 /// Preserve the local seat/carry ledger when session identity entropy fails.
@@ -966,7 +926,7 @@ impl ScriptingCore {
 // A reduced session-construction path beside `Session::build`: the scripting core
 // only (script runtime + context, registries, classname dispatch, the data-script
 // runner living on the runtime), with no audio, input, UI/modal stack, net
-// endpoint, player options I/O, or window. The headless driver
+// endpoint, player options completion, or window. The headless driver
 // (`observability::driver`) loads a `.prl` map, runs fixed ticks with scripted
 // commands, dumps world state, and exits — without a GPU or display server. A net
 // endpoint is deliberately omitted, not designed out: Epic 15 Phase 4's dedicated

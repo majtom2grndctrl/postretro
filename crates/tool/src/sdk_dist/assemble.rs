@@ -523,14 +523,19 @@ mod tests {
     }
 
     fn unique_temp_dir() -> PathBuf {
+        // Tests run in parallel and macOS clocks tick in microseconds, so the
+        // timestamp alone collides; the counter keeps names unique in-process.
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let sequence = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let unique = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .expect("system time follows Unix epoch")
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "postretro_sdk_dist_{}_{}",
+            "postretro_sdk_dist_{}_{}_{}",
             std::process::id(),
-            unique
+            unique,
+            sequence
         ));
         fs::create_dir_all(&path).expect("temporary tree created");
         path

@@ -2106,7 +2106,7 @@ fn freestanding_wall_chaser_reaches_far_side_without_blocking() {
     let target = Vec3::new(3.02, rest_y(&params), 7.26);
     let wall_end_endpoint = Vec3::new(3.0, 0.0, 7.3);
     let clearance = params.radius + SKIN_DISTANCE;
-    let arrival_band = ARRIVAL_RADIUS_FACTOR * params.radius + 0.08;
+    let arrival_radius = ARRIVAL_RADIUS_FACTOR * params.radius;
 
     assert_eq!(graph.region_at(start), Some(0));
     assert!(
@@ -2119,17 +2119,12 @@ fn freestanding_wall_chaser_reaches_far_side_without_blocking() {
         distance_xz(target, wall_end_endpoint) + EPS < clearance,
         "target must exercise the wall-end endpoint disk"
     );
-    assert!(
-        arrival_band > clearance + EPS,
-        "arrival band must include the terminal standoff offset"
-    );
 
     let mut registry = EntityRegistry::new();
     // Exactly one agent is eligible to consume the replan budget in this fixture.
     let chaser = spawn_agent(&mut registry, start.x, start.z, &params);
     set_destination(&mut registry, chaser, target);
 
-    let mut reached_far_side_arrival_band = false;
     for tick_index in 0..2400 {
         let result = tick(&mut registry, &world, Some(&graph), GRAVITY, DT);
         let state = path_state(&registry, chaser).expect("chaser stays live");
@@ -2162,24 +2157,43 @@ fn freestanding_wall_chaser_reaches_far_side_without_blocking() {
                 agent.path
             );
         }
-        if distance_xz(state.position, target) <= arrival_band {
-            reached_far_side_arrival_band = true;
+        if state.arrived {
             break;
         }
     }
 
+    // Arrival is judged against the route's final waypoint, not the raw target:
+    // the target sits inside the wall-end clearance disk, so the route ends on
+    // that disk's rim and the agent stops within `arrival_radius` of the rim
+    // point. The distance to the target itself depends on the approach phase.
     let final_state = path_state(&registry, chaser).expect("chaser stays live");
     let final_agent = registry.get_component::<AgentComponent>(chaser).unwrap();
     assert!(
-        reached_far_side_arrival_band,
-        "chaser did not enter the far-side target arrival band within the loose tick bound: \
-         pos={:?}, distance={}, path={:?}, cursor={}, arrived={}, blocked={}",
+        final_state.arrived && !final_state.blocked,
+        "chaser did not arrive unblocked within the loose tick bound: pos={:?}, path={:?}, \
+         cursor={}, arrived={}, blocked={}",
         final_state.position,
-        distance_xz(final_state.position, target),
         final_agent.path,
         final_agent.waypoint_cursor,
         final_agent.arrived,
         final_agent.blocked
+    );
+    let final_waypoint = *final_agent
+        .path
+        .last()
+        .expect("an arrived chaser keeps its route");
+    assert!(
+        distance_xz(final_state.position, final_waypoint) <= arrival_radius + EPS,
+        "chaser must stop within the arrival radius of the final waypoint: pos={:?}, \
+         final waypoint={final_waypoint:?}, distance={}, arrival radius={arrival_radius}",
+        final_state.position,
+        distance_xz(final_state.position, final_waypoint)
+    );
+    assert!(
+        (distance_xz(final_waypoint, wall_end_endpoint) - clearance).abs() <= EPS,
+        "the route must end on the wall-end clearance disk: final waypoint={final_waypoint:?}, \
+         distance to endpoint={}, clearance={clearance}",
+        distance_xz(final_waypoint, wall_end_endpoint)
     );
 }
 

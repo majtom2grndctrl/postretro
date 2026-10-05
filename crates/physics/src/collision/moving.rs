@@ -212,7 +212,7 @@ pub(crate) fn cast_capsule_combined_parry(
             options,
         )
         .filter(|hit| within_limit(hit.time_of_impact, max_toi))
-        .map(|hit| mover_shape_hit(hit, mover.mover_id, pose));
+        .map(|hit| mover_shape_hit(hit, &mover_pose, mover.mover_id, pose));
         choose_nearest(&mut nearest, hit);
     }
 
@@ -430,9 +430,11 @@ fn sweep_mover_against_capsule(
             && (0.0..=1.0).contains(&hit.time_of_impact)
         {
             let hit_t = start_t + (end_t - start_t) * hit.time_of_impact;
-            let hit_transform = mover_sweep_transform(pose, hit_t);
+            let hit_pose = transform_pose(mover_sweep_transform(pose, hit_t));
+            // Shape-cast witnesses are local to their shape; carry the mover's
+            // contact point into the world at the hit pose.
             let remaining_motion =
-                surface_motion_to_final(transform_pose(hit_transform), final_pose, hit.witness1);
+                surface_motion_to_final(hit_pose, final_pose, hit_pose * hit.witness1);
             let normal =
                 swept_push_normal(hit.transform1_by(&start_pose).normal1, remaining_motion);
             let remaining = (1.0 - hit_t).max(0.0);
@@ -648,10 +650,16 @@ fn static_shape_hit(hit: ShapeCastHit) -> CombinedCastHit {
     )
 }
 
-fn mover_shape_hit(hit: ShapeCastHit, mover_id: u32, pose: MoverPose) -> CombinedCastHit {
+/// `hit.normal2` is local to the mover; `mover_pose` rotates it into the world.
+fn mover_shape_hit(
+    hit: ShapeCastHit,
+    mover_pose: &Pose,
+    mover_id: u32,
+    pose: MoverPose,
+) -> CombinedCastHit {
     hit_from_parts(
         hit.time_of_impact,
-        hit.normal2,
+        mover_pose.rotation * hit.normal2,
         CollisionSource::Mover(mover_id),
         Some(pose),
     )
@@ -1112,6 +1120,110 @@ mod tests {
         assert!(
             penetration.depth > SKIN_DISTANCE,
             "rotational sweep must produce a behaviorally meaningful displacement"
+        );
+    }
+
+    // Regression: parry reports a shape cast's `normal2` in the mover's local
+    // frame, and the combined query passed it through as the world normal.
+    #[test]
+    fn rotated_mover_capsule_hit_reports_a_world_space_normal() {
+        let world = CollisionWorld::new();
+        let movers = [local_wall_collider(42)];
+        let mut poses = TestPoseSource::default();
+        // A quarter turn about +Y maps the wall's local +X face normal to
+        // world -Z: the wall becomes the plane z = 3 facing the capsule.
+        poses.insert_pose(
+            42,
+            Transform {
+                position: Vec3::new(0.0, 0.0, 3.0),
+                rotation: Quat::from_rotation_y(std::f32::consts::FRAC_PI_2),
+                scale: Vec3::ONE,
+            },
+            Vec3::ZERO,
+            Vec3::ZERO,
+            Quat::IDENTITY,
+        );
+        let capsule = test_capsule();
+
+        let hit = cast_capsule_combined_parry(
+            &world,
+            &movers,
+            &poses,
+            Vec3::new(0.0, 1.0, 1.0),
+            &capsule,
+            Vec3::Z,
+            5.0,
+        )
+        .expect("the capsule runs into the rotated wall");
+
+        assert_eq!(hit.source, CollisionSource::Mover(42));
+        let expected_toi = 2.0 - capsule.radius - SKIN_DISTANCE;
+        assert!(
+            (hit.time_of_impact - expected_toi).abs() < 1.0e-3,
+            "expected TOI ≈ {expected_toi}, got {}",
+            hit.time_of_impact
+        );
+        assert!(
+            (hit.normal - Vec3::NEG_Z).length() < 1.0e-3,
+            "expected the wall's world-space normal, got {:?}",
+            hit.normal
+        );
+        assert_eq!(hit.classification, ContactClassification::Wall);
+    }
+
+    // Regression: the swept push carried parry's mover-local witness into
+    // `surface_motion_to_final`, which reads a world point, so a rotating
+    // mover's push depended on where in the world the scene sat.
+    #[test]
+    fn rotating_mover_swept_push_is_independent_of_world_offset() {
+        let movers = [local_wall_collider(42)];
+        let capsule = test_capsule();
+        let turn = 10.0_f32.to_radians();
+        let tick_dt = 0.1;
+        let push_at = |offset: Vec3| {
+            let mut poses = TestPoseSource::default();
+            // The wall face sweeps 0.3 m along +X through the capsule while
+            // yawing 10°, ending at the scene origin.
+            poses.insert_rotating_pose(
+                42,
+                Transform {
+                    position: offset,
+                    rotation: Quat::IDENTITY,
+                    scale: Vec3::ONE,
+                },
+                Vec3::new(3.0, 0.0, 0.0),
+                Vec3::new(0.3, 0.0, 0.0),
+                Vec3::NEG_Y * (turn / tick_dt),
+                Quat::from_rotation_y(-turn),
+                tick_dt,
+            );
+            deepest_mover_push_penetration(
+                &movers,
+                &poses,
+                offset + Vec3::new(0.1, 1.0, 0.0),
+                &capsule,
+            )
+            .expect("the sweeping wall reaches the capsule")
+        };
+
+        let at_origin = push_at(Vec3::ZERO);
+        let far_away = push_at(Vec3::new(0.0, 0.0, 10.0));
+
+        assert!(
+            at_origin.normal.x > 0.9,
+            "push follows the wall's travel: {at_origin:?}"
+        );
+        // Face reaches the capsule's skin band 0.17 m before the end of its
+        // travel.
+        assert!(
+            (at_origin.depth - (0.17 + SKIN_DISTANCE)).abs() < 0.02,
+            "push depth should cover the remaining travel: {at_origin:?}"
+        );
+        assert!(
+            (far_away.depth - at_origin.depth).abs() < 1.0e-3
+                && (far_away.normal - at_origin.normal).length() < 1.0e-3,
+            "moving the whole scene must not change the push: origin {at_origin:?}, \
+             offset {far_away:?}"
         );
     }
 

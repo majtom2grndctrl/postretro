@@ -466,8 +466,9 @@ impl App {
         // release indirect draws rely on this unchanged BVH/index mapping.
         render::validate_level_geometry_ranges(&world.bvh.leaves, world.indices.len())?;
         // The static collision trimesh is built here, also before any mutation,
-        // so a mesh parry rejects fails the load through the same route and
-        // leaves the previous level's world intact. Committed at segment B.
+        // so a mesh parry rejects fails the load through the same route. Install
+        // always follows unload, so what stays untouched is the empty world.
+        // Committed just before segment B.
         let static_collision = crate::collision::CollisionWorld::from_level(&world)?;
         self.level_timings.record("static_collision");
         self.view_feel_state = crate::view_feel::ViewFeelState::default();

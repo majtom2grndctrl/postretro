@@ -18,8 +18,8 @@
 //!
 //! Queries call `parry3d::query::*` free functions directly. There is no
 //! `QueryPipeline` and no higher-level query API. Skin-distance capsule sweeps
-//! go through the `skin_cast` dispatcher, which hardens parry's near-contact
-//! normal at skin scale.
+//! go through the `skin_cast` dispatcher, which settles each hit onto the skin
+//! band with exact capsule–triangle contacts (`capsule_triangle`).
 //!
 //! See: `context/lib/entity_model.md` §7.
 
@@ -34,6 +34,7 @@ use parry3d::shape::{Ball, Capsule as ParryCapsule, TriMesh, TriMeshBuilderError
 
 use postretro_level_loader::LevelWorld;
 
+mod capsule_triangle;
 pub mod moving;
 mod skin_cast;
 
@@ -120,7 +121,11 @@ impl CollisionWorld {
     /// Build the trimesh from PRL static geometry. All triangles are included —
     /// no material filter. A level with no triangles yields the empty
     /// placeholder world. Pure: level install builds this before mutating any
-    /// state, so a rejected mesh leaves the previous world untouched.
+    /// state, so a rejected mesh fails the load cleanly.
+    ///
+    /// Cannot fail today: parry's only error for a mesh built without topology
+    /// flags is an empty index list, which is filtered above. The `Result`
+    /// keeps a future flagged build (or parry release) from panicking a load.
     pub fn from_level(world: &LevelWorld) -> Result<Self, CollisionMeshError> {
         // The PRL Geometry decoder rejects index counts that are not a
         // multiple of 3, so `as_chunks` drops nothing here.

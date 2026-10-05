@@ -65,9 +65,10 @@ taffy = "0.14"
 # FontSystem type identity.
 cosmic-text = "0.19"
 
-# Collision (world-space trimesh queries; nalgebra types stay inside the
-# `collision` module). See context/lib/entity_model.md §7.
-parry3d = "0.17"
+# Collision (world-space trimesh queries). glam-native via glamx, so it needs
+# the workspace glam (^0.33.7); parry's shape, pose, and hit types stay inside
+# the physics `collision` module. See context/lib/entity_model.md §7.
+parry3d = "0.31"
 
 # GPU struct casting (#[repr(C)] → bytes, no `unsafe` at call sites)
 bytemuck = { version = "1", features = ["derive"] }

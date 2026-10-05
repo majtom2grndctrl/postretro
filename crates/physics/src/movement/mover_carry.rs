@@ -2,7 +2,6 @@
 // See: context/lib/movement.md §6
 
 use glam::Vec3;
-use parry3d::math::{Point, Vector};
 use parry3d::shape::Capsule;
 
 use crate::collision::moving::{
@@ -63,17 +62,16 @@ pub(super) fn displace_from_movers(
     if collision.movers.is_empty() {
         return position;
     }
-    let pos = Point::new(position.x, position.y, position.z);
     let penetration = match previous_ground {
         GroundRef::Mover(mover_id) => deepest_mover_push_penetration_excluding_swept(
             collision.movers,
             collision.poses,
-            pos,
+            position,
             capsule,
             mover_id,
         ),
         GroundRef::Airborne | GroundRef::World => {
-            deepest_mover_push_penetration(collision.movers, collision.poses, pos, capsule)
+            deepest_mover_push_penetration(collision.movers, collision.poses, position, capsule)
         }
     };
     let Some(penetration) = penetration else {
@@ -89,9 +87,8 @@ pub(super) fn displace_from_movers(
     // displacement into a different side of its final pose. Settle that
     // candidate with the same final-pose recovery pure rotators use.
     for _ in 0..4 {
-        let candidate_point = Point::new(candidate.x, candidate.y, candidate.z);
         let Some(final_penetration) =
-            deepest_mover_penetration(collision.movers, collision.poses, candidate_point, capsule)
+            deepest_mover_penetration(collision.movers, collision.poses, candidate, capsule)
         else {
             break;
         };
@@ -138,13 +135,9 @@ pub(crate) fn mover_push_is_blocked_by_static(
 ) -> bool {
     cast_capsule_parry(
         static_world,
-        Point::new(position.x, position.y, position.z),
+        position,
         capsule,
-        Vector::new(
-            penetration.normal.x,
-            penetration.normal.y,
-            penetration.normal.z,
-        ),
+        penetration.normal,
         penetration.depth,
     )
     .is_some()

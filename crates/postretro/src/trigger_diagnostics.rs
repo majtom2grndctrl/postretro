@@ -294,7 +294,9 @@ mod tests {
     use postretro_entities::{
         EntityId, MoverCommand, SlotTable, Transform, TriggerFireMode, TriggerVolumeComponent,
     };
-    use postretro_scripting_core::data_descriptors::{NamedReaction, ReactionDescriptor};
+    use postretro_scripting_core::data_descriptors::{
+        NamedReaction, ReactionDescriptor, SequenceStep, SequenceTarget,
+    };
     use postretro_scripting_core::data_registry::DataRegistry;
 
     use crate::trigger_pools::{TriggerPoolInstallReport, TriggerPoolOutcome};
@@ -334,7 +336,11 @@ mod tests {
         data_registry.populate_level(
             vec![NamedReaction {
                 name: "open_door".into(),
-                descriptor: ReactionDescriptor::Sequence(Vec::new()),
+                descriptor: ReactionDescriptor::Sequence(vec![SequenceStep {
+                    id: SequenceTarget::FiredTrigger,
+                    primitive: "disarmTrigger".into(),
+                    args: serde_json::json!({}),
+                }]),
             }],
             Vec::new(),
             &[],

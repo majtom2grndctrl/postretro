@@ -90,6 +90,15 @@
 
 **Architectural northstar:** Lean, wgpu-driven pipeline — not a resource heavy modern engine with retro filters. Near-instant boot, tiny binary, and _some_ retro filters, but used sparingly.
 
+### 1.1 Targets and altitude
+
+Design inputs for every renderer, baker, and netcode decision, not stretch goals.
+
+- **Pre-RTX.** No dependence on hardware ray-tracing APIs. Lightweight ray work is in bounds when bounded and either offline in the baker or a cheap runtime trace against baked structures (BVH, SDF, probe volumes). Mac/Metal is a perf target.
+- **Ambitious perf inside that era.** Bake over compute. Bound every bake and pass to where the player can be and see: no probes or texels in the void outside the hull, no bake rays through solid geometry or past a light's reach. Measure, don't assume.
+- **Smooth PvE co-op.** Prediction, reconciliation, and interpolation done well, validated at realistic latency. PvP, live service, and full lag compensation stay non-goals (§4).
+- **Altitude.** Destination clear → build the full shape in strides. Cut breadth before correctness or performance (`development_guide.md` §1.3).
+
 ---
 
 ## 2. Architectural Principles

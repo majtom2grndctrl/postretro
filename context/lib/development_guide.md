@@ -108,7 +108,7 @@ Read the spec and task before writing code. They tell you what outcome matters a
 **Don't:**
 - Add capabilities the task didn't ask for ("while I'm here, I'll also add...").
 - Skip work that's clearly within scope and justify it with `// TODO` or version labels.
-- Invent abstractions, helpers, or config options for hypothetical future needs.
+- Invent abstractions, helpers, or config options for hypothetical future needs. Seams for planned, named features are not hypothetical (§1.3).
 
 ### 1.2 Plan deviations
 
@@ -132,25 +132,30 @@ Over-engineering is as costly as under-delivering. Both create surface area that
 
 | | Under-delivering | Over-engineering |
 |---|---|---|
-| **What** | Shipping scope with missing validation, error handling, or tests | Adding scope, abstractions, or infrastructure the task didn't request |
-| **Cost** | Broken states, follow-up work, lost context | Unnecessary complexity, harder reviews, maintenance burden |
-| **Example** | "Map loading works but panics on missing lightmap section" | "Added a generic asset loading framework with plugin hooks" |
+| **What** | Shipping scope with missing validation, error handling, tests, or the work-bounding the design needs to perform | Adding scope, abstractions, or infrastructure the task didn't request |
+| **Cost** | Broken states, follow-up work, lost context, a feature that works but costs too much | Unnecessary complexity, harder reviews, maintenance burden |
+| **Example** | "Map loading works but panics on missing lightmap section" · "SH probes fill the whole bounding box, void included" | "Added a generic asset loading framework with plugin hooks" |
+
+**Scope is not ambition.** The rule polices breadth: features, hooks, config nobody asked for. It never licenses a naive version of what *was* asked. Inside scope, build the right shape: bounded work, baked inputs, netcode that holds at real latency. Simplest means simplest correct, budgeted version. When the destination is clear, build the full shape in strides. Small increments earn their cost only where the path is uncertain.
+
+Targets (pre-RTX, perf, co-op scope) are design inputs: [Architecture Index](./index.md) §1.1. A version that misses them is under-delivery, even when tests pass.
 
 ### 1.4 Follow-up criteria
 
 Adjacent work discovered during implementation gets a follow-up task, not a scope expansion.
 
 - **Robustness gaps** outside the task's scope → file a follow-up with enough context for the next agent.
-- **Speculative optimizations** — no measured bottleneck → file a follow-up.
-- **Abstractions** without multiple concrete consumers → three similar lines beat a premature helper.
+- **Unmeasured micro-optimizations** (instruction tuning, hand-vectorizing, cache tricks) → file a follow-up. Structural levers under **Performance** (bounding, culling, baking) are part of the task.
+- **Abstractions** without multiple concrete consumers → three similar lines beat a premature helper. A seam for a planned, named feature is not speculative; land it with its first consumer.
 
 **Performance.** Runtime performance is a first-class goal, and this engine's costs are specific — design for them while writing the code, not later. Two domains matter: the per-frame hot path (Input → Game logic → Audio → Render → Present) and build/load iteration time.
 
-In the per-frame hot path, three levers carry most of the weight:
+In the per-frame hot path, four levers carry most of the weight:
 
 - **Bound the work before optimizing the unit.** The engine's measured wins come from visibility and culling — portal traversal, cell-indexed draw candidates, BVH cone/frustum culls — and from ranking to a fixed budget, then dropping the overflow. Cap how much runs per frame first.
 - **Bake over compute** (architectural invariant — see [Architecture Index](./index.md) §2). Precompute offline — lightmaps, SH irradiance, portal visibility, BVH — so the runtime stays cheap. Reach for a baked input before a per-frame computation.
 - **Spend GPU budgets deliberately.** VRAM sits on a fixed memory floor; per-stage sampled-texture and binding slots are hard, low ceilings — several pinned by regression tests. Init-time allocations (shadow pools, atlases) and binding counts are up-front budget decisions, not later tuning. Treat a new large allocation or a new sampled binding as drawing down a fixed pool.
+- **Spend work only where it can matter.** Bake and compute where the player can be and see. Probes, lightmap texels, visibility, and nav stay inside the playable hull; the exterior void gets nothing. Cull bake rays and lights by reachability before tracing: no rays through solid geometry or past a light's range. A new bake stage or pass states its domain (which space, which receivers) and why it is no larger.
 
 Inside the hot path the ordinary defaults still hold: avoid per-frame allocations, prefer cache-friendly layouts, keep hot loops free of needless indirection. Design decisions, not speculative tuning.
 
@@ -159,6 +164,8 @@ Inside the hot path the ordinary defaults still hold: avoid per-frame allocation
 **Build and load time is a budget too.** The offline bake dominates compile time — the bake is the engine's most-optimized CPU path (content-hash stage caching, rayon-parallel SH, incremental per-light bake), and near-instant boot is a product goal. The discipline is the warm/cold contract: the cold (`--no-cache`) build is the exact ship source of truth and favors correctness; the warm iteration path is cached, parallelized, and may even approximate for author speed. Coupling: "Bake over compute" moves cost *into* the bake, so weigh what a new baked input costs the build loop, not just the frame.
 
 **Bound the full resource lifetime.** A working-set or disk bound spans the full lifecycle: production, buffering, serialization, cache or container writes, return, and cleanup. Count representations that coexist. Persistence can duplicate the output of an otherwise bounded algorithm.
+
+**Netcode feel is a budget too.** Co-op clients on home connections must feel smooth: no rubber-banding, no jitter on remote entities, no input lag on the local player. Verify with the dev latency harness at realistic latency, jitter, and loss; loopback alone is unmeasured. Levers: prediction and reconciliation that converge without snapping, snapshot interpolation with an adequate buffer, sending only what changed. Scope stays co-op (index §4).
 
 **Concurrent agents in isolated worktrees: cap at 3.** Each worktree builds the engine from scratch, and that build is heavy — the `rquickjs-sys` QuickJS C dependency dominates. Beyond three simultaneous engine builds, concurrent compiles saturate CPU and exhaust disk; a full volume surfaces as linker "No space left on device" or bus errors that fail otherwise-correct work. Three is the safe ceiling. Need more parallelism? Batch — run the next group after the first merges, not wider.
 

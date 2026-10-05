@@ -46,14 +46,19 @@ Crates form a one-way dependency graph: `foundation` and `entities` at the base,
 
 **Tooling.** The committed `crate-graph.md` is a generated snapshot of the layers and chokepoint ranking, kept fresh by the `crate-graph --check` preflight gate. Generate the full edge diagram on demand with `cargo run -p xtask -- crate-graph --mermaid` (it isn't committed — no dense graph to hand-maintain). Query the graph live with `--rdeps <crate>` for a crate's blast radius (reverse deps), or `--deps <crate>` for what it pulls in. The invariants above (nothing depends on the binary, `foundation` stays a leaf, `entities` depends only on `foundation`) are enforced by the `layering_invariants_hold` test — an upward edge or a widened chokepoint fails `cargo test`.
 
-### Build configuration
+### Build and run
 
-Iterate in the release profile with `dev-tools`. Builds, runs, and targeted tests share that one warm artifact set; any other profile or feature set compiles its own.
+`xtask run` builds the `scripts-build` sidecar, then runs the engine: `cargo run -p xtask -- run [cargo flags...] -- [engine args...]`. A bare `cargo run -p postretro` assumes the sidecar is already built.
+
+**Standard configuration: release profile with `dev-tools`.** Builds, runs, and targeted tests share that one warm artifact set; any other profile or feature set compiles its own.
 
 ```bash
 cargo run -p xtask -- run --release --features dev-tools -- content/dev/maps/<map>.prl
 cargo test --release -p <crate> <filter>   # add --features dev-tools where the crate has it
+cargo run --release -p postretro-level-compiler -- <in>.map -o <out>.prl   # compile a level (binary: prl-build)
 ```
+
+Runtime-only environment variables never trigger a rebuild: `RUST_LOG`, `WGPU_BACKEND`, and the `POSTRETRO_*` diagnostics (§6.4). Distribution builds: `cargo run -p xtask -- dist` and `sdk-dist` (`build_pipeline.md` §Distribution packaging).
 
 Release compiles out `debug_assert!`. The final gate restores them: `/preflight` runs debug `cargo test`, then a default-feature `cargo check --release`.
 
@@ -98,7 +103,7 @@ Release compiles out `debug_assert!`. The final gate restores them: `/preflight`
 - **Runtime performance is a first-class goal** — structural choices that favor it belong in the initial implementation. See §1.4.
 - Respect **subsystem boundaries**: renderer, audio, input, game logic are distinct modules with explicit contracts.
 - **Deliver the impact defined in specs and tasks.** Specs define what and why; use judgment on how. When the plan doesn't survive contact with the code, adapt — but surface deviations and update the context files. See §1.
-- **Iterate in release with `dev-tools`** — one warm build cache. See Workspace › Build configuration.
+- **Iterate in release with `dev-tools`** — one warm build cache. See Workspace › Build and run.
 - Do not flatten module structure. See §2.
 - **No `unsafe` blocks.** See §3.5.
 

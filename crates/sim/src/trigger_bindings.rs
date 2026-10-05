@@ -2887,4 +2887,101 @@ mod tests {
             "ProgressTracker owns the progress target, so it must not bind the trigger edge"
         );
     }
+
+    // A reaction whose only content is an `onComplete`-style hop must still bind,
+    // and firing the trigger must reach the chained reaction through the real
+    // residual drain. Two shapes carry nothing but hops: a sequence of one `fire`
+    // step, and a consequential primitive that fails to bind but names an
+    // `onComplete`.
+    #[test]
+    fn residual_hop_only_reactions_bind_and_run_the_chained_reaction() {
+        use postretro_scripting_core::reaction_dispatch::{
+            ResidualOrigin, dispatch_deferred_named_events_with_sequences,
+            fire_prepartitioned_reactions_with_sequences,
+        };
+        use postretro_scripting_core::reaction_registry::{
+            ReactionPrimitiveRegistry, SystemReactionRegistry,
+        };
+        use postretro_scripting_core::sequence::SequencedPrimitiveRegistry;
+        use std::sync::{Arc, Mutex};
+
+        let fire_only = NamedReaction {
+            name: "relay".into(),
+            descriptor: ReactionDescriptor::Sequence(vec![SequenceStep {
+                id: SequenceTarget::Fire,
+                primitive: "fire".into(),
+                args: serde_json::json!({ "event": "target" }),
+            }]),
+        };
+        // Unknown slot: the command is rejected at bind, leaving only the hop.
+        let rejected_with_hop = primitive(
+            "relay",
+            "setState",
+            None,
+            serde_json::json!({ "slot": "no.such.slot", "value": 1 }),
+            Some("target"),
+        );
+        for relay in [fire_only, rejected_with_hop] {
+            let mut registry = EntityRegistry::new();
+            let trigger = spawn_trigger(&mut registry, "relay");
+            let mut data = DataRegistry::new();
+            data.populate_level(
+                vec![
+                    relay,
+                    primitive(
+                        "target",
+                        "record",
+                        None,
+                        serde_json::json!({ "label": "target" }),
+                        None,
+                    ),
+                ],
+                Vec::new(),
+                &[],
+            );
+
+            let table = TriggerBindingTable::build(&registry, &data, &writable_slots());
+            let binding = table
+                .binding(trigger, TriggerEventEdge::Enter)
+                .expect("a hop-only reaction still binds its edge");
+            assert!(binding.commands.is_empty());
+            let residual = table
+                .residual(binding.residual.expect("hop survives as residual"))
+                .unwrap();
+
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let calls_for_handler = Arc::clone(&calls);
+            let mut system_registry = SystemReactionRegistry::new();
+            system_registry.register("record", move |args, _queue| {
+                calls_for_handler.lock().unwrap().push(
+                    args.get("label")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap()
+                        .to_string(),
+                );
+                Ok(())
+            });
+            let sequence_registry = SequencedPrimitiveRegistry::new();
+            let reaction_registry = ReactionPrimitiveRegistry::new();
+            let script_ctx = ScriptCtx::new();
+            let follow_ups = fire_prepartitioned_reactions_with_sequences(
+                residual.steps(),
+                &sequence_registry,
+                &reaction_registry,
+                &system_registry,
+                &script_ctx,
+                ResidualOrigin::TriggerBinding,
+            );
+            assert_eq!(follow_ups, vec!["target".to_string()]);
+            dispatch_deferred_named_events_with_sequences(
+                follow_ups,
+                &data,
+                &sequence_registry,
+                &reaction_registry,
+                &system_registry,
+                &script_ctx,
+            );
+            assert_eq!(calls.lock().unwrap().as_slice(), ["target".to_string()]);
+        }
+    }
 }

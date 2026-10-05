@@ -2,9 +2,8 @@
 # wrapper, or target override is active by default. This file is intentionally
 # comment-only so macOS, Linux, Windows, and CI keep Cargo's platform defaults.
 #
-# Use the opt-in profile when local full builds need less debug-info overhead:
-#
-#   cargo build --profile dev-fast -p postretro --bins
+# Build profiles and the standard configuration live in
+# context/lib/development_guide.md (Build and run).
 #
 # Faster linkers are optional local setup. Uncomment only on machines where the
 # linker is installed and supported; do not require these in CI or shared docs.

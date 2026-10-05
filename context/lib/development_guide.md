@@ -50,17 +50,17 @@ Crates form a one-way dependency graph: `foundation` and `entities` at the base,
 
 `xtask run` builds the `scripts-build` sidecar, then runs the engine: `cargo run -p xtask -- run [cargo flags...] -- [engine args...]`. A bare `cargo run -p postretro` assumes the sidecar is already built.
 
-**Standard configuration: release profile with `dev-tools`.** Builds, runs, and targeted tests share that one warm artifact set; any other profile or feature set compiles its own.
+**Standard configuration: default `dev` profile with `dev-tools`.** Builds, runs, and targeted tests share that one warm artifact set; any other profile or feature set compiles its own. `dev` keeps incremental builds, `debug_assert!`, and symbols, with workspace crates optimized enough to play-test.
 
 ```bash
-cargo run -p xtask -- run --release --features dev-tools -- content/dev/maps/<map>.prl
-cargo test --release -p <crate> <filter>   # add --features dev-tools where the crate has it
-cargo run --release -p postretro-level-compiler -- <in>.map -o <out>.prl   # compile a level (binary: prl-build)
+cargo run -p xtask -- run --features dev-tools -- content/dev/maps/<map>.prl
+cargo test -p <crate> <filter>   # add --features dev-tools where the crate has it
+cargo run -p postretro-level-compiler -- <in>.map -o <out>.prl   # compile a level (binary: prl-build)
 ```
 
-Runtime-only environment variables never trigger a rebuild: `RUST_LOG`, `WGPU_BACKEND`, and the `POSTRETRO_*` diagnostics (§6.4). Distribution builds: `cargo run -p xtask -- dist` and `sdk-dist` (`build_pipeline.md` §Distribution packaging).
+Other profiles are deliberate exceptions. `--release` (thin LTO, no incremental: an edit rebuild takes minutes, not seconds) is for distribution, perf validation, and preflight's release check. `--profile dev-debug` drops workspace optimization for stepping through code in a debugger.
 
-Release compiles out `debug_assert!`. The final gate restores them: `/preflight` runs debug `cargo test`, then a default-feature `cargo check --release`.
+Runtime-only environment variables never trigger a rebuild: `RUST_LOG`, `WGPU_BACKEND`, and the `POSTRETRO_*` diagnostics (§6.4). Distribution builds: `cargo run -p xtask -- dist` and `sdk-dist` (`build_pipeline.md` §Distribution packaging).
 
 ## Stack
 
@@ -103,7 +103,7 @@ Release compiles out `debug_assert!`. The final gate restores them: `/preflight`
 - **Runtime performance is a first-class goal** — structural choices that favor it belong in the initial implementation. See §1.4.
 - Respect **subsystem boundaries**: renderer, audio, input, game logic are distinct modules with explicit contracts.
 - **Deliver the impact defined in specs and tasks.** Specs define what and why; use judgment on how. When the plan doesn't survive contact with the code, adapt — but surface deviations and update the context files. See §1.
-- **Iterate in release with `dev-tools`** — one warm build cache. See Workspace › Build and run.
+- **Iterate in the default `dev` profile with `dev-tools`** — one warm build cache. See Workspace › Build and run.
 - Do not flatten module structure. See §2.
 - **No `unsafe` blocks.** See §3.5.
 

@@ -209,15 +209,20 @@ opt-level = 3
 lto = "thin"
 strip = "symbols"
 
+# Default iteration profile: incremental, debug assertions and symbols on, no
+# LTO. Workspace crates at opt-level 2 cut per-frame CPU work ~8.5% against
+# opt-level 1 for <1 s more per incremental rebuild; opt-level 3 bought ~2%
+# more (Intel Mac, 2026-10).
 [profile.dev]
-opt-level = 1
+opt-level = 2
 
 [profile.dev.package."*"]
 opt-level = 2
 
-[profile.dev-fast]
+# Slow alternate for stepping through workspace code in a debugger.
+[profile.dev-debug]
 inherits = "dev"
-debug = "line-tables-only"
+opt-level = 0
 
-[profile.dev-fast.package."*"]
+[profile.dev-debug.package."*"]
 opt-level = 2

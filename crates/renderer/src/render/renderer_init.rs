@@ -94,7 +94,8 @@ impl Renderer {
             compatible_surface: Some(&surface),
             force_fallback_adapter: false,
             // Bucketing is browser anti-fingerprinting; it would clamp the
-            // adapter limits the device request below relies on.
+            // adapter limits the device request below relies on. False is
+            // wgpu's default, spelled out because the struct literal needs it.
             apply_limit_buckets: false,
         }))
         .context("no suitable GPU adapter found")?;
@@ -197,6 +198,7 @@ impl Renderer {
             power_preference: wgpu::PowerPreference::default(),
             compatible_surface: None,
             force_fallback_adapter: false,
+            // See `Renderer::new`.
             apply_limit_buckets: false,
         }))
         .context("frame capture requires a GPU adapter")?;

@@ -108,7 +108,7 @@ Level install runs on the main thread after worker delivery. It is repeatable: e
 | 4 | Apply the current player shadow tier at the renderer boundary, then upload geometry (rebuilding the spot-shadow pool and resolution-coupled caches only when the retained resolution changed) |
 | 5 | World mesh spawn (see seam note below) |
 | 6 | Light bridge: one light entity per map-authored light |
-| 7 | Collision world committed from static geometry (separate from BSP; built before stage 1, so a rejected mesh fails the load before any mutation) |
+| 7 | Collision world committed from static geometry (separate from BSP; built before stage 1, so a rejected mesh — a defensive route, see `entity_model.md` §7 — fails the load before any mutation) |
 | 8 | Fog bridge: fog-volume entities + renderer pixel-scale / cell masks |
 | 9 | Built-in classname dispatch (player spawns partitioned out; remainder dispatched, handled set stashed) |
 | 10 | Data script run → compose active reactions/crossings from matching mod-global definitions plus level-local definitions; rebuild reaction subscribers, then `TriggerBindingTable::build` from the final active reactions |

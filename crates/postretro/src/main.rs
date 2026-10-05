@@ -4319,10 +4319,10 @@ impl ApplicationHandler for App {
                     // the SH diagnostic overlay can push debug lines that
                     // the frame's debug-line pass will pick up. Tessellated
                     // paint jobs are stashed and consumed after the frame
-                    // by `render_debug_ui`.
+                    // by `render_debug_ui`; texture deltas queue on the
+                    // `DebugUi` so a frame that never presents carries them.
                     #[cfg(feature = "dev-tools")]
                     let debug_ui_frame: Option<(
-                        egui::TexturesDelta,
                         Vec<egui::epaint::ClippedPrimitive>,
                         f32,
                     )> = {
@@ -4413,11 +4413,8 @@ impl ApplicationHandler for App {
                                 let paint_jobs = debug_ui
                                     .ctx
                                     .tessellate(full_output.shapes, full_output.pixels_per_point);
-                                out = Some((
-                                    full_output.textures_delta,
-                                    paint_jobs,
-                                    window.scale_factor() as f32,
-                                ));
+                                debug_ui.pending_textures.push(full_output.textures_delta);
+                                out = Some((paint_jobs, window.scale_factor() as f32));
                             }
                         }
                         // Clear the debug-line buffer unconditionally each
@@ -4611,10 +4608,12 @@ impl ApplicationHandler for App {
 
                         #[cfg(feature = "dev-tools")]
                         {
-                            if let Some((textures_delta, paint_jobs, scale)) = debug_ui_frame
+                            if let Some((paint_jobs, scale)) = debug_ui_frame
+                                && let Some(debug_ui) =
+                                    self.session.as_mut().and_then(|s| s.debug_ui.as_mut())
                                 && let Err(err) = renderer.render_debug_ui(
                                     &mut present_handle,
-                                    textures_delta,
+                                    debug_ui.pending_textures.delta_mut(),
                                     paint_jobs,
                                     scale,
                                 )

@@ -357,7 +357,7 @@ fn project_triangle_mask(positions: &[Vec3], indices: &[u32]) -> Vec<(u32, u32)>
         })
         .collect();
     let mut mask = vec![false; (width * height) as usize];
-    for triangle in indices.chunks_exact(3) {
+    for triangle in indices.as_chunks::<3>().0 {
         let [a, b, c] = [
             screen[triangle[0] as usize],
             screen[triangle[1] as usize],

@@ -219,7 +219,9 @@ impl SubmittedCounterReadback {
                 let view = self.slots[slot]
                     .slice(0..4)
                     .get_mapped_range()
-                    .expect("map_ready is set only by a successful map of this range");
+                    .expect(
+                    "map_ready follows a successful map of this range; fails only after device loss (no recovery contract)",
+                );
                 let value = u32::from_le_bytes([view[0], view[1], view[2], view[3]]);
                 drop(view);
                 self.slots[slot].unmap();

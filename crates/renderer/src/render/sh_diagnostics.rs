@@ -489,7 +489,9 @@ impl ShProbeReadback {
                 .buffer
                 .slice(0..self.buffer_size)
                 .get_mapped_range()
-                .expect("map_ready is set only by a successful map of this range");
+                .expect(
+                    "map_ready follows a successful map of this range; fails only after device loss (no recovery contract)",
+                );
             let decoded = decode_probe_irradiance_atlas(
                 &view,
                 self.grid_dimensions,

@@ -82,6 +82,7 @@ impl PresentHandle {
             .create_view(&wgpu::TextureViewDescriptor::default())
     }
 
+    /// wgpu 30 presents through the queue, not the surface texture.
     pub(super) fn present(self, queue: &wgpu::Queue) {
         queue.present(self.output);
     }

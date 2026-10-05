@@ -445,7 +445,7 @@ impl App {
 
     /// Install a delivered level payload on the main thread: GPU texture upload
     /// (from baked `.prm` mip sidecars), UV normalization, GPU geometry upload,
-    /// bridge / fog populate, collision commit, classname dispatch, data script,
+    /// light bridge, collision commit, fog/trigger populate, classname dispatch, data script,
     /// archetype sweep, and `levelLoad` fire. Each stage is recorded into
     /// `self.level_timings` for log line C.
     ///
@@ -609,6 +609,8 @@ impl App {
                 Some(r) => r,
                 None => {
                     log::error!("[Engine] install_level_payload called with no renderer");
+                    // The level stays installed, so its collision does too.
+                    self.collision_world = static_collision;
                     self.level = Some(world);
                     return Ok(());
                 }
@@ -2886,16 +2888,22 @@ pub(crate) mod tests {
         let check = install
             .find("render::validate_level_geometry_ranges(")
             .unwrap();
+        let collision = install
+            .find("crate::collision::CollisionWorld::from_level(")
+            .unwrap();
         for mutation in [
             "self.view_feel_state =",
             "endpoint.set_level_parity(",
             "self.nav_graph =",
             "renderer.install_textures(",
             "renderer.install_level_geometry(",
+            "self.collision_world =",
         ] {
+            let at = install.find(mutation).unwrap();
+            assert!(check < at, "range check must precede {mutation}");
             assert!(
-                check < install.find(mutation).unwrap(),
-                "range check must precede {mutation}"
+                collision < at,
+                "static collision build must precede {mutation}"
             );
         }
         let capture = include_str!("../capture/prepared.rs");

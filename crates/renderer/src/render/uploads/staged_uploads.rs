@@ -286,7 +286,9 @@ impl StagedUploads {
         let mut mapped = gpu_call(|| {
             staging
                 .get_mapped_range_mut(..len)
-                .expect("the staging pool hands out mapped buffers of at least `len` bytes")
+                .expect(
+                    "the staging pool hands out mapped buffers of at least `len` bytes; fails only after device loss (no recovery contract)",
+                )
         });
         mapped.copy_from_slice(&self.bytes);
         gpu_call(|| drop(mapped));

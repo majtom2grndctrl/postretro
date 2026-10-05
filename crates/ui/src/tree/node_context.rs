@@ -176,7 +176,7 @@ pub enum NodeContext {
     },
     /// Textured image quad. `asset` is the texture key the renderer binds; the
     /// rect comes from layout. The image sizes from the asset's natural reference
-    /// dimensions via the measure seam (see `measure_node`) — content-driven, so
+    /// dimensions via the measure seam (see `layout_leaf`) — content-driven, so
     /// `asset` doubles as the size key. Image batching/binding lands in the
     /// renderer; the tree records the key so the draw step can group by it.
     Image { asset: String },

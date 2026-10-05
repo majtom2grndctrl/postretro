@@ -61,7 +61,7 @@ Crates form a one-way dependency graph: `foundation` and `entities` at the base,
 | Logging | log 0.4 + env_logger 0.11 |
 | Scripting (JS/TS) | rquickjs (QuickJS embed) |
 | Scripting (Luau) | mlua (Luau embed) |
-| Collision | parry3d 0.31 (glam-native: its `Vector` is `glam::Vec3` and its rotation is `glam::Quat`, so points pass through unconverted; parry's shape, pose, hit, and error types stay inside `postretro-physics`'s collision module) |
+| Collision | parry3d 0.31 (glam-native: its `Vector` is `glam::Vec3` and its rotation is `glam::Quat`, so points pass through unconverted; parry's shape, pose, hit, and error types stay private to the `postretro-physics` crate; subsystem-boundary coordinates and query results use engine-owned types built from `Vec3`) |
 
 ### Renderer (`postretro-renderer`)
 

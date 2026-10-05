@@ -42,10 +42,8 @@ wgpu = "30"
 pollster = "1"
 
 # Shaped, anti-aliased text rendering on wgpu (cosmic-text + its own atlas and
-# pipeline). Pinned to 0.12: that release depends on `wgpu ^30.0.0` and
-# `cosmic-text ^0.19` (confirmed via crates.io dependency metadata), matching
-# the workspace `wgpu = "30"`. The preceding line (0.11) targets `wgpu ^29`, so
-# 0.12 is the compatible release.
+# pipeline). glyphon must match the workspace `wgpu` major; check its crates.io
+# wgpu requirement before bumping either.
 # glyphon ships its own pipeline/atlas — it is NOT routed through the UI quad
 # pipeline. See context/lib/ui.md.
 glyphon = "0.12"
@@ -61,7 +59,7 @@ glam = { version = "0.33", features = ["serde", "bytemuck"] }
 taffy = "0.14"
 
 # CPU text shaping/measurement used by the extracted UI crate. Pinned to the
-# version glyphon 0.12 depends on so the renderer text seam can share the same
+# version glyphon depends on so the renderer text seam can share the same
 # FontSystem type identity.
 cosmic-text = "0.19"
 

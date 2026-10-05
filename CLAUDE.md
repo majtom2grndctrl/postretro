@@ -18,14 +18,13 @@ xtask syntax: `cargo run -p xtask -- run [cargo-run flags...] -- [postretro args
 Simple engine args still work as `cargo run -p xtask -- run [postretro args...]`.
 
 ```bash
-cargo run -p xtask -- run                     # canonical development engine launch
-cargo run -p xtask -- run content/dev/maps/campaign-test.prl  # dev launch with a PRL map
+cargo run -p xtask -- run content/dev/maps/campaign-test.prl  # launch with a PRL map
 cargo run -p xtask -- run --features dev-tools -- content/dev/maps/campaign-test.prl  # dev-tools launch
 cargo run -p xtask -- run --release -- content/dev/maps/campaign-test.prl  # optimized xtask launch
 cargo run -p postretro                        # lower-level engine run; assumes scripts-build is already built
 cargo run -p postretro-level-compiler -- content/dev/maps/input.map -o content/dev/maps/output.prl  # compile a level (binary: prl-build)
 cargo run --release -p postretro              # optimized engine build
-RUST_LOG=info cargo run -p xtask -- run       # dev launch with logging
+RUST_LOG=info cargo run -p xtask -- run       # launch with logging
 POSTRETRO_GPU_TIMING=1 cargo run -p xtask -- run # log per-pass GPU time (requires TIMESTAMP_QUERY adapter support)
 POSTRETRO_CPU_TIMING=1 RUST_LOG=info cargo run -p xtask -- run # log per-stage CPU time, one [CpuTiming] line per 120 frames
 cargo run -p xtask -- dist                    # build release binaries, then assemble a player payload

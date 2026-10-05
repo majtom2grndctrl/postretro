@@ -14,7 +14,7 @@ impl Renderer {
     /// renderer; callers only decide whether to present a returned handle.
     pub fn present(&self, handle: PresentHandle) {
         self.queue.assert_empty("present");
-        handle.present();
+        handle.present(self.queue.raw());
     }
 
     /// Upload the decoded boot-splash logo into the boot splash pass and build

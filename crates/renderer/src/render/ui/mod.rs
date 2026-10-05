@@ -774,7 +774,7 @@ fn create_ui_quad_pipeline(
         vertex: wgpu::VertexState {
             module: shader,
             entry_point: Some("vs_main"),
-            buffers: std::slice::from_ref(instance_layout),
+            buffers: &[Some(instance_layout.clone())],
             compilation_options: wgpu::PipelineCompilationOptions::default(),
         },
         primitive: wgpu::PrimitiveState {
@@ -818,7 +818,7 @@ fn create_ui_ring_pipeline(
         vertex: wgpu::VertexState {
             module: shader,
             entry_point: Some("vs_main"),
-            buffers: std::slice::from_ref(instance_layout),
+            buffers: &[Some(instance_layout.clone())],
             compilation_options: wgpu::PipelineCompilationOptions::default(),
         },
         primitive: wgpu::PrimitiveState {

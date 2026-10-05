@@ -39,7 +39,7 @@ Master, SFX, Music, and UI volumes are player options (`player_options.md` §5) 
 
 ## 2. Playback Crate
 
-kira 0.12 handles playback, mixing, and spatialization. Engine code configures tracks and spatial parameters through kira's API, only inside `postretro-audio`. kira pulls glam 0.32 transitively; its math types do not cross into engine code.
+kira 0.12 handles playback, mixing, and spatialization. Engine code configures tracks and spatial parameters through kira's API, only inside `postretro-audio`. kira pulls glam 0.33 transitively; its math types do not cross into engine code.
 
 ---
 

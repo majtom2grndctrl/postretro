@@ -72,7 +72,7 @@ pub(super) fn create_skinned_depth_pipeline(
             // the SAME vertex buffer binds: joints at byte 24, weights at 28;
             // stride is the full `SkinnedVertex` (the skipped attributes still
             // occupy the stride, they are simply not declared).
-            buffers: &[wgpu::VertexBufferLayout {
+            buffers: &[Some(wgpu::VertexBufferLayout {
                 array_stride: std::mem::size_of::<postretro_model::mesh::SkinnedVertex>()
                     as wgpu::BufferAddress,
                 step_mode: wgpu::VertexStepMode::Vertex,
@@ -93,7 +93,7 @@ pub(super) fn create_skinned_depth_pipeline(
                         format: wgpu::VertexFormat::Unorm8x4,
                     },
                 ],
-            }],
+            })],
             compilation_options: wgpu::PipelineCompilationOptions::default(),
         },
         primitive: wgpu::PrimitiveState {

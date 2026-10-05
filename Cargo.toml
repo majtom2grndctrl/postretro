@@ -38,21 +38,22 @@ license = "PolyForm-Noncommercial-1.0.0"
 [workspace.dependencies]
 # Windowing and GPU
 winit = "0.30"
-wgpu = "29"
-pollster = "0.4"
+wgpu = "30"
+pollster = "1"
 
 # Shaped, anti-aliased text rendering on wgpu (cosmic-text + its own atlas and
-# pipeline). Pinned to 0.11: that release depends on `wgpu ^29.0.0` (confirmed
-# via crates.io dependency metadata), matching the workspace `wgpu = "29"`. The
-# preceding line (0.10) targets `wgpu ^28`, so 0.11 is the compatible release.
+# pipeline). Pinned to 0.12: that release depends on `wgpu ^30.0.0` and
+# `cosmic-text ^0.19` (confirmed via crates.io dependency metadata), matching
+# the workspace `wgpu = "30"`. The preceding line (0.11) targets `wgpu ^29`, so
+# 0.12 is the compatible release.
 # glyphon ships its own pipeline/atlas — it is NOT routed through the UI quad
-# pipeline. See context/plans/in-progress/M13--ui-render-pass-slice.
-glyphon = "0.11"
+# pipeline. See context/lib/ui.md.
+glyphon = "0.12"
 
 # Math. `bytemuck` lets glam's `Vec3`/`Mat4` derive `Pod`/`Zeroable`, so the
 # CPU-side per-model `Aabb` is the plain bound type carried by skinned meshes
 # without a parallel array-of-`f32` mirror.
-glam = { version = "0.32", features = ["serde", "bytemuck"] }
+glam = { version = "0.33", features = ["serde", "bytemuck"] }
 
 # Flexbox/grid layout solver for the UI descriptor tree. Pure CPU — no wgpu
 # dependency, so the wgpu version-pinning rationale (see `glyphon` above) does
@@ -60,9 +61,9 @@ glam = { version = "0.32", features = ["serde", "bytemuck"] }
 taffy = "0.14"
 
 # CPU text shaping/measurement used by the extracted UI crate. Pinned to the
-# version glyphon 0.11 depends on so the renderer text seam can share the same
+# version glyphon 0.12 depends on so the renderer text seam can share the same
 # FontSystem type identity.
-cosmic-text = "0.18.2"
+cosmic-text = "0.19"
 
 # Collision (world-space trimesh queries; nalgebra types stay inside the
 # `collision` module). See context/lib/entity_model.md §7.

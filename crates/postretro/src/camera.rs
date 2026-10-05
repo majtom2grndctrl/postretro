@@ -67,7 +67,7 @@ impl RenderCamera {
                 .clamp(MIN_FOV_DEG.to_radians(), MAX_FOV_DEG.to_radians())
         };
         let vfov = 2.0 * ((hfov / 2.0).tan() / safe_aspect).atan();
-        let projection = Mat4::perspective_rh(vfov, safe_aspect, NEAR, FAR);
+        let projection = glam::camera::rh::proj::directx::perspective(vfov, safe_aspect, NEAR, FAR);
 
         Self {
             eye_position,
@@ -102,12 +102,12 @@ fn look_direction(yaw: f32, pitch: f32) -> Vec3 {
 fn render_view_matrix(position: Vec3, look_dir: Vec3, roll: f32, eye_offset: Vec3) -> Mat4 {
     // Keep the no-effect path bit-identical to the pre-view-feel matrix.
     if roll == 0.0 && eye_offset == Vec3::ZERO {
-        return Mat4::look_at_rh(position, position + look_dir, Vec3::Y);
+        return glam::camera::rh::view::look_at_mat4(position, position + look_dir, Vec3::Y);
     }
 
     let up = glam::Quat::from_axis_angle(look_dir, roll) * Vec3::Y;
     let eye = effective_eye_position(position, eye_offset);
-    Mat4::look_at_rh(eye, eye + look_dir, up)
+    glam::camera::rh::view::look_at_mat4(eye, eye + look_dir, up)
 }
 
 /// Free-fly camera with Euler angle orientation and perspective projection.
@@ -186,13 +186,13 @@ impl Camera {
     fn view_matrix(&self) -> Mat4 {
         let (origin, direction) = self.aim_ray();
         let target = origin + direction;
-        Mat4::look_at_rh(origin, target, Vec3::Y)
+        glam::camera::rh::view::look_at_mat4(origin, target, Vec3::Y)
     }
 
     #[cfg(test)]
     fn projection_matrix(&self) -> Mat4 {
         let vfov = 2.0 * ((HFOV / 2.0).tan() / self.aspect.max(0.001)).atan();
-        Mat4::perspective_rh(vfov, self.aspect, NEAR, FAR)
+        glam::camera::rh::proj::directx::perspective(vfov, self.aspect, NEAR, FAR)
     }
 }
 
@@ -499,9 +499,9 @@ mod tests {
         );
         let up = glam::Quat::from_axis_angle(look_dir, roll) * Vec3::Y;
         let expected_eye = position + offset;
-        let view = Mat4::look_at_rh(expected_eye, expected_eye + look_dir, up);
+        let view = glam::camera::rh::view::look_at_mat4(expected_eye, expected_eye + look_dir, up);
         let vfov = 2.0 * ((HFOV / 2.0).tan() / aspect).atan();
-        let projection = Mat4::perspective_rh(vfov, aspect, NEAR, FAR);
+        let projection = glam::camera::rh::proj::directx::perspective(vfov, aspect, NEAR, FAR);
 
         assert_eq!(camera.eye_position, expected_eye);
         assert_eq!(
@@ -535,7 +535,7 @@ mod tests {
             pitch.sin(),
             -yaw.cos() * pitch.cos(),
         );
-        let expected = Mat4::look_at_rh(position, position + look_dir, Vec3::Y);
+        let expected = glam::camera::rh::view::look_at_mat4(position, position + look_dir, Vec3::Y);
 
         let actual = render_view_matrix(position, look_direction(yaw, pitch), 0.0, Vec3::ZERO);
 
@@ -565,8 +565,9 @@ mod tests {
         let pitch = -0.2;
         let camera = RenderCamera::new(position, aspect, yaw, pitch, 0.0, Vec3::ZERO, 0.0);
         let old_vfov = 2.0 * ((HFOV / 2.0).tan() / aspect.max(0.1)).atan();
-        let expected = Mat4::perspective_rh(old_vfov, aspect.max(0.1), NEAR, FAR)
-            * render_view_matrix(position, look_direction(yaw, pitch), 0.0, Vec3::ZERO);
+        let expected =
+            glam::camera::rh::proj::directx::perspective(old_vfov, aspect.max(0.1), NEAR, FAR)
+                * render_view_matrix(position, look_direction(yaw, pitch), 0.0, Vec3::ZERO);
         assert_eq!(
             camera.view_projection.to_cols_array(),
             expected.to_cols_array()

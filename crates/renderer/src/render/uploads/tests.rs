@@ -32,7 +32,11 @@ fn read(queue: &UploadQueue, ctx: &GpuCtx, source: &wgpu::Buffer) -> Vec<u8> {
         .poll(wgpu::PollType::wait_indefinitely())
         .unwrap();
     recv.recv().unwrap().unwrap();
-    let bytes = output.slice(..).get_mapped_range().to_vec();
+    let bytes = output
+        .slice(..)
+        .get_mapped_range()
+        .expect("buffer mapped for readback")
+        .to_vec();
     output.unmap();
     bytes
 }

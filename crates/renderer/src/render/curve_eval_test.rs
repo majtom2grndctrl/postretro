@@ -97,6 +97,7 @@ fn try_init_gpu() -> Option<GpuCtx> {
         power_preference: wgpu::PowerPreference::default(),
         compatible_surface: None,
         force_fallback_adapter: false,
+        apply_limit_buckets: false,
     }))
     .ok()?;
 
@@ -326,7 +327,9 @@ fn run_compute(
         .expect("poll");
     rx.recv().expect("map channel").expect("map ok");
 
-    let data = slice.get_mapped_range();
+    let data = slice
+        .get_mapped_range()
+        .expect("buffer mapped for readback");
     let out = data.to_vec();
     drop(data);
     readback.unmap();

@@ -36,7 +36,7 @@
 // assume. The shader reads its instance via `@builtin(instance_index)`.
 //
 // Coordinate basis: the engine world is Y-up, right-handed, metric (camera
-// builds via `look_at_rh` / `perspective_rh` with up = +Y; the level compiler
+// builds via glam's `camera::rh` view / projection with up = +Y; the level compiler
 // works in meters). glTF is ALSO Y-up, right-handed, meters, and positions are
 // stored verbatim. So the glTF→engine basis conversion is the IDENTITY — no
 // axis swap, no mirror, no scale. Winding matches too: glTF front faces are CCW
@@ -1136,7 +1136,7 @@ impl MeshPass {
                 // normal-map pass yet; committing it now lets depth-only,
                 // lighting, and normal-map passes reuse this vertex layout
                 // without a format change.
-                buffers: &[wgpu::VertexBufferLayout {
+                buffers: &[Some(wgpu::VertexBufferLayout {
                     array_stride: std::mem::size_of::<postretro_model::mesh::SkinnedVertex>()
                         as wgpu::BufferAddress,
                     step_mode: wgpu::VertexStepMode::Vertex,
@@ -1178,7 +1178,7 @@ impl MeshPass {
                             format: wgpu::VertexFormat::Unorm8x4,
                         },
                     ],
-                }],
+                })],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             },
             primitive: wgpu::PrimitiveState {

@@ -475,12 +475,12 @@ mod tests {
             fov_deg: 100.0,
         };
         let view_proj = capture_view_projection(&camera, 1280, 720);
-        let expected = Mat4::perspective_rh(
+        let expected = glam::camera::rh::proj::directx::perspective(
             2.0 * ((camera.fov_deg.to_radians() / 2.0).tan() / (1280.0 / 720.0)).atan(),
             1280.0 / 720.0,
             camera::NEAR,
             camera::FAR,
-        ) * Mat4::look_at_rh(
+        ) * glam::camera::rh::view::look_at_mat4(
             Vec3::ZERO,
             Vec3::new(
                 0.0,

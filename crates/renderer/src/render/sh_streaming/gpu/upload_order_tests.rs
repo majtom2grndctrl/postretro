@@ -22,7 +22,12 @@ fn read_first_word(device: &wgpu::Device, queue: &UploadQueue, source: &wgpu::Bu
         });
     device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
     receive.recv().unwrap().unwrap();
-    let bytes = output.slice(..).get_mapped_range()[..4].try_into().unwrap();
+    let bytes = output
+        .slice(..)
+        .get_mapped_range()
+        .expect("buffer mapped for readback")[..4]
+        .try_into()
+        .unwrap();
     output.unmap();
     bytes
 }

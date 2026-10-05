@@ -93,6 +93,9 @@ impl Renderer {
             power_preference: wgpu::PowerPreference::default(),
             compatible_surface: Some(&surface),
             force_fallback_adapter: false,
+            // Bucketing is browser anti-fingerprinting; it would clamp the
+            // adapter limits the device request below relies on.
+            apply_limit_buckets: false,
         }))
         .context("no suitable GPU adapter found")?;
 
@@ -121,6 +124,7 @@ impl Renderer {
             alpha_mode: surface_caps.alpha_modes[0],
             desired_maximum_frame_latency: 2,
             view_formats: vec![],
+            color_space: wgpu::SurfaceColorSpace::Auto,
         };
         surface.configure(&device, &surface_config);
         log::info!("[Renderer] vsync on");
@@ -193,6 +197,7 @@ impl Renderer {
             power_preference: wgpu::PowerPreference::default(),
             compatible_surface: None,
             force_fallback_adapter: false,
+            apply_limit_buckets: false,
         }))
         .context("frame capture requires a GPU adapter")?;
         let (
@@ -250,6 +255,7 @@ impl Renderer {
                 alpha_mode: wgpu::CompositeAlphaMode::Opaque,
                 desired_maximum_frame_latency: 2,
                 view_formats: vec![],
+                color_space: wgpu::SurfaceColorSpace::Auto,
             },
             is_surface_configured: false,
             surface_reconfigure_pending: false,

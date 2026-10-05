@@ -800,8 +800,13 @@ mod tests {
         } else {
             Vec3::Y
         };
-        let view = glam::Mat4::look_at_rh(eye, eye + forward, world_up);
-        let proj = glam::Mat4::perspective_rh(std::f32::consts::FRAC_PI_2, 1.0, 0.1, 4096.0);
+        let view = glam::camera::rh::view::look_at_mat4(eye, eye + forward, world_up);
+        let proj = glam::camera::rh::proj::directx::perspective(
+            std::f32::consts::FRAC_PI_2,
+            1.0,
+            0.1,
+            4096.0,
+        );
         proj * view
     }
 

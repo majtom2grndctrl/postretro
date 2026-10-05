@@ -379,7 +379,7 @@ impl KinematicBrushPass {
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: Some("vs_main"),
-                buffers: &[wgpu::VertexBufferLayout {
+                buffers: &[Some(wgpu::VertexBufferLayout {
                     array_stride: postretro_render_data::geometry::WorldVertex::STRIDE
                         as wgpu::BufferAddress,
                     step_mode: wgpu::VertexStepMode::Vertex,
@@ -405,7 +405,7 @@ impl KinematicBrushPass {
                             format: wgpu::VertexFormat::Uint16x2,
                         },
                     ],
-                }],
+                })],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             },
             primitive: wgpu::PrimitiveState {

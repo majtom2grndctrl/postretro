@@ -70,6 +70,7 @@ fn try_init_gpu() -> Option<GpuCtx> {
         power_preference: wgpu::PowerPreference::default(),
         compatible_surface: None,
         force_fallback_adapter: false,
+        apply_limit_buckets: false,
     }))
     .ok()?;
     if !adapter
@@ -568,7 +569,9 @@ fn run_probes(
         device
             .poll(wgpu::PollType::wait_indefinitely())
             .expect("poll shadowmask_sample_test device");
-        let bytes = slice.get_mapped_range();
+        let bytes = slice
+            .get_mapped_range()
+            .expect("buffer mapped for readback");
         let texels = bytes[..(width * OUTPUT_TEXEL_BYTES) as usize]
             .as_chunks::<{ OUTPUT_TEXEL_BYTES as usize }>()
             .0

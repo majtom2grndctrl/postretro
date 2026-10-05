@@ -8895,7 +8895,6 @@ mod tests {
     fn closet_reveal_closed_loaded_door_hides_interior_until_it_moves() {
         use crate::scripting_systems::mesh_anim::MeshClipTables;
         use crate::scripting_systems::mesh_render::MeshRenderCollector;
-        use glam::Mat4;
         use postretro_entities::{EntityRegistry, Transform, components::mesh::MeshComponent};
         use postretro_level_format::geometry::Vertex;
         use postretro_level_format::kinematic_geometry::{
@@ -9062,8 +9061,17 @@ mod tests {
             .expect("closet enemy mesh installs");
 
         let camera_position = Vec3::new(40.0, -80.0, 48.0);
-        let view = Mat4::look_at_rh(camera_position, camera_position + Vec3::X, Vec3::Y);
-        let view_proj = Mat4::perspective_rh(std::f32::consts::FRAC_PI_2, 1.0, 0.1, 512.0) * view;
+        let view = glam::camera::rh::view::look_at_mat4(
+            camera_position,
+            camera_position + Vec3::X,
+            Vec3::Y,
+        );
+        let view_proj = glam::camera::rh::proj::directx::perspective(
+            std::f32::consts::FRAC_PI_2,
+            1.0,
+            0.1,
+            512.0,
+        ) * view;
         let visibility = |blocked_portals: &[bool]| {
             let (result, _) = postretro_visibility::determine_visible_cells(
                 camera_position,
@@ -10023,8 +10031,11 @@ mod tests {
 
     #[test]
     fn viewmodel_world_transform_keeps_shared_shader_positions_in_world_space() {
-        let view =
-            glam::Mat4::look_at_rh(Vec3::new(6.0, 2.0, 4.0), Vec3::new(5.0, 2.5, 3.0), Vec3::Y);
+        let view = glam::camera::rh::view::look_at_mat4(
+            Vec3::new(6.0, 2.0, 4.0),
+            Vec3::new(5.0, 2.5, 3.0),
+            Vec3::Y,
+        );
         let placement = resolve_weapon_placement(None, None, None, None);
         let camera_space =
             viewmodel_camera_space_transform(Vec3::X, Vec3::ZERO, 0.0, 0.0, 0.0, &placement);

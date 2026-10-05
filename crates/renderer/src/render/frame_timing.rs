@@ -484,7 +484,8 @@ impl FrameTiming {
             let view = self
                 .readback_buffer
                 .slice(0..buffer_size)
-                .get_mapped_range();
+                .get_mapped_range()
+                .expect("map_ready is set only by a successful map of this range");
             let mut ticks = Vec::with_capacity(view.len() / 8);
             for chunk in view.as_chunks::<8>().0 {
                 ticks.push(u64::from_le_bytes(*chunk));

@@ -46,8 +46,8 @@ mod tests {
     const EPSILON: f32 = 1.0e-4;
 
     fn camera_view_projection() -> Mat4 {
-        Mat4::perspective_rh(90.0_f32.to_radians(), 4.0 / 3.0, 0.1, 100.0)
-            * Mat4::look_at_rh(Vec3::ZERO, -Vec3::Z, Vec3::Y)
+        glam::camera::rh::proj::directx::perspective(90.0_f32.to_radians(), 4.0 / 3.0, 0.1, 100.0)
+            * glam::camera::rh::view::look_at_mat4(Vec3::ZERO, -Vec3::Z, Vec3::Y)
     }
 
     #[test]

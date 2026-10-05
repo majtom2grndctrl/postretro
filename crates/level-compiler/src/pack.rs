@@ -2264,7 +2264,7 @@ mod tests {
     // could silently make a closed door block the wrong portal.
     #[test]
     fn closet_reveal_compiler_loader_portal_ids_block_and_restore_interior() {
-        use glam::{Mat4, Vec3};
+        use glam::Vec3;
         use postretro_visibility::VisibleCells;
 
         let map_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -2401,8 +2401,17 @@ mod tests {
         );
 
         let view_direction = (closet_position - player_position).normalize();
-        let view = Mat4::look_at_rh(player_position, player_position + view_direction, Vec3::Y);
-        let view_proj = Mat4::perspective_rh(std::f32::consts::FRAC_PI_2, 1.0, 0.01, 100.0) * view;
+        let view = glam::camera::rh::view::look_at_mat4(
+            player_position,
+            player_position + view_direction,
+            Vec3::Y,
+        );
+        let view_proj = glam::camera::rh::proj::directx::perspective(
+            std::f32::consts::FRAC_PI_2,
+            1.0,
+            0.01,
+            100.0,
+        ) * view;
         let visible_ids = |blocked_portals: &[bool]| {
             let (result, _) = postretro_visibility::determine_visible_cells(
                 player_position,

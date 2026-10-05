@@ -82,9 +82,12 @@ impl Renderer {
             label: Some("egui Encoder"),
         });
 
-        for (id, image_delta) in &textures_delta.set {
-            gpu.renderer
-                .update_texture(device, queue.raw(), *id, image_delta);
+        // Distinct ids are independent; one id's deltas must apply in order.
+        for (id, image_deltas) in &textures_delta.set {
+            for image_delta in image_deltas {
+                gpu.renderer
+                    .update_texture(device, queue.raw(), *id, image_delta);
+            }
         }
         let user_cmd_bufs = gpu.renderer.update_buffers(
             device,

@@ -117,13 +117,8 @@ impl UiTextRenderer {
             // Bound the layout box to the UI layer (surface extent): glyphon needs a finite
             // layout size to resolve the run (an unbounded box has nothing to lay
             // glyphs against).
-            buffer.set_size(
-                font_system,
-                Some(viewport[0] as f32),
-                Some(viewport[1] as f32),
-            );
+            buffer.set_size(Some(viewport[0] as f32), Some(viewport[1] as f32));
             buffer.set_text(
-                font_system,
                 &t.content,
                 &Attrs::new().family(Family::Name(&t.family)).metadata(i),
                 Shaping::Advanced,

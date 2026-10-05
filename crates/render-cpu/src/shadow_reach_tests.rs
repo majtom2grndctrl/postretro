@@ -1,5 +1,4 @@
 use super::*;
-use glam::Mat4;
 use postretro_render_data::cone_frustum::cone_frustum_planes;
 
 /// One leaf: its box, cell and index range.
@@ -111,12 +110,15 @@ fn row(cells: u32) -> Vec<L> {
 /// Axis-aligned slab `x ∈ [x0, x1]` over the unit cross-section, as an
 /// orthographic frustum looking down +x.
 fn slab(x0: f32, x1: f32) -> [Vec4; 6] {
-    let view = Mat4::look_at_rh(
+    let view = glam::camera::rh::view::look_at_mat4(
         Vec3::new(x0 - 1.0, 0.5, 0.5),
         Vec3::new(x1, 0.5, 0.5),
         Vec3::Y,
     );
-    cone_frustum_planes(&(Mat4::orthographic_rh(-2.0, 2.0, -2.0, 2.0, 1.0, 1.0 + x1 - x0) * view))
+    cone_frustum_planes(
+        &(glam::camera::rh::proj::directx::orthographic(-2.0, 2.0, -2.0, 2.0, 1.0, 1.0 + x1 - x0)
+            * view),
+    )
 }
 
 fn sorted(mut cells: Vec<u32>) -> Vec<u32> {
@@ -241,8 +243,8 @@ fn random_frustum(rng: &mut Rng, extent: f32) -> [Vec4; 6] {
     } else {
         Vec3::Y
     };
-    let view = Mat4::look_at_rh(eye, eye + dir, up);
-    let proj = Mat4::perspective_rh(
+    let view = glam::camera::rh::view::look_at_mat4(eye, eye + dir, up);
+    let proj = glam::camera::rh::proj::directx::perspective(
         rng.range(0.1, 2.6),
         rng.range(0.5, 2.0),
         rng.range(0.05, 1.0),

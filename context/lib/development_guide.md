@@ -67,8 +67,8 @@ Crates form a one-way dependency graph: `foundation` and `entities` at the base,
 
 | Concern | Crate |
 |---------|-------|
-| GPU | wgpu 29 (Vulkan, Metal, DX12) |
-| Async blocking | pollster 0.4 (wgpu adapter/device init only) |
+| GPU | wgpu 30 (Vulkan, Metal, DX12) |
+| Async blocking | pollster 1 (wgpu adapter/device init only) |
 
 ### Level compiler (`postretro-level-compiler`)
 

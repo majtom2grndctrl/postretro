@@ -684,8 +684,13 @@ mod tests {
     /// Camera at origin looking down -Z, wide FOV. A box in front of the camera
     /// passes the frustum; a box behind it (+Z) is frustum-rejected.
     fn forward_view_proj() -> Mat4 {
-        let view = Mat4::look_at_rh(Vec3::ZERO, Vec3::NEG_Z, Vec3::Y);
-        let proj = Mat4::perspective_rh(std::f32::consts::FRAC_PI_2, 16.0 / 9.0, 0.1, 4096.0);
+        let view = glam::camera::rh::view::look_at_mat4(Vec3::ZERO, Vec3::NEG_Z, Vec3::Y);
+        let proj = glam::camera::rh::proj::directx::perspective(
+            std::f32::consts::FRAC_PI_2,
+            16.0 / 9.0,
+            0.1,
+            4096.0,
+        );
         proj * view
     }
 

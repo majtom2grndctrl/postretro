@@ -444,7 +444,7 @@ fn building_draw_lists_after_warmup_allocates_nothing_even_for_a_record_reach() 
     let small = cone_frustum_planes(&spot(Vec3::new(0.0, 0.0, 1.0), Vec3::NEG_Z));
     let small_len = index.reach(&small, &mut scratch).len();
     let everything = cone_frustum_planes(&cube(Vec3::new(7.0, 0.0, -8.0))[5]);
-    let wide = cone_frustum_planes(&Mat4::orthographic_rh(
+    let wide = cone_frustum_planes(&glam::camera::rh::proj::directx::orthographic(
         -100.0, 100.0, -100.0, 100.0, -100.0, 100.0,
     ));
     let probe = AllocSnapshot::arm();

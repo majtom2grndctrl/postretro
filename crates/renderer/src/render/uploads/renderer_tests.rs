@@ -145,7 +145,12 @@ impl Probe {
             .poll(wgpu::PollType::wait_indefinitely())
             .unwrap();
         recv.recv().unwrap().unwrap();
-        let bytes = self.readback.slice(..).get_mapped_range().to_vec();
+        let bytes = self
+            .readback
+            .slice(..)
+            .get_mapped_range()
+            .expect("buffer mapped for readback")
+            .to_vec();
         self.readback.unmap();
         bytes
     }

@@ -251,7 +251,7 @@ fn validate_scene(scene: &CaptureScene) -> Result<(), SceneError> {
         });
     }
 
-    // `look_at_rh` subtracts eye from center in f32. At very large finite
+    // `look_at_mat4` subtracts eye from center in f32. At very large finite
     // coordinates, adding a unit look vector can round back to the eye and
     // produce a zero basis. Reject that pose before visibility or GPU work.
     let yaw = scene.camera.yaw_deg.to_radians();

@@ -213,9 +213,14 @@ mod tests {
                 -probe.yaw_radians.cos() * probe.pitch_radians.cos(),
             );
             let pos = Vec3::from_array(probe.origin);
-            let view = Mat4::look_at_rh(pos, pos + look, Vec3::Y);
+            let view = glam::camera::rh::view::look_at_mat4(pos, pos + look, Vec3::Y);
             let vfov = 2.0 * ((probe.hfov_radians / 2.0).tan() / probe.aspect).atan();
-            let proj = Mat4::perspective_rh(vfov, probe.aspect, probe.near, probe.far);
+            let proj = glam::camera::rh::proj::directx::perspective(
+                vfov,
+                probe.aspect,
+                probe.near,
+                probe.far,
+            );
             proj * view
         }
     }
@@ -253,7 +258,7 @@ mod tests {
     }
 
     fn search_map(world: &postretro_level_loader::LevelWorld) {
-        use glam::{Mat4, Vec3};
+        use glam::Vec3;
         use postretro_visibility::{TimingGate, VisibilityPath, VisibilityStage};
 
         // Dev player capsule: 0.8 m half-height, eye 0.5 m above the origin.
@@ -261,7 +266,7 @@ mod tests {
         const EYE_ABOVE_ORIGIN: f32 = 0.5;
         let aspect = 16.0 / 9.0;
         let vfov = 2.0 * ((std::f32::consts::FRAC_PI_4).tan() / aspect).atan();
-        let proj = Mat4::perspective_rh(vfov, aspect, 0.1, 4096.0);
+        let proj = glam::camera::rh::proj::directx::perspective(vfov, aspect, 0.1, 4096.0);
 
         let mut results = Vec::new();
         for cell in world
@@ -275,7 +280,7 @@ mod tests {
             for step in 0..8 {
                 let yaw = step as f32 * std::f32::consts::FRAC_PI_4;
                 let look = Vec3::new(-yaw.sin(), 0.0, -yaw.cos());
-                let view = Mat4::look_at_rh(eye, eye + look, Vec3::Y);
+                let view = glam::camera::rh::view::look_at_mat4(eye, eye + look, Vec3::Y);
                 let mut scratch = Vec::new();
                 let (vis, _) = postretro_visibility::determine_visible_cells(
                     eye,

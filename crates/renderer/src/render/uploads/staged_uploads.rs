@@ -283,7 +283,11 @@ impl StagedUploads {
             .resize(self.bytes.len().next_multiple_of(BUFFER_ALIGNMENT), 0);
         let len = self.bytes.len() as u64;
         let staging = pool.acquire(device, len);
-        let mut mapped = gpu_call(|| staging.get_mapped_range_mut(..len));
+        let mut mapped = gpu_call(|| {
+            staging
+                .get_mapped_range_mut(..len)
+                .expect("the staging pool hands out mapped buffers of at least `len` bytes")
+        });
         mapped.copy_from_slice(&self.bytes);
         gpu_call(|| drop(mapped));
         gpu_call(|| staging.unmap());

@@ -102,6 +102,7 @@ fn try_init_gpu() -> Option<GpuCtx> {
         power_preference: wgpu::PowerPreference::default(),
         compatible_surface: None,
         force_fallback_adapter: false,
+        apply_limit_buckets: false,
     }))
     .ok()?;
     let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
@@ -378,7 +379,9 @@ fn run_select(ctx: &GpuCtx, lights: &[TestLight], worlds: &[[f32; 3]]) -> Vec<(V
         .poll(wgpu::PollType::wait_indefinitely())
         .expect("poll");
     rx.recv().expect("map channel").expect("map ok");
-    let data = slice.get_mapped_range();
+    let data = slice
+        .get_mapped_range()
+        .expect("buffer mapped for readback");
     let raw: Vec<u32> = data
         .as_chunks::<4>()
         .0

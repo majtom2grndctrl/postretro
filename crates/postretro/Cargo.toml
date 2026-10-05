@@ -84,10 +84,10 @@ postretro-sim.workspace = true
 postretro-netcode.workspace = true
 
 # Debug UI (egui) — only compiled in when the `dev-tools` feature is enabled.
-# Pinned to 0.34 for the binary's `egui-winit` integration with winit 0.30.
+# Pinned to 0.36 for the binary's `egui-winit` integration with winit 0.30.
 # Renderer-side egui/wgpu compatibility belongs to `postretro-renderer`.
-egui = { version = "0.34", optional = true }
-egui-winit = { version = "0.34", optional = true }
+egui = { version = "0.36", optional = true }
+egui-winit = { version = "0.36", optional = true }
 
 [features]
 # Pulls in the egui-based debug panel and its diagnostic chord. Without this

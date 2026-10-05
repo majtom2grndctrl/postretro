@@ -17,7 +17,7 @@ use crate::geometry::GeometryResult;
 /// by the traversal shader, so BVH construction rejects it at compile time.
 const MAX_CELL_ID_EXCLUSIVE: u32 = 131072;
 
-/// `bvh` 0.11's allocation-free traversal iterator has a fixed 32-entry
+/// `bvh` 0.12's allocation-free traversal iterator has a fixed 32-entry
 /// stack. Keep every compiled tree within that limit so bake-time traversal
 /// reports a map-build error instead of panicking while tracing a ray.
 const MAX_BVH_TRAVERSE_ITERATOR_DEPTH: usize = 32;

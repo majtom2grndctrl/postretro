@@ -366,7 +366,7 @@ fn build_slider(
             Style {
                 display: Display::Flex,
                 flex_direction: FlexDirection::Row,
-                align_items: Some(AlignItems::Center),
+                align_items: Some(AlignItems::CENTER),
                 gap: Size {
                     width: length(12.0_f32),
                     height: length(0.0_f32),

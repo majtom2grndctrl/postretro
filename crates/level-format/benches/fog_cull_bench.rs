@@ -9,8 +9,9 @@
 // `postretro-level-format::fog_cell_masks` validates the OR result only; it
 // does not enforce any timing ceiling.
 
-use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use criterion::{Criterion, criterion_group, criterion_main};
 use postretro_level_format::fog_cell_masks::union_active_mask;
+use std::hint::black_box;
 
 /// Build a synthetic input mirroring a small-to-medium map's per-frame
 /// visibility set: 200 visible leaves with arbitrary fog-volume bitmasks.

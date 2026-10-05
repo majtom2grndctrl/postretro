@@ -165,6 +165,8 @@ Some suites are expensive and must not be run reflexively:
 
 **Default verification while iterating.** Run `cargo check` plus targeted tests for the touched crate or module: `cargo test -p <crate> <name_filter>`. Narrow to one target to skip the `tests/` suite: `--lib` for a library crate, `--bin <name>` for a binary. Run full `cargo test` once, as the final coordinator gate after integration, review, and fixes.
 
+**Feature-gated code needs its feature in the gate.** Plain `cargo test` and `cargo clippy` never compile code behind a cargo feature — `dev-tools` tests and the `capture` test targets included. When a change touches feature-gated code, or a dependency that code uses, the final gate also runs tests and `clippy --all-targets -- -D warnings` with that feature (e.g. `--workspace --features postretro/dev-tools`). A dependency upgrade reaches every feature set; gate them all.
+
 **Read the test count, not the exit status.** A target-and-filter pair matching nothing prints `0 passed` and exits `ok` — a pass and a no-op look identical at a glance. `--lib` on a binary crate is the standing trap: `postretro-level-compiler` exposes only texture helpers from its lib, so the compiler internals (map parsing, entity dispatch) live in the `prl-build` bin target and `--lib` reaches none of them. Use `--bin prl-build` there. Whatever the target, confirm the count matches the tests you meant to run.
 
 ---

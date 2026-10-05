@@ -2,44 +2,64 @@
 //!
 //! Movement casts keep the capsule `SKIN_DISTANCE` from surfaces, so a resting
 //! or sliding capsule starts every cast at the target-distance boundary, often
-//! moving tangent to the surface beneath it. parry 0.31's casts misbehave at
-//! that boundary:
+//! moving tangent to the surface beneath it. [`SkinCastDispatcher`] uses parry
+//! only to choose candidate triangles (its BVH traversal); it answers each
+//! capsule–triangle leaf itself, by conservative advancement on exact
+//! closest-point contacts.
 //!
-//! - **Spurious and misplaced hits.** GJK's directional distance can report a
-//!   hit for a slide that never closes on the surface, or a hit short of the
+//! # Why not parry's leaf cast
+//!
+//! Background for why the engine does not trust parry 0.31's GJK cast at the
+//! band boundary:
+//!
+//! - It can report a hit for a slide that never closes, or a hit short of the
 //!   band, with a normal tilted by up to tens of degrees on large triangles;
 //!   projecting velocity onto it bleeds speed and corrupts the knockback bank.
-//!   This happens at every triangle size and in parry 0.17 too. What changed
-//!   is that parry 0.30.2 (the fix for dimforge/parry#429, PR #430) removed
-//!   the extent-scaled slack that left short-TOI hits a few millimetres out,
-//!   so a capsule now rests exactly at the boundary and every slide starts in
-//!   the ill-conditioned case. parry's own remedy — re-derive the normal from
-//!   a closest-point contact and drop a cast that does not close — only runs
-//!   below a fixed `1e-4` TOI.
-//! - **Missed in-band starts.** A cast that starts at the boundary (gap equal
-//!   to `target_distance` within f32 rounding) and closes on the surface can
-//!   return no hit, in either argument order: open issue dimforge/parry#452
-//!   (an absolute `eps_tol` in `minkowski_ray_cast`). A capsule resting
-//!   against a wall then walks into it.
-//! - **Late hits.** A cast that starts inside the band can report its hit well
-//!   past TOI 0, letting a shallow creep reach the wall.
+//!   parry 0.30.2 (the fix for dimforge/parry#429, PR #430) removed the
+//!   extent-scaled slack that left resting capsules a few millimetres out, so
+//!   every slide now starts in this ill-conditioned case. parry's own remedy —
+//!   re-derive the normal from a contact, drop a cast that does not close —
+//!   only runs below a fixed `1e-4` TOI.
+//! - It can miss a closing cast that starts at the boundary (open issue
+//!   dimforge/parry#452), so a capsule resting against a wall walks into it.
+//! - It can place the hit of a cast that starts inside the band well past
+//!   TOI 0, letting a shallow creep reach the wall.
+//! - Its closest points drift by centimetres beside the edges of large
+//!   triangles (see `capsule_triangle`).
 //!
-//! [`SkinCastDispatcher`] therefore settles every support-map leaf cast onto
-//! the band itself:
+//! # Conservative advancement
 //!
-//! - It starts from parry's TOI, or from the cast's start when parry missed
-//!   within [`IN_BAND_START_TOLERANCE`] of the band or placed its hit inside
-//!   the band, and steps forward with closest-point contacts until the gap
-//!   reaches the band. The gap between convex shapes under translation is
-//!   convex in time, so Newton steps from the left never pass the first
-//!   crossing. That holds at any TOI, so there is no travel gate.
-//! - At the band it keeps the hit only when the rest of the cast would carry
-//!   the shapes more than [`MAX_BAND_INTRUSION`] inside it, and never when the
-//!   motion does not close (parry's rule, `normal1 · vel12 >= 0`).
-//! - Normal and witnesses come from the closest-point contact at the settled
-//!   pose. Every skin cast reduces to capsule–triangle leaves, for which that
-//!   contact is computed exactly (`capsule_triangle`): parry's GJK misjudges
-//!   it by centimetres beside the edges of large triangles.
+//! Each leaf steps forward from the cast's start, as Bullet's and Box2D's
+//! time-of-impact solvers do. The signed gap `d(t)` between convex shapes
+//! under translation is convex in `t`, penetration included, and
+//! `rate = normal1 · vel12` is its exact derivative (`normal1` points from
+//! shape 1 toward shape 2; `vel12` is shape 2's velocity relative to
+//! shape 1). A convex function never falls below its tangent line, so:
+//!
+//! - `rate >= 0`: the gap never shrinks again — no hit (parry's rule).
+//! - Gap above the band: the Newton step `t += gap / -rate` stays at or
+//!   before the first band crossing (up to f32 noise in the gap), so the first
+//!   pose that reaches the band is that crossing, and a step past
+//!   `max_time_of_impact` is a miss.
+//! - At the band, or starting inside it: the hit there is kept only if the
+//!   gap falls below `target - MAX_BAND_INTRUSION` within the rest of the
+//!   cast. The same Newton steps continue toward that level: one that passes
+//!   `max_time_of_impact`, or a `rate >= 0`, proves the gap stays above it and
+//!   drops the hit; reaching it keeps the hit. A dropped hit therefore never
+//!   lets the cast end more than [`MAX_BAND_INTRUSION`] inside the band, and a
+//!   graze that only touches the band (for example the far edge of a coplanar
+//!   neighbour) is dropped even though its tangent line dips below the level.
+//! - Steps run out ([`MAX_ADVANCE_STEPS`]) with the gap still closing on its
+//!   level inside the cast: the answer is the conservative one, a hit at the
+//!   band pose or, if the band was never reached, at the last pose, which is
+//!   still short of it. A cast that starts outside the band advances on its
+//!   first step, so it never gets a TOI-0 hit.
+//!
+//! Normal and witnesses come from the contact at the returned pose. Starting
+//! from the cast's start rather than from parry's TOI makes the leaf answer
+//! independent of parry's: a warm start from that TOI had to detect and
+//! restart from overshoots, and f32 staircase noise in the gap at kilometre
+//! coordinates made the detection misfire into TOI-0 hits.
 //!
 //! The intrusion allowance is an absolute bound, not a per-cast one. A cast
 //! that starts inside the band keeps its hit as soon as its motion would end
@@ -49,8 +69,26 @@
 //! starts a hair inside the band look like a closing one.
 //!
 //! Composite shapes (trimeshes) recurse through this dispatcher, so each
-//! triangle is settled on its own and a dropped grazing triangle never masks a
-//! farther real hit.
+//! triangle is advanced on its own and a dropped grazing triangle never masks
+//! a farther real hit. parry's traversal keeps the nearest leaf TOI and prunes
+//! BVH nodes the swept bound reaches no earlier; a leaf TOI is never later
+//! than its first band crossing, which lies inside its node's bound, so the
+//! pruning stays sound. Pairs with no exact contact — not capsule–triangle, a
+//! degenerate triangle, or a capsule core piercing the triangle at a visited
+//! pose — fall back to parry's cast for that leaf.
+//!
+//! # Known limitation: coplanar seams
+//!
+//! A slide across the shared edge of two coplanar triangles approaches the
+//! neighbour through that edge, so the neighbour's gap only grazes the band
+//! and its contact normal is tilted toward the edge. From a start within the
+//! intrusion allowance the closing test sees the gap level off and drops the
+//! hit, but nothing guarantees that under f32 noise. From a start `depth`
+//! deeper inside the band than the allowance, the slide hits at TOI 0 with a
+//! normal tilted by up to about
+//! `sqrt(2 * (depth + BAND_REACHED_TOLERANCE) / (radius + target))` — 4° from
+//! 1 mm deep for the player capsule. The proper fix is internal-edge handling
+//! (treating a shared coplanar edge as part of the face), an owner follow-up.
 //!
 //! A custom `QueryDispatcher` is parry's extension point for per-pair query
 //! behaviour. The alternative — accept parry's hit, then nudge off the surface
@@ -63,46 +101,41 @@
 use parry3d::math::{Pose, Real, Vector};
 use parry3d::query::details::{
     cast_shapes_composite_shape_shape, cast_shapes_shape_composite_shape,
-    contact_support_map_support_map,
 };
 use parry3d::query::{
     ClosestPoints, Contact, DefaultQueryDispatcher, NonlinearRigidMotion, QueryDispatcher,
     ShapeCastHit, ShapeCastOptions, ShapeCastStatus, ShapeDistance, ShapeIntersection, Unsupported,
 };
-use parry3d::shape::{Shape, SupportMap};
+use parry3d::shape::Shape;
 
 use super::capsule_triangle;
 
-/// How far outside `target_distance` a missed cast may start and still be
-/// re-checked as an in-band start. dimforge/parry#452 drops casts whose start
-/// gap equals `target_distance` to within f32 rounding; measured contact
-/// distances for those misses reach `0.0202` against a `0.02` target. With
-/// `5e-4` this dispatcher missed none of 29,400 closing casts per triangle
-/// size in a sweep (start gaps 0.2–20 mm, angles 2.5–87.5°, triangles 2–100
-/// m). It is 2.5% of `SKIN_DISTANCE`, and the re-check settles the hit onto
-/// the band, so it never stops a capsule early.
-const IN_BAND_START_TOLERANCE: Real = 5.0e-4;
-
 /// A closest-point gap within this much of `target_distance` counts as having
-/// reached the band: 0.1% of `SKIN_DISTANCE`, several f32 ulps at 100 m
-/// coordinates. A cast that only grazes the band (sliding past a coplanar
-/// neighbour triangle's edge) settles where its gap is this small, which
-/// leaves its normal tilted by about `sqrt(2 * tolerance / radius)` — 0.6° for
-/// the 0.4 m player capsule.
+/// reached the band, and likewise for the intrusion allowance's level: 0.1%
+/// of `SKIN_DISTANCE`, several f32 ulps at 100 m coordinates. A cast that only
+/// grazes the band settles where its gap is this small, which leaves its
+/// normal tilted by about
+/// `sqrt(2 * tolerance / (radius + target))` — 0.56° for the 0.4 m player
+/// capsule.
 const BAND_REACHED_TOLERANCE: Real = 2.0e-5;
 
 /// How far inside the target-distance band the rest of a cast may carry the
 /// shapes before a closing hit counts. 2.5% of `SKIN_DISTANCE`, so a resting
-/// capsule always keeps at least 19.5 mm of the 20 mm skin. It absorbs a
-/// contact-normal error of up to `MAX_BAND_INTRUSION / travel` rad — `1.5e-3`
-/// for a 0.33 m dash tick, far above f32 noise.
+/// capsule always keeps at least 19.5 mm of the 20 mm skin — a positional
+/// slop in the sense of Box2D's `linearSlop` or PhysX's rest offset. It
+/// absorbs a contact-normal error of up to `MAX_BAND_INTRUSION / travel` rad
+/// — `1.5e-3` for a 0.33 m dash tick, far above f32 noise.
 const MAX_BAND_INTRUSION: Real = 5.0e-4;
 
-/// Newton steps toward the band before the current (conservative) pose is
-/// taken as the hit. A transversal approach converges in one or two; a graze
-/// that only touches the band halves its distance to the touch point per
-/// step, so five bring a 10 cm graze within [`BAND_REACHED_TOLERANCE`].
-const MAX_SETTLE_STEPS: usize = 8;
+/// Contacts evaluated per leaf before the advancement stops with a
+/// conservative hit. A face approach reaches the band in one step and its
+/// closing test takes one more; an edge or vertex approach takes a few. A
+/// tangential graze halves its distance to the touch point per step once
+/// within about one capsule radius of it, so it reaches
+/// [`BAND_REACHED_TOLERANCE`] within about nine contacts from any distance,
+/// and its closing test needs one or two more. Eight let almost half of seam
+/// crossings from up to 1 m away run out and keep a tilted hit.
+const MAX_ADVANCE_STEPS: usize = 12;
 
 /// Shape-cast `g1` at `pos1` moving with `vel1` against `g2` at `pos2` moving
 /// with `vel2`, with the skin-band fixes. Same frames and semantics as
@@ -126,34 +159,8 @@ pub(crate) fn cast_shapes_skin(
         .flatten()
 }
 
-/// A support-map leaf pair. Closest-point contacts come from the exact
-/// capsule–triangle query when the pair is one (every skin cast's leaves
-/// are), and from parry's GJK otherwise.
-#[derive(Clone, Copy)]
-struct LeafPair<'a> {
-    g1: &'a dyn Shape,
-    g2: &'a dyn Shape,
-    s1: &'a dyn SupportMap,
-    s2: &'a dyn SupportMap,
-}
-
-impl LeafPair<'_> {
-    /// Closest-point contact at `pos12` within `prediction`, in the frames
-    /// `contact_support_map_support_map` uses.
-    fn contact(&self, pos12: &Pose, prediction: Real) -> Option<Contact> {
-        match capsule_triangle::contact(pos12, self.g1, self.g2) {
-            Some(contact) => (contact.dist <= prediction).then_some(contact),
-            None => contact_support_map_support_map(pos12, self.s1, self.s2, prediction),
-        }
-    }
-}
-
-/// No contact at an unbounded prediction: GJK failed, so the caller keeps
-/// parry's own answer.
-struct ContactFailed;
-
 /// Delegates every query to [`DefaultQueryDispatcher`] except `cast_shapes`,
-/// which settles support-map leaf casts onto the band (see the module docs).
+/// which advances capsule–triangle leaves onto the band (see the module docs).
 struct SkinCastDispatcher;
 
 impl SkinCastDispatcher {
@@ -164,108 +171,84 @@ impl SkinCastDispatcher {
         g2: &dyn Shape,
         options: ShapeCastOptions,
     ) -> Result<Option<ShapeCastHit>, Unsupported> {
-        let hit = DefaultQueryDispatcher.cast_shapes(pos12, vel12, g1, g2, options)?;
-        let (Some(s1), Some(s2)) = (g1.as_support_map(), g2.as_support_map()) else {
-            return Ok(hit);
-        };
-        let pair = LeafPair { g1, g2, s1, s2 };
-        Ok(match hit {
-            Some(hit) if hit.time_of_impact.is_finite() => {
-                Self::settle(pos12, vel12, pair, options, hit.time_of_impact).unwrap_or(Some(hit))
-            }
-            Some(hit) => Some(hit),
-            None => Self::missed_in_band_start(pos12, vel12, pair, options),
-        })
-    }
-
-    /// parry's contract for a cast that starts inside the target-distance band
-    /// and closes on the surface is a hit at TOI 0; dimforge/parry#452 misses
-    /// some of these at the band boundary, so a miss that starts within
-    /// [`IN_BAND_START_TOLERANCE`] of the band is settled from TOI 0.
-    fn missed_in_band_start(
-        pos12: &Pose,
-        vel12: Vector,
-        pair: LeafPair<'_>,
-        options: ShapeCastOptions,
-    ) -> Option<ShapeCastHit> {
-        if options.target_distance <= 0.0 {
-            return None;
+        match Self::advance(pos12, vel12, g1, g2, options) {
+            Some(hit) => Ok(hit),
+            None => DefaultQueryDispatcher.cast_shapes(pos12, vel12, g1, g2, options),
         }
-        let band = options.target_distance + IN_BAND_START_TOLERANCE;
-        pair.contact(pos12, band)?;
-        Self::settle(pos12, vel12, pair, options, 0.0).unwrap_or(None)
     }
 
-    /// Walk a cast forward from `toi` to where it reaches the band, then keep
-    /// it as a hit only if the rest of the cast closes past
-    /// [`MAX_BAND_INTRUSION`]. Normal and witnesses come from the
-    /// closest-point contact at the returned pose. A `toi` already inside the
-    /// band is past the first crossing, so the walk restarts from the cast's
-    /// start.
-    ///
-    /// The gap `d(t)` between convex shapes under translation is convex, so
-    /// it never falls below its tangent line `d + rate * Δt`, where
-    /// `rate = normal1 · vel12` (`normal1` points from shape 1 toward shape 2
-    /// and `vel12` is shape 2's velocity relative to shape 1). Hence:
-    ///
-    /// - `rate >= 0`: the gap never shrinks again — no hit (parry's rule).
-    /// - gap above the band: the band is not reached before the tangent
-    ///   line's crossing, so stepping there is safe (Newton's method from the
-    ///   left on a convex function never overshoots the first crossing). This
-    ///   corrects GJK hits placed short of the band, which grazing casts past
-    ///   a triangle edge produce with normals tilted by up to ~30°.
-    /// - at the band: the gap stays above `target - MAX_BAND_INTRUSION` for
-    ///   the rest of the cast unless the tangent line drops below it, so a hit
-    ///   is dropped exactly when keeping it cannot matter by more than the
-    ///   allowance.
-    fn settle(
+    /// Conservative advancement from the cast's start (see the module docs).
+    /// The outer `None` means some visited pose has no exact contact, and the
+    /// caller falls back to parry's cast.
+    fn advance(
         pos12: &Pose,
         vel12: Vector,
-        pair: LeafPair<'_>,
+        g1: &dyn Shape,
+        g2: &dyn Shape,
         options: ShapeCastOptions,
-        mut toi: Real,
-    ) -> Result<Option<ShapeCastHit>, ContactFailed> {
+    ) -> Option<Option<ShapeCastHit>> {
         let target = options.target_distance;
+        let mut toi: Real = 0.0;
+        // The hit at the first pose that reached the band, once found.
+        let mut band_hit = None;
         let mut steps = 0;
         loop {
-            let at = Pose::from_parts(pos12.translation + vel12 * toi, pos12.rotation);
-            let contact = pair.contact(&at, Real::MAX).ok_or(ContactFailed)?;
-            let gap = contact.dist - target;
             steps += 1;
-            if gap < -BAND_REACHED_TOLERANCE && toi > 0.0 {
-                // parry placed the hit past the first crossing (seen for casts
-                // that start inside the band); settle from the start instead.
-                toi = 0.0;
-                continue;
-            }
+            let at = Pose::from_parts(pos12.translation + vel12 * toi, pos12.rotation);
+            let contact = capsule_triangle::contact(&at, g1, g2)?;
             let rate = contact.normal1.dot(vel12);
             if rate >= 0.0 {
-                return Ok(None);
+                // The gap never shrinks again: the band is never reached, or
+                // the gap stays above the intrusion allowance.
+                return Some(None);
             }
-            if gap > BAND_REACHED_TOLERANCE && steps < MAX_SETTLE_STEPS {
-                toi += gap / -rate;
-                if toi > options.max_time_of_impact {
-                    return Ok(None);
-                }
-                continue;
+            if band_hit.is_none() && contact.dist - target <= BAND_REACHED_TOLERANCE {
+                band_hit = Some(shape_cast_hit(toi, &contact, target, true));
             }
-            let remaining = options.max_time_of_impact - toi;
-            let closes_past_band = contact.dist + rate * remaining < target - MAX_BAND_INTRUSION;
-            return Ok(closes_past_band.then_some(ShapeCastHit {
-                time_of_impact: toi,
-                witness1: contact.point1,
-                witness2: contact.point2,
-                normal1: contact.normal1,
-                normal2: contact.normal2,
-                status: if contact.dist < target {
-                    ShapeCastStatus::PenetratingOrWithinTargetDist
-                } else {
-                    ShapeCastStatus::Converged
-                },
-                subshape1: 0,
-                subshape2: 0,
-            }));
+            // Advance to the band, then on toward the allowance to decide
+            // whether the band hit counts.
+            let level = match band_hit {
+                Some(_) => target - MAX_BAND_INTRUSION,
+                None => target,
+            };
+            let gap = contact.dist - level;
+            if band_hit.is_some() && gap <= BAND_REACHED_TOLERANCE {
+                return Some(band_hit);
+            }
+            let next = toi + gap / -rate;
+            if next > options.max_time_of_impact {
+                return Some(None);
+            }
+            if steps == MAX_ADVANCE_STEPS {
+                // Still closing on the level within the cast: stop at the
+                // band, or short of it if the band was never reached.
+                return Some(Some(
+                    band_hit.unwrap_or_else(|| shape_cast_hit(toi, &contact, target, false)),
+                ));
+            }
+            toi = next;
         }
+    }
+}
+
+/// A hit at `toi` from the contact there. `converged` is false for a pose
+/// short of the band, taken when the steps ran out.
+fn shape_cast_hit(toi: Real, contact: &Contact, target: Real, converged: bool) -> ShapeCastHit {
+    ShapeCastHit {
+        time_of_impact: toi,
+        witness1: contact.point1,
+        witness2: contact.point2,
+        normal1: contact.normal1,
+        normal2: contact.normal2,
+        status: if !converged {
+            ShapeCastStatus::OutOfIterations
+        } else if contact.dist < target {
+            ShapeCastStatus::PenetratingOrWithinTargetDist
+        } else {
+            ShapeCastStatus::Converged
+        },
+        subshape1: 0,
+        subshape2: 0,
     }
 }
 
@@ -316,7 +299,7 @@ impl QueryDispatcher for SkinCastDispatcher {
         g2: &dyn Shape,
         options: ShapeCastOptions,
     ) -> Result<Option<ShapeCastHit>, Unsupported> {
-        // Recurse through this dispatcher so each trimesh triangle is settled
+        // Recurse through this dispatcher so each trimesh triangle is advanced
         // individually.
         if let Some(c1) = g1.as_composite_shape() {
             return Ok(cast_shapes_composite_shape_shape(
@@ -393,6 +376,19 @@ mod tests {
         }
     }
 
+    /// Deterministic xorshift sampler for the sweep tests.
+    struct TestRng(u64);
+
+    impl TestRng {
+        fn range(&mut self, lo: f32, hi: f32) -> f32 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            let unit = (self.0 >> 40) as f32 / (1u64 << 24) as f32;
+            lo + (hi - lo) * unit
+        }
+    }
+
     /// Regression for a dash across a 40 m floor triangle: the capsule rests a
     /// few microns inside the skin band, and plain `cast_shapes` (parry 0.31.1)
     /// reports a hit ~2 mm out with a normal tilted ~2.8°, bleeding dash speed.
@@ -417,13 +413,13 @@ mod tests {
 
         assert!(
             skin.is_none(),
-            "a tangent slide across the floor it rests on must not hit it: {skin:?}"
+            "a tangent slide within the floor triangle it rests on must not hit it: {skin:?}"
         );
     }
 
     /// The same failure far past the first skin width of travel: parry 0.31.1
     /// reports a spurious floor hit 11.6 cm into the slide with a normal
-    /// tilted 3.5°. Settling is valid at any TOI, so it is dropped too.
+    /// tilted 3.5°. Advancement is valid at any TOI, so there is no hit.
     #[test]
     fn long_tangent_slide_reports_no_tilted_floor_normal_beyond_one_skin_width() {
         let world = large_floor();
@@ -466,7 +462,7 @@ mod tests {
 
         assert!(
             skin.is_none(),
-            "a long tangent slide across the floor must not hit it: {skin:?}"
+            "a long tangent slide within one floor triangle must not hit it: {skin:?}"
         );
     }
 
@@ -549,10 +545,9 @@ mod tests {
 
     /// Regression for an agent walking into a wall it already rests against:
     /// the capsule starts 0.15 mm inside the wall's skin band, closing at about
-    /// 53°, and parry 0.31.1 drops the wall in the `(triangle, capsule)` order
-    /// a trimesh traversal happens to use (dimforge/parry#452 — either order
-    /// misses such boundary starts at similar rates). The floor graze was the
-    /// only remaining candidate and the agent stepped 4.7 cm into the wall.
+    /// 53°, and parry 0.31.1's leaf cast drops the wall (dimforge/parry#452).
+    /// The floor graze was the only remaining candidate and the agent stepped
+    /// 4.7 cm into the wall.
     #[test]
     fn cast_starting_inside_a_walls_skin_band_hits_the_wall() {
         let world = CollisionWorld::from_triangles_for_test(
@@ -650,6 +645,176 @@ mod tests {
                 worst <= MAX_BAND_INTRUSION + 1.0e-5,
                 "a {degrees}° creep intruded {worst} m into the skin band"
             );
+        }
+    }
+
+    /// Regression: at 1 km coordinates the f32 gap moves in steps of about
+    /// 6e-5, coarser than the band tolerance. Warm-started from parry's TOI,
+    /// the settle loop read a step landing a hair inside the band as parry
+    /// overshooting and restarted from the cast's start until its steps ran
+    /// out, stopping ~1% of wall approaches at TOI 0 — up to 15 cm short —
+    /// with the start pose's normal.
+    #[test]
+    fn wall_approach_at_kilometre_coordinates_hits_at_the_band() {
+        let (origin, extent) = (1000.0, 1000.0);
+        let wall_x = origin + 2.0;
+        let world = CollisionWorld::from_triangles_for_test(
+            vec![
+                Vec3::new(origin - extent, origin, origin - extent),
+                Vec3::new(origin + extent, origin, origin - extent),
+                Vec3::new(origin + extent, origin, origin + extent),
+                Vec3::new(origin - extent, origin, origin + extent),
+                Vec3::new(wall_x, origin - 1.0, origin - extent),
+                Vec3::new(wall_x, origin + 10.0, origin - extent),
+                Vec3::new(wall_x, origin + 10.0, origin + extent),
+                Vec3::new(wall_x, origin - 1.0, origin + extent),
+            ],
+            vec![[0, 2, 1], [0, 3, 2], [4, 5, 6], [4, 6, 7]],
+        );
+        let (half_height, radius) = (0.8, 0.4);
+        let capsule = Capsule::new_y(half_height, radius);
+        let travel = 0.5;
+        let mut rng = TestRng(0xdead_beef);
+        let mut checked = 0;
+
+        for _ in 0..400 {
+            // Resting in the floor's band, outside the wall's, closing on it.
+            let start_gap = rng.range(0.0205, 0.3);
+            let heading = rng.range(3.0, 89.0).to_radians();
+            let dir = Vec3::new(heading.sin(), 0.0, heading.cos());
+            let start = Vec3::new(
+                wall_x - radius - start_gap,
+                origin + half_height + radius + SKIN_DISTANCE - rng.range(0.0, 5.0e-6),
+                origin + rng.range(-0.8 * extent, 0.8 * extent),
+            );
+            let expected_toi = (start_gap - SKIN_DISTANCE) / heading.sin();
+            if expected_toi > travel - 0.02 {
+                // Too close to the end of travel to require a hit.
+                continue;
+            }
+            checked += 1;
+
+            let hit = cast_shapes_skin(
+                &Pose::from_translation(start),
+                dir,
+                &capsule,
+                &Pose::IDENTITY,
+                Vec3::ZERO,
+                &world.mesh,
+                skin_options(travel),
+            )
+            .unwrap_or_else(|| panic!("closing on the wall from {start:?} must hit it"));
+
+            // f32 spacing at 1 km is 6.1e-5 m; the gap at the hit stays
+            // within a few spacings of the band.
+            let gap_error = (hit.time_of_impact - expected_toi) * heading.sin();
+            assert!(
+                gap_error.abs() < 2.0e-4,
+                "hit {gap_error} m off the band from {start:?} along {dir:?}: {hit:?}"
+            );
+            assert!(
+                hit.normal2.angle_between(Vec3::NEG_X) < 1.0_f32.to_radians(),
+                "expected the wall normal from {start:?}, got {:?}",
+                hit.normal2
+            );
+        }
+        assert!(checked > 300, "only {checked} casts required a hit");
+    }
+
+    /// A capsule whose core pierces the triangle has no closest-point normal,
+    /// so the leaf defers to parry's cast rather than guess one.
+    #[test]
+    fn cast_from_a_piercing_start_defers_to_parry() {
+        let triangle = parry3d::shape::Triangle::new(
+            Vec3::new(-50.0, 0.0, -50.0),
+            Vec3::new(50.0, 0.0, -50.0),
+            Vec3::new(50.0, 0.0, 50.0),
+        );
+        let capsule = Capsule::new_y(0.8, 0.4);
+        let start = Pose::from_translation(Vec3::new(20.0, 0.3, -10.0));
+        let options = skin_options(0.2);
+
+        let skin = cast_shapes_skin(
+            &start,
+            Vec3::NEG_Y,
+            &capsule,
+            &Pose::IDENTITY,
+            Vec3::ZERO,
+            &triangle,
+            options,
+        );
+        let plain = cast_shapes(
+            &start,
+            Vec3::NEG_Y,
+            &capsule,
+            &Pose::IDENTITY,
+            Vec3::ZERO,
+            &triangle,
+            options,
+        )
+        .unwrap();
+
+        assert_eq!(
+            skin.map(|hit| (hit.time_of_impact, hit.normal1, hit.normal2)),
+            plain.map(|hit| (hit.time_of_impact, hit.normal1, hit.normal2)),
+        );
+    }
+
+    /// Known limitation until internal-edge handling: a slide across the
+    /// shared edge of two coplanar triangles can hit the triangle it slides
+    /// onto, whose closest feature on approach is that edge. The hit's normal
+    /// is tilted by at most about
+    /// `sqrt(2 * (depth + BAND_REACHED_TOLERANCE) / (radius + SKIN_DISTANCE))`
+    /// for a start `depth` inside the band: 0.56° at the band, 4° from 1 mm.
+    /// A start within the intrusion allowance hits rarely, because the closing
+    /// test follows the graze down to the allowance rather than trusting its
+    /// tangent line: warm-started from parry's TOI with a tangent-line test,
+    /// 55% of such slides hit. Approaches of up to 1 m also exercise the step
+    /// budget.
+    #[test]
+    fn slide_across_a_coplanar_seam_hits_rarely_and_with_a_bounded_tilt() {
+        let world = large_floor();
+        let (half_height, radius) = (0.8, 0.4);
+        let capsule = Capsule::new_y(half_height, radius);
+        let seam = Vec3::new(1.0, 0.0, 1.0).normalize();
+        let across = Vec3::new(1.0, 0.0, -1.0).normalize();
+        let mut rng = TestRng(42);
+
+        for depth in [0.0, 1.0e-4, 1.0e-3] {
+            let tilt_bound =
+                (2.0 * (depth + BAND_REACHED_TOLERANCE) / (radius + SKIN_DISTANCE)).sqrt();
+            let (casts, mut hits) = (400, 0);
+            for _ in 0..casts {
+                let heading = rng.range(5.0, 175.0).to_radians();
+                let dir = seam * heading.cos() + across * heading.sin();
+                let p = seam * rng.range(-10.0, 10.0) - dir * rng.range(0.0, 1.0);
+                let start = Vec3::new(p.x, half_height + radius + SKIN_DISTANCE - depth, p.z);
+                let Some(hit) = cast_shapes_skin(
+                    &Pose::from_translation(start),
+                    dir,
+                    &capsule,
+                    &Pose::IDENTITY,
+                    Vec3::ZERO,
+                    &world.mesh,
+                    skin_options(1.2),
+                ) else {
+                    continue;
+                };
+                hits += 1;
+                let tilt = hit.normal2.angle_between(Vec3::Y);
+                assert!(
+                    tilt <= tilt_bound * 1.05,
+                    "seam hit {depth} m inside the band tilted {}°, bound {}°",
+                    tilt.to_degrees(),
+                    tilt_bound.to_degrees()
+                );
+            }
+            if depth < MAX_BAND_INTRUSION {
+                assert!(
+                    hits * 100 <= casts,
+                    "{hits}/{casts} seam crossings {depth} m inside the band hit"
+                );
+            }
         }
     }
 }

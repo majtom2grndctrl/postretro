@@ -18,8 +18,8 @@
 //!
 //! Queries call `parry3d::query::*` free functions directly. There is no
 //! `QueryPipeline` and no higher-level query API. Skin-distance capsule sweeps
-//! go through the `skin_cast` dispatcher, which settles each hit onto the skin
-//! band with exact capsule–triangle contacts (`capsule_triangle`).
+//! go through the `skin_cast` dispatcher, which advances each capsule–triangle
+//! pair onto the skin band with exact contacts (`capsule_triangle`).
 //!
 //! See: `context/lib/entity_model.md` §7.
 

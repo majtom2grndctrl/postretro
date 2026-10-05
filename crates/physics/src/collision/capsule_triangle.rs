@@ -5,11 +5,18 @@
 //! triangle its closest-point distance can be off by over 2 cm and its normal
 //! by several degrees, with the error depending on argument order. The skin
 //! cast measures sub-millimetre gaps against a 2 cm skin, so it computes this
-//! pair directly. When the capsule's core segment does not reach the
+//! pair directly. When the capsule's core segment does not pierce the
 //! triangle, their closest points lie at a segment endpoint against the
 //! triangle face, or on the segment against a triangle edge (Ericson,
 //! *Real-Time Collision Detection*, §5.1). The candidates use parry's exact
 //! point-triangle projection and segment-segment closest points.
+//!
+//! Whether the core pierces the triangle is decided combinatorially — the
+//! endpoints straddle or touch the plane and the crossing lies inside the
+//! triangle — never from the size of the residual distance. A crossing's
+//! computed residual is f32 noise that grows with triangle size (over 1e-5 m
+//! even at the origin on a 100 m triangle), and a normal taken from it points
+//! anywhere.
 
 use parry3d::math::{Pose, Vector};
 use parry3d::query::details::closest_points_segment_segment_with_locations_nD;
@@ -17,10 +24,10 @@ use parry3d::query::{Contact, PointQuery};
 use parry3d::shape::{Capsule, Segment, Shape, Triangle};
 
 /// Contact between `g1` and `g2` in `contact_support_map_support_map`'s
-/// frames, when the pair is a capsule and a triangle (either order) and the
-/// capsule's core segment stays clear of the triangle. `None` otherwise; a
-/// core that reaches the triangle is a deep penetration that parry's EPA
-/// answers.
+/// frames, when the pair is a capsule and a non-degenerate triangle (either
+/// order) and the capsule's core segment stays clear of the triangle. `None`
+/// otherwise; a core that pierces or touches the triangle is a deep
+/// penetration with no closest-point normal, which parry's EPA answers.
 pub(crate) fn contact(pos12: &Pose, g1: &dyn Shape, g2: &dyn Shape) -> Option<Contact> {
     if let (Some(capsule), Some(triangle)) = (g1.as_capsule(), g2.as_triangle()) {
         return capsule_triangle(pos12, capsule, triangle);
@@ -38,11 +45,8 @@ fn capsule_triangle(pos12: &Pose, capsule: &Capsule, triangle: &Triangle) -> Opt
         closest_points_segment_triangle(capsule.segment.a, capsule.segment.b, &triangle_1)?;
     let offset = on_triangle - on_segment;
     let core_distance = offset.length();
-    // Below this the core touches the triangle and the normal is undefined.
-    if core_distance <= 1.0e-5 {
-        return None;
-    }
-    let normal1 = offset / core_distance;
+    // A core that touches the triangle without piercing it has no normal.
+    let normal1 = offset.try_normalize()?;
     Some(Contact::new(
         on_segment + normal1 * capsule.radius,
         pos12.inverse_transform_point(on_triangle),
@@ -53,14 +57,17 @@ fn capsule_triangle(pos12: &Pose, capsule: &Capsule, triangle: &Triangle) -> Opt
 }
 
 /// Closest points `(on segment, on triangle)` between segment `pq` and
-/// `triangle`. A segment that crosses the triangle yields coincident points.
-/// `None` for a degenerate triangle, which falls back to parry's GJK.
+/// `triangle`. `None` for a degenerate triangle, or for a segment that
+/// pierces or touches the triangle, whose closest points coincide.
 fn closest_points_segment_triangle(
     p: Vector,
     q: Vector,
     triangle: &Triangle,
 ) -> Option<(Vector, Vector)> {
     let normal = triangle.normal()?;
+    if pierces(p, q, triangle, normal) {
+        return None;
+    }
     let mut best = (p, triangle.project_local_point(p, true).point);
     let mut best_distance = best.0.distance_squared(best.1);
     let mut consider = |on_segment: Vector, on_triangle: Vector| {
@@ -78,15 +85,28 @@ fn closest_points_segment_triangle(
             closest_points_segment_segment_with_locations_nD((&p, &q), (&edge.a, &edge.b));
         consider(pq.point_at(&on_pq), edge.point_at(&on_edge));
     }
-    // A segment crossing the triangle touches it at the plane crossing. A
-    // crossing outside the triangle is just another valid pair, never closer
-    // than the true minimum.
-    let (dp, dq) = ((p - triangle.a).dot(normal), (q - triangle.a).dot(normal));
-    if dp * dq < 0.0 {
-        let crossing = p + (q - p) * (dp / (dp - dq));
-        consider(crossing, triangle.project_local_point(crossing, true).point);
-    }
     Some(best)
+}
+
+/// Whether segment `pq` meets `triangle` through its plane: the endpoints lie
+/// on opposite sides of the plane or on it, and the crossing lies inside the
+/// triangle or on its boundary. A segment lying in the plane is left to the
+/// distance test, which finds it touching (no normal) or clear in-plane.
+fn pierces(p: Vector, q: Vector, triangle: &Triangle, normal: Vector) -> bool {
+    let (dp, dq) = ((p - triangle.a).dot(normal), (q - triangle.a).dot(normal));
+    if dp * dq > 0.0 || dp == dq {
+        return false;
+    }
+    let crossing = p + (q - p) * (dp / (dp - dq));
+    // `normal` is `(b - a) × (c - a)` normalised, so each edge function is
+    // non-negative inside the triangle.
+    [
+        (triangle.a, triangle.b),
+        (triangle.b, triangle.c),
+        (triangle.c, triangle.a),
+    ]
+    .into_iter()
+    .all(|(from, to)| (to - from).cross(crossing - from).dot(normal) >= 0.0)
 }
 
 #[cfg(test)]
@@ -175,6 +195,46 @@ mod tests {
         let pose = Pose::from_translation(Vec3::new(3.0, 0.1, -7.0));
 
         assert!(contact(&pose.inverse(), &capsule, &big_floor_triangle()).is_none());
+    }
+
+    // Regression: the piercing test compared the f32 residual against 1e-5;
+    // on a 100 m triangle the residual of a piercing core reaches 2.5e-4, so
+    // such poses got dist ≈ -radius with a normal up to 178° wrong.
+    #[test]
+    fn a_core_piercing_a_large_triangle_defers_to_parry() {
+        let capsule = Capsule::new_y(0.8, 0.4);
+        let triangle = Triangle::new(
+            Vec3::new(-37.3, 4.1, -52.9),
+            Vec3::new(61.7, -8.3, -12.2),
+            Vec3::new(-8.9, 12.6, 58.4),
+        );
+        let normal = triangle.normal().unwrap();
+        let mut pierced = 0;
+        for i in 1..40 {
+            for j in 1..(40 - i) {
+                let (u, v) = (i as Real / 40.0, j as Real / 40.0);
+                let on_face =
+                    triangle.a + (triangle.b - triangle.a) * u + (triangle.c - triangle.a) * v;
+                // Tilt the core off the face normal, keeping it steep enough
+                // that its ±0.8 m half-length spans the ±0.3 m offset.
+                let tilt = parry3d::math::Rotation::from_rotation_arc(Vec3::Y, normal)
+                    * parry3d::math::Rotation::from_axis_angle(
+                        Vec3::new(u, 0.0, v).normalize(),
+                        0.9 * (i + j) as Real / 40.0,
+                    );
+                let offset = 0.3 * ((i * 7 + j * 3) % 11) as Real / 5.0 - 0.3;
+                let pose = Pose::from_parts(on_face + normal * offset, tilt);
+
+                assert!(
+                    contact(&pose.inverse(), &capsule, &triangle).is_none()
+                        && contact(&pose, &triangle, &capsule).is_none(),
+                    "a core piercing the triangle at ({u}, {v}) must defer: {:?}",
+                    contact(&pose.inverse(), &capsule, &triangle)
+                );
+                pierced += 1;
+            }
+        }
+        assert!(pierced > 700);
     }
 
     #[test]

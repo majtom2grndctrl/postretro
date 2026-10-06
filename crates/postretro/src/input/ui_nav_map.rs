@@ -32,16 +32,17 @@ fn live_in(command: Command, context: UiNavContext) -> bool {
     }
 }
 
-/// The nav intent a UI command produces. The tab commands step Next/Prev
-/// until tabs resolve them; the text shortcuts produce no nav intent.
+/// The nav intent a UI command produces. The text shortcuts produce none.
 pub fn nav_intent_for_command(command: Command) -> Option<NavIntent> {
     Some(match command {
         Command::NavUp => NavIntent::Up,
         Command::NavDown => NavIntent::Down,
         Command::NavLeft => NavIntent::Left,
         Command::NavRight => NavIntent::Right,
-        Command::NavNext | Command::NavTabNext => NavIntent::Next,
-        Command::NavPrev | Command::NavTabPrev => NavIntent::Prev,
+        Command::NavNext => NavIntent::Next,
+        Command::NavPrev => NavIntent::Prev,
+        Command::NavTabNext => NavIntent::TabNext,
+        Command::NavTabPrev => NavIntent::TabPrev,
         Command::NavConfirm => NavIntent::Confirm,
         Command::NavCancel => NavIntent::Cancel,
         Command::NavMenu => NavIntent::Menu,
@@ -216,11 +217,11 @@ mod tests {
         );
         assert_eq!(
             nav.intent_for(pad(GilrsButton::RightTrigger), Capture),
-            Some(NavIntent::Next)
+            Some(NavIntent::TabNext)
         );
         assert_eq!(
             nav.intent_for(pad(GilrsButton::LeftTrigger), Capture),
-            Some(NavIntent::Prev)
+            Some(NavIntent::TabPrev)
         );
         assert_eq!(
             nav.command_for(pad(GilrsButton::Start), TextEntry),

@@ -2405,6 +2405,9 @@ impl ApplicationHandler for App {
                 };
                 self.ui_focused_id = focus_result.focused.clone();
                 self.apply_slider_repeat_steps(focus_result.slider_steps);
+                for tab in &focus_result.activations {
+                    self.fire_focused_button_activation(Some(tab));
+                }
 
                 // Button activation: a `confirm` (gamepad
                 // confirm or pointer click — the focus engine reports both as
@@ -5768,6 +5771,9 @@ impl App {
         };
         self.ui_focused_id = focus_result.focused.clone();
         self.apply_slider_repeat_steps(focus_result.slider_steps);
+        for tab in &focus_result.activations {
+            self.fire_focused_button_activation(Some(tab));
+        }
         if focus_result.confirmed {
             self.fire_focused_button_activation(focus_result.focused.as_deref());
         }

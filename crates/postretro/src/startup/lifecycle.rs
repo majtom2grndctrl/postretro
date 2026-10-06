@@ -3382,6 +3382,7 @@ pub(crate) mod tests {
                 selected: None,
                 checked: None,
                 disabled: false,
+                tablist: None,
             }],
             groups: Vec::new(),
             initial_focus: Some("play".to_string()),

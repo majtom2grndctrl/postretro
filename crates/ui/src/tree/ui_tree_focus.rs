@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 
 use taffy::prelude::NodeId;
 
-use super::super::descriptor::{AnchoredTree, Widget};
+use super::super::descriptor::{AnchoredTree, Role, Widget};
 use super::super::layout::REFERENCE_HEIGHT;
 use super::super::layout::REFERENCE_WIDTH;
 use postretro_entities::SlotValue;
@@ -17,8 +17,8 @@ use super::draw::{
 };
 use super::ui_tree::UiTree;
 use super::widget_meta::{
-    authored_focus_neighbors, container_focus_policy, container_local_scope, focus_meta,
-    is_interactive, widget_a11y_state, widget_children, widget_id, widget_interaction,
+    authored_focus_neighbors, authored_role, container_focus_policy, container_local_scope,
+    focus_meta, is_interactive, widget_a11y_state, widget_children, widget_id, widget_interaction,
 };
 
 impl UiTree {
@@ -65,11 +65,14 @@ impl UiTree {
             ..Default::default()
         };
         let mut z = 0u32;
+        let mut tablists = 0usize;
         self.collect_focus_node(
             &descriptor.root,
             self.root,
             None,
             None,
+            None,
+            &mut tablists,
             root_origin,
             scale,
             canvas_origin,
@@ -92,6 +95,8 @@ impl UiTree {
         node: NodeId,
         group: Option<usize>,
         scope: Option<&str>,
+        tablist: Option<usize>,
+        tablists: &mut usize,
         ref_origin: [f32; 2],
         scale: f32,
         canvas_origin: [f32; 2],
@@ -141,6 +146,7 @@ impl UiTree {
                 selected,
                 checked,
                 disabled,
+                tablist: tablist.filter(|_| authored_role(widget) == Some(Role::Tab)),
             });
             if let Some(g) = group {
                 out.groups[g].members.push(rect_index);
@@ -150,6 +156,15 @@ impl UiTree {
         // A container declaring its own `localState` opens a scope its subtree's
         // `{ local }` predicate binds resolve against (mirrors `build_stack`).
         let child_scope = container_local_scope(widget).or(scope);
+
+        // A `role: "tablist"` container numbers the tabs beneath it.
+        let child_tablist = if authored_role(widget) == Some(Role::Tablist) {
+            let id = *tablists;
+            *tablists += 1;
+            Some(id)
+        } else {
+            tablist
+        };
 
         // A container declaring a focus policy opens a new group its interactive
         // descendants join. Register the group before recursing so children carry
@@ -188,6 +203,8 @@ impl UiTree {
                     child_node,
                     child_group,
                     child_scope,
+                    child_tablist,
+                    tablists,
                     child_origin,
                     scale,
                     canvas_origin,

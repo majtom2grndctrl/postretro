@@ -87,6 +87,10 @@ pub struct FocusRect {
     /// navigation and pointer focus, and the App activation gate blocks activation
     /// on a disabled focused node. Both sides are complete.
     pub disabled: bool,
+    /// For a `role: "tab"` stop inside a `role: "tablist"` container: which
+    /// tablist (numbered in tree order). The bumpers step through a tablist's
+    /// tabs; `None` for every other stop.
+    pub tablist: Option<usize>,
 }
 
 /// Per-node interaction metadata exported with an interactive focusable node.

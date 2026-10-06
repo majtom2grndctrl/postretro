@@ -35,6 +35,11 @@ pub enum NavIntent {
     Menu,
     /// Open the options/back surface (Select / Back).
     Options,
+    /// Activate the next tab in the top tree's tablist (the right bumper); in a
+    /// tree with no tablist, step Next.
+    TabNext,
+    /// Activate the previous tab (the left bumper); Prev without a tablist.
+    TabPrev,
 }
 
 impl NavIntent {
@@ -56,6 +61,8 @@ impl NavIntent {
             NavIntent::Cancel => "nav.cancel",
             NavIntent::Menu => "nav.menu",
             NavIntent::Options => "nav.options",
+            NavIntent::TabNext => "nav.tabNext",
+            NavIntent::TabPrev => "nav.tabPrev",
         }
     }
 }

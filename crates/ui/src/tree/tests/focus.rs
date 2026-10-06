@@ -930,3 +930,43 @@ fn shipped_display_confirm_exports_revert_focus_and_only_reserved_actions() {
         ]
     );
 }
+
+#[test]
+fn focus_export_numbers_tablists_and_marks_only_their_tab_stops() {
+    use crate::descriptor::Role;
+    let tab = |id: &str| {
+        let mut widget = button(id, "pick");
+        if let Widget::Button(b) = &mut widget {
+            b.role = Some(Role::Tab);
+        }
+        widget
+    };
+    let strip = |children: Vec<Widget>| {
+        let mut widget = hstack(0.0, 0.0, Align::Start, children);
+        if let Widget::HStack(c) = &mut widget {
+            c.role = Some(Role::Tablist);
+        }
+        widget
+    };
+    let tree = anchored(linear_group(vec![
+        strip(vec![tab("t0"), tab("t1"), button("plain", "x")]),
+        button("panel", "y"),
+        strip(vec![tab("u0")]),
+    ]));
+    let focus = export(&tree);
+    let tablists: Vec<(&str, Option<usize>)> = focus
+        .rects
+        .iter()
+        .map(|r| (r.id.as_str(), r.tablist))
+        .collect();
+    assert_eq!(
+        tablists,
+        [
+            ("t0", Some(0)),
+            ("t1", Some(0)),
+            ("plain", None),
+            ("panel", None),
+            ("u0", Some(1)),
+        ]
+    );
+}

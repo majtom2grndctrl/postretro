@@ -218,6 +218,23 @@ pub fn widget_a11y_state(
 /// containers. A declaring container opens a focus group whose members are the
 /// interactive descendants nested under it through any passive containers, up to
 /// the next nested focus-policy container (which opens its own group).
+/// The role a widget authors, if any (not its implicit kind role).
+pub fn authored_role(widget: &Widget) -> Option<super::super::descriptor::Role> {
+    match widget {
+        Widget::Text(w) => w.role,
+        Widget::Panel(w) => w.role,
+        Widget::Image(w) => w.role,
+        Widget::VStack(w) | Widget::HStack(w) => w.role,
+        Widget::Grid(w) => w.role,
+        Widget::Spacer(w) => w.role,
+        Widget::Button(w) => w.role,
+        Widget::Slider(w) => w.role,
+        Widget::Bar(w) => w.role,
+        Widget::Ring(w) => w.role,
+        Widget::Announce(_) => None,
+    }
+}
+
 pub fn container_focus_policy(widget: &Widget) -> Option<&super::super::descriptor::FocusPolicy> {
     match widget {
         Widget::VStack(w) | Widget::HStack(w) => w.focus.as_ref(),

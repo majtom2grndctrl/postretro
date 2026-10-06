@@ -126,6 +126,9 @@ pub struct FocusTickResult {
     /// multiplied by its acceleration. The app applies them to the focused
     /// slider's slot.
     pub slider_steps: i32,
+    /// Tabs a tab intent activated this tick, in order; the app fires each
+    /// one's `onPress` as a confirm would.
+    pub activations: Vec<String>,
 }
 
 impl UiFocusEngine {
@@ -223,6 +226,9 @@ impl UiFocusEngine {
         // exception; nav `confirm` is otherwise single-fire like F).
         let mut held_dir: Option<Dir> = None;
         let mut confirm_pressed = false;
+        // The tab a tab intent selected earlier this tick: two intents on one
+        // frame advance two tabs, though the export still shows the old one.
+        let mut pending_tab: Option<usize> = None;
         for &nav in intents {
             match nav {
                 NavIntent::Confirm => {
@@ -232,6 +238,12 @@ impl UiFocusEngine {
                 NavIntent::Cancel => result.cancelled = true,
                 NavIntent::Next => self.step_linear(active_key, rects, 1),
                 NavIntent::Prev => self.step_linear(active_key, rects, -1),
+                NavIntent::TabNext => {
+                    self.step_tab(active_key, rects, 1, &mut pending_tab, &mut result);
+                }
+                NavIntent::TabPrev => {
+                    self.step_tab(active_key, rects, -1, &mut pending_tab, &mut result);
+                }
                 other => {
                     if let Some(dir) = Dir::from_nav(other) {
                         self.move_focus(active_key, rects, dir);
@@ -430,6 +442,83 @@ impl UiFocusEngine {
         if let Some(next) = linear_index_step(rects, group, &current_id, delta, group.wrap) {
             self.set_focused(key, Some(next));
         }
+    }
+
+    /// Activate the adjacent tab in the top tree's tablist and move focus to it,
+    /// wrapping and skipping disabled tabs (P20). The tablist holding focus
+    /// wins, else the first. With no tab selected, forward picks the first tab
+    /// and back the last; a lone enabled tab takes focus without activating. A
+    /// tree with no tablist steps Next/Prev instead.
+    fn step_tab(
+        &mut self,
+        key: &str,
+        rects: &FocusRectList,
+        delta: i32,
+        pending: &mut Option<usize>,
+        result: &mut FocusTickResult,
+    ) {
+        let focused_tablist = self
+            .focused_id(key)
+            .and_then(|id| rects.rects.iter().find(|r| r.id == id))
+            .and_then(|r| r.tablist);
+        let Some(tablist) =
+            focused_tablist.or_else(|| rects.rects.iter().filter_map(|r| r.tablist).min())
+        else {
+            self.step_linear(key, rects, delta);
+            return;
+        };
+        let tabs: Vec<usize> = (0..rects.rects.len())
+            .filter(|&i| rects.rects[i].tablist == Some(tablist))
+            .collect();
+        let enabled = |i: usize| !rects.rects[i].disabled;
+        let enabled_count = tabs.iter().filter(|&&i| enabled(i)).count();
+        if enabled_count == 0 {
+            return;
+        }
+        if enabled_count == 1 {
+            let only = tabs
+                .iter()
+                .copied()
+                .find(|&i| enabled(i))
+                .unwrap_or(tabs[0]);
+            self.set_focused(key, Some(rects.rects[only].id.clone()));
+            return;
+        }
+        let current = pending.or_else(|| {
+            tabs.iter()
+                .copied()
+                .find(|&i| rects.rects[i].selected.is_some_and(|s| s > 0.5))
+        });
+        let next = match current.and_then(|cur| tabs.iter().position(|&i| i == cur)) {
+            None => {
+                let mut order = tabs.iter().copied().filter(|&i| enabled(i));
+                if delta > 0 {
+                    order.next()
+                } else {
+                    order.next_back()
+                }
+            }
+            Some(position) => {
+                let len = tabs.len() as i32;
+                let mut raw = position as i32;
+                let mut found = None;
+                for _ in 0..len {
+                    raw = (raw + delta).rem_euclid(len);
+                    if enabled(tabs[raw as usize]) {
+                        found = Some(tabs[raw as usize]);
+                        break;
+                    }
+                }
+                found
+            }
+        };
+        let Some(next) = next else {
+            return;
+        };
+        *pending = Some(next);
+        let id = rects.rects[next].id.clone();
+        self.set_focused(key, Some(id.clone()));
+        result.activations.push(id);
     }
 
     /// Advance the hold-to-repeat clock. `pressed_dir` is the direction pressed

@@ -2942,7 +2942,7 @@ declare function state(name: string): RuntimeGuardNode
 -- Rust `NavIntent` enum (input/ui_nav.rs). Luau has no template-literal types,
 -- so this is a flat string union over the same closed set.
 -- See: context/research/ui-layer.md §16.
-export type NavIntent = "nav.up" | "nav.down" | "nav.left" | "nav.right" | "nav.next" | "nav.prev" | "nav.confirm" | "nav.cancel" | "nav.menu" | "nav.options"
+export type NavIntent = "nav.up" | "nav.down" | "nav.left" | "nav.right" | "nav.next" | "nav.prev" | "nav.confirm" | "nav.cancel" | "nav.menu" | "nav.options" | "nav.tabNext" | "nav.tabPrev"
 
 
 -- ---------------------------------------------------------------------------

@@ -1100,8 +1100,9 @@
     | "up" | "down" | "left" | "right"
     | "next" | "prev"
     | "confirm" | "cancel"
-    | "menu" | "options";
+    | "menu" | "options"
+    | "tabNext" | "tabPrev";
 
   /** A UI navigation intent wire name. Template-literal type over the closed
-   * `NavIntentName` set, so only `"nav.up"` … `"nav.options"` type-check. */
+   * `NavIntentName` set, so only `"nav.up"` … `"nav.tabPrev"` type-check. */
   export type NavIntent = `nav.${NavIntentName}`;

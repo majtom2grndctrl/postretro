@@ -14,6 +14,7 @@ fn rect(id: &str, r: [f32; 4], z: u32, group: Option<usize>) -> FocusRect {
         selected: None,
         checked: None,
         disabled: false,
+        tablist: None,
     }
 }
 
@@ -2108,4 +2109,149 @@ fn an_export_owned_by_another_tree_is_withheld_from_the_focus_tick() {
     assert!(crate::session::focus_rects_for(Some(&list), "keyboard").is_some());
     list.owner = None;
     assert!(crate::session::focus_rects_for(Some(&list), "menu").is_some());
+}
+
+// --- E23 U3: tabs ---
+
+/// Three tabs in tablist 0 with `selected` on one of them, plus a panel button.
+fn tabs(selected: Option<usize>, disabled: &[usize]) -> FocusRectList {
+    let mut list = linear_list(true, None);
+    for (i, rect) in list.rects.iter_mut().enumerate() {
+        rect.tablist = Some(0);
+        rect.selected = Some(if selected == Some(i) { 1.0 } else { 0.0 });
+        rect.disabled = disabled.contains(&i);
+    }
+    let mut panel = rect("panel", [0.0, 100.0, 100.0, 20.0], 3, Some(0));
+    panel.tablist = None;
+    list.rects.push(panel);
+    list.groups[0].members.push(3);
+    list
+}
+
+fn tab_tick(
+    fe: &mut UiFocusEngine,
+    list: &FocusRectList,
+    intents: &[NavIntent],
+) -> FocusTickResult {
+    fe.tick(
+        Some("menu"),
+        Some(list),
+        intents,
+        None,
+        &[],
+        InputMode::Focus,
+        0.0,
+    )
+}
+
+#[test]
+fn a_bumper_activates_the_adjacent_tab_wrapping_and_moves_focus_to_it() {
+    let list = tabs(Some(2), &[]);
+    let mut fe = UiFocusEngine::new();
+    tab_tick(&mut fe, &list, &[]);
+    let r = tab_tick(&mut fe, &list, &[NavIntent::TabNext]);
+    assert_eq!(
+        r.activations,
+        vec!["a".to_string()],
+        "wraps from the last tab"
+    );
+    assert_eq!(r.focused.as_deref(), Some("a"));
+    let r = tab_tick(&mut fe, &tabs(Some(0), &[]), &[NavIntent::TabPrev]);
+    assert_eq!(r.activations, vec!["c".to_string()]);
+}
+
+#[test]
+fn two_bumper_presses_on_one_frame_advance_two_tabs_and_skip_a_disabled_one() {
+    let list = tabs(Some(0), &[]);
+    let mut fe = UiFocusEngine::new();
+    tab_tick(&mut fe, &list, &[]);
+    let r = tab_tick(&mut fe, &list, &[NavIntent::TabNext, NavIntent::TabNext]);
+    assert_eq!(r.activations, vec!["b".to_string(), "c".to_string()]);
+    assert_eq!(r.focused.as_deref(), Some("c"));
+
+    let list = tabs(Some(0), &[1]);
+    let mut fe = UiFocusEngine::new();
+    tab_tick(&mut fe, &list, &[]);
+    let r = tab_tick(&mut fe, &list, &[NavIntent::TabNext]);
+    assert_eq!(
+        r.activations,
+        vec!["c".to_string()],
+        "the disabled tab is skipped"
+    );
+}
+
+#[test]
+fn with_no_tab_selected_rb_activates_the_first_tab_and_lb_the_last() {
+    let list = tabs(None, &[]);
+    let mut fe = UiFocusEngine::new();
+    tab_tick(&mut fe, &list, &[]);
+    assert_eq!(
+        tab_tick(&mut fe, &list, &[NavIntent::TabNext]).activations,
+        vec!["a".to_string()]
+    );
+    let mut fe = UiFocusEngine::new();
+    tab_tick(&mut fe, &list, &[]);
+    assert_eq!(
+        tab_tick(&mut fe, &list, &[NavIntent::TabPrev]).activations,
+        vec!["c".to_string()]
+    );
+}
+
+#[test]
+fn a_lone_tab_takes_focus_without_activating() {
+    let list = tabs(Some(0), &[1, 2]);
+    let mut fe = UiFocusEngine::new();
+    tab_tick(&mut fe, &list, &[]);
+    tab_tick(
+        &mut fe,
+        &list,
+        &[NavIntent::Down, NavIntent::Down, NavIntent::Down],
+    );
+    let r = tab_tick(&mut fe, &list, &[NavIntent::TabNext]);
+    assert!(r.activations.is_empty());
+    assert_eq!(r.focused.as_deref(), Some("a"));
+}
+
+#[test]
+fn in_a_tree_with_no_tablist_the_bumpers_step_next_and_prev() {
+    let list = linear_list(false, None);
+    let mut fe = UiFocusEngine::new();
+    tab_tick(&mut fe, &list, &[]);
+    let r = tab_tick(&mut fe, &list, &[NavIntent::TabNext]);
+    assert!(r.activations.is_empty());
+    assert_eq!(r.focused.as_deref(), Some("b"));
+    assert_eq!(
+        tab_tick(&mut fe, &list, &[NavIntent::TabPrev])
+            .focused
+            .as_deref(),
+        Some("a")
+    );
+}
+
+#[test]
+fn with_a_dialog_over_a_tabbed_menu_the_bumpers_act_on_the_dialog_only() {
+    let menu = tabs(Some(0), &[]);
+    let dialog = linear_list(false, None);
+    let mut fe = UiFocusEngine::new();
+    tab_tick(&mut fe, &menu, &[]);
+    fe.tick(
+        Some("dialog#2"),
+        Some(&dialog),
+        &[],
+        None,
+        &[],
+        InputMode::Focus,
+        0.0,
+    );
+    let r = fe.tick(
+        Some("dialog#2"),
+        Some(&dialog),
+        &[NavIntent::TabNext],
+        None,
+        &[],
+        InputMode::Focus,
+        0.0,
+    );
+    assert!(r.activations.is_empty(), "the menu's tabs stay put");
+    assert_eq!(r.focused.as_deref(), Some("b"));
 }

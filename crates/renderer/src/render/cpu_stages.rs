@@ -177,6 +177,15 @@ mod tests {
     }
 
     #[test]
+    fn ui_text_spans_prepared_counts_under_the_ui_stage() {
+        let stage = RenderStage::UiTextSpansPrepared;
+        assert_eq!(stage.parent(), Some(RenderStage::Ui));
+        assert_eq!(stage.kind(), StageKind::Count);
+        assert_eq!(stage.label(), "ui_text_spans_prepared");
+        assert_eq!(RenderStage::Ui.label(), "rec_ui");
+    }
+
+    #[test]
     fn mesh_pose_sampling_no_longer_reads_the_gpu_timing_gate() {
         let source = include_str!("mesh_pass.rs");
         assert!(!source.contains("POSTRETRO_GPU_TIMING"));

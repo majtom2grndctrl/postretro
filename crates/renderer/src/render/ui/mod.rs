@@ -2,9 +2,9 @@
 // images. One instance per panel/image carries (rect, UV rect, color, 9-slice
 // margin, painter depth); the vertex stage expands each instance into 9 regions.
 // All wgpu lives here per renderer-owns-GPU. Shaped text is glyphon's own
-// pipeline, owned by the `text` submodule and recorded into this same pass after
-// the quads with matching painter depths.
-// See: context/lib/ui.md
+// pipeline, owned by the `text` submodule and recorded into this same pass at
+// its paint-stream position, with matching painter depths.
+// See: context/lib/ui.md §5
 
 use crate::render::uploads::UploadQueue;
 
@@ -384,6 +384,11 @@ impl UiPass {
         self.text.prepared_spans_for_test()
     }
 
+    #[cfg(test)]
+    pub(crate) fn text_prepare_counts_for_test(&self) -> Vec<((usize, usize), u8)> {
+        self.text.prepare_counts_for_test()
+    }
+
     /// Record a whole-frame `UiComposition` (every modal-stack layer's quad
     /// batches + text runs, in painter order) into `view`. The encode boundary is
     /// the COMPOSITION, not one layer — a caller cannot loop `encode` per layer, so
@@ -399,9 +404,10 @@ impl UiPass {
     /// Quad, image, ring, and text batches record in their mixed paint-stream
     /// order. Consecutive text runs in one layer remain batched, while shapes and
     /// layer boundaries split text into independently prepared spans so
-    /// translucent source-over blending follows the authored order. Only spans
-    /// whose inputs changed shape and prepare, all BEFORE the pass opens (it
-    /// needs `device`/`queue`, not the pass); the rest draw retained vertices.
+    /// translucent source-over blending follows the authored order. Spans whose
+    /// inputs changed shape and prepare, and an atlas reclaim prepares every
+    /// live span, all BEFORE the pass opens (it needs `device`/`queue`, not the
+    /// pass); the rest draw retained vertices.
     /// With no UI draws the pass still opens so the caller's `load` op lands.
     /// Returns what the text prepare phase did, for the timing count.
     // Wide by necessity: the GPU handles (device/queue/encoder/view), the

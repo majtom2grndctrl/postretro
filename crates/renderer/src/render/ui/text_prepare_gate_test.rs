@@ -6,7 +6,7 @@
 // Positions and font sizes here are device pixels, the space `UiText` arrives
 // in after UI scaling, so the glyph sizes the atlas sees are the ones named.
 //
-// See: context/lib/ui.md §5, context/plans/in-progress/ui-text-prepare-churn
+// See: context/lib/ui.md §5
 
 use super::text::TEXT_RECLAIM_CADENCE;
 use super::tree::UiDrawData;
@@ -52,18 +52,22 @@ fn t(content: &str, x: f32, y: f32) -> Item {
     Item::Text(text(content, [x, y], SIZE))
 }
 
-/// One pass driven frame after frame, as the windowed path drives it: encode,
-/// submit, `mark_submitted`.
+/// One pass driven frame after frame, as the windowed path drives it: encode
+/// into the same target, submit, `mark_submitted`.
 struct Rig {
     ctx: GpuCtx,
     pass: UiPass,
     font_system: postretro_ui::text::FontSystem,
     size: [u32; 2],
+    /// Reused while `size` holds, as the UI layer is, so a frame that failed
+    /// to clear would show the last frame's pixels.
+    target: Option<([u32; 2], wgpu::Texture)>,
 }
 
 struct Frame {
     stats: TextPrepareStats,
     prepared: Vec<(usize, usize)>,
+    prepare_counts: Vec<((usize, usize), u8)>,
     pixels: Readback,
 }
 
@@ -75,14 +79,24 @@ impl Rig {
             pass,
             font_system: postretro_ui::text::build_font_system(),
             size: [W, H],
+            target: None,
         }
     }
 
     fn frame(&mut self, layers: &[UiDrawData]) -> Frame {
+        if self
+            .target
+            .as_ref()
+            .is_none_or(|(size, _)| *size != self.size)
+        {
+            self.target = Some((self.size, make_target(&self.ctx, self.size)));
+        }
+        let (_, target) = self.target.as_ref().expect("target created above");
         let (stats, pixels) = encode_and_read(
             &self.ctx,
             &mut self.pass,
             &mut self.font_system,
+            target,
             self.size,
             layers,
         );
@@ -90,6 +104,7 @@ impl Rig {
         Frame {
             stats,
             prepared: self.pass.text_prepared_spans_for_test(),
+            prepare_counts: self.pass.text_prepare_counts_for_test(),
             pixels,
         }
     }
@@ -103,7 +118,16 @@ impl Rig {
             wgpu::TextureFormat::Rgba8UnormSrgb,
         );
         let mut font_system = postretro_ui::text::build_font_system();
-        encode_and_read(&self.ctx, &mut pass, &mut font_system, self.size, layers).1
+        let target = make_target(&self.ctx, self.size);
+        encode_and_read(
+            &self.ctx,
+            &mut pass,
+            &mut font_system,
+            &target,
+            self.size,
+            layers,
+        )
+        .1
     }
 
     fn assert_matches_reference(&self, frame: &Frame, layers: &[UiDrawData], what: &str) {
@@ -116,14 +140,8 @@ impl Rig {
     }
 }
 
-fn encode_and_read(
-    ctx: &GpuCtx,
-    pass: &mut UiPass,
-    font_system: &mut postretro_ui::text::FontSystem,
-    size: [u32; 2],
-    layers: &[UiDrawData],
-) -> (TextPrepareStats, Readback) {
-    let target = ctx.device.create_texture(&wgpu::TextureDescriptor {
+fn make_target(ctx: &GpuCtx, size: [u32; 2]) -> wgpu::Texture {
+    ctx.device.create_texture(&wgpu::TextureDescriptor {
         label: Some("text_prepare_gate target"),
         size: wgpu::Extent3d {
             width: size[0],
@@ -136,7 +154,17 @@ fn encode_and_read(
         format: wgpu::TextureFormat::Rgba8UnormSrgb,
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
         view_formats: &[],
-    });
+    })
+}
+
+fn encode_and_read(
+    ctx: &GpuCtx,
+    pass: &mut UiPass,
+    font_system: &mut postretro_ui::text::FontSystem,
+    target: &wgpu::Texture,
+    size: [u32; 2],
+    layers: &[UiDrawData],
+) -> (TextPrepareStats, Readback) {
     let view = target.create_view(&wgpu::TextureViewDescriptor::default());
     let white = pass.white_bind_group().clone();
     let images = super::UiImageRegistry::default();
@@ -157,7 +185,7 @@ fn encode_and_read(
         wgpu::LoadOp::Clear(wgpu::Color::BLACK),
         &composition,
     );
-    let pixels = read_texture_rgba8_staged(ctx, &uploads, &target, size[0], size[1], encoder);
+    let pixels = read_texture_rgba8_staged(ctx, &uploads, target, size[0], size[1], encoder);
     (stats, pixels)
 }
 
@@ -219,6 +247,17 @@ fn identical_frames_prepare_nothing_and_match_pixels() {
         "an unchanged frame prepares, writes and trims nothing"
     );
     assert_eq!(differing_pixels(&first.pixels, &second.pixels), 0);
+
+    // A settled UI never reclaims: the cadence waits for a change, so every
+    // settled timing window counts zero.
+    for i in 0..2 * TEXT_RECLAIM_CADENCE {
+        let settled = rig.frame(&layers);
+        assert_eq!(
+            settled.stats,
+            TextPrepareStats::default(),
+            "settled frame {i} prepared or trimmed"
+        );
+    }
 }
 
 #[test]
@@ -304,17 +343,19 @@ fn changing_span_reclaims_on_cadence_and_static_pixels_hold() {
 /// atlas held at its initial 256 px by the device limit so it cannot grow. The
 /// in-use set fills within a few dozen frames, so the run crosses atlas-full
 /// recoveries and reclaims. A skipped span's glyphs must survive every
-/// eviction in between.
+/// eviction in between. A third span moves by whole pixels every frame: it
+/// prepares ahead of the counter without allocating, so on an atlas-full frame
+/// it is a span already prepared before the overflow.
 #[test]
 fn pinned_atlas_new_glyph_counter_keeps_static_label() {
-    const LIMIT: u32 = 256;
-    let limits = wgpu::Limits {
-        max_texture_dimension_2d: LIMIT,
-        ..wgpu::Limits::default()
+    let Some(mut rig) = pinned_atlas_rig() else {
+        eprintln!("[text_prepare_gate_test] skipping: no GPU adapter available");
+        return;
     };
-    let mut rig = Rig::new(gpu_or_skip!(try_init_gpu_with_limits(limits)));
-    rig.size = [LIMIT, LIMIT];
-    assert_eq!(rig.ctx.device.limits().max_texture_dimension_2d, LIMIT);
+    assert_eq!(
+        rig.ctx.device.limits().max_texture_dimension_2d,
+        rig.size[0]
+    );
 
     const GLYPHS: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
     let glyphs: Vec<char> = GLYPHS.chars().collect();
@@ -327,6 +368,7 @@ fn pinned_atlas_new_glyph_counter_keeps_static_label() {
         let counter = glyphs[i % glyphs.len()].to_string();
         let layers = [
             layer(vec![t("STATIC", 8.0, 8.0)]),
+            layer(vec![t("MOVING", 8.0 + (i % 20) as f32, 210.0)]),
             layer(vec![Item::Text(text(&counter, [8.0, 80.0], 72.0))]),
         ];
         let frame = rig.frame(&layers);
@@ -334,11 +376,16 @@ fn pinned_atlas_new_glyph_counter_keeps_static_label() {
             atlas_full += 1;
             assert_eq!(
                 frame.prepared,
-                vec![(0, 0), (1, 0)],
+                vec![(0, 0), (1, 0), (2, 0)],
                 "an atlas-full frame prepares every live span again"
             );
+            assert!(
+                frame.prepare_counts.contains(&((1, 0), 2)),
+                "the span prepared before the overflow prepares again: {:?}",
+                frame.prepare_counts
+            );
             assert_eq!(
-                frame.stats.spans_prepared, 2,
+                frame.stats.spans_prepared, 3,
                 "an atlas-full frame counts each live span once"
             );
         }
@@ -382,13 +429,21 @@ fn pinned_atlas_rig() -> Option<Rig> {
 #[test]
 fn zero_text_frame_prepares_nothing_and_defers_reclaim() {
     let mut rig = Rig::new(gpu_or_skip!(try_init_gpu()));
-    let with_text = [layer(vec![t("HP 100", 8.0, 8.0)])];
+    let with_text = |i: u32| {
+        [
+            layer(vec![t("HP 100", 8.0, 8.0)]),
+            layer(vec![t(&format!("COUNT {i}"), 8.0, 90.0)]),
+        ]
+    };
     let without_text = [UiDrawData::default()];
 
-    // Bring the reclaim to the brink: the next encode with text is due.
-    for _ in 0..TEXT_RECLAIM_CADENCE - 1 {
-        let frame = rig.frame(&with_text);
-        assert!(!frame.stats.reclaimed);
+    // The first frame reclaims (every span is new); then bring the cadence to
+    // the brink with a change every frame: the next encode with text is due.
+    let first = rig.frame(&with_text(0));
+    assert!(first.stats.reclaimed);
+    for i in 1..TEXT_RECLAIM_CADENCE {
+        let frame = rig.frame(&with_text(i));
+        assert!(!frame.stats.trimmed, "frame {i}");
     }
 
     let empty = rig.frame(&without_text);
@@ -397,15 +452,17 @@ fn zero_text_frame_prepares_nothing_and_defers_reclaim() {
         TextPrepareStats::default(),
         "a zero-text frame prepares, writes and trims nothing"
     );
+    // The rig reuses its target, so the last frame's text is there to clear.
     assert_eq!(ink(&empty.pixels, 0, H), 0, "the layer clears with no text");
 
-    let back = rig.frame(&with_text);
+    let back_layers = with_text(TEXT_RECLAIM_CADENCE);
+    let back = rig.frame(&back_layers);
     assert!(
         back.stats.reclaimed,
         "the reclaim that fell due moves to the next frame with text"
     );
-    assert_eq!(back.prepared, vec![(0, 0)]);
-    rig.assert_matches_reference(&back, &with_text, "frame after zero text");
+    assert_eq!(back.prepared, vec![(0, 0), (1, 0)]);
+    rig.assert_matches_reference(&back, &back_layers, "frame after zero text");
 }
 
 #[test]
@@ -719,36 +776,56 @@ fn returning_layer_is_correct_after_atlas_full_while_away() {
         eprintln!("[text_prepare_gate_test] skipping: no GPU adapter available");
         return;
     };
+    // A static span beside the counter keeps the away frames partial changes,
+    // so they do not trim and the counter's glyphs pile up until the atlas fills.
+    let hud = layer(vec![t("HP", 200.0, 230.0)]);
     let menu = layer(vec![Item::Text(text("PAUSED", [8.0, 8.0], 48.0))]);
     let counter = |c: char| layer(vec![Item::Text(text(&c.to_string(), [8.0, 120.0], 72.0))]);
 
-    rig.frame(&[counter('A'), menu.clone()]);
+    rig.frame(&[hud.clone(), counter('A'), menu.clone()]);
     let mut full = false;
     for c in "BCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789".chars() {
-        full |= rig.frame(&[counter(c)]).stats.atlas_full_recovered;
+        full |= rig
+            .frame(&[hud.clone(), counter(c)])
+            .stats
+            .atlas_full_recovered;
         if full {
             break;
         }
     }
     assert!(full, "the away period never filled the atlas");
-    let layers = [counter('Z'), menu];
+    let layers = [hud, counter('Z'), menu];
     let back = rig.frame(&layers);
-    assert!(back.prepared.contains(&(1, 0)));
+    assert!(back.prepared.contains(&(2, 0)));
     rig.assert_matches_reference(&back, &layers, "back after atlas-full");
+}
+
+/// What a trim-crossing run saw: frames that reclaimed, and frames that
+/// recovered from a full atlas.
+struct TrimRun {
+    reclaims: usize,
+    atlas_full: usize,
 }
 
 /// The lower layer gains a span, then the atlas is trimmed: unchanged spans
 /// re-prepare from retained buffers and must keep their own depths, because a
-/// glyph's depth index is slot-local (O22).
-fn assert_trims_after_lower_change_keep_occlusion(rig: &mut Rig, counter_size: f32) {
+/// glyph's depth index is slot-local. Lower text is pure green, so any green
+/// pixel over the upper layer's red panel is lower text drawn through it; the
+/// upper layer's white text over its own panel keeps a high red channel.
+fn run_trims_after_lower_layer_change(rig: &mut Rig, counter_size: f32) -> TrimRun {
+    let green = |content: &str, x: f32, y: f32| {
+        let mut lower = text(content, [x, y], SIZE);
+        lower.color = [0, 255, 0, 255];
+        Item::Text(lower)
+    };
     let build = |lower_spans: usize, i: usize| {
-        let mut lower = vec![t("LOWER A", 8.0, 8.0)];
+        let mut lower = vec![green("LOWER A", 8.0, 8.0)];
         for s in 1..lower_spans {
             let y = 30.0 * s as f32;
-            lower.push(Item::Panel([8.0, y, 20.0, 2.0], [0.2, 0.8, 0.2, 1.0]));
-            lower.push(t("LOWER B", 120.0, y));
+            lower.push(Item::Panel([8.0, y, 20.0, 2.0], [0.2, 0.2, 0.8, 1.0]));
+            lower.push(green("LOWER B", 120.0, y));
         }
-        lower.push(t("HIDDEN", 8.0, 100.0));
+        lower.push(green("HIDDEN", 8.0, 100.0));
         let glyph = char::from(b'A' + (i % 26) as u8).to_string();
         [
             layer(lower),
@@ -760,22 +837,46 @@ fn assert_trims_after_lower_change_keep_occlusion(rig: &mut Rig, counter_size: f
         ]
     };
     rig.frame(&build(1, 0));
-    let mut trims = 0;
+    let mut run = TrimRun {
+        reclaims: 0,
+        atlas_full: 0,
+    };
     for i in 1..=(TEXT_RECLAIM_CADENCE as usize + 2) {
         let layers = build(2, i);
         let frame = rig.frame(&layers);
-        if frame.stats.trimmed {
-            trims += 1;
-            rig.assert_matches_reference(&frame, &layers, &format!("trim frame {i}"));
+        if !frame.stats.trimmed {
+            continue;
         }
+        run.reclaims += usize::from(frame.stats.reclaimed);
+        run.atlas_full += usize::from(frame.stats.atlas_full_recovered);
+        rig.assert_matches_reference(&frame, &layers, &format!("trim frame {i}"));
+        let stride = (frame.pixels.width * 4) as usize;
+        let mut leaked = 0;
+        let mut on_panel = 0;
+        for y in 92..128 {
+            for x in 2..108 {
+                let p = &frame.pixels.pixels[y * stride + x * 4..][..4];
+                leaked += usize::from(p[1] > 128 && p[0] < 64);
+                on_panel += usize::from(p[0] > 200 && p[1] > 128);
+            }
+        }
+        assert!(
+            leaked < 8,
+            "trim frame {i}: lower text drew over the upper panel"
+        );
+        assert!(
+            on_panel > 0,
+            "trim frame {i}: upper text missing over its panel"
+        );
     }
-    assert!(trims >= 1, "the run never trimmed");
+    run
 }
 
 #[test]
 fn reclaim_after_lower_layer_change_keeps_occlusion() {
     let mut rig = Rig::new(gpu_or_skip!(try_init_gpu()));
-    assert_trims_after_lower_change_keep_occlusion(&mut rig, SIZE);
+    let run = run_trims_after_lower_layer_change(&mut rig, SIZE);
+    assert!(run.reclaims >= 1, "the run never reclaimed");
 }
 
 #[test]
@@ -784,7 +885,8 @@ fn atlas_full_after_lower_layer_change_keeps_occlusion() {
         eprintln!("[text_prepare_gate_test] skipping: no GPU adapter available");
         return;
     };
-    assert_trims_after_lower_change_keep_occlusion(&mut rig, 96.0);
+    let run = run_trims_after_lower_layer_change(&mut rig, 96.0);
+    assert!(run.atlas_full >= 1, "the run never filled the atlas");
 }
 
 #[test]
@@ -832,7 +934,10 @@ fn over_band_bound_falls_back_then_reprepares_once() {
 }
 
 /// A glyph larger than the pinned atlas can never fit, so its span's prepare
-/// fails even after the atlas-full recovery (O4).
+/// fails even after the atlas-full recovery. The span drew last frame and its
+/// first texts still fit, so the failed prepare leaves glyphon a partial,
+/// non-empty vertex count over the old buffer: drawing it would show stale or
+/// torn text.
 #[test]
 fn failed_prepare_draws_nothing_and_retries() {
     let Some(mut rig) = pinned_atlas_rig() else {
@@ -840,13 +945,19 @@ fn failed_prepare_draws_nothing_and_retries() {
         return;
     };
     let ok = layer(vec![t("OK", 8.0, 8.0)]);
-    let layers = [
-        ok.clone(),
-        layer(vec![Item::Text(text("W", [0.0, 0.0], 400.0))]),
-    ];
+    let span = |second: Item| layer(vec![t("AB", 8.0, 120.0), second]);
 
+    let fits = [ok.clone(), span(t("CD", 60.0, 120.0))];
+    let first = rig.frame(&fits);
+    assert!(!first.stats.atlas_full_recovered);
+    assert!(
+        ink(&first.pixels, 120, 160) > 0,
+        "the span drew while it fit"
+    );
+
+    let fails = [ok.clone(), span(Item::Text(text("W", [60.0, 0.0], 400.0)))];
     for frame_index in 0..2 {
-        let frame = rig.frame(&layers);
+        let frame = rig.frame(&fails);
         assert!(frame.stats.atlas_full_recovered);
         assert!(
             frame.prepared.contains(&(1, 0)),
@@ -861,17 +972,20 @@ fn failed_prepare_draws_nothing_and_retries() {
     }
 }
 
-/// O20: the guard counts encodes, so it trips even when the first encode
-/// prepared nothing.
+/// The guard counts encodes, so it trips even when the first encode prepared
+/// nothing: a later encode could prepare a span the first draws from retained
+/// vertices.
 #[cfg(debug_assertions)]
 #[test]
 fn second_encode_before_submit_trips_guard_even_without_prepare() {
     let mut rig = Rig::new(gpu_or_skip!(try_init_gpu()));
     let empty = [UiDrawData::default()];
+    let target = make_target(&rig.ctx, rig.size);
     let (stats, _) = encode_and_read(
         &rig.ctx,
         &mut rig.pass,
         &mut rig.font_system,
+        &target,
         rig.size,
         &empty,
     );
@@ -881,13 +995,75 @@ fn second_encode_before_submit_trips_guard_even_without_prepare() {
             &rig.ctx,
             &mut rig.pass,
             &mut rig.font_system,
+            &target,
             rig.size,
             &empty,
         )
+        .0
     }));
+    let panic = second.expect_err("a second encode before submit must trip the debug guard");
+    let message = panic
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| panic.downcast_ref::<&str>().copied())
+        .unwrap_or_default();
     assert!(
-        second.is_err(),
-        "a second encode before submit must trip the debug guard"
+        message.contains("UI encoded 2 times before submit"),
+        "the panic was not the encode guard: {message}"
+    );
+}
+
+/// Both band-bound triggers: a layer over `UI_BAND_ORDERS` paint items falls
+/// back like a frame over `UI_DEPTH_BANDS` layers, and banded depth strictly
+/// decreases in paint order across layers, legacy layers included.
+#[test]
+fn band_bound_counts_items_per_layer_and_depth_follows_paint_order() {
+    use super::composition::UI_BAND_ORDERS;
+    let rig = Rig::new(gpu_or_skip!(try_init_gpu()));
+    let white = rig.pass.white_bind_group().clone();
+    let images = super::UiImageRegistry::default();
+    let quads = |n: usize| {
+        let mut draw = UiDrawData::default();
+        for _ in 0..n {
+            draw.push_quad(UiInstance::panel([0.0, 0.0, 1.0, 1.0], [1.0; 4], [0.0; 4]));
+        }
+        draw
+    };
+
+    let at_cap = [quads(UI_BAND_ORDERS)];
+    assert!(UiComposition::from_layer_draws(&at_cap, &white, &images).banded());
+    let over_cap = [quads(1), quads(UI_BAND_ORDERS + 1)];
+    assert!(!UiComposition::from_layer_draws(&over_cap, &white, &images).banded());
+
+    // A legacy layer (no paint stream) folds its lists as grouped items.
+    let mut legacy = UiDrawData::default();
+    legacy.texts.push(text("LEGACY", [0.0, 0.0], SIZE));
+    legacy
+        .quads
+        .push(UiInstance::panel([0.0, 0.0, 1.0, 1.0], [1.0; 4], [0.0; 4]));
+    let mixed = [
+        layer(vec![t("A", 0.0, 0.0), Item::Panel([0.0; 4], [1.0; 4])]),
+        legacy,
+        layer(vec![Item::Panel([0.0; 4], [1.0; 4]), t("B", 0.0, 0.0)]),
+    ];
+    let composition = UiComposition::from_layer_draws(&mixed, &white, &images);
+    assert!(composition.banded());
+    let mut depths: Vec<(usize, f32)> = composition
+        .batches
+        .iter()
+        .map(|b| (b.slot.order, composition.painter_depth(b.slot)))
+        .chain(
+            composition
+                .text_slots
+                .iter()
+                .map(|&s| (s.order, composition.painter_depth(s))),
+        )
+        .collect();
+    depths.sort_by_key(|&(order, _)| order);
+    depths.dedup_by_key(|&mut (order, _)| order);
+    assert!(
+        depths.windows(2).all(|pair| pair[1].1 < pair[0].1),
+        "banded depth does not strictly decrease in paint order: {depths:?}"
     );
 }
 
@@ -998,4 +1174,33 @@ fn reduce_motion_snap_prepares_once_then_nothing() {
     let next = tweened_health_layer(&mut rig, 4.0 * DT, true);
     let after = rig.frame(&[UiDrawData::default(), next]);
     assert_eq!(after.stats, TextPrepareStats::default());
+}
+
+/// A resize drag rescales every font each frame, so no span keeps its
+/// vertices and each frame's glyphs are new sizes. Such a frame trims first,
+/// so the in-use set holds only the current size: with the atlas pinned, the
+/// drag never fills it.
+#[test]
+fn resize_drag_trims_each_frame_and_never_fills_the_atlas() {
+    let Some(mut rig) = pinned_atlas_rig() else {
+        eprintln!("[text_prepare_gate_test] skipping: no GPU adapter available");
+        return;
+    };
+    for i in 0..60u32 {
+        rig.size = [200 + i % 50, 200];
+        let size = 16.0 + i as f32 * 0.25;
+        let layers = [
+            layer(vec![Item::Text(text("HEALTH 100", [8.0, 8.0], size))]),
+            layer(vec![Item::Text(text("AMMO 12 / 90", [8.0, 100.0], size))]),
+        ];
+        let frame = rig.frame(&layers);
+        assert!(frame.stats.reclaimed, "drag frame {i} did not trim first");
+        assert!(
+            !frame.stats.atlas_full_recovered,
+            "drag frame {i} filled the atlas with sizes no span draws"
+        );
+        if i % 10 == 0 {
+            rig.assert_matches_reference(&frame, &layers, &format!("drag frame {i}"));
+        }
+    }
 }

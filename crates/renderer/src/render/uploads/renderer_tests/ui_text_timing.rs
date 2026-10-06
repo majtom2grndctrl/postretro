@@ -85,26 +85,32 @@ fn ui_frame_reports_text_spans_prepared_under_the_ui_stage() {
         Some(0),
         "a zero-text frame still reports the count"
     );
+    // Folded as the binary folds the renderer's set, under its render stage:
+    // the count is a present-at-zero sample nested under `rec_ui`.
+    let mut record = postretro_stage_timing::FrameRecord::new();
+    record.extend_from(renderer.cpu_stages(), Some("render"));
+    let sample = record
+        .samples()
+        .iter()
+        .find(|sample| sample.label == "ui_text_spans_prepared")
+        .expect("the count is present on a zero-text UI frame");
+    assert_eq!(sample.parent, Some("rec_ui"));
+    assert_eq!(sample.kind, postretro_stage_timing::StageKind::Count);
+    assert_eq!(sample.value, 0);
 
-    // Back with text after the zero-text frame: both slots forgot their keys.
-    // Run to the reclaim, which counts each live span once.
+    // Back with text after the zero-text frame: both slots forgot their keys,
+    // so the return frame is a reclaim, counting each live span once. Then a
+    // settled window counts zero on every frame: no idle reclaim.
     let mut counts = Vec::new();
-    for _ in 0..TEXT_RECLAIM_CADENCE {
+    for _ in 0..2 * TEXT_RECLAIM_CADENCE {
         counts.push(frame_count(&mut renderer, &mut font, &hud));
     }
     assert_eq!(counts[0], Some(2), "returning slots prepare again");
-    assert_eq!(
-        counts.iter().filter(|&&count| count == Some(2)).count(),
-        2,
-        "the return frame and one reclaim frame each count both spans: {counts:?}"
-    );
     assert!(
-        counts
-            .iter()
-            .all(|&count| count == Some(0) || count == Some(2)),
-        "{counts:?}"
+        counts[1..].iter().all(|&count| count == Some(0)),
+        "settled frames prepared: {counts:?}"
     );
-    eprintln!("[UploadProof] UI text prepare count: 1 adapter case ran");
+    eprintln!("[UiTextProof] UI text prepare count: 1 adapter case ran");
 }
 
 #[test]
@@ -115,5 +121,5 @@ fn ui_text_prepare_count_is_absent_with_timing_off() {
     let mut font = postretro_ui::text::build_font_system();
     let hud = [text_layer("HP 100", [8.0, 8.0])];
     assert_eq!(frame_count(&mut renderer, &mut font, &hud), None);
-    eprintln!("[UploadProof] UI text prepare count off: 1 adapter case ran");
+    eprintln!("[UiTextProof] UI text prepare count off: 1 adapter case ran");
 }

@@ -1,10 +1,6 @@
-// glyphon shaped-text half of the UI pass: the embedded font, the glyph
-// atlas, and one retained renderer per text span. Only a span whose inputs
-// changed shapes and prepares; an unchanged span draws from its retained
-// vertices. glyphon ships its OWN pipeline and atlas — none of this routes
-// through the quad pipeline in `mod.rs`; prepared spans record INTO the same
-// render pass at their mixed paint-stream positions, with depth testing against
-// the private UI target.
+// glyphon shaped-text half of the UI pass: the embedded font, the glyph atlas,
+// and one retained renderer per text span, with change-gated prepare and atlas
+// reclaim. glyphon's pipeline records into the UI pass alongside `mod.rs`'s.
 // See: context/lib/ui.md §5
 
 use std::collections::HashSet;
@@ -18,8 +14,11 @@ use glyphon::{
 use postretro_ui::UiText;
 use postretro_ui::text::{FontSystem, LINE_HEIGHT_FACTOR};
 
-/// Encodes with text between atlas reclaims: one CPU-timing window, so a
-/// settled window holds at most one reclaim.
+/// Encodes with text before a reclaim falls due: one CPU-timing window. With
+/// prepare gated, trim is the only point where glyphs that no live span draws
+/// leave glyphon's in-use set, so without a reclaim a span that changes every
+/// frame would grow the atlas without bound. A due reclaim waits for a change
+/// since the last trim: a settled UI's in-use set cannot grow.
 pub(crate) const TEXT_RECLAIM_CADENCE: u32 = 120;
 
 /// glyphon shaped-text state for the UI pass: glyph raster cache, glyphon's own
@@ -45,14 +44,19 @@ pub(crate) struct UiTextRenderer {
     /// Retained span slots, indexed `[layer][span within layer]`. Each owns a
     /// distinct vertex buffer, so every span can be prepared before the render
     /// pass and then recorded at its painter-order position, and an unchanged
-    /// span keeps its vertices across frames.
+    /// span keeps its vertices across frames. Slots persist at their high-water
+    /// mark: a reopened menu or a new damage number reuses its renderer and
+    /// vertex buffer instead of allocating them again.
     slots: Vec<Vec<TextSlot>>,
     depth_stencil: wgpu::DepthStencilState,
     /// Bumped by every `register_font`: a new face can change how any span
     /// shapes, so every span's key moves.
     font_generation: u64,
-    /// Encodes with text since the last trim.
+    /// Encodes with text since the last trim, saturating.
     encodes_since_reclaim: u32,
+    /// A span prepared for a change, or a drawn slot left, since the last trim:
+    /// glyphs no live span draws may sit in glyphon's in-use set.
+    changed_since_trim: bool,
     /// Debug-only guard: counts UI encodes since the last submitted UI command
     /// buffer. A second encode could prepare a span another encode drew from
     /// before either executes. Release builds carry no guard cost (the field and
@@ -72,8 +76,12 @@ struct TextSlot {
     key_valid: bool,
     /// The current encode draws this slot.
     drawn: bool,
-    /// The current encode ran `prepare` on this slot.
-    prepared: bool,
+    /// `prepare` runs on this slot in the current encode: 2 when an atlas-full
+    /// recovery prepared it again.
+    prepares: u8,
+    /// The slot's last prepare failed and was logged; it warns again only
+    /// after a success, not every frame it keeps failing.
+    failure_logged: bool,
 }
 
 /// Everything a span's `prepare` reads. Floats compare by bit pattern, so a
@@ -147,9 +155,10 @@ pub(crate) struct TextPrepareStats {
     /// Distinct spans whose `prepare` ran. glyphon writes vertices and atlas
     /// texels only inside `prepare`, so zero means no text write.
     pub(crate) spans_prepared: u32,
-    /// The atlas in-use set was cleared: a cadence reclaim or an atlas-full
-    /// recovery.
+    /// The atlas in-use set was cleared: a reclaim or an atlas-full recovery.
     pub(crate) trimmed: bool,
+    /// Trimmed before the first prepare: the cadence fell due after a change,
+    /// or every live span was preparing anyway.
     pub(crate) reclaimed: bool,
     pub(crate) atlas_full_recovered: bool,
 }
@@ -180,6 +189,7 @@ impl UiTextRenderer {
             depth_stencil,
             font_generation: 0,
             encodes_since_reclaim: 0,
+            changed_since_trim: false,
             #[cfg(debug_assertions)]
             encode_count: 0,
         }
@@ -239,12 +249,14 @@ impl UiTextRenderer {
     }
 
     /// Run the composition's prepare phase. A span whose key matches its slot's
-    /// skips shaping and `prepare` and draws its retained vertices. Every
-    /// `TEXT_RECLAIM_CADENCE` encodes with text, and at once when glyphon reports
-    /// the atlas full, the atlas is trimmed and then every live span prepares,
-    /// all before the pass opens. Trimming first keeps every live span's glyphs
-    /// in glyphon's in-use set, which is all that protects a skipped span's
-    /// atlas texels from eviction until the next reclaim.
+    /// skips shaping and `prepare` and draws its retained vertices. A reclaim
+    /// trims the atlas and then prepares every live span, all before the pass
+    /// opens. It runs when every live span is preparing anyway (a viewport or
+    /// font change, or every slot returning), when `TEXT_RECLAIM_CADENCE` has
+    /// fallen due and text changed since the last trim, and at once when glyphon
+    /// reports the atlas full. Trimming first keeps every live span's glyphs in
+    /// glyphon's in-use set, which is all that protects a skipped span's atlas
+    /// texels from eviction until the next trim.
     pub fn prepare_spans(
         &mut self,
         font_system: &mut FontSystem,
@@ -253,9 +265,11 @@ impl UiTextRenderer {
         viewport: [u32; 2],
         spans: &[TextSpan<'_>],
     ) -> TextPrepareStats {
+        #[cfg(debug_assertions)]
+        debug_assert_unique_slots(spans);
         for slot in self.slots.iter_mut().flatten() {
             slot.drawn = false;
-            slot.prepared = false;
+            slot.prepares = 0;
         }
         let mut stats = TextPrepareStats::default();
         if spans.is_empty() {
@@ -273,8 +287,17 @@ impl UiTextRenderer {
             },
         );
 
-        self.encodes_since_reclaim += 1;
-        let reclaim = self.encodes_since_reclaim >= TEXT_RECLAIM_CADENCE;
+        self.encodes_since_reclaim = self.encodes_since_reclaim.saturating_add(1);
+        // A due cadence waits for a change: a settled UI's in-use set holds
+        // exactly its live glyphs, so trimming it would only rewrite identical
+        // vertices. A frame where no span can keep its vertices trims for free,
+        // and keeps a resize drag — every font size new each frame — from
+        // growing the atlas with sizes no span draws any more.
+        let reclaim = (self.encodes_since_reclaim >= TEXT_RECLAIM_CADENCE
+            && self.changed_since_trim)
+            || spans
+                .iter()
+                .all(|span| !self.slot_unchanged(span, viewport));
         if reclaim {
             self.trim();
             stats.trimmed = true;
@@ -303,15 +326,30 @@ impl UiTextRenderer {
             };
             let _ = self.prepare_pass(font_system, device, queue, spans, pass);
         }
+        if stats.trimmed {
+            // Every live span prepared after the trim, so the in-use set holds
+            // exactly their glyphs.
+            self.changed_since_trim = false;
+        }
 
         self.forget_undrawn_slots();
         stats.spans_prepared = self
             .slots
             .iter()
             .flatten()
-            .filter(|slot| slot.prepared)
+            .filter(|slot| slot.prepares > 0)
             .count() as u32;
         stats
+    }
+
+    /// The span's slot holds drawable vertices prepared from these inputs.
+    fn slot_unchanged(&self, span: &TextSpan<'_>, viewport: [u32; 2]) -> bool {
+        self.slots
+            .get(span.layer)
+            .and_then(|layer| layer.get(span.span))
+            .is_some_and(|slot| {
+                slot.key_valid && slot.key.matches(span, viewport, self.font_generation)
+            })
     }
 
     /// Prepare each span whose key moved, or every span when `force`. Stops at
@@ -337,13 +375,14 @@ impl UiTextRenderer {
             }
             if !unchanged {
                 shape_span(font_system, &mut slot.buffers, span.texts, pass.viewport);
+                self.changed_since_trim = true;
             }
 
             // Invalid until this prepare succeeds: a failed prepare clears and
             // partly refills glyphon's vertex list without writing the buffer, so
             // drawing it would read stale vertices under a partial count.
             slot.key_valid = false;
-            slot.prepared = true;
+            slot.prepares = slot.prepares.saturating_add(1);
             let areas = span
                 .texts
                 .iter()
@@ -376,9 +415,14 @@ impl UiTextRenderer {
                 Ok(()) => {
                     slot.key.store(span, pass.viewport, self.font_generation);
                     slot.key_valid = true;
+                    slot.failure_logged = false;
                 }
                 Err(e) if pass.last_chance => {
-                    log::warn!("[Renderer] UI text prepare failed after atlas recovery: {e}");
+                    // A span that can never fit retries every frame; warn once.
+                    if !slot.failure_logged {
+                        log::warn!("[Renderer] UI text prepare failed after atlas recovery: {e}");
+                        slot.failure_logged = true;
+                    }
                 }
                 Err(e) => return Err(e),
             }
@@ -403,20 +447,25 @@ impl UiTextRenderer {
                 key: SpanKey::default(),
                 key_valid: false,
                 drawn: false,
-                prepared: false,
+                prepares: 0,
+                failure_logged: false,
             });
         }
     }
 
     /// A slot the encode does not draw forgets its key, so when it returns it
     /// prepares again even with identical text: the atlas may have reclaimed
-    /// its glyphs while it was away.
+    /// its glyphs while it was away. Its glyphs stay in the in-use set until the
+    /// next trim, which counts as a change.
     fn forget_undrawn_slots(&mut self) {
+        let mut forgot = false;
         for slot in self.slots.iter_mut().flatten() {
-            if !slot.drawn {
+            if !slot.drawn && slot.key_valid {
                 slot.key_valid = false;
+                forgot = true;
             }
         }
+        self.changed_since_trim |= forgot;
     }
 
     fn trim(&mut self) {
@@ -447,10 +496,34 @@ impl UiTextRenderer {
     }
 }
 
+/// Two spans naming one slot would share one vertex buffer: the second prepare
+/// would overwrite the first's vertices and both draws would show it.
+#[cfg(debug_assertions)]
+fn debug_assert_unique_slots(spans: &[TextSpan<'_>]) {
+    for (i, a) in spans.iter().enumerate() {
+        debug_assert!(
+            spans[..i]
+                .iter()
+                .all(|b| (a.layer, a.span) != (b.layer, b.span)),
+            "two text spans share slot ({}, {})",
+            a.layer,
+            a.span,
+        );
+    }
+}
+
 #[cfg(test)]
 impl UiTextRenderer {
     /// `(layer, span)` of every slot the last encode prepared, in slot order.
     pub(crate) fn prepared_spans_for_test(&self) -> Vec<(usize, usize)> {
+        self.prepare_counts_for_test()
+            .into_iter()
+            .map(|(slot, _)| slot)
+            .collect()
+    }
+
+    /// `((layer, span), prepares)` for every slot the last encode prepared.
+    pub(crate) fn prepare_counts_for_test(&self) -> Vec<((usize, usize), u8)> {
         self.slots
             .iter()
             .enumerate()
@@ -458,8 +531,8 @@ impl UiTextRenderer {
                 slots
                     .iter()
                     .enumerate()
-                    .filter(|(_, slot)| slot.prepared)
-                    .map(move |(span, _)| (layer, span))
+                    .filter(|(_, slot)| slot.prepares > 0)
+                    .map(move |(span, slot)| ((layer, span), slot.prepares))
             })
             .collect()
     }
@@ -563,6 +636,13 @@ mod tests {
         assert!(
             !manifest.contains("[patch"),
             "the workspace patches a dependency"
+        );
+        // Source replacement vendors crates while the lock keeps the registry
+        // source, so the lock check alone would miss it.
+        let config = std::fs::read_to_string(root.join(".cargo/config.toml")).unwrap_or_default();
+        assert!(
+            !config.contains("replace-with") && !config.contains("[source"),
+            "the workspace replaces the crates.io source"
         );
     }
 

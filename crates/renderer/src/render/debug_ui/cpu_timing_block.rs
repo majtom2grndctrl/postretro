@@ -94,6 +94,30 @@ mod tests {
     }
 
     #[test]
+    fn count_rows_show_average_and_max_and_stay_present_at_zero() {
+        let mut window = StageWindow::new();
+        for index in 0..WINDOW_FRAMES {
+            let mut record = FrameRecord::new();
+            record.push_time("rec_ui", None, 1_000_000);
+            let prepared = if index == 0 { 3 } else { 0 };
+            record.push_count("ui_text_spans_prepared", Some("rec_ui"), prepared);
+            window.fold(&record);
+        }
+        let rows = cpu_timing_rows(window.last_window().unwrap());
+        assert_eq!(rows[1], "  ui_text_spans_prepared: 0.0 / 3");
+
+        let mut settled = StageWindow::new();
+        for _ in 0..WINDOW_FRAMES {
+            let mut record = FrameRecord::new();
+            record.push_time("rec_ui", None, 1_000_000);
+            record.push_count("ui_text_spans_prepared", Some("rec_ui"), 0);
+            settled.fold(&record);
+        }
+        let rows = cpu_timing_rows(settled.last_window().unwrap());
+        assert_eq!(rows[1], "  ui_text_spans_prepared: 0.0 / 0");
+    }
+
+    #[test]
     fn partial_rows_show_how_many_frames_they_ran_in() {
         let mut window = StageWindow::new();
         for index in 0..WINDOW_FRAMES {

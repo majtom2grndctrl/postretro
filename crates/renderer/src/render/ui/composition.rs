@@ -16,7 +16,8 @@ pub(crate) struct UiBatch<'a> {
 pub(super) const UI_DEPTH_BANDS: usize = 32;
 /// Fixed order steps per band. A fixed step, rather than one normalised by the
 /// layer's item count, keeps an appended item from moving earlier spans in its
-/// layer. 32 × 16384 = 2^19 steps: 32 Depth24 levels each, exact in f32.
+/// layer. 32 × 16384 = 2^19 steps, each about 32 Depth24 levels wide, so
+/// adjacent orders stay distinct in f32 and in the depth target.
 pub(super) const UI_BAND_ORDERS: usize = 16384;
 
 /// Where one paint item sits: its whole-frame paint order, and its layer and

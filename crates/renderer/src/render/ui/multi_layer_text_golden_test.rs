@@ -181,8 +181,8 @@ fn make_target(ctx: &GpuCtx) -> (wgpu::Texture, wgpu::TextureView) {
 }
 
 /// The PRODUCTION path: fold both retained layers into ONE `UiComposition` and
-/// encode it ONCE. Single `prepare` for the whole frame, so the lower layer's
-/// text survives.
+/// encode it ONCE. Each layer's text span owns its own retained glyphon buffer,
+/// so the lower layer's text survives.
 fn render_single_composition(ctx: &GpuCtx) -> Readback {
     let format = wgpu::TextureFormat::Rgba8UnormSrgb;
     let mut pass = UiPass::new(&ctx.device, &ctx.queue, format);

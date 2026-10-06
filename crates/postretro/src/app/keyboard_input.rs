@@ -177,6 +177,9 @@ impl App {
                 .dispatch_event(nav_intent)
                 .forwards_to_gameplay()
                 && session.input_focus == InputFocus::Gameplay
+                // An OS key repeat is not a press: a key held through a
+                // capturing menu must stay inert until pressed again (P24).
+                && !(pressed && key_event.repeat)
             {
                 // Only Gameplay forwards keys to the action system. When
                 // the debug panel (or future menu) owns focus, WASD must

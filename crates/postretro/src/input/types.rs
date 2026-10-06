@@ -126,6 +126,58 @@ pub enum PhysicalInput {
     GamepadAxis(GilrsAxis),
 }
 
+/// How a binding resolves its input's press and release into command phases.
+/// Authors set it per binding; players rebind keys only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+// Release and Tap reach production bindings through the manifest input block.
+#[cfg_attr(not(test), allow(dead_code))]
+pub enum ActivatorKind {
+    /// Fires on the press edge; the command stays down while the input is held.
+    #[default]
+    Press,
+    /// Fires on key-up.
+    Release,
+    /// Fires on key-up when the input was held no longer than the threshold.
+    Tap,
+    /// Fires once the threshold elapses with the input still down; the command
+    /// stays down until release.
+    Hold,
+}
+
+/// Threshold a binding uses when its author sets none: a tap's max or a hold's
+/// min, in seconds, before `hold_timing_scale`.
+pub const DEFAULT_ACTIVATOR_THRESHOLD: f32 = 0.2;
+
+/// A binding's activator kind and threshold. The threshold is a tap's max or a
+/// hold's min in seconds; `press` and `release` ignore it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Activator {
+    pub kind: ActivatorKind,
+    pub threshold: f32,
+}
+
+impl Activator {
+    pub const PRESS: Self = Self::new(ActivatorKind::Press);
+
+    pub const fn new(kind: ActivatorKind) -> Self {
+        Self {
+            kind,
+            threshold: DEFAULT_ACTIVATOR_THRESHOLD,
+        }
+    }
+
+    #[allow(dead_code)]
+    pub const fn with_threshold(kind: ActivatorKind, threshold: f32) -> Self {
+        Self { kind, threshold }
+    }
+}
+
+impl Default for Activator {
+    fn default() -> Self {
+        Self::PRESS
+    }
+}
+
 /// Maps a physical input to a logical action, with an optional scale factor.
 /// Scale factor is used for axis direction: e.g., KeyS maps to MoveForward with scale -1.0.
 #[derive(Debug, Clone, Copy)]
@@ -135,6 +187,8 @@ pub struct Binding {
     /// Scale factor applied to the input value. Defaults to 1.0.
     /// For keyboard axis bindings, the key produces 1.0 * scale when pressed.
     pub scale: f32,
+    /// When the bound input drives the command. Defaults to `press`.
+    pub activator: Activator,
 }
 
 impl Binding {
@@ -143,6 +197,7 @@ impl Binding {
             input,
             action,
             scale: 1.0,
+            activator: Activator::PRESS,
         }
     }
 
@@ -151,7 +206,14 @@ impl Binding {
             input,
             action,
             scale,
+            activator: Activator::PRESS,
         }
+    }
+
+    #[allow(dead_code)]
+    pub fn with_activator(mut self, activator: Activator) -> Self {
+        self.activator = activator;
+        self
     }
 }
 

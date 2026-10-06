@@ -16,21 +16,30 @@ struct AxisAccumulator {
     velocity: f32,
 }
 
-/// Resolves bindings against current physical input state to produce action values.
+/// Resolves bindings against current binding activity to produce action values.
+/// `binding_active` is aligned with `bindings`: whether each binding's
+/// activator holds its command down this frame.
 ///
-/// Button resolution: logical OR across all bindings for an action.
+/// Button resolution: logical OR across all bindings for an action. A command
+/// that `went_down` this frame reads Pressed even when its activator already
+/// released it (a tap resolves press and release in one resolution).
 /// Axis resolution: highest-magnitude wins within the same source type;
 /// displacement and velocity sources are additive for look axes.
 pub(crate) fn resolve_button_state(
     action: Action,
     bindings: &[Binding],
-    key_state: &HashMap<PhysicalInput, bool>,
+    binding_active: &[bool],
     prev_button_states: &HashMap<Action, ButtonState>,
+    went_down: bool,
 ) -> ButtonState {
+    if went_down {
+        return ButtonState::Pressed;
+    }
     // OR across all bindings: if any bound input is active, the action is active.
     let any_active = bindings
         .iter()
-        .any(|b| b.action == action && *key_state.get(&b.input).unwrap_or(&false));
+        .zip(binding_active)
+        .any(|(b, &active)| b.action == action && active);
 
     let prev = prev_button_states
         .get(&action)
@@ -48,20 +57,25 @@ pub(crate) fn resolve_button_state(
 pub(crate) fn resolve_axis_values(
     action: Action,
     bindings: &[Binding],
-    key_state: &HashMap<PhysicalInput, bool>,
+    binding_active: &[bool],
     mouse_axes: &HashMap<Action, f32>,
     gamepad_axes: &HashMap<GilrsAxis, f32>,
 ) -> Vec<AxisValue> {
     let mut acc = AxisAccumulator::default();
 
     // Keyboard and gamepad axis contributions resolved through bindings.
-    for binding in bindings.iter().filter(|b| b.action == action) {
+    for (binding, &active) in bindings
+        .iter()
+        .zip(binding_active)
+        .filter(|(b, _)| b.action == action)
+    {
         match binding.input {
             PhysicalInput::Key(_)
             | PhysicalInput::MouseButton(_)
             | PhysicalInput::MouseWheelUp
-            | PhysicalInput::MouseWheelDown => {
-                let active = *key_state.get(&binding.input).unwrap_or(&false);
+            | PhysicalInput::MouseWheelDown
+            | PhysicalInput::GamepadButton(_) => {
+                // D-pad buttons can act as axis inputs (e.g., DPadUp → MoveUp +1).
                 if active {
                     let value = binding.scale; // key produces 1.0 * scale
                     if value.abs() > acc.velocity.abs() {
@@ -73,18 +87,6 @@ pub(crate) fn resolve_axis_values(
                 // Resolve gamepad axis through binding: raw value * scale.
                 if let Some(&raw_val) = gamepad_axes.get(&axis) {
                     let value = raw_val * binding.scale;
-                    if value.abs() > acc.velocity.abs() {
-                        acc.velocity = value;
-                    }
-                }
-            }
-            PhysicalInput::GamepadButton(button) => {
-                // D-pad buttons can act as axis inputs (e.g., DPadUp → MoveUp +1).
-                let active = *key_state
-                    .get(&PhysicalInput::GamepadButton(button))
-                    .unwrap_or(&false);
-                if active {
-                    let value = binding.scale;
                     if value.abs() > acc.velocity.abs() {
                         acc.velocity = value;
                     }
@@ -119,6 +121,14 @@ mod tests {
     use super::*;
     use winit::keyboard::KeyCode;
 
+    /// Binding activity for plain `press` bindings: active while the key is down.
+    fn activity(bindings: &[Binding], key_state: &HashMap<PhysicalInput, bool>) -> Vec<bool> {
+        bindings
+            .iter()
+            .map(|b| *key_state.get(&b.input).unwrap_or(&false))
+            .collect()
+    }
+
     fn key_binding(key: KeyCode, action: Action) -> Binding {
         Binding::new(PhysicalInput::Key(key), action)
     }
@@ -139,7 +149,13 @@ mod tests {
         key_state.insert(PhysicalInput::Key(KeyCode::Space), false);
         key_state.insert(PhysicalInput::Key(KeyCode::KeyC), true);
 
-        let state = resolve_button_state(Action::Jump, &bindings, &key_state, &HashMap::new());
+        let state = resolve_button_state(
+            Action::Jump,
+            &bindings,
+            &activity(&bindings, &key_state),
+            &HashMap::new(),
+            false,
+        );
         assert_eq!(state, ButtonState::Pressed);
     }
 
@@ -149,7 +165,13 @@ mod tests {
         let mut key_state = HashMap::new();
         key_state.insert(PhysicalInput::Key(KeyCode::Space), false);
 
-        let state = resolve_button_state(Action::Jump, &bindings, &key_state, &HashMap::new());
+        let state = resolve_button_state(
+            Action::Jump,
+            &bindings,
+            &activity(&bindings, &key_state),
+            &HashMap::new(),
+            false,
+        );
         assert_eq!(state, ButtonState::Inactive);
     }
 
@@ -162,23 +184,47 @@ mod tests {
 
         // Frame 1: press
         key_state.insert(PhysicalInput::Key(KeyCode::Space), true);
-        let state = resolve_button_state(Action::Jump, &bindings, &key_state, &prev);
+        let state = resolve_button_state(
+            Action::Jump,
+            &bindings,
+            &activity(&bindings, &key_state),
+            &prev,
+            false,
+        );
         assert_eq!(state, ButtonState::Pressed);
         prev.insert(Action::Jump, state);
 
         // Frame 2: hold
-        let state = resolve_button_state(Action::Jump, &bindings, &key_state, &prev);
+        let state = resolve_button_state(
+            Action::Jump,
+            &bindings,
+            &activity(&bindings, &key_state),
+            &prev,
+            false,
+        );
         assert_eq!(state, ButtonState::Held);
         prev.insert(Action::Jump, state);
 
         // Frame 3: release
         key_state.insert(PhysicalInput::Key(KeyCode::Space), false);
-        let state = resolve_button_state(Action::Jump, &bindings, &key_state, &prev);
+        let state = resolve_button_state(
+            Action::Jump,
+            &bindings,
+            &activity(&bindings, &key_state),
+            &prev,
+            false,
+        );
         assert_eq!(state, ButtonState::Released);
         prev.insert(Action::Jump, state);
 
         // Frame 4: inactive
-        let state = resolve_button_state(Action::Jump, &bindings, &key_state, &prev);
+        let state = resolve_button_state(
+            Action::Jump,
+            &bindings,
+            &activity(&bindings, &key_state),
+            &prev,
+            false,
+        );
         assert_eq!(state, ButtonState::Inactive);
     }
 
@@ -197,7 +243,7 @@ mod tests {
         let values = resolve_axis_values(
             Action::MoveForward,
             &bindings,
-            &key_state,
+            &activity(&bindings, &key_state),
             &HashMap::new(),
             &HashMap::new(),
         );
@@ -221,7 +267,7 @@ mod tests {
         let values = resolve_axis_values(
             Action::MoveForward,
             &bindings,
-            &key_state,
+            &activity(&bindings, &key_state),
             &HashMap::new(),
             &HashMap::new(),
         );
@@ -242,7 +288,7 @@ mod tests {
         let values = resolve_axis_values(
             Action::LookYaw,
             &bindings,
-            &key_state,
+            &activity(&bindings, &key_state),
             &mouse_axes,
             &HashMap::new(),
         );
@@ -268,7 +314,7 @@ mod tests {
         let values = resolve_axis_values(
             Action::MoveForward,
             &bindings,
-            &key_state,
+            &activity(&bindings, &key_state),
             &HashMap::new(),
             &HashMap::new(),
         );
@@ -296,7 +342,7 @@ mod tests {
         let values = resolve_axis_values(
             Action::MoveForward,
             &bindings,
-            &key_state,
+            &activity(&bindings, &key_state),
             &HashMap::new(),
             &gamepad_axes,
         );
@@ -323,7 +369,7 @@ mod tests {
         let values = resolve_axis_values(
             Action::MoveForward,
             &bindings,
-            &key_state,
+            &activity(&bindings, &key_state),
             &HashMap::new(),
             &gamepad_axes,
         );

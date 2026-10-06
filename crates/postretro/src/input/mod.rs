@@ -2,6 +2,9 @@
 // See: context/lib/input.md
 
 mod activation;
+mod activator;
+#[cfg(test)]
+mod activator_tests;
 mod bindings;
 pub use activation::ActivationInputCapture;
 pub mod cursor;
@@ -32,6 +35,8 @@ pub(crate) use scroll::wheel_diagnostics_enabled;
 pub use snapshot::ActionSnapshot;
 pub use system::{DEFAULT_MOUSE_SENSITIVITY, InputSystem};
 pub use types::{Action, ButtonState};
+#[allow(unused_imports)]
+pub use types::{Activator, ActivatorKind, DEFAULT_ACTIVATOR_THRESHOLD};
 // Outside `input/`, only tests name the binding vocabulary today.
 #[cfg(test)]
 pub use types::{AxisSource, Binding, PhysicalInput};

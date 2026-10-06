@@ -3,8 +3,8 @@ use std::time::{Duration, Instant};
 use winit::event::{MouseButton, MouseScrollDelta};
 use winit::keyboard::KeyCode;
 
-use super::*;
 use super::scroll::{LINE_SCROLL_GESTURE_REPEAT, wheel_diagnostics_enabled_from};
+use super::*;
 
 /// Returns the default keyboard/mouse bindings for use in tests.
 fn test_bindings() -> Vec<Binding> {

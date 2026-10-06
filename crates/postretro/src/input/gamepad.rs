@@ -32,6 +32,25 @@ pub struct GamepadNavOutput {
     pub directional_released: bool,
 }
 
+/// Digital buttons polled each frame. The analog triggers are not here: they
+/// become buttons through `TRIGGER_BUTTON_THRESHOLD`, not gilrs's own threshold.
+const BUTTONS: &[Button] = &[
+    Button::South,        // A / Cross
+    Button::East,         // B / Circle
+    Button::West,         // X / Square
+    Button::North,        // Y / Triangle
+    Button::LeftTrigger,  // LB / L1
+    Button::RightTrigger, // RB / R1
+    Button::Select,
+    Button::Start,
+    Button::LeftThumb,  // L3
+    Button::RightThumb, // R3
+    Button::DPadUp,
+    Button::DPadDown,
+    Button::DPadLeft,
+    Button::DPadRight,
+];
+
 /// Dead zone radius for both sticks. Standard value across most controllers.
 const DEAD_ZONE: f32 = 0.15;
 
@@ -141,19 +160,37 @@ impl GamepadSystem {
         // intent per press, repeats handled by the focus engine's timer (Task 3).
         // A `ButtonReleased(South)` surfaces the confirm-release edge so a held
         // `repeatOnHold` button stops re-firing (M13 Text-Entry, Task 2).
-        while let Some(Event { id, event, .. }) = self.gilrs.next_event() {
+        let received_at = std::time::SystemTime::now();
+        while let Some(Event {
+            id, event, time, ..
+        }) = self.gilrs.next_event()
+        {
             // Any input event from a gamepad makes it the active one.
             if is_user_input(&event) {
                 self.active_gamepad = Some(id);
             }
+            // Button events are the gameplay edge source too, so a press and
+            // release between two polls still resolve (P1). The poll below
+            // reconciles the level and adds no edge when it agrees.
+            let age = received_at
+                .duration_since(time)
+                .map_or(0.0, |age| age.as_secs_f64());
             match event {
                 EventType::ButtonPressed(button, _) => {
                     if let Some(intent) = nav_intent_for_gamepad_button(button) {
                         out.nav_intents.push(intent);
                     }
+                    if BUTTONS.contains(&button) {
+                        input_system.handle_gamepad_button_event(button, true, age);
+                    }
                 }
-                EventType::ButtonReleased(Button::South, _) => {
-                    out.confirm_released = true;
+                EventType::ButtonReleased(button, _) => {
+                    if button == Button::South {
+                        out.confirm_released = true;
+                    }
+                    if BUTTONS.contains(&button) {
+                        input_system.handle_gamepad_button_event(button, false, age);
+                    }
                 }
                 _ => {}
             }
@@ -220,23 +257,6 @@ impl GamepadSystem {
         );
 
         // Read digital buttons.
-        const BUTTONS: &[Button] = &[
-            Button::South,        // A / Cross
-            Button::East,         // B / Circle
-            Button::West,         // X / Square
-            Button::North,        // Y / Triangle
-            Button::LeftTrigger,  // LB / L1
-            Button::RightTrigger, // RB / R1
-            Button::Select,
-            Button::Start,
-            Button::LeftThumb,  // L3
-            Button::RightThumb, // R3
-            Button::DPadUp,
-            Button::DPadDown,
-            Button::DPadLeft,
-            Button::DPadRight,
-        ];
-
         for &button in BUTTONS {
             let pressed = gamepad.is_pressed(button);
             input_system.set_physical_input(PhysicalInput::GamepadButton(button), pressed);

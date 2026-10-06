@@ -8,6 +8,7 @@ use gilrs::Axis as GilrsAxis;
 use winit::event::{MouseButton, MouseScrollDelta};
 use winit::keyboard::KeyCode;
 
+use super::activator::ActivatorResolver;
 use super::bindings;
 use super::look::LookInputs;
 use super::scroll::{
@@ -16,6 +17,25 @@ use super::scroll::{
 };
 use super::snapshot::ActionSnapshot;
 use super::types::{Action, AxisSource, Binding, ButtonState, PhysicalInput};
+
+/// Where an input edge came from. Event edges are authoritative fresh presses;
+/// level edges are inferred from a poll and respect activator suppression.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EdgeSource {
+    Event,
+    Level,
+}
+
+/// One timestamped input edge, buffered until the next snapshot resolves it,
+/// so a press and release between two frames still resolve in order (P1).
+#[derive(Debug, Clone, Copy)]
+struct InputEdge {
+    input: PhysicalInput,
+    down: bool,
+    /// Seconds since the input system's epoch.
+    t: f64,
+    source: EdgeSource,
+}
 
 /// Default sensitivity: radians per raw mouse unit. Tuned for 800 DPI mice.
 pub const DEFAULT_MOUSE_SENSITIVITY: f32 = 0.002;
@@ -32,6 +52,22 @@ pub struct InputSystem {
 
     /// Current pressed/released state of each physical input (true = active).
     physical_state: HashMap<PhysicalInput, bool>,
+
+    /// Edges since the last snapshot, resolved through activators in time order.
+    pending_edges: Vec<InputEdge>,
+
+    /// Activator resolution: per-binding down levels and per-command edges.
+    resolver: ActivatorResolver,
+
+    /// Per-binding activity for the current frame, aligned with `bindings`.
+    /// Reused across frames so the snapshot path does not reallocate it.
+    binding_active: Vec<bool>,
+
+    /// Time origin for edge timestamps.
+    epoch: Instant,
+
+    /// Multiplier on every activator threshold, captured per press.
+    hold_timing_scale: f32,
 
     /// Button states from the previous snapshot, used for state machine transitions.
     /// Pre-sized in `new()` to the button-action count so the per-frame
@@ -80,11 +116,19 @@ impl InputSystem {
         // Pre-size `prev_button_states` to the count of button-type actions so
         // the first-frame `extend` fits without reallocation.
         let button_action_count = unique_actions.iter().filter(|a| !a.is_axis()).count();
+        let mut resolver = ActivatorResolver::default();
+        resolver.reset_for(bindings.len());
+        let binding_active = vec![false; bindings.len()];
 
         Self {
             bindings,
             unique_actions,
             physical_state: HashMap::new(),
+            pending_edges: Vec::new(),
+            resolver,
+            binding_active,
+            epoch: Instant::now(),
+            hold_timing_scale: 1.0,
             prev_button_states: HashMap::with_capacity(button_action_count),
             mouse_delta: (0.0, 0.0),
             mouse_axes: HashMap::new(),
@@ -122,6 +166,37 @@ impl InputSystem {
         };
     }
 
+    /// Set the multiplier on activator thresholds. A press already down keeps
+    /// the scale it started with.
+    #[allow(dead_code)]
+    pub fn set_hold_timing_scale(&mut self, scale: f32) {
+        self.hold_timing_scale = if scale.is_finite() && scale > 0.0 {
+            scale
+        } else {
+            1.0
+        };
+    }
+
+    /// Seconds since this input system's epoch: the timebase for edges.
+    pub(crate) fn now(&self) -> f64 {
+        self.epoch.elapsed().as_secs_f64()
+    }
+
+    /// Record a physical level change as a timestamped edge. Unchanged levels
+    /// (an OS key repeat, a re-polled held button) produce no edge.
+    fn record_edge(&mut self, input: PhysicalInput, down: bool, t: f64, source: EdgeSource) {
+        let was_down = self.physical_state.get(&input).copied().unwrap_or(false);
+        self.physical_state.insert(input, down);
+        if was_down != down {
+            self.pending_edges.push(InputEdge {
+                input,
+                down,
+                t,
+                source,
+            });
+        }
+    }
+
     /// Whether invert-Y is currently enabled.
     #[allow(dead_code)]
     pub fn invert_y(&self) -> bool {
@@ -130,7 +205,12 @@ impl InputSystem {
 
     /// Process a winit keyboard event.
     pub fn handle_keyboard_event(&mut self, key: KeyCode, pressed: bool) {
-        self.physical_state.insert(PhysicalInput::Key(key), pressed);
+        let t = self.now();
+        self.handle_keyboard_event_at(key, pressed, t);
+    }
+
+    pub(crate) fn handle_keyboard_event_at(&mut self, key: KeyCode, pressed: bool, t: f64) {
+        self.record_edge(PhysicalInput::Key(key), pressed, t, EdgeSource::Event);
     }
 
     /// Accumulate mouse delta. Called for each DeviceEvent::MouseMotion.
@@ -141,8 +221,13 @@ impl InputSystem {
 
     /// Process a mouse button event.
     pub fn handle_mouse_button(&mut self, button: MouseButton, pressed: bool) {
-        self.physical_state
-            .insert(PhysicalInput::MouseButton(button), pressed);
+        let t = self.now();
+        self.record_edge(
+            PhysicalInput::MouseButton(button),
+            pressed,
+            t,
+            EdgeSource::Event,
+        );
     }
 
     /// Normalize a winit wheel event into explicit per-frame notches. Wheel
@@ -210,11 +295,40 @@ impl InputSystem {
 
     /// Set the state of a physical input directly. Used by GamepadSystem for buttons.
     pub fn set_physical_input(&mut self, input: PhysicalInput, active: bool) {
-        self.physical_state.insert(input, active);
+        let t = self.now();
+        self.set_physical_input_at(input, active, t);
+    }
+
+    pub(crate) fn set_physical_input_at(&mut self, input: PhysicalInput, active: bool, t: f64) {
+        self.record_edge(input, active, t, EdgeSource::Level);
+    }
+
+    /// A gamepad button event from the event stream, `age` seconds old. Event
+    /// edges keep a press and release between two polls (P1); the per-frame
+    /// poll through `set_physical_input` then reconciles the level.
+    pub fn handle_gamepad_button_event(&mut self, button: gilrs::Button, pressed: bool, age: f64) {
+        let t = (self.now() - age.max(0.0)).max(0.0);
+        self.record_edge(
+            PhysicalInput::GamepadButton(button),
+            pressed,
+            t,
+            EdgeSource::Event,
+        );
     }
 
     /// Clear all physical input state. Useful when window loses focus.
+    ///
+    /// Cancels every pending activator resolution: neither binding of a pending
+    /// tap/hold pair fires, and an input held through the clear does nothing
+    /// until it is pressed again.
     pub fn clear_all(&mut self) {
+        let now = self.now();
+        self.clear_all_at(now);
+    }
+
+    pub(crate) fn clear_all_at(&mut self, now: f64) {
+        self.resolve_pending_edges(now);
+        self.resolver.cancel_all(&self.bindings);
         self.physical_state.clear();
         self.mouse_delta = (0.0, 0.0);
         self.mouse_axes.clear();
@@ -226,6 +340,54 @@ impl InputSystem {
     /// Resolve all bindings and produce the action snapshot for this frame.
     /// Advances button state machines and resets per-frame accumulators.
     pub fn snapshot(&mut self) -> ActionSnapshot {
+        let now = self.now();
+        self.snapshot_at(now)
+    }
+
+    /// Feed buffered edges to the activator resolver in time order, then fire
+    /// every hold whose min elapsed by `now`.
+    fn resolve_pending_edges(&mut self, now: f64) {
+        self.pending_edges.sort_by(|a, b| a.t.total_cmp(&b.t));
+        for edge in self.pending_edges.drain(..) {
+            match edge.source {
+                EdgeSource::Event => self.resolver.event_edge(
+                    &self.bindings,
+                    edge.input,
+                    edge.down,
+                    edge.t,
+                    self.hold_timing_scale,
+                ),
+                EdgeSource::Level => self.resolver.level_edge(
+                    &self.bindings,
+                    edge.input,
+                    edge.down,
+                    edge.t,
+                    self.hold_timing_scale,
+                ),
+            }
+        }
+        self.resolver.advance(&self.bindings, now);
+    }
+
+    /// Refresh `binding_active` from the resolver. Wheel inputs are momentary
+    /// and bypass activators: a notch drives its binding for the one frame.
+    fn refresh_binding_activity(&mut self) {
+        for (index, binding) in self.bindings.iter().enumerate() {
+            self.binding_active[index] = match binding.input {
+                PhysicalInput::MouseWheelUp | PhysicalInput::MouseWheelDown => self
+                    .physical_state
+                    .get(&binding.input)
+                    .copied()
+                    .unwrap_or(false),
+                _ => self.resolver.binding_down(index),
+            };
+        }
+    }
+
+    pub(crate) fn snapshot_at(&mut self, now: f64) -> ActionSnapshot {
+        self.resolve_pending_edges(now);
+        self.refresh_binding_activity();
+
         // Convert accumulated mouse delta into axis values for bound actions.
         self.resolve_mouse_axes();
 
@@ -238,7 +400,7 @@ impl InputSystem {
                 let values = bindings::resolve_axis_values(
                     action,
                     &self.bindings,
-                    &self.physical_state,
+                    &self.binding_active,
                     &self.mouse_axes,
                     &self.gamepad_axes,
                 );
@@ -249,8 +411,9 @@ impl InputSystem {
                 let state = bindings::resolve_button_state(
                     action,
                     &self.bindings,
-                    &self.physical_state,
+                    &self.binding_active,
                     &self.prev_button_states,
+                    self.resolver.command_went_down(action),
                 );
                 button_states.insert(action, state);
                 let count = self
@@ -274,6 +437,7 @@ impl InputSystem {
             .extend(button_states.iter().map(|(&k, &v)| (k, v)));
 
         // Reset per-frame accumulators.
+        self.resolver.take_frame();
         self.mouse_delta = (0.0, 0.0);
         self.mouse_axes.clear();
         self.scroll_notches.clear_frame();
@@ -313,7 +477,7 @@ impl InputSystem {
             let values = bindings::resolve_axis_values(
                 action,
                 &self.bindings,
-                &self.physical_state,
+                &self.binding_active,
                 &self.mouse_axes,
                 &self.gamepad_axes,
             );

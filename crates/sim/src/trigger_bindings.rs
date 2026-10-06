@@ -2889,8 +2889,8 @@ mod tests {
     }
 
     // A reaction whose only content is an `onComplete`-style hop must still bind,
-    // and firing the trigger must reach the chained reaction through the real
-    // residual drain. Two shapes carry nothing but hops: a sequence of one `fire`
+    // and firing the trigger must reach the chained reaction through the
+    // dispatch entry points the app's residual drain uses. Two shapes carry nothing but hops: a sequence of one `fire`
     // step, and a consequential primitive that fails to bind but names an
     // `onComplete`.
     #[test]
@@ -2921,7 +2921,10 @@ mod tests {
             serde_json::json!({ "slot": "no.such.slot", "value": 1 }),
             Some("target"),
         );
-        for relay in [fire_only, rejected_with_hop] {
+        for (shape, relay) in [
+            ("fire-only sequence", fire_only),
+            ("rejected primitive with onComplete", rejected_with_hop),
+        ] {
             let mut registry = EntityRegistry::new();
             let trigger = spawn_trigger(&mut registry, "relay");
             let mut data = DataRegistry::new();
@@ -2943,10 +2946,14 @@ mod tests {
             let table = TriggerBindingTable::build(&registry, &data, &writable_slots());
             let binding = table
                 .binding(trigger, TriggerEventEdge::Enter)
-                .expect("a hop-only reaction still binds its edge");
-            assert!(binding.commands.is_empty());
+                .unwrap_or_else(|| panic!("{shape}: a hop-only reaction still binds its edge"));
+            assert!(binding.commands.is_empty(), "{shape}: no direct commands");
             let residual = table
-                .residual(binding.residual.expect("hop survives as residual"))
+                .residual(
+                    binding
+                        .residual
+                        .unwrap_or_else(|| panic!("{shape}: hop survives as residual")),
+                )
                 .unwrap();
 
             let calls = Arc::new(Mutex::new(Vec::new()));
@@ -2972,7 +2979,7 @@ mod tests {
                 &script_ctx,
                 ResidualOrigin::TriggerBinding,
             );
-            assert_eq!(follow_ups, vec!["target".to_string()]);
+            assert_eq!(follow_ups, vec!["target".to_string()], "{shape}: follow-up");
             dispatch_deferred_named_events_with_sequences(
                 follow_ups,
                 &data,
@@ -2981,7 +2988,11 @@ mod tests {
                 &system_registry,
                 &script_ctx,
             );
-            assert_eq!(calls.lock().unwrap().as_slice(), ["target".to_string()]);
+            assert_eq!(
+                calls.lock().unwrap().as_slice(),
+                ["target".to_string()],
+                "{shape}: chained reaction ran"
+            );
         }
     }
 }

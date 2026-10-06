@@ -58,7 +58,7 @@ cargo test -p <crate> <filter>   # add --features dev-tools where the crate has 
 cargo run -p postretro-level-compiler -- <in>.map -o <out>.prl   # compile a level (binary: prl-build)
 ```
 
-Other profiles are deliberate exceptions. `--release` (thin LTO, no incremental: an edit rebuild takes minutes, not seconds) is for distribution, perf validation, and preflight's release check. `--profile dev-debug` drops workspace optimization for stepping through code in a debugger.
+Other profiles are deliberate exceptions. `--release` (thin LTO, no incremental: an edit rebuild takes a minute or more) is for distribution, perf validation, and preflight's release check. `--profile dev-debug` drops workspace optimization for stepping through code in a debugger.
 
 Runtime-only environment variables never trigger a rebuild: `RUST_LOG`, `WGPU_BACKEND`, and the `POSTRETRO_*` diagnostics (§6.4). Distribution builds: `cargo run -p xtask -- dist` and `sdk-dist` (`build_pipeline.md` §Distribution packaging).
 

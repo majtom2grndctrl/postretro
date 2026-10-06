@@ -336,6 +336,8 @@ mod tests {
         data_registry.populate_level(
             vec![NamedReaction {
                 name: "open_door".into(),
+                // Needs real work: the binder leaves a matched reaction with no
+                // commands or steps unbound, so an empty sequence reads unresolved.
                 descriptor: ReactionDescriptor::Sequence(vec![SequenceStep {
                     id: SequenceTarget::FiredTrigger,
                     primitive: "disarmTrigger".into(),

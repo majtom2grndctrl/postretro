@@ -154,6 +154,29 @@ Grounded by read-only research at c495e49ea, then decided by the owner.
   - The two-entity pool gotcha is documented in the FGD.
   - Doc amendments now cover `audio.md` §1/§6 and `entity_model.md`'s particle step rate.
 
+## Ordering pins
+
+Added by `/review-brief` (2026-10-05). Each row is cited by an Acceptance row. P10 is reserved for the owner's ruling on the fluid-jump re-entry case.
+
+| id | scenario | ordering | expected outcome |
+|---|---|---|---|
+| P1 | A body starts tick N inside a gravity volume and the substrate carries it out during tick N | Environment resolves once, at the tick-start position, before the state intent runs | Tick N integrates the volume's gravity; tick N+1 integrates level gravity |
+| P2 | A particle's step carries it across a gravity-volume boundary | Position integrates first, then gravity resolves at the post-step position for that step's velocity update | The crossing step's velocity update uses the gravity of the region the particle ends the step in |
+| P3 | A reconcile's unacked tail contains the tick on which immersion first reaches `enterDepth`, and the acked baseline is `Normal` | Wire merge restores `Normal`; each replayed tick resolves environment at its own replayed position | The replay re-enters swim on the same tick forward prediction did; the reconciled pose equals the forward-predicted pose |
+| P4 | The acked baseline is `Swim` and the unacked tail exits swim and then enters a low-gravity volume | Wire merge restores `Swim`; each replayed tick resolves environment at its replayed position | The replay exits swim and applies the volume's gravity on the same ticks forward prediction did; no correction |
+| P5 | Swimming, jump pressed; the presented camera eye is above the surface while the tick eye is below it, or the reverse | "Eye outside" for the fluid jump comes from the tick-start resolve (position plus capsule eye height), never from the camera eye | Host and client agree on whether the jump boosts; the camera eye drives only tint and muffle |
+| P6 | A hitscan ray enters a pool from above and its blocking hit is the floor the pool's bottom face is buried in | The exit crossing at the buried bottom face coincides with the blocking hit | Exactly one splash, at the top surface; a buried face never splashes |
+| P7 | A hitscan ray crosses the shared face between two brushes of one fluid entity | Crossings are measured against the union of the entity's brushes | No splash at the shared face; one at entry, one at exit if the ray leaves before its blocking hit |
+| P8 | Level install, and level B installed after level A | The environment volumes and their BVH are built before the level parity digest is published and before the first game tick | No tick resolves against an empty or stale volume set; after B installs, none of A's volumes resolve |
+| P9 | A level whose EnvironmentVolumes section has zero volumes | The BVH builds over zero leaves | Every point, capsule and ray query returns the level default and no fluid; no splash |
+| P10 | A fluid jump on tick N leaves swim while the capsule is still immersed at or above `enterDepth` on tick N+1 | Awaits an owner ruling | Awaits an owner ruling |
+
+## Research pins
+
+| fact | pinned by |
+|---|---|
+| Billboard direct scatter (group 3 binding 17) is VERTEX-only and must stay so, because forward's fragment sampled-texture inventory is full. A per-fragment water pass takes baked direct from direct SH (binding 15), as the kinematic-brush shader does, not from smoke's scatter path. | `crates/renderer/src/render/tests/pipeline_budget_tests.rs` — `billboard_pipeline_vertex_sampled_texture_budget_includes_scatter_only_in_vertex_stage`; `crates/renderer/src/shaders/kinematic_brush.wgsl` — `sample_sh_direct` |
+
 ## Bake versus load-time build
 
 The trade-off for the volume BVH is between building it at level load and baking it into PRL.

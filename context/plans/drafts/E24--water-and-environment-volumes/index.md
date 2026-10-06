@@ -156,39 +156,61 @@ swim: {
 ## Acceptance
 ### Automated
 **Queries and resolution**
-- [ ] A point strictly inside, exactly on a face, and just outside a convex volume reports inside, inside, outside. A query whose mask excludes fluid never reports a fluid volume.
+- [ ] A point strictly inside, exactly on a face, and just outside a convex volume reports inside, inside, outside. A query whose mask excludes fluid never reports a fluid volume: a point inside a fluid volume queried with a gravity-only mask reports no fluid, and the same point under a fluid mask reports the fluid. This is a behavior test, not a grep gate.
 - [ ] A pool with no gravity, inside a lower-priority room volume with low gravity: a point in both resolves the pool's fluid and the room's gravity. Two equal-priority volumes setting gravity resolve to the smaller one, whichever comes first in map order. Two identical equal-priority volumes resolve to the earlier one in map order. A point in no volume resolves level defaults.
+- [ ] A large volume with higher priority beats a smaller overlapping volume with lower priority for the field both set.
+- [ ] An entity of two brushes whose summed volume exceeds one equal-priority single-brush entity loses to it, even where each of its brushes is smaller.
+- [ ] A level with zero volumes builds an empty BVH, and every point, capsule and ray query on it returns level defaults, no fluid and no crossing (`research.md` P9).
 - [ ] Over a seeded random set of overlapping and nested volumes, every point, capsule and ray query through the BVH returns the same result as a brute-force scan of all leaves. This includes queries on leaf faces and at shared AABB boundaries.
 - [ ] Immersion reads 0 with feet at the fluid top, 1 with the head below it, and a proportional value between. In a fluid block floating in mid-air, a capsule poking out the bottom reads the contained fraction only. A capsule wading below its body point, feet in a shallow pool, resolves the pool's fluid. A capsule spanning two fluids resolves the winner of the overlap rule, and its immersion counts only the winner's brushes.
+- [ ] A capsule whose side overlaps a fluid while its vertical segment does not resolves dry.
+- [ ] The environment volumes and their BVH are built before the level parity digest is set and before the first game tick, and installing a second level leaves none of the first level's volumes resolvable (`research.md` P8).
 **Compiler**
 - [ ] Gravity pointing sideways, pointing up, or tilted fails the build and names the entity. Zero and straight-down gravity compile.
 - [ ] A fluid volume or a gravity volume spanning a doorway leaves the cell count, portal count, static collision triangles and navmesh identical to the same map without it.
+- [ ] Every PRL section other than EnvironmentVolumes and SH, lightmap and SDF included, is byte-identical to the map without the volume, and the EnvironmentVolumes section carries that volume's record.
 - [ ] A fluid brush face flush against solid world, and a face shared by two brushes of one fluid entity, emit no surface. Every other face of the brush does.
-- [ ] On the host, a `fluid_volume` naming an undeclared fluid loads as dry and warns, naming the volume and the fluid. A `fluid_volume` with a blank `fluid`, or a `gravity_volume` with a blank `gravity`, fails the build and names the entity.
+- [ ] A `fluid_volume` with a blank `fluid`, or a `gravity_volume` with a blank `gravity`, fails the build and names the entity.
 **Movement**
 - [ ] Wading in until immersion passes `enterDepth` enters swim. Rising until it falls below `exitDepth` leaves it. Bobbing between the two thresholds never toggles state. Immersion exactly at `enterDepth` enters.
+- [ ] Immersion exactly at `exitDepth` stays in swim.
+- [ ] Two fluids differing only in viscosity: a swimmer with no input loses speed faster in the more viscous one. Wading below `enterDepth`, the same two fluids leave walking speed identical.
 - [ ] Swimming with the eye above the surface in open water, far from any solid, jump sets upward velocity to `fluidJumpVelocity` and leaves swim. Fully submerged, jump gives no boost.
+- [ ] The fluid jump's eye test uses the tick eye from the resolve, never the camera eye. With view feel moving the camera eye across the surface while the tick eye stays below it, jump gives no boost (`research.md` P5).
 - [ ] Swimming down out of the bottom of a floating fluid block leaves swim, and level gravity takes over.
+- [ ] Jumping up into the bottom of a floating fluid block enters swim once immersion reaches `enterDepth`.
 - [ ] In a volume with low gravity the player falls at that gravity. With zero gravity, vertical velocity holds. On the first tick after leaving the volume, level gravity applies. An AI agent in the same volume falls at the volume's gravity.
+- [ ] On the tick the player crosses out of a gravity volume, it still integrates the volume's gravity; on the next tick it integrates level gravity (`research.md` P1). The same holds for an AI agent.
 - [ ] A particle inside a low-gravity volume accelerates at that volume's gravity times its buoyancy. On the particle step it drifts out, it takes level gravity. A zero-buoyancy particle floats in every volume.
+- [ ] On the step a particle's position crosses a volume boundary, that step's velocity update uses the gravity at its post-step position (`research.md` P2).
 - [ ] `worldSetGravity` changes gravity outside volumes and leaves a gravity-setting volume's value in force inside it. A map with only `initialGravity` behaves as before. A PRL built before this change fails to load with a recompile message.
+- [ ] Two `worldSetGravity` calls on one tick leave the later value in force, and a gravity-setting volume's value holds inside it throughout.
 **Co-op**
 - [ ] In the predict/reconcile harness, a client crossing into a fluid and into a low-gravity volume produces zero reconciliation corrections, including when a correction's replay window spans both crossings.
+- [ ] The harness also covers a reconcile whose acked baseline is `Swim` and whose replay exits swim, and one whose acked baseline is `Normal` and whose replay enters swim; both reconcile with no correction (`research.md` P3, P4).
 - [ ] Changing a volume's shape, priority, gravity or fluid name changes the level content digest. Changing the level default gravity, or a fluid's sounds, tint or opacity, does not.
+- [ ] Swapping the map order of two volumes changes the digest. Changing a surface face's texture or UV does not. The digest binds every field of the volume record and names the surface faces and the header's default gravity as its skips. The "does not" half on fluid sounds, tint and opacity needs no test: those fields never reach the function.
 - [ ] A client joining a host whose level gravity differs from the client's, by `initialGravity` or by a script change before the join, predicts with the host's value and has zero reconciliation corrections.
 - [ ] A client whose manifest declares different `water` numbers predicts with the host's values. A client whose manifest lacks `water`, or declares its fluids in a different order, still predicts swim with the host's fluid and has zero corrections.
+- [ ] A volume naming a fluid the host lacks is dry on the client too, even when the client's own manifest declares that fluid.
+- [ ] On the host, a `fluid_volume` naming an undeclared fluid loads as dry and warns, naming the volume and the fluid.
+- [ ] Adding, removing, reordering or retuning a fluid declaration leaves the mod compatibility digest unchanged, so a client whose fluids differ from the host's stays participating.
 **Presentation and surface**
 - [ ] A hitscan ray from air into a fluid emits exactly one splash, at the crossing. A ray from inside a fluid out through a face emits one. A ray through a floating block emits two. A ray blocked before reaching a fluid face emits none. A ray that never crosses one emits none.
+- [ ] A ray that enters a pool and stops on the floor beneath it emits exactly one splash, at the top (`research.md` P6). A ray through a pool built from two brushes of one entity emits no splash at their shared face (`research.md` P7). Each splash reports the crossing point, the crossed face's outward normal and the fluid.
+- [ ] With a mod's script-set screen tint active, entering a fluid composes the fluid tint over it, and leaving the fluid restores the mod's tint unchanged. A script write to `screen.*` while the eye is in a fluid takes effect and does not clear the fluid tint. With the eye in a fluid, every `screen.*` slot keeps the value the mod last wrote.
+- [ ] Two grep gates. The projectile flight code makes no environment-resolve call. No FGD key on `fluid_volume` or `gravity_volume` names a `movement.swim` field.
 - [ ] The Scripting surface example runs as a `content/dev` fixture in TypeScript and Luau. A fluid with negative viscosity, or a swim block with `exitDepth` ≥ `enterDepth`, is rejected with a warning naming the field.
+- [ ] The Scripting surface's fluids and swim block land in content/dev's existing manifest and player descriptor, in TypeScript and Luau, and content/dev keeps its mod id.
 ### Manual
-- [ ] Fluid faces read as warped and translucent from inside and outside, a floating block included. They do not z-fight with surrounding geometry. Smoke above a fluid, seen from above, is not dimmed by it, and fog composites over it. Smoke below a fluid surface, seen from above, draws over the water: the accepted draw-order limit, confirmed but not a defect.
+- [ ] Fluid faces read as warped and translucent from inside and outside, a floating block included. They do not z-fight with surrounding geometry. Smoke above a fluid, seen from above, is not dimmed by it, and fog composites over it. Smoke below a fluid surface, seen from above, draws over the water: the accepted draw-order limit, confirmed but not a defect. A dynamic light near a large fluid face lights it smoothly, with no per-vertex faceting, and the surface matches baked lighting on adjacent walls.
 - [ ] The tint and muffle turn on when the eye enters a fluid and off when it leaves, without flicker while treading at the surface.
 - [ ] A swim and fluid-jump playtest: the surface jump feels reliable, and ledges within reach are climbable with it.
 - [ ] A low-gravity room playtest, including a pool and a floating fluid block inside the room.
 - [ ] A co-op client swims and crosses gravity volumes with no visible corrections.
 - [ ] Stress run, measure and report.
   - Fixture: `content/dev/maps/stress-env-volumes.map`, generated by `tools/gen_stress_map.py` before this brief (`research.md` §Stress pre-flight). It has 1,000 fluid and gravity volumes, some overlapping and some floating, plus 64 AI agents, 1 player pawn and 10,000 live particles moving through them. There is one player pawn because no in-process multi-pawn route exists. Per-body cost is linear, and the agents dominate the body count.
-  - Pinned: the fixture, the owner's Mac, a release build with dev-tools, a fixed `--start-pose`, and `POSTRETRO_CPU_TIMING` windows after warmup. Batch headless runs reject CPU timing.
+  - Pinned: the fixture, the owner's Mac, a release build with dev-tools, a fixed `--start-pose`, and `POSTRETRO_CPU_TIMING` windows after warmup. The start pose is the mixed measurement room, `--start-pose=114.60,2.44,-138.99,45,0`. The run's manifest declares both `water` and `sludge`, so no fixture volume loads dry. Batch headless runs reject CPU timing.
   - Metrics: environment-resolution CPU time for bodies per tick, as its own `SimStage`; for particles per frame, as a stage nested in `particle_sim`; hitscan fluid-crossing query time; BVH build time at load.
   - These are per-stage numbers, so they stay readable while the fixture's other costs are high. The pre-flight measured AI at about 7.4 ms per tick and particle sim at about 4.5 ms per frame on this map before any volume does anything (`research.md` §Stress pre-flight). Those costs belong to separate optimization work and do not gate this brief. Baseline: `stress-env-volumes-baseline.map`, the same generated map with zero volumes, measured on the same build.
   - Budget (proposed): bodies under 0.25 ms per tick, particle environment resolution under 0.5 ms per frame, BVH build under 2 ms. Results are recorded in the plan of record.

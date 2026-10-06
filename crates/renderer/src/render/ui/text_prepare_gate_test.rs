@@ -164,8 +164,10 @@ fn encode_and_read(
 fn differing_pixels(a: &Readback, b: &Readback) -> usize {
     assert_eq!((a.width, a.height), (b.width, b.height));
     a.pixels
-        .chunks_exact(4)
-        .zip(b.pixels.chunks_exact(4))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(b.pixels.as_chunks::<4>().0)
         .filter(|(x, y)| x != y)
         .count()
 }
@@ -178,7 +180,9 @@ fn band(rb: &Readback, y0: u32, y1: u32) -> Vec<u8> {
 
 fn ink(rb: &Readback, y0: u32, y1: u32) -> usize {
     band(rb, y0, y1)
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .filter(|p| p[0] > 48 || p[1] > 48 || p[2] > 48)
         .count()
 }
@@ -645,7 +649,9 @@ fn banded_depth_keeps_own_panel_under_own_text() {
     let frame = rig.frame(&layers);
     // White text over a blue panel is the only red in the top band.
     let text_over_panel = band(&frame.pixels, 0, 60)
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .filter(|p| p[0] > 128)
         .count();
     assert!(
@@ -653,7 +659,9 @@ fn banded_depth_keeps_own_panel_under_own_text() {
         "the layer's text drew over its own panel"
     );
     let leaked = band(&frame.pixels, 95, 135)
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .filter(|p| p[1] > 48 || p[2] > 48)
         .count();
     assert!(
@@ -805,7 +813,9 @@ fn over_band_bound_falls_back_then_reprepares_once() {
     let fallback = rig.frame(&over);
     rig.assert_matches_reference(&fallback, &over, "over the band bound");
     let leaked = band(&fallback.pixels, 0, 40)
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .filter(|p| p[1] > 48 || p[2] > 48)
         .count();
     assert!(

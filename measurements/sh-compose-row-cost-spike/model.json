@@ -1,0 +1,355 @@
+{
+  "stack_arm": "array-free+unroll36",
+  "counts": {
+    "arena": {
+      "indirect": {
+        "rows": 2129,
+        "entries": 110,
+        "rows_with_entries": 70,
+        "lane_entries": 3883
+      },
+      "animated": {
+        "rows": 2129,
+        "entries": 110,
+        "rows_with_entries": 70,
+        "lane_entries": 3883
+      }
+    },
+    "campaign": {
+      "indirect": {
+        "rows": 730,
+        "entries": 352,
+        "rows_with_entries": 352,
+        "lane_entries": 12201
+      },
+      "animated": {
+        "rows": 730,
+        "entries": 352,
+        "rows_with_entries": 352,
+        "lane_entries": 12201
+      }
+    },
+    "kinematic": {
+      "indirect": {
+        "rows": 2579,
+        "entries": 780,
+        "rows_with_entries": 780,
+        "lane_entries": 43456
+      },
+      "animated": {
+        "rows": 2579,
+        "entries": 75,
+        "rows_with_entries": 75,
+        "lane_entries": 4376
+      }
+    },
+    "kinematicmid": {
+      "indirect": {
+        "rows": 2511,
+        "entries": 780,
+        "rows_with_entries": 780,
+        "lane_entries": 43456
+      },
+      "animated": {
+        "rows": 2511,
+        "entries": 75,
+        "rows_with_entries": 75,
+        "lane_entries": 4376
+      }
+    }
+  },
+  "passes": {
+    "indirect": {
+      "c_ms": 0.2399,
+      "c_ms_p5_p95": [
+        0.2099,
+        0.3563
+      ],
+      "r_us_per_row": 2.9848,
+      "r_us_per_row_p5_p95": [
+        2.9068,
+        3.0015
+      ],
+      "poses": {
+        "arena": {
+          "T_ms": 6.6968,
+          "floor_ms": 6.6224,
+          "entry_share_ms": 0.0744,
+          "entry_share_pct": 1.111,
+          "us_per_entry": 0.6764,
+          "ns_per_lane_entry": 19.1604,
+          "fit_residual_ms": 0.028,
+          "stack_saving_ms": 2.2258,
+          "stack_saving_pct": 33.2368,
+          "post_filter_T_ms": 0.5232,
+          "post_filter_stack_saving_ms": 0.0732,
+          "T_ms_p5_p95": [
+            6.5999,
+            6.7252
+          ],
+          "entry_share_ms_p5_p95": [
+            0.0718,
+            0.0912
+          ],
+          "stack_saving_ms_p5_p95": [
+            2.2093,
+            2.2292
+          ],
+          "post_filter_T_ms_p5_p95": [
+            0.4966,
+            0.6378
+          ],
+          "post_filter_stack_saving_ms_p5_p95": [
+            0.0726,
+            0.0733
+          ]
+        },
+        "campaign": {
+          "T_ms": 2.4629,
+          "floor_ms": 2.4103,
+          "entry_share_ms": 0.0526,
+          "entry_share_pct": 2.1357,
+          "us_per_entry": 0.1494,
+          "ns_per_lane_entry": 4.3111,
+          "fit_residual_ms": -0.0084,
+          "stack_saving_ms": 0.7699,
+          "stack_saving_pct": 31.2599,
+          "post_filter_T_ms": 1.3431,
+          "post_filter_stack_saving_ms": 0.3712,
+          "T_ms_p5_p95": [
+            2.4574,
+            2.5304
+          ],
+          "entry_share_ms_p5_p95": [
+            0.051,
+            0.0626
+          ],
+          "stack_saving_ms_p5_p95": [
+            0.7665,
+            0.8015
+          ],
+          "post_filter_T_ms_p5_p95": [
+            1.3219,
+            1.4345
+          ],
+          "post_filter_stack_saving_ms_p5_p95": [
+            0.3696,
+            0.3865
+          ]
+        },
+        "kinematic": {
+          "T_ms": 8.0797,
+          "floor_ms": 7.8737,
+          "entry_share_ms": 0.206,
+          "entry_share_pct": 2.5496,
+          "us_per_entry": 0.2641,
+          "ns_per_lane_entry": 4.7404,
+          "fit_residual_ms": -0.0639,
+          "stack_saving_ms": 2.1929,
+          "stack_saving_pct": 27.1409,
+          "post_filter_T_ms": 2.774,
+          "post_filter_stack_saving_ms": 0.6632,
+          "T_ms_p5_p95": [
+            8.0664,
+            8.0951
+          ],
+          "entry_share_ms_p5_p95": [
+            0.2007,
+            0.2162
+          ],
+          "stack_saving_ms_p5_p95": [
+            2.1731,
+            2.2047
+          ],
+          "post_filter_T_ms_p5_p95": [
+            2.7494,
+            2.8409
+          ],
+          "post_filter_stack_saving_ms_p5_p95": [
+            0.6572,
+            0.6668
+          ]
+        },
+        "kinematicmid": {
+          "T_ms": 7.9793,
+          "floor_ms": 7.7789,
+          "entry_share_ms": 0.2004,
+          "entry_share_pct": 2.5115,
+          "us_per_entry": 0.2569,
+          "ns_per_lane_entry": 4.6116,
+          "fit_residual_ms": 0.0443,
+          "stack_saving_ms": 2.1344,
+          "stack_saving_pct": 26.7492,
+          "post_filter_T_ms": 2.7684,
+          "post_filter_stack_saving_ms": 0.663,
+          "T_ms_p5_p95": [
+            7.7465,
+            8.0361
+          ],
+          "entry_share_ms_p5_p95": [
+            0.1811,
+            0.2045
+          ],
+          "stack_saving_ms_p5_p95": [
+            2.1115,
+            2.2091
+          ],
+          "post_filter_T_ms_p5_p95": [
+            2.7316,
+            2.8304
+          ],
+          "post_filter_stack_saving_ms_p5_p95": [
+            0.6559,
+            0.6862
+          ]
+        }
+      }
+    },
+    "animated": {
+      "c_ms": 0.2716,
+      "c_ms_p5_p95": [
+        0.2241,
+        0.4377
+      ],
+      "r_us_per_row": 3.4528,
+      "r_us_per_row_p5_p95": [
+        3.3321,
+        3.4651
+      ],
+      "poses": {
+        "arena": {
+          "T_ms": 7.99,
+          "floor_ms": 7.6387,
+          "entry_share_ms": 0.3513,
+          "entry_share_pct": 4.3967,
+          "us_per_entry": 3.1936,
+          "ns_per_lane_entry": 90.4713,
+          "fit_residual_ms": 0.0161,
+          "stack_saving_ms": 2.8919,
+          "stack_saving_pct": 36.194,
+          "post_filter_T_ms": 0.8646,
+          "post_filter_stack_saving_ms": 0.0951,
+          "T_ms_p5_p95": [
+            7.627,
+            8.0204
+          ],
+          "entry_share_ms_p5_p95": [
+            0.3513,
+            0.3595
+          ],
+          "stack_saving_ms_p5_p95": [
+            2.8424,
+            2.8933
+          ],
+          "post_filter_T_ms_p5_p95": [
+            0.8194,
+            1.0256
+          ],
+          "post_filter_stack_saving_ms_p5_p95": [
+            0.0935,
+            0.0951
+          ]
+        },
+        "campaign": {
+          "T_ms": 2.9472,
+          "floor_ms": 2.7874,
+          "entry_share_ms": 0.1598,
+          "entry_share_pct": 5.4221,
+          "us_per_entry": 0.454,
+          "ns_per_lane_entry": 13.0973,
+          "fit_residual_ms": -0.0048,
+          "stack_saving_ms": 0.9908,
+          "stack_saving_pct": 33.6183,
+          "post_filter_T_ms": 1.6468,
+          "post_filter_stack_saving_ms": 0.4778,
+          "T_ms_p5_p95": [
+            2.9442,
+            3.03
+          ],
+          "entry_share_ms_p5_p95": [
+            0.1589,
+            0.1632
+          ],
+          "stack_saving_ms_p5_p95": [
+            0.9796,
+            1.0274
+          ],
+          "post_filter_T_ms_p5_p95": [
+            1.5952,
+            1.7724
+          ],
+          "post_filter_stack_saving_ms_p5_p95": [
+            0.4724,
+            0.4954
+          ]
+        },
+        "kinematic": {
+          "T_ms": 9.4863,
+          "floor_ms": 9.1416,
+          "entry_share_ms": 0.3447,
+          "entry_share_pct": 3.6337,
+          "us_per_entry": 4.596,
+          "ns_per_lane_entry": 78.7706,
+          "fit_residual_ms": -0.0348,
+          "stack_saving_ms": 3.0492,
+          "stack_saving_pct": 32.1432,
+          "post_filter_T_ms": 0.8753,
+          "post_filter_stack_saving_ms": 0.0887,
+          "T_ms_p5_p95": [
+            9.4381,
+            9.4961
+          ],
+          "entry_share_ms_p5_p95": [
+            0.3368,
+            0.3501
+          ],
+          "stack_saving_ms_p5_p95": [
+            3.0161,
+            3.0967
+          ],
+          "post_filter_T_ms_p5_p95": [
+            0.8256,
+            1.032
+          ],
+          "post_filter_stack_saving_ms_p5_p95": [
+            0.0877,
+            0.0901
+          ]
+        },
+        "kinematicmid": {
+          "T_ms": 9.358,
+          "floor_ms": 8.9651,
+          "entry_share_ms": 0.3929,
+          "entry_share_pct": 4.1985,
+          "us_per_entry": 5.2387,
+          "ns_per_lane_entry": 89.7852,
+          "fit_residual_ms": 0.0235,
+          "stack_saving_ms": 3.0371,
+          "stack_saving_pct": 32.4546,
+          "post_filter_T_ms": 0.9235,
+          "post_filter_stack_saving_ms": 0.0907,
+          "T_ms_p5_p95": [
+            9.0178,
+            9.3851
+          ],
+          "entry_share_ms_p5_p95": [
+            0.3537,
+            0.399
+          ],
+          "stack_saving_ms_p5_p95": [
+            3.0208,
+            3.0798
+          ],
+          "post_filter_T_ms_p5_p95": [
+            0.8645,
+            1.0738
+          ],
+          "post_filter_stack_saving_ms_p5_p95": [
+            0.0902,
+            0.092
+          ]
+        }
+      }
+    }
+  }
+}

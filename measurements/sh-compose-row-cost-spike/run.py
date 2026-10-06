@@ -87,7 +87,11 @@ with log.open("w") as f:
                 gpu_sampling.set()
                 threading.Thread(target=sample_gpu, daemon=True).start()
                 trace = subprocess.Popen(
-                    ["xcrun", "xctrace", "record", "--template", "Metal System Trace",
+                    ["xcrun", "xctrace", "record",
+                     *(["--instrument", os.environ["RUN_TRACE_INSTRUMENT"]]
+                       if os.environ.get("RUN_TRACE_INSTRUMENT") else ["--template", "Metal System Trace"]),
+                     *(["--instrument", os.environ["RUN_TRACE_EXTRA_INSTRUMENT"]]
+                       if os.environ.get("RUN_TRACE_EXTRA_INSTRUMENT") else []),
                      "--attach", str(p.pid), "--time-limit", f"{trace_seconds}s",
                      "--output", str(trace_dir / f"{label}.trace")],
                     stdout=status.open("w"), stderr=subprocess.STDOUT)

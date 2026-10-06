@@ -1,0 +1,77 @@
+{
+  "source": "/private/tmp/claude-501/-Users-dhiester-Projects-Personal-postretro/a48b8a8f-edfb-41e7-b57a-aab48a692d31/scratchpad/traces/campaignP-floor-r3-gpu.xml",
+  "camera_frames": 222,
+  "frame_count_pass": "Textured Pass",
+  "once_per_frame_counts": {
+    "UI Pass": 221,
+    "Screen Effects Resolve Pass": 0,
+    "Textured Pass": 222,
+    "Depth Pre-Pass": 222
+  },
+  "shadow_passes": {
+    "Dynamic Spot Entity Shadow Depth Pass": {
+      "count": 183,
+      "total_ms": 2.683,
+      "per_frame_ms": 0.0121
+    },
+    "Dynamic Spot World Depth Cache Pass": {
+      "count": 9,
+      "total_ms": 0.235,
+      "per_frame_ms": 0.0011
+    },
+    "Promoted Cube Entity Shadow Depth Pass": {
+      "count": 1332,
+      "total_ms": 24.987,
+      "per_frame_ms": 0.1126
+    },
+    "Promoted Spot Entity Shadow Depth Pass": {
+      "count": 222,
+      "total_ms": 16.56,
+      "per_frame_ms": 0.0746
+    }
+  },
+  "shadow_total_per_frame_ms": 0.2003,
+  "sum_labelled_passes_per_frame_ms": 18.6204,
+  "all_passes_per_frame_ms": {
+    "Textured Pass": 3.7627,
+    "Fog Raymarch Pass": 3.1696,
+    "Skinned Viewmodel Pass": 2.4121,
+    "Streamed Animated Direct SH": 1.8169,
+    "Streamed Animated Direct SH [B]": 1.7188,
+    "Streamed SH Compose": 1.5236,
+    "Streamed SH Compose [B]": 1.485,
+    "Kinematic Brush Pass": 1.2365,
+    "Animated LM Compose": 0.2306,
+    "Bloom Bright Pass": 0.2003,
+    "Per-frame Upload Copies": 0.1746,
+    "Promoted Cube Entity Shadow Depth Pass": 0.1126,
+    "Bloom Horizontal Gaussian Pass": 0.0969,
+    "Fog Composite Pass": 0.0914,
+    "Candidate Cull Pass": 0.0827,
+    "Promoted Spot Entity Shadow Depth Pass": 0.0746,
+    "UI Pass": 0.0609,
+    "Billboard Direct Scatter Compose": 0.0536,
+    "Depth Pre-Pass": 0.0527,
+    "Bloom Vertical Gaussian Pass": 0.0505,
+    "Bloom Scene Composite Pass": 0.0486,
+    "Frame Encoder": 0.0456,
+    "Bloom Downsample Pass": 0.0356,
+    "Bloom Upsample Pass": 0.0339,
+    "(wgpu internal) PendingWrites": 0.0288,
+    "Dynamic Spot Entity Shadow Depth Pass": 0.0121,
+    "Skinned Mesh Pass": 0.0083,
+    "Dynamic Spot World Depth Cache Pass": 0.0011
+  },
+  "compose_per_encoder_ms": {
+    "Streamed Animated Direct SH": 2.9442,
+    "Streamed Animated Direct SH [B]": 2.7853,
+    "Streamed SH Compose": 2.4689,
+    "Streamed SH Compose [B]": 2.4063
+  },
+  "compose_encoder_counts": {
+    "Streamed Animated Direct SH": 137,
+    "Streamed Animated Direct SH [B]": 137,
+    "Streamed SH Compose": 137,
+    "Streamed SH Compose [B]": 137
+  }
+}

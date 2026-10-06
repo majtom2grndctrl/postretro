@@ -41,6 +41,33 @@ impl StreamingAnimatedPass {
         uploads: &mut StagedUploads,
         rows: &[DirectSparseRowUpload<'_>],
     ) -> Result<(), ShResidencyDrainError> {
+        if crate::render::compose_spike::coalesced_animated_layout() {
+            let repacked: Vec<Vec<u16>> = rows
+                .iter()
+                .map(|row| {
+                    crate::render::compose_spike::repack_texel_major(
+                        row.tile_f16_start,
+                        &row.entry_tile_f16_offsets,
+                        row.tile_f16,
+                    )
+                })
+                .collect();
+            let rows: Vec<DirectSparseRowUpload<'_>> = rows
+                .iter()
+                .zip(&repacked)
+                .map(|(row, tiles)| DirectSparseRowUpload {
+                    row: row.row,
+                    role: row.role,
+                    entry_start: row.entry_start,
+                    entry_end: row.entry_end,
+                    tile_f16_start: row.tile_f16_start,
+                    lights: row.lights,
+                    entry_tile_f16_offsets: row.entry_tile_f16_offsets.clone(),
+                    tile_f16: tiles,
+                })
+                .collect();
+            return self.sparse.upload_rows(uploads, &rows);
+        }
         self.sparse.upload_rows(uploads, rows)
     }
 

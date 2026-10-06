@@ -30,6 +30,7 @@ const KNOWN_ARMS: &[&str] = &[
     "scale-shared",
     "vec3-accum",
     "const-tile",
+    "coalesced-b",
     // floor and ablations
     "floor",
     "no-base",
@@ -67,6 +68,11 @@ pub(crate) fn arms_b() -> Option<&'static [&'static str]> {
         .get_or_init(|| {
             let raw = std::env::var("POSTRETRO_SPIKE_ARMS_B").ok()?;
             let selected = ordered_arms(&raw);
+            assert_eq!(
+                selected.contains(&"coalesced-b"),
+                arms().contains(&"coalesced-b"),
+                "coalesced-b changes the delta layout, so both paired halves must carry it"
+            );
             log::info!(
                 "[SH spike] paired B compose arms: {}",
                 if selected.is_empty() {
@@ -182,8 +188,8 @@ fn build_source(shader: ComposeShader, decode_helper: &str, arms: &[&str]) -> St
     ]
     .concat();
     for arm in arms {
-        // vec3-accum targets Pass B; the indirect accumulator already is vec3.
-        if *arm == "vec3-accum" && shader == ComposeShader::Indirect {
+        // vec3-accum and coalesced-b target Pass B only.
+        if matches!(*arm, "vec3-accum" | "coalesced-b") && shader == ComposeShader::Indirect {
             continue;
         }
         apply_arm(&mut src, shader, arm, arms);
@@ -581,6 +587,36 @@ fn spike_scale(entry: u32, start: u32, cached: bool) -> vec3<f32> {
     let texel_f16_count = 3u;",
             arm,
         ),
+        "coalesced-b" => {
+            replace_once(
+                src,
+                "    let half_base = entry_delta_f16_offset(entry)
+        + probe_rank * grid.delta_probe_f16_stride
+        + texel_index * texel_f16_count;",
+                "    // spike coalesced-b: entry tiles are texel-major across kept probes.
+    let half_base = entry_delta_f16_offset(entry)
+        + texel_index * spike_kept_count * texel_f16_count
+        + probe_rank * texel_f16_count;",
+                arm,
+            );
+            replace_once(
+                src,
+                SHARED_DECL,
+                "var<workgroup> shared_brick_indirection: u32;
+var<private> spike_kept_count: u32;
+",
+                arm,
+            );
+            replace_once(
+                src,
+                "    let cell_index = packed_rows[workgroup.x % 4u];\n",
+                "    let cell_index = packed_rows[workgroup.x % 4u];
+    spike_kept_count = countOneBits(kept_probe_mask_word(cell_index, 0u))
+        + countOneBits(kept_probe_mask_word(cell_index, 1u));
+",
+                arm,
+            );
+        }
         "floor" => {
             replace_once(src, LET_END, "    let end = start; // spike floor\n", arm);
         }
@@ -678,6 +714,42 @@ fn spike_unused_light_scale(light_index: u32) -> vec3<f32> {
     }
 }
 
+/// Spike coalesced-b: whether Pass B's section-45 tiles upload texel-major.
+pub(crate) fn coalesced_animated_layout() -> bool {
+    arms().contains(&"coalesced-b")
+}
+
+/// Repack one sparse row's entry tiles from probe-major (`[rank][texel][rgb]`)
+/// to texel-major across the entry's kept probes (`[texel][rank][rgb]`).
+/// `entry_offsets` are absolute f16 offsets; `tile_f16_start` is the row's.
+pub(crate) fn repack_texel_major(tile_f16_start: u32, entry_offsets: &[u32], tiles: &[u16]) -> Vec<u16> {
+    const TEXELS: usize = 36;
+    const STRIDE: usize = TEXELS * 3;
+    let mut out = vec![0_u16; tiles.len()];
+    for (i, &offset) in entry_offsets.iter().enumerate() {
+        let begin = (offset - tile_f16_start) as usize;
+        let end = entry_offsets
+            .get(i + 1)
+            .map_or(tiles.len(), |next| (next - tile_f16_start) as usize);
+        let size = end - begin;
+        assert_eq!(size % STRIDE, 0, "spike coalesced-b: entry block is not whole probe tiles");
+        let probes = size / STRIDE;
+        for rank in 0..probes {
+            for texel in 0..TEXELS {
+                for channel in 0..3 {
+                    out[begin + texel * probes * 3 + rank * 3 + channel] =
+                        tiles[begin + rank * STRIDE + texel * 3 + channel];
+                }
+            }
+        }
+    }
+    if let Some(&first) = entry_offsets.first() {
+        let head = (first - tile_f16_start) as usize;
+        out[..head].copy_from_slice(&tiles[..head]);
+    }
+    out
+}
+
 /// Per-pass composed-row mix for one window of compose frames: rows and CSR
 /// entries by brick level (L0/L1/L2), from the section's whole-level metadata.
 #[derive(Default)]
@@ -767,6 +839,39 @@ mod tests {
         .unwrap_or_else(|err| panic!("{label}: arm source validates: {err:?}"));
     }
 
+    // The repack places each (rank, texel) triple where the coalesced read looks.
+    #[test]
+    fn repack_texel_major_matches_coalesced_addressing() {
+        let start = 10_u32;
+        let probes = [2_usize, 3];
+        let mut tiles = Vec::new();
+        let mut offsets = Vec::new();
+        for (entry, &n) in probes.iter().enumerate() {
+            offsets.push(start + tiles.len() as u32);
+            for rank in 0..n {
+                for texel in 0..36 {
+                    for c in 0..3 {
+                        tiles.push((entry * 10_000 + rank * 1000 + texel * 10 + c) as u16);
+                    }
+                }
+            }
+        }
+        let out = repack_texel_major(start, &offsets, &tiles);
+        for (entry, &n) in probes.iter().enumerate() {
+            let base = (offsets[entry] - start) as usize;
+            for rank in 0..n {
+                for texel in 0..36 {
+                    for c in 0..3 {
+                        assert_eq!(
+                            out[base + texel * n * 3 + rank * 3 + c],
+                            (entry * 10_000 + rank * 1000 + texel * 10 + c) as u16
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     // Every arm, alone and in the stacks the batches use, must rewrite and validate.
     #[test]
     fn every_arm_rewrites_and_validates() {
@@ -791,6 +896,8 @@ mod tests {
                 "array-free,unroll36",
                 "array-free,l0-only",
                 "array-free,unroll36,l0-only",
+                "coalesced-b",
+                "coalesced-b,array-free,unroll36",
             ]
             .map(String::from),
         );

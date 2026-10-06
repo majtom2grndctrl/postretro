@@ -3265,6 +3265,7 @@ pub(crate) mod tests {
                 name: "Replacement".to_string(),
                 id: "replacement".to_string(),
                 version: "1".to_string(),
+                input: None,
                 render: Default::default(),
                 movers: Default::default(),
                 audio: Default::default(),

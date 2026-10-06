@@ -5,6 +5,9 @@ mod activation;
 mod activator;
 #[cfg(test)]
 mod activator_tests;
+mod author_layer;
+#[cfg(test)]
+mod author_layer_tests;
 mod binding_state;
 mod binding_table;
 #[cfg(test)]
@@ -36,6 +39,7 @@ mod ui_nav_map;
 pub use ui_nav_map::UiNavContext;
 mod wieldable_selection;
 
+pub use author_layer::author_layer_from_block;
 pub use binding_state::{BindingSources, BindingState};
 pub use commands::Command;
 pub use defaults::default_bindings;

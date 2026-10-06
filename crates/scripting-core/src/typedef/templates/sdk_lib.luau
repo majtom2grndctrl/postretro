@@ -964,6 +964,7 @@ export type ModManifestInput = {
   render: RenderProfile?,
   movers: MoverDefaults?,
   audio: AudioProfile?,
+  input: ModInput?,
   switching: SwitchingDescriptor?,
   defaultWeaponPlacement: WeaponPlacementDescriptor?,
   entities: {EntityTypeDescriptor}?,

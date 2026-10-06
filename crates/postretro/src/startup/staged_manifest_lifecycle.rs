@@ -85,6 +85,23 @@ pub(crate) fn staged_audio_profile(
     }
 }
 
+/// The input block a staged manifest result commits: `Some(None)` for a
+/// committed result with no block (the engine table applies), `None` when
+/// nothing commits.
+pub(crate) fn staged_input_block(
+    result: &StagedManifestBuildResult,
+    outcome: &StagedManifestCommitOutcome,
+) -> Option<Option<postretro_scripting_core::runtime::ModInputBlock>> {
+    if !matches!(outcome, StagedManifestCommitOutcome::Committed { .. }) {
+        return None;
+    }
+    match &result.status {
+        StagedManifestBuildStatus::Built(manifest) => Some(manifest.input.clone()),
+        StagedManifestBuildStatus::NoStartScript => Some(None),
+        StagedManifestBuildStatus::Failed => None,
+    }
+}
+
 /// Switching policy a staged manifest result commits, if any. Like the render
 /// profile, it is a whole-snapshot App policy: a committed no-start result
 /// restores defaults, while every rejected or failed result retains the active
@@ -301,6 +318,10 @@ impl App {
                 session.scripting.mover_auto_close_ms = mover_auto_close_ms;
             }
             self.commit_staged_ui_manifest(&result, &outcome);
+            // Hot reload re-validates the input block; player overrides stay.
+            if let Some(input_block) = staged_input_block(&result, &outcome) {
+                self.load_author_bindings(input_block.as_ref());
+            }
             if committed {
                 self.install_network_mod_content();
             }
@@ -354,6 +375,7 @@ mod tests {
                 name: "RenderProfile".to_string(),
                 id: "render-profile".to_string(),
                 version: "1".to_string(),
+                input: None,
                 render,
                 movers: Default::default(),
                 audio,

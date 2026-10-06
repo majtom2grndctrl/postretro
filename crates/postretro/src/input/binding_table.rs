@@ -25,6 +25,30 @@ pub struct AuthorLayer {
     pub defaults: HashMap<(Command, DeviceClass), Vec<AuthorBinding>>,
     /// The author's `show` override per command.
     pub show: HashMap<Command, bool>,
+    /// Commands in manifest order. Of two author entries that conflict, the
+    /// later one in this order is unbound.
+    pub manifest_order: Vec<Command>,
+    /// Panel presentation per command: label, category, order.
+    pub presentation: HashMap<Command, CommandPresentation>,
+    /// Glyph art directories per device family.
+    pub glyphs: GlyphDirs,
+}
+
+/// How the controls panel presents a command.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct CommandPresentation {
+    pub label: Option<String>,
+    pub category: Option<String>,
+    pub order: Option<f64>,
+}
+
+/// Mod glyph art directories per device family; an asset is `<dir>/<input>`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GlyphDirs {
+    pub keyboard_mouse: Option<String>,
+    pub xbox: Option<String>,
+    pub playstation: Option<String>,
+    pub nintendo: Option<String>,
 }
 
 /// The player's saved diff over the author's defaults.
@@ -145,6 +169,9 @@ pub struct EffectiveTable {
     relevance: HashMap<Command, Relevance>,
     /// Commands whose author or engine default the player displaced.
     displaced: Vec<(Command, DeviceClass)>,
+    /// Every binding a collision dropped, with the binding that kept the
+    /// input; the input-block validation reports these.
+    suppressed: Vec<(EffectiveBinding, EffectiveBinding)>,
 }
 
 impl EffectiveTable {
@@ -173,7 +200,7 @@ impl EffectiveTable {
                 );
             }
         }
-        table.entries = table.resolve_collisions(candidates);
+        table.entries = table.resolve_collisions(candidates, &author.manifest_order);
         if swap_confirm_cancel {
             for entry in &mut table.entries {
                 if entry.class == DeviceClass::Gamepad {
@@ -192,11 +219,27 @@ impl EffectiveTable {
     /// within one layer the earlier entry does. A player binding that pushes an
     /// author or engine default off its input flags that command for the panel,
     /// so nothing the player chose changes silently.
-    fn resolve_collisions(&mut self, candidates: Vec<EffectiveBinding>) -> Vec<EffectiveBinding> {
+    fn resolve_collisions(
+        &mut self,
+        candidates: Vec<EffectiveBinding>,
+        manifest_order: &[Command],
+    ) -> Vec<EffectiveBinding> {
         let mut ordered: Vec<(usize, EffectiveBinding)> =
             candidates.into_iter().enumerate().collect();
-        // Higher origin first, then authoring order.
-        ordered.sort_by(|(ia, a), (ib, b)| b.origin.cmp(&a.origin).then(ia.cmp(ib)));
+        // Higher origin first; author entries in manifest order; then table order.
+        let manifest_rank = |binding: &EffectiveBinding| match binding.origin {
+            BindingOrigin::Author => manifest_order
+                .iter()
+                .position(|command| *command == binding.command)
+                .unwrap_or(usize::MAX),
+            BindingOrigin::Engine | BindingOrigin::Player => 0,
+        };
+        ordered.sort_by(|(ia, a), (ib, b)| {
+            b.origin
+                .cmp(&a.origin)
+                .then(manifest_rank(a).cmp(&manifest_rank(b)))
+                .then(ia.cmp(ib))
+        });
         let mut kept: Vec<(usize, EffectiveBinding)> = Vec::with_capacity(ordered.len());
         for (index, candidate) in ordered {
             let duplicate = kept
@@ -216,6 +259,7 @@ impl EffectiveTable {
             };
             match winner {
                 Some(winner) => {
+                    self.suppressed.push((candidate, winner));
                     if winner.origin == BindingOrigin::Player
                         && candidate.origin != BindingOrigin::Player
                         && !self
@@ -247,6 +291,11 @@ impl EffectiveTable {
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn relevance(&self, command: Command) -> Relevance {
         self.relevance_of(command)
+    }
+
+    /// Bindings a collision dropped, each with the binding that kept the input.
+    pub fn suppressed(&self) -> &[(EffectiveBinding, EffectiveBinding)] {
+        &self.suppressed
     }
 
     #[allow(dead_code)]

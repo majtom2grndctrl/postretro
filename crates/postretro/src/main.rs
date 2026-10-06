@@ -13216,6 +13216,7 @@ mod tests {
                     name: "UiCommit".to_string(),
                     id: "ui-commit".to_string(),
                     version: "1".to_string(),
+                    input: None,
                     render: Default::default(),
                     movers: Default::default(),
                     audio: Default::default(),

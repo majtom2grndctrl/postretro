@@ -413,4 +413,26 @@ mod tests {
             assert_eq!(accepted, expected, "{}", command.id());
         }
     }
+
+    #[test]
+    fn the_sdk_command_id_union_matches_the_engine_commands() {
+        // Drift guard: the SDK's `CommandId` union is registered by hand in the
+        // sim crate, which cannot reach this table. Derive the expectation here.
+        use postretro_scripting_core::primitives_registry::{PrimitiveRegistry, TypeShape};
+        let mut registry = PrimitiveRegistry::new();
+        crate::scripting::primitives::register_all(
+            &mut registry,
+            postretro_entities::ScriptCtx::new(),
+        );
+        let ty = registry
+            .iter_types()
+            .find(|ty| ty.name == "CommandId")
+            .expect("the SDK registers `CommandId`");
+        let TypeShape::StringEnum { variants } = &ty.shape else {
+            panic!("`CommandId` is a string enum");
+        };
+        let sdk: Vec<&str> = variants.iter().map(|variant| variant.name).collect();
+        let engine: Vec<&str> = Command::ALL.iter().map(|command| command.id()).collect();
+        assert_eq!(sdk, engine);
+    }
 }

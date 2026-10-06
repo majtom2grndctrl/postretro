@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use gilrs::{Axis as GilrsAxis, Button as GilrsButton};
 use winit::keyboard::KeyCode;
 
@@ -50,7 +48,8 @@ fn author(entries: &[(Command, DeviceClass, Vec<AuthorBinding>)]) -> AuthorLayer
             .iter()
             .map(|(command, class, list)| ((*command, *class), list.clone()))
             .collect(),
-        show: HashMap::new(),
+        manifest_order: entries.iter().map(|(command, _, _)| *command).collect(),
+        ..AuthorLayer::default()
     }
 }
 

@@ -13,12 +13,13 @@ use crate::data_descriptors::{
     drain_faction_sentiments_js, drain_faction_sentiments_lua, drain_factions_js,
     drain_factions_lua, drain_fonts_js, drain_fonts_lua, drain_frontend_js, drain_frontend_lua,
     drain_global_crossings_js, drain_global_crossings_lua, drain_global_reactions_js,
-    drain_global_reactions_lua, drain_impact_events_js, drain_impact_events_lua, drain_maps_js,
-    drain_maps_lua, drain_mover_defaults_js, drain_mover_defaults_lua,
-    drain_presentation_overlays_js, drain_presentation_overlays_lua,
-    drain_presentation_templates_js, drain_presentation_templates_lua, drain_render_profile_js,
-    drain_render_profile_lua, drain_switching_js, drain_switching_lua, drain_theme_js,
-    drain_theme_lua, drain_trigger_events_js, drain_trigger_events_lua, drain_trigger_pools_js,
+    drain_global_reactions_lua, drain_impact_events_js, drain_impact_events_lua,
+    drain_input_block_js, drain_input_block_lua, drain_maps_js, drain_maps_lua,
+    drain_mover_defaults_js, drain_mover_defaults_lua, drain_presentation_overlays_js,
+    drain_presentation_overlays_lua, drain_presentation_templates_js,
+    drain_presentation_templates_lua, drain_render_profile_js, drain_render_profile_lua,
+    drain_switching_js, drain_switching_lua, drain_theme_js, drain_theme_lua,
+    drain_trigger_events_js, drain_trigger_events_lua, drain_trigger_pools_js,
     drain_trigger_pools_lua, drain_ui_trees_js, drain_ui_trees_lua, entity_descriptor_from_js,
     entity_descriptor_from_lua, entity_faction_name_from_js, entity_faction_name_from_lua,
 };
@@ -391,6 +392,17 @@ pub(super) fn run_mod_init_quickjs(
                 return;
             }
         };
+        let input = match drain_input_block_js(&obj, "default mod manifest export") {
+            Ok(block) => block,
+            Err(e) => {
+                out = Err(ScriptError::InvalidArgument {
+                    reason: format!(
+                        "mod-init: `{source_path}` default mod manifest export `input` invalid: {e}"
+                    ),
+                });
+                return;
+            }
+        };
         let switching = match drain_switching_js(&obj, "default mod manifest export") {
             Ok(switching) => switching,
             Err(e) => {
@@ -501,6 +513,7 @@ pub(super) fn run_mod_init_quickjs(
             render,
             movers,
             audio,
+            input,
             switching,
             default_weapon_placement,
             entities,
@@ -752,6 +765,11 @@ pub(super) fn run_mod_init_luau(
             reason: format!("mod-init: `{source_path}` returned mod manifest `audio` invalid: {e}"),
         }
     })?;
+    let input = drain_input_block_lua(&table, "returned mod manifest").map_err(|e| {
+        ScriptError::InvalidArgument {
+            reason: format!("mod-init: `{source_path}` returned mod manifest `input` invalid: {e}"),
+        }
+    })?;
     let switching = drain_switching_lua(&table, "returned mod manifest").map_err(|e| {
         ScriptError::InvalidArgument {
             reason: format!(
@@ -831,6 +849,7 @@ pub(super) fn run_mod_init_luau(
         render,
         movers,
         audio,
+        input,
         switching,
         default_weapon_placement,
         entities,
@@ -1020,6 +1039,51 @@ mod tests {
             ),
             (ModAudioProfile::default(), ModAudioProfile::default())
         );
+    }
+
+    #[test]
+    fn mod_init_input_block_drains_in_both_runtimes_and_degrades_without_rejecting() {
+        use crate::runtime::{ModInputBlock, ModInputCommand};
+
+        let registry = PrimitiveRegistry::new();
+        let quickjs = QuickJsSubsystem::new(&registry, &crate::quickjs::QuickJsConfig::default())
+            .expect("QuickJS subsystem should initialize");
+        let cold = |js_input: &str, luau_input: &str| {
+            let js = run_mod_init_quickjs(
+                &quickjs,
+                &format!(
+                    "globalThis.__postretroModManifest = {{ name: 'Input', id: 'input', version: '1'{js_input} }};"
+                ),
+                "input.js",
+            )
+            .expect("an optional QuickJS input block must not reject the manifest");
+            let luau = run_mod_init_luau(
+                &[],
+                &format!("return {{ name = 'Input', id = 'input', version = '1'{luau_input} }}"),
+                "input.luau",
+                Path::new("."),
+            )
+            .expect("an optional Luau input block must not reject the manifest");
+            (js.input, luau.input)
+        };
+
+        let expected = Some(ModInputBlock {
+            commands: vec![ModInputCommand {
+                id: "sprint".to_string(),
+                gamepad: Some(Vec::new()),
+                ..ModInputCommand::default()
+            }],
+            ..ModInputBlock::default()
+        });
+        assert_eq!(
+            cold(
+                ", input: { commands: { sprint: { gamepad: [] } } }",
+                ", input = { commands = { sprint = { gamepad = {} } } }",
+            ),
+            (expected.clone(), expected)
+        );
+        assert_eq!(cold("", ""), (None, None));
+        assert_eq!(cold(", input: 5", ", input = 5"), (None, None));
     }
 
     #[test]

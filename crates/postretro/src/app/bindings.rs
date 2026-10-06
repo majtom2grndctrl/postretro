@@ -58,6 +58,18 @@ pub(crate) fn tuning_facts(tuning: &TuningPayload) -> RelevanceFacts {
 }
 
 impl App {
+    /// Validate the mod's `input` block into the author layer. `None` (no
+    /// block) leaves the engine table in place.
+    pub(crate) fn load_author_bindings(
+        &mut self,
+        block: Option<&postretro_scripting_core::runtime::ModInputBlock>,
+    ) {
+        let layer = crate::input::author_layer_from_block(block);
+        if let Some(session) = self.session.as_mut() {
+            session.bindings.set_author_layer(layer);
+        }
+    }
+
     /// Load the player's saved binding rows for the committed mod id into the
     /// binding layers. Runs at mod init, before the first table build.
     pub(crate) fn load_player_bindings(&mut self) {

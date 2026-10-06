@@ -92,6 +92,7 @@ fn staged_manifest_result(
             name: "UiLifecycle".to_string(),
             id: "ui-lifecycle".to_string(),
             version: "1".to_string(),
+            input: None,
             render: Default::default(),
             movers: Default::default(),
             audio: Default::default(),

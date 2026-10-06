@@ -7,7 +7,7 @@
           {
             "label": "arenaR-accum-scalar-r1",
             "arms_b": "accum-scalar",
-            "regime_marker_ms": 0.4221,
+            "regime_marker_ms": 0.345,
             "gpu_state": {
               "Core Clock(MHz)": 1231,
               "Memory Clock(MHz)": 1280,
@@ -38,7 +38,7 @@
           {
             "label": "arenaR-accum-scalar-r2",
             "arms_b": "accum-scalar",
-            "regime_marker_ms": 0.441,
+            "regime_marker_ms": 0.3623,
             "gpu_state": {
               "Core Clock(MHz)": 1232,
               "Memory Clock(MHz)": 1304,
@@ -69,7 +69,7 @@
           {
             "label": "arenaR-accum-scalar-r3",
             "arms_b": "accum-scalar",
-            "regime_marker_ms": 0.4175,
+            "regime_marker_ms": 0.3458,
             "gpu_state": {
               "Core Clock(MHz)": 1231,
               "Memory Clock(MHz)": 1284,
@@ -136,7 +136,7 @@
           {
             "label": "arenaR-array-free+l0-only-r1",
             "arms_b": "array-free,l0-only,scale-shared",
-            "regime_marker_ms": 0.4432,
+            "regime_marker_ms": 0.3633,
             "gpu_state": {
               "Core Clock(MHz)": 1232,
               "Memory Clock(MHz)": 1300,
@@ -167,7 +167,7 @@
           {
             "label": "arenaR-array-free+l0-only-r2",
             "arms_b": "array-free,l0-only,scale-shared",
-            "regime_marker_ms": 0.4159,
+            "regime_marker_ms": 0.3413,
             "gpu_state": {
               "Core Clock(MHz)": 1231,
               "Memory Clock(MHz)": 1174,
@@ -198,7 +198,7 @@
           {
             "label": "arenaR-array-free+l0-only-r3",
             "arms_b": "array-free,l0-only,scale-shared",
-            "regime_marker_ms": 0.4345,
+            "regime_marker_ms": 0.3532,
             "gpu_state": {
               "Core Clock(MHz)": 1230,
               "Memory Clock(MHz)": 1364,
@@ -275,11 +275,11 @@
               "Fan Speed(RPM)": 0
             },
             "indirect": {
-              "a": 6.6753,
+              "a": 6.6889,
               "b": 5.4529,
-              "delta": -1.2224,
+              "delta": -1.236,
               "encoders": [
-                91,
+                90,
                 90
               ]
             },
@@ -296,7 +296,7 @@
           {
             "label": "arenaR-array-free+unroll36+l0-only-r2",
             "arms_b": "array-free,unroll36,l0-only,scale-shared",
-            "regime_marker_ms": 0.4187,
+            "regime_marker_ms": 0.3433,
             "gpu_state": {
               "Core Clock(MHz)": 1231,
               "Memory Clock(MHz)": 1404,
@@ -327,7 +327,7 @@
           {
             "label": "arenaR-array-free+unroll36+l0-only-r3",
             "arms_b": "array-free,unroll36,l0-only,scale-shared",
-            "regime_marker_ms": 0.4381,
+            "regime_marker_ms": 0.3587,
             "gpu_state": {
               "Core Clock(MHz)": 1231,
               "Memory Clock(MHz)": 1364,
@@ -346,11 +346,11 @@
               ]
             },
             "animated": {
-              "a": 7.9288,
+              "a": 7.9987,
               "b": 4.9846,
-              "delta": -2.9442,
+              "delta": -3.0141,
               "encoders": [
-                87,
+                86,
                 85
               ]
             }
@@ -376,17 +376,17 @@
         },
         "indirect": {
           "n": 3,
-          "median_a": 6.6798,
+          "median_a": 6.6844,
           "median_delta": -1.2393,
           "min_delta": -1.2591,
-          "max_delta": -1.2224
+          "max_delta": -1.236
         },
         "animated": {
           "n": 3,
-          "median_a": 7.9729,
-          "median_delta": -3.0059,
+          "median_a": 7.9879,
+          "median_delta": -3.0141,
           "min_delta": -3.0268,
-          "max_delta": -2.9442
+          "max_delta": -3.0059
         }
       },
       "array-free+unroll36": {
@@ -413,11 +413,11 @@
               ]
             },
             "animated": {
-              "a": 7.9322,
+              "a": 7.986,
               "b": 5.0898,
-              "delta": -2.8424,
+              "delta": -2.8962,
               "encoders": [
-                90,
+                89,
                 89
               ]
             }
@@ -425,7 +425,7 @@
           {
             "label": "arenaR-array-free+unroll36-r2",
             "arms_b": "array-free,unroll36,scale-shared",
-            "regime_marker_ms": 0.4254,
+            "regime_marker_ms": 0.3481,
             "gpu_state": {
               "Core Clock(MHz)": 1231,
               "Memory Clock(MHz)": 1356,
@@ -456,7 +456,7 @@
           {
             "label": "arenaR-array-free+unroll36-r3",
             "arms_b": "array-free,unroll36,scale-shared",
-            "regime_marker_ms": 0.4225,
+            "regime_marker_ms": 0.3476,
             "gpu_state": {
               "Core Clock(MHz)": 1232,
               "Memory Clock(MHz)": 1404,
@@ -512,10 +512,10 @@
         },
         "animated": {
           "n": 3,
-          "median_a": 7.9622,
-          "median_delta": -2.8919,
-          "min_delta": -2.8933,
-          "max_delta": -2.8424
+          "median_a": 7.9791,
+          "median_delta": -2.8933,
+          "min_delta": -2.8962,
+          "max_delta": -2.8919
         }
       },
       "array-free": {
@@ -523,7 +523,7 @@
           {
             "label": "arenaR-array-free-r1",
             "arms_b": "array-free,scale-shared",
-            "regime_marker_ms": 0.424,
+            "regime_marker_ms": 0.351,
             "gpu_state": {
               "Core Clock(MHz)": 1231,
               "Memory Clock(MHz)": 1316,
@@ -554,7 +554,7 @@
           {
             "label": "arenaR-array-free-r2",
             "arms_b": "array-free,scale-shared",
-            "regime_marker_ms": 0.4236,
+            "regime_marker_ms": 0.3443,
             "gpu_state": {
               "Core Clock(MHz)": 1231,
               "Memory Clock(MHz)": 1372,
@@ -652,7 +652,7 @@
           {
             "label": "arenaR-baseline-r1",
             "arms_b": "baseline",
-            "regime_marker_ms": 0.4005,
+            "regime_marker_ms": 0.3408,
             "gpu_state": {
               "Core Clock(MHz)": 1232,
               "Memory Clock(MHz)": 1354,
@@ -693,11 +693,11 @@
               "Fan Speed(RPM)": 0
             },
             "indirect": {
-              "a": 6.6911,
+              "a": 6.7089,
               "b": 6.7084,
-              "delta": 0.0173,
+              "delta": -0.0005,
               "encoders": [
-                83,
+                82,
                 83
               ]
             },
@@ -714,7 +714,7 @@
           {
             "label": "arenaR-baseline-r3",
             "arms_b": "baseline",
-            "regime_marker_ms": 0.4284,
+            "regime_marker_ms": 0.3513,
             "gpu_state": {
               "Core Clock(MHz)": 1232,
               "Memory Clock(MHz)": 1404,
@@ -725,11 +725,11 @@
             },
             "indirect": {
               "a": 6.7248,
-              "b": 6.6854,
-              "delta": -0.0394,
+              "b": 6.7211,
+              "delta": -0.0037,
               "encoders": [
                 80,
-                80
+                79
               ]
             },
             "animated": {
@@ -763,10 +763,10 @@
         },
         "indirect": {
           "n": 3,
-          "median_a": 6.6938,
-          "median_delta": 0.0089,
-          "min_delta": -0.0394,
-          "max_delta": 0.0173
+          "median_a": 6.7089,
+          "median_delta": -0.0005,
+          "min_delta": -0.0037,
+          "max_delta": 0.0089
         },
         "animated": {
           "n": 3,

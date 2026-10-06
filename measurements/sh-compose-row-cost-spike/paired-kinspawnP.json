@@ -7,7 +7,7 @@
           {
             "label": "kinspawnP-array-free+unroll36-r1",
             "arms_b": "array-free,unroll36,scale-shared",
-            "regime_marker_ms": 0.065,
+            "regime_marker_ms": 0.0547,
             "gpu_state": {
               "Core Clock(MHz)": 1229,
               "Memory Clock(MHz)": 1364,
@@ -38,7 +38,7 @@
           {
             "label": "kinspawnP-array-free+unroll36-r2",
             "arms_b": "array-free,unroll36,scale-shared",
-            "regime_marker_ms": 0.0629,
+            "regime_marker_ms": 0.0523,
             "gpu_state": {
               "Core Clock(MHz)": 1234,
               "Memory Clock(MHz)": 1404,
@@ -69,7 +69,7 @@
           {
             "label": "kinspawnP-array-free+unroll36-r3",
             "arms_b": "array-free,unroll36,scale-shared",
-            "regime_marker_ms": 0.0625,
+            "regime_marker_ms": 0.0525,
             "gpu_state": {
               "Core Clock(MHz)": 1233,
               "Memory Clock(MHz)": 1110,
@@ -136,7 +136,7 @@
           {
             "label": "kinspawnP-baseline-r1",
             "arms_b": "baseline",
-            "regime_marker_ms": 0.0615,
+            "regime_marker_ms": 0.0509,
             "gpu_state": {
               "Core Clock(MHz)": 1234,
               "Memory Clock(MHz)": 1364,
@@ -147,27 +147,27 @@
             },
             "indirect": {
               "a": 8.0797,
-              "b": 7.9653,
-              "delta": -0.1144,
+              "b": 8.069,
+              "delta": -0.0107,
               "encoders": [
                 76,
-                76
+                75
               ]
             },
             "animated": {
               "a": 9.4867,
-              "b": 9.3607,
-              "delta": -0.126,
+              "b": 9.4816,
+              "delta": -0.0051,
               "encoders": [
                 76,
-                76
+                75
               ]
             }
           },
           {
             "label": "kinspawnP-baseline-r2",
             "arms_b": "baseline",
-            "regime_marker_ms": 0.0555,
+            "regime_marker_ms": 0.0457,
             "gpu_state": {
               "Core Clock(MHz)": 1235,
               "Memory Clock(MHz)": 1364,
@@ -198,7 +198,7 @@
           {
             "label": "kinspawnP-baseline-r3",
             "arms_b": "baseline",
-            "regime_marker_ms": 0.0555,
+            "regime_marker_ms": 0.0457,
             "gpu_state": {
               "Core Clock(MHz)": 1234,
               "Memory Clock(MHz)": 1296,
@@ -249,14 +249,14 @@
           "n": 3,
           "median_a": 8.0797,
           "median_delta": 0.0001,
-          "min_delta": -0.1144,
+          "min_delta": -0.0107,
           "max_delta": 0.0068
         },
         "animated": {
           "n": 3,
           "median_a": 9.4903,
-          "median_delta": -0.0137,
-          "min_delta": -0.126,
+          "median_delta": -0.0051,
+          "min_delta": -0.0137,
           "max_delta": 0.0
         }
       },
@@ -265,7 +265,7 @@
           {
             "label": "kinspawnP-floor-r1",
             "arms_b": "floor",
-            "regime_marker_ms": 0.0572,
+            "regime_marker_ms": 0.0471,
             "gpu_state": {
               "Core Clock(MHz)": 1234,
               "Memory Clock(MHz)": 1294,
@@ -296,7 +296,7 @@
           {
             "label": "kinspawnP-floor-r2",
             "arms_b": "floor",
-            "regime_marker_ms": 0.0579,
+            "regime_marker_ms": 0.0482,
             "gpu_state": {
               "Core Clock(MHz)": 1234,
               "Memory Clock(MHz)": 1396,
@@ -327,7 +327,7 @@
           {
             "label": "kinspawnP-floor-r3",
             "arms_b": "floor",
-            "regime_marker_ms": 0.0543,
+            "regime_marker_ms": 0.0446,
             "gpu_state": {
               "Core Clock(MHz)": 1235,
               "Memory Clock(MHz)": 1294,

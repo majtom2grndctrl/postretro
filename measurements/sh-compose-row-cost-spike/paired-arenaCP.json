@@ -7,7 +7,7 @@
           {
             "label": "arenaCP-coalesced-b_vs_coalesced-b+array-free+unroll36-r1",
             "arms_b": "array-free,unroll36,scale-shared,coalesced-b",
-            "regime_marker_ms": 0.4284,
+            "regime_marker_ms": 0.3501,
             "gpu_state": {
               "Core Clock(MHz)": 1231,
               "Memory Clock(MHz)": 1276,
@@ -38,7 +38,7 @@
           {
             "label": "arenaCP-coalesced-b_vs_coalesced-b+array-free+unroll36-r2",
             "arms_b": "array-free,unroll36,scale-shared,coalesced-b",
-            "regime_marker_ms": 0.4617,
+            "regime_marker_ms": 0.3716,
             "gpu_state": {
               "Core Clock(MHz)": 1231,
               "Memory Clock(MHz)": 1210,

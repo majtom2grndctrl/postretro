@@ -1,7 +1,7 @@
 {
-  "source": "/private/tmp/claude-501/-Users-dhiester-Projects-Personal-postretro/a48b8a8f-edfb-41e7-b57a-aab48a692d31/scratchpad/traces/campaignP-baseline-r3-gpu.xml",
+  "source": "raw/campaignP-baseline-r3-gpu.xml.gz",
   "camera_frames": 275,
-  "frame_count_pass": "Depth Pre-Pass",
+  "frame_count_pass": "Streamed SH Compose (+ [B])",
   "once_per_frame_counts": {
     "UI Pass": 274,
     "Screen Effects Resolve Pass": 0,
@@ -31,19 +31,19 @@
     }
   },
   "shadow_total_per_frame_ms": 0.236,
-  "sum_labelled_passes_per_frame_ms": 16.8387,
+  "sum_labelled_passes_per_frame_ms": 16.8295,
   "all_passes_per_frame_ms": {
     "Textured Pass": 3.536,
     "Fog Raymarch Pass": 2.5594,
     "Skinned Viewmodel Pass": 2.3788,
-    "Streamed Animated Direct SH [B]": 1.4788,
+    "Streamed Animated Direct SH [B]": 1.4699,
     "Kinematic Brush Pass": 1.4696,
     "Streamed Animated Direct SH": 1.4682,
     "Streamed SH Compose [B]": 1.2373,
     "Streamed SH Compose": 1.2242,
     "Bloom Bright Pass": 0.2007,
     "Animated LM Compose": 0.1865,
-    "Per-frame Upload Copies": 0.1509,
+    "Per-frame Upload Copies": 0.1506,
     "Promoted Cube Entity Shadow Depth Pass": 0.123,
     "Fog Composite Pass": 0.1034,
     "Promoted Spot Entity Shadow Depth Pass": 0.1007,
@@ -64,13 +64,19 @@
   },
   "compose_per_encoder_ms": {
     "Streamed Animated Direct SH": 2.9472,
-    "Streamed Animated Direct SH [B]": 2.9469,
+    "Streamed Animated Direct SH [B]": 2.9506,
     "Streamed SH Compose": 2.4574,
     "Streamed SH Compose [B]": 2.4657
   },
+  "compose_per_encoder_median_ms": {
+    "Streamed Animated Direct SH": 2.9623,
+    "Streamed Animated Direct SH [B]": 2.9641,
+    "Streamed SH Compose": 2.4708,
+    "Streamed SH Compose [B]": 2.4731
+  },
   "compose_encoder_counts": {
     "Streamed Animated Direct SH": 137,
-    "Streamed Animated Direct SH [B]": 138,
+    "Streamed Animated Direct SH [B]": 137,
     "Streamed SH Compose": 137,
     "Streamed SH Compose [B]": 138
   }

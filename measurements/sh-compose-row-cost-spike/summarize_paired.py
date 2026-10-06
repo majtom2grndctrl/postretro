@@ -4,8 +4,8 @@ usage: summarize_paired.py <batch-key>... > paired.json
 Within each valid run, A (baseline) and B (the arm) alternate per frame, so
 the run's delta B - A per pass carries no launch-to-launch regime. Each arm
 reports per-run A, B and delta, the median delta and its min..max spread.
-The launch's regime marker (Billboard Direct Scatter Compose per frame) is
-recorded beside each run.
+Billboard Direct Scatter Compose per frame is recorded beside each run as a
+sanity value (it was once misread as a launch-regime marker; see findings).
 """
 import json, re, statistics, sys
 from pathlib import Path

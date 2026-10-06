@@ -59,6 +59,18 @@
       "stress-warren-hallway-inspection.prl": "a543d0e0291dbceb"
     }
   },
+  "arenaD": {
+    "binaries": [
+      {
+        "probe_commit": "1a052cfed",
+        "sha256": "8ddcb632e02c28cabf7c232dbb0fa44edf84457df39ce59e205cd93e5e0e8c55"
+      }
+    ],
+    "one_binary": true,
+    "fixtures": {
+      "stress-warren-hallway-inspection.prl": "a543d0e0291dbceb"
+    }
+  },
   "arenaP": {
     "binaries": [
       {

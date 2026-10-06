@@ -1,0 +1,61 @@
+{
+  "source": "/private/tmp/claude-501/-Users-dhiester-Projects-Personal-postretro/a48b8a8f-edfb-41e7-b57a-aab48a692d31/scratchpad/traces/arenaD-skip-coarse-r3-gpu.xml",
+  "camera_frames": 157,
+  "frame_count_pass": "Streamed SH Compose (+ [B])",
+  "once_per_frame_counts": {
+    "UI Pass": 129,
+    "Screen Effects Resolve Pass": 0,
+    "Textured Pass": 129,
+    "Depth Pre-Pass": 130
+  },
+  "shadow_passes": {
+    "Promoted Spot Entity Shadow Depth Pass": {
+      "count": 986,
+      "total_ms": 56.752,
+      "per_frame_ms": 0.3615
+    }
+  },
+  "shadow_total_per_frame_ms": 0.3615,
+  "sum_labelled_passes_per_frame_ms": 26.7976,
+  "all_passes_per_frame_ms": {
+    "Streamed Animated Direct SH": 4.0176,
+    "Streamed Animated Direct SH [B]": 3.8268,
+    "Streamed SH Compose [B]": 3.8038,
+    "Streamed SH Compose": 3.373,
+    "Bloom Bright Pass": 2.9371,
+    "Skinned Viewmodel Pass": 2.9308,
+    "Skinned Mesh Pass": 2.8605,
+    "Textured Pass": 0.9811,
+    "UI Pass": 0.6773,
+    "Promoted Spot Entity Shadow Depth Pass": 0.3615,
+    "Billboard Direct Scatter Compose": 0.3375,
+    "Per-frame Upload Copies": 0.2104,
+    "Bloom Horizontal Gaussian Pass": 0.1755,
+    "Candidate Cull Pass": 0.0572,
+    "Bloom Scene Composite Pass": 0.0473,
+    "Bloom Vertical Gaussian Pass": 0.0457,
+    "Depth Pre-Pass": 0.0429,
+    "Bloom Downsample Pass": 0.0335,
+    "Bloom Upsample Pass": 0.0316,
+    "(wgpu internal) PendingWrites": 0.0241,
+    "Frame Encoder": 0.0225
+  },
+  "compose_per_encoder_ms": {
+    "Streamed Animated Direct SH": 7.9844,
+    "Streamed Animated Direct SH [B]": 7.7026,
+    "Streamed SH Compose": 6.7034,
+    "Streamed SH Compose [B]": 7.6564
+  },
+  "compose_per_encoder_median_ms": {
+    "Streamed Animated Direct SH": 7.9524,
+    "Streamed Animated Direct SH [B]": 7.6435,
+    "Streamed SH Compose": 6.6576,
+    "Streamed SH Compose [B]": 7.6389
+  },
+  "compose_encoder_counts": {
+    "Streamed Animated Direct SH": 79,
+    "Streamed Animated Direct SH [B]": 78,
+    "Streamed SH Compose": 79,
+    "Streamed SH Compose [B]": 78
+  }
+}

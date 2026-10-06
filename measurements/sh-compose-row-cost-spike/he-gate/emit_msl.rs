@@ -1,3 +1,9 @@
+// H-e static gate for sh-compose-row-cost-spike: emit both compose shaders' MSL
+// with wgpu-hal 30's Metal runtime checks on and off (naga's safe API only).
+// Build: copy into a scratch cargo project as src/main.rs, with Cargo.toml.txt
+// as its Cargo.toml. Reads the shaders from the probes worktree at the probe
+// commit (unchanged from main for these files); edit SH if it has moved.
+// Writes {sh_compose,animated_direct}_{checked,unchecked}.metal to the out dir.
 use naga::back::msl;
 use naga::proc::{BoundsCheckPolicies, BoundsCheckPolicy};
 use std::fs;

@@ -1,7 +1,7 @@
 {
-  "source": "/private/tmp/claude-501/-Users-dhiester-Projects-Personal-postretro/a48b8a8f-edfb-41e7-b57a-aab48a692d31/scratchpad/traces/arena3-accum-scalar-r1-gpu.xml",
+  "source": "raw/arena3-accum-scalar-r1-gpu.xml.gz",
   "camera_frames": 218,
-  "frame_count_pass": "Textured Pass",
+  "frame_count_pass": "Streamed SH Compose (+ [B])",
   "once_per_frame_counts": {
     "UI Pass": 217,
     "Screen Effects Resolve Pass": 0,
@@ -37,5 +37,17 @@
     "Bloom Upsample Pass": 0.0367,
     "Frame Encoder": 0.0316,
     "(wgpu internal) PendingWrites": 0.0272
+  },
+  "compose_per_encoder_ms": {
+    "Streamed Animated Direct SH": 3.5436,
+    "Streamed SH Compose": 3.7591
+  },
+  "compose_per_encoder_median_ms": {
+    "Streamed Animated Direct SH": 3.5531,
+    "Streamed SH Compose": 3.7689
+  },
+  "compose_encoder_counts": {
+    "Streamed Animated Direct SH": 218,
+    "Streamed SH Compose": 218
   }
 }

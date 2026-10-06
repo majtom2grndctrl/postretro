@@ -1,7 +1,7 @@
 {
-  "source": "/private/tmp/claude-501/-Users-dhiester-Projects-Personal-postretro/a48b8a8f-edfb-41e7-b57a-aab48a692d31/scratchpad/traces/arenaC-baseline-r3-gpu.xml",
+  "source": "raw/arenaC-baseline-r3-gpu.xml.gz",
   "camera_frames": 158,
-  "frame_count_pass": "Textured Pass",
+  "frame_count_pass": "Streamed SH Compose (+ [B])",
   "once_per_frame_counts": {
     "UI Pass": 157,
     "Screen Effects Resolve Pass": 0,
@@ -41,6 +41,10 @@
   "compose_per_encoder_ms": {
     "Streamed Animated Direct SH": 8.0281,
     "Streamed SH Compose": 6.7161
+  },
+  "compose_per_encoder_median_ms": {
+    "Streamed Animated Direct SH": 7.973,
+    "Streamed SH Compose": 6.667
   },
   "compose_encoder_counts": {
     "Streamed Animated Direct SH": 158,

@@ -2,7 +2,7 @@
 
 Verdict: **checks inside per-entry/per-texel loops: yes.** Both shaders.
 
-## Options used (src/main.rs)
+## Options used (`emit_msl.rs`)
 Mirrors wgpu-hal-30.0.1 `metal/device.rs::load_shader`:
 - `bounds_check_policies`: `index = buffer = image_load = Restrict` (checked) / `Unchecked` (unchecked); `binding_array = Unchecked` (as hal).
 - `force_loop_bounding`: `true` / `false`. `emit_int_div_checks`, `mesh_shader_primitive_indices_clamp`, `ray_query_initialization_tracking`: `true` / `false`, i.e. `ShaderRuntimeChecks::checked()` (the `Default`, used by `create_shader_module`) vs `unchecked()` (all five fields false).
@@ -15,7 +15,7 @@ Mirrors wgpu-hal-30.0.1 `metal/device.rs::load_shader`:
 Approximated: the binding map. Slots are assigned sequentially per class (buffer/texture/sampler) from the module's globals, and `sizes_buffer = Some(next buffer slot)`. hal derives them from the pipeline layout. This changes slot numbers only, not check insertion. `_buffer_sizes` is present, as in hal.
 One behavioural caveat: the `unchecked()` flags set `int_div_checks=false` too, so the diff includes `naga_div`/`naga_mod` select-guards (not bounds checks).
 
-Files: `{sh_compose,animated_direct}_{checked,unchecked}.metal`, `*.diff`, `analyze.py` and `analysis.txt` (per-function/loop breakdown).
+Kept here: `emit_msl.rs` (the generator), `Cargo.toml.txt`, `analyze.py` and `analysis.txt` (per-function/loop breakdown). The emitted `{sh_compose,animated_direct}_{checked,unchecked}.metal` files and their `*.diff` were scratch output and are not kept; rerun the generator to recreate them.
 Unchecked MSL has 0 `loop_bound`, 0 `metal::min(unsigned(`, 0 `naga_div`/`naga_mod`. No `image_load` guards exist: the only image ops are a sampled read and a storage `write`, and Restrict-on-load has nothing to guard.
 
 ## Per-shader table (checked count; unchecked = 0 for every row)
@@ -38,7 +38,7 @@ The two shaders have identical structure and per-loop counts unless noted. "Pass
 
 Totals (checked MSL): 10 loops each get one loop counter (30 lines). `sh_compose`: 16 const-index clamps + 35 buffer-length clamps + 52 `naga_div`/`naga_mod` call sites. `animated_direct`: 18 + 35 + 51. All are absent in unchecked.
 
-## Excerpts (sh_compose_checked.metal; Pass B is the same shape)
+## Excerpts (from the regenerated `sh_compose_checked.metal`; Pass B is the same shape)
 Loop counter (loop_4, L0 inner per-texel):
 ```
 uint2 loop_bound_4 = uint2(4294967295u);

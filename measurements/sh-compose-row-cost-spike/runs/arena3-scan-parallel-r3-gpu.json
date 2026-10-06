@@ -1,7 +1,7 @@
 {
-  "source": "/private/tmp/claude-501/-Users-dhiester-Projects-Personal-postretro/a48b8a8f-edfb-41e7-b57a-aab48a692d31/scratchpad/traces/arena3-scan-parallel-r3-gpu.xml",
+  "source": "raw/arena3-scan-parallel-r3-gpu.xml.gz",
   "camera_frames": 141,
-  "frame_count_pass": "Textured Pass",
+  "frame_count_pass": "Streamed SH Compose (+ [B])",
   "once_per_frame_counts": {
     "UI Pass": 140,
     "Screen Effects Resolve Pass": 0,
@@ -16,11 +16,11 @@
     }
   },
   "shadow_total_per_frame_ms": 0.5582,
-  "sum_labelled_passes_per_frame_ms": 30.5563,
+  "sum_labelled_passes_per_frame_ms": 30.5331,
   "all_passes_per_frame_ms": {
     "Streamed SH Compose": 8.105,
     "Streamed Animated Direct SH": 8.0562,
-    "Skinned Mesh Pass": 3.844,
+    "Skinned Mesh Pass": 3.8209,
     "Bloom Bright Pass": 3.6695,
     "Skinned Viewmodel Pass": 3.3681,
     "UI Pass": 1.012,
@@ -37,5 +37,17 @@
     "Bloom Downsample Pass": 0.0425,
     "Bloom Upsample Pass": 0.0384,
     "(wgpu internal) PendingWrites": 0.031
+  },
+  "compose_per_encoder_ms": {
+    "Streamed Animated Direct SH": 8.0562,
+    "Streamed SH Compose": 8.105
+  },
+  "compose_per_encoder_median_ms": {
+    "Streamed Animated Direct SH": 8.0182,
+    "Streamed SH Compose": 8.0667
+  },
+  "compose_encoder_counts": {
+    "Streamed Animated Direct SH": 141,
+    "Streamed SH Compose": 141
   }
 }

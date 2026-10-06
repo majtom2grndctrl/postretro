@@ -1,3 +1,9 @@
+"""Count runtime checks per function and loop in an emitted checked .metal file.
+
+usage: python3 analyze.py   (in the dir holding emit_msl.rs's *_checked.metal)
+Prints loop-bound counters, const-index and buffer-length clamps and
+naga_div/naga_mod guards per function and loop; analysis.txt is its output.
+"""
 import re,sys,collections
 def analyze(path):
     func=None; depth=0; stack=[]; pend=None

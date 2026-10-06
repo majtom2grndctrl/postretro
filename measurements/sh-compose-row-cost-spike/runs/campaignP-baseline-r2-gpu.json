@@ -1,11 +1,11 @@
 {
-  "source": "/private/tmp/claude-501/-Users-dhiester-Projects-Personal-postretro/a48b8a8f-edfb-41e7-b57a-aab48a692d31/scratchpad/traces/campaignP-baseline-r2-gpu.xml",
+  "source": "raw/campaignP-baseline-r2-gpu.xml.gz",
   "camera_frames": 297,
-  "frame_count_pass": "Textured Pass",
+  "frame_count_pass": "Streamed SH Compose (+ [B])",
   "once_per_frame_counts": {
     "UI Pass": 296,
     "Screen Effects Resolve Pass": 0,
-    "Textured Pass": 297,
+    "Textured Pass": 296,
     "Depth Pre-Pass": 297
   },
   "shadow_passes": {
@@ -31,13 +31,13 @@
     }
   },
   "shadow_total_per_frame_ms": 0.2059,
-  "sum_labelled_passes_per_frame_ms": 16.8518,
+  "sum_labelled_passes_per_frame_ms": 16.8309,
   "all_passes_per_frame_ms": {
-    "Textured Pass": 3.3731,
+    "Textured Pass": 3.3605,
     "Fog Raymarch Pass": 2.5466,
     "Skinned Viewmodel Pass": 2.414,
     "Kinematic Brush Pass": 1.6437,
-    "Streamed Animated Direct SH [B]": 1.4872,
+    "Streamed Animated Direct SH [B]": 1.4788,
     "Streamed Animated Direct SH": 1.4684,
     "Streamed SH Compose [B]": 1.2345,
     "Streamed SH Compose": 1.2251,
@@ -45,7 +45,7 @@
     "Animated LM Compose": 0.1868,
     "Per-frame Upload Copies": 0.1781,
     "Promoted Cube Entity Shadow Depth Pass": 0.1162,
-    "Bloom Horizontal Gaussian Pass": 0.0966,
+    "Bloom Horizontal Gaussian Pass": 0.0965,
     "Fog Composite Pass": 0.0925,
     "Promoted Spot Entity Shadow Depth Pass": 0.0808,
     "Candidate Cull Pass": 0.0706,
@@ -64,13 +64,19 @@
   },
   "compose_per_encoder_ms": {
     "Streamed Animated Direct SH": 2.9467,
-    "Streamed Animated Direct SH [B]": 2.9447,
+    "Streamed Animated Direct SH [B]": 2.9477,
     "Streamed SH Compose": 2.4586,
     "Streamed SH Compose [B]": 2.4608
   },
+  "compose_per_encoder_median_ms": {
+    "Streamed Animated Direct SH": 2.9619,
+    "Streamed Animated Direct SH [B]": 2.9632,
+    "Streamed SH Compose": 2.471,
+    "Streamed SH Compose [B]": 2.4709
+  },
   "compose_encoder_counts": {
     "Streamed Animated Direct SH": 148,
-    "Streamed Animated Direct SH [B]": 150,
+    "Streamed Animated Direct SH [B]": 149,
     "Streamed SH Compose": 148,
     "Streamed SH Compose [B]": 149
   }

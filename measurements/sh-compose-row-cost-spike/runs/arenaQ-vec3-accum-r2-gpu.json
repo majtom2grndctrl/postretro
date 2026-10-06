@@ -1,7 +1,7 @@
 {
-  "source": "/private/tmp/claude-501/-Users-dhiester-Projects-Personal-postretro/a48b8a8f-edfb-41e7-b57a-aab48a692d31/scratchpad/traces/arenaQ-vec3-accum-r2-gpu.xml",
+  "source": "raw/arenaQ-vec3-accum-r2-gpu.xml.gz",
   "camera_frames": 158,
-  "frame_count_pass": "Textured Pass",
+  "frame_count_pass": "Streamed SH Compose (+ [B])",
   "once_per_frame_counts": {
     "UI Pass": 157,
     "Screen Effects Resolve Pass": 0,
@@ -10,7 +10,7 @@
   },
   "shadow_passes": {
     "Promoted Spot Entity Shadow Depth Pass": {
-      "count": 1227,
+      "count": 1226,
       "total_ms": 83.63,
       "per_frame_ms": 0.5293
     }
@@ -45,6 +45,12 @@
     "Streamed Animated Direct SH [B]": 8.0234,
     "Streamed SH Compose": 6.7511,
     "Streamed SH Compose [B]": 6.7646
+  },
+  "compose_per_encoder_median_ms": {
+    "Streamed Animated Direct SH": 7.964,
+    "Streamed Animated Direct SH [B]": 7.9695,
+    "Streamed SH Compose": 6.6762,
+    "Streamed SH Compose [B]": 6.6755
   },
   "compose_encoder_counts": {
     "Streamed Animated Direct SH": 79,

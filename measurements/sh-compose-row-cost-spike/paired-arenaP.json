@@ -7,7 +7,7 @@
           {
             "label": "arenaP-baseline-r1",
             "arms_b": "baseline",
-            "regime_marker_ms": 0.4055,
+            "regime_marker_ms": 0.3415,
             "gpu_state": {
               "Core Clock(MHz)": 1233,
               "Memory Clock(MHz)": 1110,
@@ -18,11 +18,11 @@
             },
             "indirect": {
               "a": 6.7034,
-              "b": 6.6322,
-              "delta": -0.0712,
+              "b": 6.6875,
+              "delta": -0.0159,
               "encoders": [
                 86,
-                86
+                85
               ]
             },
             "animated": {
@@ -57,9 +57,9 @@
         "indirect": {
           "n": 1,
           "median_a": 6.7034,
-          "median_delta": -0.0712,
-          "min_delta": -0.0712,
-          "max_delta": -0.0712
+          "median_delta": -0.0159,
+          "min_delta": -0.0159,
+          "max_delta": -0.0159
         },
         "animated": {
           "n": 1,
@@ -74,7 +74,7 @@
           {
             "label": "arenaP-floor-r1",
             "arms_b": "floor",
-            "regime_marker_ms": 0.3947,
+            "regime_marker_ms": 0.3971,
             "gpu_state": {
               "Core Clock(MHz)": 1232,
               "Memory Clock(MHz)": 1256,

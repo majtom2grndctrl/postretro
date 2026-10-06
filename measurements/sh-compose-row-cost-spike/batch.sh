@@ -3,12 +3,15 @@
 # the whole batch; 15 s idle gap before every launch; each run is one Metal
 # System Trace after RUN_TRACE_AFTER timing windows, exported, reduced by
 # gpu_time.py and deleted at once (traces are ~1 GB each).
-# usage: batch.sh <batch-key> <rounds> <arms (space-separated, quoted)> <map.prl> [engine args...]
-#   arm names are POSTRETRO_SPIKE_ARMS values; "baseline" means none.
-# env: PAIRED=1 runs each arm as the B half of a per-frame A/B pair against
-#      the baseline inside one launch (POSTRETRO_SPIKE_ARMS_B);
-#      SPIKE_BIN (probe binary dir holding postretro + scripts-build),
-#      RUN_FOREGROUND, TRACE_DIR
+# usage: batch.sh <batch-key> <rounds> "<arm> <arm> ..." <map.prl> [engine args...]
+#   An arm is a POSTRETRO_SPIKE_ARMS list with `+` for `,` ("baseline" = none).
+#   With PAIRED=1 an arm `a/b` runs a as A and b as B; a bare arm pairs
+#   against the baseline. In run labels `/` becomes `_vs_`.
+# env (required): SPIKE_BIN (dir holding the probe postretro + scripts-build),
+#      RUN_FOREGROUND (foreground helper, read by run.py), TRACE_DIR.
+# env (optional): PAIRED=1 (per-frame A/B inside one launch via
+#      POSTRETRO_SPIKE_ARMS_B; every reported delta uses this),
+#      RUN_TRACE_AFTER (default 3 timing windows before the trace).
 set -eu
 here=${0:A:h}; runs=$here/runs
 mkdir -p $runs $here/raw
@@ -48,11 +51,12 @@ for round in $(seq 1 $rounds); do
     trace=$TRACE_DIR/$label.trace
     xml=$TRACE_DIR/$label-gpu.xml
     if [[ -d $trace ]]; then
-      xcrun xctrace export --input $trace \
-        --xpath '/trace-toc/run[@number="1"]/data/table[@schema="metal-gpu-intervals"]' \
-        --output $xml > /dev/null
-      python3 $here/gpu_time.py $xml $runs/$label-gpu.json > /dev/null
-      gzip -c $xml > $here/raw/$label-gpu.xml.gz
+      # A failed export or reduction must not strand a ~1 GB trace.
+      { xcrun xctrace export --input $trace \
+          --xpath '/trace-toc/run[@number="1"]/data/table[@schema="metal-gpu-intervals"]' \
+          --output $xml > /dev/null \
+        && python3 $here/gpu_time.py $xml $runs/$label-gpu.json > /dev/null \
+        && gzip -c $xml > $here/raw/$label-gpu.xml.gz; } || echo "reduction failed: $label" >&2
       rm -rf $trace $xml
     fi
     find ${TMPDIR:-/tmp} -maxdepth 1 -name 'instruments*.ktrace' -newer $marker -delete 2>/dev/null

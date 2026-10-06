@@ -24,7 +24,7 @@ maps = collections.defaultdict(set)
 for path in sorted((here / "runs").glob("*.run.json")):
     record = json.loads(path.read_text())
     batch = re.sub(r"-r\d+$", "", path.name[: -len(".run.json")])
-    batch = batch.split("-")[0] if batch.split("-")[0] in {"mix", "counts", "counters"} else re.match(r"[^-]+", batch)[0]
+    batch = batch.split("-")[0]
     binaries[batch].add(record["binary"])
     maps[batch].add(record["map"])
 fixtures = {m: sha(root / "content/dev/maps" / m, 16) for ms in maps.values() for m in ms}

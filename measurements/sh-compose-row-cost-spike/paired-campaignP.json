@@ -7,7 +7,7 @@
           {
             "label": "campaignP-array-free+unroll36-r1",
             "arms_b": "array-free,unroll36,scale-shared",
-            "regime_marker_ms": 0.0531,
+            "regime_marker_ms": 0.0428,
             "gpu_state": {
               "Core Clock(MHz)": 1223,
               "Memory Clock(MHz)": 1472,
@@ -38,7 +38,7 @@
           {
             "label": "campaignP-array-free+unroll36-r2",
             "arms_b": "array-free,unroll36,scale-shared",
-            "regime_marker_ms": 0.05,
+            "regime_marker_ms": 0.0408,
             "gpu_state": {
               "Core Clock(MHz)": 1225,
               "Memory Clock(MHz)": 1472,
@@ -58,18 +58,18 @@
             },
             "animated": {
               "a": 3.0204,
-              "b": 2.0296,
-              "delta": -0.9908,
+              "b": 2.0397,
+              "delta": -0.9807,
               "encoders": [
                 144,
-                146
+                145
               ]
             }
           },
           {
             "label": "campaignP-array-free+unroll36-r3",
             "arms_b": "array-free,unroll36,scale-shared",
-            "regime_marker_ms": 0.0511,
+            "regime_marker_ms": 0.041,
             "gpu_state": {
               "Core Clock(MHz)": 1225,
               "Memory Clock(MHz)": 1472,
@@ -126,7 +126,7 @@
         "animated": {
           "n": 3,
           "median_a": 3.0204,
-          "median_delta": -0.9908,
+          "median_delta": -0.9807,
           "min_delta": -1.0274,
           "max_delta": -0.9796
         }
@@ -136,7 +136,7 @@
           {
             "label": "campaignP-baseline-r1",
             "arms_b": "baseline",
-            "regime_marker_ms": 0.0475,
+            "regime_marker_ms": 0.038,
             "gpu_state": {
               "Core Clock(MHz)": 1229,
               "Memory Clock(MHz)": 1472,
@@ -187,11 +187,11 @@
             },
             "animated": {
               "a": 2.9467,
-              "b": 2.9447,
-              "delta": -0.002,
+              "b": 2.9477,
+              "delta": 0.001,
               "encoders": [
                 148,
-                150
+                149
               ]
             }
           },
@@ -218,11 +218,11 @@
             },
             "animated": {
               "a": 2.9472,
-              "b": 2.9469,
-              "delta": -0.0003,
+              "b": 2.9506,
+              "delta": 0.0034,
               "encoders": [
                 137,
-                138
+                137
               ]
             }
           }
@@ -255,9 +255,9 @@
         "animated": {
           "n": 3,
           "median_a": 2.9472,
-          "median_delta": -0.0003,
-          "min_delta": -0.002,
-          "max_delta": 0.0001
+          "median_delta": 0.001,
+          "min_delta": 0.0001,
+          "max_delta": 0.0034
         }
       },
       "floor": {
@@ -265,7 +265,7 @@
           {
             "label": "campaignP-floor-r1",
             "arms_b": "floor",
-            "regime_marker_ms": 0.0503,
+            "regime_marker_ms": 0.0409,
             "gpu_state": {
               "Core Clock(MHz)": 1229,
               "Memory Clock(MHz)": 1472,
@@ -296,7 +296,7 @@
           {
             "label": "campaignP-floor-r2",
             "arms_b": "floor",
-            "regime_marker_ms": 0.0482,
+            "regime_marker_ms": 0.0392,
             "gpu_state": {
               "Core Clock(MHz)": 1228,
               "Memory Clock(MHz)": 1472,
@@ -327,7 +327,7 @@
           {
             "label": "campaignP-floor-r3",
             "arms_b": "floor",
-            "regime_marker_ms": 0.0536,
+            "regime_marker_ms": 0.0434,
             "gpu_state": {
               "Core Clock(MHz)": 1229,
               "Memory Clock(MHz)": 1472,

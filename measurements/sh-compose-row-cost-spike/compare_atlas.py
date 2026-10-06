@@ -2,7 +2,9 @@
 
 usage: compare_atlas.py <baseline-dir> <arm-dir>
 Prints, per atlas: byte-identical or not, differing texels, and the maximum
-absolute deviation over RGB as rgba16float values.
+absolute deviation over RGB as rgba16float values (dims.json is not read).
+A size mismatch reports identical=false with no texel diff. Exit 0 when every
+atlas is identical, 1 otherwise; capture.sh relies on it.
 """
 import json, struct, sys
 from pathlib import Path

@@ -4,4 +4,7 @@ runs/*.sample.txt
 runs/suspect/
 raw/
 __pycache__/
-capture/out/
+capture/out/**/*.bin
+capture/out/**/*.png
+capture/out/**/*.report.json
+capture/out/**/capture.log

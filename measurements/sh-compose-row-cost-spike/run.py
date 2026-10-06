@@ -1,11 +1,16 @@
 """One foreground engine run for sh-compose-row-cost-spike (copied from shadow-fill-cost).
 
 usage: run.py <label> <binary> <map.prl> [engine args...]
-env:   RUN_WINDOWS (default 8) complete [CpuTiming] windows before stopping
-       RUN_TRACE=1 record a Metal System Trace after RUN_TRACE_AFTER windows
-       RUN_TRACE_SECONDS (default 4)
-       RUN_FOREGROUND path to the compiled foreground helper
-       POSTRETRO_SPIKE_ARMS passes through to the engine (recorded per run)
+env:   RUN_FOREGROUND (required) compiled foreground helper, built from
+         measurements/release-indirect-validation/runtime/foreground.swift
+       RUN_WINDOWS (default 8) [CpuTiming] windows before stopping; untraced runs only
+       RUN_TRACE=1 record a trace after RUN_TRACE_AFTER (default 2) windows,
+         for RUN_TRACE_SECONDS (default 4), into RUN_TRACE_DIR
+       RUN_TRACE_INSTRUMENT replaces the Metal System Trace template with one
+         instrument; RUN_TRACE_EXTRA_INSTRUMENT adds one (counters runs)
+       RUN_SAMPLE=1 also take a CPU `sample`
+       POSTRETRO_SPIKE_ARMS / POSTRETRO_SPIKE_ARMS_B pass through to the engine
+         (recorded per run as arms / arms_b)
 A run is also invalid if its composed rows change after the first
 [SH spike counts] window: every later window must hold min == max rows and
 the same per-level mix, per pass.
@@ -57,6 +62,8 @@ trace_dir = Path(os.environ.get("RUN_TRACE_DIR", str(out)))
 sampling = os.environ.get("RUN_SAMPLE", "0") == "1"
 
 env = os.environ.copy()
+# Release builds default indirect-call validation off; an inherited override
+# would change render_submit cost between runs.
 env.pop("WGPU_VALIDATION_INDIRECT_CALL", None)
 env.update(RUST_LOG="info", POSTRETRO_CPU_TIMING="1")
 log = out / f"{label}.log"

@@ -7,7 +7,7 @@
           {
             "label": "kinmidCP-coalesced-b_vs_coalesced-b+array-free+unroll36-r1",
             "arms_b": "array-free,unroll36,scale-shared,coalesced-b",
-            "regime_marker_ms": 0.0599,
+            "regime_marker_ms": 0.0477,
             "gpu_state": {
               "Core Clock(MHz)": 1232,
               "Memory Clock(MHz)": 1150,
@@ -38,7 +38,7 @@
           {
             "label": "kinmidCP-coalesced-b_vs_coalesced-b+array-free+unroll36-r2",
             "arms_b": "array-free,unroll36,scale-shared,coalesced-b",
-            "regime_marker_ms": 0.056,
+            "regime_marker_ms": 0.0453,
             "gpu_state": {
               "Core Clock(MHz)": 1233,
               "Memory Clock(MHz)": 1396,
@@ -58,18 +58,18 @@
             },
             "animated": {
               "a": 9.3525,
-              "b": 6.0598,
-              "delta": -3.2927,
+              "b": 6.1271,
+              "delta": -3.2254,
               "encoders": [
                 75,
-                76
+                75
               ]
             }
           },
           {
             "label": "kinmidCP-coalesced-b_vs_coalesced-b+array-free+unroll36-r3",
             "arms_b": "array-free,unroll36,scale-shared,coalesced-b",
-            "regime_marker_ms": 0.0569,
+            "regime_marker_ms": 0.0467,
             "gpu_state": {
               "Core Clock(MHz)": 1233,
               "Memory Clock(MHz)": 1378,
@@ -126,8 +126,8 @@
         "animated": {
           "n": 3,
           "median_a": 9.3525,
-          "median_delta": -3.2324,
-          "min_delta": -3.2927,
+          "median_delta": -3.2254,
+          "min_delta": -3.2324,
           "max_delta": -3.1888
         }
       }

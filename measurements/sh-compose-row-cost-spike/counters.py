@@ -3,9 +3,9 @@
 usage: counters.py <trace> <out.json>
 The trace must hold both Metal System Trace (pass intervals) and the Metal
 GPU Counters instrument (50 us samples on the same clock). For every compose
-label (A and [B] halves of a paired run) it averages Compute Shader Occupancy
-and ALU utilization over the samples inside that label's intervals and sums
-last-level-cache bytes per interval.
+label (A and [B] halves of a paired run) it averages every counter's samples
+inside that label's intervals (occupancy, ALU, LLC bytes alike). On the 5300M
+these averages did not discriminate arms (findings §Shader statistics).
 """
 import bisect, collections, json, subprocess, sys, tempfile
 import xml.etree.ElementTree as E

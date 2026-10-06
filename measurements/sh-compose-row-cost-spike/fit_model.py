@@ -1,8 +1,8 @@
 """Fit the per-pass compose cost model and project post-filter savings.
 
 usage: fit_model.py > model.json
-Inputs are the paired batches (every run's A half is the baseline build):
-baseline time T per pose = all A halves; floor delta and stacked-lever delta
+Inputs are the paired batches: baseline time T per pose = the A halves of
+runs whose A is the baseline build (floor/X pairs are excluded); floor delta and stacked-lever delta
 per pose = that arm's paired B - A. Row and entry counts come from the
 `counts-*` runs' [SH spike counts] lines (same fixtures, same poses).
 
@@ -44,6 +44,10 @@ def paired(batch):
         if not record["valid"] or record.get("arms_b") is None or not gpu_path.exists():
             continue
         arm = re.match(rf"{batch}-(.+)-r\d+$", label)[1]
+        # Only baseline/X pairs carry a baseline A half; floor/X pairs run the
+        # floor as A, so they never feed T (spike review).
+        if record.get("arms") != "baseline":
+            continue
         per = json.loads(gpu_path.read_text())["compose_per_encoder_ms"]
         out.setdefault(arm, []).append({p: (per[name], per[f"{name} [B]"]) for p, (name, _) in PASSES.items()})
     return out

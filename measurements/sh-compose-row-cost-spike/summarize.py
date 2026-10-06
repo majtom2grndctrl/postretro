@@ -1,4 +1,5 @@
-"""Per-arm per-pass GPU ms for one or more batches.
+"""Legacy: per-arm per-pass GPU ms across launches (batches arena1/arena3/diag1).
+Every reported delta comes from summarize_paired.py instead.
 
 usage: summarize.py <batch-key>... > results.json
 A run counts only if its run.json is valid (foreground, unlocked, no screen

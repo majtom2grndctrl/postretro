@@ -1,7 +1,7 @@
 {
-  "source": "/private/tmp/claude-501/-Users-dhiester-Projects-Personal-postretro/a48b8a8f-edfb-41e7-b57a-aab48a692d31/scratchpad/traces/arenaC-coalesced-b-r2-gpu.xml",
+  "source": "raw/arenaC-coalesced-b-r2-gpu.xml.gz",
   "camera_frames": 166,
-  "frame_count_pass": "Textured Pass",
+  "frame_count_pass": "Streamed SH Compose (+ [B])",
   "once_per_frame_counts": {
     "UI Pass": 165,
     "Screen Effects Resolve Pass": 0,
@@ -16,12 +16,12 @@
     }
   },
   "shadow_total_per_frame_ms": 0.5323,
-  "sum_labelled_passes_per_frame_ms": 29.16,
+  "sum_labelled_passes_per_frame_ms": 29.1263,
   "all_passes_per_frame_ms": {
     "Streamed Animated Direct SH": 8.0072,
-    "Streamed SH Compose": 6.7462,
+    "Streamed SH Compose": 6.717,
     "Skinned Mesh Pass": 4.1144,
-    "Skinned Viewmodel Pass": 3.806,
+    "Skinned Viewmodel Pass": 3.8015,
     "Bloom Bright Pass": 2.6147,
     "Textured Pass": 1.5754,
     "UI Pass": 0.5463,
@@ -40,10 +40,14 @@
   },
   "compose_per_encoder_ms": {
     "Streamed Animated Direct SH": 8.0072,
-    "Streamed SH Compose": 6.7058
+    "Streamed SH Compose": 6.717
+  },
+  "compose_per_encoder_median_ms": {
+    "Streamed Animated Direct SH": 7.9653,
+    "Streamed SH Compose": 6.6704
   },
   "compose_encoder_counts": {
     "Streamed Animated Direct SH": 166,
-    "Streamed SH Compose": 167
+    "Streamed SH Compose": 166
   }
 }

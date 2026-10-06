@@ -1,7 +1,7 @@
 # E23--gamepad-input — plan of record
 
 mode: resumable
-status: proposed
+status: approved
 read at: b9d0a4645
 
 Source re-read at `b9d0a4645` (window-modes landed; research was against `af1d3c1b5`). No Decision premise was found false. Path corrections below.

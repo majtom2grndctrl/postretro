@@ -176,10 +176,13 @@ pub(crate) enum ParticleStage {
     /// `particle_sim::tick` over every live particle. Runs once per rendered
     /// frame on frame time, not per fixed tick.
     Sim,
+    /// The particle render collector: per-sprite cell cull and instance
+    /// packing for the billboard pass.
+    Collect,
 }
 
 impl StageSet for ParticleStage {
-    const ALL: &'static [Self] = &[Self::Emit, Self::Sim];
+    const ALL: &'static [Self] = &[Self::Emit, Self::Sim, Self::Collect];
 
     fn index(self) -> usize {
         self as usize
@@ -189,6 +192,7 @@ impl StageSet for ParticleStage {
         match self {
             Self::Emit => "particle_emit",
             Self::Sim => "particle_sim",
+            Self::Collect => "particle_collect",
         }
     }
 }

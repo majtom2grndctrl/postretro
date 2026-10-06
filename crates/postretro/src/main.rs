@@ -3890,7 +3890,8 @@ impl ApplicationHandler for App {
                     session
                         .presentation_pool
                         .recycle_draw_inputs(recycled_inputs);
-                    // Particle CPU (emit + sim), folded under `render_prep` below.
+                    // Particle CPU (emit, sim, render collect), folded under `render_prep`
+                    // after the collector below.
                     let particle_cpu = postretro_stage_timing::StageFrame::<
                         cpu_timing::ParticleStage,
                     >::new(self.cpu_timer.gate());
@@ -3925,12 +3926,6 @@ impl ApplicationHandler for App {
                             &mut self.particle_live_counts,
                         );
                     }
-                    self.cpu_timer.nested_mut().extend_from(
-                        &particle_cpu,
-                        Some(postretro_stage_timing::StageSet::label(
-                            cpu_timing::FrameStage::RenderPrep,
-                        )),
-                    );
 
                     // Light bridge — between Game Logic and Render. Uploads
                     // mutated `LightComponent` data before `render_frame_indirect`
@@ -4050,6 +4045,7 @@ impl ApplicationHandler for App {
                             }),
                             None => 0.0,
                         };
+                        let _scope = particle_cpu.scope(cpu_timing::ParticleStage::Collect);
                         session.particle_render.collect_at_tick(
                             &registry,
                             self.level.as_ref(),
@@ -4057,6 +4053,12 @@ impl ApplicationHandler for App {
                             presentation_tick,
                         );
                     }
+                    self.cpu_timer.nested_mut().extend_from(
+                        &particle_cpu,
+                        Some(postretro_stage_timing::StageSet::label(
+                            cpu_timing::FrameStage::RenderPrep,
+                        )),
+                    );
                     // Prepare the controller while no borrowed draw collection
                     // is live. The actual drain still occurs as the first step
                     // inside `render_frame_indirect`, before scene recording.

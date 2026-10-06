@@ -625,6 +625,7 @@ fn particle_stages_sit_under_render_prep_in_the_log_line() {
         let expected = match stage {
             ParticleStage::Emit => "particle_emit",
             ParticleStage::Sim => "particle_sim",
+            ParticleStage::Collect => "particle_collect",
         };
         assert_eq!(stage.label(), expected);
         assert_eq!(stage.parent(), None, "{expected} is a root");

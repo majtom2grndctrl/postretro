@@ -1572,6 +1572,7 @@ pub(crate) mod tests {
             session: Some(crate::session::Session {
                 input_system: input::InputSystem::new(input::default_bindings()),
                 bindings: input::BindingState::default(),
+                controls: Default::default(),
                 pending_slider_steps: Vec::new(),
                 gameplay_input_latch: input::GameplayInputLatch::new(),
                 ui_dispatch: input::UiDispatch::new(),

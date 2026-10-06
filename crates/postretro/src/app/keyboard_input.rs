@@ -84,6 +84,15 @@ impl App {
             let Some(session) = self.session.as_mut() else {
                 return;
             };
+            // The capture prompt takes every key: a press (never an OS
+            // repeat) is its candidate, and neither the press nor its release
+            // reaches nav, text entry, the menu toggle, or gameplay (P7, P8).
+            if session.capture_prompt_is_active() {
+                if pressed && !key_event.repeat {
+                    session.offer_capture_press(input::PhysicalInput::Key(code));
+                }
+                return;
+            }
             let mut record_nav_signal = false;
             let mut set_menu_toggle = false;
 

@@ -200,3 +200,32 @@ fn dash_binds_while_host_tuning_is_installed_and_unbinds_after_demote() {
     state.rebuild(solo, local, &mut input);
     assert!(!dash_bound(&state));
 }
+
+#[test]
+fn the_controls_panel_lists_dash_from_the_registry_before_any_level_loads() {
+    // P6, R5: opening the panel from the frontend reads a table built from the
+    // committed registry, with no level loaded.
+    for with_dash in [true, false] {
+        let mut app = crate::startup::lifecycle::tests::test_app();
+        let mut pawn = entity("pawn");
+        pawn.movement = Some(movement(with_dash, false));
+        app.session
+            .as_ref()
+            .unwrap()
+            .scripting
+            .script_ctx
+            .data_registry
+            .borrow_mut()
+            .replace_entity_types(vec![pawn]);
+        app.open_controls_panel();
+        let session = app.session.as_ref().unwrap();
+        let rows = crate::app::controls_panel::controls_rows(
+            session.bindings.table(),
+            session.bindings.author(),
+        );
+        assert_eq!(
+            rows.iter().any(|row| row.command == Command::Dash),
+            with_dash
+        );
+    }
+}

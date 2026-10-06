@@ -8,6 +8,7 @@ mod activator_tests;
 mod author_layer;
 #[cfg(test)]
 mod author_layer_tests;
+mod binding_capture;
 mod binding_state;
 mod binding_table;
 #[cfg(test)]
@@ -24,6 +25,7 @@ mod input_names;
 mod latch;
 mod look;
 mod player_rows;
+mod rebind;
 mod relevance;
 mod scroll;
 mod snapshot;
@@ -40,12 +42,18 @@ pub use ui_nav_map::UiNavContext;
 mod wieldable_selection;
 
 pub use author_layer::author_layer_from_block;
+pub use binding_capture::{BindingCapture, CaptureTarget};
 pub use binding_state::{BindingSources, BindingState};
-pub use commands::Command;
+pub use binding_table::{AuthorLayer, EffectiveTable, PlayerLayer};
+#[cfg(test)]
+pub use binding_table::{AuthorBinding, CommandPresentation};
+pub use commands::{Command, CommandContext};
+pub use input_names::{input_label, input_name};
+pub use rebind::{RebindProposal, propose_rebind, reset_command};
+pub use relevance::Relevance;
 pub use defaults::default_bindings;
 pub use diagnostics::{DiagnosticAction, DiagnosticInputs, default_diagnostic_chords};
 pub use focus::InputFocus;
-#[cfg_attr(not(test), allow(unused_imports))]
 pub use input_names::DeviceClass;
 pub use latch::GameplayInputLatch;
 pub use look::DEFAULT_GAMEPAD_LOOK_SENSITIVITY;

@@ -816,6 +816,9 @@ declare EXIT_TO_DESKTOP_ACTION: "ui.exitToDesktop"
 --- Reserved button `onPress` action that opens the engine accessibility panel.
 declare OPEN_ACCESSIBILITY_ACTION: "ui.openAccessibility"
 
+--- Reserved button `onPress` action that opens the engine controls panel.
+declare OPEN_CONTROLS_ACTION: "ui.openControls"
+
 --- The reserved `onPress` action for one accessibility field. Toggles `cycle`;
 --- numeric fields `increase` or `decrease`. `AccessibilityToggleField` and
 --- `AccessibilityNumericField` are declared in virtual_module.luau — they type

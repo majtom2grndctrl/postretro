@@ -18,6 +18,52 @@ pub const QUIT_TO_MENU_ACTION: &str = "ui.quitToMenu";
 /// The App intercepts this before named-reaction dispatch.
 pub const OPEN_ACCESSIBILITY_ACTION: &str = "ui.openAccessibility";
 
+/// Reserved `Button.onPress` value that opens the engine controls panel. The
+/// App intercepts this before named-reaction dispatch.
+pub const OPEN_CONTROLS_ACTION: &str = "ui.openControls";
+
+/// Prefix of the engine controls panel's own actions (`ui.controls.<op>…`).
+/// Only the engine-built panel and its dialogs carry them.
+pub const CONTROLS_ACTION_PREFIX: &str = "ui.controls.";
+
+/// A parsed controls-panel action.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ControlsAction<'a> {
+    /// Open the capture prompt for one binding slot.
+    Capture {
+        command: &'a str,
+        class: &'a str,
+        slot: usize,
+    },
+    /// Return one command to the author's defaults.
+    Reset { command: &'a str },
+    /// Return every command to the author's defaults.
+    ResetAll,
+    /// Apply the pending conflicting binding, taking the input from the others.
+    Replace,
+    /// Drop the pending conflicting binding.
+    Keep,
+}
+
+/// Parse a `ui.controls.*` action; `None` for anything else.
+pub fn parse_controls_action(on_press: &str) -> Option<ControlsAction<'_>> {
+    let rest = on_press.strip_prefix(CONTROLS_ACTION_PREFIX)?;
+    let mut parts = rest.split('.');
+    let action = match (parts.next()?, parts.next(), parts.next(), parts.next()) {
+        ("capture", Some(command), Some(class), Some(slot)) => ControlsAction::Capture {
+            command,
+            class,
+            slot: slot.parse().ok()?,
+        },
+        ("reset", Some(command), None, None) => ControlsAction::Reset { command },
+        ("resetAll", None, None, None) => ControlsAction::ResetAll,
+        ("replace", None, None, None) => ControlsAction::Replace,
+        ("keep", None, None, None) => ControlsAction::Keep,
+        _ => return None,
+    };
+    parts.next().is_none().then_some(action)
+}
+
 /// Prefix of the reserved accessibility field-action family,
 /// `ui.accessibility.<op>.<field>`: `op` is `cycle`, `increase`, or `decrease`;
 /// `field` is the `accessibility.*` slot's camelCase suffix. The App intercepts

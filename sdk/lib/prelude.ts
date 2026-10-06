@@ -127,6 +127,7 @@ export {
   EXIT_TO_DESKTOP_ACTION,
   QUIT_TO_MENU_ACTION,
   OPEN_ACCESSIBILITY_ACTION,
+  OPEN_CONTROLS_ACTION,
   accessibilityAction,
   displayModeAction,
   openMenu,

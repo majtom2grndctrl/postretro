@@ -27,7 +27,13 @@ pub struct BindingState {
     layers_revision: u64,
     table: EffectiveTable,
     ui_nav: UiNavMap,
+    /// The relevance facts the table was last built with; rebinding proposals
+    /// rebuild against the same facts.
+    facts: RelevanceFacts,
     built_from: Option<(BindingSources, u64)>,
+    /// Bumped on every rebuild, so views of the table (the controls panel)
+    /// know when to refresh.
+    generation: u64,
 }
 
 /// Starts from the engine table so UI nav works before mod init commits the
@@ -47,7 +53,9 @@ impl Default for BindingState {
             layers_revision: 0,
             ui_nav: UiNavMap::from_table(&table),
             table,
+            facts: RelevanceFacts::default(),
             built_from: None,
+            generation: 0,
         }
     }
 }
@@ -69,7 +77,30 @@ impl BindingState {
             EffectiveTable::build(&self.author, &self.player, facts, self.swap_confirm_cancel);
         input.set_bindings(self.table.gameplay_bindings());
         self.ui_nav = UiNavMap::from_table(&self.table);
+        self.facts = facts;
         self.built_from = Some((sources, self.layers_revision));
+        self.generation += 1;
+    }
+
+    /// Counts table rebuilds.
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    pub fn author(&self) -> &AuthorLayer {
+        &self.author
+    }
+
+    pub fn player(&self) -> &PlayerLayer {
+        &self.player
+    }
+
+    pub fn facts(&self) -> RelevanceFacts {
+        self.facts
+    }
+
+    pub fn swap_confirm_cancel(&self) -> bool {
+        self.swap_confirm_cancel
     }
 
     /// The UI slice of the effective table that nav reads.
@@ -77,12 +108,10 @@ impl BindingState {
         &self.ui_nav
     }
 
-    #[allow(dead_code)]
     pub fn table(&self) -> &EffectiveTable {
         &self.table
     }
 
-    #[allow(dead_code)]
     pub fn set_author_layer(&mut self, author: AuthorLayer) {
         if self.author != author {
             self.author = author;
@@ -90,7 +119,6 @@ impl BindingState {
         }
     }
 
-    #[allow(dead_code)]
     pub fn set_player_layer(&mut self, player: PlayerLayer) {
         if self.player != player {
             self.player = player;
@@ -98,7 +126,6 @@ impl BindingState {
         }
     }
 
-    #[allow(dead_code)]
     pub fn set_swap_confirm_cancel(&mut self, swap: bool) {
         if self.swap_confirm_cancel != swap {
             self.swap_confirm_cancel = swap;

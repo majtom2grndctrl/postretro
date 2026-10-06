@@ -344,6 +344,12 @@ export const QUIT_TO_MENU_ACTION = "ui.quitToMenu";
  */
 export const OPEN_ACCESSIBILITY_ACTION = "ui.openAccessibility";
 
+/**
+ * Reserved button `onPress` action that opens the engine controls panel,
+ * built from the mod's commands; players rebind there.
+ */
+export const OPEN_CONTROLS_ACTION = "ui.openControls";
+
 /** Accessibility toggles a menu button may cycle. */
 export type AccessibilityToggleField = "reduceMotion" | "flashLimiter" | "monoAudio";
 

@@ -75,6 +75,9 @@ pub(crate) struct Session {
     /// input system runs. Rebuilt by `App::refresh_effective_bindings`.
     pub(crate) bindings: input::BindingState,
 
+    /// The engine controls panel's capture prompt and pending conflict.
+    pub(crate) controls: crate::app::controls_panel::ControlsPanelState,
+
     /// Slider value steps captured this frame, applied at the command drain.
     pub(crate) pending_slider_steps: Vec<crate::app::ui_actions::PendingSliderStep>,
 
@@ -666,6 +669,7 @@ impl Session {
         Ok(Self {
             input_system,
             bindings,
+            controls: Default::default(),
             pending_slider_steps: Vec::new(),
             gameplay_input_latch: input::GameplayInputLatch::new(),
             ui_dispatch: input::UiDispatch::new(),

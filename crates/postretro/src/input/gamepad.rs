@@ -30,6 +30,10 @@ use crate::input::ui_nav_map::{StickSide, UiNavContext, UiNavMap, stick_half_for
 #[derive(Debug, Default)]
 pub struct GamepadNavOutput {
     pub nav_intents: Vec<NavIntent>,
+    /// Every named input pressed this frame: button presses, trigger
+    /// crossings, and stick halves pushed from rest. The controls panel's
+    /// capture prompt takes these instead of the nav intents.
+    pub presses: Vec<PhysicalInput>,
     pub confirm_released: bool,
     pub directional_released: bool,
 }
@@ -78,6 +82,9 @@ pub struct GamepadSystem {
     /// Latches once after a force-feedback no-op so the unsupported-backend
     /// warning is logged at most once, not on every `rumble` call.
     ff_warned: bool,
+    /// Whether each trigger (left, right) was past its button threshold last
+    /// poll, so a crossing reports one press.
+    triggers_down: [bool; 2],
 }
 
 /// A live rumble effect plus its remaining duration. The effect handle is kept
@@ -106,6 +113,7 @@ impl GamepadSystem {
                     active_gamepad: None,
                     active_rumble: None,
                     ff_warned: false,
+                    triggers_down: [false; 2],
                 })
             }
             Err(err) => {
@@ -174,6 +182,10 @@ impl GamepadSystem {
             match event {
                 EventType::ButtonPressed(button, _) => {
                     let input = PhysicalInput::GamepadButton(button);
+                    // Triggers press through the engine's own threshold below.
+                    if BUTTONS.contains(&button) {
+                        out.presses.push(input);
+                    }
                     if let Some(intent) = ui_nav.intent_for(input, context) {
                         out.nav_intents.push(intent);
                     }
@@ -237,10 +249,11 @@ impl GamepadSystem {
             (StickSide::Left, nav_sticks.left.update(left_x, left_y)),
             (StickSide::Right, nav_sticks.right.update(right_x, right_y)),
         ] {
-            if let Some(half) = crossing.and_then(|direction| stick_half_for(side, direction))
-                && let Some(intent) = ui_nav.intent_for(half, context)
-            {
-                out.nav_intents.push(intent);
+            if let Some(half) = crossing.and_then(|direction| stick_half_for(side, direction)) {
+                out.presses.push(half);
+                if let Some(intent) = ui_nav.intent_for(half, context) {
+                    out.nav_intents.push(intent);
+                }
             }
         }
 
@@ -258,6 +271,19 @@ impl GamepadSystem {
         input_system.set_gamepad_axis(Axis::RightZ, right_trigger);
 
         // Triggers also produce button state via threshold.
+        for (index, (button, value)) in [
+            (Button::LeftTrigger2, left_trigger),
+            (Button::RightTrigger2, right_trigger),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let down = trigger_is_active(value);
+            if down && !self.triggers_down[index] {
+                out.presses.push(PhysicalInput::GamepadButton(button));
+            }
+            self.triggers_down[index] = down;
+        }
         input_system.set_physical_input(
             PhysicalInput::GamepadButton(Button::LeftTrigger2),
             trigger_is_active(left_trigger),

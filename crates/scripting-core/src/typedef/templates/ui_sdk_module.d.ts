@@ -272,6 +272,8 @@ declare module "postretro/ui" {
   export const QUIT_TO_MENU_ACTION: "ui.quitToMenu";
   /** Reserved `Button.onPress` action that opens the engine accessibility panel. */
   export const OPEN_ACCESSIBILITY_ACTION: "ui.openAccessibility";
+  /** Reserved `Button.onPress` action that opens the engine controls panel. */
+  export const OPEN_CONTROLS_ACTION: "ui.openControls";
   /** Accessibility toggles a menu button may cycle. */
   export type AccessibilityToggleField = "reduceMotion" | "flashLimiter" | "monoAudio";
   /** Accessibility numeric fields a mod menu button may step, each within its range ([0, 1], or [1, 3] for `holdTimingScale`). */

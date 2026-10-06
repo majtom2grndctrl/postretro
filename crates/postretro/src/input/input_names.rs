@@ -316,6 +316,36 @@ pub fn input_name(input: PhysicalInput) -> Option<&'static str> {
         .map(|(_, name)| *name)
 }
 
+/// A display label for an input: its name split into upper-case words, with
+/// the W3C `Key`/`Digit` prefixes dropped (`KeyW` → `W`, `ShiftLeft` →
+/// `SHIFT LEFT`, `left_stick_up` → `LEFT STICK UP`). Glyph art replaces these
+/// where a mod ships it.
+pub fn input_label(input: PhysicalInput) -> String {
+    let Some(name) = input_name(input) else {
+        return "?".to_string();
+    };
+    let name = name
+        .strip_prefix("Key")
+        .or_else(|| name.strip_prefix("Digit"))
+        .filter(|rest| rest.len() == 1)
+        .unwrap_or(name);
+    let mut out = String::with_capacity(name.len() + 4);
+    let mut previous_lower = false;
+    for c in name.chars() {
+        if c == '_' {
+            out.push(' ');
+            previous_lower = false;
+            continue;
+        }
+        if c.is_ascii_uppercase() && previous_lower {
+            out.push(' ');
+        }
+        previous_lower = c.is_ascii_lowercase() || c.is_ascii_digit();
+        out.push(c.to_ascii_uppercase());
+    }
+    out
+}
+
 /// Parse an input string from a manifest or settings row.
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn parse_input(name: &str) -> Option<PhysicalInput> {

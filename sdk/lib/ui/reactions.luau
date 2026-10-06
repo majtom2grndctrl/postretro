@@ -305,6 +305,10 @@ UiReactionsSdk.QUIT_TO_MENU_ACTION = "ui.quitToMenu"
 --- panel is engine-owned and works under a mod that registers no reactions.
 UiReactionsSdk.OPEN_ACCESSIBILITY_ACTION = "ui.openAccessibility"
 
+--- Reserved button `onPress` action that opens the engine controls panel,
+--- built from the mod's commands; players rebind there.
+UiReactionsSdk.OPEN_CONTROLS_ACTION = "ui.openControls"
+
 --- The reserved `onPress` action for one accessibility field:
 --- `ui.accessibility.<op>.<field>`. Toggles (`reduceMotion`, `flashLimiter`,
 --- `monoAudio`) `cycle`; numeric fields (`screenShakeScale`, `viewFeelScale`,

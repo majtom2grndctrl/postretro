@@ -283,12 +283,10 @@ impl EffectiveTable {
             .unwrap_or(Relevance::Irrelevant)
     }
 
-    #[cfg_attr(not(test), allow(dead_code))]
     pub fn entries(&self) -> &[EffectiveBinding] {
         &self.entries
     }
 
-    #[cfg_attr(not(test), allow(dead_code))]
     pub fn relevance(&self, command: Command) -> Relevance {
         self.relevance_of(command)
     }
@@ -298,13 +296,11 @@ impl EffectiveTable {
         &self.suppressed
     }
 
-    #[allow(dead_code)]
     pub fn displaced(&self) -> &[(Command, DeviceClass)] {
         &self.displaced
     }
 
     /// The inputs bound to a command on one class, in slot order.
-    #[allow(dead_code)]
     pub fn inputs(&self, command: Command, class: DeviceClass) -> Vec<PhysicalInput> {
         self.entries
             .iter()

@@ -2015,6 +2015,14 @@ impl ApplicationHandler for App {
                 let Some(session) = self.session.as_mut() else {
                     return;
                 };
+                // The capture prompt takes mouse buttons too; a captured click
+                // activates nothing (P8).
+                if session.capture_prompt_is_active() {
+                    if state.is_pressed() {
+                        session.offer_capture_press(input::PhysicalInput::MouseButton(button));
+                    }
+                    return;
+                }
                 if !session
                     .ui_dispatch
                     .dispatch_event(click_intent)
@@ -2102,6 +2110,8 @@ impl ApplicationHandler for App {
                         input::cursor::release_cursor(&ws.window);
                     }
                     if let Some(session) = self.session.as_mut() {
+                        // Leaving the window abandons a capture unchanged.
+                        session.abandon_capture();
                         session.input_system.clear_all();
                         self.client_weapon
                             .suspend(&session.scripting.script_ctx.registry.borrow());
@@ -2242,15 +2252,26 @@ impl ApplicationHandler for App {
                         .map_or(input::UiNavContext::Open, |session| {
                             session.ui_nav_context()
                         });
+                    let capture_prompt = session
+                        .as_ref()
+                        .is_some_and(|session| session.capture_prompt_is_active());
                     if let Some(session) = session.as_mut()
                         && let Some(gp) = session.gamepad_system.as_mut()
                     {
-                        let gp_nav = gp.update(
+                        let mut gp_nav = gp.update(
                             &mut session.input_system,
                             nav_stick_tracker,
                             session.bindings.ui_nav(),
                             context,
                         );
+                        if capture_prompt {
+                            // The capture prompt takes the pad's presses; none
+                            // navigates or opens the menu (P8).
+                            for press in std::mem::take(&mut gp_nav.presses) {
+                                session.controls.offer_press(press);
+                            }
+                            gp_nav.nav_intents.clear();
+                        }
                         // Advance any active rumble's timeout in the input stage
                         // and stop it once its duration elapses (started by a
                         // drained `Rumble` command on a prior frame).
@@ -2450,6 +2471,10 @@ impl ApplicationHandler for App {
                         );
                     }
                 }
+
+                // After the frame's activations: resolve a capture and refresh
+                // the controls panel.
+                self.update_controls_panel();
 
                 let ui_captures_gameplay = {
                     let session = self.session.as_ref().expect("running session installed");
@@ -4802,6 +4827,9 @@ impl ApplicationHandler for App {
         let Some(session) = self.session.as_mut() else {
             return;
         };
+        if let DeviceEvent::MouseMotion { delta } = event {
+            session.offer_capture_mouse_motion(delta.0, delta.1);
+        }
         // UI-dispatch seam, ahead of the gameplay forward: a captured raw
         // delta is consumed by the UI layer and must not reach the look path.
         // Mirrors the `window_event` seam; the decision is the mode flag. A raw
@@ -5685,13 +5713,20 @@ impl App {
             let session = session.as_mut().expect("frontend session installed");
             let mut nav_input_seen = false;
             let context = session.ui_nav_context();
+            let capture_prompt = session.capture_prompt_is_active();
             if let Some(gp) = session.gamepad_system.as_mut() {
-                let gp_nav = gp.update(
+                let mut gp_nav = gp.update(
                     &mut session.input_system,
                     nav_stick_tracker,
                     session.bindings.ui_nav(),
                     context,
                 );
+                if capture_prompt {
+                    for press in std::mem::take(&mut gp_nav.presses) {
+                        session.controls.offer_press(press);
+                    }
+                    gp_nav.nav_intents.clear();
+                }
                 gp.tick_rumble(frame_dt);
                 if gp_nav.confirm_released {
                     session.ui_focus.release_confirm_repeat();
@@ -5781,10 +5816,14 @@ impl App {
             && !text_entry_consumed_nav
             && !self.frontend_menu_is_top()
             && let Some(session) = self.session.as_mut()
+            && !session.capture_prompt_is_active()
         {
             session.modal_stack.pop();
         }
         self.pending_menu_toggle = false;
+        // After the frame's activations: resolve a capture and refresh the
+        // controls panel.
+        self.update_controls_panel();
 
         if self.pending_exit_to_desktop {
             self.pending_exit_to_desktop = false;

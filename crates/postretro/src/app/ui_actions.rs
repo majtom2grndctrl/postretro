@@ -67,11 +67,13 @@ pub(crate) fn apply_pause_menu_nav_policy(modal_stack: &mut postretro_ui::modal_
     }
 }
 
-/// Running `nav.cancel`: close the active `pauseMenu`, accessibility panel, or
-/// engine display-mode confirmation (reverting its pending change); also close
+/// Running `nav.cancel`: close the active `pauseMenu`, accessibility panel,
+/// controls panel or dialog, or engine display-mode confirmation (reverting
+/// its pending change); also close
 /// a submenu pushed above the pause menu or frontend root. A submenu opened from
 /// the pause menu (the options screen) returns to it. Other trees own their own
-/// cancel policy.
+/// cancel policy. The capture prompt never closes on cancel: Escape and the
+/// cancel button are inputs it captures.
 /// `close_frontend_submenu` is the frontend's verdict: its root is pushed and is
 /// not on top.
 pub(crate) fn apply_running_cancel_policy(
@@ -79,11 +81,16 @@ pub(crate) fn apply_running_cancel_policy(
     close_frontend_submenu: bool,
 ) {
     let active = modal_stack.active_name();
+    if active == Some(postretro_ui::demo::CONTROLS_CAPTURE_NAME) {
+        return;
+    }
     let pause_submenu = active != Some(postretro_ui::demo::PAUSE_MENU_NAME)
         && modal_stack.contains_pushed(postretro_ui::demo::PAUSE_MENU_NAME);
     if active == Some(postretro_ui::demo::PAUSE_MENU_NAME)
         || active == Some(postretro_ui::demo::DISPLAY_MODE_CONFIRM_NAME)
         || active == Some(postretro_ui::demo::ACCESSIBILITY_PANEL_NAME)
+        || active == Some(postretro_ui::demo::CONTROLS_PANEL_NAME)
+        || active == Some(postretro_ui::demo::CONTROLS_DIALOG_NAME)
         || pause_submenu
         || close_frontend_submenu
     {
@@ -282,6 +289,14 @@ impl App {
             }
             if on_press == postretro_ui::actions::OPEN_ACCESSIBILITY_ACTION {
                 self.open_accessibility_panel();
+                return;
+            }
+            if on_press == postretro_ui::actions::OPEN_CONTROLS_ACTION {
+                self.open_controls_panel();
+                return;
+            }
+            if let Some(action) = postretro_ui::actions::parse_controls_action(&on_press) {
+                self.apply_controls_action(action);
                 return;
             }
             if let Some(action) = postretro_ui::actions::parse_accessibility_field_action(&on_press)

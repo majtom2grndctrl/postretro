@@ -3056,6 +3056,8 @@ export type PostretroUiModule = {
   QUIT_TO_MENU_ACTION: "ui.quitToMenu",
   --- Reserved button `onPress` action that opens the engine accessibility panel.
   OPEN_ACCESSIBILITY_ACTION: "ui.openAccessibility",
+  --- Reserved button `onPress` action that opens the engine controls panel.
+  OPEN_CONTROLS_ACTION: "ui.openControls",
   --- Build a reserved `ui.displayMode.<op>` action. `next`/`previous` browse without saving;
   --- `apply` commits the selection (exclusive opens the engine confirmation).
   displayModeAction: (op: DisplayModeOperation) -> string,

@@ -138,7 +138,7 @@ Split-first files are split before they are extended, each split its own behavio
 
 | # | Task | Owner | Depends on | Status |
 |---|---|---|---|---|
-| 1 | Split `input/mod.rs` by responsibility (latch, physical state, axis resolution) — no behavior change | integrating executor | — | |
+| 1 | Split `input/mod.rs` by responsibility (latch, physical state, axis resolution) — no behavior change | integrating executor | — | done: `snapshot.rs`, `scroll.rs`, `latch.rs`, `system.rs` (+ `system_tests.rs`); moved code byte-identical but one `pub(super)`; `input::` 199 passed |
 | 2 | **Riskiest slice.** Activator resolver (press/release/tap/hold, Steam rule, buffered key and gilrs edges, thresholds captured at key-down, cancel on blur/capture) emitting phases into the snapshot via `GameplayInputLatch`; hardcoded Shift tap-dash / hold-sprint fixture. Proves AV1–AV5, AV9 and the tick-0 premise | integrating executor | 1 | |
 | 3 | Command and input vocabulary: command IDs, contexts, accepted activators, input names + parse/format, polarity table, engine default table; no-block equivalence | worker (vocabulary module), integrator reviews | 2 | |
 | 4 | Effective table + conflict checker + guard; `InputSystem` rebuild refreshing `unique_actions`; held-key rebuild rules (P4); relevance derivation (exhaustive) with tuning observation | integrating executor | 3 | |

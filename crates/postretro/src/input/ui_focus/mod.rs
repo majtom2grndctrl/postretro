@@ -26,8 +26,8 @@ mod slider;
 mod tests;
 mod traversal;
 
-use repeat::{ConfirmRepeatClock, RepeatClock, RepeatTimer};
-pub use slider::capture_slider_step;
+use repeat::{ConfirmRepeatClock, ENGINE_DEFAULT_REPEAT, RepeatClock, RepeatTimer};
+pub use slider::{capture_slider_step, slider_value};
 use traversal::{
     Dir, hit_test_topmost, initial_focus_id, linear_index_step, linear_step, neighbor_override,
     spatial_step,
@@ -119,6 +119,10 @@ pub struct FocusTickResult {
     pub confirmed: bool,
     /// True when a `cancel` intent fired this tick. Wired to back-out by the app.
     pub cancelled: bool,
+    /// Signed value steps a held slider repeat produced this tick, already
+    /// multiplied by its acceleration. The app applies them to the focused
+    /// slider's slot.
+    pub slider_steps: i32,
 }
 
 impl UiFocusEngine {
@@ -240,7 +244,7 @@ impl UiFocusEngine {
         // edge per physical press (held repeats are suppressed at the input edge),
         // so a held direction shows up as: one intent on press, then none while
         // held — exactly the signal the dt clock turns into repeats.
-        self.advance_repeat(active_key, rects, held_dir, dt);
+        result.slider_steps = self.advance_repeat(active_key, rects, held_dir, dt);
 
         // Activation-repeat (M13 Text-Entry, Task 2): a held confirm on a focused
         // `repeatOnHold` button re-fires its activation on the SAME repeat timer.
@@ -361,45 +365,79 @@ impl UiFocusEngine {
     /// move once the initial delay then each interval elapses. Confirm/cancel never
     /// reach this function; confirm repeat for `repeatOnHold` buttons is handled by
     /// [`advance_confirm_repeat`].
+    ///
+    /// Returns the signed slider steps a repeat produced: a repeat on a focused
+    /// slider that captures the held direction steps its value instead of
+    /// moving focus.
     fn advance_repeat(
         &mut self,
         key: &str,
         rects: &FocusRectList,
         pressed_dir: Option<Dir>,
         dt: f32,
-    ) {
-        // Determine the repeat cadence for the focused node's group; a group with
-        // no repeat policy disables hold-to-repeat entirely.
-        let repeat_cfg = self
-            .focused_id(key)
+    ) -> i32 {
+        if let Some(dir) = pressed_dir {
+            // Fresh press: arm (or re-arm to the new direction) the clock.
+            self.repeat = Some(RepeatClock::armed(dir, self.repeat_policy(key, rects)));
+            return 0;
+        }
+
+        // No press this tick. If a clock is armed, advance it and fire a repeat.
+        let Some(clock) = self.repeat.as_mut() else {
+            return 0;
+        };
+        clock.held += dt;
+        if !clock.timer.advance(dt) {
+            return 0;
+        }
+        let dir = clock.dir;
+        let multiplier = clock.slider_multiplier();
+        match self.focused_slider_sign(key, rects, dir) {
+            Some(sign) => sign * multiplier,
+            None => {
+                self.move_focus(key, rects, dir);
+                0
+            }
+        }
+    }
+
+    /// The focused node's group repeat cadence; the engine default where the
+    /// group authors none. An authored zero delay still never repeats.
+    fn repeat_policy(&self, key: &str, rects: &FocusRectList) -> RepeatPolicy {
+        self.focused_id(key)
             .and_then(|id| rects.rects.iter().find(|r| r.id == id))
             .and_then(|r| r.group)
-            .and_then(|g| rects.groups[g].repeat);
+            .and_then(|g| rects.groups[g].repeat)
+            .unwrap_or(ENGINE_DEFAULT_REPEAT)
+    }
 
-        if let Some(dir) = pressed_dir {
-            // Fresh press: arm (or re-arm to the new direction) the clock if the
-            // group declares a repeat policy.
-            match repeat_cfg {
-                Some(cfg) => {
-                    self.repeat = Some(RepeatClock {
-                        dir,
-                        timer: RepeatTimer::armed(cfg.initial_delay_ms, cfg.interval_ms),
-                    });
-                }
-                None => self.repeat = None,
-            }
-            return;
-        }
+    /// `+1`/`-1` when the focused node is a slider that captures `dir`'s nav,
+    /// else `None`.
+    fn focused_slider_sign(&self, key: &str, rects: &FocusRectList, dir: Dir) -> Option<i32> {
+        let focused = self.focused_id(key)?;
+        let rect = rects.rects.iter().find(|r| r.id == focused)?;
+        let Some(NodeInteraction::Slider { captures_nav, .. }) = &rect.interaction else {
+            return None;
+        };
+        let nav = dir.to_nav();
+        captures_nav
+            .iter()
+            .any(|name| name == nav.wire_name())
+            .then_some(match dir {
+                Dir::Right | Dir::Up => 1,
+                Dir::Left | Dir::Down => -1,
+            })
+    }
 
-        // No press this tick. If a clock is armed, advance it and fire repeats.
-        let Some(clock) = self.repeat.as_mut() else {
+    /// Arm hold-to-repeat for a directional press a focused slider captured
+    /// before the tick (the press stepped the value once; holding repeats it).
+    /// The press is captured before this frame's tick, so the policy comes
+    /// from the tree active last tick; a stack change this frame clears it.
+    pub fn arm_slider_repeat(&mut self, rects: &FocusRectList, nav: NavIntent) {
+        let (Some(dir), Some(key)) = (Dir::from_nav(nav), self.active_key.clone()) else {
             return;
         };
-        let fires = clock.timer.advance(dt);
-        let dir = clock.dir;
-        for _ in 0..fires {
-            self.move_focus(key, rects, dir);
-        }
+        self.repeat = Some(RepeatClock::armed(dir, self.repeat_policy(&key, rects)));
     }
 
     /// Clear the hold-to-repeat clock — called when the held direction releases
@@ -444,7 +482,7 @@ impl UiFocusEngine {
         let Some(clock) = self.confirm_repeat.as_mut() else {
             return false;
         };
-        clock.timer.advance(dt) > 0
+        clock.timer.advance(dt)
     }
 
     /// Clear the activation-repeat clock — called when the held confirm releases

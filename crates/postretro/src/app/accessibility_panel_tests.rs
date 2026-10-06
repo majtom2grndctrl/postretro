@@ -224,8 +224,8 @@ fn an_engine_tier_slider_steps_its_field_through_the_field_action() {
 #[test]
 fn a_mod_tier_slider_on_a_resolved_slot_warns_and_writes_nothing() {
     // Engine-routed slider steps are engine-tier only: a mod slider bound to a
-    // readonly `accessibility.*` slot rides the ordinary `setState` path, where
-    // the readonly write gate warns and no-ops.
+    // readonly `accessibility.*` slot rides the ordinary slider write path,
+    // where the readonly write gate warns and no-ops.
     let capture = LogCapture::start();
     let mut app = app_with_panel();
     push(&mut app, MOD_MENU);
@@ -241,11 +241,9 @@ fn a_mod_tier_slider_on_a_resolved_slot_warns_and_writes_nothing() {
         !app.session
             .as_ref()
             .unwrap()
-            .scripting
-            .script_ctx
-            .system_commands
+            .pending_slider_steps
             .is_empty(),
-        "the step rides setState"
+        "the step rides the ordinary slider write"
     );
     app.dispatch_system_commands();
     app.update_player_options(0.0, false);
@@ -442,4 +440,48 @@ fn a_mod_offering_no_accessibility_warns_once_per_state() {
     capture.clear();
     check.evaluate(&stack, "title");
     capture.assert_not_logged(Level::Warn, WARNING);
+}
+
+fn slot_number(app: &App, slot: &str) -> f32 {
+    let session = app.session.as_ref().unwrap();
+    let table = session.scripting.script_ctx.slot_table.borrow();
+    match table.get(slot).and_then(|r| r.value.as_ref()) {
+        Some(postretro_entities::SlotValue::Number(n)) => *n,
+        other => panic!("{slot} holds {other:?}"),
+    }
+}
+
+#[test]
+fn a_slider_step_and_an_external_write_on_one_frame_never_lose_the_write() {
+    // P17: the step lands on the slot's value at the drain, after the frame's
+    // queued writes, so it never resets the slot to the old value plus a step.
+    let mut app = app_with_panel();
+    push(&mut app, MOD_MENU);
+    app.update_player_options(0.0, false);
+    let slot = "options.viewFeelScale";
+    export_slider(&mut app, slot, owner(MOD_MENU, ScopeTier::Mod));
+    let before = slot_number(&app, slot);
+    let mut intents = vec![crate::input::NavIntent::Left];
+    app.apply_slider_nav_capture(&mut intents);
+    app.session
+        .as_ref()
+        .unwrap()
+        .scripting
+        .script_ctx
+        .system_commands
+        .push(
+            postretro_entities::reactions::system_commands::SystemReactionCommand::SetState {
+                slot: slot.to_string(),
+                value: serde_json::json!(0.5),
+                dispatch_source: "test".to_string(),
+                dispatch_values: Vec::new(),
+            },
+        );
+    app.dispatch_system_commands();
+    let after = slot_number(&app, slot);
+    assert!((after - 0.4).abs() < 1e-6, "write then step: {after}");
+    assert!(
+        (after - (before - 0.1)).abs() > 1e-6,
+        "never the old value minus a step"
+    );
 }

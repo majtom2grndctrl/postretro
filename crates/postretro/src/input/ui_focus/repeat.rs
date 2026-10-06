@@ -2,7 +2,20 @@
 // confirm repeat.
 // See: context/lib/ui.md §4
 
+use postretro_ui::tree::RepeatPolicy;
+
 use super::traversal::Dir;
+
+/// Hold-to-repeat for a focus group that authors none: a console-convention
+/// delay, then a steady interval.
+pub(super) const ENGINE_DEFAULT_REPEAT: RepeatPolicy = RepeatPolicy {
+    initial_delay_ms: 400.0,
+    interval_ms: 100.0,
+};
+
+/// Held time after which a slider's repeat steps double, then quadruple.
+const SLIDER_DOUBLE_AFTER_S: f32 = 1.0;
+const SLIDER_QUADRUPLE_AFTER_S: f32 = 2.0;
 
 /// The dt-clocked timing core shared by the directional-nav repeat and the
 /// activation (confirm) repeat. Each engine tick adds `dt` to `elapsed`; once the
@@ -31,33 +44,27 @@ impl RepeatTimer {
         }
     }
 
-    /// Advance the timer by `dt` and return how many repeats fired this tick
-    /// (robust to a large dt spanning multiple intervals). A non-positive threshold
-    /// disables repeating; a pathological dt/interval ratio is clamped at 64 fires.
-    pub(super) fn advance(&mut self, dt: f32) -> u32 {
+    /// Advance the timer by `dt` and report whether a repeat fired this tick.
+    /// At most one fires per tick, and a backlog from a long frame is dropped,
+    /// so a repeat never lands focus or a value past what the player saw (P15).
+    /// A non-positive delay never repeats; a non-positive interval repeats once
+    /// after the delay.
+    pub(super) fn advance(&mut self, dt: f32) -> bool {
         self.elapsed += dt;
-        let mut fires = 0u32;
-        loop {
-            let threshold = if self.repeating {
-                self.interval
-            } else {
-                self.initial_delay
-            };
-            if threshold <= 0.0 || self.elapsed < threshold {
-                break;
-            }
-            self.elapsed -= threshold;
-            self.repeating = true;
-            fires += 1;
-            if fires > 64 {
-                // 64 is a conservative power-of-two bound well above any
-                // realistic burst (e.g. ~0.3 fires/tick at a 50 ms interval /
-                // 16 ms dt), guarding a pathological dt/interval ratio.
-                self.elapsed = 0.0;
-                break;
-            }
+        let threshold = if self.repeating {
+            self.interval
+        } else {
+            self.initial_delay
+        };
+        if threshold <= 0.0 || self.elapsed < threshold {
+            return false;
         }
-        fires
+        self.elapsed -= threshold;
+        if self.elapsed >= self.interval {
+            self.elapsed = 0.0;
+        }
+        self.repeating = true;
+        true
     }
 }
 
@@ -69,6 +76,30 @@ impl RepeatTimer {
 pub(super) struct RepeatClock {
     pub(super) dir: Dir,
     pub(super) timer: RepeatTimer,
+    /// Seconds held since arming; a held slider accelerates with it.
+    pub(super) held: f32,
+}
+
+impl RepeatClock {
+    pub(super) fn armed(dir: Dir, policy: RepeatPolicy) -> Self {
+        Self {
+            dir,
+            timer: RepeatTimer::armed(policy.initial_delay_ms, policy.interval_ms),
+            held: 0.0,
+        }
+    }
+
+    /// Slider steps per repeat for the time held past the initial delay.
+    pub(super) fn slider_multiplier(&self) -> i32 {
+        let repeating_for = self.held - self.timer.initial_delay;
+        if repeating_for >= SLIDER_QUADRUPLE_AFTER_S {
+            4
+        } else if repeating_for >= SLIDER_DOUBLE_AFTER_S {
+            2
+        } else {
+            1
+        }
+    }
 }
 
 /// Hold-to-repeat clock for a held activation (confirm) on a `repeatOnHold`-flagged

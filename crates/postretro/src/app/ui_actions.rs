@@ -91,6 +91,16 @@ pub(crate) fn apply_running_cancel_policy(
     }
 }
 
+/// Signed value steps for a slider's slot, applied at the command drain.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct PendingSliderStep {
+    slot: String,
+    steps: i32,
+    step: f32,
+    min: f32,
+    max: f32,
+}
+
 impl App {
     /// Apply slider nav-capture for the focused slider (M13 Goal F, Task 4).
     ///
@@ -102,8 +112,6 @@ impl App {
     /// by `step` clamped to the slider's min/max, enqueuing a `setState` write
     /// applied at the game-logic command drain (the bound slot changes on N+1).
     pub(crate) fn apply_slider_nav_capture(&mut self, nav_intents: &mut Vec<input::NavIntent>) {
-        use postretro_ui::tree::NodeInteraction;
-
         let Some(focused_id) = self.ui_focused_id.as_deref() else {
             return;
         };
@@ -114,56 +122,128 @@ impl App {
         else {
             return;
         };
-        // Resolve the focused slider's interaction + its bound slot (clone out so
-        // the immutable borrow of the rect list drops before the slot/queue work).
-        let slider = rects
+        // Resolve the focused slider's interaction (clone out so the immutable
+        // borrow of the rect list drops before the slot/queue work).
+        let Some(interaction) = rects
             .rects
             .iter()
             .find(|r| r.id == focused_id)
-            .and_then(|r| match &r.interaction {
-                Some(interaction @ NodeInteraction::Slider { slot, min, .. }) => {
-                    Some((interaction.clone(), slot.clone(), *min))
-                }
-                _ => None,
-            });
-        let Some((interaction, slot, min)) = slider else {
+            .and_then(|r| r.interaction.clone())
+        else {
             return;
         };
         let owner = rects.owner.clone();
 
-        let script_ctx = self
+        // Peel off captured nav intents (mutating `nav_intents`). The press steps
+        // the value once and arms hold-to-repeat on the focus engine's clock.
+        if let Some(capture) = input::capture_slider_step(&interaction, nav_intents) {
+            if let Some(session) = self.session.as_mut()
+                && let Some(rects) = session.ui_focus_rects.as_ref()
+            {
+                session.ui_focus.arm_slider_repeat(rects, capture.held);
+            }
+            self.queue_slider_steps(&interaction, owner.as_ref(), capture.steps);
+        }
+    }
+
+    /// Apply the value steps a held slider's repeat produced this tick.
+    pub(crate) fn apply_slider_repeat_steps(&mut self, steps: i32) {
+        if steps == 0 {
+            return;
+        }
+        let Some(focused_id) = self.ui_focused_id.as_deref() else {
+            return;
+        };
+        let Some(rects) = self
             .session
             .as_ref()
-            .expect("frontend session installed")
-            .scripting
-            .script_ctx
-            .clone();
-        // The slider's current value: its bound slot reading, or `min` as a floor
-        // when the slot is unset or non-numeric (a sane starting point).
-        let current = {
-            let table = script_ctx.slot_table.borrow();
-            match table.get(&slot).and_then(|r| r.value.as_ref()) {
-                Some(postretro_entities::SlotValue::Number(n)) => *n,
-                _ => min,
-            }
+            .and_then(|session| session.ui_focus_rects.as_ref())
+        else {
+            return;
         };
+        let Some(interaction) = rects
+            .rects
+            .iter()
+            .find(|r| r.id == focused_id)
+            .and_then(|r| r.interaction.clone())
+        else {
+            return;
+        };
+        let owner = rects.owner.clone();
+        self.queue_slider_steps(&interaction, owner.as_ref(), steps);
+    }
 
-        // Peel off captured nav intents (mutating `nav_intents`) and compute the
-        // stepped value; emit one `setState` for the new clamped value.
-        if let Some(next) = input::capture_slider_step(&interaction, current, nav_intents) {
-            // An engine-tier slider on a readonly `accessibility.*` slot steps its
-            // field through the panel's field action instead of `setState`.
-            if self.route_engine_accessibility_slider(&slot, owner.as_ref(), current, next) {
-                return;
+    /// Queue signed slider steps for the focused slider's slot. An engine-tier
+    /// slider on a readonly `accessibility.*` slot steps its field through the
+    /// panel's field action instead.
+    fn queue_slider_steps(
+        &mut self,
+        interaction: &postretro_ui::tree::NodeInteraction,
+        owner: Option<&postretro_ui::tree::FocusRectOwner>,
+        steps: i32,
+    ) {
+        let postretro_ui::tree::NodeInteraction::Slider {
+            slot,
+            min,
+            max,
+            step,
+            ..
+        } = interaction
+        else {
+            return;
+        };
+        let direction = steps.signum() as f32;
+        if self.route_engine_accessibility_slider(slot, owner, 0.0, direction) {
+            for _ in 1..steps.unsigned_abs() {
+                self.route_engine_accessibility_slider(slot, owner, 0.0, direction);
             }
-            script_ctx
-                .system_commands
-                .push(SystemReactionCommand::SetState {
-                    slot,
-                    value: serde_json::json!(next),
-                    dispatch_source: "ui.slider".to_string(),
-                    dispatch_values: Vec::new(),
-                });
+            return;
+        }
+        if let Some(session) = self.session.as_mut() {
+            session.pending_slider_steps.push(PendingSliderStep {
+                slot: slot.clone(),
+                steps,
+                step: *step,
+                min: *min,
+                max: *max,
+            });
+        }
+    }
+
+    /// Apply queued slider steps against each slot's value at the command
+    /// drain, so a same-frame external write lands first and the step adds to
+    /// it, never to the value read before it (P17).
+    pub(crate) fn apply_pending_slider_steps(
+        &mut self,
+        script_ctx: &postretro_entities::ScriptCtx,
+    ) {
+        let Some(session) = self.session.as_mut() else {
+            return;
+        };
+        for pending in session.pending_slider_steps.drain(..) {
+            // The slot's value now, or `min` as a floor when it is unset or
+            // non-numeric (a sane starting point).
+            let current = {
+                let table = script_ctx.slot_table.borrow();
+                match table.get(&pending.slot).and_then(|r| r.value.as_ref()) {
+                    Some(postretro_entities::SlotValue::Number(n)) => *n,
+                    _ => pending.min,
+                }
+            };
+            let next = input::slider_value(
+                current,
+                pending.steps,
+                pending.step,
+                pending.min,
+                pending.max,
+            );
+            if let Err(err) = crate::scripting::primitives::store::write_state_slot_json(
+                script_ctx,
+                &pending.slot,
+                &serde_json::json!(next),
+            ) {
+                log::warn!("[UI] slider write to `{}` failed: {err}", pending.slot);
+            }
         }
     }
 

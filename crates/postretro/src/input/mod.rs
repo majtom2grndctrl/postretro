@@ -84,4 +84,4 @@ pub use text_entry::{
 // focus through the renderer's exported focus rect list, runs the dt-clocked
 // hold-to-repeat timer, and reports the focused id back for the focus ring.
 #[allow(unused_imports)]
-pub use ui_focus::{FocusTickResult, InputMode, UiFocusEngine, capture_slider_step};
+pub use ui_focus::{FocusTickResult, InputMode, UiFocusEngine, capture_slider_step, slider_value};

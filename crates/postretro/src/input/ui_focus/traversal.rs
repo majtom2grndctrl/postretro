@@ -27,6 +27,15 @@ impl Dir {
             _ => None,
         }
     }
+
+    pub(super) fn to_nav(self) -> NavIntent {
+        match self {
+            Dir::Up => NavIntent::Up,
+            Dir::Down => NavIntent::Down,
+            Dir::Left => NavIntent::Left,
+            Dir::Right => NavIntent::Right,
+        }
+    }
 }
 
 /// The id a node's `focusNeighbors` names for `dir`, if any.

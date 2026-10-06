@@ -87,7 +87,7 @@ fn slider_captures_nav_steps_value_and_removes_captured_intents() {
     // engine never sees it (focus stays put). An uncaptured nav.down is retained.
     let interaction = slider_interaction(&["nav.left", "nav.right"]);
     let mut intents = vec![NavIntent::Right, NavIntent::Down];
-    let next = capture_slider_step(&interaction, 0.5, &mut intents);
+    let next = capture_slider_step(&interaction, &mut intents).map(|c| c.value_from(0.5));
     assert!(close(next.unwrap(), 0.6), "right steps +step from 0.5");
     assert_eq!(intents, vec![NavIntent::Down], "uncaptured intent retained");
 }
@@ -99,12 +99,16 @@ fn slider_step_clamps_within_min_max() {
     let interaction = slider_interaction(&["nav.left", "nav.right"]);
     let mut down = vec![NavIntent::Left];
     assert!(close(
-        capture_slider_step(&interaction, 0.0, &mut down).unwrap(),
+        capture_slider_step(&interaction, &mut down)
+            .map(|c| c.value_from(0.0))
+            .unwrap(),
         0.0
     ));
     let mut up = vec![NavIntent::Right];
     assert!(close(
-        capture_slider_step(&interaction, 1.0, &mut up).unwrap(),
+        capture_slider_step(&interaction, &mut up)
+            .map(|c| c.value_from(1.0))
+            .unwrap(),
         1.0
     ));
 }
@@ -115,7 +119,10 @@ fn slider_with_no_captured_intents_returns_none_and_leaves_intents() {
     // happens (returns None — no setState write).
     let interaction = slider_interaction(&["nav.left", "nav.right"]);
     let mut intents = vec![NavIntent::Down];
-    assert_eq!(capture_slider_step(&interaction, 0.5, &mut intents), None);
+    assert_eq!(
+        capture_slider_step(&interaction, &mut intents).map(|c| c.value_from(0.5)),
+        None
+    );
     assert_eq!(intents, vec![NavIntent::Down]);
 }
 
@@ -195,7 +202,10 @@ fn button_interaction_never_captures_a_slider_step() {
         repeat_on_hold: None,
     };
     let mut intents = vec![NavIntent::Right];
-    assert_eq!(capture_slider_step(&interaction, 0.5, &mut intents), None);
+    assert_eq!(
+        capture_slider_step(&interaction, &mut intents).map(|c| c.value_from(0.5)),
+        None
+    );
     assert_eq!(intents, vec![NavIntent::Right]);
 }
 
@@ -1589,4 +1599,200 @@ fn passive_only_focus_group_yields_no_focus() {
         focused, None,
         "a tree with no interactive widget takes no focus"
     );
+}
+
+// --- E23 U3: engine-default repeat, one repeat per frame, slider repeat ---
+
+fn long_list(repeat: Option<RepeatPolicy>, slider: Option<NodeInteraction>) -> FocusRectList {
+    let rects = (0..10)
+        .map(|i| {
+            let mut r = rect(
+                &format!("n{i}"),
+                [0.0, 30.0 * i as f32, 100.0, 20.0],
+                i,
+                Some(0),
+            );
+            if i == 0 {
+                r.interaction = slider.clone();
+            }
+            r
+        })
+        .collect();
+    FocusRectList {
+        rects,
+        groups: vec![FocusGroup {
+            kind: FocusKind::Linear,
+            wrap: false,
+            repeat,
+            members: (0..10).collect(),
+        }],
+        initial_focus: None,
+        restore_on_return: false,
+        owner: None,
+    }
+}
+
+fn step(
+    fe: &mut UiFocusEngine,
+    list: &FocusRectList,
+    intents: &[NavIntent],
+    dt: f32,
+) -> FocusTickResult {
+    fe.tick(
+        Some("t"),
+        Some(list),
+        intents,
+        None,
+        &[],
+        InputMode::Focus,
+        dt,
+    )
+}
+
+fn focused_index(r: &FocusTickResult) -> usize {
+    r.focused.as_deref().unwrap()[1..].parse().unwrap()
+}
+
+#[test]
+fn a_tap_moves_one_step_with_no_repeat_and_a_hold_repeats_at_the_engine_default() {
+    let mut fe = UiFocusEngine::new();
+    let list = long_list(None, None);
+    step(&mut fe, &list, &[], 0.0);
+    let r = step(&mut fe, &list, &[NavIntent::Down], 0.0);
+    assert_eq!(focused_index(&r), 1);
+    fe.release_repeat();
+    let r = step(&mut fe, &list, &[], 1.0);
+    assert_eq!(focused_index(&r), 1, "a tap never repeats");
+
+    let r = step(&mut fe, &list, &[NavIntent::Down], 0.0);
+    assert_eq!(focused_index(&r), 2);
+    let r = step(&mut fe, &list, &[], 0.39);
+    assert_eq!(
+        focused_index(&r),
+        2,
+        "no repeat before the 400 ms default delay"
+    );
+    let r = step(&mut fe, &list, &[], 0.02);
+    assert_eq!(focused_index(&r), 3, "first repeat after the delay");
+    let r = step(&mut fe, &list, &[], 0.1);
+    assert_eq!(focused_index(&r), 4, "then every 100 ms");
+    fe.release_repeat();
+    let r = step(&mut fe, &list, &[], 0.5);
+    assert_eq!(focused_index(&r), 4, "release stops the repeat");
+}
+
+#[test]
+fn an_authored_zero_delay_never_repeats_and_an_authored_cadence_wins() {
+    let mut fe = UiFocusEngine::new();
+    let zero = long_list(
+        Some(RepeatPolicy {
+            initial_delay_ms: 0.0,
+            interval_ms: 50.0,
+        }),
+        None,
+    );
+    step(&mut fe, &zero, &[], 0.0);
+    step(&mut fe, &zero, &[NavIntent::Down], 0.0);
+    let r = step(&mut fe, &zero, &[], 2.0);
+    assert_eq!(focused_index(&r), 1);
+
+    let mut fe = UiFocusEngine::new();
+    let authored = long_list(
+        Some(RepeatPolicy {
+            initial_delay_ms: 200.0,
+            interval_ms: 50.0,
+        }),
+        None,
+    );
+    step(&mut fe, &authored, &[], 0.0);
+    step(&mut fe, &authored, &[NavIntent::Down], 0.0);
+    let r = step(&mut fe, &authored, &[], 0.21);
+    assert_eq!(focused_index(&r), 2);
+    let r = step(&mut fe, &authored, &[], 0.05);
+    assert_eq!(focused_index(&r), 3);
+}
+
+#[test]
+fn a_held_direction_across_a_one_second_frame_moves_at_most_one_step() {
+    let mut fe = UiFocusEngine::new();
+    let list = long_list(None, None);
+    step(&mut fe, &list, &[], 0.0);
+    step(&mut fe, &list, &[NavIntent::Down], 0.0);
+    let r = step(&mut fe, &list, &[], 1.0);
+    assert_eq!(focused_index(&r), 2, "one repeat, not the whole backlog");
+    let r = step(&mut fe, &list, &[], 0.016);
+    assert_eq!(
+        focused_index(&r),
+        2,
+        "the backlog was dropped, not deferred"
+    );
+}
+
+#[test]
+fn a_direction_held_while_a_tree_is_pushed_does_not_move_its_focus() {
+    let mut fe = UiFocusEngine::new();
+    let list = long_list(None, None);
+    step(&mut fe, &list, &[], 0.0);
+    step(&mut fe, &list, &[NavIntent::Down], 0.0);
+    let dialog = linear_list(false, None);
+    let r = fe.tick(
+        Some("dialog"),
+        Some(&dialog),
+        &[],
+        None,
+        &[],
+        InputMode::Focus,
+        0.0,
+    );
+    assert_eq!(r.focused.as_deref(), Some("a"));
+    let r = fe.tick(
+        Some("dialog"),
+        Some(&dialog),
+        &[],
+        None,
+        &[],
+        InputMode::Focus,
+        1.0,
+    );
+    assert_eq!(
+        r.focused.as_deref(),
+        Some("a"),
+        "the held direction stays inert"
+    );
+}
+
+#[test]
+fn a_held_slider_repeats_its_step_and_accelerates_with_hold_time() {
+    let mut fe = UiFocusEngine::new();
+    let list = long_list(None, Some(slider_interaction(&["nav.right", "nav.left"])));
+    step(&mut fe, &list, &[], 0.0);
+    // The press itself was captured and stepped by the app before the tick.
+    fe.arm_slider_repeat(&list, NavIntent::Right);
+    let mut steps = Vec::new();
+    for _ in 0..40 {
+        // 100 ms frames: one repeat per frame once the 400 ms delay passes.
+        let r = step(&mut fe, &list, &[], 0.1);
+        assert_eq!(focused_index(&r), 0, "a slider repeat never moves focus");
+        steps.push(r.slider_steps);
+    }
+    assert_eq!(&steps[..3], &[0, 0, 0]);
+    assert!(steps[3..12].iter().all(|s| *s == 1), "{steps:?}");
+    assert!(steps[14..22].iter().all(|s| *s == 2), "{steps:?}");
+    assert!(steps[25..].iter().all(|s| *s == 4), "{steps:?}");
+}
+
+#[test]
+fn a_held_slider_across_a_one_second_frame_steps_once() {
+    let mut fe = UiFocusEngine::new();
+    let list = long_list(None, Some(slider_interaction(&["nav.right", "nav.left"])));
+    step(&mut fe, &list, &[], 0.0);
+    fe.arm_slider_repeat(&list, NavIntent::Left);
+    let r = step(&mut fe, &list, &[], 1.0);
+    assert_eq!(r.slider_steps, -1);
+}
+
+#[test]
+fn a_slider_step_clamps_at_its_bounds_without_overshoot() {
+    assert!(close(slider_value(0.95, 4, 0.1, 0.0, 1.0), 1.0));
+    assert!(close(slider_value(0.05, -2, 0.1, 0.0, 1.0), 0.0));
 }

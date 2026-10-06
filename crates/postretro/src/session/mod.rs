@@ -75,6 +75,9 @@ pub(crate) struct Session {
     /// input system runs. Rebuilt by `App::refresh_effective_bindings`.
     pub(crate) bindings: input::BindingState,
 
+    /// Slider value steps captured this frame, applied at the command drain.
+    pub(crate) pending_slider_steps: Vec<crate::app::ui_actions::PendingSliderStep>,
+
     /// Per-tick gameplay-input latch; neutralized while a modal captures input.
     pub(crate) gameplay_input_latch: input::GameplayInputLatch,
 
@@ -616,6 +619,7 @@ impl Session {
         Ok(Self {
             input_system,
             bindings: input::BindingState::default(),
+            pending_slider_steps: Vec::new(),
             gameplay_input_latch: input::GameplayInputLatch::new(),
             ui_dispatch: input::UiDispatch::new(),
             gamepad_system: input::gamepad::GamepadSystem::new(),

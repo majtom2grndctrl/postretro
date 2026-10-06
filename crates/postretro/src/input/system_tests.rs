@@ -8,7 +8,7 @@ use super::*;
 
 /// Returns the default keyboard/mouse bindings for use in tests.
 fn test_bindings() -> Vec<Binding> {
-    defaults::default_keyboard_mouse_bindings()
+    defaults::default_bindings_for(input_names::DeviceClass::KeyboardMouse)
 }
 
 // --- InputSystem keyboard handling ---

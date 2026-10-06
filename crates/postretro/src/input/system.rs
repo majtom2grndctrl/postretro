@@ -16,7 +16,9 @@ use super::scroll::{
     wheel_diagnostics_enabled,
 };
 use super::snapshot::ActionSnapshot;
-use super::types::{Action, AxisSource, Binding, ButtonState, PhysicalInput};
+use super::types::{
+    Action, AxisHalf, AxisSource, Binding, ButtonState, HALF_AXIS_PRESS_THRESHOLD, PhysicalInput,
+};
 
 /// Where an input edge came from. Event edges are authoritative fresh presses;
 /// level edges are inferred from a poll and respect activator suppression.
@@ -286,10 +288,25 @@ impl InputSystem {
     /// Set a raw gamepad axis value. Called by GamepadSystem after dead zone processing.
     /// The value is resolved through bindings to produce action axis values.
     pub fn set_gamepad_axis(&mut self, axis: GilrsAxis, value: f32) {
+        let t = self.now();
+        self.set_gamepad_axis_at(axis, value, t);
+    }
+
+    pub(crate) fn set_gamepad_axis_at(&mut self, axis: GilrsAxis, value: f32, t: f64) {
         if value.abs() > f32::EPSILON {
             self.gamepad_axes.insert(axis, value);
         } else {
             self.gamepad_axes.remove(&axis);
+        }
+        // Each half of the axis is also a digital input for button commands.
+        for half in [AxisHalf::Positive, AxisHalf::Negative] {
+            let pressed = half.magnitude(value) >= HALF_AXIS_PRESS_THRESHOLD;
+            self.record_edge(
+                PhysicalInput::GamepadAxisHalf(axis, half),
+                pressed,
+                t,
+                EdgeSource::Level,
+            );
         }
     }
 

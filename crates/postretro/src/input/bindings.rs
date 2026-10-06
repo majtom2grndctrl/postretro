@@ -92,6 +92,16 @@ pub(crate) fn resolve_axis_values(
                     }
                 }
             }
+            PhysicalInput::GamepadAxisHalf(axis, half) => {
+                // One direction of a stick: its magnitude, signed by the
+                // command's direction on the axis action.
+                if let Some(&raw_val) = gamepad_axes.get(&axis) {
+                    let value = half.magnitude(raw_val) * binding.scale;
+                    if value.abs() > acc.velocity.abs() {
+                        acc.velocity = value;
+                    }
+                }
+            }
             PhysicalInput::MouseAxisX | PhysicalInput::MouseAxisY => {
                 // Mouse axis contributions come from the mouse_axes map.
             }

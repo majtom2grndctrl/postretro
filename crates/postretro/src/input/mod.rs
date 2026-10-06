@@ -6,12 +6,18 @@ mod activator;
 #[cfg(test)]
 mod activator_tests;
 mod bindings;
+// The effective binding table (E23 task 4) is the production consumer of the
+// command and input-name vocabulary; until it lands only tests read parts of it.
+#[cfg_attr(not(test), allow(dead_code))]
+mod commands;
 pub use activation::ActivationInputCapture;
 pub mod cursor;
 mod defaults;
 pub mod diagnostics;
 mod focus;
 pub mod gamepad;
+#[cfg_attr(not(test), allow(dead_code))]
+mod input_names;
 mod latch;
 mod look;
 mod scroll;

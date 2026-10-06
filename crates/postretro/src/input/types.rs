@@ -124,7 +124,32 @@ pub enum PhysicalInput {
     MouseAxisY,
     GamepadButton(GilrsButton),
     GamepadAxis(GilrsAxis),
+    /// One direction of a stick axis as a digital input (`left_stick_up`). It
+    /// carries its magnitude onto a movement axis and reads as pressed past
+    /// [`HALF_AXIS_PRESS_THRESHOLD`] for a button command.
+    GamepadAxisHalf(GilrsAxis, AxisHalf),
 }
+
+/// Which direction of a stick axis a half-axis input reads, in gilrs terms:
+/// `Positive` is stick right or up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AxisHalf {
+    Positive,
+    Negative,
+}
+
+impl AxisHalf {
+    /// This half's magnitude of a raw axis value: zero on the other side.
+    pub fn magnitude(self, raw: f32) -> f32 {
+        match self {
+            AxisHalf::Positive => raw.max(0.0),
+            AxisHalf::Negative => (-raw).max(0.0),
+        }
+    }
+}
+
+/// Dead-zoned deflection past which a half-axis input counts as pressed.
+pub const HALF_AXIS_PRESS_THRESHOLD: f32 = 0.5;
 
 /// How a binding resolves its input's press and release into command phases.
 /// Authors set it per binding; players rebind keys only.
@@ -192,6 +217,8 @@ pub struct Binding {
 }
 
 impl Binding {
+    // Production bindings come from `defaults::gameplay_binding`.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn new(input: PhysicalInput, action: Action) -> Self {
         Self {
             input,

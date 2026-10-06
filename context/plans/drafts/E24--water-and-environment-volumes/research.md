@@ -171,10 +171,10 @@ Source trace at 90c9b9687, read-only. It grounds the Decision that gravity is a 
 ## Third owner round (2026-10-05)
 
 `/review-brief` produced two false premises, one blocker and about twenty owner items. The owner reframed them against PostRetro's goals: 90s-style design experimentation, an expressive high-level API with approachable FGD keys, and "build more right faster". Rulings:
-- **Gravity is a force in any direction; "up" stays +Y.** This replaces the straight-down-only validator, which conflated force with orientation. Upward level gravity stays legal, so that false premise dissolves. The five rules come from §Gravity as a force.
-- **The `gravity` key takes one signed vertical number or a vector,** matching `initialGravity` for the common case.
+- **Gravity is a force in any direction; "up" stays +Y.** This replaces the straight-down-only validator, which conflated force with orientation. Upward level gravity stays legal, so that false premise dissolves. The five rules come from §Gravity as a force. *Superseded by the third direction review:* one gravity vector carried two meanings, so authored wind would be reinterpreted once the gravity-frame spec lands. `gravity` is now one signed vertical number, and a separate `push_volume` carries the vector force; the rules in §Gravity as a force now govern push.
+- **The `gravity` key takes one signed vertical number or a vector,** matching `initialGravity` for the common case. *Superseded as above:* a vector `gravity` fails the build.
 - **A missing `swim` block** keeps the absent-means-disabled precedent, and warns when a level has fluid.
-- **Readonly `player.swimming` / `player.immersion` / `player.fluid` slots** make fluid damage and air meters mod-buildable. They follow the `player.spread` catalog precedent, with no new event source.
+- **Readonly `player.swimming` / `player.immersion` / `player.fluid` slots** make fluid damage and air meters mod-buildable. *Corrected by the fourth direction review:* neither `player.spread` nor `player.health` is a precedent for host-side per-owner reads. The slots are per-owner engine slots on E16's deferred per-seat crossing spec, which owns the owner-carrying crossing input.
 - **Level gravity rides the tuning payload.** The premise lens found that payload resent on change, not once at join, so mid-level `worldSetGravity` now reaches clients.
 
 Engineering calls the orchestrator made, which follow precedent and are recorded here rather than asked:
@@ -196,6 +196,25 @@ Also ruled, at the orchestrator's recommendation and reopenable:
 - the `audio.md` reverb amendment waits for reverb;
 - the Problem names AI and particle gravity;
 - editorial trim.
+
+## Fourth direction review (validate-plan, 2026-10-06)
+
+Evidence read at 16b90e4b2.
+- **Swim slots had no shipped mechanism.**
+  - `EngineStateCatalogEntry::slot_record` (`engine_state_catalog.rs`) hard-codes `per_owner: false` for every engine slot.
+  - `player.health` is `OwnerPrivatePlayer`: `owner_private_source_value` (`netcode/src/state_slots.rs`) projects each pawn's live health to its owning client, so a client HUD reads its own. On the host the slot is one scalar, the local seat's. `player.spread` is `ReplicationScope::None`, a local display value. Neither lets a host reaction read a remote player's value by owner.
+  - `byPlayer` (`sdk/lib/data_script.ts`) throws on a global slot, and its only owner token is `@impact.source`, an impact-policy input.
+  - `plans/done/E16--per-player-currency` rejects `onStateCrossing` on a `perOwner` slot at bind (Decisions) and defers per-seat crossing — per-seat `previous`, host-only seat iteration, a crossing-owner dispatch input — to its own spec (Out of scope). `CrossingParams` publishes only `rising`.
+  - A crossing that tells which player crossed therefore needs an owner-carrying dispatch input, which the brief's "no new event source" ruling forbade E24 to add.
+  - Fluid damage stays open: app-drain environmental damage runs no impact policy in v1 (`plans/done/E16--impact-death-lifecycle`), and `perOwner` with `accumulate` is rejected (`store_bridge.rs`).
+- **Owner ruling: per-seat spec first.** E16's deferred per-seat crossing spec, to be drafted, is a prerequisite of E24's slot slice. It supplies per-owner engine catalog slots and the owner-carrying crossing input. The slot slice lands last; nothing else in E24 waits.
+- **Not taken:** a `player.health`-style owner-private slot with `per_owner: false`. It would give each client's HUD its own value today, but no host-side per-owner read and no per-seat crossing, so it misses the co-op goal.
+- **Gravity rival: a multiplier on level gravity,** so `worldSetGravity` reaches inside volumes. Rejected: `gravity` stays absolute and never depends on script state. A separate scale key added later can scale level gravity without changing `gravity`'s meaning, so absolute forecloses nothing.
+- **Tint safety.** Fluid tint is a new full-screen channel, strength up to 1, keyed on the camera eye, which head bob moves. Treading at the surface could toggle it more than 3 times a second. Ruling: an eye-depth hysteresis band, a short ramp, and the tint as a channel of the photosensitivity limiter (`rendering_pipeline.md` §7.8). The margin and ramp are delegated tuning.
+- **Considered, deferred: an authored immersion predicate** gating swim entry instead of entering from any state at `enterDepth`. Reversible: a predicate could later join `movement.md` §2's closed set without changing the swim block's fields.
+- **`push_volume` and `movement.md` §3.** The guardrail forbids a generic `apply_force(body)` primitive. A push is static, map-authored regional data, not a script verb, so it stays inside the band.
+- **Tuning-payload resend.** Resending on change is in effect a one-value replication lane, which partly answers E15's deferred gravity replication. Runtime-mutable volumes still need the general lane.
+- **Breadth.** The reviewer noted the brief is broad and that the slot slice could wait without blocking gravity and push. Not adopted as a split; the slot slice is the part that waits.
 
 ## Ordering pins
 

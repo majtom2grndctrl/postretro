@@ -11,7 +11,7 @@ Owner-requested capability. Modern retro shooters experiment with design fundame
 - Fluid faces are visible from inside and outside.
 - With the eye inside a fluid, the view tints and audio muffles.
 - Hitscan crossing a fluid face splashes.
-- A mod reads, per player, whether that player is swimming, how deep, and in which fluid, so co-op drowning is mod-buildable.
+- A mod reads, per player, whether that player is swimming, how deep, and in which fluid: the base co-op drowning, air meters and fluid damage build on. These per-owner slots sit on E16's deferred per-seat crossing spec (Decisions).
 - A co-op client predicts all of it with no corrections.
 The query layer this adds is the first piece of the engine-owned collision substrate described in `research.md` §Substrate direction.
 
@@ -33,18 +33,21 @@ The query layer this adds is the first piece of the engine-owned collision subst
   - Winner: highest priority; then the smallest summed brush volume, so a pool inside a room wins without priorities; then earliest map entity order, for exact ties only.
   - Gravity and push reach is the body's position.
   - Fluid reach is the capsule's vertical segment, feet to head. The fluid is the winner among fluid volumes intersecting it. Immersion is the segment's coverage by the union of the winner's brushes, so leaving through any face, bottom included, drops it.
-  - Eye-dependent presentation keys on the camera eye point.
+  - Eye-dependent presentation keys on the camera eye point, with hysteresis (Presentation).
   - Reverb, when built, becomes a point field under this rule. `audio.md` is amended then, not at this promotion.
 - **Gravity is vertical and defines falling; push is a force in any direction.** Two fields, so authored meaning never changes later.
   - `gravity` keeps today's meaning in every movement state, with no new rules. It is what the later gravity-frame spec orients the player to.
   - `push` is an extra acceleration that never defines "down". Ground classification, the capsule, step-up, ground-stick, camera and navmesh keep +Y as up. Lineage: Quake 2's `trigger_push` and water currents.
+  - `push_volume` sits beside `movement.md` §3's "never generic `apply_force(body)`" guardrail and stays clear of it: a push is static, map-authored regional data, never a script primitive that forces an arbitrary body.
   - Three rules make push coherent (`research.md` §Gravity as a force):
     1. **Lift-off.** A grounded body whose push points up harder than gravity pulls down leaves the ground, as a knockback launch does. With no push, nothing changes, so upward level gravity behaves as before.
     2. **Terminal speed** caps speed along the push direction, so an updraft shaft does not accelerate forever.
     3. **After the intent.** Push adds to velocity after the state intent and is never clipped by the intent's speed caps. Ground friction gives a steady drift.
   - Slide boost and AI agents read only `gravity`, so push never feeds a slope boost and agents stay on the navmesh.
   - Swimmers take push, so a fluid with a coincident push volume is a current. Particles take push unscaled by buoyancy.
-- **Level default gravity moves out of FogVolumes** into the new section's header. `initialGravity`, `worldGetGravity` and `worldSetGravity` keep their signed vertical shape and set it, so a map with only `initialGravity`, upward included, behaves as before. The level has no default push. Volume gravity overrides it inside the volume. A vector script API and M7's `area.setGravity` are not built here.
+- **Level default gravity moves out of FogVolumes** into the new section's header. `initialGravity`, `worldGetGravity` and `worldSetGravity` keep their signed vertical shape and set it, so a map with only `initialGravity`, upward included, behaves as before. The level has no default push. Volume gravity overrides it inside the volume.
+  - `gravity` is absolute and never depends on script state, so `worldSetGravity` never reaches inside a gravity volume. A separate key added later, such as `gravityScale`, could scale level gravity without changing `gravity`'s meaning, so absolute forecloses nothing (rival: `research.md` §Fourth direction review).
+  - A vector script API and M7's `area.setGravity` are not built here.
 - **Ownership is split three ways, as a closed field set.**
   - The volume owns the place: shape, priority, gravity, push, which fluid. A mod-manifest fluid descriptor owns the substance: viscosity, view tint, muffle, surface opacity, enter and exit sounds. The player descriptor's `movement.swim` block owns the swimmer.
   - Amend `entity_model.md` §4, `build_pipeline.md` §Load-time gameplay declarations and `movement.md` §7 at promotion: maps may author static regional gravity, push and fluid placement, baked at compile time. Any further regional field needs its own amendment. Maps still cannot mutate gameplay after load or override per-archetype tuning. Gas and haze stay with fog volumes.
@@ -56,10 +59,15 @@ The query layer this adds is the first piece of the engine-owned collision subst
   - A player descriptor without a `swim` block cannot swim; the pawn walks fluid floors, a legitimate wade-only design. A level with fluid volumes loaded for such a player warns once.
   - Swim tuning is never map-overridable.
 - **Who resolves what.** Player pawns resolve the full environment. AI agents resolve gravity only; they ignore push, do not swim and walk fluid floors. Particles resolve gravity and push at their own position on every particle step, once per rendered frame on frame time; buoyancy scales the resolved vector, and particles are unhashed presentation. Projectiles apply no gravity today and are untouched.
-- **Scripts can read the environment, per player.** Three readonly engine-state slots, `player.swimming` (bool), `player.immersion` (0..=1) and `player.fluid` (fluid name, empty when dry), in the generated TypeScript and Luau SDKs. They follow `player.health`: the host publishes every pawn's value per owner, and each client reads its own. A host reaction can read a remote pawn's slots and tell which player crossed a threshold, so co-op fluid damage, an air meter or a splash reaction is mod-buildable. This is the first script-visible projection of movement state, and amends `entity_model.md` §7b ("purely engine-internal").
+- **Scripts read the environment per player, through per-owner engine slots built on E16's deferred per-seat crossing spec.**
+  - Three readonly slots, one value per seat: `player.swimming` (bool), `player.immersion` (0..=1) and `player.fluid` (fluid name, empty when dry), in the generated TypeScript and Luau SDKs. Owner-private: each client reads its own.
+  - Nothing shipped carries them. Engine catalog slots are never per-owner (`EngineStateCatalogEntry::slot_record`), and `onStateCrossing` on a per-owner slot is rejected at bind, with per-seat crossing deferred to its own spec (`plans/done/E16--per-player-currency`, Out of scope and Decisions). Derivation: `research.md` §Fourth direction review.
+  - That spec, to be drafted, is a prerequisite: per-owner engine catalog slots, a per-seat `previous`, and an owner-carrying crossing dispatch input. E24 adds no event source; the owner-carrying input is the prerequisite's.
+  - The slot slice lands last and is blocked until the prerequisite lands. Substrate, gravity, push, fluids, swim and presentation do not wait on it.
+  - This is the first script-visible projection of movement state, and amends `entity_model.md` §7b ("purely engine-internal").
 - **Co-op parity.**
   - **Hashed.** Volume records (shape, priority, gravity, push, fluid name, map order) join `level_content_digest`, like static collision. Surface faces and the header's default gravity are named skips.
-  - **Sent.** Level gravity rides the host's tuning payload, which the host resends whenever it changes, so a mid-level `worldSetGravity` reaches clients. It applies on arrival, and one correction per change is accepted. The client never reads its own level gravity.
+  - **Sent.** Level gravity rides the host's tuning payload, which the host resends whenever it changes, so a mid-level `worldSetGravity` reaches clients. It applies on arrival, and one correction per change is accepted. The client never reads its own level gravity. This is in effect a one-value lane, and partly answers `plans/done/E15--session-lifecycle`'s deferred gravity replication; runtime-mutable volumes still need the general lane (Non-goals).
   - **Fluids.** The host resolves names against its manifest at install and on every manifest reload, warning on an undeclared name, which loads dry. The tuning payload carries the host's fluid table with movement fields only. A client resolves names only against that table, never its own registry, because admission gates on mod id and never version (`networking.md` §Mod identity). Presentation fields resolve locally by name, as sound keys do; a client without the fluid shows none. Fluid declarations stay out of the mod compatibility digest.
   - A hot reload that rebuilds a swimming pawn's movement component may cost one correction, accepted as a dev-time cost.
   - `Swim` joins the movement-state discriminant, which bumps the wire version. Gravity and the fluid table join the tuning payload, which bumps `TUNING_PAYLOAD_EPOCH`.
@@ -68,12 +76,13 @@ The query layer this adds is the first piece of the engine-owned collision subst
   - Fluid faces draw in a renderer-owned translucent pass after opaque forward and before smoke: alpha blend at the fluid's surface opacity, depth test on, depth write off, two-sided, turbulent UV warp. They are lit per fragment by baked SH ambient, baked direct SH and dynamic lights, on smoke's camera, lighting and SH layouts plus a fluid material group.
   - The surface is every brush face not buried in solid world and not shared with another brush of the same entity, textured from that face. A face partly buried is clipped at compile time to its exposed part.
   - Tint is an engine-owned screen-effect layer, never a write to the script-writable `screen.*` slots.
+  - Tint and muffle switch on an eye-depth hysteresis band: on once the camera eye is a few centimetres inside the fluid, off once it is that far outside. The tint ramps in and out. Head bob carries the eye across the surface and the tint is full-screen at strength up to 1, so it is also a channel of the photosensitivity limiter, beside `screen.flash` and `screen.vignette` (`rendering_pipeline.md` §7.8).
   - Muffle is a primitive-only low-pass on the world-sound bus while the camera eye is in a fluid. UI and music are not muffled, and it composes with per-voice occlusion. No kira types cross the boundary.
   - Entry and exit sounds play on swim transitions, from forward prediction only, never from replay.
   - Splash: a hitscan ray crossing a surface face before its blocking hit reports a fact (point, outward normal, fluid); its look and sound sit above it, per `plans/done/E16--combat-presentation-substrate`. A ray starting on a face never splashes there. Two adjacent fluid entities give two splashes.
   - Because water draws before smoke, a particle below the surface draws over the water seen from above. Accepted.
 - **Non-goals.**
-  - Fluid damage and drowning: E16's open "DoT / environmental death policy". Mods can build them on the per-player readonly slots.
+  - Fluid damage, drowning and air meters: E24 builds none. Once the slot slice and its prerequisite land, mods can react to per-player swim state. Whether that reaches damage or a per-player air timer depends on what the prerequisite and E16's open policy deliver: environmental damage runs no impact policy in v1 (`plans/done/E16--impact-death-lifecycle`), and `perOwner` with `accumulate` is rejected (`store_bridge.rs`). E24 does not solve either.
   - Splash from non-hitscan projectiles, and a visual splash on player entry: follow-ups on the same fact.
   - Refraction and depth absorption: no plan yet.
   - Walking on walls or ceilings, and reorienting to gravity: the gravity-frame spec, which orients to `gravity`, never to `push`.
@@ -83,7 +92,7 @@ The query layer this adds is the first piece of the engine-owned collision subst
 - **Known limits, accepted.**
   - An AI agent knocked airborne in zero gravity stays airborne until something moves it.
   - A pool built from two `fluid_volume` entities draws a surface between them. The FGD help text tells mappers to make one entity with several brushes.
-- **Doc amendments at promotion**, besides those above: `entity_model.md` says particles step once per rendered frame, and §7b records the readonly movement projection.
+- **Doc amendments at promotion**, besides those above: `entity_model.md` says particles step once per rendered frame, and §7b records the readonly movement projection. `rendering_pipeline.md` §7.8 lists the fluid tint as a limiter channel.
 
 ### Scripting surface
 TypeScript shown. The Luau SDK mirrors it with the same names, and both ship. The fixture lands in content/dev's existing manifest and player descriptor.
@@ -113,7 +122,7 @@ swim: {
 },
 ```
 
-Readonly engine state, generated into both SDKs: `player.swimming`, `player.immersion`, `player.fluid`.
+Readonly per-owner engine state, generated into both SDKs once the prerequisite lands: `player.swimming`, `player.immersion`, `player.fluid`.
 
 ## Acceptance
 ### Automated
@@ -179,15 +188,17 @@ Readonly engine state, generated into both SDKs: `player.swimming`, `player.imme
 - [ ] A ray whose origin lies on a fluid face never splashes at that face. A ray crossing the shared faces of two adjacent fluid entities emits two splashes.
 - [ ] The muffle low-pass sits on the world-sound bus. Engaging it leaves UI and music unfiltered and adds no per-voice filter. A toggle reversed mid-ramp turns back without a step. A grep gate shows the audio crate's public API names no kira type.
 - [ ] Entry and exit sounds play once per swim transition, never while bobbing between thresholds, and never from a reconcile replay.
-- [ ] `player.swimming`, `player.immersion` and `player.fluid` read false, 0 and empty when dry, and true, the immersion fraction and `water` while swimming in `water`. A crossing on `player.swimming` fires once on entry and once on exit. On the host, with two players, a reaction reads the remote player's slots by owner and can tell which player crossed; each client's HUD reads its own player's values.
 - [ ] With a mod's script-set screen tint active, entering a fluid composes the fluid tint over it, and leaving the fluid restores the mod's tint unchanged. A script write to `screen.*` while the eye is in a fluid takes effect and does not clear the fluid tint. With the eye in a fluid, every `screen.*` slot keeps the value the mod last wrote.
+- [ ] An eye bobbing across the surface at content/dev's head-bob amplitude and frequency, centred on it, toggles the tint at most once over the whole bob. An eye oscillating across the surface past the hysteresis band at 5 Hz presents at most 3 tint flashes in any 1 s window, counted on presented-frame time as `rendering_pipeline.md` §7.8 counts them. With the limiter off, the bob still toggles at most once and each toggle still ramps.
 - [ ] Two grep gates. The projectile flight code makes no environment-resolve call. No FGD key on `fluid_volume` or `gravity_volume` names a `movement.swim` field.
 - [ ] The Scripting surface example runs as a `content/dev` fixture in TypeScript and Luau. A fluid with negative viscosity, or a swim block with `exitDepth` ≥ `enterDepth`, is rejected with a warning naming the field.
 - [ ] A fluid with an out-of-range `viewTint`, `muffle` or `surfaceOpacity`, or a second `defineFluid` with an existing name, is rejected with a warning naming the field; the first declaration stands.
 - [ ] The Scripting surface's fluids and swim block land in content/dev's existing manifest and player descriptor, in TypeScript and Luau, and content/dev keeps its mod id.
+**Swim slots** (blocked until E16's deferred per-seat crossing spec lands)
+- [ ] `player.swimming`, `player.immersion` and `player.fluid` read false, 0 and empty when dry, and true, the immersion fraction and `water` while swimming in `water`. With two players, each client's HUD reads its own player's values, and on the host a reaction reads each player's slots by owner. A crossing on `player.swimming` fires once per player on entry and once on exit, and its reaction can tell which player crossed.
 ### Manual
 - [ ] Fluid faces read as warped and translucent from inside and outside, a floating block included. They do not z-fight with surrounding geometry. Smoke above a fluid, seen from above, is not dimmed by it, and fog composites over it. Smoke below a fluid surface, seen from above, draws over the water: the accepted draw-order limit, confirmed but not a defect. A dynamic light near a large fluid face lights it smoothly, with no per-vertex faceting, and the surface matches baked lighting on adjacent walls.
-- [ ] The tint and muffle turn on when the eye enters a fluid and off when it leaves, without flicker while treading at the surface.
+- [ ] The tint and muffle turn on when the eye enters a fluid and off when it leaves, and treading at the surface shows no visible flicker or audible pumping.
 - [ ] A swim and fluid-jump playtest: the surface jump feels reliable, and ledges within reach are climbable with it.
 - [ ] A low-gravity room playtest, including a pool and a floating fluid block inside the room.
 - [ ] A co-op client swims and crosses gravity volumes with no visible corrections.
@@ -204,13 +215,15 @@ Readonly engine state, generated into both SDKs: `player.swimming`, `player.imme
 - `prl_loader.rs` and `sim/mod.rs` are past 800 lines. New loader and tick code land as submodules.
 - Surface culling: follow how `KinematicMoverRenderCollector` culls movers by AABB against visible-cell bounds. The smoke pass in `smoke.rs` is the blended-pass template, but water draws before it. The `has_any_sheet` gate does not cover water.
 - Chosen shape: a load-time BVH, generic over leaf payload. Rival: a flat list with an AABB prefilter (the fog-volume precedent). It is faster below roughly 50–100 leaves but degrades linearly with author ambition. Another rival is per-cell volume lists, baked like `FogCellMasks`. Rejected: it ties collision to the visibility partition, entities store no cell, and rays cross cells.
-- Particles: `particle_sim::tick` takes the scalar `gravity` today. It gains per-particle resolution through the same pure resolve, gravity field only.
+- Particles: `particle_sim::tick` takes the scalar `gravity` today. It gains per-particle resolution through the same pure resolve, gravity and push fields.
 - Push: every gravity site in the intents is gated on airborne today. Lift-off follows the knockback launch in movement `tick`; push's terminal speed follows `knockback::clamp_fall_speed`; slide's projection is in `intents/slide.rs` and stays gravity-only (`research.md` §Gravity as a force).
-- Readonly slots: one `EngineStateCatalogEntry` each in `engine_state_catalog.rs`, per owner like `player.health`; the TS and Luau types regenerate from the catalog.
+- Readonly slots: one `EngineStateCatalogEntry` each in `engine_state_catalog.rs`, per owner through the prerequisite's engine-slot support; the TS and Luau types regenerate from the catalog.
+- Tint and muffle hysteresis: the trigger reads the eye's signed depth in the winning fluid. The limiter's per-channel clamp is where the tint channel joins it.
 - First slice: the crate, section and resolve, proven by a low-gravity room through host movement, prediction and the replay harness. It falsifies the riskiest assumption, that per-tick resolution keeps host and client identical, before any swim or rendering work.
+- Landing order: the slot slice is last and waits on E16's deferred per-seat crossing spec. If E24 reaches it first, the build checkpoints there with every other row proven.
 
 ## Open questions
-None.
+- The hysteresis margin and the tint ramp's duration — **delegated**: the executor picks values that pass the bob row and reports them in the plan of record.
 
 ## Boundary inventory
 
@@ -229,7 +242,7 @@ None.
 | Fluid fields | descriptor struct | viscosity in the tuning payload; presentation fields local | `name`, `viscosity`, `viewTint`, `muffle`, `surfaceOpacity`, `enterSound`, `exitSound` | same | n/a |
 | Swim tuning | `PlayerMovementDescriptor` swim block | tuning payload | `movement.swim` (`speed`, `accel`, `sinkSpeed`, `enterDepth`, `exitDepth`, `fluidJumpVelocity`) | same | n/a |
 | Swim state | `MovementStateKind::Swim` | movement-state discriminant (wire version bump) | n/a | n/a | n/a |
-| Environment read | engine-state catalog slots, per owner | owner-private, as `player.health` | `player.swimming`, `player.immersion`, `player.fluid` | same | n/a |
+| Environment read | per-owner engine-state catalog slots (prerequisite spec) | owner-private | `player.swimming`, `player.immersion`, `player.fluid` | same | n/a |
 
 ## Wire format
 **EnvironmentVolumes**: a new PRL section, next free id after `CellResidencySet` (51). Little-endian throughout. Mirrors TriggerVolumes (id 44): a leading `u16` version, `u32` counts, `u32` byte-length-prefixed UTF-8 strings.

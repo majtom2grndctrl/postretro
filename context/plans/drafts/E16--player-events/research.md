@@ -1,0 +1,44 @@
+# E16--player-events — research
+
+Read at 04f049215. Findings that inform the brief without deciding it.
+
+## Which machine runs each source
+| Source | Host | Connected client | Single player | Gate |
+|---|---|---|---|---|
+| `onStateCrossing` | yes | yes, after snapshot apply | yes | none; every machine over its own slot table (`run_crossing_stage`) |
+| Trigger events, map `on_fire`/`on_exit` | yes | no | yes | structural: clients run `simulate_client_wieldable_tick`, not `simulate_tick` |
+| Impact policies | yes | overlay only | yes | structural |
+| Named gameplay events | yes | yes, over locally produced edges | yes | per command |
+| `levelLoad` | yes | yes | yes | per command |
+
+Command-side gates on a client: `owner_slot_writes_enabled` suppresses `addSlot` and sentiment writes; `SpawnContext` suppresses runtime spawns; the scheduler and auto-close timers are disabled. Presentation commands run on whichever machine drains them. Not verified: whether `damage`/`grantHealth`/`grantAmmo` from a client-drained reaction is suppressed — irrelevant here, since `onPlayerEvent` never runs on a client, but adjacent to the lifted crossing rejection.
+
+Crossings are presentation observers by design: E18 trigger-event-fanout's acceptance has a host trigger write a shared slot and a client crossing fire a local reaction after replication. A code comment on the client branch of `dispatch_primitive` says clients compose the same descriptors "for presentation work".
+
+## Engine player slots today
+On the host, `player.health` and the weapon slots hold the local pawn's value only (`publish_health_values` → `pawn_with_health` → `local_player_movement_pawn`). Owner-private replication projects every pawn from its components in `owner_private_source_value`: health first, then weapon cooldown, then the weapon slot projection, then mod per-owner values by seat, then the global scalar. That chain is the per-pawn lookup the brief lifts below `netcode`. `EngineStateCatalogEntry::slot_record` hard-codes `per_owner: false`. Ambient script reads of a per-owner record are rejected (`read_script_store_slot`), so engine slots cannot simply set `per_owner: true` without breaking every HUD read — the reason a plain read keeps meaning the local player.
+
+## Rivals
+- **A mode on `onStateCrossing`** (`eachPlayer` vs `local`, required on per-player slots). One concept, but one name covering two machine sets; a default either breaks existing crossings or silently watches the host's player. Rejected for the sibling.
+- **Stored per-player engine values.** Engine systems write each pawn's value into the slot's per-seat map, as mod per-owner slots store theirs. Needs a readonly-bypassing per-seat write, a write per pawn per tick, and a second copy of component state. Rejected for the lookup.
+- **Arm-only first sight** (crossings' rule). Avoids milestone re-fires for free, but a player who joins underwater never "enters" water. The owner chose experience-correct firing and the guard idiom.
+- **Byplayer only as command target.** Cheaper — no reaction-side owned reads — but the fired reaction could not read the crossing player's other values. The owner chose both.
+- **Present-to-player via slots** (the damage-bearing precedent: owner-private slots, no message kind). Right for a continuous fact a HUD binds; wrong for one-shot commands, which would need a write-then-observe idiom and a per-owner absolute reaction write that does not exist. The channel is world-anchored only by its current payloads: `ServerPresentationPayload::{Spawn, OverlayFact}`; `NetServer::send_presentation` addresses one client.
+- **Evaluate per frame** (the crossing stage). Sees settled slots but is frame-rate dependent — several ticks collapse into one observation — and sits outside the determinism gate. Evaluating in the Triggers stage would miss this tick's impacts, weapons and death sweep.
+
+## Milestones and the guard idiom
+Per-owner values survive level transitions, disconnect holds and (with `E16--per-player-persistence`) sessions, while edge memory is rebuilt at every level install. Under fire-at-first-sight, a milestone over such a value re-fires at each install, join and reclaim unless its condition goes false once handled. The guard (`xp ≥ 100 && level < 2`, with the reaction raising `level`) makes the condition self-extinguishing, so it is correct under any edge-memory loss — more robust than relying on edge memory, which arm-only also loses across installs. The reference example and the scripting docs teach it.
+
+## Symptom watch: is `onPlayerEvent` the shape `onStateCrossing` should have had?
+The owner asked to record evidence that the crossings API was designed before the engine's netplay shape was understood. Evidence so far:
+- The threshold form is redundant with the fluent algebra (`read(x).ge(t)` plus an edge word); it survives only as a second spelling with its own normalization (`raw / max`).
+- Crossings' arm-only first-sight rule suits HUD presentation but not gameplay.
+- `playerDied` is a single global event with no player token; in co-op a mod cannot tell who died. `onPlayerEvent(died, …)` would be its natural home.
+- A local twin — `onStateEvent(becomes(cond), fire)` running on every machine over its own view — would make the two sources differ only in which machines run them.
+Add a line here whenever building or using either source turns up another.
+
+## Consumers
+- E24 swim slots (`player.swimming`, `player.immersion`, `player.fluid`): per-player engine slots on the lookup seam, conditions via `becomes`/`ceases`.
+- E16 per-player XP level-up: the guarded milestone over mod per-owner slots.
+- E23 damage bearing (decided, not built): per-owner engine slots; a candidate for the same catalog flag.
+- `coop-trigger-screen-effects`: reuses present-to-player for trigger-fired effects once its whose-screen policy is settled.

@@ -1,7 +1,7 @@
 # sh-compose-row-cost-spike — plan of record
 
 mode: compact
-status: active
+status: landed
 read at: 42cec06d8
 
 (The brief was read at `de735f026`. This plan re-verified its cited source at the claim commit `42cec06d8`; see Corrections.)
@@ -59,11 +59,11 @@ read at: 42cec06d8
 | F1 rows and entries by brick level per pose and pass | `[SH spike counts]`, `runs/counts-*` | achievable as stated | **reported**. All rows are L0 on every pose, with 0 L1/L2. Rows with entries and lane-entries are added. |
 | F2 baseline per-pass ms at 4 poses; fitted model with spread | `model.json` (`fit_model.py`, bootstrap) | achievable as stated | **reported, with a model-form departure** (Corrections). `c` = 0.24 / 0.26 ms; `r` = 2.99 / 3.46 µs per row. The per-entry term is reported per pose, and the L1/L2 terms are unfitted. |
 | F3 floor share per pass | paired `floor` | achievable as stated | **reported**. The entry share is 1.1–2.5% (indirect) and 3.6–5.4% (Pass B). |
-| F4 H-a..H-e ablation deltas (+ lever where built) | findings §Attribution | achievable as stated | **reported, except H-e: outstanding.** The static gate is positive, so the brief requires the timed `trusted` arm. It was **not run**, because the permission classifier blocked the `unsafe` call site. Owner ruling needed: allow it, or accept the static gate plus the safe partial probes (`unroll36`, `const-tile`). H-d ablations ran (`arenaD`). |
+| F4 H-a..H-e ablation deltas (+ lever where built) | findings §Attribution | achievable as stated | **reported; H-e accepted from the static gate and safe probes (owner, 2026-10-06).** Originally outstanding: The static gate is positive, so the brief requires the timed `trusted` arm. It was **not run**, because the permission classifier blocked the `unsafe` call site. Owner ruling needed: allow it, or accept the static gate plus the safe partial probes (`unroll36`, `const-tile`). H-d ablations ran (`arenaD`). |
 | F5 remainder | findings §Top-down partition | achievable as stated | **reported** |
 | F6 stacked saving vs sum of levers, arena + kinematic | paired `array-free+unroll36` | achievable as stated | **reported**. −2.23 / −2.89 ms (arena), −2.13 / −3.07 ms (station). The sum is tautological for the recommended stack. The mixed stack `scan-parallel+array-free+const-tile+vec3-accum` shows the non-additivity. |
 | F7 shader statistics or "unavailable" with tools tried | findings §Shader statistics | achievable as stated | **unavailable**. Tools tried are named there. |
-| F8 1660 Super per-pass ms | owner handoff | manual | **outstanding**. Pending for every lever and stacked arm. The handoff prioritizes baseline, `array-free` and `array-free,unroll36`. |
+| F8 1660 Super per-pass ms | owner handoff | manual | **pending (owner)**. It gates promotion of `sh-compose-array-free`; the probes branch is pushed for it. Pending for every lever and stacked arm. The handoff prioritizes baseline, `array-free` and `array-free,unroll36`. |
 | N1 findings note | `findings.md` | achievable as stated | **pass** |
 
 ## Tasks

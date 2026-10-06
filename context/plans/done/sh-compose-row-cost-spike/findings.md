@@ -209,9 +209,19 @@ Campaign spawn: −0.77 / −0.98 [−1.03, −0.98] ms (−31% / −33%). Kinem
 - **Out of scope, but large:** at both kinematic poses, Pass A (`Streamed Direct SH Promotion`) averages 2.6–2.9 ms per frame (absent at the arena and campaign). The promotion station's moving weights re-fire it. It does not bias the compose pairs (it splits evenly across A and B frames), but it may deserve its own look.
 - **The brief's Basis numbers are probably inflated** by the shared `gpu_time.py` frame heuristic (see Method). The same heuristic sits in `measurements/shadow-fill-cost/`.
 
+## Owner rulings (2026-10-06)
+- **Exactness on L0 content:** accepted as conditional. `sh-compose-array-free` keeps the L1/L2 path and proves it with a GPU byte-compare on synthetic sections.
+- **`unroll36`:** accepted as an H-a modifier.
+- **H-e:** reported from the static gate and the safe partial probes. The timed `trusted` arm is not run. A separate session may return to it.
+- **Cost model:** the per-pose entry term is accepted.
+- **Follow-ons drafted** (`context/plans/drafts/`):
+  - `sh-compose-array-free`: the lever. The 1660 reading below gates its promotion. The exported lever's unreachable old-kernel tail is deleted after a paired re-measure.
+  - `sh-compose-contributing-rows`: the row filter, by narrowing per-pass membership to rows that carry entries. Lifting the exemption is excluded.
+  - `gpu-pass-paired-ab`: a lasting paired A/B tool.
+
 ## 1660 Super handoff (F8): pending
 
-On the owner's Windows machine, check out the probes branch at `1a052cfed`. Keep that commit until the handoff is done. Then run:
+On the owner's Windows machine, check out `origin/sh-compose-row-cost-spike-probes` at `1a052cfed` (pushed for this handoff). Delete that remote branch once the reading is recorded. Then run:
 
 ```
 cargo run -p xtask -- run --release -- content/dev/maps/<map>.prl [--start-pose=…]

@@ -1,6 +1,6 @@
 # Measurements — sh-compose-row-cost-spike
 
-The brief is `context/plans/in-progress/sh-compose-row-cost-spike/index.md`, and the findings are `findings.md` beside it.
+The brief is `context/plans/done/sh-compose-row-cost-spike/index.md`, and the findings are `findings.md` beside it.
 
 ## Pins
 

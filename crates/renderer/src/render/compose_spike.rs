@@ -711,6 +711,10 @@ impl RowCountWindow {
             return;
         }
         let mut counts = [0_u64; 6];
+        // Rows the contributing-row filter would keep, and entries weighted by
+        // the row's kept (valid, L0) lanes: the work an L0 entry actually costs.
+        let mut rows_with_entries = 0_u64;
+        let mut lane_entries = 0_u64;
         for &row in rows {
             let row = row as usize;
             let level = usize::from(metadata.cell_levels.get(row).copied().unwrap_or(0).min(2));
@@ -723,9 +727,17 @@ impl RowCountWindow {
             };
             counts[level] += 1;
             counts[3 + level] += entries;
+            if entries > 0 {
+                rows_with_entries += 1;
+                let lanes = metadata
+                    .valid_probe_masks
+                    .get(row)
+                    .map_or(0, |mask| u64::from(mask.count_ones()));
+                lane_entries += entries * lanes;
+            }
         }
         log::info!(
-            "[SH spike counts] {pass}: frames {frames} rows min {min} max {max} | last rows L0 {r0} L1 {r1} L2 {r2} | entries L0 {e0} L1 {e1} L2 {e2}",
+            "[SH spike counts] {pass}: frames {frames} rows min {min} max {max} | last rows L0 {r0} L1 {r1} L2 {r2} | entries L0 {e0} L1 {e1} L2 {e2} | rows with entries {rows_with_entries} | lane-entries {lane_entries}",
             frames = self.frames,
             min = self.min_rows,
             max = self.max_rows,

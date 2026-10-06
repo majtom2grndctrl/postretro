@@ -24,6 +24,7 @@ const KNOWN_ARMS: &[&str] = &[
     // levers
     "scan-parallel",
     "texel-outer",
+    "array-free",
     "scale-shared",
     "vec3-accum",
     "const-tile",
@@ -127,7 +128,7 @@ impl ComposePipelines {
 }
 
 fn ordered_arms(raw: &str) -> Vec<&'static str> {
-    let requested: Vec<&str> = raw
+    let mut requested: Vec<&str> = raw
         .split(',')
         .map(str::trim)
         .filter(|arm| !arm.is_empty() && *arm != "baseline")
@@ -138,17 +139,19 @@ fn ordered_arms(raw: &str) -> Vec<&'static str> {
             "POSTRETRO_SPIKE_ARMS names unknown arm `{arm}`"
         );
     }
-    let mut selected: Vec<&'static str> = KNOWN_ARMS
+    assert!(
+        !(requested.contains(&"texel-outer") && requested.contains(&"array-free")),
+        "texel-outer and array-free are alternative restructures"
+    );
+    // texel-outer and array-free read per-entry scales from the shared cache.
+    if requested.contains(&"texel-outer") || requested.contains(&"array-free") {
+        requested.push("scale-shared");
+    }
+    KNOWN_ARMS
         .iter()
         .copied()
         .filter(|arm| requested.contains(arm))
-        .collect();
-    // texel-outer reads per-entry scales from the shared cache.
-    if selected.contains(&"texel-outer") && !selected.contains(&"scale-shared") {
-        let at = selected.iter().position(|a| *a == "texel-outer").unwrap() + 1;
-        selected.insert(at, "scale-shared");
-    }
-    selected
+        .collect()
 }
 
 /// Build one compose shader's full source (shader + curve helpers + decode
@@ -331,6 +334,131 @@ var<workgroup> spike_words: array<u32, 64>;
                 src,
                 ACCUM_COMMENT,
                 &format!("{LEVEL_BLOCK}{fused}{ACCUM_COMMENT}"),
+                arm,
+            );
+        }
+        "array-free" => {
+            replace_once(src, LEVEL_BLOCK, "", arm);
+            let (gate_l0, gate_coarse, base_init, store) = match shader {
+                Indirect => (
+                    "use_indirect_animated && local_probe_is_kept(cell_index, local_probe)",
+                    "use_indirect_animated",
+                    "                var spike_accum = vec3<f32>(0.0);
+                if (use_indirect_static) {
+                    spike_accum = sample_compact_base_atlas(stored_slot.slot, tile_texel).rgb;
+                }
+",
+                    "                textureStore(
+                    sh_total_atlas,
+                    vec2<i32>(tile_origin.xy + tile_texel),
+                    i32(tile_origin.z),
+                    vec4<f32>(spike_accum, select(0.0, 1.0, stored_slot.valid)),
+                );
+",
+                ),
+                AnimatedDirect => (
+                    "local_probe_is_kept(cell_index, local_probe)",
+                    "true",
+                    "                let atlas_texel = tile_origin.xy + tile_texel;
+                let uv = (vec2<f32>(atlas_texel) + 0.5)
+                    / vec2<f32>(textureDimensions(direct_intermediate_atlas));
+                var spike_accum = textureSampleLevel(
+                    direct_intermediate_atlas,
+                    intermediate_sampler,
+                    uv,
+                    i32(tile_origin.z),
+                    0.0,
+                ).rgb;
+",
+                    "                textureStore(
+                    direct_composed_atlas,
+                    vec2<i32>(tile_origin.xy + tile_texel),
+                    i32(tile_origin.z),
+                    vec4<f32>(
+                        max(spike_accum, vec3<f32>(0.0)),
+                        select(0.0, 1.0, stored_slot.valid),
+                    ),
+                );
+",
+                ),
+            };
+            let fused = format!(
+                "    // spike array-free: every level fuses the base read, the entry sum and the
+    // store per texel. L1/L2 lanes reconstruct from their own reads of the kept
+    // corner tiles, so the kernel holds no 36-entry accumulator and no barriers
+    // after the scale cache.
+    if (grid.row_count > 0u) {{
+        if (output_is_stored) {{
+            let spike_l0 = {gate_l0};
+            let spike_coarse = {gate_coarse};
+            let spike_rank = within_cell_rank(cell_index, local_probe);
+            let spike_rep = l2_representative_local(cell_index);
+            let spike_rep_kept = local_probe_is_kept(cell_index, spike_rep);
+            let spike_rep_rank = within_cell_rank(cell_index, spike_rep);
+            for (var texel_index = 0u; texel_index < TILE_TEXEL_COUNT; texel_index = texel_index + 1u) {{
+                let tile_texel = vec2<u32>(
+                    texel_index % RUNTIME_TILE_DIMENSION,
+                    texel_index / RUNTIME_TILE_DIMENSION,
+                );
+{base_init}                if (level == 0u) {{
+                    if (spike_l0) {{
+                        for (var entry = start; entry < end; entry = entry + 1u) {{
+                            spike_accum = spike_accum
+                                + read_delta_texel(entry, spike_rank, tile_texel).rgb * spike_scale(entry, start, spike_cached);
+                        }}
+                    }}
+                }} else if (spike_coarse) {{
+                    for (var entry = start; entry < end; entry = entry + 1u) {{
+                        var delta = vec3<f32>(0.0);
+                        if (level == 2u) {{
+                            var spike_tile = vec3<f32>(0.0);
+                            if (spike_rep_kept) {{
+                                spike_tile = read_delta_texel(entry, spike_rep_rank, tile_texel).rgb;
+                            }}
+                            delta = spike_tile * f32(spike_rep_kept);
+                        }} else {{
+                            delta = spike_reconstruct_l1(cell_index, entry, local_probe, tile_texel);
+                        }}
+                        spike_accum = spike_accum + delta * spike_scale(entry, start, spike_cached);
+                    }}
+                }}
+{store}            }}
+        }}
+        return;
+    }}
+"
+            );
+            replace_once(
+                src,
+                ACCUM_COMMENT,
+                &format!("{LEVEL_BLOCK}{fused}{ACCUM_COMMENT}"),
+                arm,
+            );
+            replace_once(
+                src,
+                "fn reconstruct_l1_shared_texel(",
+                "// spike array-free: the shared-lattice reconstruction, reading each kept
+// corner tile straight from the delta payload. Same slot order and arithmetic.
+fn spike_reconstruct_l1(cell: u32, entry: u32, target_local: u32, tile_texel: vec2<u32>) -> vec3<f32> {
+    var accum = vec3<f32>(0.0);
+    var weight_sum = 0.0;
+    for (var slot = 0u; slot < MAX_KEPT_TILES; slot = slot + 1u) {
+        let corner = l1_corner_local(slot);
+        if (local_probe_is_kept(cell, corner)) {
+            let weight = l1_corner_weight(target_local, corner);
+            if (weight > 0.0) {
+                accum = accum + read_delta_texel(entry, within_cell_rank(cell, corner), tile_texel).rgb * weight;
+                weight_sum = weight_sum + weight;
+            }
+        }
+    }
+    if (weight_sum > 0.0) {
+        return accum / weight_sum;
+    }
+    return vec3<f32>(0.0);
+}
+
+fn reconstruct_l1_shared_texel(",
                 arm,
             );
         }
@@ -603,6 +731,9 @@ mod tests {
                 "texel-outer",
                 "scan-parallel,texel-outer,vec3-accum",
                 "scan-parallel,texel-outer,vec3-accum,const-tile",
+                "array-free",
+                "floor,array-free",
+                "scan-parallel,array-free,const-tile",
             ]
             .map(String::from),
         );

@@ -407,14 +407,10 @@ impl StreamingAnimatedPass {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Streamed Animated Direct SH Shader"),
             source: wgpu::ShaderSource::Wgsl(
-                [
-                    include_str!("../../../shaders/animated_direct_sh_compose.wgsl"),
-                    "\n",
-                    include_str!("../../../shaders/curve_eval.wgsl"),
-                    "\n",
+                crate::render::compose_spike::compose_source(
+                    crate::render::compose_spike::ComposeShader::AnimatedDirect,
                     WGSL_DECODE_HELPER,
-                ]
-                .concat()
+                )
                 .into(),
             ),
         });

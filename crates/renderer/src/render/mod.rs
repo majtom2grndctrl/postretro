@@ -1,6 +1,7 @@
 // Renderer: GPU init, texture upload, depth pre-pass + forward pipelines, and draw.
 // See: context/lib/rendering_pipeline.md
 mod animated_direct_sh_compose;
+mod compose_spike;
 mod animated_lightmap;
 mod billboard_direct_scatter;
 mod billboard_direct_scatter_compose;

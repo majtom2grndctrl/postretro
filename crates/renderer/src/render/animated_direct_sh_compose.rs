@@ -313,14 +313,10 @@ pub(super) fn build_animated_direct_pass(
         bind_group_layouts: &[Some(uniform_bind_group_layout), Some(&bind_group_layout)],
         immediate_size: 0,
     });
-    let shader_source = [
-        include_str!("../shaders/animated_direct_sh_compose.wgsl"),
-        "\n",
-        include_str!("../shaders/curve_eval.wgsl"),
-        "\n",
+    let shader_source = super::compose_spike::compose_source(
+        super::compose_spike::ComposeShader::AnimatedDirect,
         WGSL_DECODE_HELPER,
-    ]
-    .concat();
+    );
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("Animated Direct SH Compose Shader"),
         source: wgpu::ShaderSource::Wgsl(shader_source.into()),

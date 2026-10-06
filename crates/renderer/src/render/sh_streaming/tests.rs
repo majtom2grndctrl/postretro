@@ -447,6 +447,7 @@ fn coalesced_row_union_drops_a_row_after_its_last_contributor() {
         indirect_compose_epoch: 0,
         direct_compose_epoch: 0,
         install_cpu: InstallCpuCounters::default(),
+        spike_row_counts: Default::default(),
         gpu: None,
     };
     state.indirect_resident_rows = state.rebuilt_resident_rows()[0].iter().copied().collect();

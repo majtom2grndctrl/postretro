@@ -262,6 +262,11 @@ impl ShResidencyState {
                         animated_timestamp_writes,
                     )?;
                 self.compose_planner.commit_pass(animated_plan);
+                self.spike_row_counts[1].record(
+                    "animated-direct",
+                    animated_plan.rows(),
+                    self.source_metadata.animated_direct_delta.as_ref(),
+                );
                 self.animated_direct_compose_diagnostics = pass_diagnostics(
                     animated_plan,
                     dispatches,
@@ -323,6 +328,11 @@ impl ShResidencyState {
                 timestamp_writes,
             )?;
             self.compose_planner.commit_pass(plan);
+            self.spike_row_counts[0].record(
+                "indirect",
+                plan.rows(),
+                self.source_metadata.indirect_delta.as_ref(),
+            );
             self.indirect_compose_diagnostics = pass_diagnostics(
                 plan,
                 dispatches,

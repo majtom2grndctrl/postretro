@@ -295,6 +295,7 @@ impl ShResidencyState {
             indirect_compose_epoch: 0,
             direct_compose_epoch: 0,
             install_cpu: InstallCpuCounters::default(),
+            spike_row_counts: Default::default(),
             gpu: None,
         })
     }

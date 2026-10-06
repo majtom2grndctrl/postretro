@@ -379,9 +379,19 @@ pub(super) struct ShResidencyState {
     direct_compose_epoch: u64,
     install_cpu: InstallCpuCounters,
     gpu: Option<StreamingGpuPools>,
+    /// Spike-only: per-level row/entry mix of each composed plan (indirect, animated direct).
+    spike_row_counts: [crate::render::compose_spike::RowCountWindow; 2],
 }
 
 impl ShResidencyState {
+    /// Spike-only: the composed indirect total atlas and Pass B's composed
+    /// direct atlas, for the capture-time byte comparison.
+    pub(super) fn spike_composed_atlases(&self) -> Option<(&wgpu::Texture, Option<&wgpu::Texture>)> {
+        self.gpu
+            .as_ref()
+            .map(|gpu| (&gpu.total, gpu.direct_total.as_ref()))
+    }
+
     /// Compose the streamed direct atlas after promotion assignment. Pass A
     /// covers id-35 + id-41 and Pass B covers id-35 + id-41 + id-45. A
     /// successful two-pass encode advances the direct epoch; promotion happens

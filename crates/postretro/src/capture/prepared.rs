@@ -301,6 +301,16 @@ impl PreparedCapture {
             .map(|batch| batch.unwrap_or_default())
     }
 
+    /// Spike-only: dump the composed SH atlases when
+    /// `POSTRETRO_SPIKE_ATLAS_DUMP` names a directory.
+    pub(super) fn spike_dump_atlases(&self) -> Result<()> {
+        if let Ok(dir) = std::env::var("POSTRETRO_SPIKE_ATLAS_DUMP") {
+            self.renderer
+                .spike_dump_sh_atlases(std::path::Path::new(&dir))?;
+        }
+        Ok(())
+    }
+
     /// Render the prepared static workload through the unchanged PNG/readback
     /// capture path.
     pub(super) fn capture_frame(&mut self) -> Result<Vec<u8>> {

@@ -256,14 +256,10 @@ impl StreamingIndirectCompose {
             bind_group_layouts: &[Some(uniform_bind_group_layout), Some(&bind_group_layout)],
             immediate_size: 0,
         });
-        let shader_source = [
-            include_str!("../../../shaders/sh_compose.wgsl"),
-            "\n",
-            include_str!("../../../shaders/curve_eval.wgsl"),
-            "\n",
+        let shader_source = crate::render::compose_spike::compose_source(
+            crate::render::compose_spike::ComposeShader::Indirect,
             WGSL_DECODE_HELPER,
-        ]
-        .concat();
+        );
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Streamed SH Compose Shader"),
             source: wgpu::ShaderSource::Wgsl(shader_source.into()),

@@ -334,14 +334,10 @@ impl ShComposeResources {
         });
 
         // curve_eval.wgsl provides `sample_curve_catmull_rom` used by the shader.
-        let shader_source = [
-            include_str!("../shaders/sh_compose.wgsl"),
-            "\n",
-            include_str!("../shaders/curve_eval.wgsl"),
-            "\n",
+        let shader_source = super::compose_spike::compose_source(
+            super::compose_spike::ComposeShader::Indirect,
             WGSL_DECODE_HELPER,
-        ]
-        .concat();
+        );
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("SH Compose Shader"),
             source: wgpu::ShaderSource::Wgsl(shader_source.into()),

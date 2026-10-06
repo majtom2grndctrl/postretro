@@ -103,6 +103,9 @@ pub struct UiFocusEngine {
     /// Activation-repeat clock for a held confirm on a `repeatOnHold` button (M13
     /// Text-Entry, Task 2). `Some` only while such a button's confirm is held.
     confirm_repeat: Option<ConfirmRepeatClock>,
+    /// Activation-repeat clock for a held text shortcut: the key it activates
+    /// and that key's `repeatOnHold` timing.
+    shortcut_repeat: Option<(String, ConfirmRepeatClock)>,
     /// The member last focused in each nested group, keyed by tree and group
     /// index; entering the group lands there. Validated on use, since a
     /// rebuild may renumber groups or remove the member.
@@ -185,6 +188,7 @@ impl UiFocusEngine {
         if stack_changed {
             self.repeat = None;
             self.confirm_repeat = None;
+            self.shortcut_repeat = None;
         }
         self.ensure_initialized(active_key, rects, stack_changed);
         self.active_key = Some(active_key.to_string());
@@ -645,6 +649,39 @@ impl UiFocusEngine {
             return false;
         };
         clock.timer.advance(dt)
+    }
+
+    /// A text shortcut activated `key_id`: arm its hold-to-repeat when that key
+    /// authors `repeatOnHold`, so a held shortcut repeats as the held key does.
+    pub fn arm_shortcut_repeat(&mut self, key_id: &str, rects: &FocusRectList) {
+        self.shortcut_repeat = rects
+            .rects
+            .iter()
+            .find(|r| r.id == key_id)
+            .and_then(|r| match &r.interaction {
+                Some(NodeInteraction::Button { repeat_on_hold, .. }) => *repeat_on_hold,
+                _ => None,
+            })
+            .map(|policy| {
+                (
+                    key_id.to_string(),
+                    ConfirmRepeatClock {
+                        timer: RepeatTimer::armed(policy.initial_delay_ms, policy.interval_ms),
+                    },
+                )
+            });
+    }
+
+    /// Advance a held text shortcut's repeat; the key to activate again when
+    /// it fires this tick.
+    pub fn advance_shortcut_repeat(&mut self, dt: f32) -> Option<String> {
+        let (key_id, clock) = self.shortcut_repeat.as_mut()?;
+        clock.timer.advance(dt).then(|| key_id.clone())
+    }
+
+    /// Clear the shortcut repeat — the held shortcut input released.
+    pub fn release_shortcut_repeat(&mut self) {
+        self.shortcut_repeat = None;
     }
 
     /// Clear the activation-repeat clock — called when the held confirm releases

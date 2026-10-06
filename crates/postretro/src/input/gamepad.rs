@@ -34,6 +34,11 @@ pub struct GamepadNavOutput {
     /// crossings, and stick halves pushed from rest. The controls panel's
     /// capture prompt takes these instead of the nav intents.
     pub presses: Vec<PhysicalInput>,
+    /// On-screen keyboard shortcuts pressed this frame (text-entry context).
+    pub text_shortcuts: Vec<Command>,
+    /// An input bound to a text shortcut released this frame; it stops a held
+    /// backspace shortcut's repeat.
+    pub text_shortcut_released: bool,
     pub confirm_released: bool,
     pub directional_released: bool,
 }
@@ -56,6 +61,22 @@ const BUTTONS: &[Button] = &[
     Button::DPadLeft,
     Button::DPadRight,
 ];
+
+/// The text shortcut `input` drives in `context`: one only while a text-entry
+/// tree is on top (P26).
+fn text_shortcut(ui_nav: &UiNavMap, input: PhysicalInput, context: UiNavContext) -> Option<Command> {
+    if context != UiNavContext::TextEntry {
+        return None;
+    }
+    ui_nav
+        .command_for(input, context)
+        .filter(|command| {
+            matches!(
+                command,
+                Command::TextBackspace | Command::TextSpace | Command::TextCommit
+            )
+        })
+}
 
 /// Trigger value above which a trigger counts as a button press.
 const TRIGGER_BUTTON_THRESHOLD: f32 = 0.5;
@@ -189,6 +210,9 @@ impl GamepadSystem {
                     if let Some(intent) = ui_nav.intent_for(input, context) {
                         out.nav_intents.push(intent);
                     }
+                    if let Some(command) = text_shortcut(ui_nav, input, context) {
+                        out.text_shortcuts.push(command);
+                    }
                     if BUTTONS.contains(&button) {
                         input_system.handle_gamepad_button_event(button, true, age);
                     }
@@ -199,6 +223,15 @@ impl GamepadSystem {
                     if ui_nav.is_bound_to(PhysicalInput::GamepadButton(button), Command::NavConfirm)
                     {
                         out.confirm_released = true;
+                    }
+                    if text_shortcut(
+                        ui_nav,
+                        PhysicalInput::GamepadButton(button),
+                        UiNavContext::TextEntry,
+                    )
+                    .is_some()
+                    {
+                        out.text_shortcut_released = true;
                     }
                     if BUTTONS.contains(&button) {
                         input_system.handle_gamepad_button_event(button, false, age);
@@ -481,6 +514,28 @@ pub(crate) fn apply_radial_dead_zone(x: f32, y: f32, dead_zone: f32) -> (f32, f3
 mod tests {
     use super::*;
     use crate::input::system::DEFAULT_STICK_DEAD_ZONE as DEAD_ZONE;
+
+    #[test]
+    fn text_shortcuts_resolve_only_in_the_text_entry_context() {
+        let nav = crate::input::BindingState::default().ui_nav().clone();
+        let west = PhysicalInput::GamepadButton(Button::West);
+        assert_eq!(
+            text_shortcut(&nav, west, UiNavContext::TextEntry),
+            Some(Command::TextBackspace)
+        );
+        for context in [UiNavContext::Open, UiNavContext::Capture] {
+            assert_eq!(text_shortcut(&nav, west, context), None, "{context:?}");
+        }
+        assert_eq!(
+            text_shortcut(
+                &nav,
+                PhysicalInput::GamepadButton(Button::South),
+                UiNavContext::TextEntry
+            ),
+            None,
+            "confirm is not a shortcut"
+        );
+    }
 
     const EPSILON: f32 = 1e-6;
 

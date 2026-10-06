@@ -2281,6 +2281,9 @@ impl ApplicationHandler for App {
                         if gp_nav.confirm_released {
                             session.ui_focus.release_confirm_repeat();
                         }
+                        if gp_nav.text_shortcut_released {
+                            session.ui_focus.release_shortcut_repeat();
+                        }
                         // No directional input held releases the directional
                         // hold-to-repeat clock, mirroring the arrow-key-up path.
                         if gp_nav.directional_released {
@@ -2292,6 +2295,13 @@ impl ApplicationHandler for App {
                         // the punch-through flag (Passthrough queues nothing);
                         // other nav intents enqueue only while capturing.
                         let capture = session.ui_dispatch.mode() == input::UiCaptureMode::Capture;
+                        if capture {
+                            for command in gp_nav.text_shortcuts {
+                                session
+                                    .ui_dispatch
+                                    .enqueue_intent(input::UiIntentPayload::TextShortcut(command));
+                            }
+                        }
                         for intent in gp_nav.nav_intents {
                             if intent == input::NavIntent::Menu {
                                 menu_toggle = true;
@@ -2361,6 +2371,9 @@ impl ApplicationHandler for App {
                 // below. Returns whether a commit or cancel fired so the pause-menu
                 // path is skipped this frame.
                 let text_entry_consumed_nav = self.resolve_text_entry_intents(&ui_intents);
+                // Shortcuts resolve after a commit or cancel, so one landing on
+                // the frame text entry closes does nothing (P26).
+                self.apply_text_shortcuts(&ui_intents, frame_dt);
 
                 // Focus engine (game-logic phase): split the drained intents into
                 // nav (directional/confirm/cancel/next/prev) and pointer clicks,
@@ -2390,7 +2403,9 @@ impl ApplicationHandler for App {
                         }
                         input::UiIntentPayload::PointerClick { pos } => click_positions.push(*pos),
                         // Text / Backspace are text-entry edits, resolved above.
-                        input::UiIntentPayload::Text(_) | input::UiIntentPayload::Backspace => {}
+                        input::UiIntentPayload::Text(_)
+                        | input::UiIntentPayload::Backspace
+                        | input::UiIntentPayload::TextShortcut(_) => {}
                     }
                 }
                 // Slider nav-capture (M13 Goal F, Task 4): the focused slider gets
@@ -5731,11 +5746,21 @@ impl App {
                 if gp_nav.confirm_released {
                     session.ui_focus.release_confirm_repeat();
                 }
+                if gp_nav.text_shortcut_released {
+                    session.ui_focus.release_shortcut_repeat();
+                }
                 if gp_nav.directional_released {
                     session.ui_focus.release_repeat();
                 }
                 nav_input_seen = !gp_nav.nav_intents.is_empty();
                 let capture = session.ui_dispatch.mode() == input::UiCaptureMode::Capture;
+                if capture {
+                    for command in gp_nav.text_shortcuts {
+                        session
+                            .ui_dispatch
+                            .enqueue_intent(input::UiIntentPayload::TextShortcut(command));
+                    }
+                }
                 for intent in gp_nav.nav_intents {
                     if intent == input::NavIntent::Menu {
                         continue;
@@ -5767,6 +5792,7 @@ impl App {
             ui_intents
         };
         let text_entry_consumed_nav = self.resolve_text_entry_intents(&ui_intents);
+        self.apply_text_shortcuts(&ui_intents, frame_dt);
 
         let mut nav_intents: Vec<input::NavIntent> = Vec::new();
         let mut click_positions: Vec<input::PointerPos> = Vec::new();
@@ -5781,7 +5807,9 @@ impl App {
                     nav_intents.push(*nav);
                 }
                 input::UiIntentPayload::PointerClick { pos } => click_positions.push(*pos),
-                input::UiIntentPayload::Text(_) | input::UiIntentPayload::Backspace => {}
+                input::UiIntentPayload::Text(_)
+                | input::UiIntentPayload::Backspace
+                | input::UiIntentPayload::TextShortcut(_) => {}
             }
         }
         self.apply_slider_nav_capture(&mut nav_intents);
@@ -12144,6 +12172,124 @@ mod tests {
 
     #[cfg(debug_assertions)]
     #[test]
+    fn dev_exit_and_quit_confirmations_land_a_repeated_confirm_on_cancel() {
+        // P27: confirm on EXIT opens the confirmation; a second confirm on the
+        // next frame lands on its safe choice and closes it. P12: a
+        // confirmation closed and reopened on one frame lands there too.
+        use crate::input::{InputMode, NavIntent};
+        use postretro_ui::tree::CellValues;
+
+        if !install_scripts_build_next_to_current_exe() {
+            eprintln!("skipping: could not install scripts-build next to test binary");
+            return;
+        }
+        let mut rt = test_runtime();
+        rt.run_mod_init(&workspace_root().join("content/dev"))
+            .expect("development TypeScript mod entry bundles and initializes");
+        let manifest = rt.mod_manifest().expect("dev mod manifest exists");
+        let tree = |name: &str| {
+            manifest
+                .ui_trees
+                .iter()
+                .find(|tree| tree.name == name)
+                .unwrap_or_else(|| panic!("dev manifest exports {name}"))
+                .tree
+                .clone()
+        };
+        let reactions: Vec<&str> = manifest.reactions.iter().map(|r| r.reaction.name.as_str()).collect();
+        for (name, prefix, reaction, action) in [
+            (
+                "dev.exitConfirm",
+                "exitConfirm",
+                "dev.askExit",
+                postretro_ui::actions::EXIT_TO_DESKTOP_ACTION,
+            ),
+            (
+                "dev.quitConfirm",
+                "quitConfirm",
+                "dev.askQuit",
+                postretro_ui::actions::QUIT_TO_MENU_ACTION,
+            ),
+        ] {
+            assert!(reactions.contains(&reaction), "{reaction} is registered");
+            let dialog = tree(name);
+            let cancel = format!("{prefix}Cancel");
+            let confirm = format!("{prefix}Confirm");
+            assert_eq!(dialog.initial_focus.as_deref(), Some(cancel.as_str()));
+            assert_eq!(
+                button_action(&dialog.root, &cancel),
+                Some(postretro_ui::actions::CLOSE_DIALOG_ACTION)
+            );
+            assert_eq!(button_action(&dialog.root, &confirm), Some(action));
+
+            let theme = postretro_ui::theme::UiTheme::engine_default();
+            let mut retained = postretro_ui::tree::UiTree::from_descriptor(&dialog, &theme);
+            let mut font_system = postretro_ui::text::build_font_system();
+            let slots = std::collections::HashMap::new();
+            let cells = CellValues::new();
+            retained.build_draw_data_retained(
+                [1280, 720],
+                &mut font_system,
+                &postretro_ui::tree::ImageSizes::new(),
+                &slots,
+                &cells,
+                0.0,
+            );
+            let mut rects = retained.export_focus_rects(&dialog, [1280, 720], &slots, &cells);
+            rects.owner = Some(postretro_ui::tree::FocusRectOwner {
+                name: name.to_string(),
+                tier: postretro_ui::modal_stack::ScopeTier::Mod,
+            });
+
+            let mut app = crate::startup::lifecycle::tests::test_app();
+            let tick = |app: &mut App, intents: &[NavIntent]| {
+                let session = app.session.as_mut().unwrap();
+                let (key, _) = session.ui_focus_target("hud");
+                let result = session.ui_focus.tick(
+                    Some(&key),
+                    Some(&rects),
+                    intents,
+                    None,
+                    &[],
+                    InputMode::Focus,
+                    0.016,
+                );
+                session.ui_focus_rects = Some(rects.clone());
+                app.ui_focused_id = result.focused.clone();
+                if result.confirmed {
+                    app.fire_focused_button_activation(result.focused.as_deref());
+                }
+                result
+            };
+            // Frame N: the first confirm pushed the dialog (the reaction's
+            // effect). Frame N+1: the second confirm.
+            app.session.as_mut().unwrap().modal_stack.push(name, dialog.clone());
+            let result = tick(&mut app, &[NavIntent::Confirm]);
+            assert_eq!(result.focused.as_deref(), Some(cancel.as_str()));
+            assert!(!app.pending_exit_to_desktop, "{name}: the game keeps running");
+            assert_eq!(
+                app.session.as_ref().unwrap().modal_stack.active_name(),
+                None,
+                "{name}: the confirmation closed"
+            );
+
+            // P12: focus the destructive choice, then close and reopen on one
+            // frame; the fresh push lands on the safe choice.
+            let stack = &mut app.session.as_mut().unwrap().modal_stack;
+            stack.push(name, dialog.clone());
+            tick(&mut app, &[]);
+            let moved = tick(&mut app, &[NavIntent::Right]);
+            assert_eq!(moved.focused.as_deref(), Some(confirm.as_str()));
+            let stack = &mut app.session.as_mut().unwrap().modal_stack;
+            stack.pop();
+            stack.push(name, dialog.clone());
+            let reopened = tick(&mut app, &[]);
+            assert_eq!(reopened.focused.as_deref(), Some(cancel.as_str()), "{name}");
+        }
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
     fn production_pause_menu_sdk_tree_drives_cpu_interaction_end_to_end() {
         use crate::input::{InputMode, NavIntent, PointerPos, UiFocusEngine};
         use postretro_scripting_core::data_descriptors::RegisteredUiTree;
@@ -12201,8 +12347,13 @@ mod tests {
         );
         assert_eq!(
             button_action(&mod_pause.root, "pauseExitDesktop"),
-            Some(postretro_ui::actions::EXIT_TO_DESKTOP_ACTION),
-            "Exit to Desktop resolves to the generic reserved quit action wire value",
+            Some("dev.askExit"),
+            "Exit to Desktop asks first",
+        );
+        assert_eq!(
+            button_action(&mod_pause.root, "pauseQuitToMenu"),
+            Some("dev.askQuit"),
+            "Quit to Menu asks first",
         );
 
         let theme = postretro_ui::theme::UiTheme::engine_default();
@@ -12448,7 +12599,7 @@ mod tests {
         );
         assert_eq!(
             button_action(&title.root, "frontendExit"),
-            Some(postretro_ui::actions::EXIT_TO_DESKTOP_ACTION)
+            Some("dev.askExit")
         );
         assert_eq!(
             button_action(&title.root, "frontendAccessibility"),

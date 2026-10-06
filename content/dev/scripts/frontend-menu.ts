@@ -12,6 +12,7 @@ import {
   HStack,
   Slider,
   Switch,
+  QUIT_TO_MENU_ACTION,
   Text,
   Tree,
   VStack,
@@ -143,6 +144,65 @@ export const devLevelSelectMenu = defineUiTree({
   ),
 });
 
+// Dev EXIT and QUIT confirmations: each opens a dialog whose initial focus is
+// the safe choice, so a second confirm pressed on the next frame cancels.
+const EXIT_CONFIRM_NAME = "dev.exitConfirm";
+const QUIT_CONFIRM_NAME = "dev.quitConfirm";
+
+function confirmDialog(name: string, prompt: string, label: string, action: string, idPrefix: string) {
+  return defineUiTree({
+    name,
+    tree: Tree(
+      {
+        anchor: "center",
+        offset: [0, 0],
+        captureMode: "capture",
+        // The safe choice: a repeated confirm never takes the action.
+        initialFocus: `${idPrefix}Cancel`,
+        accessibleName: prompt,
+        role: "group",
+      },
+      VStack(
+        {
+          gap: 14,
+          padding: 20,
+          align: "start",
+          fill: COLOR_PANEL,
+          focus: { policy: "linear" },
+        },
+        [
+          Text({ content: prompt, fontSize: 22, color: COLOR_ACCENT }),
+          HStack({ gap: 12, padding: 0, align: "start" }, [
+            Button({ id: `${idPrefix}Cancel`, label: "CANCEL", onPress: CLOSE_DIALOG_ACTION }),
+            Button({ id: `${idPrefix}Confirm`, label, onPress: action }),
+          ]),
+        ],
+      ),
+    ),
+  });
+}
+
+export const exitConfirm = confirmDialog(
+  EXIT_CONFIRM_NAME,
+  "EXIT TO DESKTOP?",
+  "EXIT",
+  EXIT_TO_DESKTOP_ACTION,
+  "exitConfirm",
+);
+
+export const quitConfirm = confirmDialog(
+  QUIT_CONFIRM_NAME,
+  "QUIT TO THE MAIN MENU?",
+  "QUIT",
+  QUIT_TO_MENU_ACTION,
+  "quitConfirm",
+);
+
+/** EXIT buttons press this: it opens the exit confirmation. */
+export const askExit = defineReaction("dev.askExit", openMenu(EXIT_CONFIRM_NAME));
+/** QUIT TO MENU buttons press this: it opens the quit confirmation. */
+export const askQuit = defineReaction("dev.askQuit", openMenu(QUIT_CONFIRM_NAME));
+
 const openPlay = defineReaction("frontend.openPlay", openMenu(LEVEL_SELECT_MENU_NAME));
 /** Opens the tabbed options screen; the pause menu opens it too. */
 export const openOptions = defineReaction("frontend.openOptions", openMenu(OPTIONS_MENU_NAME));
@@ -170,7 +230,7 @@ export const frontendMenu = defineUiTree({
         Text({ content: "POSTRETRO", fontSize: 36, color: COLOR_ACCENT }),
         Button({ id: "frontendPlay", label: "PLAY", onPress: openPlay }),
         Button({ id: "frontendOptions", label: "OPTIONS", onPress: openOptions }),
-        Button({ id: "frontendExit", label: "EXIT", onPress: EXIT_TO_DESKTOP_ACTION }),
+        Button({ id: "frontendExit", label: "EXIT", onPress: askExit }),
       ],
     ),
   ),
@@ -614,6 +674,8 @@ export const optionsMenu = defineUiTree({
 export const frontendReactions: NamedReactionDescriptor[] = [
   openPlay,
   openOptions,
+  askExit,
+  askQuit,
   ...frontendStartReactions,
   ...optionReactions,
   ...optionsTabReactions,

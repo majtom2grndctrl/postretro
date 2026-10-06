@@ -56,10 +56,12 @@ import {
 import { pauseMenu } from "./scripts/pause-menu";
 import {
   devLevelSelectMenu,
+  exitConfirm,
   frontendMenu,
   frontendReactions,
   mapCatalog,
   optionsMenu,
+  quitConfirm,
 } from "./scripts/frontend-menu";
 import {
   ammoOnKill,
@@ -116,6 +118,8 @@ export default defineMod({
     spreadReticle,
     reloadMeterTree,
     pauseMenu,
+    exitConfirm,
+    quitConfirm,
     frontendMenu,
     devLevelSelectMenu,
     optionsMenu,
@@ -125,7 +129,11 @@ export default defineMod({
   presentationTemplates: [damageNumber, damagedEnemyBar],
   presentationOverlays: damagedEnemyOverlay,
   theme: hudTheme,
-  reactions: [...frontendReactions, ...factionSentimentReactions, ...positionalSoundReactions],
+  reactions: [
+    ...frontendReactions,
+    ...factionSentimentReactions,
+    ...positionalSoundReactions,
+  ],
   // The combat demo's unique target tags make these mod-global policies work
   // for both catalog and direct CLI map loads. `enemyDeath` must precede its
   // `combatZombieLifecycle` override: registration order is iteration order, and

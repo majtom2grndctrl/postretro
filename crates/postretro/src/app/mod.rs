@@ -12,6 +12,7 @@ pub(crate) mod controls_panel;
 pub(crate) mod keyboard_input;
 pub(crate) mod options_menu;
 pub(crate) mod render_extents;
+pub(crate) mod text_shortcuts;
 pub(crate) mod ui_actions;
 pub(crate) mod ui_input_frames;
 #[cfg(test)]

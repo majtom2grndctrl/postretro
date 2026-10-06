@@ -25,6 +25,8 @@ const KNOWN_ARMS: &[&str] = &[
     "scan-parallel",
     "texel-outer",
     "array-free",
+    "unroll36",
+    "l0-only",
     "scale-shared",
     "vec3-accum",
     "const-tile",
@@ -143,6 +145,12 @@ fn ordered_arms(raw: &str) -> Vec<&'static str> {
         !(requested.contains(&"texel-outer") && requested.contains(&"array-free")),
         "texel-outer and array-free are alternative restructures"
     );
+    for modifier in ["unroll36", "l0-only"] {
+        assert!(
+            !requested.contains(&modifier) || requested.contains(&"array-free"),
+            "`{modifier}` modifies array-free"
+        );
+    }
     // texel-outer and array-free read per-entry scales from the shared cache.
     if requested.contains(&"texel-outer") || requested.contains(&"array-free") {
         requested.push("scale-shared");
@@ -178,7 +186,7 @@ fn build_source(shader: ComposeShader, decode_helper: &str, arms: &[&str]) -> St
         if *arm == "vec3-accum" && shader == ComposeShader::Indirect {
             continue;
         }
-        apply_arm(&mut src, shader, arm);
+        apply_arm(&mut src, shader, arm, arms);
     }
     src
 }
@@ -206,7 +214,7 @@ const ACCUM_COMMENT: &str =
     "    // Keeping the accumulator private lets one shared kept lattice serve all\n";
 const SHARED_DECL: &str = "var<workgroup> shared_brick_indirection: u32;\n";
 
-fn apply_arm(src: &mut String, shader: ComposeShader, arm: &str) {
+fn apply_arm(src: &mut String, shader: ComposeShader, arm: &str, all: &[&str]) {
     use ComposeShader::{AnimatedDirect, Indirect};
     match arm {
         "scan-parallel" => {
@@ -337,7 +345,11 @@ var<workgroup> spike_words: array<u32, 64>;
                 arm,
             );
         }
+        // Modifiers of array-free; applied inside its rewrite.
+        "unroll36" | "l0-only" => {}
         "array-free" => {
+            let unroll = all.contains(&"unroll36");
+            let l0_only = all.contains(&"l0-only");
             replace_once(src, LEVEL_BLOCK, "", arm);
             let (gate_l0, gate_coarse, base_init, store) = match shader {
                 Indirect => (
@@ -382,32 +394,18 @@ var<workgroup> spike_words: array<u32, 64>;
 ",
                 ),
             };
-            let fused = format!(
-                "    // spike array-free: every level fuses the base read, the entry sum and the
-    // store per texel. L1/L2 lanes reconstruct from their own reads of the kept
-    // corner tiles, so the kernel holds no 36-entry accumulator and no barriers
-    // after the scale cache.
-    if (grid.row_count > 0u) {{
-        if (output_is_stored) {{
-            let spike_l0 = {gate_l0};
-            let spike_coarse = {gate_coarse};
-            let spike_rank = within_cell_rank(cell_index, local_probe);
-            let spike_rep = l2_representative_local(cell_index);
-            let spike_rep_kept = local_probe_is_kept(cell_index, spike_rep);
-            let spike_rep_rank = within_cell_rank(cell_index, spike_rep);
-            for (var texel_index = 0u; texel_index < TILE_TEXEL_COUNT; texel_index = texel_index + 1u) {{
-                let tile_texel = vec2<u32>(
-                    texel_index % RUNTIME_TILE_DIMENSION,
-                    texel_index / RUNTIME_TILE_DIMENSION,
-                );
-{base_init}                if (level == 0u) {{
+            // The coarse branch is compiled out under l0-only: ids 27/45 are
+            // uniform L0 by compiler policy (`enforce_id41_only_coarsening_policy`).
+            let coarse_gate = if l0_only { "false" } else { "spike_coarse" };
+            let body = format!(
+                "{base_init}                if (level == 0u) {{
                     if (spike_l0) {{
                         for (var entry = start; entry < end; entry = entry + 1u) {{
                             spike_accum = spike_accum
                                 + read_delta_texel(entry, spike_rank, tile_texel).rgb * spike_scale(entry, start, spike_cached);
                         }}
                     }}
-                }} else if (spike_coarse) {{
+                }} else if ({coarse_gate}) {{
                     for (var entry = start; entry < end; entry = entry + 1u) {{
                         var delta = vec3<f32>(0.0);
                         if (level == 2u) {{
@@ -422,8 +420,48 @@ var<workgroup> spike_words: array<u32, 64>;
                         spike_accum = spike_accum + delta * spike_scale(entry, start, spike_cached);
                     }}
                 }}
-{store}            }}
-        }}
+{store}"
+            );
+            let texels = if unroll {
+                // spike unroll36: one block per texel with constant coordinates,
+                // so the texel loop carries no loop-bound counter or index math.
+                (0..36)
+                    .map(|t| {
+                        format!(
+                            "            {{
+                let tile_texel = vec2<u32>({x}u, {y}u);
+{body}            }}
+",
+                            x = t % 6,
+                            y = t / 6
+                        )
+                    })
+                    .collect::<String>()
+            } else {
+                format!(
+                    "            for (var texel_index = 0u; texel_index < TILE_TEXEL_COUNT; texel_index = texel_index + 1u) {{
+                let tile_texel = vec2<u32>(
+                    texel_index % RUNTIME_TILE_DIMENSION,
+                    texel_index / RUNTIME_TILE_DIMENSION,
+                );
+{body}            }}
+"
+                )
+            };
+            let fused = format!(
+                "    // spike array-free: every level fuses the base read, the entry sum and the
+    // store per texel. L1/L2 lanes reconstruct from their own reads of the kept
+    // corner tiles, so the kernel holds no 36-entry accumulator and no barriers
+    // after the scale cache.
+    if (grid.row_count > 0u) {{
+        if (output_is_stored) {{
+            let spike_l0 = {gate_l0};
+            let spike_coarse = {gate_coarse};
+            let spike_rank = within_cell_rank(cell_index, local_probe);
+            let spike_rep = l2_representative_local(cell_index);
+            let spike_rep_kept = local_probe_is_kept(cell_index, spike_rep);
+            let spike_rep_rank = within_cell_rank(cell_index, spike_rep);
+{texels}        }}
         return;
     }}
 "
@@ -721,7 +759,11 @@ mod tests {
     #[test]
     fn every_arm_rewrites_and_validates() {
         let decode = crate::render::sh_indirection::WGSL_DECODE_HELPER;
-        let mut lists: Vec<String> = KNOWN_ARMS.iter().map(|a| (*a).to_string()).collect();
+        let mut lists: Vec<String> = KNOWN_ARMS
+            .iter()
+            .filter(|a| !matches!(**a, "unroll36" | "l0-only"))
+            .map(|a| (*a).to_string())
+            .collect();
         lists.extend(
             [
                 "baseline",
@@ -734,6 +776,9 @@ mod tests {
                 "array-free",
                 "floor,array-free",
                 "scan-parallel,array-free,const-tile",
+                "array-free,unroll36",
+                "array-free,l0-only",
+                "array-free,unroll36,l0-only",
             ]
             .map(String::from),
         );

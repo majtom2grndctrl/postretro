@@ -1,7 +1,7 @@
 # ui-text-prepare-churn — plan of record
 
 mode: compact
-status: active
+status: active (results recorded; awaiting "land the plane")
 read at: 481ce6894
 
 ## Corrections
@@ -14,7 +14,10 @@ read at: 481ce6894
 - `ui.md` §5 already carries the restatement as "decided, not yet built". Landing removes those markers. No new wording is needed for the grep gate.
 
 ## Owner decisions (review, 2026-10-05)
-- **Idle reclaim held until a change.** With the cadence equal to the 120-frame timing window, every idle window held one reclaim, and M1 could not pass. A due cadence reclaim now waits until a span has prepared for a change, or a drawn slot has left, since the last trim. Eviction safety is unchanged: a settled UI's in-use set cannot grow. The brief's reclaim Decision was reworded to match.
+- **Idle reclaim held until a change.** With the cadence equal to the 120-frame timing window, every idle window held one reclaim, and M1 could not pass. A due cadence reclaim now lands on the first encode that prepares a changed span, trimming ahead of that prepare. Only those encodes can grow the in-use set, so eviction safety and the growth bound are unchanged. The brief's reclaim Decision was reworded to match.
+  - The first build of this tracked a "changed since trim" flag, and it reclaimed on the settled frame *after* the first change that followed an idle stretch. The second review round caught it (R1). The fix decides from the current frame's own spans. `first_change_after_idle_reclaims_on_that_frame_and_the_next_settles` fails on the flag version.
+  - Clarification of A2/A8, meaning preserved: on a change frame where a reclaim is due, every live span prepares. A3 already names reclaim frames as the exception. The frame after any change, departure or spawn prepares nothing.
+- **A span that keeps failing retries alone.** Its inputs already failed after a trim, so the next frame retries just that span without a recovery. A15's "prepares again on the next frame" holds without re-preparing every span each frame. It warns once per failing input.
 - **A full re-prepare trims first.** Before this change glyphon trimmed every frame. Without that, a resize drag piled every frame's new device-scaled font size into the in-use set and grew the atlas, with a re-raster stall at each growth step. A frame where no span can keep its vertices (viewport or font change, every slot returning) is now a reclaim, at no extra prepare cost. A mutation without this trigger fills the pinned atlas at drag frame 20.
 - **Debounce considered and rejected** (owner asked to consider it).
   - Debouncing the trim lets stale sizes pile up, which is exactly the atlas-fill this trigger prevents.
@@ -29,32 +32,32 @@ read at: 481ce6894
 
 Adapter-gated tests live in `crates/renderer/src/render/ui/text_prepare_gate_test.rs` (new) unless noted. Each one self-skips with a printed reason.
 
-| AC | Proof | Status |
-|---|---|---|
-| A1 identical frames: no prepare/write/trim, equal pixels | `identical_frames_prepare_nothing_and_match_pixels` (adds a settled run of 2× the cadence that prepares and trims nothing) | achievable as stated |
-| A2 one span changes | `one_changed_span_prepares_only_itself_then_nothing` | achievable as stated |
-| A3 changing span beside static past the cadence | `changing_span_reclaims_on_cadence_and_static_pixels_hold` | achievable as stated |
-| A4 pinned atlas, new glyph per frame, ≥2 reclaims, ≥1 atlas-full | `pinned_atlas_new_glyph_counter_keeps_static_label` (a moving span prepares before the overflow; its per-slot prepare count of 2 proves the re-prepare); `resize_drag_trims_each_frame_and_never_fills_the_atlas` (owner trigger) | achievable as stated |
-| A5 zero text; reclaim deferral (O9) | `zero_text_frame_prepares_nothing_and_defers_reclaim` (the rig reuses its target, so the clear check can fail) | achievable as stated |
-| A6 viewport change | `viewport_change_reprepares_every_span_once` | achievable as stated |
-| A7 font size/colour, shape insert, font registration | `appearance_change_prepares_only_its_span`, `shape_insert_prepares_only_its_layer`, `font_registration_prepares_every_span_once` | achievable as stated |
-| A8 damage number in bottom layer; HUD meter in middle layer | `presentation_spawn_prepares_no_other_layer`, `middle_layer_meter_toggle_prepares_no_other_layer` | achievable as stated |
-| A9 adjacent layers keep separate spans (O11) | `layer_boundary_ends_span` | achievable as stated |
-| A10 pause menu open/close (O10) | `modal_push_prepares_only_pushed_layer_and_pop_prepares_nothing` | achievable as stated |
-| A11 per-layer depth occlusion | existing `upper_layer_panel_occludes_lower_layer_text_without_losing_other_text` (now on banded depth) + `banded_depth_keeps_own_panel_under_own_text` | achievable as stated |
-| A12 layer close/reopen re-prepares; correct after reclaim/atlas-full/viewport; slot beyond count draws nothing (O5, O6) | `returning_layer_reprepares_and_draws_correct_text`, `returning_layer_is_correct_after_atlas_full_while_away` | achievable as stated |
-| A13 reclaim and atlas-full after lower-layer count change keep depths (O22) | `reclaim_after_lower_layer_change_keeps_occlusion` (asserts a reclaim), `atlas_full_after_lower_layer_change_keeps_occlusion` (asserts an atlas-full recovery); both check occlusion ink directly on every trim frame | achievable as stated |
-| A14 layer count over band bound (O23) | `over_band_bound_falls_back_then_reprepares_once`; `band_bound_counts_items_per_layer_and_depth_follows_paint_order` (item-cap trigger, depth order across paint-stream and legacy layers) | achievable as stated |
-| A15 failed prepare draws nothing, retries (O4) | `failed_prepare_draws_nothing_and_retries` (the span drew last frame and fails with a partial vertex count; mutation without the `key_valid` render check fails it) | achievable as stated |
-| A16 tween settle / reduce-motion snap (O18) | `settled_tween_prepares_nothing`, `reduce_motion_snap_prepares_once_then_nothing` (retained gameplay path) | achievable as stated |
-| A17 timing count under UI stage | `ui_frame_reports_text_spans_prepared_under_the_ui_stage` (real `record_ui_layer` path; folded sample sits under `rec_ui`, present at zero; settled frames count zero), `ui_text_prepare_count_is_absent_with_timing_off`, `ui_text_spans_prepared_counts_under_the_ui_stage`, `count_rows_show_average_and_max_and_stay_present_at_zero` (Performance tab); the log line uses the generic `StageKind::Count` window format | achievable as stated |
-| A18 debug guard counts encodes (O20); drift guard passes | `second_encode_before_submit_trips_guard_even_without_prepare` (debug; matches the guard message) + `renderer_direct_uploads_and_submissions_have_lifecycle_owners`, `renderer_uses_only_the_shared_staging_pool` | achievable as stated |
-| A19 grep gates | `glyphon_and_wgpu_come_from_the_registry_unpatched`, `ui_md_states_the_change_gated_text_contract` | achievable as stated |
-| A20 adapter-gated rows ran, count reported | run the module on this machine's adapter; report ran/skipped from the test output | achievable as stated |
-| M1 Mac release medians | owner, Mac. A settled window now counts zero (owner decision), so the row can pass as worded | manual |
-| M2 post-change `sample` shares | owner, Mac | manual |
-| M3 combat prepare-count residue | owner, Mac | manual |
-| M4 visual: no stale/missing text | owner, in-engine | manual |
+| AC | Proof | Status | Result |
+|---|---|---|---|
+| A1 identical frames: no prepare/write/trim, equal pixels | `identical_frames_prepare_nothing_and_match_pixels` (adds a settled run of 2× the cadence); `first_change_after_idle_reclaims_on_that_frame_and_the_next_settles` (a change or departure after an idle stretch leaves the next frame settled) | achievable as stated | pass |
+| A2 one span changes | `one_changed_span_prepares_only_itself_then_nothing` | achievable as stated | pass |
+| A3 changing span beside static past the cadence | `changing_span_reclaims_on_cadence_and_static_pixels_hold` | achievable as stated | pass |
+| A4 pinned atlas, new glyph per frame, ≥2 reclaims, ≥1 atlas-full | `pinned_atlas_new_glyph_counter_keeps_static_label` (a moving span prepares before the overflow; its per-slot prepare count of 2 proves the re-prepare); `resize_drag_trims_each_frame_and_never_fills_the_atlas` (owner trigger) | achievable as stated | pass |
+| A5 zero text; reclaim deferral (O9) | `zero_text_frame_prepares_nothing_and_defers_reclaim`. The rig reuses its target, so the clear check can fail. O9 holds by construction: a zero-text frame forgets every slot, so the next frame with text always reclaims | achievable as stated | pass |
+| A6 viewport change | `viewport_change_reprepares_every_span_once` | achievable as stated | pass |
+| A7 font size/colour, shape insert, font registration | `appearance_change_prepares_only_its_span`, `shape_insert_prepares_only_its_layer`, `font_registration_prepares_every_span_once` | achievable as stated | pass |
+| A8 damage number in bottom layer; HUD meter in middle layer | `presentation_spawn_prepares_no_other_layer`, `middle_layer_meter_toggle_prepares_no_other_layer` | achievable as stated | pass |
+| A9 adjacent layers keep separate spans (O11) | `layer_boundary_ends_span` | achievable as stated | pass |
+| A10 pause menu open/close (O10) | `modal_push_prepares_only_pushed_layer_and_pop_prepares_nothing` | achievable as stated | pass |
+| A11 per-layer depth occlusion | existing `upper_layer_panel_occludes_lower_layer_text_without_losing_other_text` (now on banded depth) + `banded_depth_keeps_own_panel_under_own_text` | achievable as stated | pass |
+| A12 layer close/reopen re-prepares; correct after reclaim/atlas-full/viewport; slot beyond count draws nothing (O5, O6) | `returning_layer_reprepares_and_draws_correct_text`, `returning_layer_is_correct_after_atlas_full_while_away` | achievable as stated | pass |
+| A13 reclaim and atlas-full after lower-layer count change keep depths (O22) | `reclaim_after_lower_layer_change_keeps_occlusion` (asserts a reclaim), `atlas_full_after_lower_layer_change_keeps_occlusion` (asserts an atlas-full recovery); both check occlusion ink directly on every trim frame | achievable as stated | pass |
+| A14 layer count over band bound (O23) | `over_band_bound_falls_back_then_reprepares_once`; `band_bound_counts_items_per_layer_and_depth_follows_paint_order` (item-cap trigger, depth order across paint-stream and legacy layers) | achievable as stated | pass |
+| A15 failed prepare draws nothing, retries (O4) | `failed_prepare_draws_nothing_and_retries`: the span drew last frame and fails with a partial vertex count, and a mutation without the `key_valid` render check fails it. Later frames retry the span alone, with no trim | achievable as stated | pass |
+| A16 tween settle / reduce-motion snap (O18) | `settled_tween_prepares_nothing`, `reduce_motion_snap_prepares_once_then_nothing` (retained gameplay path) | achievable as stated | pass |
+| A17 timing count under UI stage | `ui_frame_reports_text_spans_prepared_under_the_ui_stage` (real `record_ui_layer` path; folded sample sits under `rec_ui`, present at zero; settled frames count zero), `ui_text_prepare_count_is_absent_with_timing_off`, `ui_text_spans_prepared_counts_under_the_ui_stage`, `count_rows_show_average_and_max_and_stay_present_at_zero` (Performance tab); the log line uses the generic `StageKind::Count` window format | achievable as stated | pass |
+| A18 debug guard counts encodes (O20); drift guard passes | `second_encode_before_submit_trips_guard_even_without_prepare` (debug; matches the guard message) + `renderer_direct_uploads_and_submissions_have_lifecycle_owners`, `renderer_uses_only_the_shared_staging_pool` | achievable as stated | pass |
+| A19 grep gates | `glyphon_and_wgpu_come_from_the_registry_unpatched`, `ui_md_states_the_change_gated_text_contract` | achievable as stated | pass |
+| A20 adapter-gated rows ran, count reported | run the module on this machine's adapter; report ran/skipped from the test output | achievable as stated | pass: 31 adapter-gated rows ran on GTX 1660 Super (Vulkan), 0 skipped |
+| M1 Mac release medians | owner, Mac. A settled UI never reclaims, so a window whose frames are all settled counts zero. A window holding a change counts that change, and a due reclaim lands on the change frame | manual | outstanding: owner |
+| M2 post-change `sample` shares | owner, Mac | manual | outstanding: owner |
+| M3 combat prepare-count residue | owner, Mac | manual | outstanding: owner |
+| M4 visual: no stale/missing text | owner, in-engine | manual | outstanding: owner |
 
 ## Tasks
 

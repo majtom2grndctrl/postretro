@@ -2015,6 +2015,9 @@ impl ApplicationHandler for App {
                 let Some(session) = self.session.as_mut() else {
                     return;
                 };
+                if state.is_pressed() {
+                    session.device_family.note_keyboard_mouse();
+                }
                 // The capture prompt takes mouse buttons too; a captured click
                 // activates nothing (P8).
                 if session.capture_prompt_is_active() {
@@ -2264,6 +2267,9 @@ impl ApplicationHandler for App {
                             session.bindings.ui_nav(),
                             context,
                         );
+                        if !gp_nav.presses.is_empty() {
+                            session.device_family.note_pad(gp_nav.vendor_id);
+                        }
                         if capture_prompt {
                             // The capture prompt takes the pad's presses; none
                             // navigates or opens the menu (P8).
@@ -2337,7 +2343,15 @@ impl ApplicationHandler for App {
                         .scripting
                         .input_mode_tracker
                         .update(mode_signal, frame_dt);
+                    // Mouse motion moves glyphs to keyboard-and-mouse only once
+                    // it passes the pointer-mode debounce (P22).
+                    if resolved_input_mode == input::InputMode::Pointer
+                        && session.ui_input_mode != input::InputMode::Pointer
+                    {
+                        session.device_family.note_keyboard_mouse();
+                    }
                     session.ui_input_mode = resolved_input_mode;
+                    session.device_family.end_frame();
                 }
 
                 // Game-logic phase begins here. Read the UI captures made
@@ -5736,6 +5750,9 @@ impl App {
                     session.bindings.ui_nav(),
                     context,
                 );
+                if !gp_nav.presses.is_empty() {
+                    session.device_family.note_pad(gp_nav.vendor_id);
+                }
                 if capture_prompt {
                     for press in std::mem::take(&mut gp_nav.presses) {
                         session.controls.offer_press(press);
@@ -5786,7 +5803,13 @@ impl App {
                 .scripting
                 .input_mode_tracker
                 .update(mode_signal, frame_dt);
+            if ui_input_mode == input::InputMode::Pointer
+                && session.ui_input_mode != input::InputMode::Pointer
+            {
+                session.device_family.note_keyboard_mouse();
+            }
             session.ui_input_mode = ui_input_mode;
+            session.device_family.end_frame();
             let ui_intents = session.ui_dispatch.take_ready();
             session.ui_dispatch.advance_frame();
             ui_intents

@@ -39,6 +39,8 @@ pub struct GamepadNavOutput {
     /// An input bound to a text shortcut released this frame; it stops a held
     /// backspace shortcut's repeat.
     pub text_shortcut_released: bool,
+    /// The active pad's USB vendor id, for the glyph family.
+    pub vendor_id: Option<u16>,
     pub confirm_released: bool,
     pub directional_released: bool,
 }
@@ -254,6 +256,7 @@ impl GamepadSystem {
         };
 
         let gamepad = self.gilrs.gamepad(gamepad_id);
+        out.vendor_id = gamepad.vendor_id();
         if !gamepad.is_connected() {
             self.active_gamepad = None;
             nav_sticks.clear();

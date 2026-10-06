@@ -18,8 +18,10 @@ mod commands;
 pub use activation::ActivationInputCapture;
 pub mod cursor;
 mod defaults;
+mod device_family;
 pub mod diagnostics;
 mod focus;
+mod glyphs;
 pub mod gamepad;
 mod input_names;
 mod latch;
@@ -52,6 +54,11 @@ pub use input_names::{input_label, input_name};
 pub use rebind::{RebindProposal, propose_rebind, reset_command};
 pub use relevance::Relevance;
 pub use defaults::default_bindings;
+#[allow(unused_imports)]
+pub use device_family::{DeviceFamily, DeviceFamilyTracker};
+// The Glyph widget reads these once it lands (task 19, after the scroll merge).
+#[allow(unused_imports)]
+pub use glyphs::{GlyphView, glyph_dir, glyph_key, resolve_glyph};
 pub use diagnostics::{DiagnosticAction, DiagnosticInputs, default_diagnostic_chords};
 pub use focus::InputFocus;
 pub use input_names::DeviceClass;

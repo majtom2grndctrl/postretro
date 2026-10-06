@@ -75,6 +75,9 @@ pub(crate) struct Session {
     /// input system runs. Rebuilt by `App::refresh_effective_bindings`.
     pub(crate) bindings: input::BindingState,
 
+    /// The device family glyphs follow, settled once per frame.
+    pub(crate) device_family: input::DeviceFamilyTracker,
+
     /// The engine controls panel's capture prompt and pending conflict.
     pub(crate) controls: crate::app::controls_panel::ControlsPanelState,
 
@@ -669,6 +672,7 @@ impl Session {
         Ok(Self {
             input_system,
             bindings,
+            device_family: Default::default(),
             controls: Default::default(),
             pending_slider_steps: Vec::new(),
             gameplay_input_latch: input::GameplayInputLatch::new(),

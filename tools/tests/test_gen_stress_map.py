@@ -236,6 +236,22 @@ class EnvironmentVolumeTests(unittest.TestCase):
                          + full_text.count('"classname" "gravity_volume"'), 300)
         self.assertNotIn("fluid_volume", base_text)
         self.assertNotIn("gravity_volume", base_text)
+        # The default-priority volumes sit in the appended tail too.
+        tail = full_text[len(base_text):].split("// entity")
+        self.assertTrue(any("_volume" in e and '"priority"' not in e for e in tail))
+
+    def test_a_handful_of_volumes_omit_priority_and_only_explicit_zeros(self):
+        entities, _ = generate_zoned()
+        volumes = [e for e in entities if is_volume(e)]
+        bare = [e for e in volumes if kvp(e, "priority") is None]
+        zeros = sum(1 for e in volumes if kvp(e, "priority") == "0") + len(bare)
+        every = GENERATOR.stress_environment.DEFAULT_PRIORITY_EVERY
+        self.assertEqual(len(bare), math.ceil(zeros / every))
+        self.assertGreaterEqual(len(bare), 3)
+        self.assertLessEqual(len(bare), 20)
+        # Deterministic: the same volumes lose the KVP on every run.
+        again = [e for e in generate_zoned()[0] if is_volume(e) and kvp(e, "priority") is None]
+        self.assertEqual(bare, again)
 
     def test_generation_is_deterministic_under_the_seed(self):
         self.assertEqual(generate_env(seed=7, volumes=200),
@@ -249,7 +265,8 @@ class EnvironmentVolumeTests(unittest.TestCase):
         volumes = [e for e in entities if is_volume(e)]
         fluids, gravities, priorities = set(), set(), []
         for entity in volumes:
-            priorities.append(int(kvp(entity, "priority")))
+            priority = kvp(entity, "priority")
+            priorities.append(0 if priority is None else int(priority))
             if entity[1] == VOLUME_CLASSES[0]:
                 self.assertIn(kvp(entity, "fluid"), GENERATOR.stress_environment.FLUIDS)
                 self.assertIsNone(kvp(entity, "gravity"))
@@ -304,15 +321,20 @@ class EnvironmentVolumeTests(unittest.TestCase):
         self.assertGreater(x1, X[1] + GENERATOR.WALL_T // 2)
 
 
-def generate_zoned(volumes=1000):
+def generate_zoned(volumes=1000, seed=1, animated_frac=1.0):
     """The env-volumes preset's zoned map: (entities, zone_index)."""
     result = GENERATOR.generate(
-        8, 6, 3, 1, 0.3, 1.0, "static", 1, 0, 1.0, 0.5, 4, True,
-        1, 64, 8, 6, "use", 2, 3, 1.0,
+        8, 6, 3, seed, 0.3, 1.0, "static", 1, 0, 1.0, 0.5, 4, True,
+        1, 64, 8, 6, "use", 2, 3, animated_frac,
         n_env_volumes=volumes, n_emitters=40, emitter_rate=50.0,
         emitter_lifetime=5.0, zoned=True,
     )
     return result[3], result[12]
+
+
+def is_animated(entity):
+    return any("brightness_curve" in line or GENERATOR.SCRIPT_LIGHT_TAG in line
+               for line in entity)
 
 
 def origin_of(entity):
@@ -336,10 +358,10 @@ class ZonedLayoutTests(unittest.TestCase):
         cls.entities, cls.zones = generate_zoned()
 
     def rooms(self, zone):
-        return [rect for name, _, rect in self.zones if name == zone]
+        return [rect for name, _, rect, _ in self.zones if name == zone]
 
     def test_every_zone_is_indexed(self):
-        names = {name for name, _, _ in self.zones}
+        names = {name for name, _, _, _ in self.zones}
         self.assertEqual(names, set(GENERATOR.stress_zones.POLICY))
         self.assertEqual(len(self.rooms("water")), 2)
 
@@ -394,9 +416,7 @@ class ZonedLayoutTests(unittest.TestCase):
             self.assertIn(f'"classname" "{name}"', classes)
         carousel = [e for e in self.entities if kvp(e, "spin_axis")]
         self.assertEqual(len(carousel), 1)
-        animated = [e for e in self.entities
-                    if any("brightness_curve" in l or GENERATOR.SCRIPT_LIGHT_TAG in l
-                           for l in e)]
+        animated = [e for e in self.entities if is_animated(e)]
         self.assertLessEqual(len(animated), GENERATOR.ANIMATED_LIGHT_CAP)
         room = self.rooms("animated")[0]
         self.assertEqual(sum(inside(origin_of(e), room) for e in animated), len(animated))
@@ -404,6 +424,98 @@ class ZonedLayoutTests(unittest.TestCase):
     def test_zero_volume_zoned_map_differs_only_by_volumes(self):
         base, _ = generate_zoned(volumes=0)
         self.assertEqual(base, [e for e in self.entities if not is_volume(e)])
+
+    def test_arena_spawns_are_spaced_and_off_the_drop_gap(self):
+        arena = self.rooms("arena")[0]
+        placed = [origin_of(e) for e in self.entities
+                  if (e[1] == f'"classname" "{GENERATOR.ENEMY_CLASS}"'
+                      or any(e[1] == f'"classname" "{c}"' for c in GENERATOR.WEAPON_CLASSES))
+                  and inside(origin_of(e), arena)]
+        self.assertGreaterEqual(len(placed), GENERATOR.stress_zones.ARENA_ENEMIES + 4)
+        for n, a in enumerate(placed):
+            for b in placed[n + 1:]:
+                self.assertGreaterEqual(math.dist(a[:2], b[:2]), GENERATOR.SPAWN_SPACING)
+        _, _, x0, x1, y0, y1 = arena
+        walk = GENERATOR.ARENA_MEZZ_WALK - GENERATOR.WALL_T // 2   # gap inset from x0i
+        for x, y, _ in placed:
+            self.assertFalse(x0 + walk <= x <= x1 - walk and y0 + walk <= y <= y1 - walk)
+
+
+class WarrenPlacementTests(unittest.TestCase):
+    def test_warren_spawns_keep_capsule_spacing_across_seeds(self):
+        for seed in (0, 1, 7, 42):
+            result = GENERATOR.generate(
+                6, 5, 3, seed, 0.3, 0.6, "static", 1, 1, 1.0, 0.5, 4, True,
+                1, 12, 6, 6, "use", 2, 3, 1.0,
+            )
+            placed = [origin_of(e) for e in result[3]
+                      if e[1] == f'"classname" "{GENERATOR.ENEMY_CLASS}"'
+                      or any(e[1] == f'"classname" "{c}"' for c in GENERATOR.WEAPON_CLASSES)]
+            self.assertEqual(len(placed), 18)
+            for n, a in enumerate(placed):
+                for b in placed[n + 1:]:
+                    if a[2] == b[2]:
+                        self.assertGreaterEqual(math.dist(a[:2], b[:2]),
+                                                GENERATOR.SPAWN_SPACING, (seed, a, b))
+
+
+class ZoneGuaranteeTests(unittest.TestCase):
+    SEEDS = (1, 2, 7, 42, 1000)
+
+    def test_doors_and_crates_zones_get_their_features_on_every_seed(self):
+        for seed in self.SEEDS:
+            entities, zones = generate_zoned(volumes=0, seed=seed)
+            by_zone = {name: (rect, missing) for name, _, rect, missing in zones}
+            for zone in ("doors", "crates"):
+                self.assertEqual(by_zone[zone][1], [], (seed, zone))
+            doors_room = by_zone["doors"][0]
+            switches = [e for e in entities if e[1] == '"classname" "switch"']
+            self.assertTrue(any(inside(brush_points(e)[0], doors_room) for e in switches),
+                            seed)
+            crates_room = by_zone["crates"][0]
+            spots = {e[1] for e in entities
+                     if origin_of(e) and inside(origin_of(e), crates_room)}
+            self.assertIn('"classname" "light_spot"', spots, seed)
+            self.assertIn('"classname" "light_dynamic_spot"', spots, seed)
+
+    def test_an_unplaceable_door_is_reported_not_claimed(self):
+        # With a lift taking a top-layer cell, a 3x3x2 grid's doors room has
+        # only dedicated neighbours, so no doorway can carry a door; the zone
+        # index says so.
+        result = GENERATOR.generate(
+            3, 3, 2, 1, 0.15, 1.0, "none", 1, 0, 1.0, 0.5, 4, True,
+            0, 0, 0, 6, "use", 1, 0, 0.0, zoned=True,
+        )
+        missing = {name: m for name, _, _, m in result[12]}
+        self.assertEqual(missing["doors"], ["door", "switch"])
+        out, err = io.StringIO(), io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stdout(out), \
+                contextlib.redirect_stderr(err):
+            GENERATOR.main(["--zones", "--grid", "3", "3", "2", "--doors", "6",
+                            "--lifts", "1", "--shaft-prob", "1.0",
+                            "-o", str(Path(tmp) / "z.map")])
+        self.assertIn("warning: zone doors", err.getvalue())
+        self.assertNotIn(GENERATOR.stress_zones.ZONE_LABELS["doors"], out.getvalue())
+
+    def test_zones_with_lifts_and_no_lights_apply_zone_lighting(self):
+        result = GENERATOR.generate(
+            3, 3, 2, 1, 0.15, 1.0, "none", 1, 0, 1.0, 0.5, 4, True,
+            0, 0, 0, 0, "touch", 1, 0, 0.0, zoned=True,
+        )
+        entities, zones = result[3], result[12]
+        self.assertEqual(result[9], 1)
+        lift_rects = [rect for name, _, rect, _ in zones if name == "lift"]
+        self.assertEqual(len(lift_rects), 2)
+        water = next(rect for name, _, rect, _ in zones if name == "water")
+        self.assertTrue(any(e[1] == '"classname" "light_spot"' and inside(origin_of(e), water)
+                            for e in entities))
+
+    def test_animated_frac_zero_emits_no_zone_animated_lights(self):
+        entities, _ = generate_zoned(volumes=0, animated_frac=0.0)
+        self.assertFalse(any(is_animated(e) for e in entities))
+        animated_on, _ = generate_zoned(volumes=0)
+        self.assertGreaterEqual(sum(is_animated(e) for e in animated_on),
+                                GENERATOR.stress_zones.UNDERWATER_LIGHTS)
 
 
 class ParticleEmitterTests(unittest.TestCase):
@@ -421,6 +533,16 @@ class ParticleEmitterTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             GENERATOR.stress_environment.emitter_entities(
                 1, 1, [(0, 512, 0, 1024, 0, 1024)], 1000.0, 5.0)
+
+    def test_negative_and_non_finite_emitter_args_are_rejected(self):
+        for flag, value in (("--emitter-rate", "-10"), ("--emitter-rate", "nan"),
+                            ("--emitter-rate", "inf"), ("--emitter-lifetime", "-1"),
+                            ("--emitter-lifetime", "nan"), ("--emitter-lifetime", "inf")):
+            with tempfile.TemporaryDirectory() as tmp, \
+                    contextlib.redirect_stderr(io.StringIO()), \
+                    self.assertRaises(SystemExit):
+                GENERATOR.main(["--emitters", "1", flag, value,
+                                "-o", str(Path(tmp) / "e.map")])
 
 
 def sub(a, b):

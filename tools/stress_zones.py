@@ -1,4 +1,5 @@
 """Zoned layout for the environment-volume stress map (`--preset env-volumes`).
+Governing doc: `content/dev/maps/stress-env-volumes.README.md`.
 
 The warren is split into zones so water can be checked alone and beside each
 other engine feature, and a defect can be attributed to one pairing:
@@ -39,7 +40,8 @@ DEDICATED_ZONES = ("water", "water", "animated", "particles", "fog", "doors",
 
 # Per-zone placement policy. `lights` is the room's light mode (see
 # gen_stress_map.emit_room_lights); the flags gate the warren's global
-# placements (enemies, weapons, closets, maze doors, animated coverage).
+# placements (enemies, weapons, closets, maze doors, animated coverage);
+# `spot_mix` guarantees the room both a baked and a runtime spot.
 POLICY = {
     "water":     dict(lights="static", crates=0),
     "lift":      dict(lights="static", crates=0),
@@ -48,7 +50,7 @@ POLICY = {
     "particles": dict(lights="static", crates=0),
     "fog":       dict(lights="static", crates=0),
     "doors":     dict(lights="static", crates=0, doors=True),
-    "crates":    dict(lights="mixed", crates=3),
+    "crates":    dict(lights="mixed", crates=3, spot_mix=True),
     "lowgrav":   dict(lights="static", crates=0),
     "mixed":     dict(lights="mixed", crates=1, enemies=True, weapons=True,
                       closets=True, doors=True),
@@ -74,6 +76,7 @@ MIXED_PROPS = 4
 PROP_MODEL = "models/decraniated_low_poly_retro_pixel/scene.gltf"
 FEATURE_TEX = "50-free-textures/concrete_stone_022"
 UNDERWATER_LIGHT_OFFSET = 160
+UNDERWATER_LIGHTS = 2     # animated lights in the animated zone's pool
 
 
 def policy(zone, key):
@@ -118,13 +121,15 @@ def _fog_volume(brush, density):
             + brush + ["}"])
 
 
-def zone_feature_entities(seed, rooms, door_tags, light_entity):
+def zone_feature_entities(seed, rooms, door_tags, light_entity, underwater_lights=True):
     """Zone-specific features, plus the volume anchors they imply.
 
     `rooms` is `[(zone, rect)]` in room order; `door_tags` maps a room index
     to the tags of maze doors on its walls; `light_entity` is the generator's
-    light factory. Returns `(entities, anchors, script_lights)` where
-    `anchors` is `[(room_index, anchor)]` for `stress_environment`.
+    light factory. `underwater_lights` is false when the map animates nothing
+    (the generator reserves their animation budget only when true). Returns
+    `(entities, anchors, script_lights)` where `anchors` is
+    `[(room_index, anchor)]` for `stress_environment`.
     """
     rng = random.Random(seed ^ FEATURE_STREAM)
     entities, anchors = [], []
@@ -136,14 +141,18 @@ def zone_feature_entities(seed, rooms, door_tags, light_entity):
         cx, cy = (x0 + x1) // 2, (y0 + y1) // 2
         if zone == "animated":
             # Two animated lights inside a pool centred on the room: one KVP
-            # curve, one script pulse (both count against the map's animated
-            # budget; the generator reserves them).
-            off = UNDERWATER_LIGHT_OFFSET
-            entities.append(light_entity("static", (cx - off, cy, zf + 24), (0, 200, 255),
-                                         600, 160, False, rng, animate="kvp"))
-            entities.append(light_entity("static", (cx + off, cy, zf + 24), (0, 255, 160),
-                                         600, 160, False, rng, animate="script"))
-            script_lights += 1
+            # curve, one script pulse (UNDERWATER_LIGHTS of the map's animated
+            # budget). The light factory draws nothing, so omitting them moves
+            # no other feature.
+            if underwater_lights:
+                off = UNDERWATER_LIGHT_OFFSET
+                entities.append(light_entity("static", (cx - off, cy, zf + 24),
+                                             (0, 200, 255), 600, 160, False, rng,
+                                             animate="kvp"))
+                entities.append(light_entity("static", (cx + off, cy, zf + 24),
+                                             (0, 255, 160), 600, 160, False, rng,
+                                             animate="script"))
+                script_lights += 1
             anchors.append((n, ("pool", cx, cy, zf)))
         elif zone == "fog":
             # Axis-aligned fog box (ellipsoid fog) over a pool, a yawed
@@ -165,7 +174,8 @@ def zone_feature_entities(seed, rooms, door_tags, light_entity):
                              '"height" "256"', '"yaw" "45"', '"density" "0.4"', "}"])
         elif zone == "doors":
             # A switch pedestal that starts one of this room's doors, standing
-            # beside a pool.
+            # beside a pool. The generator forces this room a doorway and
+            # places its door first; the zone index flags a room left without.
             if door_tags.get(n):
                 sx, sy = cx, cy - 256
                 switch = prism_brush(rect_footprint(sx, sy, 48, 48), zf, flat_top(zf + 64),

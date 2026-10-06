@@ -134,6 +134,26 @@ Grounded by read-only research at c495e49ea, then decided by the owner.
   - **Premise correction.** The particle sim steps per rendered frame on `frame_dt`, not per fixed tick, so the brief's particle rows now say "per step" and "per frame".
   - **Pre-existing issues seen.** 710 "light inside a solid leaf" warnings from the warren corridor spotlights. `MAX_FOG_VOLUMES` = 16 (the fixture uses 8).
 
+## Second direction review (validate-plan, 2026-10-05)
+
+- **Verdict:** Direction sound, with owner rulings needed before promotion. `/review-brief` is recommended before promotion, because the wire format and authoring vocabulary freeze once maps exist.
+- **Owner rulings:**
+  - **Level default gravity** is sent at join, not hashed. The first draft hashed it, against `networking.md` §What gates and E15's gravity ruling.
+  - **Fluids resolve against the host's tuning table.** The owner first reasoned that peers share the mod. They share the mod id, but admission never gates on version (`networking.md` §Mod identity), and hot reload changes the manifest. So install-time resolution on the client is exactly the fallback case.
+  - **Tie-break:** priority, then smallest volume, then map order. This replaces earliest-in-map-order. `lightmap_scale_region`'s last-defined-wins was the third option, and was rejected because map order is invisible to mappers.
+  - **One resumable brief**, not a split at the first-slice seam. Where it is going is clear, and the first slice is already a checkpoint.
+- **Adopted at the reviewer's recommendation** (owner may reopen):
+  - Fluid membership is a capsule rule and gravity a point rule.
+  - Crate layering is scoped to this brief.
+  - Splash reports facts only, per E16.
+  - Muffle applies to the whole mix.
+  - Tint is an engine-owned screen-effect layer.
+  - Zero-gravity AI stranding is an accepted limit.
+  - Underwater particles drawing over water is an accepted limit with a manual row.
+  - Flood-and-drain is a named follow-up.
+  - The two-entity pool gotcha is documented in the FGD.
+  - Doc amendments now cover `audio.md` §1/§6 and `entity_model.md`'s particle step rate.
+
 ## Bake versus load-time build
 
 The trade-off for the volume BVH is between building it at level load and baking it into PRL.

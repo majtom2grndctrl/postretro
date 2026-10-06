@@ -1,4 +1,5 @@
 """Environment-volume and particle-drift content for the stress-warren generator.
+Governing doc: `content/dev/maps/stress-env-volumes.README.md`.
 
 `gen_stress_map.py` owns the warren skeleton; this module layers the content an
 environment-resolution stress run needs on top of it:
@@ -35,6 +36,9 @@ FLUIDS = ("water", "sludge")
 GRAVITIES = ("0 0 -3", "0 0 0", "0 0 -1.62", "0 0 -6", "0 0 -14")
 # A small priority range forces frequent ties, which resolve by map order.
 PRIORITIES = (0, 1, 2)
+# Every Nth explicit-0 volume omits `priority` instead, exercising the
+# default (0): resolution is the same either way.
+DEFAULT_PRIORITY_EVERY = 64
 
 # Real textures, so the compiler's texture resolution stays quiet. A fluid
 # surface will draw with its face texture once fluids render.
@@ -170,8 +174,10 @@ def volume_entity(kind, value, priority, brushes):
 
 # --- Per-room volume recipes -------------------------------------------------
 # Each recipe takes (rng, room) and returns one entity. `room` is the interior
-# rect (zf, zc, x0i, x1i, y0i, y1i). Shapes stay inside the room's interior
-# rect except where a buried face is the point (pools dip into the floor slab).
+# rect (zf, zc, x0i, x1i, y0i, y1i). Shapes centre near the room's middle; a
+# yawed or slanted footprint can reach ~64 u past the interior rect, so faces
+# may bury into the walls (and pools dip into the floor slab), but never reach
+# a corridor band or the hull.
 
 def _centre(room, rng, jitter):
     """A point near the room centre. In a room much larger than an ordinary
@@ -395,13 +401,17 @@ def env_volume_entities(count, seed, rooms, doorways, zone_doorways=()):
     water-only zones are small and fixed), one volume per zone doorway, then
     up to one in DOORWAY_SHARE volumes on other doorways, then the rest dealt over `mixed` rooms in a shuffled
     order -- each mixed room's first volume is its room-wide gravity, later
-    ones cycle FULL_RECIPES. Uses only its own RNG stream, so `count` never
+    ones cycle FULL_RECIPES. A few explicit-0 volumes then drop `priority`
+    (omit_default_priorities). Uses only its own RNG stream, so `count` never
     changes any other placement.
     """
     if count <= 0 or not rooms:
         return []
     rng = random.Random(seed ^ VOLUME_STREAM)
     out = []
+
+    def finish():
+        return omit_default_priorities(out)
 
     def room_volumes(zone, rect, anchors):
         for anchor in anchors:
@@ -414,12 +424,12 @@ def env_volume_entities(count, seed, rooms, doorways, zone_doorways=()):
             continue
         for entity in room_volumes(zone, rect, anchors):
             if len(out) == count:
-                return out
+                return finish()
             out.append(entity)
 
     for doorway in zone_doorways:
         if len(out) == count:
-            return out
+            return finish()
         out.append(doorway_volume(rng, doorway))
 
     n_door = min(len(doorways), (count - len(out)) // DOORWAY_SHARE)
@@ -430,7 +440,7 @@ def env_volume_entities(count, seed, rooms, doorways, zone_doorways=()):
 
     mixed = [rect for zone, rect, _ in rooms if zone == "mixed"]
     if not mixed:
-        return out
+        return finish()
     order = list(range(len(mixed)))
     rng.shuffle(order)
     quota = [0] * len(mixed)
@@ -440,7 +450,19 @@ def env_volume_entities(count, seed, rooms, doorways, zone_doorways=()):
         for n in range(quota[r]):
             recipe = room_gravity if n == 0 else FULL_RECIPES[(n - 1) % len(FULL_RECIPES)]
             out.append(recipe(rng, rect))
-    return out
+    return finish()
+
+
+def omit_default_priorities(volumes):
+    """Drop `"priority" "0"` from every DEFAULT_PRIORITY_EVERY-th volume that
+    carries it, the first one included, so even a small map has one."""
+    zeros = 0
+    for entity in volumes:
+        if '"priority" "0"' in entity:
+            if zeros % DEFAULT_PRIORITY_EVERY == 0:
+                entity.remove('"priority" "0"')
+            zeros += 1
+    return volumes
 
 
 # --- Particle emitters -------------------------------------------------------

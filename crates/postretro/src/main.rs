@@ -3913,7 +3913,7 @@ impl ApplicationHandler for App {
 
                     // Particle sim — after emitter bridge, before light bridge.
                     // Pure Rust; scripts never observe individual particles.
-                    // Refills `particle_live_counts` with this tick's per-emitter
+                    // Refills `particle_live_counts` with this frame's per-emitter
                     // survivor count for the next frame's bridge headroom.
                     {
                         let _scope = particle_cpu.scope(cpu_timing::ParticleStage::Sim);

@@ -42728,433 +42728,433 @@
 // entity 1278
 {
 "classname" "reference_enemy"
-"origin" "428 1141 80"
-"angles" "0 219 0"
+"origin" "1272 -108 80"
+"angles" "0 42 0"
 }
 // entity 1279
 {
 "classname" "reference_enemy"
-"origin" "-1760 1276 80"
-"angles" "0 280 0"
+"origin" "1255 435 80"
+"angles" "0 5 0"
 }
 // entity 1280
 {
 "classname" "reference_enemy"
-"origin" "-226 1278 80"
-"angles" "0 51 0"
+"origin" "1180 -801 80"
+"angles" "0 53 0"
 }
 // entity 1281
 {
 "classname" "reference_enemy"
-"origin" "-2552 1253 80"
-"angles" "0 188 0"
+"origin" "1172 1237 80"
+"angles" "0 80 0"
 }
 // entity 1282
 {
 "classname" "reference_enemy"
-"origin" "-2232 1196 80"
-"angles" "0 248 0"
+"origin" "-2849 748 80"
+"angles" "0 157 0"
 }
 // entity 1283
 {
 "classname" "reference_enemy"
-"origin" "831 1194 80"
-"angles" "0 264 0"
+"origin" "-939 1227 80"
+"angles" "0 194 0"
 }
 // entity 1284
 {
 "classname" "reference_enemy"
-"origin" "429 1157 80"
-"angles" "0 288 0"
+"origin" "-1485 1253 80"
+"angles" "0 243 0"
 }
 // entity 1285
 {
 "classname" "reference_enemy"
-"origin" "302 1218 80"
-"angles" "0 122 0"
+"origin" "1034 1217 80"
+"angles" "0 229 0"
 }
 // entity 1286
 {
 "classname" "reference_enemy"
-"origin" "-309 1133 80"
-"angles" "0 50 0"
+"origin" "-1020 1200 80"
+"angles" "0 164 0"
 }
 // entity 1287
 {
 "classname" "reference_enemy"
-"origin" "931 1273 80"
-"angles" "0 178 0"
+"origin" "-283 1231 80"
+"angles" "0 305 0"
 }
 // entity 1288
 {
 "classname" "reference_enemy"
-"origin" "803 1131 80"
-"angles" "0 200 0"
+"origin" "-2610 1194 80"
+"angles" "0 262 0"
 }
 // entity 1289
 {
 "classname" "reference_enemy"
-"origin" "908 1235 80"
-"angles" "0 211 0"
+"origin" "1279 -747 80"
+"angles" "0 68 0"
 }
 // entity 1290
 {
 "classname" "reference_enemy"
-"origin" "5583 2681 1360"
-"angles" "0 78 0"
+"origin" "5932 2287 1360"
+"angles" "0 200 0"
 }
 // entity 1291
 {
 "classname" "reference_enemy"
-"origin" "823 4122 80"
-"angles" "0 83 0"
+"origin" "692 4143 80"
+"angles" "0 110 0"
 }
 // entity 1292
 {
 "classname" "reference_enemy"
-"origin" "3964 694 720"
-"angles" "0 172 0"
+"origin" "3970 848 720"
+"angles" "0 161 0"
 }
 // entity 1293
 {
 "classname" "reference_enemy"
-"origin" "-5989 -818 1360"
-"angles" "0 261 0"
+"origin" "-5696 -600 1360"
+"angles" "0 9 0"
 }
 // entity 1294
 {
 "classname" "reference_enemy"
-"origin" "-4073 3968 80"
-"angles" "0 250 0"
+"origin" "-4099 3909 80"
+"angles" "0 355 0"
 }
 // entity 1295
 {
 "classname" "reference_enemy"
-"origin" "-4178 2384 80"
-"angles" "0 322 0"
+"origin" "-4314 2701 80"
+"angles" "0 211 0"
 }
 // entity 1296
 {
 "classname" "reference_enemy"
-"origin" "1088 889 720"
-"angles" "0 147 0"
+"origin" "591 1017 720"
+"angles" "0 78 0"
 }
 // entity 1297
 {
 "classname" "reference_enemy"
-"origin" "4097 2408 1360"
-"angles" "0 37 0"
+"origin" "4151 2458 1360"
+"angles" "0 83 0"
 }
 // entity 1298
 {
 "classname" "reference_enemy"
-"origin" "2257 646 1360"
-"angles" "0 301 0"
+"origin" "2300 694 1360"
+"angles" "0 172 0"
 }
 // entity 1299
 {
 "classname" "reference_enemy"
-"origin" "-790 -1041 1360"
-"angles" "0 310 0"
+"origin" "-997 -818 1360"
+"angles" "0 261 0"
 }
 // entity 1300
 {
 "classname" "reference_enemy"
-"origin" "1002 4187 720"
-"angles" "0 50 0"
+"origin" "919 3968 720"
+"angles" "0 250 0"
 }
 // entity 1301
 {
 "classname" "reference_enemy"
-"origin" "-5791 -4339 720"
-"angles" "0 236 0"
+"origin" "-5842 -4272 720"
+"angles" "0 322 0"
 }
 // entity 1302
 {
 "classname" "reference_enemy"
-"origin" "-867 -1021 720"
-"angles" "0 6 0"
+"origin" "-576 -775 720"
+"angles" "0 147 0"
 }
 // entity 1303
 {
 "classname" "reference_enemy"
-"origin" "-2666 -947 720"
-"angles" "0 337 0"
+"origin" "-2559 -920 720"
+"angles" "0 37 0"
 }
 // entity 1304
 {
 "classname" "reference_enemy"
-"origin" "-723 -2473 1360"
-"angles" "0 249 0"
+"origin" "-1071 -2682 1360"
+"angles" "0 301 0"
 }
 // entity 1305
 {
 "classname" "reference_enemy"
-"origin" "5684 -4078 80"
-"angles" "0 355 0"
+"origin" "5866 -4369 80"
+"angles" "0 310 0"
 }
 // entity 1306
 {
 "classname" "reference_enemy"
-"origin" "4160 -2476 1360"
-"angles" "0 160 0"
+"origin" "4330 -2469 1360"
+"angles" "0 50 0"
 }
 // entity 1307
 {
 "classname" "reference_enemy"
-"origin" "-2321 4054 1360"
-"angles" "0 151 0"
+"origin" "-2463 3981 1360"
+"angles" "0 236 0"
 }
 // entity 1308
 {
 "classname" "reference_enemy"
-"origin" "-2710 -649 1360"
-"angles" "0 209 0"
+"origin" "-2531 -1021 1360"
+"angles" "0 6 0"
 }
 // entity 1309
 {
 "classname" "reference_enemy"
-"origin" "-744 4356 1360"
-"angles" "0 96 0"
+"origin" "-1002 4045 1360"
+"angles" "0 337 0"
 }
 // entity 1310
 {
 "classname" "reference_enemy"
-"origin" "-923 814 720"
-"angles" "0 340 0"
+"origin" "-723 855 720"
+"angles" "0 249 0"
 }
 // entity 1311
 {
 "classname" "reference_enemy"
-"origin" "-4136 -2349 720"
-"angles" "0 113 0"
+"origin" "-4300 -2414 720"
+"angles" "0 355 0"
 }
 // entity 1312
 {
 "classname" "reference_enemy"
-"origin" "-2564 931 1360"
-"angles" "0 145 0"
+"origin" "-2496 852 1360"
+"angles" "0 160 0"
 }
 // entity 1313
 {
 "classname" "reference_enemy"
-"origin" "-5843 2476 1360"
-"angles" "0 150 0"
+"origin" "-5649 2390 1360"
+"angles" "0 151 0"
 }
 // entity 1314
 {
 "classname" "reference_enemy"
-"origin" "2387 -2305 1360"
-"angles" "0 169 0"
+"origin" "2282 -2313 1360"
+"angles" "0 209 0"
 }
 // entity 1315
 {
 "classname" "reference_enemy"
-"origin" "-826 3925 80"
-"angles" "0 243 0"
+"origin" "-744 4356 80"
+"angles" "0 96 0"
 }
 // entity 1316
 {
 "classname" "reference_enemy"
-"origin" "-2587 4279 720"
-"angles" "0 148 0"
+"origin" "-2587 4142 720"
+"angles" "0 340 0"
 }
 // entity 1317
 {
 "classname" "reference_enemy"
-"origin" "5928 4231 80"
-"angles" "0 121 0"
+"origin" "5848 4307 80"
+"angles" "0 113 0"
 }
 // entity 1318
 {
 "classname" "reference_enemy"
-"origin" "882 756 1360"
-"angles" "0 56 0"
+"origin" "764 931 1360"
+"angles" "0 145 0"
 }
 // entity 1319
 {
 "classname" "reference_enemy"
-"origin" "3955 4295 1360"
-"angles" "0 136 0"
+"origin" "4141 4140 1360"
+"angles" "0 150 0"
 }
 // entity 1320
 {
 "classname" "reference_enemy"
-"origin" "-2466 2320 1360"
-"angles" "0 193 0"
+"origin" "-2605 2687 1360"
+"angles" "0 169 0"
 }
 // entity 1321
 {
 "classname" "reference_enemy"
-"origin" "997 4129 1360"
-"angles" "0 266 0"
+"origin" "838 3925 1360"
+"angles" "0 243 0"
 }
 // entity 1322
 {
 "classname" "reference_enemy"
-"origin" "-4330 4007 720"
-"angles" "0 231 0"
+"origin" "-4251 4279 720"
+"angles" "0 148 0"
 }
 // entity 1323
 {
 "classname" "reference_enemy"
-"origin" "715 2423 1360"
-"angles" "0 141 0"
+"origin" "936 2567 1360"
+"angles" "0 121 0"
 }
 // entity 1324
 {
 "classname" "reference_enemy"
-"origin" "2722 -4125 720"
-"angles" "0 272 0"
+"origin" "2546 -4236 720"
+"angles" "0 56 0"
 }
 // entity 1325
 {
 "classname" "reference_enemy"
-"origin" "-1023 4272 720"
-"angles" "0 334 0"
+"origin" "-1037 4295 720"
+"angles" "0 136 0"
 }
 // entity 1326
 {
 "classname" "reference_enemy"
-"origin" "-6037 2742 720"
-"angles" "0 30 0"
+"origin" "-5794 2320 720"
+"angles" "0 193 0"
 }
 // entity 1327
 {
 "classname" "reference_enemy"
-"origin" "-5940 2363 80"
-"angles" "0 209 0"
+"origin" "-5659 2465 80"
+"angles" "0 266 0"
 }
 // entity 1328
 {
 "classname" "reference_enemy"
-"origin" "-4187 955 720"
-"angles" "0 2 0"
+"origin" "-4330 679 720"
+"angles" "0 231 0"
 }
 // entity 1329
 {
 "classname" "reference_enemy"
-"origin" "2634 -2731 720"
-"angles" "0 58 0"
+"origin" "2379 -2569 720"
+"angles" "0 141 0"
 }
 // entity 1330
 {
 "classname" "reference_enemy"
-"origin" "-4288 4152 1360"
-"angles" "0 178 0"
+"origin" "-3934 4195 1360"
+"angles" "0 272 0"
 }
 // entity 1331
 {
 "classname" "reference_enemy"
-"origin" "-579 2634 1360"
-"angles" "0 38 0"
+"origin" "-1023 2608 1360"
+"angles" "0 334 0"
 }
 // entity 1332
 {
 "classname" "reference_enemy"
-"origin" "-5647 -4099 80"
-"angles" "0 204 0"
+"origin" "-6037 -3914 80"
+"angles" "0 30 0"
 }
 // entity 1333
 {
 "classname" "reference_enemy"
-"origin" "5625 650 80"
-"angles" "0 310 0"
+"origin" "5708 699 80"
+"angles" "0 209 0"
 }
 // entity 1334
 {
 "classname" "reference_enemy"
-"origin" "-2422 -2481 1360"
-"angles" "0 174 0"
+"origin" "-2523 -2373 1360"
+"angles" "0 2 0"
 }
 // entity 1335
 {
 "classname" "reference_enemy"
-"origin" "2721 2529 80"
-"angles" "0 93 0"
+"origin" "2634 2261 80"
+"angles" "0 58 0"
 }
 // entity 1336
 {
 "classname" "reference_enemy"
-"origin" "4172 2247 80"
-"angles" "0 287 0"
+"origin" "4032 2488 80"
+"angles" "0 178 0"
 }
 // entity 1337
 {
 "classname" "reference_enemy"
-"origin" "6006 -848 1360"
-"angles" "0 144 0"
+"origin" "6077 -694 1360"
+"angles" "0 38 0"
 }
 // entity 1338
 {
 "classname" "reference_enemy"
-"origin" "-2545 4260 80"
-"angles" "0 79 0"
+"origin" "-2319 4221 80"
+"angles" "0 204 0"
 }
 // entity 1339
 {
 "classname" "reference_enemy"
-"origin" "901 -1047 720"
-"angles" "0 220 0"
+"origin" "633 -1014 720"
+"angles" "0 310 0"
 }
 // entity 1340
 {
 "classname" "reference_enemy"
-"origin" "2612 2358 720"
-"angles" "0 65 0"
+"origin" "2570 2511 720"
+"angles" "0 174 0"
 }
 // entity 1341
 {
 "classname" "reference_enemy"
-"origin" "4107 4240 80"
-"angles" "0 341 0"
+"origin" "4385 4193 80"
+"angles" "0 93 0"
 }
 // entity 1342
 {
 "classname" "reference_pistol"
-"origin" "206 1272 80"
+"origin" "-1379 1237 80"
 "angles" "0 0 0"
 }
 // entity 1343
 {
 "classname" "reference_shotgun"
-"origin" "-2430 2513 720"
+"origin" "-2380 2358 720"
 "angles" "0 0 0"
 }
 // entity 1344
 {
 "classname" "wieldable_fixture_auto"
-"origin" "620 1245 80"
+"origin" "1188 -561 80"
 "angles" "0 0 0"
 }
 // entity 1345
 {
 "classname" "wieldable_fixture_press"
-"origin" "-4364 -751 1360"
+"origin" "-4274 -977 1360"
 "angles" "0 0 0"
 }
 // entity 1346
 {
 "classname" "reference_pistol"
-"origin" "-557 1162 80"
+"origin" "-1639 1239 80"
 "angles" "0 0 0"
 }
 // entity 1347
 {
 "classname" "reference_shotgun"
-"origin" "-1758 1221 80"
+"origin" "-2414 1157 80"
 "angles" "0 0 0"
 }
 // entity 1348
 {
 "classname" "wieldable_fixture_auto"
-"origin" "-1020 1265 80"
+"origin" "-2826 -437 80"
 "angles" "0 0 0"
 }
 // entity 1349
 {
 "classname" "wieldable_fixture_press"
-"origin" "2334 1057 720"
+"origin" "2670 988 720"
 "angles" "0 0 0"
 }
 // entity 1350

@@ -173,7 +173,8 @@ impl StageSet for StreamingStage {
 pub(crate) enum ParticleStage {
     /// Emitter bridge: bursts, rate emission and particle spawns.
     Emit,
-    /// `particle_sim::tick` over every live particle.
+    /// `particle_sim::tick` over every live particle. Runs once per rendered
+    /// frame on frame time, not per fixed tick.
     Sim,
 }
 

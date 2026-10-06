@@ -36,9 +36,21 @@ The query layer this adds is the first piece of the engine-owned collision subst
   - They are peeled before the BSP, like `trigger_volume`. It never seals cells, blocks portals, or enters static geometry, static collision, lightmaps, SDF or navmesh.
   - Each brush becomes one convex leaf sharing the entity's record.
   - Volumes are static: no movers and no script toggles. A runtime-mutable volume needs the continuous replication lane `plans/done/E15--session-lifecycle` deferred.
-- **One regional overlap rule.** For each field (gravity, fluid), the value comes from the highest-priority volume that contains the query point and sets that field. Equal priorities resolve by map entity order, earliest wins. With no such volume, the level default applies.
+- **One regional overlap rule.** For each field (gravity, fluid), the value comes from the winning volume among those that set that field and are in reach of the query. With no such volume, the level default applies.
+  - **Winner:**
+    - The highest priority wins.
+    - Among equal priorities, the smallest volume wins (the summed volume of the entity's brushes), so a pool inside a room wins without the mapper setting priorities.
+    - Map entity order (earliest wins) breaks only exact ties.
+    - Map order is invisible to mappers and shifts as they edit, so it is never the main tie-break. Smallest-wins also matches the reverb rule this folds in.
+  - **Reach, per field:**
+    - Gravity is a point rule at the body's position.
+    - Fluid membership is a capsule rule. The fluid is the winner among fluid volumes that intersect the capsule's vertical segment, feet to head.
+    - Immersion is that segment's coverage by the union of the winning record's brushes.
+    - So a player wading below the body point still resolves the fluid, and a capsule spanning two fluids resolves one.
+    - Eye-dependent presentation is a point rule at the camera eye.
+  - Results never depend on traversal order: the winner is a total order over records.
   - So a pool with no gravity inside a low-gravity room keeps the room's gravity.
-  - `audio.md` §6 reverb zones are folded into this rule: reverb becomes a future environment field, replacing the cell-quantized, smallest-zone-wins rule. They are not built yet, so this costs nothing now.
+  - `audio.md` §6 reverb zones are folded into this rule: reverb becomes a future environment field, a point rule at the listener. It replaces the cell-quantized lookup, and smallest-wins survives as the equal-priority tie-break. Reverb isn't built yet, so this costs nothing now.
 - **Gravity is a vector in the format, straight-down only for now.** The section stores gravity, including the level default, as a vector. The compiler rejects any non-zero gravity whose direction is not straight down, naming the entity; zero is allowed.
   - Player up-reorientation is a later gravity-frame spec. The substrate, contact classification, capsule, camera and navmesh all assume +Y up (`research.md` §Up-axis survey). The validator is the seam that spec removes.
 - **Level default gravity moves out of FogVolumes** into the new section's header.
@@ -70,16 +82,29 @@ The query layer this adds is the first piece of the engine-owned collision subst
   - The particle sim steps once per rendered frame on frame time, not per fixed tick. `particle_sim::tick` is called from the render-prep path in `main.rs`, and particles are unhashed presentation, so prediction is unaffected.
   - Projectiles apply no gravity today and are untouched.
 - **Co-op parity.**
-  - The new section, level default gravity included, joins `level_content_digest`. It is level data both peers load, like static collision.
-  - Fluid descriptors ride the host tuning payload. The client predicts with host values and never falls back to its own registry (`networking.md` §What gates).
+  - **Hashed.** The new section's volumes join `level_content_digest`: shape, priority, gravity and fluid name. They are level data both peers load and the host cannot practically send, like static collision.
+  - **Sent, not hashed.**
+    - Level default gravity is deliberately excluded from the digest. It is a single value the host can send (`networking.md` §What gates: hash only what cannot be replicated; E15 research: hashing is the wrong instrument for world gravity).
+    - The host sends its current level gravity at the participation transition, beside pawn tuning. That includes a value a script changed before the join.
+    - The client installs the host's value and never reads its own.
+  - **Fluids resolve against the host's table.**
+    - The loaded volume keeps its fluid name.
+    - The host resolves names against its manifest at install and warns on an undeclared name; that volume is dry.
+    - A client resolves names only against the fluid table in the host's tuning payload, never its own registry, and never resolves at install.
+    - Admission gates on mod id, never version (`networking.md` §Mod identity), and hot reload can change the manifest. So a client a build behind, or declaring fluids in another order, must still predict with the host's fluids.
   - The swim state replicates with movement state, which bumps the wire version.
-  - Mid-level `worldSetGravity` replication is not owed here. E15 deferred it on mechanism.
+  - Mid-level `worldSetGravity` replication after a client has joined is not owed here. E15 deferred it on mechanism.
 - **Presentation.**
   - Fluid faces draw in a renderer-owned translucent pass after opaque forward and before smoke: alpha blend at the fluid's surface opacity, depth test on, depth write off, two-sided, turbulent UV warp.
-  - Eye-in-fluid applies the fluid's tint through screen effects, and its muffle through a new primitive-only low-pass on the audio crate, with no kira types crossing the boundary.
-  - Player entry and exit play the fluid's sounds.
-  - A hitscan ray crossing a fluid face before its blocking hit emits one splash per crossing.
+  - **Tint.** Eye-in-fluid applies the fluid's tint as an engine-owned screen-effect layer. It is not a write to the script-writable `screen.*` slots, so a mod's own screen effects compose with it rather than fighting it.
+  - **Muffle.** A new primitive-only low-pass on the audio crate muffles the whole mix while the eye is inside a fluid. It applies on the main bus or track, following the `MonoFoldBuilder` pattern, not per sound, so it composes with E12's per-voice occlusion. No kira types cross the boundary.
+  - **Sounds.** Player entry and exit play the fluid's sounds.
+  - **Splash.**
+    - A hitscan ray crossing a fluid face before its blocking hit emits one splash per crossing.
+    - The engine reports the crossing as a fact: point, normal, fluid.
+    - What the splash looks and sounds like sits above that, following `plans/done/E16--combat-presentation-substrate` (the engine reports facts, policy sits above).
   - All presentation is unhashed.
+  - **Draw order.** Because water draws before smoke, a particle below the surface draws over the water when seen from above. That is accepted for now, with a manual row.
 - **Non-goals.**
   - Fluid damage: E16's open "DoT / environmental death policy" owns it.
   - Refraction and depth absorption: a later renderer plan.
@@ -89,6 +114,13 @@ The query layer this adds is the first piece of the engine-owned collision subst
   - Mover convex collision and static trimesh cleanup: later E24 work.
   - Clip volumes.
   - Volumes on movers.
+  - Runtime-mutable volumes. That rules out flood-and-drain set-pieces, a named follow-up once E15's continuous replication lane exists, since scripted set-pieces are a product goal.
+- **Known limits, accepted.**
+  - An AI agent knocked airborne inside a zero-gravity volume stays airborne until something moves it. Navmesh-bound agents have no air control.
+  - A pool built from two `fluid_volume` entities draws a surface between them. Mappers make one entity with several brushes; the FGD help text says so.
+- **Doc amendments at promotion**, besides those named above:
+  - `audio.md` §1 and §6: reverb lookup becomes a point lookup under this overlap rule.
+  - `entity_model.md`: particles step once per rendered frame, not per game-logic tick.
 
 ### Scripting surface
 TypeScript shown. The Luau SDK mirrors it with the same names, and both ship.
@@ -125,14 +157,14 @@ swim: {
 ### Automated
 **Queries and resolution**
 - [ ] A point strictly inside, exactly on a face, and just outside a convex volume reports inside, inside, outside. A query whose mask excludes fluid never reports a fluid volume.
-- [ ] A pool with no gravity, inside a lower-priority room volume with low gravity: a point in both resolves the pool's fluid and the room's gravity. Two equal-priority volumes setting gravity resolve to the earlier one in map order. A point in no volume resolves level defaults.
+- [ ] A pool with no gravity, inside a lower-priority room volume with low gravity: a point in both resolves the pool's fluid and the room's gravity. Two equal-priority volumes setting gravity resolve to the smaller one, whichever comes first in map order. Two identical equal-priority volumes resolve to the earlier one in map order. A point in no volume resolves level defaults.
 - [ ] Over a seeded random set of overlapping and nested volumes, every point, capsule and ray query through the BVH returns the same result as a brute-force scan of all leaves. This includes queries on leaf faces and at shared AABB boundaries.
-- [ ] Immersion reads 0 with feet at the fluid top, 1 with the head below it, and a proportional value between. In a fluid block floating in mid-air, a capsule poking out the bottom reads the contained fraction only.
+- [ ] Immersion reads 0 with feet at the fluid top, 1 with the head below it, and a proportional value between. In a fluid block floating in mid-air, a capsule poking out the bottom reads the contained fraction only. A capsule wading below its body point, feet in a shallow pool, resolves the pool's fluid. A capsule spanning two fluids resolves the winner of the overlap rule, and its immersion counts only the winner's brushes.
 **Compiler**
 - [ ] Gravity pointing sideways, pointing up, or tilted fails the build and names the entity. Zero and straight-down gravity compile.
 - [ ] A fluid volume or a gravity volume spanning a doorway leaves the cell count, portal count, static collision triangles and navmesh identical to the same map without it.
 - [ ] A fluid brush face flush against solid world, and a face shared by two brushes of one fluid entity, emit no surface. Every other face of the brush does.
-- [ ] A `fluid_volume` naming an undeclared fluid loads as dry and warns, naming the volume and the fluid. A `fluid_volume` with a blank `fluid`, or a `gravity_volume` with a blank `gravity`, fails the build and names the entity.
+- [ ] On the host, a `fluid_volume` naming an undeclared fluid loads as dry and warns, naming the volume and the fluid. A `fluid_volume` with a blank `fluid`, or a `gravity_volume` with a blank `gravity`, fails the build and names the entity.
 **Movement**
 - [ ] Wading in until immersion passes `enterDepth` enters swim. Rising until it falls below `exitDepth` leaves it. Bobbing between the two thresholds never toggles state. Immersion exactly at `enterDepth` enters.
 - [ ] Swimming with the eye above the surface in open water, far from any solid, jump sets upward velocity to `fluidJumpVelocity` and leaves swim. Fully submerged, jump gives no boost.
@@ -142,13 +174,14 @@ swim: {
 - [ ] `worldSetGravity` changes gravity outside volumes and leaves a gravity-setting volume's value in force inside it. A map with only `initialGravity` behaves as before. A PRL built before this change fails to load with a recompile message.
 **Co-op**
 - [ ] In the predict/reconcile harness, a client crossing into a fluid and into a low-gravity volume produces zero reconciliation corrections, including when a correction's replay window spans both crossings.
-- [ ] Changing a volume's shape, priority, gravity or fluid name, or the level default gravity, changes the level content digest. Changing a fluid's sounds, tint or opacity does not.
-- [ ] A client whose manifest declares different `water` numbers predicts with the host's values.
+- [ ] Changing a volume's shape, priority, gravity or fluid name changes the level content digest. Changing the level default gravity, or a fluid's sounds, tint or opacity, does not.
+- [ ] A client joining a host whose level gravity differs from the client's, by `initialGravity` or by a script change before the join, predicts with the host's value and has zero reconciliation corrections.
+- [ ] A client whose manifest declares different `water` numbers predicts with the host's values. A client whose manifest lacks `water`, or declares its fluids in a different order, still predicts swim with the host's fluid and has zero corrections.
 **Presentation and surface**
 - [ ] A hitscan ray from air into a fluid emits exactly one splash, at the crossing. A ray from inside a fluid out through a face emits one. A ray through a floating block emits two. A ray blocked before reaching a fluid face emits none. A ray that never crosses one emits none.
 - [ ] The Scripting surface example runs as a `content/dev` fixture in TypeScript and Luau. A fluid with negative viscosity, or a swim block with `exitDepth` ≥ `enterDepth`, is rejected with a warning naming the field.
 ### Manual
-- [ ] Fluid faces read as warped and translucent from inside and outside, a floating block included. They do not z-fight with surrounding geometry. Smoke above a fluid, seen from above, is not dimmed by it, and fog composites over it.
+- [ ] Fluid faces read as warped and translucent from inside and outside, a floating block included. They do not z-fight with surrounding geometry. Smoke above a fluid, seen from above, is not dimmed by it, and fog composites over it. Smoke below a fluid surface, seen from above, draws over the water: the accepted draw-order limit, confirmed but not a defect.
 - [ ] The tint and muffle turn on when the eye enters a fluid and off when it leaves, without flicker while treading at the surface.
 - [ ] A swim and fluid-jump playtest: the surface jump feels reliable, and ledges within reach are climbable with it.
 - [ ] A low-gravity room playtest, including a pool and a floating fluid block inside the room.
@@ -172,8 +205,11 @@ swim: {
 ## Open questions
 None. The three questions delegated in the first draft were settled by the owner on 2026-10-05 (`research.md` §Settled open questions):
 - **Surface lighting:** baked SH ambient plus baked direct SH plus dynamic lights, evaluated per fragment. The pass reuses the smoke pass's camera, lighting and SH bind-group layouts (groups 0, 2, 3) and adds a fluid-local material group. It lands exactly at the 8/8 FRAGMENT storage ceiling that smoke already occupies. Per-fragment evaluation avoids faceting on large fluid faces, which per-vertex lighting (smoke's choice) would show.
-- **Fluid-name lookup:** at level install, not compile time. The PRL stores the name as a string; an unknown name warns and loads the volume as dry. The compiler checks only that the key is non-blank.
-- **Crate layering:** the `postretro-collision` query core takes its own plain input types (`glam` only). A thin adapter converts loaded level data. `level-compiler` never depends on the crate.
+- **Fluid-name lookup:** at runtime, not compile time. The PRL stores the name as a string, and the compiler checks only that the key is non-blank.
+  - The host resolves against its manifest at install, warning and loading dry on an unknown name.
+  - Clients resolve against the host's tuning table (Decisions §Co-op parity).
+  - The first draft of this answer resolved on clients at install, which the second direction review overturned.
+- **Crate layering:** the `postretro-collision` query core takes its own plain input types (`glam` only). A thin adapter converts loaded level data. In this brief, `level-compiler` does not depend on the crate. A later triangle-leaf step may bake its tree and take that dependency.
 
 ## Boundary inventory
 

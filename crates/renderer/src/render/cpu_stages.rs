@@ -53,6 +53,9 @@ pub enum RenderStage {
     Overlay,
     Viewmodel,
     Ui,
+    /// UI text spans whose glyphon prepare ran this frame. Present at zero on a
+    /// UI frame that prepared nothing.
+    UiTextSpansPrepared,
     /// Scene-color resolve into the swapchain and the timing-query resolve.
     Resolve,
     /// Queue submit and readback bookkeeping.
@@ -89,6 +92,7 @@ impl StageSet for RenderStage {
         Self::Overlay,
         Self::Viewmodel,
         Self::Ui,
+        Self::UiTextSpansPrepared,
         Self::Resolve,
         Self::Submit,
         Self::DebugUi,
@@ -126,6 +130,7 @@ impl StageSet for RenderStage {
             Self::Overlay => "rec_overlay",
             Self::Viewmodel => "rec_viewmodel",
             Self::Ui => "rec_ui",
+            Self::UiTextSpansPrepared => "ui_text_spans_prepared",
             Self::Resolve => "rec_resolve",
             Self::Submit => "render_submit",
             Self::DebugUi => "render_debug_ui",
@@ -144,13 +149,14 @@ impl StageSet for RenderStage {
             | Self::DirectShCompose => Some(Self::PreScene),
             Self::CullDiagnostics => Some(Self::Cull),
             Self::ShadowReach => Some(Self::ShadowDepth),
+            Self::UiTextSpansPrepared => Some(Self::Ui),
             _ => Some(Self::Record),
         }
     }
 
     fn kind(self) -> StageKind {
         match self {
-            Self::MeshPoseSamples => StageKind::Count,
+            Self::MeshPoseSamples | Self::UiTextSpansPrepared => StageKind::Count,
             _ => StageKind::Time,
         }
     }

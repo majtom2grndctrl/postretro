@@ -1,6 +1,7 @@
 // Game UI recording into the native-res UI layer the resolve composites.
 // See: context/lib/ui.md §5 · context/lib/rendering_pipeline.md §7.8
 
+use super::cpu_stages::RenderStage;
 use super::*;
 
 impl Renderer {
@@ -18,6 +19,7 @@ impl Renderer {
             device,
             queue,
             full,
+            cpu_frame,
             ..
         } = self;
         let full = full
@@ -121,7 +123,7 @@ impl Renderer {
         // Always encode, even an empty composition: the pass opens and clears
         // the layer transparent, so a frame with no UI shows none of the last
         // frame's.
-        full.ui.encode(
+        let text_stats = full.ui.encode(
             font_system,
             device,
             queue,
@@ -130,6 +132,12 @@ impl Renderer {
             ui_viewport,
             wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
             &composition,
+        );
+        // Present at zero on a frame that prepared nothing (`rendering_pipeline.md`
+        // §12: absent is not zero); a no-op with timing off.
+        cpu_frame.add_count(
+            RenderStage::UiTextSpansPrepared,
+            u64::from(text_stats.spans_prepared),
         );
         // The composition's frame-scoped borrows end here. Reclaim the passive
         // layer's translated aggregate so its Vec/String storage stays warm for

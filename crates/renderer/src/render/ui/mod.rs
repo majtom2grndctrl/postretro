@@ -15,11 +15,12 @@ use postretro_scripting_core::data_descriptors::PresentationTemplate;
 use postretro_ui::UiTexture;
 use postretro_ui::text::FontSystem;
 
-use self::text::{TextPrepareInput, UiTextRenderer};
+pub(crate) use self::text::TextPrepareStats;
+use self::text::{TextSpan, UiTextRenderer};
 
-/// glyphon shaped-text half of the pass: embedded font, glyph atlas/renderers,
-/// and the shape→prepare→render→trim cycle. Text spans record into this same
-/// render pass at their retained paint-stream positions.
+/// glyphon shaped-text half of the pass: embedded font, glyph atlas, and the
+/// retained per-span renderers with their change-gated prepare. Text spans
+/// record into this same render pass at their retained paint-stream positions.
 pub(crate) mod text;
 
 mod composition;
@@ -54,6 +55,9 @@ mod multi_layer_text_golden_test;
 
 #[cfg(test)]
 mod ring_composition_test;
+
+#[cfg(test)]
+mod text_prepare_gate_test;
 
 const UI_QUAD_WGSL: &str = include_str!("../../shaders/ui_quad.wgsl");
 const UI_RING_WGSL: &str = include_str!("../../shaders/ui_ring.wgsl");
@@ -370,9 +374,14 @@ impl UiPass {
 
     /// Mark the command buffer containing the UI encode as submitted. The debug
     /// text guard resets here, not at `encode` entry, so two UI encodes recorded
-    /// before one submit still count as two prepare phases and trip the guard.
+    /// before one submit trip the guard, whether or not either prepared a span.
     pub fn mark_submitted(&mut self) {
         self.text.reset_prepare_guard();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn text_prepared_spans_for_test(&self) -> Vec<(usize, usize)> {
+        self.text.prepared_spans_for_test()
     }
 
     /// Record a whole-frame `UiComposition` (every modal-stack layer's quad
@@ -388,11 +397,13 @@ impl UiPass {
     /// clear-vs-load is a target concern, not a composition one.
     ///
     /// Quad, image, ring, and text batches record in their mixed paint-stream
-    /// order. Consecutive text runs remain batched, while shapes split text into
-    /// independently prepared spans so translucent source-over blending follows
-    /// the authored order. Every glyphon atlas upload + CPU layout runs BEFORE
-    /// the pass opens (it needs `device`/`queue`, not the pass). With no UI draws
-    /// the pass still opens so the caller's `load` op lands.
+    /// order. Consecutive text runs in one layer remain batched, while shapes and
+    /// layer boundaries split text into independently prepared spans so
+    /// translucent source-over blending follows the authored order. Only spans
+    /// whose inputs changed shape and prepare, all BEFORE the pass opens (it
+    /// needs `device`/`queue`, not the pass); the rest draw retained vertices.
+    /// With no UI draws the pass still opens so the caller's `load` op lands.
+    /// Returns what the text prepare phase did, for the timing count.
     // Wide by necessity: the GPU handles (device/queue/encoder/view), the
     // viewport, the target's `load` op, and the whole-frame `UiComposition` are
     // all distinct encode inputs; bundling them into a builder would obscure the
@@ -408,7 +419,8 @@ impl UiPass {
         viewport: [u32; 2],
         load: wgpu::LoadOp<wgpu::Color>,
         composition: &UiComposition<'_>,
-    ) {
+    ) -> TextPrepareStats {
+        self.text.begin_encode();
         // Keep ordered batch/text slices internal to the pass. The public
         // boundary takes the whole composition so caller-side per-layer encode
         // loops stay unrepresentable.
@@ -441,35 +453,30 @@ impl UiPass {
             self.grow_ring_instance_buffer(device, total_ring_instances);
         }
 
-        // --- Shape + prepare text BEFORE the pass opens --------------------
-        // glyphon shapes each line into a `Buffer`, then `prepare` does CPU
-        // layout + atlas upload. Both must complete before `begin_render_pass`;
-        // the `render` call below only records draw commands. The buffers must
-        // outlive `prepare` (the `TextArea`s borrow them), so they live in this
-        // `Vec` for the duration of `encode`. Empty `texts` => no text work.
-        let text_buffers = self.text.shape_text(font_system, texts, viewport);
+        // --- Prepare changed text spans BEFORE the pass opens --------------
+        // A changed span shapes and prepares (CPU layout + atlas upload); an
+        // unchanged one keeps its retained vertices. All of it completes before
+        // `begin_render_pass`; the `render` calls below only record draws.
         let text_depths: Vec<f32> = composition
-            .text_orders
+            .text_slots
             .iter()
-            .map(|&order| painter_depth(order, composition.order_count))
+            .map(|&slot| composition.painter_depth(slot))
             .collect();
-        let text_ranges: Vec<std::ops::Range<usize>> = composition
+        let text_spans: Vec<TextSpan<'_>> = composition
             .text_batches
             .iter()
-            .map(|batch| batch.range.clone())
+            .map(|batch| TextSpan {
+                layer: batch.layer,
+                span: batch.span,
+                texts: &texts[batch.range.clone()],
+                depths: &text_depths[batch.range.clone()],
+            })
             .collect();
-        let prepared_text_batches = self.text.prepare_text_batches(
-            font_system,
-            device,
-            queue.raw(),
-            TextPrepareInput {
-                viewport,
-                texts,
-                buffers: &text_buffers,
-                depths: &text_depths,
-            },
-            &text_ranges,
-        );
+        // glyphon writes through the raw queue: its vertex writes are the
+        // documented exception to the frame upload batch (ui.md §5).
+        let text_stats =
+            self.text
+                .prepare_spans(font_system, device, queue.raw(), viewport, &text_spans);
 
         self.ensure_depth_target(device, viewport);
         let depth_view = self
@@ -512,7 +519,7 @@ impl UiPass {
                     if ordered.instances.is_empty() {
                         continue;
                     }
-                    let depth = painter_depth(ordered.order, composition.order_count);
+                    let depth = composition.painter_depth(ordered.slot);
                     let upload: Vec<GpuUiInstance> = ordered
                         .instances
                         .iter()
@@ -536,7 +543,7 @@ impl UiPass {
                     if ordered.instances.is_empty() {
                         continue;
                     }
-                    let depth = painter_depth(ordered.order, composition.order_count);
+                    let depth = composition.painter_depth(ordered.slot);
                     let upload: Vec<GpuUiRingInstance> = ordered
                         .instances
                         .iter()
@@ -554,24 +561,13 @@ impl UiPass {
                     ring_offset += bytes.len() as u64;
                 }
                 UiDrawCommand::Text(batch_index) => {
-                    if prepared_text_batches
-                        .get(batch_index)
-                        .copied()
-                        .unwrap_or(false)
-                    {
-                        self.text.render_batch(batch_index, &mut pass);
-                    }
+                    let batch = &composition.text_batches[batch_index];
+                    self.text.render_span(batch.layer, batch.span, &mut pass);
                 }
             }
         }
-
-        // Drop the pass (ends its borrow of `self.text`) before trimming, since
-        // `trim` needs `&mut self.text`.
         drop(pass);
-
-        // Reclaim atlas space for glyphs the last `prepare` did not touch — one
-        // trim per frame, after the draw is recorded, per glyphon's guidance.
-        self.text.trim();
+        text_stats
     }
 
     fn ensure_depth_target(&mut self, device: &wgpu::Device, viewport: [u32; 2]) {

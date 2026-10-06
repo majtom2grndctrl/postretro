@@ -31,6 +31,19 @@ pub(crate) fn try_init_gpu() -> Option<GpuCtx> {
 }
 
 pub(crate) fn try_init_gpu_with_features(required_features: wgpu::Features) -> Option<GpuCtx> {
+    try_init_gpu_with(required_features, wgpu::Limits::default())
+}
+
+/// A device whose reported limits are `required_limits`, so code that sizes
+/// itself from `device.limits()` (glyphon's atlas) sees the pinned values.
+pub(crate) fn try_init_gpu_with_limits(required_limits: wgpu::Limits) -> Option<GpuCtx> {
+    try_init_gpu_with(wgpu::Features::empty(), required_limits)
+}
+
+fn try_init_gpu_with(
+    required_features: wgpu::Features,
+    required_limits: wgpu::Limits,
+) -> Option<GpuCtx> {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
         backends: wgpu::Backends::PRIMARY,
         ..wgpu::InstanceDescriptor::new_without_display_handle()
@@ -57,7 +70,7 @@ pub(crate) fn try_init_gpu_with_features(required_features: wgpu::Features) -> O
         match pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("GPU test harness Device"),
             required_features,
-            required_limits: wgpu::Limits::default(),
+            required_limits,
             ..Default::default()
         })) {
             Ok(gpu) => gpu,

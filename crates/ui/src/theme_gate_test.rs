@@ -114,6 +114,7 @@ fn token_text(token: &str) -> AnchoredTree {
         text_entry_target: None,
         accessible_name: None,
         role: None,
+        restore_on_return: None,
     }
 }
 
@@ -140,6 +141,7 @@ fn srgb_of(linear: [f32; 4]) -> [u8; 4] {
         text_entry_target: None,
         accessible_name: None,
         role: None,
+        restore_on_return: None,
     };
     let mut ui = UiTree::from_descriptor(&tree, &UiTheme::engine_default());
     let mut fs = font_system();
@@ -226,7 +228,6 @@ fn unknown_spacing_token_warns_exactly_once_per_build() {
             id: None,
             focus_neighbors: Default::default(),
             focus: None,
-            restore_on_return: false,
             local_state: None,
             visible_when: None,
             role: None,
@@ -237,6 +238,7 @@ fn unknown_spacing_token_warns_exactly_once_per_build() {
         text_entry_target: None,
         accessible_name: None,
         role: None,
+        restore_on_return: None,
     };
     let capture = LogCapture::start();
     let _ui = UiTree::from_descriptor(&desc, &UiTheme::engine_default());
@@ -268,6 +270,7 @@ fn unknown_font_token_warns_exactly_once_per_build() {
         text_entry_target: None,
         accessible_name: None,
         role: None,
+        restore_on_return: None,
     };
     let capture = LogCapture::start();
     let _ui = UiTree::from_descriptor(&desc, &UiTheme::engine_default());

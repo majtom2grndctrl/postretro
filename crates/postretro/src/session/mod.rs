@@ -286,6 +286,34 @@ pub(crate) struct Session {
 }
 
 impl Session {
+    /// The focus-engine key and registry name of the tree on top: a pushed
+    /// modal is keyed by name and instance, so a fresh push never inherits the
+    /// focus a previous instance of the same tree had; with no modal, the
+    /// fallback tree (HUD or frontend root) is keyed by name.
+    pub(crate) fn ui_focus_target(&self, fallback: &str) -> (String, String) {
+        match (
+            self.modal_stack.active_name(),
+            self.modal_stack.active_instance(),
+        ) {
+            (Some(name), Some(instance)) => (format!("{name}#{}", instance.id()), name.to_string()),
+            _ => (fallback.to_string(), fallback.to_string()),
+        }
+    }
+
+    /// Drop saved focus for modal instances no longer on the stack, once
+    /// enough have accumulated to matter; a settled frame does no work.
+    pub(crate) fn prune_ui_focus(&mut self) {
+        if self.ui_focus.tree_count() <= self.modal_stack.len() + 8 {
+            return;
+        }
+        let stack = &self.modal_stack;
+        self.ui_focus
+            .retain_trees(|key| match key.rsplit_once('#') {
+                Some((_, id)) => id.parse().is_ok_and(|id| stack.contains_instance_id(id)),
+                None => true,
+            });
+    }
+
     /// Which UI commands are live under the top of the modal stack.
     pub(crate) fn ui_nav_context(&self) -> input::UiNavContext {
         if self.modal_stack.active_text_entry_target().is_some() {
@@ -1091,6 +1119,15 @@ mod headless_tests {
             "names the observe launcher: {msg}",
         );
     }
+}
+
+/// The focus export when it describes the tree named `name`, or `None` while it
+/// still describes another tree (the stack changed earlier this frame).
+pub(crate) fn focus_rects_for<'a>(
+    rects: Option<&'a postretro_ui::tree::FocusRectList>,
+    name: &str,
+) -> Option<&'a postretro_ui::tree::FocusRectList> {
+    rects.filter(|rects| rects.owner.as_ref().is_none_or(|owner| owner.name == name))
 }
 
 #[cfg(test)]

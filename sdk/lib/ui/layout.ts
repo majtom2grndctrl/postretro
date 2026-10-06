@@ -47,7 +47,6 @@ type ContainerCommonProps = {
   id?: string;
   focusNeighbors?: FocusNeighborsProp;
   focus?: FocusPolicyProp;
-  restoreOnReturn?: boolean;
   visibleWhen?: Predicate;
   role?: WidgetRole;
 };
@@ -294,7 +293,7 @@ function validateChildren(children: unknown, factory: string): WidgetDescriptor[
 /**
  * Build the shared container fields in Rust declaration order, appending into
  * `out` (which already carries `kind` plus `gap`/`padding`/`align` — and `cols`
- * for a grid). Emits `id`, `focusNeighbors`, `focus`, `restoreOnReturn` only
+ * for a grid). Emits `id`, `focusNeighbors`, `focus` only
  * when authored (matching each field's `skip_serializing_if`), then `children`
  * last (always present, even when empty). Stack-only `fill`/`border` are inserted
  * by the caller BEFORE this runs so the field order stays correct.
@@ -314,13 +313,6 @@ function applyCommonTail(
   if (neighbors !== undefined) out.focusNeighbors = neighbors;
   const focus = buildFocusPolicy(props.focus, factory);
   if (focus !== undefined) out.focus = focus;
-  if (props.restoreOnReturn !== undefined) {
-    if (typeof props.restoreOnReturn !== "boolean") {
-      throw new Error(`${factory}: \`restoreOnReturn\` must be a boolean`);
-    }
-    // Skip-serializes when false (the default) — emit only true.
-    if (props.restoreOnReturn) out.restoreOnReturn = true;
-  }
   if (localState !== undefined) out.localState = localState;
   const visibleWhen = buildPredicate(props.visibleWhen, "visibleWhen", factory);
   if (visibleWhen !== undefined) out.visibleWhen = visibleWhen;

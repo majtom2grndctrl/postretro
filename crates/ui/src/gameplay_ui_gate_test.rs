@@ -97,7 +97,6 @@ fn composite_fixture() -> AnchoredTree {
             id: None,
             focus_neighbors: Default::default(),
             focus: None,
-            restore_on_return: false,
             local_state: None,
             visible_when: None,
             role: None,
@@ -112,7 +111,6 @@ fn composite_fixture() -> AnchoredTree {
                     id: None,
                     focus_neighbors: Default::default(),
                     focus: None,
-                    restore_on_return: false,
                     local_state: None,
                     visible_when: None,
                     role: None,
@@ -126,7 +124,6 @@ fn composite_fixture() -> AnchoredTree {
                     id: None,
                     focus_neighbors: Default::default(),
                     focus: None,
-                    restore_on_return: false,
                     visible_when: None,
                     role: None,
                     children: vec![
@@ -157,6 +154,7 @@ fn composite_fixture() -> AnchoredTree {
         text_entry_target: None,
         accessible_name: None,
         role: None,
+        restore_on_return: None,
     }
 }
 
@@ -310,7 +308,6 @@ fn empty_gameplay_tree_early_outs_the_ui_pass() {
             id: None,
             focus_neighbors: Default::default(),
             focus: None,
-            restore_on_return: false,
             local_state: None,
             visible_when: None,
             role: None,
@@ -321,6 +318,7 @@ fn empty_gameplay_tree_early_outs_the_ui_pass() {
         text_entry_target: None,
         accessible_name: None,
         role: None,
+        restore_on_return: None,
     };
     let draw_empty = {
         let mut ui = UiTree::from_descriptor(&empty, &UiTheme::engine_default());

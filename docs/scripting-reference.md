@@ -2398,10 +2398,14 @@ Focusable widgets (`button`, `slider`) form a focus ring the player moves with
 directional nav. Directional nav resolves geometrically against the laid-out
 rects; authored `focusNeighbors` (a `{ "nav.up": "<id>", … }` map) override the
 geometric pick per direction. A tree's `initialFocus` names the node focus starts
-on when the tree becomes the top of the modal stack; `restoreOnReturn` on a
-container restores its last-focused child when focus returns to it. Held
-directional nav repeats on a delay-then-interval timer (the engine's hold-to-
-repeat clock), so a held stick or arrow steps focus/value steadily.
+on when the tree becomes the top of the modal stack. When a tree pushed above
+closes, focus returns to the control it left; set `restoreOnReturn: false` on the
+`Tree` to land on `initialFocus` instead. A fresh push always lands on
+`initialFocus`, so a reopened confirmation starts on its safe choice. Held
+directional nav repeats on a delay-then-interval timer (400 ms, then every
+100 ms, unless a container's `focus` policy authors its own `repeat`), so a held
+stick or arrow steps focus steadily, and a held slider steps its value and
+speeds up the longer it is held.
 
 ### Interactive widgets
 

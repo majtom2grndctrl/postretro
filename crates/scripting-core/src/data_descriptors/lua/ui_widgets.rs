@@ -35,6 +35,7 @@ pub fn anchored_tree_from_lua_value(value: LuaValue) -> Result<AnchoredTree, Des
     let text_entry_target = get_optional_string_lua(&table, "textEntryTarget")?;
     let accessible_name = get_optional_string_lua(&table, "accessibleName")?;
     let role = role_opt_from_lua(&table)?;
+    let restore_on_return = get_optional_bool_lua(&table, "restoreOnReturn")?;
 
     Ok(AnchoredTree {
         anchor,
@@ -45,6 +46,7 @@ pub fn anchored_tree_from_lua_value(value: LuaValue) -> Result<AnchoredTree, Des
         text_entry_target,
         accessible_name,
         role,
+        restore_on_return,
     })
 }
 
@@ -127,7 +129,6 @@ pub fn container_widget_from_lua(table: &Table) -> Result<ContainerWidget, Descr
         id: get_optional_string_lua(table, "id")?,
         focus_neighbors: focus_neighbors_from_lua(table)?,
         focus: focus_policy_from_lua(table)?,
-        restore_on_return: get_optional_bool_lua(table, "restoreOnReturn")?.unwrap_or(false),
         local_state: local_state_from_lua(table)?,
         visible_when: predicate_opt_from_lua(table, "visibleWhen")?,
         role: role_opt_from_lua(table)?,
@@ -179,7 +180,6 @@ pub fn grid_widget_from_lua(table: &Table) -> Result<GridWidget, DescriptorError
         id: get_optional_string_lua(table, "id")?,
         focus_neighbors: focus_neighbors_from_lua(table)?,
         focus: focus_policy_from_lua(table)?,
-        restore_on_return: get_optional_bool_lua(table, "restoreOnReturn")?.unwrap_or(false),
         visible_when: predicate_opt_from_lua(table, "visibleWhen")?,
         role: role_opt_from_lua(table)?,
         children: children_from_lua(table)?,

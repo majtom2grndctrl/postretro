@@ -20,7 +20,6 @@ fn focus_export_lists_ids_rects_and_a_linear_group() {
         id: None,
         focus_neighbors: crate::descriptor::FocusNeighbors::default(),
         focus: Some(FocusPolicy::Shorthand(FocusKind::Linear)),
-        restore_on_return: false,
         local_state: None,
         visible_when: None,
         role: None,
@@ -39,6 +38,7 @@ fn focus_export_lists_ids_rects_and_a_linear_group() {
         text_entry_target: None,
         accessible_name: None,
         role: None,
+        restore_on_return: None,
     };
     let mut ui = UiTree::from_descriptor(&tree, &theme());
     let mut fs = font_system();
@@ -146,7 +146,6 @@ fn focus_export_nested_interactive_widgets_join_the_enclosing_group() {
         id: None,
         focus_neighbors: Default::default(),
         focus: None,
-        restore_on_return: false,
         visible_when: None,
         role: None,
         children: vec![

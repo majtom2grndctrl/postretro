@@ -1995,3 +1995,117 @@ fn a_root_linear_group_still_steps_on_either_axis() {
     step(&mut fe, &list, &[], 0.0);
     assert_eq!(nav(&mut fe, &list, NavIntent::Right).as_deref(), Some("b"));
 }
+
+// --- E23 U3: restore on return ---
+
+fn restoring(restore: bool) -> FocusRectList {
+    let mut list = linear_list(false, None);
+    list.restore_on_return = restore;
+    list
+}
+
+fn tick_on(
+    fe: &mut UiFocusEngine,
+    key: &str,
+    rects: Option<&FocusRectList>,
+    intents: &[NavIntent],
+) -> Option<String> {
+    fe.tick(Some(key), rects, intents, None, &[], InputMode::Focus, 0.0)
+        .focused
+}
+
+#[test]
+fn a_pop_that_reveals_a_tree_restores_its_focus_unless_it_opts_out() {
+    for (restore, expected) in [(true, "b"), (false, "a")] {
+        let menu = restoring(restore);
+        let dialog = linear_list(false, None);
+        let mut fe = UiFocusEngine::new();
+        tick_on(&mut fe, "menu", Some(&menu), &[]);
+        tick_on(&mut fe, "menu", Some(&menu), &[NavIntent::Down]);
+        tick_on(&mut fe, "dialog#2", Some(&dialog), &[]);
+        assert_eq!(
+            tick_on(&mut fe, "menu", Some(&menu), &[]).as_deref(),
+            Some(expected),
+            "restore {restore}"
+        );
+    }
+}
+
+#[test]
+fn a_fresh_push_of_a_tree_visited_before_lands_on_its_initial_focus() {
+    // P12 / AC 19: a confirmation closed and reopened (even on one frame) is a
+    // new instance, so it opens on its safe choice, not the one taken last time.
+    let menu = restoring(true);
+    let dialog = restoring(true);
+    let mut fe = UiFocusEngine::new();
+    tick_on(&mut fe, "menu", Some(&menu), &[]);
+    tick_on(&mut fe, "confirm#2", Some(&dialog), &[]);
+    assert_eq!(
+        tick_on(&mut fe, "confirm#2", Some(&dialog), &[NavIntent::Down]).as_deref(),
+        Some("b")
+    );
+    assert_eq!(
+        tick_on(&mut fe, "confirm#3", Some(&dialog), &[]).as_deref(),
+        Some("a")
+    );
+}
+
+#[test]
+fn a_stale_export_from_a_popped_tree_neither_resets_nor_overwrites_the_revealed_focus() {
+    // P11: the text-entry commit pops before the focus tick, whose export still
+    // describes the keyboard. The app withholds that export; the revealed tree
+    // keeps its saved focus once its own export arrives.
+    let menu = restoring(true);
+    let keyboard = linear_list(false, None);
+    let mut fe = UiFocusEngine::new();
+    tick_on(&mut fe, "menu", Some(&menu), &[]);
+    tick_on(&mut fe, "menu", Some(&menu), &[NavIntent::Down]);
+    tick_on(&mut fe, "keyboard#5", Some(&keyboard), &[]);
+    assert_eq!(tick_on(&mut fe, "menu", None, &[]), None);
+    assert_eq!(
+        tick_on(&mut fe, "menu", Some(&menu), &[]).as_deref(),
+        Some("b")
+    );
+}
+
+#[test]
+fn a_saved_focus_now_disabled_or_rebuilt_away_lands_on_initial_focus_on_return() {
+    let menu = restoring(true);
+    let dialog = linear_list(false, None);
+    let mut fe = UiFocusEngine::new();
+    tick_on(&mut fe, "menu", Some(&menu), &[]);
+    tick_on(&mut fe, "menu", Some(&menu), &[NavIntent::Down]);
+    tick_on(&mut fe, "dialog#2", Some(&dialog), &[]);
+    let mut disabled = menu.clone();
+    disabled.rects[1].disabled = true;
+    assert_eq!(
+        tick_on(&mut fe, "menu", Some(&disabled), &[]).as_deref(),
+        Some("a")
+    );
+
+    let mut fe = UiFocusEngine::new();
+    tick_on(&mut fe, "menu", Some(&menu), &[]);
+    tick_on(&mut fe, "menu", Some(&menu), &[NavIntent::Down]);
+    tick_on(&mut fe, "dialog#2", Some(&dialog), &[]);
+    let mut rebuilt = menu.clone();
+    rebuilt.rects[1].id = "b2".to_string();
+    assert_eq!(
+        tick_on(&mut fe, "menu", Some(&rebuilt), &[]).as_deref(),
+        Some("a")
+    );
+}
+
+#[test]
+fn an_export_owned_by_another_tree_is_withheld_from_the_focus_tick() {
+    use postretro_ui::modal_stack::ScopeTier;
+    use postretro_ui::tree::FocusRectOwner;
+    let mut list = linear_list(false, None);
+    list.owner = Some(FocusRectOwner {
+        name: "keyboard".to_string(),
+        tier: ScopeTier::Engine,
+    });
+    assert!(crate::session::focus_rects_for(Some(&list), "menu").is_none());
+    assert!(crate::session::focus_rects_for(Some(&list), "keyboard").is_some());
+    list.owner = None;
+    assert!(crate::session::focus_rects_for(Some(&list), "menu").is_some());
+}

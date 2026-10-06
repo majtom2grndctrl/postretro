@@ -166,9 +166,9 @@ pub struct FocusRectList {
     /// focus starts on when this tree becomes the active (top) stack tree. `None`
     /// selects the first focusable node in tree order.
     pub initial_focus: Option<String>,
-    /// True when any container in the tree declared `restoreOnReturn`: on a pop
-    /// that returns focus here, the focus engine restores this tree's last-focused
-    /// node instead of resetting to `initial_focus`.
+    /// Whether a pop that reveals this tree restores its saved focus: the
+    /// tree's `restoreOnReturn`, on unless the tree opts out. A fresh push
+    /// always lands on initial focus.
     pub restore_on_return: bool,
     /// The registry name and scope tier of the tree this list was exported
     /// from. A press resolves against last frame's export, so the stack's top

@@ -2386,14 +2386,16 @@ impl ApplicationHandler for App {
                 let cursor = self.cursor_pos;
                 let focus_result = {
                     let session = self.session.as_mut().expect("running session installed");
-                    let active_key = session
-                        .modal_stack
-                        .active_name()
-                        .map(str::to_string)
-                        .unwrap_or_else(|| postretro_ui::tree_asset::HUD_NAME.to_string());
+                    let (active_key, active_name) =
+                        session.ui_focus_target(postretro_ui::tree_asset::HUD_NAME);
+                    session.prune_ui_focus();
+                    let rects = crate::session::focus_rects_for(
+                        session.ui_focus_rects.as_ref(),
+                        &active_name,
+                    );
                     session.ui_focus.tick(
                         Some(active_key.as_str()),
-                        session.ui_focus_rects.as_ref(),
+                        rects,
                         &nav_intents,
                         cursor,
                         &click_positions,
@@ -5750,14 +5752,13 @@ impl App {
         let cursor_pos = self.cursor_pos;
         let focus_result = {
             let session = self.session.as_mut().expect("frontend session installed");
-            let active_key = session
-                .modal_stack
-                .active_name()
-                .map(str::to_string)
-                .unwrap_or(frontend_menu_tree_name);
+            let (active_key, active_name) = session.ui_focus_target(&frontend_menu_tree_name);
+            session.prune_ui_focus();
+            let rects =
+                crate::session::focus_rects_for(session.ui_focus_rects.as_ref(), &active_name);
             session.ui_focus.tick(
                 Some(active_key.as_str()),
-                session.ui_focus_rects.as_ref(),
+                rects,
                 &nav_intents,
                 cursor_pos,
                 &click_positions,
@@ -10472,7 +10473,6 @@ mod tests {
                     id: None,
                     focus_neighbors: Default::default(),
                     focus: None,
-                    restore_on_return: false,
                     local_state: None,
                     visible_when: None,
                     role: None,
@@ -10483,6 +10483,7 @@ mod tests {
                 text_entry_target: None,
                 accessible_name: None,
                 role: None,
+                restore_on_return: None,
             }
         }
 
@@ -12457,7 +12458,7 @@ mod tests {
             "one focus group spans the tab strip, the visible panel and BACK"
         );
         assert!(
-            options_root.restore_on_return,
+            options_tree.restores_on_return(),
             "closing a tree pushed above returns focus to the control it left"
         );
         let tab_state = options_root
@@ -13020,7 +13021,6 @@ mod tests {
                     id: None,
                     focus_neighbors: Default::default(),
                     focus: None,
-                    restore_on_return: false,
                     local_state: None,
                     visible_when: None,
                     role: None,
@@ -13031,6 +13031,7 @@ mod tests {
                 text_entry_target: None,
                 accessible_name: None,
                 role: None,
+                restore_on_return: None,
             }
         }
 
@@ -13272,7 +13273,6 @@ mod tests {
                     id: None,
                     focus_neighbors: Default::default(),
                     focus: None,
-                    restore_on_return: false,
                     local_state: None,
                     visible_when: None,
                     role: None,
@@ -13283,6 +13283,7 @@ mod tests {
                 text_entry_target: None,
                 accessible_name: None,
                 role: None,
+                restore_on_return: None,
             },
             always_on: true,
             hide_below: false,
@@ -14590,7 +14591,6 @@ mod tests {
                     id: None,
                     focus_neighbors: Default::default(),
                     focus: None,
-                    restore_on_return: false,
                     local_state,
                     visible_when: None,
                     role: None,
@@ -14601,6 +14601,7 @@ mod tests {
                 text_entry_target: None,
                 accessible_name: None,
                 role: None,
+                restore_on_return: None,
             }
         }
 

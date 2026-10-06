@@ -302,10 +302,6 @@ pub struct ContainerWidget {
     /// Absent leaves the container's children outside any focus group of its own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub focus: Option<FocusPolicy>,
-    /// Restore this container's last-focused descendant when a tree popped above
-    /// it returns focus here (M13 Goal F, Task 3). Skip-serialized when `false`.
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub restore_on_return: bool,
     /// Presentation-cell scope declared on this container (M13 G1b, Task 5). When
     /// present, descendant `{ local }` binds resolve against the named cells, the
     /// cells seed the app-side cell store, and the scope id keys the cell store +
@@ -357,9 +353,6 @@ pub struct GridWidget {
     /// `"spatial"` so nav moves nearest-neighbor by direction.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub focus: Option<FocusPolicy>,
-    /// Restore this grid's last-focused descendant on return (see `ContainerWidget`).
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub restore_on_return: bool,
     /// Optional reactive visibility predicate (M13 G2). See `TextWidget::visible_when`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub visible_when: Option<Predicate>,
@@ -370,7 +363,7 @@ pub struct GridWidget {
 }
 
 /// `skip_serializing_if` predicate for boolean flags that default to `false`
-/// (`restore_on_return`, `decorative`, `disabled`): omit when `false` so a
+/// (`decorative`, `disabled`): omit when `false` so a
 /// pre-feature widget round-trips byte-identically.
 fn is_false(b: &bool) -> bool {
     !*b

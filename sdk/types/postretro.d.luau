@@ -2683,11 +2683,11 @@ export type FocusPolicyProp = FocusKind | { policy: FocusKind, wrap: boolean?, [
 --- pixels; optional `fill`/`border` draw a backdrop behind the
 --- arranged children. Stack containers may declare `localState`; stack and grid
 --- containers both accept `visibleWhen` and `role`.
-export type StackProps = { gap: WidgetSpacing?, padding: WidgetSpacing?, align: WidgetAlign?, width: number?, id: string?, focusNeighbors: FocusNeighborsProp?, focus: FocusPolicyProp?, restoreOnReturn: boolean?, fill: WidgetColor?, border: BorderProp?, localState: { scope: string, cells: { [string]: number | boolean | string | {number} } }?, visibleWhen: Predicate?, role: WidgetRole? }
+export type StackProps = { gap: WidgetSpacing?, padding: WidgetSpacing?, align: WidgetAlign?, width: number?, id: string?, focusNeighbors: FocusNeighborsProp?, focus: FocusPolicyProp?, fill: WidgetColor?, border: BorderProp?, localState: { scope: string, cells: { [string]: number | boolean | string | {number} } }?, visibleWhen: Predicate?, role: WidgetRole? }
 --- Props for `Grid`. `cols` is required and must be an integer >= 1. Children
 --- flow row-major across columns; grid currently has no backdrop fill/border
 --- and no `localState`.
-export type GridProps = { gap: WidgetSpacing?, padding: WidgetSpacing?, align: WidgetAlign?, id: string?, focusNeighbors: FocusNeighborsProp?, focus: FocusPolicyProp?, restoreOnReturn: boolean?, cols: number, visibleWhen: Predicate?, role: WidgetRole? }
+export type GridProps = { gap: WidgetSpacing?, padding: WidgetSpacing?, align: WidgetAlign?, id: string?, focusNeighbors: FocusNeighborsProp?, focus: FocusPolicyProp?, cols: number, visibleWhen: Predicate?, role: WidgetRole? }
 
 
 --- Tree viewport anchor. Valid values: `"topLeft"`, `"top"`, `"topRight"`,
@@ -2701,10 +2701,10 @@ export type WidgetCaptureMode = "capture" | "passthrough"
 --- Placement envelope props for `Tree`. `anchor` + `offset` position the root in
 --- 1280x720 logical UI space; `captureMode`, `initialFocus`, and
 --- `textEntryTarget` control modal/input behavior.
-export type TreeProps = { anchor: WidgetAnchor, offset: {number}, captureMode: WidgetCaptureMode?, initialFocus: string?, textEntryTarget: Ref<string>?, accessibleName: string?, role: WidgetRole? }
+export type TreeProps = { anchor: WidgetAnchor, offset: {number}, captureMode: WidgetCaptureMode?, initialFocus: string?, textEntryTarget: Ref<string>?, accessibleName: string?, role: WidgetRole?, restoreOnReturn: boolean? }
 --- The flat `AnchoredTree` envelope produced by `Tree(...)` and stored in UI
 --- registries. `textEntryTarget` is serialized to its dotted state-slot name.
-export type AnchoredTreeDescriptor = { anchor: WidgetAnchor, offset: {number}, root: WidgetDescriptor, captureMode: WidgetCaptureMode?, initialFocus: string?, textEntryTarget: string?, accessibleName: string?, role: WidgetRole? }
+export type AnchoredTreeDescriptor = { anchor: WidgetAnchor, offset: {number}, root: WidgetDescriptor, captureMode: WidgetCaptureMode?, initialFocus: string?, textEntryTarget: string?, accessibleName: string?, role: WidgetRole?, restoreOnReturn: boolean? }
 --- Props accepted by `defineUiTree`. The returned object preserves the runtime
 --- manifest entry shape `{ name, tree, alwaysOn?, hideBelow? }`.
 export type UiTreeRegistrationProps = { name: string, tree: AnchoredTreeDescriptor, alwaysOn: boolean?, hideBelow: boolean? }

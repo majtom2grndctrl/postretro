@@ -347,6 +347,7 @@ mod tests {
             text_entry_target: None,
             accessible_name: None,
             role: None,
+            restore_on_return: None,
         };
         postretro_ui::UiTreeEntry {
             name: name.into(),

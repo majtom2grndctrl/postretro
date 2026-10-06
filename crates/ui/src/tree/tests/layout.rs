@@ -26,6 +26,7 @@ fn vstack_distributes_children_along_column_with_gap() {
         text_entry_target: None,
         accessible_name: None,
         role: None,
+        restore_on_return: None,
     };
     let mut ui = UiTree::from_descriptor(&tree, &theme());
     let mut fs = font_system();
@@ -83,6 +84,7 @@ fn nested_hstack_in_vstack_distributes_inner_row_along_x() {
         text_entry_target: None,
         accessible_name: None,
         role: None,
+        restore_on_return: None,
     };
     let mut ui = UiTree::from_descriptor(&tree, &theme());
     let mut fs = font_system();
@@ -127,6 +129,7 @@ fn stack_authored_width_establishes_a_fixed_layout_canvas() {
         text_entry_target: None,
         accessible_name: None,
         role: None,
+        restore_on_return: None,
     };
     let mut ui = UiTree::from_descriptor(&tree, &theme());
     let mut fs = font_system();
@@ -158,6 +161,7 @@ fn spacer_maps_to_flex_grow_and_emits_no_draw_payload() {
         text_entry_target: None,
         accessible_name: None,
         role: None,
+        restore_on_return: None,
     };
     let mut ui = UiTree::from_descriptor(&tree, &theme());
     let mut fs = font_system();
@@ -202,6 +206,7 @@ fn child_rects_scale_uniformly_at_4k() {
         text_entry_target: None,
         accessible_name: None,
         role: None,
+        restore_on_return: None,
     };
     let mut fs = font_system();
     let mut ui_ref = UiTree::from_descriptor(&tree, &theme());
@@ -259,7 +264,6 @@ fn grid_places_children_across_equal_columns() {
             id: None,
             focus_neighbors: Default::default(),
             focus: None,
-            restore_on_return: false,
             visible_when: None,
             role: None,
             children: vec![cell(), cell(), cell(), cell()],
@@ -269,6 +273,7 @@ fn grid_places_children_across_equal_columns() {
         text_entry_target: None,
         accessible_name: None,
         role: None,
+        restore_on_return: None,
     };
     let mut ui = UiTree::from_descriptor(&tree, &theme());
     let mut fs = font_system();
@@ -327,6 +332,7 @@ fn anchored_tree_centers_against_non_16_9_letterbox() {
         text_entry_target: None,
         accessible_name: None,
         role: None,
+        restore_on_return: None,
     };
     let mut ui = UiTree::from_descriptor(&tree, &theme());
     let mut fs = font_system();
@@ -369,7 +375,6 @@ fn container_backdrop_quad_rects_snap_to_integer_device_pixels() {
         id: None,
         focus_neighbors: Default::default(),
         focus: None,
-        restore_on_return: false,
         local_state: None,
         visible_when: None,
         role: None,
@@ -384,6 +389,7 @@ fn container_backdrop_quad_rects_snap_to_integer_device_pixels() {
         text_entry_target: None,
         accessible_name: None,
         role: None,
+        restore_on_return: None,
     };
     let mut ui = UiTree::from_descriptor(&tree, &theme());
     let mut fs = font_system();
@@ -415,7 +421,6 @@ fn container_backdrop_draws_beneath_children_sized_to_full_rect() {
         id: None,
         focus_neighbors: Default::default(),
         focus: None,
-        restore_on_return: false,
         local_state: None,
         visible_when: None,
         role: None,
@@ -430,6 +435,7 @@ fn container_backdrop_draws_beneath_children_sized_to_full_rect() {
         text_entry_target: None,
         accessible_name: None,
         role: None,
+        restore_on_return: None,
     };
     let mut ui = UiTree::from_descriptor(&tree, &theme());
     let mut fs = font_system();
@@ -479,6 +485,7 @@ fn measured_text_size(content: &str, font_size: f32) -> taffy::geometry::Size<f3
         text_entry_target: None,
         accessible_name: None,
         role: None,
+        restore_on_return: None,
     };
     let mut ui = UiTree::from_descriptor(&tree, &theme());
     let mut fs = font_system();

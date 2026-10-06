@@ -897,3 +897,44 @@ fn drain_theme_lua_skips_bad_token_and_keeps_good_token() {
         "the valid color token must survive"
     );
 }
+
+#[test]
+fn restore_on_return_is_a_tree_prop_in_both_sdks_and_an_explicit_false_survives() {
+    // JS: an authored `false` opts the tree out; an absent key restores.
+    let src = r#"({ anchor: "center", offset: [0.0, 0.0], restoreOnReturn: false,
+        root: { kind: "spacer", flexGrow: 1.0 } })"#;
+    let tree = eval_js(src, |ctx, v| {
+        anchored_tree_from_js_value(ctx, v).expect("must convert")
+    });
+    assert_eq!(tree.restore_on_return, Some(false));
+    assert!(!tree.restores_on_return());
+    let src =
+        r#"({ anchor: "center", offset: [0.0, 0.0], root: { kind: "spacer", flexGrow: 1.0 } })"#;
+    let tree = eval_js(src, |ctx, v| {
+        anchored_tree_from_js_value(ctx, v).expect("must convert")
+    });
+    assert!(tree.restores_on_return());
+
+    // Luau, through the SDK's `Tree` factory.
+    const WIDGETS_SRC: &str = include_str!("../../../../../sdk/lib/ui/widgets.luau");
+    const TREE_SRC: &str = include_str!("../../../../../sdk/lib/ui/tree.luau");
+    let lua = mlua::Lua::new();
+    install_ui_theme_token_validator(&lua);
+    let widgets: mlua::Table = lua.load(WIDGETS_SRC).eval().unwrap();
+    let tree_mod: mlua::Table = lua.load(TREE_SRC).eval().unwrap();
+    lua.globals().set("W", widgets).unwrap();
+    lua.globals().set("T", tree_mod).unwrap();
+    let opted_out: mlua::Value = lua
+        .load(r#"return T.Tree({ anchor = "center", offset = { 0, 0 }, restoreOnReturn = false }, W.Spacer({ flexGrow = 1 }))"#)
+        .eval()
+        .expect("factory builds a tree");
+    let tree = anchored_tree_from_lua_value(opted_out).expect("bridge converts");
+    assert_eq!(tree.restore_on_return, Some(false));
+    let default: mlua::Value = lua
+        .load(r#"return T.Tree({ anchor = "center", offset = { 0, 0 } }, W.Spacer({ flexGrow = 1 }))"#)
+        .eval()
+        .expect("factory builds a tree");
+    let tree = anchored_tree_from_lua_value(default).expect("bridge converts");
+    assert_eq!(tree.restore_on_return, None);
+    assert!(tree.restores_on_return());
+}

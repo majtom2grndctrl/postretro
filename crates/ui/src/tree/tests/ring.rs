@@ -292,7 +292,6 @@ fn nonfinite_bound_sweep_keeps_track_and_recovers_shape() {
         id: None,
         focus_neighbors: Default::default(),
         focus: None,
-        restore_on_return: false,
         local_state: Some(LocalState {
             scope: "ring-scope".to_string(),
             cells: Default::default(),
@@ -662,7 +661,6 @@ fn local_bound_ring_scalar_resolves_in_its_declaring_scope() {
         id: None,
         focus_neighbors: Default::default(),
         focus: None,
-        restore_on_return: false,
         local_state: Some(LocalState {
             scope: "ring-scope".to_string(),
             cells: Default::default(),

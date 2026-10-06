@@ -292,7 +292,7 @@ local function validateChildren(children: any, factory: string): { WidgetDescrip
 end
 
 -- Append the shared container tail fields (`id`, `focusNeighbors`, `focus`,
--- `restoreOnReturn`, then `children`) in place. `children` is always present.
+-- then `children`) in place. `children` is always present.
 local function applyCommonTail(
   out: { [string]: any },
   props: any,
@@ -311,15 +311,6 @@ local function applyCommonTail(
   local focus = buildFocusPolicy(props.focus, factory)
   if focus ~= nil then
     out.focus = focus
-  end
-  if props.restoreOnReturn ~= nil then
-    if type(props.restoreOnReturn) ~= "boolean" then
-      error(`{factory}: \`restoreOnReturn\` must be a boolean`)
-    end
-    -- Skip-serializes when false (the default) -- emit only true.
-    if props.restoreOnReturn then
-      out.restoreOnReturn = true
-    end
   end
   if localState ~= nil then
     out.localState = localState

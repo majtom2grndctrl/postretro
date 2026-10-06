@@ -93,7 +93,6 @@ pub fn vstack(gap: f32, padding: f32, align: Align, children: Vec<Widget>) -> Wi
         id: None,
         focus_neighbors: Default::default(),
         focus: None,
-        restore_on_return: false,
         local_state: None,
         visible_when: None,
         role: None,
@@ -112,7 +111,6 @@ pub fn hstack(gap: f32, padding: f32, align: Align, children: Vec<Widget>) -> Wi
         id: None,
         focus_neighbors: Default::default(),
         focus: None,
-        restore_on_return: false,
         local_state: None,
         visible_when: None,
         role: None,
@@ -171,7 +169,6 @@ pub fn tweened_panel_in_stack(fill: [f32; 4], slot: &str, tween: PanelTween) -> 
         id: None,
         focus_neighbors: Default::default(),
         focus: None,
-        restore_on_return: false,
         local_state: None,
         visible_when: None,
         role: None,
@@ -257,6 +254,7 @@ pub fn anchored(root: Widget) -> AnchoredTree {
         text_entry_target: None,
         accessible_name: None,
         role: None,
+        restore_on_return: None,
     }
 }
 

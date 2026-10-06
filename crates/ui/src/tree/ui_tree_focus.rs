@@ -17,8 +17,8 @@ use super::draw::{
 };
 use super::ui_tree::UiTree;
 use super::widget_meta::{
-    any_restore_on_return, authored_focus_neighbors, container_focus_policy, container_local_scope,
-    focus_meta, is_interactive, widget_a11y_state, widget_children, widget_id, widget_interaction,
+    authored_focus_neighbors, container_focus_policy, container_local_scope, focus_meta,
+    is_interactive, widget_a11y_state, widget_children, widget_id, widget_interaction,
 };
 
 impl UiTree {
@@ -61,7 +61,7 @@ impl UiTree {
 
         let mut out = FocusRectList {
             initial_focus: descriptor.initial_focus.clone(),
-            restore_on_return: any_restore_on_return(&descriptor.root),
+            restore_on_return: descriptor.restores_on_return(),
             ..Default::default()
         };
         let mut z = 0u32;

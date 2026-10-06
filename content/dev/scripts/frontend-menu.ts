@@ -581,8 +581,9 @@ export const optionsMenu = defineUiTree({
     // One linear focus group spans the tab strip, the visible panel and BACK, so
     // every stop is reachable from every tab. The tab strip deliberately declares
     // no focus policy of its own: a nested group would trap nav inside the strip.
-    // Hidden panels drop out of the focus export. `restoreOnReturn` brings focus
-    // back to the last-focused control when a tree pushed above this one closes.
+    // Hidden panels drop out of the focus export. Closing a tree pushed above
+    // this one returns focus to the last-focused control (restore is on by
+    // default).
     VStack(
       {
         localState: optionsTabState.scope,
@@ -592,7 +593,6 @@ export const optionsMenu = defineUiTree({
         width: 640,
         fill: COLOR_PANEL,
         focus: { policy: "linear", wrap: true },
-        restoreOnReturn: true,
       },
       [
         Text({ content: "OPTIONS", fontSize: 24, color: COLOR_ACCENT }),

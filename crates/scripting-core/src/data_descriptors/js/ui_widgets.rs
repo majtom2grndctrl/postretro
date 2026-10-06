@@ -40,6 +40,7 @@ pub fn anchored_tree_from_js_value<'js>(
     let text_entry_target = get_optional_string_js(&obj, "textEntryTarget")?;
     let accessible_name = get_optional_string_js(&obj, "accessibleName")?;
     let role = role_opt_from_js(&obj)?;
+    let restore_on_return = get_optional_bool_js(&obj, "restoreOnReturn")?;
 
     Ok(AnchoredTree {
         anchor,
@@ -50,6 +51,7 @@ pub fn anchored_tree_from_js_value<'js>(
         text_entry_target,
         accessible_name,
         role,
+        restore_on_return,
     })
 }
 
@@ -143,7 +145,6 @@ pub fn container_widget_from_js<'js>(
         id: get_optional_string_js(obj, "id")?,
         focus_neighbors: focus_neighbors_from_js(obj)?,
         focus: focus_policy_from_js(obj)?,
-        restore_on_return: get_optional_bool_js(obj, "restoreOnReturn")?.unwrap_or(false),
         local_state: local_state_from_js(obj)?,
         visible_when: predicate_opt_from_js(obj, "visibleWhen")?,
         role: role_opt_from_js(obj)?,
@@ -207,7 +208,6 @@ pub fn grid_widget_from_js<'js>(
         id: get_optional_string_js(obj, "id")?,
         focus_neighbors: focus_neighbors_from_js(obj)?,
         focus: focus_policy_from_js(obj)?,
-        restore_on_return: get_optional_bool_js(obj, "restoreOnReturn")?.unwrap_or(false),
         visible_when: predicate_opt_from_js(obj, "visibleWhen")?,
         role: role_opt_from_js(obj)?,
         children: children_from_js(ctx, obj)?,

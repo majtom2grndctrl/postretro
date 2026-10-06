@@ -167,9 +167,10 @@ impl UiFocusEngine {
             return FocusTickResult::default();
         };
         let Some(rects) = rects else {
-            // The active tree published no rect list yet (first frame after a push,
-            // before the renderer exported one). Focus nothing this tick.
-            self.active_key = Some(active_key.to_string());
+            // The active tree published no rect list yet (first frame after a
+            // push, or the export still describes the tree a pop removed this
+            // frame). Focus nothing, and leave the active key unchanged so the
+            // next tick with this tree's own export still sees the change (P11).
             return FocusTickResult::default();
         };
 
@@ -304,11 +305,14 @@ impl UiFocusEngine {
     /// On a non-stack-change tick, initialize only if not yet initialized.
     fn ensure_initialized(&mut self, key: &str, rects: &FocusRectList, stack_changed: bool) {
         let entry = self.trees.entry(key.to_string()).or_default();
+        // Restore applies to a key seen before: the app keys each pushed modal
+        // instance separately, so a fresh push (even of a tree closed and
+        // reopened this frame) is a new key with no saved focus (O14, P12).
         let restore_valid = rects.restore_on_return
             && entry
                 .focused
                 .as_ref()
-                .is_some_and(|f| rects.rects.iter().any(|r| &r.id == f));
+                .is_some_and(|f| rects.rects.iter().any(|r| &r.id == f && !r.disabled));
 
         if stack_changed {
             if restore_valid {
@@ -323,6 +327,18 @@ impl UiFocusEngine {
             entry.focused = initial_focus_id(rects);
             entry.initialized = true;
         }
+    }
+
+    /// Forget saved focus for trees no longer on the stack, so per-instance
+    /// keys do not accumulate.
+    pub fn retain_trees(&mut self, alive: impl Fn(&str) -> bool) {
+        self.trees.retain(|key, _| alive(key));
+        self.group_memory.retain(|(key, _), _| alive(key));
+    }
+
+    /// How many trees hold saved focus.
+    pub fn tree_count(&self) -> usize {
+        self.trees.len()
     }
 
     /// The focused node id for `key`, if any.

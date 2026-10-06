@@ -226,20 +226,6 @@ pub fn container_focus_policy(widget: &Widget) -> Option<&super::super::descript
     }
 }
 
-/// Whether `widget` or any descendant container declares `restoreOnReturn`.
-/// Surfaced tree-wide on the focus rect list: the focus engine restores this
-/// tree's saved focus on a returning pop when any of its containers opted in.
-pub fn any_restore_on_return(widget: &Widget) -> bool {
-    let declared = match widget {
-        Widget::VStack(w) | Widget::HStack(w) => w.restore_on_return,
-        Widget::Grid(w) => w.restore_on_return,
-        _ => false,
-    };
-    declared
-        || widget_children(widget)
-            .is_some_and(|children| children.iter().any(any_restore_on_return))
-}
-
 /// A container's `children` for the lockstep focus walk, or `None` for leaves.
 pub fn widget_children(widget: &Widget) -> Option<&[Widget]> {
     match widget {

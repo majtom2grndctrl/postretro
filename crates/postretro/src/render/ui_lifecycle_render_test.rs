@@ -68,6 +68,7 @@ fn text_tree(content: &str, color: ColorValue, font: Option<String>) -> Anchored
         text_entry_target: None,
         accessible_name: None,
         role: None,
+        restore_on_return: None,
     }
 }
 
@@ -415,6 +416,7 @@ fn mod_theme_token_overrides_engine_default_in_a_rendered_panel() {
         text_entry_target: None,
         accessible_name: None,
         role: None,
+        restore_on_return: None,
     };
 
     let data = render_tree(&tree, &theme, &no_slots(), &CellValues::new());
@@ -477,7 +479,6 @@ fn mixed_tree(scope: &str) -> AnchoredTree {
             id: None,
             focus_neighbors: Default::default(),
             focus: None,
-            restore_on_return: false,
             local_state: Some(LocalState {
                 scope: scope.to_string(),
                 cells: Default::default(),
@@ -545,6 +546,7 @@ fn mixed_tree(scope: &str) -> AnchoredTree {
         text_entry_target: None,
         accessible_name: None,
         role: None,
+        restore_on_return: None,
     }
 }
 
@@ -723,6 +725,7 @@ fn health_bar_tree() -> AnchoredTree {
         text_entry_target: None,
         accessible_name: None,
         role: None,
+        restore_on_return: None,
     }
 }
 

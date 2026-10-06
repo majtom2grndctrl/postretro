@@ -23,6 +23,13 @@ pub use registry::{ScopeTier, UiTreeRegistry};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ModalInstance(u64);
 
+impl ModalInstance {
+    /// A stable number for this push, unique for the stack's lifetime.
+    pub fn id(self) -> u64 {
+        self.0
+    }
+}
+
 /// One tree currently on the modal stack: its registry name, the descriptor
 /// instance pushed, and the optional `onCommit` reaction carried from the
 /// `PushTree` that opened it. `on_commit` is carried on the stack entry; the App
@@ -65,6 +72,10 @@ impl ModalStack {
 
     pub fn active_instance(&self) -> Option<ModalInstance> {
         self.stack.last().map(|tree| tree.instance)
+    }
+    /// Whether a pushed instance with this id is still on the stack.
+    pub fn contains_instance_id(&self, id: u64) -> bool {
+        self.stack.iter().any(|tree| tree.instance.0 == id)
     }
     pub fn contains_instance(&self, instance: ModalInstance) -> bool {
         self.stack.iter().any(|tree| tree.instance == instance)
@@ -408,7 +419,6 @@ mod tests {
                 id: None,
                 focus_neighbors: Default::default(),
                 focus: None,
-                restore_on_return: false,
                 local_state: None,
                 visible_when: None,
                 role: None,
@@ -419,6 +429,7 @@ mod tests {
             text_entry_target: None,
             accessible_name: None,
             role: None,
+            restore_on_return: None,
         }
     }
 

@@ -446,7 +446,6 @@ mod tests {
             id: None,
             focus_neighbors: Default::default(),
             focus: None,
-            restore_on_return: false,
             local_state: None,
             visible_when: None,
             role: None,

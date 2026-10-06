@@ -52,7 +52,7 @@ Adapter-gated tests live in `crates/renderer/src/render/ui/text_prepare_gate_tes
 
 | # | Task | Owner | Depends on | Status |
 |---|---|---|---|---|
-| 0 | Move UI pipeline constructors out of `render/ui/mod.rs` (structural only) | integrating executor | — | |
+| 0 | Move UI pipeline constructors out of `render/ui/mod.rs` (structural only) | integrating executor | — | done: `render/ui/pipelines.rs`; mod.rs 1032→807; 12 UI tests pass on GTX 1660 Super (Vulkan) |
 | 1 | Thin slice: per-slot gate in `UiTextRenderer` (exact key, retained shaped buffers, slot-local metadata), trim-first reclaim at cadence + atlas-full recovery, encode stats; harness with pinned limits; A1–A4 goldens | integrating executor | 0 | |
 | 2 | Per-layer scoping: composition ends spans at layer boundaries and carries layer per span; banded depth for quads/rings/text with fallback; A8–A14 | integrating executor | 1 | |
 | 3 | Edge rows: font generation, zero text + reclaim deferral, viewport, prepare failure; A5–A7, A15 | integrating executor | 1 | |

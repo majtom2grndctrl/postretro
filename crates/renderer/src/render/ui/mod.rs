@@ -24,6 +24,7 @@ pub(crate) mod text;
 
 mod composition;
 mod image_registry;
+mod pipelines;
 mod retained_layers;
 
 pub(crate) use composition::UiComposition;
@@ -192,63 +193,8 @@ impl UiPass {
         queue: &wgpu::Queue,
         color_format: wgpu::TextureFormat,
     ) -> Self {
-        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("UI Quad BGL"),
-            entries: &[
-                // 0: UiUniform (device viewport), read in the vertex stage.
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: wgpu::BufferSize::new(
-                            std::mem::size_of::<UiUniform>() as u64
-                        ),
-                    },
-                    count: None,
-                },
-                // 1: bound texture (white texel for panels, image for logos).
-                // Float-filterable so the same BGL works for linear sampling.
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
-                // 2: filtering sampler. Must be Filtering to pair with the
-                // Float { filterable: true } texture binding above.
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-            ],
-        });
-
-        // Rings only need the viewport uniform: all geometry and color arrive
-        // as instance attributes, with no texture/sampler contract.
-        let ring_bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("UI Ring BGL"),
-                entries: &[wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: wgpu::BufferSize::new(
-                            std::mem::size_of::<UiUniform>() as u64
-                        ),
-                    },
-                    count: None,
-                }],
-            });
+        let bind_group_layout = pipelines::create_quad_bind_group_layout(device);
+        let ring_bind_group_layout = pipelines::create_ring_bind_group_layout(device);
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("UI Quad Shader"),
@@ -261,55 +207,18 @@ impl UiPass {
             immediate_size: 0,
         });
 
-        // Per-instance vertex buffer: the four vec4 attributes from `UiInstance`
-        // plus one renderer-local painter depth. No per-vertex buffer — geometry
-        // is generated from `vertex_index`.
-        let instance_layout = wgpu::VertexBufferLayout {
-            array_stride: INSTANCE_SIZE as u64,
-            step_mode: wgpu::VertexStepMode::Instance,
-            attributes: &[
-                wgpu::VertexAttribute {
-                    format: wgpu::VertexFormat::Float32x4,
-                    offset: 0,
-                    shader_location: 0,
-                },
-                wgpu::VertexAttribute {
-                    format: wgpu::VertexFormat::Float32x4,
-                    offset: 16,
-                    shader_location: 1,
-                },
-                wgpu::VertexAttribute {
-                    format: wgpu::VertexFormat::Float32x4,
-                    offset: 32,
-                    shader_location: 2,
-                },
-                wgpu::VertexAttribute {
-                    format: wgpu::VertexFormat::Float32x4,
-                    offset: 48,
-                    shader_location: 3,
-                },
-                wgpu::VertexAttribute {
-                    format: wgpu::VertexFormat::Float32,
-                    offset: 64,
-                    shader_location: 4,
-                },
-            ],
-        };
-
-        let opaque_pipeline = create_ui_quad_pipeline(
+        let opaque_pipeline = pipelines::create_ui_quad_pipeline(
             device,
             &pipeline_layout,
             &shader,
-            &instance_layout,
             color_format,
             true,
             "UI Quad Pipeline",
         );
-        let translucent_pipeline = create_ui_quad_pipeline(
+        let translucent_pipeline = pipelines::create_ui_quad_pipeline(
             device,
             &pipeline_layout,
             &shader,
-            &instance_layout,
             color_format,
             false,
             "UI Quad Translucent Pipeline",
@@ -324,54 +233,10 @@ impl UiPass {
             bind_group_layouts: &[Some(&ring_bind_group_layout)],
             immediate_size: 0,
         });
-        // Rect/color plus four radial scalars and renderer-local painter depth.
-        // This 52-byte upload layout mirrors GpuUiRingInstance exactly.
-        let ring_instance_layout = wgpu::VertexBufferLayout {
-            array_stride: RING_INSTANCE_SIZE as u64,
-            step_mode: wgpu::VertexStepMode::Instance,
-            attributes: &[
-                wgpu::VertexAttribute {
-                    format: wgpu::VertexFormat::Float32x4,
-                    offset: 0,
-                    shader_location: 0,
-                },
-                wgpu::VertexAttribute {
-                    format: wgpu::VertexFormat::Float32x4,
-                    offset: 16,
-                    shader_location: 1,
-                },
-                wgpu::VertexAttribute {
-                    format: wgpu::VertexFormat::Float32,
-                    offset: 32,
-                    shader_location: 2,
-                },
-                wgpu::VertexAttribute {
-                    format: wgpu::VertexFormat::Float32,
-                    offset: 36,
-                    shader_location: 3,
-                },
-                wgpu::VertexAttribute {
-                    format: wgpu::VertexFormat::Float32,
-                    offset: 40,
-                    shader_location: 4,
-                },
-                wgpu::VertexAttribute {
-                    format: wgpu::VertexFormat::Float32,
-                    offset: 44,
-                    shader_location: 5,
-                },
-                wgpu::VertexAttribute {
-                    format: wgpu::VertexFormat::Float32,
-                    offset: 48,
-                    shader_location: 6,
-                },
-            ],
-        };
-        let ring_pipeline = create_ui_ring_pipeline(
+        let ring_pipeline = pipelines::create_ui_ring_pipeline(
             device,
             &ring_pipeline_layout,
             &ring_shader,
-            &ring_instance_layout,
             color_format,
         );
 
@@ -449,7 +314,12 @@ impl UiPass {
         // glyphon shaped-text state — its own pipeline/atlas, constructed here
         // so `TextAtlas` builds in `Renderer::new` rather than on the first
         // shaped frame. The CPU `FontSystem` is session-owned.
-        let text = UiTextRenderer::new(device, queue, color_format, ui_depth_stencil_state(false));
+        let text = UiTextRenderer::new(
+            device,
+            queue,
+            color_format,
+            pipelines::ui_depth_stencil_state(false),
+        );
 
         Self {
             opaque_pipeline,
@@ -756,101 +626,6 @@ impl UiPass {
             mapped_at_creation: false,
         });
         self.ring_instance_capacity = capacity;
-    }
-}
-
-fn create_ui_quad_pipeline(
-    device: &wgpu::Device,
-    pipeline_layout: &wgpu::PipelineLayout,
-    shader: &wgpu::ShaderModule,
-    instance_layout: &wgpu::VertexBufferLayout<'_>,
-    color_format: wgpu::TextureFormat,
-    depth_write_enabled: bool,
-    label: &'static str,
-) -> wgpu::RenderPipeline {
-    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some(label),
-        layout: Some(pipeline_layout),
-        vertex: wgpu::VertexState {
-            module: shader,
-            entry_point: Some("vs_main"),
-            buffers: &[Some(instance_layout.clone())],
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
-        },
-        primitive: wgpu::PrimitiveState {
-            topology: wgpu::PrimitiveTopology::TriangleList,
-            ..Default::default()
-        },
-        // Private UI depth preserves painter order across the quad/text split.
-        // Opaque quads write it for hard occlusion; translucent/image batches
-        // only test so they do not erase lower text before glyphon renders.
-        depth_stencil: Some(ui_depth_stencil_state(depth_write_enabled)),
-        multisample: wgpu::MultisampleState::default(),
-        fragment: Some(wgpu::FragmentState {
-            module: shader,
-            entry_point: Some("fs_main"),
-            targets: &[Some(wgpu::ColorTargetState {
-                format: color_format,
-                // Standard alpha blend over the existing target contents. Over the
-                // transparent-cleared UI layer this accumulates premultiplied
-                // colour with coverage alpha (colour SrcAlpha/OneMinusSrcAlpha,
-                // alpha One/OneMinusSrcAlpha via ALPHA_BLENDING).
-                blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                write_mask: wgpu::ColorWrites::ALL,
-            })],
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
-        }),
-        multiview_mask: None,
-        cache: None,
-    })
-}
-
-fn create_ui_ring_pipeline(
-    device: &wgpu::Device,
-    pipeline_layout: &wgpu::PipelineLayout,
-    shader: &wgpu::ShaderModule,
-    instance_layout: &wgpu::VertexBufferLayout<'_>,
-    color_format: wgpu::TextureFormat,
-) -> wgpu::RenderPipeline {
-    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some("UI Ring Pipeline"),
-        layout: Some(pipeline_layout),
-        vertex: wgpu::VertexState {
-            module: shader,
-            entry_point: Some("vs_main"),
-            buffers: &[Some(instance_layout.clone())],
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
-        },
-        primitive: wgpu::PrimitiveState {
-            topology: wgpu::PrimitiveTopology::TriangleList,
-            ..Default::default()
-        },
-        // Rings always use alpha coverage from their SDF edge, so they test but
-        // never write the shared UI depth target.
-        depth_stencil: Some(ui_depth_stencil_state(false)),
-        multisample: wgpu::MultisampleState::default(),
-        fragment: Some(wgpu::FragmentState {
-            module: shader,
-            entry_point: Some("fs_main"),
-            targets: &[Some(wgpu::ColorTargetState {
-                format: color_format,
-                blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                write_mask: wgpu::ColorWrites::ALL,
-            })],
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
-        }),
-        multiview_mask: None,
-        cache: None,
-    })
-}
-
-fn ui_depth_stencil_state(depth_write_enabled: bool) -> wgpu::DepthStencilState {
-    wgpu::DepthStencilState {
-        format: UI_DEPTH_FORMAT,
-        depth_write_enabled: Some(depth_write_enabled),
-        depth_compare: Some(wgpu::CompareFunction::LessEqual),
-        stencil: wgpu::StencilState::default(),
-        bias: wgpu::DepthBiasState::default(),
     }
 }
 

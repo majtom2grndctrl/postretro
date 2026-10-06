@@ -1,0 +1,23 @@
+{
+  "map": "content/dev/maps/kinematic-platform.prl",
+  "camera": {
+    "position": [
+      -6.5,
+      2.82,
+      -27.94
+    ],
+    "yaw_deg": 0.0,
+    "pitch_deg": 0.0,
+    "fov_deg": 100.0
+  },
+  "resolution": [
+    640,
+    360
+  ],
+  "output": "measurements/sh-compose-row-cost-spike/capture/out/kinematicmid-gated-t050.png",
+  "measurement": {
+    "report": "measurements/sh-compose-row-cost-spike/capture/out/kinematicmid-gated-t050.report.json",
+    "warmup_frames": 1,
+    "sample_frames": 29
+  }
+}

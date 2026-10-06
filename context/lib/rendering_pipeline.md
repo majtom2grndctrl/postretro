@@ -833,7 +833,12 @@ engine's GPU timing reports unsupported. On macOS, take per-pass GPU time from a
 Instruments Metal System Trace instead. wgpu forwards pass labels, so the trace groups
 GPU intervals by pass. Record headless with `xcrun xctrace record --template 'Metal
 System Trace' --launch -- <postretro binary> <map>.prl`, then read its tables with
-`xctrace export`. The engine renders no frames while its window is hidden or backgrounded,
+`xctrace export`. Reduce the export per encoder. A pass's time is the union of its
+encoder's intervals, with nested and coalesced rows counted once. Divide by a once-per-frame
+encoder of the same pass to get a per-frame figure. Never take the frame count from
+render-pass encoder counts: those rows go missing from part of some traces, which
+undercounts frames by up to a quarter and invents between-launch "regimes" that are not there.
+The engine renders no frames while its window is hidden or backgrounded,
 or while the screen is locked. Keep the window in front for the whole capture.
 Each recording also leaves an `instruments*.ktrace` temp file of about 1 GB in
 `$TMPDIR`, and the `.trace` bundle stays wherever `--output` put it. Delete both once

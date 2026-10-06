@@ -5,10 +5,11 @@ mod activation;
 mod activator;
 #[cfg(test)]
 mod activator_tests;
+mod binding_state;
+mod binding_table;
+#[cfg(test)]
+mod binding_table_tests;
 mod bindings;
-// The effective binding table (E23 task 4) is the production consumer of the
-// command and input-name vocabulary; until it lands only tests read parts of it.
-#[cfg_attr(not(test), allow(dead_code))]
 mod commands;
 pub use activation::ActivationInputCapture;
 pub mod cursor;
@@ -16,10 +17,10 @@ mod defaults;
 pub mod diagnostics;
 mod focus;
 pub mod gamepad;
-#[cfg_attr(not(test), allow(dead_code))]
 mod input_names;
 mod latch;
 mod look;
+mod relevance;
 mod scroll;
 mod snapshot;
 mod system;
@@ -32,11 +33,18 @@ mod ui_focus;
 mod ui_nav;
 mod wieldable_selection;
 
+pub use binding_state::{BindingSources, BindingState};
+// Consumed outside `input/` by tests now and by the controls panel (task 10).
+#[cfg_attr(not(test), allow(unused_imports))]
+pub use commands::Command;
 pub use defaults::default_bindings;
 pub use diagnostics::{DiagnosticAction, DiagnosticInputs, default_diagnostic_chords};
 pub use focus::InputFocus;
+#[cfg_attr(not(test), allow(unused_imports))]
+pub use input_names::DeviceClass;
 pub use latch::GameplayInputLatch;
 pub use look::LookInputs;
+pub use relevance::RelevanceFacts;
 pub(crate) use scroll::wheel_diagnostics_enabled;
 pub use snapshot::ActionSnapshot;
 pub use system::{DEFAULT_MOUSE_SENSITIVITY, InputSystem};

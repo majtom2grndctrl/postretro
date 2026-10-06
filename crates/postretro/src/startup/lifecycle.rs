@@ -1571,6 +1571,7 @@ pub(crate) mod tests {
             // reaction/classname dispatch; the real `Session::build` populates them.
             session: Some(crate::session::Session {
                 input_system: input::InputSystem::new(input::default_bindings()),
+                bindings: input::BindingState::default(),
                 gameplay_input_latch: input::GameplayInputLatch::new(),
                 ui_dispatch: input::UiDispatch::new(),
                 gamepad_system: None,

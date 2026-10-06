@@ -14,6 +14,9 @@ struct HeldInput {
     scale: f32,
     /// The hold binding(s) on this input have fired; the short partner never will.
     hold_fired: bool,
+    /// A rebuild changed this input's bindings while it was down. A resolution
+    /// already made stands until release; nothing new fires on this press (P4).
+    stale: bool,
 }
 
 /// Resolves timed input edges into per-binding down levels and per-command
@@ -116,6 +119,7 @@ impl ActivatorResolver {
                 down_at: t,
                 scale,
                 hold_fired: false,
+                stale: false,
             },
         );
         if shares_hold(bindings, input) {
@@ -134,6 +138,14 @@ impl ActivatorResolver {
             // resolves on this release.
             return;
         };
+        if held.stale {
+            for (index, binding) in bindings.iter().enumerate() {
+                if binding.input == input {
+                    self.set_up(bindings, index);
+                }
+            }
+            return;
+        }
         let elapsed = t - held.down_at;
         // A hold whose min passed before this release fired first, even if no
         // frame advanced time across the threshold in between.
@@ -169,6 +181,7 @@ impl ActivatorResolver {
             .iter()
             .filter(|(input, held)| {
                 !held.hold_fired
+                    && !held.stale
                     && self.hold_threshold_passed(bindings, **input, held, now - held.down_at)
             })
             .map(|(input, _)| *input)
@@ -190,6 +203,48 @@ impl ActivatorResolver {
         }
         for index in 0..self.binding_down.len() {
             self.set_up(bindings, index);
+        }
+    }
+
+    /// Carry resolution across a binding-table rebuild (P4). An input whose
+    /// bindings are unchanged resolves as if no rebuild happened. On a changed
+    /// input, bindings already down and still present stay down until release,
+    /// a pending resolution is cancelled, and nothing new fires on this press.
+    /// An input the rebuild newly binds is not tracked, so it waits for a
+    /// fresh press.
+    pub(super) fn rebind(&mut self, old: &[Binding], new: &[Binding]) {
+        fn same(a: &Binding, b: &Binding) -> bool {
+            a.input == b.input
+                && a.action == b.action
+                && a.activator == b.activator
+                && a.scale == b.scale
+        }
+        let mut new_down = vec![false; new.len()];
+        for (input, held) in &mut self.held {
+            let old_on: Vec<usize> = (0..old.len()).filter(|&i| old[i].input == *input).collect();
+            let new_on: Vec<usize> = (0..new.len()).filter(|&i| new[i].input == *input).collect();
+            let unchanged = old_on.len() == new_on.len()
+                && old_on
+                    .iter()
+                    .zip(&new_on)
+                    .all(|(&o, &n)| same(&old[o], &new[n]));
+            for &o in &old_on {
+                if self.binding_down.get(o).copied().unwrap_or(false)
+                    && let Some(&n) = new_on.iter().find(|&&n| same(&old[o], &new[n]))
+                {
+                    new_down[n] = true;
+                }
+            }
+            if !unchanged {
+                held.stale = true;
+            }
+        }
+        self.binding_down = new_down;
+        self.command_down.clear();
+        for (index, down) in self.binding_down.iter().enumerate() {
+            if *down {
+                *self.command_down.entry(new[index].action).or_insert(0) += 1;
+            }
         }
     }
 

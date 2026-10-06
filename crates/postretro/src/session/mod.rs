@@ -71,6 +71,10 @@ pub(crate) struct Session {
     /// look preferences. See: context/lib/input.md
     pub(crate) input_system: input::InputSystem,
 
+    /// Binding layers (author, player, swap) and the effective table the
+    /// input system runs. Rebuilt by `App::refresh_effective_bindings`.
+    pub(crate) bindings: input::BindingState,
+
     /// Per-tick gameplay-input latch; neutralized while a modal captures input.
     pub(crate) gameplay_input_latch: input::GameplayInputLatch,
 
@@ -611,6 +615,7 @@ impl Session {
 
         Ok(Self {
             input_system,
+            bindings: input::BindingState::default(),
             gameplay_input_latch: input::GameplayInputLatch::new(),
             ui_dispatch: input::UiDispatch::new(),
             gamepad_system: input::gamepad::GamepadSystem::new(),

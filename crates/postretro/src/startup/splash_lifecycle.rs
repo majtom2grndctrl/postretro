@@ -591,6 +591,9 @@ impl App {
         // Admission identity is frozen by the scripting runtime; the digest is
         // recomputed from the committed registry each time this deferred init runs.
         self.install_network_mod_content();
+        // Bind against the committed registry right away, so a controls panel
+        // opened before any level loads lists the game's commands (P6).
+        self.refresh_effective_bindings();
         self.mod_timings.record("mod_init");
         true
     }

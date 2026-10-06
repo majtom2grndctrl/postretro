@@ -2175,6 +2175,9 @@ impl ApplicationHandler for App {
 
                 drop(stage_scope);
                 let stage_scope = cpu_stages.scope(cpu_timing::FrameStage::Input);
+                // Registry, layer, or host-tuning changes from earlier frames
+                // rebuild the binding table before this frame's input reads it.
+                self.refresh_effective_bindings();
 
                 // The frame's animation sample clock is a single value shared by
                 // game-side hit-zone pose resolution and render collection. It is
@@ -5622,6 +5625,7 @@ impl App {
         if self.session.is_none() {
             return true;
         }
+        self.refresh_effective_bindings();
 
         // Gamepad poll: disjoint borrows of the session group and the
         // non-session `nav_stick_tracker`. A nav intent votes `focus` mode;

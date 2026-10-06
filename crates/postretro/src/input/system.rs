@@ -46,10 +46,8 @@ pub const DEFAULT_MOUSE_SENSITIVITY: f32 = 0.002;
 pub struct InputSystem {
     bindings: Vec<Binding>,
 
-    /// Unique actions referenced by `bindings`, cached at construction time so
-    /// `snapshot()` does not rebuild the list every frame. `bindings` currently
-    /// has no rebind write site outside `new()`; if one is added, refresh this
-    /// cache alongside it.
+    /// Unique actions referenced by `bindings`, cached so `snapshot()` does not
+    /// rebuild the list every frame. `new()` and `set_bindings()` refresh it.
     unique_actions: Vec<Action>,
 
     /// Current pressed/released state of each physical input (true = active).
@@ -105,15 +103,7 @@ pub struct InputSystem {
 
 impl InputSystem {
     pub fn new(bindings: Vec<Binding>) -> Self {
-        // Build the unique-action cache once at construction. Using a local
-        // HashSet for dedup keeps the constructor cost a one-time hit.
-        let mut seen = HashSet::with_capacity(bindings.len());
-        let mut unique_actions: Vec<Action> = Vec::with_capacity(bindings.len());
-        for binding in &bindings {
-            if seen.insert(binding.action) {
-                unique_actions.push(binding.action);
-            }
-        }
+        let unique_actions = unique_actions(&bindings);
 
         // Pre-size `prev_button_states` to the count of button-type actions so
         // the first-frame `extend` fits without reallocation.
@@ -141,6 +131,23 @@ impl InputSystem {
             mouse_sensitivity: DEFAULT_MOUSE_SENSITIVITY,
             invert_y: false,
         }
+    }
+
+    /// Replace the binding table (mod init, hot reload, rebind, host tuning).
+    /// Input state and preferences survive; held inputs follow the rebuild
+    /// rules in `ActivatorResolver::rebind` (P4).
+    pub fn set_bindings(&mut self, bindings: Vec<Binding>) {
+        let now = self.now();
+        self.set_bindings_at(bindings, now);
+    }
+
+    pub(crate) fn set_bindings_at(&mut self, bindings: Vec<Binding>, now: f64) {
+        // Edges already buffered resolve against the table they arrived under.
+        self.resolve_pending_edges(now);
+        self.resolver.rebind(&self.bindings, &bindings);
+        self.unique_actions = unique_actions(&bindings);
+        self.binding_active = vec![false; bindings.len()];
+        self.bindings = bindings;
     }
 
     /// Set mouse sensitivity (radians per raw mouse unit).
@@ -433,12 +440,15 @@ impl InputSystem {
                     self.resolver.command_went_down(action),
                 );
                 button_states.insert(action, state);
+                // A notch-read command counts wheel notches plus one step per
+                // press edge from any other bound input (the D-pad cycles).
                 let count = self
                     .bindings
                     .iter()
                     .filter(|binding| binding.action == action)
                     .map(|binding| self.scroll_notches.count(binding.input))
-                    .sum();
+                    .sum::<u32>()
+                    + u32::from(self.resolver.command_went_down(action));
                 if count != 0 {
                     notch_counts.insert(action, count);
                 }
@@ -559,4 +569,16 @@ impl InputSystem {
             }
         }
     }
+}
+
+/// Unique actions referenced by a binding table, in first-seen order.
+fn unique_actions(bindings: &[Binding]) -> Vec<Action> {
+    let mut seen = HashSet::with_capacity(bindings.len());
+    let mut unique = Vec::with_capacity(bindings.len());
+    for binding in bindings {
+        if seen.insert(binding.action) {
+            unique.push(binding.action);
+        }
+    }
+    unique
 }

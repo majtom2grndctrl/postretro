@@ -36,6 +36,7 @@ impl DeviceClass {
         }
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub const fn of(input: PhysicalInput) -> Self {
         match input {
             PhysicalInput::Key(_)
@@ -299,6 +300,7 @@ const GAMEPAD: &[(PhysicalInput, &str)] = &[
 
 /// The input string for a physical input, or `None` for an input that has no
 /// bindable name (an unlisted key, a trigger's raw axis).
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn input_name(input: PhysicalInput) -> Option<&'static str> {
     if let PhysicalInput::Key(code) = input {
         return KEYS
@@ -315,6 +317,7 @@ pub fn input_name(input: PhysicalInput) -> Option<&'static str> {
 }
 
 /// Parse an input string from a manifest or settings row.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn parse_input(name: &str) -> Option<PhysicalInput> {
     KEYS.iter()
         .chain(META_KEYS)

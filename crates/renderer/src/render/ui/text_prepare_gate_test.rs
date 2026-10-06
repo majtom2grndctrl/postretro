@@ -389,7 +389,8 @@ fn pinned_atlas_new_glyph_counter_keeps_static_label() {
                 "an atlas-full frame counts each live span once"
             );
         }
-        if frame.stats.trimmed {
+        // Frame 0 trims because every span is new; count the run's own trims.
+        if frame.stats.trimmed && i > 0 {
             reclaims += 1;
         }
         let band = band(&frame.pixels, 0, 60);
@@ -438,7 +439,10 @@ fn zero_text_frame_prepares_nothing_and_defers_reclaim() {
     let without_text = [UiDrawData::default()];
 
     // The first frame reclaims (every span is new); then bring the cadence to
-    // the brink with a change every frame: the next encode with text is due.
+    // the brink with a change every frame. A zero-text frame neither counts
+    // toward the cadence nor trims; it forgets every slot, so the next frame
+    // with text always reclaims — the deferral O9 asks for holds by
+    // construction.
     let first = rig.frame(&with_text(0));
     assert!(first.stats.reclaimed);
     for i in 1..TEXT_RECLAIM_CADENCE {
@@ -748,11 +752,15 @@ fn returning_layer_reprepares_and_draws_correct_text() {
     );
     rig.assert_matches_reference(&back, &with_menu, "back after resize");
 
-    // Away across a cadence reclaim.
-    rig.frame(&hud);
+    // Away across a cadence reclaim: a changing span beside the HUD keeps
+    // reclaims due while the menu is closed.
     let mut reclaimed = false;
-    for _ in 0..TEXT_RECLAIM_CADENCE {
-        reclaimed |= rig.frame(&hud).stats.reclaimed;
+    for i in 0..=TEXT_RECLAIM_CADENCE {
+        let away = [
+            hud[0].clone(),
+            layer(vec![t(&format!("{i}"), 200.0, 160.0)]),
+        ];
+        reclaimed |= rig.frame(&away).stats.reclaimed;
     }
     assert!(reclaimed);
     let back = rig.frame(&with_menu);
@@ -956,13 +964,20 @@ fn failed_prepare_draws_nothing_and_retries() {
     );
 
     let fails = [ok.clone(), span(Item::Text(text("W", [60.0, 0.0], 400.0)))];
-    for frame_index in 0..2 {
+    for frame_index in 0..3 {
         let frame = rig.frame(&fails);
-        assert!(frame.stats.atlas_full_recovered);
-        assert!(
-            frame.prepared.contains(&(1, 0)),
-            "frame {frame_index}: the failed span prepares again though unchanged"
-        );
+        if frame_index == 0 {
+            assert!(frame.stats.atlas_full_recovered);
+        } else {
+            // The same inputs already failed after a trim: the span retries
+            // alone, without dragging every span through another recovery.
+            assert_eq!(
+                frame.prepared,
+                vec![(1, 0)],
+                "frame {frame_index}: the failed span prepares again though unchanged"
+            );
+            assert!(!frame.stats.trimmed, "frame {frame_index}");
+        }
         let only_ok = rig.reference(std::slice::from_ref(&ok));
         assert_eq!(
             differing_pixels(&frame.pixels, &only_ok),
@@ -1202,5 +1217,58 @@ fn resize_drag_trims_each_frame_and_never_fills_the_atlas() {
         if i % 10 == 0 {
             rig.assert_matches_reference(&frame, &layers, &format!("drag frame {i}"));
         }
+    }
+}
+
+// Regression: a reclaim due during an idle stretch fired on the settled frame
+// after the first change, re-preparing every span one frame late.
+#[test]
+fn first_change_after_idle_reclaims_on_that_frame_and_the_next_settles() {
+    let mut rig = Rig::new(gpu_or_skip!(try_init_gpu()));
+    let build = |ammo: &str, menu: bool| {
+        let mut layers = vec![
+            layer(vec![t("HP 100", 8.0, 8.0)]),
+            layer(vec![t(ammo, 8.0, 90.0)]),
+        ];
+        if menu {
+            layers.push(layer(vec![t("PAUSED", 60.0, 140.0)]));
+        }
+        layers
+    };
+    let idle = |rig: &mut Rig, layers: &[UiDrawData]| {
+        for i in 0..=TEXT_RECLAIM_CADENCE {
+            assert_eq!(
+                rig.frame(layers).stats,
+                TextPrepareStats::default(),
+                "idle frame {i}"
+            );
+        }
+    };
+
+    rig.frame(&build("AMMO 12", true));
+    idle(&mut rig, &build("AMMO 12", true));
+
+    // The cadence is long due: the change frame trims ahead of its prepare.
+    let changed = rig.frame(&build("AMMO 11", true));
+    assert!(
+        changed.stats.reclaimed,
+        "the due reclaim lands on the change"
+    );
+    assert_eq!(changed.prepared, vec![(0, 0), (1, 0), (2, 0)]);
+    rig.assert_matches_reference(&changed, &build("AMMO 11", true), "change frame");
+    assert_eq!(
+        rig.frame(&build("AMMO 11", true)).stats,
+        TextPrepareStats::default(),
+        "the frame after the change settles"
+    );
+
+    // A departure after idle prepares and trims nothing, then or next frame.
+    idle(&mut rig, &build("AMMO 11", true));
+    for frame in ["departure", "after departure"] {
+        assert_eq!(
+            rig.frame(&build("AMMO 11", false)).stats,
+            TextPrepareStats::default(),
+            "{frame}"
+        );
     }
 }

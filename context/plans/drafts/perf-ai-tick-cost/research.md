@@ -1,6 +1,6 @@
 # perf-ai-tick-cost — research
 
-Read at 90c9b9687 plus the uncommitted `sim_steer_*` sub-stages this draft's session added. Findings that inform the brief but do not decide it.
+Measured at 90c9b9687 plus the `sim_steer_*` sub-stages, since committed; source re-read at 2095e74c6. Findings that inform the brief but do not decide it.
 
 ## Measurement snapshot (2026-10-05)
 
@@ -92,15 +92,35 @@ Read at 90c9b9687 plus the uncommitted `sim_steer_*` sub-stages this draft's ses
 ## Established techniques considered
 
 General engine practice, not re-verified against sources this session.
-- **Occupancy bitset per component kind** (as in `hibitset` from specs and legion). Iteration visits set bits in slot order, at O(slots/64 + members). Slot-order determinism is preserved, which a swap-remove sparse set (EnTT-style) would not give.
+- **Occupancy bitset per component kind** (as in `hibitset` from specs and legion). Iteration visits set bits in slot order, at O(slots/64 + members). Slot-order determinism is preserved, which a swap-remove sparse set (EnTT-style) would not give. Moved to the last-landing occupancy-index follow-up.
 - **Uniform grid / spatial hash for proximity queries** (Detour crowd `dtProximityGrid`, most crowd and boids systems). It is rebuilt each tick from pawn positions. A ring search in order of distance returns the exact nearest result.
 - **Grid or BV-tree point-to-polygon lookup on a navmesh** (Detour `findNearestPoly` uses a per-tile BV tree). A navmesh that is already grid-rasterised maps directly to a cell → region list.
 - **Time-sliced or budgeted perception and LOS** (Unreal AI Perception's per-frame sense budget). This does not apply: LOS is about 0% of measured cost. It also changes reaction latency, which is a behaviour change.
 - **Parallel AI** (`ai_pathfinding_mt_readiness.md`). This does not apply: the measured cost is a cache-hostile registry walk, not compute, and the registry is single-threaded by contract.
 
+## Faction-first pawn index
+
+- `target_offers` prices the stride from hostile candidates only (`is_hostile` over the candidate's faction leaf). Non-hostile pawns stay in the raw scan only so selection can admit them through retaliation.
+- `select_target_with_attacker_ledger` admits a non-hostile candidate only when `retaliation_preference` returns a rank, and that requires `has_attacker_record`, which `CandidateScope::refresh` sets from the brain's ledger. The ledger holds at most `RECENT_ATTACKER_LEDGER_CAPACITY` (8) entries. Retaliation candidates are therefore a subset of ledger attackers.
+- Among non-retaliation candidates the winner is the nearest eligible hostile; ties go to the earlier candidate (`total_cmp(..).is_lt()`), i.e. movement holders before brain-only holders, then slot order. A walk in (distance, group, slot) order that stops at the first eligible hostile returns the same winner, and that winner is also the nearest eligible hostile the retaliation latch compares against.
+- Hostility is a function of (evaluating faction, candidate faction) only, through `LiveFactionSentiment`, which `run_ai_tick_with_host` builds once per pass. So hostility resolves per bucket pair, not per pawn pair. The measured per-pair sentiment hashing (6.7% of AI) goes with it.
+- The rival, a single all-pawn XZ grid, returns the full candidate set in distance order on due ticks. That is more than the selection rule needs. It also mixes allied pawns into every ring search. In a converged horde, the case the spread-patrol rows never measured, one faction surrounds one player: the hostile bucket holds one pawn and the allied bucket holds the horde.
+
+## Rejected: cell-visibility broad phase
+
+`plans/done/E10--enemy-mp-target-selection` (Decisions and Risks, "Selection cost") reserved the `visible`/selection seam for a view-independent cell-visibility broad phase "if enemy counts ever make it hot". It is the wrong tool here:
+- The stride price is raw XZ distance to the nearest hostile, independent of visibility. A visibility filter cannot answer it.
+- Line of sight measured about 0% of AI cost. The cost is the candidate walk.
+
+## Registry occupancy index: a later brief
+
+A per-kind occupancy index lands last, as its own brief, not here:
+- Landing it before the particle pool would absorb the same particle-driven slot cost and void the pool's attribution row.
+- Once particles leave the registry, this fixture's slot count is about 960, so a particle-sweep registry-independence row is vacuous. The follow-up proves itself on a synthetic non-particle population (projectiles, props, crates).
+
 ## Adjacent work
 
 - `plans/done/E10--enemy-mp-target-selection`, `E10--enemy-aggro-model` and `E10--combat-perception-facts` define the selection semantics this brief must preserve: candidate order, hysteresis, retaliation and the stride price.
-- `plans/done/perf-billboard-emitter` made "columnar / batched registry mutation API" a non-goal. That covered storage *redesign*. An occupancy index leaves storage and the mutation API unchanged.
+- `plans/done/perf-billboard-emitter`'s "columnar / batched registry mutation API" non-goal covered that plan's Slice 4 only. It is not a project rule. The storage mismatch is `drafts/registry-column-storage`'s.
 - `drafts/perf-particle-sim-cost` removes particles from the registry. That removes this fixture's slot inflation, but not the O(slots) shape.
-- `index.md` §4 says internal storage is "dense per-kind component columns". The columns are slot-indexed and sparse. Reconcile the wording at promotion.
+- `entity_model.md` §9 lists "Spatial partitioning for entity-entity queries (octree, grid)" as a non-goal. The pawn index is a named exception, amended at promotion.

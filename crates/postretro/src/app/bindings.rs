@@ -58,6 +58,26 @@ pub(crate) fn tuning_facts(tuning: &TuningPayload) -> RelevanceFacts {
 }
 
 impl App {
+    /// Load the player's saved binding rows for the committed mod id into the
+    /// binding layers. Runs at mod init, before the first table build.
+    pub(crate) fn load_player_bindings(&mut self) {
+        let Some(session) = self.session.as_mut() else {
+            return;
+        };
+        let Some((mod_id, _)) = session.scripting.script_runtime.committed_mod_identity() else {
+            return;
+        };
+        let rows = session.player_options.game_binding_rows(mod_id);
+        let layer = crate::input::player_layer_from_rows(rows.iter().map(|row| {
+            (
+                row.class_key.as_str(),
+                row.command_id.as_str(),
+                row.inputs.as_slice(),
+            )
+        }));
+        session.bindings.set_player_layer(layer);
+    }
+
     /// Rebuild the effective binding table when the registry, the layers, or
     /// participation tuning changed since the last build. Cheap when nothing
     /// did: one generation read and a key compare. Runs before each frame's

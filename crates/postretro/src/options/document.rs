@@ -55,6 +55,16 @@ impl StoredDocument {
     pub(super) fn is_unrecognized(&self, key: &str) -> bool {
         self.unrecognized.contains(key)
     }
+
+    /// The table nested at `path` (`["game", "acme.neon", "bindings"]`), when
+    /// every step is a table.
+    pub(super) fn table_at(&self, path: &[&str]) -> Option<&Table> {
+        path.iter()
+            .try_fold(&self.table, |table, step| match table.get(*step)? {
+                Value::Table(next) => Some(next),
+                _ => None,
+            })
+    }
 }
 
 /// Reads fields out of a loaded table one at a time. A present value that does
@@ -181,6 +191,26 @@ impl<'a> DocumentWriter<'a> {
         if let Value::Table(group_table) = entry {
             put_f32_value(group_table, key, value);
         }
+    }
+
+    /// Write `key` in the table nested at `path`, creating tables (or
+    /// replacing a non-table value) along the way; `None` removes the key and
+    /// leaves sibling keys untouched.
+    pub(super) fn put_at<T: Serialize>(&mut self, path: &[&str], key: &str, value: Option<&T>) {
+        let mut table = &mut self.table;
+        for step in path {
+            let entry = table
+                .entry((*step).to_string())
+                .or_insert_with(|| Value::Table(Table::new()));
+            if !entry.is_table() {
+                *entry = Value::Table(Table::new());
+            }
+            let Value::Table(next) = entry else {
+                return;
+            };
+            table = next;
+        }
+        put_value(table, key, value);
     }
 
     pub(super) fn finish(self) -> Table {

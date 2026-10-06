@@ -684,3 +684,121 @@ fn a_stepped_f32_value_saves_at_full_precision_not_f64_widened_noise() {
     let text = to_toml(&stepped);
     assert!(text.contains("view_feel_scale = 0.85\n"), "got:\n{text}");
 }
+
+// --- Game-scoped binding rows ---
+
+fn rows(options: &PlayerOptions, mod_id: &str) -> Vec<(String, String, Vec<Option<String>>)> {
+    options
+        .game_binding_rows(mod_id)
+        .into_iter()
+        .map(|row| (row.class_key, row.command_id, row.inputs))
+        .collect()
+}
+
+#[test]
+fn an_empty_binding_row_stays_unbound_across_save_and_load() {
+    let mut options = PlayerOptions::default();
+    options.set_game_binding_row("acme.neon", "gamepad", "dash", Some(Vec::new()));
+    let reloaded = from_toml(&to_toml(&options));
+    assert_eq!(
+        rows(&reloaded, "acme.neon"),
+        vec![("gamepad".into(), "dash".into(), Vec::new())]
+    );
+}
+
+#[test]
+fn an_unknown_command_row_survives_a_save_that_rewrites_another_row() {
+    let mut options = from_toml(
+        "[game.\"acme.neon\".bindings.keyboard_mouse]\n\
+         grapple = [\"KeyG\"]\n\
+         dash = [\"KeyF\"]\n",
+    );
+    options.set_game_binding_row(
+        "acme.neon",
+        "keyboard_mouse",
+        "dash",
+        Some(vec!["KeyV".to_string()]),
+    );
+    let text = to_toml(&options);
+    let reloaded = from_toml(&text);
+    let saved = rows(&reloaded, "acme.neon");
+    assert!(saved.contains(&(
+        "keyboard_mouse".into(),
+        "grapple".into(),
+        vec![Some("KeyG".into())]
+    )));
+    assert!(saved.contains(&(
+        "keyboard_mouse".into(),
+        "dash".into(),
+        vec![Some("KeyV".into())]
+    )));
+}
+
+#[test]
+fn a_reset_removes_only_that_row() {
+    let mut options = from_toml(
+        "[game.\"acme.neon\".bindings.keyboard_mouse]\n\
+         dash = [\"KeyV\"]\n\
+         jump = [\"KeyJ\"]\n",
+    );
+    options.set_game_binding_row("acme.neon", "keyboard_mouse", "dash", None);
+    let reloaded = from_toml(&to_toml(&options));
+    assert_eq!(
+        rows(&reloaded, "acme.neon"),
+        vec![(
+            "keyboard_mouse".into(),
+            "jump".into(),
+            vec![Some("KeyJ".into())]
+        )]
+    );
+}
+
+#[test]
+fn two_mod_ids_keep_separate_binding_rows() {
+    let mut options = PlayerOptions::default();
+    options.set_game_binding_row("mod.a", "keyboard_mouse", "dash", Some(vec!["KeyQ".into()]));
+    options.set_game_binding_row("mod.b", "keyboard_mouse", "dash", Some(vec!["KeyE".into()]));
+    let reloaded = from_toml(&to_toml(&options));
+    assert_eq!(
+        rows(&reloaded, "mod.a"),
+        vec![(
+            "keyboard_mouse".into(),
+            "dash".into(),
+            vec![Some("KeyQ".into())]
+        )]
+    );
+    assert_eq!(
+        rows(&reloaded, "mod.b"),
+        vec![(
+            "keyboard_mouse".into(),
+            "dash".into(),
+            vec![Some("KeyE".into())]
+        )]
+    );
+    assert!(rows(&reloaded, "mod.c").is_empty());
+}
+
+#[test]
+fn a_malformed_binding_row_falls_back_alone_and_stays_in_the_file() {
+    let capture = LogCapture::start();
+    let options = from_toml(
+        "invert_y = true\n\
+         [game.\"acme.neon\".bindings.keyboard_mouse]\n\
+         dash = \"KeyF\"\n\
+         jump = [3, \"KeyJ\"]\n",
+    );
+    assert!(options.invert_y, "every other setting loads");
+    assert_eq!(
+        rows(&options, "acme.neon"),
+        vec![(
+            "keyboard_mouse".into(),
+            "jump".into(),
+            vec![None, Some("KeyJ".into())]
+        )]
+    );
+    capture.assert_logged(
+        Level::Warn,
+        "binding row `dash` for `acme.neon` is not a list",
+    );
+    assert!(to_toml(&options).contains("dash = \"KeyF\""));
+}

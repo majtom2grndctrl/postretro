@@ -10,6 +10,7 @@ mod accessibility;
 pub(crate) mod boot;
 mod bridge;
 mod document;
+mod game;
 mod graphics;
 mod panel_actions;
 mod persist;
@@ -157,6 +158,9 @@ pub struct PlayerOptions {
     /// first-launch hold shows the panel until this is written.
     pub accessibility_panel_shown: bool,
 
+    /// This session's writes to `[game."<mod_id>".bindings]` rows.
+    game_binding_writes: game::GameBindingWrites,
+
     /// The loaded document a save rewrites.
     stored: StoredDocument,
 }
@@ -180,6 +184,7 @@ impl PartialEq for PlayerOptions {
             && self.scroll_notch_pixels == other.scroll_notch_pixels
             && self.accessibility == other.accessibility
             && self.accessibility_panel_shown == other.accessibility_panel_shown
+            && self.game_binding_writes == other.game_binding_writes
     }
 }
 
@@ -224,6 +229,7 @@ impl Default for PlayerOptions {
             scroll_notch_pixels: default_scroll_notch_pixels(),
             accessibility: AccessibilityOptions::default(),
             accessibility_panel_shown: false,
+            game_binding_writes: Default::default(),
             stored: StoredDocument::default(),
         }
     }

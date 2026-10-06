@@ -575,3 +575,17 @@ fn a_dpad_press_steps_weapon_cycling() {
     assert_eq!(sys.snapshot().notch_count(Action::CycleWieldableNext), 1);
     assert_eq!(sys.snapshot().notch_count(Action::CycleWieldableNext), 0);
 }
+
+#[test]
+fn a_player_dash_row_waits_out_an_irrelevant_session_and_applies_when_dash_returns() {
+    let rows = player(&[(Command::Dash, KBM, vec![Some(key(KeyCode::KeyV))])]);
+    let no_dash = RelevanceFacts {
+        dash: false,
+        ..all_facts()
+    };
+    let table = build(&AuthorLayer::default(), &rows, no_dash);
+    assert!(table.inputs(Command::Dash, KBM).is_empty());
+    assert!(table.displaced().is_empty());
+    let table = build(&AuthorLayer::default(), &rows, all_facts());
+    assert_eq!(table.inputs(Command::Dash, KBM), vec![key(KeyCode::KeyV)]);
+}

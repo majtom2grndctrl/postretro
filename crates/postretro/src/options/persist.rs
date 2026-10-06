@@ -106,6 +106,7 @@ impl PlayerOptions {
             accessibility_panel_shown: reader
                 .read(keys::ACCESSIBILITY_PANEL_SHOWN)
                 .unwrap_or(defaults.accessibility_panel_shown),
+            game_binding_writes: Default::default(),
             stored: StoredDocument::default(),
         };
         Self { stored, ..options }
@@ -143,6 +144,7 @@ impl PlayerOptions {
             self.accessibility_panel_shown.then_some(&true),
         );
         self.accessibility.write(&mut writer);
+        self.write_game_bindings(&mut writer);
         writer.finish()
     }
 

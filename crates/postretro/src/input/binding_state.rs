@@ -4,6 +4,7 @@
 use super::binding_table::{AuthorLayer, EffectiveTable, PlayerLayer};
 use super::relevance::RelevanceFacts;
 use super::system::InputSystem;
+use super::ui_nav_map::UiNavMap;
 
 /// What the effective table was last built from. The table rebuilds at mod
 /// init, on hot reload (entity types change), on rebind or swap (the layers
@@ -17,7 +18,7 @@ pub struct BindingSources {
     pub tuning: Option<u64>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct BindingState {
     author: AuthorLayer,
     player: PlayerLayer,
@@ -25,7 +26,30 @@ pub struct BindingState {
     /// Bumped on every layer change so the next refresh rebuilds.
     layers_revision: u64,
     table: EffectiveTable,
+    ui_nav: UiNavMap,
     built_from: Option<(BindingSources, u64)>,
+}
+
+/// Starts from the engine table so UI nav works before mod init commits the
+/// game's layers; the first refresh replaces it.
+impl Default for BindingState {
+    fn default() -> Self {
+        let table = EffectiveTable::build(
+            &AuthorLayer::default(),
+            &PlayerLayer::default(),
+            RelevanceFacts::default(),
+            false,
+        );
+        Self {
+            author: AuthorLayer::default(),
+            player: PlayerLayer::default(),
+            swap_confirm_cancel: false,
+            layers_revision: 0,
+            ui_nav: UiNavMap::from_table(&table),
+            table,
+            built_from: None,
+        }
+    }
 }
 
 impl BindingState {
@@ -44,7 +68,13 @@ impl BindingState {
         self.table =
             EffectiveTable::build(&self.author, &self.player, facts, self.swap_confirm_cancel);
         input.set_bindings(self.table.gameplay_bindings());
+        self.ui_nav = UiNavMap::from_table(&self.table);
         self.built_from = Some((sources, self.layers_revision));
+    }
+
+    /// The UI slice of the effective table that nav reads.
+    pub fn ui_nav(&self) -> &UiNavMap {
+        &self.ui_nav
     }
 
     #[allow(dead_code)]

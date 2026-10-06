@@ -285,6 +285,19 @@ pub(crate) struct Session {
     pub(crate) debug_ui: Option<render::debug_ui::DebugUi>,
 }
 
+impl Session {
+    /// Which UI commands are live under the top of the modal stack.
+    pub(crate) fn ui_nav_context(&self) -> input::UiNavContext {
+        if self.modal_stack.active_text_entry_target().is_some() {
+            input::UiNavContext::TextEntry
+        } else if self.ui_dispatch.mode() == input::UiCaptureMode::Capture {
+            input::UiNavContext::Capture
+        } else {
+            input::UiNavContext::Open
+        }
+    }
+}
+
 /// Scripting tranche grouped under [`Session`]. The whole group is built at
 /// `Session::build`: `ScriptCtx` is `Clone` (`Rc`-backed), and all clones are
 /// distributed from that single construction site.

@@ -1661,7 +1661,7 @@ pub(crate) mod tests {
             crouch_toggle_active: false,
             ai_runtime: postretro_ai::AiRuntime::new(),
             cursor_pos: None,
-            nav_stick_tracker: input::StickNavTracker::new(),
+            nav_stick_tracker: input::StickNavTrackers::new(),
             frame_timing: FrameTiming::new(initial_state),
             view_feel_state: view_feel::ViewFeelState::default(),
             view_feel_followed_pawn: None,

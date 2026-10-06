@@ -5,8 +5,10 @@ use gilrs::ff::{BaseEffect, BaseEffectType, Effect, EffectBuilder, Replay, Ticks
 use gilrs::{Axis, Button, Event, EventType, GamepadId, Gilrs};
 
 use super::InputSystem;
+use crate::input::commands::Command;
 use crate::input::types::PhysicalInput;
-use crate::input::ui_nav::{NavIntent, StickNavTracker, nav_intent_for_gamepad_button};
+use crate::input::ui_nav::{NavIntent, StickNavTrackers};
+use crate::input::ui_nav_map::{StickSide, UiNavContext, UiNavMap, stick_half_for};
 
 /// One frame's UI-relevant gamepad output: the nav intent down-edges harvested
 /// this frame, plus the two release channels the focus engine's dt-clocked
@@ -60,15 +62,6 @@ const TRIGGER_BUTTON_THRESHOLD: f32 = 0.5;
 /// Returns whether an analog trigger value counts as a button press.
 fn trigger_is_active(value: f32) -> bool {
     value >= TRIGGER_BUTTON_THRESHOLD
-}
-
-/// Whether NO directional input is held this frame: every D-pad direction button
-/// is up AND the (already dead-zoned) left stick sits at rest. This is the
-/// `directional_released` edge — the focus engine clears its hold-to-repeat clock
-/// on it, the gamepad twin of keyboard arrow-key-up. `stick_x`/`stick_y` must be
-/// post-dead-zone values so an at-rest stick reads exactly zero.
-fn no_directional_input_held(dpad_held: bool, stick_x: f32, stick_y: f32) -> bool {
-    !dpad_held && stick_x == 0.0 && stick_y == 0.0
 }
 
 /// Manages gamepad input via gilrs.
@@ -147,10 +140,16 @@ impl GamepadSystem {
     /// capturing tree owns input. `nav_stick` is the per-stick edge detector,
     /// owned by the caller so its latch persists across frames.
     /// See: context/lib/input.md §7
+    ///
+    /// Nav intents resolve through `ui_nav`, the UI slice of the effective
+    /// binding table, in `context`: a remapped direction navigates from its new
+    /// input and no longer from the old one.
     pub fn update(
         &mut self,
         input_system: &mut InputSystem,
-        nav_stick: &mut StickNavTracker,
+        nav_sticks: &mut StickNavTrackers,
+        ui_nav: &UiNavMap,
+        context: UiNavContext,
     ) -> GamepadNavOutput {
         let mut out = GamepadNavOutput::default();
 
@@ -177,7 +176,8 @@ impl GamepadSystem {
                 .map_or(0.0, |age| age.as_secs_f64());
             match event {
                 EventType::ButtonPressed(button, _) => {
-                    if let Some(intent) = nav_intent_for_gamepad_button(button) {
+                    let input = PhysicalInput::GamepadButton(button);
+                    if let Some(intent) = ui_nav.intent_for(input, context) {
                         out.nav_intents.push(intent);
                     }
                     if BUTTONS.contains(&button) {
@@ -185,7 +185,10 @@ impl GamepadSystem {
                     }
                 }
                 EventType::ButtonReleased(button, _) => {
-                    if button == Button::South {
+                    // Whichever button confirm is bound to now ends its repeat
+                    // (P9, P10).
+                    if ui_nav.is_bound_to(PhysicalInput::GamepadButton(button), Command::NavConfirm)
+                    {
                         out.confirm_released = true;
                     }
                     if BUTTONS.contains(&button) {
@@ -202,7 +205,7 @@ impl GamepadSystem {
                 // No active gamepad: still clear the stick latch so a stick that
                 // was held when the pad disconnected re-arms cleanly. With no pad
                 // nothing is held, so the directional repeat clock may release.
-                nav_stick.update(0.0, 0.0);
+                nav_sticks.clear();
                 out.directional_released = true;
                 return out;
             }
@@ -211,7 +214,7 @@ impl GamepadSystem {
         let gamepad = self.gilrs.gamepad(gamepad_id);
         if !gamepad.is_connected() {
             self.active_gamepad = None;
-            nav_stick.update(0.0, 0.0);
+            nav_sticks.clear();
             out.directional_released = true;
             return out;
         }
@@ -226,11 +229,18 @@ impl GamepadSystem {
         let (left_x, left_y) = apply_radial_dead_zone(left_x, left_y, DEAD_ZONE);
         let (right_x, right_y) = apply_radial_dead_zone(right_x, right_y, DEAD_ZONE);
 
-        // The left stick doubles as a D-pad for UI nav: a push past the dead
-        // zone fires one directional intent per crossing. Uses the same
-        // dead-zoned value gameplay movement reads.
-        if let Some(intent) = nav_stick.update(left_x, left_y) {
-            out.nav_intents.push(intent);
+        // A stick navigates through its half-axis inputs: a push past the dead
+        // zone fires one directional crossing, which resolves to whatever nav
+        // command that half is bound to (the left stick by default).
+        for (side, crossing) in [
+            (StickSide::Left, nav_sticks.left.update(left_x, left_y)),
+            (StickSide::Right, nav_sticks.right.update(right_x, right_y)),
+        ] {
+            if let Some(half) = crossing.and_then(|direction| stick_half_for(side, direction))
+                && let Some(intent) = ui_nav.intent_for(half, context)
+            {
+                out.nav_intents.push(intent);
+            }
         }
 
         // Feed stick axes into input system.
@@ -262,16 +272,23 @@ impl GamepadSystem {
             input_system.set_physical_input(PhysicalInput::GamepadButton(button), pressed);
         }
 
-        // Directional-release channel: true when NO directional input is held —
-        // all four D-pad direction buttons are up AND the (dead-zoned) left stick
-        // sits at rest. The focus engine consumes this to clear its hold-to-repeat
-        // clock, the gamepad twin of the keyboard arrow-key-up path. `left_x`/
-        // `left_y` are already dead-zoned, so an at-rest stick reads exactly zero.
-        let dpad_held = gamepad.is_pressed(Button::DPadUp)
-            || gamepad.is_pressed(Button::DPadDown)
-            || gamepad.is_pressed(Button::DPadLeft)
-            || gamepad.is_pressed(Button::DPadRight);
-        out.directional_released = no_directional_input_held(dpad_held, left_x, left_y);
+        // Directional-release channel: true when no input bound to a nav
+        // direction is held. The focus engine consumes this to clear its
+        // hold-to-repeat clock, the gamepad twin of a direction key's release.
+        // Stick values are already dead-zoned, so a stick at rest reads zero.
+        let stick_value = |axis: Axis| match axis {
+            Axis::LeftStickX => left_x,
+            Axis::LeftStickY => left_y,
+            Axis::RightStickX => right_x,
+            Axis::RightStickY => right_y,
+            _ => 0.0,
+        };
+        let direction_held = ui_nav.direction_inputs().any(|input| match input {
+            PhysicalInput::GamepadButton(button) => gamepad.is_pressed(button),
+            PhysicalInput::GamepadAxisHalf(axis, half) => half.magnitude(stick_value(axis)) > 0.0,
+            _ => false,
+        });
+        out.directional_released = !direction_held;
 
         out
     }
@@ -529,32 +546,6 @@ mod tests {
     }
 
     // --- Directional-release edge tests ---
-
-    #[test]
-    fn directional_release_reported_when_no_direction_held() {
-        // No D-pad button down and the dead-zoned stick at rest ⇒ the release edge
-        // fires, so the focus engine clears its hold-to-repeat clock (the gamepad
-        // twin of keyboard arrow-key-up).
-        assert!(no_directional_input_held(false, 0.0, 0.0));
-    }
-
-    #[test]
-    fn directional_release_suppressed_while_a_direction_is_held() {
-        // A held D-pad direction OR a deflected stick keeps the clock armed — the
-        // edge must NOT fire while any directional input is still held.
-        assert!(
-            !no_directional_input_held(true, 0.0, 0.0),
-            "a held D-pad direction holds the repeat clock"
-        );
-        assert!(
-            !no_directional_input_held(false, 0.8, 0.0),
-            "a deflected stick (post-dead-zone) holds the repeat clock"
-        );
-        assert!(
-            !no_directional_input_held(false, 0.0, -0.5),
-            "stick deflection on either axis holds the clock"
-        );
-    }
 
     // --- Trigger threshold tests ---
 

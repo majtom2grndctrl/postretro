@@ -87,30 +87,20 @@ impl App {
             let mut record_nav_signal = false;
             let mut set_menu_toggle = false;
 
-            // A directional key RELEASE stops the focus engine's
-            // hold-to-repeat (the press-edge queue carries no release, so
-            // the focus ring's repeat clock is cleared here). Cancel never
-            // repeats, so only directional keys matter for nav repeat.
-            if !pressed
-                && matches!(
-                    code,
-                    winit::keyboard::KeyCode::ArrowUp
-                        | winit::keyboard::KeyCode::ArrowDown
-                        | winit::keyboard::KeyCode::ArrowLeft
-                        | winit::keyboard::KeyCode::ArrowRight
-                )
-            {
+            // A RELEASE of a key bound to a nav direction stops the focus
+            // engine's hold-to-repeat (the press-edge queue carries no release,
+            // so the repeat clock is cleared here); a key no longer bound to a
+            // direction never does (P10). A release of a key bound to confirm
+            // stops the activation-repeat clock the same way.
+            let physical = input::PhysicalInput::Key(code);
+            if !pressed && session.bindings.ui_nav().binds_direction(physical) {
                 session.ui_focus.release_repeat();
             }
-            // A confirm key (Enter) RELEASE stops the activation-repeat clock
-            // (M13 Text-Entry, Task 2): a held `repeatOnHold` button stops
-            // re-firing once the confirm key is released, mirroring the
-            // directional release above.
             if !pressed
-                && matches!(
-                    code,
-                    winit::keyboard::KeyCode::Enter | winit::keyboard::KeyCode::NumpadEnter
-                )
+                && session
+                    .bindings
+                    .ui_nav()
+                    .is_bound_to(physical, input::Command::NavConfirm)
             {
                 session.ui_focus.release_confirm_repeat();
             }
@@ -154,8 +144,12 @@ impl App {
                     // set by `reconcile_ui_focus` from the modal stack's top
                     // capture mode, so it IS the "capturing tree present"
                     // predicate. See: context/lib/input.md §7
-                    let capturing = session.ui_dispatch.mode() == input::UiCaptureMode::Capture;
-                    let intent = input::nav_intent_for_key(code, capturing);
+                    let context = if session.ui_dispatch.mode() == input::UiCaptureMode::Capture {
+                        input::UiNavContext::Capture
+                    } else {
+                        input::UiNavContext::Open
+                    };
+                    let intent = session.bindings.ui_nav().intent_for(physical, context);
                     if intent.is_some() {
                         // A nav key (arrows/enter/escape/tab) is a `focus`-mode
                         // signal — it switches the interaction mode off pointer.

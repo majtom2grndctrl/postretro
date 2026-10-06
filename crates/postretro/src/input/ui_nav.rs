@@ -1,26 +1,15 @@
-// UI navigation-intent vocabulary and the action→intent mapping the input
-// stage feeds into the UI-dispatch queue.
-// See: context/lib/input.md §7 · context/research/ui-layer.md §16
+// UI navigation-intent vocabulary, text-entry key resolution, and the stick
+// edge detector feeding nav. Which input produces which intent is the UI slice
+// of the effective binding table (`ui_nav_map.rs`).
+// See: context/lib/input.md §7
 
-//! The nav-intent layer maps fixed physical inputs — keyboard arrows/enter/
-//! escape, gamepad D-pad and face/system buttons, and stick-past-deadzone edges
-//! — to a closed [`NavIntent`] vocabulary. This is deliberately *not* routed
-//! through the remappable [`Action`](crate::input::Action) binding table: UI nav
-//! reads fixed inputs; remapping stays the action-map layer's concern (M13 Goal
-//! F scope). The intents this module produces are wrapped in
-//! [`UiIntent::Nav`](crate::input::ui_dispatch::UiIntent) and ride the existing
-//! N→N+1 [`UiDispatch`](crate::input::ui_dispatch::UiDispatch) queue.
-//!
-//! ## Escape routing seam
-//!
-//! Escape is `nav.menu` from gameplay but `nav.cancel` inside a capturing UI
-//! tree. The "is a capturing tree on the stack?" predicate is the UI-dispatch
-//! seam's `Capture` mode, which `App::reconcile_ui_focus` sets from the modal
-//! stack's top capture mode (M13 Goal F). The App threads it through
-//! [`nav_intent_for_key`] as `capturing_tree_present`.
+//! Nav intents are wrapped in [`UiIntent::Nav`](crate::input::ui_dispatch::UiIntent)
+//! and ride the N→N+1 [`UiDispatch`](crate::input::ui_dispatch::UiDispatch) queue.
+//! Escape is `nav.menu` with no capturing tree and `nav.cancel` under one; the
+//! context comes from the UI-dispatch seam's `Capture` mode, which
+//! `App::reconcile_ui_focus` sets from the modal stack's top capture mode.
 
-use gilrs::Button as GilrsButton;
-use winit::keyboard::{Key, KeyCode, NamedKey};
+use winit::keyboard::{Key, NamedKey};
 
 /// Closed UI-navigation intent vocabulary. Each variant carries a stable wire
 /// name (`"nav.up"` … `"nav.options"`) consumed by JSON/TS/Luau UI authors
@@ -71,33 +60,6 @@ impl NavIntent {
     }
 }
 
-/// Map a keyboard key press to a nav intent, or `None` for keys the UI nav
-/// vocabulary ignores. Only key-*down* edges should call this; held repeats are
-/// the focus engine's hold-to-repeat concern (Task 3), not a fresh intent.
-///
-/// Escape routing depends on `capturing_tree_present`: from gameplay (no
-/// capturing tree) Escape opens the menu (`nav.menu`); inside a capturing tree
-/// it backs out (`nav.cancel`). The App sources the flag from the UI-dispatch
-/// seam's `Capture` mode (set from the modal stack's top capture mode).
-pub fn nav_intent_for_key(key: KeyCode, capturing_tree_present: bool) -> Option<NavIntent> {
-    Some(match key {
-        KeyCode::ArrowUp => NavIntent::Up,
-        KeyCode::ArrowDown => NavIntent::Down,
-        KeyCode::ArrowLeft => NavIntent::Left,
-        KeyCode::ArrowRight => NavIntent::Right,
-        KeyCode::Tab => NavIntent::Next,
-        KeyCode::Enter | KeyCode::NumpadEnter => NavIntent::Confirm,
-        KeyCode::Escape => {
-            if capturing_tree_present {
-                NavIntent::Cancel
-            } else {
-                NavIntent::Menu
-            }
-        }
-        _ => return None,
-    })
-}
-
 /// What a key-down event means while a text-entry tree is open (M13 Text-Entry,
 /// Task 3). The input stage resolves the LOGICAL key first so the control keys
 /// (Backspace / Enter / Escape) are matched by identity — never by their
@@ -146,27 +108,6 @@ pub fn text_entry_key(logical_key: &Key, text: Option<&str>) -> Option<TextEntry
     Some(TextEntryKey::Append(text.to_string()))
 }
 
-/// Map a gamepad button to a nav intent, or `None` for buttons outside the UI
-/// nav vocabulary. Only button-*down* edges should call this.
-///
-/// Bindings (M13 Goal F): South = confirm, East = cancel, D-pad = directions,
-/// shoulders = next/prev, Start = `nav.menu`, Select = `nav.options`.
-pub fn nav_intent_for_gamepad_button(button: GilrsButton) -> Option<NavIntent> {
-    Some(match button {
-        GilrsButton::DPadUp => NavIntent::Up,
-        GilrsButton::DPadDown => NavIntent::Down,
-        GilrsButton::DPadLeft => NavIntent::Left,
-        GilrsButton::DPadRight => NavIntent::Right,
-        GilrsButton::RightTrigger => NavIntent::Next,
-        GilrsButton::LeftTrigger => NavIntent::Prev,
-        GilrsButton::South => NavIntent::Confirm,
-        GilrsButton::East => NavIntent::Cancel,
-        GilrsButton::Start => NavIntent::Menu,
-        GilrsButton::Select => NavIntent::Options,
-        _ => return None,
-    })
-}
-
 /// Edge detector that turns a continuous nav stick into discrete D-pad-style nav
 /// intents: pressing a stick past the dead zone in one of the four cardinal
 /// directions emits exactly one intent per crossing, and the stick must return
@@ -188,7 +129,27 @@ pub struct StickNavTracker {
     latched: Option<NavIntent>,
 }
 
+/// One stick-nav edge detector per stick, owned by the App so latches persist.
+#[derive(Debug, Default)]
+pub struct StickNavTrackers {
+    pub left: StickNavTracker,
+    pub right: StickNavTracker,
+}
+
+impl StickNavTrackers {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Re-arm both sticks (no pad, or the pad disconnected).
+    pub fn clear(&mut self) {
+        self.left.update(0.0, 0.0);
+        self.right.update(0.0, 0.0);
+    }
+}
+
 impl StickNavTracker {
+    #[cfg(test)]
     pub fn new() -> Self {
         Self::default()
     }
@@ -272,60 +233,6 @@ mod tests {
 
     // --- Keyboard mapping ---
 
-    #[test]
-    fn arrow_keys_map_to_directional_nav() {
-        assert_eq!(
-            nav_intent_for_key(KeyCode::ArrowUp, false),
-            Some(NavIntent::Up)
-        );
-        assert_eq!(
-            nav_intent_for_key(KeyCode::ArrowDown, false),
-            Some(NavIntent::Down)
-        );
-        assert_eq!(
-            nav_intent_for_key(KeyCode::ArrowLeft, false),
-            Some(NavIntent::Left)
-        );
-        assert_eq!(
-            nav_intent_for_key(KeyCode::ArrowRight, false),
-            Some(NavIntent::Right)
-        );
-    }
-
-    #[test]
-    fn enter_maps_to_confirm() {
-        assert_eq!(
-            nav_intent_for_key(KeyCode::Enter, false),
-            Some(NavIntent::Confirm)
-        );
-        assert_eq!(
-            nav_intent_for_key(KeyCode::NumpadEnter, false),
-            Some(NavIntent::Confirm)
-        );
-    }
-
-    #[test]
-    fn escape_from_gameplay_is_menu_and_inside_ui_is_cancel() {
-        // The capturing-tree flag is the only difference: no capturing tree
-        // (gameplay) opens the menu; a capturing tree backs out.
-        assert_eq!(
-            nav_intent_for_key(KeyCode::Escape, false),
-            Some(NavIntent::Menu),
-            "Escape from gameplay opens the menu",
-        );
-        assert_eq!(
-            nav_intent_for_key(KeyCode::Escape, true),
-            Some(NavIntent::Cancel),
-            "Escape inside a capturing tree cancels",
-        );
-    }
-
-    #[test]
-    fn non_nav_keys_map_to_none() {
-        assert_eq!(nav_intent_for_key(KeyCode::KeyW, false), None);
-        assert_eq!(nav_intent_for_key(KeyCode::Space, false), None);
-    }
-
     // --- Text-entry key resolution (M13 Text-Entry, Task 3) ---
 
     #[test]
@@ -393,52 +300,6 @@ mod tests {
     }
 
     // --- Gamepad mapping ---
-
-    #[test]
-    fn dpad_maps_to_directional_nav() {
-        assert_eq!(
-            nav_intent_for_gamepad_button(GilrsButton::DPadUp),
-            Some(NavIntent::Up)
-        );
-        assert_eq!(
-            nav_intent_for_gamepad_button(GilrsButton::DPadDown),
-            Some(NavIntent::Down)
-        );
-        assert_eq!(
-            nav_intent_for_gamepad_button(GilrsButton::DPadLeft),
-            Some(NavIntent::Left)
-        );
-        assert_eq!(
-            nav_intent_for_gamepad_button(GilrsButton::DPadRight),
-            Some(NavIntent::Right)
-        );
-    }
-
-    #[test]
-    fn face_and_system_buttons_map_per_bindings() {
-        assert_eq!(
-            nav_intent_for_gamepad_button(GilrsButton::South),
-            Some(NavIntent::Confirm)
-        );
-        assert_eq!(
-            nav_intent_for_gamepad_button(GilrsButton::East),
-            Some(NavIntent::Cancel)
-        );
-        // nav.menu = Start; nav.options = Select/Back.
-        assert_eq!(
-            nav_intent_for_gamepad_button(GilrsButton::Start),
-            Some(NavIntent::Menu)
-        );
-        assert_eq!(
-            nav_intent_for_gamepad_button(GilrsButton::Select),
-            Some(NavIntent::Options)
-        );
-    }
-
-    #[test]
-    fn unmapped_gamepad_button_is_none() {
-        assert_eq!(nav_intent_for_gamepad_button(GilrsButton::North), None);
-    }
 
     // --- Stick edge detection ---
 

@@ -32,11 +32,11 @@ mod types;
 mod ui_dispatch;
 mod ui_focus;
 mod ui_nav;
+mod ui_nav_map;
+pub use ui_nav_map::UiNavContext;
 mod wieldable_selection;
 
 pub use binding_state::{BindingSources, BindingState};
-// Consumed outside `input/` by tests now and by the controls panel (task 10).
-#[cfg_attr(not(test), allow(unused_imports))]
 pub use commands::Command;
 pub use defaults::default_bindings;
 pub use diagnostics::{DiagnosticAction, DiagnosticInputs, default_diagnostic_chords};
@@ -50,12 +50,12 @@ pub use relevance::RelevanceFacts;
 pub(crate) use scroll::wheel_diagnostics_enabled;
 pub use snapshot::ActionSnapshot;
 pub use system::{DEFAULT_MOUSE_SENSITIVITY, InputSystem};
-pub use types::{Action, ButtonState};
+pub use types::{Action, ButtonState, PhysicalInput};
 #[allow(unused_imports)]
 pub use types::{Activator, ActivatorKind, DEFAULT_ACTIVATOR_THRESHOLD};
 // Outside `input/`, only tests name the binding vocabulary today.
 #[cfg(test)]
-pub use types::{AxisSource, Binding, PhysicalInput};
+pub use types::{AxisSource, Binding};
 pub use wieldable_selection::WieldableSelectionPolicy;
 // `UiCaptureMode` is the capture/passthrough mode flag, driven by the active
 // gameplay UI descriptor via `UiDispatch::set_mode`. The boot splash leaves the
@@ -69,10 +69,7 @@ pub use ui_dispatch::{PointerPos, UiDispatchOutcome, UiIntent, UiIntentPayload};
 // Nav-intent vocabulary plus the action→intent mapping the input stage feeds
 // into `UiDispatch`. `StickNavTracker` does stick-past-deadzone edge detection.
 #[allow(unused_imports)]
-pub use ui_nav::{
-    NavIntent, StickNavTracker, TextEntryKey, nav_intent_for_gamepad_button, nav_intent_for_key,
-    text_entry_key,
-};
+pub use ui_nav::{NavIntent, StickNavTrackers, TextEntryKey, text_entry_key};
 // Text-entry intent resolution (M13 Text-Entry, Task 3): drained intents →
 // edit/commit/cancel decisions against the open text-entry surface.
 #[allow(unused_imports)]

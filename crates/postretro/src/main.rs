@@ -750,7 +750,7 @@ pub(crate) struct App {
     /// D-pad-style nav intents: one intent per push past the dead zone. Polled
     /// in the input stage before the `take_ready`/`advance_frame` pair so
     /// gamepad nav shares the keyboard's N→N+1 contract. See: context/lib/input.md §7
-    nav_stick_tracker: input::StickNavTracker,
+    nav_stick_tracker: input::StickNavTrackers,
 
     frame_timing: FrameTiming,
 
@@ -2219,10 +2219,20 @@ impl ApplicationHandler for App {
                     } = self;
                     let mut nav_seen = false;
                     let mut menu_toggle = false;
+                    let context = session
+                        .as_ref()
+                        .map_or(input::UiNavContext::Open, |session| {
+                            session.ui_nav_context()
+                        });
                     if let Some(session) = session.as_mut()
                         && let Some(gp) = session.gamepad_system.as_mut()
                     {
-                        let gp_nav = gp.update(&mut session.input_system, nav_stick_tracker);
+                        let gp_nav = gp.update(
+                            &mut session.input_system,
+                            nav_stick_tracker,
+                            session.bindings.ui_nav(),
+                            context,
+                        );
                         // Advance any active rumble's timeout in the input stage
                         // and stop it once its duration elapses (started by a
                         // drained `Rumble` command on a prior frame).
@@ -5639,8 +5649,14 @@ impl App {
             } = self;
             let session = session.as_mut().expect("frontend session installed");
             let mut nav_input_seen = false;
+            let context = session.ui_nav_context();
             if let Some(gp) = session.gamepad_system.as_mut() {
-                let gp_nav = gp.update(&mut session.input_system, nav_stick_tracker);
+                let gp_nav = gp.update(
+                    &mut session.input_system,
+                    nav_stick_tracker,
+                    session.bindings.ui_nav(),
+                    context,
+                );
                 gp.tick_rumble(frame_dt);
                 if gp_nav.confirm_released {
                     session.ui_focus.release_confirm_repeat();

@@ -5,16 +5,14 @@
 //! colliders, and a pose source for the mover transform at the query tick.
 
 use glam::{Quat, Vec3};
-use parry3d::math::{Isometry, Point, Vector};
-use parry3d::na::{Quaternion, Translation3, UnitQuaternion};
-use parry3d::query::{
-    Ray, RayCast, RayIntersection, ShapeCastHit, ShapeCastOptions, cast_shapes, contact,
-};
+use parry3d::math::Pose;
+use parry3d::query::{Ray, RayCast, RayIntersection, ShapeCastHit, ShapeCastOptions, contact};
 use parry3d::shape::{Capsule as ParryCapsule, TriMesh};
 
+use super::skin_cast::cast_shapes_skin;
 use super::{
-    COS_WALKABLE, CollisionCapsule, CollisionWorld, SKIN_DISTANCE, cast_capsule_parry,
-    cast_ray_parry,
+    COS_WALKABLE, CollisionCapsule, CollisionMeshError, CollisionWorld, SKIN_DISTANCE,
+    cast_capsule_parry, cast_ray_parry, inclusive_query_limit, within_limit,
 };
 use postretro_entities::Transform;
 
@@ -131,22 +129,26 @@ pub struct MoverCollider {
 }
 
 impl MoverCollider {
+    /// Build a mover collider from mover-local triangles. The PRL
+    /// KinematicGeometry decoder already rejects empty geometry and
+    /// out-of-range indices; this reports what parry itself refuses.
     pub fn from_local_triangles(
         mover_id: u32,
         vertices: &[Vec3],
         triangles: &[[u32; 3]],
-    ) -> Option<Self> {
+    ) -> Result<Self, CollisionMeshError> {
         if vertices.is_empty() || triangles.is_empty() {
-            return None;
+            return Err(CollisionMeshError::Empty);
         }
-        let points = vertices.iter().map(|v| Point::new(v.x, v.y, v.z)).collect();
         let local_radius = vertices
             .iter()
             .map(|vertex| vertex.length())
             .fold(0.0_f32, f32::max);
-        Some(Self {
+        let local_mesh = TriMesh::new(vertices.to_vec(), triangles.to_vec())
+            .map_err(CollisionMeshError::from_parry)?;
+        Ok(Self {
             mover_id,
-            local_mesh: TriMesh::new(points, triangles.to_vec()),
+            local_mesh,
             local_radius,
         })
     }
@@ -174,24 +176,16 @@ pub fn cast_capsule_combined(
     max_toi: f32,
 ) -> Option<CombinedCastHit> {
     let capsule = capsule.parry();
-    cast_capsule_combined_parry(
-        static_world,
-        movers,
-        poses,
-        Point::new(pos.x, pos.y, pos.z),
-        &capsule,
-        Vector::new(dir.x, dir.y, dir.z),
-        max_toi,
-    )
+    cast_capsule_combined_parry(static_world, movers, poses, pos, &capsule, dir, max_toi)
 }
 
 pub(crate) fn cast_capsule_combined_parry(
     static_world: &CollisionWorld,
     movers: &[MoverCollider],
     poses: &(impl MoverPoseSource + ?Sized),
-    pos: Point<f32>,
+    pos: Vec3,
     capsule: &ParryCapsule,
-    dir: Vector<f32>,
+    dir: Vec3,
     max_toi: f32,
 ) -> Option<CombinedCastHit> {
     let mut nearest =
@@ -201,25 +195,24 @@ pub(crate) fn cast_capsule_combined_parry(
         let Some(pose) = poses.pose(mover.mover_id) else {
             continue;
         };
-        let mover_iso = transform_isometry(pose.transform);
+        let mover_pose = transform_pose(pose.transform);
         let options = ShapeCastOptions {
-            max_time_of_impact: max_toi,
+            max_time_of_impact: inclusive_query_limit(max_toi),
             target_distance: SKIN_DISTANCE,
             stop_at_penetration: false,
             ..Default::default()
         };
-        let hit = cast_shapes(
-            &Isometry::translation(pos.x, pos.y, pos.z),
-            &dir,
+        let hit = cast_shapes_skin(
+            &Pose::from_translation(pos),
+            dir,
             capsule,
-            &mover_iso,
-            &Vector::zeros(),
+            &mover_pose,
+            Vec3::ZERO,
             &mover.local_mesh,
             options,
         )
-        .ok()
-        .flatten()
-        .map(|hit| mover_shape_hit(hit, mover.mover_id, pose));
+        .filter(|hit| within_limit(hit.time_of_impact, max_toi))
+        .map(|hit| mover_shape_hit(hit, &mover_pose, mover.mover_id, pose));
         choose_nearest(&mut nearest, hit);
     }
 
@@ -234,22 +227,15 @@ pub fn cast_ray_combined(
     dir: Vec3,
     max_toi: f32,
 ) -> Option<CombinedCastHit> {
-    cast_ray_combined_parry(
-        static_world,
-        movers,
-        poses,
-        Point::new(origin.x, origin.y, origin.z),
-        Vector::new(dir.x, dir.y, dir.z),
-        max_toi,
-    )
+    cast_ray_combined_parry(static_world, movers, poses, origin, dir, max_toi)
 }
 
 pub(crate) fn cast_ray_combined_parry(
     static_world: &CollisionWorld,
     movers: &[MoverCollider],
     poses: &(impl MoverPoseSource + ?Sized),
-    origin: Point<f32>,
-    dir: Vector<f32>,
+    origin: Vec3,
+    dir: Vec3,
     max_toi: f32,
 ) -> Option<CombinedCastHit> {
     let mut nearest = cast_ray_parry(static_world, origin, dir, max_toi).map(static_ray_hit);
@@ -259,10 +245,11 @@ pub(crate) fn cast_ray_combined_parry(
         let Some(pose) = poses.pose(mover.mover_id) else {
             continue;
         };
-        let mover_iso = transform_isometry(pose.transform);
+        let mover_pose = transform_pose(pose.transform);
         let hit = mover
             .local_mesh
-            .cast_ray_and_get_normal(&mover_iso, &ray, max_toi, true)
+            .cast_ray_and_get_normal(&mover_pose, &ray, inclusive_query_limit(max_toi), true)
+            .filter(|hit| within_limit(hit.time_of_impact, max_toi))
             .map(|hit| mover_ray_hit(hit, mover.mover_id, pose));
         choose_nearest(&mut nearest, hit);
     }
@@ -273,21 +260,21 @@ pub(crate) fn cast_ray_combined_parry(
 pub(crate) fn deepest_mover_penetration(
     movers: &[MoverCollider],
     poses: &(impl MoverPoseSource + ?Sized),
-    pos: Point<f32>,
+    pos: Vec3,
     capsule: &ParryCapsule,
 ) -> Option<MoverPenetration> {
-    let capsule_iso = Isometry::translation(pos.x, pos.y, pos.z);
+    let capsule_pose = Pose::from_translation(pos);
     let mut deepest: Option<MoverPenetration> = None;
 
     for mover in movers {
         let Some(pose) = poses.pose(mover.mover_id) else {
             continue;
         };
-        let mover_iso = transform_isometry(pose.transform);
+        let mover_pose = transform_pose(pose.transform);
         let Ok(Some(contact)) = contact(
-            &capsule_iso,
+            &capsule_pose,
             capsule,
-            &mover_iso,
+            &mover_pose,
             &mover.local_mesh,
             SKIN_DISTANCE,
         ) else {
@@ -296,7 +283,7 @@ pub(crate) fn deepest_mover_penetration(
         if contact.dist > 0.0 {
             continue;
         }
-        let normal = Vec3::new(-contact.normal1.x, -contact.normal1.y, -contact.normal1.z);
+        let normal = -contact.normal1;
         let depth = -contact.dist + SKIN_DISTANCE;
         if deepest.as_ref().is_none_or(|current| depth > current.depth) {
             deepest = Some(MoverPenetration {
@@ -313,7 +300,7 @@ pub(crate) fn deepest_mover_penetration(
 pub(crate) fn deepest_mover_push_penetration(
     movers: &[MoverCollider],
     poses: &(impl MoverPoseSource + ?Sized),
-    pos: Point<f32>,
+    pos: Vec3,
     capsule: &ParryCapsule,
 ) -> Option<MoverPenetration> {
     deepest_mover_push_penetration_inner(movers, poses, pos, capsule, None)
@@ -322,7 +309,7 @@ pub(crate) fn deepest_mover_push_penetration(
 pub(crate) fn deepest_mover_push_penetration_excluding_swept(
     movers: &[MoverCollider],
     poses: &(impl MoverPoseSource + ?Sized),
-    pos: Point<f32>,
+    pos: Vec3,
     capsule: &ParryCapsule,
     excluded_mover_id: u32,
 ) -> Option<MoverPenetration> {
@@ -332,11 +319,11 @@ pub(crate) fn deepest_mover_push_penetration_excluding_swept(
 fn deepest_mover_push_penetration_inner(
     movers: &[MoverCollider],
     poses: &(impl MoverPoseSource + ?Sized),
-    pos: Point<f32>,
+    pos: Vec3,
     capsule: &ParryCapsule,
     excluded_swept_mover_id: Option<u32>,
 ) -> Option<MoverPenetration> {
-    let capsule_iso = Isometry::translation(pos.x, pos.y, pos.z);
+    let capsule_pose = Pose::from_translation(pos);
     let mut deepest = deepest_mover_penetration(movers, poses, pos, capsule);
 
     for mover in movers {
@@ -358,7 +345,7 @@ fn deepest_mover_push_penetration_inner(
         if !mover_swept_sphere_may_reach_capsule(mover, pose, pos, capsule) {
             continue;
         }
-        sweep_mover_against_capsule(mover, pose, capsule, &capsule_iso, &mut deepest);
+        sweep_mover_against_capsule(mover, pose, capsule, &capsule_pose, &mut deepest);
     }
 
     deepest
@@ -371,20 +358,18 @@ fn deepest_mover_push_penetration_inner(
 fn mover_swept_sphere_may_reach_capsule(
     mover: &MoverCollider,
     pose: MoverPose,
-    capsule_position: Point<f32>,
+    capsule_position: Vec3,
     capsule: &ParryCapsule,
 ) -> bool {
     let scale = pose.transform.scale.abs().max_element();
     let mover_radius = mover.local_radius * scale;
     let capsule_center_local = capsule.center();
-    let capsule_center = Vec3::new(
-        capsule_position.x + capsule_center_local.x,
-        capsule_position.y + capsule_center_local.y,
-        capsule_position.z + capsule_center_local.z,
-    );
-    let capsule_radius = (capsule.segment.a - capsule_center_local)
-        .norm()
-        .max((capsule.segment.b - capsule_center_local).norm())
+    let capsule_center = capsule_position + capsule_center_local;
+    let capsule_radius = capsule
+        .segment
+        .a
+        .distance(capsule_center_local)
+        .max(capsule.segment.b.distance(capsule_center_local))
         + capsule.radius;
     let end = pose.transform.position;
     let start = end - pose.tick_delta;
@@ -413,13 +398,13 @@ fn sweep_mover_against_capsule(
     mover: &MoverCollider,
     pose: MoverPose,
     capsule: &ParryCapsule,
-    capsule_iso: &Isometry<f32>,
+    capsule_pose: &Pose,
     deepest: &mut Option<MoverPenetration>,
 ) {
     let steps = rotation_sweep_steps(mover, pose, capsule.radius);
-    let final_iso = transform_isometry(pose.transform);
+    let final_pose = transform_pose(pose.transform);
     let options = ShapeCastOptions {
-        max_time_of_impact: 1.0,
+        max_time_of_impact: inclusive_query_limit(1.0),
         target_distance: SKIN_DISTANCE,
         stop_at_penetration: false,
         ..Default::default()
@@ -430,26 +415,28 @@ fn sweep_mover_against_capsule(
         let end_t = (step + 1) as f32 / steps as f32;
         let start_transform = mover_sweep_transform(pose, start_t);
         let end_transform = mover_sweep_transform(pose, end_t);
-        let start_iso = transform_isometry(start_transform);
+        let start_pose = transform_pose(start_transform);
         let segment_delta = end_transform.position - start_transform.position;
 
-        if let Ok(Some(hit)) = cast_shapes(
-            &start_iso,
-            &Vector::new(segment_delta.x, segment_delta.y, segment_delta.z),
+        if let Some(hit) = cast_shapes_skin(
+            &start_pose,
+            segment_delta,
             &mover.local_mesh,
-            capsule_iso,
-            &Vector::zeros(),
+            capsule_pose,
+            Vec3::ZERO,
             capsule,
             options,
         ) && hit.time_of_impact.is_finite()
             && (0.0..=1.0).contains(&hit.time_of_impact)
         {
             let hit_t = start_t + (end_t - start_t) * hit.time_of_impact;
-            let hit_transform = mover_sweep_transform(pose, hit_t);
+            let hit_pose = transform_pose(mover_sweep_transform(pose, hit_t));
+            // Shape-cast witnesses are local to their shape; carry the mover's
+            // contact point into the world at the hit pose.
             let remaining_motion =
-                surface_motion_to_final(transform_isometry(hit_transform), final_iso, hit.witness1);
+                surface_motion_to_final(hit_pose, final_pose, hit_pose * hit.witness1);
             let normal =
-                swept_push_normal(*hit.transform1_by(&start_iso).normal1, remaining_motion);
+                swept_push_normal(hit.transform1_by(&start_pose).normal1, remaining_motion);
             let remaining = (1.0 - hit_t).max(0.0);
             let translation_fallback = pose.tick_delta.length() * remaining;
             record_swept_push(
@@ -467,9 +454,9 @@ fn sweep_mover_against_capsule(
         // the final pose so a rotating face that crosses and ends clear still
         // produces the displace-only push.
         let Ok(Some(sample_contact)) = contact(
-            capsule_iso,
+            capsule_pose,
             capsule,
-            &start_iso,
+            &start_pose,
             &mover.local_mesh,
             SKIN_DISTANCE,
         ) else {
@@ -478,8 +465,9 @@ fn sweep_mover_against_capsule(
         if sample_contact.dist > 0.0 {
             continue;
         }
-        let remaining_motion = surface_motion_to_final(start_iso, final_iso, sample_contact.point2);
-        let normal = swept_push_normal(-*sample_contact.normal1, remaining_motion);
+        let remaining_motion =
+            surface_motion_to_final(start_pose, final_pose, sample_contact.point2);
+        let normal = swept_push_normal(-sample_contact.normal1, remaining_motion);
         record_swept_push(
             deepest,
             mover.mover_id,
@@ -588,18 +576,9 @@ fn normalized_rotation(rotation: Quat) -> Quat {
     }
 }
 
-fn surface_motion_to_final(
-    sample_iso: Isometry<f32>,
-    final_iso: Isometry<f32>,
-    world_point: Point<f32>,
-) -> Vec3 {
-    let local_point = sample_iso.inverse_transform_point(&world_point);
-    let final_point = final_iso.transform_point(&local_point);
-    Vec3::new(
-        final_point.x - world_point.x,
-        final_point.y - world_point.y,
-        final_point.z - world_point.z,
-    )
+fn surface_motion_to_final(sample_pose: Pose, final_pose: Pose, world_point: Vec3) -> Vec3 {
+    let local_point = sample_pose.inverse_transform_point(world_point);
+    final_pose.transform_point(local_point) - world_point
 }
 
 fn record_swept_push(
@@ -665,16 +644,22 @@ fn hit_tie_prefers(candidate: &CombinedCastHit, current: &CombinedCastHit) -> bo
 fn static_shape_hit(hit: ShapeCastHit) -> CombinedCastHit {
     hit_from_parts(
         hit.time_of_impact,
-        *hit.normal2,
+        hit.normal2,
         CollisionSource::Static,
         None,
     )
 }
 
-fn mover_shape_hit(hit: ShapeCastHit, mover_id: u32, pose: MoverPose) -> CombinedCastHit {
+/// `hit.normal2` is local to the mover; `mover_pose` rotates it into the world.
+fn mover_shape_hit(
+    hit: ShapeCastHit,
+    mover_pose: &Pose,
+    mover_id: u32,
+    pose: MoverPose,
+) -> CombinedCastHit {
     hit_from_parts(
         hit.time_of_impact,
-        *hit.normal2,
+        mover_pose.rotation * hit.normal2,
         CollisionSource::Mover(mover_id),
         Some(pose),
     )
@@ -700,11 +685,10 @@ fn mover_ray_hit(hit: RayIntersection, mover_id: u32, pose: MoverPose) -> Combin
 
 fn hit_from_parts(
     time_of_impact: f32,
-    normal: Vector<f32>,
+    normal: Vec3,
     source: CollisionSource,
     pose: Option<MoverPose>,
 ) -> CombinedCastHit {
-    let normal = Vec3::new(normal.x, normal.y, normal.z);
     let mover_id = match source {
         CollisionSource::Static => None,
         CollisionSource::Mover(id) => Some(id),
@@ -731,28 +715,16 @@ fn classify_contact(normal: Vec3) -> ContactClassification {
     }
 }
 
-fn transform_isometry(transform: Transform) -> Isometry<f32> {
+fn transform_pose(transform: Transform) -> Pose {
     debug_assert!(
         (transform.scale - Vec3::ONE).length_squared() < 1.0e-6,
         "kinematic mover collision ignores non-unit Transform.scale"
     );
-    let q = if transform.rotation.is_finite() && transform.rotation.length_squared() > 1.0e-12 {
-        transform.rotation.normalize()
-    } else {
-        glam::Quat::IDENTITY
-    };
-    Isometry::from_parts(
-        Translation3::new(
-            transform.position.x,
-            transform.position.y,
-            transform.position.z,
-        ),
-        UnitQuaternion::from_quaternion(Quaternion::new(q.w, q.x, q.y, q.z)),
-    )
+    Pose::from_parts(transform.position, normalized_rotation(transform.rotation))
 }
 
-fn swept_push_normal(normal: Vector<f32>, delta: Vec3) -> Vec3 {
-    let mut normal = Vec3::new(normal.x, normal.y, normal.z);
+fn swept_push_normal(normal: Vec3, delta: Vec3) -> Vec3 {
+    let mut normal = normal;
     if !normal.is_finite() || normal.length_squared() <= 1.0e-8 {
         normal = delta.normalize_or_zero();
     }
@@ -845,16 +817,13 @@ mod tests {
 
     fn floor_world(y: f32) -> CollisionWorld {
         let points = vec![
-            Point::new(-5.0, y, -5.0),
-            Point::new(5.0, y, -5.0),
-            Point::new(5.0, y, 5.0),
-            Point::new(-5.0, y, 5.0),
+            Vec3::new(-5.0, y, -5.0),
+            Vec3::new(5.0, y, -5.0),
+            Vec3::new(5.0, y, 5.0),
+            Vec3::new(-5.0, y, 5.0),
         ];
         let triangles = vec![[0u32, 1, 2], [0, 2, 3]];
-        CollisionWorld {
-            mesh: TriMesh::new(points, triangles),
-            isometry: Isometry::identity(),
-        }
+        CollisionWorld::from_triangles_for_test(points, triangles)
     }
 
     fn local_floor_collider(mover_id: u32) -> MoverCollider {
@@ -885,27 +854,36 @@ mod tests {
         .unwrap()
     }
 
+    #[test]
+    fn mover_collider_reports_an_empty_mesh_as_an_error() {
+        assert_eq!(
+            MoverCollider::from_local_triangles(7, &[], &[]).unwrap_err(),
+            CollisionMeshError::Empty
+        );
+        assert_eq!(
+            MoverCollider::from_local_triangles(7, &[Vec3::ZERO, Vec3::X, Vec3::Y], &[])
+                .unwrap_err(),
+            CollisionMeshError::Empty
+        );
+    }
+
     fn test_capsule() -> ParryCapsule {
-        ParryCapsule::new(Point::new(0.0, -0.5, 0.0), Point::new(0.0, 0.5, 0.0), 0.25)
+        ParryCapsule::new_y(0.5, 0.25)
     }
 
     #[test]
     fn combined_ray_without_movers_matches_static_ray() {
         let world = floor_world(0.0);
         let poses = TestPoseSource::default();
-        let origin = Point::new(0.0, 2.0, 0.0);
-        let dir = Vector::new(0.0, -1.0, 0.0);
+        let origin = Vec3::new(0.0, 2.0, 0.0);
+        let dir = Vec3::NEG_Y;
 
         let direct = cast_ray_parry(&world, origin, dir, 10.0).unwrap();
         let combined = cast_ray_combined_parry(&world, &[], &poses, origin, dir, 10.0).unwrap();
 
         assert_eq!(combined.source, CollisionSource::Static);
         assert!((combined.time_of_impact - direct.time_of_impact).abs() < EPS);
-        assert!(
-            (combined.normal - Vec3::new(direct.normal.x, direct.normal.y, direct.normal.z))
-                .length()
-                < EPS
-        );
+        assert!((combined.normal - direct.normal).length() < EPS);
     }
 
     #[test]
@@ -934,15 +912,15 @@ mod tests {
         let movers = [local_wall_collider(42)];
         let mut poses = TestPoseSource::default();
         poses.insert(42, Vec3::new(1.0, 0.0, 0.0), Vec3::ZERO, Vec3::ZERO);
-        let eye = Vec3::new(0.0, 1.0, 0.0);
+        let eye = Vec3::Y;
         let aim = Vec3::new(2.0, 1.0, 0.0);
 
         let combined = cast_ray_combined_parry(
             &world,
             &movers,
             &poses,
-            Point::new(eye.x, eye.y, eye.z),
-            Vector::new(1.0, 0.0, 0.0),
+            eye,
+            Vec3::new(1.0, 0.0, 0.0),
             eye.distance(aim),
         )
         .expect("the mover blocks the combined ray");
@@ -958,8 +936,8 @@ mod tests {
         let world = floor_world(0.0);
         let poses = TestPoseSource::default();
         let capsule = test_capsule();
-        let origin = Point::new(0.0, 2.0, 0.0);
-        let dir = Vector::new(0.0, -1.0, 0.0);
+        let origin = Vec3::new(0.0, 2.0, 0.0);
+        let dir = Vec3::NEG_Y;
 
         let direct = cast_capsule_parry(&world, origin, &capsule, dir, 10.0).unwrap();
         let combined =
@@ -967,11 +945,7 @@ mod tests {
 
         assert_eq!(combined.source, CollisionSource::Static);
         assert!((combined.time_of_impact - direct.time_of_impact).abs() < EPS);
-        assert!(
-            (combined.normal - Vec3::new(direct.normal2.x, direct.normal2.y, direct.normal2.z))
-                .length()
-                < EPS
-        );
+        assert!((combined.normal - direct.normal2).length() < EPS);
     }
 
     #[test]
@@ -990,8 +964,8 @@ mod tests {
             &world,
             &movers,
             &poses,
-            Point::new(0.0, 5.0, 0.0),
-            Vector::new(0.0, -1.0, 0.0),
+            Vec3::new(0.0, 5.0, 0.0),
+            Vec3::NEG_Y,
             10.0,
         )
         .unwrap();
@@ -1017,9 +991,9 @@ mod tests {
             &world,
             &movers,
             &poses,
-            Point::new(0.0, 5.0, 0.0),
+            Vec3::new(0.0, 5.0, 0.0),
             &capsule,
-            Vector::new(0.0, -1.0, 0.0),
+            Vec3::NEG_Y,
             10.0,
         )
         .unwrap();
@@ -1039,8 +1013,8 @@ mod tests {
             &world,
             &movers,
             &poses,
-            Point::new(0.0, 5.0, 0.0),
-            Vector::new(0.0, -1.0, 0.0),
+            Vec3::new(0.0, 5.0, 0.0),
+            Vec3::NEG_Y,
             10.0,
         )
         .unwrap();
@@ -1063,9 +1037,8 @@ mod tests {
         );
         let capsule = test_capsule();
 
-        let penetration =
-            deepest_mover_push_penetration(&movers, &poses, Point::new(0.0, 1.0, 0.0), &capsule)
-                .expect("swept mover should detect crossing");
+        let penetration = deepest_mover_push_penetration(&movers, &poses, Vec3::Y, &capsule)
+            .expect("swept mover should detect crossing");
 
         assert_eq!(penetration.mover_id, 42);
         assert!(
@@ -1082,29 +1055,29 @@ mod tests {
 
     #[test]
     fn swept_contact_motion_tracks_mover_witness_through_rotation() {
-        let sample_iso = Isometry::identity();
-        let rotating_final_iso = transform_isometry(Transform {
+        let sample_pose = Pose::IDENTITY;
+        let rotating_final_pose = transform_pose(Transform {
             position: Vec3::new(0.5, 0.0, 0.0),
             rotation: Quat::from_rotation_y(std::f32::consts::FRAC_PI_2),
             scale: Vec3::ONE,
         });
-        let linear_final_iso = Isometry::translation(0.5, 0.0, 0.0);
-        let capsule_center = Point::new(0.0, 1.0, 0.0);
-        let mover_witness = Point::new(1.0, 1.0, 0.0);
+        let linear_final_pose = Pose::from_translation(Vec3::new(0.5, 0.0, 0.0));
+        let capsule_center = Vec3::Y;
+        let mover_witness = Vec3::new(1.0, 1.0, 0.0);
 
         let witness_rotation_motion =
-            surface_motion_to_final(sample_iso, rotating_final_iso, mover_witness);
+            surface_motion_to_final(sample_pose, rotating_final_pose, mover_witness);
         let center_rotation_motion =
-            surface_motion_to_final(sample_iso, rotating_final_iso, capsule_center);
+            surface_motion_to_final(sample_pose, rotating_final_pose, capsule_center);
         assert!(
             (witness_rotation_motion - center_rotation_motion).length() > EPS,
             "rotation must use the mover contact witness, not the capsule center"
         );
 
         let witness_linear_motion =
-            surface_motion_to_final(sample_iso, linear_final_iso, mover_witness);
+            surface_motion_to_final(sample_pose, linear_final_pose, mover_witness);
         let center_linear_motion =
-            surface_motion_to_final(sample_iso, linear_final_iso, capsule_center);
+            surface_motion_to_final(sample_pose, linear_final_pose, capsule_center);
         assert!(
             (witness_linear_motion - center_linear_motion).length() < EPS,
             "pure translation must preserve the existing linear sweep motion"
@@ -1133,7 +1106,7 @@ mod tests {
             0.1,
         );
         let capsule = test_capsule();
-        let capsule_position = Point::new(0.7, 1.0, 0.7);
+        let capsule_position = Vec3::new(0.7, 1.0, 0.7);
 
         assert!(
             deepest_mover_penetration(&movers, &poses, capsule_position, &capsule).is_none(),
@@ -1147,6 +1120,110 @@ mod tests {
         assert!(
             penetration.depth > SKIN_DISTANCE,
             "rotational sweep must produce a behaviorally meaningful displacement"
+        );
+    }
+
+    // Regression: parry reports a shape cast's `normal2` in the mover's local
+    // frame, and the combined query passed it through as the world normal.
+    #[test]
+    fn rotated_mover_capsule_hit_reports_a_world_space_normal() {
+        let world = CollisionWorld::new();
+        let movers = [local_wall_collider(42)];
+        let mut poses = TestPoseSource::default();
+        // A quarter turn about +Y maps the wall's local +X face normal to
+        // world -Z: the wall becomes the plane z = 3 facing the capsule.
+        poses.insert_pose(
+            42,
+            Transform {
+                position: Vec3::new(0.0, 0.0, 3.0),
+                rotation: Quat::from_rotation_y(std::f32::consts::FRAC_PI_2),
+                scale: Vec3::ONE,
+            },
+            Vec3::ZERO,
+            Vec3::ZERO,
+            Quat::IDENTITY,
+        );
+        let capsule = test_capsule();
+
+        let hit = cast_capsule_combined_parry(
+            &world,
+            &movers,
+            &poses,
+            Vec3::new(0.0, 1.0, 1.0),
+            &capsule,
+            Vec3::Z,
+            5.0,
+        )
+        .expect("the capsule runs into the rotated wall");
+
+        assert_eq!(hit.source, CollisionSource::Mover(42));
+        let expected_toi = 2.0 - capsule.radius - SKIN_DISTANCE;
+        assert!(
+            (hit.time_of_impact - expected_toi).abs() < 1.0e-3,
+            "expected TOI ≈ {expected_toi}, got {}",
+            hit.time_of_impact
+        );
+        assert!(
+            (hit.normal - Vec3::NEG_Z).length() < 1.0e-3,
+            "expected the wall's world-space normal, got {:?}",
+            hit.normal
+        );
+        assert_eq!(hit.classification, ContactClassification::Wall);
+    }
+
+    // Regression: the swept push carried parry's mover-local witness into
+    // `surface_motion_to_final`, which reads a world point, so a rotating
+    // mover's push depended on where in the world the scene sat.
+    #[test]
+    fn rotating_mover_swept_push_is_independent_of_world_offset() {
+        let movers = [local_wall_collider(42)];
+        let capsule = test_capsule();
+        let turn = 10.0_f32.to_radians();
+        let tick_dt = 0.1;
+        let push_at = |offset: Vec3| {
+            let mut poses = TestPoseSource::default();
+            // The wall face sweeps 0.3 m along +X through the capsule while
+            // yawing 10°, ending at the scene origin.
+            poses.insert_rotating_pose(
+                42,
+                Transform {
+                    position: offset,
+                    rotation: Quat::IDENTITY,
+                    scale: Vec3::ONE,
+                },
+                Vec3::new(3.0, 0.0, 0.0),
+                Vec3::new(0.3, 0.0, 0.0),
+                Vec3::NEG_Y * (turn / tick_dt),
+                Quat::from_rotation_y(-turn),
+                tick_dt,
+            );
+            deepest_mover_push_penetration(
+                &movers,
+                &poses,
+                offset + Vec3::new(0.1, 1.0, 0.0),
+                &capsule,
+            )
+            .expect("the sweeping wall reaches the capsule")
+        };
+
+        let at_origin = push_at(Vec3::ZERO);
+        let far_away = push_at(Vec3::new(0.0, 0.0, 10.0));
+
+        assert!(
+            at_origin.normal.x > 0.9,
+            "push follows the wall's travel: {at_origin:?}"
+        );
+        // Face reaches the capsule's skin band 0.17 m before the end of its
+        // travel.
+        assert!(
+            (at_origin.depth - (0.17 + SKIN_DISTANCE)).abs() < 0.02,
+            "push depth should cover the remaining travel: {at_origin:?}"
+        );
+        assert!(
+            (far_away.depth - at_origin.depth).abs() < 1.0e-3
+                && (far_away.normal - at_origin.normal).length() < 1.0e-3,
+            "moving the whole scene must not change the push: origin {at_origin:?}, \
+             offset {far_away:?}"
         );
     }
 
@@ -1206,7 +1283,7 @@ mod tests {
             1.0,
         );
         let capsule = test_capsule();
-        let capsule_position = Point::new(0.7, 1.0, 0.7);
+        let capsule_position = Vec3::new(0.7, 1.0, 0.7);
 
         assert!(
             deepest_mover_penetration(&movers, &poses, capsule_position, &capsule).is_none(),
@@ -1237,13 +1314,13 @@ mod tests {
         assert!(!mover_swept_sphere_may_reach_capsule(
             &mover,
             pose,
-            Point::new(1_000.0, 1_000.0, 1_000.0),
+            Vec3::new(1_000.0, 1_000.0, 1_000.0),
             &capsule,
         ));
         assert!(mover_swept_sphere_may_reach_capsule(
             &mover,
             pose,
-            Point::new(0.7, 1.0, 0.7),
+            Vec3::new(0.7, 1.0, 0.7),
             &capsule,
         ));
     }

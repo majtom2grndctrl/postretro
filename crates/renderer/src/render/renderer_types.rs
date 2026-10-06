@@ -82,8 +82,9 @@ impl PresentHandle {
             .create_view(&wgpu::TextureViewDescriptor::default())
     }
 
-    pub(super) fn present(self) {
-        self.output.present();
+    /// wgpu 30 presents through the queue, not the surface texture.
+    pub(super) fn present(self, queue: &wgpu::Queue) {
+        queue.present(self.output);
     }
 }
 
@@ -406,7 +407,7 @@ impl Default for SpatialDiagnostics {
     }
 }
 
-/// Hardware anisotropy cap for the Post Retro filtering pool. wgpu 29 requires
+/// Hardware anisotropy cap for the Post Retro filtering pool. wgpu requires
 /// `anisotropy_clamp >= 1`; 16 is the common ceiling exposed by desktop adapters
 /// and the visual point of diminishing returns for grazing-angle sharpness.
 pub const POST_RETRO_ANISO_CLAMP: u16 = 16;

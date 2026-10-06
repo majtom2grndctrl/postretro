@@ -457,6 +457,6 @@ pub(super) fn capture_view_projection(camera: &CameraPose, width: u32, height: u
         -yaw.cos() * pitch.cos(),
     );
     let eye = Vec3::from_array(camera.position);
-    Mat4::perspective_rh(vfov, aspect, camera::NEAR, camera::FAR)
-        * Mat4::look_at_rh(eye, eye + look_dir, Vec3::Y)
+    glam::camera::rh::proj::directx::perspective(vfov, aspect, camera::NEAR, camera::FAR)
+        * glam::camera::rh::view::look_at_mat4(eye, eye + look_dir, Vec3::Y)
 }

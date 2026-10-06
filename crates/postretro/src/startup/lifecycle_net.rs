@@ -90,8 +90,9 @@ impl App {
         // Fog- and trigger-volume entities live in the script registry;
         // clearing their bridge id tables and trigger state prevents stale
         // slots or bindings if a future surface re-creation re-runs
-        // `populate_from_level`. collision_world is reset for the same
-        // reason — it must be a clean placeholder before resume populates it.
+        // `populate_from_level`. Install replaces collision_world by
+        // assignment, so its reset here serves Frontend and suspend: no
+        // collision persists without a level.
         // Called both from `unload_level` (session installed) and the suspend
         // path (session may be absent if suspend arrives pre-install), so the
         // session-owned state clears are guarded — a no-op with no session yet.

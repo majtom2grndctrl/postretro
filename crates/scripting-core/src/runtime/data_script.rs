@@ -240,15 +240,16 @@ fn run_data_script_luau(
 
     // Mirror `LuauSubsystem::run_source`'s compile+load shape so traceback
     // formatting stays consistent.
-    let bytecode = mlua::Compiler::new()
-        .compile(source)
-        .map_err(|e| ScriptError::ScriptThrew {
-            msg: e.to_string(),
-            source_name: source_path.to_string(),
-        })?;
+    let bytecode =
+        mlua::chunk::Compiler::new()
+            .compile(source)
+            .map_err(|e| ScriptError::ScriptThrew {
+                msg: e.to_string(),
+                source_name: source_path.to_string(),
+            })?;
     lua.load(&bytecode)
         .set_name(source_path)
-        .set_mode(mlua::ChunkMode::Binary)
+        .set_mode(mlua::chunk::ChunkMode::Binary)
         .exec()
         .map_err(|e| ScriptError::ScriptThrew {
             msg: e.to_string(),

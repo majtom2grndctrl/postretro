@@ -29,7 +29,7 @@ const CHARACTER_MODEL_MIP_SAMPLER_FILTERING: MipSamplerFiltering = MipSamplerFil
 
 /// Create the Post Retro filtering pool's sampler: fully Linear min/mag/mip
 /// with `anisotropy_clamp = POST_RETRO_ANISO_CLAMP`, with a per-mip-count LOD
-/// clamp. wgpu 29 validates that aniso > 1 requires all three filters to be
+/// clamp. wgpu validates that aniso > 1 requires all three filters to be
 /// Linear. One sampler per distinct mip count is kept in
 /// `Renderer::mip_count_aniso_samplers` so world and mover materials bind the
 /// clamp that matches their uploaded mip chain. Bound at material binding 5.

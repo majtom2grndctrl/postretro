@@ -21,7 +21,7 @@ use super::build::build_node;
 use super::draw::{UiDrawData, bar_max_value, bar_slot_value};
 use super::node_context::ValueText;
 use super::predicate::{resolve_predicate, resolve_value_text};
-use super::widget_meta::{harvest_image_nodes, harvest_visibility, measure_node};
+use super::widget_meta::{harvest_image_nodes, harvest_visibility, layout_leaf};
 use super::{CellValues, ImageSizes};
 
 pub use super::node_context::{NodeContext, VisibilityState};
@@ -262,8 +262,8 @@ impl UiTree {
                         width: AvailableSpace::Definite(REFERENCE_WIDTH),
                         height: AvailableSpace::Definite(REFERENCE_HEIGHT),
                     },
-                    |known_dimensions, _available_space, _node_id, node_context, _style| {
-                        measure_node(known_dimensions, node_context, font_system, image_sizes)
+                    |inputs, _node_id, node_context, style| {
+                        layout_leaf(inputs, style, node_context, font_system, image_sizes)
                     },
                 )
                 .expect("taffy layout must succeed for a well-formed UI tree");
@@ -377,8 +377,8 @@ impl UiTree {
                         width: AvailableSpace::Definite(REFERENCE_WIDTH),
                         height: AvailableSpace::Definite(REFERENCE_HEIGHT),
                     },
-                    |known_dimensions, _available_space, _node_id, node_context, _style| {
-                        measure_node(known_dimensions, node_context, font_system, image_sizes)
+                    |inputs, _node_id, node_context, style| {
+                        layout_leaf(inputs, style, node_context, font_system, image_sizes)
                     },
                 )
                 .expect("taffy layout must succeed for a well-formed UI tree");
@@ -413,7 +413,7 @@ impl UiTree {
     }
 
     /// Depth-first collect every node id under `node` (inclusive) into `out`.
-    /// taffy 0.10 has no whole-tree id iterator, so the diff walks the parent→
+    /// taffy has no whole-tree id iterator, so the diff walks the parent→
     /// children graph from the root to enumerate nodes to resolve.
     pub(super) fn collect_node_ids(&self, node: NodeId, out: &mut Vec<NodeId>) {
         out.push(node);

@@ -70,6 +70,7 @@ fn try_init_gpu() -> Option<GpuCtx> {
         power_preference: wgpu::PowerPreference::default(),
         compatible_surface: None,
         force_fallback_adapter: false,
+        apply_limit_buckets: false,
     }))
     .ok()?;
     if !adapter
@@ -312,7 +313,7 @@ impl Probe {
             0,
         ];
         let mut out = [0u8; PROBE_BYTES];
-        for (chunk, word) in out.chunks_exact_mut(4).zip(words) {
+        for (chunk, word) in out.as_chunks_mut::<4>().0.iter_mut().zip(words) {
             chunk.copy_from_slice(&word.to_ne_bytes());
         }
         out
@@ -568,9 +569,13 @@ fn run_probes(
         device
             .poll(wgpu::PollType::wait_indefinitely())
             .expect("poll shadowmask_sample_test device");
-        let bytes = slice.get_mapped_range();
+        let bytes = slice
+            .get_mapped_range()
+            .expect("buffer mapped for readback");
         let texels = bytes[..(width * OUTPUT_TEXEL_BYTES) as usize]
-            .chunks_exact(OUTPUT_TEXEL_BYTES as usize)
+            .as_chunks::<{ OUTPUT_TEXEL_BYTES as usize }>()
+            .0
+            .iter()
             .map(|texel| {
                 std::array::from_fn(|c| {
                     f32::from_ne_bytes(texel[c * 4..c * 4 + 4].try_into().unwrap())
@@ -584,8 +589,10 @@ fn run_probes(
     let masks = read(&readbacks[0]);
     let values = read(&readbacks[1]);
     masks
-        .chunks_exact(PIXELS_PER_PROBE as usize)
-        .zip(values.chunks_exact(PIXELS_PER_PROBE as usize))
+        .as_chunks::<{ PIXELS_PER_PROBE as usize }>()
+        .0
+        .iter()
+        .zip(values.as_chunks::<{ PIXELS_PER_PROBE as usize }>().0.iter())
         .map(|(mask, values)| {
             let (selects, attenuations) = (values[0], values[1]);
             ProbeResult {

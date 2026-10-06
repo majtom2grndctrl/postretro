@@ -1197,7 +1197,9 @@ mod tests {
     fn decode_atlas(section: &DirectShVolumeSection) -> Vec<[u16; 4]> {
         section
             .atlas
-            .chunks_exact(8)
+            .as_chunks::<8>()
+            .0
+            .iter()
             .map(|c| {
                 [
                     u16::from_le_bytes([c[0], c[1]]),

@@ -6,7 +6,8 @@
 use std::collections::HashMap;
 
 use cosmic_text::FontSystem;
-use taffy::prelude::{NodeId, Size, TaffyTree};
+use taffy::prelude::{NodeId, Size, Style, TaffyTree};
+use taffy::{LayoutInput, LayoutOutput};
 
 use super::super::descriptor::{
     BindSource, FocusNeighbors as DescriptorFocusNeighbors, LocalState, Predicate, Widget,
@@ -16,6 +17,28 @@ use super::draw::{FocusNeighbors, NodeInteraction};
 use super::node_context::{BarExitFadeState, NodeContext, VisibilityState};
 use crate::text::measure_run;
 
+/// The single taffy measure-seam chokepoint: wrap `measure_node` in taffy's
+/// `compute_leaf_layout` so style-driven sizing (explicit sizes, min/max,
+/// padding, border) composes with the content measurement. Every
+/// `compute_layout_with_measure` call site routes through here.
+pub fn layout_leaf(
+    inputs: LayoutInput,
+    style: &Style,
+    node_context: Option<&mut NodeContext>,
+    font_system: &mut FontSystem,
+    image_sizes: &ImageSizes,
+) -> LayoutOutput {
+    taffy::compute_leaf_layout(
+        inputs,
+        style,
+        // No `calc()` lengths are authored, so nothing to resolve.
+        |_, _| 0.0,
+        |known_dimensions, _available_space| {
+            measure_node(known_dimensions, node_context, font_system, image_sizes)
+        },
+    )
+}
+
 /// taffy measure callback: resolve a leaf's intrinsic size from its content.
 /// Text nodes shape their `content` at `font_size` through `font_system` and
 /// report the real shaped-run extent; image nodes report their asset's natural
@@ -23,7 +46,7 @@ use crate::text::measure_run;
 /// asset/glyphs, not a wire-level number). Every other node has no intrinsic
 /// content, so it reports the size taffy already knows (`known_dimensions`,
 /// defaulting each unset axis to zero — the node sizes from its style/flex slot).
-pub fn measure_node(
+fn measure_node(
     known_dimensions: Size<Option<f32>>,
     node_context: Option<&mut NodeContext>,
     font_system: &mut FontSystem,
@@ -182,8 +205,8 @@ pub fn widget_a11y_state(
     };
     match widget {
         Widget::Button(w) => (
-            w.selected.as_ref().map(&resolve),
-            w.checked.as_ref().map(&resolve),
+            w.selected.as_ref().map(resolve),
+            w.checked.as_ref().map(resolve),
             w.disabled,
         ),
         Widget::Slider(w) => (None, None, w.disabled),

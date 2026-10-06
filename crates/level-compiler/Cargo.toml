@@ -16,11 +16,11 @@ shambler.workspace = true
 glam.workspace = true
 anyhow.workspace = true
 log.workspace = true
-env_filter = "1"
+env_filter = "2"
 thiserror.workspace = true
 rayon.workspace = true
-bvh = { version = "0.11", default-features = false }
-nalgebra = { version = "0.33", default-features = false, features = ["std"] }
+bvh = { version = "0.12", default-features = false, features = ["std"] }
+nalgebra = { version = "0.34", default-features = false, features = ["std"] }
 png.workspace = true
 image.workspace = true
 blake3 = "1"
@@ -28,8 +28,8 @@ bytemuck = { workspace = true }
 postcard = { version = "1", features = ["alloc"] }
 serde.workspace = true
 serde_json.workspace = true
-ratatui = { version = "0.28", default-features = false, features = ["crossterm", "unstable-rendered-line-info"] }
-crossterm = "0.28"
+ratatui = { version = "0.30", default-features = false, features = ["crossterm", "layout-cache", "unstable-rendered-line-info"] }
+crossterm = "0.29"
 tempfile.workspace = true
 same-file.workspace = true
 fs4.workspace = true

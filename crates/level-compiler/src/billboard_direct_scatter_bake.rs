@@ -878,7 +878,14 @@ mod tests {
 
         assert!(animated_layout_matches(&direct, &scatter));
         assert_eq!(scatter.delta_rgba.len(), 2 * 64 * 4);
-        assert!(scatter.delta_rgba.chunks_exact(4).all(|rgba| rgba[3] == 0));
+        assert!(
+            scatter
+                .delta_rgba
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .all(|rgba| rgba[3] == 0)
+        );
     }
 
     // Regression: retained script-mutable id-45 CSR entries can have empty
@@ -976,13 +983,15 @@ mod tests {
             &BakeControl::unrestricted(),
         )
         .expect("animated-only scatter entries require a section-47 anchor");
-        assert!(base.scatter_rgba.chunks_exact(4).all(|rgba| {
+        assert!(base.scatter_rgba.as_chunks::<4>().0.iter().all(|rgba| {
             rgba[..3] == [0, 0, 0]
                 && (rgba[3] == 0 || rgba[3] == BILLBOARD_DIRECT_SCATTER_VALIDITY_ONE_F16)
         }));
         assert!(
             base.scatter_rgba
-                .chunks_exact(4)
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .any(|rgba| rgba[3] == BILLBOARD_DIRECT_SCATTER_VALIDITY_ONE_F16),
             "the zero-RGB anchor must still carry usable probe validity"
         );
@@ -998,11 +1007,20 @@ mod tests {
 
         assert!(animated_layout_matches(&direct, &scatter));
         assert_eq!(scatter.delta_rgba.len(), 64 * 4);
-        assert!(scatter.delta_rgba.chunks_exact(4).all(|rgba| rgba[3] == 0));
         assert!(
             scatter
                 .delta_rgba
-                .chunks_exact(4)
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .all(|rgba| rgba[3] == 0)
+        );
+        assert!(
+            scatter
+                .delta_rgba
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .any(|rgba| rgba[..3].iter().any(|&channel| channel != 0)),
             "unit-scale animated scatter must retain visible transport"
         );

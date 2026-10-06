@@ -425,7 +425,7 @@ fn collect_node(
             // snapshot (through the optional `{}` format template); an absent
             // slot falls back to the literal `content`. Layout already used
             // the literal `content` (or the resolved/displayed string in
-            // `last_resolved`) for measurement (see `measure_node`), so
+            // `last_resolved`) for measurement (see `layout_leaf`), so
             // resolution only swaps the rendered string, never the geometry.
             //
             // For a TWEENED bind whose driver has produced a displayed value

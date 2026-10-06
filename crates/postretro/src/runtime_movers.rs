@@ -478,7 +478,17 @@ fn build_mover_collider(mover: &LoadedKinematicMover) -> Option<MoverCollider> {
         .iter()
         .map(|chunk| [chunk[0], chunk[1], chunk[2]])
         .collect();
-    MoverCollider::from_local_triangles(mover.mover_id, &vertices, &triangles)
+    match MoverCollider::from_local_triangles(mover.mover_id, &vertices, &triangles) {
+        Ok(collider) => Some(collider),
+        Err(err) => {
+            log::warn!(
+                "[Loader] kinematic mover {} (`{}`): collision mesh rejected, mover has no collider: {err}",
+                mover.mover_id,
+                mover.name,
+            );
+            None
+        }
+    }
 }
 
 fn mover_local_bounds(

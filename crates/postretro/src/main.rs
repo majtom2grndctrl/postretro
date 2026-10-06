@@ -4319,10 +4319,10 @@ impl ApplicationHandler for App {
                     // the SH diagnostic overlay can push debug lines that
                     // the frame's debug-line pass will pick up. Tessellated
                     // paint jobs are stashed and consumed after the frame
-                    // by `render_debug_ui`.
+                    // by `render_debug_ui`; texture deltas queue on the
+                    // `DebugUi` so a frame that never presents carries them.
                     #[cfg(feature = "dev-tools")]
                     let debug_ui_frame: Option<(
-                        egui::TexturesDelta,
                         Vec<egui::epaint::ClippedPrimitive>,
                         f32,
                     )> = {
@@ -4413,11 +4413,8 @@ impl ApplicationHandler for App {
                                 let paint_jobs = debug_ui
                                     .ctx
                                     .tessellate(full_output.shapes, full_output.pixels_per_point);
-                                out = Some((
-                                    full_output.textures_delta,
-                                    paint_jobs,
-                                    window.scale_factor() as f32,
-                                ));
+                                debug_ui.pending_textures.push(full_output.textures_delta);
+                                out = Some((paint_jobs, window.scale_factor() as f32));
                             }
                         }
                         // Clear the debug-line buffer unconditionally each
@@ -4611,17 +4608,19 @@ impl ApplicationHandler for App {
 
                         #[cfg(feature = "dev-tools")]
                         {
-                            if let Some((textures_delta, paint_jobs, scale)) = debug_ui_frame {
-                                if let Err(err) = renderer.render_debug_ui(
+                            if let Some((paint_jobs, scale)) = debug_ui_frame
+                                && let Some(debug_ui) =
+                                    self.session.as_mut().and_then(|s| s.debug_ui.as_mut())
+                                && let Err(err) = renderer.render_debug_ui(
                                     &mut present_handle,
-                                    textures_delta,
+                                    debug_ui.pending_textures.delta_mut(),
                                     paint_jobs,
                                     scale,
-                                ) {
-                                    self.exit_result = Err(err);
-                                    event_loop.exit();
-                                    return;
-                                }
+                                )
+                            {
+                                self.exit_result = Err(err);
+                                event_loop.exit();
+                                return;
                             }
                         }
                         let present_start = self.cpu_timer.gate().is_enabled().then(Instant::now);
@@ -8895,7 +8894,6 @@ mod tests {
     fn closet_reveal_closed_loaded_door_hides_interior_until_it_moves() {
         use crate::scripting_systems::mesh_anim::MeshClipTables;
         use crate::scripting_systems::mesh_render::MeshRenderCollector;
-        use glam::Mat4;
         use postretro_entities::{EntityRegistry, Transform, components::mesh::MeshComponent};
         use postretro_level_format::geometry::Vertex;
         use postretro_level_format::kinematic_geometry::{
@@ -9062,8 +9060,17 @@ mod tests {
             .expect("closet enemy mesh installs");
 
         let camera_position = Vec3::new(40.0, -80.0, 48.0);
-        let view = Mat4::look_at_rh(camera_position, camera_position + Vec3::X, Vec3::Y);
-        let view_proj = Mat4::perspective_rh(std::f32::consts::FRAC_PI_2, 1.0, 0.1, 512.0) * view;
+        let view = glam::camera::rh::view::look_at_mat4(
+            camera_position,
+            camera_position + Vec3::X,
+            Vec3::Y,
+        );
+        let view_proj = glam::camera::rh::proj::directx::perspective(
+            std::f32::consts::FRAC_PI_2,
+            1.0,
+            0.1,
+            512.0,
+        ) * view;
         let visibility = |blocked_portals: &[bool]| {
             let (result, _) = postretro_visibility::determine_visible_cells(
                 camera_position,
@@ -10023,8 +10030,11 @@ mod tests {
 
     #[test]
     fn viewmodel_world_transform_keeps_shared_shader_positions_in_world_space() {
-        let view =
-            glam::Mat4::look_at_rh(Vec3::new(6.0, 2.0, 4.0), Vec3::new(5.0, 2.5, 3.0), Vec3::Y);
+        let view = glam::camera::rh::view::look_at_mat4(
+            Vec3::new(6.0, 2.0, 4.0),
+            Vec3::new(5.0, 2.5, 3.0),
+            Vec3::Y,
+        );
         let placement = resolve_weapon_placement(None, None, None, None);
         let camera_space =
             viewmodel_camera_space_transform(Vec3::X, Vec3::ZERO, 0.0, 0.0, 0.0, &placement);
@@ -12842,25 +12852,21 @@ mod tests {
 
             let mut display_bindings = Vec::new();
             for widget in &control_widgets {
-                if let Widget::Text(text) = widget {
-                    if let Some(bind) = &text.bind {
-                        if let BindSource::Slot { slot } = &bind.source {
-                            if slot.starts_with("window.displayMode") {
-                                display_bindings.push(slot.as_str());
-                                assert_eq!(
-                                    text.visible_when, None,
-                                    "the parent control group owns {value} text visibility",
-                                );
-                                assert_eq!(
-                                    text.color,
-                                    postretro_ui::descriptor::ColorValue::Literal([
-                                        1.0, 1.0, 1.0, opacity,
-                                    ]),
-                                    "{value} display text uses the branch opacity",
-                                );
-                            }
-                        }
-                    }
+                if let Widget::Text(text) = widget
+                    && let Some(bind) = &text.bind
+                    && let BindSource::Slot { slot } = &bind.source
+                    && slot.starts_with("window.displayMode")
+                {
+                    display_bindings.push(slot.as_str());
+                    assert_eq!(
+                        text.visible_when, None,
+                        "the parent control group owns {value} text visibility",
+                    );
+                    assert_eq!(
+                        text.color,
+                        postretro_ui::descriptor::ColorValue::Literal([1.0, 1.0, 1.0, opacity]),
+                        "{value} display text uses the branch opacity",
+                    );
                 }
             }
             assert_eq!(

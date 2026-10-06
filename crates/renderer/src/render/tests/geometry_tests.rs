@@ -64,8 +64,8 @@ fn byte_cast_u32_roundtrips() {
     assert_eq!(bytes.len(), 12);
 
     let mut output = Vec::new();
-    for chunk in bytes.chunks_exact(4) {
-        output.push(u32::from_ne_bytes(chunk.try_into().unwrap()));
+    for chunk in bytes.as_chunks::<4>().0 {
+        output.push(u32::from_ne_bytes(*chunk));
     }
     assert_eq!(output, vec![100, 200, 300]);
 }

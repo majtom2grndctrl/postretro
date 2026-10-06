@@ -18,7 +18,7 @@ use super::node_context::{NodeContext, VisibilityState};
 use super::predicate::PRESENTATION_FACT_SCOPE;
 use super::predicate::resolve_predicate;
 use super::ui_tree_collect::collect_draw_data_from_layout_into;
-use super::widget_meta::{harvest_image_nodes, harvest_visibility, measure_node};
+use super::widget_meta::{harvest_image_nodes, harvest_visibility, layout_leaf};
 use super::{CellValues, ImageSizes};
 use crate::descriptor::Widget;
 use crate::layout::{REFERENCE_HEIGHT, REFERENCE_WIDTH};
@@ -171,8 +171,8 @@ impl PresentationTemplateLayout {
                         width: AvailableSpace::Definite(REFERENCE_WIDTH),
                         height: AvailableSpace::Definite(REFERENCE_HEIGHT),
                     },
-                    |known_dimensions, _available_space, _node_id, node_context, _style| {
-                        measure_node(known_dimensions, node_context, font_system, image_sizes)
+                    |inputs, _node_id, node_context, style| {
+                        layout_leaf(inputs, style, node_context, font_system, image_sizes)
                     },
                 )
                 .expect("taffy layout must succeed for a well-formed presentation template");

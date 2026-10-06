@@ -399,6 +399,7 @@ impl Scanner<'_> {
             }
             Pat::Reference(pattern) => self.bind(&pattern.pat, receiver),
             Pat::Paren(pattern) => self.bind(&pattern.pat, receiver),
+            Pat::Guard(pattern) => self.bind(&pattern.pat, receiver),
             Pat::Type(pattern) => self.bind(&pattern.pat, type_receiver(&pattern.ty)),
             Pat::Tuple(pattern) => {
                 for element in &pattern.elems {

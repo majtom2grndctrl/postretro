@@ -216,7 +216,12 @@ impl SubmittedCounterReadback {
 
         for slot in 0..Self::RING_DEPTH {
             if self.map_ready[slot].swap(false, Ordering::AcqRel) {
-                let view = self.slots[slot].slice(0..4).get_mapped_range();
+                let view = self.slots[slot]
+                    .slice(0..4)
+                    .get_mapped_range()
+                    .expect(
+                    "map_ready follows a successful map of this range; fails only after device loss (no recovery contract)",
+                );
                 let value = u32::from_le_bytes([view[0], view[1], view[2], view[3]]);
                 drop(view);
                 self.slots[slot].unmap();

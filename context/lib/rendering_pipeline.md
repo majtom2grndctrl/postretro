@@ -796,7 +796,7 @@ The renderer also requires `max_texture_dimension_2d ≥ 8192` (per-layer lightm
 
 ### Coordinate System
 
-Right-handed, Y-up. Forward is −Z. Matches glam defaults and wgpu NDC.
+Right-handed, Y-up. Forward is −Z. View and projection matrices come from glam's `camera::rh::view` and `camera::rh::proj::directx` constructors: depth 0..1, Y-up clip space, matching wgpu NDC. The `vulkan` projection module flips Y and does not fit. Don't use glam's deprecated `Mat4::perspective_rh` / `look_at_rh`.
 
 ### Projection Defaults
 

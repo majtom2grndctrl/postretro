@@ -14,7 +14,7 @@ const VIEWMODEL_FAR_CLIP: f32 = 2.0;
 fn viewmodel_projection(aspect: f32) -> Mat4 {
     let safe_aspect = aspect.max(0.1);
     let vertical_fov = 2.0 * ((VIEWMODEL_HFOV_RADIANS / 2.0).tan() / safe_aspect).atan();
-    Mat4::perspective_rh(
+    glam::camera::rh::proj::directx::perspective(
         vertical_fov,
         safe_aspect,
         VIEWMODEL_NEAR_CLIP,
@@ -86,7 +86,9 @@ impl Renderer {
             .context("capture readback map callback did not complete")?
             .context("capture readback map failed")?;
 
-        let data = slice.get_mapped_range();
+        let data = slice
+            .get_mapped_range()
+            .context("capture readback mapped range")?;
         let tight_len = u64::from(unpadded_bytes_per_row)
             .checked_mul(u64::from(height))
             .context("capture tight byte count overflows u64")?;
@@ -309,7 +311,11 @@ mod tests {
     #[test]
     fn viewmodel_world_transform_preserves_camera_space_clip_placement() {
         let projection = viewmodel_projection(16.0 / 9.0);
-        let view = Mat4::look_at_rh(Vec3::new(4.0, 2.0, 7.0), Vec3::new(3.0, 2.5, 6.0), Vec3::Y);
+        let view = glam::camera::rh::view::look_at_mat4(
+            Vec3::new(4.0, 2.0, 7.0),
+            Vec3::new(3.0, 2.5, 6.0),
+            Vec3::Y,
+        );
         let camera_space_model = Mat4::from_translation(Vec3::new(0.3, -0.2, -0.6));
         let world_model = view.inverse() * camera_space_model;
         let model_point = Vec3::new(0.1, 0.05, -0.2).extend(1.0);

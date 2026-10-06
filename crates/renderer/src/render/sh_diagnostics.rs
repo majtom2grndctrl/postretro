@@ -485,7 +485,13 @@ impl ShProbeReadback {
         let _ = device.poll(wgpu::PollType::Poll);
 
         let out = if self.map_ready.swap(false, Ordering::AcqRel) {
-            let view = self.buffer.slice(0..self.buffer_size).get_mapped_range();
+            let view = self
+                .buffer
+                .slice(0..self.buffer_size)
+                .get_mapped_range()
+                .expect(
+                    "map_ready follows a successful map of this range; fails only after device loss (no recovery contract)",
+                );
             let decoded = decode_probe_irradiance_atlas(
                 &view,
                 self.grid_dimensions,

@@ -39,6 +39,7 @@ pub(crate) fn try_init_gpu_with_features(required_features: wgpu::Features) -> O
         power_preference: wgpu::PowerPreference::HighPerformance,
         compatible_surface: None,
         force_fallback_adapter: false,
+        apply_limit_buckets: false,
     })) {
         Ok(adapter) => adapter,
         Err(error) => {
@@ -186,7 +187,9 @@ fn read_texture_rgba8_with_submit(
         .expect("poll");
     rx.recv().expect("map channel").expect("map ok");
 
-    let data = slice.get_mapped_range();
+    let data = slice
+        .get_mapped_range()
+        .expect("buffer mapped for readback");
     let mut tight = Vec::with_capacity((unpadded * height) as usize);
     for row in 0..height {
         let start = (row * padded) as usize;

@@ -87,29 +87,6 @@ impl WindowModes {
     }
 }
 
-#[cfg(test)]
-mod boot_tests {
-    #[test]
-    fn boot_mode_applies_after_visible_creation_before_first_redraw() {
-        let main = include_str!("../../main.rs");
-        let start = main.find("fn resumed(").unwrap();
-        let body = &main[start..main[start..].find("fn suspended(").unwrap() + start];
-        let create = body.find("create_window(window_attributes())").unwrap();
-        let apply = body.find("self.window_modes.apply_boot(").unwrap();
-        let renderer = body.find("Renderer::new(&window)").unwrap();
-        let finish = body.find("self.window_modes.finish_boot(").unwrap();
-        let redraw = body.find("ws.window.request_redraw();").unwrap();
-        // A deferred exclusive mode lands only once the renderer owns a surface.
-        assert!(create < apply && apply < renderer && renderer < finish && finish < redraw);
-        assert!(!main.contains(".with_fullscreen("));
-        let startup = include_str!("../../startup/session.rs");
-        assert!(
-            startup.find("BootOptions::load(").unwrap()
-                < startup.find("let event_loop = EventLoop::new()").unwrap()
-        );
-    }
-}
-
 fn request_mode(
     controller: &mut Controller,
     session: &mut crate::session::Session,
@@ -321,5 +298,28 @@ impl crate::App {
             Instant::now(),
         );
         self.finish_window_change(change);
+    }
+}
+
+#[cfg(test)]
+mod boot_tests {
+    #[test]
+    fn boot_mode_applies_after_visible_creation_before_first_redraw() {
+        let main = include_str!("../../main.rs");
+        let start = main.find("fn resumed(").unwrap();
+        let body = &main[start..main[start..].find("fn suspended(").unwrap() + start];
+        let create = body.find("create_window(window_attributes())").unwrap();
+        let apply = body.find("self.window_modes.apply_boot(").unwrap();
+        let renderer = body.find("Renderer::new(&window)").unwrap();
+        let finish = body.find("self.window_modes.finish_boot(").unwrap();
+        let redraw = body.find("ws.window.request_redraw();").unwrap();
+        // A deferred exclusive mode lands only once the renderer owns a surface.
+        assert!(create < apply && apply < renderer && renderer < finish && finish < redraw);
+        assert!(!main.contains(".with_fullscreen("));
+        let startup = include_str!("../../startup/session.rs");
+        assert!(
+            startup.find("BootOptions::load(").unwrap()
+                < startup.find("let event_loop = EventLoop::new()").unwrap()
+        );
     }
 }

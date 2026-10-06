@@ -756,7 +756,9 @@ mod tests {
         assert!(decoded.iter().all(|value| value.is_finite()));
         assert!(
             decoded
-                .chunks_exact(DELTA_TILE_TEXEL_F16_COUNT)
+                .as_chunks::<DELTA_TILE_TEXEL_F16_COUNT>()
+                .0
+                .iter()
                 .any(|rgb| rgb.iter().any(|&value| value > 0.0)),
             "the authored rest direction must produce direct transport even when a direction curve is present"
         );

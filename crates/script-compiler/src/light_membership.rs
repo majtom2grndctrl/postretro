@@ -10,9 +10,8 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use anyhow::{Context as _, Result, anyhow, bail};
-use mlua::{
-    Compiler as LuaCompiler, Function as LuaFunction, Lua, Table as LuaTable, Value as LuaValue,
-};
+use mlua::chunk::Compiler as LuaCompiler;
+use mlua::{Function as LuaFunction, Lua, Table as LuaTable, Value as LuaValue};
 use postretro_level_format::light_membership::{
     LightAnimationSnapshot, LightComponentSnapshot, LightMembershipManifest, LightMembershipRecord,
     LightTable, LightTableLight,
@@ -170,7 +169,7 @@ fn evaluate_luau(
         .map_err(|e| anyhow!("data script `{source_name}` threw: {e}"))?;
     lua.load(&bytecode)
         .set_name(&source_name)
-        .set_mode(mlua::ChunkMode::Binary)
+        .set_mode(mlua::chunk::ChunkMode::Binary)
         .exec()
         .map_err(|e| anyhow!("data script `{source_name}` threw: {e}"))?;
 
@@ -630,7 +629,7 @@ fn evaluate_luau_required_module(
     })?;
     lua.load(&bytecode)
         .set_name(resolved.to_string_lossy().as_ref())
-        .set_mode(mlua::ChunkMode::Binary)
+        .set_mode(mlua::chunk::ChunkMode::Binary)
         .eval()
 }
 

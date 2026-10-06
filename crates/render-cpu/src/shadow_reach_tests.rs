@@ -1,5 +1,4 @@
 use super::*;
-use glam::Mat4;
 use postretro_render_data::cone_frustum::cone_frustum_planes;
 
 /// One leaf: its box, cell and index range.
@@ -111,12 +110,15 @@ fn row(cells: u32) -> Vec<L> {
 /// Axis-aligned slab `x ∈ [x0, x1]` over the unit cross-section, as an
 /// orthographic frustum looking down +x.
 fn slab(x0: f32, x1: f32) -> [Vec4; 6] {
-    let view = Mat4::look_at_rh(
+    let view = glam::camera::rh::view::look_at_mat4(
         Vec3::new(x0 - 1.0, 0.5, 0.5),
         Vec3::new(x1, 0.5, 0.5),
         Vec3::Y,
     );
-    cone_frustum_planes(&(Mat4::orthographic_rh(-2.0, 2.0, -2.0, 2.0, 1.0, 1.0 + x1 - x0) * view))
+    cone_frustum_planes(
+        &(glam::camera::rh::proj::directx::orthographic(-2.0, 2.0, -2.0, 2.0, 1.0, 1.0 + x1 - x0)
+            * view),
+    )
 }
 
 fn sorted(mut cells: Vec<u32>) -> Vec<u32> {
@@ -241,8 +243,8 @@ fn random_frustum(rng: &mut Rng, extent: f32) -> [Vec4; 6] {
     } else {
         Vec3::Y
     };
-    let view = Mat4::look_at_rh(eye, eye + dir, up);
-    let proj = Mat4::perspective_rh(
+    let view = glam::camera::rh::view::look_at_mat4(eye, eye + dir, up);
+    let proj = glam::camera::rh::proj::directx::perspective(
         rng.range(0.1, 2.6),
         rng.range(0.5, 2.0),
         rng.range(0.05, 1.0),
@@ -307,7 +309,10 @@ fn leaf_overhanging_its_cell_bounds_reaches_its_cell() {
     ]);
     let planes = slab(1.02, 1.06);
     let mut scratch = index.scratch();
-    assert_eq!(index.reach(&planes, &mut scratch), &[0..3]);
+    assert_eq!(
+        index.reach(&planes, &mut scratch),
+        std::slice::from_ref(&(0..3))
+    );
     assert_eq!(scratch.cells(), &[0]);
 }
 
@@ -360,7 +365,10 @@ fn empty_and_full_reach_transitions_through_one_scratch() {
     let all = slab(-1.0, 9.0);
 
     assert!(index.reach(&miss, &mut scratch).is_empty(), "empty first");
-    assert_eq!(index.reach(&part, &mut scratch), &[6..15]);
+    assert_eq!(
+        index.reach(&part, &mut scratch),
+        std::slice::from_ref(&(6..15))
+    );
     assert!(
         index.reach(&miss, &mut scratch).is_empty(),
         "empty after nonempty"
@@ -368,7 +376,7 @@ fn empty_and_full_reach_transitions_through_one_scratch() {
     assert_eq!(scratch.stats().collected_cells, 0);
     assert_eq!(
         index.reach(&part, &mut scratch),
-        &[6..15],
+        std::slice::from_ref(&(6..15)),
         "nonempty after empty draws in full"
     );
     // Every drawable leaf's indices exactly once.
@@ -581,7 +589,10 @@ fn zero_count_leaf_reaches_its_cell_without_adding_a_range() {
         },
     ]);
     let mut scratch = index.scratch();
-    assert_eq!(index.reach(&slab(2.2, 2.8), &mut scratch), &[3..6]);
+    assert_eq!(
+        index.reach(&slab(2.2, 2.8), &mut scratch),
+        std::slice::from_ref(&(3..6))
+    );
     assert_eq!(scratch.cells(), &[1]);
 }
 
@@ -590,8 +601,14 @@ fn scratch_from_a_larger_level_walks_a_smaller_one() {
     let large = index_of(&row(200));
     let small = index_of(&row(3));
     let mut scratch = large.scratch();
-    assert_eq!(large.reach(&slab(150.2, 151.8), &mut scratch), &[450..456]);
-    assert_eq!(small.reach(&slab(-1.0, 4.0), &mut scratch), &[0..9]);
+    assert_eq!(
+        large.reach(&slab(150.2, 151.8), &mut scratch),
+        std::slice::from_ref(&(450..456))
+    );
+    assert_eq!(
+        small.reach(&slab(-1.0, 4.0), &mut scratch),
+        std::slice::from_ref(&(0..9))
+    );
 }
 
 #[test]
@@ -599,5 +616,8 @@ fn scratch_from_a_smaller_level_refits_before_walking() {
     let small = index_of(&row(2));
     let large = index_of(&row(200));
     let mut scratch = small.scratch();
-    assert_eq!(large.reach(&slab(150.2, 151.8), &mut scratch), &[450..456]);
+    assert_eq!(
+        large.reach(&slab(150.2, 151.8), &mut scratch),
+        std::slice::from_ref(&(450..456))
+    );
 }

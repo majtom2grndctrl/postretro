@@ -22,9 +22,11 @@ use super::frame_timing::{FrameTimingSnapshot, PassTiming};
 use super::sh_diagnostics::{MarkerMode, ShDiagnosticsState};
 
 mod cpu_timing_block;
+mod pending_textures;
 mod streaming_tab;
 
 pub use cpu_timing_block::CpuTimingPanel;
+pub use pending_textures::PendingTextures;
 pub use streaming_tab::LightmapStreamingTab;
 
 /// GPU-side egui state. Lives on `Renderer` (the GPU boundary), constructed
@@ -222,6 +224,8 @@ pub struct DebugUi {
     visible: bool,
     pub panel_state: DiagnosticsState,
     pub sh_diagnostics_state: ShDiagnosticsState,
+    /// Deltas from built frames, held until a presented frame applies them.
+    pub pending_textures: PendingTextures,
 }
 
 impl DebugUi {
@@ -241,6 +245,7 @@ impl DebugUi {
             visible: false,
             panel_state: DiagnosticsState::default(),
             sh_diagnostics_state: ShDiagnosticsState::default(),
+            pending_textures: PendingTextures::default(),
         }
     }
 
@@ -1295,11 +1300,11 @@ fn draw_spatial_tab(ui: &mut egui::Ui, state: &mut DiagnosticsState, renderer: &
             ui.label(format!("Total BVH leaves: {}", diag.total_leaves));
             ui.label(format!("Submitted BVH leaves: {}", diag.submitted_leaves));
             // Candidate vs total exposes future indirect-compaction headroom.
-            if let Some(candidates) = diag.candidate_leaves() {
-                if diag.total_leaves > 0 {
-                    let pct = 100.0 * candidates as f32 / diag.total_leaves as f32;
-                    ui.label(format!("Candidate / total: {pct:.1}%"));
-                }
+            if let Some(candidates) = diag.candidate_leaves()
+                && diag.total_leaves > 0
+            {
+                let pct = 100.0 * candidates as f32 / diag.total_leaves as f32;
+                ui.label(format!("Candidate / total: {pct:.1}%"));
             }
         });
 }

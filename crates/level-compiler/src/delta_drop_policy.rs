@@ -400,7 +400,9 @@ mod tests {
                 legacy_rgba.push(f32_to_f16_bits(1.0));
             }
             let legacy_zero = legacy_rgba
-                .chunks_exact(4)
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .all(|rgba| rgba[..3].iter().all(|&half| f16_bits_to_f32(half) == 0.0));
             assert_eq!(rgb_payload_is_zero(&packed_rgb), legacy_zero);
         }

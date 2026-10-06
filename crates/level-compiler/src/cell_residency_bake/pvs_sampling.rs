@@ -16,7 +16,7 @@
 //! maximum, since the cube faces tile every view direction. A cell with no
 //! accepted eye point keeps the set {cell} alone, a much weaker bound.
 
-use glam::{Mat4, Vec3};
+use glam::Vec3;
 use postretro_level_loader::LevelWorld;
 use postretro_visibility::{
     TimingGate, VisibilityPath, VisibleCells, determine_visible_cells, portal_traverse,
@@ -267,10 +267,15 @@ fn walk_cube_faces(
     visible: &mut [bool],
     stats: &mut SamplingStats,
 ) {
-    let projection = Mat4::perspective_rh(CUBE_FACE_FOV_DEGREES.to_radians(), 1.0, NEAR, FAR);
+    let projection = glam::camera::rh::proj::directx::perspective(
+        CUBE_FACE_FOV_DEGREES.to_radians(),
+        1.0,
+        NEAR,
+        FAR,
+    );
     for (direction, up) in CUBE_FACES {
         stats.walks += 1;
-        let view = Mat4::look_at_rh(eye, eye + direction, up);
+        let view = glam::camera::rh::view::look_at_mat4(eye, eye + direction, up);
         let (result, frustum) = determine_visible_cells(
             eye,
             projection * view,

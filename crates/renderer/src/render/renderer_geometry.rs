@@ -9,8 +9,13 @@ pub(crate) fn build_default_view_projection(aspect: f32) -> Mat4 {
     let center = glam::Vec3::ZERO;
     let up = glam::Vec3::Y;
 
-    let view = Mat4::look_at_rh(eye, center, up);
-    let projection = Mat4::perspective_rh(std::f32::consts::FRAC_PI_2, aspect, 0.1, 4096.0);
+    let view = glam::camera::rh::view::look_at_mat4(eye, center, up);
+    let projection = glam::camera::rh::proj::directx::perspective(
+        std::f32::consts::FRAC_PI_2,
+        aspect,
+        0.1,
+        4096.0,
+    );
 
     projection * view
 }

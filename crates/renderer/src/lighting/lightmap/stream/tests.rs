@@ -96,7 +96,10 @@ fn read_buffer(ctx: &GpuCtx, buffer: &wgpu::Buffer) -> Vec<u8> {
     ctx.device
         .poll(wgpu::PollType::wait_indefinitely())
         .expect("poll stream test device");
-    let bytes = slice.get_mapped_range().to_vec();
+    let bytes = slice
+        .get_mapped_range()
+        .expect("buffer mapped for readback")
+        .to_vec();
     readback.unmap();
     bytes
 }

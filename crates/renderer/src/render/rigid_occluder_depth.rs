@@ -51,7 +51,7 @@ impl RigidOccluderDepthPass {
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: Some("vs_main"),
-                buffers: &[wgpu::VertexBufferLayout {
+                buffers: &[Some(wgpu::VertexBufferLayout {
                     array_stride: postretro_render_data::geometry::WorldVertex::STRIDE
                         as wgpu::BufferAddress,
                     step_mode: wgpu::VertexStepMode::Vertex,
@@ -60,7 +60,7 @@ impl RigidOccluderDepthPass {
                         shader_location: 0,
                         format: wgpu::VertexFormat::Float32x3,
                     }],
-                }],
+                })],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             },
             primitive: wgpu::PrimitiveState {

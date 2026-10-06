@@ -6,7 +6,8 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
-use mlua::{Compiler, Lua};
+use mlua::Lua;
+use mlua::chunk::Compiler;
 
 use super::error::ScriptError;
 use super::luau_virtual_modules::LuauVirtualModuleRegistry;
@@ -52,7 +53,7 @@ impl LuauRequireTracker {
 ///   stripped; `../` segments are rejected (mods must not escape their root).
 /// - Absolute paths are rejected.
 /// - If the resolved path lacks a `.luau` extension, one is appended.
-/// - The resolved file is read, compiled with `mlua::Compiler`, and executed
+/// - The resolved file is read, compiled with `mlua::chunk::Compiler`, and executed
 ///   in the same Lua state. Its return value (typically a table) is the
 ///   value of the `require` call.
 /// - File-not-found, IO failure, compile failure, and runtime error all
@@ -96,7 +97,7 @@ pub(super) fn install_require_resolver(
             })?;
             lua.load(&bytecode)
                 .set_name(resolved.to_string_lossy().as_ref())
-                .set_mode(mlua::ChunkMode::Binary)
+                .set_mode(mlua::chunk::ChunkMode::Binary)
                 .eval::<mlua::Value>()
         })
         .map_err(|e| ScriptError::InvalidArgument {

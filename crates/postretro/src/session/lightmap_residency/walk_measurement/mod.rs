@@ -156,9 +156,9 @@ fn eye_point(world: &LevelWorld, cell: u32, rng: &mut SplitMix64) -> Vec3 {
 
 fn view_projection(eye: Vec3, yaw: f32) -> Mat4 {
     let look = Vec3::new(-yaw.sin(), 0.0, -yaw.cos());
-    let view = Mat4::look_at_rh(eye, eye + look, Vec3::Y);
+    let view = glam::camera::rh::view::look_at_mat4(eye, eye + look, Vec3::Y);
     let vfov = 2.0 * ((HFOV_DEGREES.to_radians() / 2.0).tan() / ASPECT).atan();
-    Mat4::perspective_rh(vfov, ASPECT, 0.1, 4096.0) * view
+    glam::camera::rh::proj::directx::perspective(vfov, ASPECT, 0.1, 4096.0) * view
 }
 
 /// Visible-miss block-frames, one bucket pair per step kind.

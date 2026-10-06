@@ -5,66 +5,100 @@
 //!
 //! The player capsule's axis is world **+Y**. Endpoints sit at
 //! `origin ± half_height * Y`. parry3d's native capsule axis is also +Y, so
-//! the engine's capsule definition maps directly to `parry3d::shape::Capsule`
-//! without rotation.
+//! the engine's capsule definition maps directly to
+//! `parry3d::shape::Capsule::new_y` without rotation.
 //!
 //! # Boundary
 //!
-//! `CollisionWorld` is Rust-only; not exposed to scripts. Parry and nalgebra
-//! values stay private to this crate. Subsystem-boundary coordinates and query
-//! results use engine-owned types built from `glam::Vec3`.
+//! `CollisionWorld` is Rust-only; not exposed to scripts. parry3d's math is
+//! glam (`parry3d::math::Vector` is `Vec3`, rotations are `glam::Quat`),
+//! so points and directions pass through unconverted. Parry's own shape, pose,
+//! and hit types stay private to this crate; subsystem-boundary coordinates and
+//! query results use engine-owned types built from `Vec3`.
 //!
 //! Queries call `parry3d::query::*` free functions directly. There is no
-//! `QueryPipeline` and no higher-level query API.
+//! `QueryPipeline` and no higher-level query API. Skin-distance capsule sweeps
+//! go through the `skin_cast` dispatcher, which advances each capsule–triangle
+//! pair onto the skin band with exact contacts (`capsule_triangle`).
 //!
 //! See: `context/lib/entity_model.md` §7.
 
-use parry3d::math::{Isometry, Point, Vector};
+use std::fmt;
+
+use glam::Vec3;
+use parry3d::math::Pose;
 use parry3d::query::{
     Ray, RayCast, RayIntersection, ShapeCastHit, ShapeCastOptions, cast_shapes, intersection_test,
 };
-use parry3d::shape::{Ball, Capsule as ParryCapsule, TriMesh};
+use parry3d::shape::{Ball, Capsule as ParryCapsule, TriMesh, TriMeshBuilderError};
 
 use postretro_level_loader::LevelWorld;
 
+mod capsule_triangle;
 pub mod moving;
+mod skin_cast;
+
+/// A collision trimesh could not be built from the supplied triangles.
+///
+/// Index range, finiteness, and triangle-multiple invariants of level geometry
+/// are rejected earlier, when the PRL sections are decoded; this covers what
+/// parry itself refuses. Engine-owned so parry's error type stays inside the
+/// collision module.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CollisionMeshError {
+    /// The mesh has no triangles. parry requires at least one.
+    Empty,
+    /// parry rejected the mesh topology.
+    Topology(String),
+}
+
+impl fmt::Display for CollisionMeshError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Empty => f.write_str("collision mesh has no triangles"),
+            Self::Topology(reason) => write!(f, "collision mesh topology rejected: {reason}"),
+        }
+    }
+}
+
+impl std::error::Error for CollisionMeshError {}
+
+impl CollisionMeshError {
+    /// Kept crate-private (not a `From` impl) so parry's error type never
+    /// appears in this crate's public trait surface.
+    pub(crate) fn from_parry(err: TriMeshBuilderError) -> Self {
+        match err {
+            TriMeshBuilderError::EmptyIndices => Self::Empty,
+            TriMeshBuilderError::TopologyError(topology) => Self::Topology(topology.to_string()),
+        }
+    }
+}
 
 /// World-space static-geometry collider. Owns a single `parry3d::TriMesh`
-/// built from the level's baked vertices and indices, plus a world-space
-/// `Isometry3<f32>` (always identity — PRL geometry is already world-space).
+/// built from the level's baked vertices and indices. PRL geometry is already
+/// world-space, so every query places the mesh at [`Pose::IDENTITY`].
 #[derive(Debug)]
 pub struct CollisionWorld {
     pub(crate) mesh: TriMesh,
-    pub(crate) isometry: Isometry<f32>,
 }
 
 impl CollisionWorld {
     /// Build static geometry from engine-native triangle data for cross-crate
-    /// harnesses. Production population remains [`Self::populate_from_level`].
+    /// harnesses. Production population is [`Self::from_level`].
     #[cfg(any(test, feature = "test-support"))]
-    pub fn from_triangles_for_test(vertices: Vec<glam::Vec3>, triangles: Vec<[u32; 3]>) -> Self {
-        let points = vertices
-            .into_iter()
-            .map(|point| Point::new(point.x, point.y, point.z))
-            .collect();
+    pub fn from_triangles_for_test(vertices: Vec<Vec3>, triangles: Vec<[u32; 3]>) -> Self {
         Self {
-            mesh: TriMesh::new(points, triangles),
-            isometry: Isometry::identity(),
+            mesh: TriMesh::new(vertices, triangles).expect("test collision mesh must be valid"),
         }
     }
 
     /// Project a point onto the test world's static mesh without exposing
     /// Parry's point-query vocabulary to a dependent crate.
     #[cfg(any(test, feature = "test-support"))]
-    pub fn project_point_for_test(&self, point: glam::Vec3, solid: bool) -> glam::Vec3 {
+    pub fn project_point_for_test(&self, point: Vec3, solid: bool) -> Vec3 {
         use parry3d::query::PointQuery;
 
-        let projection = self.mesh.project_point(
-            &self.isometry,
-            &Point::new(point.x, point.y, point.z),
-            solid,
-        );
-        glam::Vec3::new(projection.point.x, projection.point.y, projection.point.z)
+        self.mesh.project_point(&Pose::IDENTITY, point, solid).point
     }
 
     /// Initialize with a structurally valid 1-triangle mesh. `parry3d::TriMesh`
@@ -72,32 +106,29 @@ impl CollisionWorld {
     /// far outside any plausible game-space origin — so an unpopulated world
     /// reports no hits for ordinary gameplay queries.
     pub fn new() -> Self {
-        // parry3d's TriMesh requires at least one triangle. Place the
-        // placeholder at 1e6 on the X axis — far outside any plausible
-        // game-space origin — so an unpopulated world reports no hits.
         let placeholder_points = vec![
-            Point::new(1.0e6_f32, 0.0, 0.0),
-            Point::new(1.0e6_f32, 1.0, 0.0),
-            Point::new(1.0e6_f32, 0.0, 1.0),
+            Vec3::new(1.0e6_f32, 0.0, 0.0),
+            Vec3::new(1.0e6_f32, 1.0, 0.0),
+            Vec3::new(1.0e6_f32, 0.0, 1.0),
         ];
         let placeholder_indices = vec![[0u32, 1, 2]];
-        let mesh = TriMesh::new(placeholder_points, placeholder_indices);
         Self {
-            mesh,
-            isometry: Isometry::identity(),
+            mesh: TriMesh::new(placeholder_points, placeholder_indices)
+                .expect("the one-triangle placeholder mesh is always valid"),
         }
     }
 
-    /// Rebuild the trimesh from PRL static geometry. All triangles are
-    /// included — no material filter. The world-space isometry is reset
-    /// to identity since PRL vertices are already in world space.
-    pub fn populate_from_level(&mut self, world: &LevelWorld) {
-        let points: Vec<Point<f32>> = world
-            .vertices
-            .iter()
-            .map(|v| Point::new(v.position[0], v.position[1], v.position[2]))
-            .collect();
-
+    /// Build the trimesh from PRL static geometry. All triangles are included —
+    /// no material filter. A level with no triangles yields the empty
+    /// placeholder world. Pure: level install builds this before mutating any
+    /// state, so a rejected mesh fails the load cleanly.
+    ///
+    /// Cannot fail today: parry's only error for a mesh built without topology
+    /// flags is an empty index list, which is filtered above. The `Result`
+    /// keeps a future flagged build (or parry release) from panicking a load.
+    pub fn from_level(world: &LevelWorld) -> Result<Self, CollisionMeshError> {
+        // The PRL Geometry decoder rejects index counts that are not a
+        // multiple of 3, so `as_chunks` drops nothing here.
         debug_assert_eq!(
             world.indices.len() % 3,
             0,
@@ -105,26 +136,19 @@ impl CollisionWorld {
             world.indices.len()
         );
 
-        let triangles: Vec<[u32; 3]> = world
-            .indices
-            .as_chunks::<3>()
-            .0
-            .iter()
-            .map(|chunk| [chunk[0], chunk[1], chunk[2]])
-            .collect();
-
+        let triangles: Vec<[u32; 3]> = world.indices.as_chunks::<3>().0.to_vec();
         if triangles.is_empty() {
-            *self = Self::new();
-            return;
+            return Ok(Self::new());
         }
 
-        // `TriMesh::new` returns the mesh directly (no Result). PRL geometry is
-        // validated upstream by the level compiler, so we trust the
-        // (points, triangles) pair here. `chunks_exact` silently drops a trailing
-        // remainder — the debug_assert above guards against misaligned index buffers
-        // reaching this point.
-        self.mesh = TriMesh::new(points, triangles);
-        self.isometry = Isometry::identity();
+        let points: Vec<Vec3> = world
+            .vertices
+            .iter()
+            .map(|v| Vec3::from(v.position))
+            .collect();
+        Ok(Self {
+            mesh: TriMesh::new(points, triangles).map_err(CollisionMeshError::from_parry)?,
+        })
     }
 
     /// Reset to the empty placeholder state.
@@ -156,6 +180,20 @@ impl Default for CollisionWorld {
 /// separation for clearance; do not duplicate the offset by pushing again.
 pub const SKIN_DISTANCE: f32 = 0.02;
 
+/// Query limit for an inclusive `max_toi`. parry's trimesh traversal (its BVH
+/// `find_best`) drops a hit lying exactly at `max_time_of_impact`, unlike its
+/// single-shape queries. Engine casts are inclusive — a projectile reaching a
+/// wall exactly at the end of its tick range hits it there instead of starting
+/// the next tick on the surface — so query one ulp past the limit and filter
+/// hits back to it with [`within_limit`].
+pub(crate) fn inclusive_query_limit(max_toi: f32) -> f32 {
+    max_toi.next_up()
+}
+
+pub(crate) fn within_limit(time_of_impact: f32, max_toi: f32) -> bool {
+    time_of_impact <= max_toi
+}
+
 /// A surface counts as walkable when its contact normal points mostly upward.
 /// Mirrors the small agent harness's floor test so placement queries and agent
 /// movement agree about walls vs. floors. Exposed so the fixed-tick
@@ -178,11 +216,7 @@ impl CollisionCapsule {
     }
 
     pub(crate) fn parry(self) -> ParryCapsule {
-        ParryCapsule::new(
-            Point::new(0.0, -self.half_height, 0.0),
-            Point::new(0.0, self.half_height, 0.0),
-            self.radius,
-        )
+        ParryCapsule::new_y(self.half_height, self.radius)
     }
 }
 
@@ -190,7 +224,7 @@ impl CollisionCapsule {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CastHit {
     pub time_of_impact: f32,
-    pub normal: glam::Vec3,
+    pub normal: Vec3,
 }
 
 /// Small lift margin used by placement ground probes. Matches the agent harness
@@ -217,11 +251,7 @@ impl CapsulePlacement {
     }
 
     fn parry(self) -> ParryCapsule {
-        ParryCapsule::new(
-            Point::new(0.0, -self.half_height, 0.0),
-            Point::new(0.0, self.half_height, 0.0),
-            self.radius,
-        )
+        ParryCapsule::new_y(self.half_height, self.radius)
     }
 
     pub fn rest_offset(self) -> f32 {
@@ -234,48 +264,37 @@ impl CapsulePlacement {
 /// penetrating static geometry.
 pub fn capsule_static_placement_center(
     world: &CollisionWorld,
-    center: glam::Vec3,
+    center: Vec3,
     placement: CapsulePlacement,
-) -> Option<glam::Vec3> {
+) -> Option<Vec3> {
     if !center.is_finite() || !placement.is_valid() {
         return None;
     }
 
     let capsule = placement.parry();
     let center = capsule_walkable_floor_center(world, center, &capsule, placement)?;
-    let iso = Isometry::translation(center.x, center.y, center.z);
-    match intersection_test(&iso, &capsule, &world.isometry, &world.mesh) {
-        Ok(false) => Some(center),
-        Ok(true) | Err(_) => None,
-    }
+    let capsule_pose = Pose::from_translation(center);
+    intersection_test(&capsule_pose, &capsule, &Pose::IDENTITY, &world.mesh)
+        .is_ok_and(|intersection| !intersection.intersecting)
+        .then_some(center)
 }
 
 fn capsule_walkable_floor_center(
     world: &CollisionWorld,
-    center: glam::Vec3,
+    center: Vec3,
     capsule: &ParryCapsule,
     placement: CapsulePlacement,
-) -> Option<glam::Vec3> {
+) -> Option<Vec3> {
     let max_down = placement.step_height + STEP_UP_LIFT_MARGIN + SKIN_DISTANCE + 0.03;
 
-    if let Some(h) = cast_capsule_parry(
-        world,
-        Point::new(center.x, center.y, center.z),
-        capsule,
-        Vector::new(0.0, -1.0, 0.0),
-        max_down,
-    ) && h.normal2.y >= COS_WALKABLE
+    if let Some(h) = cast_capsule_parry(world, center, capsule, Vec3::NEG_Y, max_down)
+        && h.normal2.y >= COS_WALKABLE
     {
-        return Some(center - glam::Vec3::new(0.0, h.time_of_impact, 0.0));
+        return Some(center - Vec3::new(0.0, h.time_of_impact, 0.0));
     }
 
     let ray_max = max_down + placement.half_height + placement.radius;
-    let ray = cast_ray_parry(
-        world,
-        Point::new(center.x, center.y, center.z),
-        Vector::new(0.0, -1.0, 0.0),
-        ray_max,
-    )?;
+    let ray = cast_ray_parry(world, center, Vec3::NEG_Y, ray_max)?;
 
     if ray.normal.y < COS_WALKABLE {
         return None;
@@ -284,14 +303,14 @@ fn capsule_walkable_floor_center(
     let target_gap = placement.rest_offset();
     let drop = ray.time_of_impact - target_gap;
     if drop > 0.0 && drop <= max_down {
-        Some(center - glam::Vec3::new(0.0, drop, 0.0))
+        Some(center - Vec3::new(0.0, drop, 0.0))
     } else {
         None
     }
 }
 
 /// Sweep a capsule through the world trimesh along `dir` up to `max_toi`
-/// distance. The capsule's isometry sits at `pos` with identity rotation —
+/// distance. The capsule pose sits at `pos` with identity rotation —
 /// the capsule's `+Y` axis maps directly to world `+Y`, matching the
 /// player-capsule convention documented at the top of this module.
 ///
@@ -307,102 +326,86 @@ fn capsule_walkable_floor_center(
 /// every call site for a condition that cannot occur.
 pub fn cast_capsule(
     world: &CollisionWorld,
-    pos: glam::Vec3,
+    pos: Vec3,
     capsule: CollisionCapsule,
-    dir: glam::Vec3,
+    dir: Vec3,
     max_toi: f32,
 ) -> Option<CastHit> {
     let capsule = capsule.parry();
-    cast_capsule_parry(
-        world,
-        Point::new(pos.x, pos.y, pos.z),
-        &capsule,
-        Vector::new(dir.x, dir.y, dir.z),
-        max_toi,
-    )
-    .map(shape_cast_hit)
+    cast_capsule_parry(world, pos, &capsule, dir, max_toi).map(shape_cast_hit)
 }
 
 pub(crate) fn cast_capsule_parry(
     world: &CollisionWorld,
-    pos: Point<f32>,
+    pos: Vec3,
     capsule: &ParryCapsule,
-    dir: Vector<f32>,
+    dir: Vec3,
     max_toi: f32,
 ) -> Option<ShapeCastHit> {
-    let pos1 = Isometry::translation(pos.x, pos.y, pos.z);
-    let vel2 = Vector::zeros();
+    let pos1 = Pose::from_translation(pos);
     let options = ShapeCastOptions {
-        max_time_of_impact: max_toi,
+        max_time_of_impact: inclusive_query_limit(max_toi),
         target_distance: SKIN_DISTANCE,
         stop_at_penetration: false,
         ..Default::default()
     };
-    cast_shapes(
+    skin_cast::cast_shapes_skin(
         &pos1,
-        &dir,
+        dir,
         capsule,
-        &world.isometry,
-        &vel2,
+        &Pose::IDENTITY,
+        Vec3::ZERO,
         &world.mesh,
         options,
     )
-    .ok()
-    .flatten()
+    .filter(|hit| within_limit(hit.time_of_impact, max_toi))
 }
 
 /// Sweep a sphere using its exact authored radius. Unlike movement capsule
 /// casts, projectile casts add no skin distance: proximity is not impact.
 pub fn cast_sphere_exact(
     world: &CollisionWorld,
-    pos: glam::Vec3,
+    pos: Vec3,
     radius: f32,
-    dir: glam::Vec3,
+    dir: Vec3,
     max_toi: f32,
 ) -> Option<CastHit> {
-    cast_sphere_exact_parry(
-        world,
-        Point::new(pos.x, pos.y, pos.z),
-        radius,
-        Vector::new(dir.x, dir.y, dir.z),
-        max_toi,
-    )
-    .map(shape_cast_hit)
+    cast_sphere_exact_parry(world, pos, radius, dir, max_toi).map(shape_cast_hit)
 }
 
 fn cast_sphere_exact_parry(
     world: &CollisionWorld,
-    pos: Point<f32>,
+    pos: Vec3,
     radius: f32,
-    dir: Vector<f32>,
+    dir: Vec3,
     max_toi: f32,
 ) -> Option<ShapeCastHit> {
-    let pos1 = Isometry::translation(pos.x, pos.y, pos.z);
-    let vel2 = Vector::zeros();
+    let pos1 = Pose::from_translation(pos);
     let options = ShapeCastOptions {
-        max_time_of_impact: max_toi,
+        max_time_of_impact: inclusive_query_limit(max_toi),
         target_distance: 0.0,
         stop_at_penetration: false,
         ..Default::default()
     };
     cast_shapes(
         &pos1,
-        &dir,
+        dir,
         &Ball::new(radius),
-        &world.isometry,
-        &vel2,
+        &Pose::IDENTITY,
+        Vec3::ZERO,
         &world.mesh,
         options,
     )
     .ok()
     .flatten()
+    .filter(|hit| within_limit(hit.time_of_impact, max_toi))
 }
 
 /// Return whether the exact segment from `eye` to `aim` is unobstructed by
 /// static world geometry. Dynamic movers intentionally do not participate:
 /// callers that need mover-aware collision use the combined query surface
 /// explicitly instead.
-pub fn line_of_sight(eye: glam::Vec3, aim: glam::Vec3, world: &CollisionWorld) -> bool {
+pub fn line_of_sight(eye: Vec3, aim: Vec3, world: &CollisionWorld) -> bool {
     let to_aim = aim - eye;
     let distance = to_aim.length();
     if !distance.is_finite() || distance <= 1.0e-5 {
@@ -418,44 +421,34 @@ pub fn line_of_sight(eye: glam::Vec3, aim: glam::Vec3, world: &CollisionWorld) -
 /// (with normal). `solid = true` so the ray exits a triangle hit on the back
 /// face — matches the conventions used by the movement code's ground-stick
 /// fallback.
-pub fn cast_ray(
-    world: &CollisionWorld,
-    origin: glam::Vec3,
-    dir: glam::Vec3,
-    max_toi: f32,
-) -> Option<CastHit> {
-    cast_ray_parry(
-        world,
-        Point::new(origin.x, origin.y, origin.z),
-        Vector::new(dir.x, dir.y, dir.z),
-        max_toi,
-    )
-    .map(ray_hit)
+pub fn cast_ray(world: &CollisionWorld, origin: Vec3, dir: Vec3, max_toi: f32) -> Option<CastHit> {
+    cast_ray_parry(world, origin, dir, max_toi).map(ray_hit)
 }
 
 pub(crate) fn cast_ray_parry(
     world: &CollisionWorld,
-    origin: Point<f32>,
-    dir: Vector<f32>,
+    origin: Vec3,
+    dir: Vec3,
     max_toi: f32,
 ) -> Option<RayIntersection> {
     let ray = Ray::new(origin, dir);
     world
         .mesh
-        .cast_ray_and_get_normal(&world.isometry, &ray, max_toi, true)
+        .cast_ray_and_get_normal(&Pose::IDENTITY, &ray, inclusive_query_limit(max_toi), true)
+        .filter(|hit| within_limit(hit.time_of_impact, max_toi))
 }
 
 fn shape_cast_hit(hit: ShapeCastHit) -> CastHit {
     CastHit {
         time_of_impact: hit.time_of_impact,
-        normal: glam::Vec3::new(hit.normal2.x, hit.normal2.y, hit.normal2.z),
+        normal: hit.normal2,
     }
 }
 
 fn ray_hit(hit: RayIntersection) -> CastHit {
     CastHit {
         time_of_impact: hit.time_of_impact,
-        normal: glam::Vec3::new(hit.normal.x, hit.normal.y, hit.normal.z),
+        normal: hit.normal,
     }
 }
 
@@ -463,60 +456,53 @@ fn ray_hit(hit: RayIntersection) -> CastHit {
 /// degenerate. This keeps entity hit-zone collision on the same engine-owned
 /// glam boundary as static-world queries.
 pub fn cast_ray_against_segment(
-    origin: glam::Vec3,
-    direction: glam::Vec3,
-    a: glam::Vec3,
-    b: Option<glam::Vec3>,
+    origin: Vec3,
+    direction: Vec3,
+    a: Vec3,
+    b: Option<Vec3>,
     radius: f32,
     range: f32,
 ) -> Option<CastHit> {
-    let ray = Ray::new(
-        Point::new(origin.x, origin.y, origin.z),
-        Vector::new(direction.x, direction.y, direction.z),
-    );
+    let ray = Ray::new(origin, direction);
     let intersection = match b {
         Some(b) if (b - a).length() > 1.0e-6 => {
-            let capsule =
-                ParryCapsule::new(Point::new(a.x, a.y, a.z), Point::new(b.x, b.y, b.z), radius);
-            capsule.cast_ray_and_get_normal(&Isometry::identity(), &ray, range, true)
+            let capsule = ParryCapsule::new(a, b, radius);
+            capsule.cast_ray_and_get_normal(&Pose::IDENTITY, &ray, range, true)
         }
-        _ => Ball::new(radius).cast_ray_and_get_normal(
-            &Isometry::translation(a.x, a.y, a.z),
-            &ray,
-            range,
-            true,
-        ),
+        _ => {
+            Ball::new(radius).cast_ray_and_get_normal(&Pose::from_translation(a), &ray, range, true)
+        }
     }?;
     (intersection.time_of_impact <= range).then(|| ray_hit(intersection))
 }
 
 /// Return whether an exact sphere is clear of static world geometry.
-pub fn sphere_fits_world(world: &CollisionWorld, position: glam::Vec3, radius: f32) -> bool {
+pub fn sphere_fits_world(world: &CollisionWorld, position: Vec3, radius: f32) -> bool {
     if !position.is_finite() || !radius.is_finite() || radius <= 0.0 {
         return false;
     }
 
     let sphere = Ball::new(radius);
-    let sphere_isometry = Isometry::translation(position.x, position.y, position.z);
+    let sphere_pose = Pose::from_translation(position);
     let options = ShapeCastOptions {
-        max_time_of_impact: 0.0,
+        max_time_of_impact: inclusive_query_limit(0.0),
         target_distance: 0.0,
         stop_at_penetration: true,
         ..Default::default()
     };
     let cast_hits = cast_shapes(
-        &sphere_isometry,
-        &Vector::zeros(),
+        &sphere_pose,
+        Vec3::ZERO,
         &sphere,
-        &world.isometry,
-        &Vector::zeros(),
+        &Pose::IDENTITY,
+        Vec3::ZERO,
         &world.mesh,
         options,
     )
     .is_ok_and(|hit| hit.is_some());
     !cast_hits
-        && intersection_test(&sphere_isometry, &sphere, &world.isometry, &world.mesh)
-            .is_ok_and(|intersects| !intersects)
+        && intersection_test(&sphere_pose, &sphere, &Pose::IDENTITY, &world.mesh)
+            .is_ok_and(|intersection| !intersection.intersecting)
 }
 
 #[cfg(test)]
@@ -532,38 +518,31 @@ mod tests {
     /// Used as a fixture for ray-cast verification independent of PRL plumbing.
     fn floor_world() -> CollisionWorld {
         let points = vec![
-            Point::new(-1.0, 0.0, -1.0),
-            Point::new(1.0, 0.0, -1.0),
-            Point::new(1.0, 0.0, 1.0),
-            Point::new(-1.0, 0.0, 1.0),
+            Vec3::new(-1.0, 0.0, -1.0),
+            Vec3::new(1.0, 0.0, -1.0),
+            Vec3::new(1.0, 0.0, 1.0),
+            Vec3::new(-1.0, 0.0, 1.0),
         ];
         let triangles = vec![[0u32, 1, 2], [0, 2, 3]];
-        let mesh = TriMesh::new(points, triangles);
-        CollisionWorld {
-            mesh,
-            isometry: Isometry::identity(),
-        }
+        CollisionWorld::from_triangles_for_test(points, triangles)
     }
 
     fn wall_world(x: f32) -> CollisionWorld {
         let points = vec![
-            Point::new(x, -1.0, -1.0),
-            Point::new(x, 1.0, -1.0),
-            Point::new(x, 1.0, 1.0),
-            Point::new(x, -1.0, 1.0),
+            Vec3::new(x, -1.0, -1.0),
+            Vec3::new(x, 1.0, -1.0),
+            Vec3::new(x, 1.0, 1.0),
+            Vec3::new(x, -1.0, 1.0),
         ];
         let triangles = vec![[0u32, 1, 2], [0, 2, 3]];
-        CollisionWorld {
-            mesh: TriMesh::new(points, triangles),
-            isometry: Isometry::identity(),
-        }
+        CollisionWorld::from_triangles_for_test(points, triangles)
     }
 
     #[test]
     fn collision_world_ray_hits_floor_at_unit_distance() {
         let world = floor_world();
 
-        let hit = cast_ray(&world, glam::Vec3::Y, glam::Vec3::NEG_Y, 10.0)
+        let hit = cast_ray(&world, Vec3::Y, Vec3::NEG_Y, 10.0)
             .expect("ray pointing straight down should hit the floor");
 
         let eps = 1.0e-5;
@@ -572,7 +551,7 @@ mod tests {
             "expected TOI ≈ 1.0, got {}",
             hit.time_of_impact
         );
-        let normal_err = (hit.normal - glam::Vec3::Y).length();
+        let normal_err = (hit.normal - Vec3::Y).length();
         assert!(
             normal_err < eps,
             "expected contact normal ≈ (0, 1, 0), got ({}, {}, {})",
@@ -586,14 +565,9 @@ mod tests {
     fn glam_shape_adapters_preserve_toi_and_normal() {
         let floor = floor_world();
         let capsule = CollisionCapsule::new(0.25, 0.5);
-        let capsule_hit = cast_capsule(
-            &floor,
-            glam::Vec3::new(0.0, 2.0, 0.0),
-            capsule,
-            glam::Vec3::NEG_Y,
-            10.0,
-        )
-        .expect("engine-native capsule should hit the floor");
+        let capsule_hit =
+            cast_capsule(&floor, Vec3::new(0.0, 2.0, 0.0), capsule, Vec3::NEG_Y, 10.0)
+                .expect("engine-native capsule should hit the floor");
         // The capsule begins 2 m above the floor, with its lowest point
         // `half_height + radius` below its origin. The sweep must stop one
         // skin distance before contact. Parry's support-map cast terminates at
@@ -618,18 +592,33 @@ mod tests {
             capsule_normal_length
         );
 
-        let sphere_hit =
-            cast_sphere_exact(&wall_world(1.0), glam::Vec3::ZERO, 0.1, glam::Vec3::X, 10.0)
-                .expect("engine-native sphere should hit the wall");
+        let sphere_hit = cast_sphere_exact(&wall_world(1.0), Vec3::ZERO, 0.1, Vec3::X, 10.0)
+            .expect("engine-native sphere should hit the wall");
         assert!((sphere_hit.time_of_impact - 0.9).abs() < 1.0e-5);
-        assert!((sphere_hit.normal.abs() - glam::Vec3::X).length() < 1.0e-5);
+        assert!((sphere_hit.normal.abs() - Vec3::X).length() < 1.0e-5);
+    }
+
+    // parry's trimesh traversal excludes a hit exactly at the query limit;
+    // engine casts are inclusive so a projectile reaching a wall exactly at the
+    // end of its tick range hits it there.
+    #[test]
+    fn casts_include_a_hit_exactly_at_max_toi() {
+        let wall = wall_world(1.0);
+        let origin = Vec3::new(0.0, 0.3, -0.2);
+
+        let ray = cast_ray(&wall, origin, Vec3::X, 1.0).expect("ray reaches the wall at its limit");
+        assert_eq!(ray.time_of_impact, 1.0);
+        let sphere = cast_sphere_exact(&wall, origin, 0.0, Vec3::X, 1.0)
+            .expect("zero-radius sphere reaches the wall at its limit");
+        assert_eq!(sphere.time_of_impact, 1.0);
+        assert!(cast_ray(&wall, origin, Vec3::X, 1.0f32.next_down()).is_none());
     }
 
     #[test]
     fn line_of_sight_blocks_only_static_world_hits_before_the_aim_point() {
         let wall = wall_world(1.0);
-        let eye = glam::Vec3::new(0.0, 0.0, 0.0);
-        let aim = glam::Vec3::new(2.0, 0.0, 0.0);
+        let eye = Vec3::new(0.0, 0.0, 0.0);
+        let aim = Vec3::new(2.0, 0.0, 0.0);
 
         assert!(
             !line_of_sight(eye, aim, &wall),

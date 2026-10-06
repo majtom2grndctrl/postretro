@@ -46,6 +46,22 @@ Crates form a one-way dependency graph: `foundation` and `entities` at the base,
 
 **Tooling.** The committed `crate-graph.md` is a generated snapshot of the layers and chokepoint ranking, kept fresh by the `crate-graph --check` preflight gate. Generate the full edge diagram on demand with `cargo run -p xtask -- crate-graph --mermaid` (it isn't committed — no dense graph to hand-maintain). Query the graph live with `--rdeps <crate>` for a crate's blast radius (reverse deps), or `--deps <crate>` for what it pulls in. The invariants above (nothing depends on the binary, `foundation` stays a leaf, `entities` depends only on `foundation`) are enforced by the `layering_invariants_hold` test — an upward edge or a widened chokepoint fails `cargo test`.
 
+### Build and run
+
+`xtask run` builds the `scripts-build` sidecar, then runs the engine: `cargo run -p xtask -- run [cargo flags...] -- [engine args...]`. A bare `cargo run -p postretro` assumes the sidecar is already built.
+
+**Standard configuration: default `dev` profile with `dev-tools`.** Builds, runs, and targeted tests share that one warm artifact set; any other profile or feature set compiles its own. `dev` keeps incremental builds, `debug_assert!`, and symbols, with workspace crates optimized enough to play-test.
+
+```bash
+cargo run -p xtask -- run --features dev-tools -- content/dev/maps/<map>.prl
+cargo test -p <crate> <filter>   # add --features dev-tools where the crate has it
+cargo run -p postretro-level-compiler -- <in>.map -o <out>.prl   # compile a level (binary: prl-build)
+```
+
+Other profiles are deliberate exceptions. `--release` (thin LTO, no incremental: an edit rebuild takes a minute or more) is for distribution, perf validation, and preflight's release check. `--profile dev-debug` drops workspace optimization for stepping through code in a debugger.
+
+Runtime-only environment variables never trigger a rebuild: `RUST_LOG`, `WGPU_BACKEND`, and the `POSTRETRO_*` diagnostics (§6.4). Distribution builds: `cargo run -p xtask -- dist` and `sdk-dist` (`build_pipeline.md` §Distribution packaging).
+
 ## Stack
 
 ### Engine (`postretro`)
@@ -61,14 +77,14 @@ Crates form a one-way dependency graph: `foundation` and `entities` at the base,
 | Logging | log 0.4 + env_logger 0.11 |
 | Scripting (JS/TS) | rquickjs (QuickJS embed) |
 | Scripting (Luau) | mlua (Luau embed) |
-| Collision | parry3d 0.17 (nalgebra-based — convert to glam at collision module boundary; nalgebra types must not cross into engine code) |
+| Collision | parry3d 0.31 (glam-native: its `Vector` is `glam::Vec3` and its rotation is `glam::Quat`, so points pass through unconverted; parry's shape, pose, hit, and error types stay private to the `postretro-physics` crate; subsystem-boundary coordinates and query results use engine-owned types built from `Vec3`) |
 
 ### Renderer (`postretro-renderer`)
 
 | Concern | Crate |
 |---------|-------|
-| GPU | wgpu 29 (Vulkan, Metal, DX12) |
-| Async blocking | pollster 0.4 (wgpu adapter/device init only) |
+| GPU | wgpu 30 (Vulkan, Metal, DX12) |
+| Async blocking | pollster 1 (wgpu adapter/device init only) |
 
 ### Level compiler (`postretro-level-compiler`)
 
@@ -87,6 +103,7 @@ Crates form a one-way dependency graph: `foundation` and `entities` at the base,
 - **Runtime performance is a first-class goal** — structural choices that favor it belong in the initial implementation. See §1.4.
 - Respect **subsystem boundaries**: renderer, audio, input, game logic are distinct modules with explicit contracts.
 - **Deliver the impact defined in specs and tasks.** Specs define what and why; use judgment on how. When the plan doesn't survive contact with the code, adapt — but surface deviations and update the context files. See §1.
+- **Iterate in the default `dev` profile with `dev-tools`** — one warm build cache. See Workspace › Build and run.
 - Do not flatten module structure. See §2.
 - **No `unsafe` blocks.** See §3.5.
 

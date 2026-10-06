@@ -39,6 +39,12 @@ impl Renderer {
     /// inside the renderer module. Loads the existing swapchain color and
     /// stores it back — no depth attachment.
     ///
+    /// `textures_delta` is drained: every pending set/free is applied and the
+    /// delta is left empty. It is borrowed rather than moved because a frame
+    /// that never reaches here (no surface, error exit) must carry its deltas
+    /// to the next presented frame — egui sends the font atlas once, as a
+    /// whole-texture set, and later partial updates assume it was applied.
+    ///
     /// Egui overlay runs in a separate command encoder submission after the
     /// world draw, using LoadOp::Load to composite on top. This deviates from
     /// the spec's "before frame_timing.encode_resolve" placement — threading a
@@ -48,13 +54,26 @@ impl Renderer {
     pub fn render_debug_ui(
         &mut self,
         present_handle: &mut PresentHandle,
-        textures_delta: egui::TexturesDelta,
+        textures_delta: &mut egui::TexturesDelta,
+        paint_jobs: Vec<egui::ClippedPrimitive>,
+        pixels_per_point: f32,
+    ) -> Result<()> {
+        let surface_view = present_handle.surface_view();
+        self.record_debug_ui(&surface_view, textures_delta, paint_jobs, pixels_per_point)
+    }
+
+    /// `render_debug_ui` against any target view in the surface format. The
+    /// seam exists so offscreen tests can drive the overlay without a surface.
+    #[cfg(feature = "dev-tools")]
+    pub(in crate::render) fn record_debug_ui(
+        &mut self,
+        surface_view: &wgpu::TextureView,
+        textures_delta: &mut egui::TexturesDelta,
         paint_jobs: Vec<egui::ClippedPrimitive>,
         pixels_per_point: f32,
     ) -> Result<()> {
         let cpu = std::rc::Rc::clone(&self.cpu_frame);
         let _debug_ui_scope = cpu.scope(super::cpu_stages::RenderStage::DebugUi);
-        let surface_view = present_handle.surface_view();
         let screen_desc = egui_wgpu::ScreenDescriptor {
             size_in_pixels: [self.surface_config.width, self.surface_config.height],
             pixels_per_point,
@@ -82,9 +101,16 @@ impl Renderer {
             label: Some("egui Encoder"),
         });
 
-        for (id, image_delta) in &textures_delta.set {
-            gpu.renderer
-                .update_texture(device, queue.raw(), *id, image_delta);
+        // Drained into locals so the caller's delta ends empty; epaint
+        // debug-asserts on dropping a non-empty `TexturesDelta`.
+        let set = std::mem::take(&mut textures_delta.set);
+        let free = std::mem::take(&mut textures_delta.free);
+        // Distinct ids are independent; one id's deltas must apply in order.
+        for (id, image_deltas) in &set {
+            for image_delta in image_deltas {
+                gpu.renderer
+                    .update_texture(device, queue.raw(), *id, image_delta);
+            }
         }
         let user_cmd_bufs = gpu.renderer.update_buffers(
             device,
@@ -98,7 +124,7 @@ impl Renderer {
             let pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("egui Overlay Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &surface_view,
+                    view: surface_view,
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
@@ -113,7 +139,7 @@ impl Renderer {
                 .render(&mut pass.forget_lifetime(), &paint_jobs, &screen_desc);
         }
 
-        for id in &textures_delta.free {
+        for id in &free {
             gpu.renderer.free_texture(id);
         }
 

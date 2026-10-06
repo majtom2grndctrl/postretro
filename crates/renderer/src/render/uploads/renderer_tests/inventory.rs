@@ -273,8 +273,10 @@ fn real_map_steady_state_stages_binary_prewrites_and_window_only_writers() {
         None,
     ));
     let mut font = postretro_ui::text::build_font_system();
-    let view = Mat4::look_at_rh(eye, receiver_position, Vec3::Y);
-    let vp = Mat4::perspective_rh(std::f32::consts::FRAC_PI_2, 1.0, 0.1, 4096.0) * view;
+    let view = glam::camera::rh::view::look_at_mat4(eye, receiver_position, Vec3::Y);
+    let vp =
+        glam::camera::rh::proj::directx::perspective(std::f32::consts::FRAC_PI_2, 1.0, 0.1, 4096.0)
+            * view;
     // Warm retained meshes, glyphs, target pipelines and pool before counting.
     let visible = VisibleCells::Culled((0..world.cells.len() as u32).collect());
     let light_reachable = vec![true; world.cells.len()];

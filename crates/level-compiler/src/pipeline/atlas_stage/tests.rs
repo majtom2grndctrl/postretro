@@ -358,10 +358,10 @@ fn cut_face_lit_by_an_animated_light_passes_the_guards_with_matching_overlap_wei
 
     // A 9 m floor under a 2 m occluder straddling its cut lines, in cell 1.
     let (mut geometry, _) = three_leaf_fixture();
-    geometry.geometry.vertices.truncate(0);
-    geometry.geometry.indices.truncate(0);
-    geometry.geometry.faces.truncate(0);
-    geometry.face_index_ranges.truncate(0);
+    geometry.geometry.vertices.clear();
+    geometry.geometry.indices.clear();
+    geometry.geometry.faces.clear();
+    geometry.face_index_ranges.clear();
     push_quad(&mut geometry, 0.0, 9.0, 1);
     push_quad(&mut geometry, 3.5, 2.0, 1);
     for vertex in &mut geometry.geometry.vertices[4..] {

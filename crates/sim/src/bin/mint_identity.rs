@@ -525,7 +525,15 @@ mod tests {
         let temp = tempdir().expect("temporary mod root");
         let error = mint_identity(temp.path()).expect_err("missing manifest must reject");
 
-        assert!(error.contains("no mod manifest"));
+        // Debug mod-init tolerates an absent start-script (manifest stays
+        // `None`, reported by `mint_identity`); release mod-init rejects it
+        // outright. Either way the tool must fail and write nothing.
+        let expected = if cfg!(debug_assertions) {
+            "no mod manifest found"
+        } else {
+            "no `start-script.{js,luau}` found"
+        };
+        assert!(error.contains(expected), "unexpected error: {error}");
         assert!(!temp.path().join(IDENTITY_FILE_NAME).exists());
     }
 

@@ -79,8 +79,9 @@ fn align_up_to_dynamic_offset(bytes: usize) -> usize {
 /// `set_bind_group(6, .., &[offset])` rebases `sprites[0]` in the shader to each
 /// collection's 256-byte-aligned region.
 ///
-/// The bound `size` is an explicit window (NOT `as_entire_binding`). wgpu-29
-/// derives `maximum_dynamic_offset = buffer.size - window`, and
+/// The bound `size` is an explicit window (NOT `as_entire_binding`). wgpu
+/// (verified through wgpu-core 30) derives
+/// `maximum_dynamic_offset = buffer.size - window` for a binding at offset 0, and
 /// `set_bind_group` errors when any dynamic offset exceeds that maximum. With
 /// `as_entire_binding` the window equals the whole buffer, so the maximum is 0
 /// and any collection at offset ≥ 256 would be rejected. Binding an explicit
@@ -839,7 +840,8 @@ impl SmokePass {
         // is `frame_max_region` ≥ 256 B ≥ this 32-byte floor, so it is always
         // satisfied.
         //
-        // NOTE: `min_binding_size` does NOT gate the dynamic offset in wgpu-29.
+        // NOTE: `min_binding_size` does NOT gate the dynamic offset in wgpu
+        // (verified through wgpu-core 30).
         // The maximum legal dynamic offset is derived solely from the bound
         // window: `maximum_dynamic_offset = buffer.size - bound_size`
         // (`min_binding_size` is validated separately and does not feed it). So
@@ -2370,9 +2372,9 @@ mod tests {
         assert_eq!(capacity, last.offset as usize + largest_window);
     }
 
-    /// THE regression guard for the wgpu-29 dynamic-offset bug. With
+    /// THE regression guard for the whole-buffer dynamic-offset bug. With
     /// `as_entire_binding()` the bound window equals the whole buffer, so
-    /// wgpu-29 derives `maximum_dynamic_offset = buffer.size - window = 0` and
+    /// wgpu derives `maximum_dynamic_offset = buffer.size - window = 0` and
     /// rejects every collection past offset 0. The fix binds an explicit window
     /// (`record_draws`'s monotonic high-water mark) so capacity is sized to
     /// `last_offset + window`. This test pins, for a multi-collection frame,
@@ -2380,7 +2382,7 @@ mod tests {
     /// offset legal:
     ///   - `last_offset + window <= capacity` (window fits, invariant 2), and
     ///   - `maximum_dynamic_offset = capacity - window >= every placement.offset`
-    ///     (every collection's offset is admissible, the exact wgpu-29 gate).
+    ///     (every collection's offset is admissible, wgpu's exact gate).
     ///
     /// Also checks the window itself is 256-aligned (storage size alignment,
     /// invariant 3) so the bound `size` is a legal storage binding size.
@@ -2413,7 +2415,7 @@ mod tests {
             capacity,
         );
 
-        // The wgpu-29 gate: every collection's dynamic offset must be
+        // wgpu's gate: every collection's dynamic offset must be
         // <= maximum_dynamic_offset = capacity - window.
         let maximum_dynamic_offset = capacity - window as usize;
         for p in &layout.placements {

@@ -132,7 +132,8 @@ fn run_headless_inner(
     let script_ctx = session.scripting.script_ctx.clone();
     let nav_graph = install_world_gravity_and_nav(&world, &script_ctx);
 
-    let mut collision_world = CollisionWorld::new();
+    let collision_world =
+        CollisionWorld::from_level(&world).context("static collision mesh rejected")?;
     let mut fog_volume_bridge = FogVolumeBridge::new();
     // Trigger volumes are populated for parity with the windowed install, but the
     // tick loop passes no `TriggerTickContext` to `simulate_tick`, so the trigger
@@ -162,7 +163,6 @@ fn run_headless_inner(
             content_root: content_root.as_path(),
             active_level_tags: &active_level_tags,
             nav_graph: nav_graph.as_ref(),
-            collision_world: &mut collision_world,
             fog_volume_bridge: &mut fog_volume_bridge,
             trigger_volume_bridge: &mut trigger_volume_bridge,
             classname_dispatch: &session.classname_dispatch,

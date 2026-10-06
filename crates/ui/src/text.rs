@@ -60,9 +60,8 @@ pub fn measure_run(
     let line_height = font_size * LINE_HEIGHT_FACTOR;
     let metrics = Metrics::new(font_size, line_height);
     let mut buffer = TextBuffer::new(font_system, metrics);
-    buffer.set_size(font_system, None, None);
+    buffer.set_size(None, None);
     buffer.set_text(
-        font_system,
         content,
         &Attrs::new().family(Family::Name(family)),
         Shaping::Advanced,

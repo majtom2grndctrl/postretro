@@ -15,7 +15,7 @@ use postretro_scripting_core::reaction_dispatch::{
 };
 
 /// Segment B of the CPU world install (renderer-free): fog-volume entities,
-/// collision world + kinematic movers, classname dispatch, the data script, the
+/// kinematic movers, classname dispatch, the data script, the
 /// data-archetype sweep (incl. player-pawn spawn), the mesh sweep's CPU half
 /// (hit-zone store build + clip-index resolve), and the `levelLoad` fire. The
 /// sole renderer-coupled step — skinned-model upload + clip-table build — is
@@ -27,7 +27,9 @@ use postretro_scripting_core::reaction_dispatch::{
 /// `timings`, matching the windowed log-line-C labels. The caller-owned
 /// `before_level_load` hook runs after player-pawn materialization and before
 /// the event fire, so session state may bind a local pawn without making this
-/// installer depend on the seat table.
+/// installer depend on the seat table. Static collision is not built here: each
+/// caller builds it with `CollisionWorld::from_level` (fallible, before any
+/// install mutation) and commits it before this call.
 pub(crate) fn install_world_cpu(
     handles: WorldInstallHandles<'_>,
     timings: &mut StartupTimings,
@@ -47,7 +49,6 @@ pub(crate) fn install_world_cpu(
         content_root,
         active_level_tags,
         nav_graph,
-        collision_world,
         fog_volume_bridge,
         trigger_volume_bridge,
         classname_dispatch,
@@ -85,9 +86,8 @@ pub(crate) fn install_world_cpu(
         trigger_volume_bridge.populate_from_level(&mut registry, &world.trigger_volumes);
     }
 
-    // Collision + kinematic movers. Populate before the first game tick so
-    // movement collision is ready.
-    collision_world.populate_from_level(world);
+    // Kinematic movers. The caller commits the static collision world (built
+    // and validated before any install mutation) ahead of this call.
     let mover_colliders = crate::runtime_movers::build_loaded_mover_colliders(world);
     let spawned_mover_entities = if !world.kinematic_geometry.movers.is_empty() {
         let mut registry = script_ctx.registry.borrow_mut();

@@ -65,7 +65,7 @@ pub(crate) fn build_renderer_pipelines(
         vertex: wgpu::VertexState {
             module: &shader,
             entry_point: Some("vs_main"),
-            buffers: &[wgpu::VertexBufferLayout {
+            buffers: &[Some(wgpu::VertexBufferLayout {
                 array_stride: postretro_render_data::geometry::WorldVertex::STRIDE
                     as wgpu::BufferAddress,
                 step_mode: wgpu::VertexStepMode::Vertex,
@@ -109,7 +109,7 @@ pub(crate) fn build_renderer_pipelines(
                         format: wgpu::VertexFormat::Uint16x2,
                     },
                 ],
-            }],
+            })],
             compilation_options: wgpu::PipelineCompilationOptions::default(),
         },
         primitive: wgpu::PrimitiveState {
@@ -179,7 +179,7 @@ pub(crate) fn build_renderer_pipelines(
             vertex: wgpu::VertexState {
                 module: &wireframe_shader,
                 entry_point: Some("vs_main"),
-                buffers: &[wgpu::VertexBufferLayout {
+                buffers: &[Some(wgpu::VertexBufferLayout {
                     array_stride: postretro_render_data::geometry::WorldVertex::STRIDE
                         as wgpu::BufferAddress,
                     step_mode: wgpu::VertexStepMode::Vertex,
@@ -205,7 +205,7 @@ pub(crate) fn build_renderer_pipelines(
                             format: wgpu::VertexFormat::Uint16x2,
                         },
                     ],
-                }],
+                })],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             },
             primitive: wgpu::PrimitiveState {
@@ -245,7 +245,7 @@ pub(crate) fn build_renderer_pipelines(
             vertex: wgpu::VertexState {
                 module: &wireframe_shader,
                 entry_point: Some("vs_main"),
-                buffers: &[wgpu::VertexBufferLayout {
+                buffers: &[Some(wgpu::VertexBufferLayout {
                     array_stride: postretro_render_data::geometry::WorldVertex::STRIDE
                         as wgpu::BufferAddress,
                     step_mode: wgpu::VertexStepMode::Vertex,
@@ -271,7 +271,7 @@ pub(crate) fn build_renderer_pipelines(
                             format: wgpu::VertexFormat::Uint16x2,
                         },
                     ],
-                }],
+                })],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             },
             primitive: wgpu::PrimitiveState {
@@ -322,7 +322,7 @@ pub(crate) fn build_renderer_pipelines(
         vertex: wgpu::VertexState {
             module: &depth_prepass_shader,
             entry_point: Some("vs_main"),
-            buffers: &[wgpu::VertexBufferLayout {
+            buffers: &[Some(wgpu::VertexBufferLayout {
                 array_stride: postretro_render_data::geometry::WorldVertex::STRIDE
                     as wgpu::BufferAddress,
                 step_mode: wgpu::VertexStepMode::Vertex,
@@ -356,7 +356,7 @@ pub(crate) fn build_renderer_pipelines(
                         format: wgpu::VertexFormat::Uint16x2,
                     },
                 ],
-            }],
+            })],
             compilation_options: wgpu::PipelineCompilationOptions::default(),
         },
         primitive: wgpu::PrimitiveState {
@@ -414,7 +414,7 @@ pub(crate) fn build_renderer_pipelines(
         vertex: wgpu::VertexState {
             module: &shadow_shader,
             entry_point: Some("vs_main"),
-            buffers: &[wgpu::VertexBufferLayout {
+            buffers: &[Some(wgpu::VertexBufferLayout {
                 array_stride: postretro_render_data::geometry::WorldVertex::STRIDE
                     as wgpu::BufferAddress,
                 step_mode: wgpu::VertexStepMode::Vertex,
@@ -423,7 +423,7 @@ pub(crate) fn build_renderer_pipelines(
                     shader_location: 0,
                     format: wgpu::VertexFormat::Float32x3,
                 }],
-            }],
+            })],
             compilation_options: wgpu::PipelineCompilationOptions::default(),
         },
         primitive: wgpu::PrimitiveState {

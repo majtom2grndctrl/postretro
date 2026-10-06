@@ -67,7 +67,7 @@ fn real_map_streamed_scene_stages_every_indirect_promotion_and_animated_writer()
     let cluster_count = manifest.cluster_count();
     assert!(cluster_count > 0);
     let mut targets = vec![u64::MAX; cluster_count.div_ceil(64) as usize];
-    if cluster_count % 64 != 0 {
+    if !cluster_count.is_multiple_of(64) {
         *targets.last_mut().unwrap() = (1u64 << (cluster_count % 64)) - 1;
     }
     let mut ready: Vec<_> = (0..cluster_count)

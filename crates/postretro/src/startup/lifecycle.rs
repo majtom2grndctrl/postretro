@@ -445,7 +445,7 @@ impl App {
 
     /// Install a delivered level payload on the main thread: GPU texture upload
     /// (from baked `.prm` mip sidecars), UV normalization, GPU geometry upload,
-    /// bridge / fog / collision populate, classname dispatch, data script,
+    /// light bridge, collision commit, fog/trigger populate, classname dispatch, data script,
     /// archetype sweep, and `levelLoad` fire. Each stage is recorded into
     /// `self.level_timings` for log line C.
     ///
@@ -455,16 +455,22 @@ impl App {
     /// `[0,1]`.
     ///
     /// Called after a level worker delivers a payload; assumes `self.renderer`
-    /// is `Some` and `world` is populated.
-    /// Reject invalid indirect index ranges before any install mutation.
+    /// is `Some` and `world` is populated. Rejects invalid indirect index ranges
+    /// and a static collision mesh parry refuses before any install mutation.
     fn install_level_payload(
         &mut self,
         mut world: postretro_level_loader::LevelWorld,
         prm_cache_root: PathBuf,
-    ) -> Result<(), render::LevelGeometryRangeError> {
+    ) -> Result<(), LevelInstallRejection> {
         // Before parity, navigation, textures, or any other install mutation:
         // release indirect draws rely on this unchanged BVH/index mapping.
         render::validate_level_geometry_ranges(&world.bvh.leaves, world.indices.len())?;
+        // The static collision trimesh is built here, also before any mutation,
+        // so a mesh parry rejects fails the load through the same route. Install
+        // always follows unload, so what stays untouched is the empty world.
+        // Committed just before segment B.
+        let static_collision = crate::collision::CollisionWorld::from_level(&world)?;
+        self.level_timings.record("static_collision");
         self.view_feel_state = crate::view_feel::ViewFeelState::default();
         self.view_feel_followed_pawn = None;
         self.view_feel_descriptor = None;
@@ -603,6 +609,8 @@ impl App {
                 Some(r) => r,
                 None => {
                     log::error!("[Engine] install_level_payload called with no renderer");
+                    // The level stays installed, so its collision does too.
+                    self.collision_world = static_collision;
                     self.level = Some(world);
                     return Ok(());
                 }
@@ -690,7 +698,7 @@ impl App {
         }
 
         // Segment B of the CPU world install: fog-volume entities, trigger-volume
-        // entities, collision + kinematic movers, classname dispatch, the data
+        // entities, kinematic movers, classname dispatch, the data
         // script, the data-archetype sweep (incl. player spawn), the mesh sweep's
         // CPU half, and the `levelLoad` fire — all renderer-free. The one
         // renderer-coupled step (skinned-model upload + clip-table build) is
@@ -735,6 +743,9 @@ impl App {
                 crate::scripting_systems::hit_zones::ModelLoadWarningOwner::Renderer
             };
 
+        // Collision is ready before the first game tick; segment B's mover
+        // build and spawn sweep follow it.
+        self.collision_world = static_collision;
         let session = self
             .session
             .as_mut()
@@ -751,7 +762,6 @@ impl App {
             content_root: install_content_root.as_path(),
             active_level_tags: &self.active_level_tags,
             nav_graph: self.nav_graph.as_ref(),
-            collision_world: &mut self.collision_world,
             fog_volume_bridge: &mut session.fog_volume_bridge,
             trigger_volume_bridge: &mut session.trigger_volume_bridge,
             classname_dispatch: &session.classname_dispatch,
@@ -1289,6 +1299,16 @@ pub(crate) struct WorldInstallProducts {
     pub(crate) spawn_points: Vec<crate::scripting::map_entity::MapEntity>,
 }
 
+/// Why a delivered level payload was refused before any install mutation.
+/// Routed through `finish_level_failure` like any other failed level load.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum LevelInstallRejection {
+    #[error(transparent)]
+    GeometryRange(#[from] render::LevelGeometryRangeError),
+    #[error("static collision: {0}")]
+    StaticCollision(#[from] crate::collision::CollisionMeshError),
+}
+
 /// Borrowed handles segment B ([`install_world_cpu`]) reads or mutates. Bundled
 /// so the windowed caller and a future headless caller pass one context rather
 /// than ~18 positional args; every field is a live borrow held only for the one
@@ -1308,7 +1328,6 @@ pub(crate) struct WorldInstallHandles<'a> {
     /// The nav graph produced by segment A; supplies the descriptor-spawn agent
     /// capsule params. `None` on maps without a navmesh bake.
     pub(crate) nav_graph: Option<&'a crate::nav::NavGraph>,
-    pub(crate) collision_world: &'a mut crate::collision::CollisionWorld,
     pub(crate) fog_volume_bridge:
         &'a mut crate::scripting_systems::fog_volume_bridge::FogVolumeBridge,
     pub(crate) trigger_volume_bridge:
@@ -2257,6 +2276,8 @@ pub(crate) mod tests {
             .iter()
             .map(|tag| (*tag).to_string())
             .collect();
+        app.collision_world = crate::collision::CollisionWorld::from_level(&world)
+            .expect("fixture collision mesh is valid");
         let mut timings = StartupTimings::new();
         let products = {
             let session = app.session.as_mut().expect("test app session installed");
@@ -2269,7 +2290,6 @@ pub(crate) mod tests {
                 content_root: std::path::Path::new("content/dev"),
                 active_level_tags: &active_level_tags,
                 nav_graph: None,
-                collision_world: &mut app.collision_world,
                 fog_volume_bridge: &mut session.fog_volume_bridge,
                 trigger_volume_bridge: &mut session.trigger_volume_bridge,
                 classname_dispatch: &session.classname_dispatch,
@@ -2438,7 +2458,8 @@ pub(crate) mod tests {
         }
 
         if let Some(world) = app.level.as_ref() {
-            app.collision_world.populate_from_level(world);
+            app.collision_world = crate::collision::CollisionWorld::from_level(world)
+                .expect("fixture collision mesh is valid");
         }
     }
 
@@ -2867,16 +2888,22 @@ pub(crate) mod tests {
         let check = install
             .find("render::validate_level_geometry_ranges(")
             .unwrap();
+        let collision = install
+            .find("crate::collision::CollisionWorld::from_level(")
+            .unwrap();
         for mutation in [
             "self.view_feel_state =",
             "endpoint.set_level_parity(",
             "self.nav_graph =",
             "renderer.install_textures(",
             "renderer.install_level_geometry(",
+            "self.collision_world =",
         ] {
+            let at = install.find(mutation).unwrap();
+            assert!(check < at, "range check must precede {mutation}");
             assert!(
-                check < install.find(mutation).unwrap(),
-                "range check must precede {mutation}"
+                collision < at,
+                "static collision build must precede {mutation}"
             );
         }
         let capture = include_str!("../capture/prepared.rs");
@@ -4158,7 +4185,10 @@ pub(crate) mod tests {
         }
 
         // Segment B creates the fog-volume entities first thing, after the light
-        // populate above — mirroring the windowed call order.
+        // populate above — mirroring the windowed call order, which commits
+        // the static collision world before segment B.
+        app.collision_world = crate::collision::CollisionWorld::from_level(&world)
+            .expect("fixture collision mesh is valid");
         let mut timings = StartupTimings::new();
         {
             let session = app.session.as_mut().expect("test app session installed");
@@ -4171,7 +4201,6 @@ pub(crate) mod tests {
                 content_root: std::path::Path::new("content/dev"),
                 active_level_tags: &[],
                 nav_graph: None,
-                collision_world: &mut app.collision_world,
                 fog_volume_bridge: &mut session.fog_volume_bridge,
                 trigger_volume_bridge: &mut session.trigger_volume_bridge,
                 classname_dispatch: &session.classname_dispatch,

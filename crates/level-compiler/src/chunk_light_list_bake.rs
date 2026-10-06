@@ -3331,7 +3331,7 @@ mod tests {
                         }
 
                         let mut clear_receiver_found = false;
-                        for triangle_indices in indices.chunks_exact(3) {
+                        for triangle_indices in indices.as_chunks::<3>().0 {
                             let triangle = [
                                 Vec3::from(vertices[triangle_indices[0] as usize].position),
                                 Vec3::from(vertices[triangle_indices[1] as usize].position),
@@ -3371,7 +3371,7 @@ mod tests {
                                 let max_distance =
                                     length - SAMPLE_END_TOLERANCE_METERS.max(RAY_EPSILON);
                                 let blocked = max_distance > 0.0
-                                    && indices.chunks_exact(3).any(|occluder_indices| {
+                                    && indices.as_chunks::<3>().0.iter().any(|occluder_indices| {
                                         let a = Vec3::from(
                                             vertices[occluder_indices[0] as usize].position,
                                         );

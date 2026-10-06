@@ -142,7 +142,7 @@ const POINT_SHADOW_DEPTH_BIAS: f32 = 0.08;
 // Project a light-local linear depth (distance along the dominant cube-face
 // axis, i.e. the largest-magnitude component of the light→fragment vector) into
 // the perspective NDC depth [0,1] the cube depth pass stored. The cube faces are
-// rendered with `Mat4::perspective_rh(90°, 1.0, near, far)` (wgpu z ∈ [0,1]), so
+// rendered with glam `rh::proj::directx::perspective(90°, 1.0, near, far)` (wgpu z ∈ [0,1]), so
 // for a view-space depth `d` (= dominant axis magnitude = -view_z) the stored
 // NDC z is `far/(far-near) - (near*far)/((far-near)*d)`. Matching this exactly
 // is why a plain linear-distance compare would mis-shadow.

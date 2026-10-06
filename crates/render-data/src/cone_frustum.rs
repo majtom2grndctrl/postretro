@@ -192,7 +192,7 @@ pub fn aabb_intersects_frustum(aabb: &Aabb, planes: &[Vec4; 6]) -> bool {
 /// — guarantees the cull volume matches the rendered shadow frustum exactly.
 ///
 /// NDC z spans `[0, 1]` because `light_space_matrix()` uses glam's
-/// `perspective_rh` (Vulkan/D3D/Metal depth range), matching the cube corners
+/// `camera::rh::proj::directx::perspective` (wgpu depth range), matching the cube corners
 /// below. A non-invertible matrix (degenerate light) yields a point AABB at the
 /// origin, which the AABB-vs-frustum predicate handles without panicking.
 ///
@@ -271,7 +271,12 @@ mod tests {
 
     #[test]
     fn extract_frustum_planes_for_gpu_uses_webgpu_zero_to_one_near_plane() {
-        let m = Mat4::perspective_rh(std::f32::consts::FRAC_PI_2, 1.0, 0.1, 10.0);
+        let m = glam::camera::rh::proj::directx::perspective(
+            std::f32::consts::FRAC_PI_2,
+            1.0,
+            0.1,
+            10.0,
+        );
         let planes = extract_frustum_planes_for_gpu(&m);
 
         let r2 = matrix_row(&m, 2);

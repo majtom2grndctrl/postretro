@@ -219,7 +219,7 @@ impl DebugLineRenderer {
                 vertex: wgpu::VertexState {
                     module: &shader,
                     entry_point: Some("vs_main"),
-                    buffers: &[wgpu::VertexBufferLayout {
+                    buffers: &[Some(wgpu::VertexBufferLayout {
                         array_stride: std::mem::size_of::<DebugLineVertex>() as wgpu::BufferAddress,
                         step_mode: wgpu::VertexStepMode::Vertex,
                         attributes: &[
@@ -234,7 +234,7 @@ impl DebugLineRenderer {
                                 format: wgpu::VertexFormat::Unorm8x4,
                             },
                         ],
-                    }],
+                    })],
                     compilation_options: wgpu::PipelineCompilationOptions::default(),
                 },
                 primitive: wgpu::PrimitiveState {

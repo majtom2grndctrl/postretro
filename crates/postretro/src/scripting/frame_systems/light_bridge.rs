@@ -3853,7 +3853,9 @@ mod tests {
             assert_eq!(live.lights_bytes.len(), CONCURRENT_LIGHTS * GPU_LIGHT_SIZE);
             assert!(
                 live.lights_bytes
-                    .chunks_exact(GPU_LIGHT_SIZE)
+                    .as_chunks::<GPU_LIGHT_SIZE>()
+                    .0
+                    .iter()
                     .all(|record| record.iter().any(|&byte| byte != 0)),
                 "every live runtime light must produce a non-zero forward record"
             );
@@ -4260,7 +4262,9 @@ mod tests {
         assert!(
             update
                 .lights_bytes
-                .chunks_exact(GPU_LIGHT_SIZE)
+                .as_chunks::<GPU_LIGHT_SIZE>()
+                .0
+                .iter()
                 .all(|record| record.iter().any(|&byte| byte != 0)),
             "batched runtime enrollment must upload every live forward record"
         );
@@ -4538,7 +4542,12 @@ mod tests {
 
         let update = bridge.update(&mut registry, 0.0, 0.0).unwrap();
         assert_eq!(update.animated_window_brightness, vec![0.0, 0.6, 0.6]);
-        let records: Vec<&[u8]> = update.lights_bytes.chunks_exact(GPU_LIGHT_SIZE).collect();
+        let records: Vec<&[u8; GPU_LIGHT_SIZE]> = update
+            .lights_bytes
+            .as_chunks::<GPU_LIGHT_SIZE>()
+            .0
+            .iter()
+            .collect();
         assert_eq!(records.len(), 3);
         assert!(records[0].iter().all(|&byte| byte == 0));
         assert_eq!(records[1], records[2]);

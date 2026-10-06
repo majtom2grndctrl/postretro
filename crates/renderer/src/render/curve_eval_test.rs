@@ -97,6 +97,7 @@ fn try_init_gpu() -> Option<GpuCtx> {
         power_preference: wgpu::PowerPreference::default(),
         compatible_surface: None,
         force_fallback_adapter: false,
+        apply_limit_buckets: false,
     }))
     .ok()?;
 
@@ -326,7 +327,9 @@ fn run_compute(
         .expect("poll");
     rx.recv().expect("map channel").expect("map ok");
 
-    let data = slice.get_mapped_range();
+    let data = slice
+        .get_mapped_range()
+        .expect("buffer mapped for readback");
     let out = data.to_vec();
     drop(data);
     readback.unmap();
@@ -359,8 +362,8 @@ fn run_scalar_compute(ctx: &GpuCtx, samples: &[f32], dispatches: &[(u32, f32)]) 
     );
 
     let mut out = Vec::with_capacity(dispatches.len());
-    for chunk in raw.chunks_exact(4).take(dispatches.len()) {
-        out.push(f32::from_ne_bytes(chunk.try_into().unwrap()));
+    for chunk in raw.as_chunks::<4>().0.iter().take(dispatches.len()) {
+        out.push(f32::from_ne_bytes(*chunk));
     }
     out
 }
@@ -402,7 +405,7 @@ fn run_color_compute(
     );
 
     let mut out = Vec::with_capacity(dispatches.len());
-    for chunk in raw.chunks_exact(16).take(dispatches.len()) {
+    for chunk in raw.as_chunks::<16>().0.iter().take(dispatches.len()) {
         let r = f32::from_ne_bytes(chunk[0..4].try_into().unwrap());
         let g = f32::from_ne_bytes(chunk[4..8].try_into().unwrap());
         let b = f32::from_ne_bytes(chunk[8..12].try_into().unwrap());

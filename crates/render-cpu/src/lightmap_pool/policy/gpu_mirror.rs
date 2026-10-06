@@ -19,7 +19,9 @@ impl GpuMirror {
     pub(super) fn new(model: &LightmapPoolModel) -> Self {
         let bytes = model.table_bytes();
         let table = bytes
-            .chunks_exact(BLOCK_TABLE_ENTRY_BYTES)
+            .as_chunks::<BLOCK_TABLE_ENTRY_BYTES>()
+            .0
+            .iter()
             .map(|entry| {
                 BlockTableEntry::from_words(std::array::from_fn(|w| {
                     u32::from_ne_bytes(entry[w * 4..w * 4 + 4].try_into().unwrap())

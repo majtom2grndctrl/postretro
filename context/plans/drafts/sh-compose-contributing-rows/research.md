@@ -23,7 +23,8 @@
 The composed atlases persist across frames, and only compose writes them, apart from the growth copies (`sh_streaming/gpu/growth.rs`). A skipped current row keeps its last value.
 
 ## Prior commitments
-- `plans/done/perf-sh-compose-sampled-row-gating` set "today's pass-level trigger, restricted to gated contributing rows". There, "contributing" meant the section's domain: indirect scoped 4,214 of 8,127 resident rows. This brief narrows that definition; it does not repair drift. That plan deferred *per-light* row scoping, which needs per-light dirty tracking and has no dirty signal for curve samples. This brief uses static entry presence and needs no dirty signal.
+- `plans/done/perf-sh-compose-sampled-row-gating` set "today's pass-level trigger, restricted to gated contributing rows". Its spike findings (`spike-findings.md`, Q3) defined the measured "scoped" set as "resident rows with ≥1 CSR entry for an active light". `rendering_pipeline.md` §4 and §7.1 say compose filters rows by contribution. The landed membership uses sparse-row refs, which cover every brick in the domain, including empty ones (cluster directory AC3). So this brief repairs drift from a committed contract. It keeps the "≥1 CSR entry" half and drops "for an active light" (see Rivals).
+- That plan also deferred *per-light* row scoping, which needs per-light dirty tracking and has no dirty signal for curve samples. This brief uses static entry presence and needs no dirty signal.
 - The spike projected the filter alone at the arena: indirect 6.71 → 0.52 ms and Pass B 8.00 → 0.86 ms. That is `c + r · rows_f + entry share`, with `c` = 0.24 / 0.26 ms, `r` = 2.99 / 3.46 µs, and `rows_f` = 70. It extrapolates below the fitted row range (730–2579).
 
 ## Exemption
@@ -33,3 +34,9 @@ The exemption is not lifted here. What the research found:
 - Payload is unit-radiance transport, and the only script surface is `setLightAnimation`. So a zero payload looks geometric and curve-invariant. That is an inference; no plan states it.
 - Unchecked: whether an animated radius curve (`eval_animated_radius`) or entity follow (`cached_follow_positions`) can move a baked light's reach, and how `sh_runtime_envelope.rs` uses the mutable mask.
 - Lifting the exemption would shrink entry rows further at the kinematic poses (780 entry rows). It needs its own grounding.
+
+## Rivals
+- **Filter `plan.rows` after planning.** Zero-entry rows would stay stale forever, which breaks the staleness bookkeeping the oracle checks.
+- **Per-light active scoping:** a row contributes if it has an entry for a light active this frame or last. The active flags are already on the CPU, so it needs no curve dirty signal. Rejected: membership becomes dynamic and needs per-light epochs, and every light on the target maps animates continuously, so it saves nothing there.
+- **Nonzero-payload membership, decided at install:** runtime-only, and it would capture part of the exemption-lift saving without a compiler change. Rejected for now: it relies on retained records being exactly zero (unverified), and its yield at the kinematic station is unmeasured.
+- **Compiler drops empty rows:** it breaks the cluster directory's wire contract (AC3) and forces a re-bake. Residency needs empty rows for base seeding and eviction.

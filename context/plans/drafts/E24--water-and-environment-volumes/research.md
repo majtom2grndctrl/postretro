@@ -53,7 +53,7 @@ This came out of the owner conversation that preceded the brief.
   - crouch resizes along Y.
 - **Camera:** `look_direction` and `look_at_mat4(…, Vec3::Y)`.
 - **Navmesh:** a Y-up 2.5D span rasterizer (`navmesh_bake.rs`, `sim/src/nav`), which cannot represent walls or ceilings as walkable.
-- **What breaks without re-keying "ground" to gravity:** flipping gravity to +Y makes the player land on a ceiling-classified contact and never ground. Sideways gravity leaves the player permanently airborne, pinned against a wall. Only downward gravity behaves, hence the down-only validator.
+- **What breaks without re-keying "ground" to gravity:** flipping gravity to +Y makes the player land on a ceiling-classified contact and never ground. Sideways gravity leaves the player permanently airborne, pinned against a wall. Only downward gravity behaves without further rules. §Gravity as a force supersedes the down-only validator this once justified.
 
 ## Precedents
 
@@ -154,9 +154,52 @@ Grounded by read-only research at c495e49ea, then decided by the owner.
   - The two-entity pool gotcha is documented in the FGD.
   - Doc amendments now cover `audio.md` §1/§6 and `entity_model.md`'s particle step rate.
 
+## Gravity as a force (2026-10-05)
+
+Source trace at 90c9b9687, read-only. It grounds the Decision that gravity is a force in any direction while "up" stays +Y.
+- **Grounded bodies get no gravity today.** Every intent gates gravity on airborne (`intents/normal.rs`, `crouching.rs`, `dash.rs`, `slide.rs`). The substrate's `integrate_collision` (`movement/substrate.rs`) zeroes vertical velocity, and ground-stick casts `NEG_Y` whenever the previous tick was grounded with `velocity.y <= 1e-3`. So upward gravity alone never lifts a grounded player.
+- **Lift-off precedent.** The knockback launch in movement `tick` (`movement/mod.rs`) clears grounded and sets the `jumped` flag passed to the substrate, which skips the clamp and ground-stick. Lift-off on `resolved_gravity.y > 0` reuses it, in `tick`, so every state inherits it.
+- **Ceilings.** The substrate's slide loop splits contacts on `normal.y >= cos_walkable`, so a ceiling takes the wall branch: the body stays airborne and slides along it. `classify_contact` only breaks mover-hit ties. `knockback::clamp_fall_speed` caps only downward speed, hence the terminal-speed rule. `air_jump_ready` blocks air jumps while rising faster than `jump_ceiling`.
+- **Wind.**
+  - Ground friction (`GROUND_STOP_FRICTION`, `intents/mod.rs`) does not cancel a per-tick velocity add; drift settles near `g_h / 6`.
+  - Airborne with input held, the air cap (`intents/normal.rs`) would clip wind, so wind is added after the intent and exempt from caps.
+  - The knockback layer is the wrong home, because `knockback_control()` cuts steering while it is non-zero.
+- **Slide.** It projects gravity onto the floor (`intents/slide.rs`), so a sideways vector would feed the slope assist. It takes only the downward part.
+- **Agents.** `agent/mod.rs` applies gravity every tick, grounded included, with no terminal clamp. Upward gravity would lift an agent off the navmesh, and sideways gravity has no channel. Hence downward part only.
+- **Determinism.** A `Vec3` adds no parity risk beyond the scalar: plain adds and multiplies in a fixed order. Gravity is authored as components, never angles.
+
+## Third owner round (2026-10-05)
+
+`/review-brief` produced two false premises, one blocker and about twenty owner items. The owner reframed them against PostRetro's goals: 90s-style design experimentation, an expressive high-level API with approachable FGD keys, and "build more right faster". Rulings:
+- **Gravity is a force in any direction; "up" stays +Y.** This replaces the straight-down-only validator, which conflated force with orientation. Upward level gravity stays legal, so that false premise dissolves. The five rules come from §Gravity as a force.
+- **The `gravity` key takes one signed vertical number or a vector,** matching `initialGravity` for the common case.
+- **A missing `swim` block** keeps the absent-means-disabled precedent, and warns when a level has fluid.
+- **Readonly `player.swimming` / `player.immersion` / `player.fluid` slots** make fluid damage and air meters mod-buildable. They follow the `player.spread` catalog precedent, with no new event source.
+- **Level gravity rides the tuning payload.** The premise lens found that payload resent on change, not once at join, so mid-level `worldSetGravity` now reaches clients.
+
+Engineering calls the orchestrator made, which follow precedent and are recorded here rather than asked:
+- the host re-resolves fluids on manifest reload, and the one hot-reload correction is accepted;
+- the fluid table carries movement fields only, while presentation resolves locally like sound keys;
+- the correction bound is 1e-4 m under `light_link`;
+- any state enters swim, and the capsule returns to standing size;
+- swim sounds play on transitions, from forward prediction only;
+- a ray starting on a face doesn't splash there; adjacent entities give two splashes;
+- the stress budget is gated on the windowed mean, and the BVH build is a one-time load record.
+
+Also ruled, at the orchestrator's recommendation and reopenable:
+- the fluid jump latches re-entry (P10); the jump wins a same-tick tie;
+- sinking scales with resolved gravity;
+- the muffle is on the world-sound bus only;
+- partly buried faces are clipped;
+- the source entity index joins the record;
+- out-of-range and duplicate fluids are rejected with a warning;
+- the `audio.md` reverb amendment waits for reverb;
+- the Problem names AI and particle gravity;
+- editorial trim.
+
 ## Ordering pins
 
-Added by `/review-brief` (2026-10-05). Each row is cited by an Acceptance row. P10 is reserved for the owner's ruling on the fluid-jump re-entry case.
+Added by `/review-brief` (2026-10-05). Each row is cited by an Acceptance row. P10 records the owner's ruling on fluid-jump re-entry.
 
 | id | scenario | ordering | expected outcome |
 |---|---|---|---|
@@ -169,7 +212,7 @@ Added by `/review-brief` (2026-10-05). Each row is cited by an Acceptance row. P
 | P7 | A hitscan ray crosses the shared face between two brushes of one fluid entity | Crossings are measured against the union of the entity's brushes | No splash at the shared face; one at entry, one at exit if the ray leaves before its blocking hit |
 | P8 | Level install, and level B installed after level A | The environment volumes and their BVH are built before the level parity digest is published and before the first game tick | No tick resolves against an empty or stale volume set; after B installs, none of A's volumes resolve |
 | P9 | A level whose EnvironmentVolumes section has zero volumes | The BVH builds over zero leaves | Every point, capsule and ray query returns the level default and no fluid; no splash |
-| P10 | A fluid jump on tick N leaves swim while the capsule is still immersed at or above `enterDepth` on tick N+1 | Awaits an owner ruling | Awaits an owner ruling |
+| P10 | A fluid jump on tick N leaves swim while the capsule is still immersed at or above `enterDepth` on tick N+1 | The fluid jump latches swim entry off; the latch clears the first tick immersion is below `exitDepth` | Tick N+1 stays out of swim and keeps the jump's vertical velocity; swim re-enters only after immersion has dipped below `exitDepth` |
 
 ## Research pins
 

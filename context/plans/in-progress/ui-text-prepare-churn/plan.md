@@ -53,9 +53,9 @@ Adapter-gated tests live in `crates/renderer/src/render/ui/text_prepare_gate_tes
 | # | Task | Owner | Depends on | Status |
 |---|---|---|---|---|
 | 0 | Move UI pipeline constructors out of `render/ui/mod.rs` (structural only) | integrating executor | — | done: `render/ui/pipelines.rs`; mod.rs 1032→807; 12 UI tests pass on GTX 1660 Super (Vulkan) |
-| 1 | Thin slice: per-slot gate in `UiTextRenderer` (exact key, retained shaped buffers, slot-local metadata), trim-first reclaim at cadence + atlas-full recovery, encode stats; harness with pinned limits; A1–A4 goldens | integrating executor | 0 | |
-| 2 | Per-layer scoping: composition ends spans at layer boundaries and carries layer per span; banded depth for quads/rings/text with fallback; A8–A14 | integrating executor | 1 | |
-| 3 | Edge rows: font generation, zero text + reclaim deferral, viewport, prepare failure; A5–A7, A15 | integrating executor | 1 | |
-| 4 | Count stage `ui_text_spans_prepared` under `rec_ui`; guard at encode entry; A17, A18 | integrating executor | 1 | |
+| 1 | Thin slice: per-slot gate in `UiTextRenderer` (exact key, retained shaped buffers, slot-local metadata), trim-first reclaim at cadence + atlas-full recovery, encode stats; harness with pinned limits; A1–A4 goldens | integrating executor | 0 | done: `text.rs` slot gate + `TEXT_RECLAIM_CADENCE`; `try_init_gpu_with_limits`; A1–A4 pass. Mutation: per-frame trim after prepares fails the pinned-atlas golden (static label evicted, frame 35) |
+| 2 | Per-layer scoping: composition ends spans at layer boundaries and carries layer per span; banded depth for quads/rings/text with fallback; A8–A14 | integrating executor | 1 | done: `PaintSlot`, `LayerCursor`, `UI_DEPTH_BANDS`/`UI_BAND_ORDERS` in `composition.rs`; A8, A9, A11–A14 pass. Mutation: banding off fails the four layer-scope rows |
+| 3 | Edge rows: font generation, zero text + reclaim deferral, viewport, prepare failure; A5–A7, A15 | integrating executor | 1 | done: A5–A7, A15 pass |
+| 4 | Count stage `ui_text_spans_prepared` under `rec_ui`; guard at encode entry; A17, A18 | integrating executor | 1 | partial: stage + `record_ui_layer` wiring + encode-entry guard landed; A18 passes; A17 renderer-frame test pending |
 | 5 | Retained-path rows: tween settle, pause push/pop; A10, A16 | integrating executor | 2 | |
 | 6 | `ui.md` §5 restated as built; grep gates; adapter run report; A19, A20 | integrating executor | 1–5 | |

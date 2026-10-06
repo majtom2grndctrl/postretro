@@ -1659,6 +1659,7 @@ pub(crate) mod tests {
             observe_live: None,
             remote_player_presentation: crate::netcode::ClientPresentationInputs::default(),
             crouch_toggle_active: false,
+            sprint_toggle_active: false,
             ai_runtime: postretro_ai::AiRuntime::new(),
             cursor_pos: None,
             nav_stick_tracker: input::StickNavTrackers::new(),

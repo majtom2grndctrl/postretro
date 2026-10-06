@@ -53,9 +53,6 @@ const BUTTONS: &[Button] = &[
     Button::DPadRight,
 ];
 
-/// Dead zone radius for both sticks. Standard value across most controllers.
-const DEAD_ZONE: f32 = 0.15;
-
 /// Trigger value above which a trigger counts as a button press.
 const TRIGGER_BUTTON_THRESHOLD: f32 = 0.5;
 
@@ -226,8 +223,12 @@ impl GamepadSystem {
         let right_y = axis_value(&gamepad, Axis::RightStickY);
 
         // Apply radial dead zones.
-        let (left_x, left_y) = apply_radial_dead_zone(left_x, left_y, DEAD_ZONE);
-        let (right_x, right_y) = apply_radial_dead_zone(right_x, right_y, DEAD_ZONE);
+        // The stick bound to look takes the player's look dead zone; the other
+        // keeps the engine's.
+        let left_dz = input_system.stick_dead_zone(Axis::LeftStickX, Axis::LeftStickY);
+        let right_dz = input_system.stick_dead_zone(Axis::RightStickX, Axis::RightStickY);
+        let (left_x, left_y) = apply_radial_dead_zone(left_x, left_y, left_dz);
+        let (right_x, right_y) = apply_radial_dead_zone(right_x, right_y, right_dz);
 
         // A stick navigates through its half-axis inputs: a push past the dead
         // zone fires one directional crossing, which resolves to whatever nav
@@ -453,6 +454,7 @@ pub(crate) fn apply_radial_dead_zone(x: f32, y: f32, dead_zone: f32) -> (f32, f3
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::input::system::DEFAULT_STICK_DEAD_ZONE as DEAD_ZONE;
 
     const EPSILON: f32 = 1e-6;
 

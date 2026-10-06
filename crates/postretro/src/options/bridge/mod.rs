@@ -39,6 +39,9 @@ pub(crate) struct OptionsApplyEffects {
     pub(crate) surface_depth_quality: Option<SurfaceDepthQuality>,
     pub(crate) render_resolution: Option<RenderResolution>,
     pub(crate) window_mode: Option<super::WindowMode>,
+    /// The confirm/cancel swap, when the player changed it: the binding table
+    /// rebuilds with it.
+    pub(crate) swap_confirm_cancel: Option<bool>,
     /// The resolved accessibility preferences, when they changed this frame.
     pub(crate) accessibility: Option<ResolvedAccessibility>,
 }

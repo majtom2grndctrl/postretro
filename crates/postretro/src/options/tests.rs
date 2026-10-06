@@ -802,3 +802,105 @@ fn a_malformed_binding_row_falls_back_alone_and_stays_in_the_file() {
     );
     assert!(to_toml(&options).contains("dash = \"KeyF\""));
 }
+
+// --- E23 U3: gamepad look, sprint mode, swap, hold timing ---
+
+#[test]
+fn the_new_top_level_options_round_trip_as_top_level_keys() {
+    let options = PlayerOptions {
+        sprint_mode: SprintMode::Toggle,
+        gamepad_look_sensitivity: 3.5,
+        gamepad_look_dead_zone: 0.25,
+        gamepad_invert_y: true,
+        swap_confirm_cancel: true,
+        ..PlayerOptions::default()
+    };
+    let text = to_toml(&options);
+    for line in [
+        "sprint_mode = \"toggle\"",
+        "gamepad_look_sensitivity = 3.5",
+        "gamepad_look_dead_zone = 0.25",
+        "gamepad_invert_y = true",
+        "swap_confirm_cancel = true",
+    ] {
+        assert!(text.contains(line), "{line} missing:\n{text}");
+    }
+    assert!(!text.contains("accessibility.sprint"));
+    let reloaded = from_toml(&text);
+    assert_eq!(reloaded.sprint_mode, SprintMode::Toggle);
+    assert_eq!(reloaded.gamepad_look_sensitivity, 3.5);
+    assert_eq!(reloaded.gamepad_look_dead_zone, 0.25);
+    assert!(reloaded.gamepad_invert_y);
+    assert!(reloaded.swap_confirm_cancel);
+}
+
+#[test]
+fn an_unrecognized_sprint_mode_falls_back_to_hold_alone() {
+    let capture = LogCapture::start();
+    let options =
+        from_toml("sprint_mode = \"sometimes\"\ninvert_y = true\ngamepad_invert_y = true\n");
+    assert_eq!(options.sprint_mode, SprintMode::Hold);
+    assert!(options.invert_y && options.gamepad_invert_y);
+    capture.assert_logged_once(Level::Warn, "unrecognized value for `sprint_mode`");
+}
+
+#[test]
+fn hold_timing_scale_lives_in_the_group_clamps_to_one_to_three_and_falls_back_alone() {
+    let options = from_toml("[accessibility]\nhold_timing_scale = 0.5\n");
+    assert_eq!(
+        options.accessibility.hold_timing_scale, 1.0,
+        "never shortens"
+    );
+    let options = from_toml("[accessibility]\nhold_timing_scale = 9.0\n");
+    assert_eq!(options.accessibility.hold_timing_scale, 3.0);
+    let capture = LogCapture::start();
+    let options = from_toml("[accessibility]\nhold_timing_scale = \"long\"\nui_volume = 0.5\n");
+    assert_eq!(options.accessibility.hold_timing_scale, 1.0);
+    assert_eq!(options.accessibility.ui_volume, 0.5);
+    capture.assert_logged_once(Level::Warn, "accessibility.hold_timing_scale");
+    let text = to_toml(&PlayerOptions {
+        accessibility: AccessibilityOptions {
+            hold_timing_scale: 2.0,
+            ..AccessibilityOptions::default()
+        },
+        ..PlayerOptions::default()
+    });
+    assert!(
+        text.contains("[accessibility]") && text.contains("hold_timing_scale = 2"),
+        "{text}"
+    );
+}
+
+#[test]
+fn gamepad_look_values_clamp_into_their_ranges() {
+    let options = from_toml("gamepad_look_sensitivity = 40.0\ngamepad_look_dead_zone = -1.0\n");
+    assert_eq!(options.gamepad_look_sensitivity, 8.0);
+    assert_eq!(options.gamepad_look_dead_zone, 0.0);
+}
+
+#[test]
+fn only_hold_timing_scale_of_the_new_fields_has_an_accessibility_slot_and_panel_entry() {
+    // Catalog assertion: the new top-level fields are working copies only.
+    let catalog = postretro_entities::engine_state_catalog::engine_state_catalog().unwrap();
+    let names: Vec<&str> = catalog.entries().iter().map(|e| e.wire_name).collect();
+    for field in [
+        "gamepadLookSensitivity",
+        "gamepadLookDeadZone",
+        "gamepadInvertY",
+        "sprintMode",
+        "swapConfirmCancel",
+    ] {
+        assert!(
+            names.contains(&format!("options.{field}").as_str()),
+            "{field}"
+        );
+        assert!(
+            !names.contains(&format!("accessibility.{field}").as_str()),
+            "{field}"
+        );
+        assert!(!panel_actions::panel_field_names().any(|name| name == field));
+    }
+    assert!(names.contains(&"accessibility.holdTimingScale"));
+    assert!(names.contains(&"options.holdTimingScale"));
+    assert!(panel_actions::panel_field_names().any(|name| name == "holdTimingScale"));
+}

@@ -347,14 +347,15 @@ export const OPEN_ACCESSIBILITY_ACTION = "ui.openAccessibility";
 /** Accessibility toggles a menu button may cycle. */
 export type AccessibilityToggleField = "reduceMotion" | "flashLimiter" | "monoAudio";
 
-/** Accessibility numeric fields a mod menu button may step, each within [0, 1]. */
+/** Accessibility numeric fields a mod menu button may step, each within its range ([0, 1], or [1, 3] for `holdTimingScale`). */
 export type AccessibilityNumericField =
   | "screenShakeScale"
   | "viewFeelScale"
   | "masterVolume"
   | "sfxVolume"
   | "musicVolume"
-  | "uiVolume";
+  | "uiVolume"
+  | "holdTimingScale";
 
 /**
  * The reserved `onPress` action for one accessibility field:

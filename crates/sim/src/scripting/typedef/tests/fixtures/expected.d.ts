@@ -1538,6 +1538,7 @@ declare module "postretro" {
   export type GameStateRefs = {
     readonly accessibility: {
       readonly flashLimiter: ComputedRef<boolean>;
+      readonly holdTimingScale: ComputedRef<number>;
       readonly masterVolume: ComputedRef<number>;
       readonly monoAudio: ComputedRef<boolean>;
       readonly musicVolume: ComputedRef<number>;
@@ -1554,6 +1555,10 @@ declare module "postretro" {
     readonly options: {
       readonly crouchMode: Ref<"hold" | "toggle">;
       readonly fogQuality: Ref<"low" | "medium" | "high">;
+      readonly gamepadInvertY: Ref<boolean>;
+      readonly gamepadLookDeadZone: Ref<number>;
+      readonly gamepadLookSensitivity: Ref<number>;
+      readonly holdTimingScale: Ref<number>;
       readonly invertY: Ref<boolean>;
       readonly masterVolume: Ref<number>;
       readonly monoAudio: Ref<boolean>;
@@ -1564,7 +1569,9 @@ declare module "postretro" {
       readonly screenShakeScale: Ref<number>;
       readonly sfxVolume: Ref<number>;
       readonly shadowQuality: Ref<"low" | "medium" | "high">;
+      readonly sprintMode: Ref<"hold" | "toggle">;
       readonly surfaceDepthQuality: Ref<"off" | "on">;
+      readonly swapConfirmCancel: Ref<boolean>;
       readonly uiVolume: Ref<number>;
       readonly viewFeelScale: Ref<number>;
       readonly windowMode: Ref<"windowed" | "borderless" | "exclusive">;
@@ -2818,8 +2825,8 @@ declare module "postretro/ui" {
   export const OPEN_ACCESSIBILITY_ACTION: "ui.openAccessibility";
   /** Accessibility toggles a menu button may cycle. */
   export type AccessibilityToggleField = "reduceMotion" | "flashLimiter" | "monoAudio";
-  /** Accessibility numeric fields a mod menu button may step, each within [0, 1]. */
-  export type AccessibilityNumericField = "screenShakeScale" | "viewFeelScale" | "masterVolume" | "sfxVolume" | "musicVolume" | "uiVolume";
+  /** Accessibility numeric fields a mod menu button may step, each within its range ([0, 1], or [1, 3] for `holdTimingScale`). */
+  export type AccessibilityNumericField = "screenShakeScale" | "viewFeelScale" | "masterVolume" | "sfxVolume" | "musicVolume" | "uiVolume" | "holdTimingScale";
   /** Reserved operations for the engine display-mode picker and confirmation. */
   export type DisplayModeOperation = "next" | "previous" | "apply" | "keep" | "revert";
   /**

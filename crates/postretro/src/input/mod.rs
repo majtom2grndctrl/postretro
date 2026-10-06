@@ -48,12 +48,13 @@ pub use focus::InputFocus;
 #[cfg_attr(not(test), allow(unused_imports))]
 pub use input_names::DeviceClass;
 pub use latch::GameplayInputLatch;
+pub use look::DEFAULT_GAMEPAD_LOOK_SENSITIVITY;
 pub use look::LookInputs;
 pub use player_rows::player_layer_from_rows;
 pub use relevance::RelevanceFacts;
 pub(crate) use scroll::wheel_diagnostics_enabled;
 pub use snapshot::ActionSnapshot;
-pub use system::{DEFAULT_MOUSE_SENSITIVITY, InputSystem};
+pub use system::{DEFAULT_GAMEPAD_LOOK_DEAD_ZONE, DEFAULT_MOUSE_SENSITIVITY, InputSystem};
 pub use types::{Action, ButtonState, PhysicalInput};
 #[allow(unused_imports)]
 pub use types::{Activator, ActivatorKind, DEFAULT_ACTIVATOR_THRESHOLD};

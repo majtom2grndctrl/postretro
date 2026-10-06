@@ -480,6 +480,12 @@ impl Session {
         input_system.set_mouse_sensitivity(player_options.mouse_sensitivity);
         input_system.set_invert_y(player_options.invert_y);
         input_system.set_scroll_notch_pixels(player_options.scroll_notch_pixels);
+        input_system.set_gamepad_look_sensitivity(player_options.gamepad_look_sensitivity);
+        input_system.set_gamepad_look_dead_zone(player_options.gamepad_look_dead_zone);
+        input_system.set_gamepad_invert_y(player_options.gamepad_invert_y);
+        input_system.set_hold_timing_scale(player_options.accessibility.hold_timing_scale);
+        let mut bindings = input::BindingState::default();
+        bindings.set_swap_confirm_cancel(player_options.swap_confirm_cancel);
 
         // Register engine built-in trees through the one shared load-and-register
         // path (`tree_asset::register_tree_from_disk`): each built-in screen's
@@ -631,7 +637,7 @@ impl Session {
 
         Ok(Self {
             input_system,
-            bindings: input::BindingState::default(),
+            bindings,
             pending_slider_steps: Vec::new(),
             gameplay_input_latch: input::GameplayInputLatch::new(),
             ui_dispatch: input::UiDispatch::new(),

@@ -138,6 +138,35 @@
           },
           {
             "kind": "text",
+            "content": "HOLD TIMING",
+            "fontSize": 16,
+            "color": "ok",
+            "font": "mono",
+            "id": "a11y_holdTimingScaleLabel"
+          },
+          {
+            "kind": "slider",
+            "id": "a11y_holdTimingScale",
+            "labelledBy": "a11y_holdTimingScaleLabel",
+            "bind": {
+              "slot": "accessibility.holdTimingScale"
+            },
+            "min": 1.0,
+            "max": 3.0,
+            "step": 0.25,
+            "valueDisplay": {
+              "min": 1.0,
+              "max": 3.0,
+              "suffix": "x",
+              "decimalPlaces": 2
+            },
+            "capturesNav": [
+              "nav.left",
+              "nav.right"
+            ]
+          },
+          {
+            "kind": "text",
             "content": "FLASH LIMITER",
             "fontSize": 16,
             "color": "ok",

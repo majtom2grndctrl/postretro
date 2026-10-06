@@ -1537,6 +1537,7 @@ declare function worldSetGravity(value: number): ()
 export type GameStateRefs = {
   accessibility: {
     flashLimiter: ComputedRef<boolean>,
+    holdTimingScale: ComputedRef<number>,
     masterVolume: ComputedRef<number>,
     monoAudio: ComputedRef<boolean>,
     musicVolume: ComputedRef<number>,
@@ -1553,6 +1554,10 @@ export type GameStateRefs = {
   options: {
     crouchMode: Ref<"hold" | "toggle">,
     fogQuality: Ref<"low" | "medium" | "high">,
+    gamepadInvertY: Ref<boolean>,
+    gamepadLookDeadZone: Ref<number>,
+    gamepadLookSensitivity: Ref<number>,
+    holdTimingScale: Ref<number>,
     invertY: Ref<boolean>,
     masterVolume: Ref<number>,
     monoAudio: Ref<boolean>,
@@ -1563,7 +1568,9 @@ export type GameStateRefs = {
     screenShakeScale: Ref<number>,
     sfxVolume: Ref<number>,
     shadowQuality: Ref<"low" | "medium" | "high">,
+    sprintMode: Ref<"hold" | "toggle">,
     surfaceDepthQuality: Ref<"off" | "on">,
+    swapConfirmCancel: Ref<boolean>,
     uiVolume: Ref<number>,
     viewFeelScale: Ref<number>,
     windowMode: Ref<"windowed" | "borderless" | "exclusive">,
@@ -2947,8 +2954,8 @@ export type NavIntent = "nav.up" | "nav.down" | "nav.left" | "nav.right" | "nav.
 --- Accessibility toggles a menu button may cycle.
 export type AccessibilityToggleField = "reduceMotion" | "flashLimiter" | "monoAudio"
 
---- Accessibility numeric fields a mod menu button may step, each within [0, 1].
-export type AccessibilityNumericField = "screenShakeScale" | "viewFeelScale" | "masterVolume" | "sfxVolume" | "musicVolume" | "uiVolume"
+--- Accessibility numeric fields a mod menu button may step, each within its range ([0, 1], or [1, 3] for `holdTimingScale`).
+export type AccessibilityNumericField = "screenShakeScale" | "viewFeelScale" | "masterVolume" | "sfxVolume" | "musicVolume" | "uiVolume" | "holdTimingScale"
 
 --- Reserved operations for the engine display-mode picker and confirmation.
 export type DisplayModeOperation = "next" | "previous" | "apply" | "keep" | "revert"

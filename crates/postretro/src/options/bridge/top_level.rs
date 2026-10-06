@@ -5,8 +5,8 @@
 use postretro_entities::slot_table::{SlotTable, SlotValue};
 
 use super::super::{
-    CrouchMode, FogQuality, PlayerOptions, RenderResolution, ShadowQuality, SurfaceDepthQuality,
-    keys,
+    CrouchMode, FogQuality, PlayerOptions, RenderResolution, ShadowQuality, SprintMode,
+    SurfaceDepthQuality, keys,
 };
 use super::{OptionsApplyEffects, changed_value, seed_slot};
 use crate::input::InputSystem;
@@ -19,6 +19,11 @@ pub(crate) const SHADOW_QUALITY_SLOT: &str = "options.shadowQuality";
 pub(crate) const FOG_QUALITY_SLOT: &str = "options.fogQuality";
 pub(crate) const SURFACE_DEPTH_QUALITY_SLOT: &str = "options.surfaceDepthQuality";
 pub(crate) const RENDER_RESOLUTION_SLOT: &str = "options.renderResolution";
+pub(crate) const SPRINT_MODE_SLOT: &str = "options.sprintMode";
+pub(crate) const GAMEPAD_LOOK_SENSITIVITY_SLOT: &str = "options.gamepadLookSensitivity";
+pub(crate) const GAMEPAD_LOOK_DEAD_ZONE_SLOT: &str = "options.gamepadLookDeadZone";
+pub(crate) const GAMEPAD_INVERT_Y_SLOT: &str = "options.gamepadInvertY";
+pub(crate) const SWAP_CONFIRM_CANCEL_SLOT: &str = "options.swapConfirmCancel";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct ObservedGenerations {
@@ -30,6 +35,11 @@ struct ObservedGenerations {
     surface_depth_quality: u64,
     render_resolution: u64,
     window_mode: u64,
+    sprint_mode: u64,
+    gamepad_look_sensitivity: u64,
+    gamepad_look_dead_zone: u64,
+    gamepad_invert_y: u64,
+    swap_confirm_cancel: u64,
 }
 
 /// Change tracking for the top-level `options.*` working copies.
@@ -86,6 +96,31 @@ impl TopLevelSync {
             SlotValue::Enum(options.render_resolution.slot_value().to_string()),
         );
         self.reseed_window_mode(table, options.window_mode);
+        self.observed.sprint_mode = seed_slot(
+            table,
+            SPRINT_MODE_SLOT,
+            SlotValue::Enum(options.sprint_mode.slot_value().to_string()),
+        );
+        self.observed.gamepad_look_sensitivity = seed_slot(
+            table,
+            GAMEPAD_LOOK_SENSITIVITY_SLOT,
+            SlotValue::Number(options.gamepad_look_sensitivity),
+        );
+        self.observed.gamepad_look_dead_zone = seed_slot(
+            table,
+            GAMEPAD_LOOK_DEAD_ZONE_SLOT,
+            SlotValue::Number(options.gamepad_look_dead_zone),
+        );
+        self.observed.gamepad_invert_y = seed_slot(
+            table,
+            GAMEPAD_INVERT_Y_SLOT,
+            SlotValue::Boolean(options.gamepad_invert_y),
+        );
+        self.observed.swap_confirm_cancel = seed_slot(
+            table,
+            SWAP_CONFIRM_CANCEL_SLOT,
+            SlotValue::Boolean(options.swap_confirm_cancel),
+        );
     }
 
     pub(super) fn observe(
@@ -203,6 +238,83 @@ impl TopLevelSync {
                 }
             }
             self.observed.render_resolution = generation;
+        }
+
+        if let Some((generation, SlotValue::Enum(value))) =
+            changed_value(table, SPRINT_MODE_SLOT, &mut self.observed.sprint_mode)
+        {
+            if let Some(mode) = SprintMode::from_slot_value(value) {
+                options.mark_written(keys::SPRINT_MODE);
+                if options.sprint_mode != mode {
+                    options.sprint_mode = mode;
+                    changed = true;
+                }
+            }
+            self.observed.sprint_mode = generation;
+        }
+
+        if let Some((generation, SlotValue::Number(value))) = changed_value(
+            table,
+            GAMEPAD_LOOK_SENSITIVITY_SLOT,
+            &mut self.observed.gamepad_look_sensitivity,
+        ) {
+            let (min, max) = super::super::GAMEPAD_LOOK_SENSITIVITY_RANGE;
+            if value.is_finite() {
+                let value = value.clamp(min, max);
+                options.mark_written(keys::GAMEPAD_LOOK_SENSITIVITY);
+                if options.gamepad_look_sensitivity != value {
+                    options.gamepad_look_sensitivity = value;
+                    input.set_gamepad_look_sensitivity(value);
+                    changed = true;
+                }
+            }
+            self.observed.gamepad_look_sensitivity = generation;
+        }
+
+        if let Some((generation, SlotValue::Number(value))) = changed_value(
+            table,
+            GAMEPAD_LOOK_DEAD_ZONE_SLOT,
+            &mut self.observed.gamepad_look_dead_zone,
+        ) {
+            let (min, max) = super::super::GAMEPAD_LOOK_DEAD_ZONE_RANGE;
+            if value.is_finite() {
+                let value = value.clamp(min, max);
+                options.mark_written(keys::GAMEPAD_LOOK_DEAD_ZONE);
+                if options.gamepad_look_dead_zone != value {
+                    options.gamepad_look_dead_zone = value;
+                    input.set_gamepad_look_dead_zone(value);
+                    changed = true;
+                }
+            }
+            self.observed.gamepad_look_dead_zone = generation;
+        }
+
+        if let Some((generation, SlotValue::Boolean(value))) = changed_value(
+            table,
+            GAMEPAD_INVERT_Y_SLOT,
+            &mut self.observed.gamepad_invert_y,
+        ) {
+            options.mark_written(keys::GAMEPAD_INVERT_Y);
+            if options.gamepad_invert_y != *value {
+                options.gamepad_invert_y = *value;
+                input.set_gamepad_invert_y(*value);
+                changed = true;
+            }
+            self.observed.gamepad_invert_y = generation;
+        }
+
+        if let Some((generation, SlotValue::Boolean(value))) = changed_value(
+            table,
+            SWAP_CONFIRM_CANCEL_SLOT,
+            &mut self.observed.swap_confirm_cancel,
+        ) {
+            options.mark_written(keys::SWAP_CONFIRM_CANCEL);
+            if options.swap_confirm_cancel != *value {
+                options.swap_confirm_cancel = *value;
+                effects.swap_confirm_cancel = Some(*value);
+                changed = true;
+            }
+            self.observed.swap_confirm_cancel = generation;
         }
 
         changed

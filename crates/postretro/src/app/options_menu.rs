@@ -95,9 +95,19 @@ impl App {
         }
 
         if let Some(resolved) = effects.accessibility
-            && let Some(audio) = self.session.as_mut().and_then(|s| s.audio.as_mut())
+            && let Some(session) = self.session.as_mut()
         {
-            options::apply_to_audio(&resolved, audio);
+            session
+                .input_system
+                .set_hold_timing_scale(resolved.hold_timing_scale);
+            if let Some(audio) = session.audio.as_mut() {
+                options::apply_to_audio(&resolved, audio);
+            }
+        }
+        if let Some(swap) = effects.swap_confirm_cancel
+            && let Some(session) = self.session.as_mut()
+        {
+            session.bindings.set_swap_confirm_cancel(swap);
         }
 
         // Live: the renderer rewrites every installed material's uniform

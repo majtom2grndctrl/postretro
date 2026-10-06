@@ -532,3 +532,48 @@ fn failed_save_keeps_applied_value_and_later_change_retries() {
     assert!(reloaded.invert_y);
     assert!((reloaded.view_feel_scale - 0.5).abs() < EPSILON);
 }
+
+#[test]
+fn the_gamepad_sprint_and_swap_slots_update_their_fields_and_apply_live() {
+    use super::top_level::{
+        GAMEPAD_INVERT_Y_SLOT, GAMEPAD_LOOK_DEAD_ZONE_SLOT, GAMEPAD_LOOK_SENSITIVITY_SLOT,
+        SPRINT_MODE_SLOT, SWAP_CONFIRM_CANCEL_SLOT,
+    };
+    let ctx = ScriptCtx::new();
+    let mut options = PlayerOptions::default();
+    let mut input = input();
+    let mut bridge = OptionsBridge::new();
+    bridge.seed_on_open(&mut ctx.slot_table.borrow_mut(), &options);
+
+    write(&ctx, GAMEPAD_LOOK_SENSITIVITY_SLOT, json!(4.0));
+    write(&ctx, GAMEPAD_LOOK_DEAD_ZONE_SLOT, json!(0.3));
+    write(&ctx, GAMEPAD_INVERT_Y_SLOT, json!(true));
+    write(&ctx, SPRINT_MODE_SLOT, json!("toggle"));
+    write(&ctx, SWAP_CONFIRM_CANCEL_SLOT, json!(true));
+    let effects = bridge.update(
+        0.0,
+        &mut ctx.slot_table.borrow_mut(),
+        &mut options,
+        &mut input,
+        None,
+    );
+
+    assert_eq!(options.gamepad_look_sensitivity, 4.0);
+    assert_eq!(options.gamepad_look_dead_zone, 0.3);
+    assert!(options.gamepad_invert_y);
+    assert_eq!(options.sprint_mode, crate::options::SprintMode::Toggle);
+    assert!(options.swap_confirm_cancel);
+    assert_eq!(effects.swap_confirm_cancel, Some(true));
+    // Live input effects: gamepad look only; mouse look is untouched.
+    assert_eq!(input.drain_look_inputs().gamepad_sensitivity, 4.0);
+    assert!((input.mouse_sensitivity() - crate::input::DEFAULT_MOUSE_SENSITIVITY).abs() < EPSILON);
+    assert!(!input.invert_y());
+    let right = (gilrs::Axis::RightStickX, gilrs::Axis::RightStickY);
+    let left = (gilrs::Axis::LeftStickX, gilrs::Axis::LeftStickY);
+    assert_eq!(input.stick_dead_zone(right.0, right.1), 0.3);
+    assert_eq!(
+        input.stick_dead_zone(left.0, left.1),
+        0.15,
+        "the move stick keeps its own"
+    );
+}

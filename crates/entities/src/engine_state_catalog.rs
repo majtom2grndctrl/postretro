@@ -347,6 +347,7 @@ fn sdk_path_string(path: &[&str]) -> String {
 
 const INPUT_MODE_VALUES: &[&str] = &["pointer", "focus"];
 const CROUCH_MODE_VALUES: &[&str] = &["hold", "toggle"];
+const SPRINT_MODE_VALUES: &[&str] = &["hold", "toggle"];
 const QUALITY_VALUES: &[&str] = &["low", "medium", "high"];
 /// Surface Depth is off/on, not a low/medium/high ladder: it is a pure cost
 /// lever, and the middle tier it once had never changed the carve depth.
@@ -387,6 +388,16 @@ const BUILTIN_ENGINE_STATE: &[EngineStateCatalogEntry<'static>] = &[
         value_type: EngineStateValueType::Number,
         default: EngineStateDefault::Number(1.0),
         range: Some(NumericRange { min: 0.0, max: 1.0 }),
+        persist: false,
+        capability: EngineStateCapability::Readonly,
+        network: ReplicationScope::None,
+    },
+    EngineStateCatalogEntry {
+        wire_name: "accessibility.holdTimingScale",
+        sdk_path: &["accessibility", "holdTimingScale"],
+        value_type: EngineStateValueType::Number,
+        default: EngineStateDefault::Number(1.0),
+        range: Some(NumericRange { min: 1.0, max: 3.0 }),
         persist: false,
         capability: EngineStateCapability::Readonly,
         network: ReplicationScope::None,
@@ -811,6 +822,58 @@ const BUILTIN_ENGINE_STATE: &[EngineStateCatalogEntry<'static>] = &[
         network: ReplicationScope::None,
     },
     EngineStateCatalogEntry {
+        wire_name: "options.sprintMode",
+        sdk_path: &["options", "sprintMode"],
+        value_type: EngineStateValueType::Enum {
+            values: SPRINT_MODE_VALUES,
+        },
+        default: EngineStateDefault::Enum("hold"),
+        range: None,
+        persist: false,
+        capability: EngineStateCapability::Writable,
+        network: ReplicationScope::None,
+    },
+    EngineStateCatalogEntry {
+        wire_name: "options.gamepadLookSensitivity",
+        sdk_path: &["options", "gamepadLookSensitivity"],
+        value_type: EngineStateValueType::Number,
+        default: EngineStateDefault::Number(2.5),
+        range: Some(NumericRange { min: 0.5, max: 8.0 }),
+        persist: false,
+        capability: EngineStateCapability::Writable,
+        network: ReplicationScope::None,
+    },
+    EngineStateCatalogEntry {
+        wire_name: "options.gamepadLookDeadZone",
+        sdk_path: &["options", "gamepadLookDeadZone"],
+        value_type: EngineStateValueType::Number,
+        default: EngineStateDefault::Number(0.15),
+        range: Some(NumericRange { min: 0.0, max: 0.5 }),
+        persist: false,
+        capability: EngineStateCapability::Writable,
+        network: ReplicationScope::None,
+    },
+    EngineStateCatalogEntry {
+        wire_name: "options.gamepadInvertY",
+        sdk_path: &["options", "gamepadInvertY"],
+        value_type: EngineStateValueType::Boolean,
+        default: EngineStateDefault::Boolean(false),
+        range: None,
+        persist: false,
+        capability: EngineStateCapability::Writable,
+        network: ReplicationScope::None,
+    },
+    EngineStateCatalogEntry {
+        wire_name: "options.swapConfirmCancel",
+        sdk_path: &["options", "swapConfirmCancel"],
+        value_type: EngineStateValueType::Boolean,
+        default: EngineStateDefault::Boolean(false),
+        range: None,
+        persist: false,
+        capability: EngineStateCapability::Writable,
+        network: ReplicationScope::None,
+    },
+    EngineStateCatalogEntry {
         wire_name: "options.shadowQuality",
         sdk_path: &["options", "shadowQuality"],
         value_type: EngineStateValueType::Enum {
@@ -958,6 +1021,16 @@ const BUILTIN_ENGINE_STATE: &[EngineStateCatalogEntry<'static>] = &[
         value_type: EngineStateValueType::Number,
         default: EngineStateDefault::Number(1.0),
         range: Some(NumericRange { min: 0.0, max: 1.0 }),
+        persist: false,
+        capability: EngineStateCapability::Writable,
+        network: ReplicationScope::None,
+    },
+    EngineStateCatalogEntry {
+        wire_name: "options.holdTimingScale",
+        sdk_path: &["options", "holdTimingScale"],
+        value_type: EngineStateValueType::Number,
+        default: EngineStateDefault::Number(1.0),
+        range: Some(NumericRange { min: 1.0, max: 3.0 }),
         persist: false,
         capability: EngineStateCapability::Writable,
         network: ReplicationScope::None,
@@ -1190,6 +1263,7 @@ mod tests {
             wire_names,
             vec![
                 "accessibility.flashLimiter",
+                "accessibility.holdTimingScale",
                 "accessibility.masterVolume",
                 "accessibility.monoAudio",
                 "accessibility.musicVolume",
@@ -1202,6 +1276,10 @@ mod tests {
                 "input.mode",
                 "options.crouchMode",
                 "options.fogQuality",
+                "options.gamepadInvertY",
+                "options.gamepadLookDeadZone",
+                "options.gamepadLookSensitivity",
+                "options.holdTimingScale",
                 "options.invertY",
                 "options.masterVolume",
                 "options.monoAudio",
@@ -1212,7 +1290,9 @@ mod tests {
                 "options.screenShakeScale",
                 "options.sfxVolume",
                 "options.shadowQuality",
+                "options.sprintMode",
                 "options.surfaceDepthQuality",
+                "options.swapConfirmCancel",
                 "options.uiVolume",
                 "options.viewFeelScale",
                 "options.windowMode",
@@ -1274,6 +1354,12 @@ mod tests {
             "options.uiVolume",
             "options.monoAudio",
             "options.windowMode",
+            "options.sprintMode",
+            "options.gamepadLookSensitivity",
+            "options.gamepadLookDeadZone",
+            "options.gamepadInvertY",
+            "options.swapConfirmCancel",
+            "options.holdTimingScale",
         ] {
             let entry = entries
                 .iter()

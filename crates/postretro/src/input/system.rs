@@ -10,7 +10,7 @@ use winit::keyboard::KeyCode;
 
 use super::activator::ActivatorResolver;
 use super::bindings;
-use super::look::LookInputs;
+use super::look::{DEFAULT_GAMEPAD_LOOK_SENSITIVITY, LookInputs};
 use super::scroll::{
     LINE_SCROLL_GESTURE_REPEAT, LineScrollGesture, ScrollNotchAccumulator,
     wheel_diagnostics_enabled,
@@ -38,6 +38,12 @@ struct InputEdge {
     t: f64,
     source: EdgeSource,
 }
+
+/// Radial dead zone for a stick not bound to look (the move stick).
+pub const DEFAULT_STICK_DEAD_ZONE: f32 = 0.15;
+
+/// Default dead zone for the stick bound to look.
+pub const DEFAULT_GAMEPAD_LOOK_DEAD_ZONE: f32 = 0.15;
 
 /// Default sensitivity: radians per raw mouse unit. Tuned for 800 DPI mice.
 pub const DEFAULT_MOUSE_SENSITIVITY: f32 = 0.002;
@@ -99,6 +105,15 @@ pub struct InputSystem {
 
     /// When true, negate the Y (pitch) mouse axis. Applied after sensitivity.
     invert_y: bool,
+
+    /// Gamepad look: radians per second at full deflection.
+    gamepad_look_sensitivity: f32,
+
+    /// When true, negate gamepad pitch. Mouse pitch follows `invert_y`.
+    gamepad_invert_y: bool,
+
+    /// Radial dead zone of the stick bound to look.
+    gamepad_look_dead_zone: f32,
 }
 
 impl InputSystem {
@@ -130,6 +145,9 @@ impl InputSystem {
             gamepad_axes: HashMap::new(),
             mouse_sensitivity: DEFAULT_MOUSE_SENSITIVITY,
             invert_y: false,
+            gamepad_look_sensitivity: DEFAULT_GAMEPAD_LOOK_SENSITIVITY,
+            gamepad_invert_y: false,
+            gamepad_look_dead_zone: DEFAULT_GAMEPAD_LOOK_DEAD_ZONE,
         }
     }
 
@@ -159,6 +177,36 @@ impl InputSystem {
     #[allow(dead_code)]
     pub fn mouse_sensitivity(&self) -> f32 {
         self.mouse_sensitivity
+    }
+
+    /// Gamepad look speed (radians per second at full deflection).
+    pub fn set_gamepad_look_sensitivity(&mut self, sensitivity: f32) {
+        self.gamepad_look_sensitivity = sensitivity;
+    }
+
+    /// Negate gamepad pitch; mouse pitch is unaffected.
+    pub fn set_gamepad_invert_y(&mut self, invert: bool) {
+        self.gamepad_invert_y = invert;
+    }
+
+    /// Dead zone for whichever stick is bound to look.
+    pub fn set_gamepad_look_dead_zone(&mut self, dead_zone: f32) {
+        self.gamepad_look_dead_zone = dead_zone;
+    }
+
+    /// The radial dead zone to apply to a stick: the look dead zone when the
+    /// stick is bound to look, the engine's fixed one otherwise. The look dead
+    /// zone follows the binding, so swapping sticks moves it with look.
+    pub fn stick_dead_zone(&self, x: GilrsAxis, y: GilrsAxis) -> f32 {
+        let bound_to_look = self.bindings.iter().any(|binding| {
+            matches!(binding.action, Action::LookYaw | Action::LookPitch)
+                && matches!(binding.input, PhysicalInput::GamepadAxis(axis) if axis == x || axis == y)
+        });
+        if bound_to_look {
+            self.gamepad_look_dead_zone
+        } else {
+            DEFAULT_STICK_DEAD_ZONE
+        }
     }
 
     /// Enable or disable invert-Y for mouse look.
@@ -496,7 +544,10 @@ impl InputSystem {
         // branch below sees the latest motion.
         self.resolve_mouse_axes();
 
-        let mut look = LookInputs::default();
+        let mut look = LookInputs {
+            gamepad_sensitivity: self.gamepad_look_sensitivity,
+            ..LookInputs::default()
+        };
 
         // Walk LookYaw / LookPitch through the same resolver snapshot() uses.
         // This shares the binding-table lookup path — no parallel code.
@@ -520,7 +571,13 @@ impl InputSystem {
                         look.pitch_displacement += av.value;
                     }
                     (Action::LookPitch, AxisSource::Velocity) => {
-                        look.pitch_velocity += av.value;
+                        // Velocity look comes from sticks (analog commands take
+                        // axes only), so this is the gamepad's pitch.
+                        look.pitch_velocity += if self.gamepad_invert_y {
+                            -av.value
+                        } else {
+                            av.value
+                        };
                     }
                     _ => {}
                 }

@@ -630,6 +630,21 @@ fn window_attributes() -> WindowAttributes {
 ///
 /// The returned bit is the only thing the movement intent ever sees — never the
 /// raw button or the mode (the toggle-vs-hold ownership rule).
+/// The sprint twin of [`resolve_crouch_intent`]: in toggle mode each press edge
+/// of the resolved command (a hold binding's edge comes when its threshold
+/// passes) flips the latch.
+fn resolve_sprint_intent(mode: options::SprintMode, button: ButtonState, latch: &mut bool) -> bool {
+    match mode {
+        options::SprintMode::Hold => button.is_active(),
+        options::SprintMode::Toggle => {
+            if matches!(button, ButtonState::Pressed) {
+                *latch = !*latch;
+            }
+            *latch
+        }
+    }
+}
+
 fn resolve_crouch_intent(mode: options::CrouchMode, button: ButtonState, latch: &mut bool) -> bool {
     match mode {
         options::CrouchMode::Hold => button.is_active(),
@@ -726,6 +741,8 @@ pub(crate) struct App {
     /// the movement component. Inert in `CrouchMode::Hold` (hold tracks the
     /// button level directly). See: context/lib/input.md, context/lib/player_options.md
     crouch_toggle_active: bool,
+    /// Sprint's toggle-mode latch, the crouch latch's twin.
+    sprint_toggle_active: bool,
 
     /// Warn-once state for the enemy-AI tick. Content-keyed diagnostics (e.g.
     /// `anim:<name>` for an animation state that fails to switch,
@@ -1274,6 +1291,7 @@ fn build_sim_command(
     snapshot: &input::ActionSnapshot,
     camera: &Camera,
     crouch_intent: bool,
+    sprint_intent: bool,
     dash_pressed: bool,
     shoot_pressed: bool,
     select_pressed: bool,
@@ -1281,7 +1299,7 @@ fn build_sim_command(
     drop_pressed: bool,
 ) -> sim::SimCommand {
     let jump_pressed = snapshot.button(Action::Jump).is_active();
-    let sprint = snapshot.button(Action::Sprint).is_active();
+    let sprint = sprint_intent;
     let shoot = snapshot.button(Action::Shoot);
     let reload = snapshot.button(Action::Reload);
     let select_slot = select_pressed
@@ -2513,6 +2531,7 @@ impl ApplicationHandler for App {
                             false,
                             false,
                             false,
+                            false,
                         );
                         command.activation.cancel = Some(token);
                         let _ = netcode::client_send_input_command(
@@ -2619,12 +2638,22 @@ impl ApplicationHandler for App {
                         snapshot.button(Action::Crouch),
                         &mut self.crouch_toggle_active,
                     );
+                    let sprint_mode = self
+                        .session
+                        .as_ref()
+                        .map(|session| session.player_options.sprint_mode)
+                        .unwrap_or_default();
+                    let sprint_intent = resolve_sprint_intent(
+                        sprint_mode,
+                        snapshot.button(Action::Sprint),
+                        &mut self.sprint_toggle_active,
+                    );
 
                     for tick_index in 0..ticks {
                         let forward_axis = snapshot.axis_value(Action::MoveForward);
                         let right_axis = snapshot.axis_value(Action::MoveRight);
                         let up_axis = snapshot.axis_value(Action::MoveUp);
-                        let sprint = snapshot.button(Action::Sprint).is_active();
+                        let sprint = sprint_intent;
 
                         let speed = if sprint {
                             camera::MOVE_SPEED * camera::SPRINT_MULTIPLIER
@@ -2718,6 +2747,7 @@ impl ApplicationHandler for App {
                             snapshot,
                             &self.camera,
                             crouch_intent,
+                            sprint_intent,
                             dash_pressed,
                             shoot_pressed,
                             false,
@@ -11375,6 +11405,54 @@ mod tests {
     }
 
     #[test]
+    fn toggle_sprint_latches_on_the_hold_resolution_and_releases_on_the_next() {
+        use input::{Activator, ActivatorKind, Binding, PhysicalInput};
+        let shift = PhysicalInput::Key(winit::keyboard::KeyCode::ShiftLeft);
+        let mut sys = InputSystem::new(vec![
+            Binding::new(shift, Action::Sprint)
+                .with_activator(Activator::with_threshold(ActivatorKind::Hold, 0.2)),
+        ]);
+        let mut latch = false;
+        let sprint_at = |sys: &mut InputSystem, t: f64, latch: &mut bool| {
+            let snap = sys.snapshot_at(t);
+            resolve_sprint_intent(
+                options::SprintMode::Toggle,
+                snap.button(Action::Sprint),
+                latch,
+            )
+        };
+        sys.handle_keyboard_event_at(winit::keyboard::KeyCode::ShiftLeft, true, 0.0);
+        assert!(
+            !sprint_at(&mut sys, 0.1, &mut latch),
+            "not before the hold resolves"
+        );
+        assert!(
+            sprint_at(&mut sys, 0.25, &mut latch),
+            "latches at the threshold"
+        );
+        sys.handle_keyboard_event_at(winit::keyboard::KeyCode::ShiftLeft, false, 0.3);
+        assert!(
+            sprint_at(&mut sys, 0.35, &mut latch),
+            "stays latched after release"
+        );
+        sys.handle_keyboard_event_at(winit::keyboard::KeyCode::ShiftLeft, true, 1.0);
+        assert!(sprint_at(&mut sys, 1.1, &mut latch));
+        assert!(
+            !sprint_at(&mut sys, 1.25, &mut latch),
+            "the next resolution releases it"
+        );
+
+        // Hold mode follows the command.
+        let mut hold_latch = false;
+        let snap = sys.snapshot_at(1.5);
+        assert!(resolve_sprint_intent(
+            options::SprintMode::Hold,
+            snap.button(Action::Sprint),
+            &mut hold_latch
+        ));
+    }
+
+    #[test]
     fn sim_command_reuses_frame_resolved_crouch_toggle_across_catchup_ticks() {
         let mut input_system = InputSystem::new(default_bindings());
         input_system.set_physical_input(
@@ -11400,6 +11478,7 @@ mod tests {
                     &snapshot,
                     &camera,
                     crouch_intent,
+                    false,
                     false,
                     false,
                     false,
@@ -11440,6 +11519,7 @@ mod tests {
                     &snapshot,
                     &camera,
                     false,
+                    false,
                     dash_pressed,
                     false,
                     false,
@@ -11476,6 +11556,7 @@ mod tests {
                     &camera,
                     false,
                     false,
+                    false,
                     shoot_pressed,
                     false,
                     false,
@@ -11509,7 +11590,9 @@ mod tests {
         let camera = Camera::new(Vec3::ZERO, 0.0, 0.0);
         let commands: Vec<sim::SimCommand> = (0..2)
             .map(|_| {
-                build_sim_command(&snapshot, &camera, false, false, false, false, false, false)
+                build_sim_command(
+                    &snapshot, &camera, false, false, false, false, false, false, false,
+                )
             })
             .collect();
 
@@ -11537,6 +11620,7 @@ mod tests {
                 build_sim_command(
                     &snapshot,
                     &camera,
+                    false,
                     false,
                     false,
                     false,
@@ -14264,7 +14348,7 @@ mod tests {
         );
         assert_eq!(
             snapshot.len(),
-            49,
+            56,
             "only value-bearing player, screen, input, UI, options, accessibility and window slots appear, plus the explicitly set player.health",
         );
     }

@@ -40,9 +40,10 @@ enum Kind {
     /// OS-seedable toggle: System → On → Off → System.
     SystemToggle(fn(&mut PlayerOptions) -> &mut Option<bool>),
     Toggle(fn(&mut PlayerOptions) -> &mut bool),
-    /// `[0, 1]` in fixed steps.
+    /// Fixed steps within `range` (`[0, 1]` unless the field has its own).
     Numeric {
         step: f32,
+        range: (f32, f32),
         value: fn(&mut PlayerOptions) -> &mut f32,
     },
 }
@@ -52,6 +53,8 @@ struct Field {
     key: &'static str,
     kind: Kind,
 }
+
+const UNIT: (f32, f32) = (0.0, 1.0);
 
 const FIELDS: &[Field] = &[
     Field {
@@ -64,6 +67,7 @@ const FIELDS: &[Field] = &[
         key: keys::SCREEN_SHAKE_SCALE,
         kind: Kind::Numeric {
             step: 0.1,
+            range: UNIT,
             value: |o| &mut o.accessibility.screen_shake_scale,
         },
     },
@@ -72,6 +76,7 @@ const FIELDS: &[Field] = &[
         key: keys::VIEW_FEEL_SCALE,
         kind: Kind::Numeric {
             step: 0.1,
+            range: UNIT,
             value: |o| &mut o.view_feel_scale,
         },
     },
@@ -85,6 +90,7 @@ const FIELDS: &[Field] = &[
         key: keys::MASTER_VOLUME,
         kind: Kind::Numeric {
             step: 0.05,
+            range: UNIT,
             value: |o| &mut o.accessibility.master_volume,
         },
     },
@@ -93,6 +99,7 @@ const FIELDS: &[Field] = &[
         key: keys::SFX_VOLUME,
         kind: Kind::Numeric {
             step: 0.05,
+            range: UNIT,
             value: |o| &mut o.accessibility.sfx_volume,
         },
     },
@@ -101,6 +108,7 @@ const FIELDS: &[Field] = &[
         key: keys::MUSIC_VOLUME,
         kind: Kind::Numeric {
             step: 0.05,
+            range: UNIT,
             value: |o| &mut o.accessibility.music_volume,
         },
     },
@@ -109,7 +117,17 @@ const FIELDS: &[Field] = &[
         key: keys::UI_VOLUME,
         kind: Kind::Numeric {
             step: 0.05,
+            range: UNIT,
             value: |o| &mut o.accessibility.ui_volume,
+        },
+    },
+    Field {
+        name: "holdTimingScale",
+        key: keys::HOLD_TIMING_SCALE,
+        kind: Kind::Numeric {
+            step: 0.25,
+            range: super::accessibility::HOLD_TIMING_SCALE_RANGE,
+            value: |o| &mut o.accessibility.hold_timing_scale,
         },
     },
     Field {
@@ -164,11 +182,18 @@ pub(crate) fn apply_panel_action(
             *value = !*value;
             true
         }
-        (Kind::Numeric { step, value }, PanelOp::Increase | PanelOp::Decrease) => {
+        (
+            Kind::Numeric {
+                step,
+                range: (min, max),
+                value,
+            },
+            PanelOp::Increase | PanelOp::Decrease,
+        ) => {
             let value = value(options);
             let direction = if op == PanelOp::Increase { 1.0 } else { -1.0 };
             // Snap to the step grid so repeated steps never drift.
-            let next = (((*value + direction * step) / step).round() * step).clamp(0.0, 1.0);
+            let next = (((*value + direction * step) / step).round() * step).clamp(*min, *max);
             let changed = *value != next;
             *value = next;
             changed
@@ -210,6 +235,23 @@ mod tests {
             apply_panel_action(&mut options, "screenShakeScale", "decrease");
         }
         assert_eq!(options.accessibility.screen_shake_scale, 0.0);
+    }
+
+    #[test]
+    fn hold_timing_scale_steps_by_a_quarter_within_one_to_three() {
+        let mut options = PlayerOptions::default();
+        assert_eq!(options.accessibility.hold_timing_scale, 1.0);
+        assert_eq!(
+            apply_panel_action(&mut options, "holdTimingScale", "decrease"),
+            PanelActionOutcome::Written { changed: false },
+            "a motor accommodation never shortens thresholds"
+        );
+        apply_panel_action(&mut options, "holdTimingScale", "increase");
+        assert_eq!(options.accessibility.hold_timing_scale, 1.25);
+        for _ in 0..20 {
+            apply_panel_action(&mut options, "holdTimingScale", "increase");
+        }
+        assert_eq!(options.accessibility.hold_timing_scale, 3.0);
     }
 
     #[test]

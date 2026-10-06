@@ -84,6 +84,21 @@ impl PlayerOptions {
             crouch_mode: reader
                 .read(keys::CROUCH_MODE)
                 .unwrap_or(defaults.crouch_mode),
+            sprint_mode: reader
+                .read(keys::SPRINT_MODE)
+                .unwrap_or(defaults.sprint_mode),
+            gamepad_look_sensitivity: reader
+                .read(keys::GAMEPAD_LOOK_SENSITIVITY)
+                .unwrap_or(defaults.gamepad_look_sensitivity),
+            gamepad_look_dead_zone: reader
+                .read(keys::GAMEPAD_LOOK_DEAD_ZONE)
+                .unwrap_or(defaults.gamepad_look_dead_zone),
+            gamepad_invert_y: reader
+                .read(keys::GAMEPAD_INVERT_Y)
+                .unwrap_or(defaults.gamepad_invert_y),
+            swap_confirm_cancel: reader
+                .read(keys::SWAP_CONFIRM_CANCEL)
+                .unwrap_or(defaults.swap_confirm_cancel),
             shadow_quality: reader
                 .read(keys::SHADOW_QUALITY)
                 .unwrap_or(defaults.shadow_quality),
@@ -121,6 +136,17 @@ impl PlayerOptions {
         writer.put(keys::INVERT_Y, Some(&self.invert_y));
         writer.put_f32(keys::VIEW_FEEL_SCALE, Some(&self.view_feel_scale));
         writer.put(keys::CROUCH_MODE, Some(&self.crouch_mode));
+        writer.put(keys::SPRINT_MODE, Some(&self.sprint_mode));
+        writer.put_f32(
+            keys::GAMEPAD_LOOK_SENSITIVITY,
+            Some(&self.gamepad_look_sensitivity),
+        );
+        writer.put_f32(
+            keys::GAMEPAD_LOOK_DEAD_ZONE,
+            Some(&self.gamepad_look_dead_zone),
+        );
+        writer.put(keys::GAMEPAD_INVERT_Y, Some(&self.gamepad_invert_y));
+        writer.put(keys::SWAP_CONFIRM_CANCEL, Some(&self.swap_confirm_cancel));
         writer.put(keys::SHADOW_QUALITY, Some(&self.shadow_quality));
         writer.put(keys::FOG_QUALITY, Some(&self.fog_quality));
         writer.put(

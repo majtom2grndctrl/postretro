@@ -41,6 +41,11 @@ pub(crate) mod keys {
     pub(crate) const INVERT_Y: &str = "invert_y";
     pub(crate) const VIEW_FEEL_SCALE: &str = "view_feel_scale";
     pub(crate) const CROUCH_MODE: &str = "crouch_mode";
+    pub(crate) const SPRINT_MODE: &str = "sprint_mode";
+    pub(crate) const GAMEPAD_LOOK_SENSITIVITY: &str = "gamepad_look_sensitivity";
+    pub(crate) const GAMEPAD_LOOK_DEAD_ZONE: &str = "gamepad_look_dead_zone";
+    pub(crate) const GAMEPAD_INVERT_Y: &str = "gamepad_invert_y";
+    pub(crate) const SWAP_CONFIRM_CANCEL: &str = "swap_confirm_cancel";
     pub(crate) const SHADOW_QUALITY: &str = "shadow_quality";
     pub(crate) const FOG_QUALITY: &str = "fog_quality";
     pub(crate) const SURFACE_DEPTH_QUALITY: &str = "surface_depth_quality";
@@ -57,6 +62,10 @@ pub(crate) const SETTINGS_FILENAME: &str = "settings.toml";
 const DEFAULT_SCROLL_NOTCH_PIXELS: f32 = 120.0;
 const MAX_SCROLL_NOTCH_PIXELS: f32 = 4_096.0;
 const MAX_SWITCH_CYCLE_DWELL_MS: u32 = 60_000;
+/// Gamepad look: radians per second at full deflection.
+pub(crate) const GAMEPAD_LOOK_SENSITIVITY_RANGE: (f32, f32) = (0.5, 8.0);
+/// Radial dead zone of whichever stick is bound to look.
+pub(crate) const GAMEPAD_LOOK_DEAD_ZONE_RANGE: (f32, f32) = (0.0, 0.5);
 
 /// How the crouch action is interpreted by the input layer. Resolved upstream
 /// of the movement intent: the movement intent only ever sees the single
@@ -73,6 +82,37 @@ pub enum CrouchMode {
     /// Crouch intent is active only while the button is held (level signal).
     #[default]
     Hold,
+}
+
+/// How the sprint command is interpreted: held, or latched by each press
+/// (the crouch-mode pattern). The command's activator decides when it goes
+/// down; the mode decides whether that latches. Unrecognized stored values
+/// fall back to `Hold` for this field alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SprintMode {
+    /// One resolution latches sprint on, the next latches it off.
+    Toggle,
+    /// Sprint is active while the command is down.
+    #[default]
+    Hold,
+}
+
+impl SprintMode {
+    pub(crate) fn slot_value(self) -> &'static str {
+        match self {
+            Self::Hold => "hold",
+            Self::Toggle => "toggle",
+        }
+    }
+
+    pub(crate) fn from_slot_value(value: &str) -> Option<Self> {
+        match value {
+            "hold" => Some(Self::Hold),
+            "toggle" => Some(Self::Toggle),
+            _ => None,
+        }
+    }
 }
 
 impl CrouchMode {
@@ -124,6 +164,24 @@ pub struct PlayerOptions {
     /// player_options.md §6).
     pub crouch_mode: CrouchMode,
 
+    /// How the sprint command is interpreted (hold vs toggle).
+    pub sprint_mode: SprintMode,
+
+    /// Gamepad look speed: radians per second at full deflection. Separate
+    /// from mouse sensitivity.
+    pub gamepad_look_sensitivity: f32,
+
+    /// Radial dead zone of whichever stick is bound to look; the move stick
+    /// keeps the engine's fixed dead zone.
+    pub gamepad_look_dead_zone: f32,
+
+    /// Negates gamepad pitch; mouse pitch follows `invert_y`.
+    pub gamepad_invert_y: bool,
+
+    /// Exchanges the gamepad bindings of UI confirm and cancel. The player
+    /// chooses it; it never follows the pad's family.
+    pub swap_confirm_cancel: bool,
+
     /// Spot-shadow map resolution tier, applied on renderer full-init or the
     /// next level install.
     pub shadow_quality: ShadowQuality,
@@ -174,6 +232,11 @@ impl PartialEq for PlayerOptions {
             && self.invert_y == other.invert_y
             && self.view_feel_scale == other.view_feel_scale
             && self.crouch_mode == other.crouch_mode
+            && self.sprint_mode == other.sprint_mode
+            && self.gamepad_look_sensitivity == other.gamepad_look_sensitivity
+            && self.gamepad_look_dead_zone == other.gamepad_look_dead_zone
+            && self.gamepad_invert_y == other.gamepad_invert_y
+            && self.swap_confirm_cancel == other.swap_confirm_cancel
             && self.shadow_quality == other.shadow_quality
             && self.fog_quality == other.fog_quality
             && self.surface_depth_quality == other.surface_depth_quality
@@ -219,6 +282,11 @@ impl Default for PlayerOptions {
             invert_y: default_invert_y(),
             view_feel_scale: default_view_feel_scale(),
             crouch_mode: CrouchMode::default(),
+            sprint_mode: SprintMode::default(),
+            gamepad_look_sensitivity: crate::input::DEFAULT_GAMEPAD_LOOK_SENSITIVITY,
+            gamepad_look_dead_zone: crate::input::DEFAULT_GAMEPAD_LOOK_DEAD_ZONE,
+            gamepad_invert_y: false,
+            swap_confirm_cancel: false,
             shadow_quality: ShadowQuality::default(),
             fog_quality: FogQuality::default(),
             surface_depth_quality: SurfaceDepthQuality::default(),
@@ -259,6 +327,28 @@ impl PlayerOptions {
         }
         if !(self.mouse_sensitivity.is_finite() && self.mouse_sensitivity > 0.0) {
             self.mouse_sensitivity = default_mouse_sensitivity();
+        }
+
+        for (value, key, (min, max), default) in [
+            (
+                &mut self.gamepad_look_sensitivity,
+                keys::GAMEPAD_LOOK_SENSITIVITY,
+                GAMEPAD_LOOK_SENSITIVITY_RANGE,
+                crate::input::DEFAULT_GAMEPAD_LOOK_SENSITIVITY,
+            ),
+            (
+                &mut self.gamepad_look_dead_zone,
+                keys::GAMEPAD_LOOK_DEAD_ZONE,
+                GAMEPAD_LOOK_DEAD_ZONE_RANGE,
+                crate::input::DEFAULT_GAMEPAD_LOOK_DEAD_ZONE,
+            ),
+        ] {
+            if value.is_finite() {
+                *value = value.clamp(min, max);
+            } else {
+                warn_non_finite(key, *value);
+                *value = default;
+            }
         }
 
         self.switch_cycle_dwell_ms = self

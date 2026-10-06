@@ -308,7 +308,7 @@ UiReactionsSdk.OPEN_ACCESSIBILITY_ACTION = "ui.openAccessibility"
 --- The reserved `onPress` action for one accessibility field:
 --- `ui.accessibility.<op>.<field>`. Toggles (`reduceMotion`, `flashLimiter`,
 --- `monoAudio`) `cycle`; numeric fields (`screenShakeScale`, `viewFeelScale`,
---- `masterVolume`, `sfxVolume`, `musicVolume`, `uiVolume`) `increase` or
+--- `masterVolume`, `sfxVolume`, `musicVolume`, `uiVolume`, `holdTimingScale`) `increase` or
 --- `decrease`. The action writes the player's setting exactly as the engine
 --- accessibility panel's control does.
 function UiReactionsSdk.accessibilityAction(field: string, op: string): string

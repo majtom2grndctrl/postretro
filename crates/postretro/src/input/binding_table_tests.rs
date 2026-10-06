@@ -444,6 +444,16 @@ fn binding_look_and_move_to_the_other_sticks_swaps_them() {
     assert!((snap.axis_value(Action::MoveForward) - 0.6).abs() < 1e-6);
     assert!(look.yaw_velocity < 0.0, "left stick right looks right");
     assert_eq!(look.pitch_velocity, 0.0);
+    // The look dead zone moves to the left stick with look.
+    sys.set_gamepad_look_dead_zone(0.35);
+    assert_eq!(
+        sys.stick_dead_zone(GilrsAxis::LeftStickX, GilrsAxis::LeftStickY),
+        0.35
+    );
+    assert_eq!(
+        sys.stick_dead_zone(GilrsAxis::RightStickX, GilrsAxis::RightStickY),
+        0.15
+    );
 }
 
 // --- Rebuilds while held (AV8, P4) ---

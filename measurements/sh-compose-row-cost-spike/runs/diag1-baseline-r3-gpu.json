@@ -1,0 +1,41 @@
+{
+  "source": "/private/tmp/claude-501/-Users-dhiester-Projects-Personal-postretro/a48b8a8f-edfb-41e7-b57a-aab48a692d31/scratchpad/traces/diag1-baseline-r3-gpu.xml",
+  "camera_frames": 137,
+  "frame_count_pass": "Textured Pass",
+  "once_per_frame_counts": {
+    "UI Pass": 136,
+    "Screen Effects Resolve Pass": 0,
+    "Textured Pass": 137,
+    "Depth Pre-Pass": 137
+  },
+  "shadow_passes": {
+    "Promoted Spot Entity Shadow Depth Pass": {
+      "count": 1058,
+      "total_ms": 71.947,
+      "per_frame_ms": 0.5252
+    }
+  },
+  "shadow_total_per_frame_ms": 0.5252,
+  "sum_labelled_passes_per_frame_ms": 32.2223,
+  "all_passes_per_frame_ms": {
+    "Streamed Animated Direct SH": 9.6606,
+    "Streamed SH Compose": 8.1243,
+    "Skinned Mesh Pass": 4.3676,
+    "Skinned Viewmodel Pass": 3.3472,
+    "Bloom Bright Pass": 3.0678,
+    "UI Pass": 1.0315,
+    "Textured Pass": 0.8053,
+    "Promoted Spot Entity Shadow Depth Pass": 0.5252,
+    "Billboard Direct Scatter Compose": 0.4361,
+    "Per-frame Upload Copies": 0.2563,
+    "Bloom Horizontal Gaussian Pass": 0.2139,
+    "Candidate Cull Pass": 0.0741,
+    "Bloom Scene Composite Pass": 0.0628,
+    "Depth Pre-Pass": 0.0574,
+    "Bloom Vertical Gaussian Pass": 0.056,
+    "Bloom Downsample Pass": 0.0393,
+    "Bloom Upsample Pass": 0.0373,
+    "(wgpu internal) PendingWrites": 0.0317,
+    "Frame Encoder": 0.0277
+  }
+}

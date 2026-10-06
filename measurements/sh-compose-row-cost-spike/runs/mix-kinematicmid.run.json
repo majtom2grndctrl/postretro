@@ -1,0 +1,274 @@
+{
+  "label": "mix-kinematicmid",
+  "binary": "/private/tmp/claude-501/-Users-dhiester-Projects-Personal-postretro/a48b8a8f-edfb-41e7-b57a-aab48a692d31/scratchpad/bin/probe-c42738393/postretro",
+  "map": "kinematic-platform.prl",
+  "engine_args": [
+    "--start-pose=-6.5,1.22,-27.94,0,0"
+  ],
+  "elapsed": 20.6,
+  "exit": -15,
+  "timing_windows": 4,
+  "foreground_all": true,
+  "screensaver_seen": false,
+  "locked_seen": false,
+  "arms": "baseline",
+  "arms_b": null,
+  "gpu_state_median": {
+    "Core Clock(MHz)": null,
+    "Memory Clock(MHz)": null,
+    "Temperature(C)": null,
+    "Total Power(W)": null,
+    "GPU Activity(%)": null,
+    "Fan Speed(RPM)": null
+  },
+  "gpu_state_samples": [],
+  "rows_stable": true,
+  "row_mix": {
+    "indirect": {
+      "rows_L0": 2511,
+      "rows_L1": 0,
+      "rows_L2": 0,
+      "entries_L0": 780,
+      "entries_L1": 0,
+      "entries_L2": 0
+    },
+    "animated-direct": {
+      "rows_L0": 2511,
+      "rows_L1": 0,
+      "rows_L2": 0,
+      "entries_L0": 75,
+      "entries_L1": 0,
+      "entries_L2": 0
+    }
+  },
+  "spike_count_windows": {
+    "indirect": [
+      [
+        120,
+        2511,
+        2612,
+        2511,
+        0,
+        0,
+        780,
+        0,
+        0
+      ],
+      [
+        120,
+        2511,
+        2511,
+        2511,
+        0,
+        0,
+        780,
+        0,
+        0
+      ],
+      [
+        120,
+        2511,
+        2511,
+        2511,
+        0,
+        0,
+        780,
+        0,
+        0
+      ],
+      [
+        120,
+        2511,
+        2511,
+        2511,
+        0,
+        0,
+        780,
+        0,
+        0
+      ]
+    ],
+    "animated-direct": [
+      [
+        120,
+        2511,
+        2612,
+        2511,
+        0,
+        0,
+        75,
+        0,
+        0
+      ],
+      [
+        120,
+        2511,
+        2511,
+        2511,
+        0,
+        0,
+        75,
+        0,
+        0
+      ],
+      [
+        120,
+        2511,
+        2511,
+        2511,
+        0,
+        0,
+        75,
+        0,
+        0
+      ],
+      [
+        120,
+        2511,
+        2511,
+        2511,
+        0,
+        0,
+        75,
+        0,
+        0
+      ]
+    ]
+  },
+  "foreground_checks": [
+    {
+      "elapsed": 0.11,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": false
+    },
+    {
+      "elapsed": 1.26,
+      "windows": 0,
+      "foreground": true,
+      "screensaver": false,
+      "locked": false
+    },
+    {
+      "elapsed": 2.4,
+      "windows": 0,
+      "foreground": true,
+      "screensaver": false,
+      "locked": false
+    },
+    {
+      "elapsed": 3.53,
+      "windows": 0,
+      "foreground": true,
+      "screensaver": false,
+      "locked": false
+    },
+    {
+      "elapsed": 4.66,
+      "windows": 0,
+      "foreground": true,
+      "screensaver": false,
+      "locked": false
+    },
+    {
+      "elapsed": 5.79,
+      "windows": 0,
+      "foreground": true,
+      "screensaver": false,
+      "locked": false
+    },
+    {
+      "elapsed": 6.92,
+      "windows": 0,
+      "foreground": true,
+      "screensaver": false,
+      "locked": false
+    },
+    {
+      "elapsed": 8.05,
+      "windows": 1,
+      "foreground": true,
+      "screensaver": false,
+      "locked": false
+    },
+    {
+      "elapsed": 9.18,
+      "windows": 1,
+      "foreground": true,
+      "screensaver": false,
+      "locked": false
+    },
+    {
+      "elapsed": 10.32,
+      "windows": 1,
+      "foreground": true,
+      "screensaver": false,
+      "locked": false
+    },
+    {
+      "elapsed": 11.45,
+      "windows": 1,
+      "foreground": true,
+      "screensaver": false,
+      "locked": false
+    },
+    {
+      "elapsed": 12.58,
+      "windows": 2,
+      "foreground": true,
+      "screensaver": false,
+      "locked": false
+    },
+    {
+      "elapsed": 13.72,
+      "windows": 2,
+      "foreground": true,
+      "screensaver": false,
+      "locked": false
+    },
+    {
+      "elapsed": 14.85,
+      "windows": 2,
+      "foreground": true,
+      "screensaver": false,
+      "locked": false
+    },
+    {
+      "elapsed": 15.98,
+      "windows": 3,
+      "foreground": true,
+      "screensaver": false,
+      "locked": false
+    },
+    {
+      "elapsed": 17.12,
+      "windows": 3,
+      "foreground": true,
+      "screensaver": false,
+      "locked": false
+    },
+    {
+      "elapsed": 18.25,
+      "windows": 3,
+      "foreground": true,
+      "screensaver": false,
+      "locked": false
+    },
+    {
+      "elapsed": 19.38,
+      "windows": 3,
+      "foreground": true,
+      "screensaver": false,
+      "locked": false
+    },
+    {
+      "elapsed": 20.51,
+      "windows": 4,
+      "foreground": true,
+      "screensaver": false,
+      "locked": false
+    }
+  ],
+  "valid": true
+}

@@ -1,5 +1,7 @@
 """Sum Metal GPU time per postretro pass label from a metal-gpu-intervals export.
 
+Copied from shadow-fill-cost; adds per-encoder compose times for paired A/B runs.
+
 usage: gpu_time.py <export.xml[.gz]> [summary.json]
 Rows are deduplicated by (command buffer, encoder, start time); distinct
 intervals of one encoder all count. A row Metal reports as "Coelasced N
@@ -57,6 +59,12 @@ result = {
     "shadow_total_per_frame_ms": per_frame(sum(total_ns[k] for k in shadow)),
     "sum_labelled_passes_per_frame_ms": per_frame(sum(total_ns.values())),
     "all_passes_per_frame_ms": {k: per_frame(v) for k, v in total_ns.most_common()},
+    # Paired A/B runs alternate compose pipelines per frame, so each compose
+    # label runs in about half the frames: its time per encoder is the arm's
+    # per-frame pass time.
+    "compose_per_encoder_ms": {k: round(total_ns[k] / count[k] / 1e6, 4)
+                               for k in sorted(count) if "SH Compose" in k or "Animated Direct SH" in k},
+    "compose_encoder_counts": {k: count[k] for k in sorted(count) if "SH Compose" in k or "Animated Direct SH" in k},
 }
 text = json.dumps(result, indent=2)
 if len(sys.argv) > 2:

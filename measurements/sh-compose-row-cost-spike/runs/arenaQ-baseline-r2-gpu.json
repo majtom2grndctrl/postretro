@@ -1,0 +1,55 @@
+{
+  "source": "/private/tmp/claude-501/-Users-dhiester-Projects-Personal-postretro/a48b8a8f-edfb-41e7-b57a-aab48a692d31/scratchpad/traces/arenaQ-baseline-r2-gpu.xml",
+  "camera_frames": 138,
+  "frame_count_pass": "Depth Pre-Pass",
+  "once_per_frame_counts": {
+    "UI Pass": 137,
+    "Screen Effects Resolve Pass": 0,
+    "Textured Pass": 137,
+    "Depth Pre-Pass": 138
+  },
+  "shadow_passes": {
+    "Promoted Spot Entity Shadow Depth Pass": {
+      "count": 1058,
+      "total_ms": 72.912,
+      "per_frame_ms": 0.5283
+    }
+  },
+  "shadow_total_per_frame_ms": 0.5283,
+  "sum_labelled_passes_per_frame_ms": 32.0959,
+  "all_passes_per_frame_ms": {
+    "Streamed Animated Direct SH": 4.818,
+    "Streamed Animated Direct SH [B]": 4.8166,
+    "Bloom Bright Pass": 4.08,
+    "Streamed SH Compose": 4.0364,
+    "Streamed SH Compose [B]": 4.0359,
+    "Skinned Viewmodel Pass": 3.677,
+    "Skinned Mesh Pass": 3.127,
+    "Textured Pass": 1.0262,
+    "UI Pass": 0.638,
+    "Promoted Spot Entity Shadow Depth Pass": 0.5283,
+    "Billboard Direct Scatter Compose": 0.3946,
+    "Per-frame Upload Copies": 0.3135,
+    "Bloom Horizontal Gaussian Pass": 0.2215,
+    "Candidate Cull Pass": 0.0674,
+    "Bloom Scene Composite Pass": 0.0623,
+    "Bloom Vertical Gaussian Pass": 0.0568,
+    "Depth Pre-Pass": 0.0523,
+    "Bloom Downsample Pass": 0.0422,
+    "Bloom Upsample Pass": 0.0415,
+    "(wgpu internal) PendingWrites": 0.0334,
+    "Frame Encoder": 0.0272
+  },
+  "compose_per_encoder_ms": {
+    "Streamed Animated Direct SH": 8.0106,
+    "Streamed Animated Direct SH [B]": 8.0083,
+    "Streamed SH Compose": 6.6312,
+    "Streamed SH Compose [B]": 6.7102
+  },
+  "compose_encoder_counts": {
+    "Streamed Animated Direct SH": 83,
+    "Streamed Animated Direct SH [B]": 83,
+    "Streamed SH Compose": 84,
+    "Streamed SH Compose [B]": 83
+  }
+}

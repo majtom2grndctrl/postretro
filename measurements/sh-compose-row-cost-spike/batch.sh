@@ -5,7 +5,9 @@
 # gpu_time.py and deleted at once (traces are ~1 GB each).
 # usage: batch.sh <batch-key> <rounds> <arms (space-separated, quoted)> <map.prl> [engine args...]
 #   arm names are POSTRETRO_SPIKE_ARMS values; "baseline" means none.
-# env: SPIKE_BIN (probe binary dir holding postretro + scripts-build),
+# env: PAIRED=1 runs each arm as the B half of a per-frame A/B pair against
+#      the baseline inside one launch (POSTRETRO_SPIKE_ARMS_B);
+#      SPIKE_BIN (probe binary dir holding postretro + scripts-build),
 #      RUN_FOREGROUND, TRACE_DIR
 set -eu
 here=${0:A:h}; runs=$here/runs
@@ -23,9 +25,20 @@ invalid=0
 for round in $(seq 1 $rounds); do
   for arm in $arms; do
     sleep 15
-    label=$key-$arm-r$round
+    label=$key-${arm//\//_vs_}-r$round
     marker=$(mktemp)
-    if POSTRETRO_SPIKE_ARMS=${arm//+/,} RUN_TRACE=1 RUN_TRACE_AFTER=${RUN_TRACE_AFTER:-3} \
+    if [[ ${PAIRED:-0} == 1 ]]; then
+      # Paired: A and B alternate per frame. "a/b" names both halves;
+      # a bare arm pairs against the baseline.
+      if [[ $arm == */* ]]; then
+        arm_a=${${arm%%/*}//+/,}; export POSTRETRO_SPIKE_ARMS_B=${${arm#*/}//+/,}
+      else
+        arm_a=baseline; export POSTRETRO_SPIKE_ARMS_B=${arm//+/,}
+      fi
+    else
+      unset POSTRETRO_SPIKE_ARMS_B; arm_a=${arm//+/,}
+    fi
+    if POSTRETRO_SPIKE_ARMS=$arm_a RUN_TRACE=1 RUN_TRACE_AFTER=${RUN_TRACE_AFTER:-3} \
         RUN_TRACE_DIR=$TRACE_DIR python3 $here/run.py $label $SPIKE_BIN/postretro $map "$@" > /dev/null; then
       :
     else

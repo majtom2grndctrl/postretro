@@ -1,0 +1,1519 @@
+{
+  "label": "arena2-baseline-r1",
+  "binary": "/private/tmp/claude-501/-Users-dhiester-Projects-Personal-postretro/a48b8a8f-edfb-41e7-b57a-aab48a692d31/scratchpad/bin/probe-1ddd56691/postretro",
+  "map": "stress-warren-hallway-inspection.prl",
+  "engine_args": [
+    "--start-pose=21.13,2.44,30.48,0,0"
+  ],
+  "elapsed": 240.24,
+  "exit": -15,
+  "timing_windows": 0,
+  "foreground_all": false,
+  "screensaver_seen": false,
+  "locked_seen": true,
+  "arms": null,
+  "rows_stable": true,
+  "row_mix": {},
+  "spike_count_windows": {},
+  "foreground_checks": [
+    {
+      "elapsed": 0.11,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 1.26,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 2.4,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 3.51,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 4.65,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 5.77,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 6.91,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 8.04,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 9.17,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 10.28,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 11.4,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 12.52,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 13.63,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 14.76,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 15.88,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 17.0,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 18.12,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 19.23,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 20.35,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 21.48,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 22.6,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 23.72,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 24.83,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 25.94,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 27.07,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 28.18,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 29.3,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 30.41,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 31.52,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 32.64,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 33.75,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 34.86,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 35.98,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 37.1,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 38.21,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 39.32,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 40.43,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 41.54,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 42.65,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 43.76,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 44.87,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 46.01,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 47.14,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 48.28,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 49.41,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 50.54,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 51.68,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 52.82,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 53.95,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 55.09,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 56.21,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 57.34,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 58.48,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 59.62,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 60.74,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 61.88,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 63.02,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 64.15,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 65.28,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 66.41,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 67.55,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 68.68,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 69.81,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 70.94,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 72.06,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 73.19,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 74.31,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 75.43,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 76.56,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 77.69,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 78.82,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 79.94,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 81.06,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 82.19,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 83.31,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 84.43,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 85.55,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 86.68,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 87.8,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 88.92,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 90.04,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 91.16,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 92.28,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 93.4,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 94.52,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 95.65,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 96.77,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 97.89,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 99.0,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 100.12,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 101.25,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 102.38,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 103.5,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 104.62,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 105.73,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 106.85,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 107.98,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 109.1,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 110.22,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 111.34,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 112.46,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 113.58,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 114.7,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 115.81,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 116.93,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 118.07,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 119.19,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 120.31,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 121.43,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 122.54,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 123.67,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 124.79,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 125.91,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 127.04,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 128.19,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 129.31,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 130.43,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 131.55,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 132.66,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 133.78,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 134.91,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 136.03,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 137.15,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 138.27,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 139.39,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 140.51,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 141.63,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 142.75,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 143.87,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 144.99,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 146.11,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 147.23,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 148.35,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 149.48,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 150.6,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 151.72,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 152.84,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 153.96,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 155.08,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 156.2,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 157.32,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 158.43,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 159.56,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 160.68,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 161.8,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 162.92,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 164.05,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 165.17,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 166.3,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 167.41,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 168.53,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 169.65,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 170.77,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 171.89,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 173.01,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 174.14,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 175.26,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 176.39,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 177.52,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 178.63,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 179.75,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 180.86,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 181.98,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 183.1,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 184.22,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 185.36,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 186.49,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 187.62,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 188.74,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 189.86,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 190.98,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 192.1,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 193.22,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 194.34,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 195.45,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 196.57,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 197.7,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 198.82,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 199.94,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 201.06,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 202.18,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 203.31,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 204.43,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 205.55,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 206.67,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 207.79,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 208.91,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 210.03,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 211.16,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 212.28,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 213.4,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 214.53,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 215.66,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 216.78,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 217.9,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 219.02,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 220.14,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 221.26,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 222.39,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 223.51,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 224.65,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 225.78,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 226.89,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 228.01,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 229.13,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 230.25,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 231.37,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 232.48,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 233.6,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 234.72,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 235.83,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 236.95,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 238.07,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    },
+    {
+      "elapsed": 239.2,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": true
+    }
+  ],
+  "valid": false
+}

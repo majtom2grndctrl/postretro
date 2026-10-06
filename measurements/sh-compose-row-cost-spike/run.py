@@ -10,7 +10,7 @@ A run is also invalid if its composed rows change after the first
 [SH spike counts] window: every later window must hold min == max rows and
 the same per-level mix, per pass.
 """
-import json, os, re, signal, subprocess, sys, time
+import json, os, re, signal, subprocess, sys, threading, time
 from pathlib import Path
 
 root = Path(__file__).resolve().parents[2]
@@ -22,6 +22,30 @@ def screen_locked():
     r = subprocess.run(["ioreg", "-n", "Root", "-d1", "-a"], capture_output=True, text=True)
     i = r.stdout.find("CGSSessionScreenIsLocked")
     return i >= 0 and "<true/>" in r.stdout[i:i + 80]
+
+GPU_FIELDS = ("Core Clock(MHz)", "Memory Clock(MHz)", "Temperature(C)", "Total Power(W)",
+              "GPU Activity(%)", "Fan Speed(RPM)")
+
+
+def gpu_state():
+    """One sample of the 5300M's (Navi 14) clocks, temperature and power."""
+    r = subprocess.run(["ioreg", "-c", "AMDRadeonX6000_AMDNavi14GraphicsAccelerator", "-r", "-d1", "-w0"],
+                       capture_output=True, text=True)
+    sample = {}
+    for field in GPU_FIELDS:
+        m = re.search(r'"' + re.escape(field) + r'"=(\d+)', r.stdout)
+        if m:
+            sample[field] = int(m[1])
+    return sample
+
+
+gpu_samples, gpu_sampling = [], threading.Event()
+
+
+def sample_gpu():
+    while gpu_sampling.is_set():
+        gpu_samples.append({"t": round(time.time() - started, 2), **gpu_state()})
+        time.sleep(0.5)
 
 label, binary, mapname, *engine_args = sys.argv[1:]
 foreground = os.environ["RUN_FOREGROUND"]
@@ -60,12 +84,15 @@ with log.open("w") as f:
                                             str(out / f"{label}.sample.txt")],
                                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             if tracing and trace is None and windows >= trace_after:
+                gpu_sampling.set()
+                threading.Thread(target=sample_gpu, daemon=True).start()
                 trace = subprocess.Popen(
                     ["xcrun", "xctrace", "record", "--template", "Metal System Trace",
                      "--attach", str(p.pid), "--time-limit", f"{trace_seconds}s",
                      "--output", str(trace_dir / f"{label}.trace")],
                     stdout=status.open("w"), stderr=subprocess.STDOUT)
             if trace is not None and not paused and "Reached specified time limit" in status.read_text():
+                gpu_sampling.clear()
                 p.send_signal(signal.SIGSTOP)
                 paused = True
             done_windows = windows >= (trace_after if tracing else windows_wanted)
@@ -87,6 +114,15 @@ with log.open("w") as f:
             trace.wait(timeout=60)
 text = log.read_text(errors="replace")
 windows_done = text.count("[CpuTiming]")
+gpu_sampling.clear()
+
+
+def median(values):
+    values = sorted(values)
+    return values[len(values) // 2] if values else None
+
+
+gpu_summary = {field: median([s[field] for s in gpu_samples if field in s]) for field in GPU_FIELDS}
 COUNTS = re.compile(r"\[SH spike counts\] (\S+): frames (\d+) rows min (\d+) max (\d+) \| last rows "
                     r"L0 (\d+) L1 (\d+) L2 (\d+) \| entries L0 (\d+) L1 (\d+) L2 (\d+)")
 counts = {}
@@ -104,6 +140,7 @@ for pass_name, windows in counts.items():
     row_mix[pass_name] = dict(zip(["rows_L0", "rows_L1", "rows_L2", "entries_L0", "entries_L1", "entries_L2"],
                                   later[-1][3:]))
 arms_line = re.search(r"\[SH spike\] compose arms: (\S+)", text)
+arms_b_line = re.search(r"\[SH spike\] paired B compose arms: (\S+)", text)
 record = {"label": label, "binary": binary, "map": mapname, "engine_args": engine_args,
           "elapsed": round(time.time() - started, 2), "exit": p.returncode,
           "timing_windows": windows_done,
@@ -112,6 +149,8 @@ record = {"label": label, "binary": binary, "map": mapname, "engine_args": engin
           "screensaver_seen": any(c["screensaver"] for c in checks),
           "locked_seen": any(c["locked"] for c in checks),
           "arms": arms_line[1] if arms_line else None,
+          "arms_b": arms_b_line[1] if arms_b_line else None,
+          "gpu_state_median": gpu_summary, "gpu_state_samples": gpu_samples,
           "rows_stable": rows_stable, "row_mix": row_mix, "spike_count_windows": counts,
           "foreground_checks": checks}
 # A run counts only if it finished its windows in the foreground, unlocked, with

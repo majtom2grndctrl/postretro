@@ -1,0 +1,454 @@
+{
+  "label": "arena3-floor+scan-parallel-r1",
+  "binary": "/private/tmp/claude-501/-Users-dhiester-Projects-Personal-postretro/a48b8a8f-edfb-41e7-b57a-aab48a692d31/scratchpad/bin/probe-1ddd56691/postretro",
+  "map": "stress-warren-hallway-inspection.prl",
+  "engine_args": [
+    "--start-pose=21.13,2.44,30.48,0,0"
+  ],
+  "elapsed": 48.32,
+  "exit": -15,
+  "timing_windows": 5,
+  "foreground_all": true,
+  "screensaver_seen": false,
+  "locked_seen": false,
+  "arms": "scan-parallel,floor",
+  "rows_stable": true,
+  "row_mix": {
+    "indirect": {
+      "rows_L0": 2129,
+      "rows_L1": 0,
+      "rows_L2": 0,
+      "entries_L0": 110,
+      "entries_L1": 0,
+      "entries_L2": 0
+    },
+    "animated-direct": {
+      "rows_L0": 2129,
+      "rows_L1": 0,
+      "rows_L2": 0,
+      "entries_L0": 110,
+      "entries_L1": 0,
+      "entries_L2": 0
+    }
+  },
+  "spike_count_windows": {
+    "indirect": [
+      [
+        120,
+        6,
+        2624,
+        2129,
+        0,
+        0,
+        110,
+        0,
+        0
+      ],
+      [
+        120,
+        2129,
+        2129,
+        2129,
+        0,
+        0,
+        110,
+        0,
+        0
+      ],
+      [
+        120,
+        2129,
+        2129,
+        2129,
+        0,
+        0,
+        110,
+        0,
+        0
+      ],
+      [
+        120,
+        2129,
+        2129,
+        2129,
+        0,
+        0,
+        110,
+        0,
+        0
+      ],
+      [
+        120,
+        2129,
+        2129,
+        2129,
+        0,
+        0,
+        110,
+        0,
+        0
+      ]
+    ],
+    "animated-direct": [
+      [
+        120,
+        6,
+        2624,
+        2129,
+        0,
+        0,
+        110,
+        0,
+        0
+      ],
+      [
+        120,
+        2129,
+        2129,
+        2129,
+        0,
+        0,
+        110,
+        0,
+        0
+      ],
+      [
+        120,
+        2129,
+        2129,
+        2129,
+        0,
+        0,
+        110,
+        0,
+        0
+      ],
+      [
+        120,
+        2129,
+        2129,
+        2129,
+        0,
+        0,
+        110,
+        0,
+        0
+      ],
+      [
+        120,
+        2129,
+        2129,
+        2129,
+        0,
+        0,
+        110,
+        0,
+        0
+      ]
+    ]
+  },
+  "foreground_checks": [
+    {
+      "elapsed": 0.11,
+      "windows": 0,
+      "foreground": false,
+      "screensaver": false,
+      "locked": false
+    },
+    {
+      "elapsed": 1.26,
+      "windows": 0,
+      "foreground": true,
+      "screensaver": false,
+      "locked": false
+    },
+    {
+      "elapsed": 2.41,
+      "windows": 0,
+      "foreground": true,
+      "screensaver": false,
+      "locked": false
+    },
+    {
+      "elapsed": 3.53,
+      "windows": 0,
+      "foreground": true,
+      "screensaver": false,
+      "locked": false
+    },
+    {
+      "elapsed": 4.66,
+      "windows": 0,
+      "foreground": true,
+      "screensaver": false,
+      "locked": false
+    },
+    {
+      "elapsed": 5.79,
+      "windows": 0,
+      "foreground": true,
+      "screensaver": false,
+      "locked": false
+    },
+    {
+      "elapsed": 6.92,
+      "windows": 0,
+      "foreground": true,
+      "screensaver": false,
+      "locked": false
+    },
+    {
+      "elapsed": 8.05,
+      "windows": 0,
+      "foreground": true,
+      "screensaver": false,
+      "locked": false
+    },
+    {
+      "elapsed": 9.19,
+      "windows": 0,
+      "foreground": true,
+      "screensaver": false,
+      "locked": false
+    },
+    {
+      "elapsed": 10.32,
+      "windows": 0,
+      "foreground": true,
+      "screensaver": false,
+      "locked": false
+    },
+    {
+      "elapsed": 11.46,
+      "windows": 1,
+      "foreground": true,
+      "screensaver": false,
+      "locked": false
+    },
+    {
+      "elapsed": 12.6,
+      "windows": 1,
+      "foreground": true,
+      "screensaver": false,
+      "locked": false
+    },
+    {
+      "elapsed": 13.73,
+      "windows": 1,
+      "foreground": true,
+      "screensaver": false,
+      "locked": false
+    },
+    {
+      "elapsed": 14.86,
+      "windows": 2,
+      "foreground": true,
+      "screensaver": false,
+      "locked": false
+    },
+    {
+      "elapsed": 15.99,
+      "windows": 2,
+      "foreground": true,
+      "screensaver": false,
+      "locked": false
+    },
+    {
+      "elapsed": 17.12,
+      "windows": 2,
+      "foreground": true,
+      "screensaver": false,
+      "locked": false
+    },
+    {
+      "elapsed": 18.25,
+      "windows": 3,
+      "foreground": true,
+      "screensaver": false,
+      "locked": false
+    },
+    {
+      "elapsed": 19.39,
+      "windows": 3,
+      "foreground": true,
+      "screensaver": false,
+      "locked": false
+    },
+    {
+      "elapsed": 20.54,
+      "windows": 3,
+      "foreground": true,
+      "screensaver": false,
+      "locked": false
+    },
+    {
+      "elapsed": 21.76,
+      "windows": 3,
+      "foreground": true,
+      "screensaver": false,
+      "locked": false
+    },
+    {
+      "elapsed": 22.92,
+      "windows": 4,
+      "foreground": true,
+      "screensaver": false,
+      "locked": false
+    },
+    {
+      "elapsed": 24.07,
+      "windows": 4,
+      "foreground": true,
+      "screensaver": false,
+      "locked": false
+    },
+    {
+      "elapsed": 25.22,
+      "windows": 4,
+      "foreground": true,
+      "screensaver": false,
+      "locked": false
+    },
+    {
+      "elapsed": 26.38,
+      "windows": 5,
+      "foreground": true,
+      "screensaver": false,
+      "locked": false
+    },
+    {
+      "elapsed": 27.54,
+      "windows": 5,
+      "foreground": true,
+      "screensaver": false,
+      "locked": false
+    },
+    {
+      "elapsed": 28.67,
+      "windows": 5,
+      "foreground": true,
+      "screensaver": false,
+      "locked": false
+    },
+    {
+      "elapsed": 29.81,
+      "windows": 5,
+      "foreground": true,
+      "screensaver": false,
+      "locked": false
+    },
+    {
+      "elapsed": 30.95,
+      "windows": 5,
+      "foreground": true,
+      "screensaver": false,
+      "locked": false
+    },
+    {
+      "elapsed": 32.09,
+      "windows": 5,
+      "foreground": true,
+      "screensaver": false,
+      "locked": false
+    },
+    {
+      "elapsed": 33.22,
+      "windows": 5,
+      "foreground": true,
+      "screensaver": false,
+      "locked": false
+    },
+    {
+      "elapsed": 34.36,
+      "windows": 5,
+      "foreground": true,
+      "screensaver": false,
+      "locked": false
+    },
+    {
+      "elapsed": 35.49,
+      "windows": 5,
+      "foreground": true,
+      "screensaver": false,
+      "locked": false
+    },
+    {
+      "elapsed": 36.65,
+      "windows": 5,
+      "foreground": true,
+      "screensaver": false,
+      "locked": false
+    },
+    {
+      "elapsed": 37.8,
+      "windows": 5,
+      "foreground": true,
+      "screensaver": false,
+      "locked": false
+    },
+    {
+      "elapsed": 38.96,
+      "windows": 5,
+      "foreground": true,
+      "screensaver": false,
+      "locked": false
+    },
+    {
+      "elapsed": 40.13,
+      "windows": 5,
+      "foreground": true,
+      "screensaver": false,
+      "locked": false
+    },
+    {
+      "elapsed": 41.27,
+      "windows": 5,
+      "foreground": true,
+      "screensaver": false,
+      "locked": false
+    },
+    {
+      "elapsed": 42.42,
+      "windows": 5,
+      "foreground": true,
+      "screensaver": false,
+      "locked": false
+    },
+    {
+      "elapsed": 43.56,
+      "windows": 5,
+      "foreground": true,
+      "screensaver": false,
+      "locked": false
+    },
+    {
+      "elapsed": 44.7,
+      "windows": 5,
+      "foreground": true,
+      "screensaver": false,
+      "locked": false
+    },
+    {
+      "elapsed": 45.83,
+      "windows": 5,
+      "foreground": true,
+      "screensaver": false,
+      "locked": false
+    },
+    {
+      "elapsed": 47.03,
+      "windows": 5,
+      "foreground": true,
+      "screensaver": false,
+      "locked": false
+    },
+    {
+      "elapsed": 48.18,
+      "windows": 5,
+      "foreground": true,
+      "screensaver": false,
+      "locked": false
+    }
+  ],
+  "valid": true
+}

@@ -23,7 +23,7 @@ The lever exists only as WGSL rewrites on a throwaway branch. When this is done,
   - §4 and §7.1 lose "coarsened compose loads the kept lattice" for ids 27/45 and gain the per-texel corner read with its cost unmeasured. They also gain the kernel-shape rule: no per-invocation tile accumulator, and a change to a compose kernel file needs a paired Mac re-measure.
   - `build_pipeline.md`'s coarsened-delta paragraph gains the cost-first condition for 27/45.
   - §8 gains the unroll expansion as a second string-surgery mechanism.
-  - §12 gains the per-encoder GPU-time method and the paired method.
+  - §12 gains the per-encoder GPU-time method and a brief paired method, unless `gpu-pass-paired-ab` has already landed its §12 Paired A/B subsection. In that case this brief only references it. `gpu-pass-paired-ab` owns that subsection and folds this text into it when it lands.
 - **Non-goals:**
   - Row-count reduction: `sh-compose-contributing-rows` owns it.
   - The H-e trusted shader module: `unsafe` never reaches main, and a separate session may return to it.

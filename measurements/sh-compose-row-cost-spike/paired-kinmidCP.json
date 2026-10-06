@@ -7,7 +7,7 @@
           {
             "label": "kinmidCP-coalesced-b_vs_coalesced-b+array-free+unroll36-r1",
             "arms_b": "array-free,unroll36,scale-shared,coalesced-b",
-            "regime_marker_ms": 0.0477,
+            "billboard_scatter_ms": 0.0477,
             "gpu_state": {
               "Core Clock(MHz)": 1232,
               "Memory Clock(MHz)": 1150,
@@ -38,7 +38,7 @@
           {
             "label": "kinmidCP-coalesced-b_vs_coalesced-b+array-free+unroll36-r2",
             "arms_b": "array-free,unroll36,scale-shared,coalesced-b",
-            "regime_marker_ms": 0.0453,
+            "billboard_scatter_ms": 0.0453,
             "gpu_state": {
               "Core Clock(MHz)": 1233,
               "Memory Clock(MHz)": 1396,
@@ -69,7 +69,7 @@
           {
             "label": "kinmidCP-coalesced-b_vs_coalesced-b+array-free+unroll36-r3",
             "arms_b": "array-free,unroll36,scale-shared,coalesced-b",
-            "regime_marker_ms": 0.0467,
+            "billboard_scatter_ms": 0.0467,
             "gpu_state": {
               "Core Clock(MHz)": 1233,
               "Memory Clock(MHz)": 1378,

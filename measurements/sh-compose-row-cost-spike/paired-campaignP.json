@@ -7,7 +7,7 @@
           {
             "label": "campaignP-array-free+unroll36-r1",
             "arms_b": "array-free,unroll36,scale-shared",
-            "regime_marker_ms": 0.0428,
+            "billboard_scatter_ms": 0.0428,
             "gpu_state": {
               "Core Clock(MHz)": 1223,
               "Memory Clock(MHz)": 1472,
@@ -38,7 +38,7 @@
           {
             "label": "campaignP-array-free+unroll36-r2",
             "arms_b": "array-free,unroll36,scale-shared",
-            "regime_marker_ms": 0.0408,
+            "billboard_scatter_ms": 0.0408,
             "gpu_state": {
               "Core Clock(MHz)": 1225,
               "Memory Clock(MHz)": 1472,
@@ -69,7 +69,7 @@
           {
             "label": "campaignP-array-free+unroll36-r3",
             "arms_b": "array-free,unroll36,scale-shared",
-            "regime_marker_ms": 0.041,
+            "billboard_scatter_ms": 0.041,
             "gpu_state": {
               "Core Clock(MHz)": 1225,
               "Memory Clock(MHz)": 1472,
@@ -136,7 +136,7 @@
           {
             "label": "campaignP-baseline-r1",
             "arms_b": "baseline",
-            "regime_marker_ms": 0.038,
+            "billboard_scatter_ms": 0.038,
             "gpu_state": {
               "Core Clock(MHz)": 1229,
               "Memory Clock(MHz)": 1472,
@@ -167,7 +167,7 @@
           {
             "label": "campaignP-baseline-r2",
             "arms_b": "baseline",
-            "regime_marker_ms": 0.0396,
+            "billboard_scatter_ms": 0.0396,
             "gpu_state": {
               "Core Clock(MHz)": 1230,
               "Memory Clock(MHz)": 1472,
@@ -198,7 +198,7 @@
           {
             "label": "campaignP-baseline-r3",
             "arms_b": "baseline",
-            "regime_marker_ms": 0.0422,
+            "billboard_scatter_ms": 0.0422,
             "gpu_state": {
               "Core Clock(MHz)": 1229,
               "Memory Clock(MHz)": 1472,
@@ -265,7 +265,7 @@
           {
             "label": "campaignP-floor-r1",
             "arms_b": "floor",
-            "regime_marker_ms": 0.0409,
+            "billboard_scatter_ms": 0.0409,
             "gpu_state": {
               "Core Clock(MHz)": 1229,
               "Memory Clock(MHz)": 1472,
@@ -296,7 +296,7 @@
           {
             "label": "campaignP-floor-r2",
             "arms_b": "floor",
-            "regime_marker_ms": 0.0392,
+            "billboard_scatter_ms": 0.0392,
             "gpu_state": {
               "Core Clock(MHz)": 1228,
               "Memory Clock(MHz)": 1472,
@@ -327,7 +327,7 @@
           {
             "label": "campaignP-floor-r3",
             "arms_b": "floor",
-            "regime_marker_ms": 0.0434,
+            "billboard_scatter_ms": 0.0434,
             "gpu_state": {
               "Core Clock(MHz)": 1229,
               "Memory Clock(MHz)": 1472,

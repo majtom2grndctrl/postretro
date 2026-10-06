@@ -7,7 +7,7 @@
           {
             "label": "arenaD-baseline-r1",
             "arms_b": "baseline",
-            "regime_marker_ms": 0.3327,
+            "billboard_scatter_ms": 0.3327,
             "gpu_state": {
               "Core Clock(MHz)": 1233,
               "Memory Clock(MHz)": 1280,
@@ -38,7 +38,7 @@
           {
             "label": "arenaD-baseline-r2",
             "arms_b": "baseline",
-            "regime_marker_ms": 0.3389,
+            "billboard_scatter_ms": 0.3389,
             "gpu_state": {
               "Core Clock(MHz)": 1231,
               "Memory Clock(MHz)": 1356,
@@ -69,7 +69,7 @@
           {
             "label": "arenaD-baseline-r3",
             "arms_b": "baseline",
-            "regime_marker_ms": 0.3409,
+            "billboard_scatter_ms": 0.3409,
             "gpu_state": {
               "Core Clock(MHz)": 1232,
               "Memory Clock(MHz)": 1238,
@@ -136,7 +136,7 @@
           {
             "label": "arenaD-single-slot-r1",
             "arms_b": "single-slot",
-            "regime_marker_ms": 0.3397,
+            "billboard_scatter_ms": 0.3397,
             "gpu_state": {
               "Core Clock(MHz)": 1232,
               "Memory Clock(MHz)": 1296,
@@ -167,7 +167,7 @@
           {
             "label": "arenaD-single-slot-r2",
             "arms_b": "single-slot",
-            "regime_marker_ms": 0.3386,
+            "billboard_scatter_ms": 0.3386,
             "gpu_state": {
               "Core Clock(MHz)": 1233,
               "Memory Clock(MHz)": 1364,
@@ -198,7 +198,7 @@
           {
             "label": "arenaD-single-slot-r3",
             "arms_b": "single-slot",
-            "regime_marker_ms": 0.3481,
+            "billboard_scatter_ms": 0.3481,
             "gpu_state": {
               "Core Clock(MHz)": 1232,
               "Memory Clock(MHz)": 1354,
@@ -265,7 +265,7 @@
           {
             "label": "arenaD-skip-coarse-r1",
             "arms_b": "skip-coarse",
-            "regime_marker_ms": 0.3586,
+            "billboard_scatter_ms": 0.3586,
             "gpu_state": {
               "Core Clock(MHz)": 1231,
               "Memory Clock(MHz)": 1346,
@@ -296,7 +296,7 @@
           {
             "label": "arenaD-skip-coarse-r2",
             "arms_b": "skip-coarse",
-            "regime_marker_ms": 0.3378,
+            "billboard_scatter_ms": 0.3378,
             "gpu_state": {
               "Core Clock(MHz)": 1231,
               "Memory Clock(MHz)": 1102,
@@ -327,7 +327,7 @@
           {
             "label": "arenaD-skip-coarse-r3",
             "arms_b": "skip-coarse",
-            "regime_marker_ms": 0.3375,
+            "billboard_scatter_ms": 0.3375,
             "gpu_state": {
               "Core Clock(MHz)": 1232,
               "Memory Clock(MHz)": 1268,

@@ -7,7 +7,7 @@
           {
             "label": "arenaR-accum-scalar-r1",
             "arms_b": "accum-scalar",
-            "regime_marker_ms": 0.345,
+            "billboard_scatter_ms": 0.345,
             "gpu_state": {
               "Core Clock(MHz)": 1231,
               "Memory Clock(MHz)": 1280,
@@ -38,7 +38,7 @@
           {
             "label": "arenaR-accum-scalar-r2",
             "arms_b": "accum-scalar",
-            "regime_marker_ms": 0.3623,
+            "billboard_scatter_ms": 0.3623,
             "gpu_state": {
               "Core Clock(MHz)": 1232,
               "Memory Clock(MHz)": 1304,
@@ -69,7 +69,7 @@
           {
             "label": "arenaR-accum-scalar-r3",
             "arms_b": "accum-scalar",
-            "regime_marker_ms": 0.3458,
+            "billboard_scatter_ms": 0.3458,
             "gpu_state": {
               "Core Clock(MHz)": 1231,
               "Memory Clock(MHz)": 1284,
@@ -136,7 +136,7 @@
           {
             "label": "arenaR-array-free+l0-only-r1",
             "arms_b": "array-free,l0-only,scale-shared",
-            "regime_marker_ms": 0.3633,
+            "billboard_scatter_ms": 0.3633,
             "gpu_state": {
               "Core Clock(MHz)": 1232,
               "Memory Clock(MHz)": 1300,
@@ -167,7 +167,7 @@
           {
             "label": "arenaR-array-free+l0-only-r2",
             "arms_b": "array-free,l0-only,scale-shared",
-            "regime_marker_ms": 0.3413,
+            "billboard_scatter_ms": 0.3413,
             "gpu_state": {
               "Core Clock(MHz)": 1231,
               "Memory Clock(MHz)": 1174,
@@ -198,7 +198,7 @@
           {
             "label": "arenaR-array-free+l0-only-r3",
             "arms_b": "array-free,l0-only,scale-shared",
-            "regime_marker_ms": 0.3532,
+            "billboard_scatter_ms": 0.3532,
             "gpu_state": {
               "Core Clock(MHz)": 1230,
               "Memory Clock(MHz)": 1364,
@@ -265,7 +265,7 @@
           {
             "label": "arenaR-array-free+unroll36+l0-only-r1",
             "arms_b": "array-free,unroll36,l0-only,scale-shared",
-            "regime_marker_ms": 0.3554,
+            "billboard_scatter_ms": 0.3554,
             "gpu_state": {
               "Core Clock(MHz)": 1230,
               "Memory Clock(MHz)": 1270,
@@ -296,7 +296,7 @@
           {
             "label": "arenaR-array-free+unroll36+l0-only-r2",
             "arms_b": "array-free,unroll36,l0-only,scale-shared",
-            "regime_marker_ms": 0.3433,
+            "billboard_scatter_ms": 0.3433,
             "gpu_state": {
               "Core Clock(MHz)": 1231,
               "Memory Clock(MHz)": 1404,
@@ -327,7 +327,7 @@
           {
             "label": "arenaR-array-free+unroll36+l0-only-r3",
             "arms_b": "array-free,unroll36,l0-only,scale-shared",
-            "regime_marker_ms": 0.3587,
+            "billboard_scatter_ms": 0.3587,
             "gpu_state": {
               "Core Clock(MHz)": 1231,
               "Memory Clock(MHz)": 1364,
@@ -394,7 +394,7 @@
           {
             "label": "arenaR-array-free+unroll36-r1",
             "arms_b": "array-free,unroll36,scale-shared",
-            "regime_marker_ms": 0.3429,
+            "billboard_scatter_ms": 0.3429,
             "gpu_state": {
               "Core Clock(MHz)": 1231,
               "Memory Clock(MHz)": 1230,
@@ -425,7 +425,7 @@
           {
             "label": "arenaR-array-free+unroll36-r2",
             "arms_b": "array-free,unroll36,scale-shared",
-            "regime_marker_ms": 0.3481,
+            "billboard_scatter_ms": 0.3481,
             "gpu_state": {
               "Core Clock(MHz)": 1231,
               "Memory Clock(MHz)": 1356,
@@ -456,7 +456,7 @@
           {
             "label": "arenaR-array-free+unroll36-r3",
             "arms_b": "array-free,unroll36,scale-shared",
-            "regime_marker_ms": 0.3476,
+            "billboard_scatter_ms": 0.3476,
             "gpu_state": {
               "Core Clock(MHz)": 1232,
               "Memory Clock(MHz)": 1404,
@@ -523,7 +523,7 @@
           {
             "label": "arenaR-array-free-r1",
             "arms_b": "array-free,scale-shared",
-            "regime_marker_ms": 0.351,
+            "billboard_scatter_ms": 0.351,
             "gpu_state": {
               "Core Clock(MHz)": 1231,
               "Memory Clock(MHz)": 1316,
@@ -554,7 +554,7 @@
           {
             "label": "arenaR-array-free-r2",
             "arms_b": "array-free,scale-shared",
-            "regime_marker_ms": 0.3443,
+            "billboard_scatter_ms": 0.3443,
             "gpu_state": {
               "Core Clock(MHz)": 1231,
               "Memory Clock(MHz)": 1372,
@@ -585,7 +585,7 @@
           {
             "label": "arenaR-array-free-r3",
             "arms_b": "array-free,scale-shared",
-            "regime_marker_ms": 0.3486,
+            "billboard_scatter_ms": 0.3486,
             "gpu_state": {
               "Core Clock(MHz)": 1231,
               "Memory Clock(MHz)": 1230,
@@ -652,7 +652,7 @@
           {
             "label": "arenaR-baseline-r1",
             "arms_b": "baseline",
-            "regime_marker_ms": 0.3408,
+            "billboard_scatter_ms": 0.3408,
             "gpu_state": {
               "Core Clock(MHz)": 1232,
               "Memory Clock(MHz)": 1354,
@@ -683,7 +683,7 @@
           {
             "label": "arenaR-baseline-r2",
             "arms_b": "baseline",
-            "regime_marker_ms": 0.3428,
+            "billboard_scatter_ms": 0.3428,
             "gpu_state": {
               "Core Clock(MHz)": 1231,
               "Memory Clock(MHz)": 1110,
@@ -714,7 +714,7 @@
           {
             "label": "arenaR-baseline-r3",
             "arms_b": "baseline",
-            "regime_marker_ms": 0.3513,
+            "billboard_scatter_ms": 0.3513,
             "gpu_state": {
               "Core Clock(MHz)": 1232,
               "Memory Clock(MHz)": 1404,

@@ -28,7 +28,7 @@ for key in sys.argv[1:]:
         gpu = json.loads(gpu_path.read_text())
         per = gpu["compose_per_encoder_ms"]
         run = {"label": label, "arms_b": record["arms_b"],
-               "regime_marker_ms": gpu["all_passes_per_frame_ms"].get("Billboard Direct Scatter Compose"),
+               "billboard_scatter_ms": gpu["all_passes_per_frame_ms"].get("Billboard Direct Scatter Compose"),
                "gpu_state": record.get("gpu_state_median")}
         for p, name in PASSES.items():
             a, b = per.get(name), per.get(f"{name} [B]")

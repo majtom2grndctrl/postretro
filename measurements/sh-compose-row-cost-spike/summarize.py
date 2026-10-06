@@ -1,5 +1,6 @@
 """Legacy: per-arm per-pass GPU ms across launches (batches arena1/arena3/diag1).
-Every reported delta comes from summarize_paired.py instead.
+Every reported delta comes from summarize_paired.py instead. Values are per
+compose encoder, like the paired summaries.
 
 usage: summarize.py <batch-key>... > results.json
 A run counts only if its run.json is valid (foreground, unlocked, no screen
@@ -28,7 +29,7 @@ for key in sys.argv[1:]:
         gpu = json.loads(gpu_path.read_text())
         entry = batch["arms"].setdefault(arm, {"runs": [], "row_mix": record.get("row_mix")})
         entry["runs"].append({"label": label, "camera_frames": gpu["camera_frames"],
-                              **{p: gpu["all_passes_per_frame_ms"].get(name)
+                              **{p: gpu["compose_per_encoder_ms"].get(name)
                                  for p, name in PASSES.items()}})
         if entry["row_mix"] != record.get("row_mix"):
             entry["row_mix_mismatch"] = True

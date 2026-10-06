@@ -1,15 +1,13 @@
 """Sum Metal GPU time per postretro pass label from a metal-gpu-intervals export.
 
-Copied from shadow-fill-cost; adds per-encoder compose times for paired A/B runs.
-
 usage: gpu_time.py <export.xml[.gz]> [summary.json]
-Rows are deduplicated by (command buffer, encoder, start time); distinct
-intervals of one encoder all count. A row Metal reports as "Coelasced N
-Encoders" folds into its base label and counts as N encoders. Per-frame
-figures divide by the frame count: the largest encoder count among passes
-recorded once per frame, since coalescing can only hide encoders, never add
-them. Only labelled passes ("Label:Label") count; driver rows such as
-"GPU Execution", "GL/CL" and paging are excluded.
+Copied from shadow-fill-cost, then corrected in review. One encoder per
+(command buffer, encoder): its time is the union of its intervals (Metal nests
+rows), and a "Coelasced N Encoders" row counts once. Compose labels report
+time per encoder (the spike's metric). Per-frame figures divide by the
+indirect compose encoder count, falling back to the largest once-per-frame
+render-pass count only for traces without compose. Only labelled passes
+("Label:Label") count; driver rows such as "GPU Execution" are excluded.
 """
 import collections, gzip, json, re, sys
 import xml.etree.ElementTree as E

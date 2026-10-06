@@ -11,7 +11,7 @@ Probe code is on the throwaway branch `sh-compose-row-cost-spike-probes`. Every 
 ## Answer
 
 - **The cost is fixed per row.** On every target pose, 95–99% of compose time is a fixed per-row cost, not per-entry work. The per-row costs are 3.0 µs (indirect) and 3.46 µs (Pass B), and the 97% of arena rows that carry no CSR entry pay them too.
-- **The private 36-texel accumulator array (H-a) causes most of it, and dead L1/L2 code worsens it.** Ablating the array removes 43–55% of pass time. The L1/L2 path never runs on these maps, because ids 27/45 are compiled L0-only. Even so, its code costs Pass B up to 1.3 ms, through the kernel's register allocation (H-d's static cost).
+- **The private 36-texel accumulator array (H-a) causes most of it, and dead L1/L2 code worsens it.** Ablating the array removes 43–55% of pass time. The L1/L2 path never runs on these maps, because ids 27/45 are compiled L0-only. Even so, compiling it costs Pass B up to 1.3 ms (H-d's static cost). Register allocation is the likely mechanism, but it is unconfirmed, because register statistics are unavailable (F7).
 - **One exact lever recovers 27–36% per pass on all four poses.** The lever is `array-free` + `unroll36` + `scale-shared`. `array-free` removes the array and the shared-lattice L1/L2 path from the kernel. `unroll36` unrolls the 36-texel loop. `scale-shared` is the per-workgroup scale cache that `array-free` requires; the probe adds it implicitly.
   - Savings: 5.1 ms of the arena's 14.7 ms compose, and 5.2 ms of the kinematic station's 17.4 ms.
   - Both passes write byte-identical atlases.
@@ -27,7 +27,7 @@ Probe code is on the throwaway branch `sh-compose-row-cost-spike-probes`. Every 
   - Re-reduced per encoder, the six `diag1` launches of one binary read 6.69–6.75 / 7.99–8.02 ms. The `kinmidC` "slower regime" reads 8.00–8.04 / 9.37–9.41 ms, the same as `kinmidP`. The between-launch batch `arena3` agrees with the paired deltas (`accum-scalar` −2.98 / −4.48 vs paired −2.86 / −4.38).
   - The paired deltas never used that denominator. The ratio method once used for `coalesced-b` is unnecessary, and per encoder the conclusion is unchanged.
   - **The same heuristic is in shadow-fill-cost's `gpu_time.py`.** This brief's Basis (research.md: 3.2–4.3 / 3.6–4.9 µs per row, "25% apart across sessions") is therefore probably inflated. Per encoder, the arena reads 3.15 / 3.76 µs per row, against the 1660 Super's 0.55 / 0.77: a 5.7× / 4.9× gap, not 5–8×.
-- **Validity.** 224 runs are recorded valid (foreground, unlocked, no screen saver, rows stable, arms logged). 211 of them are traced; 13 are untraced row-count probes. Discarded:
+- **Validity.** 224 runs are recorded valid (foreground, unlocked, no screen saver, rows stable, arms logged). 211 of them are traced with Metal System Trace; the other 13 are 10 untraced row-count probes and 3 Metal GPU Counters traces. Discarded:
   - one invalid run, `arena2-baseline-r1`, whose screen was locked;
   - `arenaP-floor_vs_floor+no-base-r1`, which never started (a label bug). That batch was rerun as `arenaQ`.
 - **Row-stability check.** It runs on whole 120-frame `[SH spike counts]` windows, so the final partial window around the trace is not checked. Rows are deterministic at a fixed pose.
@@ -81,7 +81,7 @@ The floor arm never runs the entry loops. Pairs within the floor (`floor/floor+X
 | — base / intermediate read (`floor+no-base`) | 0.27 | 1.35 | 0.23 | 1.53 |
 | — stores (`floor+stores-off`) | 0.15 | 1.23 | 0.26 | 1.43 |
 | — lane 0's indirection scan | unmeasured (see Attribution) | | | |
-| **Floor remainder** (floor − c − array − stores) | 2.68 | 2.26 | 3.13 | 2.68 |
+| **Floor remainder** (floor − c − array − stores) | 2.68 | 2.26 | 3.14 | 2.68 |
 | **Entry-share remainder** | 0.07 (all) | 0 (over-explained) | 0.20 (all) | 0 (over-explained) |
 
 - **Floor remainder.** It holds lane 0's scan, the indirection decodes, metadata reads, loop-bound counters and bounds clamps (H-e), the dead L1/L2 code's static cost (H-d; `single-slot` moves Pass B by 1.32 ms), and the base-read share that can't be separated from the array ablation.
@@ -95,7 +95,7 @@ Paired Δ = B − A, in ms per frame: the median of 3 launches, with min..max wh
 |---|---|---|---|---|---|---|---|
 | — | `floor` | F | −0.07 [−0.11, −0.07] | −0.35 | −0.20 | −0.36 [−0.39, −0.35] | pending |
 | — | `floor+no-base` (vs floor) | A | −0.27 | −1.35 | −0.23 [−0.29, −0.21] | −1.53 | — |
-| — | `floor+stores-off` (vs floor) | A | −0.15 | −1.23 | −0.26 | −1.43 | — |
+| — | `floor+stores-off` (vs floor) | A | −0.15 | −1.23 [−1.25, −1.19] | −0.26 | −1.43 | — |
 | H-a | `accum-scalar` | A | −2.86 | −4.38 | −3.42 | −4.90 | — |
 | H-a | `floor+accum-scalar` (vs floor) | A | −3.56 | −3.90 | −4.17 | −4.64 | — |
 | H-a | `array-free` (+ `scale-shared`) | L | −1.55 | −2.91 | −1.50 | −2.85 | pending |
@@ -107,7 +107,7 @@ Paired Δ = B − A, in ms per frame: the median of 3 launches, with min..max wh
 | H-b | `const-scale` | A | +0.98 | −0.16 [−0.19, −0.16] | +1.09 | −0.18 [−0.21, −0.18] | — |
 | H-b | `scale-shared` | L | +1.66 | +0.01 | +1.99 [+1.93, +2.01] | +0.02 [+0.02, +0.07] | pending |
 | H-c | `rank0` | A | +1.11 | −0.34 | +1.24 | −0.39 [−0.39, −0.37] | — |
-| H-c | `coalesced-b` (Pass B; unpaired, per encoder, 5 launches each) | L | 6.709 → 6.717 | 8.006 → 8.007 | 8.016 → 7.999 | 9.378 → 9.378 | pending |
+| H-c | `coalesced-b` (Pass B; unpaired, per encoder, 5 launches each; median, range) | L | 6.709 [6.70, 6.72] → 6.717 [6.70, 6.74] | 8.006 [8.00, 8.03] → 8.007 [8.00, 8.02] | 8.016 [8.00, 8.04] → 7.999 [7.99, 8.01] | 9.378 [9.37, 9.41] → 9.378 [9.37, 9.38] | pending |
 | H-d | `skip-coarse` | A | +0.95 [+0.92, +0.97] | −0.31 [−0.32, −0.28] | — | — | — |
 | H-d | `single-slot` | A | −0.01 | −1.32 | — | — | — |
 | H-e | `trusted` (wgpu checks off) | A | **not measured** (see H-e) | | | | — |
@@ -123,7 +123,7 @@ Paired Δ = B − A, in ms per frame: the median of 3 launches, with min..max wh
 - **H-a: the dominant cost.** The array ablation alone removes 3.6–4.6 ms of the floor.
 - **H-b: at most 0.16–0.18 ms on Pass B; unattributable on indirect.** Its lever, `scale-shared`, regresses indirect on its own. Inside `array-free` it is required: without it, the fused texel loop would evaluate every light's scale 36 times per entry.
 - **H-c: no layout lever.** Its ablation saves 0.34–0.39 ms on Pass B, about the whole entry share. The exact layout lever (texel-major repack at upload, `coalesced-b`) changes nothing per encoder. So the ablation's gain is cache reuse from every lane reading one address, not coalescing. No build.
-- **H-d: no runtime share, a large static one.** The L1/L2 path never runs, but its code costs Pass B 1.32 ms (`single-slot`) and 0.31 ms (`skip-coarse`) through register allocation. `array-free` removes the shared-lattice path. Compiling out the rest (`l0-only`) adds nothing on top of it.
+- **H-d: no runtime share, a large static one.** The L1/L2 path never runs, but its code costs Pass B 1.32 ms (`single-slot`) and 0.31 ms (`skip-coarse`), most likely through register allocation (unconfirmed, F7). `array-free` removes the shared-lattice path. Compiling out the rest (`l0-only`) adds nothing on top of it.
 - **H-e:**
   - **Static gate: positive** (`he-gate/REPORT.md`). There are loop-bound counters on all 10 loops, `min` clamps on every `accum` and `delta_subblocks` access, and `naga_div`/`naga_mod` guards per texel.
   - **Timed trusted arm: not run.** The session's auto-mode permission classifier refused the `unsafe` `create_shader_module_trusted` call site, and it was not routed around. Under the brief's gate this arm should have been timed, so **H-e's share is outstanding pending the owner's ruling.**
@@ -146,11 +146,11 @@ The recommended lever is `array-free` + `unroll36`, plus the `scale-shared` that
 | | Arena ind | Arena B | Station ind | Station B |
 |---|---|---|---|---|
 | Stacked, measured | −2.23 (−33%) | −2.89 (−36%) | −2.13 (−27%) | −3.07 (−33%) |
-| `array-free` alone | −1.54 | −2.91 | −1.50 | −2.85 |
+| `array-free` alone (arena from `arenaR`, the stack's batch) | −1.54 | −2.91 | −1.50 | −2.85 |
 | `unroll36` increment | −0.68 | +0.01 | −0.63 | −0.23 |
 | Stacked on the `coalesced-b` layout (paired vs `coalesced-b`) | −2.20 | −2.82 | −2.18 | −3.23 |
 
-Campaign spawn: −0.77 / −0.98 ms (−31% / −33%). Kinematic spawn: −2.19 / −3.05 ms.
+Campaign spawn: −0.77 / −0.98 [−1.03, −0.98] ms (−31% / −33%). Kinematic spawn: −2.19 / −3.05 [−3.10, −3.02] ms.
 
 ## Projection through the contributing-row filter
 
@@ -168,7 +168,7 @@ Campaign spawn: −0.77 / −0.98 ms (−31% / −33%). Kinematic spawn: −2.19
 
 ## Byte identity (H4, H5)
 
-**What was compared.** Capture dumps read back the composed `rgba16float` indirect and direct atlases: whole arrays, 2560×2552×4 each, read after the final frame. They are compared with the baseline dumps of probe commit `1ddd56691`.
+**What was compared.** Capture dumps read back the composed `rgba16float` indirect and direct atlases as whole arrays, read after the final frame: 2560×2552×4 per atlas at the arena, 2752×2744×2 at animroom. They are compared with the baseline dumps of probe commit `1ddd56691`.
 - **Scenes.** Three views (stress-warren-mini animroom, the hallway arena, kinematic station) × gated and force-full-resident × t = 0.5 s and 1.0 s, so 12 scenes.
 - **Distinct states.** They hold 9 distinct indirect states and 8 distinct direct states: at the arena and kinematic station some time or mode pairs coincide. Animroom and kinematic station still give two stepped times, streamed and full-resident.
 - **Determinism.** The baseline repeats byte-identically across four probe binaries (`@repeat`, `@b2`, `@b3`, `@b4`).
@@ -176,7 +176,7 @@ Campaign spawn: −0.77 / −0.98 ms (−31% / −33%). Kinematic spawn: −2.19
 **Results.** Records: `capture/out/<arm>/<scene>/compare.json`; oracle runs: `capture/oracle.txt`.
 - **Every lever and every stack is byte-identical in all 12 scenes.** That covers `scan-parallel`, `scale-shared`, `texel-outer`, `array-free` (alone, `+unroll36`, `+l0-only`, both), `vec3-accum`, `const-tile`, `coalesced-b`, and the stacks.
 - **Negative control: `floor` differs in all 12 scenes, in both atlases.** For example, at arena-gated t = 0.5 s, 24,523 indirect texels differ (max RGB deviation 0.083) and 51 direct texels differ.
-- **Oracle test.** `sampled_row_gate_capture_matches_full_resident_at_stepped_times` passes with each lever's and each stack's arms set: 14 runs.
+- **Oracle test.** `sampled_row_gate_capture_matches_full_resident_at_stepped_times` passes in 14 runs: 11 lever or stack arm sets, including the recommended `array-free,unroll36`, plus `baseline` ×2 and `floor`. Not oracle-run, but byte-compared: `array-free+l0-only` and the mixed stack.
 
 **Coverage gaps** (the follow-on must close or accept them):
 - **L1/L2 path.** No fixture has an L1/L2 row in ids 27/45. `array-free`'s L1/L2 reconstruction matches the original in source (same slot order and arithmetic, traced by review), but its bytes are unproven. Metal fast-math may contract it differently. Proving it needs a GPU atlas byte-compare on Metal; a CPU unit test cannot see code generation.
@@ -198,12 +198,15 @@ Campaign spawn: −0.77 / −0.98 ms (−31% / −33%). Kinematic spawn: −2.19
 1. **Indirect code-generation fragility.** Small edits move indirect by ±1–2.7 ms. The build should land the measured shape, and its acceptance should include a Mac paired A/B re-measure.
 2. **The L1/L2 path in 27/45.** Either keep `array-free`'s L1/L2 reconstruction and prove it with a Metal GPU byte-compare on a synthetic L1/L2 fixture, or have the loader reject non-L0 levels in 27/45 and delete the path. The second is a format-contract decision.
 3. **The 1660.** A Metal-only lever still ships to the 1660 perf floor (§8 has no per-backend variants), so landing it needs a 1660 no-regression reading.
-4. **Sequencing.** Run it after the contributing-row filter. The filter is the 10× lever, and the rows it leaves are the ones this lever's per-row saving applies to.
+4. **Sequencing.** Run it after the contributing-row filter. The filter is the bigger lever (10× at the arena, about 5× at the kinematic station), and the rows it leaves are the ones this lever's per-row saving applies to.
 
 ## Open for the owner
 
+- **Recommending a lever whose exactness is shown only on L0 content.** The brief requires byte-identical atlases for a recommended lever. That holds on all shipped content, which is L0-only by compiler policy, but the L1/L2 path is unproven by bytes. Owner to accept the recommendation as conditional, or to require the L1/L2 proof before the follow-on.
+- **`unroll36` lever gating.** It is typed H-e-adjacent, and H-e's timed ablation never ran, so under "only a hypothesis whose ablation moves … gets a lever" it lacks a qualifying ablation. It can stand as an H-a modifier instead: it acts only inside `array-free`, whose H-a ablation qualifies. Owner to accept that reading.
 - **H-e timed arm.** Either allow the `unsafe` trusted-module call site on the probes branch, or rule H-e reported from the static gate and the safe partial probes.
 - **Cost-model form.** The entry term is reported per pose rather than as one coefficient, and the lever projection scales the per-row saving. See plan.md Corrections.
+- **Out of scope, but large:** at both kinematic poses, Pass A (`Streamed Direct SH Promotion`) averages 2.6–2.9 ms per frame (absent at the arena and campaign). The promotion station's moving weights re-fire it. It does not bias the compose pairs (it splits evenly across A and B frames), but it may deserve its own look.
 - **The brief's Basis numbers are probably inflated** by the shared `gpu_time.py` frame heuristic (see Method). The same heuristic sits in `measurements/shadow-fill-cost/`.
 
 ## 1660 Super handoff (F8): pending

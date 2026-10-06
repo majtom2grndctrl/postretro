@@ -7,7 +7,7 @@
           {
             "label": "arenaP-baseline-r1",
             "arms_b": "baseline",
-            "regime_marker_ms": 0.3415,
+            "billboard_scatter_ms": 0.3415,
             "gpu_state": {
               "Core Clock(MHz)": 1233,
               "Memory Clock(MHz)": 1110,
@@ -74,7 +74,7 @@
           {
             "label": "arenaP-floor-r1",
             "arms_b": "floor",
-            "regime_marker_ms": 0.3971,
+            "billboard_scatter_ms": 0.3971,
             "gpu_state": {
               "Core Clock(MHz)": 1232,
               "Memory Clock(MHz)": 1256,

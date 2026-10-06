@@ -131,6 +131,22 @@ pub struct FocusGroup {
     pub repeat: Option<RepeatPolicy>,
     /// Indices into `FocusRectList::rects` of this group's members, tree order.
     pub members: Vec<usize>,
+    /// The enclosing focus group, when this container sits inside another
+    /// focus-policy container. A directional move this group cannot answer
+    /// continues there, where this group is one candidate by its `bounds`.
+    pub parent: Option<usize>,
+    /// Device-pixel `[x, y, w, h]` of the declaring container.
+    pub bounds: [f32; 4],
+    /// The axis a linear group answers: a `VStack` is vertical, an `HStack`
+    /// horizontal, a `Grid` both (`None`).
+    pub axis: Option<FocusAxis>,
+}
+
+/// A linear focus group's layout axis.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FocusAxis {
+    Vertical,
+    Horizontal,
 }
 
 /// The flat hit-test / focus rect list exported once per draw-data build: every

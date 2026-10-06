@@ -65,24 +65,6 @@ pub(super) fn initial_focus_id(rects: &FocusRectList) -> Option<String> {
         .map(|r| r.id.clone())
 }
 
-/// Linear traversal: step the current node to the previous/next member of its
-/// group in tree order, wrapping per `wrap`. `dir` maps Up/Left → previous,
-/// Down/Right → next (a vstack navigates with Up/Down, an hstack with Left/Right;
-/// either pair walks the same sequential member order).
-pub(super) fn linear_step(
-    rects: &FocusRectList,
-    group_idx: usize,
-    current_id: &str,
-    dir: Dir,
-    wrap: bool,
-) -> Option<String> {
-    let delta = match dir {
-        Dir::Up | Dir::Left => -1,
-        Dir::Down | Dir::Right => 1,
-    };
-    linear_index_step(rects, &rects.groups[group_idx], current_id, delta, wrap)
-}
-
 /// Shared index walk for linear `move_focus` and next/prev: find `current_id` in
 /// the group's member list and step by `delta`, wrapping or clamping per `wrap`.
 ///
@@ -126,55 +108,6 @@ pub(super) fn linear_index_step(
         }
     }
     None
-}
-
-/// Spatial traversal: among the group's members lying in `dir`'s half-plane
-/// relative to `current`, pick the one whose center is nearest (Euclidean on
-/// device-pixel centers, with a perpendicular-offset penalty so a straight-ahead
-/// neighbor beats a diagonal). Returns `None` when no member lies that way.
-pub(super) fn spatial_step(
-    rects: &FocusRectList,
-    group_idx: usize,
-    current: &FocusRect,
-    dir: Dir,
-) -> Option<String> {
-    let group = &rects.groups[group_idx];
-    let (cx, cy) = center(current.rect);
-
-    let mut best: Option<(f32, &str)> = None;
-    for &m in &group.members {
-        let cand = &rects.rects[m];
-        if cand.id == current.id {
-            continue;
-        }
-        // Disabled members are excluded from the candidate set (M13 G2-T3).
-        if cand.disabled {
-            continue;
-        }
-        let (tx, ty) = center(cand.rect);
-        let dx = tx - cx;
-        let dy = ty - cy;
-        // Primary axis must move the right way past a small epsilon; the
-        // perpendicular offset is penalized so the most aligned neighbor wins.
-        let (along, perp) = match dir {
-            Dir::Up => (-dy, dx),
-            Dir::Down => (dy, dx),
-            Dir::Left => (-dx, dy),
-            Dir::Right => (dx, dy),
-        };
-        // Guards floating-point ties; a candidate must advance by more than 0.5 dp
-        // on the primary axis (exactly 0.5 is excluded).
-        if along <= 0.5 {
-            continue;
-        }
-        // Weight the perpendicular offset heavily so straight-ahead wins over a
-        // diagonal at similar primary distance.
-        let cost = along + perp.abs() * 2.0;
-        if best.map(|(bc, _)| cost < bc).unwrap_or(true) {
-            best = Some((cost, cand.id.as_str()));
-        }
-    }
-    best.map(|(_, id)| id.to_string())
 }
 
 /// Center `[cx, cy]` of a device-pixel rect `[x, y, w, h]`.

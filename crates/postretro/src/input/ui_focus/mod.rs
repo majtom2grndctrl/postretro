@@ -18,20 +18,19 @@
 
 use crate::input::ui_dispatch::PointerPos;
 use crate::input::ui_nav::NavIntent;
-use postretro_ui::tree::{FocusKind, FocusRectList, NodeInteraction, RepeatPolicy};
+use postretro_ui::tree::{FocusRectList, NodeInteraction, RepeatPolicy};
 
+mod nesting;
 mod repeat;
 mod slider;
 #[cfg(test)]
 mod tests;
 mod traversal;
 
+use nesting::{Candidate, first_enabled_stop, group_contains, step_from};
 use repeat::{ConfirmRepeatClock, ENGINE_DEFAULT_REPEAT, RepeatClock, RepeatTimer};
 pub use slider::{capture_slider_step, slider_value};
-use traversal::{
-    Dir, hit_test_topmost, initial_focus_id, linear_index_step, linear_step, neighbor_override,
-    spatial_step,
-};
+use traversal::{Dir, hit_test_topmost, initial_focus_id, linear_index_step, neighbor_override};
 
 /// Pointer-vs-focus interaction mode, taken as an input (the `input.mode` slot
 /// write is Task 5's concern). In `Pointer` mode, cursor motion moves focus
@@ -104,6 +103,10 @@ pub struct UiFocusEngine {
     /// Activation-repeat clock for a held confirm on a `repeatOnHold` button (M13
     /// Text-Entry, Task 2). `Some` only while such a button's confirm is held.
     confirm_repeat: Option<ConfirmRepeatClock>,
+    /// The member last focused in each nested group, keyed by tree and group
+    /// index; entering the group lands there. Validated on use, since a
+    /// rebuild may renumber groups or remove the member.
+    group_memory: std::collections::HashMap<(String, usize), String>,
 }
 
 /// Result of one focus-engine tick: the focused node id to send back on the next
@@ -258,8 +261,41 @@ impl UiFocusEngine {
             result.confirmed = true;
         }
 
+        self.remember_group_focus(active_key, rects);
         result.focused = self.focused_id(active_key).map(str::to_string);
         result
+    }
+
+    /// Record the focused node as the last-focused member of every group that
+    /// holds it, so re-entering any of them lands back on it.
+    fn remember_group_focus(&mut self, key: &str, rects: &FocusRectList) {
+        let Some(focused) = self.focused_id(key) else {
+            return;
+        };
+        let Some(rect) = rects.rects.iter().position(|r| r.id == focused) else {
+            return;
+        };
+        let focused = focused.to_string();
+        let mut group = rects.rects[rect].group;
+        while let Some(g) = group {
+            self.group_memory
+                .insert((key.to_string(), g), focused.clone());
+            group = rects.groups[g].parent;
+        }
+    }
+
+    /// The node focus lands on when a move enters `group`: its last-focused
+    /// member while that still exists inside it and is enabled, else its first
+    /// enabled member (P13).
+    fn enter_group(&self, key: &str, rects: &FocusRectList, group: usize) -> Option<String> {
+        let remembered = self
+            .group_memory
+            .get(&(key.to_string(), group))
+            .and_then(|id| rects.rects.iter().position(|r| &r.id == id))
+            .filter(|&r| !rects.rects[r].disabled && group_contains(rects, group, r));
+        remembered
+            .or_else(|| first_enabled_stop(rects, group))
+            .map(|r| rects.rects[r].id.clone())
     }
 
     /// Ensure the active tree has a selected focus. On a stack change, restore the
@@ -329,13 +365,34 @@ impl UiFocusEngine {
         let Some(group_idx) = current.group else {
             return;
         };
-        let group = &rects.groups[group_idx];
-        let next = match group.kind {
-            FocusKind::Linear => linear_step(rects, group_idx, &current_id, dir, group.wrap),
-            FocusKind::Spatial => spatial_step(rects, group_idx, current, dir),
+        // Each nested group is one candidate in its group, by its bounds. A
+        // move the group cannot answer continues in the enclosing group,
+        // escaping outward until a group answers or the root is reached.
+        let Some(current_index) = rects.rects.iter().position(|r| r.id == current_id) else {
+            return;
         };
-        if let Some(next_id) = next {
-            self.set_focused(key, Some(next_id));
+        let mut origin = Candidate::Rect(current_index);
+        let mut group = group_idx;
+        loop {
+            match step_from(rects, group, origin, dir) {
+                Some(Candidate::Rect(r)) => {
+                    self.set_focused(key, Some(rects.rects[r].id.clone()));
+                    return;
+                }
+                Some(Candidate::Group(g)) => {
+                    if let Some(id) = self.enter_group(key, rects, g) {
+                        self.set_focused(key, Some(id));
+                    }
+                    return;
+                }
+                None => match rects.groups[group].parent {
+                    Some(parent) => {
+                        origin = Candidate::Group(group);
+                        group = parent;
+                    }
+                    None => return,
+                },
+            }
         }
     }
 

@@ -1,5 +1,5 @@
 use super::*;
-use postretro_ui::tree::{FocusGroup, FocusNeighbors, FocusRect, RepeatPolicy};
+use postretro_ui::tree::{FocusGroup, FocusKind, FocusNeighbors, FocusRect, RepeatPolicy};
 
 fn rect(id: &str, r: [f32; 4], z: u32, group: Option<usize>) -> FocusRect {
     FocusRect {
@@ -37,6 +37,9 @@ fn linear_list(wrap: bool, repeat: Option<RepeatPolicy>) -> FocusRectList {
             wrap,
             repeat,
             members: vec![0, 1, 2],
+            parent: None,
+            bounds: [0.0; 4],
+            axis: None,
         }],
         initial_focus: None,
         restore_on_return: false,
@@ -58,6 +61,9 @@ fn grid_list() -> FocusRectList {
             wrap: false,
             repeat: None,
             members: vec![0, 1, 2, 3],
+            parent: None,
+            bounds: [0.0; 4],
+            axis: None,
         }],
         initial_focus: None,
         restore_on_return: false,
@@ -935,6 +941,9 @@ fn keyboard_like_list() -> FocusRectList {
             wrap: false,
             repeat: None,
             members: vec![0, 1],
+            parent: None,
+            bounds: [0.0; 4],
+            axis: None,
         }],
         initial_focus: None,
         restore_on_return: false,
@@ -1070,6 +1079,9 @@ fn linear_nav_skips_a_run_of_consecutive_disabled_members() {
             wrap: false,
             repeat: None,
             members: vec![0, 1, 2, 3],
+            parent: None,
+            bounds: [0.0; 4],
+            axis: None,
         }],
         initial_focus: None,
         restore_on_return: false,
@@ -1122,6 +1134,9 @@ fn linear_nav_clamps_when_only_disabled_lie_ahead() {
             wrap: false,
             repeat: None,
             members: vec![0, 1, 2],
+            parent: None,
+            bounds: [0.0; 4],
+            axis: None,
         }],
         initial_focus: None,
         restore_on_return: false,
@@ -1169,6 +1184,9 @@ fn linear_nav_wraps_past_disabled_run_to_an_enabled_member() {
             wrap: true,
             repeat: None,
             members: vec![0, 1, 2, 3],
+            parent: None,
+            bounds: [0.0; 4],
+            axis: None,
         }],
         initial_focus: None,
         restore_on_return: false,
@@ -1282,6 +1300,9 @@ fn initial_focus_skips_a_leading_disabled_node() {
             wrap: false,
             repeat: None,
             members: vec![0, 1, 2],
+            parent: None,
+            bounds: [0.0; 4],
+            axis: None,
         }],
         initial_focus: None,
         restore_on_return: false,
@@ -1343,6 +1364,9 @@ fn pointer_click_on_a_disabled_node_does_not_focus_or_activate_it() {
             wrap: false,
             repeat: None,
             members: vec![0, 1],
+            parent: None,
+            bounds: [0.0; 4],
+            axis: None,
         }],
         initial_focus: None,
         restore_on_return: false,
@@ -1393,6 +1417,9 @@ fn pointer_hover_over_a_disabled_node_does_not_focus_it() {
             wrap: false,
             repeat: None,
             members: vec![0, 1],
+            parent: None,
+            bounds: [0.0; 4],
+            axis: None,
         }],
         initial_focus: None,
         restore_on_return: false,
@@ -1471,6 +1498,9 @@ fn focused_activation_no_ops_on_a_disabled_focused_node() {
             wrap: false,
             repeat: None,
             members: vec![0, 1],
+            parent: None,
+            bounds: [0.0; 4],
+            axis: None,
         }],
         initial_focus: None,
         restore_on_return: false,
@@ -1625,6 +1655,9 @@ fn long_list(repeat: Option<RepeatPolicy>, slider: Option<NodeInteraction>) -> F
             wrap: false,
             repeat,
             members: (0..10).collect(),
+            parent: None,
+            bounds: [0.0; 4],
+            axis: None,
         }],
         initial_focus: None,
         restore_on_return: false,
@@ -1795,4 +1828,170 @@ fn a_held_slider_across_a_one_second_frame_steps_once() {
 fn a_slider_step_clamps_at_its_bounds_without_overshoot() {
     assert!(close(slider_value(0.95, 4, 0.1, 0.0, 1.0), 1.0));
     assert!(close(slider_value(0.05, -2, 0.1, 0.0, 1.0), 0.0));
+}
+
+// --- E23 U3: nested focus groups ---
+
+/// A tabbed menu: a horizontal wrapping strip of tabs above a vertical,
+/// non-wrapping panel, both nested in a vertical root group.
+fn tabbed_list() -> FocusRectList {
+    let group = |kind, wrap, members: Vec<usize>, parent, bounds, axis| FocusGroup {
+        kind,
+        wrap,
+        repeat: None,
+        members,
+        parent,
+        bounds,
+        axis,
+    };
+    use postretro_ui::tree::FocusAxis::{Horizontal, Vertical};
+    FocusRectList {
+        rects: vec![
+            rect("tab0", [0.0, 0.0, 50.0, 20.0], 0, Some(1)),
+            rect("tab1", [60.0, 0.0, 50.0, 20.0], 1, Some(1)),
+            rect("tab2", [120.0, 0.0, 50.0, 20.0], 2, Some(1)),
+            rect("p0", [0.0, 40.0, 170.0, 20.0], 3, Some(2)),
+            rect("p1", [0.0, 70.0, 170.0, 20.0], 4, Some(2)),
+            rect("back", [0.0, 110.0, 170.0, 20.0], 5, Some(0)),
+        ],
+        groups: vec![
+            group(
+                FocusKind::Linear,
+                false,
+                vec![5],
+                None,
+                [0.0, 0.0, 170.0, 130.0],
+                Some(Vertical),
+            ),
+            group(
+                FocusKind::Linear,
+                true,
+                vec![0, 1, 2],
+                Some(0),
+                [0.0, 0.0, 170.0, 20.0],
+                Some(Horizontal),
+            ),
+            group(
+                FocusKind::Linear,
+                false,
+                vec![3, 4],
+                Some(0),
+                [0.0, 40.0, 170.0, 50.0],
+                Some(Vertical),
+            ),
+        ],
+        initial_focus: Some("tab0".to_string()),
+        restore_on_return: false,
+        owner: None,
+    }
+}
+
+fn nav(fe: &mut UiFocusEngine, list: &FocusRectList, intent: NavIntent) -> Option<String> {
+    step(fe, list, &[intent], 0.0).focused
+}
+
+#[test]
+fn down_from_any_tab_enters_the_panel_and_up_returns_to_the_tab_last_focused() {
+    let list = tabbed_list();
+    for tab in ["tab0", "tab1", "tab2"] {
+        let mut fe = UiFocusEngine::new();
+        step(&mut fe, &list, &[], 0.0);
+        while fe.focused_id("t") != Some(tab) {
+            nav(&mut fe, &list, NavIntent::Right);
+        }
+        assert_eq!(
+            nav(&mut fe, &list, NavIntent::Down).as_deref(),
+            Some("p0"),
+            "from {tab}"
+        );
+        assert_eq!(nav(&mut fe, &list, NavIntent::Up).as_deref(), Some(tab));
+    }
+}
+
+#[test]
+fn right_on_the_last_tab_wraps_within_the_strip() {
+    let list = tabbed_list();
+    let mut fe = UiFocusEngine::new();
+    step(&mut fe, &list, &[], 0.0);
+    nav(&mut fe, &list, NavIntent::Right);
+    nav(&mut fe, &list, NavIntent::Right);
+    assert_eq!(
+        nav(&mut fe, &list, NavIntent::Right).as_deref(),
+        Some("tab0")
+    );
+}
+
+#[test]
+fn moving_back_into_a_nested_group_lands_on_its_last_focused_member() {
+    let list = tabbed_list();
+    let mut fe = UiFocusEngine::new();
+    step(&mut fe, &list, &[], 0.0);
+    nav(&mut fe, &list, NavIntent::Down); // p0
+    nav(&mut fe, &list, NavIntent::Down); // p1
+    assert_eq!(
+        nav(&mut fe, &list, NavIntent::Down).as_deref(),
+        Some("back")
+    );
+    assert_eq!(nav(&mut fe, &list, NavIntent::Up).as_deref(), Some("p1"));
+}
+
+#[test]
+fn next_at_the_end_of_a_non_wrapping_nested_group_does_nothing() {
+    let list = tabbed_list();
+    let mut fe = UiFocusEngine::new();
+    step(&mut fe, &list, &[], 0.0);
+    nav(&mut fe, &list, NavIntent::Down);
+    nav(&mut fe, &list, NavIntent::Down);
+    assert_eq!(nav(&mut fe, &list, NavIntent::Next).as_deref(), Some("p1"));
+}
+
+#[test]
+fn a_focus_neighbors_target_in_another_group_wins_over_the_escape() {
+    let mut list = tabbed_list();
+    list.rects[3].neighbors.up = Some("tab2".to_string());
+    let mut fe = UiFocusEngine::new();
+    step(&mut fe, &list, &[], 0.0);
+    nav(&mut fe, &list, NavIntent::Down);
+    assert_eq!(nav(&mut fe, &list, NavIntent::Up).as_deref(), Some("tab2"));
+}
+
+#[test]
+fn re_entering_a_group_whose_last_member_is_gone_or_disabled_lands_on_its_first_enabled() {
+    let list = tabbed_list();
+    let mut fe = UiFocusEngine::new();
+    step(&mut fe, &list, &[], 0.0);
+    nav(&mut fe, &list, NavIntent::Down);
+    nav(&mut fe, &list, NavIntent::Down); // p1 remembered
+    nav(&mut fe, &list, NavIntent::Down); // back
+    let mut disabled = list.clone();
+    disabled.rects[4].disabled = true;
+    assert_eq!(
+        nav(&mut fe, &disabled, NavIntent::Up).as_deref(),
+        Some("p0")
+    );
+
+    let mut fe = UiFocusEngine::new();
+    step(&mut fe, &list, &[], 0.0);
+    nav(&mut fe, &list, NavIntent::Down);
+    nav(&mut fe, &list, NavIntent::Down);
+    nav(&mut fe, &list, NavIntent::Down);
+    let mut rebuilt = list.clone();
+    rebuilt.rects[4].id = "p1-renamed".to_string();
+    let mut first_disabled = rebuilt.clone();
+    first_disabled.rects[3].disabled = true;
+    assert_eq!(
+        nav(&mut fe, &first_disabled, NavIntent::Up).as_deref(),
+        Some("p1-renamed")
+    );
+}
+
+#[test]
+fn a_root_linear_group_still_steps_on_either_axis() {
+    // Back-compat: with no enclosing group a cross-axis move keeps today's
+    // sequential step instead of going nowhere.
+    let mut fe = UiFocusEngine::new();
+    let mut list = linear_list(false, None);
+    list.groups[0].axis = Some(postretro_ui::tree::FocusAxis::Vertical);
+    step(&mut fe, &list, &[], 0.0);
+    assert_eq!(nav(&mut fe, &list, NavIntent::Right).as_deref(), Some("b"));
 }

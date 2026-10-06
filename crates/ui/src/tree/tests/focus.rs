@@ -210,6 +210,15 @@ fn focus_export_nested_policy_container_opens_its_own_group() {
     );
     assert_eq!(focus.rects[0].group, Some(0));
     assert_eq!(focus.rects[2].group, Some(0));
+    // The nested group knows its enclosing group, its layout axis, and the
+    // container bounds it is navigated by as one candidate.
+    assert_eq!(focus.groups[0].parent, None);
+    assert_eq!(focus.groups[1].parent, Some(0));
+    assert_eq!(focus.groups[1].axis, Some(crate::tree::FocusAxis::Vertical));
+    let [ox, oy, ow, oh] = focus.groups[0].bounds;
+    let [ix, iy, iw, ih] = focus.groups[1].bounds;
+    assert!(iw > 0.0 && ih > 0.0, "{:?}", focus.groups[1].bounds);
+    assert!(ix >= ox && iy >= oy && ix + iw <= ox + ow + 0.5 && iy + ih <= oy + oh + 0.5);
 }
 
 #[test]

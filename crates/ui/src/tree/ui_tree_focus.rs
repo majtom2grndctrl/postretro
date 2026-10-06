@@ -13,7 +13,7 @@ use postretro_entities::SlotValue;
 
 use super::CellValues;
 use super::draw::{
-    FocusGroup, FocusRect, FocusRectList, anchor_fractions, canvas_origin, project_rect,
+    FocusAxis, FocusGroup, FocusRect, FocusRectList, anchor_fractions, canvas_origin, project_rect,
 };
 use super::ui_tree::UiTree;
 use super::widget_meta::{
@@ -162,6 +162,13 @@ impl UiTree {
                     wrap: policy.wrap(),
                     repeat: policy.repeat().map(Into::into),
                     members: Vec::new(),
+                    parent: group,
+                    bounds: project_rect(ref_origin, layout, scale, canvas_origin),
+                    axis: match widget {
+                        Widget::VStack(_) => Some(FocusAxis::Vertical),
+                        Widget::HStack(_) => Some(FocusAxis::Horizontal),
+                        _ => None,
+                    },
                 });
                 Some(idx)
             }

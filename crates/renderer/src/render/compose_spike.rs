@@ -26,6 +26,7 @@ const KNOWN_ARMS: &[&str] = &[
     "texel-outer",
     "scale-shared",
     "vec3-accum",
+    "const-tile",
     // floor and ablations
     "floor",
     "no-base",
@@ -333,6 +334,16 @@ fn spike_scale(entry: u32, start: u32, cached: bool) -> vec3<f32> {
                 arm,
             );
         }
+        "const-tile" => replace_once(
+            src,
+            "    let texel_index = tile_texel.y * grid.tile_dimension + tile_texel.x;
+    let texel_f16_count = grid.delta_probe_f16_stride
+        / (grid.tile_dimension * grid.tile_dimension);",
+            "    // spike const-tile: PRL validation pins the tile to 6x6 RGB16F texels.
+    let texel_index = tile_texel.y * RUNTIME_TILE_DIMENSION + tile_texel.x;
+    let texel_f16_count = 3u;",
+            arm,
+        ),
         "floor" => {
             replace_once(src, LET_END, "    let end = start; // spike floor\n", arm);
         }
@@ -520,6 +531,7 @@ mod tests {
                 "floor,stores-off",
                 "texel-outer",
                 "scan-parallel,texel-outer,vec3-accum",
+                "scan-parallel,texel-outer,vec3-accum,const-tile",
             ]
             .map(String::from),
         );

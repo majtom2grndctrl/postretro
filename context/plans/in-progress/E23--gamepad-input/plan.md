@@ -152,7 +152,7 @@ Split-first files are split before they are extended, each split its own behavio
 | 9 | UI nav from effective bindings: `ui_nav` mappers become lookups in both `GamepadSystem::update` callers and keyboard input; repeat release by binding (P9, P10); swap; text-entry context (P28); stick half-axis nav | integrating executor | 4, 8 | |
 | 10 | Controls panel: generated `core/ui` tree, reserved name, `ui.openControls` (Rust + both SDKs), rows by category/order, read-only activators, reset / reset-all, conflict replace/cancel, guard refusal, displaced flags | integrating executor | 7, 9 | |
 | 11 | Raw capture: `UiIntentPayload` capture path decided App-side after activations while the prompt is active (P7, P8, P25), swap-aware, abandon rules | integrating executor | 10 | |
-| 12 | Split `input/ui_focus.rs` — no behavior change | integrating executor | — | |
+| 12 | Split `input/ui_focus.rs` — no behavior change | integrating executor | — | done: `input/ui_focus/{mod,repeat,traversal,slider,tests}.rs` (engine 468 lines; 38 focus tests unchanged); clippy clean |
 | 13 | Restore on return: tree prop (both SDKs, parsers, serializer), push vs pop, owner-gated tick (P11), P12, P13 | integrating executor | 12 | |
 | 14 | Engine default repeat; slider hold-repeat with acceleration (P14–P17) | integrating executor | 12 | |
 | 15 | Nested groups: export group parent + bounds, directional escape, last-focused re-entry, linear axis rule (P21) | integrating executor | 12 | |

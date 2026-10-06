@@ -469,6 +469,9 @@ mod ordering;
 #[path = "renderer_tests/lifecycle.rs"]
 mod lifecycle;
 
+#[path = "renderer_tests/ui_text_timing.rs"]
+mod ui_text_timing;
+
 #[path = "renderer_tests/streamed_inventory.rs"]
 #[cfg(feature = "dev-tools")]
 mod streamed_inventory;

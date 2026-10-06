@@ -34,14 +34,14 @@ Adapter-gated tests live in `crates/renderer/src/render/ui/text_prepare_gate_tes
 | A9 adjacent layers keep separate spans (O11) | `layer_boundary_ends_span` | achievable as stated |
 | A10 pause menu open/close (O10) | `modal_push_prepares_only_pushed_layer_and_pop_prepares_nothing` | achievable as stated |
 | A11 per-layer depth occlusion | existing `upper_layer_panel_occludes_lower_layer_text_without_losing_other_text` (now on banded depth) + `banded_depth_keeps_own_panel_under_own_text` | achievable as stated |
-| A12 layer close/reopen re-prepares; correct after reclaim/atlas-full/viewport; slot beyond count draws nothing (O5, O6) | `returning_layer_reprepares_and_draws_correct_text` | achievable as stated |
-| A13 reclaim and atlas-full after lower-layer count change keep depths (O22) | `reclaim_after_lower_layer_change_keeps_occlusion` | achievable as stated |
+| A12 layer close/reopen re-prepares; correct after reclaim/atlas-full/viewport; slot beyond count draws nothing (O5, O6) | `returning_layer_reprepares_and_draws_correct_text`, `returning_layer_is_correct_after_atlas_full_while_away` | achievable as stated |
+| A13 reclaim and atlas-full after lower-layer count change keep depths (O22) | `reclaim_after_lower_layer_change_keeps_occlusion`, `atlas_full_after_lower_layer_change_keeps_occlusion` | achievable as stated |
 | A14 layer count over band bound (O23) | `over_band_bound_falls_back_then_reprepares_once` | achievable as stated |
 | A15 failed prepare draws nothing, retries (O4) | `failed_prepare_draws_nothing_and_retries` (pinned atlas, glyph larger than the limit) | achievable as stated |
-| A16 tween settle / reduce-motion snap (O18) | `settled_tween_prepares_nothing` (retained gameplay path) | achievable as stated |
-| A17 timing count under UI stage | `RenderStage` unit tests + renderer frame test asserting `ui_text_spans_prepared` present at zero, zero-text present, reclaim counts each once, gate off counts nothing; existing log/panel formatters cover `StageKind::Count` | achievable as stated |
-| A18 debug guard counts encodes (O20); drift guard passes | `second_encode_before_submit_trips_guard_even_without_prepare` (`#[should_panic]`, debug) + existing direct-write drift guard | achievable as stated |
-| A19 grep gates | source test: `Cargo.lock` glyphon/wgpu from registry at locked versions, no `[patch]`/vendored copy; `ui.md` §5 wording | achievable as stated |
+| A16 tween settle / reduce-motion snap (O18) | `settled_tween_prepares_nothing`, `reduce_motion_snap_prepares_once_then_nothing` (retained gameplay path) | achievable as stated |
+| A17 timing count under UI stage | `ui_frame_reports_text_spans_prepared_under_the_ui_stage`, `ui_text_prepare_count_is_absent_with_timing_off` (real `record_ui_layer` path); atlas-full count in `pinned_atlas_new_glyph_counter_keeps_static_label`; `every_stage_index_matches_its_position`; existing log/panel formatters cover `StageKind::Count` | achievable as stated |
+| A18 debug guard counts encodes (O20); drift guard passes | `second_encode_before_submit_trips_guard_even_without_prepare` (debug, `catch_unwind` so a self-skip cannot pass it) + `renderer_direct_uploads_and_submissions_have_lifecycle_owners`, `renderer_uses_only_the_shared_staging_pool` | achievable as stated |
+| A19 grep gates | `glyphon_and_wgpu_come_from_the_registry_unpatched`, `ui_md_states_the_change_gated_text_contract` | achievable as stated |
 | A20 adapter-gated rows ran, count reported | run the module on this machine's adapter; report ran/skipped from the test output | achievable as stated |
 | M1 Mac release medians | owner, Mac | manual |
 | M2 post-change `sample` shares | owner, Mac | manual |
@@ -56,6 +56,6 @@ Adapter-gated tests live in `crates/renderer/src/render/ui/text_prepare_gate_tes
 | 1 | Thin slice: per-slot gate in `UiTextRenderer` (exact key, retained shaped buffers, slot-local metadata), trim-first reclaim at cadence + atlas-full recovery, encode stats; harness with pinned limits; A1–A4 goldens | integrating executor | 0 | done: `text.rs` slot gate + `TEXT_RECLAIM_CADENCE`; `try_init_gpu_with_limits`; A1–A4 pass. Mutation: per-frame trim after prepares fails the pinned-atlas golden (static label evicted, frame 35) |
 | 2 | Per-layer scoping: composition ends spans at layer boundaries and carries layer per span; banded depth for quads/rings/text with fallback; A8–A14 | integrating executor | 1 | done: `PaintSlot`, `LayerCursor`, `UI_DEPTH_BANDS`/`UI_BAND_ORDERS` in `composition.rs`; A8, A9, A11–A14 pass. Mutation: banding off fails the four layer-scope rows |
 | 3 | Edge rows: font generation, zero text + reclaim deferral, viewport, prepare failure; A5–A7, A15 | integrating executor | 1 | done: A5–A7, A15 pass |
-| 4 | Count stage `ui_text_spans_prepared` under `rec_ui`; guard at encode entry; A17, A18 | integrating executor | 1 | partial: stage + `record_ui_layer` wiring + encode-entry guard landed; A18 passes; A17 renderer-frame test pending |
-| 5 | Retained-path rows: tween settle, pause push/pop; A10, A16 | integrating executor | 2 | |
-| 6 | `ui.md` §5 restated as built; grep gates; adapter run report; A19, A20 | integrating executor | 1–5 | |
+| 4 | Count stage `ui_text_spans_prepared` under `rec_ui`; guard at encode entry; A17, A18 | integrating executor | 1 | done: stage + `record_ui_layer` wiring + encode-entry guard; A17 via `renderer_tests/ui_text_timing.rs`; A18 passes |
+| 5 | Retained-path rows: tween settle, pause push/pop; A10, A16 | integrating executor | 2 | done: A16 through `layout_gameplay_tree`; A10 at the encode seam with hand-built stack layers (the gate reads only the composition) |
+| 6 | `ui.md` §5 restated as built; grep gates; adapter run report; A19, A20 | integrating executor | 1–5 | done: `ui.md` §5 and `rendering_pipeline.md` §12 updated; A19 passes; A20 reported at preflight |

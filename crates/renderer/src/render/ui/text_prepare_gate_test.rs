@@ -318,6 +318,7 @@ fn pinned_atlas_new_glyph_counter_keeps_static_label() {
     let mut static_band = None;
     let mut reclaims = 0;
     let mut atlas_full = 0;
+    let mut trimmed_last_frame = false;
     for i in 0..frames as usize {
         let counter = glyphs[i % glyphs.len()].to_string();
         let layers = [
@@ -332,6 +333,10 @@ fn pinned_atlas_new_glyph_counter_keeps_static_label() {
                 vec![(0, 0), (1, 0)],
                 "an atlas-full frame prepares every live span again"
             );
+            assert_eq!(
+                frame.stats.spans_prepared, 2,
+                "an atlas-full frame counts each live span once"
+            );
         }
         if frame.stats.trimmed {
             reclaims += 1;
@@ -341,7 +346,12 @@ fn pinned_atlas_new_glyph_counter_keeps_static_label() {
             None => static_band = Some(band),
             Some(first) => assert!(*first == band, "static span changed on frame {i}"),
         }
-        rig.assert_matches_reference(&frame, &layers, &format!("frame {i}"));
+        // The static band is checked every frame; the whole frame against a
+        // fresh pass around every trim and periodically between them.
+        if frame.stats.trimmed || trimmed_last_frame || i % 8 == 0 {
+            rig.assert_matches_reference(&frame, &layers, &format!("frame {i}"));
+        }
+        trimmed_last_frame = frame.stats.trimmed;
     }
     assert!(atlas_full >= 1, "the run never filled the atlas");
     assert!(reclaims >= 2, "only {reclaims} reclaims in {frames} frames");
@@ -869,4 +879,113 @@ fn second_encode_before_submit_trips_guard_even_without_prepare() {
         second.is_err(),
         "a second encode before submit must trip the debug guard"
     );
+}
+
+/// A centre-anchored bound number easing from 0 to 100: its content and, as
+/// its width changes, its position move every frame until the tween clamps.
+fn tweened_health_layer(rig: &mut Rig, now: f64, snap: bool) -> UiDrawData {
+    use super::descriptor::{
+        AnchoredTree, BindSource, CaptureMode, ColorValue, Easing, TextBind, TextTween, TextWidget,
+        Widget,
+    };
+    let tree = AnchoredTree {
+        anchor: super::layout::Anchor::Center,
+        offset: [0.0, 0.0],
+        root: Widget::Text(TextWidget {
+            content: "0".into(),
+            font_size: 24.0,
+            color: ColorValue::Literal([1.0, 1.0, 1.0, 1.0]),
+            font: None,
+            bind: Some(TextBind {
+                source: BindSource::Slot {
+                    slot: "player.health".into(),
+                },
+                format: None,
+                decimal_places: Some(0),
+                tween: Some(TextTween {
+                    duration_ms: 200.0,
+                    easing: Easing::EaseOut,
+                    from: Some(0.0),
+                }),
+            }),
+            style_ranges: None,
+            id: None,
+            focus_neighbors: Default::default(),
+            visible_when: None,
+            role: None,
+        }),
+        capture_mode: CaptureMode::Passthrough,
+        initial_focus: None,
+        text_entry_target: None,
+        accessible_name: None,
+        role: None,
+    };
+    let entry = postretro_ui::UiTreeEntry {
+        name: "hud".into(),
+        tier: postretro_ui::modal_stack::ScopeTier::Engine,
+        capture_mode: tree.capture_mode,
+        descriptor: tree,
+        on_commit: None,
+    };
+    let slots = std::collections::HashMap::from([(
+        "player.health".to_string(),
+        postretro_entities::SlotValue::Number(100.0),
+    )]);
+    rig.pass.layout_gameplay_tree(
+        &mut rig.font_system,
+        0,
+        &entry,
+        rig.size,
+        &super::tree::ImageSizes::new(),
+        0,
+        &slots,
+        &super::tree::CellValues::new(),
+        &super::theme::UiTheme::engine_default(),
+        0,
+        postretro_ui::tree::TweenClock { now, snap },
+    )
+}
+
+/// O18: once the tween clamps, positions settle bit-identical and the next
+/// frame prepares nothing.
+#[test]
+fn settled_tween_prepares_nothing() {
+    let mut rig = Rig::new(gpu_or_skip!(try_init_gpu()));
+    const DT: f64 = 1.0 / 60.0;
+    let mut moving_frames = 0;
+    let mut last_prepare = None;
+    for i in 0..30 {
+        let now = i as f64 * DT;
+        let hud = tweened_health_layer(&mut rig, now, false);
+        let layers = [UiDrawData::default(), hud];
+        let frame = rig.frame(&layers);
+        if !frame.prepared.is_empty() {
+            moving_frames += 1;
+            last_prepare = Some(now);
+        }
+    }
+    assert!(moving_frames > 3, "the tween never moved the text");
+    let last = last_prepare.expect("the tween prepared");
+    assert!(
+        last <= 0.2 + DT,
+        "a span still prepared at {last:.3}s, past the 0.2 s tween and one frame"
+    );
+}
+
+/// Reduce motion snaps a running tween to its target that frame; the next
+/// frame prepares nothing.
+#[test]
+fn reduce_motion_snap_prepares_once_then_nothing() {
+    let mut rig = Rig::new(gpu_or_skip!(try_init_gpu()));
+    const DT: f64 = 1.0 / 60.0;
+    for i in 0..3 {
+        let hud = tweened_health_layer(&mut rig, i as f64 * DT, false);
+        rig.frame(&[UiDrawData::default(), hud]);
+    }
+    let snapped = tweened_health_layer(&mut rig, 3.0 * DT, true);
+    let snap_frame = rig.frame(&[UiDrawData::default(), snapped]);
+    assert_eq!(snap_frame.prepared, vec![(1, 0)], "the snap frame prepares");
+    let next = tweened_health_layer(&mut rig, 4.0 * DT, true);
+    let after = rig.frame(&[UiDrawData::default(), next]);
+    assert_eq!(after.stats, TextPrepareStats::default());
 }

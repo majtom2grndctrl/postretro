@@ -536,4 +536,54 @@ mod tests {
 
         assert!(!font_family_gained_face(&font_system, family, &before));
     }
+
+    /// The gate works around glyphon's direct writes without owning them: no
+    /// fork, patch or vendored copy of glyphon or wgpu stands in for the
+    /// registry crates. A path, git or patched dependency locks without the
+    /// registry source.
+    #[test]
+    fn glyphon_and_wgpu_come_from_the_registry_unpatched() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let lock = std::fs::read_to_string(root.join("Cargo.lock")).expect("Cargo.lock");
+        for name in ["glyphon", "wgpu", "wgpu-core", "wgpu-hal"] {
+            let entries: Vec<&str> = lock
+                .split("[[package]]")
+                .filter(|entry| entry.contains(&format!("\nname = \"{name}\"\n")))
+                .collect();
+            assert_eq!(entries.len(), 1, "{name} locks at exactly one version");
+            assert!(
+                entries[0]
+                    .contains("source = \"registry+https://github.com/rust-lang/crates.io-index\""),
+                "{name} does not lock from the crates.io registry:{}",
+                entries[0]
+            );
+        }
+        let manifest =
+            std::fs::read_to_string(root.join("Cargo.toml")).expect("workspace Cargo.toml");
+        assert!(
+            !manifest.contains("[patch"),
+            "the workspace patches a dependency"
+        );
+    }
+
+    #[test]
+    fn ui_md_states_the_change_gated_text_contract() {
+        let ui_md = include_str!("../../../../../context/lib/ui.md");
+        let section = ui_md
+            .split("## 5. Render Path & Asset Loading")
+            .nth(1)
+            .and_then(|rest| rest.split("\n## ").next())
+            .expect("ui.md §5");
+        for statement in [
+            "draws from its retained vertices",
+            "a layer boundary also ends a span",
+            "Glyphon's vertex writes are the exception: they go direct to the queue",
+        ] {
+            assert!(section.contains(statement), "ui.md §5 lacks: {statement}");
+        }
+        assert!(
+            !section.contains("decided, not yet built"),
+            "ui.md §5 still marks built behaviour as not yet built"
+        );
+    }
 }

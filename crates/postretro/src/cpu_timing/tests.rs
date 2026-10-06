@@ -280,6 +280,8 @@ fn drive_timer_frames(timer: &mut CpuFrameTimer, frames: u32) {
                 FrameStage::RenderPrep => {
                     let streaming = every_stage::<super::StreamingStage>(gate);
                     timer.nested_mut().extend_from(&streaming, anchor);
+                    let particles = every_stage::<super::ParticleStage>(gate);
+                    timer.nested_mut().extend_from(&particles, anchor);
                 }
                 FrameStage::Render => {
                     let render = every_stage::<RenderStage>(gate);
@@ -486,6 +488,7 @@ fn shared_timing_crate_source_names_no_engine_stage() {
     let stage_labels: Vec<&str> = labels::<FrameStage>()
         .chain(labels::<super::PredictionStage>())
         .chain(labels::<super::StreamingStage>())
+        .chain(labels::<super::ParticleStage>())
         .chain(labels::<postretro_sim::sim::cpu_stages::SimStage>())
         .chain(labels::<postretro_visibility::VisibilityStage>())
         .chain(labels::<postretro_renderer::cpu_stages::RenderStage>())
@@ -523,6 +526,7 @@ fn every_folded_stage_label_is_unique() {
     let all: Vec<&str> = labels::<FrameStage>()
         .chain(labels::<super::PredictionStage>())
         .chain(labels::<super::StreamingStage>())
+        .chain(labels::<super::ParticleStage>())
         .chain(labels::<postretro_sim::sim::cpu_stages::SimStage>())
         .chain(labels::<postretro_visibility::VisibilityStage>())
         .chain(labels::<postretro_renderer::cpu_stages::RenderStage>())
@@ -606,4 +610,45 @@ fn lightmap_residency_stages_sit_under_render_prep_in_the_log_line() {
     }
     capture.assert_logged_once(log::Level::Info, "lightmap_residency=1.000/1.000ms");
     capture.assert_logged_once(log::Level::Info, "lightmap_drain=2.000/2.000ms");
+}
+
+// The particle path (emitter bridge + particle sim) reaches the `[CpuTiming]`
+// line under `render_prep`, so its cost is no longer unattributed.
+#[test]
+fn particle_stages_sit_under_render_prep_in_the_log_line() {
+    use postretro_stage_timing::StageFrame;
+
+    use super::ParticleStage;
+
+    // Drift guard: a new variant must be placed here and given a label.
+    for &stage in ParticleStage::ALL {
+        let expected = match stage {
+            ParticleStage::Emit => "particle_emit",
+            ParticleStage::Sim => "particle_sim",
+        };
+        assert_eq!(stage.label(), expected);
+        assert_eq!(stage.parent(), None, "{expected} is a root");
+        assert_eq!(stage.kind(), StageKind::Time);
+    }
+
+    let capture = LogCapture::start();
+    let mut timer = CpuFrameTimer::new(TimingGate::ON);
+    for _ in 0..WINDOW_FRAMES {
+        let start = Instant::now();
+        timer.begin_frame(start);
+        timer.stages().add_nanos(FrameStage::RenderPrep, 3 * MS);
+        let particles = StageFrame::<ParticleStage>::new(timer.gate());
+        particles.add_nanos(ParticleStage::Emit, MS);
+        particles.add_nanos(ParticleStage::Sim, 2 * MS);
+        timer
+            .nested_mut()
+            .extend_from(&particles, Some(FrameStage::RenderPrep.label()));
+        timer.finish_frame(start + Duration::from_nanos(4 * MS));
+    }
+    let window = timer.last_window().expect("window closed");
+    for label in ["particle_emit", "particle_sim"] {
+        assert_eq!(window.row(label).unwrap().parent, Some("render_prep"));
+    }
+    capture.assert_logged_once(log::Level::Info, "particle_emit=1.000/1.000ms");
+    capture.assert_logged_once(log::Level::Info, "particle_sim=2.000/2.000ms");
 }

@@ -85,6 +85,55 @@ This came out of the owner conversation that preceded the brief.
   - any convex brush can be a fluid, floating included;
   - the surface jump needs no ledge.
 
+## Settled open questions (2026-10-05)
+
+Grounded by read-only research at c495e49ea, then decided by the owner.
+- **Surface lighting.**
+  - The smoke pipeline layout (`SmokePass::new`) is: camera_bgl, a sheet BGL, lighting_bgl, sh_bgl, and an instance BGL. That totals 8 FRAGMENT storage buffers, pinned by `billboard_pipeline_fragment_storage_request_matches_bgl_definitions`.
+  - A separate pipeline is charged only for the BGLs its own layout contains. It does not inherit the forward pass's 16/16 sampled-texture total (`FORWARD_SAMPLED_TEXTURE_BUDGET`).
+  - Smoke lights each sprite in `vs_main` through `sample_sh_indirect`, `sample_sh_direct` and the `billboard_direct_light` loop. The water pass moves that same evaluation into the fragment shader with the same bindings.
+  - Rejected: unlit (looks flat against lit geometry); full forward lighting (takes the full 16 sampled textures).
+- **Fluid-name lookup.**
+  - prl-build never reads the mod manifest. Its only script contact is the worldspawn `data_script`, evaluated for light membership (`script_light_membership.rs`).
+  - Map-to-registry references are checked by the engine with a warning, and PRL stores names, not indices. Precedents: `warn_unknown_sound_keys` (sound keys stored as strings in `kinematic_geometry.rs`) and the classname routing against `ModManifest.entities`.
+- **Crate layering.**
+  - `crate-graph.md` layers: `level-format` L0; `level-loader` L1; `physics` and `visibility` L2.
+  - `visibility` and `CollisionWorld::from_level` consume `LevelWorld` directly. The collision core departs from that precedent: it takes plain input types, so the seeded brute-force property test can build volumes without a level.
+  - `level-loader` is already in physics' dependency closure, so the adapter costs nothing extra.
+
+## Stress pre-flight (2026-10-05)
+
+- **Fixture authorable now:** `parse_map_file` drops unrecognised brush-entity classnames without adding them to `world_brush_ids`. A fixture carrying `fluid_volume` and `gravity_volume` entities therefore compiles as inert today and gains behaviour when E24 lands.
+- **Upstream limits found by research:**
+  - No in-process multi-pawn route exists (`LoopbackHarness` is test-only and single-client). The owner dropped the fixture to 1 player pawn plus 64 agents; per-body cost is linear and agents dominate.
+  - Particle sim had no CPU stage.
+  - `particle_sim::tick` clones every `ParticleState` and does a per-particle `HashMap` lookup. At 10,000 particles that is a perf risk independent of E24.
+  - Batch headless runs reject CPU timing. Measurement is a windowed `POSTRETRO_CPU_TIMING` run at a fixed `--start-pose`.
+- **Pre-flight results (branch `e24/stress-preflight`):**
+  - **Fixture.** `--preset env-volumes`:
+    - an 8×6×3 warren grid of 138 rooms plus an arena;
+    - 1,000 volumes, 64 enemies, and 40 emitters (each 50/s × 5 s, about 10,000 particles);
+    - zones a–h plus a mixed zone, with start poses in `content/dev/maps/stress-env-volumes.README.md`.
+  - **Feature coverage.** The fixture includes:
+    - lifts carrying lights;
+    - animated lights;
+    - arenas, enemies and pickups;
+    - emitters;
+    - fog;
+    - doors, triggers and switches;
+    - baked and runtime spots with crates;
+    - monster closets and spawners.
+  - **Inert today.** The volume and baseline maps compile to byte-identical `.prl` files: 9,205 cells, 9,362 portals, 27,770 triangles. That is the pre-E24 form of the "volumes never change the BSP" row.
+  - **Bake.** 60–75 s on a quiet machine, about 155 s under load. Lightmap takes about 35% and the cell residency set about 22–26%, followed by navmesh and SH. No hard limit was hit: about 4k leaves against the 131,072 cap.
+  - **Runtime.** Release with dev-tools, mixed-zone pose.
+    - Frame time is about 88 ms at about 5.3 ticks per frame.
+    - `sim_ai` is about 7.4 ms per tick and grows as agents converge on the player.
+    - `particle_sim` is about 4.5 ms per frame (max 7–10 ms); `particle_emit` is about 0.3 ms.
+    - `sim_movement` is about 0.03 ms.
+    - The water-only zone reads the same, because AI and particles run map-wide.
+  - **Premise correction.** The particle sim steps per rendered frame on `frame_dt`, not per fixed tick, so the brief's particle rows now say "per step" and "per frame".
+  - **Pre-existing issues seen.** 710 "light inside a solid leaf" warnings from the warren corridor spotlights. `MAX_FOG_VOLUMES` = 16 (the fixture uses 8).
+
 ## Bake versus load-time build
 
 The trade-off for the volume BVH is between building it at level load and baking it into PRL.

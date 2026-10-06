@@ -166,6 +166,32 @@ impl StageSet for StreamingStage {
     }
 }
 
+/// The CPU particle path inside the render-prep stage: the emitter bridge's
+/// spawning and the particle simulation's integrate-and-expire walk. Both are
+/// roots, placed under `render_prep` by label.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ParticleStage {
+    /// Emitter bridge: bursts, rate emission and particle spawns.
+    Emit,
+    /// `particle_sim::tick` over every live particle.
+    Sim,
+}
+
+impl StageSet for ParticleStage {
+    const ALL: &'static [Self] = &[Self::Emit, Self::Sim];
+
+    fn index(self) -> usize {
+        self as usize
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Emit => "particle_emit",
+            Self::Sim => "particle_sim",
+        }
+    }
+}
+
 /// Labels of the frame split the binary derives at commit. `total` and `work`
 /// are aggregates; `wait` and `unattributed` sit beside the top-level stages
 /// and together with them sum to `total`.

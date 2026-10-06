@@ -3890,10 +3890,15 @@ impl ApplicationHandler for App {
                     session
                         .presentation_pool
                         .recycle_draw_inputs(recycled_inputs);
+                    // Particle CPU (emit + sim), folded under `render_prep` below.
+                    let particle_cpu = postretro_stage_timing::StageFrame::<
+                        cpu_timing::ParticleStage,
+                    >::new(self.cpu_timer.gate());
                     // Emitter bridge — after script `tick` handler, before particle
                     // sim. Spawns new particles; the sim advances them the same
                     // frame so they don't appear stuck at origin.
                     {
+                        let _scope = particle_cpu.scope(cpu_timing::ParticleStage::Emit);
                         let mut registry = script_ctx.registry.borrow_mut();
                         // Cap headroom comes from the previous frame's sim tally
                         // (see particle_sim::tick) — the bridge no longer walks the
@@ -3911,6 +3916,7 @@ impl ApplicationHandler for App {
                     // Refills `particle_live_counts` with this tick's per-emitter
                     // survivor count for the next frame's bridge headroom.
                     {
+                        let _scope = particle_cpu.scope(cpu_timing::ParticleStage::Sim);
                         let mut registry = script_ctx.registry.borrow_mut();
                         scripting_systems::particle_sim::tick(
                             &mut registry,
@@ -3919,6 +3925,12 @@ impl ApplicationHandler for App {
                             &mut self.particle_live_counts,
                         );
                     }
+                    self.cpu_timer.nested_mut().extend_from(
+                        &particle_cpu,
+                        Some(postretro_stage_timing::StageSet::label(
+                            cpu_timing::FrameStage::RenderPrep,
+                        )),
+                    );
 
                     // Light bridge — between Game Logic and Render. Uploads
                     // mutated `LightComponent` data before `render_frame_indirect`

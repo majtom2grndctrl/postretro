@@ -55,6 +55,77 @@ pub(crate) fn arms() -> &'static [&'static str] {
     })
 }
 
+/// The paired B arm list (`POSTRETRO_SPIKE_ARMS_B`), when set. Its pipelines
+/// alternate with the A pipelines frame by frame inside one launch, so both
+/// arms share memory placement, clocks and thermal state.
+pub(crate) fn arms_b() -> Option<&'static [&'static str]> {
+    static ARMS_B: OnceLock<Option<Vec<&'static str>>> = OnceLock::new();
+    ARMS_B
+        .get_or_init(|| {
+            let raw = std::env::var("POSTRETRO_SPIKE_ARMS_B").ok()?;
+            let selected = ordered_arms(&raw);
+            log::info!(
+                "[SH spike] paired B compose arms: {}",
+                if selected.is_empty() {
+                    "baseline".to_string()
+                } else {
+                    selected.join(",")
+                }
+            );
+            Some(selected)
+        })
+        .as_deref()
+}
+
+/// A compose pipeline plus its optional paired-B twin. `next` alternates
+/// A, B, A, B per dispatch call when B exists.
+pub(crate) struct ComposePipelines {
+    a: wgpu::ComputePipeline,
+    b: Option<wgpu::ComputePipeline>,
+    calls: u64,
+}
+
+impl ComposePipelines {
+    pub(crate) fn new(
+        device: &wgpu::Device,
+        shader: ComposeShader,
+        decode_helper: &str,
+        label: &str,
+        layout: &wgpu::PipelineLayout,
+        entry_point: &str,
+    ) -> Self {
+        let build = |arms: &[&str], suffix: &str| {
+            let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some(&format!("{label} Shader{suffix}")),
+                source: wgpu::ShaderSource::Wgsl(build_source(shader, decode_helper, arms).into()),
+            });
+            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some(&format!("{label} Pipeline{suffix}")),
+                layout: Some(layout),
+                module: &module,
+                entry_point: Some(entry_point),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                cache: None,
+            })
+        };
+        Self {
+            a: build(arms(), ""),
+            b: arms_b().map(|arms| build(arms, " [B]")),
+            calls: 0,
+        }
+    }
+
+    /// The pipeline for this dispatch and whether it is the paired B arm.
+    pub(crate) fn next(&mut self) -> (&wgpu::ComputePipeline, bool) {
+        let use_b = self.b.is_some() && self.calls % 2 == 1;
+        self.calls += 1;
+        match (&self.b, use_b) {
+            (Some(b), true) => (b, true),
+            _ => (&self.a, false),
+        }
+    }
+}
+
 fn ordered_arms(raw: &str) -> Vec<&'static str> {
     let requested: Vec<&str> = raw
         .split(',')

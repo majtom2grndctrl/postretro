@@ -85,11 +85,16 @@ impl StreamingAnimatedPass {
             queue.write_buffer(&self.light_scale, 0, &light_scale);
             self.last_light_scale = light_scale;
         }
+        let (pipeline, is_b) = self.pipeline.next();
         dispatch_dynamic_pass(
             queue,
             encoder,
-            "Streamed Animated Direct SH",
-            &self.pipeline,
+            if is_b {
+                "Streamed Animated Direct SH [B]"
+            } else {
+                "Streamed Animated Direct SH"
+            },
+            pipeline,
             &self.bind_group,
             Some(uniform_bind_group),
             self.grid,

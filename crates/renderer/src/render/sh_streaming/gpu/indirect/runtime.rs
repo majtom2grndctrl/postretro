@@ -212,11 +212,16 @@ impl StreamingIndirectCompose {
             });
         }
         queue.write_buffer(&self.grid_buffer, 0, &upload.bytes);
+        let (pipeline, is_b) = self.pipeline.next();
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-            label: Some("Streamed SH Compose"),
+            label: Some(if is_b {
+                "Streamed SH Compose [B]"
+            } else {
+                "Streamed SH Compose"
+            }),
             timestamp_writes,
         });
-        pass.set_pipeline(&self.pipeline);
+        pass.set_pipeline(pipeline);
         pass.set_bind_group(0, uniform_bind_group, &[]);
         for dispatch in &upload.dispatches {
             pass.set_bind_group(1, &self.bind_group, &[dispatch.dynamic_offset]);

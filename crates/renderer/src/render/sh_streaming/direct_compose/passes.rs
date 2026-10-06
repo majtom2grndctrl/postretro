@@ -335,7 +335,7 @@ impl StreamingPromotionPass {
 }
 
 pub(super) struct StreamingAnimatedPass {
-    pipeline: wgpu::ComputePipeline,
+    pipeline: crate::render::compose_spike::ComposePipelines,
     bind_group_layout: wgpu::BindGroupLayout,
     bind_group: wgpu::BindGroup,
     sampler: wgpu::Sampler,
@@ -404,24 +404,14 @@ impl StreamingAnimatedPass {
             bind_group_layouts: &[Some(uniform_bind_group_layout), Some(&bgl)],
             immediate_size: 0,
         });
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Streamed Animated Direct SH Shader"),
-            source: wgpu::ShaderSource::Wgsl(
-                crate::render::compose_spike::compose_source(
-                    crate::render::compose_spike::ComposeShader::AnimatedDirect,
-                    WGSL_DECODE_HELPER,
-                )
-                .into(),
-            ),
-        });
-        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("Streamed Animated Direct SH Pipeline"),
-            layout: Some(&pipeline_layout),
-            module: &shader,
-            entry_point: Some(ANIMATED_DIRECT_COMPOSE_ENTRY_POINT),
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
-            cache: None,
-        });
+        let pipeline = crate::render::compose_spike::ComposePipelines::new(
+            device,
+            crate::render::compose_spike::ComposeShader::AnimatedDirect,
+            WGSL_DECODE_HELPER,
+            "Streamed Animated Direct SH",
+            &pipeline_layout,
+            ANIMATED_DIRECT_COMPOSE_ENTRY_POINT,
+        );
         let bind_group = Self::build_bind_group(
             device,
             &bgl,

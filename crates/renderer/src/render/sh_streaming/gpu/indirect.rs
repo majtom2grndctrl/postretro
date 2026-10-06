@@ -8,7 +8,7 @@ use super::*;
 /// sparse pools; the loader only lends a decoded chunk until the queue writes
 /// below have been planned.
 pub(super) struct StreamingIndirectCompose {
-    pipeline: wgpu::ComputePipeline,
+    pipeline: crate::render::compose_spike::ComposePipelines,
     bind_group_layout: wgpu::BindGroupLayout,
     bind_group: wgpu::BindGroup,
     sampler: wgpu::Sampler,
@@ -256,22 +256,14 @@ impl StreamingIndirectCompose {
             bind_group_layouts: &[Some(uniform_bind_group_layout), Some(&bind_group_layout)],
             immediate_size: 0,
         });
-        let shader_source = crate::render::compose_spike::compose_source(
+        let pipeline = crate::render::compose_spike::ComposePipelines::new(
+            device,
             crate::render::compose_spike::ComposeShader::Indirect,
             WGSL_DECODE_HELPER,
+            "Streamed SH Compose",
+            &pipeline_layout,
+            "compose_main",
         );
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Streamed SH Compose Shader"),
-            source: wgpu::ShaderSource::Wgsl(shader_source.into()),
-        });
-        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("Streamed SH Compose Pipeline"),
-            layout: Some(&pipeline_layout),
-            module: &shader,
-            entry_point: Some("compose_main"),
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
-            cache: None,
-        });
         let bind_group = Self::build_bind_group(
             device,
             &bind_group_layout,

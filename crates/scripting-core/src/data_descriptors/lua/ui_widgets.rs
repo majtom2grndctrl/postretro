@@ -3,7 +3,8 @@
 
 use super::super::*;
 use crate::ui::descriptor::{
-    BarExitFade, RingRadiusRange, SliderValueDisplay, validate_stack_width,
+    BarExitFade, GlyphWidget, RingRadiusRange, ScrollProps, SliderValueDisplay,
+    validate_scroll_max_height, validate_stack_width, warn_hstack_scroll_ignored,
 };
 
 // --- Lua UI deserialization -------------------------------------------------
@@ -35,6 +36,7 @@ pub fn anchored_tree_from_lua_value(value: LuaValue) -> Result<AnchoredTree, Des
     let text_entry_target = get_optional_string_lua(&table, "textEntryTarget")?;
     let accessible_name = get_optional_string_lua(&table, "accessibleName")?;
     let role = role_opt_from_lua(&table)?;
+    let restore_on_return = get_optional_bool_lua(&table, "restoreOnReturn")?;
 
     Ok(AnchoredTree {
         anchor,
@@ -45,6 +47,7 @@ pub fn anchored_tree_from_lua_value(value: LuaValue) -> Result<AnchoredTree, Des
         text_entry_target,
         accessible_name,
         role,
+        restore_on_return,
     })
 }
 
@@ -55,10 +58,11 @@ pub fn widget_from_lua(value: LuaValue) -> Result<Widget, DescriptorError> {
         "text" => Widget::Text(text_widget_from_lua(&table)?),
         "panel" => Widget::Panel(panel_widget_from_lua(&table)?),
         "image" => Widget::Image(image_widget_from_lua(&table)?),
-        "vstack" => Widget::VStack(container_widget_from_lua(&table)?),
-        "hstack" => Widget::HStack(container_widget_from_lua(&table)?),
+        "vstack" => Widget::VStack(container_widget_from_lua(&table, true)?),
+        "hstack" => Widget::HStack(container_widget_from_lua(&table, false)?),
         "grid" => Widget::Grid(grid_widget_from_lua(&table)?),
         "spacer" => Widget::Spacer(spacer_widget_from_lua(&table)?),
+        "glyph" => Widget::Glyph(glyph_widget_from_lua(&table)?),
         "button" => Widget::Button(button_widget_from_lua(&table)?),
         "slider" => Widget::Slider(slider_widget_from_lua(&table)?),
         "bar" => Widget::Bar(bar_widget_from_lua(&table)?),
@@ -115,24 +119,48 @@ pub fn image_widget_from_lua(table: &Table) -> Result<ImageWidget, DescriptorErr
     })
 }
 
-pub fn container_widget_from_lua(table: &Table) -> Result<ContainerWidget, DescriptorError> {
+/// Lua twin of [`container_widget_from_js`]: an `hstack` drops an authored
+/// `scroll` with one registration-time warning.
+pub fn container_widget_from_lua(
+    table: &Table,
+    vertical: bool,
+) -> Result<ContainerWidget, DescriptorError> {
+    let scroll = if vertical {
+        scroll_from_lua(table)?
+    } else {
+        let raw: LuaValue = table.get("scroll").map_err(lua_err)?;
+        if !matches!(raw, LuaValue::Nil) {
+            warn_hstack_scroll_ignored(get_optional_string_lua(table, "id")?.as_deref());
+        }
+        None
+    };
     Ok(ContainerWidget {
         gap: spacing_value_from_lua(table, "gap")?,
         padding: spacing_value_from_lua(table, "padding")?,
         align: parse_align(&get_required_string_lua(table, "align")?)?,
         width: validate_stack_width(get_optional_f32_lua(table, "width")?)
             .map_err(|reason| DescriptorError::InvalidShape { reason })?,
+        scroll,
         fill: color_value_opt_from_lua(table, "fill")?,
         border: border_from_lua(table, "border")?,
         id: get_optional_string_lua(table, "id")?,
         focus_neighbors: focus_neighbors_from_lua(table)?,
         focus: focus_policy_from_lua(table)?,
-        restore_on_return: get_optional_bool_lua(table, "restoreOnReturn")?.unwrap_or(false),
         local_state: local_state_from_lua(table)?,
         visible_when: predicate_opt_from_lua(table, "visibleWhen")?,
         role: role_opt_from_lua(table)?,
         children: children_from_lua(table)?,
     })
+}
+
+/// Lua twin of the JS `scroll_from_js`: an optional `scroll: { maxHeight }`.
+fn scroll_from_lua(table: &Table) -> Result<Option<ScrollProps>, DescriptorError> {
+    let Some(scroll) = optional_table_lua(table, "scroll")? else {
+        return Ok(None);
+    };
+    let max_height = validate_scroll_max_height(get_required_f32_lua(&scroll, "maxHeight")?)
+        .map_err(|reason| DescriptorError::InvalidShape { reason })?;
+    Ok(Some(ScrollProps { max_height }))
 }
 
 /// Lua twin of [`local_state_from_js`]: read a container's optional `localState`.
@@ -176,13 +204,21 @@ pub fn grid_widget_from_lua(table: &Table) -> Result<GridWidget, DescriptorError
         padding: spacing_value_from_lua(table, "padding")?,
         align: parse_align(&get_required_string_lua(table, "align")?)?,
         cols: get_required_u32_lua(table, "cols")?,
+        scroll: scroll_from_lua(table)?,
         id: get_optional_string_lua(table, "id")?,
         focus_neighbors: focus_neighbors_from_lua(table)?,
         focus: focus_policy_from_lua(table)?,
-        restore_on_return: get_optional_bool_lua(table, "restoreOnReturn")?.unwrap_or(false),
         visible_when: predicate_opt_from_lua(table, "visibleWhen")?,
         role: role_opt_from_lua(table)?,
         children: children_from_lua(table)?,
+    })
+}
+
+pub fn glyph_widget_from_lua(table: &Table) -> Result<GlyphWidget, DescriptorError> {
+    Ok(GlyphWidget {
+        command: get_required_string_lua(table, "command")?,
+        id: get_optional_string_lua(table, "id")?,
+        visible_when: predicate_opt_from_lua(table, "visibleWhen")?,
     })
 }
 

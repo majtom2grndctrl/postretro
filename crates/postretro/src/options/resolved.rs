@@ -29,6 +29,7 @@ pub(crate) struct ResolvedAccessibility {
     pub(crate) music_volume: f32,
     pub(crate) ui_volume: f32,
     pub(crate) mono_audio: bool,
+    pub(crate) hold_timing_scale: f32,
 }
 
 impl ResolvedAccessibility {
@@ -59,6 +60,7 @@ impl ResolvedAccessibility {
             music_volume: a.music_volume,
             ui_volume: a.ui_volume,
             mono_audio: a.mono_audio,
+            hold_timing_scale: a.hold_timing_scale,
         }
     }
 }

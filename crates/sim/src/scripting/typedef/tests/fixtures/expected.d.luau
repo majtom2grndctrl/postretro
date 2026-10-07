@@ -1175,6 +1175,159 @@ export type AudioProfile = {
   attenuation: AudioAttenuation?,
 }
 
+--- Stable ID of an engine command that an `input` block can label, show or hide, and bind. The set is engine-closed. Valid values: `move_forward`, `move_back`, `move_left`, `move_right`, `move_up`, `move_down`, `look_x`, `look_y`, `sprint`, `jump`, `dash`, `crouch`, `use`, `drop`, `shoot`, `alt_fire`, `reload`, `select_wieldable_1`, `select_wieldable_2`, `select_wieldable_3`, `select_wieldable_4`, `select_wieldable_5`, `select_wieldable_6`, `select_wieldable_7`, `select_wieldable_8`, `select_wieldable_9`, `select_wieldable_10`, `cycle_wieldable_next`, `cycle_wieldable_previous`, `toggle_last_wieldable`, `nav_up`, `nav_down`, `nav_left`, `nav_right`, `nav_next`, `nav_prev`, `nav_tab_next`, `nav_tab_prev`, `nav_confirm`, `nav_cancel`, `nav_menu`, `nav_options`, `text_backspace`, `text_space`, `text_commit`.
+export type CommandId =
+  --- Move forward. Digital; a half-axis stick input carries its magnitude. Accepts `press` or `hold`.
+  "move_forward"
+  --- Move backward. Digital; a half-axis stick input carries its magnitude. Accepts `press` or `hold`.
+  | "move_back"
+  --- Strafe left. Digital; a half-axis stick input carries its magnitude. Accepts `press` or `hold`.
+  | "move_left"
+  --- Strafe right. Digital; a half-axis stick input carries its magnitude. Accepts `press` or `hold`.
+  | "move_right"
+  --- Fly-cam up. Dev-only: always bound to engine defaults and hidden from the controls panel.
+  | "move_up"
+  --- Fly-cam down. Dev-only: always bound to engine defaults and hidden from the controls panel.
+  | "move_down"
+  --- Look horizontally; positive looks right. Analog: accepts axes only (`mouse_x`, stick axes) and only `press`.
+  | "look_x"
+  --- Look vertically; positive looks up. Analog: accepts axes only (`mouse_y`, stick axes) and only `press`.
+  | "look_y"
+  --- Sprint. Accepts `press` or `hold`.
+  | "sprint"
+  --- Jump.
+  | "jump"
+  --- Dash. Relevant only when a movement descriptor declares dash.
+  | "dash"
+  --- Crouch. Accepts `press` or `hold`. Relevant only when a movement descriptor declares crouch.
+  | "crouch"
+  --- Use or interact.
+  | "use"
+  --- Drop the wielded item.
+  | "drop"
+  --- Primary fire. Accepts only `press`.
+  | "shoot"
+  --- Secondary fire. Accepts only `press`. Relevant only when a weapon declares a secondary activation.
+  | "alt_fire"
+  --- Reload. Relevant only when a weapon uses a magazine resource.
+  | "reload"
+  --- Select wieldable slot 1.
+  | "select_wieldable_1"
+  --- Select wieldable slot 2.
+  | "select_wieldable_2"
+  --- Select wieldable slot 3.
+  | "select_wieldable_3"
+  --- Select wieldable slot 4.
+  | "select_wieldable_4"
+  --- Select wieldable slot 5.
+  | "select_wieldable_5"
+  --- Select wieldable slot 6.
+  | "select_wieldable_6"
+  --- Select wieldable slot 7.
+  | "select_wieldable_7"
+  --- Select wieldable slot 8.
+  | "select_wieldable_8"
+  --- Select wieldable slot 9.
+  | "select_wieldable_9"
+  --- Select wieldable slot 10.
+  | "select_wieldable_10"
+  --- Cycle to the next wieldable, one step per wheel notch or press. Accepts only `press`.
+  | "cycle_wieldable_next"
+  --- Cycle to the previous wieldable, one step per wheel notch or press. Accepts only `press`.
+  | "cycle_wieldable_previous"
+  --- Switch back to the previously wielded item.
+  | "toggle_last_wieldable"
+  --- Menu: move focus up. UI commands are always shown.
+  | "nav_up"
+  --- Menu: move focus down.
+  | "nav_down"
+  --- Menu: move focus left.
+  | "nav_left"
+  --- Menu: move focus right.
+  | "nav_right"
+  --- Menu: move focus to the next control.
+  | "nav_next"
+  --- Menu: move focus to the previous control.
+  | "nav_prev"
+  --- Menu: activate the next tab, wrapping. Steps Next in a menu with no tabs.
+  | "nav_tab_next"
+  --- Menu: activate the previous tab, wrapping. Steps Prev in a menu with no tabs.
+  | "nav_tab_prev"
+  --- Menu: confirm. Must stay bound on each device class, and cannot be hidden.
+  | "nav_confirm"
+  --- Menu: cancel or back. Must stay bound on each device class, and cannot be hidden.
+  | "nav_cancel"
+  --- Open the pause menu. Must stay bound on each device class, and cannot be hidden.
+  | "nav_menu"
+  --- Menu: options.
+  | "nav_options"
+  --- On-screen keyboard: backspace, live while a text-entry menu is on top.
+  | "text_backspace"
+  --- On-screen keyboard: space, live while a text-entry menu is on top.
+  | "text_space"
+  --- On-screen keyboard: commit, live while a text-entry menu is on top.
+  | "text_commit"
+
+--- When a binding fires. Each command accepts a fixed set; an activator outside it is diagnosed and that command's device class falls back to the engine default. Valid values: `press`, `release`, `tap`, `hold`.
+export type InputActivator =
+  --- Fire on the press. This is the default.
+  "press"
+  --- Fire on release.
+  | "release"
+  --- Fire on release when the input was held no longer than `threshold`.
+  | "tap"
+  --- Fire once the input has been held for `threshold`.
+  | "hold"
+
+--- One default binding for a command. Players rebind the input only: this input keeps its activator wherever it sits, and an input that replaces it takes its activator. A wheel notch always fires on press.
+export type ModInputBinding = {
+  --- Physical input name: a W3C `KeyboardEvent.code` (`KeyW`, `ShiftLeft`), a mouse name (`mouse_left`, `wheel_up`, `mouse_x`), or a gamepad position (`south`, `left_shoulder`, `left_stick_press`, `left_stick_x`, `left_stick_up`). An unknown name is diagnosed and the device class falls back.
+  input: string,
+  --- When the binding fires. Optional; defaults to `"press"`.
+  activator: InputActivator?,
+  --- Seconds: a `tap`'s maximum or a `hold`'s minimum. Finite and greater than 0. Clamped to 0.05–5 s. Optional; defaults to 0.2, scaled by the player's hold-timing setting.
+  threshold: number?,
+}
+
+--- Author settings for one command. Every field is optional.
+export type ModInputCommand = {
+  --- Name shown in the controls panel. Optional.
+  label: string?,
+  --- Controls-panel group heading. Optional.
+  category: string?,
+  --- Sort position within the category. Optional.
+  order: number?,
+  --- `true` forces the command shown and bound, `false` hidden and unbound, overriding relevance derived from the mod's data. Optional. Ignored, with a warning, on every UI command and on the dev-only `move_up` and `move_down`.
+  show: boolean?,
+  --- Default keyboard and mouse bindings. Optional; omission keeps the engine default, and an empty list leaves the command unbound.
+  keyboardMouse: {ModInputBinding}?,
+  --- Default gamepad bindings. Optional; omission keeps the engine default, and an empty list leaves the command unbound.
+  gamepad: {ModInputBinding}?,
+}
+
+--- Command settings keyed by command ID. Commands left out keep their engine defaults.
+export type ModInputCommands = { [string]: ModInputCommand }
+
+--- Glyph art directory per device family. A glyph's asset is `<dir>/<input>`, for example `ui/glyphs/xbox/south`. Missing art draws the input's label (`east` draws "EAST", `KeyW` draws "W").
+export type ModInputGlyphs = {
+  --- Keyboard and mouse glyph directory. Optional.
+  keyboardMouse: string?,
+  --- Xbox-layout glyph directory, also used for unrecognized pads. Optional.
+  xbox: string?,
+  --- PlayStation glyph directory. Optional.
+  playstation: string?,
+  --- Nintendo glyph directory. Optional.
+  nintendo: string?,
+}
+
+--- The game's commands, default bindings, and glyph art. Each command and device class is validated on its own: an unknown command ID, unknown input, refused activator, or a default leaving `nav_confirm`, `nav_cancel`, or `nav_menu` unbound is diagnosed, and that command and device class fall back to the engine default.
+export type ModInput = {
+  --- Command settings keyed by command ID. Optional; omission leaves every command on its engine defaults.
+  commands: ModInputCommands?,
+  --- Glyph art per device family. Optional.
+  glyphs: ModInputGlyphs?,
+}
+
 --- Mod-global switching policy. Omit the whole block to preserve immediate direct selection, zero cycle dwell, and reload interruption.
 export type SwitchingDescriptor = {
   --- Whether a direct slot-select action emits a commit immediately. Input-layer policy only.
@@ -1219,6 +1372,8 @@ export type ModManifest = {
   movers: MoverDefaults?,
   --- Static audio preferences for the entire mod. Optional; defaults to 2 to 60 metre linear attenuation.
   audio: AudioProfile?,
+  --- The game's commands, default bindings, and glyph art. Optional; omission keeps the engine's default bindings. Malformed entries warn and fall back per command and device class; they never reject the manifest.
+  input: ModInput?,
   --- Mod-global switching policy. Optional; omission preserves immediate direct selection, zero cycle dwell, and reload interruption.
   switching: SwitchingDescriptor?,
   --- Optional mod-global first-person weapon placement. It is the lowest authored tier in whole-value resolution: per-instance (future) > per-weapon > character (future) > this default > legacy BASE_OFFSET with zero rotation. v1 supplies no character or per-instance placement. It never changes the third-person hand socket.
@@ -1382,6 +1537,7 @@ declare function worldSetGravity(value: number): ()
 export type GameStateRefs = {
   accessibility: {
     flashLimiter: ComputedRef<boolean>,
+    holdTimingScale: ComputedRef<number>,
     masterVolume: ComputedRef<number>,
     monoAudio: ComputedRef<boolean>,
     musicVolume: ComputedRef<number>,
@@ -1398,6 +1554,10 @@ export type GameStateRefs = {
   options: {
     crouchMode: Ref<"hold" | "toggle">,
     fogQuality: Ref<"low" | "medium" | "high">,
+    gamepadInvertY: Ref<boolean>,
+    gamepadLookDeadZone: Ref<number>,
+    gamepadLookSensitivity: Ref<number>,
+    holdTimingScale: Ref<number>,
     invertY: Ref<boolean>,
     masterVolume: Ref<number>,
     monoAudio: Ref<boolean>,
@@ -1408,7 +1568,9 @@ export type GameStateRefs = {
     screenShakeScale: Ref<number>,
     sfxVolume: Ref<number>,
     shadowQuality: Ref<"low" | "medium" | "high">,
+    sprintMode: Ref<"hold" | "toggle">,
     surfaceDepthQuality: Ref<"off" | "on">,
+    swapConfirmCancel: Ref<boolean>,
     uiVolume: Ref<number>,
     viewFeelScale: Ref<number>,
     windowMode: Ref<"windowed" | "borderless" | "exclusive">,
@@ -2272,6 +2434,7 @@ export type ModManifestInput = {
   render: RenderProfile?,
   movers: MoverDefaults?,
   audio: AudioProfile?,
+  input: ModInput?,
   switching: SwitchingDescriptor?,
   defaultWeaponPlacement: WeaponPlacementDescriptor?,
   entities: {EntityTypeDescriptor}?,
@@ -2475,6 +2638,12 @@ export type ImageProps = { asset: string, id: string?, focusNeighbors: FocusNeig
 --- Props for `Spacer`. `flexGrow` defaults to 1. No bind.
 export type SpacerProps = { flexGrow: number?, id: string?, visibleWhen: Predicate?, role: WidgetRole? }
 
+--- Props for `Glyph`. `command` is a command ID.
+export type GlyphProps = { command: CommandId, id: string?, visibleWhen: Predicate? }
+
+--- The glyph for a command on the player's current device: the mod's art for the input bound to it, else that input's label, else nothing when it is unbound there or irrelevant. Follows rebinding and the confirm/cancel swap.
+declare function Glyph(props: GlyphProps): WidgetDescriptor
+
 --- One `Button.valueText` case: `text` shows while every predicate in `when` holds. An absent or empty `when` always holds.
 export type ValueTextCase = { when: { Predicate }?, text: LocalizedText }
 --- Props for `Button`. `onPress` is a reaction handle or a bare name string. Name-XOR (M13 G2): exactly one of `label` / `labelledBy`. `selected`/`checked` are reactive predicates; `bind`+`styleRanges` drive the highlight; `disabled` makes it non-interactive. `valueText` makes the visible text follow state: the first case whose predicates all hold, else `label`.
@@ -2515,16 +2684,22 @@ export type FocusKind = "linear" | "spatial"
 --- table with `wrap` and `repeat` options; `repeat` controls held navigation
 --- events inside the container.
 export type FocusPolicyProp = FocusKind | { policy: FocusKind, wrap: boolean?, ["repeat"]: RepeatPolicyProp? }
+--- A vertical scroll viewport for `VStack`/`Grid`: the container sizes to its
+--- content up to `maxHeight` logical px, then clips and scrolls. Focus outside
+--- the viewport scrolls into view by the minimum distance, and the pointer wheel
+--- scrolls it. It creates no focus stop or group; on an `HStack` it is ignored
+--- with a load-time diagnostic.
+export type ScrollProp = { maxHeight: number }
 --- Props for `VStack`/`HStack`. `gap` and `padding` default to 0; `align`
 --- defaults to `"start"`; `width` fixes the stack width in logical-reference
 --- pixels; optional `fill`/`border` draw a backdrop behind the
 --- arranged children. Stack containers may declare `localState`; stack and grid
 --- containers both accept `visibleWhen` and `role`.
-export type StackProps = { gap: WidgetSpacing?, padding: WidgetSpacing?, align: WidgetAlign?, width: number?, id: string?, focusNeighbors: FocusNeighborsProp?, focus: FocusPolicyProp?, restoreOnReturn: boolean?, fill: WidgetColor?, border: BorderProp?, localState: { scope: string, cells: { [string]: number | boolean | string | {number} } }?, visibleWhen: Predicate?, role: WidgetRole? }
+export type StackProps = { gap: WidgetSpacing?, padding: WidgetSpacing?, align: WidgetAlign?, width: number?, scroll: ScrollProp?, id: string?, focusNeighbors: FocusNeighborsProp?, focus: FocusPolicyProp?, fill: WidgetColor?, border: BorderProp?, localState: { scope: string, cells: { [string]: number | boolean | string | {number} } }?, visibleWhen: Predicate?, role: WidgetRole? }
 --- Props for `Grid`. `cols` is required and must be an integer >= 1. Children
 --- flow row-major across columns; grid currently has no backdrop fill/border
 --- and no `localState`.
-export type GridProps = { gap: WidgetSpacing?, padding: WidgetSpacing?, align: WidgetAlign?, id: string?, focusNeighbors: FocusNeighborsProp?, focus: FocusPolicyProp?, restoreOnReturn: boolean?, cols: number, visibleWhen: Predicate?, role: WidgetRole? }
+export type GridProps = { gap: WidgetSpacing?, padding: WidgetSpacing?, align: WidgetAlign?, id: string?, focusNeighbors: FocusNeighborsProp?, focus: FocusPolicyProp?, cols: number, scroll: ScrollProp?, visibleWhen: Predicate?, role: WidgetRole? }
 
 
 --- Tree viewport anchor. Valid values: `"topLeft"`, `"top"`, `"topRight"`,
@@ -2537,11 +2712,13 @@ export type WidgetAnchor = "topLeft" | "top" | "topRight" | "left" | "center" | 
 export type WidgetCaptureMode = "capture" | "passthrough"
 --- Placement envelope props for `Tree`. `anchor` + `offset` position the root in
 --- 1280x720 logical UI space; `captureMode`, `initialFocus`, and
---- `textEntryTarget` control modal/input behavior.
-export type TreeProps = { anchor: WidgetAnchor, offset: {number}, captureMode: WidgetCaptureMode?, initialFocus: string?, textEntryTarget: Ref<string>?, accessibleName: string?, role: WidgetRole? }
+--- `textEntryTarget` control modal/input behavior. `restoreOnReturn` (on by
+--- default) returns focus to the control it left when a tree pushed above
+--- closes; `false` lands on `initialFocus`.
+export type TreeProps = { anchor: WidgetAnchor, offset: {number}, captureMode: WidgetCaptureMode?, initialFocus: string?, textEntryTarget: Ref<string>?, accessibleName: string?, role: WidgetRole?, restoreOnReturn: boolean? }
 --- The flat `AnchoredTree` envelope produced by `Tree(...)` and stored in UI
 --- registries. `textEntryTarget` is serialized to its dotted state-slot name.
-export type AnchoredTreeDescriptor = { anchor: WidgetAnchor, offset: {number}, root: WidgetDescriptor, captureMode: WidgetCaptureMode?, initialFocus: string?, textEntryTarget: string?, accessibleName: string?, role: WidgetRole? }
+export type AnchoredTreeDescriptor = { anchor: WidgetAnchor, offset: {number}, root: WidgetDescriptor, captureMode: WidgetCaptureMode?, initialFocus: string?, textEntryTarget: string?, accessibleName: string?, role: WidgetRole?, restoreOnReturn: boolean? }
 --- Props accepted by `defineUiTree`. The returned object preserves the runtime
 --- manifest entry shape `{ name, tree, alwaysOn?, hideBelow? }`.
 export type UiTreeRegistrationProps = { name: string, tree: AnchoredTreeDescriptor, alwaysOn: boolean?, hideBelow: boolean? }
@@ -2779,7 +2956,7 @@ declare function state(name: string): RuntimeGuardNode
 -- Rust `NavIntent` enum (input/ui_nav.rs). Luau has no template-literal types,
 -- so this is a flat string union over the same closed set.
 -- See: context/research/ui-layer.md §16.
-export type NavIntent = "nav.up" | "nav.down" | "nav.left" | "nav.right" | "nav.next" | "nav.prev" | "nav.confirm" | "nav.cancel" | "nav.menu" | "nav.options"
+export type NavIntent = "nav.up" | "nav.down" | "nav.left" | "nav.right" | "nav.next" | "nav.prev" | "nav.confirm" | "nav.cancel" | "nav.menu" | "nav.options" | "nav.tabNext" | "nav.tabPrev"
 
 
 -- ---------------------------------------------------------------------------
@@ -2791,8 +2968,8 @@ export type NavIntent = "nav.up" | "nav.down" | "nav.left" | "nav.right" | "nav.
 --- Accessibility toggles a menu button may cycle.
 export type AccessibilityToggleField = "reduceMotion" | "flashLimiter" | "monoAudio"
 
---- Accessibility numeric fields a mod menu button may step, each within [0, 1].
-export type AccessibilityNumericField = "screenShakeScale" | "viewFeelScale" | "masterVolume" | "sfxVolume" | "musicVolume" | "uiVolume"
+--- Accessibility numeric fields a mod menu button may step, each within its range ([0, 1], or [1, 3] for `holdTimingScale`).
+export type AccessibilityNumericField = "screenShakeScale" | "viewFeelScale" | "masterVolume" | "sfxVolume" | "musicVolume" | "uiVolume" | "holdTimingScale"
 
 --- Reserved operations for the engine display-mode picker and confirmation.
 export type DisplayModeOperation = "next" | "previous" | "apply" | "keep" | "revert"
@@ -2806,6 +2983,8 @@ export type PostretroUiModule = {
   Image: (props: ImageProps) -> WidgetDescriptor,
   --- Build a spacer descriptor. `flexGrow` is finite and defaults to 1.
   Spacer: (props: SpacerProps?) -> WidgetDescriptor,
+  --- Build a glyph for a command on the player's current device; follows rebinding and the confirm/cancel swap.
+  Glyph: (props: GlyphProps) -> WidgetDescriptor,
   --- Build an interactive button descriptor. `onPress` accepts a reaction handle, bare reaction name, or reserved `ui.*` action.
   Button: (props: ButtonProps) -> WidgetDescriptor,
   --- Build an interactive slider descriptor. `bind` is writable numeric state/local cell; writes clamp to `[min, max]`.
@@ -2893,6 +3072,8 @@ export type PostretroUiModule = {
   QUIT_TO_MENU_ACTION: "ui.quitToMenu",
   --- Reserved button `onPress` action that opens the engine accessibility panel.
   OPEN_ACCESSIBILITY_ACTION: "ui.openAccessibility",
+  --- Reserved button `onPress` action that opens the engine controls panel.
+  OPEN_CONTROLS_ACTION: "ui.openControls",
   --- Build a reserved `ui.displayMode.<op>` action. `next`/`previous` browse without saving;
   --- `apply` commits the selection (exclusive opens the engine confirmation).
   displayModeAction: (op: DisplayModeOperation) -> string,

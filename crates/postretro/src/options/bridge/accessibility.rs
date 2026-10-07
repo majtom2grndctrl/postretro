@@ -119,6 +119,13 @@ const FIELDS: &[Field] = &[
         apply: |o, v| apply_number(&mut o.accessibility.ui_volume, v),
     },
     Field {
+        resolved_slot: "accessibility.holdTimingScale",
+        working_copy: Some("options.holdTimingScale"),
+        key: keys::HOLD_TIMING_SCALE,
+        resolved: |r| SlotValue::Number(r.hold_timing_scale),
+        apply: |o, v| apply_number(&mut o.accessibility.hold_timing_scale, v),
+    },
+    Field {
         resolved_slot: "accessibility.monoAudio",
         working_copy: Some("options.monoAudio"),
         key: keys::MONO_AUDIO,

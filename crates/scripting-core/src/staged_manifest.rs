@@ -17,8 +17,9 @@ use super::data_descriptors::{
     drain_factions_js, drain_factions_lua, drain_fonts_js, drain_fonts_lua, drain_frontend_js,
     drain_frontend_lua, drain_global_crossings_js, drain_global_crossings_lua,
     drain_global_reactions_js, drain_global_reactions_lua, drain_impact_events_js,
-    drain_impact_events_lua, drain_maps_js, drain_maps_lua, drain_mover_defaults_js,
-    drain_mover_defaults_lua, drain_presentation_overlays_js, drain_presentation_overlays_lua,
+    drain_impact_events_lua, drain_input_block_js, drain_input_block_lua, drain_maps_js,
+    drain_maps_lua, drain_mover_defaults_js, drain_mover_defaults_lua,
+    drain_presentation_overlays_js, drain_presentation_overlays_lua,
     drain_presentation_templates_js, drain_presentation_templates_lua, drain_render_profile_js,
     drain_render_profile_lua, drain_switching_js, drain_switching_lua, drain_theme_js,
     drain_theme_lua, drain_trigger_events_js, drain_trigger_events_lua, drain_trigger_pools_js,
@@ -333,6 +334,7 @@ fn run_staged_manifest_build(
         render: manifest.render,
         movers: manifest.movers,
         audio: manifest.audio,
+        input: manifest.input,
         switching: manifest.switching,
         default_weapon_placement: manifest.default_weapon_placement,
         entities: manifest.entities,
@@ -619,6 +621,13 @@ fn manifest_from_js_value<'js>(
             ),
         }
     })?;
+    let input = drain_input_block_js(&obj, "default mod manifest export").map_err(|e| {
+        ScriptError::InvalidArgument {
+            reason: format!(
+                "mod-init: `{source_path}` default mod manifest export `input` invalid: {e}"
+            ),
+        }
+    })?;
     let switching = drain_switching_js(&obj, "default mod manifest export").map_err(|e| {
         ScriptError::InvalidArgument {
             reason: format!(
@@ -704,6 +713,7 @@ fn manifest_from_js_value<'js>(
         render,
         movers,
         audio,
+        input,
         switching,
         default_weapon_placement,
         entities,
@@ -950,6 +960,11 @@ fn run_staged_mod_init_luau(
             reason: format!("mod-init: `{source_path}` returned mod manifest `audio` invalid: {e}"),
         }
     })?;
+    let input = drain_input_block_lua(&table, "returned mod manifest").map_err(|e| {
+        ScriptError::InvalidArgument {
+            reason: format!("mod-init: `{source_path}` returned mod manifest `input` invalid: {e}"),
+        }
+    })?;
     let switching = drain_switching_lua(&table, "returned mod manifest").map_err(|e| {
         ScriptError::InvalidArgument {
             reason: format!(
@@ -1029,6 +1044,7 @@ fn run_staged_mod_init_luau(
         render,
         movers,
         audio,
+        input,
         switching,
         default_weapon_placement,
         entities,
@@ -1174,6 +1190,59 @@ mod tests {
                 pixelated: true,
             },
         };
+        assert_eq!(js, expected);
+        assert_eq!(luau, expected);
+    }
+
+    #[test]
+    fn staged_manifest_input_block_snapshot_matches_in_both_runtimes() {
+        use crate::runtime::{ModInputBinding, ModInputBlock, ModInputCommand};
+
+        let staged_input = |name: &str, entry: &str, source: &str| {
+            let dir = temp_mod_root(name);
+            fs::write(dir.join(entry), source).unwrap();
+            let result = build_staged_manifest(&dir, 1, &StagedManifestBuildConfig::default());
+            let StagedManifestBuildStatus::Built(manifest) = result.status else {
+                panic!("expected built staged manifest, got {:?}", result.status);
+            };
+            manifest.input
+        };
+        let js = staged_input(
+            "js_input_block",
+            "start-script.js",
+            r#"
+                globalThis.__postretroModManifest = {
+                    name: "InputMod",
+                    id: "input-mod",
+                    version: "1",
+                    input: { commands: { dash: { keyboardMouse: [{ input: "ShiftLeft", activator: "tap" }] } } },
+                };
+            "#,
+        );
+        let luau = staged_input(
+            "luau_input_block",
+            "start-script.luau",
+            r#"
+                return {
+                    name = "InputMod",
+                    id = "input-mod",
+                    version = "1",
+                    input = { commands = { dash = { keyboardMouse = { { input = "ShiftLeft", activator = "tap" } } } } },
+                }
+            "#,
+        );
+        let expected = Some(ModInputBlock {
+            commands: vec![ModInputCommand {
+                id: "dash".to_string(),
+                keyboard_mouse: Some(vec![ModInputBinding {
+                    input: "ShiftLeft".to_string(),
+                    activator: Some("tap".to_string()),
+                    threshold: None,
+                }]),
+                ..ModInputCommand::default()
+            }],
+            ..ModInputBlock::default()
+        });
         assert_eq!(js, expected);
         assert_eq!(luau, expected);
     }

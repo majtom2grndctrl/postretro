@@ -21,6 +21,9 @@ mod node_context;
 mod predicate;
 /// Passive, tree-free layout state for world-anchored presentation templates.
 mod presentation_layout;
+/// Scroll containers: viewport state, the per-frame clamp / wheel /
+/// scroll-into-view update, and the offset math the draw and focus walks share.
+mod scroll;
 /// Theme-token resolution, value-tween easing, and shared container styling.
 mod style;
 /// The retained `UiTree` struct, the layout/draw gate, and the per-frame diff.
@@ -39,9 +42,10 @@ mod tests;
 
 // Re-exports so external `tree::X` references keep resolving after the split.
 pub use draw::{
-    FocusGroup, FocusKind, FocusRect, FocusRectList, FocusRectOwner, NodeInteraction, RepeatPolicy,
-    UiDrawData, UiPaintOp,
+    FocusAxis, FocusGroup, FocusKind, FocusRect, FocusRectList, FocusRectOwner, NodeInteraction,
+    RepeatPolicy, UiClipSpan, UiDrawData, UiPaintOp, intersect_rects,
 };
+pub use scroll::{ScrollInput, WHEEL_LINE_SCROLL};
 // `FocusNeighbors` is consumed only from `#[cfg(test)]` modules elsewhere in the
 // crate (focus-engine tests), so the non-test build sees the re-export as unused.
 pub use bindings::TweenClock;

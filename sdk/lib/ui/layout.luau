@@ -279,6 +279,21 @@ local function validateLocalState(value: any, factory: string): any?
   return value
 end
 
+-- A vertical scroll viewport: a table whose `maxHeight` is a finite number > 0.
+local function buildScroll(value: any, factory: string): { [string]: any }?
+  if value == nil then
+    return nil
+  end
+  if type(value) ~= "table" then
+    error(`{factory}: \`scroll\` must be a table with a numeric \`maxHeight\``)
+  end
+  requireFiniteNumber(value.maxHeight, "scroll.maxHeight", factory)
+  if value.maxHeight <= 0 then
+    error(`{factory}: \`scroll.maxHeight\` must be greater than 0`)
+  end
+  return { maxHeight = value.maxHeight }
+end
+
 local function validateChildren(children: any, factory: string): { WidgetDescriptor }
   if type(children) ~= "table" then
     error(`{factory}: \`children\` must be an array of widget descriptors`)
@@ -292,7 +307,7 @@ local function validateChildren(children: any, factory: string): { WidgetDescrip
 end
 
 -- Append the shared container tail fields (`id`, `focusNeighbors`, `focus`,
--- `restoreOnReturn`, then `children`) in place. `children` is always present.
+-- then `children`) in place. `children` is always present.
 local function applyCommonTail(
   out: { [string]: any },
   props: any,
@@ -311,15 +326,6 @@ local function applyCommonTail(
   local focus = buildFocusPolicy(props.focus, factory)
   if focus ~= nil then
     out.focus = focus
-  end
-  if props.restoreOnReturn ~= nil then
-    if type(props.restoreOnReturn) ~= "boolean" then
-      error(`{factory}: \`restoreOnReturn\` must be a boolean`)
-    end
-    -- Skip-serializes when false (the default) -- emit only true.
-    if props.restoreOnReturn then
-      out.restoreOnReturn = true
-    end
   end
   if localState ~= nil then
     out.localState = localState
@@ -347,7 +353,13 @@ local function buildStack(kind: string, factory: string, props: any, children: a
     end
     out.width = props.width
   end
-  -- width/fill/border come before the common tail in the Rust struct order.
+  -- An HStack's `scroll` is still emitted: the engine's drain diagnoses and
+  -- ignores it, so the authoring mistake surfaces in the load log.
+  local scroll = buildScroll(props.scroll, factory)
+  if scroll ~= nil then
+    out.scroll = scroll
+  end
+  -- width/scroll/fill/border come before the common tail in the Rust struct order.
   if props.fill ~= nil then
     out.fill = validateColor(props.fill, "fill", factory)
   end
@@ -397,6 +409,10 @@ function UiLayoutSdk.Grid(props: any, children: any?): WidgetDescriptor
   local kids = validateChildren(if children ~= nil then children else {}, "Grid")
 
   local out: { [string]: any } = { kind = "grid", gap = gap, padding = padding, align = align, cols = props.cols }
+  local scroll = buildScroll(props.scroll, "Grid")
+  if scroll ~= nil then
+    out.scroll = scroll
+  end
   applyCommonTail(out, props, kids, "Grid")
   return out
 end

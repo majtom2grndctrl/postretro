@@ -10,6 +10,7 @@ mod entity;
 mod frontend;
 mod g2_fields;
 mod health;
+mod input_block;
 mod knockback;
 mod maps;
 mod mesh;

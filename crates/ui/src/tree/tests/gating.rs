@@ -18,6 +18,7 @@ fn gating_tree() -> AnchoredTree {
         text_entry_target: None,
         accessible_name: None,
         role: None,
+        restore_on_return: None,
     }
 }
 
@@ -216,6 +217,7 @@ fn image_size_generation_change_remeasures_cached_missing_image() {
         &no_slots(),
         &no_cells(),
         crate::tree::TweenClock::easing(0.0),
+        crate::tree::ScrollInput::default(),
     );
     assert_eq!(ui.recompute_count(), 1);
     assert_eq!(missing.images[0].1.instances[0].rect[2], 0.0);
@@ -230,6 +232,7 @@ fn image_size_generation_change_remeasures_cached_missing_image() {
         &no_slots(),
         &no_cells(),
         crate::tree::TweenClock::easing(0.0),
+        crate::tree::ScrollInput::default(),
     );
 
     assert_eq!(
@@ -269,6 +272,7 @@ fn rebuilt_tree_recomputes_from_empty_cache() {
         text_entry_target: None,
         accessible_name: None,
         role: None,
+        restore_on_return: None,
     };
     let mut second = UiTree::from_descriptor(&reshaped, &theme());
     second.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots());

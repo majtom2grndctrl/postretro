@@ -16,6 +16,12 @@ pub const FRONTEND_MENU_NAME: &str = "frontendMenu";
 /// under it is rejected.
 pub const ACCESSIBILITY_PANEL_NAME: &str = "accessibilityPanel";
 pub const DISPLAY_MODE_CONFIRM_NAME: &str = "displayModeConfirm";
+/// Reserved registry name of the engine controls panel, built from the
+/// effective command list. A mod- or level-scope registration is rejected.
+pub const CONTROLS_PANEL_NAME: &str = "controlsPanel";
+/// Reserved names of the controls panel's capture prompt and dialogs.
+pub const CONTROLS_CAPTURE_NAME: &str = "controlsCapture";
+pub const CONTROLS_DIALOG_NAME: &str = "controlsDialog";
 
 /// Read a committed UI descriptor JSON anchored to the repo root (NOT runtime
 /// cwd, so it passes under `cargo test`, which runs from the crate dir). Mirrors
@@ -56,6 +62,12 @@ pub(crate) fn build_pause_menu_descriptor() -> super::descriptor::AnchoredTree {
 #[cfg(any(test, feature = "test-fixtures"))]
 pub fn build_accessibility_panel_descriptor() -> super::descriptor::AnchoredTree {
     load_ui_fixture("accessibilityPanel.json")
+}
+
+/// The shipped controls panel shell (`core/ui/controlsPanel.json`).
+#[cfg(any(test, feature = "test-fixtures"))]
+pub fn build_controls_panel_shell() -> super::descriptor::AnchoredTree {
+    load_ui_fixture("controlsPanel.json")
 }
 
 /// The shipped frontend-menu descriptor (`core/ui/frontendMenu.json`).

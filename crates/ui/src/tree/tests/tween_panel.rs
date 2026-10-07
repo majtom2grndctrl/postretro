@@ -22,6 +22,7 @@ fn panel_tween_in_flight_redraws_without_relayout() {
         text_entry_target: None,
         accessible_name: None,
         role: None,
+        restore_on_return: None,
     };
     let mut ui = UiTree::from_descriptor(&tree, &theme());
     let mut fs = font_system();
@@ -95,6 +96,7 @@ fn panel_tween_eases_alpha_channel_and_settles_exactly() {
         text_entry_target: None,
         accessible_name: None,
         role: None,
+        restore_on_return: None,
     };
     let mut ui = UiTree::from_descriptor(&tree, &theme());
     let mut fs = font_system();
@@ -169,6 +171,7 @@ fn panel_tween_advances_through_rapid_retargets() {
         text_entry_target: None,
         accessible_name: None,
         role: None,
+        restore_on_return: None,
     };
     let mut ui = UiTree::from_descriptor(&tree, &theme());
     let mut fs = font_system();
@@ -243,6 +246,7 @@ fn panel_tween_recovers_from_a_missing_slot_with_a_fresh_segment() {
         text_entry_target: None,
         accessible_name: None,
         role: None,
+        restore_on_return: None,
     };
     let mut ui = UiTree::from_descriptor(&tree, &theme());
     let mut fs = font_system();

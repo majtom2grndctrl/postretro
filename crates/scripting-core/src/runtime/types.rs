@@ -10,6 +10,7 @@ use std::path::Path;
 #[cfg(debug_assertions)]
 use std::path::PathBuf;
 
+use super::input_block::ModInputBlock;
 use crate::ctx::ScriptCtx;
 use crate::data_descriptors::{
     EntityTypeDescriptor, ImpactEventDescriptor, ModFontAssets, ModThemeTokens,
@@ -126,6 +127,10 @@ pub struct ModManifestResult {
     /// Mod-global audio preferences parsed from the optional `audio` object.
     /// Malformed values warn and fall back to the engine seed.
     pub audio: ModAudioProfile,
+    /// The author's optional `input` block: commands, default bindings, and
+    /// glyph art. `None` when the manifest has no block (the engine table
+    /// applies). Malformed parts warn and degrade; never fatal.
+    pub input: Option<ModInputBlock>,
     /// Mod-global weapon-switching rules. Omission resolves to the engine
     /// compatibility defaults before this manifest is committed.
     pub switching: SwitchingDescriptor,
@@ -508,6 +513,10 @@ pub struct ScriptRuntime {
     pub(super) watcher: Option<crate::watcher::ScriptWatcher>,
     #[cfg(debug_assertions)]
     pub(super) staged_manifest_lane: Option<StagedManifestBuildLane>,
+    /// Generation of the latest staged build that committed. Requested
+    /// generations that were stale, failed, or rejected never move it.
+    #[cfg(debug_assertions)]
+    pub(super) committed_staged_generation: Option<u64>,
     #[cfg(debug_assertions)]
     pub(super) active_mod_init_dependencies: Option<ActiveModInitDependencies>,
     /// Full descriptor snapshot from the latest staged reload whose mesh or

@@ -87,6 +87,17 @@ pub struct FocusRect {
     /// navigation and pointer focus, and the App activation gate blocks activation
     /// on a disabled focused node. Both sides are complete.
     pub disabled: bool,
+    /// For a `role: "tab"` stop inside a `role: "tablist"` container: which
+    /// tablist (numbered in tree order). The bumpers step through a tablist's
+    /// tabs; `None` for every other stop.
+    pub tablist: Option<usize>,
+    /// The device-pixel `[x, y, w, h]` viewport that clips this stop when it
+    /// sits inside a scroll container (the intersection of every scrolling
+    /// ancestor's viewport); `None` when nothing clips it. Pointer hits test
+    /// against `rect` within `clip`, so a click on a scroll container's clipped
+    /// area reaches nothing hidden there. Nav still uses the full `rect`: a
+    /// fully clipped stop stays focusable and scrolls into view.
+    pub clip: Option<[f32; 4]>,
 }
 
 /// Per-node interaction metadata exported with an interactive focusable node.
@@ -131,6 +142,22 @@ pub struct FocusGroup {
     pub repeat: Option<RepeatPolicy>,
     /// Indices into `FocusRectList::rects` of this group's members, tree order.
     pub members: Vec<usize>,
+    /// The enclosing focus group, when this container sits inside another
+    /// focus-policy container. A directional move this group cannot answer
+    /// continues there, where this group is one candidate by its `bounds`.
+    pub parent: Option<usize>,
+    /// Device-pixel `[x, y, w, h]` of the declaring container.
+    pub bounds: [f32; 4],
+    /// The axis a linear group answers: a `VStack` is vertical, an `HStack`
+    /// horizontal, a `Grid` both (`None`).
+    pub axis: Option<FocusAxis>,
+}
+
+/// A linear focus group's layout axis.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FocusAxis {
+    Vertical,
+    Horizontal,
 }
 
 /// The flat hit-test / focus rect list exported once per draw-data build: every
@@ -150,9 +177,9 @@ pub struct FocusRectList {
     /// focus starts on when this tree becomes the active (top) stack tree. `None`
     /// selects the first focusable node in tree order.
     pub initial_focus: Option<String>,
-    /// True when any container in the tree declared `restoreOnReturn`: on a pop
-    /// that returns focus here, the focus engine restores this tree's last-focused
-    /// node instead of resetting to `initial_focus`.
+    /// Whether a pop that reveals this tree restores its saved focus: the
+    /// tree's `restoreOnReturn`, on unless the tree opts out. A fresh push
+    /// always lands on initial focus.
     pub restore_on_return: bool,
     /// The registry name and scope tier of the tree this list was exported
     /// from. A press resolves against last frame's export, so the stack's top
@@ -209,6 +236,27 @@ pub enum UiPaintOp {
     Text { index: usize },
 }
 
+/// A run of consecutive paint ops (`start..end` into `UiDrawData::paint_order`)
+/// clipped to one device-pixel `[x, y, w, h]` rect: a scroll container's
+/// viewport intersected with any enclosing one. The renderer scissors shape
+/// batches and bounds text to it. Ops outside every span are unclipped.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct UiClipSpan {
+    pub start: usize,
+    pub end: usize,
+    pub rect: [f32; 4],
+}
+
+/// Intersection of two device-pixel `[x, y, w, h]` rects; an empty overlap
+/// yields a zero-size rect (never a negative extent).
+pub fn intersect_rects(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
+    let x0 = a[0].max(b[0]);
+    let y0 = a[1].max(b[1]);
+    let x1 = (a[0] + a[2]).min(b[0] + b[2]);
+    let y1 = (a[1] + a[3]).min(b[1] + b[3]);
+    [x0, y0, (x1 - x0).max(0.0), (y1 - y0).max(0.0)]
+}
+
 /// Computed draw entries from one tree: a device-pixel panel quad `UiDrawList`,
 /// per-asset image quad lists, device-positioned shaped-text lines, and the
 /// painter-order stream tying them together. The grouped fields remain the
@@ -231,6 +279,12 @@ pub struct UiDrawData {
     pub rings: Vec<UiRingInstance>,
     pub texts: Vec<UiText>,
     pub paint_order: Vec<UiPaintOp>,
+    /// Clipped runs of `paint_order`, ascending and disjoint. Empty (and so
+    /// allocation-free to clone) for a tree with no scroll container.
+    pub clip_spans: Vec<UiClipSpan>,
+    /// The clip the next pushed op records, set by the collector around a
+    /// scroll container's children.
+    current_clip: Option<[f32; 4]>,
     /// Cleared text records retained for translated presentation aggregation.
     /// Keeping their Strings alive makes repeated content/family copies reuse
     /// capacity instead of allocating at every world-anchor translation.
@@ -256,6 +310,8 @@ impl UiDrawData {
             rings: Vec::with_capacity(instance_count),
             texts: Vec::with_capacity(text_count),
             paint_order: Vec::with_capacity(paint_count),
+            clip_spans: Vec::new(),
+            current_clip: None,
             spare_texts: Vec::with_capacity(text_count),
         }
     }
@@ -272,6 +328,47 @@ impl UiDrawData {
         self.rings.clear();
         self.spare_texts.append(&mut self.texts);
         self.paint_order.clear();
+        self.clip_spans.clear();
+        self.current_clip = None;
+    }
+
+    /// The clip the next pushed op records (`None` = unclipped).
+    pub fn clip(&self) -> Option<[f32; 4]> {
+        self.current_clip
+    }
+
+    /// Set the clip later pushes record, until the next call. The collector
+    /// sets a scroll viewport around its children and restores the enclosing
+    /// clip after; the renderer clips a focus ring the same way.
+    pub fn set_clip(&mut self, clip: Option<[f32; 4]>) {
+        self.current_clip = clip;
+    }
+
+    /// The clip recorded for paint op `op` (an index into `paint_order`).
+    pub fn paint_clip(&self, op: usize) -> Option<[f32; 4]> {
+        let after = self.clip_spans.partition_point(|span| span.start <= op);
+        let span = self.clip_spans[..after].last()?;
+        (op < span.end).then_some(span.rect)
+    }
+
+    /// Record the current clip for the op just pushed at `op`, extending the
+    /// last span when it is contiguous and carries the same rect.
+    fn note_clip(&mut self, op: usize) {
+        let Some(rect) = self.current_clip else {
+            return;
+        };
+        if let Some(last) = self.clip_spans.last_mut()
+            && last.end == op
+            && last.rect == rect
+        {
+            last.end += 1;
+            return;
+        }
+        self.clip_spans.push(UiClipSpan {
+            start: op,
+            end: op + 1,
+            rect,
+        });
     }
 
     /// `true` when this tree produced no drawable output: no panel quads, no
@@ -288,26 +385,32 @@ impl UiDrawData {
     pub fn push_quad(&mut self, instance: UiInstance) {
         let index = self.quads.len();
         self.quads.push(instance);
-        self.paint_order.push(UiPaintOp::Quad { index });
+        self.push_op(UiPaintOp::Quad { index });
     }
 
     pub fn push_image(&mut self, asset: &str, instance: UiInstance) {
         let batch = self.image_batch_index(asset);
         let index = self.images[batch].1.len();
         self.images[batch].1.push(instance);
-        self.paint_order.push(UiPaintOp::Image { batch, index });
+        self.push_op(UiPaintOp::Image { batch, index });
     }
 
     pub fn push_ring(&mut self, instance: UiRingInstance) {
         let index = self.rings.len();
         self.rings.push(instance);
-        self.paint_order.push(UiPaintOp::Ring { index });
+        self.push_op(UiPaintOp::Ring { index });
     }
 
     pub fn push_text(&mut self, text: UiText) {
         let index = self.texts.len();
         self.texts.push(text);
-        self.paint_order.push(UiPaintOp::Text { index });
+        self.push_op(UiPaintOp::Text { index });
+    }
+
+    fn push_op(&mut self, op: UiPaintOp) {
+        let at = self.paint_order.len();
+        self.paint_order.push(op);
+        self.note_clip(at);
     }
 
     fn push_translated_text(&mut self, source: &UiText, offset: [f32; 2], opacity: f32) {
@@ -334,7 +437,13 @@ impl UiDrawData {
     /// without changing taffy's template-relative layout coordinates.
     pub fn append_translated(&mut self, source: &UiDrawData, offset: [f32; 2], opacity: f32) {
         let opacity = opacity.clamp(0.0, 1.0);
-        for op in &source.paint_order {
+        let enclosing_clip = self.current_clip;
+        for (at, op) in source.paint_order.iter().enumerate() {
+            // A source clip translates with its content.
+            self.current_clip = match source.paint_clip(at) {
+                Some(clip) => Some([clip[0] + offset[0], clip[1] + offset[1], clip[2], clip[3]]),
+                None => enclosing_clip,
+            };
             match *op {
                 UiPaintOp::Quad { index } => {
                     let mut instance = source.quads.instances[index];
@@ -363,6 +472,7 @@ impl UiDrawData {
                 }
             }
         }
+        self.current_clip = enclosing_clip;
     }
 
     /// Mutable handle to the quad list for `asset`, creating an empty list in

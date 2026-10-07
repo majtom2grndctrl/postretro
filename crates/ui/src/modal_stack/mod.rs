@@ -23,6 +23,13 @@ pub use registry::{ScopeTier, UiTreeRegistry};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ModalInstance(u64);
 
+impl ModalInstance {
+    /// A stable number for this push, unique for the stack's lifetime.
+    pub fn id(self) -> u64 {
+        self.0
+    }
+}
+
 /// One tree currently on the modal stack: its registry name, the descriptor
 /// instance pushed, and the optional `onCommit` reaction carried from the
 /// `PushTree` that opened it. `on_commit` is carried on the stack entry; the App
@@ -65,6 +72,19 @@ impl ModalStack {
 
     pub fn active_instance(&self) -> Option<ModalInstance> {
         self.stack.last().map(|tree| tree.instance)
+    }
+    /// Replace the descriptor of every pushed instance named `name`, keeping its
+    /// instance identity, so an engine panel built from live data updates in
+    /// place and keeps its focus.
+    pub fn replace_pushed_descriptor(&mut self, name: &str, descriptor: &AnchoredTree) {
+        for tree in self.stack.iter_mut().filter(|tree| tree.name == name) {
+            tree.descriptor = descriptor.clone();
+        }
+    }
+
+    /// Whether a pushed instance with this id is still on the stack.
+    pub fn contains_instance_id(&self, id: u64) -> bool {
+        self.stack.iter().any(|tree| tree.instance.0 == id)
     }
     pub fn contains_instance(&self, instance: ModalInstance) -> bool {
         self.stack.iter().any(|tree| tree.instance == instance)
@@ -278,13 +298,11 @@ impl ModalStack {
     }
 
     /// Number of trees on the stack.
-    #[cfg(any(test, feature = "test-fixtures"))]
     pub fn len(&self) -> usize {
         self.stack.len()
     }
 
     /// True when no tree is on the stack.
-    #[cfg(any(test, feature = "test-fixtures"))]
     pub fn is_empty(&self) -> bool {
         self.stack.is_empty()
     }
@@ -403,12 +421,12 @@ mod tests {
                 padding: SpacingValue::Literal(0.0),
                 align: Align::Start,
                 width: None,
+                scroll: None,
                 fill: None,
                 border: None,
                 id: None,
                 focus_neighbors: Default::default(),
                 focus: None,
-                restore_on_return: false,
                 local_state: None,
                 visible_when: None,
                 role: None,
@@ -419,6 +437,7 @@ mod tests {
             text_entry_target: None,
             accessible_name: None,
             role: None,
+            restore_on_return: None,
         }
     }
 
@@ -1168,7 +1187,13 @@ mod tests {
         stack
             .registry_mut()
             .register(PAUSE_MENU_NAME, engine.clone(), ScopeTier::Engine, false);
-        for name in [ACCESSIBILITY_PANEL_NAME, DISPLAY_MODE_CONFIRM_NAME] {
+        for name in [
+            ACCESSIBILITY_PANEL_NAME,
+            DISPLAY_MODE_CONFIRM_NAME,
+            crate::demo::CONTROLS_PANEL_NAME,
+            crate::demo::CONTROLS_CAPTURE_NAME,
+            crate::demo::CONTROLS_DIALOG_NAME,
+        ] {
             stack
                 .registry_mut()
                 .register(name, engine.clone(), ScopeTier::Engine, false);
@@ -1190,12 +1215,11 @@ mod tests {
             .iter()
             .filter(|r| {
                 r.level == Level::Warn
-                    && r.message
-                        .contains("reserved for the engine accessibility panel")
+                    && r.message.contains("reserved for an engine panel or dialog")
             })
             .count();
         assert_eq!(
-            rejections, 6,
+            rejections, 15,
             "mod init, level load and staged reload each warn"
         );
     }

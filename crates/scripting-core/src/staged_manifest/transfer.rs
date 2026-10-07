@@ -11,7 +11,7 @@ use super::super::data_registry::{
     FactionRegistry, FactionSentimentDescriptor, ScopedCrossing, ScopedReaction,
 };
 use super::super::runtime::{
-    Frontend, ModAudioProfile, ModMapEntry, ModMoverDefaults, ModRenderProfile,
+    Frontend, ModAudioProfile, ModInputBlock, ModMapEntry, ModMoverDefaults, ModRenderProfile,
 };
 use super::super::slot_table::StoreDeclarationSet;
 
@@ -51,6 +51,8 @@ pub struct StagedManifest {
     pub render: ModRenderProfile,
     pub movers: ModMoverDefaults,
     pub audio: ModAudioProfile,
+    /// The author's optional `input` block; `None` when the manifest has none.
+    pub input: Option<ModInputBlock>,
     pub switching: SwitchingDescriptor,
     pub default_weapon_placement: Option<WeaponPlacementDescriptor>,
     pub entities: Vec<EntityTypeDescriptor>,

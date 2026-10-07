@@ -1,308 +1,241 @@
-// Default input bindings for keyboard/mouse and gamepad.
+// Engine default bindings, per command and device class.
 // See: context/lib/input.md §2
 
 use gilrs::{Axis as GilrsAxis, Button as GilrsButton};
 use winit::event::MouseButton;
 use winit::keyboard::KeyCode;
 
-use crate::input::types::{Action, Binding, PhysicalInput};
+use super::commands::Command;
+use super::input_names::{DeviceClass, analog_polarity, is_whole_axis};
+use super::types::{Activator, AxisHalf, Binding, PhysicalInput};
 
-/// Default keyboard and mouse bindings for all actions.
-pub fn default_keyboard_mouse_bindings() -> Vec<Binding> {
-    vec![
-        // Movement axes
-        Binding::with_scale(PhysicalInput::Key(KeyCode::KeyW), Action::MoveForward, 1.0),
-        Binding::with_scale(PhysicalInput::Key(KeyCode::KeyS), Action::MoveForward, -1.0),
-        Binding::with_scale(PhysicalInput::Key(KeyCode::KeyD), Action::MoveRight, 1.0),
-        Binding::with_scale(PhysicalInput::Key(KeyCode::KeyA), Action::MoveRight, -1.0),
-        Binding::with_scale(PhysicalInput::Key(KeyCode::KeyQ), Action::MoveUp, 1.0),
-        Binding::with_scale(PhysicalInput::Key(KeyCode::KeyZ), Action::MoveUp, -1.0),
-        // Look axes (scale -1.0 for natural direction)
-        Binding::with_scale(PhysicalInput::MouseAxisX, Action::LookYaw, -1.0),
-        Binding::with_scale(PhysicalInput::MouseAxisY, Action::LookPitch, -1.0),
-        // Button actions
-        Binding::new(PhysicalInput::Key(KeyCode::ShiftLeft), Action::Sprint),
-        Binding::new(PhysicalInput::Key(KeyCode::Space), Action::Jump),
-        Binding::new(PhysicalInput::Key(KeyCode::KeyF), Action::Dash),
-        Binding::new(PhysicalInput::Key(KeyCode::KeyC), Action::Crouch),
-        Binding::new(PhysicalInput::Key(KeyCode::KeyE), Action::Use),
-        Binding::new(PhysicalInput::Key(KeyCode::KeyG), Action::Drop),
-        Binding::new(PhysicalInput::MouseButton(MouseButton::Left), Action::Shoot),
-        Binding::new(
-            PhysicalInput::MouseButton(MouseButton::Right),
-            Action::AltFire,
-        ),
-        Binding::new(PhysicalInput::Key(KeyCode::KeyR), Action::Reload),
-        Binding::new(
-            PhysicalInput::Key(KeyCode::Digit1),
-            Action::SelectWieldable1,
-        ),
-        Binding::new(
-            PhysicalInput::Key(KeyCode::Digit2),
-            Action::SelectWieldable2,
-        ),
-        Binding::new(
-            PhysicalInput::Key(KeyCode::Digit3),
-            Action::SelectWieldable3,
-        ),
-        Binding::new(
-            PhysicalInput::Key(KeyCode::Digit4),
-            Action::SelectWieldable4,
-        ),
-        Binding::new(
-            PhysicalInput::Key(KeyCode::Digit5),
-            Action::SelectWieldable5,
-        ),
-        Binding::new(
-            PhysicalInput::Key(KeyCode::Digit6),
-            Action::SelectWieldable6,
-        ),
-        Binding::new(
-            PhysicalInput::Key(KeyCode::Digit7),
-            Action::SelectWieldable7,
-        ),
-        Binding::new(
-            PhysicalInput::Key(KeyCode::Digit8),
-            Action::SelectWieldable8,
-        ),
-        Binding::new(
-            PhysicalInput::Key(KeyCode::Digit9),
-            Action::SelectWieldable9,
-        ),
-        Binding::new(
-            PhysicalInput::Key(KeyCode::Digit0),
-            Action::SelectWieldable10,
-        ),
-        Binding::new(PhysicalInput::MouseWheelDown, Action::CycleWieldableNext),
-        Binding::new(PhysicalInput::MouseWheelUp, Action::CycleWieldablePrevious),
-        Binding::new(
-            PhysicalInput::Key(KeyCode::KeyX),
-            Action::ToggleLastWieldable,
-        ),
-    ]
+const fn key(code: KeyCode) -> PhysicalInput {
+    PhysicalInput::Key(code)
 }
 
-/// Default gamepad bindings for all actions.
-pub fn default_gamepad_bindings() -> Vec<Binding> {
-    vec![
-        // Movement axes
-        Binding::with_scale(
-            PhysicalInput::GamepadAxis(GilrsAxis::LeftStickY),
-            Action::MoveForward,
-            -1.0,
-        ),
-        Binding::with_scale(
-            PhysicalInput::GamepadAxis(GilrsAxis::LeftStickX),
-            Action::MoveRight,
-            1.0,
-        ),
-        Binding::with_scale(
-            PhysicalInput::GamepadButton(GilrsButton::DPadUp),
-            Action::MoveUp,
-            1.0,
-        ),
-        Binding::with_scale(
-            PhysicalInput::GamepadButton(GilrsButton::DPadDown),
-            Action::MoveUp,
-            -1.0,
-        ),
-        // Look axes
-        Binding::with_scale(
-            PhysicalInput::GamepadAxis(GilrsAxis::RightStickX),
-            Action::LookYaw,
-            1.0,
-        ),
-        Binding::with_scale(
-            PhysicalInput::GamepadAxis(GilrsAxis::RightStickY),
-            Action::LookPitch,
-            -1.0,
-        ),
-        // Button actions
-        Binding::new(
-            PhysicalInput::GamepadButton(GilrsButton::LeftThumb),
-            Action::Sprint,
-        ),
-        Binding::new(
-            PhysicalInput::GamepadButton(GilrsButton::South),
-            Action::Jump,
-        ),
-        Binding::new(
-            PhysicalInput::GamepadButton(GilrsButton::East),
-            Action::Dash,
-        ),
-        Binding::new(
-            PhysicalInput::GamepadButton(GilrsButton::RightThumb),
-            Action::Crouch,
-        ),
-        Binding::new(PhysicalInput::GamepadButton(GilrsButton::West), Action::Use),
-        Binding::new(
-            PhysicalInput::GamepadButton(GilrsButton::Select),
-            Action::Drop,
-        ),
-        Binding::new(
-            PhysicalInput::GamepadButton(GilrsButton::RightTrigger2),
-            Action::Shoot,
-        ),
-        Binding::new(
-            PhysicalInput::GamepadButton(GilrsButton::LeftTrigger2),
-            Action::AltFire,
-        ),
-        Binding::new(
-            PhysicalInput::GamepadButton(GilrsButton::North),
-            Action::Reload,
-        ),
-        Binding::new(
-            PhysicalInput::GamepadButton(GilrsButton::DPadRight),
-            Action::CycleWieldableNext,
-        ),
-        Binding::new(
-            PhysicalInput::GamepadButton(GilrsButton::DPadLeft),
-            Action::CycleWieldablePrevious,
-        ),
-        Binding::new(
-            PhysicalInput::GamepadButton(GilrsButton::LeftTrigger),
-            Action::ToggleLastWieldable,
-        ),
-    ]
+const fn mouse(button: MouseButton) -> PhysicalInput {
+    PhysicalInput::MouseButton(button)
 }
 
-/// All default bindings (keyboard/mouse + gamepad combined).
+const fn pad(button: GilrsButton) -> PhysicalInput {
+    PhysicalInput::GamepadButton(button)
+}
+
+const fn stick(axis: GilrsAxis) -> PhysicalInput {
+    PhysicalInput::GamepadAxis(axis)
+}
+
+const fn half(axis: GilrsAxis, half: AxisHalf) -> PhysicalInput {
+    PhysicalInput::GamepadAxisHalf(axis, half)
+}
+
+const NONE: &[PhysicalInput] = &[];
+
+/// The engine's default inputs for a command on a device class: the last
+/// layer under author defaults and player overrides.
+pub fn engine_default_inputs(command: Command, class: DeviceClass) -> &'static [PhysicalInput] {
+    let (keyboard_mouse, gamepad): (&[PhysicalInput], &[PhysicalInput]) = match command {
+        Command::MoveForward => (
+            const { &[key(KeyCode::KeyW)] },
+            const { &[half(GilrsAxis::LeftStickY, AxisHalf::Positive)] },
+        ),
+        Command::MoveBack => (
+            const { &[key(KeyCode::KeyS)] },
+            const { &[half(GilrsAxis::LeftStickY, AxisHalf::Negative)] },
+        ),
+        Command::MoveLeft => (
+            const { &[key(KeyCode::KeyA)] },
+            const { &[half(GilrsAxis::LeftStickX, AxisHalf::Negative)] },
+        ),
+        Command::MoveRight => (
+            const { &[key(KeyCode::KeyD)] },
+            const { &[half(GilrsAxis::LeftStickX, AxisHalf::Positive)] },
+        ),
+        Command::MoveUp => (
+            const { &[key(KeyCode::KeyQ)] },
+            const { &[pad(GilrsButton::DPadUp)] },
+        ),
+        Command::MoveDown => (
+            const { &[key(KeyCode::KeyZ)] },
+            const { &[pad(GilrsButton::DPadDown)] },
+        ),
+        Command::LookX => (
+            const { &[PhysicalInput::MouseAxisX] },
+            const { &[stick(GilrsAxis::RightStickX)] },
+        ),
+        Command::LookY => (
+            const { &[PhysicalInput::MouseAxisY] },
+            const { &[stick(GilrsAxis::RightStickY)] },
+        ),
+        Command::Sprint => (
+            const { &[key(KeyCode::ShiftLeft)] },
+            const { &[pad(GilrsButton::LeftThumb)] },
+        ),
+        Command::Jump => (
+            const { &[key(KeyCode::Space)] },
+            const { &[pad(GilrsButton::South)] },
+        ),
+        Command::Dash => (
+            const { &[key(KeyCode::KeyF)] },
+            const { &[pad(GilrsButton::East)] },
+        ),
+        Command::Crouch => (
+            const { &[key(KeyCode::KeyC)] },
+            const { &[pad(GilrsButton::RightThumb)] },
+        ),
+        Command::Use => (
+            const { &[key(KeyCode::KeyE)] },
+            const { &[pad(GilrsButton::West)] },
+        ),
+        Command::Drop => (
+            const { &[key(KeyCode::KeyG)] },
+            const { &[pad(GilrsButton::Select)] },
+        ),
+        Command::Shoot => (
+            const { &[mouse(MouseButton::Left)] },
+            const { &[pad(GilrsButton::RightTrigger2)] },
+        ),
+        Command::AltFire => (
+            const { &[mouse(MouseButton::Right)] },
+            const { &[pad(GilrsButton::LeftTrigger2)] },
+        ),
+        Command::Reload => (
+            const { &[key(KeyCode::KeyR)] },
+            const { &[pad(GilrsButton::North)] },
+        ),
+        Command::SelectWieldable1 => (const { &[key(KeyCode::Digit1)] }, NONE),
+        Command::SelectWieldable2 => (const { &[key(KeyCode::Digit2)] }, NONE),
+        Command::SelectWieldable3 => (const { &[key(KeyCode::Digit3)] }, NONE),
+        Command::SelectWieldable4 => (const { &[key(KeyCode::Digit4)] }, NONE),
+        Command::SelectWieldable5 => (const { &[key(KeyCode::Digit5)] }, NONE),
+        Command::SelectWieldable6 => (const { &[key(KeyCode::Digit6)] }, NONE),
+        Command::SelectWieldable7 => (const { &[key(KeyCode::Digit7)] }, NONE),
+        Command::SelectWieldable8 => (const { &[key(KeyCode::Digit8)] }, NONE),
+        Command::SelectWieldable9 => (const { &[key(KeyCode::Digit9)] }, NONE),
+        Command::SelectWieldable10 => (const { &[key(KeyCode::Digit0)] }, NONE),
+        Command::CycleWieldableNext => (
+            const { &[PhysicalInput::MouseWheelDown] },
+            const { &[pad(GilrsButton::DPadRight)] },
+        ),
+        Command::CycleWieldablePrevious => (
+            const { &[PhysicalInput::MouseWheelUp] },
+            const { &[pad(GilrsButton::DPadLeft)] },
+        ),
+        Command::ToggleLastWieldable => (
+            const { &[key(KeyCode::KeyX)] },
+            const { &[pad(GilrsButton::LeftTrigger)] },
+        ),
+        Command::NavUp => (
+            const { &[key(KeyCode::ArrowUp)] },
+            const {
+                &[
+                    pad(GilrsButton::DPadUp),
+                    half(GilrsAxis::LeftStickY, AxisHalf::Positive),
+                ]
+            },
+        ),
+        Command::NavDown => (
+            const { &[key(KeyCode::ArrowDown)] },
+            const {
+                &[
+                    pad(GilrsButton::DPadDown),
+                    half(GilrsAxis::LeftStickY, AxisHalf::Negative),
+                ]
+            },
+        ),
+        Command::NavLeft => (
+            const { &[key(KeyCode::ArrowLeft)] },
+            const {
+                &[
+                    pad(GilrsButton::DPadLeft),
+                    half(GilrsAxis::LeftStickX, AxisHalf::Negative),
+                ]
+            },
+        ),
+        Command::NavRight => (
+            const { &[key(KeyCode::ArrowRight)] },
+            const {
+                &[
+                    pad(GilrsButton::DPadRight),
+                    half(GilrsAxis::LeftStickX, AxisHalf::Positive),
+                ]
+            },
+        ),
+        Command::NavNext => (const { &[key(KeyCode::Tab)] }, NONE),
+        Command::NavPrev => (NONE, NONE),
+        // The bumpers are tab keys; in a tree with no tablist they step
+        // Next/Prev, so `nav_next`/`nav_prev` need no gamepad binding.
+        Command::NavTabNext => (
+            const { &[key(KeyCode::KeyE)] },
+            const { &[pad(GilrsButton::RightTrigger)] },
+        ),
+        Command::NavTabPrev => (
+            const { &[key(KeyCode::KeyQ)] },
+            const { &[pad(GilrsButton::LeftTrigger)] },
+        ),
+        Command::NavConfirm => (
+            const { &[key(KeyCode::Enter), key(KeyCode::NumpadEnter)] },
+            const { &[pad(GilrsButton::South)] },
+        ),
+        Command::NavCancel => (
+            const { &[key(KeyCode::Escape)] },
+            const { &[pad(GilrsButton::East)] },
+        ),
+        Command::NavMenu => (
+            const { &[key(KeyCode::Escape)] },
+            const { &[pad(GilrsButton::Start)] },
+        ),
+        Command::NavOptions => (NONE, const { &[pad(GilrsButton::Select)] }),
+        // Hardware Backspace, Space, and Enter already edit text and stay fixed.
+        Command::TextBackspace => (NONE, const { &[pad(GilrsButton::West)] }),
+        Command::TextSpace => (NONE, const { &[pad(GilrsButton::North)] }),
+        Command::TextCommit => (NONE, const { &[pad(GilrsButton::Start)] }),
+    };
+    match class {
+        DeviceClass::KeyboardMouse => keyboard_mouse,
+        DeviceClass::Gamepad => gamepad,
+    }
+}
+
+/// The input-system binding for a command on one input, or `None` for a UI
+/// command (UI nav reads its own table). A whole axis takes its source's
+/// physical polarity; a half-axis is already a physical direction.
+pub fn gameplay_binding(
+    command: Command,
+    input: PhysicalInput,
+    activator: Activator,
+) -> Option<Binding> {
+    let (action, sign) = command.gameplay_target()?;
+    let polarity = if is_whole_axis(input) {
+        analog_polarity(input)
+    } else {
+        1.0
+    };
+    Some(Binding::with_scale(input, action, sign * polarity).with_activator(activator))
+}
+
+/// Engine default gameplay bindings on one device class, every one `press`.
+pub fn default_bindings_for(class: DeviceClass) -> Vec<Binding> {
+    Command::ALL
+        .into_iter()
+        .flat_map(|command| {
+            engine_default_inputs(command, class)
+                .iter()
+                .filter_map(move |input| gameplay_binding(command, *input, Activator::PRESS))
+        })
+        .collect()
+}
+
+/// All engine default gameplay bindings (keyboard/mouse, then gamepad).
 pub fn default_bindings() -> Vec<Binding> {
-    let mut bindings = default_keyboard_mouse_bindings();
-    bindings.extend(default_gamepad_bindings());
-    bindings
+    DeviceClass::ALL
+        .into_iter()
+        .flat_map(default_bindings_for)
+        .collect()
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::collections::HashSet;
-
-    /// All Action variants, for exhaustive coverage checks.
-    fn common_actions() -> Vec<Action> {
-        vec![
-            Action::MoveForward,
-            Action::MoveRight,
-            Action::MoveUp,
-            Action::LookYaw,
-            Action::LookPitch,
-            Action::Sprint,
-            Action::Jump,
-            Action::Dash,
-            Action::Crouch,
-            Action::Use,
-            Action::Drop,
-            Action::Shoot,
-            Action::AltFire,
-            Action::Reload,
-            Action::CycleWieldableNext,
-            Action::CycleWieldablePrevious,
-            Action::ToggleLastWieldable,
-        ]
-    }
-
-    #[test]
-    fn keyboard_mouse_bindings_cover_all_actions() {
-        let bindings = default_keyboard_mouse_bindings();
-        let bound_actions: HashSet<Action> = bindings.iter().map(|b| b.action).collect();
-        let mut actions = common_actions();
-        actions.extend([
-            Action::SelectWieldable1,
-            Action::SelectWieldable2,
-            Action::SelectWieldable3,
-            Action::SelectWieldable4,
-            Action::SelectWieldable5,
-            Action::SelectWieldable6,
-            Action::SelectWieldable7,
-            Action::SelectWieldable8,
-            Action::SelectWieldable9,
-            Action::SelectWieldable10,
-        ]);
-        for action in actions {
-            assert!(
-                bound_actions.contains(&action),
-                "Action {:?} has no keyboard/mouse binding",
-                action,
-            );
-        }
-    }
-
-    #[test]
-    fn gamepad_bindings_cover_all_actions() {
-        let bindings = default_gamepad_bindings();
-        let bound_actions: HashSet<Action> = bindings.iter().map(|b| b.action).collect();
-        for action in common_actions() {
-            assert!(
-                bound_actions.contains(&action),
-                "Action {:?} has no gamepad binding",
-                action,
-            );
-        }
-    }
-
-    #[test]
-    fn default_bindings_contain_both_keyboard_and_gamepad() {
-        let combined = default_bindings();
-        let kb = default_keyboard_mouse_bindings();
-        let gp = default_gamepad_bindings();
-        assert_eq!(combined.len(), kb.len() + gp.len());
-    }
-
-    #[test]
-    fn drop_defaults_bind_key_g_and_gamepad_select() {
-        assert!(default_keyboard_mouse_bindings().iter().any(|binding| {
-            binding.input == PhysicalInput::Key(KeyCode::KeyG) && binding.action == Action::Drop
-        }));
-        assert!(default_gamepad_bindings().iter().any(|binding| {
-            binding.input == PhysicalInput::GamepadButton(GilrsButton::Select)
-                && binding.action == Action::Drop
-        }));
-    }
-
-    #[test]
-    fn axis_bindings_include_opposing_directions() {
-        let bindings = default_keyboard_mouse_bindings();
-
-        // MoveForward should have both +1.0 and -1.0 keyboard bindings.
-        let forward_scales: Vec<f32> = bindings
-            .iter()
-            .filter(|b| b.action == Action::MoveForward)
-            .filter(|b| matches!(b.input, PhysicalInput::Key(_)))
-            .map(|b| b.scale)
-            .collect();
-        assert!(
-            forward_scales.contains(&1.0),
-            "MoveForward missing positive binding"
-        );
-        assert!(
-            forward_scales.contains(&-1.0),
-            "MoveForward missing negative binding"
-        );
-
-        // MoveRight should have both directions.
-        let right_scales: Vec<f32> = bindings
-            .iter()
-            .filter(|b| b.action == Action::MoveRight)
-            .filter(|b| matches!(b.input, PhysicalInput::Key(_)))
-            .map(|b| b.scale)
-            .collect();
-        assert!(
-            right_scales.contains(&1.0),
-            "MoveRight missing positive binding"
-        );
-        assert!(
-            right_scales.contains(&-1.0),
-            "MoveRight missing negative binding"
-        );
-
-        // MoveUp should have both directions.
-        let up_scales: Vec<f32> = bindings
-            .iter()
-            .filter(|b| b.action == Action::MoveUp)
-            .filter(|b| matches!(b.input, PhysicalInput::Key(_)))
-            .map(|b| b.scale)
-            .collect();
-        assert!(up_scales.contains(&1.0), "MoveUp missing positive binding");
-        assert!(up_scales.contains(&-1.0), "MoveUp missing negative binding");
-    }
-}
+#[path = "defaults_tests.rs"]
+mod tests;
+#[cfg(test)]
+pub(super) use tests::legacy_actions;

@@ -591,6 +591,19 @@ impl App {
         // Admission identity is frozen by the scripting runtime; the digest is
         // recomputed from the committed registry each time this deferred init runs.
         self.install_network_mod_content();
+        // Bind against the committed registry and the player's saved rows for
+        // this mod right away, so a controls panel opened before any level
+        // loads lists the game's commands.
+        let input_block = self.session.as_ref().and_then(|session| {
+            session
+                .scripting
+                .script_runtime
+                .mod_manifest()
+                .and_then(|manifest| manifest.input.clone())
+        });
+        self.load_author_bindings(input_block.as_ref());
+        self.load_player_bindings();
+        self.refresh_effective_bindings();
         self.mod_timings.record("mod_init");
         true
     }

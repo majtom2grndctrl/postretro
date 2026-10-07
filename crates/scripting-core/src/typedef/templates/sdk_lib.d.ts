@@ -760,6 +760,10 @@
   export type SpacerProps = { flexGrow?: number; id?: string; visibleWhen?: Predicate; role?: WidgetRole };
   /** A `spacer` leaf claiming a proportional share of leftover space. */
   export function Spacer(props?: SpacerProps): WidgetDescriptor;
+  /** Props for `Glyph`. `command` is a command ID. */
+  export type GlyphProps = { command: CommandId; id?: string; visibleWhen?: Predicate };
+  /** The glyph for a command on the player's current device: the mod's art for the input bound to it, else that input's label, else nothing when it is unbound there or irrelevant. Follows rebinding and the confirm/cancel swap. */
+  export function Glyph(props: GlyphProps): WidgetDescriptor;
 
   /** One `Button.valueText` case: `text` shows while every predicate in `when` holds. An absent or empty `when` always holds. */
   export type ValueTextCase = { when?: Predicate[]; text: LocalizedText };
@@ -790,10 +794,12 @@
   export type FocusKind = "linear" | "spatial";
   /** A container focus policy. Use a bare `"linear"`/`"spatial"` shorthand or an object with `wrap` and `repeat` options; `repeat` controls held navigation events inside the container. */
   export type FocusPolicyProp = FocusKind | { policy: FocusKind; wrap?: boolean; repeat?: RepeatPolicyProp };
+  /** A vertical scroll viewport for `VStack`/`Grid`: the container sizes to its content up to `maxHeight` logical px, then clips and scrolls. Focus outside the viewport scrolls into view by the minimum distance, and the pointer wheel scrolls it. It creates no focus stop or group; on an `HStack` it is ignored with a load-time diagnostic. */
+  export type ScrollProp = { maxHeight: number };
   /** Props for `VStack`/`HStack`. `gap` and `padding` default to 0; `align` defaults to `"start"`; `width` fixes the stack width in logical-reference pixels; optional `fill`/`border` draw a backdrop behind the arranged children. Stack containers may declare `localState`; stack and grid containers both accept `visibleWhen` and `role`. */
-  export type StackProps = { gap?: WidgetSpacing; padding?: WidgetSpacing; align?: WidgetAlign; width?: number; id?: string; focusNeighbors?: FocusNeighborsProp; focus?: FocusPolicyProp; restoreOnReturn?: boolean; fill?: WidgetColor; border?: BorderProp; localState?: { scope: string; cells: Record<string, CellInit> }; visibleWhen?: Predicate; role?: WidgetRole };
+  export type StackProps = { gap?: WidgetSpacing; padding?: WidgetSpacing; align?: WidgetAlign; width?: number; scroll?: ScrollProp; id?: string; focusNeighbors?: FocusNeighborsProp; focus?: FocusPolicyProp; fill?: WidgetColor; border?: BorderProp; localState?: { scope: string; cells: Record<string, CellInit> }; visibleWhen?: Predicate; role?: WidgetRole };
   /** Props for `Grid`. `cols` is required and must be an integer >= 1. Children flow row-major across columns; grid currently has no backdrop fill/border and no `localState`. */
-  export type GridProps = { gap?: WidgetSpacing; padding?: WidgetSpacing; align?: WidgetAlign; id?: string; focusNeighbors?: FocusNeighborsProp; focus?: FocusPolicyProp; restoreOnReturn?: boolean; cols: number; visibleWhen?: Predicate; role?: WidgetRole };
+  export type GridProps = { gap?: WidgetSpacing; padding?: WidgetSpacing; align?: WidgetAlign; id?: string; focusNeighbors?: FocusNeighborsProp; focus?: FocusPolicyProp; cols: number; scroll?: ScrollProp; visibleWhen?: Predicate; role?: WidgetRole };
 
   /** A vertical stack (`vstack`): `children` is a POSITIONAL second argument. */
   export function VStack(props?: StackProps, children?: WidgetDescriptor[]): WidgetDescriptor;
@@ -806,10 +812,10 @@
   export type WidgetAnchor = "topLeft" | "top" | "topRight" | "left" | "center" | "right" | "bottomLeft" | "bottom" | "bottomRight";
   /** Tree input behavior. `"capture"` makes this tree consume UI input and freeze lower modal layers; `"passthrough"` is the HUD/default mode and lets game input continue. */
   export type WidgetCaptureMode = "capture" | "passthrough";
-  /** Placement envelope props for `Tree`. `anchor` + `offset` position the root in 1280x720 logical UI space; `captureMode`, `initialFocus`, and `textEntryTarget` control modal/input behavior. */
-  export type TreeProps = { anchor: WidgetAnchor; offset: [number, number]; captureMode?: WidgetCaptureMode; initialFocus?: string; textEntryTarget?: Ref<string>; accessibleName?: string; role?: WidgetRole };
+  /** Placement envelope props for `Tree`. `anchor` + `offset` position the root in 1280x720 logical UI space; `captureMode`, `initialFocus`, and `textEntryTarget` control modal/input behavior. `restoreOnReturn` (on by default) returns focus to the control it left when a tree pushed above closes; `false` lands on `initialFocus`. */
+  export type TreeProps = { anchor: WidgetAnchor; offset: [number, number]; captureMode?: WidgetCaptureMode; initialFocus?: string; textEntryTarget?: Ref<string>; accessibleName?: string; role?: WidgetRole; restoreOnReturn?: boolean };
   /** The flat `AnchoredTree` envelope produced by `Tree(...)` and stored in UI registries. `textEntryTarget` is serialized to its dotted state-slot name. */
-  export type AnchoredTreeDescriptor = { anchor: WidgetAnchor; offset: [number, number]; root: WidgetDescriptor; captureMode?: WidgetCaptureMode; initialFocus?: string; textEntryTarget?: string; accessibleName?: string; role?: WidgetRole };
+  export type AnchoredTreeDescriptor = { anchor: WidgetAnchor; offset: [number, number]; root: WidgetDescriptor; captureMode?: WidgetCaptureMode; initialFocus?: string; textEntryTarget?: string; accessibleName?: string; role?: WidgetRole; restoreOnReturn?: boolean };
   /** Wrap a root widget descriptor in the `AnchoredTree` placement envelope. `root` is a POSITIONAL second argument. */
   export function Tree(props: TreeProps, root: WidgetDescriptor): AnchoredTreeDescriptor;
   /** Props accepted by `defineUiTree`. The returned object preserves the runtime manifest entry shape `{ name, tree, alwaysOn?, hideBelow? }`. */
@@ -1100,8 +1106,9 @@
     | "up" | "down" | "left" | "right"
     | "next" | "prev"
     | "confirm" | "cancel"
-    | "menu" | "options";
+    | "menu" | "options"
+    | "tabNext" | "tabPrev";
 
   /** A UI navigation intent wire name. Template-literal type over the closed
-   * `NavIntentName` set, so only `"nav.up"` … `"nav.options"` type-check. */
+   * `NavIntentName` set, so only `"nav.up"` … `"nav.tabPrev"` type-check. */
   export type NavIntent = `nav.${NavIntentName}`;

@@ -100,6 +100,7 @@ fn text_tree(content: &str, offset: [f32; 2]) -> AnchoredTree {
         text_entry_target: None,
         accessible_name: None,
         role: None,
+        restore_on_return: None,
     }
 }
 
@@ -141,6 +142,7 @@ fn layout_two_layers(
         &theme,
         0,
         postretro_ui::tree::TweenClock::easing(0.0),
+        postretro_ui::tree::ScrollInput::default(),
     );
     let upper = pass.layout_gameplay_tree(
         font_system,
@@ -154,6 +156,7 @@ fn layout_two_layers(
         &theme,
         0,
         postretro_ui::tree::TweenClock::easing(0.0),
+        postretro_ui::tree::ScrollInput::default(),
     );
     [lower, upper]
 }

@@ -8,8 +8,8 @@
 --- Accessibility toggles a menu button may cycle.
 export type AccessibilityToggleField = "reduceMotion" | "flashLimiter" | "monoAudio"
 
---- Accessibility numeric fields a mod menu button may step, each within [0, 1].
-export type AccessibilityNumericField = "screenShakeScale" | "viewFeelScale" | "masterVolume" | "sfxVolume" | "musicVolume" | "uiVolume"
+--- Accessibility numeric fields a mod menu button may step, each within its range ([0, 1], or [1, 3] for `holdTimingScale`).
+export type AccessibilityNumericField = "screenShakeScale" | "viewFeelScale" | "masterVolume" | "sfxVolume" | "musicVolume" | "uiVolume" | "holdTimingScale"
 
 --- Reserved operations for the engine display-mode picker and confirmation.
 export type DisplayModeOperation = "next" | "previous" | "apply" | "keep" | "revert"
@@ -23,6 +23,8 @@ export type PostretroUiModule = {
   Image: (props: ImageProps) -> WidgetDescriptor,
   --- Build a spacer descriptor. `flexGrow` is finite and defaults to 1.
   Spacer: (props: SpacerProps?) -> WidgetDescriptor,
+  --- Build a glyph for a command on the player's current device; follows rebinding and the confirm/cancel swap.
+  Glyph: (props: GlyphProps) -> WidgetDescriptor,
   --- Build an interactive button descriptor. `onPress` accepts a reaction handle, bare reaction name, or reserved `ui.*` action.
   Button: (props: ButtonProps) -> WidgetDescriptor,
   --- Build an interactive slider descriptor. `bind` is writable numeric state/local cell; writes clamp to `[min, max]`.
@@ -110,6 +112,8 @@ export type PostretroUiModule = {
   QUIT_TO_MENU_ACTION: "ui.quitToMenu",
   --- Reserved button `onPress` action that opens the engine accessibility panel.
   OPEN_ACCESSIBILITY_ACTION: "ui.openAccessibility",
+  --- Reserved button `onPress` action that opens the engine controls panel.
+  OPEN_CONTROLS_ACTION: "ui.openControls",
   --- Build a reserved `ui.displayMode.<op>` action. `next`/`previous` browse without saving;
   --- `apply` commits the selection (exclusive opens the engine confirmation).
   displayModeAction: (op: DisplayModeOperation) -> string,

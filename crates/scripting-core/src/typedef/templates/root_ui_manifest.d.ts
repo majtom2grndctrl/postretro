@@ -27,6 +27,7 @@
     textEntryTarget?: string;
     accessibleName?: string;
     role?: WidgetRole;
+    restoreOnReturn?: boolean;
   };
   /** Motion easing used by passive world-anchored presentation templates. */
   export type PresentationEasing = "linear" | "easeIn" | "easeOut" | "easeInOut";

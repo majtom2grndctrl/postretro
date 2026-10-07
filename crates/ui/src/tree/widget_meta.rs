@@ -107,6 +107,7 @@ pub fn widget_id(widget: &Widget) -> Option<&String> {
         Widget::Slider(w) => Some(&w.id),
         Widget::Bar(w) => w.id.as_ref(),
         Widget::Ring(w) => w.id.as_ref(),
+        Widget::Glyph(w) => w.id.as_ref(),
         Widget::Announce(_) => None,
     }
 }
@@ -133,7 +134,11 @@ pub fn authored_focus_neighbors(widget: &Widget) -> Option<&DescriptorFocusNeigh
         Widget::Grid(w) => Some(&w.focus_neighbors),
         Widget::Button(w) => Some(&w.focus_neighbors),
         Widget::Slider(w) => Some(&w.focus_neighbors),
-        Widget::Spacer(_) | Widget::Bar(_) | Widget::Ring(_) | Widget::Announce(_) => None,
+        Widget::Spacer(_)
+        | Widget::Bar(_)
+        | Widget::Ring(_)
+        | Widget::Glyph(_)
+        | Widget::Announce(_) => None,
     }
 }
 
@@ -214,6 +219,23 @@ pub fn widget_a11y_state(
     }
 }
 
+/// The role a widget authors, if any (not its implicit kind role).
+pub fn authored_role(widget: &Widget) -> Option<super::super::descriptor::Role> {
+    match widget {
+        Widget::Text(w) => w.role,
+        Widget::Panel(w) => w.role,
+        Widget::Image(w) => w.role,
+        Widget::VStack(w) | Widget::HStack(w) => w.role,
+        Widget::Grid(w) => w.role,
+        Widget::Spacer(w) => w.role,
+        Widget::Button(w) => w.role,
+        Widget::Slider(w) => w.role,
+        Widget::Bar(w) => w.role,
+        Widget::Ring(w) => w.role,
+        Widget::Glyph(_) | Widget::Announce(_) => None,
+    }
+}
+
 /// The focus policy a container declares, or `None` for leaves and policy-less
 /// containers. A declaring container opens a focus group whose members are the
 /// interactive descendants nested under it through any passive containers, up to
@@ -226,20 +248,6 @@ pub fn container_focus_policy(widget: &Widget) -> Option<&super::super::descript
     }
 }
 
-/// Whether `widget` or any descendant container declares `restoreOnReturn`.
-/// Surfaced tree-wide on the focus rect list: the focus engine restores this
-/// tree's saved focus on a returning pop when any of its containers opted in.
-pub fn any_restore_on_return(widget: &Widget) -> bool {
-    let declared = match widget {
-        Widget::VStack(w) | Widget::HStack(w) => w.restore_on_return,
-        Widget::Grid(w) => w.restore_on_return,
-        _ => false,
-    };
-    declared
-        || widget_children(widget)
-            .is_some_and(|children| children.iter().any(any_restore_on_return))
-}
-
 /// A container's `children` for the lockstep focus walk, or `None` for leaves.
 pub fn widget_children(widget: &Widget) -> Option<&[Widget]> {
     match widget {
@@ -249,8 +257,8 @@ pub fn widget_children(widget: &Widget) -> Option<&[Widget]> {
     }
 }
 
-/// A widget's optional `visibleWhen` reactive-visibility predicate (M13 G2, Task
-/// 2b). Lives on every widget variant; `None` means the node is always visible.
+/// A widget's optional `visibleWhen` reactive-visibility predicate.
+/// Lives on every widget variant; `None` means the node is always visible.
 /// Harvested in lockstep with the taffy tree (`harvest_visibility`) so the diff
 /// can toggle the matching node's taffy `Display`.
 fn widget_visible_when(widget: &Widget) -> Option<&Predicate> {
@@ -265,6 +273,7 @@ fn widget_visible_when(widget: &Widget) -> Option<&Predicate> {
         Widget::Slider(w) => w.visible_when.as_ref(),
         Widget::Bar(w) => w.visible_when.as_ref(),
         Widget::Ring(w) => w.visible_when.as_ref(),
+        Widget::Glyph(w) => w.visible_when.as_ref(),
         Widget::Announce(w) => w.visible_when.as_ref(),
     }
 }

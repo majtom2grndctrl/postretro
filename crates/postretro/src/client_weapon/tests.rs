@@ -66,6 +66,7 @@ fn command(pressed: bool, active: bool) -> sim::SimCommand {
         false,
         false,
         false,
+        false,
     );
     command.fire_button = weapon::FireButtonState { pressed, active };
     command

@@ -1,5 +1,5 @@
 // Diagnostic input channel: modifier chords for engine debug actions.
-// See: context/lib/input.md §7
+// See: context/lib/input.md §8
 
 use winit::keyboard::KeyCode;
 
@@ -166,7 +166,7 @@ impl DiagnosticInputs {
 }
 
 /// Default diagnostic chord table. All chords live in the `Alt+Shift+`
-/// namespace per `context/lib/input.md` §7.
+/// namespace per `context/lib/input.md` §8.
 pub fn default_diagnostic_chords() -> Vec<DiagnosticChord> {
     vec![
         DiagnosticChord {

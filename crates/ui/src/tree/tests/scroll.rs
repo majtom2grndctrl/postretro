@@ -124,7 +124,7 @@ fn visible(stop: &FocusRect) -> [f32; 4] {
         .map_or(stop.rect, |clip| intersect_rects(stop.rect, clip))
 }
 
-// MC15: content that fits sizes the container to it and never scrolls.
+// Content that fits sizes the container to it and never scrolls.
 #[test]
 fn a_scroll_container_whose_content_fits_sizes_to_its_content_and_does_not_scroll() {
     let mut h = Harness::new(menu(&scroll_list(400.0, 3, None, false)));
@@ -152,7 +152,7 @@ fn a_scroll_container_whose_content_fits_sizes_to_its_content_and_does_not_scrol
     );
 }
 
-// MC15: the wheel scrolls an overflowing container under the cursor, and only
+// The wheel scrolls an overflowing container under the cursor, and only
 // while the cursor is over it.
 #[test]
 fn the_pointer_wheel_scrolls_the_overflowing_container_under_the_cursor() {
@@ -198,7 +198,7 @@ fn the_pointer_wheel_scrolls_the_overflowing_container_under_the_cursor() {
     ));
 }
 
-// MC15: scroll opens no focus group; its stops join the enclosing group unless
+// Scroll opens no focus group; its stops join the enclosing group unless
 // the container itself declares `focus`.
 #[test]
 fn scroll_children_join_the_enclosing_focus_group_unless_the_container_declares_focus() {
@@ -243,7 +243,7 @@ fn a_text_inside_a_scroll_container_is_never_focused() {
     assert_eq!(list.rects.len(), 2);
 }
 
-// MC15: an HStack ignores `scroll` and the tree's registration diagnoses it.
+// An HStack ignores `scroll` and the tree's registration diagnoses it.
 #[test]
 fn an_hstack_scroll_is_ignored_and_diagnosed_once_at_registration() {
     let row = |scroll: &str| {
@@ -266,7 +266,7 @@ fn an_hstack_scroll_is_ignored_and_diagnosed_once_at_registration() {
     assert!(with.rects().rects.iter().all(|r| r.clip.is_none()));
 }
 
-// MC16: one row past the bottom scrolls by exactly one row; one row above the
+// One row past the bottom scrolls by exactly one row; one row above the
 // top aligns that row's top with the viewport's.
 #[test]
 fn moving_focus_one_row_below_the_viewport_scrolls_by_one_row_and_above_aligns_tops() {
@@ -303,7 +303,7 @@ fn moving_focus_one_row_below_the_viewport_scrolls_by_one_row_and_above_aligns_t
     assert!(approx(rect(&up, "r2").rect[1], viewport[1]));
 }
 
-// MC17 / P18: content shrinking while scrolled to the end draws from a clamped
+// Content shrinking while scrolled to the end draws from a clamped
 // offset with no empty band; under maxHeight the container shrinks to it.
 #[test]
 fn a_container_scrolled_to_its_end_whose_content_shrinks_draws_with_no_empty_band() {
@@ -338,7 +338,7 @@ fn a_container_scrolled_to_its_end_whose_content_shrinks_draws_with_no_empty_ban
     assert!(fitted[3] < viewport[3]);
 }
 
-// P18: a partial shrink that still overflows clamps the offset so the last
+// A partial shrink that still overflows clamps the offset so the last
 // row meets the viewport bottom.
 #[test]
 fn a_partial_shrink_clamps_the_offset_so_the_last_row_meets_the_bottom() {
@@ -355,7 +355,7 @@ fn a_partial_shrink_clamps_the_offset_so_the_last_row_meets_the_bottom() {
     assert!(approx(bottom(rect(&list, "r5").rect), bottom(viewport)));
 }
 
-// MC17 / P19: a stop scrolled out of view exports a clip that excludes it, so
+// A stop scrolled out of view exports a clip that excludes it, so
 // a click there reaches nothing hidden; the visible stops stay hittable.
 #[test]
 fn a_stop_scrolled_out_of_view_exports_no_visible_area() {
@@ -373,7 +373,7 @@ fn a_stop_scrolled_out_of_view_exports_no_visible_area() {
     assert_eq!(rect(&list, "after").clip, None);
 }
 
-// P19: a restored focus outside the viewport (a covered tree revealed with a
+// A restored focus outside the viewport (a covered tree revealed with a
 // saved focus below it) scrolls into view by the minimum distance.
 #[test]
 fn a_restored_focus_outside_the_viewport_scrolls_into_view_by_the_minimum_distance() {

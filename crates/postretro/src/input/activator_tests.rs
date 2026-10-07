@@ -48,7 +48,7 @@ fn fired(states: &[ButtonState]) -> usize {
         .count()
 }
 
-// --- Tap and hold on one key (AV1) ---
+// --- Tap and hold on one key ---
 
 #[test]
 fn shared_key_release_within_tap_max_fires_tap_once_and_hold_never() {
@@ -153,7 +153,7 @@ fn a_press_buffered_before_a_clear_never_reads_pressed_after_it() {
     );
 }
 
-// --- Same-frame edges (AV2: P1, P2) ---
+// --- Press and release between two frames ---
 
 #[test]
 fn press_and_release_between_frames_fire_the_tap_once_and_the_hold_never() {
@@ -214,7 +214,7 @@ fn gamepad_button_event_pressed_and_released_between_polls_fires_once() {
     assert_eq!(sys.snapshot().button(Action::Jump), ButtonState::Released);
 }
 
-// --- Lone activators (AV4, AV5) ---
+// --- Lone activators ---
 
 #[test]
 fn lone_press_fires_on_the_press_frame() {
@@ -293,7 +293,7 @@ fn authored_tap_threshold_bounds_the_tap_and_an_unset_one_uses_the_default() {
     );
 }
 
-// --- Held states (AV6) ---
+// --- Held states ---
 
 #[test]
 fn hold_sprint_shows_a_held_state_every_frame_past_the_threshold() {
@@ -317,7 +317,7 @@ fn hold_sprint_shows_a_held_state_every_frame_past_the_threshold() {
     );
 }
 
-// --- hold_timing_scale (AV7, P23) ---
+// --- hold_timing_scale ---
 
 #[test]
 fn hold_timing_scale_two_doubles_every_threshold() {
@@ -357,7 +357,7 @@ fn a_key_already_down_keeps_the_threshold_it_started_with() {
     );
 }
 
-// --- Held across a capturing menu (AV9, P24) ---
+// --- Held across a capturing menu ---
 
 #[test]
 fn a_polled_button_held_across_a_menu_does_nothing_until_pressed_again() {
@@ -468,8 +468,7 @@ fn a_hold_on_a_stick_half_moves_only_once_its_min_passes() {
 
 #[test]
 fn a_stick_held_through_a_cancel_moves_nothing_until_pushed_again() {
-    // P24 for sticks: a held W stays inert after a capturing menu, so a held
-    // stick must too.
+    // A held W stays inert after a capturing menu, so a held stick must too.
     let mut sys = InputSystem::new(vec![Binding::new(left_stick_up(), Action::MoveForward)]);
     sys.set_gamepad_axis_at(gilrs::Axis::LeftStickY, 0.8, 0.0);
     assert!((sys.snapshot_at(0.01).axis_value(Action::MoveForward) - 0.8).abs() < 1e-6);
@@ -483,6 +482,87 @@ fn a_stick_held_through_a_cancel_moves_nothing_until_pushed_again() {
 }
 
 #[test]
+fn a_stick_or_trigger_released_during_a_level_load_presses_on_its_next_push() {
+    // Regression: the clear dropped pad levels, so a stick or trigger held at
+    // the clear and released before the next poll showed no up edge, its
+    // suppression never lifted, and the first real push was dropped.
+    let stick_up =
+        PhysicalInput::GamepadAxisHalf(gilrs::Axis::RightStickY, types::AxisHalf::Positive);
+    let trigger = PhysicalInput::GamepadButton(gilrs::Button::RightTrigger2);
+    let mut sys = InputSystem::new(vec![
+        Binding::new(stick_up, Action::Jump),
+        Binding::new(trigger, Action::Shoot),
+        Binding::new(left_stick_up(), Action::MoveForward),
+    ]);
+    sys.set_gamepad_axis_at(gilrs::Axis::RightStickY, 0.8, 0.0);
+    sys.set_gamepad_axis_at(gilrs::Axis::LeftStickY, 0.8, 0.0);
+    sys.set_physical_input_at(trigger, true, 0.0);
+    let _ = sys.snapshot_at(0.01);
+
+    // The level load clears input; everything is released before the next
+    // poll.
+    sys.clear_all_at(0.1);
+    sys.set_gamepad_axis_at(gilrs::Axis::RightStickY, 0.0, 0.5);
+    sys.set_gamepad_axis_at(gilrs::Axis::LeftStickY, 0.0, 0.5);
+    sys.set_physical_input_at(trigger, false, 0.5);
+    let _ = sys.snapshot_at(0.51);
+
+    sys.set_gamepad_axis_at(gilrs::Axis::RightStickY, 0.8, 0.6);
+    sys.set_gamepad_axis_at(gilrs::Axis::LeftStickY, 0.8, 0.6);
+    sys.set_physical_input_at(trigger, true, 0.6);
+    let pushed = sys.snapshot_at(0.61);
+    assert_eq!(pushed.button(Action::Jump), ButtonState::Pressed);
+    assert_eq!(pushed.button(Action::Shoot), ButtonState::Pressed);
+    assert!((pushed.axis_value(Action::MoveForward) - 0.8).abs() < 1e-6);
+}
+
+#[test]
+fn a_stick_resting_in_its_hysteresis_band_through_a_clear_waits_for_a_release() {
+    // Regression: the clear dropped the stick's down level, so a stick resting
+    // in the hysteresis band read up, never showed an up edge, and its next
+    // push was swallowed.
+    let stick_up =
+        PhysicalInput::GamepadAxisHalf(gilrs::Axis::RightStickY, types::AxisHalf::Positive);
+    let mut sys = InputSystem::new(vec![Binding::new(stick_up, Action::Jump)]);
+    sys.set_gamepad_axis_at(gilrs::Axis::RightStickY, 0.8, 0.0);
+    assert_eq!(
+        sys.snapshot_at(0.01).button(Action::Jump),
+        ButtonState::Pressed
+    );
+    sys.clear_all_at(0.1);
+    sys.set_gamepad_axis_at(gilrs::Axis::RightStickY, 0.45, 0.2);
+    assert_eq!(fired(&states(&mut sys, Action::Jump, &[0.21, 0.3])), 0);
+    sys.set_gamepad_axis_at(gilrs::Axis::RightStickY, 0.3, 0.4);
+    let _ = sys.snapshot_at(0.41);
+    sys.set_gamepad_axis_at(gilrs::Axis::RightStickY, 0.6, 0.5);
+    assert_eq!(
+        sys.snapshot_at(0.51).button(Action::Jump),
+        ButtonState::Pressed
+    );
+}
+
+#[test]
+fn a_stick_half_that_walks_and_holds_sprint_walks_from_the_push() {
+    // Regression: the hold sharing the input deferred the movement binding to
+    // the release, so the stick never walked while it was held.
+    let mut sys = InputSystem::new(vec![
+        Binding::new(left_stick_up(), Action::MoveForward),
+        Binding::new(left_stick_up(), Action::Sprint).with_activator(hold(0.2)),
+    ]);
+    sys.set_gamepad_axis_at(gilrs::Axis::LeftStickY, 0.8, 0.0);
+    let pushed = sys.snapshot_at(0.1);
+    assert!((pushed.axis_value(Action::MoveForward) - 0.8).abs() < 1e-6);
+    assert_eq!(pushed.button(Action::Sprint), ButtonState::Inactive);
+    let sprinting = sys.snapshot_at(0.25);
+    assert!((sprinting.axis_value(Action::MoveForward) - 0.8).abs() < 1e-6);
+    assert_eq!(sprinting.button(Action::Sprint), ButtonState::Pressed);
+    sys.set_gamepad_axis_at(gilrs::Axis::LeftStickY, 0.0, 0.3);
+    let released = sys.snapshot_at(0.31);
+    assert_eq!(released.axis_value(Action::MoveForward), 0.0);
+    assert_eq!(released.button(Action::Sprint), ButtonState::Released);
+}
+
+#[test]
 fn a_stick_half_on_movement_keeps_its_full_analog_range() {
     // Activator gating must not cut off a gentle push below the button press
     // point: a movement half is down whenever it is past the dead zone.
@@ -491,7 +571,7 @@ fn a_stick_half_on_movement_keeps_its_full_analog_range() {
     assert!((sys.snapshot_at(0.01).axis_value(Action::MoveForward) - 0.2).abs() < 1e-6);
 }
 
-// --- Phases ride the gameplay latch (AV3, P3; the riskiest premise) ---
+// --- Phases ride the gameplay latch ---
 
 #[test]
 fn a_tap_on_a_zero_tick_frame_reaches_the_next_tick_as_a_press() {

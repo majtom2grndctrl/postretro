@@ -9,7 +9,7 @@ use postretro_scripting_core::runtime::{ModInputBinding, ModInputBlock};
 
 use super::binding_table::{
     AuthorBinding, AuthorLayer, BindingOrigin, CommandPresentation, EffectiveTable, GUARDED,
-    GlyphDirs, PlayerLayer,
+    GlyphDirs, PlayerLayer, swapped_command,
 };
 use super::commands::Command;
 use super::input_names::{DeviceClass, input_name, parse_input};
@@ -21,12 +21,12 @@ fn class_label(class: DeviceClass) -> &'static str {
     class.manifest_key()
 }
 
-/// The shortest activator threshold an author may set, in seconds: below it a
-/// tap or hold resolves within a frame or two.
-const MIN_ACTIVATOR_THRESHOLD: f32 = 0.01;
+/// The shortest activator threshold an author may set, in seconds: a few
+/// frames at 60 Hz, so a tap stays possible to release in time.
+const MIN_ACTIVATOR_THRESHOLD: f64 = 0.05;
 /// The longest activator threshold an author may set, in seconds, before
 /// `hold_timing_scale` lengthens it further.
-const MAX_ACTIVATOR_THRESHOLD: f32 = 5.0;
+const MAX_ACTIVATOR_THRESHOLD: f64 = 5.0;
 
 fn parse_activator(raw: Option<&str>) -> Result<ActivatorKind, String> {
     match raw {
@@ -87,21 +87,21 @@ fn validate_binding(
             binding.input
         ));
     }
-    // Checked after the cast, so a value f32 cannot hold (1e-50 rounds to 0,
-    // 1e300 to infinity) is refused rather than slipping through.
-    let threshold = match binding.threshold.map(|seconds| seconds as f32) {
+    // Clamped while still f64, so a value f32 cannot hold (1e-50 would round
+    // to 0, 1e300 to infinity) clamps like any other out-of-range value.
+    let threshold = match binding.threshold {
         None => DEFAULT_ACTIVATOR_THRESHOLD,
         Some(seconds) if seconds.is_finite() && seconds > 0.0 => {
             let clamped = seconds.clamp(MIN_ACTIVATOR_THRESHOLD, MAX_ACTIVATOR_THRESHOLD);
             if clamped != seconds {
                 log::warn!(
-                    "[Input] input block: `{}` on {}: `threshold` {seconds}s is outside \
+                    "[Input] input block: `{}` on {}: `threshold` {seconds:?}s is outside \
                      {MIN_ACTIVATOR_THRESHOLD}s..={MAX_ACTIVATOR_THRESHOLD}s; using {clamped}s",
                     command.id(),
                     class_label(class)
                 );
             }
-            clamped
+            clamped as f32
         }
         Some(_) => return Err("`threshold` must be a positive number of seconds".to_string()),
     };
@@ -130,6 +130,9 @@ pub fn author_layer_from_block(block: Option<&ModInputBlock>) -> AuthorLayer {
             );
             continue;
         };
+        // A JS object or Luau table keeps one value per key, so an authored
+        // manifest never repeats a command; this guards a block built some
+        // other way.
         if layer.manifest_order.contains(&command) {
             log::warn!(
                 "[Input] input block: `{}` appears more than once; keeping the first",
@@ -242,26 +245,98 @@ fn diagnose_tap_past_hold(layer: &mut AuthorLayer, fell_back: &mut Vec<(Command,
     }
 }
 
-/// Author defaults must leave confirm, cancel, and menu bound on each class;
-/// a guarded command left unbound falls back to the engine default there.
+/// Author defaults must leave confirm, cancel, and menu bound on each class,
+/// with the player's confirm/cancel swap off and on. A guarded command its own
+/// entry leaves unbound falls back to the engine default there. An engine
+/// default an author binding takes — `use` on `start`, which menu needs in
+/// gameplay — stays with the guarded command, and that author binding is
+/// unbound on the input, as the later of two conflicting entries is. Author
+/// outranks engine in a collision, so without this a mod could leave a pad
+/// with no way to pause. The swap is a player option, so both states are
+/// checked: `nav_cancel` on `start` shares menu's button with the swap off but
+/// drives confirm with it on, and confirm and menu conflict.
 fn diagnose_guard(layer: &mut AuthorLayer, fell_back: &mut Vec<(Command, DeviceClass)>) {
-    let table = validation_table(layer);
+    // Every pass that continues removed an author entry or binding, so the
+    // loop ends. A fallback or a drop can break another guarded command, which
+    // the next pass sees.
+    loop {
+        let mut changed = false;
+        for swap in [false, true] {
+            changed |= diagnose_guard_once(layer, fell_back, swap);
+        }
+        if !changed {
+            break;
+        }
+    }
+}
+
+/// One guard pass over the validation table for one swap state. Returns
+/// whether it changed the layer.
+fn diagnose_guard_once(
+    layer: &mut AuthorLayer,
+    fell_back: &mut Vec<(Command, DeviceClass)>,
+    swap: bool,
+) -> bool {
+    // The table names commands after the swap; the layer stores them before.
+    let stored = |command: Command, class: DeviceClass| swapped_command(command, class, swap);
+    let swap_note = if swap {
+        " with the confirm/cancel swap on"
+    } else {
+        ""
+    };
+    let table = validation_table(layer, swap);
+    let mut changed = false;
     for (command, class) in table.guard_violations() {
         debug_assert!(GUARDED.contains(&command));
-        log::warn!(
-            "[Input] input block leaves `{}` unbound on {}; using the engine default there",
-            command.id(),
-            class_label(class)
-        );
-        layer.defaults.remove(&(command, class));
-        fell_back.push((command, class));
+        // Named after the entry the author wrote: with the swap on, cancel's
+        // entry is what leaves confirm unbound, and the reverse.
+        let entry = stored(command, class);
+        if layer.defaults.remove(&(entry, class)).is_some() {
+            log::warn!(
+                "[Input] input block leaves `{}` unbound on {}{swap_note}; using the engine \
+                 default there",
+                entry.id(),
+                class_label(class)
+            );
+            fell_back.push((entry, class));
+            changed = true;
+            continue;
+        }
+        for (lost, holder) in table.suppressed() {
+            let takes_guarded_default = lost.command == command
+                && lost.class == class
+                && lost.origin == BindingOrigin::Engine
+                && holder.origin == BindingOrigin::Author;
+            if !takes_guarded_default {
+                continue;
+            }
+            let authored = stored(holder.command, holder.class);
+            let Some(list) = layer.defaults.get_mut(&(authored, holder.class)) else {
+                continue;
+            };
+            let before = list.len();
+            list.retain(|binding| binding.input != holder.input);
+            if list.len() != before {
+                log::warn!(
+                    "[Input] input block: `{}` on `{}` would leave `{}` unbound on {}{swap_note}; \
+                     `{}` is unbound there",
+                    authored.id(),
+                    input_name(holder.input).unwrap_or("?"),
+                    command.id(),
+                    class_label(class),
+                    authored.id()
+                );
+                changed = true;
+            }
+        }
     }
+    changed
 }
 
 /// Report author entries a conflict unbound (the later one in manifest order
 /// loses) and diagnosed commands whose engine fallback collides.
 fn report_collisions(layer: &AuthorLayer, fell_back: &[(Command, DeviceClass)]) {
-    let table = validation_table(layer);
+    let table = validation_table(layer, false);
     for (loser, winner) in table.suppressed() {
         let reported = loser.origin == BindingOrigin::Author
             || fell_back.contains(&(loser.command, loser.class));
@@ -279,7 +354,8 @@ fn report_collisions(layer: &AuthorLayer, fell_back: &[(Command, DeviceClass)]) 
 }
 
 /// The table validation checks against: every data-driven command relevant,
-/// so a conflict is reported whatever the registry holds.
-fn validation_table(layer: &AuthorLayer) -> EffectiveTable {
-    EffectiveTable::build(layer, &PlayerLayer::default(), RelevanceFacts::EVERY, false)
+/// so a conflict is reported whatever the registry holds. Conflicts are
+/// reported with the swap off; the guard checks both states.
+fn validation_table(layer: &AuthorLayer, swap: bool) -> EffectiveTable {
+    EffectiveTable::build(layer, &PlayerLayer::default(), RelevanceFacts::EVERY, swap)
 }

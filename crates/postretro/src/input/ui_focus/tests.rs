@@ -1633,7 +1633,7 @@ fn passive_only_focus_group_yields_no_focus() {
     );
 }
 
-// --- E23 U3: engine-default repeat, one repeat per frame, slider repeat ---
+// --- Engine-default repeat, one repeat per frame, slider repeat ---
 
 fn long_list(repeat: Option<RepeatPolicy>, slider: Option<NodeInteraction>) -> FocusRectList {
     let rects = (0..10)
@@ -1861,7 +1861,7 @@ fn a_slider_step_clamps_at_its_bounds_without_overshoot() {
     assert!(close(slider_value(0.05, -2, 0.1, 0.0, 1.0), 0.0));
 }
 
-// --- E23 U3: nested focus groups ---
+// --- Nested focus groups ---
 
 /// A tabbed menu: a horizontal wrapping strip of tabs above a vertical,
 /// non-wrapping panel, both nested in a vertical root group.
@@ -2027,7 +2027,7 @@ fn a_root_linear_group_still_steps_on_either_axis() {
     assert_eq!(nav(&mut fe, &list, NavIntent::Right).as_deref(), Some("b"));
 }
 
-// --- E23 U3: restore on return ---
+// --- Restore on return ---
 
 fn restoring(restore: bool) -> FocusRectList {
     let mut list = linear_list(false, None);
@@ -2141,7 +2141,7 @@ fn an_export_owned_by_another_tree_is_withheld_from_the_focus_tick() {
     assert!(crate::session::focus_rects_for(Some(&list), "menu").is_some());
 }
 
-// --- E23 U3: tabs ---
+// --- Tabs ---
 
 /// Three tabs in tablist 0 with `selected` on one of them, plus a panel button.
 fn tabs(selected: Option<usize>, disabled: &[usize]) -> FocusRectList {

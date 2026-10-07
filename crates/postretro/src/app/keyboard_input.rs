@@ -69,10 +69,10 @@ impl App {
             // action system this frame. `InputFocus::Menu` is the
             // intended structural home for this capture.
             //
-            // Key-down edges resolve to a nav intent (by default
-            // arrows / enter / escape / tab); the kinded payload rides the queue. Held
-            // repeats and non-nav keys carry no intent (the seam still
-            // suppresses the gameplay forward). Escape's menu-vs-cancel
+            // Key-down edges resolve to a nav intent (by default arrows / enter /
+            // escape / tab); the kinded payload rides the queue. Held repeats and
+            // non-nav keys carry no intent (the seam still suppresses the
+            // gameplay forward). Escape's menu-vs-cancel
             // split needs the "is a capturing tree on the stack?" flag,
             // sourced from the modal stack's top capture mode.
             // See: context/lib/input.md
@@ -164,7 +164,8 @@ impl App {
                     let intent = session.bindings.ui_nav().intent_for(physical, context);
                     if intent.is_some() {
                         // A nav key (by default arrows/enter/escape/tab) is a
-                        // `focus`-mode signal — it switches the interaction mode off pointer.
+                        // `focus`-mode signal — it switches the interaction mode
+                        // off pointer.
                         record_nav_signal = true;
                     }
                     // Escape-from-gameplay maps to `nav.menu` (opens the pause

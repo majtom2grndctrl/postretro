@@ -2413,7 +2413,7 @@ command carries how far the stick is pushed.
 
 **Activators** say when a binding fires: `press` (the default), `release`,
 `tap` (released within `threshold` seconds), or `hold` (still down after
-`threshold`). `threshold` defaults to 0.2 s, is clamped to 0.01–5 s, and
+`threshold`). `threshold` defaults to 0.2 s, is clamped to 0.05–5 s, and
 scales with the player's HOLD TIMING accessibility setting. One key may carry a tap and a hold for two
 commands, as Shift does above; the engine resolves which fired. `shoot`,
 `alt_fire` and analog commands accept only `press`; `sprint`, `crouch`, and
@@ -2427,14 +2427,21 @@ missing from the controls panel, never part of a conflict, and draws no glyph.
 `show` overrides that.
 
 **Validation.** Each command and device class is checked on its own. A
-command listed twice keeps its first entry. A binding that is not an object
+command ID written twice follows the language: the last one wins, as in any
+object or table. A binding that is not an object
 with an `input` string, an unknown command ID, an unknown input name, an
 activator the command refuses,
 two of the block's bindings that conflict, or defaults that would leave
 `nav_confirm`, `nav_cancel` or `nav_menu` unbound are each reported at load.
 In every case but a conflict, that command's class falls back to the engine
-default. For a conflict, the later entry in block order is unbound on that
-input and the earlier one keeps it. Conflicts are checked per context: `south` on both `jump` and `nav_confirm` is fine, since
+default. For a conflict, the later entry in block order (in Luau, command-ID
+order) is unbound on that input and the earlier one keeps it. A binding that
+takes the default input `nav_confirm`, `nav_cancel` or `nav_menu` needs is
+unbound on that input too: `use` on `start` would leave the pause menu with no
+gamepad button, so `use` loses `start` and the menu keeps it. This holds with
+the player's confirm/cancel swap off and on: with it on, `nav_cancel`'s gamepad
+bindings drive confirm, which conflicts with `nav_menu`, so `nav_cancel` on
+`start` is unbound there too. Conflicts are checked per context: `south` on both `jump` and `nav_confirm` is fine, since
 one acts in play and the other in menus. `nav_menu` opens the pause menu from
 play, so it conflicts with gameplay commands too; on one input with
 `nav_cancel` it does not.
@@ -2948,7 +2955,8 @@ Button({ id: "controls", label: "CONTROLS", onPress: OPEN_CONTROLS_ACTION });
 The panel lists every relevant command by the `input` block's categories,
 order and labels, with at least two keyboard-and-mouse and two gamepad slots per
 command, each on its own row and showing its activator. Players cannot change
-activators. Each command has RESET, and RESET ALL returns every command to the
+activators: an input that replaces one of the mod's defaults takes that
+default's activator, and any other input fires on press. Each command has RESET, and RESET ALL returns every command to the
 mod's defaults.
 
 Choosing a slot opens a prompt that captures the next key, button, stick

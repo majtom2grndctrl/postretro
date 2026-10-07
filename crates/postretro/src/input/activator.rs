@@ -27,7 +27,8 @@ struct HeldInput {
 /// Within one input, at most one short binding (`press`, `release`, `tap`) and
 /// one `hold` share the key (the Steam rule; the conflict checker enforces it).
 /// On a shared input the hold fires once its min elapses while the input is
-/// down, and the short binding fires only on a release before that min.
+/// down, and the short binding fires only on a release before that min. A
+/// movement binding is a level read, not an edge, so it never waits on a hold.
 #[derive(Debug, Default)]
 pub(super) struct ActivatorResolver {
     held: HashMap<PhysicalInput, HeldInput>,
@@ -129,11 +130,12 @@ impl ActivatorResolver {
                 stale: false,
             },
         );
-        if shares_hold(bindings, input) {
-            return;
-        }
+        let shared = shares_hold(bindings, input);
         for (index, binding) in bindings.iter().enumerate() {
-            if binding.input == input && binding.activator.kind == ActivatorKind::Press {
+            if binding.input == input
+                && binding.activator.kind == ActivatorKind::Press
+                && (!shared || reads_level(binding))
+            {
                 self.set_down(bindings, index);
             }
         }
@@ -168,7 +170,9 @@ impl ActivatorResolver {
             let threshold = f64::from(binding.activator.threshold * held.scale);
             match binding.activator.kind {
                 ActivatorKind::Hold => self.set_up(bindings, index),
-                ActivatorKind::Press if !shared => self.set_up(bindings, index),
+                ActivatorKind::Press if !shared || reads_level(binding) => {
+                    self.set_up(bindings, index);
+                }
                 ActivatorKind::Press | ActivatorKind::Release if !held.hold_fired => {
                     self.pulse(bindings, index);
                 }
@@ -216,19 +220,30 @@ impl ActivatorResolver {
         self.went_down.clear();
     }
 
-    /// Forget every gamepad input, as when the pad disconnects: bindings on
-    /// pad inputs lift without a pulse, pending pad holds never fire, and pad
-    /// suppression drops so a reconnected pad's next press is fresh. Press
-    /// edges already resolved this frame stand.
-    pub(super) fn cancel_gamepad(&mut self, bindings: &[Binding]) {
+    /// Park every gamepad input, as when the active pad disconnects or
+    /// changes: bindings on pad inputs lift without a pulse and pending pad
+    /// holds never fire. Each input in `still_down` stays inert until it is
+    /// seen up, so a button held across the change fires nothing when polls
+    /// resume; every other pad input's next press is fresh. Press edges
+    /// already resolved this frame stand.
+    pub(super) fn park_gamepad(&mut self, bindings: &[Binding], still_down: &[PhysicalInput]) {
         let is_pad = |input: &PhysicalInput| DeviceClass::of(*input) == DeviceClass::Gamepad;
         self.held.retain(|input, _| !is_pad(input));
         self.suppressed.retain(|input| !is_pad(input));
+        self.suppressed
+            .extend(still_down.iter().copied().filter(|input| is_pad(input)));
         for (index, binding) in bindings.iter().enumerate() {
             if is_pad(&binding.input) {
                 self.set_up(bindings, index);
             }
         }
+    }
+
+    /// Whether any binding currently holds the command down.
+    pub(super) fn command_is_down(&self, action: Action) -> bool {
+        self.command_down
+            .get(&action)
+            .is_some_and(|count| *count > 0)
     }
 
     /// Carry resolution across a binding-table rebuild. An input whose
@@ -327,15 +342,25 @@ impl ActivatorResolver {
 }
 
 /// Whether this input carries a hold beside a short binding, so the short
-/// binding waits for the release.
+/// binding waits for the release. A movement binding never waits, so it does
+/// not count as the short partner.
 fn shares_hold(bindings: &[Binding], input: PhysicalInput) -> bool {
     let mut has_hold = false;
     let mut has_short = false;
     for binding in bindings.iter().filter(|b| b.input == input) {
         match binding.activator.kind {
             ActivatorKind::Hold => has_hold = true,
-            ActivatorKind::Press | ActivatorKind::Release | ActivatorKind::Tap => has_short = true,
+            ActivatorKind::Press | ActivatorKind::Release | ActivatorKind::Tap => {
+                has_short |= !reads_level(binding);
+            }
         }
     }
     has_hold && has_short
+}
+
+/// A movement binding reads its input as a level (a stick half carries its
+/// magnitude), so it goes down with the input even beside a hold: sprint held
+/// on the stick that walks must not stop the walking.
+fn reads_level(binding: &Binding) -> bool {
+    binding.action.is_axis()
 }

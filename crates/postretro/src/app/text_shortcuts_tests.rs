@@ -1,5 +1,5 @@
 // Text shortcut tests: activation through the keyboard tree's keys, no effect
-// without text entry or after a same-frame commit (P26), and held repeat.
+// without text entry or after a same-frame commit, and held repeat.
 // See: context/lib/input.md §7
 
 use postretro_ui::descriptor::{AnchoredTree, CaptureMode};
@@ -130,7 +130,7 @@ fn shortcuts_do_nothing_without_a_text_entry_tree_on_top() {
 
 #[test]
 fn a_space_on_the_frame_text_entry_commits_adds_nothing() {
-    // P26: the commit resolves first and pops the tree.
+    // The commit resolves first and pops the tree.
     let mut app = app_with_keyboard(true);
     app.ui_focused_id = None;
     let intents = [

@@ -24,7 +24,7 @@ impl App {
         if let Some(session) = self.session.as_mut() {
             session.ui_dispatch.discard_all();
             if let Some(gp) = session.gamepad_system.as_mut() {
-                gp.discard_pending_events();
+                gp.discard_pending_events(&mut session.input_system);
             }
         }
     }

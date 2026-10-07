@@ -3,6 +3,8 @@
 // dialogs, reset, and the saved player rows.
 // See: context/lib/input.md §2 · context/lib/player_options.md §6 · context/lib/ui.md §4.1
 
+use std::collections::HashMap;
+
 use postretro_ui::actions::ControlsAction;
 use postretro_ui::demo::{CONTROLS_CAPTURE_NAME, CONTROLS_DIALOG_NAME, CONTROLS_PANEL_NAME};
 use postretro_ui::descriptor::AnchoredTree;
@@ -450,12 +452,23 @@ pub(crate) fn build_refusal_dialog(unbound: &str, class: DeviceClass) -> Anchore
     )
 }
 
+/// The saved text of each player row, keyed by command and class, slot for
+/// slot with the player layer: `None` marks an element that is not a string.
+pub(crate) type StoredRowText = HashMap<(Command, DeviceClass), Vec<Option<String>>>;
+
 /// The saved rows a player-layer change writes: each changed row's input
 /// names, or `None` to remove a row so the command follows the author again.
 /// Ordered by command and class so saves are deterministic.
+///
+/// An unreadable slot (`None` in the layer) writes back the text it was
+/// loaded from, found in `stored` as the matching unreadable slot of the old
+/// row, so a newer build's input name survives and the reloaded row matches
+/// this session's. An element that was not a string has no text and writes
+/// `""`, which reloads as the same unreadable slot.
 pub(crate) fn changed_rows(
     old: &PlayerLayer,
     new: &PlayerLayer,
+    stored: &StoredRowText,
 ) -> Vec<(DeviceClass, Command, Option<Vec<String>>)> {
     let mut keys: Vec<(Command, DeviceClass)> =
         old.rows.keys().chain(new.rows.keys()).copied().collect();
@@ -465,14 +478,38 @@ pub(crate) fn changed_rows(
         .filter(|key| old.rows.get(key) != new.rows.get(key))
         .map(|key @ (command, class)| {
             let names = new.rows.get(&key).map(|row| {
+                let mut unreadable = unreadable_text(
+                    old.rows.get(&key).map(Vec::as_slice),
+                    stored.get(&key).map(Vec::as_slice),
+                );
                 row.iter()
-                    .flatten()
-                    .filter_map(|input| input_name(*input).map(str::to_string))
+                    .filter_map(|slot| match slot {
+                        Some(input) => input_name(*input).map(str::to_string),
+                        None => Some(unreadable.next().flatten().unwrap_or_default()),
+                    })
                     .collect()
             });
             (class, command, names)
         })
         .collect()
+}
+
+/// The stored text of the old row's unreadable slots, in order. A replace only
+/// removes inputs from a row, so the new row's unreadable slots are these in
+/// the same order.
+fn unreadable_text<'a>(
+    old: Option<&'a [Option<PhysicalInput>]>,
+    stored: Option<&'a [Option<String>]>,
+) -> impl Iterator<Item = Option<String>> + 'a {
+    let pairs = match (old, stored) {
+        (Some(old), Some(stored)) if old.len() == stored.len() => Some(old.iter().zip(stored)),
+        _ => None,
+    };
+    pairs
+        .into_iter()
+        .flatten()
+        .filter(|(slot, _)| slot.is_none())
+        .map(|(_, text)| text.clone())
 }
 
 impl crate::session::Session {
@@ -519,15 +556,17 @@ impl crate::session::Session {
     }
 
     /// Close an open gamepad prompt when the pad goes away mid-capture: its
-    /// slot can take nothing until a pad returns. `pad_connected` is whether
-    /// any pad is connected this frame.
-    pub(crate) fn track_capture_pad(&mut self, pad_connected: bool) {
+    /// slot can take nothing until a pad returns. `pad_connected` reports
+    /// whether any pad is connected this frame; it runs only while a gamepad
+    /// prompt is open, so no other frame pays for the query.
+    pub(crate) fn track_capture_pad(&mut self, pad_connected: impl FnOnce(&Self) -> bool) {
         let Some(target) = self.controls.capture.as_ref().map(BindingCapture::target) else {
             return;
         };
         if target.class != DeviceClass::Gamepad {
             return;
         }
+        let pad_connected = pad_connected(self);
         if self.controls.pad_was_connected && !pad_connected {
             self.abandon_capture();
         }
@@ -722,8 +761,7 @@ impl App {
             session.controls.focus_anchor = Some(target.command);
             session.abandon_capture();
         }
-        let pad_connected = session.pad_connected();
-        session.track_capture_pad(pad_connected);
+        session.track_capture_pad(crate::session::Session::pad_connected);
         self.resolve_binding_capture();
         self.rebuild_controls_panel();
     }
@@ -836,7 +874,18 @@ impl App {
         };
         if let Some((mod_id, _)) = session.scripting.script_runtime.committed_mod_identity() {
             let mod_id = mod_id.to_string();
-            for (class, command, names) in changed_rows(session.bindings.player(), &player) {
+            let stored: StoredRowText = session
+                .player_options
+                .game_binding_rows(&mod_id)
+                .into_iter()
+                .filter_map(|row| {
+                    let command = Command::from_id(&row.command_id)?;
+                    let class = class_from_key(&row.class_key)?;
+                    Some(((command, class), row.inputs))
+                })
+                .collect();
+            for (class, command, names) in changed_rows(session.bindings.player(), &player, &stored)
+            {
                 session.player_options.set_game_binding_row(
                     &mod_id,
                     class.settings_key(),

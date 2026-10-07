@@ -83,7 +83,7 @@ fn press_and_read(table: &EffectiveTable, code: KeyCode, action: Action) -> Butt
     sys.snapshot_at(0.06).button(action)
 }
 
-// --- Engine defaults (AL1, AL2) ---
+// --- Engine defaults ---
 
 #[test]
 fn engine_defaults_raise_no_conflict_and_keep_the_guard() {
@@ -139,7 +139,7 @@ fn fly_cam_stays_bound_hidden_and_out_of_conflicts() {
     assert!(sys.snapshot().axis_value(Action::MoveUp) > 0.0);
 }
 
-// --- Author layer (AL3, AL8) ---
+// --- Author layer ---
 
 #[test]
 fn author_shift_dash_with_empty_sprint_keyboard_drives_dash_only() {
@@ -196,7 +196,7 @@ fn an_author_binding_displaces_a_colliding_engine_default() {
     );
 }
 
-// --- Relevance (R1, R4) ---
+// --- Relevance ---
 
 #[test]
 fn an_irrelevant_dash_is_unbound_and_never_conflicts_with_an_author_f() {
@@ -223,7 +223,7 @@ fn force_show_binds_an_underived_command() {
     assert_eq!(table.inputs(Command::Dash, KBM), vec![key(KeyCode::KeyF)]);
 }
 
-// --- Player layer (PD1, PD5, PD7, PD8, PD10) ---
+// --- Player layer ---
 
 #[test]
 fn a_command_never_rebound_follows_the_author_default() {
@@ -329,7 +329,7 @@ fn a_later_author_hold_on_a_player_press_is_displaced_so_the_press_stays_immedia
     );
 }
 
-// --- Conflicts (AV10) ---
+// --- Conflicts ---
 
 fn entry(command: Command, input: PhysicalInput, kind: ActivatorKind) -> EffectiveBinding {
     EffectiveBinding {
@@ -380,7 +380,7 @@ fn a_guard_violation_is_reported_per_device_class() {
     assert_eq!(table.guard_violations(), vec![(Command::NavCancel, PAD)]);
 }
 
-// --- Swap (GF4) and stick swap (AL10) ---
+// --- Confirm/cancel swap and stick swap ---
 
 #[test]
 fn the_confirm_cancel_swap_applies_after_player_overrides_on_gamepad_only() {
@@ -456,7 +456,7 @@ fn binding_look_and_move_to_the_other_sticks_swaps_them() {
     );
 }
 
-// --- Rebuilds while held (AV8, P4) ---
+// --- Rebuilds while a key is held ---
 
 #[test]
 fn a_tuning_rebuild_that_adds_a_shift_tap_keeps_a_held_sprint_and_fires_no_dash() {
@@ -801,4 +801,70 @@ fn a_wheel_notch_in_a_player_row_always_presses() {
         .find(|e| e.command == Command::Sprint && e.input == PhysicalInput::MouseWheelDown)
         .unwrap();
     assert_eq!(wheel.activator, Activator::PRESS);
+}
+
+// Regression: a swap within sprint's row moved its hold onto the other key.
+#[test]
+fn a_non_default_input_moved_into_a_defaults_slot_by_a_swap_takes_press() {
+    let layer = author(&[(
+        Command::Sprint,
+        KBM,
+        vec![with(key(KeyCode::ShiftLeft), ActivatorKind::Hold, 0.3)],
+    )]);
+    let rows = player(&[(
+        Command::Sprint,
+        KBM,
+        vec![Some(key(KeyCode::KeyN)), Some(key(KeyCode::ShiftLeft))],
+    )]);
+    let table = build(&layer, &rows, all_facts());
+    let sprint: Vec<_> = table
+        .entries()
+        .iter()
+        .filter(|e| e.command == Command::Sprint && e.class == KBM)
+        .map(|e| (e.input, e.activator))
+        .collect();
+    assert_eq!(
+        sprint,
+        [
+            (key(KeyCode::KeyN), Activator::PRESS),
+            (
+                key(KeyCode::ShiftLeft),
+                Activator::with_threshold(ActivatorKind::Hold, 0.3)
+            ),
+        ],
+        "the hold stays on Shift and is never copied onto N"
+    );
+}
+
+#[test]
+fn an_input_that_replaced_a_default_takes_its_activator_wherever_another_default_sits() {
+    // `use` defaults to E (press) and F (hold). N replaced F; E is still in
+    // the row, so N takes F's hold and E keeps its press.
+    let layer = author(&[(
+        Command::Use,
+        KBM,
+        vec![
+            press(key(KeyCode::KeyE)),
+            with(key(KeyCode::KeyF), ActivatorKind::Hold, 0.3),
+        ],
+    )]);
+    let rows = player(&[(
+        Command::Use,
+        KBM,
+        vec![Some(key(KeyCode::KeyE)), Some(key(KeyCode::KeyN))],
+    )]);
+    let table = build(&layer, &rows, all_facts());
+    let use_kbm: Vec<_> = table
+        .entries()
+        .iter()
+        .filter(|e| e.command == Command::Use && e.class == KBM)
+        .map(|e| (e.input, e.activator.kind))
+        .collect();
+    assert_eq!(
+        use_kbm,
+        [
+            (key(KeyCode::KeyE), ActivatorKind::Press),
+            (key(KeyCode::KeyN), ActivatorKind::Hold),
+        ]
+    );
 }

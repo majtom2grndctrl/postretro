@@ -664,6 +664,8 @@ struct GamepadPollVotes {
     nav_seen: bool,
     /// `nav.menu` (gamepad Start) was pressed.
     menu_toggle: bool,
+    /// A pad disconnect or switch lifted Shoot or AltFire to neutral.
+    weapon_lifted: bool,
 }
 
 /// Poll the gamepad once in the Input stage, before the `UiDispatch`
@@ -692,6 +694,10 @@ fn poll_gamepad(
     if !gp_nav.presses.is_empty() {
         session.device_family.note_pad(gp_nav.vendor_id);
     }
+    votes.weapon_lifted = gp_nav
+        .lifted_commands
+        .iter()
+        .any(|command| matches!(command, input::Action::Shoot | input::Action::AltFire));
     if capture_prompt {
         // The capture prompt takes the pad's presses; a captured press neither
         // navigates nor opens the menu.
@@ -2151,22 +2157,16 @@ impl ApplicationHandler for App {
                     }
                     return;
                 };
-                // The capture prompt takes a wheel notch as `wheel_up` or
-                // `wheel_down`; it scrolls nothing.
+                // The capture prompt takes a whole wheel notch as `wheel_up`
+                // or `wheel_down` and scrolls nothing. Partial travel, such as
+                // trackpad momentum, neither binds the wheel nor cancels.
                 if session.capture_prompt_is_active() {
-                    let y = match delta {
-                        winit::event::MouseScrollDelta::LineDelta(_, y) => y,
-                        winit::event::MouseScrollDelta::PixelDelta(p) => p.y as f32,
-                    };
-                    if y != 0.0 {
-                        session.offer_capture_press(if y > 0.0 {
-                            input::PhysicalInput::MouseWheelUp
-                        } else {
-                            input::PhysicalInput::MouseWheelDown
-                        });
+                    if let Some(notch) = session.input_system.capture_wheel_notch(delta) {
+                        session.offer_capture_press(notch);
                     }
                     return;
                 }
+                session.input_system.reset_capture_wheel();
                 let forwards_to_gameplay = session
                     .ui_dispatch
                     .dispatch_event(None)
@@ -2257,7 +2257,7 @@ impl ApplicationHandler for App {
                 let cpu_stages = self.cpu_timer.stages();
                 let stage_scope = cpu_stages.scope(cpu_timing::FrameStage::Housekeeping);
                 // OS preference replies land ahead of the Input stage, so a
-                // player write later this frame wins over them (UO1).
+                // player write later this frame wins over them.
                 self.poll_os_preferences();
                 self.poll_window_mode_readback();
 
@@ -2297,8 +2297,8 @@ impl ApplicationHandler for App {
                 // after the boot/install boundary but before any same-frame UI
                 // dispatch or gameplay ticks. A `levelLoad` wait enrolled while a
                 // ready world installs above therefore advances on this redraw's
-                // first tick (O1/O2/O31). A UI wait enrolled below stamps the new
-                // counter and remains protected from this redraw's ticks (O51).
+                // first tick. A UI wait enrolled below stamps the new counter and
+                // remains protected from this redraw's ticks.
                 // Distinct from `frame_timing.begin_frame`.
                 if let Some(session) = self.session.as_ref() {
                     session.scripting.scheduler.begin_frame();
@@ -2372,6 +2372,15 @@ impl ApplicationHandler for App {
                 if gamepad_votes.menu_toggle {
                     self.pending_menu_toggle = true;
                 }
+                // A pad lost or switched mid-charge cancels the activation, as
+                // focus loss does: neutral input is never a charge release.
+                if gamepad_votes.weapon_lifted
+                    && let Some(session) = self.session.as_mut()
+                {
+                    self.client_weapon
+                        .suspend(&session.scripting.script_ctx.registry.borrow());
+                    session.gameplay_input_latch.activation.suspend();
+                }
 
                 // Resolve this frame's input-mode signal into the engine-owned
                 // `input.mode` slot (app composition — the input subsystem's
@@ -2388,7 +2397,7 @@ impl ApplicationHandler for App {
                         .input_mode_tracker
                         .update(mode_signal, frame_dt);
                     // Mouse motion moves glyphs to keyboard-and-mouse only once
-                    // it passes the pointer-mode debounce (P22).
+                    // it passes the pointer-mode debounce.
                     if resolved_input_mode == input::InputMode::Pointer
                         && session.ui_input_mode != input::InputMode::Pointer
                     {
@@ -2430,7 +2439,7 @@ impl ApplicationHandler for App {
                 // path is skipped this frame.
                 let text_entry_consumed_nav = self.resolve_text_entry_intents(&ui_intents);
                 // Shortcuts resolve after a commit or cancel, so one landing on
-                // the frame text entry closes does nothing (P26).
+                // the frame text entry closes does nothing.
                 self.apply_text_shortcuts(&ui_intents, frame_dt);
 
                 // Focus engine (game-logic phase): split the drained intents into
@@ -3169,8 +3178,8 @@ impl ApplicationHandler for App {
                         // frame-end drain, after every tick's accumulator pass. An
                         // instance enrolled this frame is skipped via its stamp.
                         // This tick's paired-trigger Exit fires cancel matching
-                        // interruptible instances before the countdown advances
-                        // (O4), so an Exit on the exact landing tick wins.
+                        // interruptible instances before the countdown advances,
+                        // so an Exit on the exact landing tick wins.
                         scripting
                             .scheduler
                             .evaluate(&tick_events.trigger_exit_fires);
@@ -3546,14 +3555,14 @@ impl ApplicationHandler for App {
                             continue;
                         };
                         // Scope the origin guard to THIS residual iteration only,
-                        // released before the deferred batch below (O54): a `wait`
+                        // released before the deferred batch below: a `wait`
                         // reached synchronously here keys its instance to this
                         // `(trigger, player)`, while a batch-seeded `fire` stays
-                        // sourceless. The paired-enter standing check (O52/O60)
-                        // reads the trigger system from the session the drain
-                        // already holds — an interruptible instance parks only
-                        // while its origin's enter is live, so a player who left
-                        // within the frame does not park an uncancellable beat.
+                        // sourceless. The paired-enter standing check reads the
+                        // trigger system from the session the drain already
+                        // holds — an interruptible instance parks only while its
+                        // origin's enter is live, so a player who left within
+                        // the frame does not park an uncancellable beat.
                         let paired_enter_standing = session
                             .trigger_system
                             .paired_enters()
@@ -3591,18 +3600,18 @@ impl ApplicationHandler for App {
                     // dispatch and OUTSIDE any origin guard: a resumed tail runs
                     // where a trigger residual runs, but each landing gets its own
                     // deferred-dispatch call so a `fire`-seeded child's depth is
-                    // attributable per instance (O27, O65). The scheduler owns its
-                    // tails as `Vec<SequenceStep>` and never mints a
-                    // `TriggerResidualHandle`, so this never resolves through
-                    // `self.trigger_bindings` (O33). `take_landings` (inside
-                    // `drain_landings`) `mem::take`s the queue, so nothing borrows
-                    // it across the block — no need to move it onto `App`.
+                    // attributable per instance. The scheduler owns its tails as
+                    // `Vec<SequenceStep>` and never mints a `TriggerResidualHandle`,
+                    // so this never resolves through `self.trigger_bindings`.
+                    // `take_landings` (inside `drain_landings`) `mem::take`s the
+                    // queue, so nothing borrows it across the block — no need to
+                    // move it onto `App`.
                     //
                     // Before draining, drop any interruptible instance whose keyed
                     // trigger left the level mid-wait: `paired_enters` retains only
                     // live triggers, so a surviving parked interruptible instance
                     // absent from it has no Exit to ever cancel on and must not land
-                    // uncancelled (O63).
+                    // uncancelled.
                     session
                         .scripting
                         .scheduler
@@ -6389,7 +6398,7 @@ impl App {
                 }
             }
         }
-        // Slider steps land after this frame's queued writes (P17).
+        // Slider steps land after this frame's queued writes.
         self.apply_pending_slider_steps(&script_ctx);
     }
 
@@ -12249,9 +12258,9 @@ mod tests {
     #[cfg(debug_assertions)]
     #[test]
     fn dev_exit_and_quit_confirmations_land_a_repeated_confirm_on_cancel() {
-        // P27: confirm on EXIT opens the confirmation; a second confirm on the
-        // next frame lands on its safe choice and closes it. P12: a
-        // confirmation closed and reopened on one frame lands there too.
+        // Confirm on EXIT opens the confirmation; a second confirm on the next
+        // frame lands on its safe choice and closes it. A confirmation closed
+        // and reopened on one frame lands there too.
         use crate::input::{InputMode, NavIntent};
         use postretro_ui::tree::CellValues;
 
@@ -12360,8 +12369,8 @@ mod tests {
                 "{name}: the confirmation closed"
             );
 
-            // P12: focus the destructive choice, then close and reopen on one
-            // frame; the fresh push lands on the safe choice.
+            // Focus the destructive choice, then close and reopen on one frame;
+            // the fresh push lands on the safe choice.
             let stack = &mut app.session.as_mut().unwrap().modal_stack;
             stack.push(name, dialog.clone());
             tick(&mut app, &[]);
@@ -12841,7 +12850,7 @@ mod tests {
         assert_eq!(
             (strip_focus.kind(), strip_focus.wrap()),
             (postretro_ui::descriptor::FocusKind::Linear, true),
-            "the strip steps across its tabs and wraps; Down leaves for the panel (P21)"
+            "the strip steps across its tabs and wraps; Down leaves for the panel"
         );
         let tab_ids: Vec<&str> = tab_strip
             .children

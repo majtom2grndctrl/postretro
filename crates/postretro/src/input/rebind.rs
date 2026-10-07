@@ -17,14 +17,17 @@ use super::types::PhysicalInput;
 pub enum RebindProposal {
     /// No conflict: apply `player` as the new player layer.
     Clean { player: PlayerLayer },
-    /// The input already drives other commands live in the same context. The
+    /// The input already drives other commands live in the same context, or
+    /// a saved row of a command the game does not use now holds it. The
     /// player chooses: `replace` takes the input from them, or cancel.
     Conflict {
         with: Vec<Command>,
         replace: PlayerLayer,
     },
     /// Applying it, or replacing, would leave a guarded command (confirm,
-    /// cancel, menu) unbound on `class`, so the panel refuses it.
+    /// cancel, menu) unbound on `class`, or the new binding would only lose
+    /// its input back to that command's guarded default, so the panel
+    /// refuses it.
     Refused {
         unbound: Command,
         class: DeviceClass,
@@ -60,9 +63,10 @@ fn row_with(
 /// the new binding are asked about, as is a saved row of a command the game
 /// does not use now, which would collide once it does; the replace removes
 /// the input from them. Either result that newly leaves a guarded command
-/// unbound is refused. With the swap on, a gamepad capture for confirm or
-/// cancel is stored on the counterpart command, so the captured button drives
-/// the command the row shows.
+/// unbound is refused, as is one whose replace would empty a guarded command's
+/// row: a guarded row is never written empty. With the swap on, a gamepad
+/// capture for confirm or cancel is stored on the counterpart command, so the
+/// captured button drives the command the row shows.
 #[allow(clippy::too_many_arguments)]
 pub fn propose_rebind(
     table: &EffectiveTable,
@@ -77,11 +81,11 @@ pub fn propose_rebind(
 ) -> RebindProposal {
     let shown = table.inputs(command, class);
     if shown.get(slot) == Some(&input) {
-        return RebindProposal::Unchanged;
+        return keep_shown(table, author, player, facts, swap, command, class, &shown);
     }
     let row = row_with(&shown, slot, input);
     if row.iter().copied().eq(shown.iter().copied().map(Some)) {
-        return RebindProposal::Unchanged;
+        return keep_shown(table, author, player, facts, swap, command, class, &shown);
     }
     let mut proposed = player.clone();
     proposed
@@ -101,7 +105,9 @@ pub fn propose_rebind(
         .map(|new_binding| holders_of(table, author, player, swap, &new_binding))
         .unwrap_or_default();
     if holders.is_empty() {
-        return match new_guard_break(&candidate, table) {
+        let refusal = new_guard_break(&candidate, table)
+            .or_else(|| lands_behind_guard(&candidate, command, class, input));
+        return match refusal {
             Some((unbound, class)) => RebindProposal::Refused { unbound, class },
             None => RebindProposal::Clean { player: proposed },
         };
@@ -130,16 +136,79 @@ pub fn propose_rebind(
                 })
                 .unwrap_or_default()
         };
+        // Taking a guarded command's last input would write its row empty.
+        // A break the current table already masks (its default given back
+        // over the player's rows) would pass the guard check below, so this
+        // refuses before the row exists.
+        if remaining.is_empty() && GUARDED.contains(holder) {
+            return RebindProposal::Refused {
+                unbound: *holder,
+                class,
+            };
+        }
         replace.rows.insert(key, remaining);
     }
     let replaced = EffectiveTable::build(author, &replace, facts, swap);
-    if let Some((unbound, class)) = new_guard_break(&replaced, table) {
+    let refusal = new_guard_break(&replaced, table)
+        .or_else(|| lands_behind_guard(&replaced, command, class, input));
+    if let Some((unbound, class)) = refusal {
         return RebindProposal::Refused { unbound, class };
     }
     RebindProposal::Conflict {
         with: holders,
         replace,
     }
+}
+
+/// Pressing an input the row already shows keeps the row. When the row shows a
+/// guarded command's default given back over the command's own broken saved
+/// row (a hand edit), keeping writes the shown row, so the next save replaces
+/// the broken row instead of it being restored, with a warning, every load.
+#[allow(clippy::too_many_arguments)]
+fn keep_shown(
+    table: &EffectiveTable,
+    author: &AuthorLayer,
+    player: &PlayerLayer,
+    facts: RelevanceFacts,
+    swap: bool,
+    command: Command,
+    class: DeviceClass,
+    shown: &[PhysicalInput],
+) -> RebindProposal {
+    let key = (swapped_command(command, class, swap), class);
+    if !table.guard_restored().contains(&(command, class)) || !player.rows.contains_key(&key) {
+        return RebindProposal::Unchanged;
+    }
+    let mut kept = player.clone();
+    kept.rows
+        .insert(key, shown.iter().copied().map(Some).collect());
+    if kept == *player {
+        return RebindProposal::Unchanged;
+    }
+    check_player_layer(table, author, kept, facts, swap)
+}
+
+/// The guarded command whose given-back default drops the new binding in
+/// `candidate`: the input would bind only to be taken back. This catches a
+/// restore the current table already has, which `new_guard_break` ignores.
+fn lands_behind_guard(
+    candidate: &EffectiveTable,
+    command: Command,
+    class: DeviceClass,
+    input: PhysicalInput,
+) -> Option<(Command, DeviceClass)> {
+    candidate
+        .suppressed()
+        .iter()
+        .find(|(lost, winner)| {
+            lost.command == command
+                && lost.class == class
+                && lost.input == input
+                && candidate
+                    .guard_restored()
+                    .contains(&(winner.command, winner.class))
+        })
+        .map(|(_, winner)| (winner.command, winner.class))
 }
 
 /// The commands that hold `new_binding`'s input and conflict with it: live
@@ -166,6 +235,15 @@ fn holders_of(
         .filter(|e| table.relevance(e.command) == Relevance::Relevant)
         .map(|e| e.command)
         .collect();
+    // The dormant table is a full rebuild; skip it unless a saved row belongs
+    // to a command the game does not use now.
+    let any_dormant_row = player
+        .rows
+        .keys()
+        .any(|(command, _)| table.relevance(*command) == Relevance::Irrelevant);
+    if !any_dormant_row {
+        return holders;
+    }
     let dormant = EffectiveTable::build(author, player, RelevanceFacts::EVERY, swap);
     for e in dormant.entries().iter().filter(held_here) {
         if e.origin == BindingOrigin::Player
@@ -187,7 +265,9 @@ fn guard_broken(table: &EffectiveTable, command: Command, class: DeviceClass) ->
 
 /// The first guarded command `candidate` leaves unbound that `current` keeps
 /// bound. A break `current` already has (a hand-edited settings file) never
-/// refuses an unrelated change.
+/// refuses an unrelated change; it also never reads as newly broken, so
+/// `propose_rebind` refuses the masked cases (an emptied guarded row, a
+/// binding that lands behind the given-back default) on its own.
 fn new_guard_break(
     candidate: &EffectiveTable,
     current: &EffectiveTable,
@@ -482,6 +562,135 @@ mod tests {
         assert!(
             matches!(proposal, RebindProposal::Clean { .. }),
             "{proposal:?}"
+        );
+    }
+
+    // Regression: with menu's Start already given back over jump's saved row,
+    // capturing Start on shoot asked about menu, and REPLACE wrote an empty
+    // menu row that passed the guard check and lost shoot's Start again.
+    #[test]
+    fn taking_the_input_a_given_back_menu_needs_is_refused_and_writes_no_empty_row() {
+        let author = AuthorLayer::default();
+        let mut player = PlayerLayer::default();
+        player
+            .rows
+            .insert((Command::Jump, PAD), vec![Some(pad(Button::Start))]);
+        let facts = RelevanceFacts::EVERY;
+        let table = EffectiveTable::build(&author, &player, facts, false);
+        assert_eq!(table.guard_restored(), [(Command::NavMenu, PAD)]);
+        assert_eq!(
+            propose(
+                &author,
+                &player,
+                facts,
+                Command::Shoot,
+                PAD,
+                0,
+                pad(Button::Start)
+            ),
+            RebindProposal::Refused {
+                unbound: Command::NavMenu,
+                class: PAD
+            }
+        );
+        // Capturing Start back onto jump, the row it is saved on, is refused
+        // the same way rather than asking to empty menu's row.
+        assert_eq!(
+            propose(
+                &author,
+                &player,
+                facts,
+                Command::Jump,
+                PAD,
+                0,
+                pad(Button::Start)
+            ),
+            RebindProposal::Refused {
+                unbound: Command::NavMenu,
+                class: PAD
+            }
+        );
+    }
+
+    // Regression: pressing the given-back default again was a no-op, so the
+    // hand-edited empty cancel row stayed saved and warned on every load.
+    #[test]
+    fn keeping_a_given_back_default_writes_it_over_the_broken_row() {
+        let author = AuthorLayer::default();
+        let mut player = PlayerLayer::default();
+        player.rows.insert((Command::NavCancel, PAD), Vec::new());
+        let facts = RelevanceFacts::EVERY;
+        let kept = applied(propose(
+            &author,
+            &player,
+            facts,
+            Command::NavCancel,
+            PAD,
+            0,
+            pad(Button::East),
+        ));
+        assert_eq!(
+            kept.rows[&(Command::NavCancel, PAD)],
+            [Some(pad(Button::East))]
+        );
+        let table = EffectiveTable::build(&author, &kept, facts, false);
+        assert!(table.guard_restored().is_empty());
+        assert_eq!(table.inputs(Command::NavCancel, PAD), [pad(Button::East)]);
+
+        // With no broken row of its own, keeping changes nothing.
+        assert_eq!(
+            propose(
+                &author,
+                &PlayerLayer::default(),
+                facts,
+                Command::NavCancel,
+                PAD,
+                0,
+                pad(Button::East)
+            ),
+            RebindProposal::Unchanged
+        );
+    }
+
+    // Regression: swapping Shift into sprint's second slot put the default's
+    // hold on the other key.
+    #[test]
+    fn a_same_row_swap_keeps_the_hold_on_the_default_and_press_on_the_other_key() {
+        let mut author = AuthorLayer::default();
+        author.defaults.insert(
+            (Command::Sprint, KBM),
+            vec![AuthorBinding {
+                input: key(KeyCode::ShiftLeft),
+                activator: Activator::new(ActivatorKind::Hold),
+            }],
+        );
+        let mut player = PlayerLayer::default();
+        player.rows.insert(
+            (Command::Sprint, KBM),
+            vec![Some(key(KeyCode::ShiftLeft)), Some(key(KeyCode::KeyN))],
+        );
+        let swapped = applied(propose(
+            &author,
+            &player,
+            RelevanceFacts::EVERY,
+            Command::Sprint,
+            KBM,
+            1,
+            key(KeyCode::ShiftLeft),
+        ));
+        let table = EffectiveTable::build(&author, &swapped, RelevanceFacts::EVERY, false);
+        let sprint: Vec<_> = table
+            .entries()
+            .iter()
+            .filter(|e| e.command == Command::Sprint && e.class == KBM)
+            .map(|e| (e.input, e.activator.kind))
+            .collect();
+        assert_eq!(
+            sprint,
+            [
+                (key(KeyCode::KeyN), ActivatorKind::Press),
+                (key(KeyCode::ShiftLeft), ActivatorKind::Hold),
+            ]
         );
     }
 }

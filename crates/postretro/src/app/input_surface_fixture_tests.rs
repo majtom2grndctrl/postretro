@@ -1,4 +1,4 @@
-// The dev mod's input scripting-surface fixture (GF5), run as a level data
+// The dev mod's input scripting-surface fixture, run as a level data
 // script in both runtimes: a Glyph row, a scrolling level list, and a menu
 // entry to the engine controls panel.
 // See: docs/scripting-reference.md

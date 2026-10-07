@@ -726,11 +726,182 @@ fn a_pad_lost_mid_hold_releases_its_inputs_and_fires_no_pending_hold() {
         "keyboard state is untouched"
     );
 
-    // A reconnected pad's held button is a fresh press.
+    // A button still held when the pad reconnects stays inert until it is
+    // released and pressed again.
     sys.set_physical_input_at(pad(gilrs::Button::South), true, 1.0);
     assert_eq!(
         sys.snapshot_at(1.01).button(Action::Jump),
+        ButtonState::Inactive
+    );
+    sys.set_physical_input_at(pad(gilrs::Button::South), false, 1.1);
+    let _ = sys.snapshot_at(1.11);
+    sys.set_physical_input_at(pad(gilrs::Button::South), true, 1.2);
+    assert_eq!(
+        sys.snapshot_at(1.21).button(Action::Jump),
         ButtonState::Pressed
+    );
+}
+
+#[test]
+fn a_stick_released_while_its_pad_is_away_moves_on_the_next_push() {
+    // A stick reports no events, so its suppression lifts only on a polled
+    // release; the disconnect must keep the level that release is read against.
+    let stick_up =
+        PhysicalInput::GamepadAxisHalf(gilrs::Axis::LeftStickY, types::AxisHalf::Positive);
+    let mut sys = InputSystem::new(vec![Binding::new(stick_up, Action::MoveForward)]);
+    sys.set_gamepad_axis_at(gilrs::Axis::LeftStickY, 0.8, 0.0);
+    let _ = sys.snapshot_at(0.01);
+    sys.release_gamepad();
+
+    // Reconnected still pushed: inert.
+    sys.set_gamepad_axis_at(gilrs::Axis::LeftStickY, 0.8, 1.0);
+    assert_eq!(sys.snapshot_at(1.01).axis_value(Action::MoveForward), 0.0);
+    sys.set_gamepad_axis_at(gilrs::Axis::LeftStickY, 0.0, 1.1);
+    let _ = sys.snapshot_at(1.11);
+    sys.set_gamepad_axis_at(gilrs::Axis::LeftStickY, 0.8, 1.2);
+    assert!((sys.snapshot_at(1.21).axis_value(Action::MoveForward) - 0.8).abs() < 1e-6);
+}
+
+#[test]
+fn a_pad_lost_while_holding_shoot_lifts_it_to_neutral_never_a_release() {
+    // Regression: the disconnect left the previous state Held, so the next
+    // snapshot read Released and a charge weapon fired on the disconnect.
+    let trigger = pad(gilrs::Button::RightTrigger2);
+    let mut sys = InputSystem::new(vec![
+        Binding::new(trigger, Action::Shoot),
+        Binding::new(pad(gilrs::Button::East), Action::AltFire),
+        Binding::new(PhysicalInput::Key(KeyCode::KeyF), Action::AltFire),
+    ]);
+    let mut capture = ActivationInputCapture::default();
+    sys.set_physical_input_at(trigger, true, 0.0);
+    capture.observe(&sys.snapshot_at(0.01));
+    assert!(capture.command(1).initiation.is_some());
+    sys.set_physical_input_at(pad(gilrs::Button::East), true, 0.02);
+    sys.handle_keyboard_event_at(KeyCode::KeyF, true, 0.02);
+    let held = sys.snapshot_at(0.03);
+    assert_eq!(held.button(Action::Shoot), ButtonState::Held);
+    capture.observe(&held);
+
+    assert_eq!(
+        sys.release_gamepad(),
+        vec![Action::Shoot],
+        "AltFire stays down on the keyboard"
+    );
+    let gone = sys.snapshot_at(0.04);
+    assert_eq!(gone.button(Action::Shoot), ButtonState::Inactive);
+    assert_eq!(gone.button(Action::AltFire), ButtonState::Held);
+    capture.observe(&gone);
+    assert!(
+        capture.command(2).release.is_none(),
+        "a disconnect is never a charge release"
+    );
+}
+
+// --- Switching the active pad ---
+
+#[test]
+fn switching_pads_never_refires_a_button_the_first_pad_kept_down() {
+    // Regression: a second pad took the active role, its poll read South up,
+    // and switching back read the first pad's still-held South as a new press.
+    let south = pad(gilrs::Button::South);
+    let mut sys = InputSystem::new(vec![Binding::new(south, Action::Jump)]);
+    sys.set_physical_input_at(south, true, 0.0);
+    assert_eq!(
+        sys.snapshot_at(0.01).button(Action::Jump),
+        ButtonState::Pressed
+    );
+
+    // Pad B takes the role while pad A holds South.
+    let held_on_a = sys.gamepad_inputs_down();
+    assert_eq!(sys.switch_gamepad_at(&[], 0.1), vec![Action::Jump]);
+    sys.set_physical_input_at(south, false, 0.1);
+    assert_eq!(
+        sys.snapshot_at(0.11).button(Action::Jump),
+        ButtonState::Inactive,
+        "lifted without a release"
+    );
+
+    // Pad A takes the role back, South still down.
+    sys.switch_gamepad_at(&held_on_a, 0.2);
+    sys.set_physical_input_at(south, true, 0.2);
+    for t in [0.21, 0.3] {
+        assert_eq!(
+            sys.snapshot_at(t).button(Action::Jump),
+            ButtonState::Inactive
+        );
+    }
+
+    // Released and pressed again, it jumps.
+    sys.set_physical_input_at(south, false, 0.4);
+    let _ = sys.snapshot_at(0.41);
+    sys.set_physical_input_at(south, true, 0.5);
+    assert_eq!(
+        sys.snapshot_at(0.51).button(Action::Jump),
+        ButtonState::Pressed
+    );
+}
+
+#[test]
+fn a_pad_taking_the_role_moves_from_its_first_push() {
+    // Only inputs the outgoing pad held wait for a release: the stick that
+    // claimed the role is not one of them.
+    let stick_up =
+        PhysicalInput::GamepadAxisHalf(gilrs::Axis::LeftStickY, types::AxisHalf::Positive);
+    let south = pad(gilrs::Button::South);
+    let mut sys = InputSystem::new(vec![
+        Binding::new(stick_up, Action::MoveForward),
+        Binding::new(south, Action::Jump),
+    ]);
+    sys.set_physical_input_at(south, true, 0.0);
+    let _ = sys.snapshot_at(0.01);
+    sys.switch_gamepad_at(&[], 0.1);
+    sys.set_physical_input_at(south, false, 0.1);
+    sys.set_gamepad_axis_at(gilrs::Axis::LeftStickY, 0.8, 0.1);
+    assert!((sys.snapshot_at(0.11).axis_value(Action::MoveForward) - 0.8).abs() < 1e-6);
+}
+
+// --- Wheel capture ---
+
+#[test]
+fn trackpad_travel_short_of_a_notch_never_reaches_the_capture_prompt() {
+    let mut sys = InputSystem::new(test_bindings());
+    sys.set_scroll_notch_pixels(120.0);
+    let pixels = |y: f64| MouseScrollDelta::PixelDelta(winit::dpi::PhysicalPosition::new(0.0, y));
+    assert_eq!(sys.capture_wheel_notch(pixels(40.0)), None);
+    assert_eq!(sys.capture_wheel_notch(pixels(40.0)), None);
+    assert_eq!(
+        sys.capture_wheel_notch(pixels(-30.0)),
+        None,
+        "reversing drops the partial travel"
+    );
+    assert_eq!(sys.capture_wheel_notch(pixels(-80.0)), None);
+    assert_eq!(
+        sys.capture_wheel_notch(pixels(-20.0)),
+        Some(PhysicalInput::MouseWheelDown)
+    );
+    sys.reset_capture_wheel();
+    assert_eq!(sys.capture_wheel_notch(pixels(-110.0)), None);
+}
+
+#[test]
+fn a_wheel_click_reaches_the_capture_prompt_as_one_notch() {
+    let mut sys = InputSystem::new(test_bindings());
+    assert_eq!(
+        sys.capture_wheel_notch(MouseScrollDelta::LineDelta(0.0, 1.0)),
+        Some(PhysicalInput::MouseWheelUp)
+    );
+    assert_eq!(
+        sys.capture_wheel_notch(MouseScrollDelta::LineDelta(0.0, 0.5)),
+        None
+    );
+    assert_eq!(
+        sys.capture_wheel_notch(MouseScrollDelta::LineDelta(0.0, 0.5)),
+        Some(PhysicalInput::MouseWheelUp)
+    );
+    assert_eq!(
+        sys.snapshot().notch_count(Action::CycleWieldablePrevious),
+        0,
+        "capture travel never steps gameplay"
     );
 }
 

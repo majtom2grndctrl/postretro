@@ -1280,13 +1280,13 @@ declare module "postretro" {
     /** Fire once the input has been held for `threshold`. */
     | "hold";
 
-  /** One default binding for a command. Players rebind the input only; a rebound input keeps this slot's activator. */
+  /** One default binding for a command. Players rebind the input only; an input that replaces this default takes its activator. */
   export type ModInputBinding = {
     /** Physical input name: a W3C `KeyboardEvent.code` (`KeyW`, `ShiftLeft`), a mouse name (`mouse_left`, `wheel_up`, `mouse_x`), or a gamepad position (`south`, `left_shoulder`, `left_stick_press`, `left_stick_x`, `left_stick_up`). An unknown name is diagnosed and the device class falls back. */
     input: string;
     /** When the binding fires. Optional; defaults to `"press"`. */
     activator?: InputActivator;
-    /** Seconds: a `tap`'s maximum or a `hold`'s minimum. Finite and greater than 0. Optional; defaults to 0.2, scaled by the player's hold-timing setting. */
+    /** Seconds: a `tap`'s maximum or a `hold`'s minimum. Finite and greater than 0. Clamped to 0.05–5 s. Optional; defaults to 0.2, scaled by the player's hold-timing setting. */
     threshold?: number;
   };
 

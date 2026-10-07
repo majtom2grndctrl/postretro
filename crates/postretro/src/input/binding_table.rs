@@ -72,8 +72,8 @@ pub enum BindingOrigin {
 pub struct EffectiveBinding {
     pub command: Command,
     pub class: DeviceClass,
-    /// Position in the command's list on this class; a rebound key keeps its
-    /// slot's activator.
+    /// Position in the command's list on this class. A player input's
+    /// activator follows the input, not the slot (`player_activator`).
     pub slot: usize,
     pub input: PhysicalInput,
     pub activator: Activator,
@@ -505,14 +505,22 @@ fn engine_slots(command: Command, class: DeviceClass) -> Vec<(AuthorBinding, Bin
 }
 
 /// The activator a player-row input takes. Players rebind keys, never
-/// activators: an input that is one of the command's defaults keeps that
-/// default's activator wherever the row puts it, so packing or reordering a
-/// row never moves a default's activator onto another input. Any other input
-/// takes the activator of the default in its slot (a rebound key keeps its
-/// slot's activator), and a slot past the defaults takes `press`. A wheel
-/// notch always takes `press`: it has no duration to time.
+/// activators, so each default's activator applies to at most one input:
+///
+/// - An input that is one of the command's defaults keeps that default's
+///   activator wherever the row puts it.
+/// - Any other input replaced its slot's default when that default's input is
+///   gone from the row, and takes its activator. When the default's input is
+///   still in the row (a swap within the row moved it), the other input takes
+///   `press`, so a swap never copies a default's activator onto it.
+/// - A slot past the defaults takes `press`, and a wheel notch always does: it
+///   has no duration to time.
+///
+/// Rows store keys only, so a default another command took reads the same as
+/// one the player replaced: the input left in that slot takes its activator.
 fn player_activator(
     defaults: &[(AuthorBinding, BindingOrigin)],
+    row: &[Option<PhysicalInput>],
     slot: usize,
     input: PhysicalInput,
 ) -> Activator {
@@ -522,11 +530,13 @@ fn player_activator(
     ) {
         return Activator::PRESS;
     }
-    defaults
-        .iter()
-        .find(|(binding, _)| binding.input == input)
-        .or_else(|| defaults.get(slot))
-        .map_or(Activator::PRESS, |(binding, _)| binding.activator)
+    if let Some((own, _)) = defaults.iter().find(|(binding, _)| binding.input == input) {
+        return own.activator;
+    }
+    match defaults.get(slot) {
+        Some((replaced, _)) if !row.contains(&Some(replaced.input)) => replaced.activator,
+        _ => Activator::PRESS,
+    }
 }
 
 /// Resolve one command on one class through the three layers.
@@ -555,7 +565,7 @@ fn layer_command(
             Some(input) => Some((
                 AuthorBinding {
                     input: *input,
-                    activator: player_activator(&base, slot, *input),
+                    activator: player_activator(&base, row, slot, *input),
                 },
                 BindingOrigin::Player,
             )),

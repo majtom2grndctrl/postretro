@@ -104,6 +104,11 @@ pub struct InputSystem {
     /// Player-configured pixel distance corresponding to one wheel notch.
     scroll_notch_pixels: f64,
 
+    /// Wheel travel offered to the capture prompt, in lines and in pixels,
+    /// kept apart from gameplay's notch count.
+    capture_wheel_lines: ScrollNotchAccumulator,
+    capture_wheel_pixels: ScrollNotchAccumulator,
+
     /// Raw gamepad axis values keyed by gilrs Axis. Resolved through bindings.
     gamepad_axes: HashMap<GilrsAxis, f32>,
 
@@ -151,6 +156,8 @@ impl InputSystem {
             scroll_notches: ScrollNotchAccumulator::default(),
             line_scroll_gesture: LineScrollGesture::default(),
             scroll_notch_pixels: 120.0,
+            capture_wheel_lines: ScrollNotchAccumulator::default(),
+            capture_wheel_pixels: ScrollNotchAccumulator::default(),
             gamepad_axes: HashMap::new(),
             mouse_sensitivity: DEFAULT_MOUSE_SENSITIVITY,
             invert_y: false,
@@ -349,6 +356,41 @@ impl InputSystem {
         }
     }
 
+    /// The wheel input the capture prompt takes from one wheel event: one only
+    /// once travel since the last notch reaches a whole notch (a line, or the
+    /// player's notch pixels), so trackpad momentum and partial scrolls never
+    /// reach the prompt. Reversing direction drops the partial travel.
+    pub fn capture_wheel_notch(&mut self, delta: MouseScrollDelta) -> Option<PhysicalInput> {
+        let (accumulator, travel, per_notch) = match delta {
+            MouseScrollDelta::LineDelta(_, y) => (&mut self.capture_wheel_lines, f64::from(y), 1.0),
+            MouseScrollDelta::PixelDelta(position) => (
+                &mut self.capture_wheel_pixels,
+                position.y,
+                self.scroll_notch_pixels,
+            ),
+        };
+        if accumulator.pixel_remainder * travel < 0.0 {
+            accumulator.pixel_remainder = 0.0;
+        }
+        accumulator.add_pixel_delta(travel, per_notch);
+        let notch = if accumulator.up > 0 {
+            Some(PhysicalInput::MouseWheelUp)
+        } else if accumulator.down > 0 {
+            Some(PhysicalInput::MouseWheelDown)
+        } else {
+            None
+        };
+        accumulator.clear_frame();
+        notch
+    }
+
+    /// Drop partial wheel travel toward a capture, so a prompt starts from
+    /// rest.
+    pub fn reset_capture_wheel(&mut self) {
+        self.capture_wheel_lines.clear_all();
+        self.capture_wheel_pixels.clear_all();
+    }
+
     /// Set a raw gamepad axis value. Called by GamepadSystem after dead zone processing.
     /// The value is resolved through bindings to produce action axis values.
     pub fn set_gamepad_axis(&mut self, axis: GilrsAxis, value: f32) {
@@ -406,7 +448,8 @@ impl InputSystem {
         );
     }
 
-    /// Clear all physical input state. Useful when window loses focus.
+    /// Clear input state on a focus change or window blur. Keyboard and mouse
+    /// levels clear; pad levels survive for the next poll to compare against.
     ///
     /// Cancels every pending activator resolution: neither binding of a pending
     /// tap/hold pair fires, and an input held through the clear does nothing
@@ -418,9 +461,14 @@ impl InputSystem {
 
     pub(crate) fn clear_all_at(&mut self, now: f64) {
         self.suspend_gameplay_at(now);
-        self.physical_state.clear();
-        self.gamepad_axes.clear();
+        // Pad levels survive, as in `suspend_gameplay`: the pad is re-polled
+        // every frame, so a pad input held through the clear and released
+        // before the next poll still reads up and lifts its suppression, and a
+        // stick half keeps its hysteresis level. Keys and mouse buttons report
+        // edges as events, so their levels clear.
+        self.physical_state.retain(|input, _| is_pad(*input));
         self.line_scroll_gesture.clear();
+        self.reset_capture_wheel();
     }
 
     /// Cancel gameplay resolution on a frame that reads no snapshot (the
@@ -444,15 +492,73 @@ impl InputSystem {
         self.scroll_notches.clear_all();
     }
 
-    /// The gamepad went away: release every pad input and zero the pad axes
-    /// without a pulse, so nothing stays held down and no pending hold fires.
-    /// Keyboard and mouse state is untouched.
-    pub fn release_gamepad(&mut self) {
-        let is_pad = |input: &PhysicalInput| DeviceClass::of(*input) == DeviceClass::Gamepad;
-        self.pending_edges.retain(|edge| !is_pad(&edge.input));
-        self.physical_state.retain(|input, _| !is_pad(input));
+    /// The active gamepad disconnected. Its unresolved edges drop, so a
+    /// release delivered with the disconnect fires nothing; then every pad
+    /// input parks (see `park_gamepad`). Keyboard and mouse state is
+    /// untouched. Returns the button commands the disconnect lifted.
+    pub fn release_gamepad(&mut self) -> Vec<Action> {
+        self.pending_edges.retain(|edge| !is_pad(edge.input));
+        self.park_gamepad(&[])
+    }
+
+    /// The active gamepad changed. The outgoing pad's buffered edges resolve,
+    /// then every pad input parks (see `park_gamepad`). `carried` lists the
+    /// inputs the incoming pad held when it last lost the role; they stay
+    /// inert until it releases them, so switching back to a pad never
+    /// re-fires a button it kept down. Returns the button commands lifted.
+    pub fn switch_gamepad(&mut self, carried: &[PhysicalInput]) -> Vec<Action> {
+        let now = self.now();
+        self.switch_gamepad_at(carried, now)
+    }
+
+    pub(crate) fn switch_gamepad_at(&mut self, carried: &[PhysicalInput], now: f64) -> Vec<Action> {
+        self.resolve_pending_edges(now);
+        self.park_gamepad(carried)
+    }
+
+    /// Pad inputs the last poll or event read down.
+    pub fn gamepad_inputs_down(&self) -> Vec<PhysicalInput> {
+        self.physical_state
+            .iter()
+            .filter(|(input, down)| **down && is_pad(**input))
+            .map(|(input, _)| *input)
+            .collect()
+    }
+
+    /// Lift every pad binding without a pulse and zero the pad axes, so
+    /// nothing stays down and no pending pad hold fires. A pad input down now,
+    /// or in `carried`, keeps its down level and stays inert until a poll reads
+    /// it up, so it fires nothing when polls resume; any other pad input
+    /// presses fresh. A button command left with no binding down reads
+    /// Inactive next snapshot, never Released: neutral input is not a
+    /// release. Returns those lifted commands.
+    fn park_gamepad(&mut self, carried: &[PhysicalInput]) -> Vec<Action> {
+        let mut still_down = self.gamepad_inputs_down();
+        for input in carried {
+            if is_pad(*input) && !still_down.contains(input) {
+                still_down.push(*input);
+            }
+        }
+        let down_before: Vec<Action> = self
+            .unique_actions
+            .iter()
+            .copied()
+            .filter(|action| !action.is_axis() && self.resolver.command_is_down(*action))
+            .collect();
+        self.resolver.park_gamepad(&self.bindings, &still_down);
+        self.physical_state.retain(|input, _| !is_pad(*input));
+        for input in still_down {
+            self.physical_state.insert(input, true);
+        }
         self.gamepad_axes.clear();
-        self.resolver.cancel_gamepad(&self.bindings);
+        let lifted: Vec<Action> = down_before
+            .into_iter()
+            .filter(|action| !self.resolver.command_is_down(*action))
+            .collect();
+        for action in &lifted {
+            self.prev_button_states.remove(action);
+        }
+        lifted
     }
 
     /// Resolve all bindings and produce the action snapshot for this frame.
@@ -673,6 +779,10 @@ impl InputSystem {
             }
         }
     }
+}
+
+fn is_pad(input: PhysicalInput) -> bool {
+    DeviceClass::of(input) == DeviceClass::Gamepad
 }
 
 /// Stick halves a binding table puts on a movement (axis) action.

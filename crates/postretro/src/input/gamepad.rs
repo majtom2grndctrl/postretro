@@ -1,12 +1,14 @@
 // Gamepad input via gilrs: polling, dead zones, trigger thresholds.
 // See: context/lib/input.md §6
 
+use std::collections::HashMap;
+
 use gilrs::ff::{BaseEffect, BaseEffectType, Effect, EffectBuilder, Replay, Ticks};
 use gilrs::{Axis, Button, Event, EventType, GamepadId, Gilrs};
 
 use super::InputSystem;
 use crate::input::commands::Command;
-use crate::input::types::{PhysicalInput, hysteresis_level};
+use crate::input::types::{Action, HALF_AXIS_PRESS_THRESHOLD, PhysicalInput, hysteresis_level};
 use crate::input::ui_nav::{NavIntent, StickNavTrackers};
 use crate::input::ui_nav_map::{StickSide, UiNavContext, UiNavMap, stick_half_for};
 
@@ -43,6 +45,10 @@ pub struct GamepadNavOutput {
     pub vendor_id: Option<u16>,
     pub confirm_released: bool,
     pub directional_released: bool,
+    /// Button commands a pad disconnect or pad switch lifted to neutral this
+    /// frame. A lifted Shoot or AltFire is a cancel, never a release, so the
+    /// caller suspends the weapon activation as it does on focus loss.
+    pub lifted_commands: Vec<Action>,
 }
 
 /// Digital buttons polled each frame. The analog triggers are not here: they
@@ -141,6 +147,9 @@ pub struct GamepadSystem {
     /// Whether each trigger (left, right) was past its button threshold last
     /// poll, so a crossing reports one press.
     triggers_down: [bool; 2],
+    /// Pad inputs each inactive pad held when it lost the active role. They
+    /// stay inert when that pad takes the role back, until it releases them.
+    held_when_parked: HashMap<GamepadId, Vec<PhysicalInput>>,
 }
 
 /// A live rumble effect plus its remaining duration. The effect handle is kept
@@ -170,6 +179,7 @@ impl GamepadSystem {
                     active_rumble: None,
                     ff_warned: false,
                     triggers_down: [false; 2],
+                    held_when_parked: HashMap::new(),
                 })
             }
             Err(err) => {
@@ -185,12 +195,22 @@ impl GamepadSystem {
     }
 
     /// Drain buffered gilrs events without acting on them, keeping the active
-    /// gamepad current. Frames that draw no UI call this so a press made during
-    /// a splash or Loading frame never surfaces on the first frame that does.
-    pub fn discard_pending_events(&mut self) {
+    /// gamepad current under the same rules as `update`: an idle pad takes the
+    /// role only through `claims_active_role`, the outgoing pad parks, and the
+    /// active pad's disconnect releases it. Frames that draw no UI call this so a
+    /// press made during a splash or Loading frame never surfaces on the first
+    /// frame that does. Lifted commands are dropped with the rest.
+    pub fn discard_pending_events(&mut self, input_system: &mut InputSystem) {
+        let mut discarded = GamepadNavOutput::default();
         while let Some(Event { id, event, .. }) = self.gilrs.next_event() {
-            if is_user_input(&event) {
-                self.active_gamepad = Some(id);
+            if self.active_gamepad == Some(id) && matches!(event, EventType::Disconnected) {
+                self.active_gamepad = None;
+                self.triggers_down = [false; 2];
+                input_system.release_gamepad();
+                continue;
+            }
+            if self.active_gamepad != Some(id) && claims_active_role(&event, self.active_gamepad) {
+                self.activate(input_system, id, &mut discarded);
             }
         }
     }
@@ -231,9 +251,21 @@ impl GamepadSystem {
             id, event, time, ..
         }) = self.gilrs.next_event()
         {
-            // Any input event from a gamepad makes it the active one.
-            if is_user_input(&event) {
-                self.active_gamepad = Some(id);
+            if self.active_gamepad == Some(id) && matches!(event, EventType::Disconnected) {
+                // Releases delivered with the disconnect drop unresolved, so
+                // nothing it held fires a release-bound or tap command.
+                self.active_gamepad = None;
+                self.triggers_down = [false; 2];
+                out.lifted_commands.extend(input_system.release_gamepad());
+                continue;
+            }
+            if self.active_gamepad != Some(id) && claims_active_role(&event, self.active_gamepad) {
+                self.activate(input_system, id, &mut out);
+            }
+            // Only the active pad's edges count: a release from a pad that
+            // lost the role, or an idle pad's drift, reaches nothing.
+            if self.active_gamepad != Some(id) {
+                continue;
             }
             // Button events are the gameplay edge source too, so a press and
             // release between two polls still resolve (a shared tap/hold key
@@ -302,7 +334,7 @@ impl GamepadSystem {
             // pending hold on it never fires.
             self.active_gamepad = None;
             self.triggers_down = [false; 2];
-            input_system.release_gamepad();
+            out.lifted_commands.extend(input_system.release_gamepad());
             nav_sticks.clear();
             out.directional_released = true;
             return out;
@@ -391,6 +423,26 @@ impl GamepadSystem {
         out.directional_released = !direction_held;
 
         out
+    }
+
+    /// Give the active role to `id`. Everything the outgoing pad holds lifts
+    /// without a pulse and is remembered, and inputs `id` held when it last
+    /// lost the role stay inert until it releases them, so no button held
+    /// across a switch fires again.
+    fn activate(
+        &mut self,
+        input_system: &mut InputSystem,
+        id: GamepadId,
+        out: &mut GamepadNavOutput,
+    ) {
+        if let Some(outgoing) = self.active_gamepad {
+            self.held_when_parked
+                .insert(outgoing, input_system.gamepad_inputs_down());
+        }
+        let carried = self.held_when_parked.remove(&id).unwrap_or_default();
+        out.lifted_commands
+            .extend(input_system.switch_gamepad(&carried));
+        self.active_gamepad = Some(id);
     }
 
     /// Start a force-feedback rumble on the active gamepad: `strong`/`weak` are
@@ -519,6 +571,23 @@ fn is_user_input(event: &EventType) -> bool {
             | EventType::ButtonChanged(..)
             | EventType::AxisChanged(..)
     )
+}
+
+/// Whether `event` gives its pad the active role. With no active pad, any
+/// input does. Otherwise only a deliberate one does: a press, or an axis or
+/// analog button pushed to the half-axis press point. A release or stick drift
+/// on an idle pad never takes the role from the pad in use.
+fn claims_active_role(event: &EventType, active: Option<GamepadId>) -> bool {
+    if active.is_none() {
+        return is_user_input(event);
+    }
+    match event {
+        EventType::ButtonPressed(..) | EventType::ButtonRepeated(..) => true,
+        EventType::ButtonChanged(_, value, _) | EventType::AxisChanged(_, value, _) => {
+            value.abs() >= HALF_AXIS_PRESS_THRESHOLD
+        }
+        _ => false,
+    }
 }
 
 /// Read an axis value from a gamepad, defaulting to 0 if unavailable.

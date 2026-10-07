@@ -216,6 +216,9 @@ impl ScrollViews {
     }
 
     /// Whether `node` lies wholly inside every scrolling ancestor's viewport.
+    /// A stop taller than its viewport can never be wholly inside it, so it is
+    /// never "in view": a relayout does not follow it, the same as a stop the
+    /// wheel scrolled away. Only a focus change scrolls it into view.
     fn fully_in_view(&self, taffy: &TaffyTree<NodeContext>, node: NodeId) -> bool {
         if taffy.style(node).expect("node has a style").display == Display::None {
             return true;

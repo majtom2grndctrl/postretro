@@ -105,7 +105,8 @@ pub struct UiFocusEngine {
     /// it, exactly as a directional press arms on its own frame.
     repeat_armed_before_tick: bool,
     /// Activation-repeat clock for a held confirm on a `repeatOnHold` button
-    /// (the on-screen keyboard's backspace). `Some` only while such a button's confirm is held.
+    /// (the on-screen keyboard's backspace). `Some` only while such a button's
+    /// confirm is held.
     confirm_repeat: Option<ConfirmRepeatClock>,
     /// Activation-repeat clock for a held text shortcut: the key it activates
     /// and that key's `repeatOnHold` timing.
@@ -344,8 +345,9 @@ impl UiFocusEngine {
 
     /// Ensure the active tree has a selected focus. On a stack change, restore the
     /// saved focus unless the tree sets `restoreOnReturn: false` (and the saved
-    /// node still exists and is enabled), else select the tree's `initialFocus` (or the first focusable node).
-    /// On a non-stack-change tick, initialize only if not yet initialized.
+    /// node still exists and is enabled), else select the tree's `initialFocus`
+    /// (or the first focusable node). On a non-stack-change tick, initialize only
+    /// if not yet initialized.
     fn ensure_initialized(&mut self, key: &str, rects: &FocusRectList, stack_changed: bool) {
         let entry = self.trees.entry(key.to_string()).or_default();
         // Restore applies to a key seen before: the app keys each pushed modal

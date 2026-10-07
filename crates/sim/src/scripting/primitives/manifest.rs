@@ -390,7 +390,7 @@ fn register_input_types(registry: &mut PrimitiveRegistry) {
         .finish();
     registry
         .register_type("ModInputBinding")
-        .doc("One default binding for a command. Players rebind the input only; a rebound input keeps this slot's activator.")
+        .doc("One default binding for a command. Players rebind the input only; an input that replaces this default takes its activator.")
         .field(
             "input",
             "String",
@@ -404,7 +404,7 @@ fn register_input_types(registry: &mut PrimitiveRegistry) {
         .field(
             "threshold?",
             "f32",
-            "Seconds: a `tap`'s maximum or a `hold`'s minimum. Finite and greater than 0. Optional; defaults to 0.2, scaled by the player's hold-timing setting.",
+            "Seconds: a `tap`'s maximum or a `hold`'s minimum. Finite and greater than 0. Clamped to 0.05–5 s. Optional; defaults to 0.2, scaled by the player's hold-timing setting.",
         )
         .finish();
     registry

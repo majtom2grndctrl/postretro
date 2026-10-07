@@ -17,8 +17,8 @@ use crate::*;
 /// keys it produced.
 #[derive(Debug, Default)]
 pub(crate) struct GlyphArtState {
-    /// The author's glyph directories and the staged-reload generation the art
-    /// was read at. `None` until the first load.
+    /// The author's glyph directories and the committed staged-reload generation
+    /// the art was read at. `None` until the first load.
     loaded: Option<(GlyphDirs, Option<u64>)>,
     keys: HashSet<String>,
     /// Glyph `command` ids already reported as unknown, so a bad id warns once
@@ -29,7 +29,7 @@ pub(crate) struct GlyphArtState {
 
 impl GlyphArtState {
     /// Whether the loaded art still matches the author's directories and the
-    /// latest staged reload. A settled frame only compares; nothing allocates.
+    /// latest committed staged reload. A settled frame only compares; nothing allocates.
     fn is_current(&self, glyphs: &GlyphDirs, reload_generation: Option<u64>) -> bool {
         self.loaded
             .as_ref()
@@ -104,8 +104,9 @@ fn read_glyph_dir(mod_root: &Path, dir: &str) -> Vec<(String, Vec<u8>, u32, u32)
 
 impl App {
     /// Load the mod's glyph art once the renderer can take it, and again when
-    /// the declared directories change or a staged reload is requested (its
-    /// art may have changed in the same directories). Cheap otherwise.
+    /// the declared directories change or a staged reload commits (its art may
+    /// have changed in the same directories). A failed, stale, or rejected
+    /// staged build leaves the art alone. Cheap otherwise.
     pub(crate) fn sync_glyph_art(&mut self) {
         let (Some(session), Some(renderer)) = (self.session.as_mut(), self.renderer.as_mut())
         else {
@@ -117,7 +118,7 @@ impl App {
         let reload_generation = session
             .scripting
             .script_runtime
-            .latest_staged_manifest_generation();
+            .committed_staged_manifest_generation();
         let glyphs = &session.bindings.author().glyphs;
         if session.glyph_art.is_current(glyphs, reload_generation) {
             return;

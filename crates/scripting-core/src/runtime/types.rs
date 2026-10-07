@@ -513,6 +513,10 @@ pub struct ScriptRuntime {
     pub(super) watcher: Option<crate::watcher::ScriptWatcher>,
     #[cfg(debug_assertions)]
     pub(super) staged_manifest_lane: Option<StagedManifestBuildLane>,
+    /// Generation of the latest staged build that committed. Requested
+    /// generations that were stale, failed, or rejected never move it.
+    #[cfg(debug_assertions)]
+    pub(super) committed_staged_generation: Option<u64>,
     #[cfg(debug_assertions)]
     pub(super) active_mod_init_dependencies: Option<ActiveModInitDependencies>,
     /// Full descriptor snapshot from the latest staged reload whose mesh or

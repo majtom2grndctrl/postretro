@@ -283,7 +283,7 @@ fn changed_rows_write_names_and_remove_reset_rows() {
         vec![Some(pad(Button::North)), Some(pad(Button::LeftThumb))],
     );
     assert_eq!(
-        changed_rows(&old, &new),
+        changed_rows(&old, &new, &StoredRowText::new()),
         [
             (
                 PAD,
@@ -292,6 +292,55 @@ fn changed_rows_write_names_and_remove_reset_rows() {
             ),
             (KBM, Command::Jump, None),
         ]
+    );
+}
+
+// Regression: a replace that took V from a dormant dash row saved `[None]` as
+// `[]`, so the reloaded dash was unbound where the session showed its default,
+// and the unreadable name was lost.
+#[test]
+fn changed_rows_write_an_unreadable_slot_back_as_the_text_it_was_loaded_from() {
+    let stored_text = |inputs: &[Option<&str>]| -> Vec<Option<String>> {
+        inputs.iter().map(|i| i.map(str::to_string)).collect()
+    };
+    let saved = [
+        (
+            (Command::Dash, KBM),
+            stored_text(&[Some("KeyFromANewerBuild"), Some("KeyV"), None]),
+        ),
+        ((Command::Jump, KBM), stored_text(&[Some("KeyV")])),
+    ];
+    let stored: StoredRowText = saved.iter().cloned().collect();
+    let rows: Vec<(&str, &str, &[Option<String>])> = saved
+        .iter()
+        .map(|((command, class), inputs)| (class.settings_key(), command.id(), inputs.as_slice()))
+        .collect();
+    let old = crate::input::player_layer_from_rows(rows);
+    assert_eq!(
+        old.rows[&(Command::Dash, KBM)],
+        [None, Some(key(KeyCode::KeyV)), None]
+    );
+    // A replace takes V from the dash row, as it does from a dormant one.
+    let mut new = old.clone();
+    new.rows.insert((Command::Dash, KBM), vec![None, None]);
+    assert_eq!(
+        changed_rows(&old, &new, &stored),
+        [(
+            KBM,
+            Command::Dash,
+            Some(vec!["KeyFromANewerBuild".to_string(), String::new()])
+        )]
+    );
+    // What reloads is what the session holds.
+    let written = ["KeyFromANewerBuild".to_string(), String::new()].map(Some);
+    let reloaded = crate::input::player_layer_from_rows([(
+        KBM.settings_key(),
+        Command::Dash.id(),
+        written.as_slice(),
+    )]);
+    assert_eq!(
+        reloaded.rows[&(Command::Dash, KBM)],
+        new.rows[&(Command::Dash, KBM)]
     );
 }
 
@@ -695,9 +744,9 @@ fn a_gamepad_prompt_closes_when_the_pad_goes_away() {
     let mut app = test_app();
     open_capture(&mut app, Command::Jump, PAD, 1);
     let session_mut = app.session.as_mut().unwrap();
-    session_mut.track_capture_pad(true);
+    session_mut.track_capture_pad(|_| true);
     assert!(session_mut.capture_prompt_is_active(), "a pad is connected");
-    session_mut.track_capture_pad(false);
+    session_mut.track_capture_pad(|_| false);
     assert!(!session_mut.capture_prompt_is_active());
     assert_eq!(
         session(&app).modal_stack.active_name(),
@@ -708,8 +757,8 @@ fn a_gamepad_prompt_closes_when_the_pad_goes_away() {
     // A keyboard prompt ignores the pad.
     open_capture(&mut app, Command::Jump, KBM, 1);
     let session_mut = app.session.as_mut().unwrap();
-    session_mut.track_capture_pad(true);
-    session_mut.track_capture_pad(false);
+    session_mut.track_capture_pad(|_| true);
+    session_mut.track_capture_pad(|_| false);
     assert!(session_mut.capture_prompt_is_active());
 }
 

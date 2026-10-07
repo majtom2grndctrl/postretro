@@ -170,7 +170,6 @@ pub fn hysteresis_level(was_down: bool, value: f32, press: f32, release: f32) ->
 /// How a binding resolves its input's press and release into command phases.
 /// Authors set it per binding; players rebind inputs only.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-// Release and Tap reach production bindings through the manifest input block.
 pub enum ActivatorKind {
     /// Fires on the press edge; the command stays down while the input is held.
     #[default]

@@ -925,23 +925,6 @@ fn falloff(light: &MapLight, distance: f32) -> f32 {
     }
 }
 
-/// Whether a light can contribute bounced radiance at `point` before visibility
-/// is traced. Point and spot lights have zero falloff strictly beyond their
-/// clamped range; directional lights are position-independent.
-fn light_reaches_point(light: &MapLight, point: Vec3) -> bool {
-    match light.light_type {
-        LightType::Directional => true,
-        LightType::Point | LightType::Spot => {
-            let light_origin = Vec3::new(
-                light.origin.x as f32,
-                light.origin.y as f32,
-                light.origin.z as f32,
-            );
-            point.distance(light_origin) <= light.falloff_range.max(1.0e-4)
-        }
-    }
-}
-
 /// Must match `cone_attenuation` in `forward.wgsl` — Hermite cubic smoothstep
 /// so direct and indirect agree along the cone fringe.
 pub(crate) fn spot_cone_parameters(light: &MapLight) -> (Vec3, f32, f32) {
@@ -1371,10 +1354,14 @@ fn sample_radiance_rgb(
             let mut radiance = Vec3::ZERO;
             for (light_index, light) in lights.iter().enumerate() {
                 // This must precede `global_index` and seed derivation: a light
-                // beyond range has zero falloff, so its soft-visibility trace is
-                // provably wasted. Kept lights retain their original slice/global
+                // whose Lambert term is exactly zero here — beyond range, past a
+                // spot's outer cone, or behind the surface — would add
+                // `0 × visibility`, so its soft-visibility trace is provably
+                // wasted. Exact zero, not an epsilon: a near-zero term still
+                // accumulates. Kept lights retain their original slice/global
                 // index and therefore their deterministic visibility seed.
-                if !light_reaches_point(light, hit.point) {
+                let contribution = light_contribution_lambert(light, hit.point, hit.normal);
+                if contribution == Vec3::ZERO {
                     continue;
                 }
                 let global_index = light_global_indices
@@ -1396,7 +1383,7 @@ fn sample_radiance_rgb(
                 if v <= 0.0 {
                     continue;
                 }
-                radiance += light_contribution_lambert(light, hit.point, hit.normal) * v;
+                radiance += contribution * v;
             }
             (
                 radiance * BOUNCE_ALBEDO / std::f32::consts::PI,
@@ -1654,11 +1641,20 @@ mod tests {
         assert_eq!(falloff(&light, 100.0), 0.0);
     }
 
+    /// The SH bounce skips a light's shadow ray iff its Lambert term at the hit
+    /// point is exactly zero. These pin both sides of each factor — range, cone,
+    /// and facing — so the bit-identity test below cannot pass on a guard that
+    /// culls nothing, nor on one that culls a light that still contributes.
+    fn bounce_skips(light: &MapLight, point: Vec3, normal: Vec3) -> bool {
+        light_contribution_lambert(light, point, normal) == Vec3::ZERO
+    }
+
     #[test]
-    fn light_reaches_point_keeps_range_boundary_and_skips_only_zero_falloff() {
+    fn bounce_guard_range_keeps_boundary_and_skips_beyond() {
         let range = 10.0;
         let at_range = Vec3::new(range, 0.0, 0.0);
         let beyond_range = Vec3::new(range + 0.001, 0.0, 0.0);
+        let facing_light = Vec3::NEG_X;
 
         for light_type in [LightType::Point, LightType::Spot] {
             for falloff_model in [
@@ -1668,30 +1664,106 @@ mod tests {
             ] {
                 let mut light = point_light_with_falloff(falloff_model, range);
                 light.light_type = light_type;
+                // Aim spots at the receivers so only range varies.
+                light.cone_direction = Some([1.0, 0.0, 0.0]);
+                light.cone_angle_inner = Some(0.5);
+                light.cone_angle_outer = Some(0.8);
 
                 assert!(
-                    light_reaches_point(&light, at_range),
-                    "{light_type:?} light with {falloff_model:?} falloff must reach exactly at range"
-                );
-                assert!(
-                    !light_reaches_point(&light, beyond_range),
+                    bounce_skips(&light, beyond_range, facing_light),
                     "{light_type:?} light with {falloff_model:?} falloff must skip strictly beyond range"
                 );
+                // Inverse models are nonzero exactly at range and must keep the
+                // ray; Linear is exactly zero there, so skipping it is lossless.
+                let expect_skip = falloff_model == FalloffModel::Linear;
                 assert_eq!(
-                    falloff(&light, beyond_range.length()),
-                    0.0,
-                    "skipped {light_type:?} light with {falloff_model:?} falloff must contribute zero"
+                    bounce_skips(&light, at_range, facing_light),
+                    expect_skip,
+                    "{light_type:?} light with {falloff_model:?} falloff at exactly range"
                 );
             }
         }
+    }
 
-        let mut directional = point_light_with_falloff(FalloffModel::Linear, range);
-        directional.light_type = LightType::Directional;
-        directional.origin = DVec3::new(10_000.0, 0.0, 0.0);
+    #[test]
+    fn bounce_guard_cone_skips_iff_cone_attenuation_is_zero() {
+        // Spot at the origin aimed down +X; receivers on a 5 m arc sweep the
+        // outer cone edge in both directions, each facing the light.
+        let mut spot = point_light_with_falloff(FalloffModel::InverseSquared, 50.0);
+        spot.light_type = LightType::Spot;
+        spot.cone_direction = Some([1.0, 0.0, 0.0]);
+        spot.cone_angle_inner = Some(0.3);
+        spot.cone_angle_outer = Some(0.6);
+
+        let mut skipped = 0;
+        let mut kept = 0;
+        for step in 0..=120 {
+            let angle = 0.5 + step as f32 * (0.2 / 120.0);
+            let point = Vec3::new(angle.cos(), angle.sin(), 0.0) * 5.0;
+            let normal = -point.normalize();
+            let cone = spot_cone_attenuation(&spot, point);
+            assert_eq!(
+                bounce_skips(&spot, point, normal),
+                cone == 0.0,
+                "spot at {angle} rad off axis: skip must match exactly-zero cone attenuation ({cone})"
+            );
+            if cone == 0.0 {
+                skipped += 1;
+            } else {
+                kept += 1;
+            }
+        }
         assert!(
-            light_reaches_point(&directional, Vec3::new(-10_000.0, 0.0, 0.0)),
-            "directional lights must never be skipped by range"
+            skipped > 0 && kept > 0,
+            "the sweep must straddle the outer cone edge"
         );
+    }
+
+    #[test]
+    fn bounce_guard_facing_skips_perpendicular_and_back_for_every_light_type() {
+        let point = Vec3::ZERO;
+        let mut lights = Vec::new();
+        let mut light = point_light_with_falloff(FalloffModel::InverseSquared, 50.0);
+        light.origin = DVec3::new(0.0, 5.0, 0.0);
+        lights.push(light.clone());
+        let mut spot = light.clone();
+        spot.light_type = LightType::Spot;
+        spot.cone_direction = Some([0.0, -1.0, 0.0]);
+        spot.cone_angle_inner = Some(0.3);
+        spot.cone_angle_outer = Some(0.6);
+        lights.push(spot);
+        let mut sun = light;
+        sun.light_type = LightType::Directional;
+        sun.cone_direction = Some([0.0, -1.0, 0.0]);
+        lights.push(sun);
+
+        for light in &lights {
+            let kind = light.light_type;
+            assert!(
+                !bounce_skips(light, point, Vec3::Y),
+                "{kind:?}: a surface facing the light must keep its ray"
+            );
+            assert!(
+                !bounce_skips(light, point, Vec3::new(0.01, 1.0, 0.0).normalize()),
+                "{kind:?}: a slightly front-facing surface must keep its ray"
+            );
+            assert!(
+                bounce_skips(light, point, Vec3::X),
+                "{kind:?}: a surface exactly perpendicular to the light must skip"
+            );
+            assert!(
+                bounce_skips(light, point, Vec3::NEG_Y),
+                "{kind:?}: a surface facing away from the light must skip"
+            );
+        }
+
+        // A front-facing sun is never culled, however far away the receiver.
+        let sun = &lights[2];
+        assert!(!bounce_skips(
+            sun,
+            Vec3::new(-10_000.0, 0.0, 10_000.0),
+            Vec3::Y
+        ));
     }
 
     #[test]
@@ -2506,6 +2578,172 @@ mod tests {
                 without_trailing_light.1.to_bits(),
             ],
             "a trailing point light beyond falloff range must leave the per-ray sample byte-identical"
+        );
+    }
+
+    /// The full-term guard must leave every per-ray sample bit-identical to the
+    /// range-only guard it replaced. The reference below is that prior loop: it
+    /// traces every in-range light and multiplies by the Lambert term afterward.
+    /// The mixed light set includes lights the new guard culls (out-of-cone spot,
+    /// back-facing point, spot and sun) beside lights it keeps, on soft and hard
+    /// emitters, so each kept light's seed and trace are exercised alongside.
+    #[test]
+    fn sample_radiance_rgb_full_term_guard_matches_range_only_reference_bit_identically() {
+        fn range_only_reference(
+            ctx: &RaytracingCtx<'_>,
+            origin: Vec3,
+            dir: Vec3,
+            lights: &[&MapLight],
+            far_sentinel: f32,
+            probe_index: u64,
+            ray_index: u64,
+        ) -> (Vec3, f32) {
+            match closest_hit(ctx, origin + dir * RAY_EPSILON, dir, f32::INFINITY) {
+                None => (Vec3::from(SKY_COLOR), far_sentinel),
+                Some(hit) => {
+                    let mut radiance = Vec3::ZERO;
+                    for (light_index, light) in lights.iter().enumerate() {
+                        if light.light_type != LightType::Directional {
+                            let light_origin = Vec3::new(
+                                light.origin.x as f32,
+                                light.origin.y as f32,
+                                light.origin.z as f32,
+                            );
+                            if hit.point.distance(light_origin) > light.falloff_range.max(1.0e-4) {
+                                continue;
+                            }
+                        }
+                        let seed = soft_visibility_seed(probe_index, ray_index, light_index as u64);
+                        let v = soft_visibility(
+                            hit.point,
+                            hit.normal,
+                            light,
+                            seed,
+                            crate::lightmap_bake::DEFAULT_AREA_SAMPLE_COUNT,
+                            |from, to| segment_clear(ctx, from, to),
+                        );
+                        if v <= 0.0 {
+                            continue;
+                        }
+                        radiance += light_contribution_lambert(light, hit.point, hit.normal) * v;
+                    }
+                    (
+                        radiance * BOUNCE_ALBEDO / std::f32::consts::PI,
+                        hit.distance,
+                    )
+                }
+            }
+        }
+
+        // Floor at y = 0 plus a half-plane occluder at y = 2.5 over +X, so the
+        // soft overhead light sits in a penumbra and escalates.
+        let floor_a = [[-8.0, 0.0, -8.0], [8.0, 0.0, -8.0], [8.0, 0.0, 8.0]];
+        let floor_b = [[-8.0, 0.0, -8.0], [8.0, 0.0, 8.0], [-8.0, 0.0, 8.0]];
+        let occluder_a = [[0.0, 2.5, -4.0], [4.0, 2.5, -4.0], [4.0, 2.5, 4.0]];
+        let occluder_b = [[0.0, 2.5, -4.0], [4.0, 2.5, 4.0], [0.0, 2.5, 4.0]];
+        let geometry = multi_triangle_geometry(&[floor_a, floor_b, occluder_a, occluder_b]);
+        let (bvh, primitives, _) = build_bvh(&geometry).expect("fixture builds a BVH");
+        let ctx = RaytracingCtx {
+            bvh: &bvh,
+            primitives: &primitives,
+            geometry: &geometry,
+        };
+
+        let soft_overhead = soft_point_light(DVec3::new(0.0, 5.0, 0.0), 2.0);
+        let hard_overhead = soft_point_light(DVec3::new(-3.0, 4.0, 1.0), 0.0);
+        let mut in_cone_spot = soft_point_light(DVec3::new(1.0, 6.0, -1.0), 0.5);
+        in_cone_spot.light_type = LightType::Spot;
+        in_cone_spot.cone_direction = Some([0.0, -1.0, 0.0]);
+        in_cone_spot.cone_angle_inner = Some(0.4);
+        in_cone_spot.cone_angle_outer = Some(0.9);
+        let mut out_of_cone_spot = in_cone_spot.clone();
+        out_of_cone_spot.cone_direction = Some([0.0, 1.0, 0.0]);
+        let below_floor_point = soft_point_light(DVec3::new(0.0, -3.0, 0.0), 1.0);
+        let mut below_floor_spot = below_floor_point.clone();
+        below_floor_spot.light_type = LightType::Spot;
+        below_floor_spot.cone_direction = Some([0.0, 1.0, 0.0]);
+        below_floor_spot.cone_angle_inner = Some(0.4);
+        below_floor_spot.cone_angle_outer = Some(0.9);
+        let mut front_sun = soft_point_light(DVec3::ZERO, 0.0);
+        front_sun.light_type = LightType::Directional;
+        front_sun.cone_direction = Some(Vec3::new(0.3, -1.0, 0.2).normalize().to_array());
+        front_sun.angular_diameter = 2.0;
+        let mut back_sun = front_sun.clone();
+        back_sun.cone_direction = Some([0.0, 1.0, 0.0]);
+
+        let lights = [
+            &soft_overhead,
+            &out_of_cone_spot,
+            &hard_overhead,
+            &below_floor_point,
+            &in_cone_spot,
+            &back_sun,
+            &below_floor_spot,
+            &front_sun,
+        ];
+
+        // Every culled light really is culled at the floor hit; every kept light
+        // really contributes — otherwise the comparison proves nothing.
+        let floor_hit = Vec3::new(0.5, 0.0, 0.5);
+        for (light, culled) in [
+            (&out_of_cone_spot, true),
+            (&below_floor_point, true),
+            (&below_floor_spot, true),
+            (&back_sun, true),
+            (&soft_overhead, false),
+            (&hard_overhead, false),
+            (&in_cone_spot, false),
+            (&front_sun, false),
+        ] {
+            assert_eq!(
+                light_contribution_lambert(light, floor_hit, Vec3::Y) == Vec3::ZERO,
+                culled,
+                "fixture light {:?} at {:?} must be {}",
+                light.light_type,
+                light.origin,
+                if culled { "culled" } else { "kept" }
+            );
+        }
+
+        let mut lit_samples = 0;
+        for (ray_index, (x, z)) in [
+            (0.5, 0.5),
+            (2.0, -1.0),
+            (-2.5, 3.0),
+            (1.5, 1.5),
+            (-4.0, -4.0),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let origin = Vec3::new(x, 1.0, z);
+            let dir = Vec3::new(0.05, -1.0, 0.03).normalize();
+            let guarded =
+                sample_radiance_rgb(&ctx, origin, dir, &lights, None, 100.0, 7, ray_index as u64);
+            let reference =
+                range_only_reference(&ctx, origin, dir, &lights, 100.0, 7, ray_index as u64);
+            assert_eq!(
+                [
+                    guarded.0.x.to_bits(),
+                    guarded.0.y.to_bits(),
+                    guarded.0.z.to_bits(),
+                    guarded.1.to_bits(),
+                ],
+                [
+                    reference.0.x.to_bits(),
+                    reference.0.y.to_bits(),
+                    reference.0.z.to_bits(),
+                    reference.1.to_bits(),
+                ],
+                "ray from ({x}, {z}): full-term guard must match the range-only reference bit-for-bit"
+            );
+            if guarded.0 != Vec3::ZERO {
+                lit_samples += 1;
+            }
+        }
+        assert!(
+            lit_samples > 0,
+            "the fixture must produce lit samples to compare"
         );
     }
 

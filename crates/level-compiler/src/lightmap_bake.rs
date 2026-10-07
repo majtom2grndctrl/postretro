@@ -1017,11 +1017,34 @@ impl SoftProbes {
     /// [`soft_visibility`].
     pub(crate) fn new(light: &MapLight, full_samples: u32) -> Self {
         let full_samples = full_samples.max(SOFT_PROBE_SAMPLES);
+        let probes = match light.light_type {
+            // Point and spot probe sets snap on the unrotated sphere lattice,
+            // which depends on the count alone, so per-call callers (the SH
+            // bounce, delta and scatter bakes) reuse one snap per thread
+            // instead of re-deriving it for every receiver and light.
+            LightType::Point | LightType::Spot => SPHERE_PROBE_INDICES.with(|memo| {
+                if let Some((count, probes)) = memo.get()
+                    && count == full_samples
+                {
+                    return probes;
+                }
+                let probes = probe_indices(light, full_samples);
+                memo.set(Some((full_samples, probes)));
+                probes
+            }),
+            LightType::Directional => probe_indices(light, full_samples),
+        };
         Self {
             full_samples,
-            probes: probe_indices(light, full_samples),
+            probes,
         }
     }
+}
+
+thread_local! {
+    /// The last point/spot probe set this thread snapped, keyed by its count.
+    static SPHERE_PROBE_INDICES: std::cell::Cell<Option<(u32, [u32; SOFT_PROBE_SAMPLES as usize])>> =
+        const { std::cell::Cell::new(None) };
 }
 
 /// [`soft_visibility`] with a caller-supplied probe set; `probes` runs only

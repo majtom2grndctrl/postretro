@@ -5,6 +5,7 @@ status: active
 read at: 2bc52d471
 
 ## Corrections
+- AC 20, owner ruling on 2026-10-06: restated from "streamed vs force-full-resident are byte-equal" to "new-membership atlases are byte-identical to old-membership atlases, gated and full-resident". The literal compare differs wherever rows outside the gate lag, which is allowed and was the same before this change.
 - None. No source under `crates/` changed between the brief's `read at` (b9d0a4645) and 2bc52d471. The cited symbols were re-read anyway: `compose_row_membership`, `allocate_sparse_rows`, `SparsePool::{install_undoable,evict}`, `plan_frame_into`, `PassStaleness`, `parse_sparse_rows`, and the capture report lifecycle JSON. They match the brief and R4.
 
 ## Delegated answers
@@ -37,7 +38,7 @@ read at: 2bc52d471
 | 17 Scope grep | `git diff --name-only main` filtered on `.wgsl` / level-format / level-compiler / level-loader | achievable as stated | pass (empty) |
 | 18 Mac arena + station rows/ms before/after | owner, in-engine | manual | measured: arena 2129 → 70 rows per pass; indirect 6.71 → 0.40 ms, Pass B 8.01 → 0.43. Station indirect 2511 → 780 rows, 8.02 → 2.89 ms. Station Pass A 2511 → 327 rows, 9.06 → 1.55 ms per encoder (3.37 → 0.61 per frame). Station Pass B 9.38 → 0.89 ms. See `measurements/sh-compose-contributing-rows/README.md` |
 | 19 Station Pass B = id-45 rows ∪ Pass A rows | owner, in-engine | manual | measured: 75 id-45 rows; on Pass A frames, 75 ∪ 327 = 340, not 402, because 62 rows overlap. All 96 count windows match |
-| 20 Mac atlas byte check | owner, throwaway branch | manual | needs owner ruling on wording. New-membership atlases are byte-identical to old-membership atlases in all 12 scenes (3 views × 2 times × gated/full), both passes. A literal whole-atlas gated-vs-full compare differs at animroom and the arena, from lag outside the gate that the contract allows and that the old code had identically. It matches at the kinematic station. See the measurements README §Atlas byte check |
+| 20 Mac atlas byte check (restated: new membership vs old, gated and full) | owner, throwaway branch | manual | pass: byte-identical in all 12 scenes (3 views × 2 times × gated/full), both atlases. See the measurements README §Atlas byte check |
 
 Gate: `cargo fmt --check` ✓; `cargo clippy --target-dir target/preflight-clippy -- -D warnings` ✓; `cargo test` ✓ (60 targets, 9374 passed); `cargo check --release` ✓; `crate-graph --check` ✓; `dev-tools` renderer clippy and tests ✓; `capture` report tests ✓. Known and pre-existing: `cargo clippy --all-targets --features postretro/capture` fails in `capture/prepared.rs`, `capture/scene.rs`, `capture_shadowmask_groups.rs` and at `report.rs:27`. Each is outside this diff.
 

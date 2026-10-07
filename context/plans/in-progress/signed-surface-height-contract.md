@@ -43,7 +43,7 @@ Use `floor(x + 0.5)` in BOTH CPU and WGSL. Never `round()`: WGSL rounds half to 
 
 **Peak raise (D6).** `peak = max(0, max over every texel of every uploaded mip of s)`, then quantized with the same rule and the material's `L` when the uniform is built. Max of quantized equals quantized of max because the rule is monotonic. The peak is computed on the CPU from the slot's bytes in the renderer's texture load path, by a pure function in `postretro-render-cpu`. No surface map → peak 0. The march's ray starts at height `peak · depth_scale_m` above the plane, at the UV where the view ray crosses that height; DDA traversal from there is unchanged.
 
-**Uniform layout.** The 32-byte material uniform keeps its size. Bytes 8..12 (first half of today's `_pad`) become `surface_depth_peak_raise: f32`, the quantized peak fraction in `[0, 1]`. Bytes 12..16 stay padding. All other offsets are unchanged. The WGSL struct and `build_material_uniform` change together.
+**Uniform layout.** The 32-byte material uniform keeps its size. Bytes 8..12 (first half of today's `_pad`) become `surface_depth_peak_raise: f32`, the quantized peak fraction in `[0, 1]`. Bytes 12..16 carry the trough (P1). All other offsets are unchanged. The WGSL struct and `build_material_uniform` change together.
 
 **Gate.** The `has_depth` bit (set only for an `Rg8Unorm` slot) is now the *only* guard against the R8 placeholder: `g = 0` used to mean flat and now means maximum raise. The march must never run when `has_depth` is clear, and a test must pin that.
 
@@ -56,6 +56,35 @@ Use `floor(x + 0.5)` in BOTH CPU and WGSL. Never `round()`: WGSL rounds half to 
 **Fade.** Distance/LOD fade and quality `Off` scale `depth_scale_m` toward zero, which flattens to the true plane.
 
 **Unchanged hard constraints** (from the shader header): no `frag_depth` write; only `base_uv` is offset, never the lightmap UV; no derivative calls inside the snippet; no new binding or sampled texture; the face normal never reaches shadow-map receiver bias. Collision is untouched.
+
+## Performance (owner requirement)
+
+Doubling the span (D2) roughly doubles grazing-angle march length if nothing else changes. The owner's requirement is comparable visual results for comparable or less work. Treat cost as a first-class acceptance target, not a follow-up. This Mac has no GPU timing, so cost is measured as **DDA steps**, which the CPU reference reports deterministically.
+
+**P1 — Relief band.** At load, alongside the peak (D6), compute the material's **trough**: the lowest quantized `s` across every uploaded mip, clamped to `≤ 0`. The march's vertical extent is `[trough, peak]`, not `[−1, peak]`. A map that never goes darker than mid-gray marches only its raised band. Pack the trough into bytes 12..16 of the material uniform as `surface_depth_trough: f32` (fraction in `[−1, 0]`). With this, bytes 8..16 are both used and the uniform has no padding left.
+
+**P2 — Single-texel early-out (exact).** If the view ray's UV footprint across the whole band `[trough, peak]` stays inside the starting texel, the hit is that texel's top. Resolve it with one fetch and no loop. This is exact, not an approximation, and covers the common near-perpendicular view of floors and walls.
+
+**P3 — Band-relative shadow march.** The self-shadow march ends as soon as the ray climbs above the peak. Its budget stays as it is.
+
+**P4 — Flat band skip.** If `peak_q == trough_q == 0`, the material marches nothing: an all-mid-gray map costs the same as having no map.
+
+**Step-count harness (gate).** A deterministic test in `postretro-render-cpu` marches a fixed sweep of view directions × start positions across:
+- the three real `_h.png` assets (see D8), decoded or reproduced exactly;
+- a synthetic carve-only map;
+- a synthetic all-mid-gray map;
+- a synthetic ±full-range map.
+
+It records mean steps per fragment, p99 steps, and the starve rate (share of rays that hit the cap).
+
+**Baseline first.** The baseline numbers come from the **unmodified** march on today's encoding of the same assets, measured before the rewrite. Commit both sets of numbers into the test as pinned expectations, so a future change that raises step counts fails the test. Targets:
+- carve-only and all-mid-gray maps at or below baseline;
+- the three real assets' mean steps within 1.25× of baseline despite the doubled span;
+- the starve rate not above baseline.
+
+A target the levers above cannot reach is reported to the session with the numbers, not silently loosened.
+
+**Considered, not in this change:** maximum-mipmap / quadtree acceleration (Tevs et al. 2008) needs either a new texture, and the forward pass is at 16/16 sampled textures, or max-filtered G mips, which is a bake and format change against D4. If the harness shows P1–P4 miss the targets, this is the next lever, and it goes to the owner.
 
 ## Tracks and file ownership
 

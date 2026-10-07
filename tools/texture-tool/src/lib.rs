@@ -801,27 +801,37 @@ fn height_map(
 ) -> ImageBuffer<Rgba<u8>, Vec<u8>> {
     let (w, h) = diffuse.dimensions();
 
-    // Pivot contrast around the mean luminance rather than 0.5 so a dark or
-    // bright material still gets meaningful relief instead of being clipped
-    // against one rail.
+    // The engine reads mid-gray (128) as the true surface: darker sinks,
+    // lighter rises. Mean luminance maps onto that surface, so a dark or bright
+    // material still rises AND sinks around its own average instead of being
+    // clipped against one rail or offset wholesale off the plane.
     let mut sum = 0.0f32;
     for p in diffuse.pixels() {
         sum += luminance(*p);
     }
     let mean = sum / (w * h).max(1) as f32;
 
-    let mut img = ImageBuffer::from_fn(w, h, |x, y| {
+    ImageBuffer::from_fn(w, h, |x, y| {
         let l = wrapped_luma(diffuse, x as i32, y as i32);
-        let contrasted = (mean + (l - mean) * config.strength).clamp(0.0, 1.0);
-        let v = clamp_u8(contrasted * 255.0);
+        let centered = HEIGHT_SURFACE as f32 + (l - mean) * config.strength * 255.0;
+        let v = quantize_height(clamp_u8(centered), config.quantize_levels);
         Rgba([v, v, v, 255])
-    });
+    })
+}
 
-    // Reuse the exact posterization used for the diffuse map: the engine's
-    // aesthetic dial is terraced depth, so plateaus in the height map should
-    // read the same way plateaus in the diffuse map do.
-    quantize_chunks(&mut img, config.quantize_levels);
-    img
+/// The `_h.png` value the engine reads as the true surface plane.
+const HEIGHT_SURFACE: u8 = 128;
+
+/// Posterize a height value into `levels` terraces spread across 0..=255 with
+/// [`HEIGHT_SURFACE`] always one of them, so the mean-luminance region lands
+/// exactly on the surface rather than on whichever diffuse palette entry is
+/// nearest to 128. Terraces are the engine's aesthetic dial; their spatial
+/// boundaries still follow the diffuse's own.
+fn quantize_height(v: u8, levels: u8) -> u8 {
+    let per_side = (levels / 2).max(1) as f32;
+    let step = HEIGHT_SURFACE as f32 / per_side;
+    let offset = (v as f32 - HEIGHT_SURFACE as f32) / step;
+    clamp_u8(HEIGHT_SURFACE as f32 + (offset + 0.5).floor() * step)
 }
 
 fn aspect_crop(
@@ -1198,9 +1208,11 @@ mod tests {
 
         let low_distinct = distinct_values(&low);
         let high_distinct = distinct_values(&high);
+        // Two levels split one terrace to each side of the surface, and the
+        // surface itself is always a terrace: sink, surface, rise.
         assert!(
-            low_distinct <= 2,
-            "2-level quantization should produce at most 2 plateaus, got {low_distinct}"
+            low_distinct <= 3,
+            "2-level quantization should produce at most 3 plateaus, got {low_distinct}"
         );
         assert!(
             low_distinct < high_distinct,
@@ -1245,6 +1257,55 @@ mod tests {
             "polished-stone height strength should read more pronounced than \
              painted-metal: stone={stone_spread} metal={metal_spread}"
         );
+    }
+
+    #[test]
+    fn height_map_centers_mean_luminance_on_the_surface() {
+        // A uniform diffuse has no relief: every texel IS the mean, so the
+        // whole map must sit exactly on the surface plane at any quantization.
+        let diffuse = ImageBuffer::from_pixel(8, 8, Rgba([30, 30, 30, 255]));
+        for levels in [2, 3, 6, 24] {
+            let img = height_map(
+                &diffuse,
+                HeightConfig {
+                    strength: 1.5,
+                    quantize_levels: levels,
+                },
+            );
+            assert!(
+                img.pixels().all(|p| p[0] == HEIGHT_SURFACE),
+                "uniform diffuse must be flat mid-gray at {levels} levels"
+            );
+        }
+    }
+
+    #[test]
+    fn height_map_rises_and_sinks_around_the_surface() {
+        let diffuse = ImageBuffer::from_fn(16, 16, |x, _| {
+            let v = if x < 8 { 40 } else { 200 };
+            Rgba([v, v, v, 255])
+        });
+        let img = height_map(
+            &diffuse,
+            HeightConfig {
+                strength: 1.0,
+                quantize_levels: 6,
+            },
+        );
+        assert!(img.get_pixel(2, 0)[0] < HEIGHT_SURFACE, "dark half sinks");
+        assert!(
+            img.get_pixel(13, 0)[0] > HEIGHT_SURFACE,
+            "bright half rises"
+        );
+    }
+
+    #[test]
+    fn quantize_height_keeps_the_surface_as_a_terrace() {
+        for levels in 0..=32u8 {
+            assert_eq!(quantize_height(HEIGHT_SURFACE, levels), HEIGHT_SURFACE);
+            assert_eq!(quantize_height(127, levels.max(2)), HEIGHT_SURFACE);
+        }
+        assert_eq!(quantize_height(0, 6), 0);
     }
 
     #[test]

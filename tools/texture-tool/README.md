@@ -18,17 +18,18 @@ such as `metal/panel_01`; missing parent directories are created under the outpu
 
 ### Height maps (`stem_h.png`)
 
-`stem_h.png` is authored as a **conventional height map: white = raised, black = recessed.**
-Do not pre-invert it. The level compiler (`prl-build`) inverts height to depth at bake time
-(`depth = 255 - height`) when it packs the map into the engine's surface-depth channel, so authors
-always think in the familiar height-map convention; only the compiled `.prm` stores depth.
+`stem_h.png` is a grayscale height map centered on the surface: **mid-gray (`#808080`, 128) is
+the brush face, darker sinks below it, lighter rises above it.** Black sinks the material's full
+depth; white rises the same distance. Do not pre-invert it — `prl-build` handles the engine's
+internal encoding.
 
 Height is derived from diffuse luminance — the same signal `stem_n.png` differentiates via Sobel,
-sampled one derivative step earlier (undifferentiated). It is contrast-adjusted around the mean
-luminance by a profile-driven strength (see `--height-strength` below) and then posterized with
-the same quantization used for the diffuse map, so height plateaus line up with diffuse texel
-plateaus: the engine's aesthetic dial is terraced depth, and low quantization-level counts should
-read as visibly flat plateaus.
+sampled one derivative step earlier (undifferentiated). Mean luminance maps to mid-gray, so a
+material rises and sinks around its own average. A profile-driven strength scales contrast away
+from that mean (see `--height-strength` below). Posterizing then snaps values to terraces, with
+mid-gray always one of them. Height plateaus follow the diffuse's own plateaus: the engine's
+aesthetic dial is terraced depth, and low quantization-level counts should read as visibly flat
+plateaus.
 
 **Linear-output guarantee:** `stem_h.png`, like `stem_s.png` and `stem_n.png`, is written with no
 `sRGB`, `gAMA`, or `iCCP` PNG chunks and carries forward no color-management metadata from the
@@ -78,7 +79,7 @@ Optional flags:
 - `--normal-strength <f32>` defaults to `0.5`.
 - `--quantize-levels <u8>` defaults to `18` for `64`/`64x64`, otherwise `24`. Use `0` to request the default.
 - `--height-strength <f32>` overrides the selected spec profile's default height/depth contrast strength (see table below). Values above `1.0` exaggerate relief; values below `1.0` flatten it.
-- `--height-quantize-levels <u8>` defaults to the same size-based default as `--quantize-levels` (`18` for `64`/`64x64`, otherwise `24`). Use `0` to request the default. Lower level counts produce more pronounced, flatter plateaus — the intended retro read for the engine's terraced-depth parallax.
+- `--height-quantize-levels <u8>` defaults to the same size-based default as `--quantize-levels` (`18` for `64`/`64x64`, otherwise `24`). Use `0` to request the default. Terraces split evenly below and above the surface, plus mid-gray itself: `2` yields sink / surface / rise. Lower level counts produce more pronounced, flatter plateaus — the intended retro read for the engine's terraced-depth parallax.
 
 Spec profiles also set the default `_h.png` height/depth strength (overridable with
 `--height-strength`); a cobblestone/masonry-like profile wants pronounced, plateau-like steps,

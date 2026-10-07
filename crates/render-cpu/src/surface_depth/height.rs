@@ -116,6 +116,15 @@ impl SurfaceRelief {
 /// negative lobes, so a coarser mip can overshoot the base level's range, and
 /// residency may later make any level the one the march reads.
 ///
+/// That overshoot interacts with AO. If a coarse mip rises past the base
+/// level's highest texel by enough to move the QUANTIZED peak, the peak sits
+/// above every texel the march reads at the resident level. The march stays
+/// correct — it starts a little higher than it needs to — but no texel is at
+/// the peak any more: stone tops take nonzero AO (D5 measures from the peak),
+/// and a top hit no longer skips the self-shadow march, so it spends a budget
+/// slot on a march that cannot find an occluder. The shipped `_h.png` assets
+/// do not overshoot that far.
+///
 /// An empty chain is [`SurfaceRelief::FLAT`]. A level whose byte count is not
 /// two per texel is a debug assertion; a release build ignores a trailing odd
 /// byte.

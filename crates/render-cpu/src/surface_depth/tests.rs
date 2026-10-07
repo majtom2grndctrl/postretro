@@ -4,6 +4,18 @@ use postretro_render_data::material::{Material, SurfaceDepth};
 
 // -- Fixtures --
 
+/// An eye far above any band: the eye bound never engages.
+const FAR_EYE: f32 = f32::INFINITY;
+
+/// A view-march result at `uv` and signed `height` — what the self-shadow and
+/// AO terms read when a test wants to place a hit directly.
+fn hit_at(uv: [f32; 2], height: f32) -> SurfaceDepthHit {
+    SurfaceDepthHit {
+        height_meters: height,
+        ..SurfaceDepthHit::flat(uv)
+    }
+}
+
 /// Authored `_h.png` values.
 const BLACK: u8 = 0;
 const PLANE: u8 = 128;
@@ -618,7 +630,7 @@ fn an_all_mid_gray_field_is_an_exact_no_op_at_every_level_count() {
         let relief = band(&authored, levels);
         assert!(relief.is_flat());
         for dir in [[0.0, 0.0], [0.4, -0.2], [400.0, 90.0]] {
-            let hit = march_surface_depth(&f, [0.3, 0.7], dir, 0.02, relief, 48);
+            let hit = march_surface_depth(&f, [0.3, 0.7], dir, 0.02, relief, FAR_EYE, 48);
             assert_eq!(hit, SurfaceDepthHit::flat([0.3, 0.7]), "levels {levels}");
         }
     }
@@ -637,6 +649,7 @@ fn a_mid_gray_texel_top_is_exactly_height_zero_in_a_raised_map() {
             [0.0, 0.0],
             0.03,
             band(&authored, levels),
+            FAR_EYE,
             48,
         );
         assert_eq!(hit.face, SurfaceDepthFace::Top);
@@ -655,7 +668,7 @@ fn an_all_black_field_sinks_exactly_the_full_depth() {
         assert_eq!(relief.peak_raise, 0.0);
         assert_eq!(relief.trough, -1.0);
         for dir in [[0.0, 0.0], [3.0, 1.0], [-5.0, 2.0]] {
-            let hit = march_surface_depth(&f, [0.4, 0.6], dir, scale, relief, 48);
+            let hit = march_surface_depth(&f, [0.4, 0.6], dir, scale, relief, FAR_EYE, 48);
             assert_eq!(hit.height_meters, -scale, "levels {levels} dir {dir:?}");
             assert_eq!(hit.face, SurfaceDepthFace::Top);
         }
@@ -680,7 +693,7 @@ fn an_all_white_field_rises_by_its_quantized_peak() {
         assert_eq!(relief.peak_raise, expected_peak, "levels {levels}");
         assert_eq!(relief.trough, 0.0);
         for dir in [[0.0, 0.0], [3.0, 1.0], [-5.0, 2.0]] {
-            let hit = march_surface_depth(&f, [0.4, 0.6], dir, scale, relief, 48);
+            let hit = march_surface_depth(&f, [0.4, 0.6], dir, scale, relief, FAR_EYE, 48);
             assert_eq!(hit.height_meters, expected_peak * scale, "levels {levels}");
             assert_eq!(hit.face, SurfaceDepthFace::Top);
             // A plateau at the peak is met where the view ray enters the band.
@@ -695,7 +708,15 @@ fn a_straight_down_ray_lands_on_its_own_texel_top() {
     let authored = [64, PLANE, PLANE, PLANE];
     let g = stored(&authored);
     let f = field(2, 2, &g, 0);
-    let hit = march_surface_depth(&f, [0.25, 0.25], [0.0, 0.0], 0.02, band(&authored, 0), 48);
+    let hit = march_surface_depth(
+        &f,
+        [0.25, 0.25],
+        [0.0, 0.0],
+        0.02,
+        band(&authored, 0),
+        FAR_EYE,
+        48,
+    );
     assert!((hit.height_meters + 0.01).abs() < 1e-6);
     assert_eq!(hit.face, SurfaceDepthFace::Top);
     assert_eq!(hit.uv, [0.25, 0.25]);
@@ -718,6 +739,7 @@ fn a_neighbour_at_the_plane_is_hit_on_its_side_wall() {
         [0.5 / scale, 0.0],
         scale,
         band(&authored, 0),
+        FAR_EYE,
         48,
     );
     assert_eq!(hit.face, SurfaceDepthFace::NegU);
@@ -745,7 +767,15 @@ fn a_raised_stone_is_hit_on_its_side_wall_above_the_plane() {
     // Two texels of travel per full depth, landing on the plane at u = 2.25
     // texels: it entered the band at 0.25 and reaches the stone at 2.0, 7/8 of
     // the way down.
-    let hit = march_surface_depth(&f, [2.25 / 4.0, 0.5], [0.5 / scale, 0.0], scale, relief, 48);
+    let hit = march_surface_depth(
+        &f,
+        [2.25 / 4.0, 0.5],
+        [0.5 / scale, 0.0],
+        scale,
+        relief,
+        FAR_EYE,
+        48,
+    );
     assert_eq!(hit.face, SurfaceDepthFace::NegU);
     assert!((hit.march_uv[0] - 0.5).abs() < 1e-6);
     assert!(
@@ -755,7 +785,15 @@ fn a_raised_stone_is_hit_on_its_side_wall_above_the_plane() {
     );
 
     // Straight down onto the stone: its top, a full depth above the plane.
-    let top = march_surface_depth(&f, [2.25 / 4.0, 0.5], [0.0, 0.0], scale, relief, 48);
+    let top = march_surface_depth(
+        &f,
+        [2.25 / 4.0, 0.5],
+        [0.0, 0.0],
+        scale,
+        relief,
+        FAR_EYE,
+        48,
+    );
     assert_eq!(top.face, SurfaceDepthFace::Top);
     assert_eq!(top.height_meters, scale);
 }
@@ -770,6 +808,7 @@ fn a_side_hit_normal_opposes_the_direction_of_travel() {
         [25.0, 0.0],
         0.02,
         band(&right_stone, 0),
+        FAR_EYE,
         48,
     );
     assert_eq!(forward.face, SurfaceDepthFace::NegU);
@@ -783,6 +822,7 @@ fn a_side_hit_normal_opposes_the_direction_of_travel() {
         [-25.0, 0.0],
         0.02,
         band(&left_stone, 0),
+        FAR_EYE,
         48,
     );
     assert_eq!(backward.face, SurfaceDepthFace::PosU);
@@ -794,7 +834,15 @@ fn v_axis_crossings_produce_v_walls() {
     let authored = [BLACK, BLACK, PLANE, PLANE];
     let g = stored(&authored);
     let f = field(2, 2, &g, 0);
-    let hit = march_surface_depth(&f, [0.25, 0.25], [0.0, 25.0], 0.02, band(&authored, 0), 48);
+    let hit = march_surface_depth(
+        &f,
+        [0.25, 0.25],
+        [0.0, 25.0],
+        0.02,
+        band(&authored, 0),
+        FAR_EYE,
+        48,
+    );
     assert_eq!(hit.face, SurfaceDepthFace::NegV);
     assert_eq!(hit.face.normal_texel(), [0.0, -1.0, 0.0]);
 }
@@ -806,7 +854,15 @@ fn a_flush_texel_stops_the_ray_at_the_plane() {
     let authored = [PLANE, BLACK, BLACK, BLACK];
     let g = stored(&authored);
     let f = field(2, 2, &g, 0);
-    let hit = march_surface_depth(&f, [0.25, 0.25], [25.0, 0.0], 0.02, band(&authored, 0), 48);
+    let hit = march_surface_depth(
+        &f,
+        [0.25, 0.25],
+        [25.0, 0.0],
+        0.02,
+        band(&authored, 0),
+        FAR_EYE,
+        48,
+    );
     assert_eq!(hit.height_meters, 0.0);
     assert_eq!(hit.face, SurfaceDepthFace::Top);
 }
@@ -836,7 +892,7 @@ fn the_height_never_exceeds_the_bound_in_either_direction() {
                 for (az, uv0) in azimuths().into_iter().zip(starts.iter().cycle()) {
                     let per_m = tan / (bound / 6.0) / 8.0;
                     let dir = [az[0] * per_m, az[1] * per_m];
-                    let hit = march_surface_depth(&f, *uv0, dir, scale, relief, 48);
+                    let hit = march_surface_depth(&f, *uv0, dir, scale, relief, FAR_EYE, 48);
                     // One ulp of slack for `peak·s − (peak − s(T))·s`.
                     assert!(
                         hit.height_meters.abs() <= bound * (1.0 + 1.0e-6),
@@ -859,6 +915,273 @@ fn the_height_never_exceeds_the_bound_in_either_direction() {
     );
 }
 
+/// The DDA setup measures each moving axis to its next texel boundary, in
+/// meters of descent, and steps toward it.
+#[test]
+fn the_dda_setup_measures_each_axis_to_its_next_boundary() {
+    let dda = surface_depth_dda_setup([2.25, 3.75], [4.0, -2.0]);
+    assert_eq!(dda.cell, [2, 3]);
+    assert_eq!(dda.step, [1, -1]);
+    assert_eq!(dda.t_max, [0.1875, 0.375]);
+    assert_eq!(dda.t_delta, [0.25, 0.5]);
+    // A zero axis — `|dir| <= EPS`, negative zero included — keeps its
+    // sentinel and is never stepped. `floor` rounds a negative origin down.
+    let still = surface_depth_dda_setup([-1.5, 0.5], [SURFACE_DEPTH_EPS, -0.0]);
+    assert_eq!(still.cell, [-2, 0]);
+    assert_eq!(still.step, [0, 0]);
+    assert_eq!(still.t_max, [SURFACE_DEPTH_FAR; 2]);
+    assert_eq!(still.t_delta, [SURFACE_DEPTH_FAR; 2]);
+}
+
+/// A NaN axis is a zero axis, as in the shader's `abs(dir) > EPS` test: it is
+/// never stepped, rather than stepping `-1` with a NaN crossing distance.
+#[test]
+fn a_nan_direction_axis_is_never_stepped() {
+    let dda = surface_depth_dda_setup([0.5, 0.5], [f32::NAN, 2.0]);
+    assert_eq!(dda.step, [0, 1]);
+    assert_eq!(dda.t_max[0], SURFACE_DEPTH_FAR);
+    assert_eq!(dda.t_delta[0], SURFACE_DEPTH_FAR);
+    assert_eq!(dda.t_max[1], 0.25);
+}
+
+/// Tie-break: a ray through a texel corner crosses U first (`t_max.x <=
+/// t_max.y`). Pit at (0,0), (0,1) and (1,1); plane at (1,0). U first meets
+/// (1,0)'s -u wall at the corner; V first would enter the pit (0,1).
+#[test]
+fn a_view_ray_through_a_texel_corner_crosses_u_first() {
+    let authored = [BLACK, PLANE, BLACK, BLACK];
+    let g = stored(&authored);
+    let f = field(2, 2, &g, 0);
+    let hit = march_surface_depth(
+        &f,
+        [0.25, 0.25],
+        [25.0, 25.0],
+        0.02,
+        band(&authored, 0),
+        FAR_EYE,
+        48,
+    );
+    assert_eq!(hit.face, SurfaceDepthFace::NegU);
+    assert_eq!(hit.march_uv, [0.5, 0.5]);
+}
+
+/// The hit rules' comparisons: `z_exit > solid` is strict and `z_enter >=
+/// solid` is not. Both texels sink half the depth, and the ray leaves texel 0
+/// exactly at that height. It does not land on texel 0's top; it enters texel
+/// 1 at the top's height and hits its -u wall. Flipping either comparison
+/// returns a TOP hit instead.
+#[test]
+fn a_ray_leaving_a_texel_exactly_at_its_top_hits_the_next_wall() {
+    let authored = [64u8, 64];
+    let g = stored(&authored);
+    let f = field(2, 1, &g, 0);
+    let scale = 0.125;
+    let hit = march_surface_depth(
+        &f,
+        [0.25, 0.5],
+        [4.0, 0.0],
+        scale,
+        band(&authored, 0),
+        FAR_EYE,
+        48,
+    );
+    assert_eq!(hit.face, SurfaceDepthFace::NegU);
+    assert_eq!(hit.march_uv, [0.5, 0.5]);
+    assert_eq!(hit.height_meters, -0.5 * scale);
+    assert_eq!(hit.steps, 1);
+}
+
+/// Side-hit signs on every axis: the normal is the crossed axis negated, and
+/// the sample UV moves half a texel further along the step, into the texel
+/// that was entered.
+#[test]
+fn a_side_hit_biases_its_sample_uv_into_the_entered_texel() {
+    let half = SURFACE_DEPTH_SIDE_UV_BIAS_TEXELS / 2.0;
+    let cases = [
+        // +u into a plane texel: its -u wall, sampled further +u.
+        (
+            [BLACK, PLANE, BLACK, PLANE],
+            [0.25, 0.25],
+            [25.0, 0.0],
+            SurfaceDepthFace::NegU,
+            [half, 0.0],
+        ),
+        // -u: its +u wall, sampled further -u.
+        (
+            [PLANE, BLACK, PLANE, BLACK],
+            [0.75, 0.25],
+            [-25.0, 0.0],
+            SurfaceDepthFace::PosU,
+            [-half, 0.0],
+        ),
+        // +v: its -v wall, sampled further +v.
+        (
+            [BLACK, BLACK, PLANE, PLANE],
+            [0.25, 0.25],
+            [0.0, 25.0],
+            SurfaceDepthFace::NegV,
+            [0.0, half],
+        ),
+        // -v: its +v wall, sampled further -v.
+        (
+            [PLANE, PLANE, BLACK, BLACK],
+            [0.25, 0.75],
+            [0.0, -25.0],
+            SurfaceDepthFace::PosV,
+            [0.0, -half],
+        ),
+    ];
+    for (authored, uv0, dir, face, bias) in cases {
+        let g = stored(&authored);
+        let hit = march_surface_depth(
+            &field(2, 2, &g, 0),
+            uv0,
+            dir,
+            0.02,
+            band(&authored, 0),
+            FAR_EYE,
+            48,
+        );
+        assert_eq!(hit.face, face, "{face:?}");
+        assert_eq!(
+            [hit.uv[0] - hit.march_uv[0], hit.uv[1] - hit.march_uv[1]],
+            bias,
+            "{face:?}",
+        );
+        let n = face.normal_texel();
+        let crossed = [
+            dir[0].signum() * f32::from(dir[0] != 0.0),
+            dir[1].signum() * f32::from(dir[1] != 0.0),
+        ];
+        assert_eq!([n[0], n[1]], [-crossed[0], -crossed[1]], "{face:?}");
+    }
+}
+
+// -- The eye bound --
+
+/// The march never starts behind the camera. Plane, plane, plane, stone; the
+/// ray travels +u, two texels per full depth. From u = 1.5 texels the peak
+/// start lies two texels back, at u = −0.5, which wraps into the stone. With
+/// the eye a quarter of the depth above the plane, that start is behind the
+/// eye: the ray must start at the eye and meet the plane in front of it.
+#[test]
+fn an_eye_inside_the_band_starts_the_march_at_the_eye() {
+    let authored = [PLANE, PLANE, PLANE, WHITE];
+    let g = stored(&authored);
+    let f = field(4, 1, &g, 1);
+    let relief = band(&authored, 1);
+    assert_eq!(relief.peak_raise, 1.0);
+    let scale = 0.02;
+    let uv0 = [1.5 / 4.0, 0.5];
+    // 100 texels per meter of descent.
+    let dir = [25.0, 0.0];
+
+    // A far eye: the stone the peak start lands in is in front of it.
+    let far = march_surface_depth(&f, uv0, dir, scale, relief, FAR_EYE, 48);
+    assert_eq!(far.height_meters, scale);
+    assert!(far.march_uv[0] < 0.0);
+
+    let eye = 0.25 * scale;
+    let near = march_surface_depth(&f, uv0, dir, scale, relief, eye, 48);
+    assert_eq!(near.face, SurfaceDepthFace::Top);
+    assert_eq!(near.height_meters, 0.0);
+    assert_eq!(near.march_uv, uv0);
+    assert!(!near.starved);
+    // The full loop agrees: the early-out did not decide this alone.
+    assert_eq!(
+        march_surface_depth_full_loop(&f, uv0, dir, scale, relief, eye, 48),
+        near
+    );
+}
+
+/// An eye inside a texel that rises above it: the hit is at the eye, on the
+/// geometric top, never past it.
+#[test]
+fn an_eye_below_a_raised_texel_top_hits_at_the_eye() {
+    let authored = [WHITE; 4];
+    let g = stored(&authored);
+    let f = field(2, 2, &g, 1);
+    let relief = band(&authored, 1);
+    let scale = 0.02;
+    let eye = 0.25 * scale;
+    for dir in [[0.0, 0.0], [10.0, 5.0]] {
+        let hit = march_surface_depth(&f, [0.25, 0.25], dir, scale, relief, eye, 48);
+        assert_eq!(hit.face, SurfaceDepthFace::Top);
+        assert_eq!(hit.height_meters, eye);
+        assert_eq!(hit.steps, 0);
+    }
+}
+
+/// No hit ever lies past the camera: its signed height never exceeds the
+/// eye's, for any eye inside or above the band.
+#[test]
+fn the_march_never_resolves_behind_the_eye() {
+    let authored = noise(64, 29);
+    let g = stored(&authored);
+    let scale = 0.06;
+    let mut bounded = 0;
+    for levels in [0u32, 3, 6] {
+        let f = field(8, 8, &g, levels);
+        let relief = band(&authored, levels);
+        let peak_m = relief.peak_raise * scale;
+        assert!(peak_m > 0.0);
+        for eye in [
+            0.0001f32,
+            0.1 * peak_m,
+            0.5 * peak_m,
+            0.99 * peak_m,
+            2.0 * peak_m,
+        ] {
+            for tan in [0.0f32, 0.5, 2.0, 8.0] {
+                for az in azimuths() {
+                    let per_m = tan / 0.01 / 8.0;
+                    let dir = [az[0] * per_m, az[1] * per_m];
+                    for uv0 in [[0.37, 0.61], [0.05, 0.9], [0.52, 0.13]] {
+                        let hit = march_surface_depth(&f, uv0, dir, scale, relief, eye, 48);
+                        assert!(
+                            hit.height_meters <= eye * (1.0 + 1.0e-6),
+                            "height {} above the eye {eye}",
+                            hit.height_meters,
+                        );
+                        if eye < peak_m {
+                            bounded += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert!(bounded > 0);
+}
+
+/// An eye at or above the band marches bit-identically to no bound at all,
+/// which is why the step harness's pinned numbers do not move.
+#[test]
+fn a_far_eye_marches_exactly_as_without_the_bound() {
+    let authored = noise(64, 31);
+    let g = stored(&authored);
+    let scale = 0.06;
+    for levels in [0u32, 3, 6] {
+        let f = field(8, 8, &g, levels);
+        let relief = band(&authored, levels);
+        let peak_m = relief.peak_raise * scale;
+        for eye in [2.0 * peak_m, 1.0, 100.0] {
+            for tan in [0.0f32, 0.5, 2.0, 8.0] {
+                for az in azimuths() {
+                    let per_m = tan / 0.01 / 8.0;
+                    let dir = [az[0] * per_m, az[1] * per_m];
+                    let uv0 = [0.41, 0.17];
+                    assert_eq!(
+                        march_surface_depth(&f, uv0, dir, scale, relief, eye, 48),
+                        march_surface_depth(&f, uv0, dir, scale, relief, FAR_EYE, 48),
+                        "eye {eye} levels {levels}",
+                    );
+                }
+            }
+        }
+    }
+}
+
 /// D7: a starved march resolves flat at the true plane — original UV, height
 /// 0, geometric normal, top — rather than at the last boundary it crossed.
 #[test]
@@ -871,7 +1194,15 @@ fn a_starved_march_resolves_flat_at_the_plane() {
     let mut starved = 0;
     for az in azimuths() {
         // Grazing: thousands of texels per meter of descent.
-        let hit = march_surface_depth(&f, uv0, [az[0] * 5000.0, az[1] * 5000.0], 0.02, relief, 8);
+        let hit = march_surface_depth(
+            &f,
+            uv0,
+            [az[0] * 5000.0, az[1] * 5000.0],
+            0.02,
+            relief,
+            FAR_EYE,
+            8,
+        );
         if hit.starved {
             starved += 1;
             assert_eq!(hit.uv, uv0);
@@ -897,6 +1228,7 @@ fn the_march_terminates_within_the_step_budget_at_any_angle() {
             [az[0] * 5000.0, az[1] * 5000.0],
             0.02,
             relief,
+            FAR_EYE,
             12,
         );
         assert!(
@@ -917,19 +1249,21 @@ fn a_zero_step_budget_marches_like_a_budget_of_one() {
     let f = field(2, 2, &g, 0);
     let relief = band(&authored, 0);
     // Straight down: the first texel's top, half the depth below the plane.
-    let down = march_surface_depth(&f, [0.25, 0.25], [0.0, 0.0], 0.02, relief, 0);
+    let down = march_surface_depth(&f, [0.25, 0.25], [0.0, 0.0], 0.02, relief, FAR_EYE, 0);
     assert!(!down.starved);
     assert_eq!(down.face, SurfaceDepthFace::Top);
     assert!((down.height_meters + 0.01).abs() < 1e-7);
     // Grazing enough to leave the first texel: one iteration starves it flat.
     for dir in [[0.0, 0.0], [25.0, 0.0], [400.0, -90.0]] {
         assert_eq!(
-            march_surface_depth(&f, [0.25, 0.25], dir, 0.02, relief, 0),
-            march_surface_depth(&f, [0.25, 0.25], dir, 0.02, relief, 1),
+            march_surface_depth(&f, [0.25, 0.25], dir, 0.02, relief, FAR_EYE, 0),
+            march_surface_depth(&f, [0.25, 0.25], dir, 0.02, relief, FAR_EYE, 1),
             "dir {dir:?}",
         );
     }
-    assert!(march_surface_depth(&f, [0.25, 0.25], [400.0, -90.0], 0.02, relief, 0).starved);
+    assert!(
+        march_surface_depth(&f, [0.25, 0.25], [400.0, -90.0], 0.02, relief, FAR_EYE, 0).starved
+    );
 }
 
 /// P2 is exact: wherever the single-texel early-out fires it returns what
@@ -958,8 +1292,9 @@ fn the_single_texel_early_out_is_exact() {
                 for az in azimuths() {
                     let per_m = tan / 0.01 / 16.0;
                     let dir = [az[0] * per_m, az[1] * per_m];
-                    let full = march_surface_depth_full_loop(&f, uv0, dir, scale, relief, 48);
-                    let fast = march_surface_depth(&f, uv0, dir, scale, relief, 48);
+                    let full =
+                        march_surface_depth_full_loop(&f, uv0, dir, scale, relief, FAR_EYE, 48);
+                    let fast = march_surface_depth(&f, uv0, dir, scale, relief, FAR_EYE, 48);
                     assert_eq!(fast, full, "uv0 {uv0:?} dir {dir:?} levels {levels}");
 
                     let dims = [16.0f32, 16.0];
@@ -982,6 +1317,75 @@ fn the_single_texel_early_out_is_exact() {
     assert!(fired > 0 && looped > 0, "fired {fired}, looped {looped}");
 }
 
+/// P2 is the loop's first iteration whatever the starting texel holds: a top
+/// above the start (an eye inside the band, or a band that does not bound the
+/// field), a top below the band's floor, or a NaN. Hits are compared through
+/// `Debug` so a NaN on both sides still counts as equal.
+#[test]
+fn the_single_texel_early_out_matches_the_loop_whatever_the_texel_holds() {
+    let authored = noise(16 * 16, 17);
+    let mut g = stored(&authored);
+    for stored_g in g.iter_mut().step_by(7) {
+        *stored_g = f32::NAN;
+    }
+    let narrow = SurfaceRelief {
+        peak_raise: 0.25,
+        trough: -0.25,
+    };
+    let scale = 0.06;
+    let (mut fired, mut above_start) = (0, 0);
+    for levels in [0u32, 3] {
+        let f = field(16, 16, &g, levels);
+        for relief in [narrow, band(&authored, levels)] {
+            for eye in [FAR_EYE, 0.1 * relief.peak_raise * scale, 0.001] {
+                let mut state = 0x2545_F491u32 ^ levels;
+                for _ in 0..24 {
+                    state ^= state << 13;
+                    state ^= state >> 17;
+                    state ^= state << 5;
+                    let uv0 = [
+                        (state & 0xFFFF) as f32 / 65536.0,
+                        (state >> 16) as f32 / 65536.0,
+                    ];
+                    for tan in [0.0f32, 0.01, 0.05, 0.5] {
+                        for az in azimuths() {
+                            let per_m = tan / 0.01 / 16.0;
+                            let dir = [az[0] * per_m, az[1] * per_m];
+                            let full =
+                                march_surface_depth_full_loop(&f, uv0, dir, scale, relief, eye, 48);
+                            let fast = march_surface_depth(&f, uv0, dir, scale, relief, eye, 48);
+                            assert_eq!(
+                                format!("{fast:?}"),
+                                format!("{full:?}"),
+                                "uv0 {uv0:?} dir {dir:?} eye {eye} levels {levels}",
+                            );
+
+                            let top = relief.peak_raise.min(eye / scale);
+                            let d = [dir[0] * 16.0, dir[1] * 16.0];
+                            let start = [
+                                uv0[0] * 16.0 - d[0] * top * scale,
+                                uv0[1] * 16.0 - d[1] * top * scale,
+                            ];
+                            let dda = surface_depth_dda_setup(start, d);
+                            if surface_depth_single_texel_band(&dda, (top - relief.trough) * scale)
+                            {
+                                fired += 1;
+                                if f.texel_height(dda.cell[0], dda.cell[1]) > top {
+                                    above_start += 1;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        fired > 0 && above_start > 0,
+        "fired {fired}, above the start {above_start}"
+    );
+}
+
 // -- Self-shadowing --
 
 #[test]
@@ -994,8 +1398,7 @@ fn a_pit_floor_is_shadowed_by_the_wall_beside_it() {
     let scale = 0.02;
     let visibility = surface_depth_light_visibility(
         &f,
-        [0.25, 0.25],
-        -scale,
+        &hit_at([0.25, 0.25], -scale),
         [0.5 / scale, 0.0],
         scale,
         0.0,
@@ -1012,8 +1415,7 @@ fn a_pit_floor_is_lit_when_the_light_clears_the_wall() {
     let scale = 0.02;
     let visibility = surface_depth_light_visibility(
         &f,
-        [0.25, 0.25],
-        -scale,
+        &hit_at([0.25, 0.25], -scale),
         [0.05 / scale, 0.0],
         scale,
         0.0,
@@ -1033,15 +1435,27 @@ fn the_shadow_march_does_not_exit_at_the_plane_when_relief_rises_above_it() {
     assert_eq!(peak, 1.0);
     // The light reaches the stone's wall at half the depth above the plane,
     // below the stone's top: occluded.
-    let blocked =
-        surface_depth_light_visibility(&f, [0.25, 0.25], 0.0, [0.5 / scale, 0.0], scale, peak, 12);
+    let blocked = surface_depth_light_visibility(
+        &f,
+        &hit_at([0.25, 0.25], 0.0),
+        [0.5 / scale, 0.0],
+        scale,
+        peak,
+        12,
+    );
     assert_eq!(
         blocked, 0.0,
         "the raised stone must shadow the plane beside it"
     );
     // Steep enough to clear the stone's top before reaching it: lit.
-    let clear =
-        surface_depth_light_visibility(&f, [0.25, 0.25], 0.0, [0.05 / scale, 0.0], scale, peak, 12);
+    let clear = surface_depth_light_visibility(
+        &f,
+        &hit_at([0.25, 0.25], 0.0),
+        [0.05 / scale, 0.0],
+        scale,
+        peak,
+        12,
+    );
     assert_eq!(clear, 1.0);
 }
 
@@ -1055,8 +1469,7 @@ fn a_top_hit_never_shadows_itself() {
     for az in azimuths() {
         let visibility = surface_depth_light_visibility(
             &f,
-            [0.25, 0.25],
-            height,
+            &hit_at([0.25, 0.25], height),
             [az[0] * 30.0, az[1] * 30.0],
             scale,
             0.0,
@@ -1074,14 +1487,106 @@ fn a_top_hit_at_the_peak_skips_the_shadow_march() {
     let f = field(2, 2, &g, 1);
     let scale = 0.02;
     assert_eq!(
-        surface_depth_light_visibility(&f, [0.25, 0.25], scale, [30.0, 0.0], scale, 1.0, 12),
+        surface_depth_light_visibility(
+            &f,
+            &hit_at([0.25, 0.25], scale),
+            [30.0, 0.0],
+            scale,
+            1.0,
+            12
+        ),
         1.0
     );
     // A carve-only map's plane is its peak, so a plane hit still skips.
     assert_eq!(
-        surface_depth_light_visibility(&f, [0.25, 0.25], 0.0, [30.0, 0.0], scale, 0.0, 12),
+        surface_depth_light_visibility(&f, &hit_at([0.25, 0.25], 0.0), [30.0, 0.0], scale, 0.0, 12),
         1.0
     );
+}
+
+/// The light march breaks a corner tie the same way: U first. From the pit
+/// floor at (0,0) the plane texel (1,0) is the wall the light ray meets, so
+/// the floor is shadowed; V first would pass over pits (0,1) and (1,1) and
+/// leave the band lit.
+#[test]
+fn a_light_ray_through_a_texel_corner_crosses_u_first() {
+    let authored = [BLACK, PLANE, BLACK, BLACK];
+    let g = stored(&authored);
+    let f = field(2, 2, &g, 0);
+    let scale = 0.02;
+    let visibility = surface_depth_light_visibility(
+        &f,
+        &hit_at([0.25, 0.25], -scale),
+        [25.0, 25.0],
+        scale,
+        0.0,
+        12,
+    );
+    assert_eq!(visibility, 0.0);
+}
+
+#[test]
+fn the_shadow_budget_is_half_the_view_budget_and_never_zero() {
+    assert_eq!(surface_depth_shadow_steps(48), 24);
+    assert_eq!(surface_depth_shadow_steps(49), 24);
+    assert_eq!(surface_depth_shadow_steps(255), 127);
+    assert_eq!(surface_depth_shadow_steps(1), 1);
+    assert_eq!(surface_depth_shadow_steps(0), 1);
+}
+
+/// D7 holds through the type: a starved hit is flat, so it neither occludes
+/// nor self-shadows, whatever height it carries — the shader's `carved =
+/// false` gate.
+#[test]
+fn a_starved_hit_never_occludes_or_self_shadows() {
+    let authored = noise(9, 3);
+    let g = stored(&authored);
+    let f = field(3, 3, &g, 0);
+    let relief = band(&authored, 0);
+    assert!(
+        relief.peak_raise > 0.0,
+        "needs a raise for the gate to matter"
+    );
+    let scale = 0.02;
+    let starved = azimuths()
+        .into_iter()
+        .map(|az| {
+            march_surface_depth(
+                &f,
+                [0.13, 0.77],
+                [az[0] * 5000.0, az[1] * 5000.0],
+                scale,
+                relief,
+                FAR_EYE,
+                8,
+            )
+        })
+        .find(|hit| hit.starved)
+        .expect("a grazing ray must starve");
+    assert_eq!(
+        surface_depth_ambient_occlusion(&starved, relief.peak_raise, scale, 1.0),
+        1.0
+    );
+    // Ungated, the flat result on the plane reads as below the peak.
+    let ungated = SurfaceDepthHit {
+        starved: false,
+        ..starved
+    };
+    assert!(surface_depth_ambient_occlusion(&ungated, relief.peak_raise, scale, 1.0) < 1.0);
+
+    let mut ungated_shadowed = 0;
+    for az in azimuths() {
+        let light = [az[0] * 40.0, az[1] * 40.0];
+        assert_eq!(
+            surface_depth_light_visibility(&f, &starved, light, scale, relief.peak_raise, 12),
+            1.0
+        );
+        if surface_depth_light_visibility(&f, &ungated, light, scale, relief.peak_raise, 12) == 0.0
+        {
+            ungated_shadowed += 1;
+        }
+    }
+    assert!(ungated_shadowed > 0, "the gate must be what keeps it lit");
 }
 
 // -- Ambient occlusion (D5) --
@@ -1093,10 +1598,10 @@ fn ambient_occlusion_is_zero_on_a_texel_at_the_peak() {
     let f = field(2, 2, &g, 1);
     let relief = band(&authored, 1);
     let scale = 0.02;
-    let hit = march_surface_depth(&f, [0.25, 0.25], [0.0, 0.0], scale, relief, 48);
+    let hit = march_surface_depth(&f, [0.25, 0.25], [0.0, 0.0], scale, relief, FAR_EYE, 48);
     assert_eq!(hit.height_meters, relief.peak_raise * scale);
     assert_eq!(
-        surface_depth_ambient_occlusion(hit.height_meters, relief.peak_raise, scale, 1.0),
+        surface_depth_ambient_occlusion(&hit, relief.peak_raise, scale, 1.0),
         1.0
     );
 }
@@ -1114,10 +1619,11 @@ fn ambient_occlusion_is_zero_across_an_all_mid_gray_map() {
             [az[0] * 40.0, az[1] * 40.0],
             0.02,
             relief,
+            FAR_EYE,
             48,
         );
         assert_eq!(
-            surface_depth_ambient_occlusion(hit.height_meters, relief.peak_raise, 0.02, 1.0),
+            surface_depth_ambient_occlusion(&hit, relief.peak_raise, 0.02, 1.0),
             1.0
         );
     }
@@ -1145,10 +1651,11 @@ fn ambient_occlusion_of_a_carve_only_map_is_the_pre_signed_formula() {
                 [az[0] * per_m, az[1] * per_m],
                 scale,
                 relief,
+                FAR_EYE,
                 48,
             );
             for fade in [1.0f32, 0.5, 0.1] {
-                let ao = surface_depth_ambient_occlusion(hit.height_meters, 0.0, scale, fade);
+                let ao = surface_depth_ambient_occlusion(&hit, 0.0, scale, fade);
                 assert_eq!(ao, today(-hit.height_meters, scale, fade));
                 if ao < 1.0 {
                     occluded += 1;
@@ -1162,16 +1669,47 @@ fn ambient_occlusion_of_a_carve_only_map_is_the_pre_signed_formula() {
 #[test]
 fn ambient_occlusion_darkens_mid_gray_between_raised_texels() {
     let peak = 0.5;
-    let ao = surface_depth_ambient_occlusion(0.0, peak, 0.02, 1.0);
+    let ao = surface_depth_ambient_occlusion(&hit_at([0.0, 0.0], 0.0), peak, 0.02, 1.0);
     assert!(ao < 1.0);
     assert_eq!(ao, 1.0 - SURFACE_DEPTH_AO_STRENGTH * peak);
 }
 
+/// AO divides by the scale the march resolved with: clamped to
+/// `SURFACE_DEPTH_MAX_METERS`, as the shader clamps before both. A full-depth
+/// sink past the ceiling is fully occluded; dividing by the raw 0.5 m scale
+/// read the same −0.2 m hit as 40% of the depth (0.70).
+#[test]
+fn ambient_occlusion_uses_the_clamped_scale_above_the_ceiling() {
+    let authored = [BLACK; 4];
+    let g = stored(&authored);
+    let f = field(2, 2, &g, 6);
+    let relief = band(&authored, 6);
+    let depth_scale = 0.5;
+    assert!(depth_scale > SURFACE_DEPTH_MAX_METERS);
+    let hit = march_surface_depth(
+        &f,
+        [0.25, 0.25],
+        [0.0, 0.0],
+        depth_scale,
+        relief,
+        FAR_EYE,
+        48,
+    );
+    assert_eq!(hit.height_meters, -SURFACE_DEPTH_MAX_METERS);
+    assert_eq!(
+        surface_depth_ambient_occlusion(&hit, relief.peak_raise, depth_scale, 1.0),
+        1.0 - SURFACE_DEPTH_AO_STRENGTH,
+    );
+}
+
 #[test]
 fn ambient_occlusion_never_darkens_a_flat_material() {
-    assert_eq!(surface_depth_ambient_occlusion(0.0, 0.0, 0.0, 1.0), 1.0);
     assert_eq!(
-        surface_depth_ambient_occlusion(0.0, 1.0, f32::NAN, 1.0),
+        surface_depth_ambient_occlusion(&hit_at([0.0, 0.0], 0.0), 0.0, 0.0, 1.0),
+        1.0
+    );
+    assert_eq!(
+        surface_depth_ambient_occlusion(&hit_at([0.0, 0.0], 0.0), 1.0, f32::NAN, 1.0),
         1.0
     );
 }
@@ -1184,18 +1722,21 @@ fn ambient_occlusion_never_darkens_a_flat_material() {
 #[test]
 fn ambient_occlusion_fades_out_with_the_relief() {
     let peak = 0.5;
-    let full = surface_depth_ambient_occlusion(-0.02, peak, 0.02, 1.0);
+    let full = surface_depth_ambient_occlusion(&hit_at([0.0, 0.0], -0.02), peak, 0.02, 1.0);
     assert!(full < 1.0);
     let mut previous = full;
     for step in 1..=10u8 {
         let fade = 1.0 - f32::from(step) / 10.0_f32;
         let scale = 0.02 * fade;
-        let ao = surface_depth_ambient_occlusion(-scale, peak, scale, fade);
+        let ao = surface_depth_ambient_occlusion(&hit_at([0.0, 0.0], -scale), peak, scale, fade);
         // STRICTLY weaker: `>=` passes on a constant function.
         assert!(ao > previous, "{ao} is not above {previous} at fade {fade}");
         previous = ao;
     }
-    assert_eq!(surface_depth_ambient_occlusion(0.0, peak, 0.0, 0.0), 1.0);
+    assert_eq!(
+        surface_depth_ambient_occlusion(&hit_at([0.0, 0.0], 0.0), peak, 0.0, 0.0),
+        1.0
+    );
 }
 
 // -- Fade, basis --

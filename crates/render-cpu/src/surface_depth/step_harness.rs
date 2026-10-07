@@ -47,6 +47,10 @@ const AZIMUTHS: [(i32, i32); 16] = [
     (1, -1),
     (3, -1),
 ];
+/// The eye's height above the plane: a standing eye, far above any band, so
+/// the eye bound never engages and the sweep marches from the peak exactly as
+/// it did before the bound existed.
+const EYE_HEIGHT_M: f32 = 1.0;
 const STARTS: usize = 64;
 const RAYS: u64 = (STARTS * TAN_THETA.len() * AZIMUTHS.len()) as u64;
 
@@ -184,7 +188,15 @@ fn measure(map: &Map) -> Steps {
                     ax as f32 / len * per_m / dims[0],
                     ay as f32 / len * per_m / dims[1],
                 ];
-                let hit = march_surface_depth(&field, uv0, dir, scale, relief, tuning.max_steps);
+                let hit = march_surface_depth(
+                    &field,
+                    uv0,
+                    dir,
+                    scale,
+                    relief,
+                    EYE_HEIGHT_M,
+                    tuning.max_steps,
+                );
                 steps.push(hit.steps);
                 starved += u64::from(hit.starved);
             }

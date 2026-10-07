@@ -342,6 +342,8 @@ fn shader_constants_match_the_cpu_reference() {
             sd::SURFACE_DEPTH_MAX_UV_SCALE_M,
         ),
         ("SURFACE_DEPTH_MIN_DESCENT", sd::SURFACE_DEPTH_MIN_DESCENT),
+        ("SURFACE_DEPTH_EPS", sd::SURFACE_DEPTH_EPS),
+        ("SURFACE_DEPTH_FAR", sd::SURFACE_DEPTH_FAR),
     ] {
         assert_eq!(
             declared_f32(name),
@@ -917,9 +919,10 @@ fn a_non_surface_map_slot_never_marches_even_when_its_g_would_read_as_max_raise(
 }
 
 /// The signed march's structure, pinned against the CPU authority's: it starts
-/// at the peak (D6), measures the band (P1/P4), resolves a starved march flat
-/// (D7), reports a signed height along the view ray, measures AO from the peak
-/// (D5) and ends the shadow march at the peak's clearance (P3). The CPU's
+/// at the peak (D6) or the eye, whichever is lower (the eye bound), measures
+/// the band (P1/P4), resolves a starved march flat (D7), reports a signed
+/// height along the view ray, measures AO from the peak (D5) and ends the
+/// shadow march at the peak's clearance (P3). The CPU's
 /// single-texel early-out (P2) has no GPU branch: it resolves exactly what the
 /// loop's first iteration does, so parity holds on results.
 #[test]
@@ -930,10 +933,12 @@ fn the_shader_march_mirrors_the_signed_cpu_march() {
         "let trough = material.surface_depth_trough;",
         "let band_m = (peak - trough) * depth_scale_m;",
         "if !(band_m > 0.0) {",
-        "let start = p0 - dir * peak_m;",
-        "let solid = (peak - surface_depth_texel(surface_depth_fold(dda.cell, dims_i), base_mip, levels))",
+        "let top = min(peak, view_distance * descent / depth_scale_m);",
+        "let top_m = top * depth_scale_m;",
+        "let start = p0 - dir * top_m;",
+        "let solid = (top - surface_depth_texel(surface_depth_fold(dda.cell, dims_i), base_mip, levels))",
         "if walked + 1u >= max_steps {",
-        "let height_m = peak_m - z_hit;",
+        "let height_m = top_m - z_hit;",
         "out.world_position = world_position + view_to_eye * (height_m / descent);",
         "clamp(depth.peak_raise - depth.height_m / depth.depth_scale_m, 0.0, 1.0)",
         "let clearance = depth.peak_raise * depth.depth_scale_m - depth.height_m;",
@@ -958,6 +963,24 @@ fn the_shader_march_mirrors_the_signed_cpu_march() {
             .starts_with("return flat_result;"),
         "a starved march must resolve flat at the plane (D7)",
     );
+    // The eye bound needs the fragment-to-eye distance: both consumers pass the
+    // camera distance, not some other length.
+    for (label, consumer, camera) in [
+        ("forward", FORWARD, "uniforms.camera_position"),
+        ("kinematic brush", KINEMATIC, "camera.camera_position"),
+    ] {
+        let consumer = normalized(&strip_line_comments(consumer));
+        for expected in [
+            format!("let view_vector = {camera} - in.world_position;"),
+            "let view_distance = length(view_vector);".to_owned(),
+            "surface_depth_resolve( in.uv, in.world_position, mesh_n, V, view_distance,".to_owned(),
+        ] {
+            assert!(
+                consumer.contains(&expected),
+                "{label}: the eye bound must receive the camera distance: missing `{expected}`",
+            );
+        }
+    }
     // The old carve-only vocabulary must be gone so no consumer keeps the old
     // sign by accident.
     assert!(
@@ -1016,4 +1039,154 @@ fn the_dda_shapes_hold_their_measured_cost() {
             && light.matches("surface_depth_fold_step(texel.").count() == 2,
         "the light march steps a folded coordinate on both axes",
     );
+}
+
+/// Collapse every whitespace run to one space, so a pinned expression survives
+/// a reflow across lines.
+fn normalized(code: &str) -> String {
+    code.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// The body of `fn name(` up to the next `fn` in [`normalized`] code, for
+/// pins that must hold in one march and not merely somewhere in the snippet.
+fn function_body<'a>(code: &'a str, name: &str) -> &'a str {
+    let at = code
+        .find(&format!("fn {name}("))
+        .unwrap_or_else(|| panic!("snippet must declare {name}"));
+    let rest = &code[at + 3..];
+    &rest[..rest.find(" fn ").unwrap_or(rest.len())]
+}
+
+/// Every step of the two DDAs that a reshape could silently change, pinned as
+/// shader text against the CPU authority, which proves each one by test
+/// (`postretro_render_cpu::surface_depth`'s tests: DDA setup, corner
+/// tie-break, the hit rules' equality cases, side-hit signs, the shadow budget,
+/// the AO clamp). Shape, not bits: GPU parity is exact for the byte decode, the
+/// half step and mid-gray, but the terrace division may differ by an ulp under
+/// fast math, so no test here asserts GPU bit equality.
+#[test]
+fn the_shader_dda_steps_mirror_the_cpu_authority() {
+    let code = normalized(&strip_line_comments(SNIPPET));
+    let mut pins = vec![
+        // DDA setup: start cell, sentinels, and per-axis step, first crossing
+        // and spacing. The zero test is `abs(dir) > EPS`; the CPU writes it
+        // `!above(|dir|, EPS)` so a NaN axis is zero on both sides.
+        "dda.cell = vec2<i32>(floor(origin));".to_owned(),
+        "dda.t_max = vec2<f32>(SURFACE_DEPTH_FAR, SURFACE_DEPTH_FAR);".to_owned(),
+        "dda.t_delta = vec2<f32>(SURFACE_DEPTH_FAR, SURFACE_DEPTH_FAR);".to_owned(),
+        "dda.step_dir = vec2<i32>(0, 0);".to_owned(),
+        // The hit rules: `>=` on entry (side wall), strict `>` on exit (top).
+        "let z_exit = min(dda.t_max.x, dda.t_max.y);".to_owned(),
+        "if z_enter >= solid { z_hit = z_enter; hit_normal_ts = entry_normal_ts; hit_bias = entry_bias; break; }".to_owned(),
+        "if z_exit > solid { z_hit = solid; break; }".to_owned(),
+        // The view-march budget is floored at one iteration.
+        "let max_steps = max(packed & SURFACE_DEPTH_MAX_STEPS_MASK, 1u);".to_owned(),
+        // The resolved hit: unbiased march UV, biased sample UV, face normal
+        // from the TBN, top test.
+        "let hit_texel = start + dir * z_hit;".to_owned(),
+        "out.uv = (hit_texel + hit_bias) / dims;".to_owned(),
+        "out.march_uv = hit_texel / dims;".to_owned(),
+        "out.normal = normalize( tangent * hit_normal_ts.x + bitangent * hit_normal_ts.y + geo_normal * hit_normal_ts.z );".to_owned(),
+        "out.hit_top = hit_normal_ts.z > 0.5;".to_owned(),
+        // The self-shadow budget: half the view budget, never zero.
+        "out.shadow_steps = max(max_steps / 2u, 1u);".to_owned(),
+        "for (var i: u32 = 0u; i < depth.shadow_steps; i = i + 1u) {".to_owned(),
+        // The height is read from the G channel, at an explicit level.
+        "let stored_g = textureLoad(spec_texture, folded, level).g;".to_owned(),
+        // The fold and the folded step.
+        "let folded = coord % dims;".to_owned(),
+        "return select(folded + dims, folded, folded >= vec2<i32>(0, 0));".to_owned(),
+        "let next = folded + step;".to_owned(),
+        "return select(select(next, next - dim, next >= dim), next + dim, next < 0);".to_owned(),
+        // Fade: distance ramp, LOD ramp, LOD measured in resident texels, and
+        // the stricter of the two.
+        "if fade_distance_m <= 0.0 { return 0.0; }".to_owned(),
+        "let ramp = max(fade_distance_m * SURFACE_DEPTH_FADE_DISTANCE_FRACTION, SURFACE_DEPTH_EPS);".to_owned(),
+        "return clamp((fade_distance_m - distance_m) / ramp, 0.0, 1.0);".to_owned(),
+        "return clamp(1.0 - (lod - SURFACE_DEPTH_FADE_LOD_START) / SURFACE_DEPTH_FADE_LOD_RANGE, 0.0, 1.0);".to_owned(),
+        "let lod = log2(max(footprint, SURFACE_DEPTH_EPS));".to_owned(),
+        "let fade = min( surface_depth_distance_fade(view_distance, material.surface_depth_fade_distance), surface_depth_lod_fade(lod), );".to_owned(),
+        // AO: gated on a carved hit and its own mask bit, divided by the
+        // CLAMPED scale (the resolve clamps before both terms), and scaled by
+        // the fade.
+        "depth_scale_m = min(depth_scale_m, SURFACE_DEPTH_MAX_METERS * fade);".to_owned(),
+        "out.depth_scale_m = depth_scale_m;".to_owned(),
+        "if !depth.carved || (light_terms & LIGHT_TERM_DEPTH_AO) == 0u { return 1.0; }".to_owned(),
+        "if !(depth.depth_scale_m > SURFACE_DEPTH_EPS) { return 1.0; }".to_owned(),
+        "return 1.0 - SURFACE_DEPTH_AO_STRENGTH * depth.fade * clamp(depth.peak_raise - depth.height_m / depth.depth_scale_m, 0.0, 1.0);".to_owned(),
+        // D7 for the self-shadow march: a flat (starved) result never marches.
+        "fn surface_depth_light_visibility(depth: SurfaceDepthResult, to_light: vec3<f32>) -> f32 { if !depth.carved { return 1.0; }".to_owned(),
+    ];
+    for axis in ["x", "y"] {
+        pins.extend([
+            format!("if abs(dir.{axis}) > SURFACE_DEPTH_EPS {{"),
+            format!("let positive = dir.{axis} > 0.0;"),
+            format!("dda.step_dir.{axis} = select(-1, 1, positive);"),
+            format!(
+                "let boundary = select(f32(dda.cell.{axis}), f32(dda.cell.{axis} + 1), positive);"
+            ),
+            format!("dda.t_max.{axis} = (boundary - origin.{axis}) / dir.{axis};"),
+            format!("dda.t_delta.{axis} = abs(1.0 / dir.{axis});"),
+            // Both marches advance the crossed axis by its spacing.
+            format!("dda.t_max.{axis} = dda.t_max.{axis} + dda.t_delta.{axis};"),
+        ]);
+    }
+    // Side hits: the normal is the crossed axis negated, and the sample UV is
+    // biased half a texel along the step, into the entered texel.
+    pins.extend([
+        "dda.cell.x = dda.cell.x + dda.step_dir.x; z_enter = dda.t_max.x; dda.t_max.x = dda.t_max.x + dda.t_delta.x; entry_normal_ts = vec3<f32>(-f32(dda.step_dir.x), 0.0, 0.0); entry_bias = vec2<f32>(f32(dda.step_dir.x) * SURFACE_DEPTH_SIDE_UV_BIAS_TEXELS, 0.0);".to_owned(),
+        "dda.cell.y = dda.cell.y + dda.step_dir.y; z_enter = dda.t_max.y; dda.t_max.y = dda.t_max.y + dda.t_delta.y; entry_normal_ts = vec3<f32>(0.0, -f32(dda.step_dir.y), 0.0); entry_bias = vec2<f32>(0.0, f32(dda.step_dir.y) * SURFACE_DEPTH_SIDE_UV_BIAS_TEXELS);".to_owned(),
+        "texel.x = surface_depth_fold_step(texel.x, dda.step_dir.x, dims_i.x); risen = dda.t_max.x;".to_owned(),
+        "texel.y = surface_depth_fold_step(texel.y, dda.step_dir.y, dims_i.y); risen = dda.t_max.y;".to_owned(),
+    ]);
+    for pin in &pins {
+        assert!(
+            code.contains(pin.as_str()),
+            "the shader DDA has drifted from the CPU authority: missing `{pin}`",
+        );
+    }
+
+    // Tie-break: U is stepped on a tie, in BOTH marches.
+    for march in ["surface_depth_resolve", "surface_depth_light_visibility"] {
+        assert_eq!(
+            function_body(&code, march)
+                .matches("if dda.t_max.x <= dda.t_max.y {")
+                .count(),
+            1,
+            "{march} must step U on a corner tie, as the CPU authority does",
+        );
+    }
+}
+
+/// The pinned fold and folded-step expressions, transcribed with WGSL's
+/// semantics (`%` truncates like Rust's; `select(f, t, c)` is `if c { t } else
+/// { f }`), wrap exactly like `AddressMode::Repeat`: stepping a folded
+/// coordinate equals folding the stepped one.
+#[test]
+fn the_pinned_fold_expressions_wrap_like_repeat() {
+    let select = |f: i32, t: i32, c: bool| if c { t } else { f };
+    let fold = |coord: i32, dim: i32| {
+        let folded = coord % dim;
+        select(folded + dim, folded, folded >= 0)
+    };
+    let fold_step = |folded: i32, step: i32, dim: i32| {
+        let next = folded + step;
+        select(select(next, next - dim, next >= dim), next + dim, next < 0)
+    };
+    for dim in 1..=7 {
+        for coord in -40..40 {
+            assert_eq!(
+                fold(coord, dim),
+                coord.rem_euclid(dim),
+                "fold {coord} in {dim}"
+            );
+            for step in -1..=1 {
+                assert_eq!(
+                    fold_step(fold(coord, dim), step, dim),
+                    (coord + step).rem_euclid(dim),
+                    "step {step} from {coord} in {dim}",
+                );
+            }
+        }
+    }
 }

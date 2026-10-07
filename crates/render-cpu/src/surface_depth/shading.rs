@@ -1,6 +1,7 @@
 //! Fade and ambient occlusion: the per-fragment terms that scale how much the
 //! march shows.
 
+use super::march::{SurfaceDepthHit, surface_depth_march_scale};
 use super::{SURFACE_DEPTH_EPS, above};
 
 /// Screen-space LOD (in base-mip texels per pixel, log2) at which the relief
@@ -56,26 +57,37 @@ pub fn surface_depth_fade(distance_meters: f32, fade_distance_meters: f32, lod: 
 /// Ambient occlusion factor for the SH indirect term (D5).
 ///
 /// Measured from the material's PEAK raise, not the plane:
-/// `ao_fraction = clamp(peak_raise − hit_height / depth_scale, 0, 1)`. Mortar
+/// `ao_fraction = clamp(peak_raise − height / scale, 0, 1)`. Mortar
 /// between raised stones darkens by its depth below the stone tops wherever
 /// the author put the plane; an all-mid-gray map, or a texel at the peak, gets
 /// none. With `peak_raise = 0` (a carve-only map) this is exactly the
 /// pre-signed formula, since `0 − h/s` and `(−h)/s` are the same float.
 ///
-/// `peak_raise` is the quantized fraction from the uniform. `hit_height_meters`
+/// `peak_raise` is the quantized fraction from the uniform. The hit's height
 /// and `depth_scale_meters` are both post-fade, so their ratio is the raw texel
 /// value at every fade; the `fade` factor is what makes the occlusion degrade
-/// with the relief instead of popping at the fade boundary. A starved march
-/// (D7) is flat: its caller skips this and uses 1.
+/// with the relief instead of popping at the fade boundary.
+///
+/// `scale` is [`surface_depth_march_scale`] of `depth_scale_meters` — the same
+/// clamped scale the march resolved the height with (the shader clamps before
+/// both). Dividing by the raw scale past `SURFACE_DEPTH_MAX_METERS` would
+/// report a full-depth hit as partly occluded.
+///
+/// Takes the whole view-march result so D7 cannot be skipped: a starved hit is
+/// flat and never occludes (the shader's `carved = false` gate).
 pub fn surface_depth_ambient_occlusion(
-    hit_height_meters: f32,
+    hit: &SurfaceDepthHit,
     peak_raise: f32,
     depth_scale_meters: f32,
     fade: f32,
 ) -> f32 {
-    if !above(depth_scale_meters, SURFACE_DEPTH_EPS) {
+    if hit.starved {
         return 1.0;
     }
-    let below_peak = (peak_raise - hit_height_meters / depth_scale_meters).clamp(0.0, 1.0);
+    let scale = surface_depth_march_scale(depth_scale_meters);
+    if !above(scale, SURFACE_DEPTH_EPS) {
+        return 1.0;
+    }
+    let below_peak = (peak_raise - hit.height_meters / scale).clamp(0.0, 1.0);
     1.0 - SURFACE_DEPTH_AO_STRENGTH * fade * below_peak
 }

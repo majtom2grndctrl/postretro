@@ -805,11 +805,15 @@ fn height_map(
     // lighter rises. Mean luminance maps onto that surface, so a dark or bright
     // material still rises AND sinks around its own average instead of being
     // clipped against one rail or offset wholesale off the plane.
-    let mut sum = 0.0f32;
+    //
+    // Summed in f64: an f32 running sum over a 1024² or 2048² image loses the
+    // low bits of every addend once it is large, which drifted a uniform
+    // image's mean far enough to offset the whole map by a terrace.
+    let mut sum = 0.0f64;
     for p in diffuse.pixels() {
-        sum += luminance(*p);
+        sum += f64::from(luminance(*p));
     }
-    let mean = sum / (w * h).max(1) as f32;
+    let mean = (sum / f64::from((w * h).max(1))) as f32;
 
     ImageBuffer::from_fn(w, h, |x, y| {
         let l = wrapped_luma(diffuse, x as i32, y as i32);
@@ -1276,6 +1280,27 @@ mod tests {
             assert!(
                 img.pixels().all(|p| p[0] == HEIGHT_SURFACE),
                 "uniform diffuse must be flat mid-gray at {levels} levels"
+            );
+        }
+    }
+
+    /// At 2048² an f32 running sum drifts: a uniform image's mean lands off its
+    /// own luminance and the whole map shifts off the plane by a terrace.
+    #[test]
+    fn a_large_uniform_image_is_exactly_flat() {
+        for v in [30u8, 128, 200, 255] {
+            let diffuse = ImageBuffer::from_pixel(2048, 2048, Rgba([v, v, v, 255]));
+            let img = height_map(
+                &diffuse,
+                HeightConfig {
+                    strength: 1.5,
+                    quantize_levels: 24,
+                },
+            );
+            assert!(
+                img.pixels().all(|p| p[0] == HEIGHT_SURFACE),
+                "uniform {v} at 2048² must be flat mid-gray, got {}",
+                img.get_pixel(0, 0)[0],
             );
         }
     }

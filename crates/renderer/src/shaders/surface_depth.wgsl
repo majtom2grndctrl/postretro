@@ -359,10 +359,10 @@ fn surface_depth_dda_setup(origin: vec2<f32>, dir: vec2<f32>) -> SurfaceDepthDda
 // by construction. The baked tangent still owns normal mapping, which is a
 // different, authored tangent space.
 //
-// The march measures DESCENT from the peak raise. Per texel `T` the solid's top
-// lies `solid(T) = (peak - s(T)) * scale >= 0` below the ray's start, so the
-// loop body is the same walk the carve-only field used; the start just moved up
-// from the plane to the peak (D6).
+// The march measures DESCENT from where the ray starts: the peak raise, or the
+// eye if lower. Per texel `T` the solid's top lies `solid(T) = (top - s(T)) *
+// scale` below the start, so the loop body is the same walk the carve-only
+// field used; the start just moved up from the plane to the peak (D6).
 fn surface_depth_resolve(
     uv: vec2<f32>,
     world_position: vec3<f32>,
@@ -471,7 +471,6 @@ fn surface_depth_resolve(
     // nothing, so it costs the same as having no map.
     let peak = material.surface_depth_peak_raise;
     let trough = material.surface_depth_trough;
-    let peak_m = peak * depth_scale_m;
     let band_m = (peak - trough) * depth_scale_m;
     if !(band_m > 0.0) {
         return flat_result;
@@ -492,14 +491,20 @@ fn surface_depth_resolve(
     let p0 = uv * dims;
     // Texels per meter of descent.
     let dir = dir_uv_per_m * dims;
-    // D6: the ray enters the band at the peak, `peak_m` above the plane, which
-    // is `dir * peak_m` texels back toward the viewer from `p0`.
-    let start = p0 - dir * peak_m;
+    // Eye bound: the march never starts behind the camera. The eye sits
+    // `view_distance * descent` above the plane, so an eye inside the band (a
+    // low slide eye, a camera hugging raised brick) starts the ray at the eye.
+    // A far eye leaves `top == peak` exactly.
+    let top = min(peak, view_distance * descent / depth_scale_m);
+    let top_m = top * depth_scale_m;
+    // D6: the ray enters the band at the peak (or the eye), `top_m` above the
+    // plane, which is `dir * top_m` texels back toward the viewer from `p0`.
+    let start = p0 - dir * top_m;
     var dda = surface_depth_dda_setup(start, dir);
 
-    // The first texel is entered through the band's top, so its entry face is
-    // the geometric top. That is what makes a texel at the peak resolve on the
-    // first iteration at zero descent with the geometric normal.
+    // The first texel is entered through the start height, so its entry face
+    // is the geometric top. That is what makes a texel at the peak resolve on
+    // the first iteration at zero descent with the geometric normal.
     var z_hit = 0.0;
     var hit_normal_ts = vec3<f32>(0.0, 0.0, 1.0);
     var hit_bias = vec2<f32>(0.0, 0.0);
@@ -523,7 +528,7 @@ fn surface_depth_resolve(
         var walked = 0u;
 
         loop {
-            let solid = (peak - surface_depth_texel(surface_depth_fold(dda.cell, dims_i), base_mip, levels))
+            let solid = (top - surface_depth_texel(surface_depth_fold(dda.cell, dims_i), base_mip, levels))
                 * depth_scale_m;
             let z_exit = min(dda.t_max.x, dda.t_max.y);
             // The ray was already inside this texel's solid when it entered: it
@@ -573,7 +578,7 @@ fn surface_depth_resolve(
     }
 
     let hit_texel = start + dir * z_hit;
-    let height_m = peak_m - z_hit;
+    let height_m = top_m - z_hit;
 
     var out: SurfaceDepthResult;
     out.carved = true;

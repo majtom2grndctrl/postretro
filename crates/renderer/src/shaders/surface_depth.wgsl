@@ -11,10 +11,13 @@
 //
 // WHAT THIS IS
 // The specular slot is a two-channel surface map: R = specular intensity,
-// G = DEPTH BELOW THE SURFACE. Depth 0 means flat, so a material with no
-// `_h.png` sibling — which binds a 1x1 black R8Unorm placeholder that WGSL
-// expands to (r, 0, 0, 1) — is a true no-op through this code, not a special
-// case around it.
+// G = the SIGNED HEIGHT field, stored as `255 - h` where `h` is the authored
+// `_h.png` byte. Authored mid-gray (h = 128) is the polygon plane; darker sinks
+// below it, lighter rises above it, each by up to the material's depth. A
+// material with no `_h.png` sibling binds a 1x1 black R8Unorm placeholder that
+// WGSL expands to (r, 0, 0, 1) — and `g = 0` now reads as MAXIMUM RAISE, not
+// flat. The has-depth bit in the packed march word, set only for an `Rg8Unorm`
+// slot, is therefore the ONLY guard: the march never runs without it.
 //
 // The field is piecewise-constant per texel: a grid of boxes whose lattice is
 // the SAME texel grid `sample_post_retro` snaps albedo to, so stone side faces
@@ -22,9 +25,12 @@
 // grid of boxes is an exact 2D DDA (Amanatides-Woo), not a fixed-step POM —
 // there is no sampling error to trade against step count.
 //
-// The carve is INWARD only: the displaced surface never exceeds its real plane,
-// so there is no silhouette artifact and collision stays correct for free (the
-// player walks on the stone tops, which IS the real plane).
+// The relief rises as well as sinks. The march starts at the material's PEAK
+// raise (computed once at load over every uploaded mip, in uniform bytes 8..12)
+// and walks only the band down to its TROUGH (bytes 12..16). Raised texels are
+// accepted artifacts, not mitigated: the polygon's silhouette stays flat, a
+// raised edge slices at the polygon boundary, and nothing writes depth, so
+// feet, props and projectiles draw at the true plane. Collision is untouched.
 //
 // HARD CONSTRAINTS THIS CODE HONORS
 //  * It never writes `@builtin(frag_depth)`. The depth pre-pass is vertex-only
@@ -49,7 +55,9 @@
 //
 // The CPU authority for the march, the packing and every tuning constant
 // below is `postretro_render_cpu::surface_depth`, which is unit-tested without
-// a GPU. One rule is GPU-only and has no CPU mirror: the texel→meters
+// a GPU. The functions here keep that module's names and order so the two read
+// side by side: `height.rs` (encoding), `march.rs` (the DDAs), `shading.rs`
+// (fade, AO). One rule is GPU-only and has no CPU mirror: the texel→meters
 // conversion just below (`texels_per_m`, `texel_rate`, `depth_scale_m` under
 // `SURFACE_DEPTH_TEXEL_MODE`) needs a per-fragment UV Jacobian that only
 // exists mid-shader. That is accepted because this is a purely graphical
@@ -91,13 +99,13 @@ const SURFACE_DEPTH_FADE_DISTANCE_FRACTION: f32 = 0.25;
 const SURFACE_DEPTH_AO_STRENGTH: f32 = 0.75;
 const SURFACE_DEPTH_SHADOW_BIAS_M: f32 = 1.0e-4;
 const SURFACE_DEPTH_SIDE_UV_BIAS_TEXELS: f32 = 0.5;
-// Hard ceiling on the RESOLVED carve depth, in meters, whatever unit it was
-// authored in. Mirrors `postretro_render_data::material::SURFACE_DEPTH_MAX_METERS`.
+// Hard ceiling on the RESOLVED height in EACH direction, in meters, whatever
+// unit it was authored in. Mirrors `postretro_render_data::material::SURFACE_DEPTH_MAX_METERS`.
 //
 // In meters mode the CPU clamp already bounds this. In texel mode it does NOT:
 // the CPU caps a TEXEL COUNT, and the per-fragment divide by the texel rate can
-// turn a legal count into an arbitrarily deep carve on a coarsely-scaled face.
-// Collision still uses the true plane, so an unbounded carve diverges from it
+// turn a legal count into an arbitrarily tall relief on a coarsely-scaled face.
+// Collision still uses the true plane, so an unbounded relief diverges from it
 // visibly and pushes `world_position` — which feeds dynamic light direction and
 // attenuation — off the surface with it.
 const SURFACE_DEPTH_MAX_METERS: f32 = 0.2;
@@ -106,6 +114,11 @@ const SURFACE_DEPTH_MAX_METERS: f32 = 0.2;
 // selects the matching authoring table; the two are pinned against each other.
 const SURFACE_DEPTH_TEXEL_MODE: u32 = 1u;
 
+// Signed height encoding. The stored G byte is `255 - h` for authored `h`;
+// mid-gray (`h = 128`) is the polygon plane. Mirrors `height.rs`.
+const SURFACE_HEIGHT_BYTE_MAX: f32 = 255.0;
+const SURFACE_HEIGHT_PLANE_BYTE: f32 = 128.0;
+
 // `LightTermMask::DEPTH_AMBIENT_OCCLUSION`. Bit 8 — bit 7 stays reserved for
 // the intentionally unwired emissive category.
 const LIGHT_TERM_DEPTH_AO: u32 = 0x100u;
@@ -113,7 +126,8 @@ const LIGHT_TERM_DEPTH_AO: u32 = 0x100u;
 struct SurfaceDepthResult {
     // False whenever the fragment must render exactly as it did before this
     // feature existed: no surface map bound, a flat material, a faded-out
-    // surface, a degenerate UV chart, or an edge-on fragment.
+    // surface, a degenerate UV chart, an edge-on fragment, or a march that
+    // starved its step budget (D7).
     carved: bool,
     // UV to sample the material's textures at. Biased half a texel past the
     // crossed boundary on a side hit so `sample_post_retro` reads the stone's
@@ -123,21 +137,27 @@ struct SurfaceDepthResult {
     march_uv: vec2<f32>,
     // Hit point on the view ray. Feeds dynamic light direction and
     // attenuation; it is deliberately NOT used for shadow-map lookups, which
-    // must stay on the true plane the depth maps were rendered from.
+    // must stay on the true plane the depth maps were rendered from. A raised
+    // hit lies toward the camera.
     world_position: vec3<f32>,
     // World-space normal of the face that was hit: the geometric normal on a
     // top hit, an exact +/-U or +/-V axis on a side hit. The consumer applies
     // the normal map on top hits only.
     normal: vec3<f32>,
     hit_top: bool,
-    // Depth below the true plane, in meters. Always <= depth_scale_m.
-    depth_m: f32,
-    // Post-fade carve depth for this fragment, in meters.
+    // Signed height of the hit above the true plane, in meters. POSITIVE is
+    // raised toward the viewer. |height_m| <= depth_scale_m.
+    height_m: f32,
+    // Post-fade relief scale for this fragment, in meters: the height of a
+    // texel at +/-1.0.
     depth_scale_m: f32,
+    // The material's quantized peak raise as a fraction of `depth_scale_m`, in
+    // [0, 1]. AO and the self-shadow march measure from it, not from the plane.
+    peak_raise: f32,
     // The distance/LOD fade that produced `depth_scale_m`, in [0, 1]. Carried
-    // out of the resolve because depth-derived terms whose inputs are BOTH
+    // out of the resolve because height-derived terms whose inputs are BOTH
     // post-fade cancel it out and would pop at the fade boundary instead of
-    // degrading. See `surface_depth_indirect_ao`.
+    // degrading. See `surface_depth_ambient_occlusion`.
     fade: f32,
     quantize_levels: f32,
     shadow_steps: u32,
@@ -163,8 +183,9 @@ fn surface_depth_flat(uv: vec2<f32>, world_position: vec3<f32>, geo_normal: vec3
     out.world_position = world_position;
     out.normal = geo_normal;
     out.hit_top = true;
-    out.depth_m = 0.0;
+    out.height_m = 0.0;
     out.depth_scale_m = 0.0;
+    out.peak_raise = 0.0;
     out.fade = 0.0;
     out.quantize_levels = 0.0;
     out.shadow_steps = 0u;
@@ -177,28 +198,57 @@ fn surface_depth_flat(uv: vec2<f32>, world_position: vec3<f32>, geo_normal: vec3
     return out;
 }
 
-// Wrapped, quantized depth fetch. `textureLoad` does not wrap, so the tile is
-// folded by hand — `base_uv` samples through `AddressMode::Repeat` and the
-// march is free to walk off the edge of the texture.
+// ---- height.rs ----------------------------------------------------------
+
+// Signed height fraction of one texel from its stored G value:
+// `s = (h - 128) / 128`, positive = RAISED, in [-1, 127/128].
 //
-// Quantization (`floor(h * levels) / levels`) is one ALU op and a live
-// aesthetic dial: neighbouring texels snap onto shared plateaus, giving fewer
-// and larger terraces. It does not affect the DDA's exactness — that comes from
-// the field being constant per texel, not from the value landing on a plateau.
+// The byte is recovered first with `floor(x + 0.5)`, so every step after it is
+// integer arithmetic over a power-of-two divisor and exact on every backend.
+// `255 * (1 - g)` computed directly would not be: `g` is not exactly
+// representable, and a fused multiply-add would leave mid-gray a hair off zero.
+fn surface_height_fraction(stored_g: f32) -> f32 {
+    let stored = floor(stored_g * SURFACE_HEIGHT_BYTE_MAX + 0.5);
+    let authored = SURFACE_HEIGHT_BYTE_MAX - stored;
+    return (authored - SURFACE_HEIGHT_PLANE_BYTE) / SURFACE_HEIGHT_PLANE_BYTE;
+}
+
+// Quantize a signed fraction onto `levels` terraces PER DIRECTION. `floor(x +
+// 0.5)`, never the builtin rounding function: WGSL rounds half to even and the
+// CPU authority rounds half up, and an exact half step is reachable. Mid-gray
+// yields exactly 0.0 at every level count.
+fn surface_height_quantize(s: f32, levels: f32) -> f32 {
+    if levels >= 1.0 {
+        return clamp(floor(s * levels + 0.5) / levels, -1.0, 1.0);
+    }
+    return s;
+}
+
+// Wrapped, quantized signed height fetch. `textureLoad` does not wrap, so the
+// tile is folded by hand — `base_uv` samples through `AddressMode::Repeat` and
+// the march is free to walk off the edge of the texture.
+//
+// Quantization is a live aesthetic dial: neighbouring texels snap onto shared
+// plateaus, giving fewer and larger terraces. It does not affect the DDA's
+// exactness — that comes from the field being constant per texel, not from the
+// value landing on a plateau.
 fn surface_depth_texel(coord: vec2<i32>, dims: vec2<i32>, level: u32, levels: f32) -> f32 {
     var folded = coord % dims;
     folded = select(folded + dims, folded, folded >= vec2<i32>(0, 0));
-    let raw = textureLoad(spec_texture, folded, level).g;
-    if levels >= 1.0 {
-        return floor(raw * levels) / levels;
-    }
-    return raw;
+    let stored_g = textureLoad(spec_texture, folded, level).g;
+    return surface_height_quantize(surface_height_fraction(stored_g), levels);
 }
 
+// ---- uniform.rs ---------------------------------------------------------
+
+// The has-depth bit is the ONLY guard against the R8 placeholder, whose `g = 0`
+// reads as maximum raise. The march must never run when it is clear.
 fn surface_depth_has_map() -> bool {
     return (material.surface_depth_march & SURFACE_DEPTH_HAS_DEPTH_BIT) != 0u
         && material.surface_depth_meters > 0.0;
 }
+
+// ---- shading.rs ---------------------------------------------------------
 
 // Distance fade: 1 near, 0 at and beyond the material's fade distance.
 fn surface_depth_distance_fade(distance_m: f32, fade_distance_m: f32) -> f32 {
@@ -218,8 +268,11 @@ fn surface_depth_lod_fade(lod: f32) -> f32 {
     return clamp(1.0 - (lod - SURFACE_DEPTH_FADE_LOD_START) / SURFACE_DEPTH_FADE_LOD_RANGE, 0.0, 1.0);
 }
 
-// Ambient occlusion for the SH INDIRECT term only. Legitimate because SH probes
-// sit at ~1 m spacing and "know nothing of the receiver's own geometry"
+// Ambient occlusion for the SH INDIRECT term only, measured from the material's
+// PEAK raise rather than the plane (D5): mortar between raised stones darkens
+// by its depth below the stone tops wherever the author put the plane. An
+// all-mid-gray map or a texel at the peak gets none. Legitimate because SH
+// probes sit at ~1 m spacing and "know nothing of the receiver's own geometry"
 // (rendering_pipeline.md §4) — cobblestone-scale self-occlusion is a fact no
 // other source owns, so this is not double-counting a light.
 fn surface_depth_indirect_ao(depth: SurfaceDepthResult, light_terms: u32) -> f32 {
@@ -229,7 +282,7 @@ fn surface_depth_indirect_ao(depth: SurfaceDepthResult, light_terms: u32) -> f32
     if !(depth.depth_scale_m > SURFACE_DEPTH_EPS) {
         return 1.0;
     }
-    // Scale by the fade. `depth_m` and `depth_scale_m` are both post-fade, so
+    // Scale by the fade. `height_m` and `depth_scale_m` are both post-fade, so
     // their ratio is the raw texel value at EVERY fade — without this factor a
     // surface one epsilon inside the fade boundary still occludes at full
     // strength and then snaps to 1.0 the moment it crosses, which reads as a
@@ -237,20 +290,70 @@ fn surface_depth_indirect_ao(depth: SurfaceDepthResult, light_terms: u32) -> f32
     return 1.0
         - SURFACE_DEPTH_AO_STRENGTH
             * depth.fade
-            * clamp(depth.depth_m / depth.depth_scale_m, 0.0, 1.0);
+            * clamp(depth.peak_raise - depth.height_m / depth.depth_scale_m, 0.0, 1.0);
 }
 
-// Resolve the fragment's carve: derive the surface frame, fade, march, and
-// report the hit. `view_to_eye` points from the surface toward the camera.
+// ---- march.rs -----------------------------------------------------------
+
+// Amanatides-Woo state for a 2D walk over the texel grid.
+struct SurfaceDepthDda {
+    cell: vec2<i32>,
+    // Vertical distance (meters) at which the ray next crosses each axis.
+    t_max: vec2<f32>,
+    // Vertical distance (meters) between successive crossings on each axis.
+    t_delta: vec2<f32>,
+    step_dir: vec2<i32>,
+};
+
+// Set up the walk from `origin` (texels) along `dir` (texels per vertical
+// meter). A zero-direction axis keeps its sentinel and is never stepped,
+// because the hit rules in the march always fire first.
+fn surface_depth_dda_setup(origin: vec2<f32>, dir: vec2<f32>) -> SurfaceDepthDda {
+    var dda: SurfaceDepthDda;
+    dda.cell = vec2<i32>(floor(origin));
+    dda.t_max = vec2<f32>(SURFACE_DEPTH_FAR, SURFACE_DEPTH_FAR);
+    dda.t_delta = vec2<f32>(SURFACE_DEPTH_FAR, SURFACE_DEPTH_FAR);
+    dda.step_dir = vec2<i32>(0, 0);
+    if abs(dir.x) > SURFACE_DEPTH_EPS {
+        let positive = dir.x > 0.0;
+        dda.step_dir.x = select(-1, 1, positive);
+        let boundary = select(f32(dda.cell.x), f32(dda.cell.x + 1), positive);
+        dda.t_max.x = (boundary - origin.x) / dir.x;
+        dda.t_delta.x = abs(1.0 / dir.x);
+    }
+    if abs(dir.y) > SURFACE_DEPTH_EPS {
+        let positive = dir.y > 0.0;
+        dda.step_dir.y = select(-1, 1, positive);
+        let boundary = select(f32(dda.cell.y), f32(dda.cell.y + 1), positive);
+        dda.t_max.y = (boundary - origin.y) / dir.y;
+        dda.t_delta.y = abs(1.0 / dir.y);
+    }
+    return dda;
+}
+
+// Whether the view ray stays inside its starting texel across the whole band
+// (P2): it crosses no texel boundary before descending `band_m`.
+fn surface_depth_single_texel_band(dda: SurfaceDepthDda, band_m: f32) -> bool {
+    return min(dda.t_max.x, dda.t_max.y) > band_m;
+}
+
+// Resolve a fragment's relief: derive the surface frame, fade, march the
+// material's relief band, and report the hit. `view_to_eye` points from the
+// surface toward the camera.
 //
 // The UV frame comes from `dpdx(world_position) / dpdx(uv)` rather than from
-// the baked tangent on purpose. Depth is expressed in METERS — there is no
+// the baked tangent on purpose. Height is expressed in METERS — there is no
 // texel-density convention for world materials, brush UV scale is authored
 // freely in TrenchBroom, and a texture-space scale would give the same material
-// a different physical depth on differently scaled brushes. Taking the march
+// a different physical height on differently scaled brushes. Taking the march
 // axes AND the meters->UV scale from one Jacobian makes them consistent by
 // construction. The baked tangent still owns normal mapping, which is a
 // different, authored tangent space.
+//
+// The march measures DESCENT from the peak raise. Per texel `T` the solid's top
+// lies `solid(T) = (peak - s(T)) * scale >= 0` below the ray's start, so the
+// loop body is the same walk the carve-only field used; the start just moved up
+// from the plane to the peak (D6).
 fn surface_depth_resolve(
     uv: vec2<f32>,
     world_position: vec3<f32>,
@@ -290,8 +393,9 @@ fn surface_depth_resolve(
         return flat_result;
     }
     // Whatever unit the field carries, a non-positive value — or a NaN, which
-    // fails this the same way — means this material does not carve. Taking the
-    // early-out here keeps the degenerate-chart work below off a flat material.
+    // fails this the same way — means this material does not relieve. Taking
+    // the early-out here keeps the degenerate-chart work below off a flat
+    // material.
     let carve_request = material.surface_depth_meters * fade;
     if !(carve_request > SURFACE_DEPTH_EPS) {
         return flat_result;
@@ -324,18 +428,18 @@ fn surface_depth_resolve(
     let bitangent = normalize(b_raw);
     let uv_per_m = vec2<f32>(1.0 / scale_u, 1.0 / scale_v);
 
-    // Carve depth, in meters, whichever unit it was authored in.
+    // Relief scale, in meters, whichever unit it was authored in.
     //
     // In TEXEL mode the authored value is a count of albedo texels and is
-    // converted with THIS fragment's texel rate, so the carve is a fixed depth
-    // in the texel lattice rather than in the world: a 2048px texture on a
-    // small brush carves the same number of texels as a 256px one on a large
+    // converted with THIS fragment's texel rate, so the relief is a fixed
+    // height in the texel lattice rather than in the world: a 2048px texture on
+    // a small brush rises the same number of texels as a 256px one on a large
     // brush. The geometric mean is the neutral reading of a rate that differs
     // per axis — on the square-texel faces this engine's brushes normally
     // produce, either axis gives the same answer.
     //
-    // It also bounds the march. Horizontal travel through the carve is
-    // `depth_m * dir`, and `dir` is texels per meter of descent, so the texel
+    // It also bounds the march. Horizontal travel through the relief is
+    // `height_m * dir`, and `dir` is texels per meter of descent, so the texel
     // rate cancels: travel is `N * tan(theta)` texels regardless of texture
     // resolution or brush scale. In meters mode it does not cancel, which is
     // why a high-resolution texture on a small brush can exhaust the budget.
@@ -347,9 +451,20 @@ fn surface_depth_resolve(
     }
     // Clamp rather than bail: a face scaled past the ceiling should flatten
     // gracefully, not pop to unmarched. `fade` scales the ceiling too so the
-    // clamp cannot re-deepen a carve the fade is busy closing.
+    // clamp cannot re-grow a relief the fade is busy closing.
     depth_scale_m = min(depth_scale_m, SURFACE_DEPTH_MAX_METERS * fade);
     if !(depth_scale_m > SURFACE_DEPTH_EPS) {
+        return flat_result;
+    }
+
+    // The relief band, from the uniform (quantized on the CPU with this
+    // material's level count). P4: an empty band — an all-mid-gray map — marches
+    // nothing, so it costs the same as having no map.
+    let peak = material.surface_depth_peak_raise;
+    let trough = material.surface_depth_trough;
+    let peak_m = peak * depth_scale_m;
+    let band_m = (peak - trough) * depth_scale_m;
+    if !(band_m > 0.0) {
         return flat_result;
     }
 
@@ -368,130 +483,99 @@ fn surface_depth_resolve(
     let p0 = uv * dims;
     // Texels per meter of descent.
     let dir = dir_uv_per_m * dims;
-    var cell = vec2<i32>(floor(p0));
+    // D6: the ray enters the band at the peak, `peak_m` above the plane, which
+    // is `dir * peak_m` texels back toward the viewer from `p0`.
+    let start = p0 - dir * peak_m;
+    var dda = surface_depth_dda_setup(start, dir);
 
-    // Amanatides-Woo setup, parameterised by depth in meters rather than by
-    // ray length. A zero-direction axis keeps its sentinel and is never
-    // stepped, because the hit rules below always fire first.
-    var t_max = vec2<f32>(SURFACE_DEPTH_FAR, SURFACE_DEPTH_FAR);
-    var t_delta = vec2<f32>(SURFACE_DEPTH_FAR, SURFACE_DEPTH_FAR);
-    var step_dir = vec2<i32>(0, 0);
-    if abs(dir.x) > SURFACE_DEPTH_EPS {
-        let positive = dir.x > 0.0;
-        step_dir.x = select(-1, 1, positive);
-        let boundary = select(f32(cell.x), f32(cell.x + 1), positive);
-        t_max.x = (boundary - p0.x) / dir.x;
-        t_delta.x = abs(1.0 / dir.x);
-    }
-    if abs(dir.y) > SURFACE_DEPTH_EPS {
-        let positive = dir.y > 0.0;
-        step_dir.y = select(-1, 1, positive);
-        let boundary = select(f32(cell.y), f32(cell.y + 1), positive);
-        t_max.y = (boundary - p0.y) / dir.y;
-        t_delta.y = abs(1.0 / dir.y);
-    }
-
-    var z_enter = 0.0;
-    // The first texel is entered through the plane itself, so its entry face is
-    // the geometric top. That is what makes an all-zero field resolve on the
-    // first iteration at depth 0 with the geometric normal and the original UV.
-    var entry_normal_ts = vec3<f32>(0.0, 0.0, 1.0);
-    var entry_bias = vec2<f32>(0.0, 0.0);
-    var hit_depth = 0.0;
+    // The first texel is entered through the band's top, so its entry face is
+    // the geometric top. That is what makes a texel at the peak resolve on the
+    // first iteration at zero descent with the geometric normal.
+    var z_hit = 0.0;
     var hit_normal_ts = vec3<f32>(0.0, 0.0, 1.0);
     var hit_bias = vec2<f32>(0.0, 0.0);
-    var walked = 0u;
 
-    loop {
-        let solid = surface_depth_texel(cell, dims_i, base_mip, levels) * depth_scale_m;
-        let z_exit = min(t_max.x, t_max.y);
-        // The ray was already inside this texel's solid when it entered: it hit
-        // the SIDE wall it came through.
-        if z_enter >= solid {
-            hit_depth = z_enter;
-            hit_normal_ts = entry_normal_ts;
-            hit_bias = entry_bias;
-            break;
+    // P2: the ray never leaves its starting texel above the band's floor, and
+    // every texel's top is inside the band, so it meets this texel's top.
+    // Exactly what the loop's first iteration returns, without the loop.
+    if surface_depth_single_texel_band(dda, band_m) {
+        z_hit = (peak - surface_depth_texel(dda.cell, dims_i, base_mip, levels)) * depth_scale_m;
+    } else {
+        var z_enter = 0.0;
+        var entry_normal_ts = vec3<f32>(0.0, 0.0, 1.0);
+        var entry_bias = vec2<f32>(0.0, 0.0);
+        var walked = 0u;
+
+        loop {
+            let solid = (peak - surface_depth_texel(dda.cell, dims_i, base_mip, levels)) * depth_scale_m;
+            let z_exit = min(dda.t_max.x, dda.t_max.y);
+            // The ray was already inside this texel's solid when it entered: it
+            // hit the SIDE wall it came through.
+            if z_enter >= solid {
+                z_hit = z_enter;
+                hit_normal_ts = entry_normal_ts;
+                hit_bias = entry_bias;
+                break;
+            }
+            // The ray meets the TOP of this texel's solid before leaving it.
+            if z_exit > solid {
+                z_hit = solid;
+                break;
+            }
+            // Budget exhausted with the ray still in open space: resolve FLAT at
+            // the true plane (D7) — original UV, height 0, geometric normal, top
+            // hit, and `carved = false` so the consumer skips AO and self-shadow
+            // exactly as it does for no march. Resolving at the last crossed
+            // boundary instead smeared the texture toward the viewer at grazing
+            // angles, because `dir` is texels per meter of descent; flat reads as
+            // the effect switched off for this fragment, which is honest.
+            //
+            // Termination is structural rather than a property of the sampled
+            // values: this test is INTEGER, so the loop exits after `max_steps`
+            // iterations whatever `solid` is — including a NaN, which compares
+            // false against both hit rules.
+            if walked + 1u >= max_steps {
+                return flat_result;
+            }
+            if dda.t_max.x <= dda.t_max.y {
+                dda.cell.x = dda.cell.x + dda.step_dir.x;
+                z_enter = dda.t_max.x;
+                dda.t_max.x = dda.t_max.x + dda.t_delta.x;
+                // Normal = the crossed axis, negated.
+                entry_normal_ts = vec3<f32>(-f32(dda.step_dir.x), 0.0, 0.0);
+                entry_bias = vec2<f32>(f32(dda.step_dir.x) * SURFACE_DEPTH_SIDE_UV_BIAS_TEXELS, 0.0);
+            } else {
+                dda.cell.y = dda.cell.y + dda.step_dir.y;
+                z_enter = dda.t_max.y;
+                dda.t_max.y = dda.t_max.y + dda.t_delta.y;
+                entry_normal_ts = vec3<f32>(0.0, -f32(dda.step_dir.y), 0.0);
+                entry_bias = vec2<f32>(0.0, f32(dda.step_dir.y) * SURFACE_DEPTH_SIDE_UV_BIAS_TEXELS);
+            }
+            walked = walked + 1u;
         }
-        // The ray meets the TOP of this texel's solid before leaving it.
-        if z_exit > solid {
-            hit_depth = solid;
-            hit_normal_ts = vec3<f32>(0.0, 0.0, 1.0);
-            hit_bias = vec2<f32>(0.0, 0.0);
-            break;
-        }
-        // Budget exhausted with the ray still in open space. Resolve HERE, at
-        // the last boundary the walk actually crossed.
-        //
-        // The obvious alternative — treating this texel as unbounded so the TOP
-        // rule fires — resolves at its full `solid` depth, and the sample point
-        // is `p0 + dir * hit_depth` where `dir` is texels per METER OF DESCENT.
-        // At a grazing angle that lands the albedo, normal and specular samples
-        // tens of texels past anything the march visited, so a TIGHTER budget
-        // produced a LARGER artifact — exactly backwards for a knob whose job
-        // is to make the effect cheaper. Stopping at `z_enter` keeps the
-        // sample inside the walked region, and on the first iteration it IS the
-        // flat result (depth 0, geometric normal, original UV), so a budget too
-        // small to march degrades toward flat rather than toward an arbitrary
-        // texel.
-        //
-        // This is also what makes termination structural rather than a property
-        // of the sampled values: the test is INTEGER, so the loop exits after
-        // `max_steps` iterations whatever `solid` is — including a NaN, which
-        // compares false against both hit rules.
-        if walked + 1u >= max_steps {
-            // The TOP face, not the entry face. `z_enter` is strictly above the
-            // solid in BOTH the cell just left and the cell just entered — that
-            // is why neither hit rule fired — so there is no wall at this depth
-            // to report, and when the entered cell is the deeper of the two the
-            // entry face points the exact opposite way from the only surface
-            // present. Reporting the geometric normal keeps a starved fragment
-            // shading like its unstarved neighbour instead of flipping the
-            // normal map off, engaging the plane gate and starting a self-shadow
-            // march from open air, all across a view-angle isoline that sweeps
-            // as the camera turns. It also makes "degrades toward flat" true for
-            // every budget rather than only for a budget of one.
-            hit_depth = z_enter;
-            hit_normal_ts = vec3<f32>(0.0, 0.0, 1.0);
-            hit_bias = vec2<f32>(0.0, 0.0);
-            break;
-        }
-        if t_max.x <= t_max.y {
-            cell.x = cell.x + step_dir.x;
-            z_enter = t_max.x;
-            t_max.x = t_max.x + t_delta.x;
-            // Normal = the crossed axis, negated.
-            entry_normal_ts = vec3<f32>(-f32(step_dir.x), 0.0, 0.0);
-            entry_bias = vec2<f32>(f32(step_dir.x) * SURFACE_DEPTH_SIDE_UV_BIAS_TEXELS, 0.0);
-        } else {
-            cell.y = cell.y + step_dir.y;
-            z_enter = t_max.y;
-            t_max.y = t_max.y + t_delta.y;
-            entry_normal_ts = vec3<f32>(0.0, -f32(step_dir.y), 0.0);
-            entry_bias = vec2<f32>(0.0, f32(step_dir.y) * SURFACE_DEPTH_SIDE_UV_BIAS_TEXELS);
-        }
-        walked = walked + 1u;
     }
 
-    let hit_texel = p0 + dir * hit_depth;
+    let hit_texel = start + dir * z_hit;
+    let height_m = peak_m - z_hit;
 
     var out: SurfaceDepthResult;
     out.carved = true;
     out.uv = (hit_texel + hit_bias) / dims;
     out.march_uv = hit_texel / dims;
     // Stay on the view ray: the hit is where this pixel's ray meets the solid,
-    // not a point pushed along the normal.
-    out.world_position = world_position - view_to_eye * (hit_depth / descent);
+    // not a point pushed along the normal. A raised hit lies toward the camera.
+    out.world_position = world_position + view_to_eye * (height_m / descent);
     out.normal = normalize(
         tangent * hit_normal_ts.x + bitangent * hit_normal_ts.y + geo_normal * hit_normal_ts.z
     );
     out.hit_top = hit_normal_ts.z > 0.5;
-    out.depth_m = hit_depth;
+    out.height_m = height_m;
     out.depth_scale_m = depth_scale_m;
+    out.peak_raise = peak;
     out.fade = fade;
     out.quantize_levels = levels;
-    // A shorter march than the view ray: self-shadow rays travel at most the
-    // hit depth, and the budget is spent on the primary hit, not on lighting.
+    // A shorter march than the view ray: the budget is spent on the primary
+    // hit, not on lighting.
     out.shadow_steps = max(max_steps / 2u, 1u);
     out.shadow_light_budget =
         (packed >> SURFACE_DEPTH_SHADOW_BUDGET_SHIFT) & SURFACE_DEPTH_SHADOW_BUDGET_MASK;
@@ -506,6 +590,11 @@ fn surface_depth_resolve(
 // Self-shadow one DYNAMIC light: a second, shorter DDA from the hit point
 // toward the light. 1.0 lit, 0.0 occluded.
 //
+// The ray rises from the hit and ends as soon as it climbs above the material's
+// PEAK raise (P3) — not the plane: with raised texels around, a hit on the
+// plane can still be shadowed. A top hit at the peak height has nothing above
+// it and skips the march.
+//
 // Dynamic lights only. The bake knows nothing about dynamic bodies
 // (rendering_pipeline.md §4: "the runtime owns only the facts that involve a
 // dynamic body"), so this adds a fact no baked source owns. There is
@@ -518,7 +607,12 @@ fn surface_depth_resolve(
 // wall — a light behind that wall is already culled by `NdotL <= 0`, because
 // the wall normal IS the shading normal.
 fn surface_depth_light_visibility(depth: SurfaceDepthResult, to_light: vec3<f32>) -> f32 {
-    if !depth.carved || depth.depth_m <= SURFACE_DEPTH_SHADOW_BIAS_M {
+    if !depth.carved {
+        return 1.0;
+    }
+    // How far the light ray must rise before it clears the band.
+    let clearance = depth.peak_raise * depth.depth_scale_m - depth.height_m;
+    if !(clearance > SURFACE_DEPTH_SHADOW_BIAS_M) {
         return 1.0;
     }
     let rise = dot(to_light, depth.geo_normal);
@@ -540,44 +634,30 @@ fn surface_depth_light_visibility(depth: SurfaceDepthResult, to_light: vec3<f32>
     ) * dims;
 
     let p0 = depth.march_uv * dims;
-    var cell = vec2<i32>(floor(p0));
-    var t_max = vec2<f32>(SURFACE_DEPTH_FAR, SURFACE_DEPTH_FAR);
-    var t_delta = vec2<f32>(SURFACE_DEPTH_FAR, SURFACE_DEPTH_FAR);
-    var step_dir = vec2<i32>(0, 0);
-    if abs(dir.x) > SURFACE_DEPTH_EPS {
-        let positive = dir.x > 0.0;
-        step_dir.x = select(-1, 1, positive);
-        let boundary = select(f32(cell.x), f32(cell.x + 1), positive);
-        t_max.x = (boundary - p0.x) / dir.x;
-        t_delta.x = abs(1.0 / dir.x);
-    }
-    if abs(dir.y) > SURFACE_DEPTH_EPS {
-        let positive = dir.y > 0.0;
-        step_dir.y = select(-1, 1, positive);
-        let boundary = select(f32(cell.y), f32(cell.y + 1), positive);
-        t_max.y = (boundary - p0.y) / dir.y;
-        t_delta.y = abs(1.0 / dir.y);
-    }
+    var dda = surface_depth_dda_setup(p0, dir);
 
     for (var i: u32 = 0u; i < depth.shadow_steps; i = i + 1u) {
-        // Rising past the hit depth means the ray has cleared the carved band.
-        if min(t_max.x, t_max.y) >= depth.depth_m {
+        // Rising past the peak means the ray has left the relief band.
+        if min(dda.t_max.x, dda.t_max.y) >= clearance {
             return 1.0;
         }
         var risen: f32;
-        if t_max.x <= t_max.y {
-            cell.x = cell.x + step_dir.x;
-            risen = t_max.x;
-            t_max.x = t_max.x + t_delta.x;
+        if dda.t_max.x <= dda.t_max.y {
+            dda.cell.x = dda.cell.x + dda.step_dir.x;
+            risen = dda.t_max.x;
+            dda.t_max.x = dda.t_max.x + dda.t_delta.x;
         } else {
-            cell.y = cell.y + step_dir.y;
-            risen = t_max.y;
-            t_max.y = t_max.y + t_delta.y;
+            dda.cell.y = dda.cell.y + dda.step_dir.y;
+            risen = dda.t_max.y;
+            dda.t_max.y = dda.t_max.y + dda.t_delta.y;
         }
-        let solid = surface_depth_texel(cell, dims_i, depth.base_mip, depth.quantize_levels)
+        // Both sides measured down from the peak: the ray sits `clearance -
+        // risen` below it, the texel's top `solid` below it. Plateaus share
+        // exact quantized values, so equality must read as lit.
+        let solid = (depth.peak_raise
+            - surface_depth_texel(dda.cell, dims_i, depth.base_mip, depth.quantize_levels))
             * depth.depth_scale_m;
-        // Plateaus share exact quantized values, so equality must read as lit.
-        if depth.depth_m - risen > solid + SURFACE_DEPTH_SHADOW_BIAS_M {
+        if clearance - risen > solid + SURFACE_DEPTH_SHADOW_BIAS_M {
             return 0.0;
         }
     }

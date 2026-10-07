@@ -92,23 +92,30 @@ struct MaterialUniform {
     shininess: f32,
     // Prefix-driven static multiplier for the emissive texture.
     emissive_strength: f32,
-    _pad: vec2<f32>,
+    // --- Surface Depth relief band (bytes 8..16) ---
+    // The material's QUANTIZED peak raise, as a fraction of the relief scale in
+    // [0, 1], and its trough in [-1, 0]. Computed once at load from every
+    // uploaded mip of the surface map. The march starts at the peak and walks
+    // only the band down to the trough; an empty band marches nothing.
+    surface_depth_peak_raise: f32,
+    surface_depth_trough: f32,
     // --- Surface Depth (second 16-byte row) ---
     // Already-allocated, already-zeroed slack: `MATERIAL_UNIFORM_SIZE` has been
     // 32 on the CPU while this struct was 16, so the feature needs no buffer
     // resize, no new binding, and no change to the 128-byte group-0 `Uniforms`
     // ABI. An all-zero row is the flat material.
     //
-    // Inward carve below the true surface plane, in METERS. There is no
+    // Relief scale in each direction around the true surface plane (authored
+    // mid-gray): black sinks this far, white rises ~this far. Units per
+    // `SURFACE_DEPTH_TEXEL_MODE` (albedo texels today). There is no
     // texel-density convention for world materials — brush UV scale is authored
-    // freely in TrenchBroom — so a texture-space scale would give the same
-    // material a different physical depth on differently scaled brushes. 0
+    // freely in TrenchBroom — so the shader converts to meters per fragment. 0
     // disables the march entirely.
     surface_depth_meters: f32,
-    // Distance at which the carve has faded fully flat, in meters.
+    // Distance at which the relief has faded fully flat, in meters.
     surface_depth_fade_distance: f32,
-    // Plateau count for the in-shader quantization `floor(h * levels) / levels`;
-    // 0 leaves the stored 8-bit value alone.
+    // Terraces PER DIRECTION for the in-shader quantization of the signed height
+    // `floor(s * levels + 0.5) / levels`; 0 leaves the stored 8-bit value alone.
     surface_depth_quantize_levels: f32,
     // Packed: bits 0..7 = max DDA steps, bits 8..11 = the RESIDENT base mip the
     // DDA reads at (D6.2 — a parameter, never a hardcoded 0 in WGSL, because

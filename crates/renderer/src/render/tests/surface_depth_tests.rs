@@ -205,6 +205,38 @@ fn shader_constants_match_the_cpu_reference() {
         postretro_render_cpu::frame_uniforms::LightTermMask::DEPTH_AMBIENT_OCCLUSION.bits()
     );
 
+    // The signed encoding's two byte constants, and the expressions that use
+    // them. The expressions are pinned as TEXT because they are where a
+    // backend-dependent rounding or a sign slip would hide: the byte is
+    // recovered with `floor(x + 0.5)` first, and quantization is `floor(x +
+    // 0.5)` per direction, never the builtin that rounds half to even.
+    assert_eq!(
+        declared_f32("SURFACE_HEIGHT_BYTE_MAX"),
+        sd::SURFACE_HEIGHT_BYTE_MAX
+    );
+    assert_eq!(
+        declared_f32("SURFACE_HEIGHT_PLANE_BYTE"),
+        sd::SURFACE_HEIGHT_PLANE_BYTE
+    );
+    let snippet_code = strip_line_comments(SNIPPET);
+    for expression in [
+        "let stored = floor(stored_g * SURFACE_HEIGHT_BYTE_MAX + 0.5);",
+        "let authored = SURFACE_HEIGHT_BYTE_MAX - stored;",
+        "return (authored - SURFACE_HEIGHT_PLANE_BYTE) / SURFACE_HEIGHT_PLANE_BYTE;",
+        "if levels >= 1.0 {",
+        "return clamp(floor(s * levels + 0.5) / levels, -1.0, 1.0);",
+    ] {
+        assert!(
+            snippet_code.contains(expression),
+            "the shader's signed-height encoding has drifted from the CPU reference: \
+             missing `{expression}`",
+        );
+    }
+    assert!(
+        !snippet_code.contains("round("),
+        "WGSL rounds half to even; the CPU authority uses `floor(x + 0.5)`",
+    );
+
     for (name, expected) in [
         (
             "SURFACE_DEPTH_FADE_LOD_START",
@@ -600,7 +632,8 @@ fn an_inactive_march_restores_the_pre_feature_inputs() {
         "out.world_position = world_position;",
         "out.normal = geo_normal;",
         "out.hit_top = true;",
-        "out.depth_m = 0.0;",
+        "out.height_m = 0.0;",
+        "out.peak_raise = 0.0;",
         "out.carved = false;",
     ] {
         assert!(
@@ -611,10 +644,11 @@ fn an_inactive_march_restores_the_pre_feature_inputs() {
     // Every early-out in the resolver returns that same flat result.
     assert_eq!(
         code.matches("return flat_result;").count(),
-        8,
+        10,
         "each degenerate case (no map, faded out, zero authored depth, singular \
-         Jacobian, zero UV scale, collapsed tangent plane, a resolved carve depth \
-         that is not positive, edge-on) must return the flat result",
+         Jacobian, zero UV scale, collapsed tangent plane, a resolved scale that is \
+         not positive, an empty band (P4), edge-on, a starved march (D7)) must \
+         return the flat result",
     );
 
     for (label, consumer) in [("forward", FORWARD), ("kinematic brush", KINEMATIC)] {
@@ -731,12 +765,131 @@ fn material_parameters_are_prefix_driven_and_gated_on_the_loaded_slot() {
         Material::Concrete.emissive_strength(),
         without_map,
     );
-    // Identical first row: Surface Depth changes nothing a pre-existing
-    // material relied on.
-    assert_eq!(carved[..16], flat[..16]);
+    // Identical specular and emissive words: Surface Depth changes nothing a
+    // pre-existing material relied on. Bytes 8..16 carry the relief band.
+    assert_eq!(carved[..8], flat[..8]);
+    assert_ne!(carved[8..16], flat[8..16]);
     assert_ne!(carved[16..], flat[16..]);
     assert!(
-        flat[16..].iter().all(|&byte| byte == 0),
-        "a material without a surface map must upload the historical all-zero row",
+        flat[8..].iter().all(|&byte| byte == 0),
+        "a material without a surface map must upload the historical all-zero rows",
     );
+
+    // The band is the QUANTIZED relief, peak first. FULL_RANGE at the
+    // concrete's level count lands on a terrace edge, not the raw 127/128.
+    let band = sd::SurfaceRelief::FULL_RANGE.quantized(concrete.quantize_levels as f32);
+    assert_eq!(carved[8..12], band.peak_raise.to_le_bytes());
+    assert_eq!(carved[12..16], band.trough.to_le_bytes());
+    assert_eq!(with_map.relief, band);
+}
+
+/// `g = 0` is MAXIMUM RAISE under the signed encoding, so the has-depth bit is
+/// the only thing keeping the R8 placeholder (and any other single-channel
+/// slot) on its true plane. Whatever G byte such a slot would read as, a
+/// non-`Rg8Unorm` slot must never set the bit and must upload no band.
+#[test]
+fn a_non_surface_map_slot_never_marches_even_when_its_g_would_read_as_max_raise() {
+    // What the shader would decode from a stored G of 0.
+    assert_eq!(
+        sd::surface_height_fraction(0.0),
+        sd::SURFACE_HEIGHT_MAX_RAISE
+    );
+    let max_raise = sd::SurfaceRelief {
+        peak_raise: sd::SURFACE_HEIGHT_MAX_RAISE,
+        trough: 0.0,
+    };
+    for format in [
+        wgpu::TextureFormat::R8Unorm,
+        wgpu::TextureFormat::Bc4RUnorm,
+        wgpu::TextureFormat::Rgba8Unorm,
+        wgpu::TextureFormat::Rgba8UnormSrgb,
+        wgpu::TextureFormat::Bc5RgUnorm,
+    ] {
+        let is_surface_map = specular_slot_is_surface_map(format);
+        assert!(!is_surface_map, "{format:?} must not be a surface map");
+        let plan = postretro_render_cpu::material_plan::MaterialUniformPlan::new(
+            Material::Concrete,
+            is_surface_map,
+            11,
+            max_raise,
+        );
+        for quality in sd::SurfaceDepthQuality::ALL {
+            let bytes = plan.uniform_bytes(quality);
+            let march = u32::from_le_bytes(bytes[28..32].try_into().unwrap());
+            assert_eq!(
+                march & sd::SURFACE_DEPTH_HAS_DEPTH_BIT,
+                0,
+                "{format:?} at {quality:?} must not set the has-depth bit",
+            );
+            assert!(
+                bytes[8..].iter().all(|&byte| byte == 0),
+                "{format:?} at {quality:?} must upload the all-zero flat rows",
+            );
+        }
+    }
+    // And the shader refuses to march without the bit, whatever the band says.
+    let code = strip_line_comments(SNIPPET);
+    assert!(
+        code.contains("(material.surface_depth_march & SURFACE_DEPTH_HAS_DEPTH_BIT) != 0u"),
+        "surface_depth_has_map must test the has-depth bit",
+    );
+    assert!(
+        code.contains("if !surface_depth_has_map() {\n        return flat_result;"),
+        "the resolve must bail out flat when the has-depth bit is clear, before any fetch",
+    );
+}
+
+/// The signed march's structure, pinned against the CPU authority's: it starts
+/// at the peak (D6), measures the band (P1/P4), keeps the single-texel
+/// early-out (P2), resolves a starved march flat (D7), reports a signed height
+/// along the view ray, measures AO from the peak (D5) and ends the shadow
+/// march at the peak's clearance (P3).
+#[test]
+fn the_shader_march_mirrors_the_signed_cpu_march() {
+    let code = strip_line_comments(SNIPPET);
+    for expected in [
+        "let peak = material.surface_depth_peak_raise;",
+        "let trough = material.surface_depth_trough;",
+        "let band_m = (peak - trough) * depth_scale_m;",
+        "if !(band_m > 0.0) {",
+        "let start = p0 - dir * peak_m;",
+        "if surface_depth_single_texel_band(dda, band_m) {",
+        "return min(dda.t_max.x, dda.t_max.y) > band_m;",
+        "let solid = (peak - surface_depth_texel(dda.cell, dims_i, base_mip, levels)) * depth_scale_m;",
+        "if walked + 1u >= max_steps {",
+        "let height_m = peak_m - z_hit;",
+        "out.world_position = world_position + view_to_eye * (height_m / descent);",
+        "clamp(depth.peak_raise - depth.height_m / depth.depth_scale_m, 0.0, 1.0)",
+        "let clearance = depth.peak_raise * depth.depth_scale_m - depth.height_m;",
+        "if !(clearance > SURFACE_DEPTH_SHADOW_BIAS_M) {",
+        "if min(dda.t_max.x, dda.t_max.y) >= clearance {",
+        "if clearance - risen > solid + SURFACE_DEPTH_SHADOW_BIAS_M {",
+    ] {
+        assert!(
+            code.contains(expected),
+            "the shader march has drifted from the CPU authority: missing `{expected}`",
+        );
+    }
+    // The starved branch resolves flat: it must return the flat result, with
+    // `carved = false`, rather than a hit at the last crossed boundary.
+    let starved = code
+        .find("if walked + 1u >= max_steps {")
+        .expect("starved branch");
+    assert!(
+        code[starved..].trim_start_matches(|c: char| c != '\n').trim_start().starts_with("return flat_result;"),
+        "a starved march must resolve flat at the plane (D7)",
+    );
+    // The old carve-only vocabulary must be gone so no consumer keeps the old
+    // sign by accident.
+    assert!(
+        !code.contains(".depth_m") && !code.contains("    depth_m:"),
+        "the signed field is `height_m`",
+    );
+    for (label, consumer) in [("forward", FORWARD), ("kinematic brush", KINEMATIC)] {
+        let consumer = strip_line_comments(consumer);
+        assert!(
+            !consumer.contains(".depth_m"),
+            "{label} must read `height_m`, not the renamed depth field",
+        );
+    }
 }

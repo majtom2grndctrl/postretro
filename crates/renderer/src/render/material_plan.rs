@@ -81,7 +81,7 @@ fn create_mip_sampler(
 /// Whether a loaded specular slot carries Surface Depth's second channel.
 ///
 /// `Rg8Unorm` is the surface map the level compiler bakes when a material has
-/// an `_h.png` sibling (R = specular, G = depth below the surface). Every other
+/// an `_h.png` sibling (R = specular, G = signed height around the surface plane). Every other
 /// legal specular format is single-channel, and WGSL expands those to
 /// `(r, 0, 0, 1)` — `.g == 0`, i.e. flat — so the flag is belt-and-braces over
 /// a degradation that is already a no-op. It exists so a material without a
@@ -132,11 +132,23 @@ pub(crate) fn build_material_bind_group(
         material,
         specular_slot_is_surface_map(loaded.specular_texture.format()),
         loaded.specular_texture.mip_level_count(),
-        // Placeholder until the load path measures the slot's real band with
-        // `surface_relief_from_rg8_levels`: the widest band marches correctly
-        // for any map, only slower.
-        postretro_render_cpu::surface_depth::SurfaceRelief::FULL_RANGE,
+        // Measured at load from the bytes uploaded to that slot, every mip.
+        loaded.surface_relief,
     );
+    if uniform_plan.specular_is_surface_map {
+        let band = uniform_plan
+            .surface_relief
+            .quantized(uniform_plan.surface_depth.quantize_levels as f32);
+        log::debug!(
+            "[Loader] {label_prefix} surface depth band: peak {:+.4}, trough {:+.4} \
+             (raw {:+.4} / {:+.4}, {} levels per direction)",
+            band.peak_raise,
+            band.trough,
+            uniform_plan.surface_relief.peak_raise,
+            uniform_plan.surface_relief.trough,
+            uniform_plan.surface_depth.quantize_levels,
+        );
+    }
     let uniform_bytes = uniform_plan.uniform_bytes(surface_depth_quality);
     let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some(&format!("{label_prefix} Uniform")),

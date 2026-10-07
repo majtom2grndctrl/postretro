@@ -51,7 +51,7 @@ The lever exists only as WGSL rewrites on a throwaway branch. When this is done,
 - [ ] Existing compose naga-validation tests and `sampled_row_gate_capture_matches_full_resident_at_stepped_times` (`--features capture`, `--ignored`) pass on the landed head.
 
 ### Manual
-- [ ] Before promotion (owner, Windows): the 1660 Super spike handoff on probes `1a052cfed`, per the spike findings' handoff section. `baseline` vs `array-free,unroll36`, `sh_compose` and `animated_direct_sh_compose` from `[GpuTiming]`, at campaign-test spawn and the hallway arena, 3 interleaved launches each. No regression beyond spread in either pass.
+- [ ] Before promotion (owner, Windows): the 1660 Super spike handoff on probes `1a052cfed`, per the spike findings' handoff section. `baseline` vs `array-free,unroll36`, `sh_compose` and `animated_direct_sh_compose` from `[GpuTiming]`, at campaign-test spawn and the hallway arena, 3 interleaved launches each. No regression beyond spread in either pass. **Failed (2026-10-06):** +0.23 / +0.10 ms at campaign spawn, and +1.95 / +1.26 ms at the kinematic station. The arena saves −0.50 / −0.85 ms (spike findings §1660 Super reading).
 - [ ] Mac, first slice: paired A/B of the tail-deleted kernel against the exported lever, at the hallway arena (`--start-pose=21.13,2.44,30.48,0,0`) and the kinematic station (`--start-pose=-6.5,1.22,-27.94,0,0`), 3 launches each. The result decides the tail, per Decisions.
 - [ ] Mac, landed: paired A/B of the landed shaders against the frozen baseline, alternating per frame in one launch, at the same poses, 3 launches each. An A/A null reads within ±0.02 ms. Neither pass regresses at either pose, and each saves at least 75% of the spike's per-row saving at that pose (`research.md` §Targets). Time is per compose encoder.
 - [ ] Mac legacy path: a capture with `POSTRETRO_SH_STREAMING=off` is PNG byte-equal between the pre-change and landed binaries.
@@ -69,5 +69,5 @@ Non-binding.
 - **Rival weighed:** keeping the rewrite layer as a permanent assembly step. It keeps the old kernel text alive as an anchor nobody reads.
 
 ## Open questions
-- The 1660 reading on probes `1a052cfed` — owner — **blocks build** (promotion precondition)
+- The 1660 reading on probes `1a052cfed` — **answered (2026-10-06): it regresses**, so under Decisions this direction ends. Retiring or reshaping the brief is the owner's call (spike findings §Open for the owner).
 - Where the frozen baseline and measured kernel fixtures live (crate test data vs `measurements/` via `include_str!`) — **delegated**

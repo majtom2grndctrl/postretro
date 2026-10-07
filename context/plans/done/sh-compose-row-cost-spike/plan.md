@@ -63,7 +63,7 @@ read at: 42cec06d8
 | F5 remainder | findings §Top-down partition | achievable as stated | **reported** |
 | F6 stacked saving vs sum of levers, arena + kinematic | paired `array-free+unroll36` | achievable as stated | **reported**. −2.23 / −2.89 ms (arena), −2.13 / −3.07 ms (station). The sum is tautological for the recommended stack. The mixed stack `scan-parallel+array-free+const-tile+vec3-accum` shows the non-additivity. |
 | F7 shader statistics or "unavailable" with tools tried | findings §Shader statistics | achievable as stated | **unavailable**. Tools tried are named there. |
-| F8 1660 Super per-pass ms | owner handoff | manual | **pending (owner)**. It gates promotion of `sh-compose-array-free`; the probes branch is pushed for it. Pending for every lever and stacked arm. The handoff prioritizes baseline, `array-free` and `array-free,unroll36`. |
+| F8 1660 Super per-pass ms | owner handoff | manual | **reported (2026-10-06)**, for `baseline`, `array-free`, `array-free,unroll36` and `floor` at campaign spawn, the hallway arena and the kinematic station (findings §1660 Super reading). The stack regresses both passes at campaign spawn and the station, so it is not recommended. The other levers were not run on the 1660. |
 | N1 findings note | `findings.md` | achievable as stated | **pass** |
 
 ## Tasks

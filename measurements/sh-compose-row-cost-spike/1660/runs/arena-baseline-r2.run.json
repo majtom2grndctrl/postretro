@@ -1,0 +1,649 @@
+{
+ "label": "arena-baseline-r2",
+ "arm": "baseline",
+ "pose": "arena",
+ "args": [
+  "content\\dev\\maps\\stress-warren-hallway-inspection.prl",
+  "--start-pose=21.13,2.44,30.48,0,0"
+ ],
+ "start": 1791342087.4924698,
+ "windows": [
+  {
+   "t": 1791342100.9067724,
+   "readbacks": 120,
+   "passes": {
+    "cull": {
+     "ms": 0.0,
+     "present": null
+    },
+    "depth_prepass": {
+     "ms": 0.01,
+     "present": null
+    },
+    "forward": {
+     "ms": 1.92,
+     "present": null
+    },
+    "sh_compose": {
+     "ms": 0.82,
+     "present": null
+    },
+    "promoted_depth_cache_upper": {
+     "ms": 0.05,
+     "present": null
+    },
+    "animated_direct_sh_compose": {
+     "ms": 1.15,
+     "present": null
+    },
+    "bloom": {
+     "ms": 0.16,
+     "present": null
+    },
+    "billboard_direct_scatter_compose": {
+     "ms": 0.14,
+     "present": null
+    },
+    "resolve": {
+     "ms": 0.2,
+     "present": null
+    }
+   }
+  },
+  {
+   "t": 1791342102.9067335,
+   "readbacks": 120,
+   "passes": {
+    "cull": {
+     "ms": 0.0,
+     "present": null
+    },
+    "depth_prepass": {
+     "ms": 0.01,
+     "present": null
+    },
+    "forward": {
+     "ms": 1.93,
+     "present": null
+    },
+    "sh_compose": {
+     "ms": 0.81,
+     "present": null
+    },
+    "promoted_depth_cache_upper": {
+     "ms": 0.05,
+     "present": null
+    },
+    "animated_direct_sh_compose": {
+     "ms": 1.15,
+     "present": null
+    },
+    "bloom": {
+     "ms": 0.16,
+     "present": null
+    },
+    "billboard_direct_scatter_compose": {
+     "ms": 0.14,
+     "present": null
+    },
+    "resolve": {
+     "ms": 0.2,
+     "present": null
+    }
+   }
+  },
+  {
+   "t": 1791342104.906597,
+   "readbacks": 120,
+   "passes": {
+    "cull": {
+     "ms": 0.0,
+     "present": null
+    },
+    "depth_prepass": {
+     "ms": 0.01,
+     "present": null
+    },
+    "forward": {
+     "ms": 1.93,
+     "present": null
+    },
+    "sh_compose": {
+     "ms": 0.81,
+     "present": null
+    },
+    "promoted_depth_cache_upper": {
+     "ms": 0.05,
+     "present": null
+    },
+    "animated_direct_sh_compose": {
+     "ms": 1.15,
+     "present": null
+    },
+    "bloom": {
+     "ms": 0.16,
+     "present": null
+    },
+    "billboard_direct_scatter_compose": {
+     "ms": 0.14,
+     "present": null
+    },
+    "resolve": {
+     "ms": 0.2,
+     "present": null
+    }
+   }
+  },
+  {
+   "t": 1791342106.9067907,
+   "readbacks": 120,
+   "passes": {
+    "cull": {
+     "ms": 0.0,
+     "present": null
+    },
+    "depth_prepass": {
+     "ms": 0.01,
+     "present": null
+    },
+    "forward": {
+     "ms": 1.93,
+     "present": null
+    },
+    "sh_compose": {
+     "ms": 0.81,
+     "present": null
+    },
+    "promoted_depth_cache_upper": {
+     "ms": 0.05,
+     "present": null
+    },
+    "animated_direct_sh_compose": {
+     "ms": 1.15,
+     "present": null
+    },
+    "bloom": {
+     "ms": 0.16,
+     "present": null
+    },
+    "billboard_direct_scatter_compose": {
+     "ms": 0.14,
+     "present": null
+    },
+    "resolve": {
+     "ms": 0.2,
+     "present": null
+    }
+   }
+  },
+  {
+   "t": 1791342108.9067752,
+   "readbacks": 120,
+   "passes": {
+    "cull": {
+     "ms": 0.0,
+     "present": null
+    },
+    "depth_prepass": {
+     "ms": 0.01,
+     "present": null
+    },
+    "forward": {
+     "ms": 1.93,
+     "present": null
+    },
+    "sh_compose": {
+     "ms": 0.81,
+     "present": null
+    },
+    "promoted_depth_cache_upper": {
+     "ms": 0.05,
+     "present": null
+    },
+    "animated_direct_sh_compose": {
+     "ms": 1.15,
+     "present": null
+    },
+    "bloom": {
+     "ms": 0.16,
+     "present": null
+    },
+    "billboard_direct_scatter_compose": {
+     "ms": 0.14,
+     "present": null
+    },
+    "resolve": {
+     "ms": 0.2,
+     "present": null
+    }
+   }
+  },
+  {
+   "t": 1791342110.9068224,
+   "readbacks": 120,
+   "passes": {
+    "cull": {
+     "ms": 0.0,
+     "present": null
+    },
+    "depth_prepass": {
+     "ms": 0.01,
+     "present": null
+    },
+    "forward": {
+     "ms": 1.93,
+     "present": null
+    },
+    "sh_compose": {
+     "ms": 0.82,
+     "present": null
+    },
+    "promoted_depth_cache_upper": {
+     "ms": 0.05,
+     "present": null
+    },
+    "animated_direct_sh_compose": {
+     "ms": 1.15,
+     "present": null
+    },
+    "bloom": {
+     "ms": 0.16,
+     "present": null
+    },
+    "billboard_direct_scatter_compose": {
+     "ms": 0.14,
+     "present": null
+    },
+    "resolve": {
+     "ms": 0.2,
+     "present": null
+    }
+   }
+  },
+  {
+   "t": 1791342112.9071019,
+   "readbacks": 120,
+   "passes": {
+    "cull": {
+     "ms": 0.0,
+     "present": null
+    },
+    "depth_prepass": {
+     "ms": 0.01,
+     "present": null
+    },
+    "forward": {
+     "ms": 1.93,
+     "present": null
+    },
+    "sh_compose": {
+     "ms": 0.81,
+     "present": null
+    },
+    "promoted_depth_cache_upper": {
+     "ms": 0.05,
+     "present": null
+    },
+    "animated_direct_sh_compose": {
+     "ms": 1.15,
+     "present": null
+    },
+    "bloom": {
+     "ms": 0.16,
+     "present": null
+    },
+    "billboard_direct_scatter_compose": {
+     "ms": 0.14,
+     "present": null
+    },
+    "resolve": {
+     "ms": 0.2,
+     "present": null
+    }
+   }
+  },
+  {
+   "t": 1791342114.9069502,
+   "readbacks": 120,
+   "passes": {
+    "cull": {
+     "ms": 0.0,
+     "present": null
+    },
+    "depth_prepass": {
+     "ms": 0.01,
+     "present": null
+    },
+    "forward": {
+     "ms": 1.93,
+     "present": null
+    },
+    "sh_compose": {
+     "ms": 0.81,
+     "present": null
+    },
+    "promoted_depth_cache_upper": {
+     "ms": 0.05,
+     "present": null
+    },
+    "animated_direct_sh_compose": {
+     "ms": 1.15,
+     "present": null
+    },
+    "bloom": {
+     "ms": 0.16,
+     "present": null
+    },
+    "billboard_direct_scatter_compose": {
+     "ms": 0.14,
+     "present": null
+    },
+    "resolve": {
+     "ms": 0.2,
+     "present": null
+    }
+   }
+  }
+ ],
+ "counts": [
+  {
+   "t": 1791342093.7715263,
+   "line": "indirect: frames 120 rows min 6 max 2643 | last rows L0 2129 L1 0 L2 0 | entries L0 110 L1 0 L2 0 | rows with entries 70 | lane-entries 3883"
+  },
+  {
+   "t": 1791342093.771547,
+   "line": "animated-direct: frames 120 rows min 6 max 2643 | last rows L0 2129 L1 0 L2 0 | entries L0 110 L1 0 L2 0 | rows with entries 70 | lane-entries 3883"
+  },
+  {
+   "t": 1791342094.7715328,
+   "line": "indirect: frames 120 rows min 2129 max 2129 | last rows L0 2129 L1 0 L2 0 | entries L0 110 L1 0 L2 0 | rows with entries 70 | lane-entries 3883"
+  },
+  {
+   "t": 1791342094.7715538,
+   "line": "animated-direct: frames 120 rows min 2129 max 2129 | last rows L0 2129 L1 0 L2 0 | entries L0 110 L1 0 L2 0 | rows with entries 70 | lane-entries 3883"
+  },
+  {
+   "t": 1791342095.7716842,
+   "line": "indirect: frames 120 rows min 2129 max 2129 | last rows L0 2129 L1 0 L2 0 | entries L0 110 L1 0 L2 0 | rows with entries 70 | lane-entries 3883"
+  },
+  {
+   "t": 1791342095.7717044,
+   "line": "animated-direct: frames 120 rows min 2129 max 2129 | last rows L0 2129 L1 0 L2 0 | entries L0 110 L1 0 L2 0 | rows with entries 70 | lane-entries 3883"
+  },
+  {
+   "t": 1791342096.7717133,
+   "line": "indirect: frames 120 rows min 2129 max 2129 | last rows L0 2129 L1 0 L2 0 | entries L0 110 L1 0 L2 0 | rows with entries 70 | lane-entries 3883"
+  },
+  {
+   "t": 1791342096.7717338,
+   "line": "animated-direct: frames 120 rows min 2129 max 2129 | last rows L0 2129 L1 0 L2 0 | entries L0 110 L1 0 L2 0 | rows with entries 70 | lane-entries 3883"
+  },
+  {
+   "t": 1791342097.7717268,
+   "line": "indirect: frames 120 rows min 2129 max 2129 | last rows L0 2129 L1 0 L2 0 | entries L0 110 L1 0 L2 0 | rows with entries 70 | lane-entries 3883"
+  },
+  {
+   "t": 1791342097.771748,
+   "line": "animated-direct: frames 120 rows min 2129 max 2129 | last rows L0 2129 L1 0 L2 0 | entries L0 110 L1 0 L2 0 | rows with entries 70 | lane-entries 3883"
+  },
+  {
+   "t": 1791342098.7716918,
+   "line": "indirect: frames 120 rows min 2129 max 2129 | last rows L0 2129 L1 0 L2 0 | entries L0 110 L1 0 L2 0 | rows with entries 70 | lane-entries 3883"
+  },
+  {
+   "t": 1791342098.7717118,
+   "line": "animated-direct: frames 120 rows min 2129 max 2129 | last rows L0 2129 L1 0 L2 0 | entries L0 110 L1 0 L2 0 | rows with entries 70 | lane-entries 3883"
+  },
+  {
+   "t": 1791342099.7717974,
+   "line": "indirect: frames 120 rows min 2129 max 2129 | last rows L0 2129 L1 0 L2 0 | entries L0 110 L1 0 L2 0 | rows with entries 70 | lane-entries 3883"
+  },
+  {
+   "t": 1791342099.771819,
+   "line": "animated-direct: frames 120 rows min 2129 max 2129 | last rows L0 2129 L1 0 L2 0 | entries L0 110 L1 0 L2 0 | rows with entries 70 | lane-entries 3883"
+  },
+  {
+   "t": 1791342100.771777,
+   "line": "indirect: frames 120 rows min 2129 max 2129 | last rows L0 2129 L1 0 L2 0 | entries L0 110 L1 0 L2 0 | rows with entries 70 | lane-entries 3883"
+  },
+  {
+   "t": 1791342100.7717965,
+   "line": "animated-direct: frames 120 rows min 2129 max 2129 | last rows L0 2129 L1 0 L2 0 | entries L0 110 L1 0 L2 0 | rows with entries 70 | lane-entries 3883"
+  },
+  {
+   "t": 1791342101.7718506,
+   "line": "indirect: frames 120 rows min 2129 max 2129 | last rows L0 2129 L1 0 L2 0 | entries L0 110 L1 0 L2 0 | rows with entries 70 | lane-entries 3883"
+  },
+  {
+   "t": 1791342101.7718706,
+   "line": "animated-direct: frames 120 rows min 2129 max 2129 | last rows L0 2129 L1 0 L2 0 | entries L0 110 L1 0 L2 0 | rows with entries 70 | lane-entries 3883"
+  },
+  {
+   "t": 1791342102.7718325,
+   "line": "indirect: frames 120 rows min 2129 max 2129 | last rows L0 2129 L1 0 L2 0 | entries L0 110 L1 0 L2 0 | rows with entries 70 | lane-entries 3883"
+  },
+  {
+   "t": 1791342102.7718527,
+   "line": "animated-direct: frames 120 rows min 2129 max 2129 | last rows L0 2129 L1 0 L2 0 | entries L0 110 L1 0 L2 0 | rows with entries 70 | lane-entries 3883"
+  },
+  {
+   "t": 1791342103.771965,
+   "line": "indirect: frames 120 rows min 2129 max 2129 | last rows L0 2129 L1 0 L2 0 | entries L0 110 L1 0 L2 0 | rows with entries 70 | lane-entries 3883"
+  },
+  {
+   "t": 1791342103.7719872,
+   "line": "animated-direct: frames 120 rows min 2129 max 2129 | last rows L0 2129 L1 0 L2 0 | entries L0 110 L1 0 L2 0 | rows with entries 70 | lane-entries 3883"
+  },
+  {
+   "t": 1791342104.7719166,
+   "line": "indirect: frames 120 rows min 2129 max 2129 | last rows L0 2129 L1 0 L2 0 | entries L0 110 L1 0 L2 0 | rows with entries 70 | lane-entries 3883"
+  },
+  {
+   "t": 1791342104.7719617,
+   "line": "animated-direct: frames 120 rows min 2129 max 2129 | last rows L0 2129 L1 0 L2 0 | entries L0 110 L1 0 L2 0 | rows with entries 70 | lane-entries 3883"
+  },
+  {
+   "t": 1791342105.772021,
+   "line": "indirect: frames 120 rows min 2129 max 2129 | last rows L0 2129 L1 0 L2 0 | entries L0 110 L1 0 L2 0 | rows with entries 70 | lane-entries 3883"
+  },
+  {
+   "t": 1791342105.7720413,
+   "line": "animated-direct: frames 120 rows min 2129 max 2129 | last rows L0 2129 L1 0 L2 0 | entries L0 110 L1 0 L2 0 | rows with entries 70 | lane-entries 3883"
+  },
+  {
+   "t": 1791342106.772037,
+   "line": "indirect: frames 120 rows min 2129 max 2129 | last rows L0 2129 L1 0 L2 0 | entries L0 110 L1 0 L2 0 | rows with entries 70 | lane-entries 3883"
+  },
+  {
+   "t": 1791342106.7720559,
+   "line": "animated-direct: frames 120 rows min 2129 max 2129 | last rows L0 2129 L1 0 L2 0 | entries L0 110 L1 0 L2 0 | rows with entries 70 | lane-entries 3883"
+  },
+  {
+   "t": 1791342107.772037,
+   "line": "indirect: frames 120 rows min 2129 max 2129 | last rows L0 2129 L1 0 L2 0 | entries L0 110 L1 0 L2 0 | rows with entries 70 | lane-entries 3883"
+  },
+  {
+   "t": 1791342107.7720578,
+   "line": "animated-direct: frames 120 rows min 2129 max 2129 | last rows L0 2129 L1 0 L2 0 | entries L0 110 L1 0 L2 0 | rows with entries 70 | lane-entries 3883"
+  },
+  {
+   "t": 1791342108.7720935,
+   "line": "indirect: frames 120 rows min 2129 max 2129 | last rows L0 2129 L1 0 L2 0 | entries L0 110 L1 0 L2 0 | rows with entries 70 | lane-entries 3883"
+  },
+  {
+   "t": 1791342108.7721136,
+   "line": "animated-direct: frames 120 rows min 2129 max 2129 | last rows L0 2129 L1 0 L2 0 | entries L0 110 L1 0 L2 0 | rows with entries 70 | lane-entries 3883"
+  },
+  {
+   "t": 1791342109.77209,
+   "line": "indirect: frames 120 rows min 2129 max 2129 | last rows L0 2129 L1 0 L2 0 | entries L0 110 L1 0 L2 0 | rows with entries 70 | lane-entries 3883"
+  },
+  {
+   "t": 1791342109.7721114,
+   "line": "animated-direct: frames 120 rows min 2129 max 2129 | last rows L0 2129 L1 0 L2 0 | entries L0 110 L1 0 L2 0 | rows with entries 70 | lane-entries 3883"
+  },
+  {
+   "t": 1791342110.7720914,
+   "line": "indirect: frames 120 rows min 2129 max 2129 | last rows L0 2129 L1 0 L2 0 | entries L0 110 L1 0 L2 0 | rows with entries 70 | lane-entries 3883"
+  },
+  {
+   "t": 1791342110.7721117,
+   "line": "animated-direct: frames 120 rows min 2129 max 2129 | last rows L0 2129 L1 0 L2 0 | entries L0 110 L1 0 L2 0 | rows with entries 70 | lane-entries 3883"
+  },
+  {
+   "t": 1791342111.772194,
+   "line": "indirect: frames 120 rows min 2129 max 2129 | last rows L0 2129 L1 0 L2 0 | entries L0 110 L1 0 L2 0 | rows with entries 70 | lane-entries 3883"
+  },
+  {
+   "t": 1791342111.7722154,
+   "line": "animated-direct: frames 120 rows min 2129 max 2129 | last rows L0 2129 L1 0 L2 0 | entries L0 110 L1 0 L2 0 | rows with entries 70 | lane-entries 3883"
+  },
+  {
+   "t": 1791342112.7722244,
+   "line": "indirect: frames 120 rows min 2129 max 2129 | last rows L0 2129 L1 0 L2 0 | entries L0 110 L1 0 L2 0 | rows with entries 70 | lane-entries 3883"
+  },
+  {
+   "t": 1791342112.7722487,
+   "line": "animated-direct: frames 120 rows min 2129 max 2129 | last rows L0 2129 L1 0 L2 0 | entries L0 110 L1 0 L2 0 | rows with entries 70 | lane-entries 3883"
+  },
+  {
+   "t": 1791342113.772276,
+   "line": "indirect: frames 120 rows min 2129 max 2129 | last rows L0 2129 L1 0 L2 0 | entries L0 110 L1 0 L2 0 | rows with entries 70 | lane-entries 3883"
+  },
+  {
+   "t": 1791342113.7722962,
+   "line": "animated-direct: frames 120 rows min 2129 max 2129 | last rows L0 2129 L1 0 L2 0 | entries L0 110 L1 0 L2 0 | rows with entries 70 | lane-entries 3883"
+  },
+  {
+   "t": 1791342114.772503,
+   "line": "indirect: frames 120 rows min 2129 max 2129 | last rows L0 2129 L1 0 L2 0 | entries L0 110 L1 0 L2 0 | rows with entries 70 | lane-entries 3883"
+  },
+  {
+   "t": 1791342114.7725224,
+   "line": "animated-direct: frames 120 rows min 2129 max 2129 | last rows L0 2129 L1 0 L2 0 | entries L0 110 L1 0 L2 0 | rows with entries 70 | lane-entries 3883"
+  }
+ ],
+ "arms_logged": "baseline",
+ "nvsmi": [
+  [
+   1791342100.9899611,
+   "1965",
+   "7000",
+   "P0",
+   "56",
+   "80.06",
+   "61"
+  ],
+  [
+   1791342102.0828166,
+   "1950",
+   "7000",
+   "P0",
+   "56",
+   "80.97",
+   "61"
+  ],
+  [
+   1791342103.167765,
+   "1950",
+   "7000",
+   "P0",
+   "56",
+   "79.11",
+   "61"
+  ],
+  [
+   1791342104.2517002,
+   "1950",
+   "7000",
+   "P0",
+   "56",
+   "80.14",
+   "61"
+  ],
+  [
+   1791342105.3412285,
+   "1950",
+   "7000",
+   "P0",
+   "56",
+   "80.61",
+   "61"
+  ],
+  [
+   1791342106.4178646,
+   "1950",
+   "7000",
+   "P0",
+   "57",
+   "79.81",
+   "61"
+  ],
+  [
+   1791342107.4946148,
+   "1950",
+   "7000",
+   "P0",
+   "57",
+   "79.90",
+   "61"
+  ],
+  [
+   1791342108.5742857,
+   "1950",
+   "7000",
+   "P0",
+   "57",
+   "79.90",
+   "61"
+  ],
+  [
+   1791342109.6527216,
+   "1950",
+   "7000",
+   "P0",
+   "57",
+   "80.16",
+   "61"
+  ],
+  [
+   1791342110.7404492,
+   "1950",
+   "7000",
+   "P0",
+   "57",
+   "80.07",
+   "61"
+  ],
+  [
+   1791342111.8313956,
+   "1950",
+   "7000",
+   "P0",
+   "57",
+   "80.25",
+   "61"
+  ],
+  [
+   1791342112.912396,
+   "1950",
+   "7000",
+   "P0",
+   "57",
+   "80.18",
+   "61"
+  ],
+  [
+   1791342114.0017667,
+   "1950",
+   "7000",
+   "P0",
+   "57",
+   "80.00",
+   "61"
+  ]
+ ],
+ "valid": true,
+ "reason": null,
+ "end": 1791342115.419865
+}

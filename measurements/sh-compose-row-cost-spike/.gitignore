@@ -9,3 +9,4 @@ capture/out/**/*.bin
 capture/out/**/*.png
 capture/out/**/*.report.json
 capture/out/**/capture.log
+1660/runs/*.log

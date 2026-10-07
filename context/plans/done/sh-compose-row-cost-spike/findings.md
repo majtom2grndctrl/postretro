@@ -15,7 +15,8 @@ Probe code is on the throwaway branch `sh-compose-row-cost-spike-probes`. Every 
 - **One exact lever recovers 27–36% per pass on all four poses.** The lever is `array-free` + `unroll36` + `scale-shared`. `array-free` removes the array and the shared-lattice L1/L2 path from the kernel. `unroll36` unrolls the 36-texel loop. `scale-shared` is the per-workgroup scale cache that `array-free` requires; the probe adds it implicitly.
   - Savings: 5.1 ms of the arena's 14.7 ms compose, and 5.2 ms of the kinematic station's 17.4 ms.
   - Both passes write byte-identical atlases.
-  - **Build it via a brief, labelled Metal-only until a 1660 reading arrives.**
+  - **The 1660 Super regresses it, so it is not recommended.** It costs both passes 14–45% more at campaign-test spawn and 65–126% more at the kinematic station, and saves 61–76% at the hallway arena (§1660 Super reading). Under the owner's promotion gate, this ends the `sh-compose-array-free` direction.
+- **The 1660's cost profile differs from the Mac's.** Per-entry work is 43–67% of 1660 compose time, against 1–5% on the Mac. The lever makes rows without entries almost free but rows with entries dearer. Only at the arena do entry-free rows dominate (97% of rows), so only there does it win.
 - **The contributing-row filter is the bigger lever.** It is a separate build. The model projects it alone to take arena compose from 14.7 ms to about 1.4 ms. On top of it, this spike's lever then saves 0.17–0.84 ms per frame, depending on the pose.
 
 ## Method
@@ -26,7 +27,7 @@ Probe code is on the throwaway branch `sh-compose-row-cost-spike-probes`. Every 
 - **Retraction: the "launch regimes" were a measurement artifact.** An earlier draft said each launch fell into one of two or three GPU memory regimes, scaling the SH passes by ~1.2×. That came from the frame denominator the copied `gpu_time.py` used: the largest render-pass encoder count. Render encoders are missing from part of some traces, so that count undercounts frames by up to 26%.
   - Re-reduced per encoder, the six `diag1` launches of one binary read 6.69–6.75 / 7.99–8.02 ms. The `kinmidC` "slower regime" reads 8.00–8.04 / 9.37–9.41 ms, the same as `kinmidP`. The between-launch batch `arena3` agrees with the paired deltas (`accum-scalar` −2.98 / −4.48 vs paired −2.86 / −4.38).
   - The paired deltas never used that denominator. The ratio method once used for `coalesced-b` is unnecessary, and per encoder the conclusion is unchanged.
-  - **The same heuristic is in shadow-fill-cost's `gpu_time.py`.** This brief's Basis (research.md: 3.2–4.3 / 3.6–4.9 µs per row, "25% apart across sessions") is therefore probably inflated. Per encoder, the arena reads 3.15 / 3.76 µs per row, against the 1660 Super's 0.55 / 0.77: a 5.7× / 4.9× gap, not 5–8×.
+  - **The same heuristic is in shadow-fill-cost's `gpu_time.py`.** This brief's Basis (research.md: 3.2–4.3 / 3.6–4.9 µs per row, "25% apart across sessions") is therefore probably inflated. Per encoder, the arena reads 3.15 / 3.76 µs per row. The 1660 reading below puts the same pose at 0.39 / 0.54 µs per row, an 8.2× / 7.0× gap, and campaign spawn at 0.70 / 0.99 against the Mac's 3.37 / 4.04, a 4.8× / 4.1× gap. The gap depends on the pose, because the two GPUs split cost between rows and entries differently.
 - **Validity.** 224 runs are recorded valid (foreground, unlocked, no screen saver, rows stable, arms logged). 211 of them are traced with Metal System Trace; the other 13 are 10 untraced row-count probes and 3 Metal GPU Counters traces. Discarded:
   - one invalid run, `arena2-baseline-r1`, whose screen was locked;
   - `arenaP-floor_vs_floor+no-base-r1`, which never started (a label bug). That batch was rerun as `arenaQ`.
@@ -89,30 +90,30 @@ The floor arm never runs the entry loops. Pairs within the floor (`floor/floor+X
 
 ## Attribution (F4)
 
-Paired Δ = B − A, in ms per frame: the median of 3 launches, with min..max where the range exceeds ±0.04. Types: **F** floor, **A** ablation (timing only, never recommended), **L** lever (exact), **S** stacked, **SM** stacked mix of levers that are not all recommended. The brief asks for a 1660 reading of every lever and stacked arm; all are **pending** (handoff below). Ablations need no 1660 reading.
+Paired Δ = B − A, in ms per frame: the median of 3 launches, with min..max where the range exceeds ±0.04. Types: **F** floor, **A** ablation (timing only, never recommended), **L** lever (exact), **S** stacked, **SM** stacked mix of levers that are not all recommended. The 1660 column is unpaired: the change of each arm's 3-launch median from baseline's, as arena; station (§1660 Super reading). The handoff ran the stack, `array-free` and `floor`. The other levers were not run on the 1660, and ablations need no 1660 reading.
 
 | Hyp. | Arm | Type | Arena ind | Arena B | Station ind | Station B | 1660 ind / B |
 |---|---|---|---|---|---|---|---|
-| — | `floor` | F | −0.07 [−0.11, −0.07] | −0.35 | −0.20 | −0.36 [−0.39, −0.35] | pending |
+| — | `floor` | F | −0.07 [−0.11, −0.07] | −0.35 | −0.20 | −0.36 [−0.39, −0.35] | arena −0.35 / −0.81; station −0.80 / −0.82 |
 | — | `floor+no-base` (vs floor) | A | −0.27 | −1.35 | −0.23 [−0.29, −0.21] | −1.53 | — |
 | — | `floor+stores-off` (vs floor) | A | −0.15 | −1.23 [−1.25, −1.19] | −0.26 | −1.43 | — |
 | H-a | `accum-scalar` | A | −2.86 | −4.38 | −3.42 | −4.90 | — |
 | H-a | `floor+accum-scalar` (vs floor) | A | −3.56 | −3.90 | −4.17 | −4.64 | — |
-| H-a | `array-free` (+ `scale-shared`) | L | −1.55 | −2.91 | −1.50 | −2.85 | pending |
-| H-a/H-e | **`array-free+unroll36`** (+ `scale-shared`) | **L/S** | **−2.23** | **−2.89** | **−2.13 [−2.21, −2.11]** | **−3.07** | pending |
-| H-a/H-d | `array-free+l0-only` | L | −1.52 | −2.95 | — | — | pending |
-| H-a/H-d/H-e | `array-free+unroll36+l0-only` | L | −1.24 | −3.01 | — | — | pending |
-| H-a | `texel-outer` (+ `scale-shared`) | L | +2.73 | +1.07 | — | — | pending |
-| H-a | `vec3-accum` (Pass B) | L | +0.01 | +0.01 | — | — | pending |
+| H-a | `array-free` (+ `scale-shared`) | L | −1.55 | −2.91 | −1.50 | −2.85 | arena −0.62 / −0.87; station **+1.90 / +1.38** |
+| H-a/H-e | **`array-free+unroll36`** (+ `scale-shared`) | **L/S** | **−2.23** | **−2.89** | **−2.13 [−2.21, −2.11]** | **−3.07** | arena −0.50 / −0.85; station **+1.95 / +1.26** |
+| H-a/H-d | `array-free+l0-only` | L | −1.52 | −2.95 | — | — | not run |
+| H-a/H-d/H-e | `array-free+unroll36+l0-only` | L | −1.24 | −3.01 | — | — | not run |
+| H-a | `texel-outer` (+ `scale-shared`) | L | +2.73 | +1.07 | — | — | not run |
+| H-a | `vec3-accum` (Pass B) | L | +0.01 | +0.01 | — | — | not run |
 | H-b | `const-scale` | A | +0.98 | −0.16 [−0.19, −0.16] | +1.09 | −0.18 [−0.21, −0.18] | — |
-| H-b | `scale-shared` | L | +1.66 | +0.01 | +1.99 [+1.93, +2.01] | +0.02 [+0.02, +0.07] | pending |
+| H-b | `scale-shared` | L | +1.66 | +0.01 | +1.99 [+1.93, +2.01] | +0.02 [+0.02, +0.07] | not run |
 | H-c | `rank0` | A | +1.11 | −0.34 | +1.24 | −0.39 [−0.39, −0.37] | — |
-| H-c | `coalesced-b` (Pass B; unpaired, per encoder, 5 launches each; median, range) | L | 6.709 [6.70, 6.72] → 6.717 [6.70, 6.74] | 8.006 [8.00, 8.03] → 8.007 [8.00, 8.02] | 8.016 [8.00, 8.04] → 7.999 [7.99, 8.01] | 9.378 [9.37, 9.41] → 9.378 [9.37, 9.38] | pending |
+| H-c | `coalesced-b` (Pass B; unpaired, per encoder, 5 launches each; median, range) | L | 6.709 [6.70, 6.72] → 6.717 [6.70, 6.74] | 8.006 [8.00, 8.03] → 8.007 [8.00, 8.02] | 8.016 [8.00, 8.04] → 7.999 [7.99, 8.01] | 9.378 [9.37, 9.41] → 9.378 [9.37, 9.38] | not run |
 | H-d | `skip-coarse` | A | +0.95 [+0.92, +0.97] | −0.31 [−0.32, −0.28] | — | — | — |
 | H-d | `single-slot` | A | −0.01 | −1.32 | — | — | — |
 | H-e | `trusted` (wgpu checks off) | A | **not measured** (see H-e) | | | | — |
-| H-e | `const-tile` (no runtime tile division) | L | +1.22 | +0.00 | — | — | pending |
-| fixed | `scan-parallel` | L | +1.38 | +0.05 | — | — | pending |
+| H-e | `const-tile` (no runtime tile division) | L | +1.22 | +0.00 | — | — | not run |
+| fixed | `scan-parallel` | L | +1.38 | +0.05 | — | — | not run |
 | fixed | `floor+scan-parallel` (vs floor) | L | +1.49 | +0.38 | — | — | — |
 | mix | `scan-parallel+array-free+const-tile+vec3-accum` | SM | −1.27 | −2.80 | — | — | — |
 
@@ -188,16 +189,16 @@ Campaign spawn: −0.77 / −0.98 [−1.03, −0.98] ms (−31% / −33%). Kinem
 
 | Lever | Label | Byte identity | Call |
 |---|---|---|---|
-| `array-free` + `unroll36` + `scale-shared`, both passes | **Metal-only** (no 1660 reading) | identical, 12/12 + oracle, L0 content. The L1/L2 path is unproven by bytes. | **Build, via a brief** |
+| `array-free` + `unroll36` + `scale-shared`, both passes | Metal win; **regresses the 1660** | identical on Metal, 12/12 + oracle, L0 content. The L1/L2 path is unproven by bytes. Not checked on the 1660. | **No build: regresses the 1660 perf floor at 2 of 3 poses** |
 | `l0-only` | — | identical (L0 content only) | No build: no gain over `array-free` |
 | `texel-outer`, `scale-shared` alone, `scan-parallel`, `const-tile` | — | identical | No build: they regress indirect |
 | `vec3-accum` | — | identical | No build: no effect |
 | `coalesced-b` | — | identical | No build: no gain |
 
-**Follow-on brief: `sh-compose-array-free`.** A brief rather than a direct build, because it has these decisions to make:
+**Follow-on brief: `sh-compose-array-free`.** The 1660 reading ends it (item 3). Its other decisions are kept for any reshaped successor:
 1. **Indirect code-generation fragility.** Small edits move indirect by ±1–2.7 ms. The build should land the measured shape, and its acceptance should include a Mac paired A/B re-measure.
 2. **The L1/L2 path in 27/45.** Either keep `array-free`'s L1/L2 reconstruction and prove it with a Metal GPU byte-compare on a synthetic L1/L2 fixture, or have the loader reject non-L0 levels in 27/45 and delete the path. The second is a format-contract decision.
-3. **The 1660.** A Metal-only lever still ships to the 1660 perf floor (§8 has no per-backend variants), so landing it needs a 1660 no-regression reading.
+3. **The 1660.** A Metal-only lever still ships to the 1660 perf floor (§8 has no per-backend variants), so landing it needs a 1660 no-regression reading. **The reading regresses** (§1660 Super reading).
 4. **Sequencing.** Run it after the contributing-row filter. The filter is the bigger lever (10× at the arena, about 5× at the kinematic station), and the rows it leaves are the ones this lever's per-row saving applies to.
 
 ## Open for the owner
@@ -208,6 +209,7 @@ Campaign spawn: −0.77 / −0.98 [−1.03, −0.98] ms (−31% / −33%). Kinem
 - **Cost-model form.** The entry term is reported per pose rather than as one coefficient, and the lever projection scales the per-row saving. See plan.md Corrections.
 - **Out of scope, but large:** at both kinematic poses, Pass A (`Streamed Direct SH Promotion`) averages 2.6–2.9 ms per frame (absent at the arena and campaign). The promotion station's moving weights re-fire it. It does not bias the compose pairs (it splits evenly across A and B frames), but it may deserve its own look.
 - **The brief's Basis numbers are probably inflated** by the shared `gpu_time.py` frame heuristic (see Method). The same heuristic sits in `measurements/shadow-fill-cost/`.
+- **Retire `sh-compose-array-free`, or reshape it (open since the 1660 reading).** The gate's rule ends the direction as drafted. A successor would need a shape that keeps the array-free row path but does not raise per-entry cost on NVIDIA, for example keeping entries outer on rows that carry entries. It would also need a new 1660 reading before any Mac work. The 1660's entry-heavy profile also reopens H-b and H-c on that GPU, though they barely register on the Mac.
 
 ## Owner rulings (2026-10-06)
 - **Exactness on L0 content:** accepted as conditional. `sh-compose-array-free` keeps the L1/L2 path and proves it with a GPU byte-compare on synthetic sections.
@@ -215,21 +217,51 @@ Campaign spawn: −0.77 / −0.98 [−1.03, −0.98] ms (−31% / −33%). Kinem
 - **H-e:** reported from the static gate and the safe partial probes. The timed `trusted` arm is not run. A separate session may return to it.
 - **Cost model:** the per-pose entry term is accepted.
 - **Follow-ons drafted** (`context/plans/drafts/`):
-  - `sh-compose-array-free`: the lever. The 1660 reading below gates its promotion. The exported lever's unreachable old-kernel tail is deleted after a paired re-measure.
+  - `sh-compose-array-free`: the lever. The 1660 reading below gates its promotion, and it regresses. The exported lever's unreachable old-kernel tail is deleted after a paired re-measure.
   - `sh-compose-contributing-rows`: the row filter, by narrowing per-pass membership to rows that carry entries. Lifting the exemption is excluded.
   - `gpu-pass-paired-ab`: a lasting paired A/B tool.
 
-## 1660 Super handoff (F8): pending
+## 1660 Super reading (F8)
 
-On the owner's Windows machine, check out `origin/sh-compose-row-cost-spike-probes` at `1a052cfed` (pushed for this handoff). Delete that remote branch once the reading is recorded. Then run:
+GTX 1660 Super on Vulkan (driver 617.14), Windows 11, 2026-10-06. Records are in `measurements/sh-compose-row-cost-spike/1660/`: `batches.json` (build, binary SHA-256, fixtures, settings), `runs/*.run.json`, and `summary-*.json`.
 
-```
-cargo run -p xtask -- run --release -- content/dev/maps/<map>.prl [--start-pose=…]
-```
+**Method.**
+- One release binary of probes `1a052cfed`, built as on the Mac. `start-script.js` was rebuilt from that commit's TypeScript, because the checkout's copy came from a newer main.
+- One arm per launch (unpaired), set by `POSTRETRO_SPIKE_ARMS`, read from `POSTRETRO_GPU_TIMING=1` `[gpu-timing]` windows of 120 readbacks. Each launch drops 3 windows and keeps 8; its value is their median.
+- Arms are interleaved round by round, 3 launches each, with a 10 s idle gap. `run1660.py` drives the launches and `summarize1660.py` reduces them.
+- Arms: `baseline`, `array-free`, `array-free,unroll36` and `floor`.
+- Poses: campaign-test spawn and the hallway arena, as the handoff asked. The kinematic station was added because its entry mix differs (780 entry rows on indirect, 75 on Pass B).
+- **Validity.** All 36 launches are valid: arms logged, rows stable, GPU at 1935–1965 MHz in P0 throughout.
+- **Spread.** Per-launch values agree within ±0.01 ms (the log's resolution), except the kinematic baseline. Its windows swing 1.28–1.93 / 1.39–2.65 ms, but its launch medians hold to 1.50–1.61 / 1.905–1.93.
+- **Fixtures.** The SHA-256 prefixes differ from the Mac's (campaign `1b5942df88af66ef`, hallway `210112eeffbbd134`, kinematic `2bf5c40b97fa6c29`). Even so, the per-level row and entry counts match the Mac exactly at all three poses (§Row mix).
+- **Settings** differ from the Mac's: 2560×1440 at 120 Hz exclusive, render resolution `half`, shadow and fog `high`, Surface Depth on, vsync on. The compose dispatches cover the same rows whatever these settings are.
 
-- **Arm per launch.** Set `POSTRETRO_SPIKE_ARMS=<arm>` per launch, unpaired. GPU timestamps work there and separate the arms; paired mode would average A and B together.
-- **GPU timing.** Set `POSTRETRO_GPU_TIMING=1 RUST_LOG=info`.
-- **Priority arms:** `baseline`, `array-free`, `array-free,unroll36`. Optional: `floor` and the no-build levers.
-- **Poses:** campaign-test spawn, and the hallway arena (`--start-pose=21.13,2.44,30.48,0,0`).
-- **Protocol:** three launches each, interleaved. Read `sh_compose` and `animated_direct_sh_compose` from the `[GpuTiming]` lines.
-- **What it decides:** a regression in either pass makes the lever not recommended; a win relabels it all-backends.
+ms per frame, the median of 3 launches. Δ is against the baseline launch of the same round, as median [min, max]; brackets are omitted where the range is within ±0.01:
+
+| Pose | Arm | Indirect | Δ indirect | Pass B | Δ Pass B |
+|---|---|---|---|---|---|
+| Campaign spawn | `baseline` | 0.51 | | 0.72 | |
+| | `array-free` | 0.71 | **+0.20 (+39%)** | 0.83 | **+0.11 (+15%)** |
+| | `array-free,unroll36` | 0.74 | **+0.23 (+45%)** | 0.82 | **+0.10 (+14%)** |
+| | `floor` | 0.23 | −0.28 (−55%) | 0.24 | −0.48 (−67%) |
+| Hallway arena | `baseline` | 0.82 | | 1.15 | |
+| | `array-free` | 0.20 | −0.62 (−76%) | 0.28 | −0.87 (−76%) |
+| | `array-free,unroll36` | 0.32 | −0.50 (−61%) | 0.30 | −0.85 (−74%) |
+| | `floor` | 0.47 | −0.35 (−43%) | 0.34 | −0.81 (−70%) |
+| Kinematic station | `baseline` | 1.55 [1.50, 1.61] | | 1.93 [1.905, 1.93] | |
+| | `array-free` | 3.44 | **+1.90 [+1.83, +1.94] (+123%)** | 3.30 | **+1.38 [+1.37, +1.40] (+72%)** |
+| | `array-free,unroll36` | 3.50 | **+1.95 [+1.89, +2.01] (+126%)** | 3.19 | **+1.26 [+1.25, +1.29] (+65%)** |
+| | `floor` | 0.75 | −0.80 [−0.86, −0.75] (−52%) | 1.11 | −0.82 [−0.83, −0.80] (−43%) |
+
+**What it shows.**
+- **Entry work dominates on the 1660.** The floor arm removes 43–67% of compose time, against 1.1–5.4% on the Mac. The fixed per-row share is small: the floor reads 0.16–0.44 µs per row, depending on pose and pass.
+- **The lever trades row cost for entry cost.** At the arena, where 97% of rows carry no entry, `array-free` runs *below* the floor arm (0.20 vs 0.47 on indirect). Rows without entries become almost free, which means the 1660 floor is mostly the accumulator array too. Where entries are denser, the lever loses: at campaign spawn 48% of rows carry entries, and at the kinematic station 31% do on indirect.
+- **Kinematic Pass B does not fit an entry count.** It has 75 entry rows, about the arena's 70, yet it regresses by 72% where the arena saves 76%. Its floor per row is also nearly 3× the arena's (0.44 vs 0.16 µs). Some per-row cost specific to that pose grows under the lever. The mechanism is not identified.
+- **`unroll36` doesn't help on the 1660.** It is worse than `array-free` alone on indirect at every pose (+0.03 to +0.12 ms), and within 0.12 ms on Pass B.
+- **After the contributing-row filter (inference, not measured).** The filter drops the entry-free rows, the only rows where the lever wins on the 1660. The rows that remain are the kind it regresses, so filtered compose would most likely regress at every pose.
+
+**Not covered.** DX12 (`WGPU_BACKEND=dx12`) was not run. Byte identity was not checked on the 1660, because the lever is not recommended. The other lever arms and the ablations were not run on the 1660.
+
+**Call.** The lever regresses both passes at two of three poses. Under the brief ("a lever that a returned 1660 reading shows regressing is not recommended") it is **not recommended**. Under `sh-compose-array-free`'s promotion gate ("a regression in either pass ends this direction") the direction ends.
+
+To repeat the reading: build as in `measurements/sh-compose-row-cost-spike/README.md`, then `python run1660.py <out> 3 baseline,array-free,array-free+unroll36,floor campaign,arena,kinstation` and `python summarize1660.py <out>`. In an arm name, `+` stands for the env var's comma.

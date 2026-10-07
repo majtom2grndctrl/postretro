@@ -75,3 +75,12 @@ CARGO_PROFILE_RELEASE_STRIP=none cargo build --release -p postretro -p postretro
 | `coalesced-b` | lever (H-c, Pass B) | section-45 tiles are repacked texel-major at upload and addressed that way; A and B must both carry it |
 
 The `trusted` arm (wgpu checks off) was never built: the session's permission classifier refused its `unsafe` call site. See `findings.md`.
+
+## 1660 Super reading (`1660/`)
+
+The F8 handoff ran on the owner's Windows machine (GTX 1660 Super, Vulkan). Results are in `findings.md` §1660 Super reading.
+
+- **Build.** The same command and probe commit (`1a052cfed`) as above. `1660/batches.json` records the binary SHA-256s, fixture prefixes, adapter, driver and settings.
+- **Metric.** GPU timestamps (`POSTRETRO_GPU_TIMING=1`), not Metal System Trace. A launch's value is the median of 8 `[gpu-timing]` windows of 120 readbacks, after 3 warm-up windows. One arm per launch, unpaired.
+- **`run1660.py`** interleaves arms round by round with a 10 s idle gap. It records each launch's kept windows, its `[SH spike counts]` lines and per-second `nvidia-smi` clocks to `runs/*.run.json`. Its paths are this machine's. Full logs are ignored.
+- **`summarize1660.py`** checks row stability and writes `summary-*.json`: per arm the median and range over launches, and per-round deltas against baseline.

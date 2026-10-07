@@ -1,0 +1,44 @@
+{
+  "machine": {
+    "gpu": "NVIDIA GeForce GTX 1660 SUPER",
+    "driver": "NVIDIA 617.14",
+    "backend": "Vulkan (wgpu default on Windows)",
+    "cpu": "Intel Core i5-9400F",
+    "os": "Windows 11 Home 10.0.26300"
+  },
+  "settings": {
+    "window_mode": "exclusive",
+    "display_mode": "2560x1440 @ 120 Hz",
+    "render_resolution": "half",
+    "shadow_quality": "high",
+    "fog_quality": "high",
+    "surface_depth_quality": "on",
+    "vsync": "on"
+  },
+  "build": {
+    "probe_commit": "1a052cfed",
+    "command": "CARGO_PROFILE_RELEASE_STRIP=none cargo build --release -p postretro -p postretro-script-compiler --features postretro/capture",
+    "postretro_exe_sha256": "881bb864dfe9e2ccb72785ce63a876df0306c7775ba2ddcf83f9a67500c23aa9",
+    "scripts_build_exe_sha256": "b2942dca3e7d72b6acc12d059bc6c34d29301a84664784fbef48061cc7b1298e",
+    "start_script": "content/dev/start-script.js rebuilt from the probe commit's start-script.ts with that scripts-build"
+  },
+  "fixtures": {
+    "campaign-test.prl": "1b5942df88af66ef",
+    "stress-warren-hallway-inspection.prl": "210112eeffbbd134",
+    "kinematic-platform.prl": "2bf5c40b97fa6c29"
+  },
+  "batches": {
+    "1660-a": {
+      "poses": ["campaign", "arena"],
+      "arms": ["baseline", "array-free", "array-free,unroll36", "floor"],
+      "rounds": 3,
+      "summary": "summary-arena-campaign.json"
+    },
+    "1660-b": {
+      "poses": ["kinstation"],
+      "arms": ["baseline", "array-free", "array-free,unroll36", "floor"],
+      "rounds": 3,
+      "summary": "summary-kinstation.json"
+    }
+  }
+}

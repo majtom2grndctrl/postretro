@@ -294,6 +294,14 @@ pub(crate) struct Session {
     pub(crate) debug_ui: Option<render::debug_ui::DebugUi>,
 }
 
+/// The focus-engine key of a pushed modal instance.
+pub(crate) fn modal_focus_key(
+    name: &str,
+    instance: postretro_ui::modal_stack::ModalInstance,
+) -> String {
+    format!("{name}#{}", instance.id())
+}
+
 impl Session {
     /// The focus-engine key and registry name of the tree on top: a pushed
     /// modal is keyed by name and instance, so a fresh push never inherits the
@@ -304,7 +312,7 @@ impl Session {
             self.modal_stack.active_name(),
             self.modal_stack.active_instance(),
         ) {
-            (Some(name), Some(instance)) => (format!("{name}#{}", instance.id()), name.to_string()),
+            (Some(name), Some(instance)) => (modal_focus_key(name, instance), name.to_string()),
             _ => (fallback.to_string(), fallback.to_string()),
         }
     }

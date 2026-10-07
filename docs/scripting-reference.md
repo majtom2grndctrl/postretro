@@ -2955,12 +2955,17 @@ Button({ id: "controls", label: "CONTROLS", onPress: OPEN_CONTROLS_ACTION });
 ```
 
 The panel lists every relevant command by the `input` block's categories,
-order and labels, with at least two keyboard-and-mouse and two gamepad slots per
-command, each on its own row and showing its activator. Players cannot change
+order and labels, one row per command: its label, its binding slots, and
+RESET. The slots are those of the device the player used last, keyboard and
+mouse or gamepad, and they switch as soon as the player uses the other one; a
+caption under the title names the device shown. Each row has at least two
+slots, more when a command has more defaults on that device, and each binding
+shows its activator. Players cannot change
 activators: a default input keeps its own activator wherever it sits, an
 input that replaces one of the mod's defaults takes that default's activator,
-any other input fires on press, and a wheel notch always fires on press. Each command has RESET, and RESET ALL returns every command to the
-mod's defaults.
+any other input fires on press, and a wheel notch always fires on press. RESET
+returns the command's keyboard-and-mouse and gamepad bindings to the mod's
+defaults, and RESET ALL does so for every command.
 
 Choosing a slot opens a prompt that captures the next key, button, stick
 push, or mouse movement (for look), Escape and Start included. It has no time

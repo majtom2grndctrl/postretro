@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use postretro_ui::actions::ControlsAction;
 use postretro_ui::demo::{CONTROLS_CAPTURE_NAME, CONTROLS_DIALOG_NAME, CONTROLS_PANEL_NAME};
 use postretro_ui::descriptor::AnchoredTree;
+use postretro_ui::modal_stack::ModalInstance;
 use serde_json::{Value, json};
 
 use crate::input::{
@@ -22,13 +23,17 @@ use crate::*;
 const MIN_SLOTS: usize = 2;
 
 /// The panel's live state: the open capture prompt, a conflicting binding
-/// awaiting the player's answer, and the table generation the pushed panel
-/// was built from.
+/// awaiting the player's answer, and what the pushed panel was built from.
 #[derive(Debug, Default)]
 pub(crate) struct ControlsPanelState {
     capture: Option<BindingCapture>,
     pending_replace: Option<PendingReplace>,
-    built_generation: Option<u64>,
+    /// The table generation and the device class the pushed panel shows. A
+    /// change in either rebuilds it.
+    built: Option<(u64, DeviceClass)>,
+    /// The pushed panel's modal instance, whose focus a rebuild carries over,
+    /// whether the panel is on top or a prompt or dialog covers it.
+    instance: Option<ModalInstance>,
     /// The commands the pushed panel lists, in row order.
     listed: Vec<Command>,
     /// The row focus belonged to when a prompt closed because its command left
@@ -190,6 +195,29 @@ pub(crate) fn slot_id(command: Command, class: DeviceClass, slot: usize) -> Stri
     format!("ctl_{}_{}_{slot}", command.id(), class.settings_key())
 }
 
+/// A command's RESET button id.
+fn reset_id(command: Command) -> String {
+    format!("ctl_{}_reset", command.id())
+}
+
+/// The command of a row stop among `listed`, and its slot on either class
+/// (`None` for its RESET). `None` for a stop outside the rows.
+fn row_stop(id: &str, listed: &[Command]) -> Option<(Command, Option<usize>)> {
+    listed.iter().find_map(|&command| {
+        let rest = id.strip_prefix(&format!("ctl_{}_", command.id()))?;
+        if rest == "reset" {
+            return Some((command, None));
+        }
+        let slot = DeviceClass::ALL.into_iter().find_map(|class| {
+            rest.strip_prefix(class.settings_key())?
+                .strip_prefix('_')?
+                .parse()
+                .ok()
+        })?;
+        Some((command, Some(slot)))
+    })
+}
+
 /// Theme spacing tokens (`ui.md` §2), so a mod's theme spaces these panels the
 /// way it spaces its own.
 const GAP: &str = "m";
@@ -238,15 +266,17 @@ fn tree(initial_focus: Option<&str>, children: Vec<Value>) -> AnchoredTree {
 
 /// Id of the shell's row grid, which the engine fills.
 const ROWS_GRID_ID: &str = "controlsRows";
+/// Id of the shell's caption naming the device class the rows show.
+const DEVICE_CAPTION_ID: &str = "controlsDevice";
 /// Id of the shell's note explaining the displaced flag; dropped when no row
 /// carries the flag.
 const DISPLACED_NOTE_ID: &str = "controlsDisplacedNote";
 
-/// Columns of the row grid: label, binding, and RESET on a command's first row.
-const ROW_COLS: usize = 3;
+/// Columns of the row grid besides the slots: the command's label and RESET.
+const LABEL_AND_RESET_COLS: usize = 2;
 
 /// The slots each class shows on every row: the most any row binds, and at
-/// least `MIN_SLOTS`.
+/// least `MIN_SLOTS`, so no binding is ever out of the player's reach.
 fn slot_counts(rows: &[ControlsRow]) -> [usize; 2] {
     DeviceClass::ALL.map(|class| {
         rows.iter()
@@ -257,12 +287,22 @@ fn slot_counts(rows: &[ControlsRow]) -> [usize; 2] {
     })
 }
 
+/// The caption under the title: the class the rows show, and how to see the
+/// other one.
+fn device_caption(class: DeviceClass) -> String {
+    let other = match class {
+        DeviceClass::KeyboardMouse => "A GAMEPAD TO SEE ITS",
+        DeviceClass::Gamepad => "THE KEYBOARD OR MOUSE TO SEE THEIR",
+    };
+    format!("{} \u{b7} USE {other} BINDINGS", class_label(class))
+}
+
 /// The grid cells for the rows: a heading row per category, then one row per
-/// binding slot, labelled with its command and slot. One binding per row keeps
-/// the grid three columns wide however many slots a class shows, so the panel
-/// fits the reference canvas.
-fn row_cells(rows: &[ControlsRow]) -> Vec<Value> {
-    let slots = slot_counts(rows);
+/// command — its label, one button per slot on `class`, and RESET. The other
+/// class's slots show once the player uses that device.
+fn row_cells(rows: &[ControlsRow], class: DeviceClass) -> Vec<Value> {
+    let slots = slot_counts(rows)[class_index(class)];
+    let cols = slots + LABEL_AND_RESET_COLS;
 
     let mut cells = Vec::new();
     let mut category = None;
@@ -270,28 +310,15 @@ fn row_cells(rows: &[ControlsRow]) -> Vec<Value> {
         if category != Some(&row.category) {
             category = Some(&row.category);
             cells.push(text(&row.category, HEADING_SIZE));
-            cells.extend((1..ROW_COLS).map(|_| spacer()));
+            cells.extend((1..cols).map(|_| spacer()));
         }
-        let row_slots = DeviceClass::ALL
-            .into_iter()
-            .zip(slots)
-            .flat_map(|(class, count)| (0..count).map(move |slot| (class, slot)));
-        for (index, (class, slot)) in row_slots.enumerate() {
-            // Every slot row of a flagged class carries the mark, so it shows
-            // on whichever of them is scrolled into view.
-            let marker = if row.displaced[class_index(class)] {
-                " !"
-            } else {
-                ""
-            };
-            let short = match class {
-                DeviceClass::KeyboardMouse => "KEY",
-                DeviceClass::Gamepad => "PAD",
-            };
-            cells.push(text(
-                &format!("{}{marker} \u{b7} {short} {}", row.label, slot + 1),
-                DETAIL_SIZE,
-            ));
+        let marker = if row.displaced[class_index(class)] {
+            " !"
+        } else {
+            ""
+        };
+        cells.push(text(&format!("{}{marker}", row.label), DETAIL_SIZE));
+        for slot in 0..slots {
             let label = match row.inputs[class_index(class)].get(slot) {
                 Some((input, kind)) => {
                     format!("{}{}", input_label(*input), activator_suffix(*kind))
@@ -308,20 +335,16 @@ fn row_cells(rows: &[ControlsRow]) -> Vec<Value> {
                     class.settings_key()
                 ),
             ));
-            cells.push(if index == 0 {
-                button(
-                    &format!("ctl_{}_reset", row.command.id()),
-                    "RESET",
-                    &format!(
-                        "{}reset.{}",
-                        postretro_ui::actions::CONTROLS_ACTION_PREFIX,
-                        row.command.id()
-                    ),
-                )
-            } else {
-                spacer()
-            });
         }
+        cells.push(button(
+            &reset_id(row.command),
+            "RESET",
+            &format!(
+                "{}reset.{}",
+                postretro_ui::actions::CONTROLS_ACTION_PREFIX,
+                row.command.id()
+            ),
+        ));
     }
     cells
 }
@@ -346,29 +369,32 @@ fn remove_widget(node: &mut Value, id: &str) -> bool {
 }
 
 /// The controls panel: the `core/ui/controlsPanel.json` shell with its row
-/// grid filled from `rows`. `initial_focus` overrides the first row's first
-/// slot. A shell with no row grid is drawn as authored, with a warning.
+/// grid filled from `rows` for `class`, the device class the player used
+/// last. `initial_focus` overrides the first row's first slot. A shell with
+/// no row grid is drawn as authored, with a warning.
 pub(crate) fn build_controls_panel(
     shell: &AnchoredTree,
     rows: &[ControlsRow],
+    class: DeviceClass,
     initial_focus: Option<&str>,
 ) -> AnchoredTree {
     let mut value = serde_json::to_value(shell).expect("a descriptor serializes");
     match find_widget(&mut value["root"], ROWS_GRID_ID) {
         Some(grid) => {
-            grid["cols"] = json!(ROW_COLS);
-            grid["children"] = Value::Array(row_cells(rows));
+            grid["cols"] = json!(slot_counts(rows)[class_index(class)] + LABEL_AND_RESET_COLS);
+            grid["children"] = Value::Array(row_cells(rows, class));
         }
         None => log::warn!(
             "[UI] the controls panel shell has no `{ROWS_GRID_ID}` grid; its rows are not shown"
         ),
     }
-    if !rows.iter().any(|row| row.displaced.contains(&true)) {
+    if let Some(caption) = find_widget(&mut value["root"], DEVICE_CAPTION_ID) {
+        caption["content"] = json!(device_caption(class));
+    }
+    if !rows.iter().any(|row| row.displaced[class_index(class)]) {
         remove_widget(&mut value["root"], DISPLACED_NOTE_ID);
     }
-    let first = rows
-        .first()
-        .map(|row| slot_id(row.command, DeviceClass::KeyboardMouse, 0));
+    let first = rows.first().map(|row| slot_id(row.command, class, 0));
     if let Some(focus) = initial_focus.map(str::to_string).or(first) {
         value["initialFocus"] = json!(focus);
     }
@@ -641,11 +667,13 @@ impl App {
         let Some(shell) = controls_shell(&session.modal_stack) else {
             return;
         };
+        let class = session.device_family.current().class();
         let rows = controls_rows(session.bindings.table(), session.bindings.author());
-        let panel = build_controls_panel(&shell, &rows, None);
+        let panel = build_controls_panel(&shell, &rows, class, None);
         session.controls.listed = rows.iter().map(|row| row.command).collect();
-        session.controls.built_generation = Some(session.bindings.generation());
+        session.controls.built = Some((session.bindings.generation(), class));
         session.modal_stack.push(CONTROLS_PANEL_NAME, panel);
+        session.controls.instance = session.modal_stack.active_instance();
     }
 
     /// A `ui.controls.*` action from the panel or its dialogs.
@@ -865,30 +893,39 @@ impl App {
     }
 
     /// Replace the pushed panel's descriptor when the table changed since it
-    /// was built. Focus on a row that left the list moves to the nearest row
-    /// that remains.
+    /// was built, or the player switched device class. Focus on a row that
+    /// left the list moves to the nearest row that remains; focus on a slot
+    /// moves to the same slot of the class now shown.
     fn rebuild_controls_panel(&mut self) {
         let Some(session) = self.session.as_mut() else {
             return;
         };
+        let class = session.device_family.current().class();
+        let built = (session.bindings.generation(), class);
         if !session.modal_stack.contains_pushed(CONTROLS_PANEL_NAME)
-            || session.controls.built_generation == Some(session.bindings.generation())
+            || session.controls.built == Some(built)
         {
             return;
         }
         let rows = controls_rows(session.bindings.table(), session.bindings.author());
         let listed: Vec<Command> = rows.iter().map(|row| row.command).collect();
-        let anchor = session.controls.focus_anchor.take().or_else(|| {
-            let id = self.ui_focused_id.as_deref()?;
-            session
-                .controls
-                .listed
-                .iter()
-                .copied()
-                .find(|command| id.starts_with(&format!("ctl_{}_", command.id())))
-        });
+        let slots = slot_counts(&rows)[class_index(class)];
+        // The panel's live focus while it is on top, its saved focus while a
+        // prompt or dialog covers it: the focus engine lands on the descriptor's
+        // initial focus when that stop is gone from the rebuilt panel.
+        let stop = session
+            .controls
+            .instance
+            .map(|instance| crate::session::modal_focus_key(CONTROLS_PANEL_NAME, instance))
+            .and_then(|key| session.ui_focus.focused_in(&key).map(str::to_string))
+            .and_then(|id| row_stop(&id, &session.controls.listed));
+        let anchor = session
+            .controls
+            .focus_anchor
+            .take()
+            .or(stop.map(|(command, _)| command));
         let old = &session.controls.listed;
-        let initial_focus = anchor
+        let nearest = anchor
             .filter(|command| !listed.contains(command))
             .and_then(|command| old.iter().position(|c| *c == command))
             .and_then(|index| {
@@ -897,16 +934,24 @@ impl App {
                     .chain(old[..index].iter().rev())
                     .find(|command| listed.contains(command))
             })
-            .map(|command| slot_id(*command, DeviceClass::KeyboardMouse, 0));
+            .map(|command| slot_id(*command, class, 0));
+        let initial_focus = nearest.or_else(|| {
+            let (command, slot) = stop?;
+            Some(match slot {
+                Some(slot) if slot < slots => slot_id(command, class, slot),
+                Some(_) => slot_id(command, class, 0),
+                None => reset_id(command),
+            })
+        });
         let Some(shell) = controls_shell(&session.modal_stack) else {
             return;
         };
-        let panel = build_controls_panel(&shell, &rows, initial_focus.as_deref());
+        let panel = build_controls_panel(&shell, &rows, class, initial_focus.as_deref());
         session
             .modal_stack
             .replace_pushed_descriptor(CONTROLS_PANEL_NAME, &panel);
         session.controls.listed = listed;
-        session.controls.built_generation = Some(session.bindings.generation());
+        session.controls.built = Some(built);
     }
 
     /// Install a new player layer: save the rows that changed under the

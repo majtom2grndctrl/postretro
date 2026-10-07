@@ -386,6 +386,12 @@ impl UiFocusEngine {
         self.trees.len()
     }
 
+    /// The node focused in tree `key`: its live focus while the tree is on
+    /// top, the focus saved for its return while another tree covers it.
+    pub fn focused_in(&self, key: &str) -> Option<&str> {
+        self.focused_id(key)
+    }
+
     /// The focused node id for `key`, if any.
     fn focused_id(&self, key: &str) -> Option<&str> {
         self.trees.get(key).and_then(|t| t.focused.as_deref())

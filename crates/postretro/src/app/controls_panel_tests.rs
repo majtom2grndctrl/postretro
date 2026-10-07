@@ -152,6 +152,7 @@ fn each_slot_shows_its_activator_read_only() {
     let panel = descriptor_text(&build_controls_panel(
         &shell(),
         &controls_rows(&table, &author),
+        KBM,
         None,
     ));
     assert!(panel.contains("\"SHIFT LEFT (HOLD)\""), "{panel}");
@@ -182,17 +183,18 @@ fn a_player_binding_that_took_an_author_default_flags_the_displaced_row() {
         .map(|row| (row.command, row.displaced))
         .collect();
     assert_eq!(flagged, [(Command::Reload, [true, false])]);
-    let panel = descriptor_text(&build_controls_panel(&shell(), &rows, None));
-    assert!(panel.contains("\"RELOAD ! \u{b7} KEY 1\""), "{panel}");
-    assert!(
-        panel.contains("\"RELOAD ! \u{b7} KEY 2\""),
-        "every slot row of the flagged class carries the mark: {panel}"
-    );
-    assert!(
-        panel.contains("\"RELOAD \u{b7} PAD 1\""),
-        "the gamepad rows lost nothing and carry no mark: {panel}"
-    );
+    let panel = descriptor_text(&build_controls_panel(&shell(), &rows, KBM, None));
+    assert!(panel.contains("\"RELOAD !\""), "{panel}");
     assert!(panel.contains("ANOTHER BINDING TOOK AN INPUT FROM THIS COMMAND"));
+    let pad_panel = descriptor_text(&build_controls_panel(&shell(), &rows, PAD, None));
+    assert!(
+        pad_panel.contains("\"RELOAD\"") && !pad_panel.contains("\"RELOAD !\""),
+        "the gamepad bindings lost nothing, so their row carries no mark: {pad_panel}"
+    );
+    assert!(
+        !pad_panel.contains("controlsDisplacedNote"),
+        "the note shows only for a flagged row on the class shown"
+    );
 
     // A later author hold on the player's key yields and is flagged too.
     let mut author = AuthorLayer::default();
@@ -208,65 +210,93 @@ fn a_player_binding_that_took_an_author_default_flags_the_displaced_row() {
     );
 }
 
-#[test]
-fn each_slot_is_its_own_row_and_reset_sits_on_the_commands_first() {
-    let author = AuthorLayer::default();
-    let table = EffectiveTable::build(&author, &PlayerLayer::default(), all_facts(), false);
-    let rows = controls_rows(&table, &author);
-    let mut panel = serde_json::to_value(build_controls_panel(&shell(), &rows, None)).unwrap();
-    let grid = find_widget(&mut panel["root"], ROWS_GRID_ID).unwrap();
-    assert_eq!(grid["cols"], json!(3));
+/// The filled row grid of `panel`: its column count and its cells by row.
+fn grid_rows(panel: &AnchoredTree) -> (usize, Vec<Vec<Value>>) {
+    let mut value = serde_json::to_value(panel).unwrap();
+    let grid = find_widget(&mut value["root"], ROWS_GRID_ID).unwrap();
+    let cols = grid["cols"].as_u64().unwrap() as usize;
     let cells = grid["children"].as_array().unwrap();
-    assert_eq!(cells.len() % 3, 0, "every grid row fills its three columns");
-    let grid_rows: Vec<&[Value]> = cells.chunks(3).collect();
-    assert_eq!(
-        grid_rows[0][0]["content"],
-        json!("GAMEPLAY"),
-        "a category heading leads, with no column-header row"
-    );
-    let prefix = format!("ctl_{}_", Command::MoveForward.id());
-    let forward: Vec<&[Value]> = grid_rows
+    assert_eq!(cells.len() % cols, 0, "every grid row fills its columns");
+    (cols, cells.chunks(cols).map(<[Value]>::to_vec).collect())
+}
+
+/// The grid row whose second cell is one of `command`'s stops.
+fn command_row(rows: &[Vec<Value>], command: Command) -> Vec<Value> {
+    let prefix = format!("ctl_{}_", command.id());
+    let found: Vec<&Vec<Value>> = rows
         .iter()
-        .copied()
         .filter(|row| {
             row[1]["id"]
                 .as_str()
                 .is_some_and(|id| id.starts_with(&prefix))
         })
         .collect();
-    let labels: Vec<&str> = forward
-        .iter()
-        .map(|row| row[0]["content"].as_str().unwrap())
-        .collect();
-    assert_eq!(
-        labels,
-        [
-            "MOVE FORWARD \u{b7} KEY 1",
-            "MOVE FORWARD \u{b7} KEY 2",
-            "MOVE FORWARD \u{b7} PAD 1",
-            "MOVE FORWARD \u{b7} PAD 2",
-        ]
-    );
-    let ids: Vec<&str> = forward
-        .iter()
-        .map(|row| row[1]["id"].as_str().unwrap())
-        .collect();
-    let expected: Vec<String> = [(KBM, 0), (KBM, 1), (PAD, 0), (PAD, 1)]
-        .into_iter()
-        .map(|(class, slot)| slot_id(Command::MoveForward, class, slot))
-        .collect();
-    assert_eq!(ids, expected);
-    assert_eq!(
-        forward[0][2]["id"],
-        json!(format!("ctl_{}_reset", Command::MoveForward.id()))
-    );
-    for row in &forward[1..] {
+    assert_eq!(found.len(), 1, "one row per command");
+    found[0].clone()
+}
+
+#[test]
+fn each_action_is_one_row_with_two_binds_and_a_reset() {
+    let author = AuthorLayer::default();
+    let table = EffectiveTable::build(&author, &PlayerLayer::default(), all_facts(), false);
+    let rows = controls_rows(&table, &author);
+    for class in [KBM, PAD] {
+        let (cols, grid) = grid_rows(&build_controls_panel(&shell(), &rows, class, None));
+        assert_eq!(cols, 4, "ACTION | BIND 1 | BIND 2 | RESET");
         assert_eq!(
-            row[2]["kind"],
-            json!("spacer"),
-            "RESET shows once per command"
+            grid[0][0]["content"],
+            json!("GAMEPLAY"),
+            "a category heading leads, with no column-header row"
+        );
+        let forward = command_row(&grid, Command::MoveForward);
+        assert_eq!(forward[0]["content"], json!("MOVE FORWARD"));
+        let ids: Vec<&str> = forward[1..]
+            .iter()
+            .map(|cell| cell["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            ids,
+            [
+                slot_id(Command::MoveForward, class, 0),
+                slot_id(Command::MoveForward, class, 1),
+                format!("ctl_{}_reset", Command::MoveForward.id()),
+            ],
+            "{class:?}: the two binds shown are the class the player used last"
+        );
+        let other = if class == KBM { PAD } else { KBM };
+        let text = descriptor_text(&build_controls_panel(&shell(), &rows, class, None));
+        assert!(
+            !text.contains(&format!("_{}_", other.settings_key())),
+            "{class:?}: no slot of the other class shows"
         );
     }
+}
+
+#[test]
+fn a_class_bound_past_two_slots_shows_a_column_for_every_binding() {
+    // An author may give a command more defaults than two: every one stays in
+    // reach, so the class shows as many slot columns as its longest row.
+    let mut author = AuthorLayer::default();
+    author.defaults.insert(
+        (Command::Jump, KBM),
+        [KeyCode::Space, KeyCode::KeyJ, KeyCode::KeyK]
+            .map(|code| author_binding(key(code), ActivatorKind::Press))
+            .to_vec(),
+    );
+    let table = EffectiveTable::build(&author, &PlayerLayer::default(), all_facts(), false);
+    let rows = controls_rows(&table, &author);
+    let (cols, grid) = grid_rows(&build_controls_panel(&shell(), &rows, KBM, None));
+    assert_eq!(cols, 5);
+    let jump = command_row(&grid, Command::Jump);
+    assert_eq!(jump[3]["label"], json!("K"));
+    let forward = command_row(&grid, Command::MoveForward);
+    assert_eq!(
+        forward[3]["label"],
+        json!("---"),
+        "a shorter row shows an empty slot"
+    );
+    let (cols, _) = grid_rows(&build_controls_panel(&shell(), &rows, PAD, None));
+    assert_eq!(cols, 4, "the gamepad view keeps its two");
 }
 
 #[test]
@@ -687,10 +717,10 @@ fn a_prompt_whose_command_becomes_irrelevant_closes_without_binding() {
         session.controls.listed.clear();
         let rows = controls_rows(session.bindings.table(), session.bindings.author());
         session.controls.listed = rows.iter().map(|row| row.command).collect();
-        session.controls.built_generation = Some(session.bindings.generation());
+        session.controls.built = Some((session.bindings.generation(), KBM));
         session.modal_stack.push(
             CONTROLS_PANEL_NAME,
-            build_controls_panel(&shell(), &rows, None),
+            build_controls_panel(&shell(), &rows, KBM, None),
         );
     }
     app.apply_controls_action(ControlsAction::Capture {
@@ -715,6 +745,7 @@ fn a_prompt_whose_command_becomes_irrelevant_closes_without_binding() {
             session(&app).bindings.table(),
             session(&app).bindings.author(),
         ),
+        KBM,
         None,
     ));
     assert!(!panel.contains("ctl_dash_"));
@@ -956,11 +987,19 @@ fn the_shipped_shell_frames_the_rows_the_engine_fills() {
     let author = AuthorLayer::default();
     let table = EffectiveTable::build(&author, &PlayerLayer::default(), all_facts(), false);
     let rows = controls_rows(&table, &author);
-    let panel = build_controls_panel(&shell(), &rows, None);
+    let panel = build_controls_panel(&shell(), &rows, KBM, None);
     let text = descriptor_text(&panel);
     assert!(text.contains("\"id\":\"controlsRows\""));
     assert!(text.contains("\"scroll\":{\"maxHeight\":420.0}"), "{text}");
-    assert!(text.contains("\"cols\":3"), "{text}");
+    assert!(text.contains("\"cols\":4"), "{text}");
+    assert!(
+        text.contains("\"KEYBOARD AND MOUSE \u{b7} USE A GAMEPAD TO SEE ITS BINDINGS\""),
+        "the caption names the class shown: {text}"
+    );
+    assert!(
+        descriptor_text(&build_controls_panel(&shell(), &rows, PAD, None))
+            .contains("\"GAMEPAD \u{b7} USE THE KEYBOARD OR MOUSE TO SEE THEIR BINDINGS\"")
+    );
     assert!(text.contains("ctl_resetAll") && text.contains("ctl_back"));
     assert!(
         !text.contains("controlsDisplacedNote"),
@@ -969,6 +1008,10 @@ fn the_shipped_shell_frames_the_rows_the_engine_fills() {
     assert_eq!(
         panel.initial_focus.as_deref(),
         Some(slot_id(rows[0].command, KBM, 0).as_str())
+    );
+    assert!(
+        descriptor_text(&shell()).contains("\"cols\":4,"),
+        "the shell ships the four columns the default slots fill"
     );
     assert!(
         descriptor_text(&shell()).contains("\"children\":[]"),
@@ -1055,14 +1098,17 @@ fn assert_fits_the_canvas(name: &str, tree: &AnchoredTree) -> [f32; 4] {
 fn the_controls_panel_fits_the_reference_canvas() {
     let app = test_app();
     let rows = worst_case_rows(&app);
-    let panel = build_controls_panel(&shell(), &rows, None);
-    assert_fits_the_canvas("controls panel", &panel);
-    let text = descriptor_text(&panel);
-    assert!(text.contains("\"RIGHT STICK PRESS (RELEASE)\""), "{text}");
-    assert!(
-        text.contains("\"CYCLE WIELDABLE PREVIOUS ! \u{b7} PAD 2\""),
-        "{text}"
-    );
+    for (class, input) in [
+        (KBM, "NUMPAD MULTIPLY (RELEASE)"),
+        (PAD, "RIGHT STICK PRESS (RELEASE)"),
+    ] {
+        let panel = build_controls_panel(&shell(), &rows, class, None);
+        assert_fits_the_canvas(&format!("controls panel {class:?}"), &panel);
+        let text = descriptor_text(&panel);
+        assert!(text.contains(&format!("\"{input}\"")), "{text}");
+        assert!(text.contains("\"CYCLE WIELDABLE PREVIOUS !\""), "{text}");
+        assert!(text.contains("controlsDisplacedNote"), "{text}");
+    }
 }
 
 #[test]
@@ -1091,11 +1137,17 @@ fn the_capture_prompt_and_dialogs_fit_the_reference_canvas() {
 
 #[test]
 fn spatial_nav_reaches_every_slot_and_every_reset() {
+    for class in [KBM, PAD] {
+        spatial_nav_reaches_every_stop(class);
+    }
+}
+
+fn spatial_nav_reaches_every_stop(class: DeviceClass) {
     use crate::input::{InputMode, NavIntent, UiFocusEngine};
     let app = test_app();
     let bindings = &session(&app).bindings;
     let rows = controls_rows(bindings.table(), bindings.author());
-    let panel = build_controls_panel(&shell(), &rows, None);
+    let panel = build_controls_panel(&shell(), &rows, class, None);
     let (_, stops) = lay_out(&panel);
     // Where one nav step from `from` lands: a fresh engine opened on `from`.
     let step = |from: &str, nav: NavIntent| -> Option<String> {
@@ -1136,14 +1188,186 @@ fn spatial_nav_reaches_every_slot_and_every_reset() {
     }
     for row in &rows {
         let mut ids = vec![format!("ctl_{}_reset", row.command.id())];
-        for (class, slot) in [(KBM, 0), (KBM, 1), (PAD, 0), (PAD, 1)] {
+        for slot in 0..MIN_SLOTS {
             ids.push(slot_id(row.command, class, slot));
         }
         for id in ids {
-            assert!(reached.contains(&id), "nav never reaches {id}");
+            assert!(reached.contains(&id), "{class:?}: nav never reaches {id}");
         }
     }
     for id in ["ctl_resetAll", "ctl_back"] {
         assert!(reached.contains(&id.to_string()), "nav never reaches {id}");
     }
+}
+
+// --- device class --------------------------------------------------------
+
+/// The pushed panel's descriptor.
+fn pushed_panel(app: &App) -> AnchoredTree {
+    let session = session(app);
+    assert!(session.modal_stack.contains_pushed(CONTROLS_PANEL_NAME));
+    session
+        .modal_stack
+        .retained_descriptors()
+        .next()
+        .expect("the panel is the bottom tree in these tests")
+        .clone()
+}
+
+/// The focus engine's key for the pushed panel.
+fn panel_key(app: &App) -> String {
+    crate::session::modal_focus_key(
+        CONTROLS_PANEL_NAME,
+        session(app)
+            .controls
+            .instance
+            .expect("the panel was pushed"),
+    )
+}
+
+/// One focus tick on the pushed panel's laid-out stops, as a frame with the
+/// panel on top runs it; `land_on` stands in for the stop focus moved to.
+/// Returns the focused stop.
+fn tick_panel_focus(app: &mut App, land_on: Option<&str>) -> Option<String> {
+    use crate::input::InputMode;
+    let (_, mut stops) = lay_out(&pushed_panel(app));
+    if let Some(id) = land_on {
+        stops.initial_focus = Some(id.to_string());
+    }
+    let key = panel_key(app);
+    let session = app.session.as_mut().unwrap();
+    session
+        .ui_focus
+        .tick(
+            Some(&key),
+            Some(&stops),
+            &[],
+            None,
+            &[],
+            InputMode::Focus,
+            0.0,
+        )
+        .focused
+}
+
+fn use_pad(app: &mut App) {
+    let family = &mut app.session.as_mut().unwrap().device_family;
+    family.note_pad(None);
+    family.end_frame();
+}
+
+fn use_keyboard(app: &mut App) {
+    let family = &mut app.session.as_mut().unwrap().device_family;
+    family.note_keyboard_mouse();
+    family.end_frame();
+}
+
+#[test]
+fn switching_device_family_swaps_the_shown_class_and_keeps_focus_on_the_same_slot() {
+    let mut app = test_app();
+    app.open_controls_panel();
+    let jump_key_2 = slot_id(Command::Jump, KBM, 1);
+    assert!(descriptor_text(&pushed_panel(&app)).contains(&jump_key_2));
+    assert_eq!(
+        tick_panel_focus(&mut app, Some(&jump_key_2)).as_deref(),
+        Some(jump_key_2.as_str())
+    );
+
+    // A frame with no family change rebuilds nothing.
+    let before = descriptor_text(&pushed_panel(&app));
+    app.update_controls_panel();
+    assert_eq!(descriptor_text(&pushed_panel(&app)), before);
+
+    use_pad(&mut app);
+    app.update_controls_panel();
+    let jump_pad_2 = slot_id(Command::Jump, PAD, 1);
+    let panel = pushed_panel(&app);
+    let text = descriptor_text(&panel);
+    assert!(text.contains(&jump_pad_2), "{text}");
+    assert!(!text.contains(&jump_key_2), "{text}");
+    assert!(text.contains("\"GAMEPAD \u{b7} "), "{text}");
+    assert_eq!(session(&app).modal_stack.len(), 1, "rebuilt in place");
+    assert_eq!(
+        tick_panel_focus(&mut app, None).as_deref(),
+        Some(jump_pad_2.as_str()),
+        "focus stays on the same command and slot"
+    );
+
+    use_keyboard(&mut app);
+    app.update_controls_panel();
+    assert_eq!(
+        tick_panel_focus(&mut app, None).as_deref(),
+        Some(jump_key_2.as_str())
+    );
+
+    // RESET keeps its id across the switch, so focus on it stays.
+    let mut app = test_app();
+    app.open_controls_panel();
+    let jump_reset = format!("ctl_{}_reset", Command::Jump.id());
+    tick_panel_focus(&mut app, Some(&jump_reset));
+    use_pad(&mut app);
+    app.update_controls_panel();
+    assert_eq!(
+        tick_panel_focus(&mut app, None).as_deref(),
+        Some(jump_reset.as_str())
+    );
+}
+
+#[test]
+fn a_family_switch_under_an_open_prompt_keeps_the_prompt_and_its_class() {
+    let mut app = test_app();
+    use_pad(&mut app);
+    app.open_controls_panel();
+    let jump_pad_2 = slot_id(Command::Jump, PAD, 1);
+    tick_panel_focus(&mut app, Some(&jump_pad_2));
+    app.apply_controls_action(ControlsAction::Capture {
+        command: Command::Jump.id(),
+        class: PAD.settings_key(),
+        slot: 1,
+    });
+    assert!(session(&app).capture_prompt_is_active());
+
+    // The mouse moves while the gamepad prompt is open.
+    use_keyboard(&mut app);
+    app.update_controls_panel();
+    assert!(
+        session(&app).capture_prompt_is_active(),
+        "the prompt stays open on its gamepad slot"
+    );
+    let panel = pushed_panel(&app);
+    assert_eq!(
+        panel.initial_focus.as_deref(),
+        Some(slot_id(Command::Jump, KBM, 1).as_str()),
+        "the covered panel shows the keyboard and returns to the same slot"
+    );
+
+    capture(&mut app, pad(Button::DPadDown));
+    if session(&app).modal_stack.active_name() == Some(CONTROLS_DIALOG_NAME) {
+        app.apply_controls_action(ControlsAction::Replace);
+    }
+    assert_eq!(inputs(&app, Command::Jump, PAD)[1], pad(Button::DPadDown));
+    assert_eq!(
+        session(&app).modal_stack.active_name(),
+        Some(CONTROLS_PANEL_NAME)
+    );
+}
+
+#[test]
+fn a_family_switch_under_a_conflict_dialog_keeps_the_question() {
+    let mut app = test_app();
+    open_capture(&mut app, Command::Use, KBM, 0);
+    capture(&mut app, key(KeyCode::Space));
+    assert_eq!(
+        session(&app).modal_stack.active_name(),
+        Some(CONTROLS_DIALOG_NAME)
+    );
+    use_pad(&mut app);
+    app.update_controls_panel();
+    assert_eq!(
+        session(&app).modal_stack.active_name(),
+        Some(CONTROLS_DIALOG_NAME)
+    );
+    assert!(descriptor_text(&pushed_panel(&app)).contains(&slot_id(Command::Use, PAD, 0)));
+    app.apply_controls_action(ControlsAction::Replace);
+    assert_eq!(inputs(&app, Command::Use, KBM), [key(KeyCode::Space)]);
 }

@@ -26,12 +26,20 @@
         "font": "mono"
       },
       {
+        "kind": "text",
+        "id": "controlsDevice",
+        "content": "KEYBOARD AND MOUSE",
+        "fontSize": 14,
+        "color": "ok",
+        "font": "mono"
+      },
+      {
         "kind": "grid",
         "id": "controlsRows",
         "gap": "m",
         "padding": 0.0,
         "align": "center",
-        "cols": 3,
+        "cols": 4,
         "focus": {
           "policy": "spatial"
         },

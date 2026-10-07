@@ -14,7 +14,7 @@ Read with `context/lib/resource_management.md` §4.6, `rendering_pipeline.md` §
 | D2 | The prefix depth `D` applies **in each direction**: black sinks `D`, white rises ~`D`. | Total span doubles (concrete: −6 to +6 texels). Step caps double. Raised-texel edge artifacts are as large as the carve. |
 | D3 | Raised-texel artifacts are accepted and documented, not mitigated: flat silhouettes at polygon edges, raised floor texels cut by an adjoining wall plane, feet/props/projectiles drawing at the true plane (look sunk into raised texels). | No depth writes, no discard bounds, no offset limiting. Author docs explain where not to put strong raises. |
 | D4 | The zero point lives in the shader and its CPU mirror. The bake keeps storing `G = 255 − h`. | No `.prm` change, no `STAGE_VERSION` bump, no cache-key change. Existing `.prm` files stay valid. |
-| D5 | Ambient occlusion darkens sunk texels only, measured from the plane. Raised and mid-gray texels get none. | A flat mid-gray floor is unchanged in brightness. |
+| D5 | Ambient occlusion (the SH-indirect-only darkening term) is measured from the material's **peak raise**, not the plane: `ao_fraction = clamp(peak_q − s_q, 0, 1)`, then the existing `1 − STRENGTH · fade · ao_fraction`. | AO tracks local relief wherever the author put the plane: mid-gray mortar between raised stones darkens by its depth below the stone tops. An all-mid-gray map (peak 0) gets none. A carve-only map (peak 0) is byte-identical to today. AO touches only the SH indirect term; dynamic light, side-face normals and self-shadow are unaffected. |
 | D6 | The march starts at the material's **peak raise**: the highest quantized raise of any texel in any uploaded mip of its surface map, computed once at load on the CPU. | A map that never exceeds mid-gray marches exactly like a pure carve. Flat mid-gray areas don't pay for raise they don't have. |
 | D7 | A march that exhausts its step budget resolves **flat at the true plane** (original UV, height 0, geometric normal, top hit) — not at the last boundary crossed. | Grazing starvation looks like today's "Off" rather than smearing the texture toward the viewer. |
 | D8 | The three existing `_h.png` assets keep their pixels and take on the new meaning. | Concrete stones now rise and its mortar sinks. The two Level Eleven sci-fi panels shift slightly. No content edits. |
@@ -78,7 +78,7 @@ Compile-forced spillover outside your row is allowed if minimal, and must be rep
   - An all-255 field rises `127/128 · D` with `peak` set.
   - Quantization at an exact half step agrees with `floor(x + 0.5)`.
   - A starved march returns flat (D7).
-  - AO is zero for raised and mid-gray texels (D5).
+  - AO follows D5: zero on a texel at the peak height, zero across an all-128 map, today's value for a carve-only map, and nonzero for mid-gray between raised texels.
   - The shadow march does not exit at the plane when the relief rises above it.
   - Peak extraction over a multi-mip `Rg8` payload returns the max raise across levels and 0 for an all-sink map.
   - `|height_m|` never exceeds the bound.

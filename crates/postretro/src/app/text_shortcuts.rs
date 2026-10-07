@@ -20,7 +20,7 @@ pub(crate) fn shortcut_key_id(command: Command) -> Option<&'static str> {
 impl App {
     /// Resolve this frame's queued shortcuts and a held backspace's repeat.
     /// Runs after text-entry commit and cancel: with no text-entry tree on
-    /// top, shortcuts do nothing (P26), and a commit earlier in the batch ends
+    /// top, shortcuts do nothing, and a commit earlier in the batch ends
     /// the rest of it.
     pub(crate) fn apply_text_shortcuts(&mut self, ui_intents: &[UiIntent], dt: f32) {
         for intent in ui_intents {

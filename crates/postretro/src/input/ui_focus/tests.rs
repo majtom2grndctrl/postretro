@@ -9,8 +9,8 @@ fn rect(id: &str, r: [f32; 4], z: u32, group: Option<usize>) -> FocusRect {
         group,
         neighbors: FocusNeighbors::default(),
         interaction: None,
-        // M13 G2 a11y readback fields. `disabled` is honored by the nav/pointer
-        // paths (G2-T3); the `disabled_*` fixtures below flip it.
+        // A11y readback fields. `disabled` is honored by the nav/pointer
+        // paths; the `disabled_*` fixtures below flip it.
         selected: None,
         checked: None,
         disabled: false,
@@ -19,7 +19,7 @@ fn rect(id: &str, r: [f32; 4], z: u32, group: Option<usize>) -> FocusRect {
     }
 }
 
-/// Like [`rect`] but `disabled` — the nav/pointer paths must skip it (G2-T3).
+/// Like [`rect`] but `disabled` — the nav/pointer paths must skip it.
 fn disabled_rect(id: &str, r: [f32; 4], z: u32, group: Option<usize>) -> FocusRect {
     let mut rect = rect(id, r, z, group);
     rect.disabled = true;
@@ -73,7 +73,7 @@ fn grid_list() -> FocusRectList {
     }
 }
 
-// --- M13 Goal F, Task 4: slider nav-capture value step ---
+// --- Slider nav-capture value step ---
 
 fn slider_interaction(captures: &[&str]) -> NodeInteraction {
     NodeInteraction::Slider {
@@ -746,7 +746,7 @@ fn lower_tree_freezes_while_a_modal_is_on_top() {
     );
 }
 
-// --- M13 Text-Entry, Task 2: button activation-repeat (`repeatOnHold`) ---
+// --- Button activation-repeat (`repeatOnHold`) ---
 
 /// A single-button focus list. `repeat_on_hold` opts the button into
 /// activation-repeat (the on-screen keyboard backspace); `None` is a plain
@@ -914,8 +914,8 @@ fn confirm_release_stops_the_activation_repeat() {
     assert!(!r.confirmed, "release stops the activation-repeat");
 }
 
-// --- M13 Text-Entry, Task 3: on-screen keyboard confirm flows through the
-//     focus engine (the Fix-1 end-to-end path) ---
+// --- On-screen keyboard confirm flows through the focus engine
+//     (end-to-end path) ---
 
 use crate::input::text_entry::{TextEntryDisposition, resolve_text_entry};
 use crate::input::ui_dispatch::{UiIntent, UiIntentPayload};
@@ -969,8 +969,8 @@ fn focused_on_press<'a>(rects: &'a FocusRectList, focused: Option<&str>) -> Opti
 
 /// The button `on_press` the App's `fire_focused_button_activation` would fire,
 /// mirroring its disabled gate (`.filter(|r| !r.disabled)` before reading the
-/// `Button` interaction). A disabled focused node yields `None` — no activation
-/// (M13 G2-T3). Used to pin the App-side activation block at this layer.
+/// `Button` interaction). A disabled focused node yields `None` — no activation.
+/// Used to pin the App-side activation block at this layer.
 fn focused_activation<'a>(rects: &'a FocusRectList, focused: Option<&str>) -> Option<&'a str> {
     let id = focused?;
     rects
@@ -1062,7 +1062,7 @@ fn confirm_on_key_button_types_and_keeps_keyboard_open_then_done_commits() {
     );
 }
 
-// --- M13 G2-T3: disabled focus + activation honoring ---
+// --- Disabled focus + activation honoring ---
 
 #[test]
 fn linear_nav_skips_a_run_of_consecutive_disabled_members() {
@@ -1810,10 +1810,11 @@ fn a_held_slider_repeats_its_step_and_accelerates_with_hold_time() {
         assert_eq!(focused_index(&r), 0, "a slider repeat never moves focus");
         steps.push(r.slider_steps);
     }
-    assert_eq!(&steps[..3], &[0, 0, 0]);
-    assert!(steps[3..12].iter().all(|s| *s == 1), "{steps:?}");
-    assert!(steps[14..22].iter().all(|s| *s == 2), "{steps:?}");
-    assert!(steps[25..].iter().all(|s| *s == 4), "{steps:?}");
+    // The first tick is the press frame; the 400 ms delay runs from the next.
+    assert_eq!(&steps[..4], &[0, 0, 0, 0]);
+    assert!(steps[4..13].iter().all(|s| *s == 1), "{steps:?}");
+    assert!(steps[15..23].iter().all(|s| *s == 2), "{steps:?}");
+    assert!(steps[26..].iter().all(|s| *s == 4), "{steps:?}");
 }
 
 #[test]
@@ -1822,8 +1823,36 @@ fn a_held_slider_across_a_one_second_frame_steps_once() {
     let list = long_list(None, Some(slider_interaction(&["nav.right", "nav.left"])));
     step(&mut fe, &list, &[], 0.0);
     fe.arm_slider_repeat(&list, NavIntent::Left);
+    // The press frame never advances the clock, however long it ran.
+    let r = step(&mut fe, &list, &[], 1.0);
+    assert_eq!(r.slider_steps, 0);
     let r = step(&mut fe, &list, &[], 1.0);
     assert_eq!(r.slider_steps, -1);
+}
+
+// A slider's held press repeats on the same frame a held directional press
+// would: the arming frame does not advance the clock.
+#[test]
+fn a_slider_press_frame_does_not_advance_the_repeat_clock() {
+    let mut fe = UiFocusEngine::new();
+    let list = long_list(None, Some(slider_interaction(&["nav.right", "nav.left"])));
+    step(&mut fe, &list, &[], 0.0);
+    fe.arm_slider_repeat(&list, NavIntent::Right);
+    assert_eq!(
+        step(&mut fe, &list, &[], 0.3).slider_steps,
+        0,
+        "press frame"
+    );
+    assert_eq!(
+        step(&mut fe, &list, &[], 0.3).slider_steps,
+        0,
+        "300 ms held"
+    );
+    assert_eq!(
+        step(&mut fe, &list, &[], 0.15).slider_steps,
+        1,
+        "450 ms held"
+    );
 }
 
 #[test]
@@ -2035,7 +2064,7 @@ fn a_pop_that_reveals_a_tree_restores_its_focus_unless_it_opts_out() {
 
 #[test]
 fn a_fresh_push_of_a_tree_visited_before_lands_on_its_initial_focus() {
-    // P12 / AC 19: a confirmation closed and reopened (even on one frame) is a
+    // A confirmation closed and reopened (even on one frame) is a
     // new instance, so it opens on its safe choice, not the one taken last time.
     let menu = restoring(true);
     let dialog = restoring(true);
@@ -2054,7 +2083,7 @@ fn a_fresh_push_of_a_tree_visited_before_lands_on_its_initial_focus() {
 
 #[test]
 fn a_stale_export_from_a_popped_tree_neither_resets_nor_overwrites_the_revealed_focus() {
-    // P11: the text-entry commit pops before the focus tick, whose export still
+    // The text-entry commit pops before the focus tick, whose export still
     // describes the keyboard. The app withholds that export; the revealed tree
     // keeps its saved focus once its own export arrives.
     let menu = restoring(true);

@@ -27,7 +27,8 @@ pub struct ScrollInput<'a> {
 
 /// One scroll container's retained presentation state. The offset is in
 /// logical-reference pixels from the content's top; it never writes back to a
-/// slot and resets when the tree is rebuilt.
+/// slot. A rebuild of the same layer carries it across by `key`
+/// (`UiTree::carry_scroll_from`); any other rebuild starts it at the top.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ScrollState {
     pub(super) node: NodeId,
@@ -35,7 +36,21 @@ pub struct ScrollState {
     /// Largest offset that keeps the content's end inside the viewport,
     /// recomputed with each layout.
     max_offset: f32,
+    /// The container's identity across a rebuild of its tree.
+    key: ScrollKey,
 }
+
+/// A scroll container's identity across rebuilds: its authored id when it
+/// has one, else its child-index path from the root.
+#[derive(Debug, Clone, PartialEq)]
+enum ScrollKey {
+    Id(String),
+    Path(Vec<u32>),
+}
+
+/// Logical-reference slack when deciding whether a stop sits fully inside its
+/// viewport: a stop scrolled flush against an edge counts as inside.
+const IN_VIEW_EPSILON: f32 = 0.5;
 
 /// The scroll offset applied to `node`'s children, when `node` scrolls.
 pub(super) fn scroll_offset(states: &[ScrollState], node: NodeId) -> Option<f32> {
@@ -60,9 +75,13 @@ pub(super) struct ScrollViews {
     /// `(authored id, node)` of each interactive widget under a scroll
     /// container: the only stops scroll-into-view can move.
     targets: Vec<(String, NodeId)>,
-    /// The focused id the last update saw. A change, or a relayout, brings the
-    /// focused stop into view; a settled frame only compares.
+    /// The focused id the last update saw. A change brings the focused stop
+    /// into view; a settled frame only compares.
     last_focus: Option<String>,
+    /// Whether the focused stop sat fully inside every scroll viewport after
+    /// the last update. A relayout follows the stop only when it did, so a
+    /// relayout never undoes a wheel scroll that moved it out of view.
+    focus_in_view: bool,
 }
 
 /// Device placement of a laid-out tree: the root's reference origin, the
@@ -77,7 +96,8 @@ pub(super) struct Placement {
 impl ScrollViews {
     pub(super) fn harvest(taffy: &TaffyTree<NodeContext>, widget: &Widget, node: NodeId) -> Self {
         let mut views = Self::default();
-        views.harvest_into(taffy, widget, node, false);
+        let mut path = Vec::new();
+        views.harvest_into(taffy, widget, node, false, &mut path);
         views
     }
 
@@ -87,6 +107,7 @@ impl ScrollViews {
         widget: &Widget,
         node: NodeId,
         inside: bool,
+        path: &mut Vec<u32>,
     ) {
         if inside
             && is_interactive(widget)
@@ -96,18 +117,42 @@ impl ScrollViews {
         }
         let scrolls = scroll_max_height(widget).is_some();
         if scrolls {
+            let key = match widget_id(widget) {
+                Some(id) => ScrollKey::Id(id.clone()),
+                None => ScrollKey::Path(path.clone()),
+            };
             self.states.push(ScrollState {
                 node,
                 offset: 0.0,
                 max_offset: 0.0,
+                key,
             });
         }
         if let Some(children) = widget_children(widget) {
             let taffy_children = taffy.children(node).expect("node children resolve");
-            for (child_widget, child_node) in children.iter().zip(taffy_children) {
-                self.harvest_into(taffy, child_widget, child_node, inside || scrolls);
+            for (index, (child_widget, child_node)) in
+                children.iter().zip(taffy_children).enumerate()
+            {
+                path.push(index as u32);
+                self.harvest_into(taffy, child_widget, child_node, inside || scrolls, path);
+                path.pop();
             }
         }
+    }
+
+    /// Take over `previous`'s offsets and focus memory: `previous` is the same
+    /// layer's tree before a rebuild (a rebound control, a glyph that changed
+    /// with the device family). Containers match by authored id, else by
+    /// child-index path; an unmatched one starts at the top. The offsets are
+    /// clamped to the new content by the rebuilt tree's first layout.
+    pub(super) fn carry_from(&mut self, previous: &ScrollViews) {
+        for state in &mut self.states {
+            if let Some(old) = previous.states.iter().find(|old| old.key == state.key) {
+                state.offset = old.offset;
+            }
+        }
+        self.last_focus.clone_from(&previous.last_focus);
+        self.focus_in_view = previous.focus_in_view;
     }
 
     pub(super) fn is_empty(&self) -> bool {
@@ -118,9 +163,11 @@ impl ScrollViews {
     /// moved (the draw list and focus export must rebuild).
     ///
     /// Order: a relayout re-clamps every offset (content that shrank draws from
-    /// a clamped offset, never past its end — P18); a changed focus, or a
-    /// relayout, brings the focused stop into view by the minimum distance; the
-    /// wheel then scrolls the container under the cursor.
+    /// a clamped offset, never past its end); a changed focus brings the
+    /// focused stop into view by the minimum distance, and so does a relayout
+    /// when the stop was fully in view before it (a stop the wheel scrolled
+    /// away stays where the wheel left it); the wheel then scrolls the
+    /// container under the cursor.
     pub(super) fn update(
         &mut self,
         taffy: &TaffyTree<NodeContext>,
@@ -142,20 +189,54 @@ impl ScrollViews {
         if focus_changed {
             self.last_focus = input.focused_id.map(str::to_string);
         }
-        if (focus_changed || relaid)
-            && let Some(focused) = input.focused_id
-            && let Some(node) = self
-                .targets
-                .iter()
-                .find(|(id, _)| id == focused)
-                .map(|(_, node)| *node)
-        {
+        let follow = focus_changed || (relaid && self.focus_in_view);
+        if follow && let Some(node) = self.focused_target(input.focused_id) {
             moved |= self.scroll_into_view(taffy, node);
         }
         if let Some(wheel) = input.wheel {
             moved |= self.apply_wheel(taffy, placement, wheel);
         }
+        // Re-judged only when something moved; a settled frame only compares.
+        if moved || relaid || focus_changed {
+            self.focus_in_view = match self.focused_target(input.focused_id) {
+                Some(node) => self.fully_in_view(taffy, node),
+                None => true,
+            };
+        }
         moved
+    }
+
+    /// The node of the focused stop, when it sits inside a scroll container.
+    fn focused_target(&self, focused_id: Option<&str>) -> Option<NodeId> {
+        let focused = focused_id?;
+        self.targets
+            .iter()
+            .find(|(id, _)| id == focused)
+            .map(|(_, node)| *node)
+    }
+
+    /// Whether `node` lies wholly inside every scrolling ancestor's viewport.
+    fn fully_in_view(&self, taffy: &TaffyTree<NodeContext>, node: NodeId) -> bool {
+        if taffy.style(node).expect("node has a style").display == Display::None {
+            return true;
+        }
+        let height = taffy.layout(node).expect("node has layout").size.height;
+        let mut ancestor = taffy.parent(node);
+        while let Some(container) = ancestor {
+            if self.states.iter().any(|s| s.node == container) {
+                let top = self.origin(taffy, node)[1] - self.origin(taffy, container)[1];
+                let viewport = taffy
+                    .layout(container)
+                    .expect("node has layout")
+                    .size
+                    .height;
+                if top < -IN_VIEW_EPSILON || top + height > viewport + IN_VIEW_EPSILON {
+                    return false;
+                }
+            }
+            ancestor = taffy.parent(container);
+        }
+        true
     }
 
     /// Scroll every scroll ancestor of `node`, innermost first, by the minimum
@@ -222,7 +303,8 @@ impl ScrollViews {
         let Some((index, _)) = target else {
             return false;
         };
-        let delta = wheel.lines * WHEEL_LINE_SCROLL + wheel.pixels / placement.scale.max(f32::EPSILON);
+        let delta =
+            wheel.lines * WHEEL_LINE_SCROLL + wheel.pixels / placement.scale.max(f32::EPSILON);
         let state = &mut self.states[index];
         set_offset(state, state.offset - delta)
     }

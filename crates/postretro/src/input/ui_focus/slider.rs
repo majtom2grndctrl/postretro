@@ -29,7 +29,7 @@ pub fn slider_value(current: f32, steps: i32, step: f32, min: f32, max: f32) -> 
     (current + step * steps as f32).clamp(min, max)
 }
 
-/// Capture nav for a focused `slider` (M13 Goal F, Task 4). Partitions
+/// Capture nav for a focused `slider`. Partitions
 /// `nav_intents` into captured — removed in place — and uncaptured — retained
 /// for the focus engine. Each captured directional intent is one step:
 /// `nav.right`/`nav.up` increase, `nav.left`/`nav.down` decrease; any other
@@ -37,7 +37,7 @@ pub fn slider_value(current: f32, steps: i32, step: f32, min: f32, max: f32) -> 
 /// non-`Slider` interaction returns `None` and leaves `nav_intents` untouched.
 /// The app applies the steps relative to the slot's value when the command
 /// drain runs, so an external write on the same frame is never overwritten
-/// by a value computed before it (P17).
+/// by a value computed before it.
 pub fn capture_slider_step(
     interaction: &NodeInteraction,
     nav_intents: &mut Vec<NavIntent>,

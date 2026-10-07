@@ -179,7 +179,6 @@ impl Command {
     }
 
     /// Parse a command ID. A `<mod_id>.<name>` form is not an engine command.
-    #[allow(dead_code)]
     pub fn from_id(id: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|command| command.id() == id)
     }
@@ -285,18 +284,26 @@ impl Command {
     }
 
     /// Whether a binding of this command may use `activator`. Charge requires
-    /// `press` on shoot and alt-fire; sprint and crouch take `press` or `hold`;
-    /// analog and wheel-notch commands have no duration to time.
-    #[allow(dead_code)]
+    /// `press` on shoot and alt-fire; analog and wheel-notch commands have no
+    /// duration to time. Sprint, crouch, and movement take `press` or `hold`:
+    /// movement reads a level, and a `tap` or `release` only pulses one.
     pub const fn accepts(self, activator: ActivatorKind) -> bool {
         match (self.kind(), self) {
             (CommandKind::Analog | CommandKind::WheelNotch, _)
             | (_, Command::Shoot | Command::AltFire) => {
                 matches!(activator, ActivatorKind::Press)
             }
-            (_, Command::Sprint | Command::Crouch) => {
-                matches!(activator, ActivatorKind::Press | ActivatorKind::Hold)
-            }
+            (
+                _,
+                Command::Sprint
+                | Command::Crouch
+                | Command::MoveForward
+                | Command::MoveBack
+                | Command::MoveLeft
+                | Command::MoveRight
+                | Command::MoveUp
+                | Command::MoveDown,
+            ) => matches!(activator, ActivatorKind::Press | ActivatorKind::Hold),
             _ => true,
         }
     }
@@ -403,7 +410,14 @@ mod tests {
                 .collect();
             let expected: &[ActivatorKind] = match command {
                 Command::Shoot | Command::AltFire => &[Press],
-                Command::Sprint | Command::Crouch => &[Press, Hold],
+                Command::Sprint
+                | Command::Crouch
+                | Command::MoveForward
+                | Command::MoveBack
+                | Command::MoveLeft
+                | Command::MoveRight
+                | Command::MoveUp
+                | Command::MoveDown => &[Press, Hold],
                 Command::LookX
                 | Command::LookY
                 | Command::CycleWieldableNext

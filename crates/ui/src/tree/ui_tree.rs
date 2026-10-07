@@ -126,6 +126,18 @@ impl UiTree {
         }
     }
 
+    /// Carry scroll offsets and scroll focus memory over from `previous`, the
+    /// same layer's tree before this one replaced it (its descriptor or theme
+    /// changed under the same owner). Without it a rebuild drops every list
+    /// back to its top. Call before this tree's first retained build: that
+    /// build's layout clamps each carried offset to the new content.
+    pub fn carry_scroll_from(&mut self, previous: &UiTree) {
+        if self.scroll.is_empty() {
+            return;
+        }
+        self.scroll.carry_from(&previous.scroll);
+    }
+
     /// Where the laid-out root sits on the device: its reference origin (the
     /// anchor plus offset, pivoted by the root's size), the reference→device
     /// scale, and the letterboxed canvas origin. Shared by the draw walk, the focus export,

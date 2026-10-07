@@ -3,9 +3,8 @@
 
 use super::super::*;
 use crate::ui::descriptor::{
-    GlyphWidget,
-    BarExitFade, RingRadiusRange, ScrollProps, SliderValueDisplay, validate_scroll_max_height,
-    validate_stack_width, warn_hstack_scroll_ignored,
+    BarExitFade, GlyphWidget, RingRadiusRange, ScrollProps, SliderValueDisplay,
+    validate_scroll_max_height, validate_stack_width, warn_hstack_scroll_ignored,
 };
 
 // --- Lua UI deserialization -------------------------------------------------

@@ -21,6 +21,13 @@ fn class_label(class: DeviceClass) -> &'static str {
     class.manifest_key()
 }
 
+/// The shortest activator threshold an author may set, in seconds: below it a
+/// tap or hold resolves within a frame or two.
+const MIN_ACTIVATOR_THRESHOLD: f32 = 0.01;
+/// The longest activator threshold an author may set, in seconds, before
+/// `hold_timing_scale` lengthens it further.
+const MAX_ACTIVATOR_THRESHOLD: f32 = 5.0;
+
 fn parse_activator(raw: Option<&str>) -> Result<ActivatorKind, String> {
     match raw {
         None => Ok(ActivatorKind::Press),
@@ -47,6 +54,11 @@ fn validate_binding(
     class: DeviceClass,
     binding: &ModInputBinding,
 ) -> Result<AuthorBinding, String> {
+    // The drain leaves `input` empty for a binding that is not an object or
+    // has no `input` string.
+    if binding.input.is_empty() {
+        return Err("a binding must be an object with an `input` string".to_string());
+    }
     let input = parse_input(&binding.input)
         .ok_or_else(|| format!("`{}` is not a known input", binding.input))?;
     if !input_fits(command, class, input) {
@@ -75,9 +87,22 @@ fn validate_binding(
             binding.input
         ));
     }
-    let threshold = match binding.threshold {
+    // Checked after the cast, so a value f32 cannot hold (1e-50 rounds to 0,
+    // 1e300 to infinity) is refused rather than slipping through.
+    let threshold = match binding.threshold.map(|seconds| seconds as f32) {
         None => DEFAULT_ACTIVATOR_THRESHOLD,
-        Some(seconds) if seconds.is_finite() && seconds > 0.0 => seconds as f32,
+        Some(seconds) if seconds.is_finite() && seconds > 0.0 => {
+            let clamped = seconds.clamp(MIN_ACTIVATOR_THRESHOLD, MAX_ACTIVATOR_THRESHOLD);
+            if clamped != seconds {
+                log::warn!(
+                    "[Input] input block: `{}` on {}: `threshold` {seconds}s is outside \
+                     {MIN_ACTIVATOR_THRESHOLD}s..={MAX_ACTIVATOR_THRESHOLD}s; using {clamped}s",
+                    command.id(),
+                    class_label(class)
+                );
+            }
+            clamped
+        }
         Some(_) => return Err("`threshold` must be a positive number of seconds".to_string()),
     };
     Ok(AuthorBinding {
@@ -105,9 +130,14 @@ pub fn author_layer_from_block(block: Option<&ModInputBlock>) -> AuthorLayer {
             );
             continue;
         };
-        if !layer.manifest_order.contains(&command) {
-            layer.manifest_order.push(command);
+        if layer.manifest_order.contains(&command) {
+            log::warn!(
+                "[Input] input block: `{}` appears more than once; keeping the first",
+                command.id()
+            );
+            continue;
         }
+        layer.manifest_order.push(command);
         if let Some(show) = authored.show {
             if show_override_allowed(command) {
                 layer.show.insert(command, show);
@@ -201,9 +231,10 @@ fn diagnose_tap_past_hold(layer: &mut AuthorLayer, fell_back: &mut Vec<(Command,
         .collect();
     for (command, class, input, tap_max, hold_min) in offending {
         log::warn!(
-            "[Input] input block: `{}` taps `{}` for up to {tap_max}s, past the {hold_min}s \
-             hold on that input; using the engine default there",
+            "[Input] input block: `{}` on {} taps `{}` for up to {tap_max}s, past the \
+             {hold_min}s hold on that input; using the engine default there",
             command.id(),
+            class_label(class),
             input_name(input).unwrap_or("?")
         );
         layer.defaults.remove(&(command, class));
@@ -250,11 +281,5 @@ fn report_collisions(layer: &AuthorLayer, fell_back: &[(Command, DeviceClass)]) 
 /// The table validation checks against: every data-driven command relevant,
 /// so a conflict is reported whatever the registry holds.
 fn validation_table(layer: &AuthorLayer) -> EffectiveTable {
-    let every = RelevanceFacts {
-        dash: true,
-        crouch: true,
-        magazine: true,
-        secondary: true,
-    };
-    EffectiveTable::build(layer, &PlayerLayer::default(), every, false)
+    EffectiveTable::build(layer, &PlayerLayer::default(), RelevanceFacts::EVERY, false)
 }

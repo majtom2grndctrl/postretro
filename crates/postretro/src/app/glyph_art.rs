@@ -2,28 +2,52 @@
 // snapshot resolves every `glyph` widget into the image or text it draws.
 // See: context/lib/ui.md §4 · context/lib/input.md §2
 
+use std::cell::RefCell;
 use std::collections::HashSet;
 use std::path::{Component, Path};
 
-use postretro_ui::descriptor::{
-    ColorValue, ImageWidget, SpacerWidget, TextWidget, Widget,
-};
+use postretro_ui::descriptor::{ColorValue, ImageWidget, SpacerWidget, TextWidget, Widget};
 
 use crate::input::{
-    Command, DeviceFamily, EffectiveTable, GlyphView, glyph_key, resolve_glyph,
+    Command, DeviceFamily, EffectiveTable, GlyphDirs, GlyphView, glyph_key, resolve_glyph,
 };
 use crate::*;
 
-/// The glyph art the renderer holds: which directories loaded, and the image
-/// keys they produced.
+/// The glyph art the renderer holds: what it was loaded for, and the image
+/// keys it produced.
 #[derive(Debug, Default)]
 pub(crate) struct GlyphArtState {
-    loaded_dirs: Option<Vec<String>>,
+    /// The author's glyph directories and the staged-reload generation the art
+    /// was read at. `None` until the first load.
+    loaded: Option<(GlyphDirs, Option<u64>)>,
     keys: HashSet<String>,
+    /// Glyph `command` ids already reported as unknown, so a bad id warns once
+    /// rather than every frame. Interior: the per-frame resolve reads the
+    /// session shared.
+    warned_unknown_commands: RefCell<HashSet<String>>,
+}
+
+impl GlyphArtState {
+    /// Whether the loaded art still matches the author's directories and the
+    /// latest staged reload. A settled frame only compares; nothing allocates.
+    fn is_current(&self, glyphs: &GlyphDirs, reload_generation: Option<u64>) -> bool {
+        self.loaded
+            .as_ref()
+            .is_some_and(|(dirs, generation)| dirs == glyphs && *generation == reload_generation)
+    }
+
+    /// Warn once per unknown glyph `command` id.
+    fn warn_unknown_command(&self, command: &str) {
+        let mut warned = self.warned_unknown_commands.borrow_mut();
+        if !warned.contains(command) {
+            log::warn!("[UI] glyph widget names unknown command `{command}`; it draws nothing");
+            warned.insert(command.to_string());
+        }
+    }
 }
 
 /// The directories the author's `input.glyphs` names, in family order.
-fn declared_dirs(glyphs: &crate::input::GlyphDirs) -> Vec<String> {
+fn declared_dirs(glyphs: &GlyphDirs) -> Vec<String> {
     [
         &glyphs.keyboard_mouse,
         &glyphs.xbox,
@@ -80,7 +104,8 @@ fn read_glyph_dir(mod_root: &Path, dir: &str) -> Vec<(String, Vec<u8>, u32, u32)
 
 impl App {
     /// Load the mod's glyph art once the renderer can take it, and again when
-    /// the declared directories change (a staged reload). Cheap otherwise.
+    /// the declared directories change or a staged reload is requested (its
+    /// art may have changed in the same directories). Cheap otherwise.
     pub(crate) fn sync_glyph_art(&mut self) {
         let (Some(session), Some(renderer)) = (self.session.as_mut(), self.renderer.as_mut())
         else {
@@ -89,10 +114,16 @@ impl App {
         if !renderer.is_full_ready() {
             return;
         }
-        let dirs = declared_dirs(&session.bindings.author().glyphs);
-        if session.glyph_art.loaded_dirs.as_ref() == Some(&dirs) {
+        let reload_generation = session
+            .scripting
+            .script_runtime
+            .latest_staged_manifest_generation();
+        let glyphs = &session.bindings.author().glyphs;
+        if session.glyph_art.is_current(glyphs, reload_generation) {
             return;
         }
+        let glyphs = glyphs.clone();
+        let dirs = declared_dirs(&glyphs);
         let mut keys = HashSet::new();
         for dir in &dirs {
             for (key, rgba, width, height) in read_glyph_dir(&self.content_root, dir) {
@@ -101,26 +132,35 @@ impl App {
             }
         }
         if !dirs.is_empty() {
-            log::info!("[UI] loaded {} glyph image(s) from {} directories", keys.len(), dirs.len());
+            log::info!(
+                "[UI] loaded {} glyph image(s) from {} directories",
+                keys.len(),
+                dirs.len()
+            );
         }
-        session.glyph_art = GlyphArtState {
-            loaded_dirs: Some(dirs),
-            keys,
-        };
+        session.glyph_art.loaded = Some((glyphs, reload_generation));
+        session.glyph_art.keys = keys;
     }
 }
 
 /// What one glyph widget draws this frame. An unknown command ID draws
-/// nothing.
+/// nothing and warns once; an irrelevant command draws nothing silently.
 fn resolved_widget(
     glyph: &postretro_ui::descriptor::GlyphWidget,
     table: &EffectiveTable,
-    glyphs: &crate::input::GlyphDirs,
+    glyphs: &GlyphDirs,
     family: DeviceFamily,
-    art: &HashSet<String>,
+    art: &GlyphArtState,
 ) -> Widget {
-    let view = Command::from_id(&glyph.command)
-        .and_then(|command| resolve_glyph(table, glyphs, family, command, |key| art.contains(key)));
+    let view = match Command::from_id(&glyph.command) {
+        Some(command) => {
+            resolve_glyph(table, glyphs, family, command, |key| art.keys.contains(key))
+        }
+        None => {
+            art.warn_unknown_command(&glyph.command);
+            None
+        }
+    };
     match view {
         Some(GlyphView::Art(asset)) => Widget::Image(ImageWidget {
             asset,
@@ -155,9 +195,9 @@ fn resolved_widget(
 fn resolve_in(
     widget: &mut Widget,
     table: &EffectiveTable,
-    glyphs: &crate::input::GlyphDirs,
+    glyphs: &GlyphDirs,
     family: DeviceFamily,
-    art: &HashSet<String>,
+    art: &GlyphArtState,
 ) {
     match widget {
         Widget::Glyph(glyph) => *widget = resolved_widget(glyph, table, glyphs, family, art),
@@ -191,7 +231,7 @@ pub(crate) fn resolve_snapshot_glyphs(
             table,
             glyphs,
             family,
-            &session.glyph_art.keys,
+            &session.glyph_art,
         );
     }
 }

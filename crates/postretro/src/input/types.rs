@@ -124,9 +124,9 @@ pub enum PhysicalInput {
     MouseAxisY,
     GamepadButton(GilrsButton),
     GamepadAxis(GilrsAxis),
-    /// One direction of a stick axis as a digital input (`left_stick_up`). It
-    /// carries its magnitude onto a movement axis and reads as pressed past
-    /// [`HALF_AXIS_PRESS_THRESHOLD`] for a button command.
+    /// One direction of a stick axis as a digital input (`left_stick_up`). On a
+    /// movement axis it is down past the dead zone and carries its magnitude;
+    /// for a button command it presses at [`HALF_AXIS_PRESS_THRESHOLD`].
     GamepadAxisHalf(GilrsAxis, AxisHalf),
 }
 
@@ -148,14 +148,29 @@ impl AxisHalf {
     }
 }
 
-/// Dead-zoned deflection past which a half-axis input counts as pressed.
+/// Dead-zoned deflection at which a half-axis input driving a button command
+/// counts as pressed.
 pub const HALF_AXIS_PRESS_THRESHOLD: f32 = 0.5;
 
+/// Dead-zoned deflection below which a pressed half-axis input releases. The
+/// gap to [`HALF_AXIS_PRESS_THRESHOLD`] keeps a stick resting near the press
+/// point from chattering press edges.
+pub const HALF_AXIS_RELEASE_THRESHOLD: f32 = 0.4;
+
+/// A digital level read from an analog value with hysteresis: an input that is
+/// up presses at `press`, and one that is down releases only below `release`.
+pub fn hysteresis_level(was_down: bool, value: f32, press: f32, release: f32) -> bool {
+    if was_down {
+        value >= release
+    } else {
+        value >= press
+    }
+}
+
 /// How a binding resolves its input's press and release into command phases.
-/// Authors set it per binding; players rebind keys only.
+/// Authors set it per binding; players rebind inputs only.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 // Release and Tap reach production bindings through the manifest input block.
-#[cfg_attr(not(test), allow(dead_code))]
 pub enum ActivatorKind {
     /// Fires on the press edge; the command stays down while the input is held.
     #[default]
@@ -191,7 +206,6 @@ impl Activator {
         }
     }
 
-    #[allow(dead_code)]
     pub const fn with_threshold(kind: ActivatorKind, threshold: f32) -> Self {
         Self { kind, threshold }
     }

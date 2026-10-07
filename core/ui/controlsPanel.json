@@ -43,7 +43,7 @@
       {
         "kind": "text",
         "id": "controlsDisplacedNote",
-        "content": "! A DEFAULT FOR THIS COMMAND IS TAKEN BY ONE OF YOUR BINDINGS",
+        "content": "! ANOTHER BINDING TOOK AN INPUT FROM THIS COMMAND",
         "fontSize": 14,
         "color": "ok",
         "font": "mono"

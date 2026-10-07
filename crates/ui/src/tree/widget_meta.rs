@@ -219,10 +219,6 @@ pub fn widget_a11y_state(
     }
 }
 
-/// The focus policy a container declares, or `None` for leaves and policy-less
-/// containers. A declaring container opens a focus group whose members are the
-/// interactive descendants nested under it through any passive containers, up to
-/// the next nested focus-policy container (which opens its own group).
 /// The role a widget authors, if any (not its implicit kind role).
 pub fn authored_role(widget: &Widget) -> Option<super::super::descriptor::Role> {
     match widget {
@@ -240,6 +236,10 @@ pub fn authored_role(widget: &Widget) -> Option<super::super::descriptor::Role> 
     }
 }
 
+/// The focus policy a container declares, or `None` for leaves and policy-less
+/// containers. A declaring container opens a focus group whose members are the
+/// interactive descendants nested under it through any passive containers, up to
+/// the next nested focus-policy container (which opens its own group).
 pub fn container_focus_policy(widget: &Widget) -> Option<&super::super::descriptor::FocusPolicy> {
     match widget {
         Widget::VStack(w) | Widget::HStack(w) => w.focus.as_ref(),
@@ -257,8 +257,8 @@ pub fn widget_children(widget: &Widget) -> Option<&[Widget]> {
     }
 }
 
-/// A widget's optional `visibleWhen` reactive-visibility predicate (M13 G2, Task
-/// 2b). Lives on every widget variant; `None` means the node is always visible.
+/// A widget's optional `visibleWhen` reactive-visibility predicate.
+/// Lives on every widget variant; `None` means the node is always visible.
 /// Harvested in lockstep with the taffy tree (`harvest_visibility`) so the diff
 /// can toggle the matching node's taffy `Display`.
 fn widget_visible_when(widget: &Widget) -> Option<&Predicate> {

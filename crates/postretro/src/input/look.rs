@@ -2,8 +2,7 @@
 // See: context/lib/input.md §3
 
 /// Gamepad look sensitivity: radians per second at full stick deflection.
-/// Consumed by `LookInputs::yaw_delta` / `pitch_delta` when integrating
-/// gamepad velocity over a render frame's elapsed time.
+/// Default for `LookInputs::gamepad_sensitivity`.
 pub const DEFAULT_GAMEPAD_LOOK_SENSITIVITY: f32 = 2.5;
 
 /// Snapshot of the look-axis contributions accumulated since the last drain.

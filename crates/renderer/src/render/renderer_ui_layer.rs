@@ -114,11 +114,20 @@ impl Renderer {
                         .ui_theme
                         .color("focus.ring")
                         .unwrap_or([1.0, 0.0, 1.0, 1.0]);
-                    // A stop inside a scroll viewport rings within it, so a
-                    // ring trailing a scroll by a frame never paints outside.
-                    draw.set_clip(fr.clip);
-                    ui::push_focus_ring(&mut draw, fr.rect, inset, ring_color);
-                    draw.set_clip(None);
+                    // A stop inside a scroll viewport rings within the
+                    // viewport grown by the ring's reach along each edge the
+                    // stop reaches, so a stop scrolled flush with an edge (or
+                    // a full-width row) keeps every bar; a stop scrolled out
+                    // of view draws no ring.
+                    let ring_clip = match fr.clip {
+                        None => Some(None),
+                        Some(clip) => ui::focus_ring_clip(fr.rect, clip, inset).map(Some),
+                    };
+                    if let Some(ring_clip) = ring_clip {
+                        draw.set_clip(ring_clip);
+                        ui::push_focus_ring(&mut draw, fr.rect, inset, ring_color);
+                        draw.set_clip(None);
+                    }
                 }
             }
             layer_draws.push(draw);

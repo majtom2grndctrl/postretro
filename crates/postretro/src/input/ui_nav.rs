@@ -12,7 +12,7 @@
 use winit::keyboard::{Key, NamedKey};
 
 /// Closed UI-navigation intent vocabulary. Each variant carries a stable wire
-/// name (`"nav.up"` … `"nav.options"`) consumed by JSON/TS/Luau UI authors
+/// name (`"nav.up"` … `"nav.tabPrev"`) consumed by JSON/TS/Luau UI authors
 /// (`capturesNav`, focus policy). New variants extend the [`wire_name`] match
 /// and the TS/Luau union in `scripting::typedef` in lockstep.
 ///
@@ -23,22 +23,22 @@ pub enum NavIntent {
     Down,
     Left,
     Right,
-    /// Advance focus to the next sibling (Tab / shoulder-button forward).
+    /// Advance focus to the next sibling (by default Tab / shoulder-button forward).
     Next,
     /// Retreat focus to the previous sibling.
     Prev,
-    /// Activate the focused widget (Enter / A / South).
+    /// Activate the focused widget (by default Enter / A / South).
     Confirm,
-    /// Dismiss/back out within a capturing tree (Escape-inside-UI / B / East).
+    /// Dismiss/back out within a capturing tree (by default Escape-inside-UI / B / East).
     Cancel,
-    /// Open or toggle the menu (Start / Escape-from-gameplay).
+    /// Open or toggle the menu (by default Start / Escape-from-gameplay).
     Menu,
-    /// Open the options/back surface (Select / Back).
+    /// Open the options/back surface (by default Select / Back).
     Options,
-    /// Activate the next tab in the top tree's tablist (the right bumper); in a
+    /// Activate the next tab in the top tree's tablist (by default the right bumper); in a
     /// tree with no tablist, step Next.
     TabNext,
-    /// Activate the previous tab (the left bumper); Prev without a tablist.
+    /// Activate the previous tab (by default the left bumper); Prev without a tablist.
     TabPrev,
 }
 
@@ -47,7 +47,7 @@ impl NavIntent {
     /// type and Luau string union emitted in the SDK typedefs. The UI authoring
     /// surface (`capturesNav`, focus policy) keys on these strings.
     ///
-    /// The slider nav-capture path (M13 Goal F, Task 4) matches authored
+    /// The slider nav-capture path matches authored
     /// `capturesNav` wire names against these to claim captured nav intents.
     pub fn wire_name(self) -> &'static str {
         match self {
@@ -67,8 +67,7 @@ impl NavIntent {
     }
 }
 
-/// What a key-down event means while a text-entry tree is open (M13 Text-Entry,
-/// Task 3). The input stage resolves the LOGICAL key first so the control keys
+/// What a key-down event means while a text-entry tree is open. The input stage resolves the LOGICAL key first so the control keys
 /// (Backspace / Enter / Escape) are matched by identity — never by their
 /// `KeyEvent.text`, which on some platforms delivers Backspace as `\u{8}` and
 /// Enter as `\r`. Only a non-control printable `text` falls through to `Append`.
@@ -127,7 +126,7 @@ pub fn text_entry_key(logical_key: &Key, text: Option<&str>) -> Option<TextEntry
 /// Diagonal handling: the dominant axis wins, so a diagonal push produces a
 /// single directional intent rather than two. While the stick stays past the
 /// dead zone, no further intents fire — repeat-on-hold is the focus engine's
-/// dt-clocked timer (Task 3), not an input-edge concern.
+/// dt-clocked timer, not an input-edge concern.
 #[derive(Debug, Default)]
 pub struct StickNavTracker {
     /// The direction the stick is currently latched in, or `None` when it sits
@@ -178,7 +177,7 @@ impl StickNavTracker {
                 None
             }
             Some(dir) if self.latched == Some(dir) => {
-                // Still held the same way; the hold-to-repeat timer (Task 3)
+                // Still held the same way; the hold-to-repeat timer
                 // owns any subsequent firing, not this edge detector.
                 None
             }
@@ -232,15 +231,15 @@ mod tests {
             (NavIntent::Cancel, "nav.cancel"),
             (NavIntent::Menu, "nav.menu"),
             (NavIntent::Options, "nav.options"),
+            (NavIntent::TabNext, "nav.tabNext"),
+            (NavIntent::TabPrev, "nav.tabPrev"),
         ];
         for (intent, name) in pairs {
             assert_eq!(intent.wire_name(), name);
         }
     }
 
-    // --- Keyboard mapping ---
-
-    // --- Text-entry key resolution (M13 Text-Entry, Task 3) ---
+    // --- Text-entry key resolution ---
 
     #[test]
     fn printable_text_becomes_append() {
@@ -306,8 +305,6 @@ mod tests {
         assert_eq!(text_entry_key(&Key::Character("x".into()), Some("")), None);
     }
 
-    // --- Gamepad mapping ---
-
     // --- Stick edge detection ---
 
     #[test]
@@ -316,7 +313,7 @@ mod tests {
 
         // First push past the dead zone fires once.
         assert_eq!(tracker.update(0.0, 0.8), Some(NavIntent::Up));
-        // Holding it produces no further intents — repeat is Task 3's timer.
+        // Holding it produces no further intents — repeat is the focus engine's timer.
         assert_eq!(tracker.update(0.0, 0.9), None);
         assert_eq!(tracker.update(0.0, 0.8), None);
 

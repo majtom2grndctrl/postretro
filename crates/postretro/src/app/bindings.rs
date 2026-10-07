@@ -94,7 +94,7 @@ impl App {
     /// participation tuning changed since the last build. Cheap when nothing
     /// did: one generation read and a key compare. Runs before each frame's
     /// input snapshot, gameplay and frontend alike, so the controls panel
-    /// never reads a table derived before mod init committed (P6).
+    /// never reads a table derived before mod init committed.
     pub(crate) fn refresh_effective_bindings(&mut self) {
         let Some(session) = self.session.as_mut() else {
             return;

@@ -177,7 +177,7 @@ declare module "postretro/ui" {
   export function Spacer(props?: SpacerProps): WidgetDescriptor;
   /** Props for `Glyph`. `command` is a command ID. */
   export type GlyphProps = { command: CommandId; id?: string; visibleWhen?: Predicate };
-  /** The glyph for a command on the player's current device: the mod's art for the input bound to it, else that input's name, else nothing when it is unbound there or irrelevant. Follows rebinding and the confirm/cancel swap. */
+  /** The glyph for a command on the player's current device: the mod's art for the input bound to it, else that input's label, else nothing when it is unbound there or irrelevant. Follows rebinding and the confirm/cancel swap. */
   export function Glyph(props: GlyphProps): WidgetDescriptor;
   /** One `Button.valueText` case: `text` shows while every predicate in `when` holds. An absent or empty `when` always holds. */
   export type ValueTextCase = { when?: Predicate[]; text: LocalizedText };
@@ -224,7 +224,7 @@ declare module "postretro/ui" {
 
   export type WidgetAnchor = "topLeft" | "top" | "topRight" | "left" | "center" | "right" | "bottomLeft" | "bottom" | "bottomRight";
   export type WidgetCaptureMode = "capture" | "passthrough";
-  /** Props for `Tree`. `anchor` and `offset` place the root in 1280x720 logical UI space. `captureMode` defaults to `"passthrough"`; `initialFocus` names a widget id; `textEntryTarget` is a writable string state ref. */
+  /** Props for `Tree`. `anchor` and `offset` place the root in 1280x720 logical UI space. `captureMode` defaults to `"passthrough"`; `initialFocus` names a widget id; `textEntryTarget` is a writable string state ref; `restoreOnReturn` (on by default) returns focus to the control it left when a tree pushed above closes, and `false` lands on `initialFocus` instead. */
   export type TreeProps = { anchor: WidgetAnchor; offset: [number, number]; captureMode?: WidgetCaptureMode; initialFocus?: string; textEntryTarget?: Ref<string>; accessibleName?: string; role?: WidgetRole; restoreOnReturn?: boolean };
   export type AnchoredTreeDescriptor = { anchor: WidgetAnchor; offset: [number, number]; root: WidgetDescriptor; captureMode?: WidgetCaptureMode; initialFocus?: string; textEntryTarget?: string; accessibleName?: string; role?: WidgetRole; restoreOnReturn?: boolean };
   /** Wrap a root widget in an anchored tree placement envelope. Pure; registration happens through `defineUiTree` and manifest data. */

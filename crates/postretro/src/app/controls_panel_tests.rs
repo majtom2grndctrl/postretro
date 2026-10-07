@@ -17,12 +17,17 @@ use postretro_ui::demo::{CONTROLS_CAPTURE_NAME, CONTROLS_DIALOG_NAME, CONTROLS_P
 /// A test app with the engine's controls panel shell registered, as boot does.
 pub(crate) fn test_app() -> App {
     let mut app = bare_test_app();
-    app.session.as_mut().unwrap().modal_stack.registry_mut().register(
-        CONTROLS_PANEL_NAME,
-        shell(),
-        postretro_ui::modal_stack::ScopeTier::Engine,
-        false,
-    );
+    app.session
+        .as_mut()
+        .unwrap()
+        .modal_stack
+        .registry_mut()
+        .register(
+            CONTROLS_PANEL_NAME,
+            shell(),
+            postretro_ui::modal_stack::ScopeTier::Engine,
+            false,
+        );
     app
 }
 
@@ -69,7 +74,12 @@ fn descriptor_text(tree: &AnchoredTree) -> String {
 fn rows_list_only_relevant_commands() {
     let author = AuthorLayer::default();
     let without = controls_rows(
-        &EffectiveTable::build(&author, &PlayerLayer::default(), RelevanceFacts::default(), false),
+        &EffectiveTable::build(
+            &author,
+            &PlayerLayer::default(),
+            RelevanceFacts::default(),
+            false,
+        ),
         &author,
     );
     let with = controls_rows(
@@ -139,7 +149,11 @@ fn each_slot_shows_its_activator_read_only() {
         vec![author_binding(key(KeyCode::ShiftLeft), ActivatorKind::Tap)],
     );
     let table = EffectiveTable::build(&author, &PlayerLayer::default(), all_facts(), false);
-    let panel = descriptor_text(&build_controls_panel(&shell(), &controls_rows(&table, &author), None));
+    let panel = descriptor_text(&build_controls_panel(
+        &shell(),
+        &controls_rows(&table, &author),
+        None,
+    ));
     assert!(panel.contains("\"SHIFT LEFT (HOLD)\""), "{panel}");
     assert!(panel.contains("\"SHIFT LEFT (TAP)\""), "{panel}");
     assert!(
@@ -150,7 +164,7 @@ fn each_slot_shows_its_activator_read_only() {
 
 #[test]
 fn a_player_binding_that_took_an_author_default_flags_the_displaced_row() {
-    // PD7: the player bound Q to dash; a later author default puts reload on Q.
+    // The player bound Q to dash; a later author default puts reload on Q.
     let mut author = AuthorLayer::default();
     author.defaults.insert(
         (Command::Reload, KBM),
@@ -162,21 +176,25 @@ fn a_player_binding_that_took_an_author_default_flags_the_displaced_row() {
         .insert((Command::Dash, KBM), vec![Some(key(KeyCode::KeyQ))]);
     let table = EffectiveTable::build(&author, &player, all_facts(), false);
     let rows = controls_rows(&table, &author);
-    let flagged: Vec<Command> = rows
+    let flagged: Vec<(Command, [bool; 2])> = rows
         .iter()
-        .filter(|row| row.displaced)
-        .map(|row| row.command)
+        .filter(|row| row.displaced.contains(&true))
+        .map(|row| (row.command, row.displaced))
         .collect();
-    assert_eq!(flagged, [Command::Reload]);
+    assert_eq!(flagged, [(Command::Reload, [true, false])]);
     let panel = descriptor_text(&build_controls_panel(&shell(), &rows, None));
     assert!(panel.contains("\"RELOAD ! \u{b7} KEY 1\""), "{panel}");
     assert!(
-        panel.contains("\"RELOAD ! \u{b7} PAD 2\""),
-        "every row of a flagged command carries the mark: {panel}"
+        panel.contains("\"RELOAD ! \u{b7} KEY 2\""),
+        "every slot row of the flagged class carries the mark: {panel}"
     );
-    assert!(panel.contains("TAKEN BY ONE OF YOUR BINDINGS"));
+    assert!(
+        panel.contains("\"RELOAD \u{b7} PAD 1\""),
+        "the gamepad rows lost nothing and carry no mark: {panel}"
+    );
+    assert!(panel.contains("ANOTHER BINDING TOOK AN INPUT FROM THIS COMMAND"));
 
-    // PD8: a later author hold on the player's key yields and is flagged too.
+    // A later author hold on the player's key yields and is flagged too.
     let mut author = AuthorLayer::default();
     author.defaults.insert(
         (Command::Reload, KBM),
@@ -186,7 +204,7 @@ fn a_player_binding_that_took_an_author_default_flags_the_displaced_row() {
     assert!(
         controls_rows(&table, &author)
             .iter()
-            .any(|row| row.command == Command::Reload && row.displaced)
+            .any(|row| row.command == Command::Reload && row.displaced[0])
     );
 }
 
@@ -298,7 +316,7 @@ fn inputs(app: &App, command: Command, class: DeviceClass) -> Vec<PhysicalInput>
 
 #[test]
 fn a_press_before_the_prompt_opens_is_not_captured() {
-    // P7: the press that opens the prompt, and any press resolved before the
+    // The press that opens the prompt, and any press resolved before the
     // prompt is the active tree, never reach it.
     let mut app = test_app();
     app.open_controls_panel();
@@ -327,7 +345,10 @@ fn a_press_before_the_prompt_opens_is_not_captured() {
             .offer_capture_press(pad(Button::RightTrigger))
     );
     app.update_controls_panel();
-    assert_eq!(inputs(&app, Command::Jump, PAD), [pad(Button::RightTrigger)]);
+    assert_eq!(
+        inputs(&app, Command::Jump, PAD),
+        [pad(Button::RightTrigger)]
+    );
     assert_eq!(
         session(&app).modal_stack.active_name(),
         Some(CONTROLS_PANEL_NAME)
@@ -335,21 +356,27 @@ fn a_press_before_the_prompt_opens_is_not_captured() {
 }
 
 #[test]
-fn capturing_start_or_escape_binds_it_and_nothing_else() {
-    // P8: a menu or cancel input binds and is routed nowhere else: no menu
-    // opens or closes, and no prompt or dialog follows.
-    // Escape and Start bind cleanly (menu and cancel never conflict with a
-    // gameplay command); South and Select also drive jump and drop, so the
-    // capture raises a question it does not answer.
+fn a_captured_menu_or_cancel_input_reaches_nothing_else() {
+    // A menu or cancel input the prompt captures is routed nowhere else: no
+    // menu opens or closes, and only the capture's own answer follows.
+    // Menu is live in gameplay too, so Escape or Start on `use` would take
+    // menu's only input there: refused. South and Select also drive jump and
+    // drop, so those captures ask. Start on cancel takes it from text commit
+    // and, replaced, binds.
+    enum Expect {
+        Refused,
+        Asks,
+    }
     let cases = [
-        (KBM, key(KeyCode::Escape), false),
-        (PAD, pad(Button::Start), false),
-        (PAD, pad(Button::South), true),
-        (PAD, pad(Button::Select), true),
+        (Command::Use, KBM, key(KeyCode::Escape), Expect::Refused),
+        (Command::Use, PAD, pad(Button::Start), Expect::Refused),
+        (Command::Use, PAD, pad(Button::South), Expect::Asks),
+        (Command::Use, PAD, pad(Button::Select), Expect::Asks),
+        (Command::NavCancel, PAD, pad(Button::Start), Expect::Asks),
     ];
-    for (class, input, asks) in cases {
+    for (command, class, input, expect) in cases {
         let mut app = test_app();
-        open_capture(&mut app, Command::Use, class, 1);
+        open_capture(&mut app, command, class, 1);
         let session_mut = app.session.as_mut().unwrap();
         assert!(session_mut.capture_prompt_is_active());
         assert!(session_mut.offer_capture_press(input));
@@ -357,15 +384,31 @@ fn capturing_start_or_escape_binds_it_and_nothing_else() {
         // A later frame: the captured press reached no other consumer.
         app.update_controls_panel();
         let stack = &session(&app).modal_stack;
-        if asks {
-            assert_eq!(stack.active_name(), Some(CONTROLS_DIALOG_NAME), "{input:?}");
-            assert_eq!(stack.len(), 2, "{input:?}: the prompt closed, no menu opened");
-            assert!(session(&app).controls.pending_replace.is_some());
-            assert_eq!(inputs(&app, Command::Use, class).len(), 1, "{input:?}");
-        } else {
-            assert_eq!(stack.active_name(), Some(CONTROLS_PANEL_NAME), "{input:?}");
-            assert_eq!(stack.len(), 1, "{input:?}: no menu opened");
-            assert_eq!(inputs(&app, Command::Use, class)[1], input);
+        assert_eq!(stack.active_name(), Some(CONTROLS_DIALOG_NAME), "{input:?}");
+        assert_eq!(
+            stack.len(),
+            2,
+            "{input:?}: the prompt closed, no menu opened"
+        );
+        assert_eq!(inputs(&app, command, class).len(), 1, "{input:?}");
+        match expect {
+            Expect::Refused => {
+                assert!(
+                    session(&app).controls.pending_replace.is_none(),
+                    "{input:?}"
+                );
+            }
+            Expect::Asks => {
+                assert!(
+                    session(&app).controls.pending_replace.is_some(),
+                    "{input:?}"
+                );
+                app.apply_controls_action(ControlsAction::Replace);
+                let stack = &session(&app).modal_stack;
+                assert_eq!(stack.active_name(), Some(CONTROLS_PANEL_NAME), "{input:?}");
+                assert_eq!(stack.len(), 1, "{input:?}: no menu opened");
+                assert_eq!(inputs(&app, command, class)[1], input);
+            }
         }
     }
 }
@@ -405,7 +448,7 @@ fn a_conflict_replace_takes_the_input_from_its_holder() {
 
 #[test]
 fn rebinding_confirm_to_cancels_only_button_is_refused() {
-    // AV10: East is cancel's only gamepad binding; confirm on East would leave
+    // East is cancel's only gamepad binding; confirm on East would leave
     // cancel unbound, so the panel refuses and both bindings stay.
     let mut app = test_app();
     open_capture(&mut app, Command::NavConfirm, PAD, 0);
@@ -457,12 +500,15 @@ fn with_the_swap_on_capturing_south_for_confirm_makes_south_confirm() {
     );
     app.apply_controls_action(ControlsAction::Replace);
     assert_eq!(inputs(&app, Command::NavConfirm, PAD), [pad(Button::South)]);
-    assert_eq!(inputs(&app, Command::NavCancel, PAD), [pad(Button::LeftThumb)]);
     assert_eq!(
-        session(&app).bindings.ui_nav().command_for(
-            pad(Button::South),
-            crate::input::UiNavContext::Capture
-        ),
+        inputs(&app, Command::NavCancel, PAD),
+        [pad(Button::LeftThumb)]
+    );
+    assert_eq!(
+        session(&app)
+            .bindings
+            .ui_nav()
+            .command_for(pad(Button::South), crate::input::UiNavContext::Capture),
         Some(Command::NavConfirm)
     );
 }
@@ -485,7 +531,8 @@ fn pressing_the_current_input_again_keeps_it() {
 
 #[test]
 fn a_prompt_whose_command_becomes_irrelevant_closes_without_binding() {
-    // P25: dash leaves the list while its prompt is open.
+    // A prompt closes unchanged when its command leaves the list: here dash
+    // becomes irrelevant while its prompt is open.
     let mut app = test_app();
     {
         let session = app.session.as_mut().unwrap();
@@ -501,9 +548,10 @@ fn a_prompt_whose_command_becomes_irrelevant_closes_without_binding() {
         let rows = controls_rows(session.bindings.table(), session.bindings.author());
         session.controls.listed = rows.iter().map(|row| row.command).collect();
         session.controls.built_generation = Some(session.bindings.generation());
-        session
-            .modal_stack
-            .push(CONTROLS_PANEL_NAME, build_controls_panel(&shell(), &rows, None));
+        session.modal_stack.push(
+            CONTROLS_PANEL_NAME,
+            build_controls_panel(&shell(), &rows, None),
+        );
     }
     app.apply_controls_action(ControlsAction::Capture {
         command: Command::Dash.id(),
@@ -523,7 +571,10 @@ fn a_prompt_whose_command_becomes_irrelevant_closes_without_binding() {
     assert!(session(&app).bindings.player().rows.is_empty());
     let panel = descriptor_text(&build_controls_panel(
         &shell(),
-        &controls_rows(session(&app).bindings.table(), session(&app).bindings.author()),
+        &controls_rows(
+            session(&app).bindings.table(),
+            session(&app).bindings.author(),
+        ),
         None,
     ));
     assert!(!panel.contains("ctl_dash_"));
@@ -532,9 +583,7 @@ fn a_prompt_whose_command_becomes_irrelevant_closes_without_binding() {
         .into_iter()
         .skip_while(|command| *command != Command::Dash)
         .skip(1)
-        .find(|command| {
-            session(&app).bindings.table().relevance(*command) == Relevance::Relevant
-        })
+        .find(|command| session(&app).bindings.table().relevance(*command) == Relevance::Relevant)
         .unwrap();
     assert_eq!(
         pushed.initial_focus.as_deref(),
@@ -575,6 +624,117 @@ fn reset_returns_a_command_to_its_defaults_and_reset_all_clears_every_row() {
     assert!(session(&app).bindings.player().rows.is_empty());
 }
 
+fn capture(app: &mut App, input: PhysicalInput) {
+    app.session.as_mut().unwrap().offer_capture_press(input);
+    app.update_controls_panel();
+}
+
+#[test]
+fn reset_that_would_leave_cancel_unbound_is_refused_and_changes_nothing() {
+    // Cancel gives East to confirm and keeps North; resetting cancel would
+    // bring back its East default, which confirm's player binding holds.
+    let mut app = test_app();
+    open_capture(&mut app, Command::NavCancel, PAD, 1);
+    capture(&mut app, pad(Button::North));
+    if session(&app).modal_stack.active_name() == Some(CONTROLS_DIALOG_NAME) {
+        app.apply_controls_action(ControlsAction::Replace);
+    }
+    assert_eq!(
+        inputs(&app, Command::NavCancel, PAD),
+        [pad(Button::East), pad(Button::North)]
+    );
+    open_capture(&mut app, Command::NavConfirm, PAD, 1);
+    capture(&mut app, pad(Button::East));
+    assert_eq!(
+        session(&app).modal_stack.active_name(),
+        Some(CONTROLS_DIALOG_NAME),
+        "East is cancel's, so the player is asked"
+    );
+    app.apply_controls_action(ControlsAction::Replace);
+    assert_eq!(inputs(&app, Command::NavCancel, PAD), [pad(Button::North)]);
+    let before = session(&app).bindings.player().clone();
+
+    app.apply_controls_action(ControlsAction::Reset {
+        command: Command::NavCancel.id(),
+    });
+    assert_eq!(
+        session(&app).modal_stack.active_name(),
+        Some(CONTROLS_DIALOG_NAME),
+        "the refusal explains itself"
+    );
+    assert_eq!(session(&app).bindings.player(), &before);
+    assert_eq!(inputs(&app, Command::NavCancel, PAD), [pad(Button::North)]);
+    assert_eq!(
+        inputs(&app, Command::NavConfirm, PAD),
+        [pad(Button::South), pad(Button::East)]
+    );
+}
+
+#[test]
+fn a_key_closes_a_gamepad_prompt_without_binding() {
+    let mut app = test_app();
+    open_capture(&mut app, Command::Jump, PAD, 1);
+    let prompt = descriptor_text(
+        session(&app)
+            .modal_stack
+            .retained_descriptors()
+            .last()
+            .unwrap(),
+    );
+    assert!(prompt.contains("PRESS ANY KEY TO CANCEL"), "{prompt}");
+    capture(&mut app, key(KeyCode::KeyJ));
+    assert_eq!(
+        session(&app).modal_stack.active_name(),
+        Some(CONTROLS_PANEL_NAME)
+    );
+    assert!(session(&app).bindings.player().rows.is_empty());
+}
+
+#[test]
+fn a_gamepad_prompt_closes_when_the_pad_goes_away() {
+    let mut app = test_app();
+    open_capture(&mut app, Command::Jump, PAD, 1);
+    let session_mut = app.session.as_mut().unwrap();
+    session_mut.track_capture_pad(true);
+    assert!(session_mut.capture_prompt_is_active(), "a pad is connected");
+    session_mut.track_capture_pad(false);
+    assert!(!session_mut.capture_prompt_is_active());
+    assert_eq!(
+        session(&app).modal_stack.active_name(),
+        Some(CONTROLS_PANEL_NAME)
+    );
+    assert!(session(&app).bindings.player().rows.is_empty());
+
+    // A keyboard prompt ignores the pad.
+    open_capture(&mut app, Command::Jump, KBM, 1);
+    let session_mut = app.session.as_mut().unwrap();
+    session_mut.track_capture_pad(true);
+    session_mut.track_capture_pad(false);
+    assert!(session_mut.capture_prompt_is_active());
+}
+
+#[test]
+fn an_input_with_no_stored_name_never_binds_and_the_prompt_keeps_waiting() {
+    let mut app = test_app();
+    open_capture(&mut app, Command::NavCancel, KBM, 1);
+    capture(
+        &mut app,
+        PhysicalInput::MouseButton(winit::event::MouseButton::Other(9)),
+    );
+    assert!(session(&app).capture_prompt_is_active());
+    assert!(session(&app).bindings.player().rows.is_empty());
+}
+
+#[test]
+fn a_capture_for_a_slot_the_panel_does_not_show_opens_no_prompt() {
+    let mut app = test_app();
+    open_capture(&mut app, Command::Jump, KBM, usize::MAX);
+    assert_eq!(
+        session(&app).modal_stack.active_name(),
+        Some(CONTROLS_PANEL_NAME)
+    );
+}
+
 #[test]
 fn the_pushed_panel_rebuilds_when_the_table_changes() {
     let mut app = test_app();
@@ -585,14 +745,18 @@ fn the_pushed_panel_rebuilds_when_the_table_changes() {
         .offer_capture_press(key(KeyCode::KeyV));
     app.update_controls_panel();
     let stack = &session(&app).modal_stack;
-    assert_eq!(stack.len(), 1, "the panel is updated in place, not pushed again");
+    assert_eq!(
+        stack.len(),
+        1,
+        "the panel is updated in place, not pushed again"
+    );
     let panel = descriptor_text(stack.retained_descriptors().last().unwrap());
     assert!(panel.contains("\"label\":\"V\""), "{panel}");
 }
 
 #[test]
 fn a_mod_tree_under_the_reserved_name_never_replaces_the_engine_panel() {
-    // MC19: the registry rejects the name at mod scope, and ui.openControls
+    // The registry rejects the name at mod scope, and ui.openControls
     // still opens the engine panel.
     use log::Level;
     use postretro_scripting_core::data_descriptors::RegisteredUiTree;
@@ -602,15 +766,19 @@ fn a_mod_tree_under_the_reserved_name_never_replaces_the_engine_panel() {
     let capture = LogCapture::start();
     let mut app = test_app();
     let impostor = build_refusal_dialog("IMPOSTOR", KBM);
-    app.session.as_mut().unwrap().modal_stack.register_script_trees(
-        [RegisteredUiTree {
-            name: CONTROLS_PANEL_NAME.to_string(),
-            tree: impostor,
-            always_on: false,
-            hide_below: false,
-        }],
-        ScopeTier::Mod,
-    );
+    app.session
+        .as_mut()
+        .unwrap()
+        .modal_stack
+        .register_script_trees(
+            [RegisteredUiTree {
+                name: CONTROLS_PANEL_NAME.to_string(),
+                tree: impostor,
+                always_on: false,
+                hide_below: false,
+            }],
+            ScopeTier::Mod,
+        );
     capture.assert_logged(Level::Warn, "reserved for an engine panel or dialog");
     app.open_controls_panel();
     let stack = &session(&app).modal_stack;
@@ -660,7 +828,7 @@ fn worst_case_rows(app: &App) -> Vec<ControlsRow> {
     let mut rows = controls_rows(bindings.table(), bindings.author());
     let worst = &mut rows[0];
     worst.label = command_label(&AuthorLayer::default(), Command::CycleWieldablePrevious);
-    worst.displaced = true;
+    worst.displaced = [true; 2];
     worst.inputs = [
         vec![(key(KeyCode::NumpadMultiply), ActivatorKind::Release); MIN_SLOTS],
         vec![(pad(Button::RightThumb), ActivatorKind::Release); MIN_SLOTS],

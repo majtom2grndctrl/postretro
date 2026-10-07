@@ -14,6 +14,7 @@
 // accepts a reaction handle or a bare name string.
 // See: context/lib/ui.md · context/lib/scripting.md §7
 
+import type { CommandId } from "postretro";
 import type { LocalizedText } from "./text";
 import type { ColorToken, FontToken, SpacingToken } from "./theme";
 import { __unwrapThemeToken } from "./theme";
@@ -830,14 +831,14 @@ export function Spacer(props: SpacerProps = {}): WidgetDescriptor {
 
 /** Props for `Glyph`. `command` is a command ID such as `"nav_confirm"`. */
 export type GlyphProps = {
-  command: string;
+  command: CommandId;
   id?: string;
   visibleWhen?: Predicate;
 };
 
 /**
  * The glyph for a command on the player's current device: the mod's art for
- * the input bound to it, else that input's name, else nothing when the command
+ * the input bound to it, else that input's label, else nothing when the command
  * is unbound there or irrelevant. Follows rebinding and the confirm/cancel
  * swap. Mirrors `GlyphWidget`.
  */
@@ -849,7 +850,8 @@ export function Glyph(props: GlyphProps): WidgetDescriptor {
     requireNonemptyString(props.id, "id", "Glyph");
     out.id = props.id;
   }
-  if (props.visibleWhen !== undefined) out.visibleWhen = props.visibleWhen;
+  const visibleWhen = buildPredicate(props.visibleWhen, "visibleWhen", "Glyph");
+  if (visibleWhen !== undefined) out.visibleWhen = visibleWhen;
   return out;
 }
 

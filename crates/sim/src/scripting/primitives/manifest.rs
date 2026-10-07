@@ -255,19 +255,19 @@ pub(crate) fn register_sdk_type(registry: &mut PrimitiveRegistry) {
 const COMMAND_IDS: &[(&str, &str)] = &[
     (
         "move_forward",
-        "Move forward. Digital; a half-axis stick input carries its magnitude.",
+        "Move forward. Digital; a half-axis stick input carries its magnitude. Accepts `press` or `hold`.",
     ),
     (
         "move_back",
-        "Move backward. Digital; a half-axis stick input carries its magnitude.",
+        "Move backward. Digital; a half-axis stick input carries its magnitude. Accepts `press` or `hold`.",
     ),
     (
         "move_left",
-        "Strafe left. Digital; a half-axis stick input carries its magnitude.",
+        "Strafe left. Digital; a half-axis stick input carries its magnitude. Accepts `press` or `hold`.",
     ),
     (
         "move_right",
-        "Strafe right. Digital; a half-axis stick input carries its magnitude.",
+        "Strafe right. Digital; a half-axis stick input carries its magnitude. Accepts `press` or `hold`.",
     ),
     (
         "move_up",
@@ -428,7 +428,7 @@ fn register_input_types(registry: &mut PrimitiveRegistry) {
         .field(
             "show?",
             "bool",
-            "`true` forces the command shown and bound, `false` hidden and unbound, overriding relevance derived from the mod's data. Optional. UI commands cannot be hidden.",
+            "`true` forces the command shown and bound, `false` hidden and unbound, overriding relevance derived from the mod's data. Optional. Ignored, with a warning, on every UI command and on the dev-only `move_up` and `move_down`.",
         )
         .field(
             "keyboardMouse?",
@@ -451,7 +451,7 @@ fn register_input_types(registry: &mut PrimitiveRegistry) {
         .finish();
     registry
         .register_type("ModInputGlyphs")
-        .doc("Glyph art directory per device family. A glyph's asset is `<dir>/<input>`, for example `ui/glyphs/xbox/south`. Missing art draws the input's name.")
+        .doc("Glyph art directory per device family. A glyph's asset is `<dir>/<input>`, for example `ui/glyphs/xbox/south`. Missing art draws the input's label (`east` draws \"EAST\", `KeyW` draws \"W\").")
         .field("keyboardMouse?", "String", "Keyboard and mouse glyph directory. Optional.")
         .field("xbox?", "String", "Xbox-layout glyph directory, also used for unrecognized pads. Optional.")
         .field("playstation?", "String", "PlayStation glyph directory. Optional.")
@@ -461,9 +461,9 @@ fn register_input_types(registry: &mut PrimitiveRegistry) {
         .register_type("ModInput")
         .doc("The game's commands, default bindings, and glyph art. Each command and device class is validated on its own: an unknown command ID, unknown input, refused activator, or a default leaving `nav_confirm`, `nav_cancel`, or `nav_menu` unbound is diagnosed, and that command and device class fall back to the engine default.")
         .field(
-            "commands",
+            "commands?",
             "ModInputCommands",
-            "Command settings keyed by command ID.",
+            "Command settings keyed by command ID. Optional; omission leaves every command on its engine defaults.",
         )
         .field(
             "glyphs?",
@@ -705,7 +705,7 @@ mod tests {
         // Script names of the fields each drained Rust struct carries; the
         // drain reads exactly these keys.
         for (name, expected_fields) in [
-            ("ModInput", ["commands", "glyphs?"].as_slice()),
+            ("ModInput", ["commands?", "glyphs?"].as_slice()),
             (
                 "ModInputCommand",
                 [

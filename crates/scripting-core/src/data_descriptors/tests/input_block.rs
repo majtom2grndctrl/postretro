@@ -490,3 +490,19 @@ fn input_block_cyclic_binding_value_terminates_as_an_empty_input() {
     );
     assert_not_warned(&capture);
 }
+
+#[test]
+fn input_block_lone_surrogate_string_or_key_degrades_in_quickjs_instead_of_failing() {
+    // A lone surrogate has no UTF-8 form. As a value it degrades like any
+    // other unusable value, and as a key it makes its object unusable, the
+    // way Luau treats a non-UTF-8 string; the manifest never fails over it.
+    let block = drain_js(
+        r#"{ input: { commands: { jump: { label: '\uD800', keyboardMouse: [{ input: 'KeyJ' }] } } } }"#,
+    )
+    .expect("the block drains");
+    let [jump] = block.commands.as_slice() else {
+        panic!("expected one command, got {:?}", block.commands);
+    };
+    assert_eq!(jump.keyboard_mouse, Some(vec![binding("KeyJ", None, None)]));
+    assert!(drain_js(r#"{ input: { commands: { '\uD800': {}, jump: {} } } }"#).is_some());
+}

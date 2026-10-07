@@ -20,7 +20,7 @@ use super::values::{
 /// tag is read by buffering the object through `serde_json::Value`, which a
 /// tuple variant cannot map onto. Container kinds (`vstack`/`hstack`/`grid`)
 /// carry positional `children`; leaf kinds (`text`/`panel`/`image`/`spacer`/
-/// `button`/`slider`/`bar`/`ring`/`announce`) carry no
+/// `button`/`slider`/`bar`/`ring`/`glyph`/`announce`) carry no
 /// `children` field. Compare `postretro_entities::ReactionDescriptor`,
 /// which discriminates by manual key-presence instead — this enum deliberately
 /// uses serde's tag mechanism.
@@ -52,7 +52,7 @@ pub enum Widget {
     // routes to the platform a11y layer with the declared `priority`.
     Announce(AnnounceWidget),
     /// The current glyph for a command: the mod's art for the input bound to
-    /// it on the player's device, else that input's name, else nothing. The
+    /// it on the player's device, else that input's label, else nothing. The
     /// engine resolves it each frame into an image or text before layout.
     Glyph(GlyphWidget),
 }
@@ -419,8 +419,8 @@ fn is_false(b: &bool) -> bool {
 }
 
 /// A command's glyph. `command` is a command ID (`nav_confirm`, `jump`); the
-/// SDK types reject an unknown ID, and one that reaches the engine draws
-/// nothing.
+/// TypeScript types reject an unknown ID; one that reaches the engine draws
+/// nothing and logs a warning once.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GlyphWidget {

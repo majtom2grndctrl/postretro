@@ -598,3 +598,207 @@ fn a_player_dash_row_waits_out_an_irrelevant_session_and_applies_when_dash_retur
     let table = build(&AuthorLayer::default(), &rows, all_facts());
     assert_eq!(table.inputs(Command::Dash, KBM), vec![key(KeyCode::KeyV)]);
 }
+
+// --- Guard over the player layer, player-vs-player, menu, swap order ---
+
+#[test]
+fn a_hand_edited_empty_cancel_row_gets_its_default_back() {
+    let rows = player(&[(Command::NavCancel, PAD, vec![])]);
+    let table = build(&AuthorLayer::default(), &rows, all_facts());
+    assert_eq!(
+        table.inputs(Command::NavCancel, PAD),
+        [pad(GilrsButton::East)]
+    );
+    assert_eq!(table.guard_restored(), [(Command::NavCancel, PAD)]);
+    assert!(table.guard_violations().is_empty());
+}
+
+#[test]
+fn a_saved_confirm_on_escape_yields_it_back_to_cancel_and_menu() {
+    // Confirm on Escape would leave cancel and menu with no keyboard input.
+    let rows = player(&[(Command::NavConfirm, KBM, vec![Some(key(KeyCode::Escape))])]);
+    let table = build(&AuthorLayer::default(), &rows, all_facts());
+    assert_eq!(
+        table.inputs(Command::NavCancel, KBM),
+        [key(KeyCode::Escape)]
+    );
+    assert_eq!(table.inputs(Command::NavMenu, KBM), [key(KeyCode::Escape)]);
+    assert_eq!(
+        table.inputs(Command::NavConfirm, KBM),
+        [key(KeyCode::Enter), key(KeyCode::NumpadEnter)],
+        "confirm, left with nothing, gets its own default back"
+    );
+    assert!(table.displaced().contains(&(Command::NavConfirm, KBM)));
+    assert!(
+        !table.displaced().contains(&(Command::NavCancel, KBM)),
+        "cancel has its default again, so it is not flagged"
+    );
+    assert!(table.guard_violations().is_empty());
+}
+
+#[test]
+fn a_newer_author_cancel_on_a_players_input_takes_it_back_and_flags_the_player_row() {
+    let layer = author(&[(
+        Command::NavCancel,
+        PAD,
+        vec![press(pad(GilrsButton::North))],
+    )]);
+    let rows = player(&[(
+        Command::NavOptions,
+        PAD,
+        vec![Some(pad(GilrsButton::North))],
+    )]);
+    let table = build(&layer, &rows, all_facts());
+    assert_eq!(
+        table.inputs(Command::NavCancel, PAD),
+        [pad(GilrsButton::North)]
+    );
+    assert!(table.inputs(Command::NavOptions, PAD).is_empty());
+    assert!(table.displaced().contains(&(Command::NavOptions, PAD)));
+}
+
+#[test]
+fn the_guard_restore_warns_once_and_an_unchanged_rebuild_keeps_the_generation() {
+    use super::binding_state::{BindingSources, BindingState};
+    use log::Level;
+    use postretro_test_log_capture::LogCapture;
+
+    let capture = LogCapture::start();
+    let mut state = BindingState::default();
+    state.set_player_layer(player(&[(Command::NavCancel, PAD, vec![])]));
+    let mut input = InputSystem::new(Vec::new());
+    let sources = BindingSources {
+        entity_types_generation: 1,
+        tuning: None,
+    };
+    state.rebuild(sources, all_facts(), &mut input);
+    let generation = state.generation();
+    state.rebuild(
+        BindingSources {
+            entity_types_generation: 2,
+            ..sources
+        },
+        all_facts(),
+        &mut input,
+    );
+    capture.assert_logged_once(Level::Warn, "leave `nav_cancel` unbound on gamepad");
+    assert_eq!(
+        state.generation(),
+        generation,
+        "a rebuild that changes nothing keeps the generation"
+    );
+}
+
+#[test]
+fn a_player_row_losing_to_another_player_row_is_flagged() {
+    // Dash's saved row wakes up on the key the player later gave jump.
+    let rows = player(&[
+        (Command::Jump, KBM, vec![Some(key(KeyCode::KeyV))]),
+        (Command::Dash, KBM, vec![Some(key(KeyCode::KeyV))]),
+    ]);
+    let table = build(&AuthorLayer::default(), &rows, all_facts());
+    assert_eq!(table.inputs(Command::Jump, KBM), [key(KeyCode::KeyV)]);
+    assert!(table.inputs(Command::Dash, KBM).is_empty());
+    assert!(table.displaced().contains(&(Command::Dash, KBM)));
+}
+
+#[test]
+fn menu_and_a_gameplay_command_on_one_input_conflict_whatever_the_activators() {
+    use ActivatorKind::*;
+    let space = key(KeyCode::Space);
+    assert!(conflicts(
+        &entry(Command::NavMenu, space, Press),
+        &entry(Command::Jump, space, Press)
+    ));
+    assert!(conflicts(
+        &entry(Command::NavMenu, space, Press),
+        &entry(Command::Jump, space, Hold)
+    ));
+    let escape = key(KeyCode::Escape);
+    assert!(!conflicts(
+        &entry(Command::NavMenu, escape, Press),
+        &entry(Command::NavCancel, escape, Press)
+    ));
+    // A player's menu on Space takes it from jump, flagged.
+    let rows = player(&[(Command::NavMenu, KBM, vec![Some(space)])]);
+    let table = build(&AuthorLayer::default(), &rows, all_facts());
+    assert!(table.inputs(Command::Jump, KBM).is_empty());
+    assert!(table.displaced().contains(&(Command::Jump, KBM)));
+}
+
+#[test]
+fn the_swap_applies_before_collisions_so_menu_never_shares_confirms_button() {
+    // Menu on East pairs with cancel; with the swap on, East is confirm, so
+    // menu yields it back to confirm (the guard) and is flagged.
+    // Dash, which also defaults to East, stays irrelevant here.
+    let rows = player(&[(Command::NavMenu, PAD, vec![Some(pad(GilrsButton::East))])]);
+    let facts = RelevanceFacts::default();
+    let unswapped = EffectiveTable::build(&AuthorLayer::default(), &rows, facts, false);
+    assert_eq!(
+        unswapped.inputs(Command::NavMenu, PAD),
+        [pad(GilrsButton::East)]
+    );
+    assert!(unswapped.displaced().is_empty());
+
+    let swapped = EffectiveTable::build(&AuthorLayer::default(), &rows, facts, true);
+    let on_east: Vec<Command> = swapped
+        .entries()
+        .iter()
+        .filter(|e| e.input == pad(GilrsButton::East) && e.command.context() == CommandContext::Ui)
+        .map(|e| e.command)
+        .collect();
+    assert_eq!(on_east, [Command::NavConfirm]);
+    assert_eq!(
+        swapped.inputs(Command::NavMenu, PAD),
+        [pad(GilrsButton::Start)]
+    );
+    assert!(swapped.displaced().contains(&(Command::NavMenu, PAD)));
+}
+
+#[test]
+fn a_default_input_keeps_its_own_activator_wherever_the_row_puts_it() {
+    let layer = author(&[(
+        Command::Use,
+        KBM,
+        vec![
+            press(key(KeyCode::KeyE)),
+            with(key(KeyCode::KeyF), ActivatorKind::Hold, 0.3),
+        ],
+    )]);
+    let rows = player(&[(Command::Use, KBM, vec![Some(key(KeyCode::KeyF))])]);
+    let table = build(&layer, &rows, all_facts());
+    let use_kbm: Vec<_> = table
+        .entries()
+        .iter()
+        .filter(|e| e.command == Command::Use && e.class == KBM)
+        .map(|e| (e.input, e.activator))
+        .collect();
+    assert_eq!(
+        use_kbm,
+        [(
+            key(KeyCode::KeyF),
+            Activator::with_threshold(ActivatorKind::Hold, 0.3)
+        )]
+    );
+}
+
+#[test]
+fn a_wheel_notch_in_a_player_row_always_presses() {
+    let layer = author(&[(
+        Command::Sprint,
+        KBM,
+        vec![with(key(KeyCode::ShiftLeft), ActivatorKind::Hold, 0.3)],
+    )]);
+    let rows = player(&[(
+        Command::Sprint,
+        KBM,
+        vec![Some(PhysicalInput::MouseWheelDown)],
+    )]);
+    let table = build(&layer, &rows, all_facts());
+    let wheel = table
+        .entries()
+        .iter()
+        .find(|e| e.command == Command::Sprint && e.input == PhysicalInput::MouseWheelDown)
+        .unwrap();
+    assert_eq!(wheel.activator, Activator::PRESS);
+}

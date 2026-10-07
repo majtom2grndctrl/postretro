@@ -410,6 +410,9 @@ mod tests {
             "a clip past the layer edge is cut to the viewport",
         );
         assert_eq!(scissor_for_clip([0.0, 0.0, 0.0, 30.0], [1280, 720]), None);
-        assert_eq!(scissor_for_clip([2000.0, 0.0, 10.0, 10.0], [1280, 720]), None);
+        assert_eq!(
+            scissor_for_clip([2000.0, 0.0, 10.0, 10.0], [1280, 720]),
+            None
+        );
     }
 }

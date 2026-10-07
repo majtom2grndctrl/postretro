@@ -1,5 +1,5 @@
 // Engine default table tests, against the pre-command default tables.
-// The legacy tables below are the "today" reference for AL1: every default key,
+// The legacy tables below are the "today" reference: every default key,
 // mouse, and button input must keep its action reads.
 
 use std::collections::HashSet;

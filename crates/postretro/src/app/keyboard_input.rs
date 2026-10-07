@@ -69,8 +69,8 @@ impl App {
             // action system this frame. `InputFocus::Menu` is the
             // intended structural home for this capture.
             //
-            // Key-down edges resolve to a nav intent (arrows / enter /
-            // escape / tab); the kinded payload rides the queue. Held
+            // Key-down edges resolve to a nav intent (by default
+            // arrows / enter / escape / tab); the kinded payload rides the queue. Held
             // repeats and non-nav keys carry no intent (the seam still
             // suppresses the gameplay forward). Escape's menu-vs-cancel
             // split needs the "is a capturing tree on the stack?" flag,
@@ -89,7 +89,7 @@ impl App {
             }
             // The capture prompt takes every key: a press (never an OS
             // repeat) is its candidate, and neither the press nor its release
-            // reaches nav, text entry, the menu toggle, or gameplay (P7, P8).
+            // reaches nav, text entry, the menu toggle, or gameplay.
             if session.capture_prompt_is_active() {
                 if pressed && !key_event.repeat {
                     session.offer_capture_press(input::PhysicalInput::Key(code));
@@ -102,7 +102,7 @@ impl App {
             // A RELEASE of a key bound to a nav direction stops the focus
             // engine's hold-to-repeat (the press-edge queue carries no release,
             // so the repeat clock is cleared here); a key no longer bound to a
-            // direction never does (P10). A release of a key bound to confirm
+            // direction never does. A release of a key bound to confirm
             // stops the activation-repeat clock the same way.
             let physical = input::PhysicalInput::Key(code);
             if !pressed && session.bindings.ui_nav().binds_direction(physical) {
@@ -116,7 +116,7 @@ impl App {
             {
                 session.ui_focus.release_confirm_repeat();
             }
-            // Text-entry routing (M13 Text-Entry, Task 3): while a text-entry
+            // Text-entry routing: while a text-entry
             // tree is the top of the modal stack, hardware key-down events
             // drive the edit surface instead of nav. The LOGICAL key resolves
             // Backspace/Enter/Escape first (so a `\u{8}` Backspace text or a
@@ -125,8 +125,8 @@ impl App {
             // Enter/Escape ride the queue as `nav.confirm`/`nav.cancel`, which
             // the focus-resolution stage intercepts for commit/cancel.
             let text_entry_open = session.modal_stack.active_text_entry_target().is_some();
-            // Text entry intentionally honors OS key-repeat (Text-Entry AC4:
-            // hardware-key repeat comes from the OS): a held Backspace/letter
+            // Text entry intentionally honors OS key-repeat (hardware-key repeat
+            // comes from the OS): a held Backspace/letter
             // appends/deletes on each auto-repeat. All OTHER UI input stays
             // edge-only (`!key_event.repeat`) — nav intents must not re-fire on
             // a held key, since the focus engine's own dt clock owns nav repeat.
@@ -163,8 +163,8 @@ impl App {
                     };
                     let intent = session.bindings.ui_nav().intent_for(physical, context);
                     if intent.is_some() {
-                        // A nav key (arrows/enter/escape/tab) is a `focus`-mode
-                        // signal — it switches the interaction mode off pointer.
+                        // A nav key (by default arrows/enter/escape/tab) is a
+                        // `focus`-mode signal — it switches the interaction mode off pointer.
                         record_nav_signal = true;
                     }
                     // Escape-from-gameplay maps to `nav.menu` (opens the pause
@@ -184,7 +184,7 @@ impl App {
                 .forwards_to_gameplay()
                 && session.input_focus == InputFocus::Gameplay
                 // An OS key repeat is not a press: a key held through a
-                // capturing menu must stay inert until pressed again (P24).
+                // capturing menu must stay inert until pressed again.
                 && !(pressed && key_event.repeat)
             {
                 // Only Gameplay forwards keys to the action system. When

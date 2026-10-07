@@ -34,8 +34,14 @@ fn authored_value_js(value: JsValue<'_>, depth: usize) -> Result<AuthoredValue, 
     if let Some(number) = value.as_number() {
         return Ok(AuthoredValue::Number(number));
     }
+    // A string that is not valid UTF-8 (a lone surrogate) degrades like any
+    // other unusable value, as the Luau drain does, rather than failing the
+    // manifest.
     if let Some(string) = value.as_string() {
-        return Ok(AuthoredValue::String(string.to_string().map_err(js_err)?));
+        return Ok(match string.to_string() {
+            Ok(string) => AuthoredValue::String(string),
+            Err(_) => AuthoredValue::Other,
+        });
     }
     if value.is_function() || depth > MAX_INPUT_CONTAINER_DEPTH {
         return Ok(AuthoredValue::Other);
@@ -50,8 +56,13 @@ fn authored_value_js(value: JsValue<'_>, depth: usize) -> Result<AuthoredValue, 
     }
     if let Some(object) = value.as_object() {
         let mut entries = Vec::new();
-        for entry in object.props::<String, JsValue>() {
+        // Keys arrive as JS values so a key that is not valid UTF-8 makes the
+        // whole object unusable, as a Luau table with such a key is.
+        for entry in object.props::<JsValue, JsValue>() {
             let (key, item) = entry.map_err(js_err)?;
+            let Some(Ok(key)) = key.as_string().map(|key| key.to_string()) else {
+                return Ok(AuthoredValue::Other);
+            };
             entries.push((key, authored_value_js(item, depth + 1)?));
         }
         return Ok(AuthoredValue::Object(entries));

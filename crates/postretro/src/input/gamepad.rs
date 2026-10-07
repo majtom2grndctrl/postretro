@@ -6,7 +6,7 @@ use gilrs::{Axis, Button, Event, EventType, GamepadId, Gilrs};
 
 use super::InputSystem;
 use crate::input::commands::Command;
-use crate::input::types::PhysicalInput;
+use crate::input::types::{PhysicalInput, hysteresis_level};
 use crate::input::ui_nav::{NavIntent, StickNavTrackers};
 use crate::input::ui_nav_map::{StickSide, UiNavContext, UiNavMap, stick_half_for};
 
@@ -14,13 +14,13 @@ use crate::input::ui_nav_map::{StickSide, UiNavContext, UiNavMap, stick_half_for
 /// this frame, plus the two release channels the focus engine's dt-clocked
 /// repeat timers need to stop.
 ///
-/// `confirm_released` is true when the confirm button (South) was RELEASED this
-/// frame — it stops a held `repeatOnHold` button (M13 Text-Entry, Task 2), the
-/// gamepad twin of the keyboard Enter-release path.
+/// `confirm_released` is true when a button bound to `nav_confirm` was RELEASED
+/// this frame — it stops a held `repeatOnHold` button, the gamepad twin of the
+/// keyboard confirm-release path.
 ///
-/// `directional_released` is true when NO directional input is currently held —
-/// the D-pad direction buttons are all up AND the left stick is back inside the
-/// dead zone. It clears the focus engine's directional hold-to-repeat clock,
+/// `directional_released` is true when NO input bound to a nav direction is
+/// currently held (buttons, and either stick's half-axes past the dead zone). It
+/// clears the focus engine's directional hold-to-repeat clock,
 /// mirroring the keyboard arrow-key-up path; without it a press that armed the
 /// repeat clock would free-run on dt until the next stack/intent change (runaway
 /// focus-scroll on any tree declaring a `repeat` policy).
@@ -46,7 +46,7 @@ pub struct GamepadNavOutput {
 }
 
 /// Digital buttons polled each frame. The analog triggers are not here: they
-/// become buttons through `TRIGGER_BUTTON_THRESHOLD`, not gilrs's own threshold.
+/// become buttons through `TRIGGER_PRESS_THRESHOLD`, not gilrs's own threshold.
 const BUTTONS: &[Button] = &[
     Button::South,        // A / Cross
     Button::East,         // B / Circle
@@ -65,27 +65,39 @@ const BUTTONS: &[Button] = &[
 ];
 
 /// The text shortcut `input` drives in `context`: one only while a text-entry
-/// tree is on top (P26).
-fn text_shortcut(ui_nav: &UiNavMap, input: PhysicalInput, context: UiNavContext) -> Option<Command> {
+/// tree is on top; shortcuts do nothing once a commit has popped it.
+fn text_shortcut(
+    ui_nav: &UiNavMap,
+    input: PhysicalInput,
+    context: UiNavContext,
+) -> Option<Command> {
     if context != UiNavContext::TextEntry {
         return None;
     }
-    ui_nav
-        .command_for(input, context)
-        .filter(|command| {
-            matches!(
-                command,
-                Command::TextBackspace | Command::TextSpace | Command::TextCommit
-            )
-        })
+    ui_nav.command_for(input, context).filter(|command| {
+        matches!(
+            command,
+            Command::TextBackspace | Command::TextSpace | Command::TextCommit
+        )
+    })
 }
 
-/// Trigger value above which a trigger counts as a button press.
-const TRIGGER_BUTTON_THRESHOLD: f32 = 0.5;
+/// Trigger value at which a released trigger counts as a button press.
+const TRIGGER_PRESS_THRESHOLD: f32 = 0.5;
 
-/// Returns whether an analog trigger value counts as a button press.
-fn trigger_is_active(value: f32) -> bool {
-    value >= TRIGGER_BUTTON_THRESHOLD
+/// Trigger value below which a pressed trigger releases. The gap to
+/// [`TRIGGER_PRESS_THRESHOLD`] keeps a trigger resting near the press point
+/// from chattering press edges.
+const TRIGGER_RELEASE_THRESHOLD: f32 = 0.4;
+
+/// Whether a trigger reads as a pressed button, given whether it did last poll.
+fn trigger_is_active(was_down: bool, value: f32) -> bool {
+    hysteresis_level(
+        was_down,
+        value,
+        TRIGGER_PRESS_THRESHOLD,
+        TRIGGER_RELEASE_THRESHOLD,
+    )
 }
 
 /// Combine a trigger's button-reported and axis-reported analog values into one
@@ -167,6 +179,11 @@ impl GamepadSystem {
         }
     }
 
+    /// Whether any gamepad is connected, as of the last event drain.
+    pub fn any_connected(&self) -> bool {
+        self.gilrs.gamepads().next().is_some()
+    }
+
     /// Drain buffered gilrs events without acting on them, keeping the active
     /// gamepad current. Frames that draw no UI call this so a press made during
     /// a splash or Loading frame never surfaces on the first frame that does.
@@ -179,15 +196,16 @@ impl GamepadSystem {
     }
 
     /// Poll gilrs events and feed processed state into the input system,
-    /// returning the UI nav intents produced this frame (D-pad / face / system
-    /// button down-edges and a left-stick-past-dead-zone edge).
+    /// returning the UI nav intents produced this frame (button down-edges and
+    /// either stick's half-axis crossing past the dead zone, resolved through
+    /// the binding table).
     ///
     /// Call once per frame, before `input_system.snapshot()` and — critically —
     /// before the `UiDispatch` `take_ready`/`advance_frame` pair, so the returned
     /// nav intents can be enqueued ahead of promotion and ride the same N→N+1
     /// contract as keyboard captures. The caller enqueues them only while a
-    /// capturing tree owns input. `nav_stick` is the per-stick edge detector,
-    /// owned by the caller so its latch persists across frames.
+    /// capturing tree owns input. `nav_sticks` holds the per-stick edge
+    /// detectors, owned by the caller so their latches persist across frames.
     /// See: context/lib/input.md §7
     ///
     /// Nav intents resolve through `ui_nav`, the UI slice of the effective
@@ -205,9 +223,9 @@ impl GamepadSystem {
         // Drain all pending events to track the active gamepad and harvest
         // button-down edges as nav intents. gilrs delivers a discrete
         // `ButtonPressed` per press, so this is the natural edge source — one
-        // intent per press, repeats handled by the focus engine's timer (Task 3).
-        // A `ButtonReleased(South)` surfaces the confirm-release edge so a held
-        // `repeatOnHold` button stops re-firing (M13 Text-Entry, Task 2).
+        // intent per press, repeats handled by the focus engine's timer.
+        // A `ButtonReleased` of a button bound to `nav_confirm` surfaces the
+        // confirm-release edge so a held `repeatOnHold` button stops re-firing.
         let received_at = std::time::SystemTime::now();
         while let Some(Event {
             id, event, time, ..
@@ -218,7 +236,8 @@ impl GamepadSystem {
                 self.active_gamepad = Some(id);
             }
             // Button events are the gameplay edge source too, so a press and
-            // release between two polls still resolve (P1). The poll below
+            // release between two polls still resolve (a shared tap/hold key
+            // still taps rather than losing the press). The poll below
             // reconciles the level and adds no edge when it agrees.
             let age = received_at
                 .duration_since(time)
@@ -241,8 +260,8 @@ impl GamepadSystem {
                     }
                 }
                 EventType::ButtonReleased(button, _) => {
-                    // Whichever button confirm is bound to now ends its repeat
-                    // (P9, P10).
+                    // Whichever button confirm is bound to now ends its repeat,
+                    // even after a remap or confirm/cancel swap.
                     if ui_nav.is_bound_to(PhysicalInput::GamepadButton(button), Command::NavConfirm)
                     {
                         out.confirm_released = true;
@@ -279,7 +298,11 @@ impl GamepadSystem {
         let gamepad = self.gilrs.gamepad(gamepad_id);
         out.vendor_id = gamepad.vendor_id();
         if !gamepad.is_connected() {
+            // The pad is gone mid-hold: nothing it held may stay down, and a
+            // pending hold on it never fires.
             self.active_gamepad = None;
+            self.triggers_down = [false; 2];
+            input_system.release_gamepad();
             nav_sticks.clear();
             out.directional_released = true;
             return out;
@@ -327,7 +350,7 @@ impl GamepadSystem {
         input_system.set_gamepad_axis(Axis::LeftZ, left_trigger);
         input_system.set_gamepad_axis(Axis::RightZ, right_trigger);
 
-        // Triggers also produce button state via threshold.
+        // Triggers also produce button state via threshold, with hysteresis.
         for (index, (button, value)) in [
             (Button::LeftTrigger2, left_trigger),
             (Button::RightTrigger2, right_trigger),
@@ -335,20 +358,13 @@ impl GamepadSystem {
         .into_iter()
         .enumerate()
         {
-            let down = trigger_is_active(value);
+            let down = trigger_is_active(self.triggers_down[index], value);
             if down && !self.triggers_down[index] {
                 out.presses.push(PhysicalInput::GamepadButton(button));
             }
             self.triggers_down[index] = down;
+            input_system.set_physical_input(PhysicalInput::GamepadButton(button), down);
         }
-        input_system.set_physical_input(
-            PhysicalInput::GamepadButton(Button::LeftTrigger2),
-            trigger_is_active(left_trigger),
-        );
-        input_system.set_physical_input(
-            PhysicalInput::GamepadButton(Button::RightTrigger2),
-            trigger_is_active(right_trigger),
-        );
 
         // Read digital buttons.
         for &button in BUTTONS {
@@ -658,29 +674,47 @@ mod tests {
 
     #[test]
     fn trigger_below_threshold_is_inactive() {
-        assert!(!trigger_is_active(0.3));
+        assert!(!trigger_is_active(false, 0.3));
     }
 
     #[test]
     fn trigger_at_threshold_is_active() {
-        assert!(trigger_is_active(TRIGGER_BUTTON_THRESHOLD));
+        assert!(trigger_is_active(false, TRIGGER_PRESS_THRESHOLD));
     }
 
     #[test]
     fn trigger_above_threshold_is_active() {
-        assert!(trigger_is_active(0.8));
+        assert!(trigger_is_active(false, 0.8));
+    }
+
+    #[test]
+    fn a_trigger_resting_inside_the_hysteresis_band_presses_once() {
+        // Regression: one threshold made a trigger resting near it chatter, so
+        // Shoot alternated press and release every poll.
+        let mut down = false;
+        let mut presses = 0;
+        for value in [0.0, 0.52, 0.47, 0.51, 0.45, 0.49, 0.42, 0.5, 0.41] {
+            let now = trigger_is_active(down, value);
+            if now && !down {
+                presses += 1;
+            }
+            down = now;
+        }
+        assert_eq!(presses, 1);
+        assert!(down, "still pressed above the release threshold");
+        assert!(!trigger_is_active(true, 0.39), "releases below it");
     }
 
     // --- Trigger value sourcing tests ---
 
     #[test]
     fn trigger_button_value_alone_is_active() {
-        assert!(trigger_is_active(trigger_value(Some(1.0), None)));
+        assert!(trigger_is_active(false, trigger_value(Some(1.0), None)));
     }
 
     #[test]
     fn trigger_axis_value_alone_is_active() {
-        assert!(trigger_is_active(trigger_value(None, Some(1.0))));
+        assert!(trigger_is_active(false, trigger_value(None, Some(1.0))));
     }
 
     #[test]
@@ -690,14 +724,17 @@ mod tests {
 
     #[test]
     fn trigger_zero_button_value_is_inactive() {
-        assert!(!trigger_is_active(trigger_value(Some(0.0), None)));
+        assert!(!trigger_is_active(false, trigger_value(Some(0.0), None)));
     }
 
     #[test]
     fn trigger_partial_values_below_threshold_are_inactive() {
-        assert!(!trigger_is_active(trigger_value(Some(0.3), None)));
-        assert!(!trigger_is_active(trigger_value(None, Some(0.3))));
-        assert!(!trigger_is_active(trigger_value(Some(0.2), Some(0.4))));
+        assert!(!trigger_is_active(false, trigger_value(Some(0.3), None)));
+        assert!(!trigger_is_active(false, trigger_value(None, Some(0.3))));
+        assert!(!trigger_is_active(
+            false,
+            trigger_value(Some(0.2), Some(0.4))
+        ));
     }
 
     #[test]
@@ -716,7 +753,7 @@ mod tests {
         )]);
         sys.set_physical_input(
             PhysicalInput::GamepadButton(Button::RightTrigger2),
-            trigger_is_active(trigger_value(Some(1.0), None)),
+            trigger_is_active(false, trigger_value(Some(1.0), None)),
         );
         assert_eq!(sys.snapshot().button(Action::Shoot), ButtonState::Pressed);
     }

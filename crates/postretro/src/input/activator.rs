@@ -3,6 +3,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use super::input_names::DeviceClass;
 use super::types::{Action, ActivatorKind, Binding, PhysicalInput};
 
 /// One physical input that is currently down and resolving.
@@ -10,12 +11,12 @@ use super::types::{Action, ActivatorKind, Binding, PhysicalInput};
 struct HeldInput {
     down_at: f64,
     /// `hold_timing_scale` captured when the input went down, so a scale change
-    /// mid-hold never moves this press's thresholds (P23).
+    /// mid-hold never moves this press's thresholds.
     scale: f32,
     /// The hold binding(s) on this input have fired; the short partner never will.
     hold_fired: bool,
     /// A rebuild changed this input's bindings while it was down. A resolution
-    /// already made stands until release; nothing new fires on this press (P4).
+    /// already made stands until release; nothing new fires on this press.
     stale: bool,
 }
 
@@ -32,14 +33,15 @@ pub(super) struct ActivatorResolver {
     held: HashMap<PhysicalInput, HeldInput>,
     /// Inputs held across a cancel. A level-sourced input (a polled gamepad
     /// button) stays inert until it is observed up, so a button held through a
-    /// capturing menu fires nothing when the menu closes (P24).
+    /// capturing menu fires nothing when the menu closes.
     suppressed: HashSet<PhysicalInput>,
     /// Down level per binding index, aligned with the binding table.
     binding_down: Vec<bool>,
     /// Down count per command; a 0→1 transition is the command's press edge.
     command_down: HashMap<Action, u32>,
-    /// Commands that went down at least once since the last `take_frame`.
-    went_down: HashSet<Action>,
+    /// Press edges per command since the last `take_frame`: two presses
+    /// between snapshots count two, so a notch-read command steps twice.
+    went_down: HashMap<Action, u32>,
 }
 
 impl ActivatorResolver {
@@ -57,7 +59,12 @@ impl ActivatorResolver {
     }
 
     pub(super) fn command_went_down(&self, action: Action) -> bool {
-        self.went_down.contains(&action)
+        self.went_down.contains_key(&action)
+    }
+
+    /// How many times the command went down since the last `take_frame`.
+    pub(super) fn command_press_count(&self, action: Action) -> u32 {
+        self.went_down.get(&action).copied().unwrap_or(0)
     }
 
     /// Clear the per-frame edge record after a snapshot has read it.
@@ -66,7 +73,9 @@ impl ActivatorResolver {
     }
 
     /// An authoritative edge from an event source (winit key or button event,
-    /// gilrs button event). A fresh press clears any suppression on the input.
+    /// gilrs button event). Any event edge clears suppression: a press is
+    /// fresh, and a release means the next press is too, whichever source
+    /// reports it.
     pub(super) fn event_edge(
         &mut self,
         bindings: &[Binding],
@@ -75,9 +84,7 @@ impl ActivatorResolver {
         t: f64,
         scale: f32,
     ) {
-        if down {
-            self.suppressed.remove(&input);
-        }
+        self.suppressed.remove(&input);
         self.edge(bindings, input, down, t, scale);
     }
 
@@ -196,7 +203,9 @@ impl ActivatorResolver {
 
     /// Cancel every pending resolution and lift every down binding without a
     /// pulse: losing window focus or a capturing tree opening fires neither
-    /// binding of a pending pair. Held inputs are suppressed until seen up.
+    /// binding of a pending pair. Held inputs are suppressed until seen up,
+    /// and press edges not yet read are dropped, so nothing pressed before the
+    /// cancel reads Pressed after it.
     pub(super) fn cancel_all(&mut self, bindings: &[Binding]) {
         for (input, _) in self.held.drain() {
             self.suppressed.insert(input);
@@ -204,9 +213,25 @@ impl ActivatorResolver {
         for index in 0..self.binding_down.len() {
             self.set_up(bindings, index);
         }
+        self.went_down.clear();
     }
 
-    /// Carry resolution across a binding-table rebuild (P4). An input whose
+    /// Forget every gamepad input, as when the pad disconnects: bindings on
+    /// pad inputs lift without a pulse, pending pad holds never fire, and pad
+    /// suppression drops so a reconnected pad's next press is fresh. Press
+    /// edges already resolved this frame stand.
+    pub(super) fn cancel_gamepad(&mut self, bindings: &[Binding]) {
+        let is_pad = |input: &PhysicalInput| DeviceClass::of(*input) == DeviceClass::Gamepad;
+        self.held.retain(|input, _| !is_pad(input));
+        self.suppressed.retain(|input| !is_pad(input));
+        for (index, binding) in bindings.iter().enumerate() {
+            if is_pad(&binding.input) {
+                self.set_up(bindings, index);
+            }
+        }
+    }
+
+    /// Carry resolution across a binding-table rebuild. An input whose
     /// bindings are unchanged resolves as if no rebuild happened. On a changed
     /// input, bindings already down and still present stay down until release,
     /// a pending resolution is cancelled, and nothing new fires on this press.
@@ -278,7 +303,7 @@ impl ActivatorResolver {
         self.binding_down[index] = true;
         let count = self.command_down.entry(bindings[index].action).or_insert(0);
         if *count == 0 {
-            self.went_down.insert(bindings[index].action);
+            *self.went_down.entry(bindings[index].action).or_insert(0) += 1;
         }
         *count += 1;
     }

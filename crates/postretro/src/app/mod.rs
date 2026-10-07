@@ -1,5 +1,5 @@
-// `App` behavior split by concern: UI action routing, keyboard intake, and the
-// options-menu bridge wiring. `main.rs` keeps the frame loop and composition.
+// `App` behavior split by concern: UI actions, keyboard intake, options and controls
+// panels, binding refresh, glyph art, text shortcuts. `main.rs` keeps the frame loop.
 // See: context/lib/ui.md §4 · context/lib/input.md §5
 
 pub(crate) mod accessibility_panel;

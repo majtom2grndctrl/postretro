@@ -340,7 +340,12 @@ mod tests {
     fn a_clipped_text_run_is_bounded_by_its_scroll_viewport_within_the_layer() {
         let unclipped = text_bounds(None, [1280, 720]);
         assert_eq!(
-            (unclipped.left, unclipped.top, unclipped.right, unclipped.bottom),
+            (
+                unclipped.left,
+                unclipped.top,
+                unclipped.right,
+                unclipped.bottom
+            ),
             (0, 0, 1280, 720),
         );
         let clipped = text_bounds(Some([100.5, 50.0, 200.0, 80.25]), [1280, 720]);
@@ -349,7 +354,10 @@ mod tests {
             (100, 50, 301, 131),
         );
         let outside = text_bounds(Some([1400.0, 800.0, 50.0, 50.0]), [1280, 720]);
-        assert_eq!(outside.left, outside.right, "an off-layer clip draws no glyph");
+        assert_eq!(
+            outside.left, outside.right,
+            "an off-layer clip draws no glyph"
+        );
     }
 
     #[test]

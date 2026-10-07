@@ -125,7 +125,7 @@ fn losing_focus_mid_hold_fires_neither_binding() {
 }
 
 #[test]
-fn losing_focus_after_the_hold_fired_releases_without_a_tap() {
+fn losing_focus_after_the_hold_fired_lifts_it_without_a_release_or_a_tap() {
     let mut sys = shift_tap_dash_hold_sprint(0.2, 0.2);
     press(&mut sys, SHIFT, 0.0);
     assert_eq!(
@@ -133,10 +133,24 @@ fn losing_focus_after_the_hold_fired_releases_without_a_tap() {
         ButtonState::Pressed
     );
     sys.clear_all_at(0.305);
+    // Neutral input is not a release: the cleared action reads Inactive.
     let snap = sys.snapshot_at(0.31);
-    assert_eq!(snap.button(Action::Sprint), ButtonState::Released);
+    assert_eq!(snap.button(Action::Sprint), ButtonState::Inactive);
     release(&mut sys, SHIFT, 0.32);
     assert_eq!(fired(&states(&mut sys, Action::Dash, &[0.33, 0.6])), 0);
+}
+
+#[test]
+fn a_press_buffered_before_a_clear_never_reads_pressed_after_it() {
+    // Regression: the clear resolved buffered edges and kept their press
+    // edges, so the next snapshot reported a press made before the cancel.
+    let mut sys = shift_tap_dash_hold_sprint(0.2, 0.2);
+    press(&mut sys, KeyCode::Space, 0.0);
+    sys.clear_all_at(0.01);
+    assert_eq!(
+        sys.snapshot_at(0.02).button(Action::Jump),
+        ButtonState::Inactive
+    );
 }
 
 // --- Same-frame edges (AV2: P1, P2) ---
@@ -369,6 +383,112 @@ fn a_polled_button_held_across_a_menu_does_nothing_until_pressed_again() {
         sys.snapshot_at(0.51).button(Action::Jump),
         ButtonState::Pressed
     );
+}
+
+#[test]
+fn a_suppressed_button_released_by_its_event_presses_again_from_a_poll() {
+    // Regression: only an event press or a polled release lifted suppression,
+    // so after a release seen as an event, a press seen only by the poll (its
+    // event drained on a frame that draws no UI) was dropped.
+    let south = PhysicalInput::GamepadButton(gilrs::Button::South);
+    let mut sys = InputSystem::new(vec![Binding::new(south, Action::Jump)]);
+    sys.set_physical_input_at(south, true, 0.0);
+    let _ = sys.snapshot_at(0.01);
+    sys.clear_all_at(0.02);
+    sys.set_physical_input_at(south, true, 0.03);
+    let _ = sys.snapshot_at(0.04);
+    sys.handle_gamepad_button_event(gilrs::Button::South, false, 0.0);
+    let _ = sys.snapshot_at(0.05);
+    sys.set_physical_input_at(south, true, 0.1);
+    assert_eq!(
+        sys.snapshot_at(0.11).button(Action::Jump),
+        ButtonState::Pressed
+    );
+}
+
+#[test]
+fn pad_presses_made_in_the_frontend_never_reach_the_first_running_frame() {
+    // Regression: frontend frames read no snapshot, so pad press edges piled
+    // up and the first Running frame reported them as gameplay presses.
+    let south = PhysicalInput::GamepadButton(gilrs::Button::South);
+    let dpad_right = PhysicalInput::GamepadButton(gilrs::Button::DPadRight);
+    let bindings = vec![
+        Binding::new(south, Action::Jump),
+        Binding::new(dpad_right, Action::CycleWieldableNext),
+    ];
+    let mut sys = InputSystem::new(bindings.clone());
+
+    // Frontend frame: South pressed and held to confirm, D-pad tapped to move.
+    sys.handle_gamepad_button_event(gilrs::Button::South, true, 0.0);
+    sys.handle_gamepad_button_event(gilrs::Button::DPadRight, true, 0.0);
+    sys.handle_gamepad_button_event(gilrs::Button::DPadRight, false, 0.0);
+    sys.set_physical_input_at(south, true, 0.05);
+    sys.suspend_gameplay_at(0.06);
+    // Next frontend frame: South still down.
+    sys.set_physical_input_at(south, true, 0.1);
+    sys.suspend_gameplay_at(0.11);
+
+    // Level load: the table rebuilds and gameplay takes focus.
+    sys.set_bindings_at(bindings, 0.5);
+    sys.clear_all_at(0.5);
+
+    // First Running frame, South still held.
+    sys.set_physical_input_at(south, true, 0.6);
+    let first = sys.snapshot_at(0.61);
+    assert_eq!(first.button(Action::Jump), ButtonState::Inactive);
+    assert_eq!(first.notch_count(Action::CycleWieldableNext), 0);
+    assert_eq!(fired(&states(&mut sys, Action::Jump, &[0.7, 0.8])), 0);
+
+    // Released and pressed again, it jumps.
+    sys.set_physical_input_at(south, false, 0.9);
+    let _ = sys.snapshot_at(0.91);
+    sys.set_physical_input_at(south, true, 1.0);
+    assert_eq!(
+        sys.snapshot_at(1.01).button(Action::Jump),
+        ButtonState::Pressed
+    );
+}
+
+// --- Activators on movement ---
+
+fn left_stick_up() -> PhysicalInput {
+    PhysicalInput::GamepadAxisHalf(gilrs::Axis::LeftStickY, types::AxisHalf::Positive)
+}
+
+#[test]
+fn a_hold_on_a_stick_half_moves_only_once_its_min_passes() {
+    // Regression: the half-axis read the stick directly, skipping the hold.
+    let mut sys = InputSystem::new(vec![
+        Binding::new(left_stick_up(), Action::MoveForward).with_activator(hold(0.2)),
+    ]);
+    sys.set_gamepad_axis_at(gilrs::Axis::LeftStickY, 0.8, 0.0);
+    assert_eq!(sys.snapshot_at(0.1).axis_value(Action::MoveForward), 0.0);
+    assert!((sys.snapshot_at(0.25).axis_value(Action::MoveForward) - 0.8).abs() < 1e-6);
+}
+
+#[test]
+fn a_stick_held_through_a_cancel_moves_nothing_until_pushed_again() {
+    // P24 for sticks: a held W stays inert after a capturing menu, so a held
+    // stick must too.
+    let mut sys = InputSystem::new(vec![Binding::new(left_stick_up(), Action::MoveForward)]);
+    sys.set_gamepad_axis_at(gilrs::Axis::LeftStickY, 0.8, 0.0);
+    assert!((sys.snapshot_at(0.01).axis_value(Action::MoveForward) - 0.8).abs() < 1e-6);
+    sys.clear_all_at(0.1);
+    sys.set_gamepad_axis_at(gilrs::Axis::LeftStickY, 0.8, 0.15);
+    assert_eq!(sys.snapshot_at(0.16).axis_value(Action::MoveForward), 0.0);
+    sys.set_gamepad_axis_at(gilrs::Axis::LeftStickY, 0.0, 0.2);
+    let _ = sys.snapshot_at(0.21);
+    sys.set_gamepad_axis_at(gilrs::Axis::LeftStickY, 0.8, 0.3);
+    assert!((sys.snapshot_at(0.31).axis_value(Action::MoveForward) - 0.8).abs() < 1e-6);
+}
+
+#[test]
+fn a_stick_half_on_movement_keeps_its_full_analog_range() {
+    // Activator gating must not cut off a gentle push below the button press
+    // point: a movement half is down whenever it is past the dead zone.
+    let mut sys = InputSystem::new(vec![Binding::new(left_stick_up(), Action::MoveForward)]);
+    sys.set_gamepad_axis_at(gilrs::Axis::LeftStickY, 0.2, 0.0);
+    assert!((sys.snapshot_at(0.01).axis_value(Action::MoveForward) - 0.2).abs() < 1e-6);
 }
 
 // --- Phases ride the gameplay latch (AV3, P3; the riskiest premise) ---

@@ -92,6 +92,15 @@ impl Harness {
         })
     }
 
+    /// Replace the tree in place, as the renderer does when the same layer's
+    /// descriptor changes: a fresh build that carries the old scroll state.
+    fn rebuild(&mut self, tree: AnchoredTree) {
+        let mut ui = UiTree::from_descriptor(&tree, &theme());
+        ui.carry_scroll_from(&self.ui);
+        self.ui = ui;
+        self.tree = tree;
+    }
+
     fn rects(&self) -> FocusRectList {
         self.ui
             .export_focus_rects(&self.tree, VIEWPORT, &self.slots, &no_cells())
@@ -111,7 +120,8 @@ fn bottom(r: [f32; 4]) -> f32 {
 
 /// The visible part of a stop: its rect within its scroll clip.
 fn visible(stop: &FocusRect) -> [f32; 4] {
-    stop.clip.map_or(stop.rect, |clip| intersect_rects(stop.rect, clip))
+    stop.clip
+        .map_or(stop.rect, |clip| intersect_rects(stop.rect, clip))
 }
 
 // MC15: content that fits sizes the container to it and never scrolls.
@@ -120,7 +130,9 @@ fn a_scroll_container_whose_content_fits_sizes_to_its_content_and_does_not_scrol
     let mut h = Harness::new(menu(&scroll_list(400.0, 3, None, false)));
     h.frame(ScrollInput::default());
     let before = h.rects();
-    let viewport = rect(&before, "r0").clip.expect("rows sit in a scroll viewport");
+    let viewport = rect(&before, "r0")
+        .clip
+        .expect("rows sit in a scroll viewport");
     assert!(
         approx(viewport[1], rect(&before, "r0").rect[1])
             && approx(bottom(viewport), bottom(rect(&before, "r2").rect)),
@@ -133,7 +145,11 @@ fn a_scroll_container_whose_content_fits_sizes_to_its_content_and_does_not_scrol
     );
 
     h.wheel([viewport[0] + 4.0, viewport[1] + 4.0], -3.0);
-    assert_eq!(h.rects(), before, "a wheel over content that fits moves nothing");
+    assert_eq!(
+        h.rects(),
+        before,
+        "a wheel over content that fits moves nothing"
+    );
 }
 
 // MC15: the wheel scrolls an overflowing container under the cursor, and only
@@ -144,7 +160,10 @@ fn the_pointer_wheel_scrolls_the_overflowing_container_under_the_cursor() {
     h.frame(ScrollInput::default());
     let before = h.rects();
     let viewport = rect(&before, "r0").clip.expect("clipped");
-    assert!(approx(viewport[3], 100.0), "overflowing content clamps to maxHeight");
+    assert!(
+        approx(viewport[3], 100.0),
+        "overflowing content clamps to maxHeight"
+    );
     let r0 = rect(&before, "r0").rect;
 
     // A wheel outside the viewport scrolls nothing.
@@ -154,20 +173,29 @@ fn the_pointer_wheel_scrolls_the_overflowing_container_under_the_cursor() {
     // One notch down scrolls the content up by one wheel line.
     h.wheel([viewport[0] + 4.0, viewport[1] + 4.0], -1.0);
     let after = h.rects();
-    assert!(approx(rect(&after, "r0").rect[1], r0[1] - WHEEL_LINE_SCROLL));
+    assert!(approx(
+        rect(&after, "r0").rect[1],
+        r0[1] - WHEEL_LINE_SCROLL
+    ));
     assert_eq!(
         rect(&after, "r0").clip,
         Some(viewport),
         "the viewport itself does not move"
     );
     assert!(
-        approx(rect(&after, "after").rect[1], rect(&before, "after").rect[1]),
+        approx(
+            rect(&after, "after").rect[1],
+            rect(&before, "after").rect[1]
+        ),
         "scrolling never relays out the content after the container"
     );
 
     // Far past the end, the offset stops where the last row meets the bottom.
     h.wheel([viewport[0] + 4.0, viewport[1] + 4.0], -100.0);
-    assert!(approx(bottom(rect(&h.rects(), "r9").rect), bottom(viewport)));
+    assert!(approx(
+        bottom(rect(&h.rects(), "r9").rect),
+        bottom(viewport)
+    ));
 }
 
 // MC15: scroll opens no focus group; its stops join the enclosing group unless
@@ -191,7 +219,11 @@ fn scroll_children_join_the_enclosing_focus_group_unless_the_container_declares_
     let mut h = Harness::new(menu(&scroll_list(100.0, 4, None, true)));
     h.frame(ScrollInput::default());
     let list = h.rects();
-    assert_eq!(list.groups.len(), 2, "a scroll container with focus opens its group");
+    assert_eq!(
+        list.groups.len(),
+        2,
+        "a scroll container with focus opens its group"
+    );
     assert_eq!(list.groups[1].parent, Some(0));
     assert_eq!(rect(&list, "r0").group, Some(1));
     assert_eq!(rect(&list, "after").group, Some(0));
@@ -279,7 +311,10 @@ fn a_container_scrolled_to_its_end_whose_content_shrinks_draws_with_no_empty_ban
     h.focused("r9");
     let scrolled = h.rects();
     let viewport = rect(&scrolled, "r0").clip.expect("clipped");
-    assert!(rect(&scrolled, "r0").rect[1] < viewport[1], "scrolled to the end");
+    assert!(
+        rect(&scrolled, "r0").rect[1] < viewport[1],
+        "scrolled to the end"
+    );
 
     // Shrink below the viewport: the container fits its two rows, drawn from
     // its top.
@@ -292,7 +327,10 @@ fn a_container_scrolled_to_its_end_whose_content_shrinks_draws_with_no_empty_ban
     let shrunk = h.rects();
     let r0 = rect(&shrunk, "r0");
     let fitted = r0.clip.expect("still a scroll viewport");
-    assert!(approx(r0.rect[1], fitted[1]), "the first row draws at the top");
+    assert!(
+        approx(r0.rect[1], fitted[1]),
+        "the first row draws at the top"
+    );
     assert!(
         approx(bottom(rect(&shrunk, "r1").rect), bottom(fitted)),
         "the container shrinks to its content: no empty band"
@@ -416,4 +454,102 @@ fn a_scrolling_grid_clamps_to_max_height_and_scrolls_its_rows() {
     let list = h.rects();
     assert!(approx(bottom(rect(&list, "g11").rect), bottom(viewport)));
     assert!(approx(bottom(rect(&list, "g9").rect), bottom(viewport)));
+}
+
+// A rebuild of the same tree (a rebound control relabels a row) keeps the
+// offset: the focused row stays where it was instead of snapping to an edge.
+#[test]
+fn a_rebuilt_tree_with_a_changed_leaf_keeps_its_scroll_offset() {
+    let list = scroll_list(100.0, 10, None, false);
+    let mut h = Harness::new(menu(&list));
+    h.focused("r9");
+    h.focused("r7");
+    let before = h.rects();
+    let viewport = rect(&before, "r7").clip.expect("clipped");
+    assert!(
+        approx(bottom(rect(&before, "r9").rect), bottom(viewport)),
+        "scrolled to the end"
+    );
+
+    h.rebuild(menu(&list.replace("Row r3", "Rebound")));
+    h.focused("r7");
+    let after = h.rects();
+    assert_eq!(rect(&after, "r7").rect, rect(&before, "r7").rect);
+    assert!(approx(bottom(rect(&after, "r9").rect), bottom(viewport)));
+}
+
+// A carried offset past the rebuilt content's end clamps to it.
+#[test]
+fn a_carried_offset_clamps_to_the_rebuilt_content() {
+    let mut h = Harness::new(menu(&scroll_list(100.0, 10, None, false)));
+    h.frame(ScrollInput::default());
+    let viewport = rect(&h.rects(), "r0").clip.expect("clipped");
+    h.wheel([viewport[0] + 4.0, viewport[1] + 4.0], -100.0);
+
+    h.rebuild(menu(&scroll_list(100.0, 6, None, false)));
+    h.frame(ScrollInput::default());
+    let list = h.rects();
+    let viewport = rect(&list, "r0").clip.expect("still a scroll viewport");
+    assert!(
+        approx(bottom(rect(&list, "r5").rect), bottom(viewport)),
+        "the last row meets the bottom: no empty band"
+    );
+    assert!(
+        rect(&list, "r0").rect[1] < viewport[1],
+        "still scrolled, not reset to the top"
+    );
+}
+
+// A container with an authored id matches by id, so a sibling inserted ahead
+// of it (its child-index path changes) still carries its offset.
+#[test]
+fn a_container_with_an_id_carries_its_offset_when_its_path_changes() {
+    let list = scroll_list(100.0, 10, None, false).replacen(
+        r#"{"kind":"vstack","#,
+        r#"{"kind":"vstack","id":"levels","#,
+        1,
+    );
+    let mut h = Harness::new(menu(&list));
+    h.frame(ScrollInput::default());
+    let viewport = rect(&h.rects(), "r0").clip.expect("clipped");
+    h.wheel([viewport[0] + 4.0, viewport[1] + 4.0], -2.0);
+    let before = h.rects();
+    let scrolled_by = rect(&before, "r0").clip.expect("clipped")[1] - rect(&before, "r0").rect[1];
+    assert!(scrolled_by > 0.0);
+
+    h.rebuild(menu(&format!("{},{list}", button("before"))));
+    h.frame(ScrollInput::default());
+    let after = h.rects();
+    let r0 = rect(&after, "r0");
+    let viewport = r0.clip.expect("clipped");
+    assert!(approx(viewport[1] - r0.rect[1], scrolled_by));
+}
+
+// A relayout that does not move focus leaves a wheel scroll alone when the
+// wheel had already taken the focused stop out of full view.
+#[test]
+fn a_relayout_without_a_focus_change_keeps_a_wheel_scroll() {
+    let mut h = Harness::new(menu(&scroll_list(100.0, 10, Some(9), false)));
+    h.focused("r0");
+    let viewport = rect(&h.rects(), "r0").clip.expect("clipped");
+    h.frame(ScrollInput {
+        focused_id: Some("r0"),
+        wheel: Some(UiWheelScroll {
+            position: [viewport[0] + 4.0, viewport[1] + 4.0],
+            lines: -1.0,
+            pixels: 0.0,
+        }),
+    });
+    let wheeled = rect(&h.rects(), "r0").rect;
+    assert!(wheeled[1] < viewport[1] - 1.0, "the wheel scrolled r0 up");
+
+    // r9 hides: the content relays out, focus stays on r0.
+    h.slots
+        .insert("menu.more".to_string(), SlotValue::Boolean(false));
+    h.focused("r0");
+    let after = rect(&h.rects(), "r0").rect;
+    assert!(
+        approx(after[1], wheeled[1]),
+        "the relayout did not scroll r0 back into view: {after:?} vs {wheeled:?}"
+    );
 }

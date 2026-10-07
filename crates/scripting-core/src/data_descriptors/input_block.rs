@@ -166,7 +166,9 @@ fn device_bindings(
 
 /// One binding entry. Malformed parts are kept in a form the engine diagnoses
 /// (empty input, empty activator, NaN threshold) rather than warned here, so
-/// each malformed binding yields exactly one diagnostic, from the engine.
+/// each malformed binding yields exactly one diagnostic, from the engine. An
+/// empty input stands for a binding that is not an object or has no `input`
+/// string, and the engine names it so.
 fn binding(raw: AuthoredValue) -> ModInputBinding {
     let Some(mut fields) = raw.into_entries() else {
         return ModInputBinding::default();

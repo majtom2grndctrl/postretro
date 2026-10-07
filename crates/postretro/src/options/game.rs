@@ -84,7 +84,6 @@ impl PlayerOptions {
     /// Record the player's binding row for one command on one device class;
     /// `None` resets it to the author default. The next save writes it, and
     /// every other row, known or not, keeps its text.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn set_game_binding_row(
         &mut self,
         mod_id: &str,

@@ -43,7 +43,7 @@ impl DeviceFamily {
 
 /// Collects this frame's deliberate input and settles one family per frame.
 /// Only presses, stick crossings past the dead zone, and a pointer-mode switch
-/// vote, so a resting device's drift never changes the family (P22).
+/// vote, so a resting device's drift never changes the family.
 #[derive(Debug, Default)]
 pub struct DeviceFamilyTracker {
     current: DeviceFamily,
@@ -82,7 +82,10 @@ mod tests {
 
     #[test]
     fn pads_map_to_families_by_vendor() {
-        assert_eq!(DeviceFamily::of_pad(Some(0x054C)), DeviceFamily::PlayStation);
+        assert_eq!(
+            DeviceFamily::of_pad(Some(0x054C)),
+            DeviceFamily::PlayStation
+        );
         assert_eq!(DeviceFamily::of_pad(Some(0x057E)), DeviceFamily::Nintendo);
         assert_eq!(DeviceFamily::of_pad(Some(0x045E)), DeviceFamily::Xbox);
         assert_eq!(DeviceFamily::of_pad(Some(0x2DC8)), DeviceFamily::Xbox);

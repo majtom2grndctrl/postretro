@@ -630,6 +630,18 @@ fn window_attributes() -> WindowAttributes {
 ///
 /// The returned bit is the only thing the movement intent ever sees — never the
 /// raw button or the mode (the toggle-vs-hold ownership rule).
+fn resolve_crouch_intent(mode: options::CrouchMode, button: ButtonState, latch: &mut bool) -> bool {
+    match mode {
+        options::CrouchMode::Hold => button.is_active(),
+        options::CrouchMode::Toggle => {
+            if matches!(button, ButtonState::Pressed) {
+                *latch = !*latch;
+            }
+            *latch
+        }
+    }
+}
+
 /// The sprint twin of [`resolve_crouch_intent`]: in toggle mode each press edge
 /// of the resolved command (a hold binding's edge comes when its threshold
 /// passes) flips the latch.
@@ -645,16 +657,86 @@ fn resolve_sprint_intent(mode: options::SprintMode, button: ButtonState, latch: 
     }
 }
 
-fn resolve_crouch_intent(mode: options::CrouchMode, button: ButtonState, latch: &mut bool) -> bool {
-    match mode {
-        options::CrouchMode::Hold => button.is_active(),
-        options::CrouchMode::Toggle => {
-            if matches!(button, ButtonState::Pressed) {
-                *latch = !*latch;
-            }
-            *latch
+/// What one frame's gamepad poll asks of the App once the session borrow ends.
+#[derive(Debug, Default, Clone, Copy)]
+struct GamepadPollVotes {
+    /// A gamepad nav intent arrived: a `focus`-mode signal.
+    nav_seen: bool,
+    /// `nav.menu` (gamepad Start) was pressed.
+    menu_toggle: bool,
+}
+
+/// Poll the gamepad once in the Input stage, before the `UiDispatch`
+/// `take_ready`/`advance_frame` pair, so pad nav intents ride the keyboard's
+/// N→N+1 contract. Feeds the pad into the input system, hands presses to an
+/// open capture prompt, releases the focus engine's repeat clocks, and queues
+/// text shortcuts and nav intents only while a capturing tree owns input.
+/// See: context/lib/input.md §7
+fn poll_gamepad(
+    session: &mut session::Session,
+    nav_sticks: &mut input::StickNavTrackers,
+    frame_dt: f32,
+) -> GamepadPollVotes {
+    let mut votes = GamepadPollVotes::default();
+    let context = session.ui_nav_context();
+    let capture_prompt = session.capture_prompt_is_active();
+    let Some(gp) = session.gamepad_system.as_mut() else {
+        return votes;
+    };
+    let mut gp_nav = gp.update(
+        &mut session.input_system,
+        nav_sticks,
+        session.bindings.ui_nav(),
+        context,
+    );
+    if !gp_nav.presses.is_empty() {
+        session.device_family.note_pad(gp_nav.vendor_id);
+    }
+    if capture_prompt {
+        // The capture prompt takes the pad's presses; a captured press neither
+        // navigates nor opens the menu.
+        for press in std::mem::take(&mut gp_nav.presses) {
+            session.controls.offer_press(press);
+        }
+        gp_nav.nav_intents.clear();
+    }
+    // Advance any active rumble's timeout and stop it once its duration
+    // elapses (started by a drained `Rumble` command on a prior frame).
+    gp.tick_rumble(frame_dt);
+    // A confirm RELEASE stops the activation-repeat clock — the gamepad twin of
+    // the keyboard Enter-release.
+    if gp_nav.confirm_released {
+        session.ui_focus.release_confirm_repeat();
+    }
+    if gp_nav.text_shortcut_released {
+        session.ui_focus.release_shortcut_repeat();
+    }
+    // No directional input held releases the directional hold-to-repeat clock,
+    // mirroring the arrow-key-up path.
+    if gp_nav.directional_released {
+        session.ui_focus.release_repeat();
+    }
+    votes.nav_seen = !gp_nav.nav_intents.is_empty();
+    let capture = session.ui_dispatch.mode() == input::UiCaptureMode::Capture;
+    if capture {
+        for command in gp_nav.text_shortcuts {
+            session
+                .ui_dispatch
+                .enqueue_intent(input::UiIntentPayload::TextShortcut(command));
         }
     }
+    for intent in gp_nav.nav_intents {
+        if intent == input::NavIntent::Menu {
+            votes.menu_toggle = true;
+            continue;
+        }
+        if capture {
+            session
+                .ui_dispatch
+                .enqueue_intent(input::UiIntentPayload::Nav(intent));
+        }
+    }
+    votes
 }
 
 /// Client-side tick path for static PRL-loaded movers. The host replicates
@@ -2024,7 +2106,7 @@ impl ApplicationHandler for App {
                     session.device_family.note_keyboard_mouse();
                 }
                 // The capture prompt takes mouse buttons too; a captured click
-                // activates nothing (P8).
+                // activates nothing.
                 if session.capture_prompt_is_active() {
                     if state.is_pressed() {
                         session.offer_capture_press(input::PhysicalInput::MouseButton(button));
@@ -2264,104 +2346,30 @@ impl ApplicationHandler for App {
                     frozen,
                 );
 
-                // Tail of the Input stage: poll the gamepad. This must run
-                // BEFORE the `take_ready`/`advance_frame` pair below so gamepad
-                // nav intents land in `pending` ahead of promotion and share the
-                // keyboard's N→N+1 contract — a gamepad nav consumed this frame
-                // first reaches game logic next frame, never same-frame. (gilrs
-                // previously polled *after* promotion, which would have leaked
-                // gamepad intents a frame early.) The intents are enqueued only
-                // while a capturing tree owns input (`Capture` mode); under
-                // `Passthrough` they are dropped here, exactly as keyboard
-                // events forward through the seam. See: context/lib/input.md §7
+                // Tail of the Input stage: poll the gamepad, BEFORE the
+                // `take_ready`/`advance_frame` pair below (see `poll_gamepad`).
                 // Reached only in Running (Frontend returned above), so the
                 // session is installed. Disjoint borrows of the session group and
                 // the non-session `nav_stick_tracker`; mode-signal and menu-toggle
                 // votes are collected and applied after the borrow ends.
-                let (gamepad_nav_seen, gamepad_menu_toggle) = {
+                let gamepad_votes = {
                     let App {
                         session,
                         nav_stick_tracker,
                         ..
                     } = self;
-                    let mut nav_seen = false;
-                    let mut menu_toggle = false;
-                    let context = session
-                        .as_ref()
-                        .map_or(input::UiNavContext::Open, |session| {
-                            session.ui_nav_context()
-                        });
-                    let capture_prompt = session
-                        .as_ref()
-                        .is_some_and(|session| session.capture_prompt_is_active());
-                    if let Some(session) = session.as_mut()
-                        && let Some(gp) = session.gamepad_system.as_mut()
-                    {
-                        let mut gp_nav = gp.update(
-                            &mut session.input_system,
-                            nav_stick_tracker,
-                            session.bindings.ui_nav(),
-                            context,
-                        );
-                        if !gp_nav.presses.is_empty() {
-                            session.device_family.note_pad(gp_nav.vendor_id);
-                        }
-                        if capture_prompt {
-                            // The capture prompt takes the pad's presses; none
-                            // navigates or opens the menu (P8).
-                            for press in std::mem::take(&mut gp_nav.presses) {
-                                session.controls.offer_press(press);
-                            }
-                            gp_nav.nav_intents.clear();
-                        }
-                        // Advance any active rumble's timeout in the input stage
-                        // and stop it once its duration elapses (started by a
-                        // drained `Rumble` command on a prior frame).
-                        gp.tick_rumble(frame_dt);
-                        // A confirm (South) RELEASE stops the activation-repeat
-                        // clock — the gamepad twin of the keyboard Enter-release.
-                        if gp_nav.confirm_released {
-                            session.ui_focus.release_confirm_repeat();
-                        }
-                        if gp_nav.text_shortcut_released {
-                            session.ui_focus.release_shortcut_repeat();
-                        }
-                        // No directional input held releases the directional
-                        // hold-to-repeat clock, mirroring the arrow-key-up path.
-                        if gp_nav.directional_released {
-                            session.ui_focus.release_repeat();
-                        }
-                        // Any gamepad nav intent is a `focus`-mode signal.
-                        nav_seen = !gp_nav.nav_intents.is_empty();
-                        // `nav.menu` (gamepad Start) toggles the pause menu via
-                        // the punch-through flag (Passthrough queues nothing);
-                        // other nav intents enqueue only while capturing.
-                        let capture = session.ui_dispatch.mode() == input::UiCaptureMode::Capture;
-                        if capture {
-                            for command in gp_nav.text_shortcuts {
-                                session
-                                    .ui_dispatch
-                                    .enqueue_intent(input::UiIntentPayload::TextShortcut(command));
-                            }
-                        }
-                        for intent in gp_nav.nav_intents {
-                            if intent == input::NavIntent::Menu {
-                                menu_toggle = true;
-                                continue;
-                            }
-                            if capture {
-                                session
-                                    .ui_dispatch
-                                    .enqueue_intent(input::UiIntentPayload::Nav(intent));
-                            }
-                        }
-                    }
-                    (nav_seen, menu_toggle)
+                    session
+                        .as_mut()
+                        .map_or_else(GamepadPollVotes::default, |session| {
+                            poll_gamepad(session, nav_stick_tracker, frame_dt)
+                        })
                 };
-                if gamepad_nav_seen {
+                if gamepad_votes.nav_seen {
                     self.record_mode_signal(scripting_systems::input_mode::ModeSignal::NavInput);
                 }
-                if gamepad_menu_toggle {
+                // `nav.menu` (gamepad Start) toggles the pause menu via the
+                // punch-through flag (Passthrough queues nothing).
+                if gamepad_votes.menu_toggle {
                     self.pending_menu_toggle = true;
                 }
 
@@ -5771,66 +5779,24 @@ impl App {
 
         // Gamepad poll: disjoint borrows of the session group and the
         // non-session `nav_stick_tracker`. A nav intent votes `focus` mode;
-        // recorded after the borrow ends.
-        let nav_input_seen = {
+        // recorded after the borrow ends. The frontend has no pause menu, so a
+        // `nav.menu` vote is dropped.
+        let gamepad_votes = {
             let App {
                 session,
                 nav_stick_tracker,
                 ..
             } = self;
             let session = session.as_mut().expect("frontend session installed");
-            let mut nav_input_seen = false;
-            let context = session.ui_nav_context();
-            let capture_prompt = session.capture_prompt_is_active();
-            if let Some(gp) = session.gamepad_system.as_mut() {
-                let mut gp_nav = gp.update(
-                    &mut session.input_system,
-                    nav_stick_tracker,
-                    session.bindings.ui_nav(),
-                    context,
-                );
-                if !gp_nav.presses.is_empty() {
-                    session.device_family.note_pad(gp_nav.vendor_id);
-                }
-                if capture_prompt {
-                    for press in std::mem::take(&mut gp_nav.presses) {
-                        session.controls.offer_press(press);
-                    }
-                    gp_nav.nav_intents.clear();
-                }
-                gp.tick_rumble(frame_dt);
-                if gp_nav.confirm_released {
-                    session.ui_focus.release_confirm_repeat();
-                }
-                if gp_nav.text_shortcut_released {
-                    session.ui_focus.release_shortcut_repeat();
-                }
-                if gp_nav.directional_released {
-                    session.ui_focus.release_repeat();
-                }
-                nav_input_seen = !gp_nav.nav_intents.is_empty();
-                let capture = session.ui_dispatch.mode() == input::UiCaptureMode::Capture;
-                if capture {
-                    for command in gp_nav.text_shortcuts {
-                        session
-                            .ui_dispatch
-                            .enqueue_intent(input::UiIntentPayload::TextShortcut(command));
-                    }
-                }
-                for intent in gp_nav.nav_intents {
-                    if intent == input::NavIntent::Menu {
-                        continue;
-                    }
-                    if capture {
-                        session
-                            .ui_dispatch
-                            .enqueue_intent(input::UiIntentPayload::Nav(intent));
-                    }
-                }
-            }
-            nav_input_seen
+            let votes = poll_gamepad(session, nav_stick_tracker, frame_dt);
+            // No snapshot reads gameplay input on these frames, so the pad's
+            // gameplay edges are cancelled every frame instead of replaying as
+            // presses on the first Running frame. A pad input still held then
+            // stays inert until pressed again.
+            session.input_system.suspend_gameplay();
+            votes
         };
-        if nav_input_seen {
+        if gamepad_votes.nav_seen {
             self.record_mode_signal(scripting_systems::input_mode::ModeSignal::NavInput);
         }
 
@@ -12271,7 +12237,10 @@ mod tests {
             .collect();
         assert_eq!(
             on_shift,
-            [(Command::Sprint, ActivatorKind::Hold), (Command::Dash, ActivatorKind::Tap)],
+            [
+                (Command::Sprint, ActivatorKind::Hold),
+                (Command::Dash, ActivatorKind::Tap)
+            ],
             "tap-Shift dashes and hold-Shift sprints"
         );
         assert!(table.conflicting_pairs().is_empty());
@@ -12303,7 +12272,11 @@ mod tests {
                 .tree
                 .clone()
         };
-        let reactions: Vec<&str> = manifest.reactions.iter().map(|r| r.reaction.name.as_str()).collect();
+        let reactions: Vec<&str> = manifest
+            .reactions
+            .iter()
+            .map(|r| r.reaction.name.as_str())
+            .collect();
         for (name, prefix, reaction, action) in [
             (
                 "dev.exitConfirm",
@@ -12370,10 +12343,17 @@ mod tests {
             };
             // Frame N: the first confirm pushed the dialog (the reaction's
             // effect). Frame N+1: the second confirm.
-            app.session.as_mut().unwrap().modal_stack.push(name, dialog.clone());
+            app.session
+                .as_mut()
+                .unwrap()
+                .modal_stack
+                .push(name, dialog.clone());
             let result = tick(&mut app, &[NavIntent::Confirm]);
             assert_eq!(result.focused.as_deref(), Some(cancel.as_str()));
-            assert!(!app.pending_exit_to_desktop, "{name}: the game keeps running");
+            assert!(
+                !app.pending_exit_to_desktop,
+                "{name}: the game keeps running"
+            );
             assert_eq!(
                 app.session.as_ref().unwrap().modal_stack.active_name(),
                 None,

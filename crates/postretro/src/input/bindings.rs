@@ -1,4 +1,4 @@
-// Binding resolution: resolves physical input state into action values.
+// Binding resolution: folds per-binding activator activity into action values.
 // See: context/lib/input.md §2
 
 use std::collections::HashMap;
@@ -94,8 +94,10 @@ pub(crate) fn resolve_axis_values(
             }
             PhysicalInput::GamepadAxisHalf(axis, half) => {
                 // One direction of a stick: its magnitude, signed by the
-                // command's direction on the axis action.
-                if let Some(&raw_val) = gamepad_axes.get(&axis) {
+                // command's direction on the axis action. Gated on the
+                // activator like a key, so a hold waits for its min and a
+                // stick held through a cancel stays inert until pushed again.
+                if active && let Some(&raw_val) = gamepad_axes.get(&axis) {
                     let value = half.magnitude(raw_val) * binding.scale;
                     if value.abs() > acc.velocity.abs() {
                         acc.velocity = value;

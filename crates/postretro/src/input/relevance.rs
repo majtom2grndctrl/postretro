@@ -19,9 +19,17 @@ pub struct RelevanceFacts {
 }
 
 impl RelevanceFacts {
+    /// Every data-driven command relevant: what validation checks against, and
+    /// how a rebind sees the saved rows of commands the game does not use now.
+    pub const EVERY: Self = Self {
+        dash: true,
+        crouch: true,
+        magazine: true,
+        secondary: true,
+    };
+
     /// The union of two fact sets: co-op relevance is local derivation plus
     /// the host tuning, because tuning sites keep no local fallback.
-    #[allow(dead_code)]
     pub fn union(self, other: Self) -> Self {
         Self {
             dash: self.dash || other.dash,

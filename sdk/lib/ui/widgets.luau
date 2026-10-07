@@ -572,7 +572,7 @@ end
 -- --- Glyph ------------------------------------------------------------------
 
 --- The glyph for a command on the player's current device: the mod's art for
---- the input bound to it, else that input's name, else nothing when the command
+--- the input bound to it, else that input's label, else nothing when the command
 --- is unbound there or irrelevant. Follows rebinding and the confirm/cancel
 --- swap. Mirrors `GlyphWidget`.
 function UiWidgetsSdk.Glyph(props: any): WidgetDescriptor
@@ -583,8 +583,9 @@ function UiWidgetsSdk.Glyph(props: any): WidgetDescriptor
     requireNonemptyString(props.id, "id", "Glyph")
     out.id = props.id
   end
-  if props.visibleWhen ~= nil then
-    out.visibleWhen = props.visibleWhen
+  local visibleWhen = buildPredicate(props.visibleWhen, "visibleWhen", "Glyph")
+  if visibleWhen ~= nil then
+    out.visibleWhen = visibleWhen
   end
   return out
 end

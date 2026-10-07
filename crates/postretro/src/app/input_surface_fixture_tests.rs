@@ -55,13 +55,14 @@ fn both_sdks_author_the_same_input_surface() {
 
     let root = &ts[0].tree.root;
     let row = &children(root)[0];
-    assert!(
-        matches!(&children(row)[0], Widget::Glyph(glyph) if glyph.command == "nav_confirm")
-    );
+    assert!(matches!(&children(row)[0], Widget::Glyph(glyph) if glyph.command == "nav_confirm"));
     let Widget::VStack(list) = &children(root)[1] else {
         panic!("the level list is a vstack");
     };
-    assert_eq!(list.scroll.as_ref().map(|scroll| scroll.max_height), Some(320.0));
+    assert_eq!(
+        list.scroll.as_ref().map(|scroll| scroll.max_height),
+        Some(320.0)
+    );
     assert_eq!(list.children.len(), 10);
 }
 
@@ -95,7 +96,9 @@ fn the_fixture_glyph_resolves_and_its_controls_entry_opens_the_panel() {
 
     // The CONTROLS entry opens the engine panel.
     let session = app.session.as_mut().unwrap();
-    session.modal_stack.push(tree.name.clone(), tree.tree.clone());
+    session
+        .modal_stack
+        .push(tree.name.clone(), tree.tree.clone());
     session.ui_focus_rects = Some(FocusRectList {
         rects: vec![FocusRect {
             id: "controls".into(),

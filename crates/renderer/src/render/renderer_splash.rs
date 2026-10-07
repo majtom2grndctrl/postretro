@@ -83,7 +83,8 @@ impl Renderer {
 
     /// Upload an RGBA8 image (`width * height * 4` bytes) under `key`, so
     /// `image` widgets naming that key draw it. Re-registering a key replaces
-    /// it. Mods' glyph art arrives through here at mod init.
+    /// it. Glyph art is loaded through here once the renderer is full-ready, and
+    /// again when the declared glyph directories change.
     pub fn register_ui_image(&mut self, key: &str, rgba: Vec<u8>, width: u32, height: u32) {
         let image = postretro_ui::UiTexture {
             data: rgba,

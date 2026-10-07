@@ -46,7 +46,7 @@ impl RepeatTimer {
 
     /// Advance the timer by `dt` and report whether a repeat fired this tick.
     /// At most one fires per tick, and a backlog from a long frame is dropped,
-    /// so a repeat never lands focus or a value past what the player saw (P15).
+    /// so a repeat never lands focus or a value past what the player saw.
     /// A non-positive delay never repeats; a non-positive interval repeats once
     /// after the delay.
     pub(super) fn advance(&mut self, dt: f32) -> bool {
@@ -103,7 +103,7 @@ impl RepeatClock {
 }
 
 /// Hold-to-repeat clock for a held activation (confirm) on a `repeatOnHold`-flagged
-/// button (M13 Text-Entry, Task 2 — the on-screen keyboard backspace). The ONE
+/// button (the on-screen keyboard backspace). The ONE
 /// activation-repeat exception: armed only when a confirm lands on a focused button
 /// carrying a `repeat_on_hold` policy, it re-fires the button's activation on the
 /// SAME [`RepeatTimer`] mechanics the nav repeat uses. A confirm release clears it

@@ -1215,8 +1215,7 @@ mod tests {
             .iter()
             .filter(|r| {
                 r.level == Level::Warn
-                    && r.message
-                        .contains("reserved for an engine panel or dialog")
+                    && r.message.contains("reserved for an engine panel or dialog")
             })
             .count();
         assert_eq!(

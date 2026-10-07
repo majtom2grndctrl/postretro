@@ -2377,17 +2377,23 @@ return defineMod({
 })
 ```
 
+The `commands` field is itself optional. In TypeScript its keys are typed
+`CommandId`, so a misspelled command is a compile error. Luau types the keys as
+plain strings, so Luau checks command IDs at load, not at type-check.
+
 **Per command**, every field is optional:
 
 - `label`, `category`, `order` — how the controls panel lists the command.
   Rows group by category and sort by `order`, then by the order the block
-  names them. Without a label the panel shows the command ID in words.
+  names them (a Luau block has no key order, so it orders by command ID).
+  Without a label the panel shows the command ID in words.
 - `keyboardMouse`, `gamepad` — the default bindings for that device class. A
   list replaces the engine default; an empty list leaves the command unbound
   there; leaving the field out keeps the engine default.
 - `show` — `true` lists and binds the command, `false` hides and unbinds it,
-  overriding what the engine derives from the mod's data. UI commands cannot
-  be hidden.
+  overriding what the engine derives from the mod's data. The engine ignores
+  `show` (with a warning) on every UI command and on the dev-only `move_up`
+  and `move_down`.
 
 **Inputs** are named as strings:
 
@@ -2407,24 +2413,31 @@ command carries how far the stick is pushed.
 
 **Activators** say when a binding fires: `press` (the default), `release`,
 `tap` (released within `threshold` seconds), or `hold` (still down after
-`threshold`). `threshold` defaults to 0.2 s and scales with the player's HOLD
-TIMING accessibility setting. One key may carry a tap and a hold for two
+`threshold`). `threshold` defaults to 0.2 s, is clamped to 0.01–5 s, and
+scales with the player's HOLD TIMING accessibility setting. One key may carry a tap and a hold for two
 commands, as Shift does above; the engine resolves which fired. `shoot`,
-`alt_fire` and analog commands accept only `press`; `sprint` and `crouch`
-accept `press` and `hold`.
+`alt_fire` and analog commands accept only `press`; `sprint`, `crouch`, and
+the movement commands (`move_forward`, `move_back`, `move_left`,
+`move_right`) accept `press` and `hold`. A movement `hold` moves only once
+its threshold passes.
 
 **Relevance.** A command the mod's data never uses — `dash` with no movement
 descriptor carrying dash, `reload` with no magazine weapon — is unbound,
 missing from the controls panel, never part of a conflict, and draws no glyph.
 `show` overrides that.
 
-**Validation.** Each command and device class is checked on its own. An
-unknown command ID, an unknown input name, an activator the command refuses,
+**Validation.** Each command and device class is checked on its own. A
+command listed twice keeps its first entry. A binding that is not an object
+with an `input` string, an unknown command ID, an unknown input name, an
+activator the command refuses,
 two of the block's bindings that conflict, or defaults that would leave
-`nav_confirm`, `nav_cancel` or `nav_menu` unbound are each reported at load,
-and that command's class falls back to the engine default. Conflicts are
-checked per context: `south` on both `jump` and `nav_confirm` is fine, since
-one acts in play and the other in menus.
+`nav_confirm`, `nav_cancel` or `nav_menu` unbound are each reported at load.
+In every case but a conflict, that command's class falls back to the engine
+default. For a conflict, the later entry in block order is unbound on that
+input and the earlier one keeps it. Conflicts are checked per context: `south` on both `jump` and `nav_confirm` is fine, since
+one acts in play and the other in menus. `nav_menu` opens the pause menu from
+play, so it conflicts with gameplay commands too; on one input with
+`nav_cancel` it does not.
 
 **Glyph art** is optional. For each device family, `glyphs` names a directory
 under the mod root holding one PNG per input name: `ui/glyphs/xbox/south.png`,
@@ -2433,7 +2446,9 @@ under the mod root holding one PNG per input name: `ui/glyphs/xbox/south.png`,
 **Player bindings** are saved per game, under the mod's `id`, and only where
 the player changed something. A player binding wins over a later change to the
 mod's defaults; the controls panel flags a command whose new default lost that
-way.
+way. The one exception is the guard: if saved bindings would leave
+`nav_confirm`, `nav_cancel` or `nav_menu` unbound on a device, that command
+gets its default back and the player binding holding it is flagged instead.
 
 The player's options also include gamepad look speed and dead zone, gamepad
 invert Y, hold or toggle sprint, and a confirm/cancel swap for pads with
@@ -2474,7 +2489,7 @@ In a tree with no tablist, the tab intents step Next and Prev.
 
 #### The `NavIntent` type
 
-The nav vocabulary is **closed** — those thirteen `nav.*` wire names and no others.
+The nav vocabulary is **closed** — those twelve `nav.*` wire names and no others.
 Wherever an author names a nav intent (a `slider`'s `capturesNav`, a
 `focusNeighbors` direction key), the value is typed `NavIntent` so a misspelled
 wire name is a compile error rather than a silently-ignored field at load.
@@ -2531,7 +2546,8 @@ nested group. A direction its own group cannot answer continues in the
 enclosing group, where the nested group counts as one candidate by its bounds;
 entering it lands on the member last focused there, else its first. A
 `linear` group answers only its own axis (a `VStack` steps up and down, an
-`HStack` left and right). Next and Prev stay within the group, and
+`HStack` left and right), except the outermost group, which answers both so a
+menu with no enclosing group steps on either axis. Next and Prev stay within the group, and
 `focusNeighbors` still overrides everything.
 
 **Tabs.** Give a container `role: "tablist"` and its buttons `role: "tab"` with
@@ -2588,7 +2604,8 @@ VStack({ scroll: { maxHeight: 320 }, focus: { policy: "linear" } }, levelButtons
 - **`glyph`** — `{ kind: "glyph", command, id?, visibleWhen? }`, built with
   `Glyph({ command })`. Passive. Draws the glyph for a command on the device
   the player last used: the mod's art for the input bound to it (see *Glyph
-  art* above), else that input's name, and nothing when the command is unbound
+  art* above), else that input's label (`east` draws "EAST", `KeyW` draws
+  "W"), and nothing when the command is unbound
   on that device or irrelevant. It follows the player's rebinding and the
   confirm/cancel swap with no extra authoring. A pad with Sony's vendor id
   draws `playstation` art, Nintendo's draws `nintendo`, any other `xbox`.
@@ -2866,6 +2883,7 @@ resolved value, live during play whether or not a menu is open:
 | `accessibility.flashLimiter` | boolean | Photosensitivity flash limiter. Limits `screen.flash` and `screen.vignette`. |
 | `accessibility.masterVolume`, `sfxVolume`, `musicVolume`, `uiVolume` | number, 0–1 | Volumes. |
 | `accessibility.monoAudio` | boolean | Mono audio. |
+| `accessibility.holdTimingScale` | number, 1–3 | Multiplier on tap and hold thresholds. Lengthens them, never shortens. |
 
 Scripts cannot write these slots; a `setState` on one warns and changes nothing.
 The engine already applies each preference to what it presents: reduce motion
@@ -2928,18 +2946,23 @@ Button({ id: "controls", label: "CONTROLS", onPress: OPEN_CONTROLS_ACTION });
 ```
 
 The panel lists every relevant command by the `input` block's categories,
-order and labels, with two keyboard-and-mouse and two gamepad slots per
+order and labels, with at least two keyboard-and-mouse and two gamepad slots per
 command, each on its own row and showing its activator. Players cannot change
 activators. Each command has RESET, and RESET ALL returns every command to the
 mod's defaults.
 
 Choosing a slot opens a prompt that captures the next key, button, stick
 push, or mouse movement (for look), Escape and Start included. It has no time
-limit. Pressing the slot's current input again keeps it; switching away from
-the game cancels. If the input already drives another command in the same
+limit. Pressing the slot's current input again keeps it. A press on the other
+device cancels (any key on a gamepad slot, a gamepad button on a keyboard
+slot), as do unplugging the gamepad during a gamepad capture and switching
+away from the game. An input the settings file has no name for, such as an
+extra mouse button or a media key, is ignored and the prompt keeps waiting. If the input already drives another command in the same
 context, the player chooses to replace it there or keep the current bindings.
 A change that would leave `nav_confirm`, `nav_cancel` or `nav_menu` with no
-binding on a device is refused. With the confirm/cancel swap on, the prompt
+binding on a device is refused, RESET included. RESET removes only the
+command's own bindings: a default another of the player's bindings holds stays
+with that binding, and the command stays flagged. With the confirm/cancel swap on, the prompt
 binds the button to the command the row shows.
 
 The panel's names (`controlsPanel`, `controlsCapture`, `controlsDialog`) are
@@ -2984,10 +3007,12 @@ const hud = Tree(
 - **Leaves:** `Text`, `Panel`, `Image`, `Spacer`, `Bar`, `Ring`, `Glyph`, and
   non-visual `Announce`; interactive `Button` / `Slider` (see *Operable UI*
   above) — `(props)`.
-- **Envelope:** `Tree({ anchor, offset, captureMode?, initialFocus?, textEntryTarget? }, root)`
+- **Envelope:** `Tree({ anchor, offset, captureMode?, initialFocus?, textEntryTarget?, restoreOnReturn? }, root)`
   places the whole tree once on the 1280×720 logical canvas. `captureMode`
   defaults to `"passthrough"` (a HUD never captures input); `"capture"` routes
   UI input to the tree, suppresses player controls, and freezes lower UI trees.
+  `restoreOnReturn` defaults to `true`: when a tree pushed above closes, focus
+  returns to the control it left (see *Focus and repeat props*).
 
 Color props accept a color token from `getDesignTokens(theme)` or an inline
 literal `[r, g, b, a]`. Spacing props accept a spacing token or a number. Font

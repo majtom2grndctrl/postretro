@@ -926,6 +926,51 @@ pub(crate) fn push_focus_ring(
     draw.push_quad(bar([ox + ow - t, oy + t, t, (oh - 2.0 * t).max(0.0)]));
 }
 
+/// Slack, in device px, for treating a focused stop as flush with a scroll
+/// viewport edge.
+const FOCUS_RING_EDGE_EPSILON: f32 = 0.5;
+
+/// The clip a focus ring draws under when its stop sits in a scroll viewport
+/// `clip` (device px `[x, y, w, h]`). The ring sits `inset` px outside the
+/// stop, and scroll-into-view leaves a stop flush with the viewport edge, so
+/// clipping to the viewport itself would always cut that side's bar. Each
+/// edge the stop reaches (sits inside of, or flush with) grows by the ring's
+/// reach; an edge that cuts the stop stays, so a partly scrolled-out stop's
+/// ring is cut where its content is. `None` when no part of the stop shows:
+/// a stop scrolled out of view draws no ring.
+pub(crate) fn focus_ring_clip(rect: [f32; 4], clip: [f32; 4], inset: f32) -> Option<[f32; 4]> {
+    let reach = inset.max(0.0) + FOCUS_RING_THICKNESS;
+    let eps = FOCUS_RING_EDGE_EPSILON;
+    let (clip_right, clip_bottom) = (clip[0] + clip[2], clip[1] + clip[3]);
+    let (rect_right, rect_bottom) = (rect[0] + rect[2], rect[1] + rect[3]);
+    let visible_w = rect_right.min(clip_right) - rect[0].max(clip[0]);
+    let visible_h = rect_bottom.min(clip_bottom) - rect[1].max(clip[1]);
+    if visible_w <= 0.0 || visible_h <= 0.0 {
+        return None;
+    }
+    let left = if rect[0] >= clip[0] - eps {
+        clip[0] - reach
+    } else {
+        clip[0]
+    };
+    let top = if rect[1] >= clip[1] - eps {
+        clip[1] - reach
+    } else {
+        clip[1]
+    };
+    let right = if rect_right <= clip_right + eps {
+        clip_right + reach
+    } else {
+        clip_right
+    };
+    let bottom = if rect_bottom <= clip_bottom + eps {
+        clip_bottom + reach
+    } else {
+        clip_bottom
+    };
+    Some([left, top, right - left, bottom - top])
+}
+
 impl UiPass {
     /// Upload an RGBA8 image for `image` widgets: its texture and the bind
     /// group its batches bind, laid out like the white texel's.
@@ -1091,6 +1136,54 @@ mod tests {
                 .iter()
                 .all(|op| matches!(op, tree::UiPaintOp::Quad { .. })),
             "focus ring quads append after focused content",
+        );
+    }
+
+    // A full-width row scrolled flush to the viewport's bottom keeps every
+    // bar of its ring: each edge it reaches grows by the ring's reach.
+    #[test]
+    fn a_flush_full_width_stop_keeps_its_whole_ring_inside_the_grown_clip() {
+        let clip = [100.0, 100.0, 200.0, 100.0];
+        let rect = [100.0, 160.0, 200.0, 40.0];
+        let inset = 4.0;
+        let ring = focus_ring_clip(rect, clip, inset).expect("the stop shows");
+        let reach = inset + FOCUS_RING_THICKNESS;
+        assert_eq!(
+            ring,
+            [
+                100.0 - reach,
+                100.0 - reach,
+                200.0 + 2.0 * reach,
+                100.0 + 2.0 * reach
+            ]
+        );
+        // Every ring bar lies inside the clip.
+        let outer = [
+            rect[0] - inset,
+            rect[1] - inset,
+            rect[2] + 2.0 * inset,
+            rect[3] + 2.0 * inset,
+        ];
+        assert!(outer[0] >= ring[0] && outer[1] >= ring[1]);
+        assert!(outer[0] + outer[2] <= ring[0] + ring[2]);
+        assert!(outer[1] + outer[3] <= ring[1] + ring[3]);
+    }
+
+    // A stop cut by the viewport's bottom keeps that edge, so its ring's side
+    // bars stop where its content does; a stop scrolled fully out draws none.
+    #[test]
+    fn a_cut_stop_rings_within_the_cutting_edge_and_a_hidden_stop_draws_no_ring() {
+        let clip = [100.0, 100.0, 200.0, 100.0];
+        let cut = focus_ring_clip([100.0, 180.0, 200.0, 40.0], clip, 4.0).expect("partly shown");
+        assert_eq!(cut[1] + cut[3], 200.0, "the cutting bottom edge stays");
+        assert!(cut[1] < 100.0, "the reached top edge grows");
+        assert_eq!(
+            focus_ring_clip([100.0, 210.0, 200.0, 40.0], clip, 4.0),
+            None
+        );
+        assert_eq!(
+            focus_ring_clip([100.0, 200.0, 200.0, 40.0], clip, 4.0),
+            None
         );
     }
 }

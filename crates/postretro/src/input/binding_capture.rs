@@ -5,7 +5,7 @@
 // See: context/lib/input.md §2 · context/lib/player_options.md §6
 
 use super::commands::{Command, CommandKind};
-use super::input_names::DeviceClass;
+use super::input_names::{DeviceClass, input_name};
 use super::player_rows::input_fits;
 use super::types::PhysicalInput;
 
@@ -22,12 +22,15 @@ pub struct CaptureTarget {
 }
 
 /// One open capture prompt. It has no time limit, and every input it accepts
-/// stays capturable: Escape, Start and Select bind like any other input.
+/// stays capturable: Escape, Start and Select bind like any other input. A
+/// press from the other device class cancels it, so a gamepad prompt with no
+/// pad connected still closes.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BindingCapture {
     target: CaptureTarget,
     candidate: Option<PhysicalInput>,
     mouse_travel: [f64; 2],
+    cancelled: bool,
 }
 
 impl BindingCapture {
@@ -36,6 +39,7 @@ impl BindingCapture {
             target,
             candidate: None,
             mouse_travel: [0.0; 2],
+            cancelled: false,
         }
     }
 
@@ -45,19 +49,30 @@ impl BindingCapture {
 
     /// Offer a press the prompt saw while it was the active tree. The caller
     /// drops OS key repeats, so a key held since before the prompt opened is
-    /// captured only when pressed again (P7). The first press that fits the
+    /// captured only when pressed again. The first press that fits the
     /// slot is the candidate; a stick half captures its whole axis for an
-    /// analog command. Inputs of the other device class are ignored.
+    /// analog command. A press of the other device class cancels the prompt.
     pub fn offer_press(&mut self, input: PhysicalInput) {
-        if self.candidate.is_none() {
-            self.candidate = fit(self.target, input);
+        if self.candidate.is_some() || self.cancelled {
+            return;
         }
+        if DeviceClass::of(input) != self.target.class {
+            self.cancelled = true;
+            return;
+        }
+        self.candidate = fit(self.target, input);
+    }
+
+    /// Whether a press of the other device class cancelled the prompt.
+    pub fn cancelled(&self) -> bool {
+        self.cancelled
     }
 
     /// Offer raw mouse motion. An analog keyboard-and-mouse slot captures the
     /// axis that travels `MOUSE_AXIS_CAPTURE_DISTANCE` first.
     pub fn offer_mouse_motion(&mut self, dx: f64, dy: f64) {
         if self.candidate.is_some()
+            || self.cancelled
             || self.target.class != DeviceClass::KeyboardMouse
             || self.target.command.kind() != CommandKind::Analog
         {
@@ -83,7 +98,9 @@ impl BindingCapture {
 }
 
 /// The input a press binds to the target slot, if it can drive the command on
-/// the slot's class.
+/// the slot's class and has a name the settings file can store. An unnamed
+/// input (an extra mouse button, F25, a media key) is ignored, since its
+/// binding would not survive a restart.
 fn fit(target: CaptureTarget, input: PhysicalInput) -> Option<PhysicalInput> {
     let input = match (target.command.kind(), input) {
         (CommandKind::Analog, PhysicalInput::GamepadAxisHalf(axis, _)) => {
@@ -91,12 +108,14 @@ fn fit(target: CaptureTarget, input: PhysicalInput) -> Option<PhysicalInput> {
         }
         _ => input,
     };
-    input_fits(target.command, target.class, input).then_some(input)
+    (input_fits(target.command, target.class, input) && input_name(input).is_some())
+        .then_some(input)
 }
 
 #[cfg(test)]
 mod tests {
     use gilrs::{Axis, Button};
+    use winit::event::MouseButton;
     use winit::keyboard::KeyCode;
 
     use super::*;
@@ -112,16 +131,51 @@ mod tests {
 
     #[test]
     fn the_first_fitting_press_is_the_candidate() {
-        let mut prompt = capture(Command::Jump, DeviceClass::Gamepad);
-        prompt.offer_press(PhysicalInput::Key(KeyCode::Space));
-        prompt.offer_press(PhysicalInput::GamepadButton(Button::Start));
-        prompt.offer_press(PhysicalInput::GamepadButton(Button::South));
+        let mut jump = capture(Command::Jump, DeviceClass::Gamepad);
+        jump.offer_press(PhysicalInput::GamepadButton(Button::Start));
+        jump.offer_press(PhysicalInput::GamepadButton(Button::South));
+        assert_eq!(
+            jump.take_candidate(),
+            Some(PhysicalInput::GamepadButton(Button::Start)),
+            "Start is capturable"
+        );
+        assert_eq!(jump.take_candidate(), None);
+        assert!(!jump.cancelled());
+    }
+
+    #[test]
+    fn a_press_of_the_other_device_class_cancels_the_prompt() {
+        let mut pad_slot = capture(Command::Jump, DeviceClass::Gamepad);
+        pad_slot.offer_press(PhysicalInput::Key(KeyCode::Space));
+        assert!(pad_slot.cancelled(), "a key closes a gamepad prompt");
+        pad_slot.offer_press(PhysicalInput::GamepadButton(Button::South));
+        assert_eq!(
+            pad_slot.take_candidate(),
+            None,
+            "nothing binds once cancelled"
+        );
+
+        let mut key_slot = capture(Command::Jump, DeviceClass::KeyboardMouse);
+        key_slot.offer_press(PhysicalInput::GamepadButton(Button::South));
+        assert!(
+            key_slot.cancelled(),
+            "a pad button closes a keyboard prompt"
+        );
+        assert_eq!(key_slot.take_candidate(), None);
+    }
+
+    #[test]
+    fn an_input_with_no_stored_name_is_ignored_and_the_prompt_keeps_waiting() {
+        let mut prompt = capture(Command::Jump, DeviceClass::KeyboardMouse);
+        prompt.offer_press(PhysicalInput::MouseButton(MouseButton::Other(9)));
+        prompt.offer_press(PhysicalInput::Key(KeyCode::F35));
+        assert_eq!(prompt.take_candidate(), None);
+        assert!(!prompt.cancelled());
+        prompt.offer_press(PhysicalInput::Key(KeyCode::KeyJ));
         assert_eq!(
             prompt.take_candidate(),
-            Some(PhysicalInput::GamepadButton(Button::Start)),
-            "a keyboard press is ignored on a gamepad slot; Start is capturable"
+            Some(PhysicalInput::Key(KeyCode::KeyJ))
         );
-        assert_eq!(prompt.take_candidate(), None);
     }
 
     #[test]
@@ -132,7 +186,11 @@ mod tests {
 
         let mut look = capture(Command::LookX, DeviceClass::KeyboardMouse);
         look.offer_press(PhysicalInput::MouseWheelUp);
-        assert_eq!(look.take_candidate(), None, "a wheel notch cannot drive an analog command");
+        assert_eq!(
+            look.take_candidate(),
+            None,
+            "a wheel notch cannot drive an analog command"
+        );
     }
 
     #[test]
@@ -175,6 +233,10 @@ mod tests {
 
         let mut jump = capture(Command::Jump, DeviceClass::KeyboardMouse);
         jump.offer_mouse_motion(500.0, 0.0);
-        assert_eq!(jump.take_candidate(), None, "motion never binds a digital command");
+        assert_eq!(
+            jump.take_candidate(),
+            None,
+            "motion never binds a digital command"
+        );
     }
 }

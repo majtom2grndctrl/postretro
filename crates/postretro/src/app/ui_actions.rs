@@ -46,6 +46,23 @@ pub(crate) fn focused_button_on_press(
         })
 }
 
+/// Whether a `ui.controls.*` press came from the engine's own controls panel,
+/// capture prompt or conflict dialog. Their names are reserved, and the tier
+/// check rejects a same-named tree at another tier: a mod tree cannot rebind
+/// or reset the player's controls.
+pub(crate) fn controls_action_source_is_engine(
+    owner: Option<&postretro_ui::tree::FocusRectOwner>,
+) -> bool {
+    use postretro_ui::demo::{CONTROLS_CAPTURE_NAME, CONTROLS_DIALOG_NAME, CONTROLS_PANEL_NAME};
+    owner.is_some_and(|owner| {
+        owner.tier == postretro_ui::modal_stack::ScopeTier::Engine
+            && matches!(
+                owner.name.as_str(),
+                CONTROLS_PANEL_NAME | CONTROLS_CAPTURE_NAME | CONTROLS_DIALOG_NAME
+            )
+    })
+}
+
 pub(crate) fn route_ui_button_action(
     on_press: &str,
     modal_stack: &mut postretro_ui::modal_stack::ModalStack,
@@ -109,15 +126,17 @@ pub(crate) struct PendingSliderStep {
 }
 
 impl App {
-    /// Apply slider nav-capture for the focused slider (M13 Goal F, Task 4).
+    /// Apply slider nav-capture for the focused slider.
     ///
     /// The currently focused node
     /// (last frame's `ui_focused_id`, the focus going into this frame) is matched
     /// against the exported focus rects; if it is a `slider`, each nav intent whose
     /// wire name is in the slider's `captures_nav` is REMOVED from `nav_intents`
-    /// (the focus engine never sees it) and, when directional, steps the bound value
-    /// by `step` clamped to the slider's min/max, enqueuing a `setState` write
-    /// applied at the game-logic command drain (the bound slot changes on N+1).
+    /// (the focus engine never sees it) and, when directional, queues a relative
+    /// `PendingSliderStep` for the slider's slot. `apply_pending_slider_steps`
+    /// resolves it at the game-logic command drain: it reads the slot then, steps
+    /// it by `step` clamped to the slider's min/max, and writes the result (the
+    /// bound slot changes on N+1).
     pub(crate) fn apply_slider_nav_capture(&mut self, nav_intents: &mut Vec<input::NavIntent>) {
         let Some(focused_id) = self.ui_focused_id.as_deref() else {
             return;
@@ -199,6 +218,8 @@ impl App {
         else {
             return;
         };
+        // The accessibility route reads only the sign of `next - current`, so
+        // `current = 0.0` and a unit `direction` carry the step's sign.
         let direction = steps.signum() as f32;
         if self.route_engine_accessibility_slider(slot, owner, 0.0, direction) {
             for _ in 1..steps.unsigned_abs() {
@@ -219,7 +240,7 @@ impl App {
 
     /// Apply queued slider steps against each slot's value at the command
     /// drain, so a same-frame external write lands first and the step adds to
-    /// it, never to the value read before it (P17).
+    /// it, never to the value read before it.
     pub(crate) fn apply_pending_slider_steps(
         &mut self,
         script_ctx: &postretro_entities::ScriptCtx,
@@ -296,7 +317,18 @@ impl App {
                 return;
             }
             if let Some(action) = postretro_ui::actions::parse_controls_action(&on_press) {
-                self.apply_controls_action(action);
+                let owner = self
+                    .session
+                    .as_ref()
+                    .and_then(|session| session.ui_focus_rects.as_ref())
+                    .and_then(|rects| rects.owner.as_ref());
+                if controls_action_source_is_engine(owner) {
+                    self.apply_controls_action(action);
+                } else {
+                    log::warn!(
+                        "[UI] ignoring `{on_press}`: ui.controls.* actions fire only from the engine controls panel and its prompts"
+                    );
+                }
                 return;
             }
             if let Some(action) = postretro_ui::actions::parse_accessibility_field_action(&on_press)
@@ -562,5 +594,113 @@ impl App {
         {
             ws.window.set_cursor_visible(visible);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use log::Level;
+    use postretro_test_log_capture::LogCapture;
+    use postretro_ui::demo::{CONTROLS_CAPTURE_NAME, CONTROLS_DIALOG_NAME, CONTROLS_PANEL_NAME};
+    use postretro_ui::modal_stack::ScopeTier;
+    use postretro_ui::tree::{FocusRect, FocusRectList, FocusRectOwner, NodeInteraction};
+
+    use super::controls_action_source_is_engine;
+    use crate::App;
+    use crate::input::{Command, DeviceClass};
+    use crate::startup::lifecycle::tests::test_app;
+
+    fn owner(name: &str, tier: ScopeTier) -> FocusRectOwner {
+        FocusRectOwner {
+            name: name.to_string(),
+            tier,
+        }
+    }
+
+    /// Last frame's focus export: one button firing `on_press`, owned by `from`.
+    fn export_button(app: &mut App, on_press: &str, from: Option<FocusRectOwner>) {
+        app.session.as_mut().unwrap().ui_focus_rects = Some(FocusRectList {
+            rects: vec![FocusRect {
+                id: "control".to_string(),
+                rect: [0.0, 0.0, 100.0, 20.0],
+                z: 0,
+                group: None,
+                neighbors: Default::default(),
+                interaction: Some(NodeInteraction::Button {
+                    on_press: on_press.to_string(),
+                    repeat_on_hold: None,
+                }),
+                selected: None,
+                checked: None,
+                disabled: false,
+                tablist: None,
+                clip: None,
+            }],
+            owner: from,
+            ..Default::default()
+        });
+    }
+
+    #[test]
+    fn only_the_engine_controls_trees_source_controls_actions() {
+        for name in [
+            CONTROLS_PANEL_NAME,
+            CONTROLS_CAPTURE_NAME,
+            CONTROLS_DIALOG_NAME,
+        ] {
+            assert!(controls_action_source_is_engine(Some(&owner(
+                name,
+                ScopeTier::Engine
+            ))));
+            assert!(
+                !controls_action_source_is_engine(Some(&owner(name, ScopeTier::Mod))),
+                "a same-named mod tree is not the engine panel"
+            );
+        }
+        let engine_named_otherwise = owner("modMenu", ScopeTier::Engine);
+        assert!(!controls_action_source_is_engine(Some(
+            &engine_named_otherwise
+        )));
+        assert!(!controls_action_source_is_engine(None));
+    }
+
+    #[test]
+    fn a_controls_action_from_a_mod_tree_is_dropped_with_a_warning() {
+        let capture_action = format!(
+            "ui.controls.capture.{}.{}.0",
+            Command::NavConfirm.id(),
+            DeviceClass::Gamepad.settings_key()
+        );
+
+        let log = LogCapture::start();
+        let mut app = test_app();
+        app.refresh_effective_bindings();
+        export_button(
+            &mut app,
+            &capture_action,
+            Some(owner("modMenu", ScopeTier::Mod)),
+        );
+        app.fire_focused_button_activation(Some("control"));
+        assert_ne!(
+            app.session.as_ref().unwrap().modal_stack.active_name(),
+            Some(CONTROLS_CAPTURE_NAME),
+            "a mod tree cannot open the capture prompt"
+        );
+        log.assert_logged_once(
+            Level::Warn,
+            "ui.controls.* actions fire only from the engine",
+        );
+
+        // The same press from the engine panel opens the prompt.
+        export_button(
+            &mut app,
+            &capture_action,
+            Some(owner(CONTROLS_PANEL_NAME, ScopeTier::Engine)),
+        );
+        app.fire_focused_button_activation(Some("control"));
+        assert_eq!(
+            app.session.as_ref().unwrap().modal_stack.active_name(),
+            Some(CONTROLS_CAPTURE_NAME)
+        );
     }
 }

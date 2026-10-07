@@ -1178,13 +1178,13 @@ declare module "postretro" {
 
   /** Stable ID of an engine command that an `input` block can label, show or hide, and bind. The set is engine-closed. Valid values: `move_forward`, `move_back`, `move_left`, `move_right`, `move_up`, `move_down`, `look_x`, `look_y`, `sprint`, `jump`, `dash`, `crouch`, `use`, `drop`, `shoot`, `alt_fire`, `reload`, `select_wieldable_1`, `select_wieldable_2`, `select_wieldable_3`, `select_wieldable_4`, `select_wieldable_5`, `select_wieldable_6`, `select_wieldable_7`, `select_wieldable_8`, `select_wieldable_9`, `select_wieldable_10`, `cycle_wieldable_next`, `cycle_wieldable_previous`, `toggle_last_wieldable`, `nav_up`, `nav_down`, `nav_left`, `nav_right`, `nav_next`, `nav_prev`, `nav_tab_next`, `nav_tab_prev`, `nav_confirm`, `nav_cancel`, `nav_menu`, `nav_options`, `text_backspace`, `text_space`, `text_commit`. */
   export type CommandId =
-    /** Move forward. Digital; a half-axis stick input carries its magnitude. */
+    /** Move forward. Digital; a half-axis stick input carries its magnitude. Accepts `press` or `hold`. */
     | "move_forward"
-    /** Move backward. Digital; a half-axis stick input carries its magnitude. */
+    /** Move backward. Digital; a half-axis stick input carries its magnitude. Accepts `press` or `hold`. */
     | "move_back"
-    /** Strafe left. Digital; a half-axis stick input carries its magnitude. */
+    /** Strafe left. Digital; a half-axis stick input carries its magnitude. Accepts `press` or `hold`. */
     | "move_left"
-    /** Strafe right. Digital; a half-axis stick input carries its magnitude. */
+    /** Strafe right. Digital; a half-axis stick input carries its magnitude. Accepts `press` or `hold`. */
     | "move_right"
     /** Fly-cam up. Dev-only: always bound to engine defaults and hidden from the controls panel. */
     | "move_up"
@@ -1298,7 +1298,7 @@ declare module "postretro" {
     category?: string;
     /** Sort position within the category. Optional. */
     order?: number;
-    /** `true` forces the command shown and bound, `false` hidden and unbound, overriding relevance derived from the mod's data. Optional. UI commands cannot be hidden. */
+    /** `true` forces the command shown and bound, `false` hidden and unbound, overriding relevance derived from the mod's data. Optional. Ignored, with a warning, on every UI command and on the dev-only `move_up` and `move_down`. */
     show?: boolean;
     /** Default keyboard and mouse bindings. Optional; omission keeps the engine default, and an empty list leaves the command unbound. */
     keyboardMouse?: ReadonlyArray<ModInputBinding>;
@@ -1309,7 +1309,7 @@ declare module "postretro" {
   /** Command settings keyed by command ID. Commands left out keep their engine defaults. */
   export type ModInputCommands = Partial<Record<CommandId, ModInputCommand>>;
 
-  /** Glyph art directory per device family. A glyph's asset is `<dir>/<input>`, for example `ui/glyphs/xbox/south`. Missing art draws the input's name. */
+  /** Glyph art directory per device family. A glyph's asset is `<dir>/<input>`, for example `ui/glyphs/xbox/south`. Missing art draws the input's label (`east` draws "EAST", `KeyW` draws "W"). */
   export type ModInputGlyphs = {
     /** Keyboard and mouse glyph directory. Optional. */
     keyboardMouse?: string;
@@ -1323,8 +1323,8 @@ declare module "postretro" {
 
   /** The game's commands, default bindings, and glyph art. Each command and device class is validated on its own: an unknown command ID, unknown input, refused activator, or a default leaving `nav_confirm`, `nav_cancel`, or `nav_menu` unbound is diagnosed, and that command and device class fall back to the engine default. */
   export type ModInput = {
-    /** Command settings keyed by command ID. */
-    commands: ModInputCommands;
+    /** Command settings keyed by command ID. Optional; omission leaves every command on its engine defaults. */
+    commands?: ModInputCommands;
     /** Glyph art per device family. Optional. */
     glyphs?: ModInputGlyphs;
   };
@@ -2730,7 +2730,7 @@ declare module "postretro/ui" {
   export function Spacer(props?: SpacerProps): WidgetDescriptor;
   /** Props for `Glyph`. `command` is a command ID. */
   export type GlyphProps = { command: CommandId; id?: string; visibleWhen?: Predicate };
-  /** The glyph for a command on the player's current device: the mod's art for the input bound to it, else that input's name, else nothing when it is unbound there or irrelevant. Follows rebinding and the confirm/cancel swap. */
+  /** The glyph for a command on the player's current device: the mod's art for the input bound to it, else that input's label, else nothing when it is unbound there or irrelevant. Follows rebinding and the confirm/cancel swap. */
   export function Glyph(props: GlyphProps): WidgetDescriptor;
   /** One `Button.valueText` case: `text` shows while every predicate in `when` holds. An absent or empty `when` always holds. */
   export type ValueTextCase = { when?: Predicate[]; text: LocalizedText };
@@ -2777,7 +2777,7 @@ declare module "postretro/ui" {
 
   export type WidgetAnchor = "topLeft" | "top" | "topRight" | "left" | "center" | "right" | "bottomLeft" | "bottom" | "bottomRight";
   export type WidgetCaptureMode = "capture" | "passthrough";
-  /** Props for `Tree`. `anchor` and `offset` place the root in 1280x720 logical UI space. `captureMode` defaults to `"passthrough"`; `initialFocus` names a widget id; `textEntryTarget` is a writable string state ref. */
+  /** Props for `Tree`. `anchor` and `offset` place the root in 1280x720 logical UI space. `captureMode` defaults to `"passthrough"`; `initialFocus` names a widget id; `textEntryTarget` is a writable string state ref; `restoreOnReturn` (on by default) returns focus to the control it left when a tree pushed above closes, and `false` lands on `initialFocus` instead. */
   export type TreeProps = { anchor: WidgetAnchor; offset: [number, number]; captureMode?: WidgetCaptureMode; initialFocus?: string; textEntryTarget?: Ref<string>; accessibleName?: string; role?: WidgetRole; restoreOnReturn?: boolean };
   export type AnchoredTreeDescriptor = { anchor: WidgetAnchor; offset: [number, number]; root: WidgetDescriptor; captureMode?: WidgetCaptureMode; initialFocus?: string; textEntryTarget?: string; accessibleName?: string; role?: WidgetRole; restoreOnReturn?: boolean };
   /** Wrap a root widget in an anchored tree placement envelope. Pure; registration happens through `defineUiTree` and manifest data. */

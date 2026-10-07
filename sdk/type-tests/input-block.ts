@@ -1,7 +1,7 @@
 import type { CommandId, ModInput, ModManifest } from "postretro";
 import { defineMod } from "postretro";
 
-// The brief's Scripting-surface example (input block only).
+// The `input` block example from docs/scripting-reference.md ("Input commands and the `input` block").
 const manifest: ModManifest = defineMod({
   name: "Neon",
   id: "acme.neon",

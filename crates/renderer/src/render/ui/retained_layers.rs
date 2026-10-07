@@ -135,10 +135,20 @@ impl UiPass {
             None => true,
         };
         if needs_build {
+            let mut fresh = tree::UiTree::from_descriptor(tree, theme);
+            // The same tree rebuilt in place (a rebound control, a glyph that
+            // followed the device family, a theme swap) keeps its scroll
+            // positions; a different tree in this slot starts at the top.
+            if let Some(previous) = self.gameplay_trees.get(layer)
+                && previous.owner.name == entry.name
+                && previous.owner.tier == entry.tier
+            {
+                fresh.carry_scroll_from(&previous.tree);
+            }
             let rebuilt = RetainedGameplayTree {
                 descriptor: tree.clone(),
                 theme_generation,
-                tree: tree::UiTree::from_descriptor(tree, theme),
+                tree: fresh,
                 owner: tree::FocusRectOwner {
                     name: entry.name.clone(),
                     tier: entry.tier,

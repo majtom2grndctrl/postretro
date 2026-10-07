@@ -32,8 +32,8 @@ use repeat::{ConfirmRepeatClock, ENGINE_DEFAULT_REPEAT, RepeatClock, RepeatTimer
 pub use slider::{capture_slider_step, slider_value};
 use traversal::{Dir, hit_test_topmost, initial_focus_id, linear_index_step, neighbor_override};
 
-/// Pointer-vs-focus interaction mode, taken as an input (the `input.mode` slot
-/// write is Task 5's concern). In `Pointer` mode, cursor motion moves focus
+/// Pointer-vs-focus interaction mode, taken as an input (the app writes the
+/// `input.mode` slot). In `Pointer` mode, cursor motion moves focus
 /// (hover-focus); in `Focus` mode, the cursor never moves focus.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum InputMode {
@@ -57,7 +57,7 @@ impl InputMode {
     }
 
     /// Whether the OS cursor should be VISIBLE for this mode while a capturing UI
-    /// tree is on the stack (M13 Goal F, Task 5). `Pointer` shows the cursor (the
+    /// tree is on the stack. `Pointer` shows the cursor (the
     /// user is pointing); `Focus` hides it (the user is navigating with stick /
     /// D-pad / keys, so the cursor would be a distraction). Inert when no
     /// capturing tree is up — the caller gates on that. See: context/lib/input.md §5.
@@ -100,28 +100,33 @@ pub struct UiFocusEngine {
     active_key: Option<String>,
     /// Hold-to-repeat clock for the active tree's currently held direction.
     repeat: Option<RepeatClock>,
-    /// Activation-repeat clock for a held confirm on a `repeatOnHold` button (M13
-    /// Text-Entry, Task 2). `Some` only while such a button's confirm is held.
+    /// A captured slider press armed `repeat` this frame, ahead of the tick.
+    /// The tick then treats the clock as freshly pressed and does not advance
+    /// it, exactly as a directional press arms on its own frame.
+    repeat_armed_before_tick: bool,
+    /// Activation-repeat clock for a held confirm on a `repeatOnHold` button
+    /// (the on-screen keyboard's backspace). `Some` only while such a button's confirm is held.
     confirm_repeat: Option<ConfirmRepeatClock>,
     /// Activation-repeat clock for a held text shortcut: the key it activates
     /// and that key's `repeatOnHold` timing.
     shortcut_repeat: Option<(String, ConfirmRepeatClock)>,
     /// The member last focused in each nested group, keyed by tree and group
     /// index; entering the group lands there. Validated on use, since a
-    /// rebuild may renumber groups or remove the member.
-    group_memory: std::collections::HashMap<(String, usize), String>,
+    /// rebuild may renumber groups or remove the member. Nested by tree so a
+    /// lookup by `&str` key allocates nothing.
+    group_memory: std::collections::HashMap<String, std::collections::HashMap<usize, String>>,
 }
 
 /// Result of one focus-engine tick: the focused node id to send back on the next
 /// snapshot (drives the focus ring) and any confirm/cancel activation intent that
-/// fired this tick (Task 4 wires button activation onto `confirm`).
+/// fired this tick.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct FocusTickResult {
     /// The id of the focused node in the active tree, or `None` when nothing is
     /// focusable. Rides the next `UiReadSnapshot` so the UI pass draws the ring.
     pub focused: Option<String>,
     /// True when a `confirm` (activate) intent landed on the focused node this
-    /// tick. Task 4 fires the focused widget's reaction on this.
+    /// tick. The app fires the focused widget's reaction on this.
     pub confirmed: bool,
     /// True when a `cancel` intent fired this tick. Wired to back-out by the app.
     pub cancelled: bool,
@@ -149,7 +154,7 @@ impl UiFocusEngine {
     ///   frame (already filtered to the active tree by the capture seam).
     /// - `cursor`: the tracked cursor position (device px), or `None`.
     /// - `clicks`: pointer-click positions delivered this frame (topmost-z hit).
-    /// - `mode`: pointer-vs-focus interaction mode (Task 5 owns writing it).
+    /// - `mode`: pointer-vs-focus interaction mode (the app writes it).
     /// - `dt`: seconds since the last tick, for the hold-to-repeat clock.
     // Wide by necessity: active key + rect list + intents + cursor + clicks + mode
     // + dt are all distinct per-tick inputs from different subsystems; bundling
@@ -165,6 +170,8 @@ impl UiFocusEngine {
         mode: InputMode,
         dt: f32,
     ) -> FocusTickResult {
+        // Consumed by this tick whatever path it takes.
+        let repeat_armed_before_tick = std::mem::take(&mut self.repeat_armed_before_tick);
         let Some(active_key) = active_key else {
             // No active tree: clear the active marker and the repeat clock, focus
             // nothing. Lower trees' saved focus is retained for a future return.
@@ -176,14 +183,16 @@ impl UiFocusEngine {
             // The active tree published no rect list yet (first frame after a
             // push, or the export still describes the tree a pop removed this
             // frame). Focus nothing, and leave the active key unchanged so the
-            // next tick with this tree's own export still sees the change (P11).
+            // next tick with this tree's own export still sees the change. A tree
+            // popped earlier this frame must not reset the revealed tree's focus.
             return FocusTickResult::default();
         };
 
         // Stack change detection: the active tree differs from last tick (a push or
         // a returning pop). Drop the repeat clock (a new tree must re-arm) and
         // ensure the now-active tree's focus is selected: restore its saved focus
-        // when it opted into `restoreOnReturn`, else (re)select its initial focus.
+        // unless the tree sets `restoreOnReturn: false`, else (re)select its initial
+        // focus.
         let stack_changed = self.active_key.as_deref() != Some(active_key);
         if stack_changed {
             self.repeat = None;
@@ -264,9 +273,15 @@ impl UiFocusEngine {
         // edge per physical press (held repeats are suppressed at the input edge),
         // so a held direction shows up as: one intent on press, then none while
         // held — exactly the signal the dt clock turns into repeats.
-        result.slider_steps = self.advance_repeat(active_key, rects, held_dir, dt);
+        // A slider press captured before this tick armed the clock already:
+        // its frame is the press frame, so the clock starts advancing next tick.
+        result.slider_steps = if repeat_armed_before_tick && held_dir.is_none() {
+            0
+        } else {
+            self.advance_repeat(active_key, rects, held_dir, dt)
+        };
 
-        // Activation-repeat (M13 Text-Entry, Task 2): a held confirm on a focused
+        // Activation-repeat: a held confirm on a focused
         // `repeatOnHold` button re-fires its activation on the SAME repeat timer.
         // The confirm intent stream carries one edge per press (held confirms are
         // suppressed at the input edge, exactly like directional nav), so a held
@@ -284,30 +299,42 @@ impl UiFocusEngine {
     }
 
     /// Record the focused node as the last-focused member of every group that
-    /// holds it, so re-entering any of them lands back on it.
+    /// holds it, so re-entering any of them lands back on it. Runs every tick, so
+    /// it allocates only when a group's remembered member actually changes.
     fn remember_group_focus(&mut self, key: &str, rects: &FocusRectList) {
-        let Some(focused) = self.focused_id(key) else {
+        // Field access (not `focused_id`) keeps `focused` borrowing only `trees`,
+        // leaving `group_memory` free to mutate below.
+        let Some(focused) = self.trees.get(key).and_then(|t| t.focused.as_deref()) else {
             return;
         };
         let Some(rect) = rects.rects.iter().position(|r| r.id == focused) else {
             return;
         };
-        let focused = focused.to_string();
         let mut group = rects.rects[rect].group;
         while let Some(g) = group {
-            self.group_memory
-                .insert((key.to_string(), g), focused.clone());
+            let unchanged = self
+                .group_memory
+                .get(key)
+                .and_then(|m| m.get(&g))
+                .is_some_and(|id| id.as_str() == focused);
+            if !unchanged {
+                self.group_memory
+                    .entry(key.to_string())
+                    .or_default()
+                    .insert(g, focused.to_string());
+            }
             group = rects.groups[g].parent;
         }
     }
 
     /// The node focus lands on when a move enters `group`: its last-focused
     /// member while that still exists inside it and is enabled, else its first
-    /// enabled member (P13).
+    /// enabled member.
     fn enter_group(&self, key: &str, rects: &FocusRectList, group: usize) -> Option<String> {
         let remembered = self
             .group_memory
-            .get(&(key.to_string(), group))
+            .get(key)
+            .and_then(|members| members.get(&group))
             .and_then(|id| rects.rects.iter().position(|r| &r.id == id))
             .filter(|&r| !rects.rects[r].disabled && group_contains(rects, group, r));
         remembered
@@ -316,14 +343,14 @@ impl UiFocusEngine {
     }
 
     /// Ensure the active tree has a selected focus. On a stack change, restore the
-    /// saved focus when the tree opted into `restoreOnReturn` (and it still
-    /// exists), else select the tree's `initialFocus` (or the first focusable node).
+    /// saved focus unless the tree sets `restoreOnReturn: false` (and the saved
+    /// node still exists and is enabled), else select the tree's `initialFocus` (or the first focusable node).
     /// On a non-stack-change tick, initialize only if not yet initialized.
     fn ensure_initialized(&mut self, key: &str, rects: &FocusRectList, stack_changed: bool) {
         let entry = self.trees.entry(key.to_string()).or_default();
         // Restore applies to a key seen before: the app keys each pushed modal
         // instance separately, so a fresh push (even of a tree closed and
-        // reopened this frame) is a new key with no saved focus (O14, P12).
+        // reopened this frame) is a new key with no saved focus.
         let restore_valid = rects.restore_on_return
             && entry
                 .focused
@@ -332,7 +359,7 @@ impl UiFocusEngine {
 
         if stack_changed {
             if restore_valid {
-                // Keep the saved focus (restoreOnReturn) — nothing to do.
+                // Keep the saved focus — nothing to do.
                 entry.initialized = true;
             } else {
                 let initial = initial_focus_id(rects);
@@ -349,7 +376,7 @@ impl UiFocusEngine {
     /// keys do not accumulate.
     pub fn retain_trees(&mut self, alive: impl Fn(&str) -> bool) {
         self.trees.retain(|key, _| alive(key));
-        self.group_memory.retain(|(key, _), _| alive(key));
+        self.group_memory.retain(|key, _| alive(key));
     }
 
     /// How many trees hold saved focus.
@@ -383,7 +410,7 @@ impl UiFocusEngine {
             return;
         };
 
-        // 1) Neighbor override wins — but never onto a disabled node (M13 G2-T3):
+        // 1) Neighbor override wins — but never onto a disabled node:
         // a disabled target is unreachable, so the override is ignored and the
         // governing group policy resolves the move instead (which also skips it).
         if let Some(target) = neighbor_override(current, dir)
@@ -449,7 +476,7 @@ impl UiFocusEngine {
     }
 
     /// Activate the adjacent tab in the top tree's tablist and move focus to it,
-    /// wrapping and skipping disabled tabs (P20). The tablist holding focus
+    /// wrapping and skipping disabled tabs. The tablist holding focus
     /// wins, else the first. With no tab selected, forward picks the first tab
     /// and back the last; a lone enabled tab takes focus without activating. A
     /// tree with no tablist steps Next/Prev instead.
@@ -604,6 +631,7 @@ impl UiFocusEngine {
             return;
         };
         self.repeat = Some(RepeatClock::armed(dir, self.repeat_policy(&key, rects)));
+        self.repeat_armed_before_tick = true;
     }
 
     /// Clear the hold-to-repeat clock — called when the held direction releases
@@ -612,7 +640,7 @@ impl UiFocusEngine {
         self.repeat = None;
     }
 
-    /// Advance the activation (confirm) repeat clock (M13 Text-Entry, Task 2),
+    /// Advance the activation (confirm) repeat clock,
     /// returning `true` when a repeated activation fired this tick. A fresh confirm
     /// press arms the clock ONLY when the focused node is a `button` carrying a
     /// `repeat_on_hold` policy (the on-screen keyboard backspace); otherwise it

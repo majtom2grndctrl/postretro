@@ -593,7 +593,7 @@ impl App {
         self.install_network_mod_content();
         // Bind against the committed registry and the player's saved rows for
         // this mod right away, so a controls panel opened before any level
-        // loads lists the game's commands (P6).
+        // loads lists the game's commands.
         let input_block = self.session.as_ref().and_then(|session| {
             session
                 .scripting

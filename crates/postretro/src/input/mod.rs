@@ -21,8 +21,8 @@ mod defaults;
 mod device_family;
 pub mod diagnostics;
 mod focus;
-mod glyphs;
 pub mod gamepad;
+mod glyphs;
 mod input_names;
 mod latch;
 mod look;
@@ -46,23 +46,23 @@ mod wieldable_selection;
 pub use author_layer::author_layer_from_block;
 pub use binding_capture::{BindingCapture, CaptureTarget};
 pub use binding_state::{BindingSources, BindingState};
-pub use binding_table::{AuthorLayer, EffectiveTable, GlyphDirs, PlayerLayer};
 #[cfg(test)]
 pub use binding_table::{AuthorBinding, CommandPresentation};
+pub use binding_table::{AuthorLayer, EffectiveTable, GlyphDirs, PlayerLayer};
 pub use commands::{Command, CommandContext};
-pub use input_names::{input_label, input_name};
-pub use rebind::{RebindProposal, propose_rebind, reset_command};
-pub use relevance::Relevance;
 pub use defaults::default_bindings;
 pub use device_family::{DeviceFamily, DeviceFamilyTracker};
-pub use glyphs::{GlyphView, glyph_key, resolve_glyph};
 pub use diagnostics::{DiagnosticAction, DiagnosticInputs, default_diagnostic_chords};
 pub use focus::InputFocus;
+pub use glyphs::{GlyphView, glyph_key, resolve_glyph};
 pub use input_names::DeviceClass;
+pub use input_names::{input_label, input_name};
 pub use latch::GameplayInputLatch;
 pub use look::DEFAULT_GAMEPAD_LOOK_SENSITIVITY;
 pub use look::LookInputs;
 pub use player_rows::player_layer_from_rows;
+pub use rebind::{RebindProposal, check_player_layer, propose_rebind, reset_command};
+pub use relevance::Relevance;
 pub use relevance::RelevanceFacts;
 pub(crate) use scroll::wheel_diagnostics_enabled;
 pub use snapshot::ActionSnapshot;
@@ -80,21 +80,22 @@ pub use wieldable_selection::WieldableSelectionPolicy;
 pub use ui_dispatch::{UiCaptureMode, UiDispatch};
 // `UiDispatchOutcome` is `dispatch_event`'s per-event return type. `UiIntent`
 // is the queued kinded capture; `UiIntentPayload`/`PointerPos` are its payload
-// vocabulary. The modal stack (M13 Goal F) consumes the queued intents.
+// vocabulary. The modal stack consumes the queued intents.
 #[allow(unused_imports)]
 pub use ui_dispatch::{PointerPos, UiDispatchOutcome, UiIntent, UiIntentPayload};
-// Nav-intent vocabulary plus the action→intent mapping the input stage feeds
-// into `UiDispatch`. `StickNavTracker` does stick-past-deadzone edge detection.
+// Nav-intent vocabulary the input stage feeds into `UiDispatch`, plus
+// `StickNavTrackers` (per-stick past-deadzone edge detection). The input→intent
+// mapping lives in `ui_nav_map.rs`.
 #[allow(unused_imports)]
 pub use ui_nav::{NavIntent, StickNavTrackers, TextEntryKey, text_entry_key};
-// Text-entry intent resolution (M13 Text-Entry, Task 3): drained intents →
+// Text-entry intent resolution: drained intents →
 // edit/commit/cancel decisions against the open text-entry surface.
 #[allow(unused_imports)]
 pub use text_entry::{
     TextEntryDisposition, TextEntryEdit, TextEntryResolution, escape_is_dev_quit_chord,
     resolve_text_entry,
 };
-// App-side focus engine (M13 Goal F, Task 3): consumes nav intents + cursor, moves
+// App-side focus engine: consumes nav intents + cursor, moves
 // focus through the renderer's exported focus rect list, runs the dt-clocked
 // hold-to-repeat timer, and reports the focused id back for the focus ring.
 #[allow(unused_imports)]

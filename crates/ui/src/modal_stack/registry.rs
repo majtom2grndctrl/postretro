@@ -122,7 +122,7 @@ impl UiTreeRegistry {
     ) {
         let name = name.into();
         // Every registration path — mod init, level load, staged reload — lands
-        // here, so the accessibility panel's reserved name is enforced once.
+        // here, so the engine panels' reserved names are enforced once.
         if matches!(
             name.as_str(),
             crate::demo::ACCESSIBILITY_PANEL_NAME

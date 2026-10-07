@@ -300,7 +300,10 @@ fn a_tap_max_past_the_hold_min_on_one_input_is_diagnosed() {
             None,
         ),
     ]));
-    capture.assert_logged_once(Level::Warn, "`dash` taps `ShiftLeft` for up to 0.4s");
+    capture.assert_logged_once(
+        Level::Warn,
+        "`dash` on keyboardMouse taps `ShiftLeft` for up to 0.4s",
+    );
     assert_eq!(table.inputs(Command::Dash, KBM), vec![key(KeyCode::KeyF)]);
 }
 
@@ -370,4 +373,71 @@ fn no_block_is_the_engine_table() {
     let table = EffectiveTable::build(&none, &PlayerLayer::default(), all_facts(), false);
     assert_eq!(table.inputs(Command::Dash, KBM), vec![key(KeyCode::KeyF)]);
     assert!(table.conflicting_pairs().is_empty());
+}
+
+#[test]
+fn a_threshold_f32_cannot_hold_is_refused_and_one_out_of_range_is_clamped() {
+    let capture = LogCapture::start();
+    let table = table_for(&block(vec![
+        command(
+            "dash",
+            Some(vec![bind_with("KeyV", "tap", Some(1e-50))]),
+            Some(vec![bind_with("west", "tap", Some(1e300))]),
+        ),
+        command(
+            "use",
+            Some(vec![bind_with("KeyB", "hold", Some(0.001))]),
+            Some(vec![bind_with("north", "hold", Some(60.0))]),
+        ),
+    ]));
+    assert_eq!(
+        capture
+            .records()
+            .into_iter()
+            .filter(|record| record
+                .message
+                .contains("`threshold` must be a positive number"))
+            .count(),
+        2,
+        "1e-50 rounds to 0 and 1e300 to infinity as f32"
+    );
+    assert_eq!(table.inputs(Command::Dash, KBM), vec![key(KeyCode::KeyF)]);
+    let threshold = |input: PhysicalInput| {
+        table
+            .entries()
+            .iter()
+            .find(|e| e.command == Command::Use && e.input == input)
+            .map(|e| e.activator.threshold)
+    };
+    assert_eq!(threshold(key(KeyCode::KeyB)), Some(0.01));
+    assert_eq!(threshold(pad(gilrs::Button::North)), Some(5.0));
+    capture.assert_logged(
+        Level::Warn,
+        "`use` on keyboardMouse: `threshold` 0.001s is outside",
+    );
+}
+
+#[test]
+fn a_command_authored_twice_keeps_its_first_entry() {
+    let capture = LogCapture::start();
+    let table = table_for(&block(vec![
+        command("dash", Some(vec![bind("KeyV")]), None),
+        command("dash", Some(vec![bind("KeyB")]), None),
+    ]));
+    capture.assert_logged_once(
+        Level::Warn,
+        "`dash` appears more than once; keeping the first",
+    );
+    assert_eq!(table.inputs(Command::Dash, KBM), vec![key(KeyCode::KeyV)]);
+}
+
+#[test]
+fn a_binding_that_is_not_an_object_is_named_as_such() {
+    let capture = LogCapture::start();
+    let table = table_for(&block(vec![command("dash", Some(vec![bind("")]), None)]));
+    capture.assert_logged_once(
+        Level::Warn,
+        "`dash` on keyboardMouse: a binding must be an object with an `input` string",
+    );
+    assert_eq!(table.inputs(Command::Dash, KBM), vec![key(KeyCode::KeyF)]);
 }

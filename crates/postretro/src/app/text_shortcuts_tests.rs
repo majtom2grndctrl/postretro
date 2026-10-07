@@ -66,7 +66,11 @@ fn app_with_keyboard(text_entry: bool) -> App {
                 }),
             ),
             key("key_space", COUNTING_ACTION, None),
-            key("key_done", postretro_ui::actions::COMMIT_TEXT_ENTRY_ACTION, None),
+            key(
+                "key_done",
+                postretro_ui::actions::COMMIT_TEXT_ENTRY_ACTION,
+                None,
+            ),
         ],
         owner: Some(FocusRectOwner {
             name: KEYBOARD.to_string(),

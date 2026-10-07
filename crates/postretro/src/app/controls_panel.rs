@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 use crate::input::{
     ActivatorKind, AuthorLayer, BindingCapture, CaptureTarget, Command, CommandContext,
     DeviceClass, EffectiveTable, PhysicalInput, PlayerLayer, RebindProposal, Relevance,
-    input_label, input_name, propose_rebind, reset_command,
+    check_player_layer, input_label, input_name, propose_rebind, reset_command,
 };
 use crate::*;
 
@@ -32,6 +32,9 @@ pub(crate) struct ControlsPanelState {
     /// The row focus belonged to when a prompt closed because its command left
     /// the list; the next rebuild focuses the nearest remaining row.
     focus_anchor: Option<Command>,
+    /// Whether a pad was connected last frame while a gamepad prompt is open,
+    /// so the prompt closes when the pad goes away.
+    pad_was_connected: bool,
 }
 
 /// One listed command: its presentation and its effective inputs per class.
@@ -43,8 +46,9 @@ pub(crate) struct ControlsRow {
     /// Keyboard-and-mouse inputs, then gamepad inputs, each in slot order,
     /// with the activator each binding uses.
     pub(crate) inputs: [Vec<(PhysicalInput, ActivatorKind)>; 2],
-    /// A player binding took one of this command's newer author defaults.
-    pub(crate) displaced: bool,
+    /// Per class, as `inputs`: a player binding took an input this command
+    /// would otherwise have there.
+    pub(crate) displaced: [bool; 2],
 }
 
 impl ControlsPanelState {
@@ -140,7 +144,8 @@ pub(crate) fn controls_rows(table: &EffectiveTable, author: &AuthorLayer) -> Vec
                 label: command_label(author, command),
                 category: command_category(author, command),
                 inputs,
-                displaced: table.displaced().iter().any(|(c, _)| *c == command),
+                displaced: DeviceClass::ALL
+                    .map(|class| table.displaced().contains(&(command, class))),
             }
         })
         .collect();
@@ -228,18 +233,24 @@ const DISPLACED_NOTE_ID: &str = "controlsDisplacedNote";
 /// Columns of the row grid: label, binding, and RESET on a command's first row.
 const ROW_COLS: usize = 3;
 
-/// The grid cells for the rows: a heading row per category, then one row per
-/// binding slot, labelled with its command and slot. One binding per row keeps
-/// the grid three columns wide however many slots a class shows, so the panel
-/// fits the reference canvas.
-fn row_cells(rows: &[ControlsRow]) -> Vec<Value> {
-    let slots = DeviceClass::ALL.map(|class| {
+/// The slots each class shows on every row: the most any row binds, and at
+/// least `MIN_SLOTS`.
+fn slot_counts(rows: &[ControlsRow]) -> [usize; 2] {
+    DeviceClass::ALL.map(|class| {
         rows.iter()
             .map(|row| row.inputs[class_index(class)].len())
             .max()
             .unwrap_or(0)
             .max(MIN_SLOTS)
-    });
+    })
+}
+
+/// The grid cells for the rows: a heading row per category, then one row per
+/// binding slot, labelled with its command and slot. One binding per row keeps
+/// the grid three columns wide however many slots a class shows, so the panel
+/// fits the reference canvas.
+fn row_cells(rows: &[ControlsRow]) -> Vec<Value> {
+    let slots = slot_counts(rows);
 
     let mut cells = Vec::new();
     let mut category = None;
@@ -249,14 +260,18 @@ fn row_cells(rows: &[ControlsRow]) -> Vec<Value> {
             cells.push(text(&row.category, HEADING_SIZE));
             cells.extend((1..ROW_COLS).map(|_| spacer()));
         }
-        // Every row of a flagged command carries the mark, so it shows on
-        // whichever of the command's rows is scrolled into view.
-        let marker = if row.displaced { " !" } else { "" };
         let row_slots = DeviceClass::ALL
             .into_iter()
             .zip(slots)
             .flat_map(|(class, count)| (0..count).map(move |slot| (class, slot)));
         for (index, (class, slot)) in row_slots.enumerate() {
+            // Every slot row of a flagged class carries the mark, so it shows
+            // on whichever of them is scrolled into view.
+            let marker = if row.displaced[class_index(class)] {
+                " !"
+            } else {
+                ""
+            };
             let short = match class {
                 DeviceClass::KeyboardMouse => "KEY",
                 DeviceClass::Gamepad => "PAD",
@@ -336,7 +351,7 @@ pub(crate) fn build_controls_panel(
             "[UI] the controls panel shell has no `{ROWS_GRID_ID}` grid; its rows are not shown"
         ),
     }
-    if !rows.iter().any(|row| row.displaced) {
+    if !rows.iter().any(|row| row.displaced.contains(&true)) {
         remove_widget(&mut value["root"], DISPLACED_NOTE_ID);
     }
     let first = rows
@@ -348,7 +363,8 @@ pub(crate) fn build_controls_panel(
     serde_json::from_value(value).expect("the filled controls panel is well formed")
 }
 
-/// The capture prompt. It has no focus stops: every input it sees is captured.
+/// The capture prompt. It has no focus stops: every input it sees is captured,
+/// and a press of the other device class cancels it.
 pub(crate) fn build_capture_prompt(
     label: &str,
     target: CaptureTarget,
@@ -357,7 +373,11 @@ pub(crate) fn build_capture_prompt(
     let mut children = vec![
         text(&format!("PRESS AN INPUT FOR {label}"), TITLE_SIZE),
         text(
-            &format!("{} SLOT {}", class_label(target.class), target.slot + 1),
+            &format!(
+                "{} SLOT {}",
+                class_label(target.class),
+                target.slot.saturating_add(1)
+            ),
             BODY_SIZE,
         ),
     ];
@@ -365,6 +385,13 @@ pub(crate) fn build_capture_prompt(
         &match current {
             Some(input) => format!("PRESS {} AGAIN TO KEEP IT", input_label(input)),
             None => "RESET RETURNS THIS COMMAND TO ITS DEFAULTS".to_string(),
+        },
+        DETAIL_SIZE,
+    ));
+    children.push(text(
+        match target.class {
+            DeviceClass::Gamepad => "PRESS ANY KEY TO CANCEL",
+            DeviceClass::KeyboardMouse => "PRESS A GAMEPAD BUTTON TO CANCEL",
         },
         DETAIL_SIZE,
     ));
@@ -483,6 +510,29 @@ impl crate::session::Session {
             pop_named(&mut self.modal_stack, CONTROLS_CAPTURE_NAME);
         }
     }
+
+    /// Whether any gamepad is connected now.
+    fn pad_connected(&self) -> bool {
+        self.gamepad_system
+            .as_ref()
+            .is_some_and(crate::input::gamepad::GamepadSystem::any_connected)
+    }
+
+    /// Close an open gamepad prompt when the pad goes away mid-capture: its
+    /// slot can take nothing until a pad returns. `pad_connected` is whether
+    /// any pad is connected this frame.
+    pub(crate) fn track_capture_pad(&mut self, pad_connected: bool) {
+        let Some(target) = self.controls.capture.as_ref().map(BindingCapture::target) else {
+            return;
+        };
+        if target.class != DeviceClass::Gamepad {
+            return;
+        }
+        if self.controls.pad_was_connected && !pad_connected {
+            self.abandon_capture();
+        }
+        self.controls.pad_was_connected = pad_connected;
+    }
 }
 
 /// The engine shell the panel fills (`core/ui/controlsPanel.json`). Its name
@@ -553,13 +603,19 @@ impl App {
                 let Some(session) = self.session.as_ref() else {
                     return;
                 };
-                let player = reset_command(
-                    session.bindings.player(),
+                let bindings = &session.bindings;
+                let proposal = reset_command(
+                    bindings.table(),
+                    bindings.author(),
+                    bindings.player(),
+                    bindings.facts(),
+                    bindings.swap_confirm_cancel(),
                     command,
-                    session.bindings.swap_confirm_cancel(),
                 );
-                self.apply_player_layer(player);
+                self.apply_checked_layer(proposal);
             }
+            // Defaults alone always keep the guard: author validation falls a
+            // guarded command back to the engine default.
             ControlsAction::ResetAll => self.apply_player_layer(PlayerLayer::default()),
             ControlsAction::Replace => {
                 let Some(session) = self.session.as_mut() else {
@@ -567,9 +623,20 @@ impl App {
                 };
                 let pending = session.controls.pending_replace.take();
                 pop_named(&mut session.modal_stack, CONTROLS_DIALOG_NAME);
-                if let Some(player) = pending {
-                    self.apply_player_layer(player);
-                }
+                let Some(player) = pending else {
+                    return;
+                };
+                // The table may have changed (a hot reload) since the dialog
+                // asked, so the replace is checked against the guard again.
+                let bindings = &session.bindings;
+                let proposal = check_player_layer(
+                    bindings.table(),
+                    bindings.author(),
+                    player,
+                    bindings.facts(),
+                    bindings.swap_confirm_cancel(),
+                );
+                self.apply_checked_layer(proposal);
             }
             ControlsAction::Keep => {
                 if let Some(session) = self.session.as_mut() {
@@ -577,6 +644,24 @@ impl App {
                     pop_named(&mut session.modal_stack, CONTROLS_DIALOG_NAME);
                 }
             }
+        }
+    }
+
+    /// Apply a checked player layer, or explain a guard refusal.
+    fn apply_checked_layer(&mut self, proposal: RebindProposal) {
+        match proposal {
+            RebindProposal::Clean { player } => self.apply_player_layer(player),
+            RebindProposal::Refused { unbound, class } => {
+                let Some(session) = self.session.as_mut() else {
+                    return;
+                };
+                let label = command_label(session.bindings.author(), unbound);
+                session
+                    .modal_stack
+                    .push(CONTROLS_DIALOG_NAME, build_refusal_dialog(&label, class));
+            }
+            // A reset or a checked replace never raises a new question.
+            RebindProposal::Conflict { .. } | RebindProposal::Unchanged => {}
         }
     }
 
@@ -588,8 +673,24 @@ impl App {
         if table.relevance(target.command) != Relevance::Relevant {
             return;
         }
-        let current = table.inputs(target.command, target.class).get(target.slot).copied();
+        // Only a slot the panel shows can be captured, whatever an action
+        // string names.
+        let rows = controls_rows(table, session.bindings.author());
+        if target.slot >= slot_counts(&rows)[class_index(target.class)] {
+            log::warn!(
+                "[UI] ui.controls.capture: `{}` shows no slot {} on {}",
+                target.command.id(),
+                target.slot,
+                target.class.settings_key()
+            );
+            return;
+        }
+        let current = table
+            .inputs(target.command, target.class)
+            .get(target.slot)
+            .copied();
         let label = command_label(session.bindings.author(), target.command);
+        session.controls.pad_was_connected = session.pad_connected();
         session.controls.capture = Some(BindingCapture::new(target));
         session.modal_stack.push(
             CONTROLS_CAPTURE_NAME,
@@ -598,7 +699,7 @@ impl App {
     }
 
     /// Per frame, after the frame's activations: close a prompt whose command
-    /// became irrelevant (P25), resolve a captured input, and rebuild the
+    /// became irrelevant, resolve a captured input, and rebuild the
     /// pushed panel when the effective table changed.
     pub(crate) fn update_controls_panel(&mut self) {
         let Some(session) = self.session.as_mut() else {
@@ -611,12 +712,18 @@ impl App {
         if !session.modal_stack.contains_pushed(CONTROLS_DIALOG_NAME) {
             session.controls.pending_replace = None;
         }
-        if let Some(target) = session.controls.capture.as_ref().map(BindingCapture::target)
+        if let Some(target) = session
+            .controls
+            .capture
+            .as_ref()
+            .map(BindingCapture::target)
             && session.bindings.table().relevance(target.command) != Relevance::Relevant
         {
             session.controls.focus_anchor = Some(target.command);
             session.abandon_capture();
         }
+        let pad_connected = session.pad_connected();
+        session.track_capture_pad(pad_connected);
         self.resolve_binding_capture();
         self.rebuild_controls_panel();
     }
@@ -632,7 +739,13 @@ impl App {
             return;
         };
         let target = capture.target();
-        let Some(input) = capture.take_candidate() else {
+        let cancelled = capture.cancelled();
+        let candidate = capture.take_candidate();
+        if cancelled {
+            session.abandon_capture();
+            return;
+        }
+        let Some(input) = candidate else {
             return;
         };
         session.abandon_capture();
@@ -661,12 +774,11 @@ impl App {
                     .modal_stack
                     .push(CONTROLS_DIALOG_NAME, build_conflict_dialog(input, &holders));
             }
-            RebindProposal::Refused { unbound } => {
+            RebindProposal::Refused { unbound, class } => {
                 let label = command_label(session.bindings.author(), unbound);
-                session.modal_stack.push(
-                    CONTROLS_DIALOG_NAME,
-                    build_refusal_dialog(&label, target.class),
-                );
+                session
+                    .modal_stack
+                    .push(CONTROLS_DIALOG_NAME, build_refusal_dialog(&label, class));
             }
         }
     }

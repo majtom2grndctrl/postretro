@@ -97,9 +97,15 @@ fn live_contexts(command: Command) -> &'static [LiveContext] {
     match command.context() {
         CommandContext::Gameplay => &[LiveContext::Gameplay],
         CommandContext::Ui => match command {
-            // Today's Start closes an open pause menu, so menu stays live under
-            // a capturing tree; its overlap with cancel is resolved below.
-            Command::NavMenu => &[LiveContext::UiOpen, LiveContext::UiCapture],
+            // Menu opens the pause menu from gameplay, so it shares no input
+            // with a gameplay command. Today's Start closes an open pause menu,
+            // so menu stays live under a capturing tree too; its overlap with
+            // cancel is resolved below.
+            Command::NavMenu => &[
+                LiveContext::Gameplay,
+                LiveContext::UiOpen,
+                LiveContext::UiCapture,
+            ],
             Command::TextBackspace | Command::TextSpace | Command::TextCommit => {
                 &[LiveContext::UiTextEntry]
             }
@@ -121,6 +127,8 @@ fn is_hold(binding: &EffectiveBinding) -> bool {
 /// context, and not the one legal pairing (a short binding plus a `hold`,
 /// neither press-only). Menu and cancel on one input are not a conflict: under
 /// a capturing tree the input acts as cancel, which closes an open menu too.
+/// Menu and a gameplay command always conflict: UI nav reads presses, never
+/// activators, so no hold pairing keeps them apart.
 pub fn conflicts(a: &EffectiveBinding, b: &EffectiveBinding) -> bool {
     if a.input != b.input || a.command == b.command {
         return false;
@@ -136,6 +144,9 @@ pub fn conflicts(a: &EffectiveBinding, b: &EffectiveBinding) -> bool {
         (Command::NavMenu, Command::NavCancel) | (Command::NavCancel, Command::NavMenu)
     ) {
         return false;
+    }
+    if a.command.context() != b.command.context() {
+        return true;
     }
     let one_hold = is_hold(a) != is_hold(b);
     !(one_hold && !press_only(a.command) && !press_only(b.command))
@@ -162,16 +173,31 @@ fn collides(kept: &EffectiveBinding, candidate: &EffectiveBinding) -> bool {
 /// Commands that must stay bound on every device class.
 pub const GUARDED: [Command; 3] = [Command::NavConfirm, Command::NavCancel, Command::NavMenu];
 
+/// The command a stored binding drives. With the swap on, gamepad confirm and
+/// cancel exchange; the mapping is its own inverse, so it also gives the
+/// command a shown binding is stored on.
+pub fn swapped_command(command: Command, class: DeviceClass, swap: bool) -> Command {
+    match (swap, class, command) {
+        (true, DeviceClass::Gamepad, Command::NavConfirm) => Command::NavCancel,
+        (true, DeviceClass::Gamepad, Command::NavCancel) => Command::NavConfirm,
+        _ => command,
+    }
+}
+
 /// The resolved binding table for one mod, relevance included.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct EffectiveTable {
     entries: Vec<EffectiveBinding>,
     relevance: HashMap<Command, Relevance>,
-    /// Commands whose author or engine default the player displaced.
+    /// Commands that lost an input to a player binding (an author or engine
+    /// default, or another player row) or to a guarded default given back.
     displaced: Vec<(Command, DeviceClass)>,
     /// Every binding a collision dropped, with the binding that kept the
     /// input; the input-block validation reports these.
     suppressed: Vec<(EffectiveBinding, EffectiveBinding)>,
+    /// Guarded commands the player layer left unbound on a class, whose
+    /// defaults were given back.
+    guard_restored: Vec<(Command, DeviceClass)>,
 }
 
 impl EffectiveTable {
@@ -200,38 +226,42 @@ impl EffectiveTable {
                 );
             }
         }
-        table.entries = table.resolve_collisions(candidates, &author.manifest_order);
-        if swap_confirm_cancel {
-            for entry in &mut table.entries {
-                if entry.class == DeviceClass::Gamepad {
-                    entry.command = match entry.command {
-                        Command::NavConfirm => Command::NavCancel,
-                        Command::NavCancel => Command::NavConfirm,
-                        other => other,
-                    };
-                }
-            }
+        // The swap applies before collisions resolve, so conflicts, the
+        // menu-and-cancel pairing, and the displaced flags all name the
+        // command each input drives.
+        for candidate in &mut candidates {
+            candidate.command =
+                swapped_command(candidate.command, candidate.class, swap_confirm_cancel);
         }
+        let kept =
+            table.resolve_collisions(candidates, &author.manifest_order, swap_confirm_cancel);
+        table.entries = table.restore_guard(kept, author, swap_confirm_cancel);
         table
     }
 
     /// Drop the loser of each collision: a higher layer keeps the input, and
-    /// within one layer the earlier entry does. A player binding that pushes an
-    /// author or engine default off its input flags that command for the panel,
-    /// so nothing the player chose changes silently.
+    /// within one layer the earlier entry does. A player binding that pushes
+    /// any other binding off its input flags that command for the panel, so
+    /// nothing the player chose changes silently. Returns the kept bindings
+    /// with their candidate positions, in candidate order.
     fn resolve_collisions(
         &mut self,
         candidates: Vec<EffectiveBinding>,
         manifest_order: &[Command],
-    ) -> Vec<EffectiveBinding> {
+        swap: bool,
+    ) -> Vec<(usize, EffectiveBinding)> {
         let mut ordered: Vec<(usize, EffectiveBinding)> =
             candidates.into_iter().enumerate().collect();
-        // Higher origin first; author entries in manifest order; then table order.
+        // Higher origin first; author entries in manifest order (of the command
+        // the author wrote, before the swap); then table order.
         let manifest_rank = |binding: &EffectiveBinding| match binding.origin {
-            BindingOrigin::Author => manifest_order
-                .iter()
-                .position(|command| *command == binding.command)
-                .unwrap_or(usize::MAX),
+            BindingOrigin::Author => {
+                let authored = swapped_command(binding.command, binding.class, swap);
+                manifest_order
+                    .iter()
+                    .position(|command| *command == authored)
+                    .unwrap_or(usize::MAX)
+            }
             BindingOrigin::Engine | BindingOrigin::Player => 0,
         };
         ordered.sort_by(|(ia, a), (ib, b)| {
@@ -260,16 +290,106 @@ impl EffectiveTable {
             match winner {
                 Some(winner) => {
                     self.suppressed.push((candidate, winner));
-                    if winner.origin == BindingOrigin::Player
-                        && candidate.origin != BindingOrigin::Player
-                        && !self
-                            .displaced
-                            .contains(&(candidate.command, candidate.class))
-                    {
-                        self.displaced.push((candidate.command, candidate.class));
+                    // A player row losing to another player row (a saved row
+                    // waking as its command becomes relevant) is flagged, as
+                    // is a default losing to one.
+                    if winner.origin == BindingOrigin::Player {
+                        self.flag_displaced(candidate.command, candidate.class);
                     }
                 }
                 None => kept.push((index, candidate)),
+            }
+        }
+        kept.sort_by_key(|(index, _)| *index);
+        kept
+    }
+
+    fn flag_displaced(&mut self, command: Command, class: DeviceClass) {
+        if !self.displaced.contains(&(command, class)) {
+            self.displaced.push((command, class));
+        }
+    }
+
+    /// Give a guarded command the player layer left unbound on a class (a
+    /// hand-edited empty row, or a newer author default landing on an input a
+    /// player row holds) its author or engine default back. The player
+    /// bindings on those inputs yield and their commands are flagged. A
+    /// default an author or engine binding holds is not given back, so an
+    /// author layer that unbinds a guarded command still reads as a guard
+    /// violation for validation to diagnose.
+    fn restore_guard(
+        &mut self,
+        mut kept: Vec<(usize, EffectiveBinding)>,
+        author: &AuthorLayer,
+        swap: bool,
+    ) -> Vec<EffectiveBinding> {
+        let mut next_index = kept.iter().map(|(index, _)| index + 1).max().unwrap_or(0);
+        let mut attempted: Vec<(Command, DeviceClass)> = Vec::new();
+        // Commands whose player bindings yielded here: their flag stands even
+        // if they get their own defaults back later.
+        let mut evicted: Vec<(Command, DeviceClass)> = Vec::new();
+        // Each (command, class) is tried at most once, so the loop ends.
+        // Evicting a player binding of another guarded command can leave that
+        // one unbound for a later pass.
+        loop {
+            let missing = GUARDED
+                .into_iter()
+                .flat_map(|command| DeviceClass::ALL.map(|class| (command, class)))
+                .find(|(command, class)| {
+                    !attempted.contains(&(*command, *class))
+                        && self.relevance_of(*command) == Relevance::Relevant
+                        && !kept
+                            .iter()
+                            .any(|(_, k)| k.command == *command && k.class == *class)
+                });
+            let Some((command, class)) = missing else {
+                break;
+            };
+            attempted.push((command, class));
+            let stored = swapped_command(command, class, swap);
+            let mut slot = 0;
+            for (binding, origin) in default_slots(stored, class, author) {
+                let restored = EffectiveBinding {
+                    command,
+                    class,
+                    slot,
+                    input: binding.input,
+                    activator: binding.activator,
+                    origin,
+                };
+                let holders: Vec<usize> = kept
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, (_, k))| {
+                        self.relevance_of(k.command) != Relevance::DevOnly
+                            && (collides(k, &restored) || collides(&restored, k))
+                    })
+                    .map(|(position, _)| position)
+                    .collect();
+                if holders
+                    .iter()
+                    .any(|position| kept[*position].1.origin != BindingOrigin::Player)
+                {
+                    continue;
+                }
+                for position in holders.into_iter().rev() {
+                    let (_, holder) = kept.remove(position);
+                    self.suppressed.push((holder, restored));
+                    self.flag_displaced(holder.command, holder.class);
+                    evicted.push((holder.command, holder.class));
+                }
+                kept.push((next_index, restored));
+                next_index += 1;
+                slot += 1;
+            }
+            if slot > 0 {
+                self.guard_restored.push((command, class));
+                // Its defaults are back, so a flag from losing them to a
+                // player binding no longer applies.
+                if !evicted.contains(&(command, class)) {
+                    self.displaced
+                        .retain(|flagged| *flagged != (command, class));
+                }
             }
         }
         kept.sort_by_key(|(index, _)| *index);
@@ -300,6 +420,12 @@ impl EffectiveTable {
         &self.displaced
     }
 
+    /// Guarded commands whose defaults were given back because the player
+    /// layer left them unbound on a class.
+    pub fn guard_restored(&self) -> &[(Command, DeviceClass)] {
+        &self.guard_restored
+    }
+
     /// The inputs bound to a command on one class, in slot order.
     pub fn inputs(&self, command: Command, class: DeviceClass) -> Vec<PhysicalInput> {
         self.entries
@@ -310,7 +436,6 @@ impl EffectiveTable {
     }
 
     /// Guarded commands left unbound on a device class.
-    #[allow(dead_code)]
     pub fn guard_violations(&self) -> Vec<(Command, DeviceClass)> {
         GUARDED
             .into_iter()
@@ -325,7 +450,7 @@ impl EffectiveTable {
     }
 
     /// Every conflicting pair among relevant, non-dev bindings.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn conflicting_pairs(&self) -> Vec<(EffectiveBinding, EffectiveBinding)> {
         let checked: Vec<_> = self
             .entries
@@ -352,6 +477,58 @@ impl EffectiveTable {
     }
 }
 
+/// A command's defaults on one class: the author's list, else the engine's.
+fn default_slots(
+    command: Command,
+    class: DeviceClass,
+    author: &AuthorLayer,
+) -> Vec<(AuthorBinding, BindingOrigin)> {
+    match author.defaults.get(&(command, class)) {
+        Some(list) => list.iter().map(|b| (*b, BindingOrigin::Author)).collect(),
+        None => engine_slots(command, class),
+    }
+}
+
+fn engine_slots(command: Command, class: DeviceClass) -> Vec<(AuthorBinding, BindingOrigin)> {
+    engine_default_inputs(command, class)
+        .iter()
+        .map(|input| {
+            (
+                AuthorBinding {
+                    input: *input,
+                    activator: Activator::PRESS,
+                },
+                BindingOrigin::Engine,
+            )
+        })
+        .collect()
+}
+
+/// The activator a player-row input takes. Players rebind keys, never
+/// activators: an input that is one of the command's defaults keeps that
+/// default's activator wherever the row puts it, so packing or reordering a
+/// row never moves a default's activator onto another input. Any other input
+/// takes the activator of the default in its slot (a rebound key keeps its
+/// slot's activator), and a slot past the defaults takes `press`. A wheel
+/// notch always takes `press`: it has no duration to time.
+fn player_activator(
+    defaults: &[(AuthorBinding, BindingOrigin)],
+    slot: usize,
+    input: PhysicalInput,
+) -> Activator {
+    if matches!(
+        input,
+        PhysicalInput::MouseWheelUp | PhysicalInput::MouseWheelDown
+    ) {
+        return Activator::PRESS;
+    }
+    defaults
+        .iter()
+        .find(|(binding, _)| binding.input == input)
+        .or_else(|| defaults.get(slot))
+        .map_or(Activator::PRESS, |(binding, _)| binding.activator)
+}
+
 /// Resolve one command on one class through the three layers.
 fn layer_command(
     command: Command,
@@ -361,29 +538,12 @@ fn layer_command(
     player: &PlayerLayer,
     out: &mut Vec<EffectiveBinding>,
 ) {
-    let engine = || -> Vec<(AuthorBinding, BindingOrigin)> {
-        engine_default_inputs(command, class)
-            .iter()
-            .map(|input| {
-                (
-                    AuthorBinding {
-                        input: *input,
-                        activator: Activator::PRESS,
-                    },
-                    BindingOrigin::Engine,
-                )
-            })
-            .collect()
-    };
     // A dev-only command is bound to its engine defaults alone.
     if command_relevance == Relevance::DevOnly {
-        push_slots(command, class, engine(), out);
+        push_slots(command, class, engine_slots(command, class), out);
         return;
     }
-    let base: Vec<(AuthorBinding, BindingOrigin)> = match author.defaults.get(&(command, class)) {
-        Some(list) => list.iter().map(|b| (*b, BindingOrigin::Author)).collect(),
-        None => engine(),
-    };
+    let base = default_slots(command, class, author);
     let Some(row) = player.rows.get(&(command, class)) else {
         push_slots(command, class, base, out);
         return;
@@ -395,10 +555,7 @@ fn layer_command(
             Some(input) => Some((
                 AuthorBinding {
                     input: *input,
-                    // A slot past the author's list takes `press`.
-                    activator: base
-                        .get(slot)
-                        .map_or(Activator::PRESS, |(b, _)| b.activator),
+                    activator: player_activator(&base, slot, *input),
                 },
                 BindingOrigin::Player,
             )),

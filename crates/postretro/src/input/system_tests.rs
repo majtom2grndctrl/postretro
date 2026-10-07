@@ -676,3 +676,101 @@ fn clear_all_resets_physical_state() {
     assert!(snap.axis(Action::MoveForward).is_empty());
     assert!(snap.axis(Action::LookYaw).is_empty());
 }
+
+#[test]
+fn clear_all_lifts_a_held_action_to_inactive_not_released() {
+    let mut sys = InputSystem::new(test_bindings());
+    sys.handle_keyboard_event(KeyCode::Space, true);
+    let _ = sys.snapshot();
+    assert_eq!(sys.snapshot().button(Action::Jump), ButtonState::Held);
+    sys.clear_all();
+    assert_eq!(sys.snapshot().button(Action::Jump), ButtonState::Inactive);
+}
+
+// --- Gamepad edges ---
+
+fn pad(button: gilrs::Button) -> PhysicalInput {
+    PhysicalInput::GamepadButton(button)
+}
+
+#[test]
+fn a_pad_lost_mid_hold_releases_its_inputs_and_fires_no_pending_hold() {
+    let stick_up =
+        PhysicalInput::GamepadAxisHalf(gilrs::Axis::LeftStickY, types::AxisHalf::Positive);
+    let mut sys = InputSystem::new(vec![
+        Binding::new(pad(gilrs::Button::South), Action::Jump),
+        Binding::new(pad(gilrs::Button::East), Action::Sprint)
+            .with_activator(Activator::with_threshold(ActivatorKind::Hold, 0.2)),
+        Binding::new(stick_up, Action::MoveForward),
+        Binding::new(PhysicalInput::Key(KeyCode::Space), Action::Use),
+    ]);
+    sys.set_physical_input_at(pad(gilrs::Button::South), true, 0.0);
+    sys.set_physical_input_at(pad(gilrs::Button::East), true, 0.0);
+    sys.set_gamepad_axis_at(gilrs::Axis::LeftStickY, 0.8, 0.0);
+    sys.handle_keyboard_event_at(KeyCode::Space, true, 0.0);
+    let held = sys.snapshot_at(0.05);
+    assert_eq!(held.button(Action::Jump), ButtonState::Pressed);
+    assert!((held.axis_value(Action::MoveForward) - 0.8).abs() < 1e-6);
+
+    sys.release_gamepad();
+    let gone = sys.snapshot_at(0.5);
+    assert!(!gone.button(Action::Jump).is_active());
+    assert!(
+        !gone.button(Action::Sprint).is_active(),
+        "the pending hold never fires"
+    );
+    assert_eq!(gone.axis_value(Action::MoveForward), 0.0);
+    assert_eq!(
+        gone.button(Action::Use),
+        ButtonState::Held,
+        "keyboard state is untouched"
+    );
+
+    // A reconnected pad's held button is a fresh press.
+    sys.set_physical_input_at(pad(gilrs::Button::South), true, 1.0);
+    assert_eq!(
+        sys.snapshot_at(1.01).button(Action::Jump),
+        ButtonState::Pressed
+    );
+}
+
+#[test]
+fn a_stick_half_resting_near_the_press_point_presses_a_button_command_once() {
+    // Regression: one threshold made a stick resting near it chatter, so the
+    // command re-pressed on every crossing.
+    let stick_up =
+        PhysicalInput::GamepadAxisHalf(gilrs::Axis::RightStickY, types::AxisHalf::Positive);
+    let mut sys = InputSystem::new(vec![Binding::new(stick_up, Action::Jump)]);
+    let mut presses = 0;
+    for (frame, value) in [0.0, 0.52, 0.47, 0.51, 0.45, 0.49, 0.42, 0.5]
+        .into_iter()
+        .enumerate()
+    {
+        let t = frame as f64 * 0.016;
+        sys.set_gamepad_axis_at(gilrs::Axis::RightStickY, value, t);
+        if sys.snapshot_at(t + 0.001).button(Action::Jump) == ButtonState::Pressed {
+            presses += 1;
+        }
+    }
+    assert_eq!(presses, 1);
+    sys.set_gamepad_axis_at(gilrs::Axis::RightStickY, 0.3, 1.0);
+    assert_eq!(
+        sys.snapshot_at(1.001).button(Action::Jump),
+        ButtonState::Released
+    );
+}
+
+#[test]
+fn two_dpad_presses_inside_one_frame_step_weapon_cycling_twice() {
+    // Regression: press edges were a set per frame, so a hitch frame holding
+    // two D-pad presses stepped once.
+    let mut sys = InputSystem::new(vec![Binding::new(
+        pad(gilrs::Button::DPadRight),
+        Action::CycleWieldableNext,
+    )]);
+    for pressed in [true, false, true, false] {
+        sys.handle_gamepad_button_event(gilrs::Button::DPadRight, pressed, 0.0);
+    }
+    assert_eq!(sys.snapshot().notch_count(Action::CycleWieldableNext), 2);
+    assert_eq!(sys.snapshot().notch_count(Action::CycleWieldableNext), 0);
+}

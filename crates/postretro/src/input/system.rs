@@ -10,6 +10,7 @@ use winit::keyboard::KeyCode;
 
 use super::activator::ActivatorResolver;
 use super::bindings;
+use super::input_names::DeviceClass;
 use super::look::{DEFAULT_GAMEPAD_LOOK_SENSITIVITY, LookInputs};
 use super::scroll::{
     LINE_SCROLL_GESTURE_REPEAT, LineScrollGesture, ScrollNotchAccumulator,
@@ -17,7 +18,8 @@ use super::scroll::{
 };
 use super::snapshot::ActionSnapshot;
 use super::types::{
-    Action, AxisHalf, AxisSource, Binding, ButtonState, HALF_AXIS_PRESS_THRESHOLD, PhysicalInput,
+    Action, AxisHalf, AxisSource, Binding, ButtonState, HALF_AXIS_PRESS_THRESHOLD,
+    HALF_AXIS_RELEASE_THRESHOLD, PhysicalInput, hysteresis_level,
 };
 
 /// Where an input edge came from. Event edges are authoritative fresh presses;
@@ -29,7 +31,7 @@ enum EdgeSource {
 }
 
 /// One timestamped input edge, buffered until the next snapshot resolves it,
-/// so a press and release between two frames still resolve in order (P1).
+/// so a press and release between two frames still resolve in order.
 #[derive(Debug, Clone, Copy)]
 struct InputEdge {
     input: PhysicalInput,
@@ -55,6 +57,11 @@ pub struct InputSystem {
     /// Unique actions referenced by `bindings`, cached so `snapshot()` does not
     /// rebuild the list every frame. `new()` and `set_bindings()` refresh it.
     unique_actions: Vec<Action>,
+
+    /// Stick halves bound to a movement axis, cached with `unique_actions`.
+    /// Such a half is down whenever it is past the dead zone, so its binding
+    /// carries the stick's full analog range.
+    movement_halves: Vec<PhysicalInput>,
 
     /// Current pressed/released state of each physical input (true = active).
     physical_state: HashMap<PhysicalInput, bool>,
@@ -119,6 +126,7 @@ pub struct InputSystem {
 impl InputSystem {
     pub fn new(bindings: Vec<Binding>) -> Self {
         let unique_actions = unique_actions(&bindings);
+        let movement_halves = movement_halves(&bindings);
 
         // Pre-size `prev_button_states` to the count of button-type actions so
         // the first-frame `extend` fits without reallocation.
@@ -130,6 +138,7 @@ impl InputSystem {
         Self {
             bindings,
             unique_actions,
+            movement_halves,
             physical_state: HashMap::new(),
             pending_edges: Vec::new(),
             resolver,
@@ -153,7 +162,7 @@ impl InputSystem {
 
     /// Replace the binding table (mod init, hot reload, rebind, host tuning).
     /// Input state and preferences survive; held inputs follow the rebuild
-    /// rules in `ActivatorResolver::rebind` (P4).
+    /// rules in `ActivatorResolver::rebind`.
     pub fn set_bindings(&mut self, bindings: Vec<Binding>) {
         let now = self.now();
         self.set_bindings_at(bindings, now);
@@ -164,6 +173,7 @@ impl InputSystem {
         self.resolve_pending_edges(now);
         self.resolver.rebind(&self.bindings, &bindings);
         self.unique_actions = unique_actions(&bindings);
+        self.movement_halves = movement_halves(&bindings);
         self.binding_active = vec![false; bindings.len()];
         self.bindings = bindings;
     }
@@ -174,7 +184,7 @@ impl InputSystem {
     }
 
     /// Get the current mouse sensitivity.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn mouse_sensitivity(&self) -> f32 {
         self.mouse_sensitivity
     }
@@ -225,7 +235,6 @@ impl InputSystem {
 
     /// Set the multiplier on activator thresholds. A press already down keeps
     /// the scale it started with.
-    #[allow(dead_code)]
     pub fn set_hold_timing_scale(&mut self, scale: f32) {
         self.hold_timing_scale = if scale.is_finite() && scale > 0.0 {
             scale
@@ -255,7 +264,7 @@ impl InputSystem {
     }
 
     /// Whether invert-Y is currently enabled.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn invert_y(&self) -> bool {
         self.invert_y
     }
@@ -353,15 +362,24 @@ impl InputSystem {
         } else {
             self.gamepad_axes.remove(&axis);
         }
-        // Each half of the axis is also a digital input for button commands.
+        // Each half of the axis is also a digital input. A half on a movement
+        // axis is down past the dead zone, so its activator gates the whole
+        // analog range; for a button command it presses with hysteresis.
         for half in [AxisHalf::Positive, AxisHalf::Negative] {
-            let pressed = half.magnitude(value) >= HALF_AXIS_PRESS_THRESHOLD;
-            self.record_edge(
-                PhysicalInput::GamepadAxisHalf(axis, half),
-                pressed,
-                t,
-                EdgeSource::Level,
-            );
+            let input = PhysicalInput::GamepadAxisHalf(axis, half);
+            let magnitude = half.magnitude(value);
+            let pressed = if self.movement_halves.contains(&input) {
+                magnitude > 0.0
+            } else {
+                let was_down = self.physical_state.get(&input).copied().unwrap_or(false);
+                hysteresis_level(
+                    was_down,
+                    magnitude,
+                    HALF_AXIS_PRESS_THRESHOLD,
+                    HALF_AXIS_RELEASE_THRESHOLD,
+                )
+            };
+            self.record_edge(input, pressed, t, EdgeSource::Level);
         }
     }
 
@@ -376,7 +394,7 @@ impl InputSystem {
     }
 
     /// A gamepad button event from the event stream, `age` seconds old. Event
-    /// edges keep a press and release between two polls (P1); the per-frame
+    /// edges keep a press and release between two polls; the per-frame
     /// poll through `set_physical_input` then reconciles the level.
     pub fn handle_gamepad_button_event(&mut self, button: gilrs::Button, pressed: bool, age: f64) {
         let t = (self.now() - age.max(0.0)).max(0.0);
@@ -399,14 +417,42 @@ impl InputSystem {
     }
 
     pub(crate) fn clear_all_at(&mut self, now: f64) {
+        self.suspend_gameplay_at(now);
+        self.physical_state.clear();
+        self.gamepad_axes.clear();
+        self.line_scroll_gesture.clear();
+    }
+
+    /// Cancel gameplay resolution on a frame that reads no snapshot (the
+    /// frontend). Buffered edges resolve so held inputs are tracked, then
+    /// everything lifts without a pulse: nothing pressed here reads Pressed
+    /// later, and an input still held stays inert until pressed again.
+    /// Physical levels survive, so the next poll adds no spurious edge.
+    pub fn suspend_gameplay(&mut self) {
+        let now = self.now();
+        self.suspend_gameplay_at(now);
+    }
+
+    pub(crate) fn suspend_gameplay_at(&mut self, now: f64) {
         self.resolve_pending_edges(now);
         self.resolver.cancel_all(&self.bindings);
-        self.physical_state.clear();
+        // A held action reads Inactive next snapshot, never Released: neutral
+        // input is not a release.
+        self.prev_button_states.clear();
         self.mouse_delta = (0.0, 0.0);
         self.mouse_axes.clear();
-        self.gamepad_axes.clear();
         self.scroll_notches.clear_all();
-        self.line_scroll_gesture.clear();
+    }
+
+    /// The gamepad went away: release every pad input and zero the pad axes
+    /// without a pulse, so nothing stays held down and no pending hold fires.
+    /// Keyboard and mouse state is untouched.
+    pub fn release_gamepad(&mut self) {
+        let is_pad = |input: &PhysicalInput| DeviceClass::of(*input) == DeviceClass::Gamepad;
+        self.pending_edges.retain(|edge| !is_pad(&edge.input));
+        self.physical_state.retain(|input, _| !is_pad(input));
+        self.gamepad_axes.clear();
+        self.resolver.cancel_gamepad(&self.bindings);
     }
 
     /// Resolve all bindings and produce the action snapshot for this frame.
@@ -489,14 +535,15 @@ impl InputSystem {
                 );
                 button_states.insert(action, state);
                 // A notch-read command counts wheel notches plus one step per
-                // press edge from any other bound input (the D-pad cycles).
+                // press edge from any other bound input (the D-pad cycles), so
+                // two presses inside one frame step twice.
                 let count = self
                     .bindings
                     .iter()
                     .filter(|binding| binding.action == action)
                     .map(|binding| self.scroll_notches.count(binding.input))
                     .sum::<u32>()
-                    + u32::from(self.resolver.command_went_down(action));
+                    + self.resolver.command_press_count(action);
                 if count != 0 {
                     notch_counts.insert(action, count);
                 }
@@ -626,6 +673,20 @@ impl InputSystem {
             }
         }
     }
+}
+
+/// Stick halves a binding table puts on a movement (axis) action.
+fn movement_halves(bindings: &[Binding]) -> Vec<PhysicalInput> {
+    let mut halves = Vec::new();
+    for binding in bindings {
+        if matches!(binding.input, PhysicalInput::GamepadAxisHalf(..))
+            && binding.action.is_axis()
+            && !halves.contains(&binding.input)
+        {
+            halves.push(binding.input);
+        }
+    }
+    halves
 }
 
 /// Unique actions referenced by a binding table, in first-seen order.

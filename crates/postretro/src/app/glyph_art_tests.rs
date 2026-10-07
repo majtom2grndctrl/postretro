@@ -3,6 +3,8 @@
 // See: context/lib/ui.md §4
 
 use gilrs::Button;
+use log::Level;
+use postretro_test_log_capture::LogCapture;
 use postretro_ui::descriptor::{AnchoredTree, Widget};
 use postretro_ui::modal_stack::ScopeTier;
 
@@ -38,10 +40,14 @@ fn app_with_glyphs() -> App {
         },
         ..AuthorLayer::default()
     });
-    session.glyph_art.keys = ["ui/glyphs/xbox/south", "ui/glyphs/xbox/west", "ui/glyphs/ps/south"]
-        .into_iter()
-        .map(str::to_string)
-        .collect();
+    session.glyph_art.keys = [
+        "ui/glyphs/xbox/south",
+        "ui/glyphs/xbox/west",
+        "ui/glyphs/ps/south",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect();
     app.refresh_effective_bindings();
     app
 }
@@ -127,7 +133,11 @@ fn rebinding_confirm_changes_its_glyph_on_the_next_frame() {
         (Command::NavConfirm, DeviceClass::Gamepad),
         vec![Some(PhysicalInput::GamepadButton(Button::West))],
     );
-    app.session.as_mut().unwrap().bindings.set_player_layer(player);
+    app.session
+        .as_mut()
+        .unwrap()
+        .bindings
+        .set_player_layer(player);
     app.refresh_effective_bindings();
     assert_eq!(image_asset(&resolve(&app)[0]), Some("ui/glyphs/xbox/west"));
 }
@@ -158,4 +168,81 @@ fn the_dev_mods_art_decodes_under_input_keyed_names() {
             "{family} art ships"
         );
     }
+}
+
+#[test]
+fn swapping_confirm_and_cancel_changes_the_confirm_glyph_the_same_frame() {
+    let mut app = app_with_glyphs();
+    app.session
+        .as_mut()
+        .unwrap()
+        .glyph_art
+        .keys
+        .insert("ui/glyphs/xbox/east".to_string());
+    set_family(&mut app, Some(0x045E));
+    assert_eq!(image_asset(&resolve(&app)[0]), Some("ui/glyphs/xbox/south"));
+    // No separate refresh: the options write itself rebuilds the table.
+    app.apply_swap_confirm_cancel(true);
+    assert_eq!(image_asset(&resolve(&app)[0]), Some("ui/glyphs/xbox/east"));
+}
+
+#[test]
+fn loaded_glyph_art_is_current_only_for_its_directories_and_reload_generation() {
+    let dirs = GlyphDirs {
+        xbox: Some("ui/glyphs/xbox".into()),
+        ..GlyphDirs::default()
+    };
+    let mut state = GlyphArtState::default();
+    assert!(!state.is_current(&dirs, None), "nothing loaded yet");
+
+    state.loaded = Some((dirs.clone(), Some(3)));
+    assert!(state.is_current(&dirs, Some(3)));
+    assert!(
+        !state.is_current(&dirs, Some(4)),
+        "a staged reload in the same directories reloads the art"
+    );
+    let moved = GlyphDirs {
+        xbox: Some("ui/glyphs/pad".into()),
+        ..GlyphDirs::default()
+    };
+    assert!(!state.is_current(&moved, Some(3)));
+}
+
+#[test]
+fn an_unknown_glyph_command_draws_nothing_and_warns_once() {
+    let capture = LogCapture::start();
+    let app = app_with_glyphs();
+    let tree: AnchoredTree = serde_json::from_value(serde_json::json!({
+        "anchor": "center",
+        "offset": [0.0, 0.0],
+        "root": {
+            "kind": "hstack", "gap": 8.0, "padding": 0.0, "align": "center",
+            "children": [{ "kind": "glyph", "command": "nav_confrim" }],
+        },
+    }))
+    .unwrap();
+    for _ in 0..3 {
+        let mut snapshot = postretro_ui::UiReadSnapshot::with_trees(
+            vec![postretro_ui::UiTreeEntry {
+                name: "row".into(),
+                tier: ScopeTier::Mod,
+                descriptor: tree.clone(),
+                capture_mode: postretro_ui::descriptor::CaptureMode::Passthrough,
+                on_commit: None,
+            }],
+            Default::default(),
+            Default::default(),
+            0.0,
+            None,
+        );
+        resolve_snapshot_glyphs(&mut snapshot, app.session.as_ref().unwrap());
+        let Widget::HStack(row) = &snapshot.trees[0].descriptor.root else {
+            panic!("row is an hstack");
+        };
+        assert!(matches!(row.children[0], Widget::Spacer(_)));
+    }
+    capture.assert_logged_once(Level::Warn, "unknown command `nav_confrim`");
+    // An irrelevant command is a known id: it draws nothing silently.
+    resolve(&app);
+    capture.assert_not_logged(Level::Warn, "unknown command `dash`");
 }

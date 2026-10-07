@@ -22,13 +22,13 @@ pub use values::{
     Align, BindSource, Border, BoundScalar, CellInit, ColorValue, Easing, LocalState, Predicate,
     PredicateValue, ScalarValue, SpacingValue, TextTween,
 };
-pub(crate) use widgets::{validate_scroll_max_height, validate_stack_width};
 pub use widgets::{
     AnnounceWidget, BarExitFade, BarMax, BarMaxStateRef, BarWidget, ButtonWidget, ContainerWidget,
-    GridWidget, ImageWidget, PanelBind, PanelTween, PanelWidget, Priority, RingRadiusRange,
-    GlyphWidget, RingWidget, ScrollProps, SliderBind, SliderValueDisplay, SliderWidget, SpacerWidget, TextBind,
-    TextWidget, ValueTextCase, Widget, warn_hstack_scroll_ignored,
+    GlyphWidget, GridWidget, ImageWidget, PanelBind, PanelTween, PanelWidget, Priority,
+    RingRadiusRange, RingWidget, ScrollProps, SliderBind, SliderValueDisplay, SliderWidget,
+    SpacerWidget, TextBind, TextWidget, ValueTextCase, Widget, warn_hstack_scroll_ignored,
 };
+pub(crate) use widgets::{validate_scroll_max_height, validate_stack_width};
 
 #[cfg(test)]
 mod tests {
@@ -88,7 +88,9 @@ mod tests {
             let json = format!(
                 r#"{{"kind":"vstack","gap":0.0,"padding":0.0,"align":"start","scroll":{{"maxHeight":{bad}}},"children":[]}}"#
             );
-            let error = serde_json::from_str::<Widget>(&json).unwrap_err().to_string();
+            let error = serde_json::from_str::<Widget>(&json)
+                .unwrap_err()
+                .to_string();
             assert!(
                 error.contains("`scroll.maxHeight` must be a finite number greater than zero"),
                 "maxHeight {bad} must be rejected by name: {error}",

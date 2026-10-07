@@ -20,6 +20,16 @@ impl App {
         }
     }
 
+    /// Swap confirm and cancel on the gamepad and rebuild the effective table
+    /// now, so this frame's glyphs and the next frame's nav both see the swap.
+    pub(crate) fn apply_swap_confirm_cancel(&mut self, swap: bool) {
+        let Some(session) = self.session.as_mut() else {
+            return;
+        };
+        session.bindings.set_swap_confirm_cancel(swap);
+        self.refresh_effective_bindings();
+    }
+
     pub(crate) fn options_menu_is_top(&self) -> bool {
         self.session.as_ref().is_some_and(|session| {
             session.modal_stack.active_name() == Some(options::OPTIONS_MENU_TREE_NAME)
@@ -104,10 +114,8 @@ impl App {
                 options::apply_to_audio(&resolved, audio);
             }
         }
-        if let Some(swap) = effects.swap_confirm_cancel
-            && let Some(session) = self.session.as_mut()
-        {
-            session.bindings.set_swap_confirm_cancel(swap);
+        if let Some(swap) = effects.swap_confirm_cancel {
+            self.apply_swap_confirm_cancel(swap);
         }
 
         // Live: the renderer rewrites every installed material's uniform

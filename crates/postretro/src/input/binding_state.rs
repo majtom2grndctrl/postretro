@@ -31,8 +31,8 @@ pub struct BindingState {
     /// rebuild against the same facts.
     facts: RelevanceFacts,
     built_from: Option<(BindingSources, u64)>,
-    /// Bumped on every rebuild, so views of the table (the controls panel)
-    /// know when to refresh.
+    /// Bumped when a rebuild changes the table or the layers, so views of
+    /// the table (the controls panel) know when to refresh.
     generation: u64,
 }
 
@@ -66,23 +66,41 @@ impl BindingState {
     }
 
     /// Rebuild the effective table and hand its gameplay bindings to the
-    /// input system. Input state and preferences survive (P4).
+    /// input system. Input state and preferences survive.
     pub fn rebuild(
         &mut self,
         sources: BindingSources,
         facts: RelevanceFacts,
         input: &mut InputSystem,
     ) {
-        self.table =
+        let table =
             EffectiveTable::build(&self.author, &self.player, facts, self.swap_confirm_cancel);
+        for (command, class) in table.guard_restored() {
+            if !self.table.guard_restored().contains(&(*command, *class)) {
+                log::warn!(
+                    "[Input] the saved bindings leave `{}` unbound on {}; its default \
+                     applies there and the player bindings on it are flagged",
+                    command.id(),
+                    class.settings_key()
+                );
+            }
+        }
+        // A layer change can alter what the panel shows (an author label)
+        // without changing the table.
+        let layers_changed = self
+            .built_from
+            .is_none_or(|(_, revision)| revision != self.layers_revision);
+        if table != self.table || layers_changed {
+            self.generation += 1;
+        }
+        self.table = table;
         input.set_bindings(self.table.gameplay_bindings());
         self.ui_nav = UiNavMap::from_table(&self.table);
         self.facts = facts;
         self.built_from = Some((sources, self.layers_revision));
-        self.generation += 1;
     }
 
-    /// Counts table rebuilds.
+    /// Counts rebuilds that changed the table or the layers.
     pub fn generation(&self) -> u64 {
         self.generation
     }

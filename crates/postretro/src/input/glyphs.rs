@@ -76,7 +76,12 @@ mod tests {
     }
 
     fn table(player: &PlayerLayer, swap: bool) -> EffectiveTable {
-        EffectiveTable::build(&AuthorLayer::default(), player, RelevanceFacts::default(), swap)
+        EffectiveTable::build(
+            &AuthorLayer::default(),
+            player,
+            RelevanceFacts::default(),
+            swap,
+        )
     }
 
     #[test]
@@ -84,15 +89,33 @@ mod tests {
         let table = table(&PlayerLayer::default(), false);
         let all_art = |_: &str| true;
         assert_eq!(
-            resolve_glyph(&table, &dirs(), DeviceFamily::Xbox, Command::NavConfirm, all_art),
+            resolve_glyph(
+                &table,
+                &dirs(),
+                DeviceFamily::Xbox,
+                Command::NavConfirm,
+                all_art
+            ),
             Some(GlyphView::Art("ui/glyphs/xbox/south".into()))
         );
         assert_eq!(
-            resolve_glyph(&table, &dirs(), DeviceFamily::PlayStation, Command::NavConfirm, all_art),
+            resolve_glyph(
+                &table,
+                &dirs(),
+                DeviceFamily::PlayStation,
+                Command::NavConfirm,
+                all_art
+            ),
             Some(GlyphView::Art("ui/glyphs/ps/south".into()))
         );
         assert_eq!(
-            resolve_glyph(&table, &dirs(), DeviceFamily::KeyboardMouse, Command::NavConfirm, all_art),
+            resolve_glyph(
+                &table,
+                &dirs(),
+                DeviceFamily::KeyboardMouse,
+                Command::NavConfirm,
+                all_art
+            ),
             Some(GlyphView::Art("ui/glyphs/kbm/Enter".into()))
         );
     }
@@ -101,12 +124,24 @@ mod tests {
     fn missing_art_draws_the_input_name() {
         let table = table(&PlayerLayer::default(), false);
         assert_eq!(
-            resolve_glyph(&table, &dirs(), DeviceFamily::Nintendo, Command::NavCancel, |_| true),
+            resolve_glyph(
+                &table,
+                &dirs(),
+                DeviceFamily::Nintendo,
+                Command::NavCancel,
+                |_| true
+            ),
             Some(GlyphView::Label("EAST".into())),
             "the block names no Nintendo art"
         );
         assert_eq!(
-            resolve_glyph(&table, &dirs(), DeviceFamily::Xbox, Command::NavCancel, |_| false),
+            resolve_glyph(
+                &table,
+                &dirs(),
+                DeviceFamily::Xbox,
+                Command::NavCancel,
+                |_| false
+            ),
             Some(GlyphView::Label("EAST".into()))
         );
     }
@@ -141,12 +176,24 @@ mod tests {
         );
         let rebound = table(&player, false);
         assert_eq!(
-            resolve_glyph(&rebound, &dirs(), DeviceFamily::Xbox, Command::NavConfirm, |_| true),
+            resolve_glyph(
+                &rebound,
+                &dirs(),
+                DeviceFamily::Xbox,
+                Command::NavConfirm,
+                |_| true
+            ),
             Some(GlyphView::Art("ui/glyphs/xbox/west".into()))
         );
         let swapped = table(&PlayerLayer::default(), true);
         assert_eq!(
-            resolve_glyph(&swapped, &dirs(), DeviceFamily::Xbox, Command::NavConfirm, |_| true),
+            resolve_glyph(
+                &swapped,
+                &dirs(),
+                DeviceFamily::Xbox,
+                Command::NavConfirm,
+                |_| true
+            ),
             Some(GlyphView::Art("ui/glyphs/xbox/east".into()))
         );
     }

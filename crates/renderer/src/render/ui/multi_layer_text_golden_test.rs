@@ -102,7 +102,7 @@ fn text_tree(content: &str, offset: [f32; 2]) -> AnchoredTree {
         role: None,
         restore_on_return: None,
     }
-    }
+}
 
 /// A stack entry for `tree`; the owner does not affect drawing.
 fn layer_entry(tree: AnchoredTree) -> postretro_ui::UiTreeEntry {

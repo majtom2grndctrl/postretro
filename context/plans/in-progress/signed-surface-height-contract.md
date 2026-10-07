@@ -65,7 +65,7 @@ Use `floor(x + 0.5)` in BOTH CPU and WGSL. Never `round()`: WGSL rounds half to 
 
 Doubling the span (D2) roughly doubles grazing-angle march length if nothing else changes. The owner's requirement is comparable visual results for comparable or less work. Treat cost as a first-class acceptance target, not a follow-up. Cost is measured two ways: **DDA steps** from the CPU reference (deterministic, test-gated), and **`forward` pass GPU time** from a Metal System Trace on this Mac (manual A/B; method in `rendering_pipeline.md` §12, "Without timestamp support" and "Machine-state confounders").
 
-**P1 — Relief band.** *Track A finding:* the band does not shorten the loop (texel data already bounds it). It feeds P2, P4 and the shadow exit. The real saving is D6's peak start. At load, alongside the peak (D6), compute the material's **trough**: the lowest quantized `s` across every uploaded mip, clamped to `≤ 0`. The march's vertical extent is `[trough, peak]`, not `[−1, peak]`. A map that never goes darker than mid-gray marches only its raised band. Pack the trough into bytes 12..16 of the material uniform as `surface_depth_trough: f32` (fraction in `[−1, 0]`). With this, bytes 8..16 are both used and the uniform has no padding left.
+**P1 — Relief band.** *Track A finding:* the band does not shorten the loop (texel data already bounds it). It feeds P2, P4 and the shadow exit. The real saving is D6's peak start. At load, alongside the peak (D6), compute the material's **trough**: the lowest quantized `s` of each uploaded mip (the uniform packs the read mip's, per amended D6), clamped to `≤ 0`. The march's vertical extent is `[trough, peak]`, not `[−1, peak]`. A map that never goes darker than mid-gray marches only its raised band. Pack the trough into bytes 12..16 of the material uniform as `surface_depth_trough: f32` (fraction in `[−1, 0]`). With this, bytes 8..16 are both used and the uniform has no padding left.
 
 **P2 — Single-texel early-out (exact).** *Track A finding:* step-neutral on CPU, because the loop's first iteration already resolves these rays with zero steps. It is kept as a separate branch and proven bit-identical to the loop. On GPU it may still save loop setup; the Metal trace decides whether it stays. If the view ray's UV footprint across the whole band `[trough, peak]` stays inside the starting texel, the hit is that texel's top. Resolve it with one fetch and no loop. This is exact, not an approximation, and covers the common near-perpendicular view of floors and walls.
 
@@ -155,7 +155,7 @@ Compile-forced spillover outside your row is allowed if minimal, and must be rep
   - A starved march returns flat (D7).
   - AO follows D5: zero on a texel at the peak height, zero across an all-128 map, today's value for a carve-only map, and nonzero for mid-gray between raised texels.
   - The shadow march does not exit at the plane when the relief rises above it.
-  - Peak extraction over a multi-mip `Rg8` payload returns the max raise across levels and 0 for an all-sink map.
+  - Peak extraction measures each mip of a multi-mip `Rg8` payload separately (0 peak for an all-sink map), and the uniform packs the clamped base mip's band (D6 as amended).
   - `|height_m|` never exceeds the bound.
 
 **B.**

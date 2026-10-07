@@ -763,6 +763,11 @@ pub(crate) struct App {
     /// See: context/lib/input.md §7
     cursor_pos: Option<input::PointerPos>,
 
+    /// Pointer wheel a capturing UI tree consumed since the last UI snapshot,
+    /// at the cursor. Taken onto the next snapshot, where the top tree scrolls
+    /// the scroll container under the cursor. See: context/lib/ui.md §4
+    ui_wheel: Option<postretro_ui::UiWheelScroll>,
+
     /// Edge detector turning the gamepad nav stick (left stick) into discrete
     /// D-pad-style nav intents: one intent per push past the dead zone. Polled
     /// in the input stage before the `take_ready`/`advance_frame` pair so
@@ -2068,6 +2073,21 @@ impl ApplicationHandler for App {
                     .ui_dispatch
                     .dispatch_event(None)
                     .forwards_to_gameplay();
+                if !forwards_to_gameplay {
+                    // A capturing tree consumed the wheel: it scrolls the scroll
+                    // container under the cursor on the next UI snapshot.
+                    if let Some(pos) = self.cursor_pos {
+                        let (lines, pixels) = match delta {
+                            winit::event::MouseScrollDelta::LineDelta(_, y) => (y, 0.0),
+                            winit::event::MouseScrollDelta::PixelDelta(p) => (0.0, p.y as f32),
+                        };
+                        self.ui_wheel.get_or_insert_default().accumulate(
+                            [pos.x as f32, pos.y as f32],
+                            lines,
+                            pixels,
+                        );
+                    }
+                }
                 if forwards_to_gameplay && session.input_focus == InputFocus::Gameplay {
                     session.input_system.handle_mouse_wheel(delta);
                 } else if input::wheel_diagnostics_enabled() {
@@ -4622,7 +4642,7 @@ impl ApplicationHandler for App {
                     // second `self.session.as_mut()` here would alias it.
                     let frontend_menu_is_present =
                         frontend_root_is_pushed(&session.modal_stack, frontend_menu_name);
-                    let ui_snapshot = Self::build_ui_read_snapshot(
+                    let mut ui_snapshot = Self::build_ui_read_snapshot(
                         &session.modal_stack,
                         &mut session.presentation_cells,
                         &script_ctx.slot_table.borrow(),
@@ -4631,6 +4651,7 @@ impl ApplicationHandler for App {
                         self.ui_focused_id.clone(),
                         frontend_menu_is_present,
                     );
+                    ui_snapshot.wheel = self.ui_wheel.take();
                     renderer.set_ui_snapshot(ui_snapshot);
                     let limiter_frame = Self::next_limiter_frame(&mut self.last_resolve_at, now);
                     renderer.set_limiter_frame(limiter_frame);
@@ -5909,7 +5930,7 @@ impl App {
         let Some(session) = self.session.as_mut() else {
             return;
         };
-        let ui_snapshot = Self::build_ui_read_snapshot(
+        let mut ui_snapshot = Self::build_ui_read_snapshot(
             &session.modal_stack,
             &mut session.presentation_cells,
             &session.scripting.script_ctx.slot_table.borrow(),
@@ -5918,6 +5939,7 @@ impl App {
             self.ui_focused_id.clone(),
             frontend_menu_is_present,
         );
+        ui_snapshot.wheel = self.ui_wheel.take();
 
         let Some(renderer) = self.renderer.as_mut() else {
             return;
@@ -10564,6 +10586,7 @@ mod tests {
                     padding: SpacingValue::Literal(0.0),
                     align: Align::Start,
                     width: None,
+                    scroll: None,
                     fill: None,
                     border: None,
                     id: None,
@@ -13301,6 +13324,7 @@ mod tests {
                     padding: SpacingValue::Literal(0.0),
                     align: Align::Start,
                     width: None,
+                    scroll: None,
                     fill: None,
                     border: None,
                     id: None,
@@ -13553,6 +13577,7 @@ mod tests {
                     padding: SpacingValue::Literal(0.0),
                     align: Align::Start,
                     width: None,
+                    scroll: None,
                     fill: None,
                     border: None,
                     id: None,
@@ -14871,6 +14896,7 @@ mod tests {
                     padding: SpacingValue::Literal(0.0),
                     align: Align::Start,
                     width: None,
+                    scroll: None,
                     fill: None,
                     border: None,
                     id: None,

@@ -22,12 +22,12 @@ pub use values::{
     Align, BindSource, Border, BoundScalar, CellInit, ColorValue, Easing, LocalState, Predicate,
     PredicateValue, ScalarValue, SpacingValue, TextTween,
 };
-pub(crate) use widgets::validate_stack_width;
+pub(crate) use widgets::{validate_scroll_max_height, validate_stack_width};
 pub use widgets::{
     AnnounceWidget, BarExitFade, BarMax, BarMaxStateRef, BarWidget, ButtonWidget, ContainerWidget,
     GridWidget, ImageWidget, PanelBind, PanelTween, PanelWidget, Priority, RingRadiusRange,
-    RingWidget, SliderBind, SliderValueDisplay, SliderWidget, SpacerWidget, TextBind, TextWidget,
-    ValueTextCase, Widget,
+    RingWidget, ScrollProps, SliderBind, SliderValueDisplay, SliderWidget, SpacerWidget, TextBind,
+    TextWidget, ValueTextCase, Widget, warn_hstack_scroll_ignored,
 };
 
 #[cfg(test)]
@@ -73,6 +73,28 @@ mod tests {
             assert!(result.is_err(), "width {width} must be rejected");
         }
         assert!(validate_stack_width(Some(f32::NAN)).is_err());
+    }
+
+    #[test]
+    fn scroll_round_trips_on_stack_and_grid_and_rejects_a_non_positive_max_height() {
+        for json in [
+            r#"{"kind":"vstack","gap":0.0,"padding":0.0,"align":"start","scroll":{"maxHeight":320.0},"children":[]}"#,
+            r#"{"kind":"grid","gap":0.0,"padding":0.0,"align":"start","cols":2,"scroll":{"maxHeight":200.0},"children":[]}"#,
+        ] {
+            let widget: Widget = serde_json::from_str(json).expect("scroll must parse");
+            assert_eq!(serde_json::to_string(&widget).unwrap(), json);
+        }
+        for bad in ["0.0", "-4.0"] {
+            let json = format!(
+                r#"{{"kind":"vstack","gap":0.0,"padding":0.0,"align":"start","scroll":{{"maxHeight":{bad}}},"children":[]}}"#
+            );
+            let error = serde_json::from_str::<Widget>(&json).unwrap_err().to_string();
+            assert!(
+                error.contains("`scroll.maxHeight` must be a finite number greater than zero"),
+                "maxHeight {bad} must be rejected by name: {error}",
+            );
+        }
+        assert!(validate_scroll_max_height(f32::INFINITY).is_err());
     }
 
     #[test]

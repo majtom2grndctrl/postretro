@@ -22,6 +22,7 @@ pub mod ui_texture;
 pub use core_root::CoreRoot;
 pub use output::{
     UiDrawList, UiInstance, UiReadSnapshot, UiRingInstance, UiText, UiTreeEntry, UiUniform,
+    UiWheelScroll,
 };
 pub use ui_texture::UiTexture;
 

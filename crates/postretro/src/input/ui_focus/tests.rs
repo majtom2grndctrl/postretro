@@ -15,6 +15,7 @@ fn rect(id: &str, r: [f32; 4], z: u32, group: Option<usize>) -> FocusRect {
         checked: None,
         disabled: false,
         tablist: None,
+        clip: None,
     }
 }
 

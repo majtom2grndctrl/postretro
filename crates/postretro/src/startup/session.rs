@@ -305,6 +305,7 @@ pub(crate) fn build_session() -> Result<BootSession> {
         sprint_toggle_active: false,
         ai_runtime: postretro_ai::AiRuntime::new(),
         cursor_pos: None,
+        ui_wheel: None,
         nav_stick_tracker: input::StickNavTrackers::new(),
         frame_timing: FrameTiming::new(initial_state),
         view_feel_state: view_feel::ViewFeelState::default(),

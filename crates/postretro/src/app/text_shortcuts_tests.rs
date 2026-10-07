@@ -30,6 +30,7 @@ fn key(id: &str, on_press: &str, repeat_on_hold: Option<RepeatPolicy>) -> FocusR
         checked: None,
         disabled: false,
         tablist: None,
+        clip: None,
     }
 }
 

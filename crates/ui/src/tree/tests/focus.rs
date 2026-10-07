@@ -15,6 +15,7 @@ fn focus_export_lists_ids_rects_and_a_linear_group() {
         padding: SpacingValue::Literal(0.0),
         align: Align::Start,
         width: None,
+        scroll: None,
         fill: None,
         border: None,
         id: None,
@@ -140,6 +141,7 @@ fn focus_export_nested_interactive_widgets_join_the_enclosing_group() {
     // slider and button join the outer group; the labels do not.
     let grid = Widget::Grid(GridWidget {
         cols: 2,
+        scroll: None,
         gap: SpacingValue::Literal(0.0),
         padding: SpacingValue::Literal(0.0),
         align: Align::Start,

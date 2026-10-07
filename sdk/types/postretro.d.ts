@@ -2757,10 +2757,12 @@ declare module "postretro/ui" {
 
   export type FocusKind = "linear" | "spatial";
   export type FocusPolicyProp = FocusKind | { policy: FocusKind; wrap?: boolean; repeat?: RepeatPolicyProp };
+  /** A vertical scroll viewport for `VStack`/`Grid`: sizes to content up to `maxHeight`, then clips and scrolls. Ignored with a diagnostic on `HStack`. */
+  export type ScrollProp = { maxHeight: number };
   /** Props for `VStack`/`HStack`. `gap`/`padding` default to 0, `align` defaults to `"start"`, `width` fixes the stack width in logical-reference pixels, and optional `localState` declares presentation-only cells scoped to this container. */
-  export type StackProps = { gap?: WidgetSpacing; padding?: WidgetSpacing; align?: WidgetAlign; width?: number; id?: string; focusNeighbors?: FocusNeighborsProp; focus?: FocusPolicyProp; fill?: WidgetColor; border?: BorderProp; localState?: { scope: string; cells: Record<string, CellInit> }; visibleWhen?: Predicate; role?: WidgetRole };
+  export type StackProps = { gap?: WidgetSpacing; padding?: WidgetSpacing; align?: WidgetAlign; width?: number; scroll?: ScrollProp; id?: string; focusNeighbors?: FocusNeighborsProp; focus?: FocusPolicyProp; fill?: WidgetColor; border?: BorderProp; localState?: { scope: string; cells: Record<string, CellInit> }; visibleWhen?: Predicate; role?: WidgetRole };
   /** Props for `Grid`. `cols` is required and must be an integer >= 1; children flow row-major. */
-  export type GridProps = { gap?: WidgetSpacing; padding?: WidgetSpacing; align?: WidgetAlign; id?: string; focusNeighbors?: FocusNeighborsProp; focus?: FocusPolicyProp; cols: number; visibleWhen?: Predicate; role?: WidgetRole };
+  export type GridProps = { gap?: WidgetSpacing; padding?: WidgetSpacing; align?: WidgetAlign; id?: string; focusNeighbors?: FocusNeighborsProp; focus?: FocusPolicyProp; cols: number; scroll?: ScrollProp; visibleWhen?: Predicate; role?: WidgetRole };
   /** Build a vertical stack descriptor. `children` is positional, not a prop. */
   export function VStack(props?: StackProps, children?: WidgetDescriptor[]): WidgetDescriptor;
   /** Build a horizontal stack descriptor. `children` is positional, not a prop. */

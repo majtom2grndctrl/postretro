@@ -6,15 +6,12 @@ use std::collections::{HashMap, HashSet};
 
 use taffy::prelude::NodeId;
 
-use super::super::descriptor::{AnchoredTree, Role, Widget};
-use super::super::layout::REFERENCE_HEIGHT;
-use super::super::layout::REFERENCE_WIDTH;
+use super::super::descriptor::{AnchoredTree, Role, Widget, warn_hstack_scroll_ignored};
 use postretro_entities::SlotValue;
 
 use super::CellValues;
-use super::draw::{
-    FocusAxis, FocusGroup, FocusRect, FocusRectList, anchor_fractions, canvas_origin, project_rect,
-};
+use super::draw::{FocusAxis, FocusGroup, FocusRect, FocusRectList, intersect_rects, project_rect};
+use super::scroll::scroll_offset;
 use super::ui_tree::UiTree;
 use super::widget_meta::{
     authored_focus_neighbors, authored_role, container_focus_policy, container_local_scope,
@@ -48,16 +45,12 @@ impl UiTree {
         slot_values: &HashMap<String, SlotValue>,
         cell_values: &CellValues,
     ) -> FocusRectList {
-        let root_size = self.taffy.layout(self.root).expect("root has layout").size;
-        let (afx, afy) = anchor_fractions(self.anchor);
-        let anchor_x = REFERENCE_WIDTH * afx + self.offset[0];
-        let anchor_y = REFERENCE_HEIGHT * afy + self.offset[1];
-        let root_origin = [
-            anchor_x - root_size.width * afx,
-            anchor_y - root_size.height * afy,
-        ];
-        let scale = super::super::layout::device_scale(device_size);
-        let canvas_origin = canvas_origin(device_size, scale);
+        let placement = self.placement(device_size);
+        let (root_origin, scale, canvas_origin) = (
+            placement.root_origin,
+            placement.scale,
+            placement.canvas_origin,
+        );
 
         let mut out = FocusRectList {
             initial_focus: descriptor.initial_focus.clone(),
@@ -69,6 +62,7 @@ impl UiTree {
         self.collect_focus_node(
             &descriptor.root,
             self.root,
+            None,
             None,
             None,
             None,
@@ -96,6 +90,7 @@ impl UiTree {
         group: Option<usize>,
         scope: Option<&str>,
         tablist: Option<usize>,
+        clip: Option<[f32; 4]>,
         tablists: &mut usize,
         ref_origin: [f32; 2],
         scale: f32,
@@ -147,6 +142,7 @@ impl UiTree {
                 checked,
                 disabled,
                 tablist: tablist.filter(|_| authored_role(widget) == Some(Role::Tab)),
+                clip,
             });
             if let Some(g) = group {
                 out.groups[g].members.push(rect_index);
@@ -190,13 +186,25 @@ impl UiTree {
             None => group,
         };
 
+        // A scroll container shifts its stops by its offset and clips them to
+        // its viewport, exactly as the draw walk does; it opens no group.
+        let scroll_offset = scroll_offset(&self.scroll.states, node);
+        let child_clip = match scroll_offset {
+            Some(_) => {
+                let viewport = project_rect(ref_origin, layout, scale, canvas_origin);
+                Some(clip.map_or(viewport, |clip| intersect_rects(clip, viewport)))
+            }
+            None => clip,
+        };
+        let dy = scroll_offset.unwrap_or(0.0);
+
         if let Some(children) = widget_children(widget) {
             let taffy_children = self.taffy.children(node).expect("node children resolve");
             for (child_widget, child_node) in children.iter().zip(taffy_children) {
                 let child_layout = self.taffy.layout(child_node).expect("child has layout");
                 let child_origin = [
                     ref_origin[0] + child_layout.location.x,
-                    ref_origin[1] + child_layout.location.y,
+                    ref_origin[1] + child_layout.location.y - dy,
                 ];
                 self.collect_focus_node(
                     child_widget,
@@ -204,6 +212,7 @@ impl UiTree {
                     child_group,
                     child_scope,
                     child_tablist,
+                    child_clip,
                     tablists,
                     child_origin,
                     scale,
@@ -237,6 +246,21 @@ pub fn warn_focus_authoring(tree_name: &str, tree: &AnchoredTree) {
         );
     }
     warn_neighbors(tree_name, &tree.root, &interactive);
+    warn_hstack_scroll(&tree.root);
+}
+
+/// An `HStack` never scrolls. The script bridges diagnose and drop its
+/// `scroll`; a JSON-built tree keeps the field, so registration diagnoses it
+/// here and layout ignores it.
+fn warn_hstack_scroll(widget: &Widget) {
+    if let Widget::HStack(container) = widget
+        && container.scroll.is_some()
+    {
+        warn_hstack_scroll_ignored(container.id.as_deref());
+    }
+    for child in widget_children(widget).unwrap_or_default() {
+        warn_hstack_scroll(child);
+    }
 }
 
 /// Collect every interactive widget's id, warning (once per registration) about

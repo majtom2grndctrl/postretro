@@ -609,6 +609,7 @@ fn reduce_motion_snaps_starting_and_running_tweens_to_their_target() {
             &slots,
             &no_cells(),
             clock,
+            crate::tree::ScrollInput::default(),
         );
         text_value(&draw)
     };

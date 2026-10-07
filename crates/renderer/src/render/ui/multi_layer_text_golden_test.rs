@@ -142,6 +142,7 @@ fn layout_two_layers(
         &theme,
         0,
         postretro_ui::tree::TweenClock::easing(0.0),
+        postretro_ui::tree::ScrollInput::default(),
     );
     let upper = pass.layout_gameplay_tree(
         font_system,
@@ -155,6 +156,7 @@ fn layout_two_layers(
         &theme,
         0,
         postretro_ui::tree::TweenClock::easing(0.0),
+        postretro_ui::tree::ScrollInput::default(),
     );
     [lower, upper]
 }

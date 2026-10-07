@@ -95,6 +95,9 @@ impl UiPass {
     ///
     /// `entry` also names the layer's owner (registry name and tier), which the
     /// focus export carries: the owner is recorded with the layout it names.
+    ///
+    /// `scroll_input` carries the focused id and pointer wheel to the TOP layer's
+    /// scroll containers; lower layers pass the default and hold their offsets.
     // Wide by necessity: layer + viewport + image sizes + slot values + theme +
     // theme generation + frame time are all distinct retained-build inputs;
     // bundling them into a struct would only obscure the per-frame call site.
@@ -112,6 +115,7 @@ impl UiPass {
         theme: &theme::UiTheme,
         theme_generation: u64,
         clock: tree::TweenClock,
+        scroll_input: tree::ScrollInput<'_>,
     ) -> tree::UiDrawData {
         debug_assert!(
             layer <= self.gameplay_trees.len(),
@@ -167,6 +171,7 @@ impl UiPass {
                 slot_values,
                 cell_values,
                 clock,
+                scroll_input,
             )
     }
 
@@ -396,6 +401,7 @@ mod tests {
                 &theme,
                 0,
                 tree::TweenClock::easing(0.0),
+                tree::ScrollInput::default(),
             );
         };
 

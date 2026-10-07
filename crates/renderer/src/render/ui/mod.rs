@@ -597,6 +597,7 @@ impl UiPass {
                 texts,
                 buffers: &text_buffers,
                 depths: &text_depths,
+                clips: &composition.text_clips,
             },
             &text_ranges,
         );
@@ -635,7 +636,31 @@ impl UiPass {
         // order, without relying on a non-zero `first_instance`.
         let mut offset = 0u64;
         let mut ring_offset = 0u64;
+        // Scroll viewports scissor their shape batches. The pass starts with
+        // the full-layer scissor; it changes only when a command's clip does.
+        let full_scissor = [0, 0, viewport[0].max(1), viewport[1].max(1)];
+        let mut scissor = full_scissor;
         for command in &composition.commands {
+            let clip = match *command {
+                UiDrawCommand::Quad(batch_index) => batches[batch_index].clip,
+                UiDrawCommand::Ring(batch_index) => ring_batches[batch_index].clip,
+                // Text clips through its per-area `TextBounds`, so its span
+                // draws under the full-layer scissor.
+                UiDrawCommand::Text(_) => None,
+            };
+            let wanted = match clip {
+                Some(clip) => scissor_for_clip(clip, viewport),
+                None => Some(full_scissor),
+            };
+            // A clip that covers nothing skips the command; buffer offsets
+            // advance only for written batches, so later ones stay aligned.
+            let Some(rect) = wanted else {
+                continue;
+            };
+            if rect != scissor {
+                pass.set_scissor_rect(rect[0], rect[1], rect[2], rect[3]);
+                scissor = rect;
+            }
             match *command {
                 UiDrawCommand::Quad(batch_index) => {
                     let ordered = &batches[batch_index];

@@ -938,3 +938,92 @@ fn restore_on_return_is_a_tree_prop_in_both_sdks_and_an_explicit_false_survives(
     assert_eq!(tree.restore_on_return, None);
     assert!(tree.restores_on_return());
 }
+
+const HSTACK_SCROLL_DIAGNOSTIC: &str = "authors `scroll`; ignored (only VStack and Grid scroll";
+
+// MC15 (SDK half): `scroll` is a container attribute on VStack and Grid in both
+// SDKs; on an HStack the drain draws one diagnostic and drops it.
+#[test]
+fn scroll_drains_on_vstack_and_grid_and_an_hstack_scroll_is_diagnosed_and_ignored_in_both_sdks() {
+    // JS: the wire form the TypeScript factories emit.
+    let capture = LogCapture::start();
+    let src = r#"({ anchor: "center", offset: [0.0, 0.0], root: { kind: "vstack", gap: 0, padding: 0,
+        align: "start", scroll: { maxHeight: 320 }, focus: "linear", children: [
+            { kind: "grid", gap: 0, padding: 0, align: "start", cols: 2, scroll: { maxHeight: 64 }, children: [] },
+            { kind: "hstack", gap: 0, padding: 0, align: "start", id: "row", scroll: { maxHeight: 10 }, children: [] },
+        ] } })"#;
+    let from_js = eval_js(src, |ctx, v| {
+        anchored_tree_from_js_value(ctx, v).expect("scroll must drain")
+    });
+    let expect_scroll = |tree: &AnchoredTree| {
+        let Widget::VStack(root) = &tree.root else {
+            panic!("root must be a vstack");
+        };
+        assert_eq!(root.scroll.map(|s| s.max_height), Some(320.0));
+        let Widget::Grid(grid) = &root.children[0] else {
+            panic!("first child must be a grid");
+        };
+        assert_eq!(grid.scroll.map(|s| s.max_height), Some(64.0));
+        let Widget::HStack(row) = &root.children[1] else {
+            panic!("second child must be an hstack");
+        };
+        assert_eq!(row.scroll, None, "an HStack's scroll is ignored");
+    };
+    expect_scroll(&from_js);
+    capture.assert_logged_once(Level::Warn, HSTACK_SCROLL_DIAGNOSTIC);
+    capture.assert_logged_once(Level::Warn, "HStack 'row'");
+
+    // Luau, through the SDK's layout factories (the HStack factory still emits
+    // `scroll`, so the diagnostic is the drain's).
+    capture.clear();
+    const LAYOUT_SRC: &str = include_str!("../../../../../sdk/lib/ui/layout.luau");
+    const TREE_SRC: &str = include_str!("../../../../../sdk/lib/ui/tree.luau");
+    let lua = mlua::Lua::new();
+    install_ui_theme_token_validator(&lua);
+    let layout: mlua::Table = lua.load(LAYOUT_SRC).eval().unwrap();
+    let tree_mod: mlua::Table = lua.load(TREE_SRC).eval().unwrap();
+    lua.globals().set("L", layout).unwrap();
+    lua.globals().set("T", tree_mod).unwrap();
+    let value: mlua::Value = lua
+        .load(
+            r#"return T.Tree({ anchor = "center", offset = { 0, 0 } },
+                L.VStack({ scroll = { maxHeight = 320 }, focus = "linear" }, {
+                    L.Grid({ cols = 2, scroll = { maxHeight = 64 } }, {}),
+                    L.HStack({ id = "row", scroll = { maxHeight = 10 } }, {}),
+                }))"#,
+        )
+        .eval()
+        .expect("factories build a scrolling tree");
+    let from_lua = anchored_tree_from_lua_value(value).expect("scroll must drain");
+    expect_scroll(&from_lua);
+    capture.assert_logged_once(Level::Warn, HSTACK_SCROLL_DIAGNOSTIC);
+    assert_eq!(
+        serde_json::to_value(&from_js.root).unwrap(),
+        serde_json::to_value(&from_lua.root).unwrap(),
+        "both SDKs drain the same scroll descriptors"
+    );
+}
+
+#[test]
+fn a_non_positive_scroll_max_height_is_a_named_error_in_both_sdks() {
+    for max_height in ["0", "-20"] {
+        let src = format!(
+            r#"({{ kind: "vstack", gap: 0, padding: 0, align: "start", scroll: {{ maxHeight: {max_height} }}, children: [] }})"#
+        );
+        let err = eval_js(&src, |ctx, v| widget_from_js(ctx, v).unwrap_err());
+        assert!(
+            err.to_string()
+                .contains("`scroll.maxHeight` must be a finite number greater than zero"),
+            "JS maxHeight {max_height}: {err}"
+        );
+        let src = format!(
+            r#"return {{ kind = "grid", gap = 0, padding = 0, align = "start", cols = 1, scroll = {{ maxHeight = {max_height} }}, children = {{}} }}"#
+        );
+        let err = eval_lua(&src, |v| widget_from_lua(v).unwrap_err());
+        assert!(
+            err.to_string()
+                .contains("`scroll.maxHeight` must be a finite number greater than zero"),
+            "Luau maxHeight {max_height}: {err}"
+        );
+    }
+}

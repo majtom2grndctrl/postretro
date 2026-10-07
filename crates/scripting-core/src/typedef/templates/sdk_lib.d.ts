@@ -790,10 +790,12 @@
   export type FocusKind = "linear" | "spatial";
   /** A container focus policy. Use a bare `"linear"`/`"spatial"` shorthand or an object with `wrap` and `repeat` options; `repeat` controls held navigation events inside the container. */
   export type FocusPolicyProp = FocusKind | { policy: FocusKind; wrap?: boolean; repeat?: RepeatPolicyProp };
+  /** A vertical scroll viewport for `VStack`/`Grid`: the container sizes to its content up to `maxHeight` logical px, then clips and scrolls. Focus outside the viewport scrolls into view by the minimum distance, and the pointer wheel scrolls it. It creates no focus stop or group; on an `HStack` it is ignored with a load-time diagnostic. */
+  export type ScrollProp = { maxHeight: number };
   /** Props for `VStack`/`HStack`. `gap` and `padding` default to 0; `align` defaults to `"start"`; `width` fixes the stack width in logical-reference pixels; optional `fill`/`border` draw a backdrop behind the arranged children. Stack containers may declare `localState`; stack and grid containers both accept `visibleWhen` and `role`. */
-  export type StackProps = { gap?: WidgetSpacing; padding?: WidgetSpacing; align?: WidgetAlign; width?: number; id?: string; focusNeighbors?: FocusNeighborsProp; focus?: FocusPolicyProp; fill?: WidgetColor; border?: BorderProp; localState?: { scope: string; cells: Record<string, CellInit> }; visibleWhen?: Predicate; role?: WidgetRole };
+  export type StackProps = { gap?: WidgetSpacing; padding?: WidgetSpacing; align?: WidgetAlign; width?: number; scroll?: ScrollProp; id?: string; focusNeighbors?: FocusNeighborsProp; focus?: FocusPolicyProp; fill?: WidgetColor; border?: BorderProp; localState?: { scope: string; cells: Record<string, CellInit> }; visibleWhen?: Predicate; role?: WidgetRole };
   /** Props for `Grid`. `cols` is required and must be an integer >= 1. Children flow row-major across columns; grid currently has no backdrop fill/border and no `localState`. */
-  export type GridProps = { gap?: WidgetSpacing; padding?: WidgetSpacing; align?: WidgetAlign; id?: string; focusNeighbors?: FocusNeighborsProp; focus?: FocusPolicyProp; cols: number; visibleWhen?: Predicate; role?: WidgetRole };
+  export type GridProps = { gap?: WidgetSpacing; padding?: WidgetSpacing; align?: WidgetAlign; id?: string; focusNeighbors?: FocusNeighborsProp; focus?: FocusPolicyProp; cols: number; scroll?: ScrollProp; visibleWhen?: Predicate; role?: WidgetRole };
 
   /** A vertical stack (`vstack`): `children` is a POSITIONAL second argument. */
   export function VStack(props?: StackProps, children?: WidgetDescriptor[]): WidgetDescriptor;

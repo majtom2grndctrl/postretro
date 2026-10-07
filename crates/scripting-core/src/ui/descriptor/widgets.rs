@@ -286,6 +286,11 @@ pub struct ContainerWidget {
         deserialize_with = "deserialize_optional_stack_width"
     )]
     pub width: Option<f32>,
+    /// Optional vertical scroll viewport. Honored on a `VStack`; an `HStack`
+    /// ignores it with a registration-time diagnostic (horizontal scrolling is
+    /// a non-goal). Creates no focus stop or group.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scroll: Option<ScrollProps>,
     /// Optional backdrop fill (linear RGBA), drawn beneath the children.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fill: Option<ColorValue>,
@@ -334,6 +339,43 @@ where
     validate_stack_width(Option::<f32>::deserialize(deserializer)?).map_err(D::Error::custom)
 }
 
+/// A container's vertical scroll viewport (`scroll: { maxHeight }`). The
+/// container sizes to its content up to `max_height` logical-reference pixels,
+/// then clips its children and scrolls vertically. The offset is retained-UI
+/// presentation state; nothing here is authoritative.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ScrollProps {
+    #[serde(deserialize_with = "deserialize_scroll_max_height")]
+    pub max_height: f32,
+}
+
+/// Validate an authored `scroll.maxHeight`: a finite number greater than zero.
+/// Shared by the serde boundary and both script bridges.
+pub(crate) fn validate_scroll_max_height(max_height: f32) -> Result<f32, String> {
+    if !max_height.is_finite() || max_height <= 0.0 {
+        return Err("`scroll.maxHeight` must be a finite number greater than zero".to_string());
+    }
+    Ok(max_height)
+}
+
+/// The one diagnostic for `scroll` authored on an `HStack`, which is ignored
+/// (horizontal scrolling is a non-goal). Both script bridges and the retained
+/// UI's registration check emit it, so the wording stays in one place.
+pub fn warn_hstack_scroll_ignored(id: Option<&str>) {
+    let id = id.unwrap_or("<no id>");
+    log::warn!(
+        "[UI] HStack '{id}' authors `scroll`; ignored (only VStack and Grid scroll, vertically)"
+    );
+}
+
+fn deserialize_scroll_max_height<'de, D>(deserializer: D) -> Result<f32, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    validate_scroll_max_height(f32::deserialize(deserializer)?).map_err(D::Error::custom)
+}
+
 /// Grid container. Like a stack but flows `children` across a fixed number of
 /// columns. Shares the stack fields; adds `cols`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -343,6 +385,9 @@ pub struct GridWidget {
     pub padding: SpacingValue,
     pub align: Align,
     pub cols: u32,
+    /// Optional vertical scroll viewport. See `ContainerWidget::scroll`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scroll: Option<ScrollProps>,
     /// Authored stable id (M13 Goal F, Task 3). See `TextWidget::id`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,

@@ -217,6 +217,7 @@ fn image_size_generation_change_remeasures_cached_missing_image() {
         &no_slots(),
         &no_cells(),
         crate::tree::TweenClock::easing(0.0),
+        crate::tree::ScrollInput::default(),
     );
     assert_eq!(ui.recompute_count(), 1);
     assert_eq!(missing.images[0].1.instances[0].rect[2], 0.0);
@@ -231,6 +232,7 @@ fn image_size_generation_change_remeasures_cached_missing_image() {
         &no_slots(),
         &no_cells(),
         crate::tree::TweenClock::easing(0.0),
+        crate::tree::ScrollInput::default(),
     );
 
     assert_eq!(

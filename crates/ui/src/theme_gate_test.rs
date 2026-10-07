@@ -223,6 +223,7 @@ fn unknown_spacing_token_warns_exactly_once_per_build() {
             padding: SpacingValue::Literal(0.0),
             align: Align::Start,
             width: None,
+            scroll: None,
             fill: None,
             border: None,
             id: None,

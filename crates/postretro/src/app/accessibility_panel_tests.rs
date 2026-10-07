@@ -52,6 +52,7 @@ fn rect(id: &str, interaction: NodeInteraction) -> FocusRect {
         checked: None,
         disabled: false,
         tablist: None,
+        clip: None,
     }
 }
 

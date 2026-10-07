@@ -474,6 +474,7 @@ fn mixed_tree(scope: &str) -> AnchoredTree {
             padding: SpacingValue::Literal(0.0),
             align: Align::Start,
             width: None,
+            scroll: None,
             fill: None,
             border: None,
             id: None,

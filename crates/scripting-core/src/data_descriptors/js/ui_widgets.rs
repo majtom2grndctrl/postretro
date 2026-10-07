@@ -3,7 +3,8 @@
 
 use super::super::*;
 use crate::ui::descriptor::{
-    BarExitFade, RingRadiusRange, SliderValueDisplay, validate_stack_width,
+    BarExitFade, RingRadiusRange, ScrollProps, SliderValueDisplay, validate_scroll_max_height,
+    validate_stack_width, warn_hstack_scroll_ignored,
 };
 
 // --- JS UI deserialization --------------------------------------------------
@@ -64,8 +65,8 @@ pub fn widget_from_js<'js>(ctx: &Ctx<'js>, value: JsValue<'js>) -> Result<Widget
         "text" => Widget::Text(text_widget_from_js(ctx, &obj)?),
         "panel" => Widget::Panel(panel_widget_from_js(ctx, &obj)?),
         "image" => Widget::Image(image_widget_from_js(&obj)?),
-        "vstack" => Widget::VStack(container_widget_from_js(ctx, &obj)?),
-        "hstack" => Widget::HStack(container_widget_from_js(ctx, &obj)?),
+        "vstack" => Widget::VStack(container_widget_from_js(ctx, &obj, true)?),
+        "hstack" => Widget::HStack(container_widget_from_js(ctx, &obj, false)?),
         "grid" => Widget::Grid(grid_widget_from_js(ctx, &obj)?),
         "spacer" => Widget::Spacer(spacer_widget_from_js(&obj)?),
         "button" => Widget::Button(button_widget_from_js(ctx, &obj)?),
@@ -130,16 +131,29 @@ pub fn image_widget_from_js<'js>(obj: &Object<'js>) -> Result<ImageWidget, Descr
     })
 }
 
+/// Read a `vstack` (`vertical`) or `hstack` container. An `hstack` never
+/// scrolls: an authored `scroll` draws one registration-time warning and is
+/// dropped unread (horizontal scrolling is a non-goal).
 pub fn container_widget_from_js<'js>(
     ctx: &Ctx<'js>,
     obj: &Object<'js>,
+    vertical: bool,
 ) -> Result<ContainerWidget, DescriptorError> {
+    let scroll = if vertical {
+        scroll_from_js(obj)?
+    } else {
+        if optional_value_js(obj, "scroll")?.is_some() {
+            warn_hstack_scroll_ignored(get_optional_string_js(obj, "id")?.as_deref());
+        }
+        None
+    };
     Ok(ContainerWidget {
         gap: spacing_value_from_js(obj, "gap")?,
         padding: spacing_value_from_js(obj, "padding")?,
         align: parse_align(&get_required_string_js(obj, "align")?)?,
         width: validate_stack_width(get_optional_f32_js(obj, "width")?)
             .map_err(|reason| DescriptorError::InvalidShape { reason })?,
+        scroll,
         fill: color_value_opt_from_js(obj, "fill")?,
         border: border_from_js(obj, "border")?,
         id: get_optional_string_js(obj, "id")?,
@@ -150,6 +164,17 @@ pub fn container_widget_from_js<'js>(
         role: role_opt_from_js(obj)?,
         children: children_from_js(ctx, obj)?,
     })
+}
+
+/// Read a container's optional `scroll: { maxHeight }` viewport. A present
+/// `maxHeight` that is not a finite number greater than zero is a named error.
+fn scroll_from_js<'js>(obj: &Object<'js>) -> Result<Option<ScrollProps>, DescriptorError> {
+    let Some(scroll) = optional_object_js(obj, "scroll")? else {
+        return Ok(None);
+    };
+    let max_height = validate_scroll_max_height(get_required_f32_js(&scroll, "maxHeight")?)
+        .map_err(|reason| DescriptorError::InvalidShape { reason })?;
+    Ok(Some(ScrollProps { max_height }))
 }
 
 /// Read a container's optional `localState` declaration (M13 G1b, Task 5): the
@@ -205,6 +230,7 @@ pub fn grid_widget_from_js<'js>(
         padding: spacing_value_from_js(obj, "padding")?,
         align: parse_align(&get_required_string_js(obj, "align")?)?,
         cols: get_required_u32_js(obj, "cols")?,
+        scroll: scroll_from_js(obj)?,
         id: get_optional_string_js(obj, "id")?,
         focus_neighbors: focus_neighbors_from_js(obj)?,
         focus: focus_policy_from_js(obj)?,

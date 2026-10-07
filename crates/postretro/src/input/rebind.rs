@@ -36,6 +36,38 @@ pub enum RebindProposal {
     Unchanged,
 }
 
+/// The layers a rebind is checked against: the current effective table and
+/// what it was built from.
+#[derive(Clone, Copy)]
+struct Layers<'a> {
+    table: &'a EffectiveTable,
+    author: &'a AuthorLayer,
+    player: &'a PlayerLayer,
+    facts: RelevanceFacts,
+    swap: bool,
+}
+
+impl<'a> Layers<'a> {
+    /// The saved row `command` shows on `class`, with the row slot behind each
+    /// shown input. `None` when the command has no saved row there, or when
+    /// the row is broken and the table shows the guarded default given back
+    /// over it, which no row slot is behind.
+    fn saved_row(
+        &self,
+        command: Command,
+        class: DeviceClass,
+    ) -> Option<(&'a [Option<PhysicalInput>], Vec<usize>)> {
+        if self.table.guard_restored().contains(&(command, class)) {
+            return None;
+        }
+        let player: &'a PlayerLayer = self.player;
+        let row = player
+            .rows
+            .get(&(swapped_command(command, class, self.swap), class))?;
+        Some((row.as_slice(), self.table.slots(command, class)))
+    }
+}
+
 /// The player row a slot write produces from the current effective inputs:
 /// the slot takes `input`, and every other slot keeps what it shows now. An
 /// input already in another slot of the row trades places with the slot's
@@ -56,6 +88,42 @@ fn row_with(
     row.into_iter().map(Some).collect()
 }
 
+/// `row_with` over a saved row: shown slot `slot` maps through `slots` to the
+/// row slot it shows, which takes `input`. Every other row slot keeps what it
+/// holds, so an unreadable slot survives with its saved string, and no slot
+/// moves: a write past the shown slots appends. An input the row holds
+/// already (saved, or shown as an unreadable slot's fallback) trades places
+/// with what the slot shows. Only a write to an unreadable slot itself, or a
+/// trade with the fallback it shows, replaces it, in place.
+fn saved_row_with(
+    row: &[Option<PhysicalInput>],
+    slots: &[usize],
+    shown: &[PhysicalInput],
+    slot: usize,
+    input: PhysicalInput,
+) -> Vec<Option<PhysicalInput>> {
+    let mut edited = row.to_vec();
+    let from = row
+        .iter()
+        .position(|stored| *stored == Some(input))
+        .or_else(|| {
+            let shown_at = shown.iter().position(|bound| *bound == input)?;
+            slots.get(shown_at).copied()
+        });
+    match (from, slots.get(slot).copied()) {
+        (Some(from), Some(target)) => {
+            edited[from] = shown.get(slot).copied().or(row[target]);
+            edited[target] = Some(input);
+        }
+        // Held already, and the slot is past what the row shows: nothing
+        // moves.
+        (Some(_), None) => {}
+        (None, Some(target)) => edited[target] = Some(input),
+        (None, None) => edited.push(Some(input)),
+    }
+    edited
+}
+
 /// Build what binding `input` to `command`'s `slot` on `class` would do.
 ///
 /// `table` is the current effective table (built from `author`, `player`,
@@ -66,7 +134,8 @@ fn row_with(
 /// unbound is refused, as is one whose replace would empty a guarded command's
 /// row: a guarded row is never written empty. With the swap on, a gamepad
 /// capture for confirm or cancel is stored on the counterpart command, so the
-/// captured button drives the command the row shows.
+/// captured button drives the command the row shows. Edits apply to the saved
+/// rows, so an unreadable slot the edit does not reach keeps its saved string.
 #[allow(clippy::too_many_arguments)]
 pub fn propose_rebind(
     table: &EffectiveTable,
@@ -79,13 +148,31 @@ pub fn propose_rebind(
     slot: usize,
     input: PhysicalInput,
 ) -> RebindProposal {
+    let layers = Layers {
+        table,
+        author,
+        player,
+        facts,
+        swap,
+    };
     let shown = table.inputs(command, class);
     if shown.get(slot) == Some(&input) {
-        return keep_shown(table, author, player, facts, swap, command, class, &shown);
+        return keep_shown(layers, command, class, &shown);
     }
-    let row = row_with(&shown, slot, input);
-    if row.iter().copied().eq(shown.iter().copied().map(Some)) {
-        return keep_shown(table, author, player, facts, swap, command, class, &shown);
+    let (current, row) = match layers.saved_row(command, class) {
+        Some((saved, slots)) => (
+            saved.to_vec(),
+            saved_row_with(saved, &slots, &shown, slot, input),
+        ),
+        None => (
+            shown.iter().copied().map(Some).collect(),
+            row_with(&shown, slot, input),
+        ),
+    };
+    // An input the row holds but a collision drops still goes through the
+    // checks below, so the player learns what holds it.
+    if row == current && shown.contains(&input) {
+        return keep_shown(layers, command, class, &shown);
     }
     let mut proposed = player.clone();
     proposed
@@ -116,25 +203,27 @@ pub fn propose_rebind(
     for holder in &holders {
         let key = (swapped_command(*holder, class, swap), class);
         let live = table.relevance(*holder) == Relevance::Relevant;
-        let remaining: Vec<Option<PhysicalInput>> = if live {
-            table
+        // A saved row gives up just this input: only its readable slots
+        // holding it go. An unreadable slot whose fallback is the input stays
+        // saved; the new binding beats that fallback, which flags the holder.
+        let saved = if live {
+            layers.saved_row(*holder, class).map(|(row, _)| row)
+        } else {
+            player.rows.get(&key).map(Vec::as_slice)
+        };
+        let remaining: Vec<Option<PhysicalInput>> = match saved {
+            Some(row) => row
+                .iter()
+                .copied()
+                .filter(|stored| *stored != Some(input))
+                .collect(),
+            None if live => table
                 .inputs(*holder, class)
                 .into_iter()
                 .filter(|bound| *bound != input)
                 .map(Some)
-                .collect()
-        } else {
-            // A dormant saved row gives up just this input.
-            player
-                .rows
-                .get(&key)
-                .map(|row| {
-                    row.iter()
-                        .copied()
-                        .filter(|stored| *stored != Some(input))
-                        .collect()
-                })
-                .unwrap_or_default()
+                .collect(),
+            None => Vec::new(),
         };
         // Taking a guarded command's last input would write its row empty.
         // A break the current table already masks (its default given back
@@ -164,28 +253,34 @@ pub fn propose_rebind(
 /// guarded command's default given back over the command's own broken saved
 /// row (a hand edit), keeping writes the shown row, so the next save replaces
 /// the broken row instead of it being restored, with a warning, every load.
-#[allow(clippy::too_many_arguments)]
+/// The whole broken row goes, unreadable slots included: the given-back
+/// default is what the player kept, and no row slot is behind it.
 fn keep_shown(
-    table: &EffectiveTable,
-    author: &AuthorLayer,
-    player: &PlayerLayer,
-    facts: RelevanceFacts,
-    swap: bool,
+    layers: Layers<'_>,
     command: Command,
     class: DeviceClass,
     shown: &[PhysicalInput],
 ) -> RebindProposal {
-    let key = (swapped_command(command, class, swap), class);
-    if !table.guard_restored().contains(&(command, class)) || !player.rows.contains_key(&key) {
+    let key = (swapped_command(command, class, layers.swap), class);
+    if !layers.table.guard_restored().contains(&(command, class))
+        || !layers.player.rows.contains_key(&key)
+    {
         return RebindProposal::Unchanged;
     }
-    let mut kept = player.clone();
+    let mut kept = layers.player.clone();
     kept.rows
         .insert(key, shown.iter().copied().map(Some).collect());
-    if kept == *player {
+    if kept == *layers.player {
         return RebindProposal::Unchanged;
     }
-    check_player_layer(table, author, kept, facts, swap)
+    check_player_layer(
+        layers.table,
+        layers.author,
+        kept,
+        layers.facts,
+        layers.swap,
+        None,
+    )
 }
 
 /// The guarded command whose given-back default drops the new binding in
@@ -283,18 +378,25 @@ fn new_guard_break(
 }
 
 /// Check a player layer against the guard before it applies: `Clean` to
-/// apply it, or `Refused` when it newly leaves a guarded command unbound. A
-/// conflict dialog's replace runs through this when the player answers, since
-/// the table may have changed (a hot reload) while the dialog was open.
+/// apply it, or `Refused` when it newly leaves a guarded command unbound, or
+/// when `added` (the binding the layer adds: command, class, input) would
+/// only land behind a guarded default given back. A conflict dialog's replace
+/// runs through this when the player answers, since the table may have
+/// changed (a hot reload) while the dialog was open.
 pub fn check_player_layer(
     table: &EffectiveTable,
     author: &AuthorLayer,
     player: PlayerLayer,
     facts: RelevanceFacts,
     swap: bool,
+    added: Option<(Command, DeviceClass, PhysicalInput)>,
 ) -> RebindProposal {
     let candidate = EffectiveTable::build(author, &player, facts, swap);
-    match new_guard_break(&candidate, table) {
+    let refusal = new_guard_break(&candidate, table).or_else(|| {
+        let (command, class, input) = added?;
+        lands_behind_guard(&candidate, command, class, input)
+    });
+    match refusal {
         Some((unbound, class)) => RebindProposal::Refused { unbound, class },
         None => RebindProposal::Clean { player },
     }
@@ -322,7 +424,7 @@ pub fn reset_command(
     if reset == *player {
         return RebindProposal::Unchanged;
     }
-    check_player_layer(table, author, reset, facts, swap)
+    check_player_layer(table, author, reset, facts, swap, None)
 }
 
 #[cfg(test)]
@@ -535,7 +637,7 @@ mod tests {
         let mut stale = PlayerLayer::default();
         stale.rows.insert((Command::NavCancel, PAD), Vec::new());
         assert_eq!(
-            check_player_layer(&table, &author, stale, facts, false),
+            check_player_layer(&table, &author, stale, facts, false, None),
             RebindProposal::Refused {
                 unbound: Command::NavCancel,
                 class: PAD
@@ -691,6 +793,147 @@ mod tests {
                 (key(KeyCode::KeyN), ActivatorKind::Press),
                 (key(KeyCode::ShiftLeft), ActivatorKind::Hold),
             ]
+        );
+    }
+
+    // Regression: the edited row was built from what the panel shows, which
+    // reads an unreadable slot as its fallback default, so capturing into
+    // another slot saved the default's name over the player's string.
+    #[test]
+    fn capturing_into_another_slot_keeps_an_unreadable_slot() {
+        let author = AuthorLayer::default();
+        let mut player = PlayerLayer::default();
+        player
+            .rows
+            .insert((Command::Jump, KBM), vec![None, Some(key(KeyCode::KeyJ))]);
+        let facts = RelevanceFacts::EVERY;
+        let table = EffectiveTable::build(&author, &player, facts, false);
+        assert_eq!(
+            table.inputs(Command::Jump, KBM),
+            [key(KeyCode::Space), key(KeyCode::KeyJ)],
+            "the unreadable slot shows its default"
+        );
+        let edited = applied(propose(
+            &author,
+            &player,
+            facts,
+            Command::Jump,
+            KBM,
+            1,
+            key(KeyCode::KeyK),
+        ));
+        assert_eq!(
+            edited.rows[&(Command::Jump, KBM)],
+            [None, Some(key(KeyCode::KeyK))]
+        );
+
+        // Capturing into the unreadable slot itself replaces it in place.
+        let overwritten = applied(propose(
+            &author,
+            &player,
+            facts,
+            Command::Jump,
+            KBM,
+            0,
+            key(KeyCode::KeyK),
+        ));
+        assert_eq!(
+            overwritten.rows[&(Command::Jump, KBM)],
+            [Some(key(KeyCode::KeyK)), Some(key(KeyCode::KeyJ))]
+        );
+    }
+
+    #[test]
+    fn a_replace_on_a_live_holder_keeps_its_unreadable_slot() {
+        let author = AuthorLayer::default();
+        let mut player = PlayerLayer::default();
+        player
+            .rows
+            .insert((Command::Jump, KBM), vec![None, Some(key(KeyCode::KeyJ))]);
+        let facts = RelevanceFacts::EVERY;
+        let proposal = propose(
+            &author,
+            &player,
+            facts,
+            Command::Use,
+            KBM,
+            0,
+            key(KeyCode::KeyJ),
+        );
+        let RebindProposal::Conflict { with, replace } = proposal.clone() else {
+            panic!("J drives jump, so the player is asked: {proposal:?}");
+        };
+        assert_eq!(with, [Command::Jump]);
+        assert_eq!(replace.rows[&(Command::Jump, KBM)], [None]);
+        let table = EffectiveTable::build(&author, &replace, facts, false);
+        assert_eq!(table.inputs(Command::Jump, KBM), [key(KeyCode::Space)]);
+        assert_eq!(table.inputs(Command::Use, KBM), [key(KeyCode::KeyJ)]);
+    }
+
+    #[test]
+    fn a_replace_of_the_input_an_unreadable_slot_falls_back_to_leaves_it_saved_and_flagged() {
+        // Jump's unreadable slot shows Space; use takes Space, and the slot
+        // stays saved, its fallback lost to the player's binding.
+        let author = AuthorLayer::default();
+        let mut player = PlayerLayer::default();
+        player.rows.insert((Command::Jump, KBM), vec![None]);
+        let facts = RelevanceFacts::EVERY;
+        let proposal = propose(
+            &author,
+            &player,
+            facts,
+            Command::Use,
+            KBM,
+            0,
+            key(KeyCode::Space),
+        );
+        let RebindProposal::Conflict { with, replace } = proposal.clone() else {
+            panic!("Space drives jump, so the player is asked: {proposal:?}");
+        };
+        assert_eq!(with, [Command::Jump]);
+        assert_eq!(replace.rows[&(Command::Jump, KBM)], [None]);
+        let table = EffectiveTable::build(&author, &replace, facts, false);
+        assert!(table.inputs(Command::Jump, KBM).is_empty());
+        assert!(table.displaced().contains(&(Command::Jump, KBM)));
+    }
+
+    // Regression: the replace check on the player's answer ran only the
+    // guard-break check, which a default already given back passes, so a
+    // binding landing behind menu's given-back Start applied.
+    #[test]
+    fn a_stale_replace_whose_binding_lands_behind_a_given_back_default_is_refused() {
+        let author = AuthorLayer::default();
+        let facts = RelevanceFacts::EVERY;
+        let mut current = PlayerLayer::default();
+        current
+            .rows
+            .insert((Command::Jump, PAD), vec![Some(pad(Button::Start))]);
+        let table = EffectiveTable::build(&author, &current, facts, false);
+        assert_eq!(table.guard_restored(), [(Command::NavMenu, PAD)]);
+        let mut stale = PlayerLayer::default();
+        stale
+            .rows
+            .insert((Command::Shoot, PAD), vec![Some(pad(Button::Start))]);
+        assert!(
+            matches!(
+                check_player_layer(&table, &author, stale.clone(), facts, false, None),
+                RebindProposal::Clean { .. }
+            ),
+            "menu is broken in both tables, so no new break shows"
+        );
+        assert_eq!(
+            check_player_layer(
+                &table,
+                &author,
+                stale,
+                facts,
+                false,
+                Some((Command::Shoot, PAD, pad(Button::Start)))
+            ),
+            RebindProposal::Refused {
+                unbound: Command::NavMenu,
+                class: PAD
+            }
         );
     }
 }

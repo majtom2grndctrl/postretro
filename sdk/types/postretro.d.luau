@@ -1279,7 +1279,7 @@ export type InputActivator =
   --- Fire once the input has been held for `threshold`.
   | "hold"
 
---- One default binding for a command. Players rebind the input only; an input that replaces this default takes its activator.
+--- One default binding for a command. Players rebind the input only: this input keeps its activator wherever it sits, and an input that replaces it takes its activator. A wheel notch always fires on press.
 export type ModInputBinding = {
   --- Physical input name: a W3C `KeyboardEvent.code` (`KeyW`, `ShiftLeft`), a mouse name (`mouse_left`, `wheel_up`, `mouse_x`), or a gamepad position (`south`, `left_shoulder`, `left_stick_press`, `left_stick_x`, `left_stick_up`). An unknown name is diagnosed and the device class falls back.
   input: string,

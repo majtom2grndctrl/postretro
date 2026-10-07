@@ -42,7 +42,7 @@ The owner keeps this as one brief with two stages (epic `research.md` §Brief pi
 - **In co-op, relevance follows the host.** While participating, relevance is the union of local derivation and the installed host tuning. Tuning sites keep no local fallback (`networking.md`), so a client whose registry lacks dash would otherwise leave the host's live dash unbound.
 
 ### Bindings and activators
-- **Activators live on bindings:** `press` (the default), `release`, `tap` (a max time), and `hold` (a min time). The name `activator` (owner) avoids the weapon descriptor's `trigger`. **Authors set activators, and players rebind keys only** (owner): a rebound key inherits its slot's activator, and a slot past the author's list takes `press`.
+- **Activators live on bindings:** `press` (the default), `release`, `tap` (a max time), and `hold` (a min time). The name `activator` (owner) avoids the weapon descriptor's `trigger`. **Authors set activators, and players rebind keys only** (owner). Each input's activator is derived per `context/lib/player_options.md` §6 (Activators): a default input keeps its own activator wherever it sits, a key that replaced a default takes that default's, and any other key, a slot past the author's list, and a wheel notch take `press`.
   - A lone `press` fires on the press edge.
   - A lone `release` fires on key-up.
   - A lone `tap` fires on key-up when the key was held no longer than its max, and otherwise never.
@@ -208,7 +208,7 @@ These rows add to epic AC 19–25, as amended, and to AC 2, 3a–3c, and 10 for 
 - [ ] A player binding of Q to dash, then an author default of Q for reload: Q drives dash only, and reload is flagged in the panel. Without the player row, Q drives reload.
 - [ ] A player press on Q, then an author hold on Q for another command: Q still fires the player's command on the press frame, and the author's command is flagged.
 - [ ] Two mod ids in one shared settings file keep separate rows, and A's overrides do not apply while B is loaded.
-- [ ] A rebound key keeps its slot's author activator.
+- [ ] A rebound key that replaced an author default takes that default's activator; a default moved within its row keeps its own (`context/lib/player_options.md` §6, Activators).
 - [ ] gamepad_look_sensitivity, gamepad_look_dead_zone, gamepad_invert_y, sprint_mode and swap_confirm_cancel save as top-level keys with no accessibility.* slot or panel entry (catalog assertion); hold_timing_scale has both. An unrecognized sprint_mode value falls back to hold for that field alone.
 
 **Activators**

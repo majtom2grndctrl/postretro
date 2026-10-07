@@ -726,8 +726,9 @@ fn a_pad_lost_mid_hold_releases_its_inputs_and_fires_no_pending_hold() {
         "keyboard state is untouched"
     );
 
-    // A button still held when the pad reconnects stays inert until it is
-    // released and pressed again.
+    // A button still held when the pad reconnects and claims the role with
+    // another input stays inert until it is released and pressed again.
+    sys.switch_gamepad_at(&[pad(gilrs::Button::South)], 1.0);
     sys.set_physical_input_at(pad(gilrs::Button::South), true, 1.0);
     assert_eq!(
         sys.snapshot_at(1.01).button(Action::Jump),
@@ -745,7 +746,7 @@ fn a_pad_lost_mid_hold_releases_its_inputs_and_fires_no_pending_hold() {
 #[test]
 fn a_stick_released_while_its_pad_is_away_moves_on_the_next_push() {
     // A stick reports no events, so its suppression lifts only on a polled
-    // release; the disconnect must keep the level that release is read against.
+    // release; the claim must seed the level that release is read against.
     let stick_up =
         PhysicalInput::GamepadAxisHalf(gilrs::Axis::LeftStickY, types::AxisHalf::Positive);
     let mut sys = InputSystem::new(vec![Binding::new(stick_up, Action::MoveForward)]);
@@ -754,6 +755,7 @@ fn a_stick_released_while_its_pad_is_away_moves_on_the_next_push() {
     sys.release_gamepad();
 
     // Reconnected still pushed: inert.
+    sys.switch_gamepad_at(&[stick_up], 1.0);
     sys.set_gamepad_axis_at(gilrs::Axis::LeftStickY, 0.8, 1.0);
     assert_eq!(sys.snapshot_at(1.01).axis_value(Action::MoveForward), 0.0);
     sys.set_gamepad_axis_at(gilrs::Axis::LeftStickY, 0.0, 1.1);
@@ -812,7 +814,6 @@ fn switching_pads_never_refires_a_button_the_first_pad_kept_down() {
     );
 
     // Pad B takes the role while pad A holds South.
-    let held_on_a = sys.gamepad_inputs_down();
     assert_eq!(sys.switch_gamepad_at(&[], 0.1), vec![Action::Jump]);
     sys.set_physical_input_at(south, false, 0.1);
     assert_eq!(
@@ -821,8 +822,8 @@ fn switching_pads_never_refires_a_button_the_first_pad_kept_down() {
         "lifted without a release"
     );
 
-    // Pad A takes the role back, South still down.
-    sys.switch_gamepad_at(&held_on_a, 0.2);
+    // Pad A takes the role back with another input, South still down.
+    sys.switch_gamepad_at(&[south], 0.2);
     sys.set_physical_input_at(south, true, 0.2);
     for t in [0.21, 0.3] {
         assert_eq!(
@@ -858,6 +859,140 @@ fn a_pad_taking_the_role_moves_from_its_first_push() {
     sys.set_physical_input_at(south, false, 0.1);
     sys.set_gamepad_axis_at(gilrs::Axis::LeftStickY, 0.8, 0.1);
     assert!((sys.snapshot_at(0.11).axis_value(Action::MoveForward) - 0.8).abs() < 1e-6);
+}
+
+// Regression: the switch kept the outgoing pad's South level down, so the
+// press that claimed the role back recorded no edge and did nothing.
+#[test]
+fn a_pad_reclaiming_the_role_with_a_button_it_released_while_idle_presses_it() {
+    let south = gilrs::Button::South;
+    let mut sys = InputSystem::new(vec![Binding::new(pad(south), Action::Jump)]);
+    sys.handle_gamepad_button_event_at(south, true, 0.0);
+    assert_eq!(
+        sys.snapshot_at(0.01).button(Action::Jump),
+        ButtonState::Pressed
+    );
+
+    // Pad B claims with a button of its own while pad A holds South; A then
+    // releases South while idle, which reaches nothing.
+    assert_eq!(sys.switch_gamepad_at(&[], 0.1), vec![Action::Jump]);
+    assert_eq!(
+        sys.snapshot_at(0.11).button(Action::Jump),
+        ButtonState::Inactive
+    );
+
+    // Pad A presses South to claim the role back: the claiming press acts.
+    sys.switch_gamepad_at(&[], 0.2);
+    sys.handle_gamepad_button_event_at(south, true, 0.2);
+    assert_eq!(
+        sys.snapshot_at(0.21).button(Action::Jump),
+        ButtonState::Pressed
+    );
+}
+
+// Regression: a disconnect kept the held South level down, so after a release
+// while unplugged the first press on reconnect recorded no edge.
+#[test]
+fn a_button_released_while_its_pad_was_unplugged_presses_on_reconnect() {
+    let south = gilrs::Button::South;
+    let mut sys = InputSystem::new(vec![Binding::new(pad(south), Action::Jump)]);
+    sys.handle_gamepad_button_event_at(south, true, 0.0);
+    let _ = sys.snapshot_at(0.01);
+    assert_eq!(sys.release_gamepad(), vec![Action::Jump]);
+    assert_eq!(
+        sys.snapshot_at(0.5).button(Action::Jump),
+        ButtonState::Inactive
+    );
+
+    // Reconnected, the pad claims the role with a South press.
+    sys.switch_gamepad_at(&[], 1.0);
+    sys.handle_gamepad_button_event_at(south, true, 1.0);
+    sys.set_physical_input_at(pad(south), true, 1.0);
+    assert_eq!(
+        sys.snapshot_at(1.01).button(Action::Jump),
+        ButtonState::Pressed
+    );
+}
+
+// Regression: the incoming pad's press of a button the outgoing pad still held
+// was suppressed as if the incoming pad had held it through the switch.
+#[test]
+fn a_pad_claiming_with_a_button_the_outgoing_pad_holds_presses_it() {
+    let south = gilrs::Button::South;
+    let mut sys = InputSystem::new(vec![Binding::new(pad(south), Action::Jump)]);
+    sys.handle_gamepad_button_event_at(south, true, 0.0);
+    let _ = sys.snapshot_at(0.01);
+    assert_eq!(sys.snapshot_at(0.1).button(Action::Jump), ButtonState::Held);
+
+    // Pad B presses South, claiming the role while pad A still holds it.
+    assert_eq!(sys.switch_gamepad_at(&[], 0.2), vec![Action::Jump]);
+    sys.handle_gamepad_button_event_at(south, true, 0.2);
+    sys.set_physical_input_at(pad(south), true, 0.2);
+    assert_eq!(
+        sys.snapshot_at(0.21).button(Action::Jump),
+        ButtonState::Pressed
+    );
+}
+
+#[test]
+fn a_button_the_incoming_pad_holds_stays_inert_through_its_event_release() {
+    let south = gilrs::Button::South;
+    let mut sys = InputSystem::new(vec![
+        Binding::new(pad(south), Action::Jump),
+        Binding::new(pad(gilrs::Button::East), Action::Use)
+            .with_activator(Activator::new(ActivatorKind::Release)),
+    ]);
+    sys.switch_gamepad_at(&[pad(south), pad(gilrs::Button::East)], 0.0);
+    sys.set_physical_input_at(pad(south), true, 0.0);
+    sys.set_physical_input_at(pad(gilrs::Button::East), true, 0.0);
+    assert_eq!(
+        sys.snapshot_at(0.01).button(Action::Jump),
+        ButtonState::Inactive
+    );
+
+    sys.handle_gamepad_button_event_at(south, false, 0.1);
+    sys.handle_gamepad_button_event_at(gilrs::Button::East, false, 0.1);
+    let released = sys.snapshot_at(0.11);
+    assert_eq!(released.button(Action::Jump), ButtonState::Inactive);
+    assert_eq!(
+        released.button(Action::Use),
+        ButtonState::Inactive,
+        "a release-bound command never fires on a held-through release"
+    );
+
+    sys.handle_gamepad_button_event_at(south, true, 0.2);
+    assert_eq!(
+        sys.snapshot_at(0.21).button(Action::Jump),
+        ButtonState::Pressed
+    );
+}
+
+#[test]
+fn a_stick_the_incoming_pad_releases_before_its_first_poll_moves_on_the_next_push() {
+    let stick_up =
+        PhysicalInput::GamepadAxisHalf(gilrs::Axis::LeftStickY, types::AxisHalf::Positive);
+    let mut sys = InputSystem::new(vec![Binding::new(stick_up, Action::MoveForward)]);
+    sys.switch_gamepad_at(&[stick_up], 0.0);
+    sys.set_gamepad_axis_at(gilrs::Axis::LeftStickY, 0.0, 0.0);
+    let _ = sys.snapshot_at(0.01);
+    sys.set_gamepad_axis_at(gilrs::Axis::LeftStickY, 0.8, 0.1);
+    assert!((sys.snapshot_at(0.11).axis_value(Action::MoveForward) - 0.8).abs() < 1e-6);
+}
+
+// Regression: a press resolved by the switch's own edge flush stayed in the
+// frame's press record, so the lifted command read Pressed, then Released.
+#[test]
+fn a_press_resolved_in_the_drain_that_switches_pads_never_reads_pressed() {
+    let south = gilrs::Button::South;
+    let mut sys = InputSystem::new(vec![Binding::new(pad(south), Action::Jump)]);
+    sys.handle_gamepad_button_event_at(south, true, 0.0);
+    assert_eq!(sys.switch_gamepad_at(&[], 0.01), vec![Action::Jump]);
+    for t in [0.02, 0.03] {
+        assert_eq!(
+            sys.snapshot_at(t).button(Action::Jump),
+            ButtonState::Inactive
+        );
+    }
 }
 
 // --- Wheel capture ---

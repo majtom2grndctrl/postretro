@@ -390,7 +390,7 @@ fn register_input_types(registry: &mut PrimitiveRegistry) {
         .finish();
     registry
         .register_type("ModInputBinding")
-        .doc("One default binding for a command. Players rebind the input only; an input that replaces this default takes its activator.")
+        .doc("One default binding for a command. Players rebind the input only: this input keeps its activator wherever it sits, and an input that replaces it takes its activator. A wheel notch always fires on press.")
         .field(
             "input",
             "String",

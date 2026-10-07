@@ -868,3 +868,50 @@ fn an_input_that_replaced_a_default_takes_its_activator_wherever_another_default
         ]
     );
 }
+
+// Rows store keys only: adding the default back reads as a swap, so the input
+// that replaced it loses its activator (player_options.md §6, Activators).
+#[test]
+fn adding_a_default_back_into_a_row_turns_the_input_that_replaced_it_into_a_press() {
+    let layer = author(&[(
+        Command::Use,
+        KBM,
+        vec![with(key(KeyCode::KeyE), ActivatorKind::Tap, 0.2)],
+    )]);
+    let use_kbm = |row: Vec<Option<PhysicalInput>>| -> Vec<(PhysicalInput, ActivatorKind)> {
+        build(&layer, &player(&[(Command::Use, KBM, row)]), all_facts())
+            .entries()
+            .iter()
+            .filter(|e| e.command == Command::Use && e.class == KBM)
+            .map(|e| (e.input, e.activator.kind))
+            .collect()
+    };
+    assert_eq!(
+        use_kbm(vec![Some(key(KeyCode::KeyF))]),
+        [(key(KeyCode::KeyF), ActivatorKind::Tap)]
+    );
+    assert_eq!(
+        use_kbm(vec![Some(key(KeyCode::KeyF)), Some(key(KeyCode::KeyE))]),
+        [
+            (key(KeyCode::KeyF), ActivatorKind::Press),
+            (key(KeyCode::KeyE), ActivatorKind::Tap),
+        ]
+    );
+}
+
+#[test]
+fn slots_index_the_saved_row_and_skip_an_unreadable_slot_with_no_default() {
+    // Jump has one default, so the unreadable slot 1 shows nothing and slot 2
+    // keeps its own index.
+    let rows = player(&[(
+        Command::Jump,
+        KBM,
+        vec![None, None, Some(key(KeyCode::KeyJ))],
+    )]);
+    let table = build(&AuthorLayer::default(), &rows, all_facts());
+    assert_eq!(
+        table.inputs(Command::Jump, KBM),
+        [key(KeyCode::Space), key(KeyCode::KeyJ)]
+    );
+    assert_eq!(table.slots(Command::Jump, KBM), [0, 2]);
+}

@@ -342,17 +342,14 @@ impl ScriptRuntime {
         Vec::new()
     }
 
-    pub fn latest_staged_manifest_generation(&self) -> Option<u64> {
-        #[cfg(debug_assertions)]
-        {
-            self.staged_manifest_lane
-                .as_ref()
-                .map(|lane| lane.latest_requested_generation())
-        }
-        #[cfg(not(debug_assertions))]
-        {
-            None
-        }
+    /// Generation of the latest staged build requested, not necessarily
+    /// committed, or `None` when no staged lane exists. Its one reader, the
+    /// stale-result check, exists only in debug builds, and so does this.
+    #[cfg(debug_assertions)]
+    pub(crate) fn latest_staged_manifest_generation(&self) -> Option<u64> {
+        self.staged_manifest_lane
+            .as_ref()
+            .map(|lane| lane.latest_requested_generation())
     }
 
     /// Generation of the latest staged build that committed, or `None` if none

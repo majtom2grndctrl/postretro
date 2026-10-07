@@ -2166,7 +2166,6 @@ impl ApplicationHandler for App {
                     }
                     return;
                 }
-                session.input_system.reset_capture_wheel();
                 let forwards_to_gameplay = session
                     .ui_dispatch
                     .dispatch_event(None)

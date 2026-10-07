@@ -2430,7 +2430,9 @@ missing from the controls panel, never part of a conflict, and draws no glyph.
 command ID written twice follows the language: the last one wins, as in any
 object or table. A binding that is not an object
 with an `input` string, an unknown command ID, an unknown input name, an
-activator the command refuses,
+activator the command refuses, a `threshold` that is not a positive finite
+number, an activator other than `press` on a wheel notch, a `tap` whose
+`threshold` runs past a `hold`'s on the same input (any command's),
 two of the block's bindings that conflict, or defaults that would leave
 `nav_confirm`, `nav_cancel` or `nav_menu` unbound are each reported at load.
 In every case but a conflict, that command's class falls back to the engine
@@ -2955,8 +2957,9 @@ Button({ id: "controls", label: "CONTROLS", onPress: OPEN_CONTROLS_ACTION });
 The panel lists every relevant command by the `input` block's categories,
 order and labels, with at least two keyboard-and-mouse and two gamepad slots per
 command, each on its own row and showing its activator. Players cannot change
-activators: an input that replaces one of the mod's defaults takes that
-default's activator, and any other input fires on press. Each command has RESET, and RESET ALL returns every command to the
+activators: a default input keeps its own activator wherever it sits, an
+input that replaces one of the mod's defaults takes that default's activator,
+any other input fires on press, and a wheel notch always fires on press. Each command has RESET, and RESET ALL returns every command to the
 mod's defaults.
 
 Choosing a slot opens a prompt that captures the next key, button, stick

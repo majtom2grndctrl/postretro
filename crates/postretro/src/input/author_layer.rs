@@ -256,7 +256,7 @@ fn diagnose_tap_past_hold(layer: &mut AuthorLayer, fell_back: &mut Vec<(Command,
 /// checked: `nav_cancel` on `start` shares menu's button with the swap off but
 /// drives confirm with it on, and confirm and menu conflict.
 fn diagnose_guard(layer: &mut AuthorLayer, fell_back: &mut Vec<(Command, DeviceClass)>) {
-    // Every pass that continues removed an author entry or binding, so the
+    // Every pass that runs again removed an author entry or binding, so the
     // loop ends. A fallback or a drop can break another guarded command, which
     // the next pass sees.
     loop {

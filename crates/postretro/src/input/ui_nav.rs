@@ -70,7 +70,8 @@ impl NavIntent {
 /// What a key-down event means while a text-entry tree is open. The input stage
 /// resolves the LOGICAL key first so the control keys (Backspace / Enter /
 /// Escape) are matched by identity — never by their `KeyEvent.text`, which on
-/// some platforms delivers Backspace as `\u{8}` and Enter as `\r`. Only a non-control printable `text` falls through to `Append`.
+/// some platforms delivers Backspace as `\u{8}` and Enter as `\r`. Only a
+/// non-control printable `text` falls through to `Append`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TextEntryKey {
     /// Append the captured printable text to the bound slot.

@@ -440,6 +440,15 @@ impl InputSystem {
     /// poll through `set_physical_input` then reconciles the level.
     pub fn handle_gamepad_button_event(&mut self, button: gilrs::Button, pressed: bool, age: f64) {
         let t = (self.now() - age.max(0.0)).max(0.0);
+        self.handle_gamepad_button_event_at(button, pressed, t);
+    }
+
+    pub(crate) fn handle_gamepad_button_event_at(
+        &mut self,
+        button: gilrs::Button,
+        pressed: bool,
+        t: f64,
+    ) {
         self.record_edge(
             PhysicalInput::GamepadButton(button),
             pressed,
@@ -494,60 +503,53 @@ impl InputSystem {
 
     /// The active gamepad disconnected. Its unresolved edges drop, so a
     /// release delivered with the disconnect fires nothing; then every pad
-    /// input parks (see `park_gamepad`). Keyboard and mouse state is
-    /// untouched. Returns the button commands the disconnect lifted.
+    /// input parks with nothing held (see `park_gamepad`), so a button
+    /// released while the pad is away presses fresh once it is back. Keyboard
+    /// and mouse state is untouched. Returns the button commands the
+    /// disconnect lifted.
     pub fn release_gamepad(&mut self) -> Vec<Action> {
         self.pending_edges.retain(|edge| !is_pad(edge.input));
         self.park_gamepad(&[])
     }
 
-    /// The active gamepad changed. The outgoing pad's buffered edges resolve,
-    /// then every pad input parks (see `park_gamepad`). `carried` lists the
-    /// inputs the incoming pad held when it last lost the role; they stay
-    /// inert until it releases them, so switching back to a pad never
-    /// re-fires a button it kept down. Returns the button commands lifted.
-    pub fn switch_gamepad(&mut self, carried: &[PhysicalInput]) -> Vec<Action> {
+    /// A pad took the active role. The outgoing pad's buffered edges resolve,
+    /// then every pad input parks (see `park_gamepad`). `held` lists the
+    /// inputs the incoming pad already reads down, without the input that
+    /// claimed the role: they stay inert until it releases them, so a pad
+    /// never re-fires a button it kept down. Returns the button commands
+    /// lifted.
+    pub fn switch_gamepad(&mut self, held: &[PhysicalInput]) -> Vec<Action> {
         let now = self.now();
-        self.switch_gamepad_at(carried, now)
+        self.switch_gamepad_at(held, now)
     }
 
-    pub(crate) fn switch_gamepad_at(&mut self, carried: &[PhysicalInput], now: f64) -> Vec<Action> {
+    pub(crate) fn switch_gamepad_at(&mut self, held: &[PhysicalInput], now: f64) -> Vec<Action> {
         self.resolve_pending_edges(now);
-        self.park_gamepad(carried)
+        self.park_gamepad(held)
     }
 
-    /// Pad inputs the last poll or event read down.
-    pub fn gamepad_inputs_down(&self) -> Vec<PhysicalInput> {
-        self.physical_state
+    /// Lift every pad binding without a pulse and drop the outgoing pad's
+    /// levels and axes, so nothing stays down, no pending pad hold fires, and
+    /// the incoming pad's presses record fresh edges. Each input in `held`
+    /// reads down and stays inert until a release is seen. A button command
+    /// left with no binding down reads Inactive next snapshot, never Pressed
+    /// or Released: neutral input is not a release, and a press resolved just
+    /// before the park is dropped with it. Returns those lifted commands.
+    fn park_gamepad(&mut self, held: &[PhysicalInput]) -> Vec<Action> {
+        let held: Vec<PhysicalInput> = held
             .iter()
-            .filter(|(input, down)| **down && is_pad(**input))
-            .map(|(input, _)| *input)
-            .collect()
-    }
-
-    /// Lift every pad binding without a pulse and zero the pad axes, so
-    /// nothing stays down and no pending pad hold fires. A pad input down now,
-    /// or in `carried`, keeps its down level and stays inert until a poll reads
-    /// it up, so it fires nothing when polls resume; any other pad input
-    /// presses fresh. A button command left with no binding down reads
-    /// Inactive next snapshot, never Released: neutral input is not a
-    /// release. Returns those lifted commands.
-    fn park_gamepad(&mut self, carried: &[PhysicalInput]) -> Vec<Action> {
-        let mut still_down = self.gamepad_inputs_down();
-        for input in carried {
-            if is_pad(*input) && !still_down.contains(input) {
-                still_down.push(*input);
-            }
-        }
+            .copied()
+            .filter(|input| is_pad(*input))
+            .collect();
         let down_before: Vec<Action> = self
             .unique_actions
             .iter()
             .copied()
             .filter(|action| !action.is_axis() && self.resolver.command_is_down(*action))
             .collect();
-        self.resolver.park_gamepad(&self.bindings, &still_down);
+        self.resolver.park_gamepad(&self.bindings, &held);
         self.physical_state.retain(|input, _| !is_pad(*input));
-        for input in still_down {
+        for input in held {
             self.physical_state.insert(input, true);
         }
         self.gamepad_axes.clear();
@@ -557,6 +559,7 @@ impl InputSystem {
             .collect();
         for action in &lifted {
             self.prev_button_states.remove(action);
+            self.resolver.forget_presses(*action);
         }
         lifted
     }

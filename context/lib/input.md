@@ -146,7 +146,7 @@ gilrs provides a unified gamepad API across platforms.
 | Triggers | Analog axis in [0, 1]. Map to axis actions (e.g., analog acceleration) or threshold to button actions. |
 | Action parity | Gamepad bindings map to the same actions as keyboard/mouse. Switching input device mid-play requires no mode change. |
 | Active pad | One pad is active at a time; events from any other pad are ignored. With none active, any input claims the role. Otherwise an idle pad takes it only on a button press or a push of at least half travel, so drift or a release cannot steal it. Frames that draw no UI follow the same rule. |
-| Inert until released | A switch lifts the outgoing pad's held inputs to neutral. Inputs a pad held when it lost the role, or when it disconnected, stay inert until that pad releases them: nothing fires again on regaining the role. |
+| Inert until released | A switch lifts the outgoing pad's held inputs to neutral and forgets them. Inputs the incoming pad is already holding when it takes the role stay inert until released, except the press that claimed the role, which acts. A pad that reconnects starts from what it holds at that moment. |
 | Disconnect | The active pad's disconnect lifts every held pad command to neutral — never a release. Edges still unresolved at that moment are dropped, so nothing the pad held fires a release-bound or tap command. |
 
 Gamepad and keyboard/mouse bindings coexist. If both are active in the same frame, binding resolution (section 2) applies.

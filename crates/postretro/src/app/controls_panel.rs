@@ -27,7 +27,7 @@ const MIN_SLOTS: usize = 2;
 #[derive(Debug, Default)]
 pub(crate) struct ControlsPanelState {
     capture: Option<BindingCapture>,
-    pending_replace: Option<PlayerLayer>,
+    pending_replace: Option<PendingReplace>,
     built_generation: Option<u64>,
     /// The commands the pushed panel lists, in row order.
     listed: Vec<Command>,
@@ -37,6 +37,16 @@ pub(crate) struct ControlsPanelState {
     /// Whether a pad was connected last frame while a gamepad prompt is open,
     /// so the prompt closes when the pad goes away.
     pad_was_connected: bool,
+}
+
+/// A conflict dialog's replace, kept until the player answers: the layer it
+/// applies and the binding it adds, both checked again on the answer.
+#[derive(Debug)]
+struct PendingReplace {
+    player: PlayerLayer,
+    command: Command,
+    class: DeviceClass,
+    input: PhysicalInput,
 }
 
 /// One listed command: its presentation and its effective inputs per class.
@@ -462,9 +472,9 @@ pub(crate) type StoredRowText = HashMap<(Command, DeviceClass), Vec<Option<Strin
 ///
 /// An unreadable slot (`None` in the layer) writes back the text it was
 /// loaded from, found in `stored` as the matching unreadable slot of the old
-/// row, so a newer build's input name survives and the reloaded row matches
-/// this session's. An element that was not a string has no text and writes
-/// `""`, which reloads as the same unreadable slot.
+/// row (`unreadable_text`), so a newer build's input name survives and the
+/// reloaded row matches this session's. An element that was not a string has
+/// no text and writes `""`, which reloads as the same unreadable slot.
 pub(crate) fn changed_rows(
     old: &PlayerLayer,
     new: &PlayerLayer,
@@ -481,11 +491,13 @@ pub(crate) fn changed_rows(
                 let mut unreadable = unreadable_text(
                     old.rows.get(&key).map(Vec::as_slice),
                     stored.get(&key).map(Vec::as_slice),
-                );
+                    row,
+                )
+                .into_iter();
                 row.iter()
                     .filter_map(|slot| match slot {
                         Some(input) => input_name(*input).map(str::to_string),
-                        None => Some(unreadable.next().flatten().unwrap_or_default()),
+                        None => Some(unreadable.next().unwrap_or_default()),
                     })
                     .collect()
             });
@@ -494,22 +506,44 @@ pub(crate) fn changed_rows(
         .collect()
 }
 
-/// The stored text of the old row's unreadable slots, in order. A replace only
-/// removes inputs from a row, so the new row's unreadable slots are these in
-/// the same order.
-fn unreadable_text<'a>(
-    old: Option<&'a [Option<PhysicalInput>]>,
-    stored: Option<&'a [Option<String>]>,
-) -> impl Iterator<Item = Option<String>> + 'a {
-    let pairs = match (old, stored) {
-        (Some(old), Some(stored)) if old.len() == stored.len() => Some(old.iter().zip(stored)),
-        _ => None,
+/// The stored text each unreadable slot of `new` writes back, in order. A
+/// rebind keeps an old row's unreadable slot in place, or moves it earlier
+/// when a replace removes a readable slot before it; a capture into the slot
+/// itself overwrites it in place. So each new unreadable slot takes the first
+/// old one at or after its index that an earlier new slot did not take.
+fn unreadable_text(
+    old: Option<&[Option<PhysicalInput>]>,
+    stored: Option<&[Option<String>]>,
+    new: &[Option<PhysicalInput>],
+) -> Vec<String> {
+    let old_texts: Vec<(usize, Option<String>)> = match (old, stored) {
+        (Some(old), Some(stored)) if old.len() == stored.len() => old
+            .iter()
+            .zip(stored)
+            .enumerate()
+            .filter(|(_, (slot, _))| slot.is_none())
+            .map(|(index, (_, text))| (index, text.clone()))
+            .collect(),
+        _ => Vec::new(),
     };
-    pairs
-        .into_iter()
-        .flatten()
-        .filter(|(slot, _)| slot.is_none())
-        .map(|(_, text)| text.clone())
+    let mut next = 0;
+    new.iter()
+        .enumerate()
+        .filter(|(_, slot)| slot.is_none())
+        .map(|(index, _)| {
+            let found = old_texts[next..]
+                .iter()
+                .position(|(old_index, _)| *old_index >= index);
+            match found {
+                Some(offset) => {
+                    let text = old_texts[next + offset].1.clone();
+                    next += offset + 1;
+                    text.unwrap_or_default()
+                }
+                None => String::new(),
+            }
+        })
+        .collect()
 }
 
 impl crate::session::Session {
@@ -662,18 +696,20 @@ impl App {
                 };
                 let pending = session.controls.pending_replace.take();
                 pop_named(&mut session.modal_stack, CONTROLS_DIALOG_NAME);
-                let Some(player) = pending else {
+                let Some(pending) = pending else {
                     return;
                 };
                 // The table may have changed (a hot reload) since the dialog
-                // asked, so the replace is checked against the guard again.
+                // asked, so the replace is checked against the guard again,
+                // the new binding landing behind a given-back default included.
                 let bindings = &session.bindings;
                 let proposal = check_player_layer(
                     bindings.table(),
                     bindings.author(),
-                    player,
+                    pending.player,
                     bindings.facts(),
                     bindings.swap_confirm_cancel(),
+                    Some((pending.command, pending.class, pending.input)),
                 );
                 self.apply_checked_layer(proposal);
             }
@@ -730,6 +766,8 @@ impl App {
             .copied();
         let label = command_label(session.bindings.author(), target.command);
         session.controls.pad_was_connected = session.pad_connected();
+        // Wheel travel from before the prompt never counts toward a notch.
+        session.input_system.reset_capture_wheel();
         session.controls.capture = Some(BindingCapture::new(target));
         session.modal_stack.push(
             CONTROLS_CAPTURE_NAME,
@@ -807,7 +845,12 @@ impl App {
                     .iter()
                     .map(|command| command_label(session.bindings.author(), *command))
                     .collect();
-                session.controls.pending_replace = Some(replace);
+                session.controls.pending_replace = Some(PendingReplace {
+                    player: replace,
+                    command: target.command,
+                    class: target.class,
+                    input,
+                });
                 session
                     .modal_stack
                     .push(CONTROLS_DIALOG_NAME, build_conflict_dialog(input, &holders));

@@ -73,6 +73,12 @@ impl ActivatorResolver {
         self.went_down.clear();
     }
 
+    /// Drop the command's press edges not yet read, so a command lifted to
+    /// neutral reads neither Pressed nor a notch step.
+    pub(super) fn forget_presses(&mut self, action: Action) {
+        self.went_down.remove(&action);
+    }
+
     /// An authoritative edge from an event source (winit key or button event,
     /// gilrs button event). Any event edge clears suppression: a press is
     /// fresh, and a release means the next press is too, whichever source
@@ -225,7 +231,7 @@ impl ActivatorResolver {
     /// holds never fire. Each input in `still_down` stays inert until it is
     /// seen up, so a button held across the change fires nothing when polls
     /// resume; every other pad input's next press is fresh. Press edges
-    /// already resolved this frame stand.
+    /// already resolved this frame stand until the caller forgets them.
     pub(super) fn park_gamepad(&mut self, bindings: &[Binding], still_down: &[PhysicalInput]) {
         let is_pad = |input: &PhysicalInput| DeviceClass::of(*input) == DeviceClass::Gamepad;
         self.held.retain(|input, _| !is_pad(input));

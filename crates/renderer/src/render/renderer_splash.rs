@@ -152,7 +152,7 @@ impl Renderer {
             .as_ref()
             .expect("renderer full-init must complete before full-ready paths run");
         let viewport = [surface_config.width, surface_config.height];
-        // Resolve each focusable button's `selected`/`checked` predicate (M13 G2)
+        // Resolve each focusable button's `selected`/`checked` predicate
         // against the same frame snapshot the draw build used, so the a11y readback
         // matches the author-wired highlight.
         // The export carries the owner recorded with the retained top layer's

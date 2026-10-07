@@ -1,14 +1,14 @@
 // Gamepad input via gilrs: polling, dead zones, trigger thresholds.
 // See: context/lib/input.md §6
 
-use std::collections::HashMap;
-
 use gilrs::ff::{BaseEffect, BaseEffectType, Effect, EffectBuilder, Replay, Ticks};
 use gilrs::{Axis, Button, Event, EventType, GamepadId, Gilrs};
 
 use super::InputSystem;
 use crate::input::commands::Command;
-use crate::input::types::{Action, HALF_AXIS_PRESS_THRESHOLD, PhysicalInput, hysteresis_level};
+use crate::input::types::{
+    Action, AxisHalf, HALF_AXIS_PRESS_THRESHOLD, PhysicalInput, hysteresis_level,
+};
 use crate::input::ui_nav::{NavIntent, StickNavTrackers};
 use crate::input::ui_nav_map::{StickSide, UiNavContext, UiNavMap, stick_half_for};
 
@@ -130,11 +130,13 @@ fn trigger_reading(gamepad: &gilrs::Gamepad, button: Button, axis: Axis) -> f32 
 /// Manages gamepad input via gilrs.
 ///
 /// Each frame, call `update()` to drain gilrs events and feed processed
-/// axis/button state into the InputSystem. Tracks the most-recently-used
-/// gamepad when multiple are connected.
+/// axis/button state into the InputSystem. One connected pad is active at a
+/// time; only its input reaches the input system.
 pub struct GamepadSystem {
     gilrs: Gilrs,
-    /// Most-recently-used gamepad. Updated when any gamepad produces input.
+    /// The pad whose input counts. Set by `activate`: with none active any
+    /// input claims the role, otherwise an idle pad takes it only through
+    /// `claims_active_role`. Cleared when the active pad disconnects.
     active_gamepad: Option<GamepadId>,
     /// The currently-playing rumble effect and how long it has left to run
     /// (milliseconds). gilrs reference-counts the [`Effect`] handle, so holding
@@ -147,9 +149,11 @@ pub struct GamepadSystem {
     /// Whether each trigger (left, right) was past its button threshold last
     /// poll, so a crossing reports one press.
     triggers_down: [bool; 2],
-    /// Pad inputs each inactive pad held when it lost the active role. They
-    /// stay inert when that pad takes the role back, until it releases them.
-    held_when_parked: HashMap<GamepadId, Vec<PhysicalInput>>,
+    /// Set by a switch and taken by the next poll, which re-arms the nav
+    /// stick latches for the incoming pad. A stick (left, right) the incoming
+    /// pad already held is latched where it rests instead, so it navigates
+    /// only after recentring.
+    nav_sticks_rearm: Option<[bool; 2]>,
 }
 
 /// A live rumble effect plus its remaining duration. The effect handle is kept
@@ -179,7 +183,7 @@ impl GamepadSystem {
                     active_rumble: None,
                     ff_warned: false,
                     triggers_down: [false; 2],
-                    held_when_parked: HashMap::new(),
+                    nav_sticks_rearm: None,
                 })
             }
             Err(err) => {
@@ -201,7 +205,6 @@ impl GamepadSystem {
     /// press made during a splash or Loading frame never surfaces on the first
     /// frame that does. Lifted commands are dropped with the rest.
     pub fn discard_pending_events(&mut self, input_system: &mut InputSystem) {
-        let mut discarded = GamepadNavOutput::default();
         while let Some(Event { id, event, .. }) = self.gilrs.next_event() {
             if self.active_gamepad == Some(id) && matches!(event, EventType::Disconnected) {
                 self.active_gamepad = None;
@@ -210,7 +213,7 @@ impl GamepadSystem {
                 continue;
             }
             if self.active_gamepad != Some(id) && claims_active_role(&event, self.active_gamepad) {
-                self.activate(input_system, id, &mut discarded);
+                let _lifted = self.activate(input_system, id, &event);
             }
         }
     }
@@ -260,7 +263,10 @@ impl GamepadSystem {
                 continue;
             }
             if self.active_gamepad != Some(id) && claims_active_role(&event, self.active_gamepad) {
-                self.activate(input_system, id, &mut out);
+                // The claiming event itself falls through below, so the
+                // press that took the role acts as a fresh press.
+                let lifted = self.activate(input_system, id, &event);
+                out.lifted_commands.extend(lifted);
             }
             // Only the active pad's edges count: a release from a pad that
             // lost the role, or an idle pad's drift, reaches nothing.
@@ -354,6 +360,18 @@ impl GamepadSystem {
         let (left_x, left_y) = apply_radial_dead_zone(left_x, left_y, left_dz);
         let (right_x, right_y) = apply_radial_dead_zone(right_x, right_y, right_dz);
 
+        // The outgoing pad's stick latches mean nothing for the incoming one:
+        // re-arm them, latching a stick the incoming pad already held.
+        if let Some([left_held, right_held]) = self.nav_sticks_rearm.take() {
+            nav_sticks.clear();
+            if left_held {
+                nav_sticks.left.update(left_x, left_y);
+            }
+            if right_held {
+                nav_sticks.right.update(right_x, right_y);
+            }
+        }
+
         // A stick navigates through its half-axis inputs: a push past the dead
         // zone fires one directional crossing, which resolves to whatever nav
         // command that half is bound to (the left stick by default).
@@ -425,24 +443,45 @@ impl GamepadSystem {
         out
     }
 
-    /// Give the active role to `id`. Everything the outgoing pad holds lifts
-    /// without a pulse and is remembered, and inputs `id` held when it last
-    /// lost the role stay inert until it releases them, so no button held
-    /// across a switch fires again.
+    /// Give the active role to `id`, which `claim` just claimed it with.
+    /// Everything the outgoing pad holds lifts without a pulse. Inputs `id`
+    /// already reads down, other than the claiming one, stay inert until it
+    /// releases them, so no button held across a switch or reconnect fires
+    /// again; the claiming input acts as a fresh press. Returns the button
+    /// commands lifted.
     fn activate(
         &mut self,
         input_system: &mut InputSystem,
         id: GamepadId,
-        out: &mut GamepadNavOutput,
-    ) {
-        if let Some(outgoing) = self.active_gamepad {
-            self.held_when_parked
-                .insert(outgoing, input_system.gamepad_inputs_down());
-        }
-        let carried = self.held_when_parked.remove(&id).unwrap_or_default();
-        out.lifted_commands
-            .extend(input_system.switch_gamepad(&carried));
+        claim: &EventType,
+    ) -> Vec<Action> {
+        let gamepad = self.gilrs.gamepad(id);
+        let held = held_at_claim(
+            BUTTONS
+                .iter()
+                .copied()
+                .filter(|button| gamepad.is_pressed(*button)),
+            [
+                trigger_reading(&gamepad, Button::LeftTrigger2, Axis::LeftZ),
+                trigger_reading(&gamepad, Button::RightTrigger2, Axis::RightZ),
+            ],
+            STICK_AXES.map(|axis| (axis, axis_value(&gamepad, axis))),
+            claiming_input(claim),
+        );
+        let holds_stick = |x: Axis, y: Axis| {
+            held.iter().any(|input| match input {
+                PhysicalInput::GamepadAxisHalf(axis, _) => *axis == x || *axis == y,
+                _ => false,
+            })
+        };
+        self.triggers_down = [Button::LeftTrigger2, Button::RightTrigger2]
+            .map(|trigger| held.contains(&PhysicalInput::GamepadButton(trigger)));
+        self.nav_sticks_rearm = Some([
+            holds_stick(Axis::LeftStickX, Axis::LeftStickY),
+            holds_stick(Axis::RightStickX, Axis::RightStickY),
+        ]);
         self.active_gamepad = Some(id);
+        input_system.switch_gamepad(&held)
     }
 
     /// Start a force-feedback rumble on the active gamepad: `strong`/`weak` are
@@ -588,6 +627,74 @@ fn claims_active_role(event: &EventType, active: Option<GamepadId>) -> bool {
         }
         _ => false,
     }
+}
+
+/// The stick axes, whose halves are pad inputs of their own.
+const STICK_AXES: [Axis; 4] = [
+    Axis::LeftStickX,
+    Axis::LeftStickY,
+    Axis::RightStickX,
+    Axis::RightStickY,
+];
+
+/// The pad input a role-claiming event pushed. It acts as a fresh press, so
+/// it is never among the inputs held at the claim.
+fn claiming_input(event: &EventType) -> Option<PhysicalInput> {
+    match *event {
+        EventType::ButtonPressed(button, _) => Some(PhysicalInput::GamepadButton(button)),
+        // A trigger presses through the engine's own threshold, so its value
+        // change is the press. A digital button's press is `ButtonPressed`.
+        EventType::ButtonChanged(button @ (Button::LeftTrigger2 | Button::RightTrigger2), _, _) => {
+            Some(PhysicalInput::GamepadButton(button))
+        }
+        EventType::AxisChanged(axis, value, _) => Some(axis_input(axis, value)),
+        _ => None,
+    }
+}
+
+/// The pad input an axis push reads as: a trigger axis is its trigger
+/// button, a stick axis the half it is pushed toward.
+fn axis_input(axis: Axis, value: f32) -> PhysicalInput {
+    match axis {
+        Axis::LeftZ => PhysicalInput::GamepadButton(Button::LeftTrigger2),
+        Axis::RightZ => PhysicalInput::GamepadButton(Button::RightTrigger2),
+        _ => {
+            let half = if value < 0.0 {
+                AxisHalf::Negative
+            } else {
+                AxisHalf::Positive
+            };
+            PhysicalInput::GamepadAxisHalf(axis, half)
+        }
+    }
+}
+
+/// The inputs a pad reads down as it claims the role, without the claiming
+/// one: pressed buttons, triggers past the press threshold, and stick halves
+/// pushed at least half travel (a push that claims the role on its own).
+/// `triggers` is (left, right); `sticks` pairs each stick axis with its raw
+/// value.
+fn held_at_claim(
+    pressed: impl Iterator<Item = Button>,
+    triggers: [f32; 2],
+    sticks: [(Axis, f32); 4],
+    claiming: Option<PhysicalInput>,
+) -> Vec<PhysicalInput> {
+    let buttons = pressed.map(PhysicalInput::GamepadButton);
+    let triggers = [Button::LeftTrigger2, Button::RightTrigger2]
+        .into_iter()
+        .zip(triggers)
+        .filter(|(_, value)| *value >= TRIGGER_PRESS_THRESHOLD)
+        .map(|(button, _)| PhysicalInput::GamepadButton(button));
+    let halves = sticks
+        .into_iter()
+        .filter(|(_, value)| value.abs() >= HALF_AXIS_PRESS_THRESHOLD)
+        .map(|(axis, value)| axis_input(axis, value));
+    buttons
+        .chain(triggers)
+        .chain(halves)
+        .filter(|input| Some(*input) != claiming)
+        .collect()
 }
 
 /// Read an axis value from a gamepad, defaulting to 0 if unavailable.
@@ -825,6 +932,68 @@ mod tests {
             trigger_is_active(false, trigger_value(Some(1.0), None)),
         );
         assert_eq!(sys.snapshot().button(Action::Shoot), ButtonState::Pressed);
+    }
+
+    // --- Inputs held at a claim ---
+
+    const STICKS_AT_REST: [(Axis, f32); 4] = [
+        (Axis::LeftStickX, 0.0),
+        (Axis::LeftStickY, 0.0),
+        (Axis::RightStickX, 0.0),
+        (Axis::RightStickY, 0.0),
+    ];
+
+    #[test]
+    fn the_button_that_claims_the_role_is_never_held_at_the_claim() {
+        // Regression: the claiming press read as held, stayed inert, and the
+        // press that took the role did nothing.
+        let south = PhysicalInput::GamepadButton(Button::South);
+        let east = PhysicalInput::GamepadButton(Button::East);
+        let held = held_at_claim(
+            [Button::South, Button::East].into_iter(),
+            [0.0, 0.0],
+            STICKS_AT_REST,
+            Some(south),
+        );
+        assert_eq!(held, vec![east]);
+    }
+
+    #[test]
+    fn held_at_claim_reads_triggers_and_stick_halves_past_their_press_points() {
+        let held = held_at_claim(
+            std::iter::empty(),
+            [0.3, 0.9],
+            [
+                (Axis::LeftStickX, 0.3),
+                (Axis::LeftStickY, -0.8),
+                (Axis::RightStickX, 0.6),
+                (Axis::RightStickY, 0.0),
+            ],
+            Some(axis_input(Axis::RightStickX, 0.6)),
+        );
+        assert_eq!(
+            held,
+            vec![
+                PhysicalInput::GamepadButton(Button::RightTrigger2),
+                PhysicalInput::GamepadAxisHalf(Axis::LeftStickY, AxisHalf::Negative),
+            ],
+            "the left trigger and a light push read up; the claiming stick half is excluded"
+        );
+    }
+
+    #[test]
+    fn a_trigger_axis_push_claims_as_its_trigger_button() {
+        assert_eq!(
+            axis_input(Axis::RightZ, 0.7),
+            PhysicalInput::GamepadButton(Button::RightTrigger2)
+        );
+        let held = held_at_claim(
+            std::iter::empty(),
+            [0.0, 0.7],
+            STICKS_AT_REST,
+            Some(axis_input(Axis::RightZ, 0.7)),
+        );
+        assert!(held.is_empty(), "the claiming trigger presses fresh");
     }
 
     // --- Rumble magnitude mapping tests ---

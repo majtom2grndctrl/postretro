@@ -344,6 +344,97 @@ fn changed_rows_write_an_unreadable_slot_back_as_the_text_it_was_loaded_from() {
     );
 }
 
+/// One saved row as `stored` text, and the player layer it loads as.
+fn load_row(
+    command: Command,
+    class: DeviceClass,
+    inputs: &[Option<&str>],
+) -> (StoredRowText, PlayerLayer) {
+    let text: Vec<Option<String>> = inputs.iter().map(|i| i.map(str::to_string)).collect();
+    let layer = crate::input::player_layer_from_rows([(
+        class.settings_key(),
+        command.id(),
+        text.as_slice(),
+    )]);
+    let stored: StoredRowText = [((command, class), text)].into_iter().collect();
+    (stored, layer)
+}
+
+/// What capturing `input` into `command`'s `slot` on `class` saves.
+fn saved_after_capture(
+    stored: &StoredRowText,
+    old: &PlayerLayer,
+    command: Command,
+    class: DeviceClass,
+    slot: usize,
+    input: PhysicalInput,
+) -> Vec<(DeviceClass, Command, Option<Vec<String>>)> {
+    let author = AuthorLayer::default();
+    let table = EffectiveTable::build(&author, old, all_facts(), false);
+    let proposal = propose_rebind(
+        &table,
+        &author,
+        old,
+        all_facts(),
+        false,
+        command,
+        class,
+        slot,
+        input,
+    );
+    let RebindProposal::Clean { player } = proposal else {
+        panic!("expected a clean capture, got {proposal:?}");
+    };
+    changed_rows(old, &player, stored)
+}
+
+// Regression: capturing K into jump's second slot over a saved
+// `["<unreadable>", "KeyJ"]` saved `["Space", "KeyK"]`, the default the
+// unreadable slot showed.
+#[test]
+fn a_capture_into_another_slot_writes_an_unreadable_slot_back_unchanged() {
+    let (stored, old) = load_row(
+        Command::Jump,
+        KBM,
+        &[Some("KeyFromANewerBuild"), Some("KeyJ")],
+    );
+    assert_eq!(
+        saved_after_capture(&stored, &old, Command::Jump, KBM, 1, key(KeyCode::KeyK)),
+        [(
+            KBM,
+            Command::Jump,
+            Some(vec!["KeyFromANewerBuild".to_string(), "KeyK".to_string()])
+        )]
+    );
+}
+
+#[test]
+fn a_capture_over_one_unreadable_slot_writes_the_next_back_in_its_place() {
+    // Slot 2 has no default to fall back to, so the panel shows only slots 0
+    // and 1; capturing into slot 0 replaces that slot's string alone.
+    let (stored, old) = load_row(
+        Command::Jump,
+        KBM,
+        &[
+            Some("KeyFromANewerBuild"),
+            Some("KeyJ"),
+            Some("KeyFromANewestBuild"),
+        ],
+    );
+    assert_eq!(
+        saved_after_capture(&stored, &old, Command::Jump, KBM, 0, key(KeyCode::KeyK)),
+        [(
+            KBM,
+            Command::Jump,
+            Some(vec![
+                "KeyK".to_string(),
+                "KeyJ".to_string(),
+                "KeyFromANewestBuild".to_string()
+            ])
+        )]
+    );
+}
+
 // --- capture -------------------------------------------------------------
 
 fn open_capture(app: &mut App, command: Command, class: DeviceClass, slot: usize) {
@@ -716,6 +807,29 @@ fn reset_that_would_leave_cancel_unbound_is_refused_and_changes_nothing() {
     assert_eq!(
         inputs(&app, Command::NavConfirm, PAD),
         [pad(Button::South), pad(Button::East)]
+    );
+}
+
+#[test]
+fn a_prompt_opens_with_no_partial_wheel_travel() {
+    use winit::event::MouseScrollDelta;
+    let half_notch = MouseScrollDelta::LineDelta(0.0, 0.5);
+    let mut app = test_app();
+    let session_mut = app.session.as_mut().unwrap();
+    assert_eq!(
+        session_mut.input_system.capture_wheel_notch(half_notch),
+        None
+    );
+    open_capture(&mut app, Command::Jump, KBM, 1);
+    let session_mut = app.session.as_mut().unwrap();
+    assert_eq!(
+        session_mut.input_system.capture_wheel_notch(half_notch),
+        None,
+        "travel from before the prompt does not complete a notch"
+    );
+    assert_eq!(
+        session_mut.input_system.capture_wheel_notch(half_notch),
+        Some(PhysicalInput::MouseWheelUp)
     );
 }
 

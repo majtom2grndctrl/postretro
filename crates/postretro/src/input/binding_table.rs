@@ -72,8 +72,12 @@ pub enum BindingOrigin {
 pub struct EffectiveBinding {
     pub command: Command,
     pub class: DeviceClass,
-    /// Position in the command's list on this class. A player input's
-    /// activator follows the input, not the slot (`player_activator`).
+    /// The slot it fills: for a binding layered from a saved player row, that
+    /// row's slot (an unreadable slot falling back to its default included);
+    /// otherwise its position in the default list. A slot the collisions or an
+    /// unreadable slot with no default leave empty is skipped, not renumbered.
+    /// A player input's activator follows the input, not the slot
+    /// (`player_activator`).
     pub slot: usize,
     pub input: PhysicalInput,
     pub activator: Activator,
@@ -435,6 +439,16 @@ impl EffectiveTable {
             .collect()
     }
 
+    /// The slot behind each input `inputs` lists, in the same order. For a
+    /// command layered from a saved player row, these index that row.
+    pub fn slots(&self, command: Command, class: DeviceClass) -> Vec<usize> {
+        self.entries
+            .iter()
+            .filter(|e| e.command == command && e.class == class)
+            .map(|e| e.slot)
+            .collect()
+    }
+
     /// Guarded commands left unbound on a device class.
     pub fn guard_violations(&self) -> Vec<(Command, DeviceClass)> {
         GUARDED
@@ -516,8 +530,8 @@ fn engine_slots(command: Command, class: DeviceClass) -> Vec<(AuthorBinding, Bin
 /// - A slot past the defaults takes `press`, and a wheel notch always does: it
 ///   has no duration to time.
 ///
-/// Rows store keys only, so a default another command took reads the same as
-/// one the player replaced: the input left in that slot takes its activator.
+/// Rows store keys only; what that cannot tell apart is in
+/// `context/lib/player_options.md` §6 (Activators).
 fn player_activator(
     defaults: &[(AuthorBinding, BindingOrigin)],
     row: &[Option<PhysicalInput>],
@@ -550,42 +564,47 @@ fn layer_command(
 ) {
     // A dev-only command is bound to its engine defaults alone.
     if command_relevance == Relevance::DevOnly {
-        push_slots(command, class, engine_slots(command, class), out);
+        push_slots(
+            command,
+            class,
+            engine_slots(command, class).into_iter().enumerate(),
+            out,
+        );
         return;
     }
     let base = default_slots(command, class, author);
     let Some(row) = player.rows.get(&(command, class)) else {
-        push_slots(command, class, base, out);
+        push_slots(command, class, base.into_iter().enumerate(), out);
         return;
     };
-    let layered = row
-        .iter()
-        .enumerate()
-        .filter_map(|(slot, stored)| match stored {
-            Some(input) => Some((
+    // Each binding keeps its row slot, so a rebind can map what the panel
+    // shows back onto the saved row.
+    let layered = row.iter().enumerate().filter_map(|(slot, stored)| {
+        let binding = match stored {
+            Some(input) => (
                 AuthorBinding {
                     input: *input,
                     activator: player_activator(&base, row, slot, *input),
                 },
                 BindingOrigin::Player,
-            )),
+            ),
             // An unreadable stored input falls back to that slot's default.
-            None => base.get(slot).copied(),
-        })
-        .collect();
+            None => base.get(slot).copied()?,
+        };
+        Some((slot, binding))
+    });
     push_slots(command, class, layered, out);
 }
 
 fn push_slots(
     command: Command,
     class: DeviceClass,
-    slots: Vec<(AuthorBinding, BindingOrigin)>,
+    slots: impl IntoIterator<Item = (usize, (AuthorBinding, BindingOrigin))>,
     out: &mut Vec<EffectiveBinding>,
 ) {
     out.extend(
         slots
             .into_iter()
-            .enumerate()
             .map(|(slot, (binding, origin))| EffectiveBinding {
                 command,
                 class,

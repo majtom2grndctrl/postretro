@@ -183,56 +183,58 @@ rides in the **G channel of the specular slot**, which becomes a two-channel
   prefix terraces, and the terrace rule carries white up to the full depth.
   128 is the plane because 127.5 is unrepresentable.
 - **Color Space:** Linear. An `sRGB` or `iCCP` tag fails the build, as does a
-  `gAMA` that is not approximately 1.0, exactly like `_s` and `_n`. A `gAMA` of
-  about 1.0 is accepted.
+  `gAMA` not approximately 1.0, exactly like `_s` and `_n`.
 - **Dimensions:** Must match the diffuse, and must match `_s.png` when that
   sibling exists. Both are hard compile-time bails — unlike `_s`/`_n` versus
   diffuse, which is documented but unenforced — because `_h` and `_s` are
   interleaved into one texture.
 - **Inversion at bake time:** `prl-build` stores `G = 255 - height`. The
   mid-gray zero point is applied at runtime, not baked: the shader and its CPU
-  reference recover the byte and re-center it. The stored encoding predates
-  signed height and is unchanged, so no `.prm` rebakes. Consequence: `G = 0`
-  now means **maximum raise**, not flat, and the has-depth gate (below) is the
-  only thing keeping a single-channel slot from marching as fully raised.
+  reference recover the byte and re-center it, so the `.prm` encoding carries
+  no notion of the plane. `G = 0` therefore means **maximum raise**, and the
+  has-depth gate (below) is the only thing keeping a single-channel slot from
+  marching as fully raised.
 - **Slot mask:** the SPECULAR bit is set if **either** `_s.png` or `_h.png` is
   present. With `_h` and no `_s`, R bakes to 0 — the same zero specular
   response the shared black placeholder gives.
-- **Fallback:** no `_h.png` bakes the historical single-channel `R8Unorm`
-  specular slot, byte-identical to before. Content addressing folds height in
-  only when it is present, so no existing `baked/materials/` sidecar rebakes.
-- **Runtime:** the absent-specular placeholder is the same 1×1 black
-  `R8Unorm` texel it always was. WGSL expands it to `(r, 0, 0, 1)`, whose
-  `.g == 0` would read as maximum raise, so the march runs only when the
-  loaded slot is `Rg8Unorm` — a has-depth bit decided from the slot that
-  actually loaded, never from the prefix. Both slot formats bind through the same group-1 texture
-  entry (`Float { filterable: true }`), so no bind-group layout changes. The
-  surface map costs exactly twice the single-channel specular slot it replaces
-  and nothing else; a 1024×1024 bundle's specular payload goes from 1,398,101
-  to 2,796,202 bytes across its 11 mip levels.
+- **Fallback:** no `_h.png` bakes the single-channel `R8Unorm` specular slot.
+  Content addressing folds height in only when it is present, so a material
+  without one keeps its sidecar key.
+- **Runtime:** the absent-specular placeholder is a 1×1 black `R8Unorm` texel.
+  WGSL expands it to `(r, 0, 0, 1)`, whose `.g == 0` would read as maximum
+  raise, so the march runs only when the loaded slot is `Rg8Unorm` — a
+  has-depth bit decided from the slot that actually loaded, never from the
+  prefix. Both slot formats bind through the same group-1 texture entry
+  (`Float { filterable: true }`), so no bind-group layout changes. The surface
+  map costs exactly twice the single-channel specular slot it replaces and
+  nothing else; a 1024×1024 bundle's specular payload goes from 1,398,101 to
+  2,796,202 bytes across its 11 mip levels.
 - **Shading:** the forward and kinematic-mover passes march the G channel with
   an exact texel-grid DDA before sampling any other slot; see
   `rendering_pipeline.md` §7.3 (Surface Depth) for the algorithm, the lighting
   integration, and the hard renderer constraints it honors.
 - **Per-material tuning:** depth (texels or meters, applied **in each
   direction**), terrace count per direction, march step cap, and fade distance
-  are derived from the material name **prefix**, exactly like `shininess` and `emissive_strength`
-  (`postretro-render-data::material::Material::surface_depth`). This engine has
-  no author-facing material descriptor file and Surface Depth deliberately does
-  not introduce one: authoring is still "drop a correctly-named PNG". The four
-  values ride in the per-material uniform's second 16-byte row. A material
-  whose loaded specular slot is not `Rg8Unorm` gets an all-zero row and skips
-  the march entirely.
-- **Relief band:** at load, the renderer measures the surface map's highest
-  raise and lowest sink at **every uploaded mip** on the CPU (filtering can
-  overshoot the base level). The uniform packs the band of the mip the march
-  reads — the clamped base mip — quantized to the material's terraces, in its
-  first row beside shininess and emissive strength. That band bounds every
-  texel the march can fetch, so a coarser mip's overshoot never lifts the
-  start. The base mip and its band are resolved together, so a change of base
-  mip repacks the band. The march starts at the band's top, so a map that never
-  exceeds mid-gray costs the same as a carve-only map under the signed march;
-  an empty band (all mid-gray) uploads the same bytes as no map.
+  are derived from the material name **prefix**, exactly like `shininess` and
+  `emissive_strength` (`postretro-render-data::material::Material::surface_depth`).
+  This engine has no author-facing material descriptor file and Surface Depth
+  deliberately does not introduce one: authoring is still "drop a
+  correctly-named PNG". The four values ride in the per-material uniform's
+  second 16-byte row. A material whose loaded specular slot is not `Rg8Unorm`
+  gets an all-zero row and skips the march entirely. `tools/texture-tool`
+  derives its default height terrace count from the same prefixes (twice the
+  engine's count per direction, so its terraces land on engine plateaus); a
+  test in `postretro-render-data` keeps the two tables in step.
+- **Relief band:** at load, the renderer measures each uploaded mip's highest
+  raise and lowest sink separately on the CPU (filtering can overshoot the
+  base level). The uniform packs the band of the mip the march reads — the
+  clamped base mip — quantized to the material's terraces, in its first row
+  beside shininess and emissive strength. That band bounds every texel the
+  march can fetch, so a coarser mip's overshoot never lifts the start. The base
+  mip and its band are resolved together, so a change of base mip repacks the
+  band. The march starts at the band's top, so a map that never exceeds
+  mid-gray pays nothing for raise; an empty band (all mid-gray) uploads the
+  same bytes as no map.
 - **Player on/off switch:** the renderer RETAINS each world/mover
   material's uniform buffer handle alongside its bind group (`GpuTexture`),
   plus the GPU-free `MaterialUniformPlan` that produced its contents, so
@@ -240,9 +242,10 @@ rides in the **G channel of the specular slot**, which becomes a two-channel
   The setting is **off/on** — no middle tier; see `player_options.md` §4. The
   plan stores the material's own per-prefix tuning, unmodified by the switch,
   and the facts taken from the slot that actually loaded (is it `Rg8Unorm`,
-  how many mips, its relief band), so a rewrite can turn the effect back on as well as off and
-  can never resurrect a carve for a material with no height sibling. Ownership is unchanged: the buffers live in the
-  level's `gpu_textures` vector and die with the level (§8.2).
+  how many mips, its relief band), so a rewrite can turn the effect back on as
+  well as off and can never resurrect a march for a material with no height
+  sibling. The buffers live in the level's `gpu_textures` vector and die with
+  the level (§8.2).
 
 ---
 

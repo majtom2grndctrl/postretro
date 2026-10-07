@@ -184,7 +184,7 @@ fn a_material_without_a_surface_map_resolves_flat() {
 }
 
 /// The has-depth bit is the ONLY guard against the R8 placeholder, because
-/// the placeholder's `g = 0` now means maximum raise, not flat.
+/// the placeholder's `g = 0` means maximum raise, not flat.
 #[test]
 fn the_march_never_runs_without_the_has_depth_bit() {
     // What the placeholder would do if marched: lift the face by its full depth.
@@ -1223,7 +1223,7 @@ fn a_neighbour_taller_than_the_eye_still_blocks() {
 
 /// The see-through rule never fires for a far eye: the march starts at the
 /// peak, above every texel. This fingerprint of 7680 far-eye hits was taken
-/// from the march before the rule existed.
+/// with the rule disabled.
 #[test]
 fn a_far_eye_marches_bit_identically_to_before_the_see_through_rule() {
     let mut hash = 0xcbf2_9ce4_8422_2325u64;

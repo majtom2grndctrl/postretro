@@ -14,10 +14,10 @@
 //! within one texel the solid's top is a single height, so the only events are
 //! "cross a side wall" and "meet the top" ([`march`]).
 //!
-//! The march walks only the material's relief band — from its peak raise down
-//! to its trough, both measured once at load over every uploaded mip — so a
-//! map that never rises above mid-gray marches exactly like a pure carve, and
-//! an all-mid-gray map marches nothing.
+//! The march walks only the material's relief band, from its peak raise down
+//! to its trough. Each uploaded mip's band is measured at load, and the uniform
+//! packs the band of the mip the march reads. A map that never rises above
+//! mid-gray pays nothing for raise, and an all-mid-gray map marches nothing.
 //!
 //! Everything in this module is GPU-free, and it is the authority for the
 //! march itself, the packed material layout, and every tuning constant that

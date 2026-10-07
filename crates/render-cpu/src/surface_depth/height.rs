@@ -63,8 +63,9 @@ pub fn surface_height_quantize(s: f32, levels: f32) -> f32 {
 ///
 /// `peak_raise` is the highest raise of any texel (`≥ 0`), `trough` the lowest
 /// sink (`≤ 0`). The march walks only `[trough, peak_raise]` and starts at the
-/// peak. Raw values come from [`surface_relief_from_rg8_levels`] at load; [`Self::quantized`] applies the material's level count when the
-/// uniform is built, and that quantized pair is what the shader reads.
+/// peak. Raw values come from [`surface_relief_from_rg8_levels`] at load;
+/// [`Self::quantized`] applies the material's level count when the uniform is
+/// built, and that quantized pair is what the shader reads.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SurfaceRelief {
     pub peak_raise: f32,

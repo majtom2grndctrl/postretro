@@ -471,7 +471,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // handed to textureSampleGrad explicitly, matching the world forward pass.
     let ddx = dpdx(in.uv);
     let ddy = dpdy(in.uv);
-    // World-space footprint of the same fragment. Surface Depth carves in
+    // World-space footprint of the same fragment. Surface Depth marches in
     // METERS and needs world-units-per-UV-unit to reach UV space; taking it
     // here keeps every derivative in uniform control flow. The march itself
     // calls no derivative.
@@ -481,8 +481,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let mesh_n = normalize(in.world_normal);
     let view_vector = camera.camera_position - in.world_position;
     let view_distance = length(view_vector);
-    // normalize(), not a divide by `view_distance`: this runs at EVERY quality
-    // tier including Off, and v/sqrt(dot(v,v)) is not required to round to the
+    // normalize(), not a divide by `view_distance`: this runs with Surface
+    // Depth on or off, and v/sqrt(dot(v,v)) is not required to round to the
     // same bits as the rsqrt normalize() lowers to. Keeping it exact is what
     // makes Off byte-identical to the pre-Surface-Depth render.
     let V = normalize(view_vector);

@@ -313,7 +313,7 @@ Example: `cobble.png` → diffuse; `cobble_h.png` → height.
 
 The scale is linear between rows. White sits at 127/128 of the depth before terracing, and every prefix's terracing carries it up to the full depth. The half-depth rows land exactly on a terrace only when the prefix has an even terrace count. With an odd count, such as `grate` and the default prefix (3 terraces per direction), an exact half step snaps up: `#404040` sinks one third and `#C0C0C0` rises two thirds.
 
-Paint flat areas exactly `#808080` — Photoshop's and GIMP's 50% gray. The engine snaps 127 to flat too. A map with nothing lighter than mid-gray only carves, at no extra cost.
+Paint flat areas exactly `#808080` — Photoshop's and GIMP's 50% gray. The engine snaps 127 to flat too. A map with nothing lighter than mid-gray only carves, and pays nothing for raise.
 
 Requirements — each of these **fails the compile**. None of them is a warning you can ignore:
 
@@ -367,7 +367,7 @@ cargo run --release --manifest-path tools/texture-tool/Cargo.toml -- \
   --height-strength 1.6 --height-quantize-levels 6
 ```
 
-`--height-strength` scales the relief (above `1.0` exaggerates it, below flattens it; each spec profile has its own default). `--height-quantize-levels` sets how many terraces, split evenly above and below mid-gray — **lower means fewer, flatter, chunkier plateaus**, which is the retro read the effect is tuned for. The engine re-terraces every map to its prefix's own count per direction, so the tool's terraces land on the engine's plateaus when that count is a multiple of the tool's per-side count (this flag ÷ 2). `concrete` (6) suits 4, 6 or 12; `metal` and `wood` (2) suit 4; `grate` and the default prefix (3) suit 6. Above the prefix's count the engine re-terraces the map anyway. The tool writes untagged linear PNGs at the diffuse's exact dimensions, so its output satisfies the rules above by construction. See `tools/texture-tool/README.md` for the full flag list and the per-profile defaults.
+`--height-strength` scales the relief (above `1.0` exaggerates it, below flattens it; each spec profile has its own default). `--height-quantize-levels` sets how many terraces, split evenly above and below mid-gray — **lower means fewer, flatter, chunkier plateaus**, which is the retro read the effect is tuned for. Left out, it follows the stem's prefix: `concrete` 12, `metal` and `wood` 4, `grate` and anything else 6. That is twice the engine's own terraces per direction, so every terrace lands exactly on one of the engine's plateaus. A lower count still lands on plateaus when half of it divides the prefix's count: `concrete` (6 each way) also suits 4 or 6. Other counts can put a terrace on a half step, where raised sides render one terrace taller than sunk sides. The tool writes untagged linear PNGs at the diffuse's exact dimensions, so its output satisfies the rules above by construction. See `tools/texture-tool/README.md` for the full flag list and the per-profile defaults.
 
 #### The player's on/off setting
 

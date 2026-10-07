@@ -26,8 +26,9 @@
 // there is no sampling error to trade against step count.
 //
 // The relief rises as well as sinks. The march starts at the material's PEAK
-// raise (computed once at load over every uploaded mip, in uniform bytes 8..12)
-// and walks only the band down to its TROUGH (bytes 12..16). Raised texels are
+// raise (uniform bytes 8..12) and walks only the band down to its TROUGH (bytes
+// 12..16). Each uploaded mip's band is measured at load; the uniform carries
+// the band of the mip the march reads. Raised texels are
 // accepted artifacts, not mitigated: the polygon's silhouette stays flat, a
 // raised edge slices at the polygon boundary, and nothing writes depth, so
 // feet, props and projectiles draw at the true plane. Collision is untouched.
@@ -55,18 +56,22 @@
 //
 // The CPU authority for the march, the packing and every tuning constant
 // below is `postretro_render_cpu::surface_depth`, which is unit-tested without
-// a GPU. The functions here keep that module's names and order so the two read
-// side by side: `height.rs` (encoding), `march.rs` (the DDAs), `shading.rs`
-// (fade, AO). Parity is on RESULTS, not code shape: the view march below has
-// no single-texel early-out, and the light march steps a pre-folded texel
+// a GPU. The sections below follow its modules — `height.rs` (encoding),
+// `uniform.rs`, `shading.rs` (fade, AO), `march.rs` (the DDAs) — so the two
+// read side by side. A function mirroring one CPU function keeps its name,
+// with one exception: `surface_depth_indirect_ao` mirrors
+// `surface_depth_ambient_occlusion`. `surface_depth_resolve` composes the CPU's
+// `surface_depth_basis`, `surface_depth_view_ray` and `march_surface_depth`.
+// Parity is on RESULTS, not code shape: the view march below has no
+// single-texel early-out, and the light march steps a pre-folded texel
 // coordinate; neither changes a result. One rule is GPU-only and has no CPU
-// mirror: the texel→meters conversion just below (`texels_per_m`, `texel_rate`,
-// `depth_scale_m` under
-// `SURFACE_DEPTH_TEXEL_MODE`) needs a per-fragment UV Jacobian that only
-// exists mid-shader. That is accepted because this is a purely graphical
-// relief — collision uses the true brush plane, so a wrong conversion is a
-// visible on-screen error, not a corrupted game-logic value, and nothing
-// downstream (no save data, no netcode) depends on it.
+// mirror: the texel→meters conversion in the resolve (`texels_per_m`,
+// `texel_rate`, `depth_scale_m` under `SURFACE_DEPTH_TEXEL_MODE`) needs a
+// per-fragment UV Jacobian that only exists mid-shader. That is accepted
+// because this is a purely graphical relief — collision uses the true brush
+// plane, so a wrong conversion is a visible on-screen error, not a corrupted
+// game-logic value, and nothing downstream (no save data, no netcode) depends
+// on it.
 
 const SURFACE_DEPTH_EPS: f32 = 1.0e-9;
 const SURFACE_DEPTH_FAR: f32 = 3.4e38;
@@ -160,7 +165,8 @@ struct SurfaceDepthResult {
     // The distance/LOD fade that produced `depth_scale_m`, in [0, 1]. Carried
     // out of the resolve because height-derived terms whose inputs are BOTH
     // post-fade cancel it out and would pop at the fade boundary instead of
-    // degrading. See `surface_depth_ambient_occlusion`.
+    // degrading. See `surface_depth_indirect_ao` (CPU:
+    // `surface_depth_ambient_occlusion`).
     fade: f32,
     quantize_levels: f32,
     shadow_steps: u32,

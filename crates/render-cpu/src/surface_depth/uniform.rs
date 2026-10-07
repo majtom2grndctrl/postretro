@@ -17,9 +17,9 @@ pub const SURFACE_DEPTH_HAS_DEPTH_BIT: u32 = 1 << 12;
 /// Uniform-word bit offset of the packed per-fragment self-shadow budget.
 ///
 /// The budget is per-MATERIAL data rather than a shader constant because the
-/// player-facing on/off switch is applied by rewriting this buffer,
-/// not by compiling a shader variant — this engine has no variant system. Bit
-/// 13..16 stay free between the has-depth flag and this field.
+/// player-facing on/off switch is applied by rewriting this buffer, not by
+/// compiling a shader variant — this engine has no variant system. Bit 13..16
+/// stay free between the has-depth flag and this field.
 pub const SURFACE_DEPTH_SHADOW_BUDGET_SHIFT: u32 = 16;
 /// Bit width (and therefore ceiling) of the packed self-shadow budget.
 pub const SURFACE_DEPTH_SHADOW_BUDGET_MASK: u32 = 0xF;
@@ -28,9 +28,10 @@ pub const SURFACE_DEPTH_MAX_STEPS: u32 = 0xFF;
 
 /// The mip level the DDA reads the surface map at today.
 ///
-/// This must reach the shader as a *parameter*, never a hardcoded `0` in WGSL. Asset streaming will drop top mips; when it does, this value moves and
-/// a hardcoded `0` would silently read non-resident data. The fade-to-flat LOD
-/// is driven off the dimensions at this level for the same reason, so a
+/// This must reach the shader as a *parameter*, never a hardcoded `0` in WGSL.
+/// Asset streaming will drop top mips; when it does, this value moves and a
+/// hardcoded `0` would silently read non-resident data. The fade-to-flat LOD is
+/// driven off the dimensions at this level for the same reason, so a
 /// streamed-out surface map flattens gracefully instead of popping.
 pub const SURFACE_DEPTH_RESIDENT_BASE_MIP: u32 = 0;
 
@@ -187,9 +188,9 @@ impl SurfaceDepthUniform {
     /// Resolve a material's prefix-driven tuning against the player's on/off
     /// switch and against what actually loaded.
     ///
-    /// `quality` is the persisted player setting; it is applied
-    /// FIRST, so `Off` collapses to [`Self::FLAT`] before any other decision is
-    /// made. `specular_is_surface_map` comes from the bound texture's format.
+    /// `quality` is the persisted player setting; it is applied FIRST, so `Off`
+    /// collapses to [`Self::FLAT`] before any other decision is made.
+    /// `specular_is_surface_map` comes from the bound texture's format.
     /// `requested_base_mip` is the residency decision — today always
     /// [`SURFACE_DEPTH_RESIDENT_BASE_MIP`], later whatever streaming has kept
     /// resident — and is clamped against `specular_mip_count` and the packed

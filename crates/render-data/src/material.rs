@@ -196,9 +196,9 @@ impl Material {
     /// `neon` are flat because a relief on a light source or pane reads as a
     /// defect.
     ///
-    /// Every `max_steps` is twice its carve-only value: the depth now applies
-    /// in each direction, so a full-range map's span — and its grazing-angle
-    /// travel — doubled.
+    /// Every `max_steps` is sized for the signed span: the depth applies in
+    /// each direction, so a full-range map spans twice its depth, and its
+    /// grazing-angle travel grows with it.
     ///
     /// A material whose baked `.prm` has no height sibling stays flat whatever
     /// this returns — the bind group clears the has-depth flag (see

@@ -48,8 +48,7 @@ const AZIMUTHS: [(i32, i32); 16] = [
     (3, -1),
 ];
 /// The eye's height above the plane: a standing eye, far above any band, so
-/// the eye bound never engages and the sweep marches from the peak exactly as
-/// it did before the bound existed.
+/// the eye bound never engages and every ray starts at the peak.
 const EYE_HEIGHT_M: f32 = 1.0;
 const STARTS: usize = 64;
 const RAYS: u64 = (STARTS * TAN_THETA.len() * AZIMUTHS.len()) as u64;
@@ -71,7 +70,7 @@ impl Steps {
     }
 }
 
-/// Which cost target the contract sets for a map.
+/// Which cost target a map is held to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MeanTarget {
     /// At or below baseline: carve-only and flat maps must not pay for raise.
@@ -94,8 +93,8 @@ struct Map {
     /// Ceiling: the numbers this march measured when it landed.
     current: Steps,
     mean_target: MeanTarget,
-    /// Set when the mean target is known to be out of reach of the cost
-    /// levers, with the reason. Escalated to the owner, not loosened.
+    /// Set when the mean target is out of reach of the cost levers, with the
+    /// reason. The target itself stays as set.
     mean_target_missed: Option<&'static str>,
 }
 
@@ -301,8 +300,9 @@ fn maps() -> Vec<Map> {
         mean_target: MeanTarget::AtBaseline,
         mean_target_missed: None,
     });
-    // Synthetic ±full-range: uniform noise over every byte, same pixels in
-    // both eras. Its baseline is a carve of span D; now the span is 2D.
+    // Synthetic ±full-range: uniform noise over every byte, the same pixels
+    // for both marches. The baseline reads them as a carve of span D, the
+    // signed march as a span of 2D.
     let mut state = 0x1234_5678u32;
     let full: Vec<u8> = (0..n * n)
         .map(|_| (xorshift(&mut state) & 0xFF) as u8)

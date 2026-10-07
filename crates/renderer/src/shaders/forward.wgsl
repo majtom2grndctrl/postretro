@@ -82,9 +82,12 @@ fn animated_baked_light_tail_count() -> u32 {
 // Per-material emissive color. `Rgba8UnormSrgb` decodes to linear through the
 // hardware texture path, like base_texture; the black placeholder is a no-op.
 @group(1) @binding(1) var emissive_texture: texture_2d<f32>;
-// Per-material specular texture (R8Unorm sampled as .r). 1×1 black when the
-// diffuse's `_s.png` sibling is absent — zeros `spec_int` without any
-// shader branching. See context/lib/resource_management.md §4.1.
+// Per-material specular slot, sampled as .r: R8Unorm specular, or the
+// Rg8Unorm surface map (R specular, G stored height) when the diffuse has an
+// `_h.png` sibling. 1×1 black R8Unorm when neither sibling exists, which zeros
+// `spec_int` without a branch; its G reads as maximum raise, so the has-depth
+// bit is the only guard keeping Surface Depth off it. See
+// context/lib/resource_management.md §4.1, §4.6.
 @group(1) @binding(2) var spec_texture: texture_2d<f32>;
 
 struct MaterialUniform {
@@ -933,7 +936,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // textureSampleGrad as explicit gradients before conditional texture reads.
     let ddx = dpdx(in.uv);
     let ddy = dpdy(in.uv);
-    // World-space footprint of the same fragment. Surface Depth carves in
+    // World-space footprint of the same fragment. Surface Depth marches in
     // METERS and needs world-units-per-UV-unit to reach UV space; taking it
     // here keeps every derivative in uniform control flow, which the naga
     // uniformity test enforces. The march itself calls no derivative.
@@ -944,8 +947,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     let view_vector = uniforms.camera_position - in.world_position;
     let view_distance = length(view_vector);
-    // normalize(), not a divide by `view_distance`: this runs at EVERY quality
-    // tier including Off, and v/sqrt(dot(v,v)) is not required to round to the
+    // normalize(), not a divide by `view_distance`: this runs with Surface
+    // Depth on or off, and v/sqrt(dot(v,v)) is not required to round to the
     // same bits as the rsqrt normalize() lowers to. Keeping it exact is what
     // makes Off byte-identical to the pre-Surface-Depth render.
     let V = normalize(view_vector);

@@ -65,7 +65,7 @@ impl Renderer {
         );
     }
 
-    /// The Surface Depth tier currently applied to every installed material.
+    /// The Surface Depth setting currently applied to every installed material.
     pub fn surface_depth_quality(
         &self,
     ) -> postretro_render_cpu::surface_depth::SurfaceDepthQuality {

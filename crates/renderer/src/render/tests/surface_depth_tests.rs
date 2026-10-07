@@ -787,7 +787,7 @@ fn the_player_switch_reaches_the_shader_through_the_packed_march_word() {
         true,
         11,
         sd::SURFACE_DEPTH_RESIDENT_BASE_MIP,
-        sd::SurfaceRelief::FULL_RANGE,
+        sd::SurfaceReliefLevels::splat(sd::SurfaceRelief::FULL_RANGE),
     );
     let off = sd::SurfaceDepthUniform::resolve(
         concrete,
@@ -795,7 +795,7 @@ fn the_player_switch_reaches_the_shader_through_the_packed_march_word() {
         true,
         11,
         sd::SURFACE_DEPTH_RESIDENT_BASE_MIP,
-        sd::SurfaceRelief::FULL_RANGE,
+        sd::SurfaceReliefLevels::splat(sd::SurfaceRelief::FULL_RANGE),
     );
     let decoded_on = sd::unpack_surface_depth_march(on.march_word());
     assert!(decoded_on.has_depth);
@@ -820,7 +820,7 @@ fn material_parameters_are_prefix_driven_and_gated_on_the_loaded_slot() {
         true,
         11,
         sd::SURFACE_DEPTH_RESIDENT_BASE_MIP,
-        sd::SurfaceRelief::FULL_RANGE,
+        sd::SurfaceReliefLevels::splat(sd::SurfaceRelief::FULL_RANGE),
     );
     assert!(with_map.has_depth);
     let without_map = sd::SurfaceDepthUniform::resolve(
@@ -829,7 +829,7 @@ fn material_parameters_are_prefix_driven_and_gated_on_the_loaded_slot() {
         false,
         11,
         sd::SURFACE_DEPTH_RESIDENT_BASE_MIP,
-        sd::SurfaceRelief::FULL_RANGE,
+        sd::SurfaceReliefLevels::splat(sd::SurfaceRelief::FULL_RANGE),
     );
     assert!(!without_map.has_depth);
     assert_eq!(without_map.depth.depth_meters, 0.0);
@@ -890,7 +890,7 @@ fn a_non_surface_map_slot_never_marches_even_when_its_g_would_read_as_max_raise(
             Material::Concrete,
             is_surface_map,
             11,
-            max_raise,
+            sd::SurfaceReliefLevels::splat(max_raise),
         );
         for quality in sd::SurfaceDepthQuality::ALL {
             let bytes = plan.uniform_bytes(quality);

@@ -52,7 +52,7 @@ pub fn build_material_uniform(
 /// Depth state, with no GPU access.
 ///
 /// The renderer retains this beside each material's uniform buffer so the
-/// player-facing Surface Depth switch (design D5) can be applied live by
+/// player-facing Surface Depth switch can be applied live by
 /// rewriting the buffer — `queue.write_buffer`, not a bind-group rebuild
 /// (`resource_management.md` §8.2: handles are stable, nothing allocates during
 /// gameplay) and not a new group-0 uniform field (that struct is exactly 128
@@ -73,13 +73,14 @@ pub struct MaterialUniformPlan {
     pub specular_is_surface_map: bool,
     /// Mip levels actually uploaded to that slot; clamps the DDA's base mip.
     pub specular_mip_count: u32,
-    /// Residency's requested base mip (D6.2), today always
+    /// Residency's requested base mip, today always
     /// [`crate::surface_depth::SURFACE_DEPTH_RESIDENT_BASE_MIP`].
     pub requested_base_mip: u32,
-    /// The slot's RAW relief band, measured at load over every uploaded mip
-    /// by [`crate::surface_depth::surface_relief_from_rg8_levels`].
-    /// Quantization waits for the uniform build, where the level count is.
-    pub surface_relief: crate::surface_depth::SurfaceRelief,
+    /// The slot's RAW relief band at every uploaded mip, measured at load by
+    /// [`crate::surface_depth::surface_relief_from_rg8_levels`]. The uniform
+    /// build picks the base mip's band and quantizes it, where the level count
+    /// is.
+    pub surface_relief: crate::surface_depth::SurfaceReliefLevels,
 }
 
 impl MaterialUniformPlan {
@@ -88,7 +89,7 @@ impl MaterialUniformPlan {
         material: postretro_render_data::material::Material,
         specular_is_surface_map: bool,
         specular_mip_count: u32,
-        surface_relief: crate::surface_depth::SurfaceRelief,
+        surface_relief: crate::surface_depth::SurfaceReliefLevels,
     ) -> Self {
         Self {
             shininess: material.shininess(),
@@ -129,7 +130,7 @@ mod material_uniform_tests {
     use super::*;
     use crate::surface_depth::{
         SURFACE_DEPTH_HAS_DEPTH_BIT, SurfaceDepthQuality, SurfaceDepthUniform, SurfaceRelief,
-        surface_height_quantize,
+        SurfaceReliefLevels, surface_height_quantize,
     };
     use postretro_render_data::material::{Material, SurfaceDepth};
 
@@ -138,10 +139,10 @@ mod material_uniform_tests {
     }
 
     /// A concrete-like band: stones rise, mortar sinks to full depth.
-    const STONES: SurfaceRelief = SurfaceRelief {
+    const STONES: SurfaceReliefLevels = SurfaceReliefLevels::splat(SurfaceRelief {
         peak_raise: 0.6,
         trough: -1.0,
-    };
+    });
 
     #[test]
     fn material_uniform_packs_shininess_and_emissive_strength_in_first_row() {
@@ -187,10 +188,10 @@ mod material_uniform_tests {
     /// plan carries raw values and the build applies the material's levels.
     #[test]
     fn the_relief_band_rides_in_bytes_8_to_16_quantized_at_build() {
-        let raw = SurfaceRelief {
+        let raw = SurfaceReliefLevels::splat(SurfaceRelief {
             peak_raise: 0.3,
             trough: -0.25,
-        };
+        });
         let plan = MaterialUniformPlan::new(Material::Concrete, true, 11, raw);
         assert_eq!(
             plan.surface_relief, raw,
@@ -205,7 +206,59 @@ mod material_uniform_tests {
         assert_eq!(f32_at(&bytes, 12), -1.0 / 6.0);
     }
 
-    // -- Player on/off switch (D5): the bytes a live rewrite uploads --
+    /// A chain whose coarse mips overshoot mip 0 (a filter lobe), measured per
+    /// level the way the load path does.
+    fn overshooting_chain() -> SurfaceReliefLevels {
+        SurfaceReliefLevels::from_bands(&[
+            SurfaceRelief {
+                peak_raise: 0.25,
+                trough: -0.5,
+            },
+            SurfaceRelief {
+                peak_raise: 0.75,
+                trough: -1.0,
+            },
+            SurfaceRelief {
+                peak_raise: 1.0,
+                trough: -1.0,
+            },
+        ])
+    }
+
+    #[test]
+    fn a_coarse_mip_overshoot_does_not_move_the_band_of_base_mip_zero() {
+        let plan = MaterialUniformPlan::new(Material::Concrete, true, 3, overshooting_chain());
+        let bytes = plan.uniform_bytes(SurfaceDepthQuality::On);
+        let levels = Material::Concrete.surface_depth().quantize_levels as f32;
+        assert_eq!(f32_at(&bytes, 8), surface_height_quantize(0.25, levels));
+        assert_eq!(f32_at(&bytes, 12), surface_height_quantize(-0.5, levels));
+        let march = u32::from_le_bytes(bytes[28..32].try_into().unwrap());
+        assert_eq!((march >> 8) & 0xF, 0, "the march reads base mip 0");
+    }
+
+    #[test]
+    fn another_base_mip_packs_its_own_band() {
+        let mut plan = MaterialUniformPlan::new(Material::Concrete, true, 3, overshooting_chain());
+        plan.requested_base_mip = 1;
+        let bytes = plan.uniform_bytes(SurfaceDepthQuality::On);
+        let levels = Material::Concrete.surface_depth().quantize_levels as f32;
+        assert_eq!(f32_at(&bytes, 8), surface_height_quantize(0.75, levels));
+        assert_eq!(f32_at(&bytes, 12), surface_height_quantize(-1.0, levels));
+        // A request past the uploaded chain clamps to the last level's band.
+        plan.requested_base_mip = 9;
+        let bytes = plan.uniform_bytes(SurfaceDepthQuality::On);
+        assert_eq!(f32_at(&bytes, 8), surface_height_quantize(1.0, levels));
+    }
+
+    #[test]
+    fn off_then_on_round_trips_byte_for_byte() {
+        let plan = MaterialUniformPlan::new(Material::Concrete, true, 3, overshooting_chain());
+        let on = plan.uniform_bytes(SurfaceDepthQuality::On);
+        let _ = plan.uniform_bytes(SurfaceDepthQuality::Off);
+        assert_eq!(plan.uniform_bytes(SurfaceDepthQuality::On), on);
+    }
+
+    // -- Player on/off switch: the bytes a live rewrite uploads --
 
     /// A carving material with a real surface map: the plan the renderer keeps
     /// for a `.prm` whose specular slot baked to `Rg8Unorm`.
@@ -236,9 +289,11 @@ mod material_uniform_tests {
 
     #[test]
     fn an_all_mid_gray_map_uploads_bytes_identical_to_no_map() {
-        // P4: an empty band marches nothing, so it costs what no map costs.
-        let mid_gray = MaterialUniformPlan::new(Material::Concrete, true, 11, SurfaceRelief::FLAT);
-        let no_map = MaterialUniformPlan::new(Material::Concrete, false, 1, SurfaceRelief::FLAT);
+        // An empty band marches nothing, so it costs what no map costs.
+        let mid_gray =
+            MaterialUniformPlan::new(Material::Concrete, true, 11, SurfaceReliefLevels::FLAT);
+        let no_map =
+            MaterialUniformPlan::new(Material::Concrete, false, 1, SurfaceReliefLevels::FLAT);
         assert_eq!(
             mid_gray.uniform_bytes(SurfaceDepthQuality::On),
             no_map.uniform_bytes(SurfaceDepthQuality::On),

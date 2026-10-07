@@ -12,6 +12,8 @@
 //! Black is exactly −1. White is 127/128, not 1 — that is the price of 128
 //! being exactly representable as the plane. Do not "fix" it.
 
+use super::uniform::SURFACE_DEPTH_BASE_MIP_MASK;
+
 /// Largest stored byte: the unorm scale of the specular slot's G channel.
 pub const SURFACE_HEIGHT_BYTE_MAX: f32 = 255.0;
 /// Authored byte that sits exactly on the polygon plane (`#808080`), and the
@@ -60,9 +62,8 @@ pub fn surface_height_quantize(s: f32, levels: f32) -> f32 {
 /// A material's vertical extent, as signed fractions of its depth.
 ///
 /// `peak_raise` is the highest raise of any texel (`≥ 0`), `trough` the lowest
-/// sink (`≤ 0`). The march walks only `[trough, peak_raise]` (P1) and starts at
-/// the peak (D6). Raw values come from [`surface_relief_from_rg8_levels`] at
-/// load; [`Self::quantized`] applies the material's level count when the
+/// sink (`≤ 0`). The march walks only `[trough, peak_raise]` and starts at the
+/// peak. Raw values come from [`surface_relief_from_rg8_levels`] at load; [`Self::quantized`] applies the material's level count when the
 /// uniform is built, and that quantized pair is what the shader reads.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SurfaceRelief {
@@ -71,7 +72,7 @@ pub struct SurfaceRelief {
 }
 
 impl SurfaceRelief {
-    /// No relief: no surface map, or an all-mid-gray one. Marches nothing (P4).
+    /// No relief: no surface map, or an all-mid-gray one. An empty band marches nothing.
     pub const FLAT: Self = Self {
         peak_raise: 0.0,
         trough: 0.0,
@@ -107,42 +108,75 @@ impl SurfaceRelief {
     }
 }
 
-/// Peak raise and trough, as raw signed fractions, of an `Rg8Unorm` surface
-/// map across EVERY uploaded mip level.
+/// Most mip levels whose relief a slot records: the base-mip field of the march
+/// word is 4 bits wide, so no deeper level can ever be the one the march reads.
+pub const SURFACE_RELIEF_MAX_LEVELS: usize = (SURFACE_DEPTH_BASE_MIP_MASK + 1) as usize;
+
+/// The raw relief band of every uploaded mip level of one surface map.
 ///
-/// `levels` is the slot's chain as `(width, height, bytes)`, interleaved
-/// `[R specular, G stored]` per texel — the shape the renderer already slices
-/// for upload. Every level counts: the bake's Mitchell-Netravali filter has
-/// negative lobes, so a coarser mip can overshoot the base level's range, and
-/// residency may later make any level the one the march reads.
+/// A fixed-size array keeps [`crate::material_plan::MaterialUniformPlan`]
+/// `Copy`. [`Self::at`] picks the band of the mip the march reads; the uniform
+/// packs that band, so it bounds every texel the march can fetch exactly. A
+/// coarser mip's filter overshoot never widens a finer mip's band.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SurfaceReliefLevels {
+    levels: [SurfaceRelief; SURFACE_RELIEF_MAX_LEVELS],
+    /// Levels measured, at most [`SURFACE_RELIEF_MAX_LEVELS`]. Zero is flat.
+    count: usize,
+}
+
+impl SurfaceReliefLevels {
+    /// No levels measured: no surface map. Every lookup is flat.
+    pub const FLAT: Self = Self {
+        levels: [SurfaceRelief::FLAT; SURFACE_RELIEF_MAX_LEVELS],
+        count: 0,
+    };
+
+    /// The same band at every level.
+    pub const fn splat(band: SurfaceRelief) -> Self {
+        Self {
+            levels: [band; SURFACE_RELIEF_MAX_LEVELS],
+            count: SURFACE_RELIEF_MAX_LEVELS,
+        }
+    }
+
+    /// Per-level bands, finest first. Levels past
+    /// [`SURFACE_RELIEF_MAX_LEVELS`] are dropped; the march cannot read them.
+    pub fn from_bands(bands: &[SurfaceRelief]) -> Self {
+        let count = bands.len().min(SURFACE_RELIEF_MAX_LEVELS);
+        let mut levels = [SurfaceRelief::FLAT; SURFACE_RELIEF_MAX_LEVELS];
+        levels[..count].copy_from_slice(&bands[..count]);
+        Self { levels, count }
+    }
+
+    /// The band of mip `level`, clamped to the last measured level.
+    pub fn at(&self, level: u32) -> SurfaceRelief {
+        match self.count {
+            0 => SurfaceRelief::FLAT,
+            count => self.levels[(level as usize).min(count - 1)],
+        }
+    }
+}
+
+/// Peak raise and trough, as raw signed fractions, of ONE `Rg8Unorm` mip level:
+/// `bytes` is interleaved `[R specular, G stored]` per texel.
 ///
-/// That overshoot interacts with AO. If a coarse mip rises past the base
-/// level's highest texel by enough to move the QUANTIZED peak, the peak sits
-/// above every texel the march reads at the resident level. The march stays
-/// correct — it starts a little higher than it needs to — but no texel is at
-/// the peak any more: stone tops take nonzero AO (D5 measures from the peak),
-/// and a top hit no longer skips the self-shadow march, so it spends a budget
-/// slot on a march that cannot find an occluder. The shipped `_h.png` assets
-/// do not overshoot that far.
-///
-/// An empty chain is [`SurfaceRelief::FLAT`]. A level whose byte count is not
-/// two per texel is a debug assertion; a release build ignores a trailing odd
-/// byte.
-pub fn surface_relief_from_rg8_levels(levels: &[(u32, u32, &[u8])]) -> SurfaceRelief {
+/// A level whose byte count is not two per texel is a debug assertion; a
+/// release build ignores a trailing odd byte. An empty level is
+/// [`SurfaceRelief::FLAT`].
+pub fn surface_relief_from_rg8_level(width: u32, height: u32, bytes: &[u8]) -> SurfaceRelief {
+    debug_assert_eq!(
+        bytes.len(),
+        2 * width as usize * height as usize,
+        "an Rg8Unorm level is two bytes per texel",
+    );
     let mut min_stored = u8::MAX;
     let mut max_stored = u8::MIN;
     let mut any = false;
-    for &(width, height, bytes) in levels {
-        debug_assert_eq!(
-            bytes.len(),
-            2 * width as usize * height as usize,
-            "an Rg8Unorm level is two bytes per texel",
-        );
-        for texel in bytes.as_chunks::<2>().0 {
-            min_stored = min_stored.min(texel[1]);
-            max_stored = max_stored.max(texel[1]);
-            any = true;
-        }
+    for texel in bytes.as_chunks::<2>().0 {
+        min_stored = min_stored.min(texel[1]);
+        max_stored = max_stored.max(texel[1]);
+        any = true;
     }
     if !any {
         return SurfaceRelief::FLAT;
@@ -152,6 +186,28 @@ pub fn surface_relief_from_rg8_levels(levels: &[(u32, u32, &[u8])]) -> SurfaceRe
         peak_raise: surface_height_fraction_from_byte(min_stored).max(0.0),
         trough: surface_height_fraction_from_byte(max_stored).min(0.0),
     }
+}
+
+/// The relief band of every uploaded mip of an `Rg8Unorm` surface map.
+///
+/// `levels` is the slot's chain as `(width, height, bytes)`, finest first — the
+/// shape the renderer already slices for upload. Every level is measured: the
+/// bake's Mitchell-Netravali filter has negative lobes, so a coarser mip can
+/// overshoot the base level's range, and residency may make any level the one
+/// the march reads. The uniform build then packs only the read level's band
+/// ([`SurfaceReliefLevels::at`]), so an overshoot in a coarser mip cannot lift
+/// the march start or move the quantized peak above the tallest texel the
+/// march fetches. Stone tops stay at the peak: they take no AO, and a top hit
+/// there still skips the self-shadow march.
+///
+/// An empty chain is [`SurfaceReliefLevels::FLAT`].
+pub fn surface_relief_from_rg8_levels(levels: &[(u32, u32, &[u8])]) -> SurfaceReliefLevels {
+    let mut bands = [SurfaceRelief::FLAT; SURFACE_RELIEF_MAX_LEVELS];
+    let count = levels.len().min(SURFACE_RELIEF_MAX_LEVELS);
+    for (band, &(width, height, bytes)) in bands.iter_mut().zip(levels) {
+        *band = surface_relief_from_rg8_level(width, height, bytes);
+    }
+    SurfaceReliefLevels::from_bands(&bands[..count])
 }
 
 /// A piecewise-constant height field: one stored G value per texel, tiled

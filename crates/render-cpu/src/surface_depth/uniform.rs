@@ -1,7 +1,7 @@
 //! The per-material uniform: the packed `march` word, the player's on/off
 //! switch, and the resolve that decides what one material uploads.
 
-use super::height::SurfaceRelief;
+use super::height::{SurfaceRelief, SurfaceReliefLevels};
 use postretro_render_data::material::{SurfaceDepth, surface_depth_max_authored};
 
 /// Uniform-word bit offset of the packed base mip level.
@@ -193,11 +193,13 @@ impl SurfaceDepthUniform {
     /// made. `specular_is_surface_map` comes from the bound texture's format.
     /// `requested_base_mip` is the residency decision — today always
     /// [`SURFACE_DEPTH_RESIDENT_BASE_MIP`], later whatever streaming has kept
-    /// resident — and is clamped against `specular_mip_count` so the DDA can
-    /// never `textureLoad` past the end of the uploaded chain. `relief` is the
-    /// RAW band measured from that slot at load; it is quantized here with the
-    /// material's level count. An empty band resolves flat (P4): an
-    /// all-mid-gray map uploads exactly what no map does.
+    /// resident — and is clamped against `specular_mip_count` and the packed
+    /// field's width so the DDA can never `textureLoad` past the end of the
+    /// uploaded chain. `relief` holds the RAW band of every mip measured at
+    /// load; the band of that clamped base mip is quantized here with the
+    /// material's level count and uploaded, so it bounds exactly what the march
+    /// reads. An empty band resolves flat: an all-mid-gray map uploads exactly
+    /// what no map does.
     ///
     /// The authored depth is also rejected if non-finite and clamped to
     /// [`surface_depth_max_authored`]. `SurfaceDepth::depth_meters` is a public
@@ -213,7 +215,7 @@ impl SurfaceDepthUniform {
         specular_is_surface_map: bool,
         specular_mip_count: u32,
         requested_base_mip: u32,
-        relief: SurfaceRelief,
+        relief: SurfaceReliefLevels,
     ) -> Self {
         let mut tuned = quality.apply(depth);
         if !specular_is_surface_map || !tuned.is_enabled() {
@@ -223,17 +225,20 @@ impl SurfaceDepthUniform {
         if !tuned.depth_meters.is_finite() {
             return Self::FLAT;
         }
-        let band = relief.quantized(tuned.quantize_levels as f32);
+        let top_level = specular_mip_count
+            .saturating_sub(1)
+            .min(SURFACE_DEPTH_BASE_MIP_MASK);
+        let base_mip = requested_base_mip.min(top_level);
+        let band = relief.at(base_mip).quantized(tuned.quantize_levels as f32);
         if band.is_flat() {
             return Self::FLAT;
         }
         // Cap against whichever unit the field is carrying.
         tuned.depth_meters = tuned.depth_meters.min(surface_depth_max_authored());
-        let top_level = specular_mip_count.saturating_sub(1);
         Self {
             depth: tuned,
             has_depth: true,
-            base_mip: requested_base_mip.min(top_level),
+            base_mip,
             shadow_light_budget: quality.shadow_light_budget(),
             relief: band,
         }

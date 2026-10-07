@@ -43,7 +43,9 @@ fn field(width: i32, height: i32, stored_g: &[f32], levels: u32) -> SurfaceDepth
 /// load-time extraction over one level, then the material's quantization.
 fn band(authored: &[u8], levels: u32) -> SurfaceRelief {
     let rg: Vec<u8> = authored.iter().flat_map(|&h| [0u8, 255 - h]).collect();
-    surface_relief_from_rg8_levels(&[(authored.len() as u32, 1, &rg)]).quantized(levels as f32)
+    surface_relief_from_rg8_levels(&[(authored.len() as u32, 1, &rg)])
+        .at(0)
+        .quantized(levels as f32)
 }
 
 /// Deterministic authored bytes, no libm involved.
@@ -157,7 +159,7 @@ fn resolve_on(carving: SurfaceDepth, mip_count: u32, requested: u32) -> SurfaceD
         true,
         mip_count,
         requested,
-        SurfaceRelief::FULL_RANGE,
+        SurfaceReliefLevels::splat(SurfaceRelief::FULL_RANGE),
     )
 }
 
@@ -171,7 +173,7 @@ fn a_material_without_a_surface_map_resolves_flat() {
         false,
         11,
         SURFACE_DEPTH_RESIDENT_BASE_MIP,
-        SurfaceRelief::FULL_RANGE,
+        SurfaceReliefLevels::splat(SurfaceRelief::FULL_RANGE),
     );
     assert_eq!(resolved, SurfaceDepthUniform::FLAT);
     assert!(!resolved.has_depth);
@@ -202,7 +204,7 @@ fn the_march_never_runs_without_the_has_depth_bit() {
                 false,
                 1,
                 SURFACE_DEPTH_RESIDENT_BASE_MIP,
-                relief,
+                SurfaceReliefLevels::splat(relief),
             );
             assert!(
                 !surface_depth_has_map(resolved.march_word(), resolved.depth.depth_meters),
@@ -242,7 +244,7 @@ fn an_all_mid_gray_map_uploads_exactly_what_no_map_does() {
             true,
             11,
             SURFACE_DEPTH_RESIDENT_BASE_MIP,
-            band(&[PLANE; 16], levels),
+            SurfaceReliefLevels::splat(band(&[PLANE; 16], levels)),
         );
         assert_eq!(resolved, SurfaceDepthUniform::FLAT, "levels {levels}");
     }
@@ -257,10 +259,10 @@ fn the_relief_band_is_quantized_with_the_material_levels() {
         true,
         11,
         SURFACE_DEPTH_RESIDENT_BASE_MIP,
-        SurfaceRelief {
+        SurfaceReliefLevels::splat(SurfaceRelief {
             peak_raise: 0.3,
             trough: -0.25,
-        },
+        }),
     );
     let levels = depth.quantize_levels as f32;
     assert_eq!(
@@ -358,7 +360,7 @@ fn off_forces_every_carving_material_flat() {
             true,
             11,
             SURFACE_DEPTH_RESIDENT_BASE_MIP,
-            SurfaceRelief::FULL_RANGE,
+            SurfaceReliefLevels::splat(SurfaceRelief::FULL_RANGE),
         );
         assert_eq!(resolved, SurfaceDepthUniform::FLAT);
         assert_eq!(
@@ -413,7 +415,7 @@ fn a_flat_material_is_switch_independent() {
                 true,
                 11,
                 SURFACE_DEPTH_RESIDENT_BASE_MIP,
-                SurfaceRelief::FULL_RANGE,
+                SurfaceReliefLevels::splat(SurfaceRelief::FULL_RANGE),
             ),
             SurfaceDepthUniform::FLAT
         );
@@ -436,7 +438,7 @@ fn a_non_finite_authored_depth_resolves_flat() {
             true,
             4,
             0,
-            SurfaceRelief::FULL_RANGE,
+            SurfaceReliefLevels::splat(SurfaceRelief::FULL_RANGE),
         );
         assert_eq!(
             resolved,
@@ -463,7 +465,7 @@ fn an_over_deep_authored_depth_is_clamped_to_the_ceiling() {
         true,
         4,
         0,
-        SurfaceRelief::FULL_RANGE,
+        SurfaceReliefLevels::splat(SurfaceRelief::FULL_RANGE),
     );
     assert!(resolved.depth.depth_meters <= ceiling);
     // Still marching — the clamp bounds the depth, it does not disable it.
@@ -572,7 +574,7 @@ fn quantization_snaps_neighbours_onto_shared_plateaus() {
     assert_eq!(f.texel_height(0, 1), -3.0 / 6.0);
 }
 
-// -- Relief extraction (D6, P1) --
+// -- Relief extraction --
 
 fn rg_level(width: u32, height: u32, stored_g: &[u8]) -> Vec<u8> {
     assert_eq!(stored_g.len(), (width * height) as usize);
@@ -580,7 +582,7 @@ fn rg_level(width: u32, height: u32, stored_g: &[u8]) -> Vec<u8> {
 }
 
 #[test]
-fn relief_extraction_takes_the_extremes_across_every_mip() {
+fn relief_extraction_measures_every_mip_separately() {
     // Base level: plane and sinks only. Mip 1: one overshooting raise (a
     // Mitchell-Netravali lobe can do this). Mip 2: the deepest sink.
     let base = rg_level(2, 2, &[127, 127, 200, 150]);
@@ -588,8 +590,13 @@ fn relief_extraction_takes_the_extremes_across_every_mip() {
     let mip2 = rg_level(1, 1, &[240]);
     let relief =
         surface_relief_from_rg8_levels(&[(2, 2, &base[..]), (1, 1, &mip1[..]), (1, 1, &mip2[..])]);
-    assert_eq!(relief.peak_raise, (127.0 - 27.0) / 128.0);
-    assert_eq!(relief.trough, (127.0 - 240.0) / 128.0);
+    assert_eq!(relief.at(0).peak_raise, 0.0);
+    assert_eq!(relief.at(0).trough, (127.0 - 200.0) / 128.0);
+    assert_eq!(relief.at(1).peak_raise, (127.0 - 27.0) / 128.0);
+    assert_eq!(relief.at(1).trough, 0.0);
+    assert_eq!(relief.at(2).trough, (127.0 - 240.0) / 128.0);
+    // A level past the chain reads the last measured one.
+    assert_eq!(relief.at(9), relief.at(2));
 }
 
 #[test]
@@ -597,26 +604,60 @@ fn relief_extraction_of_an_all_sink_map_has_no_peak() {
     let base = rg_level(2, 2, &[127, 255, 200, 150]);
     let mip1 = rg_level(1, 1, &[180]);
     let relief = surface_relief_from_rg8_levels(&[(2, 2, &base[..]), (1, 1, &mip1[..])]);
-    assert_eq!(relief.peak_raise, 0.0);
-    assert_eq!(relief.trough, -1.0);
+    for level in 0..2 {
+        assert_eq!(relief.at(level).peak_raise, 0.0);
+    }
+    assert_eq!(relief.at(0).trough, -1.0);
 }
 
 #[test]
 fn relief_extraction_of_an_all_raise_map_has_no_trough() {
     let base = rg_level(1, 2, &[0, 100]);
     let relief = surface_relief_from_rg8_levels(&[(1, 2, &base[..])]);
-    assert_eq!(relief.peak_raise, SURFACE_HEIGHT_MAX_RAISE);
-    assert_eq!(relief.trough, 0.0);
+    assert_eq!(relief.at(0).peak_raise, SURFACE_HEIGHT_MAX_RAISE);
+    assert_eq!(relief.at(0).trough, 0.0);
 }
 
 #[test]
 fn relief_extraction_of_nothing_is_flat() {
-    assert_eq!(surface_relief_from_rg8_levels(&[]), SurfaceRelief::FLAT);
-    let mid = rg_level(2, 1, &[127, 127]);
     assert_eq!(
-        surface_relief_from_rg8_levels(&[(2, 1, &mid[..])]),
-        SurfaceRelief::FLAT
+        surface_relief_from_rg8_levels(&[]),
+        SurfaceReliefLevels::FLAT
     );
+    assert_eq!(SurfaceReliefLevels::FLAT.at(3), SurfaceRelief::FLAT);
+    let mid = rg_level(2, 1, &[127, 127]);
+    assert!(
+        surface_relief_from_rg8_levels(&[(2, 1, &mid[..])])
+            .at(0)
+            .is_flat()
+    );
+}
+
+#[test]
+fn the_resolve_reads_the_band_of_the_clamped_base_mip() {
+    // Mip 0 stays under mip 1's overshoot: a coarse lobe must not lift the
+    // base level's band.
+    let base = rg_level(2, 1, &[100, 200]);
+    let mip1 = rg_level(1, 1, &[0]);
+    let relief = surface_relief_from_rg8_levels(&[(2, 1, &base[..]), (1, 1, &mip1[..])]);
+    let depth = Material::Concrete.surface_depth();
+    let levels = depth.quantize_levels as f32;
+    for (requested, mip_count, source) in [(0, 2, 0), (1, 2, 1), (7, 2, 1), (1, 1, 0)] {
+        let resolved = SurfaceDepthUniform::resolve(
+            depth,
+            SurfaceDepthQuality::On,
+            true,
+            mip_count,
+            requested,
+            relief,
+        );
+        assert_eq!(resolved.base_mip, source, "requested {requested}");
+        assert_eq!(
+            resolved.relief,
+            relief.at(source).quantized(levels),
+            "requested {requested}"
+        );
+    }
 }
 
 // -- The view march --

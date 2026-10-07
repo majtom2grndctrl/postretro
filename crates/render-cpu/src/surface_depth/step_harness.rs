@@ -173,6 +173,7 @@ fn measure(map: &Map) -> Steps {
     // filter overshoot in a coarser mip would widen the runtime band.
     let rg: Vec<u8> = stored_bytes.iter().flat_map(|&g| [0u8, g]).collect();
     let relief = surface_relief_from_rg8_levels(&[(map.width as u32, map.height as u32, &rg)])
+        .at(0)
         .quantized(tuning.quantize_levels as f32);
     let dims = [map.width as f32, map.height as f32];
     let scale = tuning.depth_meters * TEXEL_M;

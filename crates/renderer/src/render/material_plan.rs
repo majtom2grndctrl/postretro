@@ -137,16 +137,17 @@ pub(crate) fn build_material_bind_group(
         loaded.surface_relief,
     );
     if uniform_plan.specular_is_surface_map {
-        let band = uniform_plan
+        let raw = uniform_plan
             .surface_relief
-            .quantized(uniform_plan.surface_depth.quantize_levels as f32);
+            .at(uniform_plan.requested_base_mip);
+        let band = raw.quantized(uniform_plan.surface_depth.quantize_levels as f32);
         log::debug!(
             "[Loader] {label_prefix} surface depth band: peak {:+.4}, trough {:+.4} \
              (raw {:+.4} / {:+.4}, {} levels per direction)",
             band.peak_raise,
             band.trough,
-            uniform_plan.surface_relief.peak_raise,
-            uniform_plan.surface_relief.trough,
+            raw.peak_raise,
+            raw.trough,
             uniform_plan.surface_depth.quantize_levels,
         );
     }

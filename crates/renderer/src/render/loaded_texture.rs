@@ -10,7 +10,7 @@ use postretro_level_format::texture_cache_keys::TextureCacheKeysSection;
 use postretro_render_cpu::loaded_texture::{
     TextureSlotPlan, TextureSlotPolicy, slot_levels, texture_slot_plan,
 };
-use postretro_render_cpu::surface_depth::{SurfaceRelief, surface_relief_from_rg8_levels};
+use postretro_render_cpu::surface_depth::{SurfaceReliefLevels, surface_relief_from_rg8_levels};
 
 const PLACEHOLDER_SIZE: u32 = 64;
 const CHECKER_SQUARE: u32 = 8;
@@ -65,11 +65,11 @@ pub struct LoadedTexture {
     /// is keyed by this value so no slot is over-clamped when sibling slots
     /// have different chain depths (e.g. corrupted diffuse with intact normal).
     pub mip_count: u32,
-    /// The specular slot's RAW relief band, measured from the bytes actually
-    /// uploaded, over every mip. [`SurfaceRelief::FLAT`] for any slot that is
-    /// not an `Rg8Unorm` surface map. `build_material_bind_group` quantizes it
-    /// with the material's level count.
-    pub surface_relief: SurfaceRelief,
+    /// The specular slot's RAW relief band at every uploaded mip, measured from
+    /// the bytes actually uploaded. [`SurfaceReliefLevels::FLAT`] for any slot
+    /// that is not an `Rg8Unorm` surface map. The uniform build picks the base
+    /// mip's band and quantizes it with the material's level count.
+    pub surface_relief: SurfaceReliefLevels,
 }
 
 /// Row-layout classification for a `.prm`-backed upload format.
@@ -382,7 +382,7 @@ pub(super) fn placeholder_loaded_texture(
         emissive_texture,
         emissive_view,
         mip_count: 1,
-        surface_relief: SurfaceRelief::FLAT,
+        surface_relief: SurfaceReliefLevels::FLAT,
     }
 }
 
@@ -587,26 +587,26 @@ pub(super) fn load_model_diffuse_texture(
         emissive_view,
         mip_count: plan.mip_count,
         // Models take the neutral specular placeholder: no surface map.
-        surface_relief: SurfaceRelief::FLAT,
+        surface_relief: SurfaceReliefLevels::FLAT,
     }
 }
 
-/// The raw relief band of the specular slot, from the exact bytes
-/// `upload_slot_or_placeholder` uploads for it, across every mip.
+/// The raw relief band of every mip of the specular slot, from the exact bytes
+/// `upload_slot_or_placeholder` uploads for it.
 ///
-/// Empty ([`SurfaceRelief::FLAT`]) unless the slot is consumed AND decodes as
+/// Empty ([`SurfaceReliefLevels::FLAT`]) unless the slot is consumed AND decodes as
 /// an `Rg8Unorm` surface map — the same condition under which the bound
 /// texture has that format. Any other slot must never report relief: an R8
 /// slot's G would read as maximum raise under the signed encoding.
 fn specular_surface_relief(
     slot_result: &Result<PrmSlot, PrmReadError>,
     consume: bool,
-) -> SurfaceRelief {
+) -> SurfaceReliefLevels {
     match slot_result {
         Ok(slot) if consume && prm_format_to_wgpu(slot.format) == wgpu::TextureFormat::Rg8Unorm => {
             surface_relief_from_rg8_levels(&slot_levels(slot))
         }
-        _ => SurfaceRelief::FLAT,
+        _ => SurfaceReliefLevels::FLAT,
     }
 }
 
@@ -820,7 +820,7 @@ mod tests {
         // Two texels of [R, G]: authored 128 (stored 127) and authored 192
         // (stored 63).
         let slot = slot(PrmFormat::Rg8Unorm, 2, 1, vec![9, 127, 9, 63]);
-        let relief = specular_surface_relief(&Ok(slot), true);
+        let relief = specular_surface_relief(&Ok(slot), true).at(0);
         assert_eq!(relief.peak_raise, 0.5);
         assert_eq!(relief.trough, 0.0);
     }
@@ -830,15 +830,18 @@ mod tests {
     #[test]
     fn a_non_surface_map_slot_reports_no_relief() {
         let r8 = slot(PrmFormat::R8Unorm, 2, 1, vec![0, 0]);
-        assert_eq!(specular_surface_relief(&Ok(r8), true), SurfaceRelief::FLAT);
+        assert_eq!(
+            specular_surface_relief(&Ok(r8), true),
+            SurfaceReliefLevels::FLAT
+        );
         let unconsumed = slot(PrmFormat::Rg8Unorm, 1, 1, vec![0, 0]);
         assert_eq!(
             specular_surface_relief(&Ok(unconsumed), false),
-            SurfaceRelief::FLAT
+            SurfaceReliefLevels::FLAT
         );
         assert_eq!(
             specular_surface_relief(&Err(PrmReadError::NotPresent), true),
-            SurfaceRelief::FLAT
+            SurfaceReliefLevels::FLAT
         );
     }
 

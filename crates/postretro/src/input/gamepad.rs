@@ -88,6 +88,27 @@ fn trigger_is_active(value: f32) -> bool {
     value >= TRIGGER_BUTTON_THRESHOLD
 }
 
+/// Combine a trigger's button-reported and axis-reported analog values into one
+/// value in [0, 1]. Absent readings count as zero.
+fn trigger_value(button: Option<f32>, axis: Option<f32>) -> f32 {
+    button
+        .unwrap_or(0.0)
+        .max(axis.unwrap_or(0.0))
+        .clamp(0.0, 1.0)
+}
+
+/// Read a trigger's analog value from a gamepad.
+///
+/// gilrs reports triggers as `Button::*Trigger2` with an analog button value on
+/// the WGI and SDL-mapping paths, never as `Axis::*Z`; the axis stays as a
+/// fallback for backends that do report it.
+fn trigger_reading(gamepad: &gilrs::Gamepad, button: Button, axis: Axis) -> f32 {
+    trigger_value(
+        gamepad.button_data(button).map(|data| data.value()),
+        gamepad.axis_data(axis).map(|data| data.value()),
+    )
+}
+
 /// Manages gamepad input via gilrs.
 ///
 /// Each frame, call `update()` to drain gilrs events and feed processed
@@ -299,9 +320,9 @@ impl GamepadSystem {
         input_system.set_gamepad_axis(Axis::RightStickX, right_x);
         input_system.set_gamepad_axis(Axis::RightStickY, right_y);
 
-        // Read triggers as axis values in [0, 1].
-        let left_trigger = axis_value(&gamepad, Axis::LeftZ).max(0.0);
-        let right_trigger = axis_value(&gamepad, Axis::RightZ).max(0.0);
+        // Read triggers as values in [0, 1].
+        let left_trigger = trigger_reading(&gamepad, Button::LeftTrigger2, Axis::LeftZ);
+        let right_trigger = trigger_reading(&gamepad, Button::RightTrigger2, Axis::RightZ);
 
         input_system.set_gamepad_axis(Axis::LeftZ, left_trigger);
         input_system.set_gamepad_axis(Axis::RightZ, right_trigger);
@@ -648,6 +669,56 @@ mod tests {
     #[test]
     fn trigger_above_threshold_is_active() {
         assert!(trigger_is_active(0.8));
+    }
+
+    // --- Trigger value sourcing tests ---
+
+    #[test]
+    fn trigger_button_value_alone_is_active() {
+        assert!(trigger_is_active(trigger_value(Some(1.0), None)));
+    }
+
+    #[test]
+    fn trigger_axis_value_alone_is_active() {
+        assert!(trigger_is_active(trigger_value(None, Some(1.0))));
+    }
+
+    #[test]
+    fn trigger_without_readings_is_zero() {
+        assert_eq!(trigger_value(None, None), 0.0);
+    }
+
+    #[test]
+    fn trigger_zero_button_value_is_inactive() {
+        assert!(!trigger_is_active(trigger_value(Some(0.0), None)));
+    }
+
+    #[test]
+    fn trigger_partial_values_below_threshold_are_inactive() {
+        assert!(!trigger_is_active(trigger_value(Some(0.3), None)));
+        assert!(!trigger_is_active(trigger_value(None, Some(0.3))));
+        assert!(!trigger_is_active(trigger_value(Some(0.2), Some(0.4))));
+    }
+
+    #[test]
+    fn trigger_takes_the_larger_reading_and_clamps_to_unit_range() {
+        assert_eq!(trigger_value(Some(0.25), Some(0.75)), 0.75);
+        assert_eq!(trigger_value(None, Some(-1.0)), 0.0);
+        assert_eq!(trigger_value(Some(1.5), None), 1.0);
+    }
+
+    #[test]
+    fn active_right_trigger_button_activates_shoot() {
+        use crate::input::types::{Action, Binding, ButtonState};
+        let mut sys = InputSystem::new(vec![Binding::new(
+            PhysicalInput::GamepadButton(Button::RightTrigger2),
+            Action::Shoot,
+        )]);
+        sys.set_physical_input(
+            PhysicalInput::GamepadButton(Button::RightTrigger2),
+            trigger_is_active(trigger_value(Some(1.0), None)),
+        );
+        assert_eq!(sys.snapshot().button(Action::Shoot), ButtonState::Pressed);
     }
 
     // --- Rumble magnitude mapping tests ---

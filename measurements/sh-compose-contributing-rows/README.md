@@ -1,6 +1,6 @@
 # Measurements — sh-compose-contributing-rows
 
-The brief is `context/plans/in-progress/sh-compose-contributing-rows/index.md`. These runs answer its manual rows on per-pass composed rows and pass time.
+The brief is `context/plans/done/sh-compose-contributing-rows/index.md`. These runs answer its manual rows on per-pass composed rows and pass time.
 
 ## Pins
 
@@ -67,6 +67,18 @@ One run per arm reads 2.5–2.7 ms above the other two.
 - station: 132 → 266.
 
 **Confound.** Under the lighter load, the GPU core clock in the new arena runs falls to 1115–1160 MHz, against 1232 MHz for old. New-arm times are therefore, if anything, overstated.
+
+## GTX 1660 (owner, Windows)
+
+The owner measured these on the 1660 after the Mac runs, using its GPU timestamps. Each figure is compose ms per frame, summed over all three passes.
+
+| Pose | Before → after |
+|---|---|
+| Hallway arena | 1.97 → 0.17 |
+| Campaign spawn | 1.24 → 0.78 |
+| Kinematic station | 3.90 → 1.55 |
+
+The station total includes Pass A, which drops from 0.67 to 0.17 ms per frame.
 
 ## Atlas byte check
 

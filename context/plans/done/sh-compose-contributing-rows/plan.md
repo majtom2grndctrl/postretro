@@ -1,7 +1,7 @@
 # sh-compose-contributing-rows — plan of record
 
 mode: compact
-status: active
+status: done
 read at: 2bc52d471
 
 ## Corrections
@@ -43,6 +43,15 @@ read at: 2bc52d471
 Gate: `cargo fmt --check` ✓; `cargo clippy --target-dir target/preflight-clippy -- -D warnings` ✓; `cargo test` ✓ (60 targets, 9374 passed); `cargo check --release` ✓; `crate-graph --check` ✓; `dev-tools` renderer clippy and tests ✓; `capture` report tests ✓. Known and pre-existing: `cargo clippy --all-targets --features postretro/capture` fails in `capture/prepared.rs`, `capture/scene.rs`, `capture_shadowmask_groups.rs` and at `report.rs:27`. Each is outside this diff.
 
 Manual-proof aid: the capture report now carries `entry_rows_composed` per pass, beside `rows_composed`. The `[SH streaming]` log line and the dev-tools tab do not show it. AC 18 and 19 can read the split from a capture at each pose, or from the spike's `RowCountWindow`.
+
+## Windows follow-up (owner)
+
+On the GTX 1660, compose ms per frame summed over all three passes:
+- arena: 1.97 → 0.17;
+- campaign spawn: 1.24 → 0.78;
+- kinematic station: 3.90 → 1.55, including Pass A, which drops from 0.67 to 0.17.
+
+The brief needed no 1660 gate; this confirms the win carries to that backend.
 
 ## Review loop
 - Round 1 panel: 2 correctness tracers + adversarial tester (Opus) and hygiene/drift (Sonnet). No 🔴 code findings.

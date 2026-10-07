@@ -10,8 +10,8 @@
   "role": "group",
   "root": {
     "kind": "vstack",
-    "gap": 12.0,
-    "padding": 20.0,
+    "gap": "m",
+    "padding": "l",
     "align": "start",
     "fill": "panel.default",
     "focus": {
@@ -28,10 +28,10 @@
       {
         "kind": "grid",
         "id": "controlsRows",
-        "gap": 8.0,
+        "gap": "m",
         "padding": 0.0,
         "align": "center",
-        "cols": 1,
+        "cols": 3,
         "focus": {
           "policy": "spatial"
         },
@@ -50,7 +50,7 @@
       },
       {
         "kind": "hstack",
-        "gap": 12.0,
+        "gap": "l",
         "padding": 0.0,
         "align": "start",
         "children": [

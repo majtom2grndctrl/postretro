@@ -173,6 +173,19 @@ pub(crate) fn slot_id(command: Command, class: DeviceClass, slot: usize) -> Stri
     format!("ctl_{}_{}_{slot}", command.id(), class.settings_key())
 }
 
+/// Theme spacing tokens (`ui.md` §2), so a mod's theme spaces these panels the
+/// way it spaces its own.
+const GAP: &str = "m";
+const PADDING: &str = "l";
+const BUTTON_GAP: &str = "l";
+
+/// Font sizes, on the scale the shipped menus use. A category heading reads a
+/// step above the rows it heads.
+const TITLE_SIZE: f32 = 22.0;
+const HEADING_SIZE: f32 = 16.0;
+const BODY_SIZE: f32 = 16.0;
+const DETAIL_SIZE: f32 = 14.0;
+
 fn text(content: &str, size: f32) -> Value {
     json!({ "kind": "text", "content": content, "fontSize": size, "color": "ok", "font": "mono" })
 }
@@ -192,8 +205,8 @@ fn tree(initial_focus: Option<&str>, children: Vec<Value>) -> AnchoredTree {
         "captureMode": "capture",
         "root": {
             "kind": "vstack",
-            "gap": 12.0,
-            "padding": 20.0,
+            "gap": GAP,
+            "padding": PADDING,
             "align": "start",
             "fill": "panel.default",
             "focus": { "policy": "linear" },
@@ -212,9 +225,14 @@ const ROWS_GRID_ID: &str = "controlsRows";
 /// carries the flag.
 const DISPLACED_NOTE_ID: &str = "controlsDisplacedNote";
 
-/// The grid cells and column count for the rows: a header row, a heading row
-/// per category, then each command's label, slot buttons, and RESET.
-fn row_cells(rows: &[ControlsRow]) -> (usize, Vec<Value>) {
+/// Columns of the row grid: label, binding, and RESET on a command's first row.
+const ROW_COLS: usize = 3;
+
+/// The grid cells for the rows: a heading row per category, then one row per
+/// binding slot, labelled with its command and slot. One binding per row keeps
+/// the grid three columns wide however many slots a class shows, so the panel
+/// fits the reference canvas.
+fn row_cells(rows: &[ControlsRow]) -> Vec<Value> {
     let slots = DeviceClass::ALL.map(|class| {
         rows.iter()
             .map(|row| row.inputs[class_index(class)].len())
@@ -222,58 +240,63 @@ fn row_cells(rows: &[ControlsRow]) -> (usize, Vec<Value>) {
             .unwrap_or(0)
             .max(MIN_SLOTS)
     });
-    let cols = 2 + slots[0] + slots[1];
 
-    let mut cells = vec![text("COMMAND", 14.0)];
-    for (class, count) in DeviceClass::ALL.into_iter().zip(slots) {
-        let short = match class {
-            DeviceClass::KeyboardMouse => "KEY",
-            DeviceClass::Gamepad => "PAD",
-        };
-        cells.extend((1..=count).map(|n| text(&format!("{short} {n}"), 14.0)));
-    }
-    cells.push(spacer());
-
+    let mut cells = Vec::new();
     let mut category = None;
     for row in rows {
         if category != Some(&row.category) {
             category = Some(&row.category);
-            cells.push(text(&row.category, 18.0));
-            cells.extend((1..cols).map(|_| spacer()));
+            cells.push(text(&row.category, HEADING_SIZE));
+            cells.extend((1..ROW_COLS).map(|_| spacer()));
         }
+        // Every row of a flagged command carries the mark, so it shows on
+        // whichever of the command's rows is scrolled into view.
         let marker = if row.displaced { " !" } else { "" };
-        cells.push(text(&format!("{}{marker}", row.label), 16.0));
-        for (class, count) in DeviceClass::ALL.into_iter().zip(slots) {
-            for slot in 0..count {
-                let label = match row.inputs[class_index(class)].get(slot) {
-                    Some((input, kind)) => {
-                        format!("{}{}", input_label(*input), activator_suffix(*kind))
-                    }
-                    None => "---".to_string(),
-                };
-                cells.push(button(
-                    &slot_id(row.command, class, slot),
-                    &label,
+        let row_slots = DeviceClass::ALL
+            .into_iter()
+            .zip(slots)
+            .flat_map(|(class, count)| (0..count).map(move |slot| (class, slot)));
+        for (index, (class, slot)) in row_slots.enumerate() {
+            let short = match class {
+                DeviceClass::KeyboardMouse => "KEY",
+                DeviceClass::Gamepad => "PAD",
+            };
+            cells.push(text(
+                &format!("{}{marker} \u{b7} {short} {}", row.label, slot + 1),
+                DETAIL_SIZE,
+            ));
+            let label = match row.inputs[class_index(class)].get(slot) {
+                Some((input, kind)) => {
+                    format!("{}{}", input_label(*input), activator_suffix(*kind))
+                }
+                None => "---".to_string(),
+            };
+            cells.push(button(
+                &slot_id(row.command, class, slot),
+                &label,
+                &format!(
+                    "{}capture.{}.{}.{slot}",
+                    postretro_ui::actions::CONTROLS_ACTION_PREFIX,
+                    row.command.id(),
+                    class.settings_key()
+                ),
+            ));
+            cells.push(if index == 0 {
+                button(
+                    &format!("ctl_{}_reset", row.command.id()),
+                    "RESET",
                     &format!(
-                        "{}capture.{}.{}.{slot}",
+                        "{}reset.{}",
                         postretro_ui::actions::CONTROLS_ACTION_PREFIX,
-                        row.command.id(),
-                        class.settings_key()
+                        row.command.id()
                     ),
-                ));
-            }
+                )
+            } else {
+                spacer()
+            });
         }
-        cells.push(button(
-            &format!("ctl_{}_reset", row.command.id()),
-            "RESET",
-            &format!(
-                "{}reset.{}",
-                postretro_ui::actions::CONTROLS_ACTION_PREFIX,
-                row.command.id()
-            ),
-        ));
     }
-    (cols, cells)
+    cells
 }
 
 /// The widget object `id` under `node`, depth first.
@@ -304,11 +327,10 @@ pub(crate) fn build_controls_panel(
     initial_focus: Option<&str>,
 ) -> AnchoredTree {
     let mut value = serde_json::to_value(shell).expect("a descriptor serializes");
-    let (cols, cells) = row_cells(rows);
     match find_widget(&mut value["root"], ROWS_GRID_ID) {
         Some(grid) => {
-            grid["cols"] = json!(cols);
-            grid["children"] = Value::Array(cells);
+            grid["cols"] = json!(ROW_COLS);
+            grid["children"] = Value::Array(row_cells(rows));
         }
         None => log::warn!(
             "[UI] the controls panel shell has no `{ROWS_GRID_ID}` grid; its rows are not shown"
@@ -333,10 +355,10 @@ pub(crate) fn build_capture_prompt(
     current: Option<PhysicalInput>,
 ) -> AnchoredTree {
     let mut children = vec![
-        text(&format!("PRESS AN INPUT FOR {label}"), 22.0),
+        text(&format!("PRESS AN INPUT FOR {label}"), TITLE_SIZE),
         text(
             &format!("{} SLOT {}", class_label(target.class), target.slot + 1),
-            16.0,
+            BODY_SIZE,
         ),
     ];
     children.push(text(
@@ -344,16 +366,16 @@ pub(crate) fn build_capture_prompt(
             Some(input) => format!("PRESS {} AGAIN TO KEEP IT", input_label(input)),
             None => "RESET RETURNS THIS COMMAND TO ITS DEFAULTS".to_string(),
         },
-        14.0,
+        DETAIL_SIZE,
     ));
     tree(None, children)
 }
 
 fn dialog(lines: &[String], buttons: Vec<Value>, initial_focus: &str) -> AnchoredTree {
-    let mut children: Vec<Value> = lines.iter().map(|line| text(line, 16.0)).collect();
+    let mut children: Vec<Value> = lines.iter().map(|line| text(line, BODY_SIZE)).collect();
     children.push(json!({
         "kind": "hstack",
-        "gap": 12.0,
+        "gap": BUTTON_GAP,
         "padding": 0.0,
         "align": "start",
         "children": buttons,

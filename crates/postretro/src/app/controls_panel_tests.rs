@@ -169,7 +169,11 @@ fn a_player_binding_that_took_an_author_default_flags_the_displaced_row() {
         .collect();
     assert_eq!(flagged, [Command::Reload]);
     let panel = descriptor_text(&build_controls_panel(&shell(), &rows, None));
-    assert!(panel.contains("\"RELOAD !\""), "{panel}");
+    assert!(panel.contains("\"RELOAD ! \u{b7} KEY 1\""), "{panel}");
+    assert!(
+        panel.contains("\"RELOAD ! \u{b7} PAD 2\""),
+        "every row of a flagged command carries the mark: {panel}"
+    );
     assert!(panel.contains("TAKEN BY ONE OF YOUR BINDINGS"));
 
     // PD8: a later author hold on the player's key yields and is flagged too.
@@ -184,6 +188,67 @@ fn a_player_binding_that_took_an_author_default_flags_the_displaced_row() {
             .iter()
             .any(|row| row.command == Command::Reload && row.displaced)
     );
+}
+
+#[test]
+fn each_slot_is_its_own_row_and_reset_sits_on_the_commands_first() {
+    let author = AuthorLayer::default();
+    let table = EffectiveTable::build(&author, &PlayerLayer::default(), all_facts(), false);
+    let rows = controls_rows(&table, &author);
+    let mut panel = serde_json::to_value(build_controls_panel(&shell(), &rows, None)).unwrap();
+    let grid = find_widget(&mut panel["root"], ROWS_GRID_ID).unwrap();
+    assert_eq!(grid["cols"], json!(3));
+    let cells = grid["children"].as_array().unwrap();
+    assert_eq!(cells.len() % 3, 0, "every grid row fills its three columns");
+    let grid_rows: Vec<&[Value]> = cells.chunks(3).collect();
+    assert_eq!(
+        grid_rows[0][0]["content"],
+        json!("GAMEPLAY"),
+        "a category heading leads, with no column-header row"
+    );
+    let prefix = format!("ctl_{}_", Command::MoveForward.id());
+    let forward: Vec<&[Value]> = grid_rows
+        .iter()
+        .copied()
+        .filter(|row| {
+            row[1]["id"]
+                .as_str()
+                .is_some_and(|id| id.starts_with(&prefix))
+        })
+        .collect();
+    let labels: Vec<&str> = forward
+        .iter()
+        .map(|row| row[0]["content"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        labels,
+        [
+            "MOVE FORWARD \u{b7} KEY 1",
+            "MOVE FORWARD \u{b7} KEY 2",
+            "MOVE FORWARD \u{b7} PAD 1",
+            "MOVE FORWARD \u{b7} PAD 2",
+        ]
+    );
+    let ids: Vec<&str> = forward
+        .iter()
+        .map(|row| row[1]["id"].as_str().unwrap())
+        .collect();
+    let expected: Vec<String> = [(KBM, 0), (KBM, 1), (PAD, 0), (PAD, 1)]
+        .into_iter()
+        .map(|(class, slot)| slot_id(Command::MoveForward, class, slot))
+        .collect();
+    assert_eq!(ids, expected);
+    assert_eq!(
+        forward[0][2]["id"],
+        json!(format!("ctl_{}_reset", Command::MoveForward.id()))
+    );
+    for row in &forward[1..] {
+        assert_eq!(
+            row[2]["kind"],
+            json!("spacer"),
+            "RESET shows once per command"
+        );
+    }
 }
 
 #[test]
@@ -564,6 +629,7 @@ fn the_shipped_shell_frames_the_rows_the_engine_fills() {
     let text = descriptor_text(&panel);
     assert!(text.contains("\"id\":\"controlsRows\""));
     assert!(text.contains("\"scroll\":{\"maxHeight\":420.0}"), "{text}");
+    assert!(text.contains("\"cols\":3"), "{text}");
     assert!(text.contains("ctl_resetAll") && text.contains("ctl_back"));
     assert!(
         !text.contains("controlsDisplacedNote"),
@@ -577,4 +643,176 @@ fn the_shipped_shell_frames_the_rows_the_engine_fills() {
         descriptor_text(&shell()).contains("\"children\":[]"),
         "the shell ships an empty row grid"
     );
+}
+
+// --- layout --------------------------------------------------------------
+
+/// The reference canvas at 1:1, so device pixels are logical pixels.
+const CANVAS: [u32; 2] = [1280, 720];
+/// The least clear canvas every panel leaves on each side.
+const CANVAS_MARGIN: f32 = 40.0;
+
+/// The rows of the default table with the first made the worst case the
+/// engine's own vocabulary produces: the longest command label, flagged, with
+/// the longest input name and activator in every slot.
+fn worst_case_rows(app: &App) -> Vec<ControlsRow> {
+    let bindings = &session(app).bindings;
+    let mut rows = controls_rows(bindings.table(), bindings.author());
+    let worst = &mut rows[0];
+    worst.label = command_label(&AuthorLayer::default(), Command::CycleWieldablePrevious);
+    worst.displaced = true;
+    worst.inputs = [
+        vec![(key(KeyCode::NumpadMultiply), ActivatorKind::Release); MIN_SLOTS],
+        vec![(pad(Button::RightThumb), ActivatorKind::Release); MIN_SLOTS],
+    ];
+    rows
+}
+
+/// Lay `tree` out on the reference canvas: its backdrop rect and focus stops.
+fn lay_out(tree: &AnchoredTree) -> ([f32; 4], postretro_ui::tree::FocusRectList) {
+    use postretro_ui::tree::{CellValues, ImageSizes, UiTree};
+    let mut ui = UiTree::from_descriptor(tree, &postretro_ui::theme::UiTheme::engine_default());
+    let mut fonts = postretro_ui::text::build_font_system();
+    let drawn = ui.build_draw_data(
+        CANVAS,
+        &mut fonts,
+        &ImageSizes::new(),
+        &std::collections::HashMap::new(),
+    );
+    let backdrop = drawn
+        .quads
+        .instances
+        .iter()
+        .map(|quad| quad.rect)
+        .max_by(|a, b| (a[2] * a[3]).total_cmp(&(b[2] * b[3])))
+        .expect("the panel draws its backdrop");
+    let stops = ui.export_focus_rects(
+        tree,
+        CANVAS,
+        &std::collections::HashMap::new(),
+        &CellValues::new(),
+    );
+    (backdrop, stops)
+}
+
+/// `tree` lies inside the canvas with margin, and no focus stop pokes out of
+/// its panel sideways. Returns the panel rect.
+fn assert_fits_the_canvas(name: &str, tree: &AnchoredTree) -> [f32; 4] {
+    let (panel, stops) = lay_out(tree);
+    let [x, y, w, h] = panel;
+    let [width, height] = CANVAS.map(|v| v as f32);
+    assert!(
+        x >= CANVAS_MARGIN
+            && y >= CANVAS_MARGIN
+            && x + w <= width - CANVAS_MARGIN
+            && y + h <= height - CANVAS_MARGIN,
+        "{name}: panel {panel:?} leaves less than {CANVAS_MARGIN} px of the {width}x{height} canvas"
+    );
+    for stop in &stops.rects {
+        let [sx, _, sw, _] = stop.rect;
+        assert!(
+            sx >= x && sx + sw <= x + w,
+            "{name}: {} at {:?} is clipped by the panel {panel:?}",
+            stop.id,
+            stop.rect
+        );
+    }
+    panel
+}
+
+#[test]
+fn the_controls_panel_fits_the_reference_canvas() {
+    let app = test_app();
+    let rows = worst_case_rows(&app);
+    let panel = build_controls_panel(&shell(), &rows, None);
+    assert_fits_the_canvas("controls panel", &panel);
+    let text = descriptor_text(&panel);
+    assert!(text.contains("\"RIGHT STICK PRESS (RELEASE)\""), "{text}");
+    assert!(
+        text.contains("\"CYCLE WIELDABLE PREVIOUS ! \u{b7} PAD 2\""),
+        "{text}"
+    );
+}
+
+#[test]
+fn the_capture_prompt_and_dialogs_fit_the_reference_canvas() {
+    let label = command_label(&AuthorLayer::default(), Command::CycleWieldablePrevious);
+    let prompt = build_capture_prompt(
+        &label,
+        CaptureTarget {
+            command: Command::CycleWieldablePrevious,
+            class: KBM,
+            slot: 1,
+        },
+        Some(key(KeyCode::NumpadMultiply)),
+    );
+    assert_fits_the_canvas("capture prompt", &prompt);
+    let holders = [
+        label.clone(),
+        command_label(&AuthorLayer::default(), Command::ToggleLastWieldable),
+    ];
+    assert_fits_the_canvas(
+        "conflict dialog",
+        &build_conflict_dialog(pad(Button::RightThumb), &holders),
+    );
+    assert_fits_the_canvas("refusal dialog", &build_refusal_dialog(&label, KBM));
+}
+
+#[test]
+fn spatial_nav_reaches_every_slot_and_every_reset() {
+    use crate::input::{InputMode, NavIntent, UiFocusEngine};
+    let app = test_app();
+    let bindings = &session(&app).bindings;
+    let rows = controls_rows(bindings.table(), bindings.author());
+    let panel = build_controls_panel(&shell(), &rows, None);
+    let (_, stops) = lay_out(&panel);
+    // Where one nav step from `from` lands: a fresh engine opened on `from`.
+    let step = |from: &str, nav: NavIntent| -> Option<String> {
+        let mut list = stops.clone();
+        list.initial_focus = Some(from.to_string());
+        let mut engine = UiFocusEngine::new();
+        let mut tick = |intents: &[NavIntent]| {
+            engine.tick(
+                Some("controls"),
+                Some(&list),
+                intents,
+                None,
+                &[],
+                InputMode::Focus,
+                0.0,
+            )
+        };
+        tick(&[]);
+        tick(&[nav]).focused
+    };
+    let start = panel.initial_focus.clone().unwrap();
+    let mut reached = vec![start.clone()];
+    let mut frontier = vec![start];
+    while let Some(from) = frontier.pop() {
+        for nav in [
+            NavIntent::Up,
+            NavIntent::Down,
+            NavIntent::Left,
+            NavIntent::Right,
+        ] {
+            if let Some(to) = step(&from, nav)
+                && !reached.contains(&to)
+            {
+                reached.push(to.clone());
+                frontier.push(to);
+            }
+        }
+    }
+    for row in &rows {
+        let mut ids = vec![format!("ctl_{}_reset", row.command.id())];
+        for (class, slot) in [(KBM, 0), (KBM, 1), (PAD, 0), (PAD, 1)] {
+            ids.push(slot_id(row.command, class, slot));
+        }
+        for id in ids {
+            assert!(reached.contains(&id), "nav never reaches {id}");
+        }
+    }
+    for id in ["ctl_resetAll", "ctl_back"] {
+        assert!(reached.contains(&id.to_string()), "nav never reaches {id}");
+    }
 }

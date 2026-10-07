@@ -2929,8 +2929,9 @@ Button({ id: "controls", label: "CONTROLS", onPress: OPEN_CONTROLS_ACTION });
 
 The panel lists every relevant command by the `input` block's categories,
 order and labels, with two keyboard-and-mouse and two gamepad slots per
-command, each showing its activator. Players cannot change activators. Each
-row has RESET, and RESET ALL returns every command to the mod's defaults.
+command, each on its own row and showing its activator. Players cannot change
+activators. Each command has RESET, and RESET ALL returns every command to the
+mod's defaults.
 
 Choosing a slot opens a prompt that captures the next key, button, stick
 push, or mouse movement (for look), Escape and Start included. It has no time

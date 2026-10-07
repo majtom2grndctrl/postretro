@@ -68,6 +68,22 @@ One run per arm reads 2.5–2.7 ms above the other two.
 
 **Confound.** Under the lighter load, the GPU core clock in the new arena runs falls to 1115–1160 MHz, against 1232 MHz for old. New-arm times are therefore, if anything, overstated.
 
-## Not covered
+## Atlas byte check
 
-The atlas byte check (streamed vs force-full-resident, both passes, two stepped times per pose) is a separate manual row and has not run.
+`capture.sh` runs each spike capture view (animroom, arena, kinematic station) at t = 0.5 s and 1.0 s, both gated and force-full-resident, under old and new membership. That is 24 captures, all with `POSTRETRO_SH_STREAMING=sync-proof`, from the same probe binary.
+- Each capture dumps both composed atlases.
+- Each scene is compared by `../sh-compose-row-cost-spike/compare_atlas.py`, and its `.bin` dumps (0.04–0.2 GB per atlas) are then deleted.
+- `capture/out/compare/` keeps the comparisons.
+
+**New vs old: byte-identical in all 12 scenes, both atlases.**
+- In the gated scenes, the zero-entry rows the new code skips hold exactly the bytes the old code rewrote every frame.
+- The force-full scenes are a control.
+
+**Gated vs force-full-resident (informational).**
+- They are identical at the kinematic station.
+- At animroom and the arena they differ:
+  - animroom indirect: 0.78 M texels, max |Δ| 0.157;
+  - arena indirect: 14 k texels, max |Δ| 0.015;
+  - the direct atlases differ similarly.
+- These are entry-carrying rows lagging outside the view gate, which the sampled-row contract allows. Consumers never sample them.
+- New equals old in both modes, so the differences are exactly the old code's. The sampled image matches: `sampled_row_gate_capture_matches_full_resident_at_stepped_times` compares PNGs byte for byte.

@@ -1,0 +1,61 @@
+{
+  "source": "raw/arenaQ-scan-parallel+array-free+const-tile+vec3-accum-r2-gpu.xml.gz",
+  "camera_frames": 171,
+  "frame_count_pass": "Streamed SH Compose (+ [B])",
+  "once_per_frame_counts": {
+    "UI Pass": 140,
+    "Screen Effects Resolve Pass": 0,
+    "Textured Pass": 140,
+    "Depth Pre-Pass": 141
+  },
+  "shadow_passes": {
+    "Promoted Spot Entity Shadow Depth Pass": {
+      "count": 1108,
+      "total_ms": 54.264,
+      "per_frame_ms": 0.3173
+    }
+  },
+  "shadow_total_per_frame_ms": 0.3173,
+  "sum_labelled_passes_per_frame_ms": 24.2773,
+  "all_passes_per_frame_ms": {
+    "Streamed Animated Direct SH": 3.9691,
+    "Streamed SH Compose": 3.3348,
+    "Skinned Mesh Pass": 3.0257,
+    "Skinned Viewmodel Pass": 2.987,
+    "Bloom Bright Pass": 2.8486,
+    "Streamed SH Compose [B]": 2.7174,
+    "Streamed Animated Direct SH [B]": 2.6046,
+    "Textured Pass": 0.9129,
+    "UI Pass": 0.5634,
+    "Billboard Direct Scatter Compose": 0.346,
+    "Promoted Spot Entity Shadow Depth Pass": 0.3173,
+    "Per-frame Upload Copies": 0.2039,
+    "Bloom Horizontal Gaussian Pass": 0.1462,
+    "Candidate Cull Pass": 0.0499,
+    "Depth Pre-Pass": 0.0485,
+    "Bloom Scene Composite Pass": 0.0472,
+    "Bloom Vertical Gaussian Pass": 0.0458,
+    "Bloom Downsample Pass": 0.0325,
+    "Bloom Upsample Pass": 0.03,
+    "(wgpu internal) PendingWrites": 0.0244,
+    "Frame Encoder": 0.022
+  },
+  "compose_per_encoder_ms": {
+    "Streamed Animated Direct SH": 7.9849,
+    "Streamed Animated Direct SH [B]": 5.1789,
+    "Streamed SH Compose": 6.7089,
+    "Streamed SH Compose [B]": 5.4032
+  },
+  "compose_per_encoder_median_ms": {
+    "Streamed Animated Direct SH": 7.9507,
+    "Streamed Animated Direct SH [B]": 5.1677,
+    "Streamed SH Compose": 6.6582,
+    "Streamed SH Compose [B]": 5.3892
+  },
+  "compose_encoder_counts": {
+    "Streamed Animated Direct SH": 85,
+    "Streamed Animated Direct SH [B]": 86,
+    "Streamed SH Compose": 85,
+    "Streamed SH Compose [B]": 86
+  }
+}

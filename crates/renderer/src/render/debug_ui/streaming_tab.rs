@@ -493,18 +493,21 @@ mod tests {
             pool_growth_cpu_micros: 900,
             indirect_compose: ShComposePassDiagnostics {
                 rows_composed: 27,
+                entry_rows_composed: 26,
                 dispatches: 1,
                 lagged_rows_composed: 8,
                 resident_rows_still_lagging: 6,
             },
             static_direct_compose: ShComposePassDiagnostics {
                 rows_composed: 4,
+                entry_rows_composed: 3,
                 dispatches: 1,
                 lagged_rows_composed: 2,
                 resident_rows_still_lagging: 3,
             },
             animated_direct_compose: ShComposePassDiagnostics {
                 rows_composed: 19,
+                entry_rows_composed: 18,
                 dispatches: 2,
                 lagged_rows_composed: 7,
                 resident_rows_still_lagging: 5,

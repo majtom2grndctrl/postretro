@@ -59,6 +59,7 @@ Measured 2026-10-04 during `shadow-fill-cost`. The protocol, run records and scr
 - Exclusive window, render resolution `half`, shadow and fog quality `low`, vsync on.
 - Frame and GPU wait: medians of three clean runs per pose (the arena: one run).
 - Pass times: one 4 s Metal System Trace per pose. Labelled-pass time is divided by the frame count, taken as the largest count among once-per-frame passes.
+  - **Caveat (2026-10-06):** the `sh-compose-row-cost-spike` retracted that denominator. Render-pass encoders are missing from part of some traces, so their count undercounts frames by up to 26% and inflates per-frame pass times. Re-measure as time per compose encoder: the union of each encoder's intervals (`measurements/sh-compose-row-cost-spike/gpu_time.py`). Per encoder, the arena reads 6.71 / 8.00 ms (indirect / Pass B).
 
 | Pose | Frame | GPU wait | Pass B | Indirect | Direct SH promotion | Animated LM | Textured Pass |
 |---|---|---|---|---|---|---|---|

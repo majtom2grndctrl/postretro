@@ -266,10 +266,15 @@ per frame. A frame therefore pays for the rows its
 cells list plus the bricks of its moving regions; resident membership is a dense bitset per
 pass, updated per touched row on install and eviction. No row indices cross the
 application/renderer boundary. Rows are
-also filtered per pass by whether the resident streamed data actually contributes: indirect
-section 27, static-direct section 41, or animated-direct section 45. A level with id-35 base
-direct SH but neither id 41 nor id 45 samples that base uncomposed, so its direct passes hold
-no rows; without id 45, Pass B holds none.
+also filtered per pass by contribution: a row contributes when its installed sparse row
+carries at least one CSR entry in the pass's section — indirect id 27, static-direct id 41
+(also Pass B's upstream input), animated-direct id 45. Retained zero-payload records count.
+The compiler emits a sparse row for every brick a cluster covers, so many resident rows carry
+none. Those rows stay resident and dirty-tracked but never fire on a pass's per-source
+trigger. They stay exact because install, slot reuse, partial eviction, mask and control
+changes, force-full, and Pass A rewrites recompose rows regardless of contribution. A level
+with id-35 base direct SH but neither id 41 nor id 45 samples that base uncomposed, so its
+direct passes hold no rows; without id 45, Pass B holds none.
 
 Invariant: every stored slot a consumer can sample in frame N equals what full-resident
 compose would write in frame N, so no stale slot is sampled. Per-pass generations record
@@ -420,7 +425,7 @@ Base UVs computed from face projection data at compile time; GPU sampler uses re
    one-frame tail: indirect while an animated indirect light is active, animated direct
    while an animated direct light is active, and static direct only when its uploaded
    promotion weights change. A firing pass composes only sampled rows (§4 "Sampled-row
-   compose") that carry its contribution. Rows touched by an install, slot reuse, or partial
+   compose") whose installed sparse row carries an entry in its section. Rows touched by an install, slot reuse, or partial
    eviction, and their scaled-node writer rows, compose regardless. A light-term mask or
    dev-override change forces one full-resident frame. A dev/capture switch forces
    full-resident compose every frame; it is the exactness reference. Measurement captures
@@ -833,7 +838,12 @@ engine's GPU timing reports unsupported. On macOS, take per-pass GPU time from a
 Instruments Metal System Trace instead. wgpu forwards pass labels, so the trace groups
 GPU intervals by pass. Record headless with `xcrun xctrace record --template 'Metal
 System Trace' --launch -- <postretro binary> <map>.prl`, then read its tables with
-`xctrace export`. The engine renders no frames while its window is hidden or backgrounded,
+`xctrace export`. Reduce the export per encoder. A pass's time is the union of its
+encoder's intervals, with nested and coalesced rows counted once. Divide by a once-per-frame
+encoder of the same pass to get a per-frame figure. Never take the frame count from
+render-pass encoder counts: those rows go missing from part of some traces, which
+undercounts frames by up to a quarter and invents between-launch "regimes" that are not there.
+The engine renders no frames while its window is hidden or backgrounded,
 or while the screen is locked. Keep the window in front for the whole capture.
 Each recording also leaves an `instruments*.ktrace` temp file of about 1 GB in
 `$TMPDIR`, and the `.trace` bundle stays wherever `--output` put it. Delete both once

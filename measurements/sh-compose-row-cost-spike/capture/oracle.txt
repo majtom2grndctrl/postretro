@@ -1,0 +1,50 @@
+# Oracle test per arm: sampled_row_gate_capture_matches_full_resident_at_stepped_times
+# cargo test -p postretro --features capture --test capture_frame <name> -- --ignored, with POSTRETRO_SPIKE_ARMS=<arm>
+# Round 1: probes 1ddd56691 (dev build). Round 2: probes 1a052cfed (dev build).
+
+## Round 1
+== baseline
+test sampled_row_gate_capture_matches_full_resident_at_stepped_times ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9 filtered out; finished in 24.46s
+== scan-parallel
+test sampled_row_gate_capture_matches_full_resident_at_stepped_times ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9 filtered out; finished in 25.58s
+== scale-shared
+test sampled_row_gate_capture_matches_full_resident_at_stepped_times ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9 filtered out; finished in 25.45s
+== texel-outer
+test sampled_row_gate_capture_matches_full_resident_at_stepped_times ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9 filtered out; finished in 26.56s
+== vec3-accum
+test sampled_row_gate_capture_matches_full_resident_at_stepped_times ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9 filtered out; finished in 24.32s
+== const-tile
+test sampled_row_gate_capture_matches_full_resident_at_stepped_times ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9 filtered out; finished in 25.34s
+== scan-parallel,texel-outer,vec3-accum,const-tile
+test sampled_row_gate_capture_matches_full_resident_at_stepped_times ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9 filtered out; finished in 25.51s
+== floor
+test sampled_row_gate_capture_matches_full_resident_at_stepped_times ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9 filtered out; finished in 24.30s
+/dev/disk1s6   466Gi   417Gi    28Gi    94%    6.9M  290M    2%   /System/Volumes/Data
+
+[exited with code 0]
+
+## Round 2
+== baseline
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9 filtered out; finished in 24.39s
+== array-free
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9 filtered out; finished in 23.32s
+== array-free,unroll36
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9 filtered out; finished in 23.78s
+== array-free,unroll36,l0-only
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9 filtered out; finished in 23.68s
+== coalesced-b
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9 filtered out; finished in 24.41s
+== coalesced-b,array-free,unroll36
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9 filtered out; finished in 23.77s
+1a052cfed
+/dev/disk1s6   466Gi   422Gi    22Gi    96%    7.0M  227M    3%   /System/Volumes/Data
+
+[exited with code 0]

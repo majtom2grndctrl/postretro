@@ -1,0 +1,1691 @@
+--- direct.baseline.wgsl
++++ direct.array-free+unroll36.wgsl
+@@ -96,6 +96,14 @@
+ var<workgroup> shared_kept_tiles: array<vec4<f32>, 288>;
+ var<workgroup> shared_kept_present: array<u32, 8>;
+ var<workgroup> shared_brick_indirection: u32;
++var<workgroup> spike_scales: array<vec3<f32>, 64>;
++
++fn spike_scale(entry: u32, start: u32, cached: bool) -> vec3<f32> {
++    if (cached) {
++        return spike_scales[entry - start];
++    }
++    return animated_light_scale(affinity_lights[entry]);
++}
+ 
+ fn compaction_meta_offset_base() -> u32 {
+     return grid.affinity_dims.x * grid.affinity_dims.y * grid.affinity_dims.z * 3u;
+@@ -294,6 +302,27 @@
+     return wx * wy * wz;
+ }
+ 
++// spike array-free: the shared-lattice reconstruction, reading each kept
++// corner tile straight from the delta payload. Same slot order and arithmetic.
++fn spike_reconstruct_l1(cell: u32, entry: u32, target_local: u32, tile_texel: vec2<u32>) -> vec3<f32> {
++    var accum = vec3<f32>(0.0);
++    var weight_sum = 0.0;
++    for (var slot = 0u; slot < MAX_KEPT_TILES; slot = slot + 1u) {
++        let corner = l1_corner_local(slot);
++        if (local_probe_is_kept(cell, corner)) {
++            let weight = l1_corner_weight(target_local, corner);
++            if (weight > 0.0) {
++                accum = accum + read_delta_texel(entry, within_cell_rank(cell, corner), tile_texel).rgb * weight;
++                weight_sum = weight_sum + weight;
++            }
++        }
++    }
++    if (weight_sum > 0.0) {
++        return accum / weight_sum;
++    }
++    return vec3<f32>(0.0);
++}
++
+ fn reconstruct_l1_shared_texel(target_local: u32, texel_index: u32) -> vec3<f32> {
+     var accum = vec3<f32>(0.0);
+     var weight_sum = 0.0;
+@@ -434,6 +463,1616 @@
+     let output_is_stored = stored_slot.write;
+     let tile_origin = slot_tile_origin(stored_slot.slot);
+ 
++    let level = cell_level(cell_index);
++    let offset_index = cell_index * 2u;
++    let start = affinity_offsets[offset_index];
++    let end = affinity_offsets[offset_index + 1u];
++    // spike scale-shared: one lane per CSR entry evaluates its light's scale
++    // once per workgroup instead of every lane evaluating every entry.
++    let spike_cached = end - start <= 64u;
++    if (spike_cached && local_probe < end - start) {
++        spike_scales[local_probe] = animated_light_scale(affinity_lights[start + local_probe]);
++    }
++    workgroupBarrier();
++    // spike array-free: every level fuses the base read, the entry sum and the
++    // store per texel. L1/L2 lanes reconstruct from their own reads of the kept
++    // corner tiles, so the kernel holds no 36-entry accumulator and no barriers
++    // after the scale cache.
++    if (grid.row_count > 0u) {
++        if (output_is_stored) {
++            let spike_l0 = local_probe_is_kept(cell_index, local_probe);
++            let spike_coarse = true;
++            let spike_rank = within_cell_rank(cell_index, local_probe);
++            let spike_rep = l2_representative_local(cell_index);
++            let spike_rep_kept = local_probe_is_kept(cell_index, spike_rep);
++            let spike_rep_rank = within_cell_rank(cell_index, spike_rep);
++            {
++                let tile_texel = vec2<u32>(0u, 0u);
++                let atlas_texel = tile_origin.xy + tile_texel;
++                let uv = (vec2<f32>(atlas_texel) + 0.5)
++                    / vec2<f32>(textureDimensions(direct_intermediate_atlas));
++                var spike_accum = textureSampleLevel(
++                    direct_intermediate_atlas,
++                    intermediate_sampler,
++                    uv,
++                    i32(tile_origin.z),
++                    0.0,
++                ).rgb;
++                if (level == 0u) {
++                    if (spike_l0) {
++                        for (var entry = start; entry < end; entry = entry + 1u) {
++                            spike_accum = spike_accum
++                                + read_delta_texel(entry, spike_rank, tile_texel).rgb * spike_scale(entry, start, spike_cached);
++                        }
++                    }
++                } else if (spike_coarse) {
++                    for (var entry = start; entry < end; entry = entry + 1u) {
++                        var delta = vec3<f32>(0.0);
++                        if (level == 2u) {
++                            var spike_tile = vec3<f32>(0.0);
++                            if (spike_rep_kept) {
++                                spike_tile = read_delta_texel(entry, spike_rep_rank, tile_texel).rgb;
++                            }
++                            delta = spike_tile * f32(spike_rep_kept);
++                        } else {
++                            delta = spike_reconstruct_l1(cell_index, entry, local_probe, tile_texel);
++                        }
++                        spike_accum = spike_accum + delta * spike_scale(entry, start, spike_cached);
++                    }
++                }
++                textureStore(
++                    direct_composed_atlas,
++                    vec2<i32>(tile_origin.xy + tile_texel),
++                    i32(tile_origin.z),
++                    vec4<f32>(
++                        max(spike_accum, vec3<f32>(0.0)),
++                        select(0.0, 1.0, stored_slot.valid),
++                    ),
++                );
++            }
++            {
++                let tile_texel = vec2<u32>(1u, 0u);
++                let atlas_texel = tile_origin.xy + tile_texel;
++                let uv = (vec2<f32>(atlas_texel) + 0.5)
++                    / vec2<f32>(textureDimensions(direct_intermediate_atlas));
++                var spike_accum = textureSampleLevel(
++                    direct_intermediate_atlas,
++                    intermediate_sampler,
++                    uv,
++                    i32(tile_origin.z),
++                    0.0,
++                ).rgb;
++                if (level == 0u) {
++                    if (spike_l0) {
++                        for (var entry = start; entry < end; entry = entry + 1u) {
++                            spike_accum = spike_accum
++                                + read_delta_texel(entry, spike_rank, tile_texel).rgb * spike_scale(entry, start, spike_cached);
++                        }
++                    }
++                } else if (spike_coarse) {
++                    for (var entry = start; entry < end; entry = entry + 1u) {
++                        var delta = vec3<f32>(0.0);
++                        if (level == 2u) {
++                            var spike_tile = vec3<f32>(0.0);
++                            if (spike_rep_kept) {
++                                spike_tile = read_delta_texel(entry, spike_rep_rank, tile_texel).rgb;
++                            }
++                            delta = spike_tile * f32(spike_rep_kept);
++                        } else {
++                            delta = spike_reconstruct_l1(cell_index, entry, local_probe, tile_texel);
++                        }
++                        spike_accum = spike_accum + delta * spike_scale(entry, start, spike_cached);
++                    }
++                }
++                textureStore(
++                    direct_composed_atlas,
++                    vec2<i32>(tile_origin.xy + tile_texel),
++                    i32(tile_origin.z),
++                    vec4<f32>(
++                        max(spike_accum, vec3<f32>(0.0)),
++                        select(0.0, 1.0, stored_slot.valid),
++                    ),
++                );
++            }
++            {
++                let tile_texel = vec2<u32>(2u, 0u);
++                let atlas_texel = tile_origin.xy + tile_texel;
++                let uv = (vec2<f32>(atlas_texel) + 0.5)
++                    / vec2<f32>(textureDimensions(direct_intermediate_atlas));
++                var spike_accum = textureSampleLevel(
++                    direct_intermediate_atlas,
++                    intermediate_sampler,
++                    uv,
++                    i32(tile_origin.z),
++                    0.0,
++                ).rgb;
++                if (level == 0u) {
++                    if (spike_l0) {
++                        for (var entry = start; entry < end; entry = entry + 1u) {
++                            spike_accum = spike_accum
++                                + read_delta_texel(entry, spike_rank, tile_texel).rgb * spike_scale(entry, start, spike_cached);
++                        }
++                    }
++                } else if (spike_coarse) {
++                    for (var entry = start; entry < end; entry = entry + 1u) {
++                        var delta = vec3<f32>(0.0);
++                        if (level == 2u) {
++                            var spike_tile = vec3<f32>(0.0);
++                            if (spike_rep_kept) {
++                                spike_tile = read_delta_texel(entry, spike_rep_rank, tile_texel).rgb;
++                            }
++                            delta = spike_tile * f32(spike_rep_kept);
++                        } else {
++                            delta = spike_reconstruct_l1(cell_index, entry, local_probe, tile_texel);
++                        }
++                        spike_accum = spike_accum + delta * spike_scale(entry, start, spike_cached);
++                    }
++                }
++                textureStore(
++                    direct_composed_atlas,
++                    vec2<i32>(tile_origin.xy + tile_texel),
++                    i32(tile_origin.z),
++                    vec4<f32>(
++                        max(spike_accum, vec3<f32>(0.0)),
++                        select(0.0, 1.0, stored_slot.valid),
++                    ),
++                );
++            }
++            {
++                let tile_texel = vec2<u32>(3u, 0u);
++                let atlas_texel = tile_origin.xy + tile_texel;
++                let uv = (vec2<f32>(atlas_texel) + 0.5)
++                    / vec2<f32>(textureDimensions(direct_intermediate_atlas));
++                var spike_accum = textureSampleLevel(
++                    direct_intermediate_atlas,
++                    intermediate_sampler,
++                    uv,
++                    i32(tile_origin.z),
++                    0.0,
++                ).rgb;
++                if (level == 0u) {
++                    if (spike_l0) {
++                        for (var entry = start; entry < end; entry = entry + 1u) {
++                            spike_accum = spike_accum
++                                + read_delta_texel(entry, spike_rank, tile_texel).rgb * spike_scale(entry, start, spike_cached);
++                        }
++                    }
++                } else if (spike_coarse) {
++                    for (var entry = start; entry < end; entry = entry + 1u) {
++                        var delta = vec3<f32>(0.0);
++                        if (level == 2u) {
++                            var spike_tile = vec3<f32>(0.0);
++                            if (spike_rep_kept) {
++                                spike_tile = read_delta_texel(entry, spike_rep_rank, tile_texel).rgb;
++                            }
++                            delta = spike_tile * f32(spike_rep_kept);
++                        } else {
++                            delta = spike_reconstruct_l1(cell_index, entry, local_probe, tile_texel);
++                        }
++                        spike_accum = spike_accum + delta * spike_scale(entry, start, spike_cached);
++                    }
++                }
++                textureStore(
++                    direct_composed_atlas,
++                    vec2<i32>(tile_origin.xy + tile_texel),
++                    i32(tile_origin.z),
++                    vec4<f32>(
++                        max(spike_accum, vec3<f32>(0.0)),
++                        select(0.0, 1.0, stored_slot.valid),
++                    ),
++                );
++            }
++            {
++                let tile_texel = vec2<u32>(4u, 0u);
++                let atlas_texel = tile_origin.xy + tile_texel;
++                let uv = (vec2<f32>(atlas_texel) + 0.5)
++                    / vec2<f32>(textureDimensions(direct_intermediate_atlas));
++                var spike_accum = textureSampleLevel(
++                    direct_intermediate_atlas,
++                    intermediate_sampler,
++                    uv,
++                    i32(tile_origin.z),
++                    0.0,
++                ).rgb;
++                if (level == 0u) {
++                    if (spike_l0) {
++                        for (var entry = start; entry < end; entry = entry + 1u) {
++                            spike_accum = spike_accum
++                                + read_delta_texel(entry, spike_rank, tile_texel).rgb * spike_scale(entry, start, spike_cached);
++                        }
++                    }
++                } else if (spike_coarse) {
++                    for (var entry = start; entry < end; entry = entry + 1u) {
++                        var delta = vec3<f32>(0.0);
++                        if (level == 2u) {
++                            var spike_tile = vec3<f32>(0.0);
++                            if (spike_rep_kept) {
++                                spike_tile = read_delta_texel(entry, spike_rep_rank, tile_texel).rgb;
++                            }
++                            delta = spike_tile * f32(spike_rep_kept);
++                        } else {
++                            delta = spike_reconstruct_l1(cell_index, entry, local_probe, tile_texel);
++                        }
++                        spike_accum = spike_accum + delta * spike_scale(entry, start, spike_cached);
++                    }
++                }
++                textureStore(
++                    direct_composed_atlas,
++                    vec2<i32>(tile_origin.xy + tile_texel),
++                    i32(tile_origin.z),
++                    vec4<f32>(
++                        max(spike_accum, vec3<f32>(0.0)),
++                        select(0.0, 1.0, stored_slot.valid),
++                    ),
++                );
++            }
++            {
++                let tile_texel = vec2<u32>(5u, 0u);
++                let atlas_texel = tile_origin.xy + tile_texel;
++                let uv = (vec2<f32>(atlas_texel) + 0.5)
++                    / vec2<f32>(textureDimensions(direct_intermediate_atlas));
++                var spike_accum = textureSampleLevel(
++                    direct_intermediate_atlas,
++                    intermediate_sampler,
++                    uv,
++                    i32(tile_origin.z),
++                    0.0,
++                ).rgb;
++                if (level == 0u) {
++                    if (spike_l0) {
++                        for (var entry = start; entry < end; entry = entry + 1u) {
++                            spike_accum = spike_accum
++                                + read_delta_texel(entry, spike_rank, tile_texel).rgb * spike_scale(entry, start, spike_cached);
++                        }
++                    }
++                } else if (spike_coarse) {
++                    for (var entry = start; entry < end; entry = entry + 1u) {
++                        var delta = vec3<f32>(0.0);
++                        if (level == 2u) {
++                            var spike_tile = vec3<f32>(0.0);
++                            if (spike_rep_kept) {
++                                spike_tile = read_delta_texel(entry, spike_rep_rank, tile_texel).rgb;
++                            }
++                            delta = spike_tile * f32(spike_rep_kept);
++                        } else {
++                            delta = spike_reconstruct_l1(cell_index, entry, local_probe, tile_texel);
++                        }
++                        spike_accum = spike_accum + delta * spike_scale(entry, start, spike_cached);
++                    }
++                }
++                textureStore(
++                    direct_composed_atlas,
++                    vec2<i32>(tile_origin.xy + tile_texel),
++                    i32(tile_origin.z),
++                    vec4<f32>(
++                        max(spike_accum, vec3<f32>(0.0)),
++                        select(0.0, 1.0, stored_slot.valid),
++                    ),
++                );
++            }
++            {
++                let tile_texel = vec2<u32>(0u, 1u);
++                let atlas_texel = tile_origin.xy + tile_texel;
++                let uv = (vec2<f32>(atlas_texel) + 0.5)
++                    / vec2<f32>(textureDimensions(direct_intermediate_atlas));
++                var spike_accum = textureSampleLevel(
++                    direct_intermediate_atlas,
++                    intermediate_sampler,
++                    uv,
++                    i32(tile_origin.z),
++                    0.0,
++                ).rgb;
++                if (level == 0u) {
++                    if (spike_l0) {
++                        for (var entry = start; entry < end; entry = entry + 1u) {
++                            spike_accum = spike_accum
++                                + read_delta_texel(entry, spike_rank, tile_texel).rgb * spike_scale(entry, start, spike_cached);
++                        }
++                    }
++                } else if (spike_coarse) {
++                    for (var entry = start; entry < end; entry = entry + 1u) {
++                        var delta = vec3<f32>(0.0);
++                        if (level == 2u) {
++                            var spike_tile = vec3<f32>(0.0);
++                            if (spike_rep_kept) {
++                                spike_tile = read_delta_texel(entry, spike_rep_rank, tile_texel).rgb;
++                            }
++                            delta = spike_tile * f32(spike_rep_kept);
++                        } else {
++                            delta = spike_reconstruct_l1(cell_index, entry, local_probe, tile_texel);
++                        }
++                        spike_accum = spike_accum + delta * spike_scale(entry, start, spike_cached);
++                    }
++                }
++                textureStore(
++                    direct_composed_atlas,
++                    vec2<i32>(tile_origin.xy + tile_texel),
++                    i32(tile_origin.z),
++                    vec4<f32>(
++                        max(spike_accum, vec3<f32>(0.0)),
++                        select(0.0, 1.0, stored_slot.valid),
++                    ),
++                );
++            }
++            {
++                let tile_texel = vec2<u32>(1u, 1u);
++                let atlas_texel = tile_origin.xy + tile_texel;
++                let uv = (vec2<f32>(atlas_texel) + 0.5)
++                    / vec2<f32>(textureDimensions(direct_intermediate_atlas));
++                var spike_accum = textureSampleLevel(
++                    direct_intermediate_atlas,
++                    intermediate_sampler,
++                    uv,
++                    i32(tile_origin.z),
++                    0.0,
++                ).rgb;
++                if (level == 0u) {
++                    if (spike_l0) {
++                        for (var entry = start; entry < end; entry = entry + 1u) {
++                            spike_accum = spike_accum
++                                + read_delta_texel(entry, spike_rank, tile_texel).rgb * spike_scale(entry, start, spike_cached);
++                        }
++                    }
++                } else if (spike_coarse) {
++                    for (var entry = start; entry < end; entry = entry + 1u) {
++                        var delta = vec3<f32>(0.0);
++                        if (level == 2u) {
++                            var spike_tile = vec3<f32>(0.0);
++                            if (spike_rep_kept) {
++                                spike_tile = read_delta_texel(entry, spike_rep_rank, tile_texel).rgb;
++                            }
++                            delta = spike_tile * f32(spike_rep_kept);
++                        } else {
++                            delta = spike_reconstruct_l1(cell_index, entry, local_probe, tile_texel);
++                        }
++                        spike_accum = spike_accum + delta * spike_scale(entry, start, spike_cached);
++                    }
++                }
++                textureStore(
++                    direct_composed_atlas,
++                    vec2<i32>(tile_origin.xy + tile_texel),
++                    i32(tile_origin.z),
++                    vec4<f32>(
++                        max(spike_accum, vec3<f32>(0.0)),
++                        select(0.0, 1.0, stored_slot.valid),
++                    ),
++                );
++            }
++            {
++                let tile_texel = vec2<u32>(2u, 1u);
++                let atlas_texel = tile_origin.xy + tile_texel;
++                let uv = (vec2<f32>(atlas_texel) + 0.5)
++                    / vec2<f32>(textureDimensions(direct_intermediate_atlas));
++                var spike_accum = textureSampleLevel(
++                    direct_intermediate_atlas,
++                    intermediate_sampler,
++                    uv,
++                    i32(tile_origin.z),
++                    0.0,
++                ).rgb;
++                if (level == 0u) {
++                    if (spike_l0) {
++                        for (var entry = start; entry < end; entry = entry + 1u) {
++                            spike_accum = spike_accum
++                                + read_delta_texel(entry, spike_rank, tile_texel).rgb * spike_scale(entry, start, spike_cached);
++                        }
++                    }
++                } else if (spike_coarse) {
++                    for (var entry = start; entry < end; entry = entry + 1u) {
++                        var delta = vec3<f32>(0.0);
++                        if (level == 2u) {
++                            var spike_tile = vec3<f32>(0.0);
++                            if (spike_rep_kept) {
++                                spike_tile = read_delta_texel(entry, spike_rep_rank, tile_texel).rgb;
++                            }
++                            delta = spike_tile * f32(spike_rep_kept);
++                        } else {
++                            delta = spike_reconstruct_l1(cell_index, entry, local_probe, tile_texel);
++                        }
++                        spike_accum = spike_accum + delta * spike_scale(entry, start, spike_cached);
++                    }
++                }
++                textureStore(
++                    direct_composed_atlas,
++                    vec2<i32>(tile_origin.xy + tile_texel),
++                    i32(tile_origin.z),
++                    vec4<f32>(
++                        max(spike_accum, vec3<f32>(0.0)),
++                        select(0.0, 1.0, stored_slot.valid),
++                    ),
++                );
++            }
++            {
++                let tile_texel = vec2<u32>(3u, 1u);
++                let atlas_texel = tile_origin.xy + tile_texel;
++                let uv = (vec2<f32>(atlas_texel) + 0.5)
++                    / vec2<f32>(textureDimensions(direct_intermediate_atlas));
++                var spike_accum = textureSampleLevel(
++                    direct_intermediate_atlas,
++                    intermediate_sampler,
++                    uv,
++                    i32(tile_origin.z),
++                    0.0,
++                ).rgb;
++                if (level == 0u) {
++                    if (spike_l0) {
++                        for (var entry = start; entry < end; entry = entry + 1u) {
++                            spike_accum = spike_accum
++                                + read_delta_texel(entry, spike_rank, tile_texel).rgb * spike_scale(entry, start, spike_cached);
++                        }
++                    }
++                } else if (spike_coarse) {
++                    for (var entry = start; entry < end; entry = entry + 1u) {
++                        var delta = vec3<f32>(0.0);
++                        if (level == 2u) {
++                            var spike_tile = vec3<f32>(0.0);
++                            if (spike_rep_kept) {
++                                spike_tile = read_delta_texel(entry, spike_rep_rank, tile_texel).rgb;
++                            }
++                            delta = spike_tile * f32(spike_rep_kept);
++                        } else {
++                            delta = spike_reconstruct_l1(cell_index, entry, local_probe, tile_texel);
++                        }
++                        spike_accum = spike_accum + delta * spike_scale(entry, start, spike_cached);
++                    }
++                }
++                textureStore(
++                    direct_composed_atlas,
++                    vec2<i32>(tile_origin.xy + tile_texel),
++                    i32(tile_origin.z),
++                    vec4<f32>(
++                        max(spike_accum, vec3<f32>(0.0)),
++                        select(0.0, 1.0, stored_slot.valid),
++                    ),
++                );
++            }
++            {
++                let tile_texel = vec2<u32>(4u, 1u);
++                let atlas_texel = tile_origin.xy + tile_texel;
++                let uv = (vec2<f32>(atlas_texel) + 0.5)
++                    / vec2<f32>(textureDimensions(direct_intermediate_atlas));
++                var spike_accum = textureSampleLevel(
++                    direct_intermediate_atlas,
++                    intermediate_sampler,
++                    uv,
++                    i32(tile_origin.z),
++                    0.0,
++                ).rgb;
++                if (level == 0u) {
++                    if (spike_l0) {
++                        for (var entry = start; entry < end; entry = entry + 1u) {
++                            spike_accum = spike_accum
++                                + read_delta_texel(entry, spike_rank, tile_texel).rgb * spike_scale(entry, start, spike_cached);
++                        }
++                    }
++                } else if (spike_coarse) {
++                    for (var entry = start; entry < end; entry = entry + 1u) {
++                        var delta = vec3<f32>(0.0);
++                        if (level == 2u) {
++                            var spike_tile = vec3<f32>(0.0);
++                            if (spike_rep_kept) {
++                                spike_tile = read_delta_texel(entry, spike_rep_rank, tile_texel).rgb;
++                            }
++                            delta = spike_tile * f32(spike_rep_kept);
++                        } else {
++                            delta = spike_reconstruct_l1(cell_index, entry, local_probe, tile_texel);
++                        }
++                        spike_accum = spike_accum + delta * spike_scale(entry, start, spike_cached);
++                    }
++                }
++                textureStore(
++                    direct_composed_atlas,
++                    vec2<i32>(tile_origin.xy + tile_texel),
++                    i32(tile_origin.z),
++                    vec4<f32>(
++                        max(spike_accum, vec3<f32>(0.0)),
++                        select(0.0, 1.0, stored_slot.valid),
++                    ),
++                );
++            }
++            {
++                let tile_texel = vec2<u32>(5u, 1u);
++                let atlas_texel = tile_origin.xy + tile_texel;
++                let uv = (vec2<f32>(atlas_texel) + 0.5)
++                    / vec2<f32>(textureDimensions(direct_intermediate_atlas));
++                var spike_accum = textureSampleLevel(
++                    direct_intermediate_atlas,
++                    intermediate_sampler,
++                    uv,
++                    i32(tile_origin.z),
++                    0.0,
++                ).rgb;
++                if (level == 0u) {
++                    if (spike_l0) {
++                        for (var entry = start; entry < end; entry = entry + 1u) {
++                            spike_accum = spike_accum
++                                + read_delta_texel(entry, spike_rank, tile_texel).rgb * spike_scale(entry, start, spike_cached);
++                        }
++                    }
++                } else if (spike_coarse) {
++                    for (var entry = start; entry < end; entry = entry + 1u) {
++                        var delta = vec3<f32>(0.0);
++                        if (level == 2u) {
++                            var spike_tile = vec3<f32>(0.0);
++                            if (spike_rep_kept) {
++                                spike_tile = read_delta_texel(entry, spike_rep_rank, tile_texel).rgb;
++                            }
++                            delta = spike_tile * f32(spike_rep_kept);
++                        } else {
++                            delta = spike_reconstruct_l1(cell_index, entry, local_probe, tile_texel);
++                        }
++                        spike_accum = spike_accum + delta * spike_scale(entry, start, spike_cached);
++                    }
++                }
++                textureStore(
++                    direct_composed_atlas,
++                    vec2<i32>(tile_origin.xy + tile_texel),
++                    i32(tile_origin.z),
++                    vec4<f32>(
++                        max(spike_accum, vec3<f32>(0.0)),
++                        select(0.0, 1.0, stored_slot.valid),
++                    ),
++                );
++            }
++            {
++                let tile_texel = vec2<u32>(0u, 2u);
++                let atlas_texel = tile_origin.xy + tile_texel;
++                let uv = (vec2<f32>(atlas_texel) + 0.5)
++                    / vec2<f32>(textureDimensions(direct_intermediate_atlas));
++                var spike_accum = textureSampleLevel(
++                    direct_intermediate_atlas,
++                    intermediate_sampler,
++                    uv,
++                    i32(tile_origin.z),
++                    0.0,
++                ).rgb;
++                if (level == 0u) {
++                    if (spike_l0) {
++                        for (var entry = start; entry < end; entry = entry + 1u) {
++                            spike_accum = spike_accum
++                                + read_delta_texel(entry, spike_rank, tile_texel).rgb * spike_scale(entry, start, spike_cached);
++                        }
++                    }
++                } else if (spike_coarse) {
++                    for (var entry = start; entry < end; entry = entry + 1u) {
++                        var delta = vec3<f32>(0.0);
++                        if (level == 2u) {
++                            var spike_tile = vec3<f32>(0.0);
++                            if (spike_rep_kept) {
++                                spike_tile = read_delta_texel(entry, spike_rep_rank, tile_texel).rgb;
++                            }
++                            delta = spike_tile * f32(spike_rep_kept);
++                        } else {
++                            delta = spike_reconstruct_l1(cell_index, entry, local_probe, tile_texel);
++                        }
++                        spike_accum = spike_accum + delta * spike_scale(entry, start, spike_cached);
++                    }
++                }
++                textureStore(
++                    direct_composed_atlas,
++                    vec2<i32>(tile_origin.xy + tile_texel),
++                    i32(tile_origin.z),
++                    vec4<f32>(
++                        max(spike_accum, vec3<f32>(0.0)),
++                        select(0.0, 1.0, stored_slot.valid),
++                    ),
++                );
++            }
++            {
++                let tile_texel = vec2<u32>(1u, 2u);
++                let atlas_texel = tile_origin.xy + tile_texel;
++                let uv = (vec2<f32>(atlas_texel) + 0.5)
++                    / vec2<f32>(textureDimensions(direct_intermediate_atlas));
++                var spike_accum = textureSampleLevel(
++                    direct_intermediate_atlas,
++                    intermediate_sampler,
++                    uv,
++                    i32(tile_origin.z),
++                    0.0,
++                ).rgb;
++                if (level == 0u) {
++                    if (spike_l0) {
++                        for (var entry = start; entry < end; entry = entry + 1u) {
++                            spike_accum = spike_accum
++                                + read_delta_texel(entry, spike_rank, tile_texel).rgb * spike_scale(entry, start, spike_cached);
++                        }
++                    }
++                } else if (spike_coarse) {
++                    for (var entry = start; entry < end; entry = entry + 1u) {
++                        var delta = vec3<f32>(0.0);
++                        if (level == 2u) {
++                            var spike_tile = vec3<f32>(0.0);
++                            if (spike_rep_kept) {
++                                spike_tile = read_delta_texel(entry, spike_rep_rank, tile_texel).rgb;
++                            }
++                            delta = spike_tile * f32(spike_rep_kept);
++                        } else {
++                            delta = spike_reconstruct_l1(cell_index, entry, local_probe, tile_texel);
++                        }
++                        spike_accum = spike_accum + delta * spike_scale(entry, start, spike_cached);
++                    }
++                }
++                textureStore(
++                    direct_composed_atlas,
++                    vec2<i32>(tile_origin.xy + tile_texel),
++                    i32(tile_origin.z),
++                    vec4<f32>(
++                        max(spike_accum, vec3<f32>(0.0)),
++                        select(0.0, 1.0, stored_slot.valid),
++                    ),
++                );
++            }
++            {
++                let tile_texel = vec2<u32>(2u, 2u);
++                let atlas_texel = tile_origin.xy + tile_texel;
++                let uv = (vec2<f32>(atlas_texel) + 0.5)
++                    / vec2<f32>(textureDimensions(direct_intermediate_atlas));
++                var spike_accum = textureSampleLevel(
++                    direct_intermediate_atlas,
++                    intermediate_sampler,
++                    uv,
++                    i32(tile_origin.z),
++                    0.0,
++                ).rgb;
++                if (level == 0u) {
++                    if (spike_l0) {
++                        for (var entry = start; entry < end; entry = entry + 1u) {
++                            spike_accum = spike_accum
++                                + read_delta_texel(entry, spike_rank, tile_texel).rgb * spike_scale(entry, start, spike_cached);
++                        }
++                    }
++                } else if (spike_coarse) {
++                    for (var entry = start; entry < end; entry = entry + 1u) {
++                        var delta = vec3<f32>(0.0);
++                        if (level == 2u) {
++                            var spike_tile = vec3<f32>(0.0);
++                            if (spike_rep_kept) {
++                                spike_tile = read_delta_texel(entry, spike_rep_rank, tile_texel).rgb;
++                            }
++                            delta = spike_tile * f32(spike_rep_kept);
++                        } else {
++                            delta = spike_reconstruct_l1(cell_index, entry, local_probe, tile_texel);
++                        }
++                        spike_accum = spike_accum + delta * spike_scale(entry, start, spike_cached);
++                    }
++                }
++                textureStore(
++                    direct_composed_atlas,
++                    vec2<i32>(tile_origin.xy + tile_texel),
++                    i32(tile_origin.z),
++                    vec4<f32>(
++                        max(spike_accum, vec3<f32>(0.0)),
++                        select(0.0, 1.0, stored_slot.valid),
++                    ),
++                );
++            }
++            {
++                let tile_texel = vec2<u32>(3u, 2u);
++                let atlas_texel = tile_origin.xy + tile_texel;
++                let uv = (vec2<f32>(atlas_texel) + 0.5)
++                    / vec2<f32>(textureDimensions(direct_intermediate_atlas));
++                var spike_accum = textureSampleLevel(
++                    direct_intermediate_atlas,
++                    intermediate_sampler,
++                    uv,
++                    i32(tile_origin.z),
++                    0.0,
++                ).rgb;
++                if (level == 0u) {
++                    if (spike_l0) {
++                        for (var entry = start; entry < end; entry = entry + 1u) {
++                            spike_accum = spike_accum
++                                + read_delta_texel(entry, spike_rank, tile_texel).rgb * spike_scale(entry, start, spike_cached);
++                        }
++                    }
++                } else if (spike_coarse) {
++                    for (var entry = start; entry < end; entry = entry + 1u) {
++                        var delta = vec3<f32>(0.0);
++                        if (level == 2u) {
++                            var spike_tile = vec3<f32>(0.0);
++                            if (spike_rep_kept) {
++                                spike_tile = read_delta_texel(entry, spike_rep_rank, tile_texel).rgb;
++                            }
++                            delta = spike_tile * f32(spike_rep_kept);
++                        } else {
++                            delta = spike_reconstruct_l1(cell_index, entry, local_probe, tile_texel);
++                        }
++                        spike_accum = spike_accum + delta * spike_scale(entry, start, spike_cached);
++                    }
++                }
++                textureStore(
++                    direct_composed_atlas,
++                    vec2<i32>(tile_origin.xy + tile_texel),
++                    i32(tile_origin.z),
++                    vec4<f32>(
++                        max(spike_accum, vec3<f32>(0.0)),
++                        select(0.0, 1.0, stored_slot.valid),
++                    ),
++                );
++            }
++            {
++                let tile_texel = vec2<u32>(4u, 2u);
++                let atlas_texel = tile_origin.xy + tile_texel;
++                let uv = (vec2<f32>(atlas_texel) + 0.5)
++                    / vec2<f32>(textureDimensions(direct_intermediate_atlas));
++                var spike_accum = textureSampleLevel(
++                    direct_intermediate_atlas,
++                    intermediate_sampler,
++                    uv,
++                    i32(tile_origin.z),
++                    0.0,
++                ).rgb;
++                if (level == 0u) {
++                    if (spike_l0) {
++                        for (var entry = start; entry < end; entry = entry + 1u) {
++                            spike_accum = spike_accum
++                                + read_delta_texel(entry, spike_rank, tile_texel).rgb * spike_scale(entry, start, spike_cached);
++                        }
++                    }
++                } else if (spike_coarse) {
++                    for (var entry = start; entry < end; entry = entry + 1u) {
++                        var delta = vec3<f32>(0.0);
++                        if (level == 2u) {
++                            var spike_tile = vec3<f32>(0.0);
++                            if (spike_rep_kept) {
++                                spike_tile = read_delta_texel(entry, spike_rep_rank, tile_texel).rgb;
++                            }
++                            delta = spike_tile * f32(spike_rep_kept);
++                        } else {
++                            delta = spike_reconstruct_l1(cell_index, entry, local_probe, tile_texel);
++                        }
++                        spike_accum = spike_accum + delta * spike_scale(entry, start, spike_cached);
++                    }
++                }
++                textureStore(
++                    direct_composed_atlas,
++                    vec2<i32>(tile_origin.xy + tile_texel),
++                    i32(tile_origin.z),
++                    vec4<f32>(
++                        max(spike_accum, vec3<f32>(0.0)),
++                        select(0.0, 1.0, stored_slot.valid),
++                    ),
++                );
++            }
++            {
++                let tile_texel = vec2<u32>(5u, 2u);
++                let atlas_texel = tile_origin.xy + tile_texel;
++                let uv = (vec2<f32>(atlas_texel) + 0.5)
++                    / vec2<f32>(textureDimensions(direct_intermediate_atlas));
++                var spike_accum = textureSampleLevel(
++                    direct_intermediate_atlas,
++                    intermediate_sampler,
++                    uv,
++                    i32(tile_origin.z),
++                    0.0,
++                ).rgb;
++                if (level == 0u) {
++                    if (spike_l0) {
++                        for (var entry = start; entry < end; entry = entry + 1u) {
++                            spike_accum = spike_accum
++                                + read_delta_texel(entry, spike_rank, tile_texel).rgb * spike_scale(entry, start, spike_cached);
++                        }
++                    }
++                } else if (spike_coarse) {
++                    for (var entry = start; entry < end; entry = entry + 1u) {
++                        var delta = vec3<f32>(0.0);
++                        if (level == 2u) {
++                            var spike_tile = vec3<f32>(0.0);
++                            if (spike_rep_kept) {
++                                spike_tile = read_delta_texel(entry, spike_rep_rank, tile_texel).rgb;
++                            }
++                            delta = spike_tile * f32(spike_rep_kept);
++                        } else {
++                            delta = spike_reconstruct_l1(cell_index, entry, local_probe, tile_texel);
++                        }
++                        spike_accum = spike_accum + delta * spike_scale(entry, start, spike_cached);
++                    }
++                }
++                textureStore(
++                    direct_composed_atlas,
++                    vec2<i32>(tile_origin.xy + tile_texel),
++                    i32(tile_origin.z),
++                    vec4<f32>(
++                        max(spike_accum, vec3<f32>(0.0)),
++                        select(0.0, 1.0, stored_slot.valid),
++                    ),
++                );
++            }
++            {
++                let tile_texel = vec2<u32>(0u, 3u);
++                let atlas_texel = tile_origin.xy + tile_texel;
++                let uv = (vec2<f32>(atlas_texel) + 0.5)
++                    / vec2<f32>(textureDimensions(direct_intermediate_atlas));
++                var spike_accum = textureSampleLevel(
++                    direct_intermediate_atlas,
++                    intermediate_sampler,
++                    uv,
++                    i32(tile_origin.z),
++                    0.0,
++                ).rgb;
++                if (level == 0u) {
++                    if (spike_l0) {
++                        for (var entry = start; entry < end; entry = entry + 1u) {
++                            spike_accum = spike_accum
++                                + read_delta_texel(entry, spike_rank, tile_texel).rgb * spike_scale(entry, start, spike_cached);
++                        }
++                    }
++                } else if (spike_coarse) {
++                    for (var entry = start; entry < end; entry = entry + 1u) {
++                        var delta = vec3<f32>(0.0);
++                        if (level == 2u) {
++                            var spike_tile = vec3<f32>(0.0);
++                            if (spike_rep_kept) {
++                                spike_tile = read_delta_texel(entry, spike_rep_rank, tile_texel).rgb;
++                            }
++                            delta = spike_tile * f32(spike_rep_kept);
++                        } else {
++                            delta = spike_reconstruct_l1(cell_index, entry, local_probe, tile_texel);
++                        }
++                        spike_accum = spike_accum + delta * spike_scale(entry, start, spike_cached);
++                    }
++                }
++                textureStore(
++                    direct_composed_atlas,
++                    vec2<i32>(tile_origin.xy + tile_texel),
++                    i32(tile_origin.z),
++                    vec4<f32>(
++                        max(spike_accum, vec3<f32>(0.0)),
++                        select(0.0, 1.0, stored_slot.valid),
++                    ),
++                );
++            }
++            {
++                let tile_texel = vec2<u32>(1u, 3u);
++                let atlas_texel = tile_origin.xy + tile_texel;
++                let uv = (vec2<f32>(atlas_texel) + 0.5)
++                    / vec2<f32>(textureDimensions(direct_intermediate_atlas));
++                var spike_accum = textureSampleLevel(
++                    direct_intermediate_atlas,
++                    intermediate_sampler,
++                    uv,
++                    i32(tile_origin.z),
++                    0.0,
++                ).rgb;
++                if (level == 0u) {
++                    if (spike_l0) {
++                        for (var entry = start; entry < end; entry = entry + 1u) {
++                            spike_accum = spike_accum
++                                + read_delta_texel(entry, spike_rank, tile_texel).rgb * spike_scale(entry, start, spike_cached);
++                        }
++                    }
++                } else if (spike_coarse) {
++                    for (var entry = start; entry < end; entry = entry + 1u) {
++                        var delta = vec3<f32>(0.0);
++                        if (level == 2u) {
++                            var spike_tile = vec3<f32>(0.0);
++                            if (spike_rep_kept) {
++                                spike_tile = read_delta_texel(entry, spike_rep_rank, tile_texel).rgb;
++                            }
++                            delta = spike_tile * f32(spike_rep_kept);
++                        } else {
++                            delta = spike_reconstruct_l1(cell_index, entry, local_probe, tile_texel);
++                        }
++                        spike_accum = spike_accum + delta * spike_scale(entry, start, spike_cached);
++                    }
++                }
++                textureStore(
++                    direct_composed_atlas,
++                    vec2<i32>(tile_origin.xy + tile_texel),
++                    i32(tile_origin.z),
++                    vec4<f32>(
++                        max(spike_accum, vec3<f32>(0.0)),
++                        select(0.0, 1.0, stored_slot.valid),
++                    ),
++                );
++            }
++            {
++                let tile_texel = vec2<u32>(2u, 3u);
++                let atlas_texel = tile_origin.xy + tile_texel;
++                let uv = (vec2<f32>(atlas_texel) + 0.5)
++                    / vec2<f32>(textureDimensions(direct_intermediate_atlas));
++                var spike_accum = textureSampleLevel(
++                    direct_intermediate_atlas,
++                    intermediate_sampler,
++                    uv,
++                    i32(tile_origin.z),
++                    0.0,
++                ).rgb;
++                if (level == 0u) {
++                    if (spike_l0) {
++                        for (var entry = start; entry < end; entry = entry + 1u) {
++                            spike_accum = spike_accum
++                                + read_delta_texel(entry, spike_rank, tile_texel).rgb * spike_scale(entry, start, spike_cached);
++                        }
++                    }
++                } else if (spike_coarse) {
++                    for (var entry = start; entry < end; entry = entry + 1u) {
++                        var delta = vec3<f32>(0.0);
++                        if (level == 2u) {
++                            var spike_tile = vec3<f32>(0.0);
++                            if (spike_rep_kept) {
++                                spike_tile = read_delta_texel(entry, spike_rep_rank, tile_texel).rgb;
++                            }
++                            delta = spike_tile * f32(spike_rep_kept);
++                        } else {
++                            delta = spike_reconstruct_l1(cell_index, entry, local_probe, tile_texel);
++                        }
++                        spike_accum = spike_accum + delta * spike_scale(entry, start, spike_cached);
++                    }
++                }
++                textureStore(
++                    direct_composed_atlas,
++                    vec2<i32>(tile_origin.xy + tile_texel),
++                    i32(tile_origin.z),
++                    vec4<f32>(
++                        max(spike_accum, vec3<f32>(0.0)),
++                        select(0.0, 1.0, stored_slot.valid),
++                    ),
++                );
++            }
++            {
++                let tile_texel = vec2<u32>(3u, 3u);
++                let atlas_texel = tile_origin.xy + tile_texel;
++                let uv = (vec2<f32>(atlas_texel) + 0.5)
++                    / vec2<f32>(textureDimensions(direct_intermediate_atlas));
++                var spike_accum = textureSampleLevel(
++                    direct_intermediate_atlas,
++                    intermediate_sampler,
++                    uv,
++                    i32(tile_origin.z),
++                    0.0,
++                ).rgb;
++                if (level == 0u) {
++                    if (spike_l0) {
++                        for (var entry = start; entry < end; entry = entry + 1u) {
++                            spike_accum = spike_accum
++                                + read_delta_texel(entry, spike_rank, tile_texel).rgb * spike_scale(entry, start, spike_cached);
++                        }
++                    }
++                } else if (spike_coarse) {
++                    for (var entry = start; entry < end; entry = entry + 1u) {
++                        var delta = vec3<f32>(0.0);
++                        if (level == 2u) {
++                            var spike_tile = vec3<f32>(0.0);
++                            if (spike_rep_kept) {
++                                spike_tile = read_delta_texel(entry, spike_rep_rank, tile_texel).rgb;
++                            }
++                            delta = spike_tile * f32(spike_rep_kept);
++                        } else {
++                            delta = spike_reconstruct_l1(cell_index, entry, local_probe, tile_texel);
++                        }
++                        spike_accum = spike_accum + delta * spike_scale(entry, start, spike_cached);
++                    }
++                }
++                textureStore(
++                    direct_composed_atlas,
++                    vec2<i32>(tile_origin.xy + tile_texel),
++                    i32(tile_origin.z),
++                    vec4<f32>(
++                        max(spike_accum, vec3<f32>(0.0)),
++                        select(0.0, 1.0, stored_slot.valid),
++                    ),
++                );
++            }
++            {
++                let tile_texel = vec2<u32>(4u, 3u);
++                let atlas_texel = tile_origin.xy + tile_texel;
++                let uv = (vec2<f32>(atlas_texel) + 0.5)
++                    / vec2<f32>(textureDimensions(direct_intermediate_atlas));
++                var spike_accum = textureSampleLevel(
++                    direct_intermediate_atlas,
++                    intermediate_sampler,
++                    uv,
++                    i32(tile_origin.z),
++                    0.0,
++                ).rgb;
++                if (level == 0u) {
++                    if (spike_l0) {
++                        for (var entry = start; entry < end; entry = entry + 1u) {
++                            spike_accum = spike_accum
++                                + read_delta_texel(entry, spike_rank, tile_texel).rgb * spike_scale(entry, start, spike_cached);
++                        }
++                    }
++                } else if (spike_coarse) {
++                    for (var entry = start; entry < end; entry = entry + 1u) {
++                        var delta = vec3<f32>(0.0);
++                        if (level == 2u) {
++                            var spike_tile = vec3<f32>(0.0);
++                            if (spike_rep_kept) {
++                                spike_tile = read_delta_texel(entry, spike_rep_rank, tile_texel).rgb;
++                            }
++                            delta = spike_tile * f32(spike_rep_kept);
++                        } else {
++                            delta = spike_reconstruct_l1(cell_index, entry, local_probe, tile_texel);
++                        }
++                        spike_accum = spike_accum + delta * spike_scale(entry, start, spike_cached);
++                    }
++                }
++                textureStore(
++                    direct_composed_atlas,
++                    vec2<i32>(tile_origin.xy + tile_texel),
++                    i32(tile_origin.z),
++                    vec4<f32>(
++                        max(spike_accum, vec3<f32>(0.0)),
++                        select(0.0, 1.0, stored_slot.valid),
++                    ),
++                );
++            }
++            {
++                let tile_texel = vec2<u32>(5u, 3u);
++                let atlas_texel = tile_origin.xy + tile_texel;
++                let uv = (vec2<f32>(atlas_texel) + 0.5)
++                    / vec2<f32>(textureDimensions(direct_intermediate_atlas));
++                var spike_accum = textureSampleLevel(
++                    direct_intermediate_atlas,
++                    intermediate_sampler,
++                    uv,
++                    i32(tile_origin.z),
++                    0.0,
++                ).rgb;
++                if (level == 0u) {
++                    if (spike_l0) {
++                        for (var entry = start; entry < end; entry = entry + 1u) {
++                            spike_accum = spike_accum
++                                + read_delta_texel(entry, spike_rank, tile_texel).rgb * spike_scale(entry, start, spike_cached);
++                        }
++                    }
++                } else if (spike_coarse) {
++                    for (var entry = start; entry < end; entry = entry + 1u) {
++                        var delta = vec3<f32>(0.0);
++                        if (level == 2u) {
++                            var spike_tile = vec3<f32>(0.0);
++                            if (spike_rep_kept) {
++                                spike_tile = read_delta_texel(entry, spike_rep_rank, tile_texel).rgb;
++                            }
++                            delta = spike_tile * f32(spike_rep_kept);
++                        } else {
++                            delta = spike_reconstruct_l1(cell_index, entry, local_probe, tile_texel);
++                        }
++                        spike_accum = spike_accum + delta * spike_scale(entry, start, spike_cached);
++                    }
++                }
++                textureStore(
++                    direct_composed_atlas,
++                    vec2<i32>(tile_origin.xy + tile_texel),
++                    i32(tile_origin.z),
++                    vec4<f32>(
++                        max(spike_accum, vec3<f32>(0.0)),
++                        select(0.0, 1.0, stored_slot.valid),
++                    ),
++                );
++            }
++            {
++                let tile_texel = vec2<u32>(0u, 4u);
++                let atlas_texel = tile_origin.xy + tile_texel;
++                let uv = (vec2<f32>(atlas_texel) + 0.5)
++                    / vec2<f32>(textureDimensions(direct_intermediate_atlas));
++                var spike_accum = textureSampleLevel(
++                    direct_intermediate_atlas,
++                    intermediate_sampler,
++                    uv,
++                    i32(tile_origin.z),
++                    0.0,
++                ).rgb;
++                if (level == 0u) {
++                    if (spike_l0) {
++                        for (var entry = start; entry < end; entry = entry + 1u) {
++                            spike_accum = spike_accum
++                                + read_delta_texel(entry, spike_rank, tile_texel).rgb * spike_scale(entry, start, spike_cached);
++                        }
++                    }
++                } else if (spike_coarse) {
++                    for (var entry = start; entry < end; entry = entry + 1u) {
++                        var delta = vec3<f32>(0.0);
++                        if (level == 2u) {
++                            var spike_tile = vec3<f32>(0.0);
++                            if (spike_rep_kept) {
++                                spike_tile = read_delta_texel(entry, spike_rep_rank, tile_texel).rgb;
++                            }
++                            delta = spike_tile * f32(spike_rep_kept);
++                        } else {
++                            delta = spike_reconstruct_l1(cell_index, entry, local_probe, tile_texel);
++                        }
++                        spike_accum = spike_accum + delta * spike_scale(entry, start, spike_cached);
++                    }
++                }
++                textureStore(
++                    direct_composed_atlas,
++                    vec2<i32>(tile_origin.xy + tile_texel),
++                    i32(tile_origin.z),
++                    vec4<f32>(
++                        max(spike_accum, vec3<f32>(0.0)),
++                        select(0.0, 1.0, stored_slot.valid),
++                    ),
++                );
++            }
++            {
++                let tile_texel = vec2<u32>(1u, 4u);
++                let atlas_texel = tile_origin.xy + tile_texel;
++                let uv = (vec2<f32>(atlas_texel) + 0.5)
++                    / vec2<f32>(textureDimensions(direct_intermediate_atlas));
++                var spike_accum = textureSampleLevel(
++                    direct_intermediate_atlas,
++                    intermediate_sampler,
++                    uv,
++                    i32(tile_origin.z),
++                    0.0,
++                ).rgb;
++                if (level == 0u) {
++                    if (spike_l0) {
++                        for (var entry = start; entry < end; entry = entry + 1u) {
++                            spike_accum = spike_accum
++                                + read_delta_texel(entry, spike_rank, tile_texel).rgb * spike_scale(entry, start, spike_cached);
++                        }
++                    }
++                } else if (spike_coarse) {
++                    for (var entry = start; entry < end; entry = entry + 1u) {
++                        var delta = vec3<f32>(0.0);
++                        if (level == 2u) {
++                            var spike_tile = vec3<f32>(0.0);
++                            if (spike_rep_kept) {
++                                spike_tile = read_delta_texel(entry, spike_rep_rank, tile_texel).rgb;
++                            }
++                            delta = spike_tile * f32(spike_rep_kept);
++                        } else {
++                            delta = spike_reconstruct_l1(cell_index, entry, local_probe, tile_texel);
++                        }
++                        spike_accum = spike_accum + delta * spike_scale(entry, start, spike_cached);
++                    }
++                }
++                textureStore(
++                    direct_composed_atlas,
++                    vec2<i32>(tile_origin.xy + tile_texel),
++                    i32(tile_origin.z),
++                    vec4<f32>(
++                        max(spike_accum, vec3<f32>(0.0)),
++                        select(0.0, 1.0, stored_slot.valid),
++                    ),
++                );
++            }
++            {
++                let tile_texel = vec2<u32>(2u, 4u);
++                let atlas_texel = tile_origin.xy + tile_texel;
++                let uv = (vec2<f32>(atlas_texel) + 0.5)
++                    / vec2<f32>(textureDimensions(direct_intermediate_atlas));
++                var spike_accum = textureSampleLevel(
++                    direct_intermediate_atlas,
++                    intermediate_sampler,
++                    uv,
++                    i32(tile_origin.z),
++                    0.0,
++                ).rgb;
++                if (level == 0u) {
++                    if (spike_l0) {
++                        for (var entry = start; entry < end; entry = entry + 1u) {
++                            spike_accum = spike_accum
++                                + read_delta_texel(entry, spike_rank, tile_texel).rgb * spike_scale(entry, start, spike_cached);
++                        }
++                    }
++                } else if (spike_coarse) {
++                    for (var entry = start; entry < end; entry = entry + 1u) {
++                        var delta = vec3<f32>(0.0);
++                        if (level == 2u) {
++                            var spike_tile = vec3<f32>(0.0);
++                            if (spike_rep_kept) {
++                                spike_tile = read_delta_texel(entry, spike_rep_rank, tile_texel).rgb;
++                            }
++                            delta = spike_tile * f32(spike_rep_kept);
++                        } else {
++                            delta = spike_reconstruct_l1(cell_index, entry, local_probe, tile_texel);
++                        }
++                        spike_accum = spike_accum + delta * spike_scale(entry, start, spike_cached);
++                    }
++                }
++                textureStore(
++                    direct_composed_atlas,
++                    vec2<i32>(tile_origin.xy + tile_texel),
++                    i32(tile_origin.z),
++                    vec4<f32>(
++                        max(spike_accum, vec3<f32>(0.0)),
++                        select(0.0, 1.0, stored_slot.valid),
++                    ),
++                );
++            }
++            {
++                let tile_texel = vec2<u32>(3u, 4u);
++                let atlas_texel = tile_origin.xy + tile_texel;
++                let uv = (vec2<f32>(atlas_texel) + 0.5)
++                    / vec2<f32>(textureDimensions(direct_intermediate_atlas));
++                var spike_accum = textureSampleLevel(
++                    direct_intermediate_atlas,
++                    intermediate_sampler,
++                    uv,
++                    i32(tile_origin.z),
++                    0.0,
++                ).rgb;
++                if (level == 0u) {
++                    if (spike_l0) {
++                        for (var entry = start; entry < end; entry = entry + 1u) {
++                            spike_accum = spike_accum
++                                + read_delta_texel(entry, spike_rank, tile_texel).rgb * spike_scale(entry, start, spike_cached);
++                        }
++                    }
++                } else if (spike_coarse) {
++                    for (var entry = start; entry < end; entry = entry + 1u) {
++                        var delta = vec3<f32>(0.0);
++                        if (level == 2u) {
++                            var spike_tile = vec3<f32>(0.0);
++                            if (spike_rep_kept) {
++                                spike_tile = read_delta_texel(entry, spike_rep_rank, tile_texel).rgb;
++                            }
++                            delta = spike_tile * f32(spike_rep_kept);
++                        } else {
++                            delta = spike_reconstruct_l1(cell_index, entry, local_probe, tile_texel);
++                        }
++                        spike_accum = spike_accum + delta * spike_scale(entry, start, spike_cached);
++                    }
++                }
++                textureStore(
++                    direct_composed_atlas,
++                    vec2<i32>(tile_origin.xy + tile_texel),
++                    i32(tile_origin.z),
++                    vec4<f32>(
++                        max(spike_accum, vec3<f32>(0.0)),
++                        select(0.0, 1.0, stored_slot.valid),
++                    ),
++                );
++            }
++            {
++                let tile_texel = vec2<u32>(4u, 4u);
++                let atlas_texel = tile_origin.xy + tile_texel;
++                let uv = (vec2<f32>(atlas_texel) + 0.5)
++                    / vec2<f32>(textureDimensions(direct_intermediate_atlas));
++                var spike_accum = textureSampleLevel(
++                    direct_intermediate_atlas,
++                    intermediate_sampler,
++                    uv,
++                    i32(tile_origin.z),
++                    0.0,
++                ).rgb;
++                if (level == 0u) {
++                    if (spike_l0) {
++                        for (var entry = start; entry < end; entry = entry + 1u) {
++                            spike_accum = spike_accum
++                                + read_delta_texel(entry, spike_rank, tile_texel).rgb * spike_scale(entry, start, spike_cached);
++                        }
++                    }
++                } else if (spike_coarse) {
++                    for (var entry = start; entry < end; entry = entry + 1u) {
++                        var delta = vec3<f32>(0.0);
++                        if (level == 2u) {
++                            var spike_tile = vec3<f32>(0.0);
++                            if (spike_rep_kept) {
++                                spike_tile = read_delta_texel(entry, spike_rep_rank, tile_texel).rgb;
++                            }
++                            delta = spike_tile * f32(spike_rep_kept);
++                        } else {
++                            delta = spike_reconstruct_l1(cell_index, entry, local_probe, tile_texel);
++                        }
++                        spike_accum = spike_accum + delta * spike_scale(entry, start, spike_cached);
++                    }
++                }
++                textureStore(
++                    direct_composed_atlas,
++                    vec2<i32>(tile_origin.xy + tile_texel),
++                    i32(tile_origin.z),
++                    vec4<f32>(
++                        max(spike_accum, vec3<f32>(0.0)),
++                        select(0.0, 1.0, stored_slot.valid),
++                    ),
++                );
++            }
++            {
++                let tile_texel = vec2<u32>(5u, 4u);
++                let atlas_texel = tile_origin.xy + tile_texel;
++                let uv = (vec2<f32>(atlas_texel) + 0.5)
++                    / vec2<f32>(textureDimensions(direct_intermediate_atlas));
++                var spike_accum = textureSampleLevel(
++                    direct_intermediate_atlas,
++                    intermediate_sampler,
++                    uv,
++                    i32(tile_origin.z),
++                    0.0,
++                ).rgb;
++                if (level == 0u) {
++                    if (spike_l0) {
++                        for (var entry = start; entry < end; entry = entry + 1u) {
++                            spike_accum = spike_accum
++                                + read_delta_texel(entry, spike_rank, tile_texel).rgb * spike_scale(entry, start, spike_cached);
++                        }
++                    }
++                } else if (spike_coarse) {
++                    for (var entry = start; entry < end; entry = entry + 1u) {
++                        var delta = vec3<f32>(0.0);
++                        if (level == 2u) {
++                            var spike_tile = vec3<f32>(0.0);
++                            if (spike_rep_kept) {
++                                spike_tile = read_delta_texel(entry, spike_rep_rank, tile_texel).rgb;
++                            }
++                            delta = spike_tile * f32(spike_rep_kept);
++                        } else {
++                            delta = spike_reconstruct_l1(cell_index, entry, local_probe, tile_texel);
++                        }
++                        spike_accum = spike_accum + delta * spike_scale(entry, start, spike_cached);
++                    }
++                }
++                textureStore(
++                    direct_composed_atlas,
++                    vec2<i32>(tile_origin.xy + tile_texel),
++                    i32(tile_origin.z),
++                    vec4<f32>(
++                        max(spike_accum, vec3<f32>(0.0)),
++                        select(0.0, 1.0, stored_slot.valid),
++                    ),
++                );
++            }
++            {
++                let tile_texel = vec2<u32>(0u, 5u);
++                let atlas_texel = tile_origin.xy + tile_texel;
++                let uv = (vec2<f32>(atlas_texel) + 0.5)
++                    / vec2<f32>(textureDimensions(direct_intermediate_atlas));
++                var spike_accum = textureSampleLevel(
++                    direct_intermediate_atlas,
++                    intermediate_sampler,
++                    uv,
++                    i32(tile_origin.z),
++                    0.0,
++                ).rgb;
++                if (level == 0u) {
++                    if (spike_l0) {
++                        for (var entry = start; entry < end; entry = entry + 1u) {
++                            spike_accum = spike_accum
++                                + read_delta_texel(entry, spike_rank, tile_texel).rgb * spike_scale(entry, start, spike_cached);
++                        }
++                    }
++                } else if (spike_coarse) {
++                    for (var entry = start; entry < end; entry = entry + 1u) {
++                        var delta = vec3<f32>(0.0);
++                        if (level == 2u) {
++                            var spike_tile = vec3<f32>(0.0);
++                            if (spike_rep_kept) {
++                                spike_tile = read_delta_texel(entry, spike_rep_rank, tile_texel).rgb;
++                            }
++                            delta = spike_tile * f32(spike_rep_kept);
++                        } else {
++                            delta = spike_reconstruct_l1(cell_index, entry, local_probe, tile_texel);
++                        }
++                        spike_accum = spike_accum + delta * spike_scale(entry, start, spike_cached);
++                    }
++                }
++                textureStore(
++                    direct_composed_atlas,
++                    vec2<i32>(tile_origin.xy + tile_texel),
++                    i32(tile_origin.z),
++                    vec4<f32>(
++                        max(spike_accum, vec3<f32>(0.0)),
++                        select(0.0, 1.0, stored_slot.valid),
++                    ),
++                );
++            }
++            {
++                let tile_texel = vec2<u32>(1u, 5u);
++                let atlas_texel = tile_origin.xy + tile_texel;
++                let uv = (vec2<f32>(atlas_texel) + 0.5)
++                    / vec2<f32>(textureDimensions(direct_intermediate_atlas));
++                var spike_accum = textureSampleLevel(
++                    direct_intermediate_atlas,
++                    intermediate_sampler,
++                    uv,
++                    i32(tile_origin.z),
++                    0.0,
++                ).rgb;
++                if (level == 0u) {
++                    if (spike_l0) {
++                        for (var entry = start; entry < end; entry = entry + 1u) {
++                            spike_accum = spike_accum
++                                + read_delta_texel(entry, spike_rank, tile_texel).rgb * spike_scale(entry, start, spike_cached);
++                        }
++                    }
++                } else if (spike_coarse) {
++                    for (var entry = start; entry < end; entry = entry + 1u) {
++                        var delta = vec3<f32>(0.0);
++                        if (level == 2u) {
++                            var spike_tile = vec3<f32>(0.0);
++                            if (spike_rep_kept) {
++                                spike_tile = read_delta_texel(entry, spike_rep_rank, tile_texel).rgb;
++                            }
++                            delta = spike_tile * f32(spike_rep_kept);
++                        } else {
++                            delta = spike_reconstruct_l1(cell_index, entry, local_probe, tile_texel);
++                        }
++                        spike_accum = spike_accum + delta * spike_scale(entry, start, spike_cached);
++                    }
++                }
++                textureStore(
++                    direct_composed_atlas,
++                    vec2<i32>(tile_origin.xy + tile_texel),
++                    i32(tile_origin.z),
++                    vec4<f32>(
++                        max(spike_accum, vec3<f32>(0.0)),
++                        select(0.0, 1.0, stored_slot.valid),
++                    ),
++                );
++            }
++            {
++                let tile_texel = vec2<u32>(2u, 5u);
++                let atlas_texel = tile_origin.xy + tile_texel;
++                let uv = (vec2<f32>(atlas_texel) + 0.5)
++                    / vec2<f32>(textureDimensions(direct_intermediate_atlas));
++                var spike_accum = textureSampleLevel(
++                    direct_intermediate_atlas,
++                    intermediate_sampler,
++                    uv,
++                    i32(tile_origin.z),
++                    0.0,
++                ).rgb;
++                if (level == 0u) {
++                    if (spike_l0) {
++                        for (var entry = start; entry < end; entry = entry + 1u) {
++                            spike_accum = spike_accum
++                                + read_delta_texel(entry, spike_rank, tile_texel).rgb * spike_scale(entry, start, spike_cached);
++                        }
++                    }
++                } else if (spike_coarse) {
++                    for (var entry = start; entry < end; entry = entry + 1u) {
++                        var delta = vec3<f32>(0.0);
++                        if (level == 2u) {
++                            var spike_tile = vec3<f32>(0.0);
++                            if (spike_rep_kept) {
++                                spike_tile = read_delta_texel(entry, spike_rep_rank, tile_texel).rgb;
++                            }
++                            delta = spike_tile * f32(spike_rep_kept);
++                        } else {
++                            delta = spike_reconstruct_l1(cell_index, entry, local_probe, tile_texel);
++                        }
++                        spike_accum = spike_accum + delta * spike_scale(entry, start, spike_cached);
++                    }
++                }
++                textureStore(
++                    direct_composed_atlas,
++                    vec2<i32>(tile_origin.xy + tile_texel),
++                    i32(tile_origin.z),
++                    vec4<f32>(
++                        max(spike_accum, vec3<f32>(0.0)),
++                        select(0.0, 1.0, stored_slot.valid),
++                    ),
++                );
++            }
++            {
++                let tile_texel = vec2<u32>(3u, 5u);
++                let atlas_texel = tile_origin.xy + tile_texel;
++                let uv = (vec2<f32>(atlas_texel) + 0.5)
++                    / vec2<f32>(textureDimensions(direct_intermediate_atlas));
++                var spike_accum = textureSampleLevel(
++                    direct_intermediate_atlas,
++                    intermediate_sampler,
++                    uv,
++                    i32(tile_origin.z),
++                    0.0,
++                ).rgb;
++                if (level == 0u) {
++                    if (spike_l0) {
++                        for (var entry = start; entry < end; entry = entry + 1u) {
++                            spike_accum = spike_accum
++                                + read_delta_texel(entry, spike_rank, tile_texel).rgb * spike_scale(entry, start, spike_cached);
++                        }
++                    }
++                } else if (spike_coarse) {
++                    for (var entry = start; entry < end; entry = entry + 1u) {
++                        var delta = vec3<f32>(0.0);
++                        if (level == 2u) {
++                            var spike_tile = vec3<f32>(0.0);
++                            if (spike_rep_kept) {
++                                spike_tile = read_delta_texel(entry, spike_rep_rank, tile_texel).rgb;
++                            }
++                            delta = spike_tile * f32(spike_rep_kept);
++                        } else {
++                            delta = spike_reconstruct_l1(cell_index, entry, local_probe, tile_texel);
++                        }
++                        spike_accum = spike_accum + delta * spike_scale(entry, start, spike_cached);
++                    }
++                }
++                textureStore(
++                    direct_composed_atlas,
++                    vec2<i32>(tile_origin.xy + tile_texel),
++                    i32(tile_origin.z),
++                    vec4<f32>(
++                        max(spike_accum, vec3<f32>(0.0)),
++                        select(0.0, 1.0, stored_slot.valid),
++                    ),
++                );
++            }
++            {
++                let tile_texel = vec2<u32>(4u, 5u);
++                let atlas_texel = tile_origin.xy + tile_texel;
++                let uv = (vec2<f32>(atlas_texel) + 0.5)
++                    / vec2<f32>(textureDimensions(direct_intermediate_atlas));
++                var spike_accum = textureSampleLevel(
++                    direct_intermediate_atlas,
++                    intermediate_sampler,
++                    uv,
++                    i32(tile_origin.z),
++                    0.0,
++                ).rgb;
++                if (level == 0u) {
++                    if (spike_l0) {
++                        for (var entry = start; entry < end; entry = entry + 1u) {
++                            spike_accum = spike_accum
++                                + read_delta_texel(entry, spike_rank, tile_texel).rgb * spike_scale(entry, start, spike_cached);
++                        }
++                    }
++                } else if (spike_coarse) {
++                    for (var entry = start; entry < end; entry = entry + 1u) {
++                        var delta = vec3<f32>(0.0);
++                        if (level == 2u) {
++                            var spike_tile = vec3<f32>(0.0);
++                            if (spike_rep_kept) {
++                                spike_tile = read_delta_texel(entry, spike_rep_rank, tile_texel).rgb;
++                            }
++                            delta = spike_tile * f32(spike_rep_kept);
++                        } else {
++                            delta = spike_reconstruct_l1(cell_index, entry, local_probe, tile_texel);
++                        }
++                        spike_accum = spike_accum + delta * spike_scale(entry, start, spike_cached);
++                    }
++                }
++                textureStore(
++                    direct_composed_atlas,
++                    vec2<i32>(tile_origin.xy + tile_texel),
++                    i32(tile_origin.z),
++                    vec4<f32>(
++                        max(spike_accum, vec3<f32>(0.0)),
++                        select(0.0, 1.0, stored_slot.valid),
++                    ),
++                );
++            }
++            {
++                let tile_texel = vec2<u32>(5u, 5u);
++                let atlas_texel = tile_origin.xy + tile_texel;
++                let uv = (vec2<f32>(atlas_texel) + 0.5)
++                    / vec2<f32>(textureDimensions(direct_intermediate_atlas));
++                var spike_accum = textureSampleLevel(
++                    direct_intermediate_atlas,
++                    intermediate_sampler,
++                    uv,
++                    i32(tile_origin.z),
++                    0.0,
++                ).rgb;
++                if (level == 0u) {
++                    if (spike_l0) {
++                        for (var entry = start; entry < end; entry = entry + 1u) {
++                            spike_accum = spike_accum
++                                + read_delta_texel(entry, spike_rank, tile_texel).rgb * spike_scale(entry, start, spike_cached);
++                        }
++                    }
++                } else if (spike_coarse) {
++                    for (var entry = start; entry < end; entry = entry + 1u) {
++                        var delta = vec3<f32>(0.0);
++                        if (level == 2u) {
++                            var spike_tile = vec3<f32>(0.0);
++                            if (spike_rep_kept) {
++                                spike_tile = read_delta_texel(entry, spike_rep_rank, tile_texel).rgb;
++                            }
++                            delta = spike_tile * f32(spike_rep_kept);
++                        } else {
++                            delta = spike_reconstruct_l1(cell_index, entry, local_probe, tile_texel);
++                        }
++                        spike_accum = spike_accum + delta * spike_scale(entry, start, spike_cached);
++                    }
++                }
++                textureStore(
++                    direct_composed_atlas,
++                    vec2<i32>(tile_origin.xy + tile_texel),
++                    i32(tile_origin.z),
++                    vec4<f32>(
++                        max(spike_accum, vec3<f32>(0.0)),
++                        select(0.0, 1.0, stored_slot.valid),
++                    ),
++                );
++            }
++        }
++        return;
++    }
+     // Keeping the accumulator private lets one shared kept lattice serve all
+     // 64 output tiles without a second global delta read. The runtime tile
+     // geometry is fixed at 6×6 by PRL validation.
+@@ -459,10 +2098,6 @@
+         }
+     }
+ 
+-    let level = cell_level(cell_index);
+-    let offset_index = cell_index * 2u;
+-    let start = affinity_offsets[offset_index];
+-    let end = affinity_offsets[offset_index + 1u];
+ 
+     if (level == 0u) {
+         // Id 45 L0 compacts valid probes; L1 retains valid brick corners in
+@@ -472,7 +2107,7 @@
+         if (output_is_stored && local_probe_is_kept(cell_index, local_probe)) {
+             let probe_rank = within_cell_rank(cell_index, local_probe);
+             for (var entry = start; entry < end; entry = entry + 1u) {
+-                let scale = animated_light_scale(affinity_lights[entry]);
++                let scale = spike_scale(entry, start, spike_cached);
+                 for (var texel_index = 0u; texel_index < TILE_TEXEL_COUNT; texel_index = texel_index + 1u) {
+                     let tile_texel = vec2<u32>(
+                         texel_index % RUNTIME_TILE_DIMENSION,
+@@ -533,7 +2168,7 @@
+             workgroupBarrier();
+ 
+             if (output_is_stored) {
+-                let scale = animated_light_scale(affinity_lights[entry]);
++                let scale = spike_scale(entry, start, spike_cached);
+                 for (var texel_index = 0u; texel_index < TILE_TEXEL_COUNT; texel_index = texel_index + 1u) {
+                     var delta = vec3<f32>(0.0);
+                     if (level == 2u) {

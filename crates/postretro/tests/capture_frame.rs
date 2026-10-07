@@ -113,11 +113,14 @@ fn sampled_row_gate_capture_matches_full_resident_at_stepped_times() {
         if !run_capture_or_skip_without_adapter(&workspace, &scene_path) {
             return;
         }
-        let compose_rows = capture_report_compose_rows(&report_path);
+        let compose = capture_report_compose(&report_path);
         assert!(
-            compose_rows > 0,
-            "{name} must report composed streamed-SH rows across its measurement frames"
+            compose.passes.iter().map(|pass| pass.rows).sum::<u64>() > 0,
+            "{name} must report composed streamed-SH rows on its last measurement frame"
         );
+        if name.starts_with("gated") {
+            assert_gated_compose_rows_carry_entries(name, &compose);
+        }
         pngs.insert(
             name,
             fs::read(&output_path)
@@ -144,7 +147,25 @@ fn sampled_row_gate_capture_matches_full_resident_at_stepped_times() {
     }
 }
 
-fn capture_report_compose_rows(report_path: &std::path::Path) -> u64 {
+const COMPOSE_PASSES: [&str; 3] = [
+    "indirect_compose",
+    "static_direct_compose",
+    "animated_direct_compose",
+];
+
+/// The last measured frame's compose gauges for one streamed SH pass.
+struct ComposePassRows {
+    rows: u64,
+    entry_rows: u64,
+}
+
+struct CaptureCompose {
+    /// `COMPOSE_PASSES` order.
+    passes: Vec<ComposePassRows>,
+    lifecycle: serde_json::Map<String, serde_json::Value>,
+}
+
+fn capture_report_compose(report_path: &std::path::Path) -> CaptureCompose {
     let report_bytes = fs::read(report_path)
         .unwrap_or_else(|err| panic!("read capture report {}: {err}", report_path.display()));
     let report: serde_json::Value = serde_json::from_slice(&report_bytes)
@@ -157,29 +178,71 @@ fn capture_report_compose_rows(report_path: &std::path::Path) -> u64 {
                 "capture report {} must contain renderer_accounted_sh.streaming_lifecycle",
                 report_path.display()
             )
-        });
-
-    [
-        "indirect_compose",
-        "static_direct_compose",
-        "animated_direct_compose",
-    ]
-    .into_iter()
-    .map(|pass| {
+        })
+        .clone();
+    let gauge = |pass: &str, field: &str| {
         lifecycle
             .get(pass)
-            .and_then(serde_json::Value::as_object)
-            .and_then(|diagnostics| diagnostics.get("rows_composed"))
+            .and_then(|diagnostics| diagnostics.get(field))
             .and_then(serde_json::Value::as_u64)
             .unwrap_or_else(|| {
                 panic!(
-                    "capture report {} must contain a u64 streaming_lifecycle.{pass}.rows_composed",
+                    "capture report {} must contain a u64 streaming_lifecycle.{pass}.{field}",
                     report_path.display()
                 )
             })
-    })
-    .try_fold(0_u64, |total, rows| total.checked_add(rows))
-    .expect("capture report compose-row total must not overflow")
+    };
+    let passes = COMPOSE_PASSES
+        .into_iter()
+        .map(|pass| ComposePassRows {
+            rows: gauge(pass, "rows_composed"),
+            entry_rows: gauge(pass, "entry_rows_composed"),
+        })
+        .collect();
+    CaptureCompose { passes, lifecycle }
+}
+
+// Regression: every gated resident row composed every animated frame, though
+// most carry no CSR entry and compose to an animation-independent value.
+fn assert_gated_compose_rows_carry_entries(name: &str, compose: &CaptureCompose) {
+    let count = |field: &str| {
+        compose
+            .lifecycle
+            .get(field)
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or_else(|| panic!("{name} report must contain streaming_lifecycle.{field}"))
+    };
+    // Settled streaming leaves no install or eviction work that could
+    // legitimately compose a zero-entry row on the measured frame.
+    // `evictions` is cumulative, so it also rules out eviction work during
+    // warmup.
+    for field in [
+        "queued_clusters",
+        "ready_clusters",
+        "installed_uncomposed_clusters",
+        "evictions",
+    ] {
+        assert_eq!(count(field), 0, "{name}: {field}");
+    }
+    assert_eq!(
+        count("sampleable_clusters"),
+        count("target_clusters"),
+        "{name}: every target must be sampleable"
+    );
+    for (pass, rows) in COMPOSE_PASSES.into_iter().zip(&compose.passes) {
+        assert_eq!(
+            rows.entry_rows, rows.rows,
+            "{name}: every row {pass} composed must carry an entry"
+        );
+    }
+    // Pass A may compose nothing: promotion weights settle before the final
+    // frame.
+    for (pass, rows) in [
+        (COMPOSE_PASSES[0], &compose.passes[0]),
+        (COMPOSE_PASSES[2], &compose.passes[2]),
+    ] {
+        assert!(rows.rows > 0, "{name}: {pass} must compose an entry row");
+    }
 }
 
 // Manual A/B gate for specular-shadowmask occlusion. The source fixture exists

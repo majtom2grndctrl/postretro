@@ -1,0 +1,713 @@
+{
+ "label": "campaign-new-array-free_unroll36-r3",
+ "arm": "new-array-free,unroll36",
+ "pose": "campaign",
+ "args": [
+  "content\\dev\\maps\\campaign-test.prl"
+ ],
+ "start": 1791353701.2379858,
+ "windows": [
+  {
+   "t": 1791353712.0882244,
+   "readbacks": 120,
+   "passes": {
+    "cull": {
+     "ms": 0.0,
+     "present": null
+    },
+    "animated_lm_compose": {
+     "ms": 0.17,
+     "present": null
+    },
+    "depth_prepass": {
+     "ms": 0.01,
+     "present": null
+    },
+    "forward": {
+     "ms": 1.5,
+     "present": null
+    },
+    "sh_compose": {
+     "ms": 0.52,
+     "present": null
+    },
+    "promoted_depth_cache_upper": {
+     "ms": 0.04,
+     "present": null
+    },
+    "animated_direct_sh_compose": {
+     "ms": 0.58,
+     "present": null
+    },
+    "bloom": {
+     "ms": 0.22,
+     "present": null
+    },
+    "billboard_direct_scatter_compose": {
+     "ms": 0.02,
+     "present": null
+    },
+    "dynamic_spot_depth_upper": {
+     "ms": 0.07,
+     "present": 53
+    },
+    "resolve": {
+     "ms": 0.2,
+     "present": null
+    }
+   }
+  },
+  {
+   "t": 1791353714.0879138,
+   "readbacks": 120,
+   "passes": {
+    "cull": {
+     "ms": 0.0,
+     "present": null
+    },
+    "animated_lm_compose": {
+     "ms": 0.17,
+     "present": null
+    },
+    "depth_prepass": {
+     "ms": 0.01,
+     "present": null
+    },
+    "forward": {
+     "ms": 1.51,
+     "present": null
+    },
+    "sh_compose": {
+     "ms": 0.52,
+     "present": null
+    },
+    "promoted_depth_cache_upper": {
+     "ms": 0.04,
+     "present": null
+    },
+    "animated_direct_sh_compose": {
+     "ms": 0.58,
+     "present": null
+    },
+    "bloom": {
+     "ms": 0.22,
+     "present": null
+    },
+    "billboard_direct_scatter_compose": {
+     "ms": 0.02,
+     "present": null
+    },
+    "dynamic_spot_depth_upper": {
+     "ms": 0.08,
+     "present": 60
+    },
+    "resolve": {
+     "ms": 0.2,
+     "present": null
+    }
+   }
+  },
+  {
+   "t": 1791353716.087887,
+   "readbacks": 120,
+   "passes": {
+    "cull": {
+     "ms": 0.0,
+     "present": null
+    },
+    "animated_lm_compose": {
+     "ms": 0.17,
+     "present": null
+    },
+    "depth_prepass": {
+     "ms": 0.01,
+     "present": null
+    },
+    "forward": {
+     "ms": 1.51,
+     "present": null
+    },
+    "sh_compose": {
+     "ms": 0.52,
+     "present": null
+    },
+    "promoted_depth_cache_upper": {
+     "ms": 0.03,
+     "present": null
+    },
+    "animated_direct_sh_compose": {
+     "ms": 0.58,
+     "present": null
+    },
+    "bloom": {
+     "ms": 0.22,
+     "present": null
+    },
+    "billboard_direct_scatter_compose": {
+     "ms": 0.02,
+     "present": null
+    },
+    "dynamic_spot_depth_upper": {
+     "ms": 0.07,
+     "present": 32
+    },
+    "resolve": {
+     "ms": 0.2,
+     "present": null
+    }
+   }
+  },
+  {
+   "t": 1791353718.0880435,
+   "readbacks": 120,
+   "passes": {
+    "cull": {
+     "ms": 0.0,
+     "present": null
+    },
+    "animated_lm_compose": {
+     "ms": 0.17,
+     "present": null
+    },
+    "depth_prepass": {
+     "ms": 0.01,
+     "present": null
+    },
+    "forward": {
+     "ms": 1.51,
+     "present": null
+    },
+    "sh_compose": {
+     "ms": 0.52,
+     "present": null
+    },
+    "promoted_depth_cache_upper": {
+     "ms": 0.05,
+     "present": null
+    },
+    "animated_direct_sh_compose": {
+     "ms": 0.58,
+     "present": null
+    },
+    "bloom": {
+     "ms": 0.22,
+     "present": null
+    },
+    "billboard_direct_scatter_compose": {
+     "ms": 0.02,
+     "present": null
+    },
+    "dynamic_spot_depth_upper": {
+     "ms": 0.08,
+     "present": 81
+    },
+    "resolve": {
+     "ms": 0.2,
+     "present": null
+    }
+   }
+  },
+  {
+   "t": 1791353720.0883925,
+   "readbacks": 120,
+   "passes": {
+    "cull": {
+     "ms": 0.0,
+     "present": null
+    },
+    "animated_lm_compose": {
+     "ms": 0.17,
+     "present": null
+    },
+    "depth_prepass": {
+     "ms": 0.01,
+     "present": null
+    },
+    "forward": {
+     "ms": 1.51,
+     "present": null
+    },
+    "sh_compose": {
+     "ms": 0.52,
+     "present": null
+    },
+    "promoted_depth_cache_upper": {
+     "ms": 0.02,
+     "present": null
+    },
+    "animated_direct_sh_compose": {
+     "ms": 0.58,
+     "present": null
+    },
+    "bloom": {
+     "ms": 0.22,
+     "present": null
+    },
+    "billboard_direct_scatter_compose": {
+     "ms": 0.02,
+     "present": null
+    },
+    "dynamic_spot_depth_upper": {
+     "ms": 0.05,
+     "present": 11
+    },
+    "resolve": {
+     "ms": 0.2,
+     "present": null
+    }
+   }
+  },
+  {
+   "t": 1791353722.088065,
+   "readbacks": 120,
+   "passes": {
+    "cull": {
+     "ms": 0.0,
+     "present": null
+    },
+    "animated_lm_compose": {
+     "ms": 0.17,
+     "present": null
+    },
+    "depth_prepass": {
+     "ms": 0.01,
+     "present": null
+    },
+    "forward": {
+     "ms": 1.51,
+     "present": null
+    },
+    "sh_compose": {
+     "ms": 0.52,
+     "present": null
+    },
+    "promoted_depth_cache_upper": {
+     "ms": 0.05,
+     "present": null
+    },
+    "animated_direct_sh_compose": {
+     "ms": 0.58,
+     "present": null
+    },
+    "bloom": {
+     "ms": 0.22,
+     "present": null
+    },
+    "billboard_direct_scatter_compose": {
+     "ms": 0.02,
+     "present": null
+    },
+    "dynamic_spot_depth_upper": {
+     "ms": 0.07,
+     "present": 92
+    },
+    "resolve": {
+     "ms": 0.2,
+     "present": null
+    }
+   }
+  },
+  {
+   "t": 1791353724.088362,
+   "readbacks": 120,
+   "passes": {
+    "cull": {
+     "ms": 0.0,
+     "present": null
+    },
+    "animated_lm_compose": {
+     "ms": 0.17,
+     "present": null
+    },
+    "depth_prepass": {
+     "ms": 0.01,
+     "present": null
+    },
+    "forward": {
+     "ms": 1.51,
+     "present": null
+    },
+    "sh_compose": {
+     "ms": 0.52,
+     "present": null
+    },
+    "promoted_depth_cache_upper": {
+     "ms": 0.02,
+     "present": null
+    },
+    "animated_direct_sh_compose": {
+     "ms": 0.58,
+     "present": null
+    },
+    "bloom": {
+     "ms": 0.22,
+     "present": null
+    },
+    "billboard_direct_scatter_compose": {
+     "ms": 0.02,
+     "present": null
+    },
+    "dynamic_spot_depth_upper": {
+     "ms": 0.05,
+     "present": 3
+    },
+    "resolve": {
+     "ms": 0.2,
+     "present": null
+    }
+   }
+  },
+  {
+   "t": 1791353726.0883543,
+   "readbacks": 120,
+   "passes": {
+    "cull": {
+     "ms": 0.0,
+     "present": null
+    },
+    "animated_lm_compose": {
+     "ms": 0.17,
+     "present": null
+    },
+    "depth_prepass": {
+     "ms": 0.01,
+     "present": null
+    },
+    "forward": {
+     "ms": 1.51,
+     "present": null
+    },
+    "sh_compose": {
+     "ms": 0.52,
+     "present": null
+    },
+    "promoted_depth_cache_upper": {
+     "ms": 0.05,
+     "present": null
+    },
+    "animated_direct_sh_compose": {
+     "ms": 0.58,
+     "present": null
+    },
+    "bloom": {
+     "ms": 0.22,
+     "present": null
+    },
+    "billboard_direct_scatter_compose": {
+     "ms": 0.02,
+     "present": null
+    },
+    "dynamic_spot_depth_upper": {
+     "ms": 0.08,
+     "present": 89
+    },
+    "resolve": {
+     "ms": 0.2,
+     "present": null
+    }
+   }
+  }
+ ],
+ "counts": [
+  {
+   "t": 1791353705.0692818,
+   "line": "indirect: frames 120 rows min 184 max 496 | last rows L0 352 L1 0 L2 0 | entries L0 352 L1 0 L2 0 | rows with entries 352 | lane-entries 12201 | rows with entries or upstream 352 | upstream rows 0"
+  },
+  {
+   "t": 1791353705.0693035,
+   "line": "animated-direct: frames 120 rows min 265 max 588 | last rows L0 352 L1 0 L2 0 | entries L0 352 L1 0 L2 0 | rows with entries 352 | lane-entries 12201 | rows with entries or upstream 352 | upstream rows 0"
+  },
+  {
+   "t": 1791353706.0693865,
+   "line": "indirect: frames 120 rows min 352 max 352 | last rows L0 352 L1 0 L2 0 | entries L0 352 L1 0 L2 0 | rows with entries 352 | lane-entries 12201 | rows with entries or upstream 352 | upstream rows 0"
+  },
+  {
+   "t": 1791353706.0694077,
+   "line": "animated-direct: frames 120 rows min 352 max 352 | last rows L0 352 L1 0 L2 0 | entries L0 352 L1 0 L2 0 | rows with entries 352 | lane-entries 12201 | rows with entries or upstream 352 | upstream rows 0"
+  },
+  {
+   "t": 1791353707.0695198,
+   "line": "indirect: frames 120 rows min 352 max 352 | last rows L0 352 L1 0 L2 0 | entries L0 352 L1 0 L2 0 | rows with entries 352 | lane-entries 12201 | rows with entries or upstream 352 | upstream rows 0"
+  },
+  {
+   "t": 1791353707.0695412,
+   "line": "animated-direct: frames 120 rows min 352 max 352 | last rows L0 352 L1 0 L2 0 | entries L0 352 L1 0 L2 0 | rows with entries 352 | lane-entries 12201 | rows with entries or upstream 352 | upstream rows 0"
+  },
+  {
+   "t": 1791353708.0695596,
+   "line": "indirect: frames 120 rows min 352 max 352 | last rows L0 352 L1 0 L2 0 | entries L0 352 L1 0 L2 0 | rows with entries 352 | lane-entries 12201 | rows with entries or upstream 352 | upstream rows 0"
+  },
+  {
+   "t": 1791353708.0695813,
+   "line": "animated-direct: frames 120 rows min 352 max 352 | last rows L0 352 L1 0 L2 0 | entries L0 352 L1 0 L2 0 | rows with entries 352 | lane-entries 12201 | rows with entries or upstream 352 | upstream rows 0"
+  },
+  {
+   "t": 1791353709.0695965,
+   "line": "indirect: frames 120 rows min 352 max 352 | last rows L0 352 L1 0 L2 0 | entries L0 352 L1 0 L2 0 | rows with entries 352 | lane-entries 12201 | rows with entries or upstream 352 | upstream rows 0"
+  },
+  {
+   "t": 1791353709.0696192,
+   "line": "animated-direct: frames 120 rows min 352 max 352 | last rows L0 352 L1 0 L2 0 | entries L0 352 L1 0 L2 0 | rows with entries 352 | lane-entries 12201 | rows with entries or upstream 352 | upstream rows 0"
+  },
+  {
+   "t": 1791353710.069641,
+   "line": "indirect: frames 120 rows min 352 max 352 | last rows L0 352 L1 0 L2 0 | entries L0 352 L1 0 L2 0 | rows with entries 352 | lane-entries 12201 | rows with entries or upstream 352 | upstream rows 0"
+  },
+  {
+   "t": 1791353710.0696604,
+   "line": "animated-direct: frames 120 rows min 352 max 352 | last rows L0 352 L1 0 L2 0 | entries L0 352 L1 0 L2 0 | rows with entries 352 | lane-entries 12201 | rows with entries or upstream 352 | upstream rows 0"
+  },
+  {
+   "t": 1791353711.069654,
+   "line": "indirect: frames 120 rows min 352 max 352 | last rows L0 352 L1 0 L2 0 | entries L0 352 L1 0 L2 0 | rows with entries 352 | lane-entries 12201 | rows with entries or upstream 352 | upstream rows 0"
+  },
+  {
+   "t": 1791353711.069675,
+   "line": "animated-direct: frames 120 rows min 352 max 352 | last rows L0 352 L1 0 L2 0 | entries L0 352 L1 0 L2 0 | rows with entries 352 | lane-entries 12201 | rows with entries or upstream 352 | upstream rows 0"
+  },
+  {
+   "t": 1791353712.069605,
+   "line": "indirect: frames 120 rows min 352 max 352 | last rows L0 352 L1 0 L2 0 | entries L0 352 L1 0 L2 0 | rows with entries 352 | lane-entries 12201 | rows with entries or upstream 352 | upstream rows 0"
+  },
+  {
+   "t": 1791353712.0696259,
+   "line": "animated-direct: frames 120 rows min 352 max 352 | last rows L0 352 L1 0 L2 0 | entries L0 352 L1 0 L2 0 | rows with entries 352 | lane-entries 12201 | rows with entries or upstream 352 | upstream rows 0"
+  },
+  {
+   "t": 1791353713.0696545,
+   "line": "indirect: frames 120 rows min 352 max 352 | last rows L0 352 L1 0 L2 0 | entries L0 352 L1 0 L2 0 | rows with entries 352 | lane-entries 12201 | rows with entries or upstream 352 | upstream rows 0"
+  },
+  {
+   "t": 1791353713.0696754,
+   "line": "animated-direct: frames 120 rows min 352 max 352 | last rows L0 352 L1 0 L2 0 | entries L0 352 L1 0 L2 0 | rows with entries 352 | lane-entries 12201 | rows with entries or upstream 352 | upstream rows 0"
+  },
+  {
+   "t": 1791353714.0698333,
+   "line": "indirect: frames 120 rows min 352 max 352 | last rows L0 352 L1 0 L2 0 | entries L0 352 L1 0 L2 0 | rows with entries 352 | lane-entries 12201 | rows with entries or upstream 352 | upstream rows 0"
+  },
+  {
+   "t": 1791353714.0698557,
+   "line": "animated-direct: frames 120 rows min 352 max 352 | last rows L0 352 L1 0 L2 0 | entries L0 352 L1 0 L2 0 | rows with entries 352 | lane-entries 12201 | rows with entries or upstream 352 | upstream rows 0"
+  },
+  {
+   "t": 1791353715.0697777,
+   "line": "indirect: frames 120 rows min 352 max 352 | last rows L0 352 L1 0 L2 0 | entries L0 352 L1 0 L2 0 | rows with entries 352 | lane-entries 12201 | rows with entries or upstream 352 | upstream rows 0"
+  },
+  {
+   "t": 1791353715.069799,
+   "line": "animated-direct: frames 120 rows min 352 max 352 | last rows L0 352 L1 0 L2 0 | entries L0 352 L1 0 L2 0 | rows with entries 352 | lane-entries 12201 | rows with entries or upstream 352 | upstream rows 0"
+  },
+  {
+   "t": 1791353716.0697887,
+   "line": "indirect: frames 120 rows min 352 max 352 | last rows L0 352 L1 0 L2 0 | entries L0 352 L1 0 L2 0 | rows with entries 352 | lane-entries 12201 | rows with entries or upstream 352 | upstream rows 0"
+  },
+  {
+   "t": 1791353716.0698097,
+   "line": "animated-direct: frames 120 rows min 352 max 352 | last rows L0 352 L1 0 L2 0 | entries L0 352 L1 0 L2 0 | rows with entries 352 | lane-entries 12201 | rows with entries or upstream 352 | upstream rows 0"
+  },
+  {
+   "t": 1791353717.0698757,
+   "line": "indirect: frames 120 rows min 352 max 352 | last rows L0 352 L1 0 L2 0 | entries L0 352 L1 0 L2 0 | rows with entries 352 | lane-entries 12201 | rows with entries or upstream 352 | upstream rows 0"
+  },
+  {
+   "t": 1791353717.0698946,
+   "line": "animated-direct: frames 120 rows min 352 max 352 | last rows L0 352 L1 0 L2 0 | entries L0 352 L1 0 L2 0 | rows with entries 352 | lane-entries 12201 | rows with entries or upstream 352 | upstream rows 0"
+  },
+  {
+   "t": 1791353718.0698466,
+   "line": "indirect: frames 120 rows min 352 max 352 | last rows L0 352 L1 0 L2 0 | entries L0 352 L1 0 L2 0 | rows with entries 352 | lane-entries 12201 | rows with entries or upstream 352 | upstream rows 0"
+  },
+  {
+   "t": 1791353718.0698678,
+   "line": "animated-direct: frames 120 rows min 352 max 352 | last rows L0 352 L1 0 L2 0 | entries L0 352 L1 0 L2 0 | rows with entries 352 | lane-entries 12201 | rows with entries or upstream 352 | upstream rows 0"
+  },
+  {
+   "t": 1791353719.0697715,
+   "line": "indirect: frames 120 rows min 352 max 352 | last rows L0 352 L1 0 L2 0 | entries L0 352 L1 0 L2 0 | rows with entries 352 | lane-entries 12201 | rows with entries or upstream 352 | upstream rows 0"
+  },
+  {
+   "t": 1791353719.069793,
+   "line": "animated-direct: frames 120 rows min 352 max 352 | last rows L0 352 L1 0 L2 0 | entries L0 352 L1 0 L2 0 | rows with entries 352 | lane-entries 12201 | rows with entries or upstream 352 | upstream rows 0"
+  },
+  {
+   "t": 1791353720.070099,
+   "line": "indirect: frames 120 rows min 352 max 352 | last rows L0 352 L1 0 L2 0 | entries L0 352 L1 0 L2 0 | rows with entries 352 | lane-entries 12201 | rows with entries or upstream 352 | upstream rows 0"
+  },
+  {
+   "t": 1791353720.070123,
+   "line": "animated-direct: frames 120 rows min 352 max 352 | last rows L0 352 L1 0 L2 0 | entries L0 352 L1 0 L2 0 | rows with entries 352 | lane-entries 12201 | rows with entries or upstream 352 | upstream rows 0"
+  },
+  {
+   "t": 1791353721.0699012,
+   "line": "indirect: frames 120 rows min 352 max 352 | last rows L0 352 L1 0 L2 0 | entries L0 352 L1 0 L2 0 | rows with entries 352 | lane-entries 12201 | rows with entries or upstream 352 | upstream rows 0"
+  },
+  {
+   "t": 1791353721.0699222,
+   "line": "animated-direct: frames 120 rows min 352 max 352 | last rows L0 352 L1 0 L2 0 | entries L0 352 L1 0 L2 0 | rows with entries 352 | lane-entries 12201 | rows with entries or upstream 352 | upstream rows 0"
+  },
+  {
+   "t": 1791353722.0700643,
+   "line": "indirect: frames 120 rows min 352 max 352 | last rows L0 352 L1 0 L2 0 | entries L0 352 L1 0 L2 0 | rows with entries 352 | lane-entries 12201 | rows with entries or upstream 352 | upstream rows 0"
+  },
+  {
+   "t": 1791353722.0700855,
+   "line": "animated-direct: frames 120 rows min 352 max 352 | last rows L0 352 L1 0 L2 0 | entries L0 352 L1 0 L2 0 | rows with entries 352 | lane-entries 12201 | rows with entries or upstream 352 | upstream rows 0"
+  },
+  {
+   "t": 1791353723.069998,
+   "line": "indirect: frames 120 rows min 352 max 352 | last rows L0 352 L1 0 L2 0 | entries L0 352 L1 0 L2 0 | rows with entries 352 | lane-entries 12201 | rows with entries or upstream 352 | upstream rows 0"
+  },
+  {
+   "t": 1791353723.0700212,
+   "line": "animated-direct: frames 120 rows min 352 max 352 | last rows L0 352 L1 0 L2 0 | entries L0 352 L1 0 L2 0 | rows with entries 352 | lane-entries 12201 | rows with entries or upstream 352 | upstream rows 0"
+  },
+  {
+   "t": 1791353724.0699942,
+   "line": "indirect: frames 120 rows min 352 max 352 | last rows L0 352 L1 0 L2 0 | entries L0 352 L1 0 L2 0 | rows with entries 352 | lane-entries 12201 | rows with entries or upstream 352 | upstream rows 0"
+  },
+  {
+   "t": 1791353724.0700197,
+   "line": "animated-direct: frames 120 rows min 352 max 352 | last rows L0 352 L1 0 L2 0 | entries L0 352 L1 0 L2 0 | rows with entries 352 | lane-entries 12201 | rows with entries or upstream 352 | upstream rows 0"
+  },
+  {
+   "t": 1791353725.0700533,
+   "line": "indirect: frames 120 rows min 352 max 352 | last rows L0 352 L1 0 L2 0 | entries L0 352 L1 0 L2 0 | rows with entries 352 | lane-entries 12201 | rows with entries or upstream 352 | upstream rows 0"
+  },
+  {
+   "t": 1791353725.0700765,
+   "line": "animated-direct: frames 120 rows min 352 max 352 | last rows L0 352 L1 0 L2 0 | entries L0 352 L1 0 L2 0 | rows with entries 352 | lane-entries 12201 | rows with entries or upstream 352 | upstream rows 0"
+  },
+  {
+   "t": 1791353726.0701458,
+   "line": "indirect: frames 120 rows min 352 max 352 | last rows L0 352 L1 0 L2 0 | entries L0 352 L1 0 L2 0 | rows with entries 352 | lane-entries 12201 | rows with entries or upstream 352 | upstream rows 0"
+  },
+  {
+   "t": 1791353726.0701673,
+   "line": "animated-direct: frames 120 rows min 352 max 352 | last rows L0 352 L1 0 L2 0 | entries L0 352 L1 0 L2 0 | rows with entries 352 | lane-entries 12201 | rows with entries or upstream 352 | upstream rows 0"
+  }
+ ],
+ "arms_logged": "array-free,unroll36,scale-shared",
+ "nvsmi": [
+  [
+   1791353712.1602736,
+   "1950",
+   "7000",
+   "P0",
+   "56",
+   "79.10",
+   "65"
+  ],
+  [
+   1791353713.2384906,
+   "1950",
+   "7000",
+   "P0",
+   "56",
+   "79.02",
+   "65"
+  ],
+  [
+   1791353714.3281915,
+   "1950",
+   "7000",
+   "P0",
+   "56",
+   "79.90",
+   "65"
+  ],
+  [
+   1791353715.409243,
+   "1950",
+   "7000",
+   "P0",
+   "57",
+   "80.38",
+   "66"
+  ],
+  [
+   1791353716.483703,
+   "1950",
+   "7000",
+   "P0",
+   "57",
+   "80.01",
+   "65"
+  ],
+  [
+   1791353717.5682166,
+   "1950",
+   "7000",
+   "P0",
+   "57",
+   "80.32",
+   "66"
+  ],
+  [
+   1791353718.6471543,
+   "1950",
+   "7000",
+   "P0",
+   "57",
+   "79.62",
+   "66"
+  ],
+  [
+   1791353719.7274365,
+   "1950",
+   "7000",
+   "P0",
+   "57",
+   "79.65",
+   "65"
+  ],
+  [
+   1791353720.82381,
+   "1950",
+   "7000",
+   "P0",
+   "57",
+   "80.30",
+   "65"
+  ],
+  [
+   1791353721.9120336,
+   "1950",
+   "7000",
+   "P0",
+   "57",
+   "80.50",
+   "67"
+  ],
+  [
+   1791353723.0028245,
+   "1950",
+   "7000",
+   "P0",
+   "57",
+   "79.83",
+   "66"
+  ],
+  [
+   1791353724.0806413,
+   "1950",
+   "7000",
+   "P0",
+   "57",
+   "79.96",
+   "65"
+  ],
+  [
+   1791353725.159681,
+   "1950",
+   "7000",
+   "P0",
+   "57",
+   "80.29",
+   "65"
+  ]
+ ],
+ "valid": true,
+ "reason": null,
+ "membership_logged": "entry-carrying",
+ "end": 1791353726.6503808
+}

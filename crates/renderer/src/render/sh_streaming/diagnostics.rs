@@ -207,6 +207,7 @@ mod tests {
             pool_growth_cpu_micros: 250,
             indirect_compose: ShComposePassDiagnostics {
                 rows_composed: 21,
+                entry_rows_composed: 20,
                 dispatches: 2,
                 lagged_rows_composed: 5,
                 resident_rows_still_lagging: 8,

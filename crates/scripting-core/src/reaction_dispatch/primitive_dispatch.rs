@@ -12,6 +12,8 @@ use crate::reaction_registry::{
 use crate::registry::{ComponentKind, EntityId};
 use crate::slot_table::SlotType;
 
+use super::group_dispatch::dispatch_group;
+
 /// Routes a `Primitive` descriptor to one of two execution arms (M13 HUD
 /// dynamics): a `Some(tag)` resolves entities and runs the entity-targeted
 /// `ReactionPrimitiveRegistry`; a `None` tag is a system reaction, dispatched
@@ -24,6 +26,18 @@ pub(super) fn dispatch_primitive(
     system_registry: &SystemReactionRegistry,
     script_ctx: &ScriptCtx,
 ) {
+    // A `kind` makes this a group command: resolved by kind, host-only.
+    if let Some(group) = descriptor.group_target() {
+        dispatch_group(
+            &descriptor.primitive,
+            &group,
+            &descriptor.args,
+            reaction_registry,
+            script_ctx,
+        );
+        return;
+    }
+
     // Connected clients compose the same descriptor graph for presentation
     // work, but must not make authoritative per-owner state mutations or emit
     // diagnostics for host-only gameplay events.
@@ -51,7 +65,7 @@ pub(super) fn dispatch_primitive(
     };
 
     if descriptor.primitive == "addSlot" {
-        dispatch_add_owner_slot(descriptor, &targets, script_ctx);
+        dispatch_add_owner_slot(&descriptor.args, &targets, script_ctx);
         return;
     }
 
@@ -89,16 +103,16 @@ struct AddSlotArgs {
     delta: f32,
 }
 
-/// Resolve the tagged pawn recipients while a named/crossing/level-load
+/// Resolve the tagged or grouped pawn recipients while a named/crossing/level-load
 /// reaction fires, then defer the actual addition to the host app drain. This
 /// keeps reaction dispatch independent from the session seat ledger while the
 /// drain remains responsible for skipping seats released in the meantime.
-fn dispatch_add_owner_slot(
-    descriptor: &PrimitiveDescriptor,
+pub(super) fn dispatch_add_owner_slot(
+    args: &serde_json::Value,
     targets: &[EntityId],
     script_ctx: &ScriptCtx,
 ) {
-    let args: AddSlotArgs = match serde_json::from_value::<AddSlotArgs>(descriptor.args.clone()) {
+    let args: AddSlotArgs = match serde_json::from_value::<AddSlotArgs>(args.clone()) {
         Ok(args) if args.delta.is_finite() => args,
         Ok(_) => {
             log::warn!("[Scripting] addSlot delta must be finite; reaction had no effect");

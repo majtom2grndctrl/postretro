@@ -26,7 +26,7 @@ export interface EnemyGroup {
 export function enemies(filter: EnemyGroupFilter): EnemyGroup {
   return {
     update(fields) {
-      return { primitive: "updateEnemyState", tag: filter.tag, args: fields };
+      return { primitive: "updateNpcState", tag: filter.tag, args: fields };
     },
   };
 }

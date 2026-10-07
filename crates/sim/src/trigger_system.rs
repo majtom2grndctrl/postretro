@@ -1637,6 +1637,7 @@ mod tests {
                     descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                         primitive: "moverStart".into(),
                         target: None,
+                        kind: None,
                         tag: Some("closet_door".into()),
                         args: serde_json::json!({}),
                         on_complete: None,
@@ -1645,8 +1646,9 @@ mod tests {
                 NamedReaction {
                     name: "closet.releaseCloset".into(),
                     descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
-                        primitive: "updateEnemyState".into(),
+                        primitive: "updateNpcState".into(),
                         target: None,
+                        kind: None,
                         tag: Some("closet_enemies".into()),
                         args: serde_json::json!({ "aggro": true }),
                         on_complete: None,
@@ -1709,7 +1711,7 @@ mod tests {
             dispatched,
             vec![
                 crate::trigger_bindings::BoundTriggerCommandKind::Mover,
-                crate::trigger_bindings::BoundTriggerCommandKind::UpdateEnemyState,
+                crate::trigger_bindings::BoundTriggerCommandKind::UpdateNpcState,
             ],
             "one reveal enter edge fans out to the door and aggro-release reactions"
         );
@@ -1778,6 +1780,7 @@ mod tests {
                 descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                     primitive: "spawnFromSpawner".into(),
                     target: None,
+                    kind: None,
                     tag: Some("ambush_spawner".into()),
                     args: serde_json::json!({}),
                     on_complete: None,

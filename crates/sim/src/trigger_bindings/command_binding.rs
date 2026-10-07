@@ -17,7 +17,7 @@ use crate::grant::{GrantAmmoArgs, GrantHealthArgs};
 use crate::health::reactions::ApplyDamageArgs;
 use crate::mover_commands::MoverSetSpinRateArgs;
 use crate::scripting::reactions::animation::SetAnimationStateArgs;
-use crate::scripting::reactions::enemy_state::UpdateEnemyStateArgs;
+use crate::scripting::reactions::npc_state::UpdateNpcStateArgs;
 use crate::trigger_commands::{BoundStoreValue, BoundTarget, BoundTriggerCommand};
 
 #[derive(Debug, Deserialize)]
@@ -48,6 +48,16 @@ pub(super) fn bind_primitive(
     {
         log::warn!(
             "[Trigger] setState is system-targeted and cannot carry a target tag or sentinel; not binding"
+        );
+        return None;
+    }
+    if let Some(kind) = primitive.kind {
+        // A kindless tag binding would hit every tagged entity — a player pawn
+        // under an npc group included — so a group is never lowered to one.
+        log::warn!(
+            "[Trigger] group command `{}` on kind `{}` has no fixed-tick binding yet; not binding",
+            primitive.primitive,
+            kind.as_wire()
         );
         return None;
     }
@@ -85,8 +95,16 @@ pub(super) fn bind_sequence_step(
         );
         return None;
     }
-    let target = Some(match step.id {
-        SequenceTarget::Entity(id) => BoundTarget::Entity(id),
+    let target = Some(match &step.id {
+        SequenceTarget::Entity(id) => BoundTarget::Entity(*id),
+        SequenceTarget::Group(group) => {
+            log::warn!(
+                "[Trigger] group step `{}` on kind `{}` has no fixed-tick binding yet; not binding",
+                step.primitive,
+                group.kind.as_wire()
+            );
+            return None;
+        }
         SequenceTarget::Activators => BoundTarget::Activators,
         SequenceTarget::FiredTrigger => BoundTarget::FiredTrigger,
         // Control steps never bind to an in-tick command: `BoundTarget` has no
@@ -284,21 +302,19 @@ pub(super) fn bind_command(
                 state: args.state,
             })
         }
-        "updateEnemyState" => {
+        "updateNpcState" => {
             let Some(target) = target_from_context else {
-                log::warn!(
-                    "[Trigger] updateEnemyState requires a fire-time tag target; not binding"
-                );
+                log::warn!("[Trigger] updateNpcState requires a fire-time tag target; not binding");
                 return None;
             };
-            let args: UpdateEnemyStateArgs = match serde_json::from_value(args.clone()) {
+            let args: UpdateNpcStateArgs = match serde_json::from_value(args.clone()) {
                 Ok(args) => args,
                 Err(error) => {
-                    log::warn!("[Trigger] updateEnemyState has invalid args; not binding: {error}");
+                    log::warn!("[Trigger] updateNpcState has invalid args; not binding: {error}");
                     return None;
                 }
             };
-            Some(BoundTriggerCommand::UpdateEnemyState {
+            Some(BoundTriggerCommand::UpdateNpcState {
                 target,
                 aggro: args.aggro,
             })

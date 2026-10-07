@@ -6,6 +6,8 @@
 // See: context/lib/scripting.md
 
 pub mod flash_decay;
+#[cfg(test)]
+mod group_command_tests;
 pub mod health;
 pub mod hit_zones;
 pub mod mesh_anim;

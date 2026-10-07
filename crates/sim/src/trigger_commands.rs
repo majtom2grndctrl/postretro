@@ -11,9 +11,7 @@ use postretro_scripting_core::store_bridge::{apply_store_slot_batch, validate_sl
 use crate::health::reactions::{self as health_reactions, ApplyDamageArgs};
 use crate::mover_commands::{MoverCommandDiagnostics, apply_mover_command_to_targets};
 use crate::scripting::reactions::animation::{self as animation_reactions, SetAnimationStateArgs};
-use crate::scripting::reactions::enemy_state::{
-    UpdateEnemyStateArgs, apply_update_enemy_state_to_brain,
-};
+use crate::scripting::reactions::npc_state::{UpdateNpcStateArgs, apply_update_npc_state_to_brain};
 use crate::spawner::{SpawnContext, spawn_from_spawner_tag};
 use crate::trigger_system::{arm_trigger_targets, disarm_trigger_targets};
 
@@ -58,7 +56,7 @@ pub(crate) enum BoundTriggerCommand {
         target: BoundTarget,
         state: String,
     },
-    UpdateEnemyState {
+    UpdateNpcState {
         target: BoundTarget,
         aggro: Option<bool>,
     },
@@ -122,7 +120,7 @@ pub(crate) enum BoundTriggerCommandKind {
     StoreSlot,
     AddOwnerSlot,
     AnimationState,
-    UpdateEnemyState,
+    UpdateNpcState,
     Spawn,
 }
 
@@ -331,10 +329,10 @@ impl BoundTriggerCommand {
                     log::warn!("[Trigger] setAnimationState binding failed: {error}");
                 }
             }
-            Self::UpdateEnemyState { target, aggro } => {
+            Self::UpdateNpcState { target, aggro } => {
                 let BoundTarget::Tag(tag) = target else {
                     log::warn!(
-                        "[Trigger] updateEnemyState requires a tag target; special target is invalid; skipping"
+                        "[Trigger] updateNpcState requires a tag target; special target is invalid; skipping"
                     );
                     return;
                 };
@@ -343,12 +341,12 @@ impl BoundTriggerCommand {
                     .map(|(entity, _)| entity)
                     .collect();
                 if targets.is_empty() {
-                    log::debug!("[Trigger] updateEnemyState: empty Brain tag match, no-op");
+                    log::debug!("[Trigger] updateNpcState: empty Brain tag match, no-op");
                     return;
                 }
-                let args = UpdateEnemyStateArgs { aggro: *aggro };
+                let args = UpdateNpcStateArgs { aggro: *aggro };
                 for entity in targets {
-                    apply_update_enemy_state_to_brain(registry, entity, &args);
+                    apply_update_npc_state_to_brain(registry, entity, &args);
                 }
             }
             Self::Spawn { target } => {
@@ -378,7 +376,7 @@ impl BoundTriggerCommand {
             Self::StoreSlot { .. } => BoundTriggerCommandKind::StoreSlot,
             Self::AddOwnerSlot { .. } => BoundTriggerCommandKind::AddOwnerSlot,
             Self::AnimationState { .. } => BoundTriggerCommandKind::AnimationState,
-            Self::UpdateEnemyState { .. } => BoundTriggerCommandKind::UpdateEnemyState,
+            Self::UpdateNpcState { .. } => BoundTriggerCommandKind::UpdateNpcState,
             Self::Spawn { .. } => BoundTriggerCommandKind::Spawn,
         }
     }

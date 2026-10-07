@@ -491,7 +491,7 @@ fn enemy_group_update_descriptors_match_across_authoring_runtimes() {
     assert_eq!(
         typescript,
         serde_json::json!({
-            "primitive": "updateEnemyState",
+            "primitive": "updateNpcState",
             "tag": "closet_a",
             "args": { "aggro": true },
         }),

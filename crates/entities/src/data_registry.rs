@@ -1087,6 +1087,7 @@ mod tests {
             descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                 primitive: "moveGeometry".to_string(),
                 target: None,
+                kind: None,
                 tag: Some("reactorChambers".to_string()),
                 on_complete: None,
                 args: serde_json::Value::Object(Default::default()),
@@ -1156,6 +1157,7 @@ mod tests {
                 descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                     primitive: "moveGeometry".to_string(),
                     target: None,
+                    kind: None,
                     tag: Some("reactorChambers".to_string()),
                     on_complete: on_complete.map(str::to_string),
                     args: serde_json::Value::Object(Default::default()),
@@ -1400,6 +1402,7 @@ mod tests {
                 descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                     primitive: "activateGroup".to_string(),
                     target: None,
+                    kind: None,
                     tag: Some("local".to_string()),
                     on_complete: None,
                     args: serde_json::Value::Object(Default::default()),

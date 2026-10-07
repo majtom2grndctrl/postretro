@@ -87,10 +87,10 @@ pub use validate::*;
 pub use vm_adapters::*;
 
 pub use postretro_entities::data_descriptors::{
-    CrossingCondition, CrossingDescriptor, EntityTypeDescriptor, InventoryDescriptor,
-    LocomotionDescriptor, MeshDescriptor, NamedReaction, PrimitiveDescriptor, ProgressDescriptor,
-    RawAnimationState, RawMeshDescriptor, ReactionDescriptor, SequenceStep, SequenceTarget,
-    TriggerEventDescriptor, TriggerPoolArm, TriggerPoolDescriptor, build_crossing,
+    CrossingCondition, CrossingDescriptor, EntityTypeDescriptor, GroupKind, GroupTarget,
+    InventoryDescriptor, LocomotionDescriptor, MeshDescriptor, NamedReaction, PrimitiveDescriptor,
+    ProgressDescriptor, RawAnimationState, RawMeshDescriptor, ReactionDescriptor, SequenceStep,
+    SequenceTarget, TriggerEventDescriptor, TriggerPoolArm, TriggerPoolDescriptor, build_crossing,
     build_predicate_crossing,
 };
 pub use postretro_foundation::data_descriptors::LightDescriptor;

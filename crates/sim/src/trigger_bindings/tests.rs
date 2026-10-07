@@ -27,6 +27,7 @@ fn primitive(
         descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
             primitive: primitive.to_string(),
             target: None,
+            kind: None,
             tag: tag.map(str::to_string),
             on_complete: on_complete.map(str::to_string),
             args,
@@ -282,10 +283,10 @@ fn legacy_set_state_rejects_per_owner_literal_and_ir_without_blocking_global_sib
 }
 
 #[test]
-fn update_enemy_state_rejects_tagless_and_unknown_key_bindings() {
+fn update_npc_state_rejects_tagless_and_unknown_key_bindings() {
     assert!(
         bind_command(
-            "updateEnemyState",
+            "updateNpcState",
             None,
             &serde_json::json!({ "aggro": true }),
             &SlotTable::new(),
@@ -295,7 +296,7 @@ fn update_enemy_state_rejects_tagless_and_unknown_key_bindings() {
     );
     assert!(
         bind_command(
-            "updateEnemyState",
+            "updateNpcState",
             Some(BoundTarget::Tag("closet".into())),
             &serde_json::json!({ "unknown": true }),
             &SlotTable::new(),
@@ -333,14 +334,14 @@ fn spawn_from_spawner_requires_a_tag_target_at_binding() {
 }
 
 #[test]
-fn update_enemy_state_resolves_later_added_brains_at_fire_time() {
+fn update_npc_state_resolves_later_added_brains_at_fire_time() {
     let mut registry = EntityRegistry::new();
     let trigger = spawn_trigger(&mut registry, "release");
     let mut data = DataRegistry::new();
     data.populate_level(
         vec![primitive(
             "release",
-            "updateEnemyState",
+            "updateNpcState",
             Some("closet"),
             serde_json::json!({ "aggro": false }),
             None,
@@ -361,7 +362,7 @@ fn update_enemy_state_resolves_later_added_brains_at_fire_time() {
 
     assert_eq!(
         execution.commands,
-        vec![BoundTriggerCommandKind::UpdateEnemyState]
+        vec![BoundTriggerCommandKind::UpdateNpcState]
     );
     assert!(
         !registry
@@ -372,7 +373,7 @@ fn update_enemy_state_resolves_later_added_brains_at_fire_time() {
 }
 
 #[test]
-fn update_enemy_state_empty_tag_is_debug_noop_and_keeps_fanout_work() {
+fn update_npc_state_empty_tag_is_debug_noop_and_keeps_fanout_work() {
     let mut registry = EntityRegistry::new();
     let trigger = spawn_trigger(&mut registry, "fanout");
     let mut data = DataRegistry::new();
@@ -380,7 +381,7 @@ fn update_enemy_state_empty_tag_is_debug_noop_and_keeps_fanout_work() {
         vec![
             primitive(
                 "fanout",
-                "updateEnemyState",
+                "updateNpcState",
                 Some("unspawned"),
                 serde_json::json!({ "aggro": true }),
                 None,
@@ -409,7 +410,7 @@ fn update_enemy_state_empty_tag_is_debug_noop_and_keeps_fanout_work() {
         assert_eq!(
             execution.commands,
             vec![
-                BoundTriggerCommandKind::UpdateEnemyState,
+                BoundTriggerCommandKind::UpdateNpcState,
                 BoundTriggerCommandKind::StoreSlot,
             ]
         );
@@ -424,9 +425,9 @@ fn update_enemy_state_empty_tag_is_debug_noop_and_keeps_fanout_work() {
 }
 
 #[test]
-fn update_enemy_state_special_target_logs_and_skips() {
+fn update_npc_state_special_target_logs_and_skips() {
     let command = bind_command(
-        "updateEnemyState",
+        "updateNpcState",
         Some(BoundTarget::Activators),
         &serde_json::json!({ "aggro": false }),
         &SlotTable::new(),
@@ -727,6 +728,7 @@ fn activator_grant_commands_mutate_only_the_current_activator() {
                 descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                     primitive: "grantHealth".into(),
                     target: Some("@activators".into()),
+                    kind: None,
                     tag: None,
                     on_complete: None,
                     args: serde_json::json!({ "amount": 25.0 }),
@@ -737,6 +739,7 @@ fn activator_grant_commands_mutate_only_the_current_activator() {
                 descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                     primitive: "grantAmmo".into(),
                     target: Some("@activators".into()),
+                    kind: None,
                     tag: None,
                     on_complete: None,
                     args: serde_json::json!({ "type": "bullets.light", "amount": 8.0 }),
@@ -865,6 +868,7 @@ fn activator_target_damages_each_edge_presser_once_and_leaves_bystander_untouche
             descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                 primitive: "applyDamage".into(),
                 target: Some("@activators".into()),
+                kind: None,
                 tag: None,
                 on_complete: None,
                 args: serde_json::json!({"amount": 25}),
@@ -1655,6 +1659,7 @@ fn bind_rejects_sentinel_targeted_set_state_without_an_in_tick_write() {
             descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                 primitive: "setState".to_string(),
                 target: Some("@activators".to_string()),
+                kind: None,
                 tag: None,
                 on_complete: None,
                 args: serde_json::json!({ "slot": "trigger.flag", "value": 1 }),

@@ -1705,7 +1705,7 @@ export type ProgressReactionDescriptor = {
 --- Primitive reaction body: invokes the named Rust primitive. A non-empty
 --- `tag` targets matching entities. Tag-targeted primitives include
 --- emitter/fog/mover commands, `applyDamage`, `grantHealth`, `grantAmmo`, `addSlot`,
---- `setAnimationState`, `updateEnemyState`, `spawnFromSpawner`, `armTrigger`,
+--- `setAnimationState`, `updateNpcState`, `spawnFromSpawner`, `armTrigger`,
 --- and `disarmTrigger`. In a trigger-event reaction, `applyDamage`,
 --- `grantHealth`, `grantAmmo`, and `addSlot` may instead target `@activators`. True system
 --- reactions carry neither `tag` nor `target` and enqueue typed engine commands

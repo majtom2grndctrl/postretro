@@ -10816,6 +10816,7 @@ mod tests {
                 descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                     primitive: "playSound".to_string(),
                     target: None,
+                    kind: None,
                     tag: None,
                     on_complete: None,
                     args: serde_json::json!({ "sound": "door_open", "bus": "sfx" }),
@@ -10874,6 +10875,7 @@ mod tests {
                 descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                     primitive: "playSound".to_string(),
                     target: None,
+                    kind: None,
                     tag: None,
                     on_complete: None,
                     args: serde_json::json!({
@@ -10961,6 +10963,7 @@ mod tests {
                 descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                     primitive: "playSound".to_string(),
                     target: None,
+                    kind: None,
                     tag: None,
                     on_complete: None,
                     args: serde_json::json!({ "sound": "fixtures/door_open", "at": "@emitter" }),
@@ -11107,6 +11110,7 @@ mod tests {
                 descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                     primitive: "playSound".to_string(),
                     target: None,
+                    kind: None,
                     tag: None,
                     on_complete: None,
                     args: serde_json::json!({ "sound": "sfx/brass" }),
@@ -11189,6 +11193,7 @@ mod tests {
             descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                 primitive: "playSound".to_string(),
                 target: None,
+                kind: None,
                 tag: None,
                 on_complete: None,
                 args: serde_json::json!({ "sound": "event_chain", "bus": "sfx" }),

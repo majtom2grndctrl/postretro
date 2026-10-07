@@ -1351,3 +1351,151 @@ fn lua_crossing_fire_rejects_non_dense_tables() {
         );
     }
 }
+
+// W1: a group entry parses to the same descriptor in both runtimes. A sequence
+// entry `{ primitive, kind, tag?, args }` becomes a group step; a primitive
+// descriptor keeps its optional tag beside the kind; a kindless descriptor is
+// unchanged raw data.
+#[test]
+fn group_entries_parse_identically_in_both_vms() {
+    let js = eval_js(
+        r#"({ reactions: [
+            { name: "closet", sequence: [
+                { kind: "npc", tag: "x", primitive: "applyDamage", args: { amount: 5 } },
+                { id: "@wait", primitive: "wait", args: { durationMs: 800 } },
+                { kind: "player", primitive: "grantHealth", args: { amount: 10 } },
+            ] },
+            { name: "resupply", primitive: "grantHealth", kind: "player", args: { amount: 10 } },
+            { name: "raw", primitive: "applyDamage", tag: "x", args: { amount: 5 } },
+        ] })"#,
+        |ctx, value| LevelManifest::from_js_value(ctx, value).unwrap(),
+    );
+    let lua = eval_lua(
+        r#"return { reactions = {
+            { name = "closet", sequence = {
+                { kind = "npc", tag = "x", primitive = "applyDamage", args = { amount = 5 } },
+                { id = "@wait", primitive = "wait", args = { durationMs = 800 } },
+                { kind = "player", primitive = "grantHealth", args = { amount = 10 } },
+            } },
+            { name = "resupply", primitive = "grantHealth", kind = "player", args = { amount = 10 } },
+            { name = "raw", primitive = "applyDamage", tag = "x", args = { amount = 5 } },
+        } }"#,
+        |value| LevelManifest::from_lua_value(value).unwrap(),
+    );
+    assert_eq!(js.reactions, lua.reactions);
+    assert_eq!(js.reactions.len(), 3);
+
+    let ReactionDescriptor::Sequence(steps) = &js.reactions[0].descriptor else {
+        panic!("expected sequence");
+    };
+    assert_eq!(
+        steps[0].id,
+        SequenceTarget::Group(GroupTarget {
+            kind: GroupKind::Npc,
+            tag: Some("x".to_string()),
+        })
+    );
+    assert_eq!(steps[1].id, SequenceTarget::Wait);
+    assert_eq!(
+        steps[2].id,
+        SequenceTarget::Group(GroupTarget {
+            kind: GroupKind::Player,
+            tag: None,
+        })
+    );
+
+    let ReactionDescriptor::Primitive(resupply) = &js.reactions[1].descriptor else {
+        panic!("expected primitive");
+    };
+    assert_eq!(resupply.kind, Some(GroupKind::Player));
+    assert_eq!(resupply.tag, None);
+
+    let ReactionDescriptor::Primitive(raw) = &js.reactions[2].descriptor else {
+        panic!("expected primitive");
+    };
+    assert_eq!(
+        raw.kind, None,
+        "a kindless descriptor stays on the raw tag path"
+    );
+    assert_eq!(raw.tag.as_deref(), Some("x"));
+}
+
+// W1: both runtimes reject, naming the reaction, an entry or primitive
+// descriptor that carries both `id` and `kind`, or a `kind` other than
+// `npc`/`player`. The manifest drain skips the reaction and warns with that name.
+#[test]
+fn group_kind_rejections_name_the_reaction_in_both_vms() {
+    let cases = [
+        (
+            r#"({ name: "bad", sequence: [{ id: 65536, kind: "npc", primitive: "applyDamage", args: { amount: 1 } }] })"#,
+            r#"return { name = "bad", sequence = { { id = 65536, kind = "npc", primitive = "applyDamage", args = { amount = 1 } } } }"#,
+            "reaction `bad` sequence step",
+            "cannot carry both `id` and `kind`",
+        ),
+        (
+            r#"({ name: "bad", sequence: [{ id: "@activators", kind: "player", primitive: "grantHealth", args: { amount: 1 } }] })"#,
+            r#"return { name = "bad", sequence = { { id = "@activators", kind = "player", primitive = "grantHealth", args = { amount = 1 } } } }"#,
+            "reaction `bad` sequence step",
+            "cannot carry both `id` and `kind`",
+        ),
+        (
+            r#"({ name: "bad", primitive: "applyDamage", id: 65536, kind: "npc", args: { amount: 1 } })"#,
+            r#"return { name = "bad", primitive = "applyDamage", id = 65536, kind = "npc", args = { amount = 1 } }"#,
+            "reaction `bad` primitive",
+            "cannot carry both `id` and `kind`",
+        ),
+        (
+            r#"({ name: "bad", sequence: [{ kind: "enemy", primitive: "applyDamage", args: { amount: 1 } }] })"#,
+            r#"return { name = "bad", sequence = { { kind = "enemy", primitive = "applyDamage", args = { amount = 1 } } } }"#,
+            "reaction `bad` sequence step",
+            "`kind` must be \"npc\" or \"player\", got \"enemy\"",
+        ),
+        (
+            r#"({ name: "bad", primitive: "applyDamage", kind: "enemy", tag: "x", args: { amount: 1 } })"#,
+            r#"return { name = "bad", primitive = "applyDamage", kind = "enemy", tag = "x", args = { amount = 1 } }"#,
+            "reaction `bad` primitive",
+            "`kind` must be \"npc\" or \"player\", got \"enemy\"",
+        ),
+        (
+            r#"({ name: "bad", primitive: "applyDamage", kind: 1, args: { amount: 1 } })"#,
+            r#"return { name = "bad", primitive = "applyDamage", kind = 1, args = { amount = 1 } }"#,
+            "reaction `bad` primitive",
+            "`kind` must be \"npc\" or \"player\"",
+        ),
+        (
+            r#"({ name: "bad", primitive: "grantHealth", kind: "player", target: "@activators", args: { amount: 1 } })"#,
+            r#"return { name = "bad", primitive = "grantHealth", kind = "player", target = "@activators", args = { amount = 1 } }"#,
+            "reaction `bad` primitive",
+            "cannot carry both `target` and `kind`",
+        ),
+    ];
+
+    for (js_source, lua_source, site, reason) in cases {
+        let js_error = eval_js(js_source, |ctx, value| {
+            named_reaction_from_js(ctx, value).unwrap_err()
+        });
+        let lua_error = eval_lua(lua_source, |value| {
+            named_reaction_from_lua(value).unwrap_err()
+        });
+        for error in [js_error.to_string(), lua_error.to_string()] {
+            assert!(
+                error.contains(site) && error.contains(reason),
+                "unexpected diagnostic for {js_source}: {error}"
+            );
+        }
+    }
+
+    // At the manifest drain the rejection skips only that reaction, and the
+    // skip warning names it.
+    let capture = postretro_test_log_capture::LogCapture::start();
+    let manifest = eval_js(
+        r#"({ reactions: [
+            { name: "badGroup", sequence: [{ kind: "enemy", primitive: "applyDamage", args: { amount: 1 } }] },
+            { name: "ok", sequence: [{ kind: "npc", primitive: "applyDamage", args: { amount: 1 } }] },
+        ] })"#,
+        |ctx, value| LevelManifest::from_js_value(ctx, value).unwrap(),
+    );
+    assert_eq!(manifest.reactions.len(), 1);
+    assert_eq!(manifest.reactions[0].name, "ok");
+    capture.assert_logged_once(log::Level::Warn, "reaction `badGroup` sequence step 0");
+}

@@ -292,7 +292,7 @@ fn scoped_fire_targets(
                 steps
                     .iter()
                     .enumerate()
-                    .find_map(|(step_index, step)| match step.id {
+                    .find_map(|(step_index, step)| match &step.id {
                         SequenceTarget::Activators => Some(format!(
                             "sequence step {step_index} target sentinel `@activators`"
                         )),
@@ -304,10 +304,11 @@ fn scoped_fire_targets(
                         // primitive, so no sequence naming it survives
                         // `validate_sequence_primitives` (`setupLevel`) to
                         // reach V4b.
-                        SequenceTarget::Entity(_) | SequenceTarget::Wait | SequenceTarget::Fire => {
-                            args_read_emitter(&step.args)
-                                .then(|| format!("sequence step {step_index} `at` `on.emitter`"))
-                        }
+                        SequenceTarget::Entity(_)
+                        | SequenceTarget::Group(_)
+                        | SequenceTarget::Wait
+                        | SequenceTarget::Fire => args_read_emitter(&step.args)
+                            .then(|| format!("sequence step {step_index} `at` `on.emitter`")),
                     })
             }
             ReactionDescriptor::Progress(_) => None,
@@ -519,7 +520,7 @@ mod tests {
     fn sentinel_step(target: SequenceTarget) -> SequenceStep {
         SequenceStep {
             id: target,
-            primitive: "updateEnemyState".to_string(),
+            primitive: "updateNpcState".to_string(),
             args: json!({ "aggro": true }),
         }
     }
@@ -537,6 +538,7 @@ mod tests {
             descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                 primitive: "setState".to_string(),
                 target: None,
+                kind: None,
                 tag: None,
                 on_complete: None,
                 args: json!({ "slot": slot, "value": value }),
@@ -550,6 +552,7 @@ mod tests {
             descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                 primitive: "applyDamage".to_string(),
                 target: Some("@activators".to_string()),
+                kind: None,
                 tag: None,
                 on_complete: None,
                 args: json!({ "amount": 5.0 }),
@@ -571,6 +574,7 @@ mod tests {
             descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                 primitive: "playSound".to_string(),
                 target: None,
+                kind: None,
                 tag: None,
                 on_complete: None,
                 args,
@@ -586,6 +590,7 @@ mod tests {
             descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                 primitive: "playSound".to_string(),
                 target: None,
+                kind: None,
                 tag: None,
                 on_complete: None,
                 args: json!({ "sound": "sfx/test_tone", "at": at }),
@@ -1512,6 +1517,120 @@ mod tests {
         assert!(
             enter_execution(&table, &ctx, trigger).1.is_none(),
             "the staged binder never receives the restored scoped fire",
+        );
+    }
+
+    // Q3 (A7), through the real `setupLevel` order — id-step primitive
+    // validation, then Pass A. A subject-token step after a `wait` drops its
+    // reaction with an error naming it (V4a), never as an unnamed unknown
+    // primitive; a players() group step in the same position installs and
+    // lands.
+    #[test]
+    fn subject_token_after_wait_drops_while_a_group_step_after_wait_installs_and_lands() {
+        use postretro_entities::components::health::HealthComponent;
+        use postretro_entities::data_descriptors::HealthDescriptor;
+        use postretro_entities::{GroupKind, GroupTarget};
+        use postretro_scripting_core::reaction_dispatch::{
+            fire_named_event_with_sequences, validate_sequence_primitives,
+        };
+
+        let scheduler = ReactionScheduler::default();
+        scheduler.set_enabled(true);
+        let mut sequence_registry = SequencedPrimitiveRegistry::new();
+        register_reaction_control_primitives(&mut sequence_registry, scheduler.clone());
+        let mut reaction_registry = ReactionPrimitiveRegistry::new();
+        crate::scripting::reactions::registry::register_grant_reactions(&mut reaction_registry);
+
+        let grant = |id: SequenceTarget| SequenceStep {
+            id,
+            primitive: "grantHealth".to_string(),
+            args: json!({ "amount": 5.0 }),
+        };
+        let authored = vec![
+            sequence(
+                "tokenAfterWait",
+                vec![
+                    wait_step(json!(800), false),
+                    grant(SequenceTarget::Activators),
+                ],
+            ),
+            sequence(
+                "groupAfterWait",
+                vec![
+                    wait_step(json!(800), false),
+                    grant(SequenceTarget::Group(GroupTarget {
+                        kind: GroupKind::Player,
+                        tag: None,
+                    })),
+                ],
+            ),
+        ];
+
+        let capture = LogCapture::start();
+        let installed = validate_sequence_primitives(authored, &sequence_registry);
+        assert_eq!(
+            installed.len(),
+            2,
+            "neither step is an unknown id-step primitive"
+        );
+        let ctx = ctx_with_reactions(installed);
+        validate_reaction_bodies_pass_a(&ctx);
+        capture.assert_logged_once(log::Level::Error, "reaction `tokenAfterWait` step 1");
+        capture.assert_not_logged(log::Level::Error, "names unknown primitive");
+        capture.assert_not_logged(log::Level::Error, "reaction `groupAfterWait`");
+        assert!(is_dropped(&ctx, "tokenAfterWait"));
+        assert!(!is_dropped(&ctx, "groupAfterWait"));
+
+        let pawn = {
+            let mut registry = ctx.registry.borrow_mut();
+            let pawn = registry.spawn(Transform::default());
+            let mut health = HealthComponent::from_descriptor(&HealthDescriptor {
+                max: 100.0,
+                hitbox: None,
+                zone_multipliers: HashMap::new(),
+            });
+            health.current = 50.0;
+            registry.set_component(pawn, health).unwrap();
+            registry.bind_pawn_seat(pawn, postretro_foundation::Seat(0));
+            pawn
+        };
+        let mut data = postretro_entities::DataRegistry::new();
+        data.populate_level(
+            ctx.data_registry.borrow().reactions.clone(),
+            Vec::new(),
+            &[],
+        );
+        let system_registry = SystemReactionRegistry::new();
+        let _ = fire_named_event_with_sequences(
+            "groupAfterWait",
+            &data,
+            &sequence_registry,
+            &reaction_registry,
+            &system_registry,
+            &ctx,
+            None,
+        );
+        assert_eq!(scheduler.pending_len(), 1);
+        for _ in 0..60 {
+            scheduler.begin_frame();
+            scheduler.evaluate(&[]);
+            scheduler.drain_landings(
+                &data,
+                &sequence_registry,
+                &reaction_registry,
+                &system_registry,
+                &ctx,
+            );
+        }
+        assert_eq!(scheduler.pending_len(), 0);
+        assert_eq!(
+            ctx.registry
+                .borrow()
+                .get_component::<HealthComponent>(pawn)
+                .unwrap()
+                .current,
+            55.0,
+            "the group step lands on the seat-bound pawn",
         );
     }
 }

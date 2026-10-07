@@ -23,7 +23,7 @@ pub(crate) use crate::health::reactions as apply_damage;
 pub(crate) use animation as set_animation_state;
 
 pub(crate) mod animation;
-pub(crate) mod enemy_state;
+pub(crate) mod npc_state;
 pub mod registry;
 pub mod system_commands;
 
@@ -117,6 +117,7 @@ mod tests {
             descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                 primitive: primitive.to_string(),
                 target: None,
+                kind: None,
                 tag: None,
                 on_complete: None,
                 args,

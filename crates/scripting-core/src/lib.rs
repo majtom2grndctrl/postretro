@@ -63,6 +63,7 @@ pub mod ui;
 pub mod conv;
 pub mod data_descriptors;
 pub mod game_state_refs;
+pub mod group_resolution;
 pub mod luau;
 pub mod luau_prelude;
 pub mod luau_require;

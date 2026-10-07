@@ -28,7 +28,7 @@ const CONSEQUENTIAL_PRIMITIVES: &[&str] = &[
     "setState",
     "addSlot",
     "setAnimationState",
-    "updateEnemyState",
+    "updateNpcState",
     "spawnFromSpawner",
 ];
 

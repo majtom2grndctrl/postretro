@@ -50,6 +50,7 @@ fn primitive_reaction(
         descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
             primitive: primitive.to_string(),
             target: None,
+            kind: None,
             tag: Some(tag.to_string()),
             on_complete: on_complete.map(|s| s.to_string()),
             args: serde_json::Value::Object(Default::default()),
@@ -65,8 +66,8 @@ fn spawn_with_tags(reg: &mut EntityRegistry, tags: &[&str]) {
 
 #[cfg(debug_assertions)]
 #[test]
-fn update_enemy_state_stays_in_trigger_consequential_mirror() {
-    assert!(is_trigger_consequential_primitive("updateEnemyState"));
+fn update_npc_state_stays_in_trigger_consequential_mirror() {
+    assert!(is_trigger_consequential_primitive("updateNpcState"));
 }
 
 #[cfg(debug_assertions)]
@@ -359,6 +360,7 @@ fn add_slot_tag_target_resolves_owner_seat_for_level_load_and_crossing_dispatch(
             descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                 primitive: "addSlot".to_string(),
                 target: None,
+                kind: None,
                 tag: Some("players".to_string()),
                 on_complete: None,
                 args: serde_json::json!({ "slot": "currency.xp", "delta": 3.0 }),
@@ -400,6 +402,7 @@ fn add_slot_zero_recipients_and_client_dispatch_are_silent_no_ops() {
     let descriptor = PrimitiveDescriptor {
         primitive: "addSlot".to_string(),
         target: None,
+        kind: None,
         tag: Some("no-pawns".to_string()),
         on_complete: None,
         args: serde_json::json!({ "slot": "currency.xp", "delta": 1.0 }),
@@ -466,6 +469,7 @@ fn named_add_slot_validates_global_slot_without_recipients_and_runs_sibling_effe
                 descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                     primitive: "addSlot".to_string(),
                     target: None,
+                    kind: None,
                     tag: Some("no-pawns".to_string()),
                     on_complete: None,
                     args: serde_json::json!({
@@ -479,6 +483,7 @@ fn named_add_slot_validates_global_slot_without_recipients_and_runs_sibling_effe
                 descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                     primitive: "record".to_string(),
                     target: None,
+                    kind: None,
                     tag: None,
                     on_complete: None,
                     args: serde_json::json!({ "label": "sibling" }),
@@ -537,6 +542,7 @@ fn named_add_slot_with_valid_descriptor_and_zero_recipients_is_silent_and_runs_s
                 descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                     primitive: "addSlot".to_string(),
                     target: None,
+                    kind: None,
                     tag: Some("no-pawns".to_string()),
                     on_complete: None,
                     args: serde_json::json!({ "slot": "currency.xp", "delta": 1.0 }),
@@ -547,6 +553,7 @@ fn named_add_slot_with_valid_descriptor_and_zero_recipients_is_silent_and_runs_s
                 descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                     primitive: "record".to_string(),
                     target: None,
+                    kind: None,
                     tag: None,
                     on_complete: None,
                     args: serde_json::json!({ "label": "sibling" }),
@@ -608,6 +615,7 @@ fn prepartitioned_progress_is_a_noop_and_yields_no_follow_up() {
             descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                 primitive: "record".into(),
                 target: None,
+                kind: None,
                 tag: None,
                 on_complete: None,
                 args: serde_json::json!({ "label": "release" }),
@@ -677,6 +685,7 @@ fn progress_tracker_still_fires_its_target_at_threshold() {
                 descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                     primitive: "record".into(),
                     target: None,
+                    kind: None,
                     tag: None,
                     on_complete: None,
                     args: serde_json::json!({ "label": "release" }),
@@ -735,6 +744,7 @@ fn deferred_named_events_are_breadth_first_and_batch_hop_bounded() {
         descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
             primitive: "record".into(),
             target: None,
+            kind: None,
             tag: None,
             on_complete: on_complete.map(str::to_string),
             args: serde_json::json!({ "label": name }),
@@ -808,6 +818,7 @@ fn system_reaction_fired_by_named_event_enqueues_command() {
                 primitive: "playSound".to_string(),
                 target: None,
                 // No tag ⇒ system-targeted.
+                kind: None,
                 tag: None,
                 on_complete: None,
                 args: serde_json::json!({ "sound": "alarm", "bus": "sfx" }),
@@ -1041,6 +1052,7 @@ fn named_dispatch_skips_sentinel_target_primitive_but_runs_sentinel_free_command
                 descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                     primitive: "applyDamage".to_string(),
                     target: Some("@activators".to_string()),
+                    kind: None,
                     tag: None,
                     on_complete: None,
                     args: serde_json::json!({ "amount": 25 }),
@@ -1052,6 +1064,7 @@ fn named_dispatch_skips_sentinel_target_primitive_but_runs_sentinel_free_command
                 descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                     primitive: "playSound".to_string(),
                     target: None,
+                    kind: None,
                     tag: None,
                     on_complete: None,
                     args: serde_json::json!({ "sound": "beep", "bus": "sfx" }),

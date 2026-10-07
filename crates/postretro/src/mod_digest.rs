@@ -883,6 +883,7 @@ pub(crate) mod tests {
                 descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                     primitive: "playSound".to_string(),
                     target: None,
+                    kind: None,
                     tag: None,
                     on_complete: None,
                     args: serde_json::json!({ "sound": "fixture" }),

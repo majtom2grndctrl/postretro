@@ -27,9 +27,9 @@ pub fn named_reaction_from_js<'js>(
                 .map_err(|e| DescriptorError::InvalidSequenceShape {
                     reason: e.to_string(),
                 })?;
-        ReactionDescriptor::Sequence(sequence_steps_from_js(ctx, &arr)?)
+        ReactionDescriptor::Sequence(sequence_steps_from_js(ctx, &name, &arr)?)
     } else if has_primitive {
-        ReactionDescriptor::Primitive(primitive_descriptor_from_js(ctx, &obj)?)
+        ReactionDescriptor::Primitive(primitive_descriptor_from_js(ctx, &name, &obj)?)
     } else {
         return Err(DescriptorError::UnknownShape);
     };
@@ -99,6 +99,7 @@ fn crossing_edge_from_js<'js>(obj: &Object<'js>) -> Result<Option<String>, Descr
 
 pub fn primitive_descriptor_from_js<'js>(
     ctx: &Ctx<'js>,
+    reaction: &str,
     obj: &Object<'js>,
 ) -> Result<PrimitiveDescriptor, DescriptorError> {
     let primitive = get_required_string_js(obj, "primitive")?;
@@ -137,6 +138,18 @@ pub fn primitive_descriptor_from_js<'js>(
             reason: "primitive `target` must be `@activators`".to_string(),
         });
     }
+    let has_id = {
+        let raw: JsValue = obj.get("id").map_err(js_err)?;
+        !(raw.is_null() || raw.is_undefined())
+    };
+    let kind = validate_authored_group_kind(
+        reaction,
+        "primitive",
+        authored_kind_js(obj)?,
+        has_id,
+        target.is_some(),
+    )
+    .map_err(|reason| DescriptorError::InvalidShape { reason })?;
     if primitive == "spawnFromSpawner"
         && (tag.as_deref().is_none() || tag.as_deref().is_some_and(str::is_empty))
     {
@@ -169,11 +182,12 @@ pub fn primitive_descriptor_from_js<'js>(
         serde_json::Value::Object(Default::default())
     };
 
-    validate_consequential_reaction(&primitive, tag.as_deref(), target.as_deref(), &args)?;
+    validate_consequential_reaction(&primitive, kind, tag.as_deref(), target.as_deref(), &args)?;
 
     Ok(PrimitiveDescriptor {
         primitive,
         target,
+        kind,
         tag,
         on_complete,
         args,
@@ -185,6 +199,7 @@ pub fn primitive_descriptor_from_js<'js>(
 /// cannot reach a reaction handler or a fixed-tick trigger binding.
 fn validate_consequential_reaction(
     primitive: &str,
+    kind: Option<GroupKind>,
     tag: Option<&str>,
     target: Option<&str>,
     args: &serde_json::Value,
@@ -193,14 +208,15 @@ fn validate_consequential_reaction(
         return Ok(());
     }
 
-    let has_non_empty_tag = tag.is_some_and(|tag| !tag.is_empty());
+    // A group `kind` addresses its recipients with or without a tag filter.
+    let has_recipients = kind.is_some() || tag.is_some_and(|tag| !tag.is_empty());
     if !matches!(
-        (has_non_empty_tag, target),
+        (has_recipients, target),
         (true, None) | (false, Some("@activators"))
     ) {
         return Err(DescriptorError::InvalidShape {
             reason: format!(
-                "primitive `{primitive}` requires exactly one of a non-empty `tag` or target `@activators`"
+                "primitive `{primitive}` requires exactly one of a group `kind`, a non-empty `tag`, or target `@activators`"
             ),
         });
     }
@@ -260,6 +276,7 @@ fn validate_consequential_reaction(
 
 pub fn sequence_steps_from_js<'js>(
     ctx: &Ctx<'js>,
+    reaction: &str,
     arr: &Array<'js>,
 ) -> Result<Vec<SequenceStep>, DescriptorError> {
     let mut out = Vec::with_capacity(arr.len());
@@ -269,7 +286,20 @@ pub fn sequence_steps_from_js<'js>(
             reason: format!("step {i} must be an object"),
         })?;
         let id_value: JsValue = obj.get("id").map_err(js_err)?;
-        let id = if let Some(value) = id_value.as_string() {
+        let kind = validate_authored_group_kind(
+            reaction,
+            &format!("sequence step {i}"),
+            authored_kind_js(&obj)?,
+            !(id_value.is_null() || id_value.is_undefined()),
+            false,
+        )
+        .map_err(|reason| DescriptorError::InvalidSequenceShape { reason })?;
+        let id = if let Some(kind) = kind {
+            SequenceTarget::Group(GroupTarget {
+                kind,
+                tag: optional_string_js(&obj, "tag")?,
+            })
+        } else if let Some(value) = id_value.as_string() {
             match value.to_string().map_err(js_err)?.as_str() {
                 "@activators" => SequenceTarget::Activators,
                 "@trigger" => SequenceTarget::FiredTrigger,
@@ -286,7 +316,7 @@ pub fn sequence_steps_from_js<'js>(
         };
         let primitive = get_required_string_js(&obj, "primitive")?;
         let primitive = validate_primitive_name(primitive)?;
-        validate_control_step_pair(i, id, &primitive)?;
+        validate_control_step_pair(i, &id, &primitive)?;
         if matches!(id, SequenceTarget::Activators)
             && matches!(primitive.as_str(), "armTrigger" | "disarmTrigger")
         {
@@ -316,7 +346,7 @@ pub fn sequence_steps_from_js<'js>(
 /// prevents an entity-targeted `wait`/`fire` from reaching an inert handler.
 fn validate_control_step_pair(
     step_index: usize,
-    target: SequenceTarget,
+    target: &SequenceTarget,
     primitive: &str,
 ) -> Result<(), DescriptorError> {
     let mismatch = match (target, primitive) {
@@ -339,6 +369,31 @@ fn validate_control_step_pair(
         Some(reason) => Err(DescriptorError::InvalidSequenceShape { reason }),
         None => Ok(()),
     }
+}
+
+/// Lower an authored `kind` for the shared group-target validator. `null` and
+/// `undefined` read as absent, matching the other optional descriptor fields.
+fn authored_kind_js<'js>(obj: &Object<'js>) -> Result<AuthoredKind, DescriptorError> {
+    let raw: JsValue = obj.get("kind").map_err(js_err)?;
+    if raw.is_null() || raw.is_undefined() {
+        return Ok(AuthoredKind::Absent);
+    }
+    match raw.as_string() {
+        Some(value) => Ok(AuthoredKind::Text(value.to_string().map_err(js_err)?)),
+        None => Ok(AuthoredKind::NonString(raw.type_name().to_string())),
+    }
+}
+
+/// An optional string field: absent, `null` or `undefined` read as `None`.
+fn optional_string_js<'js>(
+    obj: &Object<'js>,
+    field: &'static str,
+) -> Result<Option<String>, DescriptorError> {
+    let raw: JsValue = obj.get(field).map_err(js_err)?;
+    if raw.is_null() || raw.is_undefined() {
+        return Ok(None);
+    }
+    Ok(Some(String::from_js_value_required(raw, field)?))
 }
 
 pub fn get_required_u32_js<'js>(

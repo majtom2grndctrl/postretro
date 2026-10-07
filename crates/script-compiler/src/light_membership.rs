@@ -970,6 +970,25 @@ fn runtime_sequence_step_shape_is_valid(step: &JsonValue) -> bool {
         return false;
     }
 
+    // A group entry `{ primitive, kind, tag?, args }` addresses NPCs or
+    // players resolved at runtime: it is a legal step that reserves no light
+    // slot, so it must not make the caller skip the sequence (A12). Mirror the
+    // runtime parser's rejections — an unknown kind, an `id` beside `kind`, a
+    // non-string tag — so the pass skips exactly the reactions runtime drops.
+    match step.get("kind") {
+        None | Some(JsonValue::Null) => {}
+        Some(JsonValue::String(kind)) => {
+            return matches!(kind.as_str(), "npc" | "player")
+                && matches!(step.get("id"), None | Some(JsonValue::Null))
+                && matches!(
+                    step.get("tag"),
+                    None | Some(JsonValue::Null) | Some(JsonValue::String(_))
+                )
+                && !matches!(primitive, "wait" | "fire");
+        }
+        Some(_) => return false,
+    }
+
     match step.get("id") {
         Some(JsonValue::String(target)) => {
             // `@wait`/`@fire` are control sentinels: accept them so a body that
@@ -1560,6 +1579,92 @@ mod tests {
             "the setLightAnimation step's levelLoad startActive was read through the mixed sequence",
         );
         assert!(!quickjs_manifest.lights[0].is_dynamic);
+    }
+
+    // A12 / M7: a group step beside a light member step reserves exactly the
+    // membership the light step reserves alone, in both hosts — before and
+    // after a `wait`. A malformed group step (both `id` and `kind`) still makes
+    // the pass skip the sequence, because runtime drops that whole reaction.
+    #[test]
+    fn group_steps_leave_light_membership_unchanged_in_both_hosts() {
+        let quickjs = |group_steps: &str| {
+            format!(
+                r#"
+                function setupLevel() {{
+                  const light = world.query({{ component: "light", tag: "wave" }})[0];
+                  return {{ reactions: [
+                    {{ name: "levelLoad", sequence: [
+                      {{ id: light.id, primitive: "setLightAnimation", args: {{ startActive: false }} }},
+                      {group_steps}
+                    ] }},
+                  ] }};
+                }}
+            "#
+            )
+        };
+        let luau = |group_steps: &str| {
+            format!(
+                r#"
+                function setupLevel(_)
+                  local light = world:query({{ component = "light", tag = "wave" }})[1]
+                  return {{ reactions = {{
+                    {{ name = "levelLoad", sequence = {{
+                      {{ id = light.id, primitive = "setLightAnimation", args = {{ startActive = false }} }},
+                      {group_steps}
+                    }} }},
+                  }} }}
+                end
+            "#
+            )
+        };
+        let evaluate = |source: String, path: &str| {
+            emit_light_membership_manifest(&source, Path::new(path), Path::new("."), &table())
+                .expect("fixture evaluates")
+                .lights
+        };
+
+        let baseline_js = evaluate(quickjs(""), "fixture.ts");
+        let baseline_luau = evaluate(luau(""), "fixture.luau");
+        assert_eq!(
+            baseline_js.len(),
+            1,
+            "the light step alone reserves its slot"
+        );
+        assert_eq!(baseline_js, baseline_luau);
+
+        let with_groups_js = evaluate(
+            quickjs(
+                r#"{ kind: "npc", primitive: "updateNpcState", args: { aggro: true } },
+                   { id: "@wait", primitive: "wait", args: { durationMs: 800 } },
+                   { kind: "npc", tag: "closet", primitive: "applyDamage", args: { amount: 5 } },
+                   { kind: "player", primitive: "grantHealth", args: { amount: 10 } },"#,
+            ),
+            "fixture.ts",
+        );
+        let with_groups_luau = evaluate(
+            luau(
+                r#"{ kind = "npc", primitive = "updateNpcState", args = { aggro = true } },
+                   { id = "@wait", primitive = "wait", args = { durationMs = 800 } },
+                   { kind = "npc", tag = "closet", primitive = "applyDamage", args = { amount = 5 } },
+                   { kind = "player", primitive = "grantHealth", args = { amount = 10 } },"#,
+            ),
+            "fixture.luau",
+        );
+        assert_eq!(with_groups_js, baseline_js);
+        assert_eq!(with_groups_luau, baseline_luau);
+
+        let malformed_js = evaluate(
+            quickjs(r#"{ id: 7, kind: "npc", primitive: "updateNpcState", args: {} },"#),
+            "fixture.ts",
+        );
+        let malformed_luau = evaluate(
+            luau(r#"{ id = 7, kind = "npc", primitive = "updateNpcState", args = {} },"#),
+            "fixture.luau",
+        );
+        assert!(
+            malformed_js.is_empty() && malformed_luau.is_empty(),
+            "a step runtime rejects keeps the pass skipping its reaction"
+        );
     }
 
     #[test]

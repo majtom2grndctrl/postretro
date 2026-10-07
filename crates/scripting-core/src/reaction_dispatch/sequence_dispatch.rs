@@ -2,9 +2,12 @@
 // See: context/lib/scripting.md §12 (Reaction Dispatch Model)
 
 use crate::ctx::ScriptCtx;
-use crate::data_descriptors::{NamedReaction, ReactionDescriptor, SequenceStep};
+use crate::data_descriptors::{NamedReaction, ReactionDescriptor, SequenceStep, SequenceTarget};
 use crate::data_registry::ScopedReaction;
+use crate::reaction_registry::ReactionPrimitiveRegistry;
 use crate::sequence::SequencedPrimitiveRegistry;
+
+use super::group_dispatch::dispatch_group;
 
 /// Dispatch a `sequence` body. Returns the `fire`-step event names collected
 /// while walking the body (in authored order), which callers extend into their
@@ -16,17 +19,22 @@ use crate::sequence::SequencedPrimitiveRegistry;
 /// nothing downstream can reconstruct) to the registered control handler, then
 /// `break`s — no step past a wait runs in this drain. On a `@fire` step it
 /// collects the target `event` name.
+///
+/// A group step resolves its kind against the registry as it runs, through the
+/// entity-targeted `reaction_registry` handler — so a group step after a `wait`
+/// reaches whoever exists at landing, in authored order with member steps.
 pub(super) fn dispatch_sequence(
     address: &str,
     body_ordinal: usize,
     steps: &[SequenceStep],
     sequence_registry: &SequencedPrimitiveRegistry,
+    reaction_registry: &ReactionPrimitiveRegistry,
     script_ctx: &ScriptCtx,
 ) -> Vec<String> {
     let mut fired = Vec::new();
     for (i, step) in steps.iter().enumerate() {
-        let id = match step.id {
-            postretro_entities::SequenceTarget::Wait => {
+        let id = match &step.id {
+            SequenceTarget::Wait => {
                 if let Some(control) = sequence_registry.get_control(&step.primitive) {
                     control(address, body_ordinal, &steps[i + 1..], &step.args);
                 } else {
@@ -37,7 +45,7 @@ pub(super) fn dispatch_sequence(
                 }
                 break;
             }
-            postretro_entities::SequenceTarget::Fire => {
+            SequenceTarget::Fire => {
                 match step.args.get("event").and_then(serde_json::Value::as_str) {
                     Some(event) => fired.push(event.to_string()),
                     None => log::warn!(
@@ -46,9 +54,18 @@ pub(super) fn dispatch_sequence(
                 }
                 continue;
             }
-            postretro_entities::SequenceTarget::Entity(id) => id,
-            postretro_entities::SequenceTarget::Activators
-            | postretro_entities::SequenceTarget::FiredTrigger => {
+            SequenceTarget::Group(group) => {
+                dispatch_group(
+                    &step.primitive,
+                    group,
+                    &step.args,
+                    reaction_registry,
+                    script_ctx,
+                );
+                continue;
+            }
+            SequenceTarget::Entity(id) => *id,
+            SequenceTarget::Activators | SequenceTarget::FiredTrigger => {
                 log::warn!(
                     "[Scripting] sequence step {i}: sentinel target has no trigger fire context; skipping"
                 );
@@ -120,6 +137,19 @@ fn sequence_primitives_are_valid(
         return true;
     };
     for (i, step) in steps.iter().enumerate() {
+        // Group and subject-token steps name entity-targeted reaction
+        // primitives (`applyDamage`, `grantHealth`, `updateNpcState`, …), which
+        // this id-step registry does not hold. A group step resolves its handler
+        // when it runs and warns there if none is registered; a subject-token
+        // step binds by name in the trigger tick, and Pass A's V4a — not this
+        // check — owns rejecting one after a `wait`, with an error naming the
+        // reaction.
+        if matches!(
+            step.id,
+            SequenceTarget::Group(_) | SequenceTarget::Activators | SequenceTarget::FiredTrigger
+        ) {
+            continue;
+        }
         if !sequence_registry.contains(&step.primitive) {
             log::error!(
                 "[Scripting] {source}: sequence step {i} names unknown primitive \"{}\"",

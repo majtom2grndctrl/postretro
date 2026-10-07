@@ -1,6 +1,7 @@
 // Reaction dispatch: named events and per-tag kill progress.
 // See: context/lib/scripting.md §12 (Reaction Dispatch Model)
 
+mod group_dispatch;
 mod primitive_dispatch;
 mod progress;
 mod sequence_dispatch;
@@ -109,6 +110,7 @@ pub fn fire_named_event_with_sequences(
                     body_ordinal,
                     steps,
                     sequence_registry,
+                    reaction_registry,
                     script_ctx,
                 ));
             }
@@ -243,6 +245,7 @@ pub fn fire_prepartitioned_reactions_with_sequences(
                     *body_ordinal,
                     steps,
                     sequence_registry,
+                    reaction_registry,
                     script_ctx,
                 ));
             }
@@ -339,7 +342,7 @@ fn is_trigger_consequential_primitive(primitive: &str) -> bool {
             | "setState"
             | "addSlot"
             | "setAnimationState"
-            | "updateEnemyState"
+            | "updateNpcState"
             | "spawnFromSpawner"
     )
 }

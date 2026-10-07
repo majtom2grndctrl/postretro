@@ -1775,6 +1775,7 @@ pub(crate) mod tests {
             descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                 primitive: "testPrimitive".to_string(),
                 target: None,
+                kind: None,
                 tag: None,
                 on_complete: None,
                 args: serde_json::Value::Object(Default::default()),
@@ -1811,6 +1812,7 @@ pub(crate) mod tests {
                 descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                     primitive: "setState".to_string(),
                     target: None,
+                    kind: None,
                     tag: None,
                     on_complete: None,
                     args: serde_json::json!({ "slot": "trigger.flag", "value": value }),
@@ -1868,6 +1870,7 @@ pub(crate) mod tests {
                 descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                     primitive: "setState".to_string(),
                     target: None,
+                    kind: None,
                     tag: None,
                     on_complete: None,
                     args: serde_json::json!({
@@ -3393,6 +3396,7 @@ pub(crate) mod tests {
                 descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                     primitive: "loadLevel".to_string(),
                     target: None,
+                    kind: None,
                     tag: None,
                     args: serde_json::json!({ "map": "e1m1" }),
                     on_complete: None,
@@ -4009,6 +4013,7 @@ pub(crate) mod tests {
                         descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                             primitive: "applyDamage".to_string(),
                             target: Some("@activators".to_string()),
+                            kind: None,
                             tag: None,
                             on_complete: None,
                             args: serde_json::json!({ "amount": 10.0 }),

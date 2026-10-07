@@ -520,6 +520,7 @@ mod tests {
             descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                 primitive: primitive.to_string(),
                 target: None,
+                kind: None,
                 tag: Some("fixture_tripwire".to_string()),
                 on_complete: None,
                 args: json!({}),

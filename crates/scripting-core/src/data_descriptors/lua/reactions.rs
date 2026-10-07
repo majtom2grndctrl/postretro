@@ -30,9 +30,9 @@ pub fn named_reaction_from_lua(value: LuaValue) -> Result<NamedReaction, Descrip
                 .map_err(|e| DescriptorError::InvalidSequenceShape {
                     reason: e.to_string(),
                 })?;
-        ReactionDescriptor::Sequence(sequence_steps_from_lua(&arr)?)
+        ReactionDescriptor::Sequence(sequence_steps_from_lua(&name, &arr)?)
     } else if has_primitive {
-        ReactionDescriptor::Primitive(primitive_descriptor_from_lua(&table)?)
+        ReactionDescriptor::Primitive(primitive_descriptor_from_lua(&name, &table)?)
     } else {
         return Err(DescriptorError::UnknownShape);
     };
@@ -114,6 +114,7 @@ fn crossing_edge_from_lua(table: &Table) -> Result<Option<String>, DescriptorErr
 }
 
 pub fn primitive_descriptor_from_lua(
+    reaction: &str,
     table: &Table,
 ) -> Result<PrimitiveDescriptor, DescriptorError> {
     let primitive = get_required_string_lua(table, "primitive")?;
@@ -159,6 +160,15 @@ pub fn primitive_descriptor_from_lua(
             reason: "primitive `target` must be `@activators`".to_string(),
         });
     }
+    let has_id = !matches!(table.get("id").map_err(lua_err)?, LuaValue::Nil);
+    let kind = validate_authored_group_kind(
+        reaction,
+        "primitive",
+        authored_kind_lua(table)?,
+        has_id,
+        target.is_some(),
+    )
+    .map_err(|reason| DescriptorError::InvalidShape { reason })?;
     if primitive == "spawnFromSpawner"
         && (tag.as_deref().is_none() || tag.as_deref().is_some_and(str::is_empty))
     {
@@ -194,11 +204,12 @@ pub fn primitive_descriptor_from_lua(
         serde_json::Value::Object(Default::default())
     };
 
-    validate_consequential_reaction(&primitive, tag.as_deref(), target.as_deref(), &args)?;
+    validate_consequential_reaction(&primitive, kind, tag.as_deref(), target.as_deref(), &args)?;
 
     Ok(PrimitiveDescriptor {
         primitive,
         target,
+        kind,
         tag,
         on_complete,
         args,
@@ -209,6 +220,7 @@ pub fn primitive_descriptor_from_lua(
 /// two authoring runtimes must reject the same malformed reaction descriptors.
 fn validate_consequential_reaction(
     primitive: &str,
+    kind: Option<GroupKind>,
     tag: Option<&str>,
     target: Option<&str>,
     args: &serde_json::Value,
@@ -217,14 +229,15 @@ fn validate_consequential_reaction(
         return Ok(());
     }
 
-    let has_non_empty_tag = tag.is_some_and(|tag| !tag.is_empty());
+    // A group `kind` addresses its recipients with or without a tag filter.
+    let has_recipients = kind.is_some() || tag.is_some_and(|tag| !tag.is_empty());
     if !matches!(
-        (has_non_empty_tag, target),
+        (has_recipients, target),
         (true, None) | (false, Some("@activators"))
     ) {
         return Err(DescriptorError::InvalidShape {
             reason: format!(
-                "primitive `{primitive}` requires exactly one of a non-empty `tag` or target `@activators`"
+                "primitive `{primitive}` requires exactly one of a group `kind`, a non-empty `tag`, or target `@activators`"
             ),
         });
     }
@@ -282,7 +295,10 @@ fn validate_consequential_reaction(
     Ok(())
 }
 
-pub fn sequence_steps_from_lua(arr: &Table) -> Result<Vec<SequenceStep>, DescriptorError> {
+pub fn sequence_steps_from_lua(
+    reaction: &str,
+    arr: &Table,
+) -> Result<Vec<SequenceStep>, DescriptorError> {
     let len = validate_dense_lua_array(arr, "`sequence` field").map_err(|e| {
         DescriptorError::InvalidSequenceShape {
             reason: e.to_string(),
@@ -299,8 +315,21 @@ pub fn sequence_steps_from_lua(arr: &Table) -> Result<Vec<SequenceStep>, Descrip
                 });
             }
         };
-        let id = match step_table.get("id").map_err(lua_err)? {
-            LuaValue::String(value) => match value.to_str().map_err(lua_err)?.as_ref() {
+        let id_value: LuaValue = step_table.get("id").map_err(lua_err)?;
+        let kind = validate_authored_group_kind(
+            reaction,
+            &format!("sequence step {i}"),
+            authored_kind_lua(&step_table)?,
+            !matches!(id_value, LuaValue::Nil),
+            false,
+        )
+        .map_err(|reason| DescriptorError::InvalidSequenceShape { reason })?;
+        let id = match (kind, id_value) {
+            (Some(kind), _) => SequenceTarget::Group(GroupTarget {
+                kind,
+                tag: optional_string_lua(&step_table, "tag")?,
+            }),
+            (None, LuaValue::String(value)) => match value.to_str().map_err(lua_err)?.as_ref() {
                 "@activators" => SequenceTarget::Activators,
                 "@trigger" => SequenceTarget::FiredTrigger,
                 "@wait" => SequenceTarget::Wait,
@@ -311,13 +340,13 @@ pub fn sequence_steps_from_lua(arr: &Table) -> Result<Vec<SequenceStep>, Descrip
                     });
                 }
             },
-            _ => {
+            (None, _) => {
                 SequenceTarget::Entity(EntityId::from_raw(get_required_u32_lua(&step_table, "id")?))
             }
         };
         let primitive = get_required_string_lua(&step_table, "primitive")?;
         let primitive = validate_primitive_name(primitive)?;
-        validate_control_step_pair(i, id, &primitive)?;
+        validate_control_step_pair(i, &id, &primitive)?;
         if matches!(id, SequenceTarget::Activators)
             && matches!(primitive.as_str(), "armTrigger" | "disarmTrigger")
         {
@@ -346,7 +375,7 @@ pub fn sequence_steps_from_lua(arr: &Table) -> Result<Vec<SequenceStep>, Descrip
 /// wording aligned so malformed raw descriptors degrade the same way.
 fn validate_control_step_pair(
     step_index: i64,
-    target: SequenceTarget,
+    target: &SequenceTarget,
     primitive: &str,
 ) -> Result<(), DescriptorError> {
     let mismatch = match (target, primitive) {
@@ -368,6 +397,31 @@ fn validate_control_step_pair(
     match mismatch {
         Some(reason) => Err(DescriptorError::InvalidSequenceShape { reason }),
         None => Ok(()),
+    }
+}
+
+/// Luau twin of `authored_kind_js`: `nil` reads as absent.
+fn authored_kind_lua(table: &Table) -> Result<AuthoredKind, DescriptorError> {
+    match table.get("kind").map_err(lua_err)? {
+        LuaValue::Nil => Ok(AuthoredKind::Absent),
+        LuaValue::String(value) => Ok(AuthoredKind::Text(
+            value.to_str().map_err(lua_err)?.to_string(),
+        )),
+        other => Ok(AuthoredKind::NonString(other.type_name().to_string())),
+    }
+}
+
+/// An optional string field: absent or `nil` read as `None`.
+fn optional_string_lua(
+    table: &Table,
+    field: &'static str,
+) -> Result<Option<String>, DescriptorError> {
+    match table.get(field).map_err(lua_err)? {
+        LuaValue::Nil => Ok(None),
+        LuaValue::String(value) => Ok(Some(value.to_str().map_err(lua_err)?.to_string())),
+        other => Err(DescriptorError::InvalidShape {
+            reason: format!("'{field}' must be a string, got {}", other.type_name()),
+        }),
     }
 }
 

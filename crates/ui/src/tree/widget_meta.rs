@@ -107,6 +107,7 @@ pub fn widget_id(widget: &Widget) -> Option<&String> {
         Widget::Slider(w) => Some(&w.id),
         Widget::Bar(w) => w.id.as_ref(),
         Widget::Ring(w) => w.id.as_ref(),
+        Widget::Glyph(w) => w.id.as_ref(),
         Widget::Announce(_) => None,
     }
 }
@@ -133,7 +134,11 @@ pub fn authored_focus_neighbors(widget: &Widget) -> Option<&DescriptorFocusNeigh
         Widget::Grid(w) => Some(&w.focus_neighbors),
         Widget::Button(w) => Some(&w.focus_neighbors),
         Widget::Slider(w) => Some(&w.focus_neighbors),
-        Widget::Spacer(_) | Widget::Bar(_) | Widget::Ring(_) | Widget::Announce(_) => None,
+        Widget::Spacer(_)
+        | Widget::Bar(_)
+        | Widget::Ring(_)
+        | Widget::Glyph(_)
+        | Widget::Announce(_) => None,
     }
 }
 
@@ -231,7 +236,7 @@ pub fn authored_role(widget: &Widget) -> Option<super::super::descriptor::Role> 
         Widget::Slider(w) => w.role,
         Widget::Bar(w) => w.role,
         Widget::Ring(w) => w.role,
-        Widget::Announce(_) => None,
+        Widget::Glyph(_) | Widget::Announce(_) => None,
     }
 }
 
@@ -268,6 +273,7 @@ fn widget_visible_when(widget: &Widget) -> Option<&Predicate> {
         Widget::Slider(w) => w.visible_when.as_ref(),
         Widget::Bar(w) => w.visible_when.as_ref(),
         Widget::Ring(w) => w.visible_when.as_ref(),
+        Widget::Glyph(w) => w.visible_when.as_ref(),
         Widget::Announce(w) => w.visible_when.as_ref(),
     }
 }

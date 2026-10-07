@@ -157,6 +157,7 @@ fn validate_widget_sources(widget: &Widget, path: &str, allow_facts: bool) -> Re
             Ok(())
         }
         Widget::Spacer(spacer) => predicate(&spacer.visible_when, "visibleWhen"),
+        Widget::Glyph(glyph) => predicate(&glyph.visible_when, "visibleWhen"),
         Widget::Button(button) => {
             predicate(&button.selected, "selected")?;
             predicate(&button.checked, "checked")?;
@@ -259,6 +260,9 @@ fn validate_presentation_widget(widget: &Widget, path: &str) -> Result<(), Strin
         )),
         Widget::Spacer(_) => Err(format!(
             "{path}.kind `spacer` is not supported in passive presentation templates"
+        )),
+        Widget::Glyph(_) => Err(format!(
+            "{path}.kind `glyph` is not supported in passive presentation templates"
         )),
         Widget::Button(_) => Err(format!(
             "{path}.kind `button` is interactive and is not supported in passive presentation templates"

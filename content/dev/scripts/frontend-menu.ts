@@ -8,6 +8,7 @@ import {
   Button,
   CLOSE_DIALOG_ACTION,
   EXIT_TO_DESKTOP_ACTION,
+  Glyph,
   Grid,
   HStack,
   OPEN_CONTROLS_ACTION,
@@ -100,10 +101,24 @@ function levelButton(entry: ModMapEntry) {
   });
 }
 
+// A column of level buttons that scrolls once it outgrows the screen. Scroll
+// opens no focus group, so both columns' buttons share the level select's
+// spatial group: Left and Right cross between columns.
 function section(title: string, entries: ModMapEntry[]) {
   return VStack({ gap: 6, align: "stretch" }, [
     Text({ content: title, fontSize: 16 }),
-    ...entries.map(levelButton),
+    VStack({ gap: 6, align: "stretch", scroll: { maxHeight: 360 } }, entries.map(levelButton)),
+  ]);
+}
+
+/// Device-aware prompts: each glyph follows the player's last device and
+/// their bindings.
+function promptRow() {
+  return HStack({ gap: 8, align: "center" }, [
+    Glyph({ command: "nav_confirm" }),
+    Text({ content: "SELECT", fontSize: 14, color: COLOR_MUTED }),
+    Glyph({ command: "nav_cancel" }),
+    Text({ content: "BACK", fontSize: 14, color: COLOR_MUTED }),
   ]);
 }
 
@@ -131,7 +146,7 @@ export const devLevelSelectMenu = defineUiTree({
         focus: { policy: "linear", wrap: true },
       },
       [
-        HStack({ gap: 18, align: "start" }, [
+        HStack({ gap: 18, align: "start", focus: { policy: "spatial" } }, [
           section("Recommended", mapsTagged("recommended")),
           section("Development Tests", mapsTagged("test")),
         ]),
@@ -140,6 +155,7 @@ export const devLevelSelectMenu = defineUiTree({
           label: "BACK",
           onPress: CLOSE_DIALOG_ACTION,
         }),
+        promptRow(),
       ],
     ),
   ),
@@ -769,6 +785,7 @@ export const optionsMenu = defineUiTree({
           }),
         ),
         Button({ id: "optionsBack", label: "BACK", onPress: CLOSE_DIALOG_ACTION }),
+        promptRow(),
       ],
     ),
   ),

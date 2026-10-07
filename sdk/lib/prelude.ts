@@ -49,6 +49,7 @@ export type {
   PanelProps,
   ImageProps,
   SpacerProps,
+  GlyphProps,
   ButtonProps,
   ValueTextCase,
   SliderProps,
@@ -56,7 +57,7 @@ export type {
   RingProps,
   AnnounceProps,
 } from "./ui/widgets";
-export { Text, Panel, Image, Spacer, Button, Slider, Bar, Ring, Announce } from "./ui/widgets";
+export { Text, Panel, Image, Spacer, Glyph, Button, Slider, Bar, Ring, Announce } from "./ui/widgets";
 
 export type {
   FocusKind,

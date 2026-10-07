@@ -473,6 +473,7 @@ mod tests {
                 "Panel",
                 "Image",
                 "Spacer",
+                "Glyph",
                 "Button",
                 "Slider",
                 "Bar",

@@ -26,7 +26,7 @@ pub(crate) use widgets::{validate_scroll_max_height, validate_stack_width};
 pub use widgets::{
     AnnounceWidget, BarExitFade, BarMax, BarMaxStateRef, BarWidget, ButtonWidget, ContainerWidget,
     GridWidget, ImageWidget, PanelBind, PanelTween, PanelWidget, Priority, RingRadiusRange,
-    RingWidget, ScrollProps, SliderBind, SliderValueDisplay, SliderWidget, SpacerWidget, TextBind,
+    GlyphWidget, RingWidget, ScrollProps, SliderBind, SliderValueDisplay, SliderWidget, SpacerWidget, TextBind,
     TextWidget, ValueTextCase, Widget, warn_hstack_scroll_ignored,
 };
 

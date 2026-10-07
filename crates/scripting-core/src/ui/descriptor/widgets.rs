@@ -51,6 +51,10 @@ pub enum Widget {
     // glyph); its sole payload is an a11y live-region announcement a later task
     // routes to the platform a11y layer with the declared `priority`.
     Announce(AnnounceWidget),
+    /// The current glyph for a command: the mod's art for the input bound to
+    /// it on the player's device, else that input's name, else nothing. The
+    /// engine resolves it each frame into an image or text before layout.
+    Glyph(GlyphWidget),
 }
 
 /// Leaf text run. `content` is the literal string; `font_size` is logical px;
@@ -412,6 +416,19 @@ pub struct GridWidget {
 /// pre-feature widget round-trips byte-identically.
 fn is_false(b: &bool) -> bool {
     !*b
+}
+
+/// A command's glyph. `command` is a command ID (`nav_confirm`, `jump`); the
+/// SDK types reject an unknown ID, and one that reaches the engine draws
+/// nothing.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GlyphWidget {
+    pub command: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub visible_when: Option<Predicate>,
 }
 
 /// Flexible-space leaf. `flex_grow` is the proportional share of leftover space

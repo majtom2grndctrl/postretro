@@ -1,6 +1,7 @@
 --!strict
 -- UI widget factories (M13 G1a, Task 3): capitalized constructors for the nine
--- non-container widget kinds -- Text, Panel, Image, Button, Slider, Bar, Ring, Spacer, Announce.
+-- non-container widget kinds -- Text, Panel, Image, Button, Slider, Bar, Ring, Spacer, Announce,
+-- Glyph.
 -- (Containers -- VStack/HStack/Grid -- live in `layout.luau`.) Each mirrors the
 -- `emitter()` precedent: a props table validated synchronously (throwing a
 -- field-named error), documented defaults, a plain descriptor table whose keys
@@ -565,6 +566,26 @@ function UiWidgetsSdk.Spacer(props: any?): WidgetDescriptor
     out.id = p.id
   end
   applyA11yFields(out, p, "Spacer")
+  return out
+end
+
+-- --- Glyph ------------------------------------------------------------------
+
+--- The glyph for a command on the player's current device: the mod's art for
+--- the input bound to it, else that input's name, else nothing when the command
+--- is unbound there or irrelevant. Follows rebinding and the confirm/cancel
+--- swap. Mirrors `GlyphWidget`.
+function UiWidgetsSdk.Glyph(props: any): WidgetDescriptor
+  requireObject(props, "Glyph")
+  requireNonemptyString(props.command, "command", "Glyph")
+  local out: { [string]: any } = { kind = "glyph", command = props.command }
+  if props.id ~= nil then
+    requireNonemptyString(props.id, "id", "Glyph")
+    out.id = props.id
+  end
+  if props.visibleWhen ~= nil then
+    out.visibleWhen = props.visibleWhen
+  end
   return out
 end
 

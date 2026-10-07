@@ -184,7 +184,9 @@ pub fn build_node(
         Widget::Ring(ring) => build_ring(taffy, ring, theme, scope),
         // M13 G2: a non-visual announcement lays out as an empty zero-size leaf
         // (no quad, no glyph). Routing its text to the a11y layer is a later task.
-        Widget::Announce(_) => taffy
+        // A glyph the engine has not resolved into an image or text (a tree
+        // laid out outside the App's snapshot) lays out as nothing.
+        Widget::Announce(_) | Widget::Glyph(_) => taffy
             .new_leaf(Style::default())
             .expect("taffy leaf creation must succeed"),
     }

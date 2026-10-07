@@ -225,7 +225,7 @@ pub(super) const UI_REACTIONS_FIELDS: &[&str] = &[
 /// `validateBorder` / `resolveReactionName` are internal helpers that
 /// `layout.luau` redeclares locally, so they stay off the module table.
 const UI_WIDGETS_FIELDS: &[&str] = &[
-    "Text", "Panel", "Image", "Spacer", "Button", "Slider", "Bar", "Ring", "Announce",
+    "Text", "Panel", "Image", "Spacer", "Glyph", "Button", "Slider", "Bar", "Ring", "Announce",
 ];
 
 /// UI layout-factory SDK fields exported through `require("postretro/ui")`.
@@ -272,6 +272,7 @@ pub const POSTRETRO_UI_MODULE_EXPORTS: &[&str] = &[
     "Panel",
     "Image",
     "Spacer",
+    "Glyph",
     "Button",
     "Slider",
     "Bar",

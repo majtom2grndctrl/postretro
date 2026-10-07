@@ -3,6 +3,7 @@
 
 use super::super::*;
 use crate::ui::descriptor::{
+    GlyphWidget,
     BarExitFade, RingRadiusRange, ScrollProps, SliderValueDisplay, validate_scroll_max_height,
     validate_stack_width, warn_hstack_scroll_ignored,
 };
@@ -69,6 +70,7 @@ pub fn widget_from_js<'js>(ctx: &Ctx<'js>, value: JsValue<'js>) -> Result<Widget
         "hstack" => Widget::HStack(container_widget_from_js(ctx, &obj, false)?),
         "grid" => Widget::Grid(grid_widget_from_js(ctx, &obj)?),
         "spacer" => Widget::Spacer(spacer_widget_from_js(&obj)?),
+        "glyph" => Widget::Glyph(glyph_widget_from_js(&obj)?),
         "button" => Widget::Button(button_widget_from_js(ctx, &obj)?),
         "slider" => Widget::Slider(slider_widget_from_js(ctx, &obj)?),
         "bar" => Widget::Bar(bar_widget_from_js(ctx, &obj)?),
@@ -237,6 +239,14 @@ pub fn grid_widget_from_js<'js>(
         visible_when: predicate_opt_from_js(obj, "visibleWhen")?,
         role: role_opt_from_js(obj)?,
         children: children_from_js(ctx, obj)?,
+    })
+}
+
+pub fn glyph_widget_from_js<'js>(obj: &Object<'js>) -> Result<GlyphWidget, DescriptorError> {
+    Ok(GlyphWidget {
+        command: get_required_string_js(obj, "command")?,
+        id: get_optional_string_js(obj, "id")?,
+        visible_when: predicate_opt_from_js(obj, "visibleWhen")?,
     })
 }
 

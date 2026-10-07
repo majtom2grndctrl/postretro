@@ -2638,6 +2638,12 @@ export type ImageProps = { asset: string, id: string?, focusNeighbors: FocusNeig
 --- Props for `Spacer`. `flexGrow` defaults to 1. No bind.
 export type SpacerProps = { flexGrow: number?, id: string?, visibleWhen: Predicate?, role: WidgetRole? }
 
+--- Props for `Glyph`. `command` is a command ID.
+export type GlyphProps = { command: CommandId, id: string?, visibleWhen: Predicate? }
+
+--- The glyph for a command on the player's current device: the mod's art for the input bound to it, else that input's name, else nothing when it is unbound there or irrelevant. Follows rebinding and the confirm/cancel swap.
+declare function Glyph(props: GlyphProps): WidgetDescriptor
+
 --- One `Button.valueText` case: `text` shows while every predicate in `when` holds. An absent or empty `when` always holds.
 export type ValueTextCase = { when: { Predicate }?, text: LocalizedText }
 --- Props for `Button`. `onPress` is a reaction handle or a bare name string. Name-XOR (M13 G2): exactly one of `label` / `labelledBy`. `selected`/`checked` are reactive predicates; `bind`+`styleRanges` drive the highlight; `disabled` makes it non-interactive. `valueText` makes the visible text follow state: the first case whose predicates all hold, else `label`.
@@ -2975,6 +2981,8 @@ export type PostretroUiModule = {
   Image: (props: ImageProps) -> WidgetDescriptor,
   --- Build a spacer descriptor. `flexGrow` is finite and defaults to 1.
   Spacer: (props: SpacerProps?) -> WidgetDescriptor,
+  --- Build a glyph for a command on the player's current device; follows rebinding and the confirm/cancel swap.
+  Glyph: (props: GlyphProps) -> WidgetDescriptor,
   --- Build an interactive button descriptor. `onPress` accepts a reaction handle, bare reaction name, or reserved `ui.*` action.
   Button: (props: ButtonProps) -> WidgetDescriptor,
   --- Build an interactive slider descriptor. `bind` is writable numeric state/local cell; writes clamp to `[min, max]`.

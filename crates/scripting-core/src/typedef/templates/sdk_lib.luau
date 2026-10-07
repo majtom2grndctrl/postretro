@@ -1181,6 +1181,12 @@ export type SpacerProps = { flexGrow: number?, id: string?, visibleWhen: Predica
 --- A `spacer` leaf claiming a proportional share of leftover space.
 declare function Spacer(props: SpacerProps?): WidgetDescriptor
 
+--- Props for `Glyph`. `command` is a command ID.
+export type GlyphProps = { command: CommandId, id: string?, visibleWhen: Predicate? }
+
+--- The glyph for a command on the player's current device: the mod's art for the input bound to it, else that input's name, else nothing when it is unbound there or irrelevant. Follows rebinding and the confirm/cancel swap.
+declare function Glyph(props: GlyphProps): WidgetDescriptor
+
 --- One `Button.valueText` case: `text` shows while every predicate in `when` holds. An absent or empty `when` always holds.
 export type ValueTextCase = { when: { Predicate }?, text: LocalizedText }
 --- Props for `Button`. `onPress` is a reaction handle or a bare name string. Name-XOR (M13 G2): exactly one of `label` / `labelledBy`. `selected`/`checked` are reactive predicates; `bind`+`styleRanges` drive the highlight; `disabled` makes it non-interactive. `valueText` makes the visible text follow state: the first case whose predicates all hold, else `label`.

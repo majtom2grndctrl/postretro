@@ -3,6 +3,7 @@
 
 use super::super::*;
 use crate::ui::descriptor::{
+    GlyphWidget,
     BarExitFade, RingRadiusRange, ScrollProps, SliderValueDisplay, validate_scroll_max_height,
     validate_stack_width, warn_hstack_scroll_ignored,
 };
@@ -62,6 +63,7 @@ pub fn widget_from_lua(value: LuaValue) -> Result<Widget, DescriptorError> {
         "hstack" => Widget::HStack(container_widget_from_lua(&table, false)?),
         "grid" => Widget::Grid(grid_widget_from_lua(&table)?),
         "spacer" => Widget::Spacer(spacer_widget_from_lua(&table)?),
+        "glyph" => Widget::Glyph(glyph_widget_from_lua(&table)?),
         "button" => Widget::Button(button_widget_from_lua(&table)?),
         "slider" => Widget::Slider(slider_widget_from_lua(&table)?),
         "bar" => Widget::Bar(bar_widget_from_lua(&table)?),
@@ -210,6 +212,14 @@ pub fn grid_widget_from_lua(table: &Table) -> Result<GridWidget, DescriptorError
         visible_when: predicate_opt_from_lua(table, "visibleWhen")?,
         role: role_opt_from_lua(table)?,
         children: children_from_lua(table)?,
+    })
+}
+
+pub fn glyph_widget_from_lua(table: &Table) -> Result<GlyphWidget, DescriptorError> {
+    Ok(GlyphWidget {
+        command: get_required_string_lua(table, "command")?,
+        id: get_optional_string_lua(table, "id")?,
+        visible_when: predicate_opt_from_lua(table, "visibleWhen")?,
     })
 }
 

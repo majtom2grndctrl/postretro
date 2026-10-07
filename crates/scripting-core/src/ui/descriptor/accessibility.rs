@@ -53,6 +53,8 @@ pub fn implicit_role(widget: &Widget) -> Role {
         | Widget::Panel(_)
         | Widget::Ring(_)
         | Widget::Announce(_) => Role::None,
+        // Resolved into an image or text before layout.
+        Widget::Glyph(_) => Role::Image,
     }
 }
 

@@ -2524,6 +2524,7 @@ impl ApplicationHandler for App {
                 // After the frame's activations: resolve a capture and refresh
                 // the controls panel.
                 self.update_controls_panel();
+                self.sync_glyph_art();
 
                 let ui_captures_gameplay = {
                     let session = self.session.as_ref().expect("running session installed");
@@ -4652,6 +4653,7 @@ impl ApplicationHandler for App {
                         frontend_menu_is_present,
                     );
                     ui_snapshot.wheel = self.ui_wheel.take();
+                    crate::app::glyph_art::resolve_snapshot_glyphs(&mut ui_snapshot, session);
                     renderer.set_ui_snapshot(ui_snapshot);
                     let limiter_frame = Self::next_limiter_frame(&mut self.last_resolve_at, now);
                     renderer.set_limiter_frame(limiter_frame);
@@ -5896,6 +5898,7 @@ impl App {
         // After the frame's activations: resolve a capture and refresh the
         // controls panel.
         self.update_controls_panel();
+        self.sync_glyph_art();
 
         if self.pending_exit_to_desktop {
             self.pending_exit_to_desktop = false;
@@ -5940,6 +5943,7 @@ impl App {
             frontend_menu_is_present,
         );
         ui_snapshot.wheel = self.ui_wheel.take();
+        crate::app::glyph_art::resolve_snapshot_glyphs(&mut ui_snapshot, session);
 
         let Some(renderer) = self.renderer.as_mut() else {
             return;
@@ -12712,6 +12716,32 @@ mod tests {
             button_action(&tree("frontend.devLevelSelect").root, "levelSelectBack"),
             Some(postretro_ui::actions::CLOSE_DIALOG_ACTION)
         );
+        {
+            use postretro_ui::descriptor::{FocusKind, Widget};
+            let Widget::VStack(select_root) = &tree("frontend.devLevelSelect").root else {
+                panic!("level select root is a vstack");
+            };
+            let Some(Widget::HStack(columns)) = select_root.children.first() else {
+                panic!("level select opens with its columns");
+            };
+            assert_eq!(
+                columns.focus.as_ref().map(|focus| focus.kind()),
+                Some(FocusKind::Spatial),
+                "level select is spatial: Left and Right cross columns"
+            );
+            for column in &columns.children {
+                let Widget::VStack(column) = column else {
+                    panic!("each column is a vstack");
+                };
+                assert!(
+                    column.children.iter().any(|child| matches!(
+                        child,
+                        Widget::VStack(list) if list.scroll.is_some()
+                    )),
+                    "each column's list scrolls"
+                );
+            }
+        }
 
         let options_registration = manifest
             .ui_trees

@@ -760,6 +760,10 @@
   export type SpacerProps = { flexGrow?: number; id?: string; visibleWhen?: Predicate; role?: WidgetRole };
   /** A `spacer` leaf claiming a proportional share of leftover space. */
   export function Spacer(props?: SpacerProps): WidgetDescriptor;
+  /** Props for `Glyph`. `command` is a command ID. */
+  export type GlyphProps = { command: CommandId; id?: string; visibleWhen?: Predicate };
+  /** The glyph for a command on the player's current device: the mod's art for the input bound to it, else that input's name, else nothing when it is unbound there or irrelevant. Follows rebinding and the confirm/cancel swap. */
+  export function Glyph(props: GlyphProps): WidgetDescriptor;
 
   /** One `Button.valueText` case: `text` shows while every predicate in `when` holds. An absent or empty `when` always holds. */
   export type ValueTextCase = { when?: Predicate[]; text: LocalizedText };

@@ -81,6 +81,26 @@ impl Renderer {
         self.full_mut().ui_snapshot = snapshot;
     }
 
+    /// Upload an RGBA8 image (`width * height * 4` bytes) under `key`, so
+    /// `image` widgets naming that key draw it. Re-registering a key replaces
+    /// it. Mods' glyph art arrives through here at mod init.
+    pub fn register_ui_image(&mut self, key: &str, rgba: Vec<u8>, width: u32, height: u32) {
+        let image = postretro_ui::UiTexture {
+            data: rgba,
+            width,
+            height,
+        };
+        let device = &self.device;
+        let queue = self.queue.raw();
+        let full = self
+            .full
+            .as_mut()
+            .expect("renderer full-init must complete before UI images upload");
+        let (texture, bind_group) = full.ui.upload_image(device, queue, &image);
+        full.ui_images
+            .register_uploaded(key, texture, bind_group, [width, height]);
+    }
+
     /// Store the elapsed presented-frame time the photosensitivity limiter
     /// ages its window and rate allowance by. The App calls this beside
     /// `set_ui_snapshot`. An input the resolve has not yet consumed (its frame's

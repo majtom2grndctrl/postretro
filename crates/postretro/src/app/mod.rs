@@ -9,6 +9,9 @@ mod accessibility_panel_tests;
 mod accessibility_surface_fixture_tests;
 pub(crate) mod bindings;
 pub(crate) mod controls_panel;
+pub(crate) mod glyph_art;
+#[cfg(test)]
+mod input_surface_fixture_tests;
 pub(crate) mod keyboard_input;
 pub(crate) mod options_menu;
 pub(crate) mod render_extents;

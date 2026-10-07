@@ -46,7 +46,7 @@ mod wieldable_selection;
 pub use author_layer::author_layer_from_block;
 pub use binding_capture::{BindingCapture, CaptureTarget};
 pub use binding_state::{BindingSources, BindingState};
-pub use binding_table::{AuthorLayer, EffectiveTable, PlayerLayer};
+pub use binding_table::{AuthorLayer, EffectiveTable, GlyphDirs, PlayerLayer};
 #[cfg(test)]
 pub use binding_table::{AuthorBinding, CommandPresentation};
 pub use commands::{Command, CommandContext};
@@ -54,11 +54,8 @@ pub use input_names::{input_label, input_name};
 pub use rebind::{RebindProposal, propose_rebind, reset_command};
 pub use relevance::Relevance;
 pub use defaults::default_bindings;
-#[allow(unused_imports)]
 pub use device_family::{DeviceFamily, DeviceFamilyTracker};
-// The Glyph widget reads these once it lands (task 19, after the scroll merge).
-#[allow(unused_imports)]
-pub use glyphs::{GlyphView, glyph_dir, glyph_key, resolve_glyph};
+pub use glyphs::{GlyphView, glyph_key, resolve_glyph};
 pub use diagnostics::{DiagnosticAction, DiagnosticInputs, default_diagnostic_chords};
 pub use focus::InputFocus;
 pub use input_names::DeviceClass;

@@ -75,6 +75,9 @@ pub(crate) struct Session {
     /// input system runs. Rebuilt by `App::refresh_effective_bindings`.
     pub(crate) bindings: input::BindingState,
 
+    /// The mod's glyph art the renderer holds.
+    pub(crate) glyph_art: crate::app::glyph_art::GlyphArtState,
+
     /// The device family glyphs follow, settled once per frame.
     pub(crate) device_family: input::DeviceFamilyTracker,
 
@@ -680,6 +683,7 @@ impl Session {
         Ok(Self {
             input_system,
             bindings,
+            glyph_art: Default::default(),
             device_family: Default::default(),
             controls: Default::default(),
             pending_slider_steps: Vec::new(),

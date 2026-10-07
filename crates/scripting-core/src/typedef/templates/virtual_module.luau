@@ -23,6 +23,8 @@ export type PostretroUiModule = {
   Image: (props: ImageProps) -> WidgetDescriptor,
   --- Build a spacer descriptor. `flexGrow` is finite and defaults to 1.
   Spacer: (props: SpacerProps?) -> WidgetDescriptor,
+  --- Build a glyph for a command on the player's current device; follows rebinding and the confirm/cancel swap.
+  Glyph: (props: GlyphProps) -> WidgetDescriptor,
   --- Build an interactive button descriptor. `onPress` accepts a reaction handle, bare reaction name, or reserved `ui.*` action.
   Button: (props: ButtonProps) -> WidgetDescriptor,
   --- Build an interactive slider descriptor. `bind` is writable numeric state/local cell; writes clamp to `[min, max]`.

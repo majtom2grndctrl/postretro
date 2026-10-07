@@ -145,6 +145,10 @@ pub(crate) struct UiPass {
     /// Bind group for the white-texel batch (panels). Rebuilt only if the
     /// uniform buffer changes, which it never does after construction.
     white_bind_group: wgpu::BindGroup,
+    /// The quad pipeline's bind-group layout and sampler, kept so an `image`
+    /// widget asset uploaded later binds the same way the white texel does.
+    image_bind_group_layout: wgpu::BindGroupLayout,
+    image_sampler: wgpu::Sampler,
 
     /// glyphon shaped-text half of the pass. Owns its pipeline, atlas, and
     /// per-span draw recorders. See `text`.
@@ -463,6 +467,8 @@ impl UiPass {
             ring_bind_group,
             white_view,
             white_bind_group,
+            image_bind_group_layout: bind_group_layout.clone(),
+            image_sampler: sampler.clone(),
             text,
             depth_texture: None,
             depth_view: None,
@@ -918,6 +924,39 @@ pub(crate) fn push_focus_ring(
     draw.push_quad(bar([ox, oy + oh - t, ow, t]));
     draw.push_quad(bar([ox, oy + t, t, (oh - 2.0 * t).max(0.0)]));
     draw.push_quad(bar([ox + ow - t, oy + t, t, (oh - 2.0 * t).max(0.0)]));
+}
+
+impl UiPass {
+    /// Upload an RGBA8 image for `image` widgets: its texture and the bind
+    /// group its batches bind, laid out like the white texel's.
+    pub(crate) fn upload_image(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        image: &UiTexture,
+    ) -> (wgpu::Texture, wgpu::BindGroup) {
+        let texture = upload_ui_texture(device, queue, image);
+        let view = texture.create_view(&Default::default());
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("UI Image Bind Group"),
+            layout: &self.image_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: self.uniform_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&self.image_sampler),
+                },
+            ],
+        });
+        (texture, bind_group)
+    }
 }
 
 /// Upload a CPU RGBA8 `UiTexture` and return the GPU texture. sRGB format so

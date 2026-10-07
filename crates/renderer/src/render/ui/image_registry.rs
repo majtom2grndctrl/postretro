@@ -37,7 +37,6 @@ impl UiImageRegistry {
     /// creates the GPU objects; the registry keeps the texture alive, resolves
     /// the key at draw time, and exposes the same texture's natural size to
     /// layout.
-    #[allow(dead_code)]
     pub fn register_uploaded(
         &mut self,
         key: impl Into<String>,

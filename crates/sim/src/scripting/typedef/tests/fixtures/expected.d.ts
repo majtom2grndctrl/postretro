@@ -2571,6 +2571,7 @@ declare module "postretro/ui" {
     CrossingDescriptor,
     NumberValue,
     RuntimeValue,
+    CommandId,
   } from "postretro";
 
   /** Linear RGBA color token value. Components are in display-linear 0-1 space; alpha is the fourth element. */
@@ -2727,6 +2728,10 @@ declare module "postretro/ui" {
   export type SpacerProps = { flexGrow?: number; id?: string; visibleWhen?: Predicate; role?: WidgetRole };
   /** Build a spacer widget descriptor. */
   export function Spacer(props?: SpacerProps): WidgetDescriptor;
+  /** Props for `Glyph`. `command` is a command ID. */
+  export type GlyphProps = { command: CommandId; id?: string; visibleWhen?: Predicate };
+  /** The glyph for a command on the player's current device: the mod's art for the input bound to it, else that input's name, else nothing when it is unbound there or irrelevant. Follows rebinding and the confirm/cancel swap. */
+  export function Glyph(props: GlyphProps): WidgetDescriptor;
   /** One `Button.valueText` case: `text` shows while every predicate in `when` holds. An absent or empty `when` always holds. */
   export type ValueTextCase = { when?: Predicate[]; text: LocalizedText };
   /** Props for `Button`. `id` is required for focus/activation. `onPress` accepts a `defineReaction` handle, bare reaction name, or reserved `ui.*` action. Exactly one of `label` or `labelledBy` is required. `valueText` makes the visible text follow state: the first case whose predicates all hold, else `label`. */

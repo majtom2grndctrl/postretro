@@ -71,8 +71,6 @@ impl DeviceFamilyTracker {
         self.current
     }
 
-    // Read by the Glyph widget's per-frame map (task 19, after the scroll merge).
-    #[allow(dead_code)]
     pub fn current(&self) -> DeviceFamily {
         self.current
     }

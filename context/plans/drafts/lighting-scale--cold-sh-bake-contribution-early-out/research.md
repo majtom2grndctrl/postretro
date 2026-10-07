@@ -62,8 +62,10 @@ The SH stage fell further (−65 %) than the re-snap's 46 % share: the exact-zer
 skips the shadow rays — and their probe work — for lights aimed away or behind the surface.
 The two were not timed separately.
 
-Single-run wall-clock on a shared container; treat second-level differences in small stages
-as noise.
+A second cold run after the review fixes (range test restored ahead of the zero test) kept
+both hashes and measured `stress-warren-mini` SH 200.09 s, total 447.23 s; `campaign-test`
+SH 7.69 s, total 23.08 s. Run-to-run spread on this shared container is ~20 % per stage;
+read the after column as 200–252 s SH and 447–503 s total on mini.
 
 ## Warm builds and the cache
 

@@ -209,7 +209,7 @@ Campaign spawn: −0.77 / −0.98 [−1.03, −0.98] ms (−31% / −33%). Kinem
 - **Cost-model form.** The entry term is reported per pose rather than as one coefficient, and the lever projection scales the per-row saving. See plan.md Corrections.
 - **Out of scope, but large:** at both kinematic poses, Pass A (`Streamed Direct SH Promotion`) averages 2.6–2.9 ms per frame (absent at the arena and campaign). The promotion station's moving weights re-fire it. It does not bias the compose pairs (it splits evenly across A and B frames), but it may deserve its own look.
 - **The brief's Basis numbers are probably inflated** by the shared `gpu_time.py` frame heuristic (see Method). The same heuristic sits in `measurements/shadow-fill-cost/`.
-- **Retire `sh-compose-array-free`, or reshape it (open since the 1660 reading).** The gate's rule ends the direction as drafted. A successor would need a shape that keeps the array-free row path but does not raise per-entry cost on NVIDIA, for example keeping entries outer on rows that carry entries. It would also need a new 1660 reading before any Mac work. The 1660's entry-heavy profile also reopens H-b and H-c on that GPU, though they barely register on the Mac.
+- **Retire `sh-compose-array-free`, or reshape it** — ruled below: retired. The gate's rule ends the direction as drafted. A successor would need a shape that keeps the array-free row path but does not raise per-entry cost on NVIDIA, for example keeping entries outer on rows that carry entries. It would also need a new 1660 reading before any Mac work. The 1660's entry-heavy profile also reopens H-b and H-c on that GPU, though they barely register on the Mac.
 
 ## Owner rulings (2026-10-06)
 - **Exactness on L0 content:** accepted as conditional. `sh-compose-array-free` keeps the L1/L2 path and proves it with a GPU byte-compare on synthetic sections.
@@ -220,6 +220,7 @@ Campaign spawn: −0.77 / −0.98 [−1.03, −0.98] ms (−31% / −33%). Kinem
   - `sh-compose-array-free`: the lever. The 1660 reading below gates its promotion, and it regresses. The exported lever's unreachable old-kernel tail is deleted after a paired re-measure.
   - `sh-compose-contributing-rows`: the row filter, by narrowing per-pass membership to rows that carry entries. Lifting the exemption is excluded.
   - `gpu-pass-paired-ab`: a lasting paired A/B tool.
+- **`sh-compose-array-free` retired and deleted (owner, 2026-10-06),** after the 1660 reading regressed it before and after the contributing-row filter.
 
 ## 1660 Super reading (F8)
 
@@ -227,7 +228,7 @@ GTX 1660 Super on Vulkan (driver 617.14), Windows 11, 2026-10-06. Records are in
 
 **Method.**
 - One release binary of probes `1a052cfed`, built as on the Mac. `start-script.js` was rebuilt from that commit's TypeScript, because the checkout's copy came from a newer main.
-- One arm per launch (unpaired), set by `POSTRETRO_SPIKE_ARMS`, read from `POSTRETRO_GPU_TIMING=1` `[gpu-timing]` windows of 120 readbacks. Each launch drops 3 windows and keeps 8; its value is their median.
+- One arm per launch (unpaired, because GPU timestamps would average paired A and B together), set by `POSTRETRO_SPIKE_ARMS`, read from `POSTRETRO_GPU_TIMING=1` `[gpu-timing]` windows of 120 readbacks. Each launch drops 3 windows and keeps 8; its value is their median.
 - Arms are interleaved round by round, 3 launches each, with a 10 s idle gap. `run1660.py` drives the launches and `summarize1660.py` reduces them.
 - Arms: `baseline`, `array-free`, `array-free,unroll36` and `floor`.
 - Poses: campaign-test spawn and the hallway arena, as the handoff asked. The kinematic station was added because its entry mix differs (780 entry rows on indirect, 75 on Pass B).

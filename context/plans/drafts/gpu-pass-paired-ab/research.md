@@ -11,9 +11,9 @@ Read at `b9d0a4645` (origin/main). Spike evidence was read on the `sh-compose-ro
 | Per encoder, between-launch reads agree: six `diag1` launches of one binary read 6.69–6.75 / 7.99–8.02 ms, and between-launch `arena3` matches the paired deltas (`accum-scalar` −2.98 / −4.48 vs paired −2.86 / −4.38) | spike `findings.md` §Retraction |
 | A/A paired null: −0.01 to +0.02 ms by median, runs to ±0.02 | spike `findings.md` §Method |
 | Deltas still ahead are small: the lever on top of the contributing-row filter projects −0.07 to −0.66 ms per pass | spike `findings.md` post-filter table ("Lever on top") |
-| Firm consumer: a change to a compose kernel file needs a paired Mac re-measure | `drafts/sh-compose-array-free/index.md` Decisions (owner, 2026-10-06) |
+| Former consumer, now retired: `sh-compose-array-free` required a paired Mac re-measure for any compose kernel change. The owner retired that brief on 2026-10-06 after the 1660 reading regressed. | spike `findings.md` §Owner rulings |
 | Both compose passes flip together, so Pass B is measured with indirect on the same arm | spike `findings.md` §Method |
-| With timestamps, paired mode would average A and B together | spike `findings.md` §1660 handoff ("Arm per launch") |
+| With timestamps, paired mode would average A and B together | spike `findings.md` §1660 Super reading (Method) |
 | A host-side layout lever (`coalesced-b`) needed A and B to both carry it | spike `README.md` §Arms |
 | Known delta for the manual reproduction row: `array-free+unroll36` at the arena, −2.23 ms indirect, −2.89 ms Pass B (median of 3 paired launches) | spike `findings.md` attribution table |
 | Exact assembled source of both arms, with SHA-256s | spike `measurements/sh-compose-row-cost-spike/lever-wgsl/README.md` |
@@ -109,7 +109,7 @@ Rejected locations:
 
 ## §12 text ownership
 
-`sh-compose-array-free` promotes a per-encoder method and a short paired method into §12 if it lands first. That brief's Decisions say `gpu-pass-paired-ab` owns the Paired A/B subsection and folds that text in when it lands. Either order leaves one subsection.
+`gpu-pass-paired-ab` alone writes §12's Paired A/B subsection. `sh-compose-array-free`, which could have landed a short paired method first, was retired (owner, 2026-10-06).
 
 The subsection also qualifies §12 Machine-state confounders, "Then A/B an older commit under the same machine state":
 - shader-only changes use the paired method;

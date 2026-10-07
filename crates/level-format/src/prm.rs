@@ -8,7 +8,7 @@
 // Normal slots may use BC5 block compression (format_tag 3); diffuse and
 // specular stay uncompressed. The specular slot is a two-channel "surface map"
 // (format_tag 4, `Rg8Unorm`) when the material carries a `_h.png` height
-// sibling: R keeps specular intensity, G carries depth below the surface.
+// sibling: R keeps specular intensity, G carries the inverted height byte.
 // Single-channel `R8Unorm` specular remains valid and is what a material
 // without a height sibling still bakes to. Loading is still a header parse plus
 // memcpy — BC5 payload bytes are uploaded verbatim. No per-mip headers.
@@ -127,12 +127,11 @@ pub enum PrmFormat {
     Bc5RgUnorm = 3,
     /// 2 bytes per pixel, linear two-channel. The specular slot's "surface
     /// map" form: R is specular intensity (identical in meaning to
-    /// `R8Unorm`), G is depth below the true surface plane, baked from the
-    /// material's `_h.png` height sibling as `255 - height`.
-    ///
-    /// Storing depth rather than height is what makes an absent height
-    /// sibling a true no-op: sampling a single-channel `R8Unorm` specular in
-    /// WGSL yields `(r, 0, 0, 1)`, so `.g == 0` — and depth 0 means "flat".
+    /// `R8Unorm`), G is the material's `_h.png` height sibling baked as
+    /// `255 - height`. The byte carries no zero point; the renderer reads
+    /// 128 as the surface plane. Under that reading `G = 0` is maximum
+    /// raise, so a single-channel slot (WGSL `(r, 0, 0, 1)`) must never be
+    /// marched — the renderer gates on this format, not on the G value.
     Rg8Unorm = 4,
 }
 

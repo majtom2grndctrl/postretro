@@ -295,8 +295,8 @@ pub(super) fn build_specular_chain_impl(r8: &[u8], width: u32, height: u32) -> V
 ///
 /// `rg` is interleaved `[specular, depth]` per texel at `width * height`
 /// texels. Both channels are already linear and already in their stored
-/// sense — in particular the caller has inverted the authored height map to
-/// depth (`255 - height`) before interleaving, so mip 0 is a straight copy.
+/// sense — in particular the caller has inverted the authored height map
+/// (`255 - height`) before interleaving, so mip 0 is a straight copy.
 ///
 /// Filtering is the same Mitchell-Netravali (B = C = 1/3) separable path the
 /// single-channel specular chain uses, applied to both channels at once, so a
@@ -1092,10 +1092,10 @@ pub fn bake_world_texture_mips(
         match (height_bytes.as_deref(), height_path.as_ref()) {
             (Some(hb), Some(hp)) => {
                 let (height_rgba, w, h) = decode_png_rgba(hb, hp)?;
-                // Authors write a conventional height map: white = raised.
-                // The stored channel is depth BELOW the surface, so invert
-                // here — that is what makes "no height sibling" and "depth 0"
-                // the same thing at sample time.
+                // Stored as `255 - height`. The runtime re-centers on mid-gray
+                // (128 = the surface plane); the bake applies no zero point,
+                // because the bundle hash covers source PNG bytes only and a
+                // changed transform would silently reuse stale sidecars.
                 let depth: Vec<u8> = height_rgba
                     .as_chunks::<4>()
                     .0

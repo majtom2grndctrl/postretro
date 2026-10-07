@@ -83,7 +83,7 @@ The material enum and prefix derivation are implemented. Behavior hooks are plan
 |----------|--------|
 | **Emissive surfaces** | Implemented — world and kinematic-brush `_e` texels add static self-illumination to HDR scene color, scaled by the prefix-derived material multiplier. They never replace or inject into direct/indirect lighting; bright values bloom in the renderer compositor. See §4.5. |
 | **Shininess** | Implemented (Epic 5) — specular exponent on enum variant. |
-| **Surface Depth carve** | Implemented — per-prefix carve depth (meters), terrace count, march step cap, and fade distance for the texel-space parallax march. `glass` and `neon` resolve to flat by intent, not by omission. See §4.6. |
+| **Surface Depth** | Implemented — per-prefix depth (each direction), terrace count, march step cap, and fade distance for the signed texel-space parallax march. `glass` and `neon` resolve to flat by intent, not by omission. See §4.6. |
 | **Footstep sounds** | Planned. |
 | **Bullet impact particles** | Planned. |
 | **Ricochet behavior** | Planned. |
@@ -170,36 +170,40 @@ the authored sRGB-content convention for this sibling.
 
 ### 4.6 Height Maps (Surface Depth)
 
-Per-texel depth for texel-space parallax. Height does **not** get a `.prm` slot
+Per-texel signed height for texel-space parallax. Height does **not** get a `.prm` slot
 of its own — the forward pass is at its 16/16 sampled-texture budget — so it
 rides in the **G channel of the specular slot**, which becomes a two-channel
 "surface map" (`PrmFormat::Rg8Unorm`, wire tag 4): R specular, G depth.
 
 - **Naming:** `{name}_h.png` suffix.
 - **Format:** the authored PNG is grayscale; the baker reads its R channel.
-  Authored as a **conventional height map — white = raised**, the familiar
-  convention.
+  **Mid-gray (128) is the true surface plane.** Darker sinks, lighter rises,
+  linear in the byte: `(h − 128) / 128` of the material's depth, so black
+  sinks the full depth and white rises 127/128 of it. 128 is the plane
+  because 127.5 is unrepresentable.
 - **Color Space:** Linear. An `sRGB`, `gAMA`, or `iCCP` tag fails the build,
   exactly like `_s` and `_n`.
 - **Dimensions:** Must match the diffuse, and must match `_s.png` when that
   sibling exists. Both are hard compile-time bails — unlike `_s`/`_n` versus
   diffuse, which is documented but unenforced — because `_h` and `_s` are
   interleaved into one texture.
-- **Inversion at bake time:** `prl-build` stores `G = 255 - height`, i.e. depth
-  *below* the true surface plane, not height above it. Authors never think in
-  inverted terms; the baker does it. This is what makes an absent height map a
-  true no-op: sampling a single-channel `R8Unorm` specular in WGSL yields
-  `(r, 0, 0, 1)`, so `.g == 0`, and depth 0 means flat.
+- **Inversion at bake time:** `prl-build` stores `G = 255 - height`. The
+  mid-gray zero point is applied at runtime, not baked: the shader and its CPU
+  reference recover the byte and re-center it. The stored encoding predates
+  signed height and is unchanged, so no `.prm` rebakes. Consequence: `G = 0`
+  now means **maximum raise**, not flat, and the has-depth gate (below) is the
+  only thing keeping a single-channel slot from marching as fully raised.
 - **Slot mask:** the SPECULAR bit is set if **either** `_s.png` or `_h.png` is
   present. With `_h` and no `_s`, R bakes to 0 — the same zero specular
   response the shared black placeholder gives.
 - **Fallback:** no `_h.png` bakes the historical single-channel `R8Unorm`
   specular slot, byte-identical to before. Content addressing folds height in
   only when it is present, so no existing `baked/materials/` sidecar rebakes.
-- **Runtime:** the absent-specular placeholder is unchanged and needs no
-  change — it is the same 1×1 black `R8Unorm` texel it always was, and WGSL's
-  `(r, 0, 0, 1)` expansion of a single-channel sample makes its depth channel
-  read 0, i.e. flat. Both slot formats bind through the same group-1 texture
+- **Runtime:** the absent-specular placeholder is the same 1×1 black
+  `R8Unorm` texel it always was. WGSL expands it to `(r, 0, 0, 1)`, whose
+  `.g == 0` would read as maximum raise, so the march runs only when the
+  loaded slot is `Rg8Unorm` — a has-depth bit decided from the slot that
+  actually loaded, never from the prefix. Both slot formats bind through the same group-1 texture
   entry (`Float { filterable: true }`), so no bind-group layout changes. The
   surface map costs exactly twice the single-channel specular slot it replaces
   and nothing else; a 1024×1024 bundle's specular payload goes from 1,398,101
@@ -208,24 +212,30 @@ rides in the **G channel of the specular slot**, which becomes a two-channel
   an exact texel-grid DDA before sampling any other slot; see
   `rendering_pipeline.md` §7.3 (Surface Depth) for the algorithm, the lighting
   integration, and the hard renderer constraints it honors.
-- **Per-material tuning:** carve depth (in **meters**), quantization plateau
-  count, march step cap, and fade distance are derived from the material name
-  **prefix**, exactly like `shininess` and `emissive_strength`
+- **Per-material tuning:** depth (texels or meters, applied **in each
+  direction**), terrace count per direction, march step cap, and fade distance
+  are derived from the material name **prefix**, exactly like `shininess` and `emissive_strength`
   (`postretro-render-data::material::Material::surface_depth`). This engine has
   no author-facing material descriptor file and Surface Depth deliberately does
   not introduce one: authoring is still "drop a correctly-named PNG". The four
-  values ride in the per-material uniform's second 16-byte row, which was
-  already allocated and already zeroed, so nothing about the binding layout or
-  buffer size changed. A material whose loaded specular slot is not `Rg8Unorm`
-  gets an all-zero row and skips the march entirely.
+  values ride in the per-material uniform's second 16-byte row. A material
+  whose loaded specular slot is not `Rg8Unorm` gets an all-zero row and skips
+  the march entirely.
+- **Relief band:** at load, the renderer reads the surface map's highest raise
+  and lowest sink across **every uploaded mip** (filtering can overshoot the
+  base level) on the CPU. Quantized to the material's terraces, the band rides
+  in the uniform's first row beside shininess and emissive strength. The march
+  starts at the band's top, so a map that never exceeds mid-gray costs what a
+  carve-only map always did; an empty band (all mid-gray) uploads the same
+  bytes as no map.
 - **Player on/off switch (D5):** the renderer RETAINS each world/mover
   material's uniform buffer handle alongside its bind group (`GpuTexture`),
   plus the GPU-free `MaterialUniformPlan` that produced its contents, so
   `Renderer::set_surface_depth_quality` can rewrite those 32 bytes in place.
   The setting is **off/on** — no middle tier; see `player_options.md` §4. The
   plan stores the material's own per-prefix tuning, unmodified by the switch,
-  and the two facts taken from the slot that actually loaded (is it `Rg8Unorm`,
-  how many mips), so a rewrite can turn the effect back on as well as off and
+  and the facts taken from the slot that actually loaded (is it `Rg8Unorm`,
+  how many mips, its relief band), so a rewrite can turn the effect back on as well as off and
   can never resurrect a carve for a material with no height sibling. Ownership is unchanged: the buffers live in the
   level's `gpu_textures` vector and die with the level (§8.2).
 

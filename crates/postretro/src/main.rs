@@ -879,7 +879,7 @@ pub(crate) struct App {
     view_feel_descriptor: Option<postretro_foundation::ViewFeelParams>,
 
     /// Parallel to `input_system`; same key events, debug actions only.
-    /// See: context/lib/input.md §7
+    /// See: context/lib/input.md §8
     diagnostic_inputs: input::DiagnosticInputs,
 
     /// One-shot flag: set by `DumpPortalWalk`, consumed and cleared on the
@@ -929,7 +929,7 @@ pub(crate) struct App {
     /// (close) the registered `pauseMenu` via the engine push/pop API. `nav.menu` opens
     /// the menu from gameplay where the UI-dispatch seam is `Passthrough` and so
     /// queues nothing — hence the dedicated punch-through, mirroring how
-    /// `ToggleDebugPanel` bypasses the capture gate. See: context/lib/input.md §7.
+    /// `ToggleDebugPanel` bypasses the capture gate. See: context/lib/input.md §5.
     pending_menu_toggle: bool,
 
     /// Whether the engine accessibility panel was on the stack at the last
@@ -2080,7 +2080,7 @@ impl ApplicationHandler for App {
                 // exactly like gamepad Start) and Escape inside a capturing tree —
                 // including an open text-entry modal — to `nav.cancel`. The Shift state is
                 // the diagnostic resolver's modifier tracking (the Shift key-down was seen
-                // by the general arm before this Esc). See: context/lib/input.md §7.
+                // by the general arm before this Esc). See: context/lib/input.md §5.
                 self.release_cursor_for_exit();
                 log::info!("[Engine] Shutting down");
                 event_loop.exit();

@@ -1,6 +1,6 @@
 // Glyphs: the mod's art loads into the UI image registry, and each frame's
 // snapshot resolves every `glyph` widget into the image or text it draws.
-// See: context/lib/ui.md §4 · context/lib/input.md §2
+// See: context/lib/ui.md §4 · context/lib/input.md §2, §6
 
 use std::cell::RefCell;
 use std::collections::HashSet;

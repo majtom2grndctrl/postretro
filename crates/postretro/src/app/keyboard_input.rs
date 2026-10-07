@@ -40,7 +40,7 @@ impl App {
                 // The toggle chord (`Alt+Shift+Backquote`) is reachable
                 // even when egui consumes the keypress — no egui widget
                 // binds it, so a targeted check here is unambiguous.
-                // See: context/lib/input.md §7
+                // See: context/lib/input.md §5, §8
                 #[cfg(feature = "dev-tools")]
                 if !is_modifier_key
                     && let Some(action) =
@@ -155,7 +155,7 @@ impl App {
                     // opens the menu (`nav.menu`). The seam's `Capture` mode is
                     // set by `reconcile_ui_focus` from the modal stack's top
                     // capture mode, so it IS the "capturing tree present"
-                    // predicate. See: context/lib/input.md §7
+                    // predicate. See: context/lib/input.md §2 (Contexts), §5
                     let context = if session.ui_dispatch.mode() == input::UiCaptureMode::Capture {
                         input::UiNavContext::Capture
                     } else {

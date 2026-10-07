@@ -1,6 +1,6 @@
 // Text shortcut tests: activation through the keyboard tree's keys, no effect
 // without text entry or after a same-frame commit, and held repeat.
-// See: context/lib/input.md §7
+// See: context/lib/input.md §5 · context/lib/ui.md §4
 
 use postretro_ui::descriptor::{AnchoredTree, CaptureMode};
 use postretro_ui::modal_stack::ScopeTier;

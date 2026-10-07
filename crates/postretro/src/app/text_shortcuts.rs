@@ -1,7 +1,7 @@
 // On-screen keyboard shortcuts: `text_backspace`, `text_space`, and
 // `text_commit` activate the keyboard tree's own keys without moving focus,
 // so they act through whatever the tree authors.
-// See: context/lib/input.md §7 · context/lib/ui.md §4
+// See: context/lib/input.md §5 · context/lib/ui.md §4
 
 use crate::input::{Command, UiIntent, UiIntentPayload};
 use crate::*;

@@ -2,7 +2,7 @@
 // first input pressed while it is the active tree. The App swallows every
 // input the prompt sees and resolves the candidate after that frame's
 // activations.
-// See: context/lib/input.md §2 · context/lib/player_options.md §6
+// See: context/lib/input.md §5 (Rebind capture) · context/lib/player_options.md §6
 
 use super::commands::{Command, CommandKind};
 use super::input_names::{DeviceClass, input_name};

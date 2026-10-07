@@ -1,7 +1,7 @@
 # E23--gamepad-input — plan of record
 
 mode: resumable
-status: approved
+status: done
 read at: b9d0a4645
 
 Source re-read at `b9d0a4645` (window-modes landed; research was against `af1d3c1b5`). No Decision premise was found false. Path corrections below.
@@ -61,91 +61,91 @@ Source re-read at `b9d0a4645` (window-modes landed; research was against `af1d3c
 
 ## AC-to-proof
 
-Row ids number the brief's Acceptance bullets in order within each heading. Planned test names are indicative; final names land in the Status column.
+Row ids number the brief's Acceptance bullets in order within each heading. Planned test names are indicative; final names land in the Result column, each confirmed present in the tree at `12ca8ac91`. Results: 76 pass (two review gates included), 4 manual pass (owner, 2026-10-07), 1 not applicable, none outstanding or failing.
 
-| AC | Proof | Status |
-|---|---|---|
-| AL1 no block = today's defaults, no conflicts, Escape menu/cancel | `effective_table_without_block_matches_legacy_defaults` + conflict check over engine table | restated (owner, 2026-10-06): every default key, mouse, and button input produces the same action reads as today; the pad sticks move and look in the keyboard and mouse directions instead of today's inverted signs |
-| AL2 Q/Z fly-cam with no block; move_up hidden, no conflict on Q | effective-table + no-pawn snapshot test; panel row list test | achievable as stated |
-| AL3 ShiftLeft→dash, sprint kbm empty | manifest-validation + resolver test | achievable as stated |
-| AL4 accepted activators per command | `activator_acceptance_per_command` (exhaustive over commands) | achievable as stated |
-| AL5 guard on author defaults | validation test | achievable as stated |
-| AL6 unknown input on dash / unknown command id | validation test with log assertions | achievable as stated |
-| AL7 typo fallback collides → unbound; later conflicting entry unbound | validation test | achievable as stated |
-| AL8 absent device class keeps engine default; empty unbinds | validation test | achievable as stated |
-| AL9 show:false on nav_confirm diagnosed | validation test | achievable as stated |
-| AL10 key on analog / axis on digital diagnosed; stick swap moves dead zone | validation + gamepad look test | achievable as stated |
-| AL11 `postretro.dev.dash` unknown; rows keyed by ID strings | validation + settings round-trip test | achievable as stated |
-| AL12 hot reload recomputes, keeps overrides | staged-commit rebuild test | achievable as stated |
-| R1 no dash descriptor → unbound, unlisted, no conflict on F; one of two → relevant | relevance derivation test | achievable as stated |
-| R2 reload / crouch / alt_fire relevance | relevance derivation test | achievable as stated |
-| R3 hot reload adding dash binds it | staged-commit rebuild test | achievable as stated |
-| R4 force-show / force-hide flip | relevance test | achievable as stated |
-| R5 panel from frontend before level load (P6) | panel row-list test after mod-init commit | achievable as stated |
-| R6 co-op tuning union and clear (P5) | relevance + endpoint observation test | achievable as stated |
-| R7 unclassified command fails to compile; no wildcard | exhaustive match + review gate | review gate |
-| PD1 changed author default reaches non-rebinders | layering test | achievable as stated |
-| PD2 dash row kept while irrelevant, reapplies | settings + relevance test | achievable as stated |
-| PD3 empty-list row round-trips | settings round-trip test | achievable as stated |
-| PD4 unknown command row survives a save | settings round-trip test | achievable as stated |
-| PD5 unknown first entry → author default on slot 1, slot 2 kept | settings + layering test | achievable as stated |
-| PD6 every written input string parses back | `every_input_name_round_trips` | achievable as stated |
-| PD7 player Q→dash vs later author Q→reload | collision test + panel flag | achievable as stated |
-| PD8 player press vs later author hold on Q | collision test + panel flag | achievable as stated |
-| PD9 two mod ids keep separate rows | settings test | achievable as stated |
-| PD10 rebound key takes its activator per `player_options.md` §6 | layering test | achievable as stated |
-| PD11 top-level keys without accessibility slot (catalog assertion); hold_timing_scale has both; bad sprint_mode falls back alone | options + catalog tests | achievable as stated |
-| AV1 tap+hold on one key, all six cases | resolver unit tests (deterministic time) | achievable as stated |
-| AV2 P1, P2 | resolver buffered-edge tests | achievable as stated |
-| AV3 P3 zero-tick tap and hold | latch + resolver test | achievable as stated |
-| AV4 lone press / tap / release | resolver tests | achievable as stated |
-| AV5 tap 0.1 s vs release 0.15 s; default 0.2 s | resolver test | achievable as stated |
-| AV6 hold sprint held state; toggle latch | resolver + sprint-mode test | achievable as stated |
-| AV7 hold_timing_scale doubles; panel 1–3; P23 | resolver + panel action test | achievable as stated |
-| AV8 tuning install while Shift held; P4 | rebuild test | achievable as stated |
-| AV9 P24 key held across menu | resolver cancel test | achievable as stated |
-| AV10 conflict cases incl. guarded replace refusal | conflict checker tests | achievable as stated |
-| AV11 no wire field for activators | review gate (netcode wire types diff) | review gate |
-| CAP1 P7 | capture-prompt tests | achievable as stated |
-| CAP2 P8 | capture routing test | achievable as stated |
-| CAP3 swap-aware capture | capture test | achievable as stated |
-| CAP4 P25 | capture + rebuild test | achievable as stated |
-| MC1 restoreOnReturn:false in both SDKs | SDK drain tests (JS + Luau) + focus test | achievable as stated |
-| MC2 P11 | focus owner-gating test | achievable as stated |
-| MC3 P12, P27 | focus + dev-dialog test | achievable as stated |
-| MC4 P13 | focus tests | achievable as stated |
-| MC5 P14 | focus test | achievable as stated |
-| MC6 P15 | repeat test | achievable as stated |
-| MC7 P16 | repeat test | achievable as stated |
-| MC8 P17 | slider capture test | achievable as stated |
-| MC9 P9, P10 | nav-binding repeat-release tests | achievable as stated |
-| MC10 nav_down on right_stick_down | gamepad nav test | achievable as stated |
-| MC11 nested group escape / re-entry / Next at end / focusNeighbors / Text never focused | focus tests | achievable as stated |
-| MC12 P21 tab strip | focus test | achievable as stated |
-| MC13 P20 | tab intent tests | achievable as stated |
-| MC14 no tablist → bumpers Next/Prev | tab intent test | achievable as stated |
-| MC15 scroll fits / wheel / group membership / HStack diagnostic both SDKs | layout + SDK drain tests | achievable as stated |
-| MC16 scroll-into-view by one row | layout test | achievable as stated |
-| MC17 P18, P19 | layout + hit-test tests | achievable as stated |
-| MC18 P26, P28, backspace repeat | text-entry shortcut tests | achievable as stated |
-| MC19 reserved controls-panel name at all paths | registry tests with log assertions | achievable as stated |
-| GF1 glyph follows family and rebinding | glyph resolve test | achievable as stated |
-| GF2 vendor id → family; dead-zone drift; one family per frame (P22) | family tracker tests | achievable as stated |
-| GF3 missing art → input name; irrelevant/unbound → nothing | glyph resolve test | achievable as stated |
-| GF4 no auto-swap by family; swap after overrides | layering + glyph test | achievable as stated |
-| GF5 Scripting-surface example as a `content/dev` fixture in both SDKs | fixture scripts drained by JS and Luau tests | achievable as stated |
-| MN1 tap-dash / hold-sprint feel | owner, in-engine, keyboard + gamepad | manual |
-| MN2 controls panel content | owner, in-engine | manual |
-| MN3 epic AC 25 gamepad-only pass, Xbox + PS/Nintendo | owner, real pads | manual |
-| E2 (hold_timing_scale) unrecognized value falls back alone | options test | achievable as stated |
-| E3a hold_timing_scale slot live, readonly | catalog + bridge test | achievable as stated |
-| E3b working copy write path | bridge test | achievable as stated |
-| E3c engine write reseeds | panel action test | achievable as stated |
-| E10 panel carries hold_timing_scale | `the_panel_descriptor_carries_every_accessibility_field` | achievable as stated |
-| E13 replication clause covers new entries | existing catalog-derived test | achievable as stated |
-| E19–E24 | covered by MC/GF/AV/CAP rows above; cross-checked at report | achievable as stated |
-| E25 | = MN3 | manual |
-| E33 | only if U4 lands first | not applicable unless U4 lands first |
+| AC | Proof | Status | Result |
+|---|---|---|---|
+| AL1 no block = today's defaults, no conflicts, Escape menu/cancel | `effective_table_without_block_matches_legacy_defaults` + conflict check over engine table | restated (owner, 2026-10-06): every default key, mouse, and button input produces the same action reads as today; the pad sticks move and look in the keyboard and mouse directions instead of today's inverted signs | pass: `engine_defaults_keep_every_legacy_key_mouse_and_button_read`, `pad_sticks_move_in_the_keyboard_directions`, `pad_look_turns_and_pitches_in_the_mouse_directions`, `engine_defaults_raise_no_conflict_and_keep_the_guard`, `escape_is_menu_with_no_tree_and_cancel_under_one_without_a_conflict` (the planned `effective_table_without_block_matches_legacy_defaults` was never added; these replace it) |
+| AL2 Q/Z fly-cam with no block; move_up hidden, no conflict on Q | effective-table + no-pawn snapshot test; panel row list test | achievable as stated | pass: `fly_cam_stays_bound_hidden_and_out_of_conflicts`, `fly_cam_commands_are_dev_only_whatever_the_author_shows`, `rows_list_only_relevant_commands` |
+| AL3 ShiftLeft→dash, sprint kbm empty | manifest-validation + resolver test | achievable as stated | pass: `author_shift_dash_with_empty_sprint_keyboard_drives_dash_only`, `shift_dash_with_an_empty_sprint_keyboard_list_drives_dash_and_never_runs` |
+| AL4 accepted activators per command | `activator_acceptance_per_command` (exhaustive over commands) | achievable as stated | pass: `activator_acceptance_per_command`, `each_command_accepts_its_activators_and_diagnoses_the_rest` |
+| AL5 guard on author defaults | validation test | achievable as stated | pass: `defaults_that_unbind_a_guarded_command_are_diagnosed_and_fall_back` |
+| AL6 unknown input on dash / unknown command id | validation test with log assertions | achievable as stated | pass: `an_unknown_input_falls_back_for_that_entry_alone_and_unknown_commands_are_ignored` |
+| AL7 typo fallback collides → unbound; later conflicting entry unbound | validation test | achievable as stated | pass: `a_fallback_that_would_collide_unbinds_and_the_later_conflicting_entry_loses` |
+| AL8 absent device class keeps engine default; empty unbinds | validation test | achievable as stated | pass: `a_keyboard_only_entry_keeps_gamepad_defaults_and_an_empty_gamepad_list_unbinds`, `an_absent_device_class_keeps_engine_defaults_and_an_empty_list_unbinds` |
+| AL9 show:false on nav_confirm diagnosed | validation test | achievable as stated | pass: `hiding_nav_confirm_is_diagnosed_and_it_stays_bound_and_listed` |
+| AL10 key on analog / axis on digital diagnosed; stick swap moves dead zone | validation + gamepad look test | achievable as stated | pass: `a_key_on_an_analog_command_or_an_axis_on_a_digital_one_is_diagnosed`, `binding_look_and_move_to_the_other_sticks_swaps_them` (the look dead zone follows look) |
+| AL11 `postretro.dev.dash` unknown; rows keyed by ID strings | validation + settings round-trip test | achievable as stated | pass: `an_unknown_input_falls_back_for_that_entry_alone_and_unknown_commands_are_ignored` (`postretro.dev.dash`), `command_ids_round_trip_and_never_contain_a_dot`, `rows_parse_by_command_id_and_skip_unknown_commands` |
+| AL12 hot reload recomputes, keeps overrides | staged-commit rebuild test | achievable as stated | pass: `a_hot_reload_of_the_block_recomputes_bindings_and_keeps_player_overrides` |
+| R1 no dash descriptor → unbound, unlisted, no conflict on F; one of two → relevant | relevance derivation test | achievable as stated | pass: `an_irrelevant_dash_is_unbound_and_never_conflicts_with_an_author_f`, `dash_is_relevant_when_any_of_two_movement_descriptors_has_it`, `rows_list_only_relevant_commands` |
+| R2 reload / crouch / alt_fire relevance | relevance derivation test | achievable as stated | pass: `reload_crouch_and_alt_fire_follow_their_descriptors`, `data_driven_commands_follow_their_facts` |
+| R3 hot reload adding dash binds it | staged-commit rebuild test | achievable as stated | pass: `the_controls_panel_lists_dash_from_the_registry_before_any_level_loads` (a registry replace bumps the entity-types generation the rebuild keys on; a staged commit replaces the registry the same way). No dedicated staged-reload test |
+| R4 force-show / force-hide flip | relevance test | achievable as stated | pass: `force_show_and_force_hide_flip_the_derived_answer`, `force_show_binds_an_underived_command` |
+| R5 panel from frontend before level load (P6) | panel row-list test after mod-init commit | achievable as stated | pass: `the_controls_panel_lists_dash_from_the_registry_before_any_level_loads` |
+| R6 co-op tuning union and clear (P5) | relevance + endpoint observation test | achievable as stated | pass: `host_tuning_makes_dash_relevant_for_a_client_registry_without_it`, `dash_binds_while_host_tuning_is_installed_and_unbinds_after_demote`, `co_op_relevance_is_the_union_with_host_tuning` |
+| R7 unclassified command fails to compile; no wildcard | exhaustive match + review gate | review gate | pass (review gate): `derived_relevance` is an exhaustive match with no wildcard arm |
+| PD1 changed author default reaches non-rebinders | layering test | achievable as stated | pass: `a_command_never_rebound_follows_the_author_default` |
+| PD2 dash row kept while irrelevant, reapplies | settings + relevance test | achievable as stated | pass: `a_player_dash_row_waits_out_an_irrelevant_session_and_applies_when_dash_returns` |
+| PD3 empty-list row round-trips | settings round-trip test | achievable as stated | pass: `an_empty_binding_row_stays_unbound_across_save_and_load`, `an_empty_row_unbinds` |
+| PD4 unknown command row survives a save | settings round-trip test | achievable as stated | pass: `an_unknown_command_row_survives_a_save_that_rewrites_another_row` |
+| PD5 unknown first entry → author default on slot 1, slot 2 kept | settings + layering test | achievable as stated | pass: `an_unreadable_slot_falls_back_to_its_author_default_alone`, `an_unknown_input_string_keeps_its_slot_for_the_author_default` |
+| PD6 every written input string parses back | `every_input_name_round_trips` | achievable as stated | pass: `every_input_name_round_trips` |
+| PD7 player Q→dash vs later author Q→reload | collision test + panel flag | achievable as stated | pass: `a_player_key_beats_a_later_author_default_on_it_and_flags_the_author_command`, `a_player_binding_that_took_an_author_default_flags_the_displaced_row` |
+| PD8 player press vs later author hold on Q | collision test + panel flag | achievable as stated | pass: `a_later_author_hold_on_a_player_press_is_displaced_so_the_press_stays_immediate` |
+| PD9 two mod ids keep separate rows | settings test | achievable as stated | pass: `two_mod_ids_keep_separate_binding_rows` |
+| PD10 rebound key takes its activator per `player_options.md` §6 | layering test | achievable as stated | pass: `a_default_input_keeps_its_own_activator_wherever_the_row_puts_it`, `an_input_that_replaced_a_default_takes_its_activator_wherever_another_default_sits`, `a_rebound_key_keeps_its_slot_activator_and_an_extra_slot_takes_press` |
+| PD11 top-level keys without accessibility slot (catalog assertion); hold_timing_scale has both; bad sprint_mode falls back alone | options + catalog tests | achievable as stated | pass: `only_hold_timing_scale_of_the_new_fields_has_an_accessibility_slot_and_panel_entry`, `an_unrecognized_sprint_mode_falls_back_to_hold_alone` |
+| AV1 tap+hold on one key, all six cases | resolver unit tests (deterministic time) | achievable as stated | pass: `shared_key_release_within_tap_max_fires_tap_once_and_hold_never`, `shared_key_held_past_hold_min_fires_hold_and_never_tap`, `shared_key_release_exactly_at_threshold_counts_as_the_release`, `shared_key_release_between_tap_max_and_hold_min_fires_nothing`, `a_tap_max_past_the_hold_min_on_one_input_is_diagnosed`, `losing_focus_mid_hold_fires_neither_binding` |
+| AV2 P1, P2 | resolver buffered-edge tests | achievable as stated | pass: `press_and_release_between_frames_fire_the_tap_once_and_the_hold_never`, `lone_press_pressed_and_released_between_frames_fires_once`, `two_keys_tapped_on_one_frame_fire_their_command_once`, `gamepad_button_event_pressed_and_released_between_polls_fires_once` |
+| AV3 P3 zero-tick tap and hold | latch + resolver test | achievable as stated | pass: `a_tap_on_a_zero_tick_frame_reaches_the_next_tick_as_a_press`, `a_hold_crossing_on_a_zero_tick_frame_reaches_the_next_tick_and_its_tap_never_fires`, `toggle_sprint_latches_on_the_hold_resolution_and_releases_on_the_next` |
+| AV4 lone press / tap / release | resolver tests | achievable as stated | pass: `lone_press_fires_on_the_press_frame`, `lone_tap_fires_on_its_release_frame_within_max_and_never_past_it`, `lone_release_fires_on_key_up` |
+| AV5 tap 0.1 s vs release 0.15 s; default 0.2 s | resolver test | achievable as stated | pass: `authored_tap_threshold_bounds_the_tap_and_an_unset_one_uses_the_default` |
+| AV6 hold sprint held state; toggle latch | resolver + sprint-mode test | achievable as stated | pass: `hold_sprint_shows_a_held_state_every_frame_past_the_threshold`, `toggle_sprint_latches_on_the_hold_resolution_and_releases_on_the_next` |
+| AV7 hold_timing_scale doubles; panel 1–3; P23 | resolver + panel action test | achievable as stated | pass: `hold_timing_scale_two_doubles_every_threshold`, `hold_timing_scale_steps_by_a_quarter_within_one_to_three`, `a_key_already_down_keeps_the_threshold_it_started_with` |
+| AV8 tuning install while Shift held; P4 | rebuild test | achievable as stated | pass: `a_tuning_rebuild_that_adds_a_shift_tap_keeps_a_held_sprint_and_fires_no_dash`, `a_key_held_through_a_rebuild_that_newly_binds_it_fires_only_on_its_next_press` |
+| AV9 P24 key held across menu | resolver cancel test | achievable as stated | pass: `a_polled_button_held_across_a_menu_does_nothing_until_pressed_again`, `a_press_buffered_before_a_clear_never_reads_pressed_after_it` |
+| AV10 conflict cases incl. guarded replace refusal | conflict checker tests | achievable as stated | pass: `south_on_jump_and_confirm_is_not_a_conflict`, `conflict_rules_follow_the_steam_pairing`, `a_conflict_replace_takes_the_input_from_its_holder`, `rebinding_confirm_to_cancels_only_button_is_refused` |
+| AV11 no wire field for activators | review gate (netcode wire types diff) | review gate | pass (review gate): `crates/net`, `crates/netcode`, and `crates/combat-model` are unchanged against `main` |
+| CAP1 P7 | capture-prompt tests | achievable as stated | pass: `a_press_before_the_prompt_opens_is_not_captured` |
+| CAP2 P8 | capture routing test | achievable as stated | pass: `a_captured_menu_or_cancel_input_reaches_nothing_else` (renamed from `capturing_start_or_escape_binds_it_and_nothing_else`) |
+| CAP3 swap-aware capture | capture test | achievable as stated | pass: `with_the_swap_on_capturing_south_for_confirm_makes_south_confirm` |
+| CAP4 P25 | capture + rebuild test | achievable as stated | pass: `a_prompt_whose_command_becomes_irrelevant_closes_without_binding` |
+| MC1 restoreOnReturn:false in both SDKs | SDK drain tests (JS + Luau) + focus test | achievable as stated | pass: `restore_on_return_is_a_tree_prop_in_both_sdks_and_an_explicit_false_survives`, `a_pop_that_reveals_a_tree_restores_its_focus_unless_it_opts_out` |
+| MC2 P11 | focus owner-gating test | achievable as stated | pass: `a_stale_export_from_a_popped_tree_neither_resets_nor_overwrites_the_revealed_focus`, `an_export_owned_by_another_tree_is_withheld_from_the_focus_tick` |
+| MC3 P12, P27 | focus + dev-dialog test | achievable as stated | pass: `a_fresh_push_of_a_tree_visited_before_lands_on_its_initial_focus`, `dev_exit_and_quit_confirmations_land_a_repeated_confirm_on_cancel` |
+| MC4 P13 | focus tests | achievable as stated | pass: `a_saved_focus_now_disabled_or_rebuilt_away_…`, `re_entering_a_group_whose_last_member_is_gone_or_disabled_lands_on_its_first_enabled` |
+| MC5 P14 | focus test | achievable as stated | pass: `a_direction_held_while_a_tree_is_pushed_does_not_move_its_focus` |
+| MC6 P15 | repeat test | achievable as stated | pass: `a_held_direction_across_a_one_second_frame_moves_at_most_one_step`, `a_held_slider_across_a_one_second_frame_steps_once` |
+| MC7 P16 | repeat test | achievable as stated | pass: `a_tap_moves_one_step_with_no_repeat_and_a_hold_repeats_at_the_engine_default`, `an_authored_zero_delay_never_repeats_and_an_authored_cadence_wins` |
+| MC8 P17 | slider capture test | achievable as stated | pass: `a_slider_step_and_an_external_write_on_one_frame_never_lose_the_write` |
+| MC9 P9, P10 | nav-binding repeat-release tests | achievable as stated | pass: `a_direction_rebound_to_w_resolves_from_w_and_no_longer_from_the_arrow`, `the_swap_makes_east_confirm_and_south_cancel`, `confirm_release_stops_the_activation_repeat`. The release sites stop repeat through the same nav-map lookups; no end-to-end held-key test |
+| MC10 nav_down on right_stick_down | gamepad nav test | achievable as stated | pass: `binding_nav_down_to_the_right_stick_navigates_with_it` |
+| MC11 nested group escape / re-entry / Next at end / focusNeighbors / Text never focused | focus tests | achievable as stated | pass: `moving_back_into_a_nested_group_lands_on_its_last_focused_member`, `next_at_the_end_of_a_non_wrapping_nested_group_does_nothing`, `a_focus_neighbors_target_in_another_group_wins_over_the_escape`, `a_text_inside_a_scroll_container_is_never_focused` |
+| MC12 P21 tab strip | focus test | achievable as stated | pass: `down_from_any_tab_enters_the_panel_and_up_returns_to_the_tab_last_focused`, `right_on_the_last_tab_wraps_within_the_strip` |
+| MC13 P20 | tab intent tests | achievable as stated | pass: `two_bumper_presses_on_one_frame_advance_two_tabs_and_skip_a_disabled_one`, `with_no_tab_selected_rb_activates_the_first_tab_and_lb_the_last`, `a_lone_tab_takes_focus_without_activating`, `with_a_dialog_over_a_tabbed_menu_the_bumpers_act_on_the_dialog_only` |
+| MC14 no tablist → bumpers Next/Prev | tab intent test | achievable as stated | pass: `in_a_tree_with_no_tablist_the_bumpers_step_next_and_prev` |
+| MC15 scroll fits / wheel / group membership / HStack diagnostic both SDKs | layout + SDK drain tests | achievable as stated | pass: `a_scroll_container_whose_content_fits_sizes_to_its_content_and_does_not_scroll`, `the_pointer_wheel_scrolls_the_overflowing_container_under_the_cursor`, `scroll_children_join_the_enclosing_focus_group_unless_the_container_declares_focus`, `an_hstack_scroll_is_ignored_and_diagnosed_once_at_registration`, `scroll_drains_on_vstack_and_grid_and_an_hstack_scroll_is_diagnosed_and_ignored_in_both_sdks` |
+| MC16 scroll-into-view by one row | layout test | achievable as stated | pass: `moving_focus_one_row_below_the_viewport_scrolls_by_one_row_and_above_aligns_tops` |
+| MC17 P18, P19 | layout + hit-test tests | achievable as stated | pass: `a_container_scrolled_to_its_end_whose_content_shrinks_draws_with_no_empty_band`, `a_click_on_a_scroll_containers_clipped_area_hits_nothing_hidden`, `a_restored_focus_outside_the_viewport_scrolls_into_view_by_the_minimum_distance` |
+| MC18 P26, P28, backspace repeat | text-entry shortcut tests | achievable as stated | pass: `a_space_on_the_frame_text_entry_commits_adds_nothing`, `shortcuts_do_nothing_without_a_text_entry_tree_on_top`, `a_held_backspace_shortcut_repeats_as_the_key_does`, `text_shortcuts_resolve_only_in_the_text_entry_context`. The keyboard half of P28 holds by construction: the text-entry key branch never consults the nav map |
+| MC19 reserved controls-panel name at all paths | registry tests with log assertions | achievable as stated | pass: `a_mod_tree_under_the_reserved_name_never_replaces_the_engine_panel`, `engine_panel_and_confirm_names_are_reserved_on_every_registration_path` |
+| GF1 glyph follows family and rebinding | glyph resolve test | achievable as stated | pass: `rebinding_confirm_changes_its_glyph_on_the_next_frame`, `a_glyph_draws_the_familys_art_and_an_irrelevant_command_draws_nothing` |
+| GF2 vendor id → family; dead-zone drift; one family per frame (P22) | family tracker tests | achievable as stated | pass: `pads_map_to_families_by_vendor`, `one_family_per_frame_and_quiet_frames_keep_it`. Drift never votes: only presses and dead-zone crossings reach the tracker |
+| GF3 missing art → input name; irrelevant/unbound → nothing | glyph resolve test | achievable as stated | pass: `missing_art_draws_the_input_name`, `irrelevant_or_unbound_commands_draw_nothing` |
+| GF4 no auto-swap by family; swap after overrides | layering + glyph test | achievable as stated | pass: `the_confirm_cancel_swap_applies_after_player_overrides_on_gamepad_only`, `glyphs_follow_rebinding_and_the_swap` |
+| GF5 Scripting-surface example as a `content/dev` fixture in both SDKs | fixture scripts drained by JS and Luau tests | achievable as stated | pass: `both_sdks_author_the_same_input_surface`, `the_fixture_glyph_resolves_and_its_controls_entry_opens_the_panel`, `input_block_scripting_surface_example_drains_in_both_runtimes` |
+| MN1 tap-dash / hold-sprint feel | owner, in-engine, keyboard + gamepad | manual | manual: pass (owner, 2026-10-07) |
+| MN2 controls panel content | owner, in-engine | manual | manual: pass (owner, 2026-10-07); automated half `rows_list_only_relevant_commands`, `rows_follow_author_labels_categories_and_order`, `each_slot_shows_its_activator_read_only` |
+| MN3 epic AC 25 gamepad-only pass, Xbox + PS/Nintendo | owner, real pads | manual | manual: pass (owner, 2026-10-07) |
+| E2 (hold_timing_scale) unrecognized value falls back alone | options test | achievable as stated | pass: `hold_timing_scale_lives_in_the_group_clamps_to_one_to_three_and_falls_back_alone` |
+| E3a hold_timing_scale slot live, readonly | catalog + bridge test | achievable as stated | pass: `session_build_seeds_resolved_slots_and_working_copies` (table-driven over the group, `hold_timing_scale` included) |
+| E3b working copy write path | bridge test | achievable as stated | pass: `a_menu_write_updates_the_store_and_the_resolved_slot_in_the_same_frame` (table-driven) |
+| E3c engine write reseeds | panel action test | achievable as stated | pass: `an_engine_write_reseeds_the_working_copy_without_counting_as_a_menu_write` (table-driven) |
+| E10 panel carries hold_timing_scale | `the_panel_descriptor_carries_every_accessibility_field` | achievable as stated | pass: `the_panel_descriptor_carries_every_accessibility_field` |
+| E13 replication clause covers new entries | existing catalog-derived test | achievable as stated | pass: `accessibility_slots_and_their_working_copies_never_replicate` (catalog-derived; covers `accessibility.holdTimingScale` and its working copy) |
+| E19–E24 | covered by MC/GF/AV/CAP rows above; cross-checked at report | achievable as stated | pass: through the MC, GF, AV, and CAP rows above |
+| E25 | = MN3 | manual | manual: pass (owner, 2026-10-07), as MN3 |
+| E33 | only if U4 lands first | not applicable unless U4 lands first | n/a: U4 has not started |
 
 ## Tasks
 

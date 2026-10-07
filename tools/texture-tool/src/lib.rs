@@ -170,7 +170,7 @@ impl SpecProfile {
         }
     }
 
-    /// Per-profile default height/depth strength. See `HeightProfileDefaults`.
+    /// Per-profile default height strength. See `HeightProfileDefaults`.
     fn height_defaults(self) -> HeightProfileDefaults {
         match self {
             // Backward-compatible/neutral: pass the luminance signal through.
@@ -262,12 +262,9 @@ impl TextureJob {
     }
 
     pub fn resolved_height_quantize_levels(&self) -> Result<u8, String> {
-        let levels = self.height_quantize_levels.unwrap_or_else(|| {
-            default_quantize_levels(TextureDimensions {
-                width: self.width,
-                height: self.height,
-            })
-        });
+        let levels = self
+            .height_quantize_levels
+            .unwrap_or_else(|| default_height_quantize_levels(&self.stem));
         if levels < 2 {
             return Err(format!(
                 "height_quantize_levels must be blank, 0, or at least 2 for {}",
@@ -308,6 +305,36 @@ pub fn default_quantize_levels(size: TextureDimensions) -> u8 {
     } else {
         24
     }
+}
+
+/// Default height terraces per stem material prefix: twice the engine's
+/// terraces per direction for that prefix, so every terrace this tool writes
+/// lands exactly on an engine plateau. Any other count puts some terraces on
+/// the engine's half-step ties, and raised sides then render one terrace taller
+/// than sunk sides. Kept in step with the engine's prefix table by a test in
+/// `postretro-render-data`, which reads this table from this file.
+pub const HEIGHT_QUANTIZE_LEVELS_BY_PREFIX: [(&str, u8); 4] =
+    [("concrete", 12), ("metal", 4), ("wood", 4), ("grate", 6)];
+
+/// Default height terraces for any prefix not in
+/// [`HEIGHT_QUANTIZE_LEVELS_BY_PREFIX`]: the engine's default material.
+pub const DEFAULT_HEIGHT_QUANTIZE_LEVELS: u8 = 6;
+
+/// The material prefix of a stem, as the engine derives it: the first
+/// `_`-delimited token of the name after any collection path, case-folded.
+pub fn material_prefix(stem: &str) -> String {
+    let bare = stem.rsplit_once('/').map_or(stem, |(_, bare)| bare);
+    let prefix = bare.split_once('_').map_or(bare, |(prefix, _)| prefix);
+    prefix.to_lowercase()
+}
+
+/// Default `--height-quantize-levels` for a stem, from its material prefix.
+pub fn default_height_quantize_levels(stem: &str) -> u8 {
+    let prefix = material_prefix(stem);
+    HEIGHT_QUANTIZE_LEVELS_BY_PREFIX
+        .iter()
+        .find(|(name, _)| *name == prefix)
+        .map_or(DEFAULT_HEIGHT_QUANTIZE_LEVELS, |&(_, levels)| levels)
 }
 
 pub fn parse_size(value: &str) -> Result<TextureDimensions, String> {
@@ -786,11 +813,14 @@ fn normal(
     })
 }
 
-/// Derive a conventional height map from diffuse luminance: white = raised,
-/// black = recessed. This is authoring-facing and intentionally NOT inverted
-/// to depth here — see `tools/texture-tool/README.md`; `prl-build` performs
-/// `depth = 255 - height` at bake time so authors keep thinking in familiar
-/// height-map terms.
+/// Derive a height map from diffuse luminance, centered on the surface:
+/// mid-gray (`HEIGHT_SURFACE`) is the true plane, darker sinks, lighter rises.
+/// Mean luminance maps to mid-gray, so a material rises and sinks around its
+/// own average.
+///
+/// The output is in authoring sense (white = raised) and is not inverted here;
+/// `prl-build` stores `255 - height` at bake time. See
+/// `tools/texture-tool/README.md`.
 ///
 /// Height is the same luminance signal `normal()` differentiates (via Sobel)
 /// one derivative step earlier, so it shares `wrapped_luma` rather than
@@ -801,27 +831,41 @@ fn height_map(
 ) -> ImageBuffer<Rgba<u8>, Vec<u8>> {
     let (w, h) = diffuse.dimensions();
 
-    // Pivot contrast around the mean luminance rather than 0.5 so a dark or
-    // bright material still gets meaningful relief instead of being clipped
-    // against one rail.
-    let mut sum = 0.0f32;
+    // The engine reads mid-gray (128) as the true surface: darker sinks,
+    // lighter rises. Mean luminance maps onto that surface, so a dark or bright
+    // material still rises AND sinks around its own average instead of being
+    // clipped against one rail or offset wholesale off the plane.
+    //
+    // Summed in f64: an f32 running sum over a 1024² or 2048² image loses the
+    // low bits of every addend once it is large, which drifted a uniform
+    // image's mean far enough to offset the whole map by a terrace.
+    let mut sum = 0.0f64;
     for p in diffuse.pixels() {
-        sum += luminance(*p);
+        sum += f64::from(luminance(*p));
     }
-    let mean = sum / (w * h).max(1) as f32;
+    let mean = (sum / f64::from((w * h).max(1))) as f32;
 
-    let mut img = ImageBuffer::from_fn(w, h, |x, y| {
+    ImageBuffer::from_fn(w, h, |x, y| {
         let l = wrapped_luma(diffuse, x as i32, y as i32);
-        let contrasted = (mean + (l - mean) * config.strength).clamp(0.0, 1.0);
-        let v = clamp_u8(contrasted * 255.0);
+        let centered = HEIGHT_SURFACE as f32 + (l - mean) * config.strength * 255.0;
+        let v = quantize_height(clamp_u8(centered), config.quantize_levels);
         Rgba([v, v, v, 255])
-    });
+    })
+}
 
-    // Reuse the exact posterization used for the diffuse map: the engine's
-    // aesthetic dial is terraced depth, so plateaus in the height map should
-    // read the same way plateaus in the diffuse map do.
-    quantize_chunks(&mut img, config.quantize_levels);
-    img
+/// The `_h.png` value the engine reads as the true surface plane.
+const HEIGHT_SURFACE: u8 = 128;
+
+/// Posterize a height value into `levels / 2` terraces on each side of
+/// [`HEIGHT_SURFACE`], plus the surface itself (an odd count rounds down). The
+/// mean-luminance region lands exactly on the surface, not on whichever diffuse
+/// palette entry is nearest to 128. Terraces are the engine's aesthetic dial;
+/// their spatial boundaries still follow the diffuse's own.
+fn quantize_height(v: u8, levels: u8) -> u8 {
+    let per_side = (levels / 2).max(1) as f32;
+    let step = HEIGHT_SURFACE as f32 / per_side;
+    let offset = (v as f32 - HEIGHT_SURFACE as f32) / step;
+    clamp_u8(HEIGHT_SURFACE as f32 + (offset + 0.5).floor() * step)
 }
 
 fn aspect_crop(
@@ -947,7 +991,11 @@ mod tests {
 
         assert_eq!(job.height_strength, None);
         assert_eq!(job.height_quantize_levels, None);
-        assert_eq!(job.resolved_height_quantize_levels().unwrap(), 24);
+        // `default` is not an engine prefix: the default material's count.
+        assert_eq!(
+            job.resolved_height_quantize_levels().unwrap(),
+            DEFAULT_HEIGHT_QUANTIZE_LEVELS
+        );
     }
 
     #[test]
@@ -1198,9 +1246,11 @@ mod tests {
 
         let low_distinct = distinct_values(&low);
         let high_distinct = distinct_values(&high);
+        // Two levels split one terrace to each side of the surface, and the
+        // surface itself is always a terrace: sink, surface, rise.
         assert!(
-            low_distinct <= 2,
-            "2-level quantization should produce at most 2 plateaus, got {low_distinct}"
+            low_distinct <= 3,
+            "2-level quantization should produce at most 3 plateaus, got {low_distinct}"
         );
         assert!(
             low_distinct < high_distinct,
@@ -1248,6 +1298,76 @@ mod tests {
     }
 
     #[test]
+    fn height_map_centers_mean_luminance_on_the_surface() {
+        // A uniform diffuse has no relief: every texel IS the mean, so the
+        // whole map must sit exactly on the surface plane at any quantization.
+        let diffuse = ImageBuffer::from_pixel(8, 8, Rgba([30, 30, 30, 255]));
+        for levels in [2, 3, 6, 24] {
+            let img = height_map(
+                &diffuse,
+                HeightConfig {
+                    strength: 1.5,
+                    quantize_levels: levels,
+                },
+            );
+            assert!(
+                img.pixels().all(|p| p[0] == HEIGHT_SURFACE),
+                "uniform diffuse must be flat mid-gray at {levels} levels"
+            );
+        }
+    }
+
+    /// At 2048² an f32 running sum drifts: a uniform image's mean lands off its
+    /// own luminance and the whole map shifts off the plane by a terrace.
+    #[test]
+    fn a_large_uniform_image_is_exactly_flat() {
+        for v in [30u8, 128, 200, 255] {
+            let diffuse = ImageBuffer::from_pixel(2048, 2048, Rgba([v, v, v, 255]));
+            let img = height_map(
+                &diffuse,
+                HeightConfig {
+                    strength: 1.5,
+                    quantize_levels: 24,
+                },
+            );
+            assert!(
+                img.pixels().all(|p| p[0] == HEIGHT_SURFACE),
+                "uniform {v} at 2048² must be flat mid-gray, got {}",
+                img.get_pixel(0, 0)[0],
+            );
+        }
+    }
+
+    #[test]
+    fn height_map_rises_and_sinks_around_the_surface() {
+        let diffuse = ImageBuffer::from_fn(16, 16, |x, _| {
+            let v = if x < 8 { 40 } else { 200 };
+            Rgba([v, v, v, 255])
+        });
+        let img = height_map(
+            &diffuse,
+            HeightConfig {
+                strength: 1.0,
+                quantize_levels: 6,
+            },
+        );
+        assert!(img.get_pixel(2, 0)[0] < HEIGHT_SURFACE, "dark half sinks");
+        assert!(
+            img.get_pixel(13, 0)[0] > HEIGHT_SURFACE,
+            "bright half rises"
+        );
+    }
+
+    #[test]
+    fn quantize_height_keeps_the_surface_as_a_terrace() {
+        for levels in 0..=32u8 {
+            assert_eq!(quantize_height(HEIGHT_SURFACE, levels), HEIGHT_SURFACE);
+            assert_eq!(quantize_height(127, levels.max(2)), HEIGHT_SURFACE);
+        }
+        assert_eq!(quantize_height(0, 6), 0);
+    }
+
+    #[test]
     fn height_strength_override_takes_precedence_over_profile_default() {
         let mut job = base_job(PathBuf::from("unused.png"), "override_test");
         job.spec_profile = SpecProfile::PolishedStone;
@@ -1258,16 +1378,66 @@ mod tests {
     }
 
     #[test]
-    fn resolved_height_quantize_levels_uses_size_based_default_when_unset() {
-        let mut job = base_job(PathBuf::from("unused.png"), "default_levels_test");
-        job.height_quantize_levels = None;
-        job.width = 64;
-        job.height = 64;
-        assert_eq!(job.resolved_height_quantize_levels().unwrap(), 18);
+    fn the_default_height_levels_follow_the_stem_prefix() {
+        for (stem, levels) in [
+            ("concrete_pavement_036", 12),
+            ("CONCRETE_wall", 12),
+            ("metal_panel_01", 4),
+            ("wood_planks", 4),
+            ("grate_floor", 6),
+            ("cobble_floor_01", 6),
+            ("glass_panel_01", 6),
+            ("concrete", 12),
+            // The collection path is not part of the material identity.
+            ("metal/panel_01", 6),
+            ("50-free-textures/concrete_pavement_036", 12),
+        ] {
+            assert_eq!(default_height_quantize_levels(stem), levels, "{stem}");
+            for size in [64, 128] {
+                let mut job = base_job(PathBuf::from("unused.png"), stem);
+                job.height_quantize_levels = None;
+                job.width = size;
+                job.height = size;
+                assert_eq!(
+                    job.resolved_height_quantize_levels().unwrap(),
+                    levels,
+                    "{stem} at {size}"
+                );
+            }
+        }
+    }
 
-        job.width = 128;
-        job.height = 128;
-        assert_eq!(job.resolved_height_quantize_levels().unwrap(), 24);
+    #[test]
+    fn an_explicit_height_level_count_overrides_the_prefix_default() {
+        let mut job = base_job(PathBuf::from("unused.png"), "concrete_floor");
+        job.height_quantize_levels = Some(8);
+        assert_eq!(job.resolved_height_quantize_levels().unwrap(), 8);
+    }
+
+    /// Every default lands its terraces on the plateaus of an engine that
+    /// terraces `levels / 2` per direction: each terrace sits on a whole engine
+    /// step, never near a half-step tie. Authored white (255, one byte short of
+    /// the top terrace) still rounds cleanly onto the top plateau.
+    #[test]
+    fn default_height_terraces_land_on_whole_engine_steps() {
+        for &(prefix, levels) in HEIGHT_QUANTIZE_LEVELS_BY_PREFIX
+            .iter()
+            .chain([("other", DEFAULT_HEIGHT_QUANTIZE_LEVELS)].iter())
+        {
+            let engine_per_direction = f32::from(levels / 2);
+            for v in 0..=255u8 {
+                let offset = i32::from(quantize_height(v, levels)) - i32::from(HEIGHT_SURFACE);
+                let steps = offset as f32 * engine_per_direction / 128.0;
+                assert!(
+                    (steps - steps.round()).abs() < 0.1,
+                    "{prefix}: byte {v} terraces {steps} engine steps from the plane"
+                );
+            }
+        }
+        // 24 terraces against concrete's 6 per direction land odd terraces
+        // within a hair of the engine's half-step ties.
+        let steps = f32::from(quantize_height(140, 24) - HEIGHT_SURFACE) * 6.0 / 128.0;
+        assert!((steps - steps.round()).abs() > 0.4, "{steps}");
     }
 
     #[test]

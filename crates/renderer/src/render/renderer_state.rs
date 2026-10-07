@@ -21,7 +21,7 @@ impl Renderer {
         self.spot_shadow_map_resolution
     }
 
-    /// Apply the player's Surface Depth tier (design D5).
+    /// Apply the player's Surface Depth switch.
     ///
     /// Live and allocation-free: every installed world/mover material's uniform
     /// BUFFER is rewritten in place with `queue.write_buffer`. Bind groups,
@@ -65,7 +65,7 @@ impl Renderer {
         );
     }
 
-    /// The Surface Depth tier currently applied to every installed material.
+    /// The Surface Depth setting currently applied to every installed material.
     pub fn surface_depth_quality(
         &self,
     ) -> postretro_render_cpu::surface_depth::SurfaceDepthQuality {

@@ -350,11 +350,11 @@ impl Renderer {
                     .mip_count_character_model_samplers
                     .entry(tex.mip_count)
                     .or_insert_with(|| create_mip_character_model_sampler(device, tex.mip_count));
-                // Skinned models are outside Surface Depth's scope (design
-                // D3): they never bind the world material bundle's surface
-                // map — `load_model_diffuse_texture` binds the neutral
-                // single-channel specular placeholder — so their uniform is
-                // flat at every tier. The uniform buffer handle is therefore
+                // Skinned models are outside Surface Depth's scope: they never
+                // bind the world material bundle's surface map —
+                // `load_model_diffuse_texture` binds the neutral single-channel
+                // specular placeholder — so their uniform is flat whatever the
+                // switch says. The uniform buffer handle is therefore
                 // deliberately not retained; the bind group keeps the buffer
                 // alive and nothing will ever rewrite it.
                 build_material_bind_group(

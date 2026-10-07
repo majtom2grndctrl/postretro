@@ -258,10 +258,35 @@ ms per frame, the median of 3 launches. Δ is against the baseline launch of the
 - **The lever trades row cost for entry cost.** At the arena, where 97% of rows carry no entry, `array-free` runs *below* the floor arm (0.20 vs 0.47 on indirect). Rows without entries become almost free, which means the 1660 floor is mostly the accumulator array too. Where entries are denser, the lever loses: at campaign spawn 48% of rows carry entries, and at the kinematic station 31% do on indirect.
 - **Kinematic Pass B does not fit an entry count.** It has 75 entry rows, about the arena's 70, yet it regresses by 72% where the arena saves 76%. Its floor per row is also nearly 3× the arena's (0.44 vs 0.16 µs). Some per-row cost specific to that pose grows under the lever. The mechanism is not identified.
 - **`unroll36` doesn't help on the 1660.** It is worse than `array-free` alone on indirect at every pose (+0.03 to +0.12 ms), and within 0.12 ms on Pass B.
-- **After the contributing-row filter (inference, not measured).** The filter drops the entry-free rows, the only rows where the lever wins on the 1660. The rows that remain are the kind it regresses, so filtered compose would most likely regress at every pose.
+- **After the contributing-row filter.** The filter drops the entry-free rows, the only rows where the lever wins on the 1660. Measured on the filter branch, the lever then regresses campaign spawn and the station and saves at most 0.02 ms at the arena (next section).
 
 **Not covered.** DX12 (`WGPU_BACKEND=dx12`) was not run. Byte identity was not checked on the 1660, because the lever is not recommended. The other lever arms and the ablations were not run on the 1660.
 
 **Call.** The lever regresses both passes at two of three poses. Under the brief ("a lever that a returned 1660 reading shows regressing is not recommended") it is **not recommended**. Under `sh-compose-array-free`'s promotion gate ("a regression in either pass ends this direction") the direction ends.
 
 To repeat the reading: build as in `measurements/sh-compose-row-cost-spike/README.md`, then `python run1660.py <out> 3 baseline,array-free,array-free+unroll36,floor campaign,arena,kinstation` and `python summarize1660.py <out>`. In an arm name, `+` stands for the env var's comma.
+
+## 1660 Super reading after the contributing-row filter
+
+The same machine and protocol, on the `sh-compose-contributing-rows` branch: feature commit `00da7fe6d` plus that branch's `measurements/sh-compose-contributing-rows/probes.patch`. One binary carries both memberships, switched by `POSTRETRO_SPIKE_OLD_MEMBERSHIP=1`, and the spike's compose arms. Records are in `measurements/sh-compose-row-cost-spike/1660/post-filter/`.
+
+- **Arms.** `old` is whole-domain membership. `new` is the filter. `new` + stack is the filter with `array-free,unroll36`, and `new` + floor is the filter with `floor`.
+- **Validity.** All 36 launches are valid. Indirect rows hold steady. Pass B rows at the station vary between 75 and 340 by design, as on the Mac.
+- **Rows.** The composed rows match the Mac's: arena 2129 → 70 per pass; station indirect 2511 → 780 and Pass B → 75 or 340; campaign 730 → 352 per pass.
+
+ms per frame, the median of 3 launches. Lever Δ is against `new` in the same round:
+
+| Pose | Pass | `old` | `new` | `new` + stack | Lever Δ | `new` + floor |
+|---|---|---|---|---|---|---|
+| Arena | indirect | 0.82 | 0.08 | 0.07 | −0.01 | 0.04 |
+| | Pass B | 1.15 | 0.09 | 0.07 | −0.02 | 0.04 |
+| Campaign spawn | indirect | 0.52 | 0.31 | 0.52 | **+0.21 (+68%)** | 0.12 |
+| | Pass B | 0.72 | 0.47 | 0.58 | **+0.11 (+23%)** | 0.16 |
+| Kinematic station | indirect | 1.45 [1.40, 1.61] | 1.11 | 2.14 | **+1.03 (+93%)** | 0.31 |
+| | Pass B | 1.78 [1.64, 2.03] | 0.27 | 0.39 | **+0.12 (+43%)** | 0.15 |
+| | Pass A, per frame | 0.67 [0.55, 0.68] | 0.17 | 0.17 | — | 0.17 |
+
+- **The filter wins on the 1660 at every pose.** Compose per frame (indirect + Pass B + Pass A) drops from 1.97 to 0.17 ms at the arena, from 1.24 to 0.78 at campaign spawn, and from 3.90 to 1.55 at the station.
+- **The lever regresses the filtered compose,** confirming the inference above. The station's indirect pass nearly doubles.
+- **Entry work is now most of what's left.** The floor removes 50–72% of filtered compose, except Pass B at the station (44%). A successor lever has to cut per-entry cost on the 1660 without raising it on the Mac.
+- **Clocks.** The arena floor arm ran at 1875–1905 MHz, below the 1920–1965 of the other arms, because its load is light. Its 0.04 ms values are a slight overstatement, if anything.

@@ -64,3 +64,11 @@ The two were not timed separately.
 
 Single-run wall-clock on a shared container; treat second-level differences in small stages
 as noise.
+
+## Warm builds and the cache
+
+`campaign-test`, default (warm) mode. Three builds, one SHA-256
+(`3c78f081bdf86f00de89f18a3e3d8086553ed11a9b0eaed5f2f87ab8e7e2debf`): `main` into a fresh
+cache, this change into a fresh cache, and this change reading `main`'s cache. Cached entries
+are byte-compatible across the change, so no stage epoch moves. Warm fresh-cache total:
+39.80 → 24.36 s (SH 18.35 → 8.30 s, delta SH 5.58 → 2.20 s).

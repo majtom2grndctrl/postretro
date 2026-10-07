@@ -135,6 +135,6 @@ byte-for-byte identical to today's — nothing reaches the runtime.
   make-or-break, and it holds by construction or the predicate is wrong.
 
 ## Open questions
-- Does the cold SH cache key capture the culled ray set, requiring a stage-version bump? —
-  **delegated**: the executor confirms output byte-identity across cold and warm settles it;
-  if a bump is needed, it is a note in the plan of record, not a decision to make here.
+- Does a cache key capture the culled ray set or the probe snap, requiring a stage-version
+  bump? — **resolved: no.** Warm output is byte-identical to `main`'s, including when this
+  change reads `main`'s cache (`research.md`).

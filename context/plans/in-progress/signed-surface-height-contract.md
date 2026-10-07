@@ -1,0 +1,100 @@
+# Signed surface height — design contract
+
+## Goal
+
+Surface Depth height maps change from carve-only to signed. Today white (255) is the polygon plane and black carves below it. After this change **mid-gray (128) is the polygon plane, darker sinks below it, lighter rises above it.** The re-centering is entirely runtime: the march starts at the top of the relief instead of at the plane and reports a signed height. The `.prm` format, the bake, and every cache key stay byte-identical.
+
+Read with `context/lib/resource_management.md` §4.6, `rendering_pipeline.md` §7.3, and the header comment of `crates/renderer/src/shaders/surface_depth.wgsl`.
+
+## Decisions (owner-settled)
+
+| # | Decision | Consequence |
+|---|---|---|
+| D1 | 128 (`#808080`) is the surface. | 127.5 is not representable; any other choice makes "flat mid-gray" impossible to author exactly. |
+| D2 | The prefix depth `D` applies **in each direction**: black sinks `D`, white rises ~`D`. | Total span doubles (concrete: −6 to +6 texels). Step caps double. Raised-texel edge artifacts are as large as the carve. |
+| D3 | Raised-texel artifacts are accepted and documented, not mitigated: flat silhouettes at polygon edges, raised floor texels cut by an adjoining wall plane, feet/props/projectiles drawing at the true plane (look sunk into raised texels). | No depth writes, no discard bounds, no offset limiting. Author docs explain where not to put strong raises. |
+| D4 | The zero point lives in the shader and its CPU mirror. The bake keeps storing `G = 255 − h`. | No `.prm` change, no `STAGE_VERSION` bump, no cache-key change. Existing `.prm` files stay valid. |
+| D5 | Ambient occlusion darkens sunk texels only, measured from the plane. Raised and mid-gray texels get none. | A flat mid-gray floor is unchanged in brightness. |
+| D6 | The march starts at the material's **peak raise**: the highest quantized raise of any texel in any uploaded mip of its surface map, computed once at load on the CPU. | A map that never exceeds mid-gray marches exactly like a pure carve. Flat mid-gray areas don't pay for raise they don't have. |
+| D7 | A march that exhausts its step budget resolves **flat at the true plane** (original UV, height 0, geometric normal, top hit) — not at the last boundary crossed. | Grazing starvation looks like today's "Off" rather than smearing the texture toward the viewer. |
+| D8 | The three existing `_h.png` assets keep their pixels and take on the new meaning. | Concrete stones now rise and its mortar sinks. The two Level Eleven sci-fi panels shift slightly. No content edits. |
+| D9 | `texture-tool` maps diffuse mean luminance to mid-gray. | Generated maps rise and sink around the surface instead of carrying an arbitrary absolute offset. |
+
+## Invariants (no track may break these)
+
+**Encoding.** Stored `g ∈ [0,1]` (unorm of `G = 255 − h`). Authored `h = 255·(1 − g)`. Signed fraction:
+
+```
+s = (h − 128) / 128            // s ∈ [−1, 127/128]; positive = RAISED above the plane
+```
+
+`s` is linear in `h` (no piecewise slope). Black is exactly −1. White is 127/128, not 1. Do not "fix" this.
+
+**Quantization.** With `L = quantize_levels` (terraces **per direction**):
+
+```
+L >= 1:  s_q = clamp(floor(s·L + 0.5) / L, −1, 1)
+L == 0:  s_q = s
+```
+
+Use `floor(x + 0.5)` in BOTH CPU and WGSL. Never `round()`: WGSL rounds half to even, Rust rounds half away from zero, and an exact half-step is reachable. Mid-gray must yield `s_q == 0.0` exactly for every `L`.
+
+**Units and sign.** Signed height in meters `height_m = s_q · depth_scale_m`, where `depth_scale_m = D · fade` (post-fade, as today). **Positive = above the plane.** The hit-result field carrying it is renamed from `depth_m` / `depth_meters` to `height_m` / `height_meters` on both sides, so no consumer keeps the old sign by accident. `world_position` moves along the view ray to the hit point; a raised hit lies toward the camera.
+
+**Peak raise (D6).** `peak = max(0, max over every texel of every uploaded mip of s)`, then quantized with the same rule and the material's `L` when the uniform is built. Max of quantized equals quantized of max because the rule is monotonic. The peak is computed on the CPU from the slot's bytes in the renderer's texture load path, by a pure function in `postretro-render-cpu`. No surface map → peak 0. The march's ray starts at height `peak · depth_scale_m` above the plane, at the UV where the view ray crosses that height; DDA traversal from there is unchanged.
+
+**Uniform layout.** The 32-byte material uniform keeps its size. Bytes 8..12 (first half of today's `_pad`) become `surface_depth_peak_raise: f32`, the quantized peak fraction in `[0, 1]`. Bytes 12..16 stay padding. All other offsets are unchanged. The WGSL struct and `build_material_uniform` change together.
+
+**Gate.** The `has_depth` bit (set only for an `Rg8Unorm` slot) is now the *only* guard against the R8 placeholder: `g = 0` used to mean flat and now means maximum raise. The march must never run when `has_depth` is clear, and a test must pin that.
+
+**Bounds.** `SURFACE_DEPTH_MAX_METERS` (0.2) and `SURFACE_DEPTH_MAX_TEXELS` bound `|height|` in each direction. The resolved `|height_m| ≤ min(depth_scale_m, SURFACE_DEPTH_MAX_METERS)`.
+
+**Step caps.** Every `max_steps` in both prefix tables (texel and meters) doubles. Must stay ≤ `SURFACE_DEPTH_MAX_STEPS` (255). `quantize_levels` values are unchanged; their meaning becomes "per direction".
+
+**Self-shadow.** The light-visibility march toward a dynamic light runs until the ray climbs above the peak height, not the plane. The early-out "a hit on the plane skips the shadow march" becomes "a top hit at the peak height skips it". The budget rule (`max_steps / 2`) is unchanged.
+
+**Fade.** Distance/LOD fade and quality `Off` scale `depth_scale_m` toward zero, which flattens to the true plane.
+
+**Unchanged hard constraints** (from the shader header): no `frag_depth` write; only `base_uv` is offset, never the lightmap UV; no derivative calls inside the snippet; no new binding or sampled texture; the face normal never reaches shadow-map receiver bias. Collision is untouched.
+
+## Tracks and file ownership
+
+| Track | Model | Owns | Starts |
+|---|---|---|---|
+| A — CPU authority | opus | `crates/render-data/src/material.rs`, `crates/render-cpu/src/surface_depth.rs` (+ any split modules under it), `crates/render-cpu/src/material_plan.rs` | First, on this branch |
+| B — GPU mirror | sonnet | `crates/renderer/src/shaders/{surface_depth,forward,kinematic_brush}.wgsl`, `crates/renderer/src/render/{loaded_texture,material_plan}.rs`, `crates/renderer/src/render/tests/surface_depth_tests.rs` | After A lands, on this branch |
+| C — tool + docs | session | `tools/texture-tool/`, `docs/level_design.md`, `context/lib/*`, comments in `level-format/src/prm.rs` and `level-compiler/src/texture_mips.rs` | Alongside / after |
+
+Compile-forced spillover outside your row is allowed if minimal, and must be reported.
+
+## Acceptance
+
+**A.**
+- `cargo test -p postretro-render-cpu --lib surface_depth` and `cargo test -p postretro-render-cpu --lib material_plan` pass with a non-zero count.
+- `cargo test -p postretro-render-data --lib` passes.
+- Tests cover:
+  - An all-128 field is an exact no-op for every `L`, including 0.
+  - An all-0 field sinks exactly `D`.
+  - An all-255 field rises `127/128 · D` with `peak` set.
+  - Quantization at an exact half step agrees with `floor(x + 0.5)`.
+  - A starved march returns flat (D7).
+  - AO is zero for raised and mid-gray texels (D5).
+  - The shadow march does not exit at the plane when the relief rises above it.
+  - Peak extraction over a multi-mip `Rg8` payload returns the max raise across levels and 0 for an all-sink map.
+  - `|height_m|` never exceeds the bound.
+
+**B.**
+- `cargo test -p postretro-renderer --lib surface_depth` passes with a non-zero count.
+- The shader-constant pin test covers every new constant and the quantization expression.
+- The naga validation and uniformity tests for `forward.wgsl` and `kinematic_brush.wgsl` pass.
+- `rg -n "round\(" crates/renderer/src/shaders/surface_depth.wgsl` returns nothing.
+- A captured frame of the concrete floor in `maps/campaign-test.prl` at a grazing angle, looked at by the agent, if a headless or offscreen capture path is reachable. Otherwise, report why not.
+
+**C.**
+- `cargo test --manifest-path tools/texture-tool/Cargo.toml` passes.
+- `docs/level_design.md` §Surface Depth carries a gradient table (black → `#808080` → white) and the D3 caveats.
+- No `cargo run -p xtask` appears in `docs/`.
+
+## Open questions
+
+- GPU cost of the doubled span is unmeasured (no GPU timing on this Mac). A Windows `POSTRETRO_GPU_TIMING` pass is a handoff, not a gate.

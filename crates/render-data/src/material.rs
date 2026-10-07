@@ -352,18 +352,27 @@ pub fn parse_prefix(texture_name: &str) -> &str {
     }
 }
 
+/// Every recognized material prefix, lowercase. Any other prefix is
+/// [`Material::Default`]. `tools/texture-tool` derives its default height
+/// terraces from the same prefixes; a test in this crate keeps the two tables
+/// in step.
+pub const MATERIAL_PREFIXES: [(&str, Material); 6] = [
+    ("metal", Material::Metal),
+    ("concrete", Material::Concrete),
+    ("grate", Material::Grate),
+    ("neon", Material::Neon),
+    ("glass", Material::Glass),
+    ("wood", Material::Wood),
+];
+
 /// Look up the material variant for a given prefix string.
 fn lookup_material(prefix: &str) -> Option<Material> {
     // Case-insensitive match: texture names from BSP data may vary in case.
-    match prefix.to_lowercase().as_str() {
-        "metal" => Some(Material::Metal),
-        "concrete" => Some(Material::Concrete),
-        "grate" => Some(Material::Grate),
-        "neon" => Some(Material::Neon),
-        "glass" => Some(Material::Glass),
-        "wood" => Some(Material::Wood),
-        _ => None,
-    }
+    let prefix = prefix.to_lowercase();
+    MATERIAL_PREFIXES
+        .iter()
+        .find(|(name, _)| *name == prefix)
+        .map(|&(_, material)| material)
 }
 
 /// Derive a material from a texture name. Returns `Material::Default` for

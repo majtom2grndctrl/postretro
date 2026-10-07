@@ -55,7 +55,7 @@ cargo run --release --manifest-path tools/texture-tool/Cargo.toml -- \
   --normal-strength 0.5 \
   --quantize-levels 24 \
   --height-strength 1.2 \
-  --height-quantize-levels 8
+  --height-quantize-levels 4
 ```
 
 Required flags: `--src`, `--stem`, and `--out-dir`.
@@ -78,11 +78,11 @@ Optional flags:
 - `--spec-edge-damping <0..1>` overrides how strongly high-contrast edges and dark seams are made less reflective.
 - `--normal-strength <f32>` defaults to `0.5`.
 - `--quantize-levels <u8>` defaults to `18` for `64`/`64x64`, otherwise `24`. Use `0` to request the default.
-- `--height-strength <f32>` overrides the selected spec profile's default height/depth contrast strength (see table below). Values above `1.0` exaggerate relief; values below `1.0` flatten it.
-- `--height-quantize-levels <u8>` defaults to the same size-based default as `--quantize-levels` (`18` for `64`/`64x64`, otherwise `24`). Use `0` to request the default. Terraces split evenly below and above the surface, plus mid-gray itself: `2` yields sink / surface / rise. An odd count rounds down to the even count below it. Lower level counts produce more pronounced, flatter plateaus — the intended retro read for the engine's terraced-depth parallax.
-  The engine re-terraces every map to its material prefix's own terrace count per direction. A generated map's terraces land on the engine's plateaus when that count is a multiple of the tool's per-side count (this flag ÷ 2). `concrete` (6 per direction) suits `4`, `6` or `12`; `metal` and `wood` (2) suit `4`; `grate` and the default prefix (3) suit `6`. Above the prefix's count the engine re-terraces the map anyway.
+- `--height-strength <f32>` overrides the selected spec profile's default height contrast strength (see table below). Values above `1.0` exaggerate relief; values below `1.0` flatten it.
+- `--height-quantize-levels <u8>` defaults from the stem's material prefix: `concrete` `12`, `metal` and `wood` `4`, `grate` and any other prefix `6`. Use `0` to request the default. Terraces split evenly below and above the surface, plus mid-gray itself: `2` yields sink / surface / rise. An odd count rounds down to the even count below it (minimum `2`). Lower counts produce more pronounced, flatter plateaus — the intended retro read for the engine's terraced-depth parallax.
+  The engine re-terraces every map to its material prefix's own terrace count in each direction, and the default is twice that count, so every generated terrace lands exactly on an engine plateau. A count that does not match can put a terrace on a half step between two engine plateaus, where raised sides render one terrace taller than sunk sides. Below the default, terraces still land on plateaus when this flag ÷ 2 divides the prefix's count: `concrete` (6 per direction) also suits `4` or `6`.
 
-Spec profiles also set the default `_h.png` height/depth strength (overridable with
+Spec profiles also set the default `_h.png` height strength (overridable with
 `--height-strength`); a cobblestone/masonry-like profile wants pronounced, plateau-like steps,
 while a smooth glass or metal profile wants almost none:
 
@@ -125,9 +125,9 @@ Relative source paths resolve from the manifest file's directory. Blank optional
 fields use the selected profile's defaults. `spec_profile` defaults to `luminance`; `spec_base` and
 `spec_edge_damping` are `0..1` overrides; `spec_gamma` must be greater than `0`. `height_strength`
 blank uses the selected profile's default height strength (see table above); `height_quantize_levels`
-may be blank or `0` to use the same size-based default as `quantize_levels`. `height_strength` and
-`height_quantize_levels` may be supplied even when the four spec-control fields before them are
-left blank.
+may be blank or `0` to use the stem prefix's default (see `--height-quantize-levels`).
+`height_strength` and `height_quantize_levels` may be supplied even when the four spec-control
+fields before them are left blank.
 
 Example:
 

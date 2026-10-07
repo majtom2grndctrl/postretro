@@ -170,7 +170,7 @@ impl SpecProfile {
         }
     }
 
-    /// Per-profile default height/depth strength. See `HeightProfileDefaults`.
+    /// Per-profile default height strength. See `HeightProfileDefaults`.
     fn height_defaults(self) -> HeightProfileDefaults {
         match self {
             // Backward-compatible/neutral: pass the luminance signal through.
@@ -262,12 +262,9 @@ impl TextureJob {
     }
 
     pub fn resolved_height_quantize_levels(&self) -> Result<u8, String> {
-        let levels = self.height_quantize_levels.unwrap_or_else(|| {
-            default_quantize_levels(TextureDimensions {
-                width: self.width,
-                height: self.height,
-            })
-        });
+        let levels = self
+            .height_quantize_levels
+            .unwrap_or_else(|| default_height_quantize_levels(&self.stem));
         if levels < 2 {
             return Err(format!(
                 "height_quantize_levels must be blank, 0, or at least 2 for {}",
@@ -308,6 +305,36 @@ pub fn default_quantize_levels(size: TextureDimensions) -> u8 {
     } else {
         24
     }
+}
+
+/// Default height terraces per stem material prefix: twice the engine's
+/// terraces per direction for that prefix, so every terrace this tool writes
+/// lands exactly on an engine plateau. Any other count puts some terraces on
+/// the engine's half-step ties, and raised sides then render one terrace taller
+/// than sunk sides. Kept in step with the engine's prefix table by a test in
+/// `postretro-render-data`, which reads this table from this file.
+pub const HEIGHT_QUANTIZE_LEVELS_BY_PREFIX: [(&str, u8); 4] =
+    [("concrete", 12), ("metal", 4), ("wood", 4), ("grate", 6)];
+
+/// Default height terraces for any prefix not in
+/// [`HEIGHT_QUANTIZE_LEVELS_BY_PREFIX`]: the engine's default material.
+pub const DEFAULT_HEIGHT_QUANTIZE_LEVELS: u8 = 6;
+
+/// The material prefix of a stem, as the engine derives it: the first
+/// `_`-delimited token of the name after any collection path, case-folded.
+pub fn material_prefix(stem: &str) -> String {
+    let bare = stem.rsplit_once('/').map_or(stem, |(_, bare)| bare);
+    let prefix = bare.split_once('_').map_or(bare, |(prefix, _)| prefix);
+    prefix.to_lowercase()
+}
+
+/// Default `--height-quantize-levels` for a stem, from its material prefix.
+pub fn default_height_quantize_levels(stem: &str) -> u8 {
+    let prefix = material_prefix(stem);
+    HEIGHT_QUANTIZE_LEVELS_BY_PREFIX
+        .iter()
+        .find(|(name, _)| *name == prefix)
+        .map_or(DEFAULT_HEIGHT_QUANTIZE_LEVELS, |&(_, levels)| levels)
 }
 
 pub fn parse_size(value: &str) -> Result<TextureDimensions, String> {
@@ -964,7 +991,11 @@ mod tests {
 
         assert_eq!(job.height_strength, None);
         assert_eq!(job.height_quantize_levels, None);
-        assert_eq!(job.resolved_height_quantize_levels().unwrap(), 24);
+        // `default` is not an engine prefix: the default material's count.
+        assert_eq!(
+            job.resolved_height_quantize_levels().unwrap(),
+            DEFAULT_HEIGHT_QUANTIZE_LEVELS
+        );
     }
 
     #[test]
@@ -1347,16 +1378,66 @@ mod tests {
     }
 
     #[test]
-    fn resolved_height_quantize_levels_uses_size_based_default_when_unset() {
-        let mut job = base_job(PathBuf::from("unused.png"), "default_levels_test");
-        job.height_quantize_levels = None;
-        job.width = 64;
-        job.height = 64;
-        assert_eq!(job.resolved_height_quantize_levels().unwrap(), 18);
+    fn the_default_height_levels_follow_the_stem_prefix() {
+        for (stem, levels) in [
+            ("concrete_pavement_036", 12),
+            ("CONCRETE_wall", 12),
+            ("metal_panel_01", 4),
+            ("wood_planks", 4),
+            ("grate_floor", 6),
+            ("cobble_floor_01", 6),
+            ("glass_panel_01", 6),
+            ("concrete", 12),
+            // The collection path is not part of the material identity.
+            ("metal/panel_01", 6),
+            ("50-free-textures/concrete_pavement_036", 12),
+        ] {
+            assert_eq!(default_height_quantize_levels(stem), levels, "{stem}");
+            for size in [64, 128] {
+                let mut job = base_job(PathBuf::from("unused.png"), stem);
+                job.height_quantize_levels = None;
+                job.width = size;
+                job.height = size;
+                assert_eq!(
+                    job.resolved_height_quantize_levels().unwrap(),
+                    levels,
+                    "{stem} at {size}"
+                );
+            }
+        }
+    }
 
-        job.width = 128;
-        job.height = 128;
-        assert_eq!(job.resolved_height_quantize_levels().unwrap(), 24);
+    #[test]
+    fn an_explicit_height_level_count_overrides_the_prefix_default() {
+        let mut job = base_job(PathBuf::from("unused.png"), "concrete_floor");
+        job.height_quantize_levels = Some(8);
+        assert_eq!(job.resolved_height_quantize_levels().unwrap(), 8);
+    }
+
+    /// Every default lands its terraces on the plateaus of an engine that
+    /// terraces `levels / 2` per direction: each terrace sits on a whole engine
+    /// step, never near a half-step tie. Authored white (255, one byte short of
+    /// the top terrace) still rounds cleanly onto the top plateau.
+    #[test]
+    fn default_height_terraces_land_on_whole_engine_steps() {
+        for &(prefix, levels) in HEIGHT_QUANTIZE_LEVELS_BY_PREFIX
+            .iter()
+            .chain([("other", DEFAULT_HEIGHT_QUANTIZE_LEVELS)].iter())
+        {
+            let engine_per_direction = f32::from(levels / 2);
+            for v in 0..=255u8 {
+                let offset = i32::from(quantize_height(v, levels)) - i32::from(HEIGHT_SURFACE);
+                let steps = offset as f32 * engine_per_direction / 128.0;
+                assert!(
+                    (steps - steps.round()).abs() < 0.1,
+                    "{prefix}: byte {v} terraces {steps} engine steps from the plane"
+                );
+            }
+        }
+        // 24 terraces against concrete's 6 per direction land odd terraces
+        // within a hair of the engine's half-step ties.
+        let steps = f32::from(quantize_height(140, 24) - HEIGHT_SURFACE) * 6.0 / 128.0;
+        assert!((steps - steps.round()).abs() > 0.4, "{steps}");
     }
 
     #[test]

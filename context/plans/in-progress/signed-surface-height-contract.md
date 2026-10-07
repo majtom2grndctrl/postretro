@@ -53,6 +53,10 @@ Use `floor(x + 0.5)` in BOTH CPU and WGSL. Never `round()`: WGSL rounds half to 
 
 **Self-shadow.** The light-visibility march toward a dynamic light runs until the ray climbs above the peak height, not the plane. The early-out "a hit on the plane skips the shadow march" becomes "a top hit at the peak height skips it". The budget rule (`max_steps / 2`) is unchanged.
 
+**Eye bound (added after review round 1).** The march never starts behind the camera. The start offset along the view ray is `min(peak_m / descent, distance from fragment to eye)`. When the eye sits inside the raised band (low slide eye, camera hugging raised wall brick), the ray starts at the eye, not past it. The CPU march takes the eye distance so parity holds.
+
+**GPU parity precision.** Parity is exact for the byte decode, the half-step choice and mid-gray. The GPU's `n / L` terrace division may differ from the CPU's by ~1 ulp (Metal fast math), and fast math may not preserve NaN→flat guards. Pins that need bit equality are CPU-only; GPU-side tests pin shape, not bits.
+
 **Fade.** Distance/LOD fade and quality `Off` scale `depth_scale_m` toward zero, which flattens to the true plane.
 
 **Unchanged hard constraints** (from the shader header): no `frag_depth` write; only `base_uv` is offset, never the lightmap UV; no derivative calls inside the snippet; no new binding or sampled texture; the face normal never reaches shadow-map receiver bias. Collision is untouched.

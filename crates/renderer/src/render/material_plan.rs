@@ -123,8 +123,8 @@ pub(crate) fn build_material_bind_group(
     // loaded, not from the material prefix: only a two-channel `Rg8Unorm`
     // specular slot is a surface map. A prefix that wants depth but whose
     // `.prm` has no `_h.png` sibling binds the single-channel specular (or the
-    // 1x1 black placeholder) and must skip the march entirely rather than walk
-    // an all-zero field. The base mip is clamped to the slot's own uploaded
+    // 1x1 black placeholder) and must skip the march entirely: the placeholder's
+    // all-zero G would read as maximum raise. The base mip is clamped to the slot's own uploaded
     // chain so the shader's `textureLoad` level can never go out of range.
     //
     // Both facts are recorded in the retained plan rather than folded away, so

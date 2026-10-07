@@ -86,7 +86,7 @@ pub struct LoadedTexture {
 fn upload_bytes_per_pixel(format: wgpu::TextureFormat) -> Option<Option<u32>> {
     match format {
         wgpu::TextureFormat::Rgba8Unorm | wgpu::TextureFormat::Rgba8UnormSrgb => Some(Some(4)),
-        // The two-channel surface map: R specular, G depth. A material with an
+        // The two-channel surface map: R specular, G inverted height. A material with an
         // `_h.png` height sibling bakes its specular slot to this instead of
         // `R8Unorm`, so every world-material upload path must size it.
         wgpu::TextureFormat::Rg8Unorm => Some(Some(2)),
@@ -279,7 +279,7 @@ pub(super) fn prm_format_to_wgpu(format: PrmFormat) -> wgpu::TextureFormat {
         PrmFormat::Rgba8UnormSrgb => wgpu::TextureFormat::Rgba8UnormSrgb,
         PrmFormat::Rgba8Unorm => wgpu::TextureFormat::Rgba8Unorm,
         PrmFormat::R8Unorm => wgpu::TextureFormat::R8Unorm,
-        // Two-channel surface map: R specular, G depth (see `PrmFormat`).
+        // Two-channel surface map: R specular, G inverted height (see `PrmFormat`).
         PrmFormat::Rg8Unorm => wgpu::TextureFormat::Rg8Unorm,
         // BC5 two-channel (R,G) block-compressed normal map. Requires the
         // adapter's TEXTURE_COMPRESSION_BC feature (checked at device creation

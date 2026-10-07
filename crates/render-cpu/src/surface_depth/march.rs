@@ -76,8 +76,8 @@ pub struct SurfaceDepthHit {
     pub face: SurfaceDepthFace,
     /// Texel boundaries crossed. Only ever interesting for budgeting.
     pub steps: u32,
-    /// The view ray exhausted its budget and resolved flat at the true plane
-    /// (D7). A consumer treats this exactly like no march: no AO, no
+    /// The view ray exhausted its budget and resolved flat at the true plane.
+    /// A consumer treats this exactly like no march: no AO, no
     /// self-shadow.
     pub starved: bool,
 }
@@ -153,7 +153,7 @@ pub fn surface_depth_dda_setup(origin: [f32; 2], dir: [f32; 2]) -> SurfaceDepthD
 ///
 /// `band` is the QUANTIZED relief from the uniform; it must bound every texel
 /// the field returns, which load-time extraction over every mip guarantees.
-/// The ray enters the band at the peak raise (D6) — at `uv0 − dir · peak` in
+/// The ray enters the band at the peak raise — at `uv0 − dir · peak` in
 /// texel space, where the view ray crosses that height — and descends.
 ///
 /// Eye bound: the march never starts behind the camera. `eye_height_meters`
@@ -176,13 +176,13 @@ pub fn surface_depth_dda_setup(origin: [f32; 2], dir: [f32; 2]) -> SurfaceDepthD
 /// with the geometric normal, and so does a texel rising above an eye inside
 /// the band (`solid < 0`, a hit at the eye).
 ///
-/// Cost levers: an empty band marches nothing (P4); a ray that leaves the
+/// Cost levers: an empty band marches nothing; a ray that leaves the
 /// starting texel only below the band's floor resolves that texel's top with
-/// one fetch and no loop (P2) — exactly what the loop's first iteration would
+/// one fetch and no loop — exactly what the loop's first iteration would
 /// have returned. Termination is structural: the budget test is an integer
 /// comparison, so the loop exits after at most `max_steps` iterations whatever
 /// the field samples to, including a NaN. A starved march resolves FLAT at the
-/// true plane (D7), so grazing starvation looks like the effect switched off.
+/// true plane, so grazing starvation looks like the effect switched off.
 pub fn march_surface_depth(
     field: &SurfaceDepthField<'_>,
     uv0: [f32; 2],
@@ -228,8 +228,7 @@ pub(super) fn march_surface_depth_full_loop(
     )
 }
 
-/// Whether the view ray stays inside its starting texel across the whole band
-/// (P2): it crosses no texel boundary before descending `band_meters`, the
+/// Whether the view ray stays inside its starting texel across the whole band: it crosses no texel boundary before descending `band_meters`, the
 /// band measured from where the ray starts.
 pub fn surface_depth_single_texel_band(dda: &SurfaceDepthDda, band_meters: f32) -> bool {
     dda.t_max[0].min(dda.t_max[1]) > band_meters
@@ -248,7 +247,7 @@ fn march_view_ray(
 ) -> SurfaceDepthHit {
     let scale = surface_depth_march_scale(depth_scale_meters);
     let band_m = (band.peak_raise - band.trough) * scale;
-    // P4: an empty band — no map, an all-mid-gray map, or a zero scale.
+    // An empty band — no map, an all-mid-gray map, or a zero scale.
     if !above(band_m, 0.0) {
         return SurfaceDepthHit::flat(uv0);
     }
@@ -261,13 +260,13 @@ fn march_view_ray(
     let p0 = [uv0[0] * dims[0], uv0[1] * dims[1]];
     // Texels per meter of descent.
     let dir = [dir_uv_per_meter[0] * dims[0], dir_uv_per_meter[1] * dims[1]];
-    // D6: the ray enters the band at the peak — or at the eye, if lower —
+    // The ray enters the band at the peak — or at the eye, if lower —
     // `top_m` above the plane, which is `dir · top_m` texels back toward the
     // viewer from `p0`.
     let start = [p0[0] - dir[0] * top_m, p0[1] - dir[1] * top_m];
     let mut dda = surface_depth_dda_setup(start, dir);
 
-    // P2: the ray never leaves its starting texel above the band's floor, so
+    // Single-texel early-out: the ray never leaves its starting texel above the band's floor, so
     // it meets this texel's top. Exactly the loop's first iteration, whatever
     // the texel holds: a top above the start (`solid <= 0`, an eye inside the
     // band) is a hit at the start, and a top the ray does not reach inside
@@ -306,7 +305,7 @@ fn march_view_ray(
             break (solid, SurfaceDepthFace::Top, [0.0, 0.0]);
         }
         // Budget exhausted with the ray still in open space: resolve FLAT at
-        // the true plane (D7). Resolving at the last crossed boundary instead
+        // the true plane. Resolving at the last crossed boundary instead
         // smeared the texture toward the viewer at grazing angles; flat reads
         // as the effect switched off for that fragment, which is honest.
         if walked + 1 >= steps_allowed {
@@ -344,7 +343,7 @@ fn march_view_ray(
 }
 
 /// Turn a descent `z_hit` below the start height `top_m` into the reported
-/// hit. Shared by the loop and the P2 early-out so both produce bit-identical
+/// hit. Shared by the loop and the single-texel early-out so both produce bit-identical
 /// results.
 #[allow(clippy::too_many_arguments)]
 fn resolve_view_hit(
@@ -377,13 +376,13 @@ pub fn surface_depth_shadow_steps(max_steps: u32) -> u32 {
 /// Self-shadow one dynamic light: a second, shorter DDA from the hit point
 /// toward the light. Returns 1.0 lit, 0.0 occluded.
 ///
-/// Takes the whole view-march result, not its height, so D7 cannot be
-/// skipped: a starved hit is flat, and a flat fragment never self-shadows
+/// Takes the whole view-march result, not its height, so a starved march's flat
+/// result cannot be skipped: a starved hit is flat, and a flat fragment never self-shadows
 /// (the shader's `carved = false` gate). The march starts at the hit's
 /// unbiased `march_uv`.
 ///
 /// The ray rises from the hit and ends as soon as it climbs above the
-/// material's PEAK raise (P3) — not the plane: with raised texels around, a
+/// material's PEAK raise — not the plane: with raised texels around, a
 /// hit on the plane can still be shadowed. A top hit at the peak height has
 /// nothing above it and skips the march. `peak_raise` is the quantized
 /// fraction from the uniform; `max_steps` is [`surface_depth_shadow_steps`]

@@ -120,7 +120,7 @@ pub(crate) const MAX_ANIMATED_BAKED_LIGHTS: usize = 256;
 /// (`resource_management.md` §8.2).
 ///
 /// Skinned models deliberately do NOT flow through here: they are out of
-/// Surface Depth's scope (design D3), they bind `Material::Default` against a
+/// Surface Depth's scope, they bind `Material::Default` against a
 /// neutral single-channel specular placeholder, and their bind groups are
 /// owned by the mesh pass.
 pub(crate) struct GpuTexture {
@@ -709,7 +709,7 @@ pub struct Renderer {
     /// rebuild live GPU resources from the setter.
     pub(super) spot_shadow_map_resolution: u32,
 
-    /// Player-facing Surface Depth tier (design D5). Boot state, like the
+    /// Player-facing Surface Depth switch. Boot state, like the
     /// bloom profile, so a full-renderer rebuild after surface recovery keeps
     /// the player's choice instead of silently returning to the default.
     ///

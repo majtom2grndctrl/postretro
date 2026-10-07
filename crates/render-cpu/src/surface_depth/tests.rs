@@ -232,7 +232,7 @@ fn a_flat_prefix_with_a_surface_map_still_resolves_flat() {
 
 #[test]
 fn an_all_mid_gray_map_uploads_exactly_what_no_map_does() {
-    // P4: the band is empty, so the material marches nothing.
+    // An empty band marches nothing.
     for levels in 0..=16u32 {
         let depth = SurfaceDepth {
             quantize_levels: levels,
@@ -318,7 +318,7 @@ fn a_requested_base_mip_survives_the_packed_word() {
     assert!(fields.has_depth);
 }
 
-// -- Player on/off switch (D5) --
+// -- Player on/off switch --
 
 #[test]
 fn the_switch_defaults_to_on_because_the_feature_ships_enabled() {
@@ -327,7 +327,7 @@ fn the_switch_defaults_to_on_because_the_feature_ships_enabled() {
 
 #[test]
 fn the_switch_has_exactly_two_states() {
-    // D5 is a cost lever, not a quality ladder: a third state would have to
+    // The switch is a cost lever, not a quality ladder: a third state would have to
     // earn its keep visually, and the one that existed never changed the
     // carve depth at all.
     assert_eq!(
@@ -1223,7 +1223,7 @@ fn a_far_eye_marches_exactly_as_without_the_bound() {
     }
 }
 
-/// D7: a starved march resolves flat at the true plane — original UV, height
+/// A starved march resolves flat at the true plane — original UV, height
 /// 0, geometric normal, top — rather than at the last boundary it crossed.
 #[test]
 fn a_starved_march_resolves_flat_at_the_plane() {
@@ -1307,7 +1307,7 @@ fn a_zero_step_budget_marches_like_a_budget_of_one() {
     );
 }
 
-/// P2 is exact: wherever the single-texel early-out fires it returns what
+/// The single-texel early-out is exact: wherever the single-texel early-out fires it returns what
 /// the full loop returns, bit for bit — and nowhere else does it change
 /// anything.
 #[test]
@@ -1358,7 +1358,7 @@ fn the_single_texel_early_out_is_exact() {
     assert!(fired > 0 && looped > 0, "fired {fired}, looped {looped}");
 }
 
-/// P2 is the loop's first iteration whatever the starting texel holds: a top
+/// The single-texel early-out is the loop's first iteration whatever the starting texel holds: a top
 /// above the start (an eye inside the band, or a band that does not bound the
 /// field), a top below the band's floor, or a NaN. Hits are compared through
 /// `Debug` so a NaN on both sides still counts as equal.
@@ -1465,7 +1465,7 @@ fn a_pit_floor_is_lit_when_the_light_clears_the_wall() {
     assert_eq!(visibility, 1.0);
 }
 
-/// P3: with relief above the plane, a hit ON the plane is not out of the band.
+/// With relief above the plane, a hit ON the plane is not out of the band.
 #[test]
 fn the_shadow_march_does_not_exit_at_the_plane_when_relief_rises_above_it() {
     let authored = [PLANE, WHITE, PLANE, WHITE];
@@ -1575,7 +1575,7 @@ fn the_shadow_budget_is_half_the_view_budget_and_never_zero() {
     assert_eq!(surface_depth_shadow_steps(0), 1);
 }
 
-/// D7 holds through the type: a starved hit is flat, so it neither occludes
+/// A starved march resolves flat through the type: a starved hit is flat, so it neither occludes
 /// nor self-shadows, whatever height it carries — the shader's `carved =
 /// false` gate.
 #[test]
@@ -1630,7 +1630,7 @@ fn a_starved_hit_never_occludes_or_self_shadows() {
     assert!(ungated_shadowed > 0, "the gate must be what keeps it lit");
 }
 
-// -- Ambient occlusion (D5) --
+// -- Ambient occlusion from the peak --
 
 #[test]
 fn ambient_occlusion_is_zero_on_a_texel_at_the_peak() {

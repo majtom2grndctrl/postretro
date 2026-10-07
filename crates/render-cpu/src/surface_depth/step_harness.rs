@@ -104,8 +104,8 @@ struct Map {
 /// an empty top third the ray still had to descend through. Read signed, the
 /// same pixels span four plateaus from +1 to −2 texels — the peak 0.195 rounds
 /// up to 1/3 — so the walked span grows from 2/3 to the full depth (1.5×).
-/// Starting at the peak recovers the empty third; nothing in P1–P4 can
-/// shorten a band the content actually fills.
+/// Starting at the peak recovers the empty third; no lever can shorten
+/// a band the content actually fills.
 const VENT_MISS: &str = "the signed reading makes the panel's relief 1.5x taller";
 
 /// Identical geometry costs identical steps: at the old 24-step cap this map
@@ -218,7 +218,7 @@ fn steps(sum: u64, p99: u32, starved: u64) -> Steps {
 
 fn maps() -> Vec<Map> {
     let mut maps = Vec::new();
-    // D8: the three shipped assets keep their pixels and take the signed meaning.
+    // The three shipped assets keep their pixels and take the signed meaning.
     for (name, relative, material, baseline, current, mean_target_missed) in [
         (
             "concrete_stone_030",

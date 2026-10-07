@@ -92,19 +92,19 @@ struct MaterialUniform {
     shininess: f32,
     // Prefix-driven static multiplier for the emissive texture.
     emissive_strength: f32,
-    // --- Surface Depth relief band (bytes 8..16) ---
-    // The material's QUANTIZED peak raise, as a fraction of the relief scale in
-    // [0, 1], and its trough in [-1, 0]. Computed once at load from every
-    // uploaded mip of the surface map. The march starts at the peak and walks
-    // only the band down to the trough; an empty band marches nothing.
+    // --- Surface Depth (bytes 8..32) ---
+    // The CPU buffer was already 32 bytes while this struct was 16, so the
+    // feature needs no buffer resize, no new binding, and no change to the
+    // 128-byte group-0 `Uniforms` ABI. Every byte from 8 on is zero for the flat
+    // material.
+    //
+    // Relief band (bytes 8..16): the QUANTIZED peak raise, as a fraction of the
+    // relief scale in [0, 1], and the trough in [-1, 0]. Both come from the
+    // band of the mip the march reads; the CPU measures every uploaded mip at
+    // load. The march starts at the peak and walks only the band down to the
+    // trough; an empty band marches nothing.
     surface_depth_peak_raise: f32,
     surface_depth_trough: f32,
-    // --- Surface Depth (second 16-byte row) ---
-    // Already-allocated, already-zeroed slack: `MATERIAL_UNIFORM_SIZE` has been
-    // 32 on the CPU while this struct was 16, so the feature needs no buffer
-    // resize, no new binding, and no change to the 128-byte group-0 `Uniforms`
-    // ABI. An all-zero row is the flat material.
-    //
     // Relief scale in each direction around the true surface plane (authored
     // mid-gray): black sinks this far, white rises ~this far. Units per
     // `SURFACE_DEPTH_TEXEL_MODE` (albedo texels today). There is no
@@ -118,7 +118,7 @@ struct MaterialUniform {
     // `floor(s * levels + 0.5) / levels`; 0 leaves the stored 8-bit value alone.
     surface_depth_quantize_levels: f32,
     // Packed: bits 0..7 = max DDA steps, bits 8..11 = the RESIDENT base mip the
-    // DDA reads at (D6.2 — a parameter, never a hardcoded 0 in WGSL, because
+    // DDA reads at (a parameter, never a hardcoded 0 in WGSL, because
     // streaming will move it), bit 12 = the has-depth flag the bind-group
     // builder sets from the loaded specular slot's format, bits 13..15 unused,
     // bits 16..19 = how many dynamic lights this fragment may self-shadow (the
@@ -950,10 +950,10 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // makes Off byte-identical to the pre-Surface-Depth render.
     let V = normalize(view_vector);
 
-    // Surface Depth: march the surface map's depth channel and shade the texel
+    // Surface Depth: march the surface map's height channel and shade the texel
     // face this pixel's view ray actually lands on. When the march is inactive
-    // — flat material, no `_h.png` sibling (the 1x1 black R8 placeholder reads
-    // `.g == 0`), faded out, degenerate UV chart, edge-on fragment — it returns
+    // — flat material, no `_h.png` sibling (the has-depth bit is clear), faded
+    // out, degenerate UV chart, edge-on fragment — it returns
     // `in.uv`, `in.world_position` and the geometric normal unchanged, so
     // everything below is the pre-Surface-Depth path exactly.
     //
@@ -1252,8 +1252,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // Surface Depth self-shadowing is budgeted: at most
     // `depth.shadow_light_budget` marches per fragment, spent on the first
     // contributing lights in loop order. The budget rides the per-material
-    // uniform because the player's quality tier switches it off by rewriting
-    // that buffer — `Low` and `Off` send zero, and so does every flat fragment.
+    // uniform because the player's on/off switch turns it off by rewriting
+    // that buffer — `Off` sends zero, and so does every flat fragment.
     var depth_shadow_marches: u32 = 0u;
     for (var i: u32 = 0u; i < light_count; i = i + 1u) {
         // Influence-volume early-out: pure optimization — no pixel change.

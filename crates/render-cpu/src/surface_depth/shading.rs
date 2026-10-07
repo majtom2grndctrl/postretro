@@ -54,7 +54,7 @@ pub fn surface_depth_fade(distance_meters: f32, fade_distance_meters: f32, lod: 
         .min(surface_depth_lod_fade(lod))
 }
 
-/// Ambient occlusion factor for the SH indirect term (D5).
+/// Ambient occlusion factor for the SH indirect term.
 ///
 /// Measured from the material's PEAK raise, not the plane:
 /// `ao_fraction = clamp(peak_raise − height / scale, 0, 1)`. Mortar
@@ -73,7 +73,7 @@ pub fn surface_depth_fade(distance_meters: f32, fade_distance_meters: f32, lod: 
 /// both). Dividing by the raw scale past `SURFACE_DEPTH_MAX_METERS` would
 /// report a full-depth hit as partly occluded.
 ///
-/// Takes the whole view-march result so D7 cannot be skipped: a starved hit is
+/// Takes the whole view-march result so a starved march's flat result cannot be skipped: a starved hit is
 /// flat and never occludes (the shader's `carved = false` gate).
 pub fn surface_depth_ambient_occlusion(
     hit: &SurfaceDepthHit,

@@ -27,7 +27,7 @@ Height is derived from diffuse luminance — the same signal `stem_n.png` differ
 sampled one derivative step earlier (undifferentiated). Mean luminance maps to mid-gray, so a
 material rises and sinks around its own average. A profile-driven strength scales contrast away
 from that mean (see `--height-strength` below). Posterizing then snaps values to terraces, with
-mid-gray always one of them. Height plateaus follow the diffuse's own plateaus: the engine's
+mid-gray always one of them. Terrace boundaries follow the diffuse's own edges: the engine's
 aesthetic dial is terraced depth, and low quantization-level counts should read as visibly flat
 plateaus.
 
@@ -80,6 +80,7 @@ Optional flags:
 - `--quantize-levels <u8>` defaults to `18` for `64`/`64x64`, otherwise `24`. Use `0` to request the default.
 - `--height-strength <f32>` overrides the selected spec profile's default height/depth contrast strength (see table below). Values above `1.0` exaggerate relief; values below `1.0` flatten it.
 - `--height-quantize-levels <u8>` defaults to the same size-based default as `--quantize-levels` (`18` for `64`/`64x64`, otherwise `24`). Use `0` to request the default. Terraces split evenly below and above the surface, plus mid-gray itself: `2` yields sink / surface / rise. An odd count rounds down to the even count below it. Lower level counts produce more pronounced, flatter plateaus — the intended retro read for the engine's terraced-depth parallax.
+  The engine re-terraces every map to its material prefix's own terrace count per direction. A generated map's terraces land on the engine's plateaus when that count is a multiple of the tool's per-side count (this flag ÷ 2). `concrete` (6 per direction) suits `4`, `6` or `12`; `metal` and `wood` (2) suit `4`; `grate` and the default prefix (3) suit `6`. Above the prefix's count the engine re-terraces the map anyway.
 
 Spec profiles also set the default `_h.png` height/depth strength (overridable with
 `--height-strength`); a cobblestone/masonry-like profile wants pronounced, plateau-like steps,

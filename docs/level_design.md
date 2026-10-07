@@ -306,12 +306,14 @@ Example: `cobble.png` → diffuse; `cobble_h.png` → height.
 | Shade | Value | Where the surface appears |
 |-------|-------|---------------------------|
 | Black | `#000000` (0) | Sunk the material's full depth below the face |
-| Dark gray | `#404040` (64) | Sunk half the depth |
+| Dark gray | `#404040` (64) | Sunk about half the depth (exactly half for even terrace counts) |
 | **Mid-gray** | **`#808080` (128)** | **Exactly on the brush face** |
-| Light gray | `#C0C0C0` (192) | Raised half the depth |
-| White | `#FFFFFF` (255) | Raised the full depth above the face |
+| Light gray | `#C0C0C0` (192) | Raised about half the depth (exactly half for even terrace counts) |
+| White | `#FFFFFF` (255) | Raised the full depth above the face, once terraced |
 
-The scale is linear between rows. Paint flat areas exactly `#808080` — Photoshop's and GIMP's 50% gray. The engine snaps 127 to flat too. A map with nothing lighter than mid-gray only carves, at no extra cost.
+The scale is linear between rows. White sits at 127/128 of the depth before terracing, and every prefix's terracing carries it up to the full depth. The half-depth rows land exactly on a terrace only when the prefix has an even terrace count. With an odd count, such as `grate` and the default prefix (3 terraces per direction), an exact half step snaps up: `#404040` sinks one third and `#C0C0C0` rises two thirds.
+
+Paint flat areas exactly `#808080` — Photoshop's and GIMP's 50% gray. The engine snaps 127 to flat too. A map with nothing lighter than mid-gray only carves, at no extra cost.
 
 Requirements — each of these **fails the compile**. None of them is a warning you can ignore:
 
@@ -350,7 +352,7 @@ The effect applies to static world brushes and to `kinematic_mover` brushes. It 
 
 #### Generating one
 
-`tools/texture-tool` writes `{stem}_h.png` alongside the diffuse, specular and normal maps in the same run. It derives height from diffuse luminance and places the diffuse's average brightness on mid-gray, so the result both rises and sinks. Its terraces line up with the diffuse's own quantization:
+`tools/texture-tool` writes `{stem}_h.png` alongside the diffuse, specular and normal maps in the same run. It derives height from diffuse luminance and places the diffuse's average brightness on mid-gray, so the result both rises and sinks. Its terrace boundaries follow the diffuse's own edges:
 
 `texture-tool` is the one exception to the bundle's "no toolchain needed"
 rule. Unlike the prebuilt helpers in `bin/`, it ships as Rust *source* under
@@ -365,7 +367,7 @@ cargo run --release --manifest-path tools/texture-tool/Cargo.toml -- \
   --height-strength 1.6 --height-quantize-levels 6
 ```
 
-`--height-strength` scales the relief (above `1.0` exaggerates it, below flattens it; each spec profile has its own default). `--height-quantize-levels` sets how many terraces, split evenly above and below mid-gray — **lower means fewer, flatter, chunkier plateaus**, which is the retro read the effect is tuned for. The tool writes untagged linear PNGs at the diffuse's exact dimensions, so its output satisfies the rules above by construction. See `tools/texture-tool/README.md` for the full flag list and the per-profile defaults.
+`--height-strength` scales the relief (above `1.0` exaggerates it, below flattens it; each spec profile has its own default). `--height-quantize-levels` sets how many terraces, split evenly above and below mid-gray — **lower means fewer, flatter, chunkier plateaus**, which is the retro read the effect is tuned for. The engine re-terraces every map to its prefix's own count per direction, so the tool's terraces land on the engine's plateaus when that count is a multiple of the tool's per-side count (this flag ÷ 2). `concrete` (6) suits 4, 6 or 12; `metal` and `wood` (2) suit 4; `grate` and the default prefix (3) suit 6. Above the prefix's count the engine re-terraces the map anyway. The tool writes untagged linear PNGs at the diffuse's exact dimensions, so its output satisfies the rules above by construction. See `tools/texture-tool/README.md` for the full flag list and the per-profile defaults.
 
 #### The player's on/off setting
 

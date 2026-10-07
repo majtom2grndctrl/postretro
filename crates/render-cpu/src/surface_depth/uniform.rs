@@ -17,7 +17,7 @@ pub const SURFACE_DEPTH_HAS_DEPTH_BIT: u32 = 1 << 12;
 /// Uniform-word bit offset of the packed per-fragment self-shadow budget.
 ///
 /// The budget is per-MATERIAL data rather than a shader constant because the
-/// player-facing on/off switch (design D5) is applied by rewriting this buffer,
+/// player-facing on/off switch is applied by rewriting this buffer,
 /// not by compiling a shader variant — this engine has no variant system. Bit
 /// 13..16 stay free between the has-depth flag and this field.
 pub const SURFACE_DEPTH_SHADOW_BUDGET_SHIFT: u32 = 16;
@@ -28,8 +28,7 @@ pub const SURFACE_DEPTH_MAX_STEPS: u32 = 0xFF;
 
 /// The mip level the DDA reads the surface map at today.
 ///
-/// D6.2: this must reach the shader as a *parameter*, never a hardcoded `0` in
-/// WGSL. Asset streaming will drop top mips; when it does, this value moves and
+/// This must reach the shader as a *parameter*, never a hardcoded `0` in WGSL. Asset streaming will drop top mips; when it does, this value moves and
 /// a hardcoded `0` would silently read non-resident data. The fade-to-flat LOD
 /// is driven off the dimensions at this level for the same reason, so a
 /// streamed-out surface map flattens gracefully instead of popping.
@@ -44,7 +43,7 @@ pub const SURFACE_DEPTH_SHADOW_LIGHT_BUDGET: u32 = 2;
 pub struct SurfaceDepthMarch {
     /// Hard cap on texels the view-ray DDA may walk.
     pub max_steps: u32,
-    /// Resident base mip the DDA reads the surface map at (D6.2).
+    /// Resident base mip the DDA reads the surface map at.
     pub base_mip: u32,
     /// The bound specular slot really is a two-channel surface map.
     pub has_depth: bool,
@@ -94,7 +93,7 @@ pub fn surface_depth_has_map(march_word: u32, depth_meters: f32) -> bool {
     (march_word & SURFACE_DEPTH_HAS_DEPTH_BIT) != 0 && depth_meters > 0.0
 }
 
-/// Player-facing Surface Depth switch (design D5).
+/// Player-facing Surface Depth switch.
 ///
 /// Two states, not a graded tier ladder: the feature is a per-fragment cost a
 /// weak GPU either can or cannot afford, and a middle setting that kept the
@@ -165,7 +164,7 @@ pub struct SurfaceDepthUniform {
     /// prefix: a prefix that wants depth but whose `.prm` has no `_h` sibling
     /// must skip the march rather than walk the placeholder.
     pub has_depth: bool,
-    /// Resident base mip the DDA reads at (D6.2).
+    /// Resident base mip the DDA reads at.
     pub base_mip: u32,
     /// Per-fragment dynamic-light self-shadow budget, from the player's
     /// on/off switch. Zero means the fragment never runs the shadow DDA.
@@ -188,7 +187,7 @@ impl SurfaceDepthUniform {
     /// Resolve a material's prefix-driven tuning against the player's on/off
     /// switch and against what actually loaded.
     ///
-    /// `quality` is the persisted player setting (design D5); it is applied
+    /// `quality` is the persisted player setting; it is applied
     /// FIRST, so `Off` collapses to [`Self::FLAT`] before any other decision is
     /// made. `specular_is_surface_map` comes from the bound texture's format.
     /// `requested_base_mip` is the residency decision — today always

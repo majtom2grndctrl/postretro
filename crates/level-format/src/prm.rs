@@ -356,7 +356,7 @@ pub fn bc5_level_count(width: u16, height: u16) -> u8 {
 /// Slot 1 (specular) accepts both of its forms: `R8Unorm` for a material with
 /// no height sibling — which is what every pre-surface-depth `.prm` carries,
 /// still read unchanged — and `Rg8Unorm` for the two-channel surface map
-/// (R specular, G depth). Widening here is purely additive.
+/// (R specular, G inverted height). Widening here is purely additive.
 fn format_allowed_for_slot(slot_index: u8, format: PrmFormat) -> bool {
     match slot_index {
         0 | 3 => format == PrmFormat::Rgba8UnormSrgb,
@@ -1762,7 +1762,7 @@ mod tests {
             (0, make_slot(PrmFormat::Rgba8UnormSrgb, 1, 1)),
             (1, make_slot(PrmFormat::R8Unorm, 1, 1)),
             // The specular slot's two-channel surface-map form (R specular,
-            // G depth). Additive: the R8Unorm row above stays accepted.
+            // G inverted height). Additive: the R8Unorm row above stays accepted.
             (1, make_slot(PrmFormat::Rg8Unorm, 1, 1)),
             // Legacy linear RGBA normals remain readable and writable.
             (2, make_slot(PrmFormat::Rgba8Unorm, 1, 1)),

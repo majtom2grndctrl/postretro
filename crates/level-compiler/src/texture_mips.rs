@@ -293,7 +293,7 @@ pub(super) fn build_specular_chain_impl(r8: &[u8], width: u32, height: u32) -> V
 
 /// Build a two-channel surface-map mip chain (`PrmFormat::Rg8Unorm`).
 ///
-/// `rg` is interleaved `[specular, depth]` per texel at `width * height`
+/// `rg` is interleaved `[specular, inverted height]` per texel at `width * height`
 /// texels. Both channels are already linear and already in their stored
 /// sense — in particular the caller has inverted the authored height map
 /// (`255 - height`) before interleaving, so mip 0 is a straight copy.
@@ -1087,7 +1087,8 @@ pub fn bake_world_texture_mips(
         // Slot 1 is the specular slot in both of its forms. Without a height
         // sibling it stays single-channel `R8Unorm`, byte-identical to what it
         // has always baked. With one it becomes the two-channel surface map:
-        // R specular (or 0 when `_s.png` is absent), G depth. The SPECULAR
+        // R specular (or 0 when `_s.png` is absent), G the inverted height
+        // byte (`255 - height`). The SPECULAR
         // slot-mask bit is set if EITHER sibling is present.
         match (height_bytes.as_deref(), height_path.as_ref()) {
             (Some(hb), Some(hp)) => {
@@ -1096,7 +1097,7 @@ pub fn bake_world_texture_mips(
                 // (128 = the surface plane); the bake applies no zero point,
                 // because the bundle hash covers source PNG bytes only and a
                 // changed transform would silently reuse stale sidecars.
-                let depth: Vec<u8> = height_rgba
+                let inverted_height: Vec<u8> = height_rgba
                     .as_chunks::<4>()
                     .0
                     .iter()
@@ -1108,13 +1109,13 @@ pub fn bake_world_texture_mips(
                         let (spec_rgba, _, _) = decode_png_rgba(sb, sp)?;
                         spec_rgba.as_chunks::<4>().0.iter().map(|c| c[0]).collect()
                     }
-                    None => vec![0u8; depth.len()],
+                    None => vec![0u8; inverted_height.len()],
                 };
 
-                let mut rg: Vec<u8> = Vec::with_capacity(depth.len() * 2);
-                for (s, d) in specular.iter().zip(depth.iter()) {
+                let mut rg: Vec<u8> = Vec::with_capacity(inverted_height.len() * 2);
+                for (s, g) in specular.iter().zip(inverted_height.iter()) {
                     rg.push(*s);
-                    rg.push(*d);
+                    rg.push(*g);
                 }
 
                 let payload = build_surface_chain(&rg, w, h);
@@ -2431,7 +2432,7 @@ mod tests {
         assert_eq!(slot.format, PrmFormat::Rg8Unorm);
         for texel in slot.payload[..2 * 2 * 2].as_chunks::<2>().0 {
             assert_eq!(texel[0], 0);
-            assert_eq!(texel[1], 245, "depth = 255 - 10");
+            assert_eq!(texel[1], 245, "G = 255 - 10");
         }
 
         let _ = std::fs::remove_dir_all(&root);
@@ -2605,12 +2606,12 @@ mod tests {
     }
 
     /// A height sibling turns the specular slot into the two-channel surface
-    /// map: R is the authored specular, G is depth — the *inverse* of the
-    /// authored height, because the stored channel measures how far the
-    /// surface is carved below its true plane.
+    /// map: R is the authored specular, G is the inverted height byte
+    /// (`255 - height`). The runtime reads G = 0 as the highest raise and
+    /// G = 255 as the deepest sink around the mid-gray plane.
     #[test]
-    fn height_sibling_bakes_inverted_depth_into_the_specular_green_channel() {
-        let root = unique_temp_dir("height-inverts-to-depth");
+    fn height_sibling_bakes_inverted_height_into_the_specular_green_channel() {
+        let root = unique_temp_dir("height-inverts-into-green");
         let texture_root = root.join("textures");
         let collection = texture_root.join("stone");
         let cache_root = root.join("cache");
@@ -2622,7 +2623,7 @@ mod tests {
             solid_png_bytes(4, 4, [200, 0, 0, 255]),
         )
         .unwrap();
-        // Authored height: 60 = mostly recessed. Depth must read 255 - 60.
+        // Authored height: 60 = mostly recessed. G must read 255 - 60.
         std::fs::write(
             collection.join("cobble_h.png"),
             solid_png_bytes(4, 4, [60, 60, 60, 255]),
@@ -2657,7 +2658,11 @@ mod tests {
         // Mip 0 is the source interleave, untouched by filtering.
         for texel in slot.payload[..4 * 4 * 2].as_chunks::<2>().0 {
             assert_eq!(texel[0], 200, "R keeps the authored specular");
-            assert_eq!(texel[1], 255 - 60, "G is depth = 255 - authored height");
+            assert_eq!(
+                texel[1],
+                255 - 60,
+                "G is the inverted height = 255 - authored height"
+            );
         }
 
         let _ = std::fs::remove_dir_all(&root);
@@ -2699,8 +2704,8 @@ mod tests {
         assert_eq!(slot.format, PrmFormat::Rg8Unorm);
         for texel in slot.payload[..4 * 4 * 2].as_chunks::<2>().0 {
             assert_eq!(texel[0], 0, "absent _s.png reads as zero specular");
-            // Fully white height (raised) carves to zero depth: flat.
-            assert_eq!(texel[1], 0, "white height is depth 0 — a true no-op");
+            // Fully white height inverts to G = 0: the highest raise, not flat.
+            assert_eq!(texel[1], 0, "white height stores G = 0");
         }
 
         let _ = std::fs::remove_dir_all(&root);

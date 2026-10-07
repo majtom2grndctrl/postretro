@@ -786,11 +786,14 @@ fn normal(
     })
 }
 
-/// Derive a conventional height map from diffuse luminance: white = raised,
-/// black = recessed. This is authoring-facing and intentionally NOT inverted
-/// to depth here — see `tools/texture-tool/README.md`; `prl-build` performs
-/// `depth = 255 - height` at bake time so authors keep thinking in familiar
-/// height-map terms.
+/// Derive a height map from diffuse luminance, centered on the surface:
+/// mid-gray (`HEIGHT_SURFACE`) is the true plane, darker sinks, lighter rises.
+/// Mean luminance maps to mid-gray, so a material rises and sinks around its
+/// own average.
+///
+/// The output is in authoring sense (white = raised) and is not inverted here;
+/// `prl-build` stores `255 - height` at bake time. See
+/// `tools/texture-tool/README.md`.
 ///
 /// Height is the same luminance signal `normal()` differentiates (via Sobel)
 /// one derivative step earlier, so it shares `wrapped_luma` rather than
@@ -827,11 +830,10 @@ fn height_map(
 const HEIGHT_SURFACE: u8 = 128;
 
 /// Posterize a height value into `levels / 2` terraces on each side of
-/// [`HEIGHT_SURFACE`], plus the surface itself (an odd count rounds down), so
-/// the mean-luminance region lands
-/// exactly on the surface rather than on whichever diffuse palette entry is
-/// nearest to 128. Terraces are the engine's aesthetic dial; their spatial
-/// boundaries still follow the diffuse's own.
+/// [`HEIGHT_SURFACE`], plus the surface itself (an odd count rounds down). The
+/// mean-luminance region lands exactly on the surface, not on whichever diffuse
+/// palette entry is nearest to 128. Terraces are the engine's aesthetic dial;
+/// their spatial boundaries still follow the diffuse's own.
 fn quantize_height(v: u8, levels: u8) -> u8 {
     let per_side = (levels / 2).max(1) as f32;
     let step = HEIGHT_SURFACE as f32 / per_side;

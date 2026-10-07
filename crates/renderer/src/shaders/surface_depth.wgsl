@@ -89,7 +89,7 @@ const SURFACE_DEPTH_BASE_MIP_SHIFT: u32 = 8u;
 const SURFACE_DEPTH_BASE_MIP_MASK: u32 = 0xFu;
 const SURFACE_DEPTH_HAS_DEPTH_BIT: u32 = 0x1000u;
 // Per-fragment dynamic-light self-shadow budget. It rides the uniform rather
-// than a `const` because the player-facing on/off switch (design D5) is applied
+// than a `const` because the player-facing on/off switch is applied
 // by rewriting this BUFFER — this engine has no shader-variant system, so a
 // switch that must turn the shadow march off has to reach the shader as data.
 // Zero means the second (shadow) DDA never runs.
@@ -130,7 +130,7 @@ struct SurfaceDepthResult {
     // False whenever the fragment must render exactly as it did before this
     // feature existed: no surface map bound, a flat material, a faded-out
     // surface, a degenerate UV chart, an edge-on fragment, or a march that
-    // starved its step budget (D7).
+    // starved its step budget.
     carved: bool,
     // UV to sample the material's textures at. Biased half a texel past the
     // crossed boundary on a side hit so `sample_post_retro` reads the stone's
@@ -278,14 +278,14 @@ fn surface_depth_distance_fade(distance_m: f32, fade_distance_m: f32) -> f32 {
 // Residency/LOD fade. `lod` is log2 of the fragment's footprint measured in
 // texels OF THE RESIDENT BASE MIP, so when streaming drops top mips the base
 // dimensions shrink, the lod drops with them, and a streamed-out surface map
-// flattens gracefully instead of popping (D6.2). It is also a straight perf
+// flattens gracefully instead of popping. It is also a straight perf
 // win: at distance the texels go sub-pixel and the parallax is invisible.
 fn surface_depth_lod_fade(lod: f32) -> f32 {
     return clamp(1.0 - (lod - SURFACE_DEPTH_FADE_LOD_START) / SURFACE_DEPTH_FADE_LOD_RANGE, 0.0, 1.0);
 }
 
 // Ambient occlusion for the SH INDIRECT term only, measured from the material's
-// PEAK raise rather than the plane (D5): mortar between raised stones darkens
+// PEAK raise rather than the plane: mortar between raised stones darkens
 // by its depth below the stone tops wherever the author put the plane. An
 // all-mid-gray map or a texel at the peak gets none. Legitimate because SH
 // probes sit at ~1 m spacing and "know nothing of the receiver's own geometry"
@@ -362,7 +362,7 @@ fn surface_depth_dda_setup(origin: vec2<f32>, dir: vec2<f32>) -> SurfaceDepthDda
 // The march measures DESCENT from where the ray starts: the peak raise, or the
 // eye if lower. Per texel `T` the solid's top lies `solid(T) = (top - s(T)) *
 // scale` below the start, so the loop body is the same walk the carve-only
-// field used; the start just moved up from the plane to the peak (D6).
+// field used; the start just moved up from the plane to the peak.
 fn surface_depth_resolve(
     uv: vec2<f32>,
     world_position: vec3<f32>,
@@ -467,7 +467,7 @@ fn surface_depth_resolve(
     }
 
     // The relief band, from the uniform (quantized on the CPU with this
-    // material's level count). P4: an empty band — an all-mid-gray map — marches
+    // material's level count). An empty band — an all-mid-gray map — marches
     // nothing, so it costs the same as having no map.
     let peak = material.surface_depth_peak_raise;
     let trough = material.surface_depth_trough;
@@ -497,7 +497,7 @@ fn surface_depth_resolve(
     // A far eye leaves `top == peak` exactly.
     let top = min(peak, view_distance * descent / depth_scale_m);
     let top_m = top * depth_scale_m;
-    // D6: the ray enters the band at the peak (or the eye), `top_m` above the
+    // The ray enters the band at the peak (or the eye), `top_m` above the
     // plane, which is `dir * top_m` texels back toward the viewer from `p0`.
     let start = p0 - dir * top_m;
     var dda = surface_depth_dda_setup(start, dir);
@@ -509,7 +509,7 @@ fn surface_depth_resolve(
     var hit_normal_ts = vec3<f32>(0.0, 0.0, 1.0);
     var hit_bias = vec2<f32>(0.0, 0.0);
 
-    // No single-texel early-out (P2) here, unlike the CPU authority: it
+    // No single-texel early-out here, unlike the CPU authority: it
     // resolves exactly what the loop's first iteration does, so dropping it
     // changes no result. Measured on AMD Metal, the extra branch made the
     // whole forward shader slower, even with Surface Depth off.
@@ -545,7 +545,7 @@ fn surface_depth_resolve(
                 break;
             }
             // Budget exhausted with the ray still in open space: resolve FLAT at
-            // the true plane (D7) — original UV, height 0, geometric normal, top
+            // the true plane — original UV, height 0, geometric normal, top
             // hit, and `carved = false` so the consumer skips AO and self-shadow
             // exactly as it does for no march. Resolving at the last crossed
             // boundary instead smeared the texture toward the viewer at grazing
@@ -613,7 +613,7 @@ fn surface_depth_resolve(
 // toward the light. 1.0 lit, 0.0 occluded.
 //
 // The ray rises from the hit and ends as soon as it climbs above the material's
-// PEAK raise (P3) — not the plane: with raised texels around, a hit on the
+// PEAK raise — not the plane: with raised texels around, a hit on the
 // plane can still be shadowed. A top hit at the peak height has nothing above
 // it and skips the march.
 //

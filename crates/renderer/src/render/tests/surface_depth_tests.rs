@@ -245,7 +245,7 @@ fn shader_constants_match_the_cpu_reference() {
         sd::SURFACE_DEPTH_HAS_DEPTH_BIT
     );
     // The self-shadow budget is NOT a shader constant: it rides the packed
-    // march word so the player's on/off switch (D5) can zero it by rewriting the
+    // march word so the player's on/off switch can zero it by rewriting the
     // material uniform buffer. Pin the field's position instead.
     assert_eq!(
         declared_u32("SURFACE_DEPTH_SHADOW_BUDGET_SHIFT"),
@@ -353,7 +353,7 @@ fn shader_constants_match_the_cpu_reference() {
     }
 }
 
-/// D2's hard renderer constraints, restated as assertions. Each of these
+/// The shader's hard renderer constraints, restated as assertions. Each of these
 /// breaks the build or the engine if violated, and none of them fails loudly
 /// on its own — a depth write silently kills the fragment under
 /// `depth_compare: Equal`, a lightmap offset silently samples a neighbouring
@@ -560,7 +560,7 @@ fn the_sh_lookup_bias_never_uses_the_dda_face_normal() {
     }
 }
 
-/// D6.2: the base mip must reach the shader as a parameter. A hardcoded 0
+/// The base mip must reach the shader as a parameter. A hardcoded 0
 /// would silently read non-resident data once streaming drops top mips, and
 /// the fade must key off the resident level's dimensions so a streamed-out
 /// surface map flattens instead of popping.
@@ -726,7 +726,7 @@ fn an_inactive_march_restores_the_pre_feature_inputs() {
         10,
         "each degenerate case (no map, faded out, zero authored depth, singular \
          Jacobian, zero UV scale, collapsed tangent plane, a resolved scale that is \
-         not positive, an empty band (P4), edge-on, a starved march (D7)) must \
+         not positive, an empty band, edge-on, a starved march) must \
          return the flat result",
     );
 
@@ -762,7 +762,7 @@ fn both_world_pipelines_pass_naga_validation() {
     }
 }
 
-/// The player's Surface Depth switch (design D5) reaches the shader as DATA in
+/// The player's Surface Depth switch reaches the shader as DATA in
 /// the per-material uniform, because the switch is applied by rewriting that
 /// buffer — this engine has no shader-variant system, so anything the switch
 /// must turn off has to be decodable from the packed march word.
@@ -806,8 +806,8 @@ fn the_player_switch_reaches_the_shader_through_the_packed_march_word() {
     assert_eq!(off.march_word(), 0, "Off must pack the all-zero march word");
 }
 
-/// The prefix-driven parameters reach the shader through the already-zeroed
-/// second uniform row, and a material with no height sibling never sets the
+/// The prefix-driven parameters reach the shader through uniform bytes 8..32
+/// (the relief band and the second row), and a material with no height sibling never sets the
 /// has-depth flag however deep its prefix asks to carve.
 #[test]
 fn material_parameters_are_prefix_driven_and_gated_on_the_loaded_slot() {
@@ -919,11 +919,10 @@ fn a_non_surface_map_slot_never_marches_even_when_its_g_would_read_as_max_raise(
 }
 
 /// The signed march's structure, pinned against the CPU authority's: it starts
-/// at the peak (D6) or the eye, whichever is lower (the eye bound), measures
-/// the band (P1/P4), resolves a starved march flat (D7), reports a signed
-/// height along the view ray, measures AO from the peak (D5) and ends the
-/// shadow march at the peak's clearance (P3). The CPU's
-/// single-texel early-out (P2) has no GPU branch: it resolves exactly what the
+/// at the peak or the eye, whichever is lower (the eye bound), measures the
+/// band, resolves a starved march flat, reports a signed height along the view
+/// ray, measures AO from the peak and ends the shadow march at the peak's
+/// clearance. The CPU's single-texel early-out has no GPU branch: it resolves exactly what the
 /// loop's first iteration does, so parity holds on results.
 #[test]
 fn the_shader_march_mirrors_the_signed_cpu_march() {
@@ -961,7 +960,7 @@ fn the_shader_march_mirrors_the_signed_cpu_march() {
             .trim_start_matches(|c: char| c != '\n')
             .trim_start()
             .starts_with("return flat_result;"),
-        "a starved march must resolve flat at the plane (D7)",
+        "a starved march must resolve flat at the plane",
     );
     // The eye bound needs the fragment-to-eye distance: both consumers pass the
     // camera distance, not some other length.
@@ -1014,7 +1013,7 @@ fn the_dda_shapes_hold_their_measured_cost() {
     );
     // A GPU early-out would compare the ray's first crossing against the band
     // height under some other name. `band_m` may only be declared and fed to
-    // the empty-band test (P4).
+    // the empty-band test.
     assert_eq!(
         code.matches("band_m").count(),
         2,
@@ -1114,7 +1113,7 @@ fn the_shader_dda_steps_mirror_the_cpu_authority() {
         "if !depth.carved || (light_terms & LIGHT_TERM_DEPTH_AO) == 0u { return 1.0; }".to_owned(),
         "if !(depth.depth_scale_m > SURFACE_DEPTH_EPS) { return 1.0; }".to_owned(),
         "return 1.0 - SURFACE_DEPTH_AO_STRENGTH * depth.fade * clamp(depth.peak_raise - depth.height_m / depth.depth_scale_m, 0.0, 1.0);".to_owned(),
-        // D7 for the self-shadow march: a flat (starved) result never marches.
+        // A flat (starved) result never marches.
         "fn surface_depth_light_visibility(depth: SurfaceDepthResult, to_light: vec3<f32>) -> f32 { if !depth.carved { return 1.0; }".to_owned(),
     ];
     for axis in ["x", "y"] {

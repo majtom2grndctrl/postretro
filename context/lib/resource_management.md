@@ -179,10 +179,12 @@ rides in the **G channel of the specular slot**, which becomes a two-channel
 - **Format:** the authored PNG is grayscale; the baker reads its R channel.
   **Mid-gray (128) is the true surface plane.** Darker sinks, lighter rises,
   linear in the byte: `(h − 128) / 128` of the material's depth, so black
-  sinks the full depth and white rises 127/128 of it. 128 is the plane
-  because 127.5 is unrepresentable.
-- **Color Space:** Linear. An `sRGB`, `gAMA`, or `iCCP` tag fails the build,
-  exactly like `_s` and `_n`.
+  sinks the full depth and white reads 127/128 of it before terracing. Every
+  prefix terraces, and the terrace rule carries white up to the full depth.
+  128 is the plane because 127.5 is unrepresentable.
+- **Color Space:** Linear. An `sRGB` or `iCCP` tag fails the build, as does a
+  `gAMA` that is not approximately 1.0, exactly like `_s` and `_n`. A `gAMA` of
+  about 1.0 is accepted.
 - **Dimensions:** Must match the diffuse, and must match `_s.png` when that
   sibling exists. Both are hard compile-time bails — unlike `_s`/`_n` versus
   diffuse, which is documented but unenforced — because `_h` and `_s` are
@@ -221,14 +223,17 @@ rides in the **G channel of the specular slot**, which becomes a two-channel
   values ride in the per-material uniform's second 16-byte row. A material
   whose loaded specular slot is not `Rg8Unorm` gets an all-zero row and skips
   the march entirely.
-- **Relief band:** at load, the renderer reads the surface map's highest raise
-  and lowest sink across **every uploaded mip** (filtering can overshoot the
-  base level) on the CPU. Quantized to the material's terraces, the band rides
-  in the uniform's first row beside shininess and emissive strength. The march
-  starts at the band's top, so a map that never exceeds mid-gray costs what a
-  carve-only map always did; an empty band (all mid-gray) uploads the same
-  bytes as no map.
-- **Player on/off switch (D5):** the renderer RETAINS each world/mover
+- **Relief band:** at load, the renderer measures the surface map's highest
+  raise and lowest sink at **every uploaded mip** on the CPU (filtering can
+  overshoot the base level). The uniform packs the band of the mip the march
+  reads — the clamped base mip — quantized to the material's terraces, in its
+  first row beside shininess and emissive strength. That band bounds every
+  texel the march can fetch, so a coarser mip's overshoot never lifts the
+  start. The base mip and its band are resolved together, so a change of base
+  mip repacks the band. The march starts at the band's top, so a map that never
+  exceeds mid-gray costs the same as a carve-only map under the signed march;
+  an empty band (all mid-gray) uploads the same bytes as no map.
+- **Player on/off switch:** the renderer RETAINS each world/mover
   material's uniform buffer handle alongside its bind group (`GpuTexture`),
   plus the GPU-free `MaterialUniformPlan` that produced its contents, so
   `Renderer::set_surface_depth_quality` can rewrite those 32 bytes in place.

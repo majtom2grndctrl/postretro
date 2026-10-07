@@ -18,19 +18,19 @@ struct MaterialUniform {
     shininess: f32,
     // Prefix-driven static multiplier for the emissive texture.
     emissive_strength: f32,
-    // --- Surface Depth relief band (bytes 8..16) ---
-    // The material's QUANTIZED peak raise, as a fraction of the relief scale in
-    // [0, 1], and its trough in [-1, 0]. Computed once at load from every
-    // uploaded mip of the surface map. The march starts at the peak and walks
-    // only the band down to the trough; an empty band marches nothing.
+    // --- Surface Depth (bytes 8..32) ---
+    // The CPU buffer was already 32 bytes while this struct was 16, so the
+    // feature needs no buffer resize, no new binding, and no change to the
+    // 128-byte group-0 `Uniforms` ABI. Every byte from 8 on is zero for the flat
+    // material.
+    //
+    // Relief band (bytes 8..16): the QUANTIZED peak raise, as a fraction of the
+    // relief scale in [0, 1], and the trough in [-1, 0]. Both come from the
+    // band of the mip the march reads; the CPU measures every uploaded mip at
+    // load. The march starts at the peak and walks only the band down to the
+    // trough; an empty band marches nothing.
     surface_depth_peak_raise: f32,
     surface_depth_trough: f32,
-    // --- Surface Depth (second 16-byte row) ---
-    // Already-allocated, already-zeroed slack: `MATERIAL_UNIFORM_SIZE` has been
-    // 32 on the CPU while this struct was 16, so the feature needs no buffer
-    // resize, no new binding, and no change to the 128-byte group-0 `Uniforms`
-    // ABI. An all-zero row is the flat material.
-    //
     // Relief scale in each direction around the true surface plane (authored
     // mid-gray): black sinks this far, white rises ~this far. Units per
     // `SURFACE_DEPTH_TEXEL_MODE` (albedo texels today). There is no
@@ -44,7 +44,7 @@ struct MaterialUniform {
     // `floor(s * levels + 0.5) / levels`; 0 leaves the stored 8-bit value alone.
     surface_depth_quantize_levels: f32,
     // Packed: bits 0..7 = max DDA steps, bits 8..11 = the RESIDENT base mip the
-    // DDA reads at (D6.2 — a parameter, never a hardcoded 0 in WGSL, because
+    // DDA reads at (a parameter, never a hardcoded 0 in WGSL, because
     // streaming will move it), bit 12 = the has-depth flag the bind-group
     // builder sets from the loaded specular slot's format, bits 13..15 unused,
     // bits 16..19 = how many dynamic lights this fragment may self-shadow (the
@@ -261,8 +261,8 @@ fn accumulate_dynamic_direct(
     var total = vec3<f32>(0.0);
     let light_count = select(0u, kinematic_light_params.light_count, use_dynamic);
     // Surface Depth self-shadowing is budgeted per fragment by
-    // `depth.shadow_light_budget` (the player's quality tier, carried in the
-    // per-material uniform; zero at `Low` and `Off`) and applies to the
+    // `depth.shadow_light_budget` (the player's on/off switch, carried in the
+    // per-material uniform; zero at `Off`) and applies to the
     // DYNAMIC prefix only — the animated-baked tail and the selected-static
     // suffix are baked-tier records whose occlusion the bake already owns.
     var depth_shadow_marches: u32 = 0u;

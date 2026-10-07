@@ -1,6 +1,6 @@
 # lighting-scale--cold-sh-bake-contribution-early-out
 
-Brief · compact · reads: `context/lib/build_pipeline.md` §Compiler pipeline · read at c855e3e
+Brief · compact · done (direct build, PR #562) · reads: `context/lib/build_pipeline.md` §Compiler pipeline · read at c855e3e
 
 ## Problem
 Developer-raised. Owner goal: the baker takes less time in ways players cannot notice, with no

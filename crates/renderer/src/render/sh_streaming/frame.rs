@@ -405,7 +405,10 @@ impl ShResidencyState {
 
     // The commits below are the CPU half of each pass's dispatch, run once
     // its encode succeeded. They stay apart from the GPU encode so CPU tests
-    // drive the same planner commit and residency-work consumption.
+    // drive the same planner commit and residency-work consumption. The
+    // direct epoch bump stays in `dispatch_direct_compose`: it advances once
+    // for both direct passes, so a CPU-only commit never makes a cluster
+    // that needs direct compose sampleable.
 
     pub(super) fn commit_indirect_compose(
         &mut self,

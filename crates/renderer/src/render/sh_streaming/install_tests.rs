@@ -745,9 +745,32 @@ fn touched_rows_cover_membership_changes_on(map: SyntheticMap) {
 
     let mut bad_patch = map.prepared(&state, 1);
     corrupt_last_probe_patch(&mut bad_patch);
-    let operations: [&dyn Fn(&mut ShResidencyState); 7] = [
+    let operations: [&dyn Fn(&mut ShResidencyState); 8] = [
         &|state| state.install(None, &map.prepared(state, 0)).unwrap(),
         &|state| assert!(state.install(None, &bad_patch).is_err()),
+        // Fails inside sparse allocation. Cluster 1's id-27 and id-41 rows
+        // and its first id-45 row already hold provisional refs and row
+        // pairs when a stale live row refuses its last id-45 row, so the
+        // rollback releases refs it added.
+        &|state| {
+            let blocked = *map.cluster_rows(1).last().unwrap();
+            let pool = state
+                .sparse_pools
+                .get_mut(&ANIMATED_DIRECT_DELTA_ID)
+                .unwrap();
+            pool.install(blocked, 1, ENTRY_TILE_F16).unwrap();
+            let prepared = map.prepared(state, 1);
+            assert_eq!(
+                state.install(None, &prepared),
+                Err(malformed(1, "sparse row cannot allocate pool range"))
+            );
+            assert!(!state.compose_membership_touched.rows().is_empty());
+            let pool = state
+                .sparse_pools
+                .get_mut(&ANIMATED_DIRECT_DELTA_ID)
+                .unwrap();
+            pool.evict(blocked).unwrap();
+        },
         &|state| state.install(None, &map.prepared(state, 1)).unwrap(),
         &|state| state.evict(&mut StagedUploads::default(), 1).unwrap(),
         &|state| state.evict(&mut StagedUploads::default(), 0).unwrap(),

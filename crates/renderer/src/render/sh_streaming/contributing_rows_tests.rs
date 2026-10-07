@@ -183,8 +183,10 @@ impl Harness {
     /// Commit only Pass A, as when Pass B's encode fails after it.
     fn commit_pass_a_only(&mut self) {
         let plan = self.state.compose_frame_plan.take().unwrap();
-        self.state
-            .commit_static_direct_compose(&plan.static_direct, 1);
+        if !plan.static_direct.rows().is_empty() {
+            self.state
+                .commit_static_direct_compose(&plan.static_direct, 1);
+        }
         self.state.compose_frame_plan = Some(plan);
     }
 

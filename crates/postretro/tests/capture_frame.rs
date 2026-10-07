@@ -214,10 +214,13 @@ fn assert_gated_compose_rows_carry_entries(name: &str, compose: &CaptureCompose)
     };
     // Settled streaming leaves no install or eviction work that could
     // legitimately compose a zero-entry row on the measured frame.
+    // `evictions` is cumulative, so it also rules out eviction work during
+    // warmup.
     for field in [
         "queued_clusters",
         "ready_clusters",
         "installed_uncomposed_clusters",
+        "evictions",
     ] {
         assert_eq!(count(field), 0, "{name}: {field}");
     }

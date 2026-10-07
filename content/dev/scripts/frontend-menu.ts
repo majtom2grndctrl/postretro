@@ -10,9 +10,10 @@ import {
   EXIT_TO_DESKTOP_ACTION,
   Grid,
   HStack,
+  OPEN_CONTROLS_ACTION,
+  QUIT_TO_MENU_ACTION,
   Slider,
   Switch,
-  QUIT_TO_MENU_ACTION,
   Text,
   Tree,
   VStack,
@@ -262,6 +263,18 @@ const optionReactions: NamedReactionDescriptor[] = [
   defineReaction("frontend.options.invertY.on", updateState(options.invertY, true)),
   defineReaction("frontend.options.crouchMode.hold", updateState(options.crouchMode, "hold")),
   defineReaction("frontend.options.crouchMode.toggle", updateState(options.crouchMode, "toggle")),
+  defineReaction("frontend.options.sprintMode.hold", updateState(options.sprintMode, "hold")),
+  defineReaction("frontend.options.sprintMode.toggle", updateState(options.sprintMode, "toggle")),
+  defineReaction("frontend.options.gamepadInvertY.off", updateState(options.gamepadInvertY, false)),
+  defineReaction("frontend.options.gamepadInvertY.on", updateState(options.gamepadInvertY, true)),
+  defineReaction(
+    "frontend.options.swapConfirmCancel.off",
+    updateState(options.swapConfirmCancel, false),
+  ),
+  defineReaction(
+    "frontend.options.swapConfirmCancel.on",
+    updateState(options.swapConfirmCancel, true),
+  ),
   defineReaction("frontend.options.shadowQuality.low", updateState(options.shadowQuality, "low")),
   defineReaction(
     "frontend.options.shadowQuality.medium",
@@ -323,6 +336,39 @@ function radioChoice(id: string, label: string, checked: Predicate, onPress: str
   });
 }
 
+/// An OFF/ON radio pair for a boolean option, firing
+/// `frontend.options.<field>.off|on`.
+function offOnChoices(idPrefix: string, field: string, slot: typeof options.invertY) {
+  return optionChoices([
+    radioChoice(`${idPrefix}Off`, "OFF", stateEquals(slot, false), `frontend.options.${field}.off`),
+    radioChoice(`${idPrefix}On`, "ON", stateEquals(slot, true), `frontend.options.${field}.on`),
+  ]);
+}
+
+/// A slider over `[min, max]` bound to an option's working copy.
+function rangeSlider(
+  id: string,
+  labelledBy: string,
+  bind: typeof options.mouseSensitivity,
+  min: number,
+  max: number,
+  step: number,
+  decimalPlaces: number,
+) {
+  return optionValue(
+    Slider({
+      id,
+      labelledBy,
+      bind,
+      min,
+      max,
+      step,
+      valueDisplay: { min, max, decimalPlaces },
+      capturesNav: ["nav.left", "nav.right"],
+    }),
+  );
+}
+
 function optionLabel(id: string, label: string, note?: string) {
   return VStack({ gap: 2, align: "start", role: "group" }, [
     Text({ id, content: label, fontSize: 14 }),
@@ -379,8 +425,13 @@ function optionsPanel(id: string, children: WidgetDescriptor[]) {
   return VStack({ id, gap: 10, align: "stretch", role: "group" }, children);
 }
 
+// Each panel's grid is its own spatial focus group nested in the screen's
+// linear group: Up from the top row leaves for the tab strip, Down from the
+// bottom row reaches BACK, and returning lands on the control last focused.
 const controlsPanel = optionsPanel("optionsPanelControls", [
-  Grid({ gap: 12, align: "stretch", cols: 2 }, [
+  Grid({ gap: 12, align: "stretch", cols: 2, focus: { policy: "spatial" } }, [
+    optionLabel("optionsRebindLabel", "BINDINGS", "Keyboard, mouse and gamepad"),
+    optionValue(Button({ id: "optionsRebind", label: "CONTROLS", onPress: OPEN_CONTROLS_ACTION })),
     optionLabel("optionsMouseSensitivityLabel", "MOUSE SENSITIVITY"),
     optionValue(
       Slider({
@@ -436,6 +487,45 @@ const controlsPanel = optionsPanel("optionsPanelControls", [
         "frontend.options.crouchMode.toggle",
       ),
     ]),
+    optionLabel("optionsSprintModeLabel", "SPRINT MODE"),
+    optionChoices([
+      radioChoice(
+        "optionsSprintHold",
+        "HOLD",
+        stateEquals(options.sprintMode, "hold"),
+        "frontend.options.sprintMode.hold",
+      ),
+      radioChoice(
+        "optionsSprintToggle",
+        "TOGGLE",
+        stateEquals(options.sprintMode, "toggle"),
+        "frontend.options.sprintMode.toggle",
+      ),
+    ]),
+    optionLabel("optionsGamepadLookSensitivityLabel", "GAMEPAD LOOK SPEED"),
+    rangeSlider(
+      "optionsGamepadLookSensitivity",
+      "optionsGamepadLookSensitivityLabel",
+      options.gamepadLookSensitivity,
+      0.5,
+      8,
+      0.25,
+      2,
+    ),
+    optionLabel("optionsGamepadLookDeadZoneLabel", "GAMEPAD LOOK DEAD ZONE"),
+    rangeSlider(
+      "optionsGamepadLookDeadZone",
+      "optionsGamepadLookDeadZoneLabel",
+      options.gamepadLookDeadZone,
+      0,
+      0.5,
+      0.05,
+      2,
+    ),
+    optionLabel("optionsGamepadInvertYLabel", "GAMEPAD INVERT Y"),
+    offOnChoices("optionsGamepadInvertY", "gamepadInvertY", options.gamepadInvertY),
+    optionLabel("optionsSwapConfirmCancelLabel", "SWAP CONFIRM / CANCEL", "For pads with confirm on the right"),
+    offOnChoices("optionsSwapConfirmCancel", "swapConfirmCancel", options.swapConfirmCancel),
   ]),
 ]);
 
@@ -472,7 +562,7 @@ function displayModeControls(value: (typeof WINDOW_MODE_CHOICES)[number]["value"
 }
 
 const graphicsPanel = optionsPanel("optionsPanelGraphics", [
-  Grid({ gap: 12, align: "stretch", cols: 2 }, [
+  Grid({ gap: 12, align: "stretch", cols: 2, focus: { policy: "spatial" } }, [
     optionLabel("optionsWindowModeLabel", "WINDOW MODE"),
     optionChoices(WINDOW_MODE_CHOICES.map(({ value, id, label }) =>
       radioChoice(id, label, stateEquals(options.windowMode, value), `frontend.options.windowMode.${value}`),
@@ -579,7 +669,7 @@ const followsSystem = stateEquals(accessibility.reduceMotionFollowsSystem, true)
 const motionReduced = stateEquals(accessibility.reduceMotion, true);
 
 const accessibilityPanel = optionsPanel("optionsPanelAccessibility", [
-  Grid({ gap: 12, align: "stretch", cols: 2 }, [
+  Grid({ gap: 12, align: "stretch", cols: 2, focus: { policy: "spatial" } }, [
     optionLabel("optionsReduceMotionLabel", "REDUCE MOTION"),
     valueButton("optionsReduceMotion", "optionsReduceMotionLabel", "reduceMotion", [
       { when: [followsSystem, motionReduced], text: "SYSTEM (ON)" },
@@ -600,6 +690,16 @@ const accessibilityPanel = optionsPanel("optionsPanelAccessibility", [
       "optionsA11yViewFeelScaleLabel",
       options.viewFeelScale,
       0.1,
+    ),
+    optionLabel("optionsHoldTimingScaleLabel", "HOLD TIMING", "Longer tap and hold windows"),
+    rangeSlider(
+      "optionsHoldTimingScale",
+      "optionsHoldTimingScaleLabel",
+      options.holdTimingScale,
+      1,
+      3,
+      0.25,
+      2,
     ),
     optionLabel("optionsFlashLimiterLabel", "FLASH LIMITER"),
     valueButton(
@@ -638,12 +738,12 @@ export const optionsMenu = defineUiTree({
       accessibleName: "Player options",
       role: "group",
     },
-    // One linear focus group spans the tab strip, the visible panel and BACK, so
-    // every stop is reachable from every tab. The tab strip deliberately declares
-    // no focus policy of its own: a nested group would trap nav inside the strip.
-    // Hidden panels drop out of the focus export. Closing a tree pushed above
-    // this one returns focus to the last-focused control (restore is on by
-    // default).
+    // The screen is one linear group holding three stops: the tab strip (a
+    // nested horizontal group that wraps), the visible panel's grid (a nested
+    // spatial group), and BACK. Down from a tab enters the panel; the bumpers
+    // switch tabs from anywhere. Hidden panels drop out of the focus export.
+    // Closing a tree pushed above this one returns focus to the last-focused
+    // control (restore is on by default).
     VStack(
       {
         localState: optionsTabState.scope,
@@ -656,7 +756,10 @@ export const optionsMenu = defineUiTree({
       },
       [
         Text({ content: "OPTIONS", fontSize: 24, color: COLOR_ACCENT }),
-        HStack({ gap: 6, align: "stretch", role: "tablist" }, OPTIONS_TABS.map(optionsTabButton)),
+        HStack(
+          { gap: 6, align: "stretch", role: "tablist", focus: { policy: "linear", wrap: true } },
+          OPTIONS_TABS.map(optionsTabButton),
+        ),
         VStack(
           { align: "stretch" },
           Switch(optionsTab, {

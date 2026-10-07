@@ -12195,6 +12195,47 @@ mod tests {
 
     #[cfg(debug_assertions)]
     #[test]
+    fn dev_input_block_validates_cleanly_and_shares_shift() {
+        use crate::input::{ActivatorKind, Command, DeviceClass, EffectiveTable, PhysicalInput};
+        use postretro_test_log_capture::LogCapture;
+
+        if !install_scripts_build_next_to_current_exe() {
+            eprintln!("skipping: could not install scripts-build next to test binary");
+            return;
+        }
+        let mut rt = test_runtime();
+        rt.run_mod_init(&workspace_root().join("content/dev"))
+            .expect("development TypeScript mod entry bundles and initializes");
+        let manifest = rt.mod_manifest().expect("dev mod manifest exists");
+        let capture = LogCapture::start();
+        let author = crate::input::author_layer_from_block(manifest.input.as_ref());
+        capture.assert_not_logged(log::Level::Warn, "[Input]");
+        assert_eq!(author.glyphs.xbox.as_deref(), Some("ui/glyphs/xbox"));
+
+        let facts = crate::input::RelevanceFacts {
+            dash: true,
+            crouch: true,
+            magazine: true,
+            secondary: true,
+        };
+        let table = EffectiveTable::build(&author, &Default::default(), facts, false);
+        let shift = PhysicalInput::Key(winit::keyboard::KeyCode::ShiftLeft);
+        let on_shift: Vec<(Command, ActivatorKind)> = table
+            .entries()
+            .iter()
+            .filter(|e| e.class == DeviceClass::KeyboardMouse && e.input == shift)
+            .map(|e| (e.command, e.activator.kind))
+            .collect();
+        assert_eq!(
+            on_shift,
+            [(Command::Sprint, ActivatorKind::Hold), (Command::Dash, ActivatorKind::Tap)],
+            "tap-Shift dashes and hold-Shift sprints"
+        );
+        assert!(table.conflicting_pairs().is_empty());
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
     fn dev_exit_and_quit_confirmations_land_a_repeated_confirm_on_cancel() {
         // P27: confirm on EXIT opens the confirmation; a second confirm on the
         // next frame lands on its safe choice and closes it. P12: a
@@ -12744,9 +12785,14 @@ mod tests {
                 _ => None,
             })
             .expect("the options root carries a tablist strip outside every panel");
-        assert!(
-            tab_strip.focus.is_none(),
-            "a focus policy on the strip would open a nested group and trap nav in it"
+        let strip_focus = tab_strip
+            .focus
+            .as_ref()
+            .expect("the strip is its own nested group");
+        assert_eq!(
+            (strip_focus.kind(), strip_focus.wrap()),
+            (postretro_ui::descriptor::FocusKind::Linear, true),
+            "the strip steps across its tabs and wraps; Down leaves for the panel (P21)"
         );
         let tab_ids: Vec<&str> = tab_strip
             .children
@@ -12777,14 +12823,23 @@ mod tests {
                 "optionsTabControls",
                 "controls",
                 "optionsPanelControls",
-                8,
+                20,
                 &[
+                    "optionsRebind",
                     "optionsMouseSensitivity",
                     "optionsInvertYOff",
                     "optionsInvertYOn",
                     "optionsViewFeelScale",
                     "optionsCrouchHold",
                     "optionsCrouchToggle",
+                    "optionsSprintHold",
+                    "optionsSprintToggle",
+                    "optionsGamepadLookSensitivity",
+                    "optionsGamepadLookDeadZone",
+                    "optionsGamepadInvertYOff",
+                    "optionsGamepadInvertYOn",
+                    "optionsSwapConfirmCancelOff",
+                    "optionsSwapConfirmCancelOn",
                 ][..],
             ),
             (
@@ -12817,10 +12872,11 @@ mod tests {
                 "optionsTabAccessibility",
                 "accessibility",
                 "optionsPanelAccessibility",
-                // A label and a control for each of the nine accessibility fields.
-                18,
+                // A label and a control for each of the ten accessibility fields.
+                20,
                 &[
                     "optionsReduceMotion",
+                    "optionsHoldTimingScale",
                     "optionsScreenShakeScale",
                     "optionsA11yViewFeelScale",
                     "optionsFlashLimiter",
@@ -12875,6 +12931,11 @@ mod tests {
             let grids = grids_in(panel_widget);
             assert_eq!(grids.len(), 1, "{panel_id} lays its rows out in one grid");
             assert_eq!(grids[0].cols, 2);
+            assert_eq!(
+                grids[0].focus.as_ref().map(|focus| focus.kind()),
+                Some(postretro_ui::descriptor::FocusKind::Spatial),
+                "{panel_id}: its grid is a nested spatial group"
+            );
             assert_eq!(grids[0].children.len(), grid_len, "{panel_id} grid cells");
             assert!(
                 grids[0]
@@ -12895,6 +12956,11 @@ mod tests {
             grids_in(&options_tree.root).len(),
             3,
             "no grid sits outside the three tab panels"
+        );
+        assert_eq!(
+            button_action(&options_tree.root, "optionsRebind"),
+            Some(postretro_ui::actions::OPEN_CONTROLS_ACTION),
+            "the controls tab opens the engine controls panel"
         );
 
         // Every toggle is one value button on the right, named by its label on

@@ -54,6 +54,7 @@ import {
   xpReadout,
 } from "./scripts/hud";
 import { pauseMenu } from "./scripts/pause-menu";
+import { devInput } from "./scripts/input";
 import {
   devLevelSelectMenu,
   exitConfirm,
@@ -101,6 +102,7 @@ export default defineMod({
   },
   // Dogfoods the mod-wide positional attenuation surface (`audio.md` §5).
   audio: { attenuation: positionalSoundAttenuation },
+  input: devInput,
   frontend: {
     menuTree: frontendMenu.name,
     backgroundLevel: "combat-demo",

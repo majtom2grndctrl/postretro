@@ -35,8 +35,8 @@ read at: 2bc52d471
 | 15 Oracle suite passes | `cargo test -p postretro-renderer --lib sh_streaming` (includes `compose_plan_oracle`) | achievable as stated | pass |
 | 16 Capture test with entry-row assertions | `sampled_row_gate_capture_matches_full_resident_at_stepped_times` (`--features capture -- --ignored`) | achievable as stated | pass: gated t050 indirect 112/112, Pass A 0, Pass B 15/15 entry rows; 18/18 sampleable; byte-identical to full-resident |
 | 17 Scope grep | `git diff --name-only main` filtered on `.wgsl` / level-format / level-compiler / level-loader | achievable as stated | pass (empty) |
-| 18 Mac arena + station rows/ms before/after | owner, in-engine | manual | outstanding |
-| 19 Station Pass B = id-45 rows ∪ Pass A rows | owner, in-engine | manual | outstanding |
+| 18 Mac arena + station rows/ms before/after | owner, in-engine | manual | measured: arena 2129 → 70 rows per pass; indirect 6.71 → 0.40 ms, Pass B 8.01 → 0.43. Station indirect 2511 → 780 rows, 8.02 → 2.89 ms. Station Pass A 2511 → 327 rows, 9.06 → 1.55 ms per encoder (3.37 → 0.61 per frame). Station Pass B 9.38 → 0.89 ms. See `measurements/sh-compose-contributing-rows/README.md` |
+| 19 Station Pass B = id-45 rows ∪ Pass A rows | owner, in-engine | manual | measured: 75 id-45 rows; on Pass A frames, 75 ∪ 327 = 340, not 402, because 62 rows overlap. All 96 count windows match |
 | 20 Mac atlas byte check | owner, throwaway branch | manual | outstanding |
 
 Gate: `cargo fmt --check` ✓; `cargo clippy --target-dir target/preflight-clippy -- -D warnings` ✓; `cargo test` ✓ (60 targets, 9374 passed); `cargo check --release` ✓; `crate-graph --check` ✓; `dev-tools` renderer clippy and tests ✓; `capture` report tests ✓. Known and pre-existing: `cargo clippy --all-targets --features postretro/capture` fails in `capture/prepared.rs`, `capture/scene.rs`, `capture_shadowmask_groups.rs` and at `report.rs:27`. Each is outside this diff.

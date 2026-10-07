@@ -10,6 +10,8 @@ read at: 2bc52d471
 ## Delegated answers
 - Membership source: `contributing = ref present ∧ sparse_pools[section].row_pairs[row]` is non-empty. The pair is the CPU mirror of the value compose reads (R4). Because the ref is in the conjunction, membership flips only on ref flips, and those already reach `compose_membership_touched`.
 - Report shape: `ShComposePassDiagnostics` gains `entry_rows_composed`, a gauge beside `rows_composed` for the same frame. For Pass B a row counts when it has id-45 entries or sits in that frame's Pass A plan.
+- Commit seam: the CPU half of each dispatch (planner commit, diagnostics, dirty consumption, indirect epoch) moved into `commit_{indirect,static_direct,animated_direct}_compose` in `frame.rs`. The harness calls the same code the dispatch does, with no hand mirror.
+- Partial eviction: the synthetic map gained `with_sparse_row_owner`, so one row's sparse owner differs from its base owner.
 - Tests: most behavioural rows run the real install → `prepare_compose_frame` → commit path on the synthetic streamed map. The map gains per-section zero-entry rows, and `fog_draw_all` or mover regions provide the gate. A CPU commit helper mirrors the dispatch's planner commit and dirty clear. No GPU is involved.
 
 ## AC-to-proof
@@ -41,7 +43,7 @@ read at: 2bc52d471
 
 | # | Task | Owner | Depends on | Status |
 |---|---|---|---|---|
-| 1 | Narrow `compose_row_membership` to entry-carrying rows, add zero-entry rows to the synthetic map, land ACs 1–2, 14 | integrating executor | — | |
-| 2 | Frame-path behaviour tests, ACs 3–13 | integrating executor | 1 | |
-| 3 | `entry_rows_composed` diagnostic through report, plus capture test assertions (AC 16), then run the capture | integrating executor | 1 | |
-| 4 | Oracle and full renderer gate (AC 15), scope grep (AC 17) | integrating executor | 2, 3 | |
+| 1 | Narrow `compose_row_membership` to entry-carrying rows, add zero-entry rows to the synthetic map, land ACs 1–2, 14 | integrating executor | — | done: `contributing_rows_tests` |
+| 2 | Frame-path behaviour tests, ACs 3–13 | integrating executor | 1 | done: 13 tests; 10 fail on the old ref-only membership, and the other 3 are preservation guards |
+| 3 | `entry_rows_composed` diagnostic through report, plus capture test assertions (AC 16), then run the capture | integrating executor | 1 | done: capture passes; gated t050 indirect 112/112, Pass B 15/15 entry rows |
+| 4 | Oracle and full renderer gate (AC 15), scope grep (AC 17) | integrating executor | 2, 3 | done: `sh_streaming` 153 pass; scope grep empty |

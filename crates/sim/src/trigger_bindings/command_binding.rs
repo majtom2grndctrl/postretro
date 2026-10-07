@@ -308,23 +308,26 @@ pub(super) fn bind_command(
                 aggro: args.aggro,
             })
         }
-        "spawnFromSpawner" => {
-            let Some(BoundTarget::Tag(tag)) = target_from_context.as_ref() else {
-                log::warn!(
-                    "[Trigger] spawnFromSpawner requires a fire-time tag target; not binding"
-                );
-                return None;
-            };
-            if tag.is_empty() {
+        "spawnFromSpawner" => match target_from_context {
+            // A spawner member's `fire()` step: that spawner only.
+            Some(target @ BoundTarget::Entity(_)) => Some(BoundTriggerCommand::Spawn { target }),
+            // The raw tag-keyed descriptor stays valid wire data.
+            Some(BoundTarget::Tag(tag)) if !tag.is_empty() => Some(BoundTriggerCommand::Spawn {
+                target: BoundTarget::Tag(tag),
+            }),
+            Some(BoundTarget::Tag(_)) => {
                 log::warn!(
                     "[Trigger] spawnFromSpawner requires a non-empty fire-time tag target; not binding"
                 );
-                return None;
+                None
             }
-            Some(BoundTriggerCommand::Spawn {
-                target: target_from_context.expect("tag target checked above"),
-            })
-        }
+            _ => {
+                log::warn!(
+                    "[Trigger] spawnFromSpawner requires a spawner member or fire-time tag target; not binding"
+                );
+                None
+            }
+        },
         _ => None,
     }
 }

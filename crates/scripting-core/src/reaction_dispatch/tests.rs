@@ -58,10 +58,11 @@ fn primitive_reaction(
     }
 }
 
-fn spawn_with_tags(reg: &mut EntityRegistry, tags: &[&str]) {
+fn spawn_with_tags(reg: &mut EntityRegistry, tags: &[&str]) -> EntityId {
     let id = reg.spawn(Transform::default());
     let owned: Vec<String> = tags.iter().map(|s| s.to_string()).collect();
     reg.set_tags(id, owned).unwrap();
+    id
 }
 
 #[cfg(debug_assertions)]
@@ -86,12 +87,12 @@ fn progress_threshold_fires_when_all_dead_at_full_ratio() {
     );
 
     let mut entities = EntityRegistry::new();
-    spawn_with_tags(&mut entities, &["wave1"]);
+    let member = spawn_with_tags(&mut entities, &["wave1"]);
 
     let mut tracker = ProgressTracker::new();
     tracker.initialize(&data, &entities);
 
-    let fired = tracker.on_entity_killed(&["wave1".to_string()]);
+    let fired = tracker.on_entity_killed(member);
     assert_eq!(fired, vec!["powerOn".to_string()]);
 }
 
@@ -105,16 +106,20 @@ fn progress_does_not_fire_before_threshold() {
     );
 
     let mut entities = EntityRegistry::new();
-    spawn_with_tags(&mut entities, &["wave1"]);
-    spawn_with_tags(&mut entities, &["wave1"]);
+    let first = spawn_with_tags(&mut entities, &["wave1"]);
+    let second = spawn_with_tags(&mut entities, &["wave1"]);
 
     let mut tracker = ProgressTracker::new();
     tracker.initialize(&data, &entities);
 
-    let fired = tracker.on_entity_killed(&["wave1".to_string()]);
+    let fired = tracker.on_entity_killed(first);
     assert!(fired.is_empty());
+    assert!(
+        tracker.on_entity_killed(first).is_empty(),
+        "a repeated report for one member never counts twice"
+    );
 
-    let fired = tracker.on_entity_killed(&["wave1".to_string()]);
+    let fired = tracker.on_entity_killed(second);
     assert_eq!(fired, vec!["powerOn".to_string()]);
 }
 
@@ -128,17 +133,17 @@ fn progress_fires_at_partial_ratio_when_at_below_one() {
     );
 
     let mut entities = EntityRegistry::new();
-    for _ in 0..4 {
-        spawn_with_tags(&mut entities, &["wave1"]);
-    }
+    let members: Vec<EntityId> = (0..4)
+        .map(|_| spawn_with_tags(&mut entities, &["wave1"]))
+        .collect();
 
     let mut tracker = ProgressTracker::new();
     tracker.initialize(&data, &entities);
 
-    assert!(tracker.on_entity_killed(&["wave1".into()]).is_empty());
-    let fired = tracker.on_entity_killed(&["wave1".into()]);
+    assert!(tracker.on_entity_killed(members[0]).is_empty());
+    let fired = tracker.on_entity_killed(members[1]);
     assert_eq!(fired, vec!["midwave".to_string()]);
-    assert!(tracker.on_entity_killed(&["wave1".into()]).is_empty());
+    assert!(tracker.on_entity_killed(members[2]).is_empty());
 }
 
 #[test]
@@ -154,7 +159,7 @@ fn multi_tag_entity_decrements_both_buckets_independently() {
     );
 
     let mut entities = EntityRegistry::new();
-    spawn_with_tags(&mut entities, &["wave1", "reactorMonster"]);
+    let member = spawn_with_tags(&mut entities, &["wave1", "reactorMonster"]);
 
     let mut tracker = ProgressTracker::new();
     tracker.initialize(&data, &entities);
@@ -162,7 +167,7 @@ fn multi_tag_entity_decrements_both_buckets_independently() {
     assert_eq!(tracker.subscription_count("wave1"), 1);
     assert_eq!(tracker.subscription_count("reactorMonster"), 1);
 
-    let fired = tracker.on_entity_killed(&["wave1".to_string(), "reactorMonster".to_string()]);
+    let fired = tracker.on_entity_killed(member);
     assert!(fired.contains(&"powerOn".to_string()));
     assert!(fired.contains(&"reactorOff".to_string()));
     assert_eq!(fired.len(), 2);
@@ -181,21 +186,23 @@ fn multi_tag_entity_fires_both_subscriptions() {
     );
 
     let mut entities = EntityRegistry::new();
-    spawn_with_tags(&mut entities, &["wave1", "reactorMonster"]);
+    let member = spawn_with_tags(&mut entities, &["wave1", "reactorMonster"]);
 
     let mut tracker = ProgressTracker::new();
     tracker.initialize(&data, &entities);
 
-    let fired = tracker.on_entity_killed(&["wave1".to_string(), "reactorMonster".to_string()]);
+    let fired = tracker.on_entity_killed(member);
     assert!(fired.contains(&"powerOn".to_string()));
     assert!(fired.contains(&"reactorOff".to_string()));
     assert_eq!(fired.len(), 2);
 }
 
 #[test]
-fn killing_untracked_tag_is_a_no_op() {
+fn killing_a_non_member_is_a_no_op() {
+    let mut entities = EntityRegistry::new();
+    let ghost = spawn_with_tags(&mut entities, &["ghosts"]);
     let mut tracker = ProgressTracker::new();
-    let fired = tracker.on_entity_killed(&["ghosts".to_string()]);
+    let fired = tracker.on_entity_killed(ghost);
     assert!(fired.is_empty());
 }
 
@@ -208,7 +215,7 @@ fn clear_drops_all_subscriptions() {
         &[],
     );
     let mut entities = EntityRegistry::new();
-    spawn_with_tags(&mut entities, &["wave1"]);
+    let member = spawn_with_tags(&mut entities, &["wave1"]);
 
     let mut tracker = ProgressTracker::new();
     tracker.initialize(&data, &entities);
@@ -216,7 +223,7 @@ fn clear_drops_all_subscriptions() {
 
     tracker.clear();
     assert_eq!(tracker.subscription_count("wave1"), 0);
-    assert!(tracker.on_entity_killed(&["wave1".into()]).is_empty());
+    assert!(tracker.on_entity_killed(member).is_empty());
 }
 
 #[test]
@@ -228,12 +235,69 @@ fn progress_with_zero_total_never_fires() {
         Vec::new(),
         &[],
     );
-    let entities = EntityRegistry::new();
+    let mut entities = EntityRegistry::new();
 
     let mut tracker = ProgressTracker::new();
     tracker.initialize(&data, &entities);
-    let fired = tracker.on_entity_killed(&["ghosts".into()]);
+    // Tagged after install: not a member, so the zero total stays inert.
+    let late = spawn_with_tags(&mut entities, &["ghosts"]);
+    let fired = tracker.on_entity_killed(late);
     assert!(fired.is_empty());
+}
+
+// S2: membership is the id set carrying the tag at install. An entity tagged
+// later — a spawner's output inherits its tags — neither counts nor raises the
+// total, and a mod hot reload recompose keeps both the set and the tally.
+#[test]
+fn progress_recompose_keeps_install_membership_and_kill_tally() {
+    let mut data = DataRegistry::new();
+    data.populate_level(
+        vec![progress_reaction("waveDone", "wave1", 1.0, "powerOn")],
+        Vec::new(),
+        &[],
+    );
+    let mut entities = EntityRegistry::new();
+    let first = spawn_with_tags(&mut entities, &["wave1"]);
+    let second = spawn_with_tags(&mut entities, &["wave1"]);
+
+    let mut tracker = ProgressTracker::new();
+    tracker.initialize(&data, &entities);
+    assert!(tracker.on_entity_killed(first).is_empty());
+
+    let late = spawn_with_tags(&mut entities, &["wave1"]);
+    tracker.recompose(&data, &entities);
+    assert!(
+        tracker.on_entity_killed(late).is_empty(),
+        "an entity tagged after install never joins the set"
+    );
+    assert_eq!(
+        tracker.on_entity_killed(second),
+        vec!["powerOn".to_string()],
+        "the pre-recompose kill still counts and the total stays two"
+    );
+}
+
+#[test]
+fn progress_recompose_keeps_a_fired_subscription_fired() {
+    let mut data = DataRegistry::new();
+    data.populate_level(
+        vec![progress_reaction("half", "wave1", 0.5, "midwave")],
+        Vec::new(),
+        &[],
+    );
+    let mut entities = EntityRegistry::new();
+    let first = spawn_with_tags(&mut entities, &["wave1"]);
+    let second = spawn_with_tags(&mut entities, &["wave1"]);
+
+    let mut tracker = ProgressTracker::new();
+    tracker.initialize(&data, &entities);
+    assert_eq!(tracker.on_entity_killed(first), vec!["midwave".to_string()]);
+
+    tracker.recompose(&data, &entities);
+    assert!(
+        tracker.on_entity_killed(second).is_empty(),
+        "a recompose does not re-arm a fired progress"
+    );
 }
 
 #[test]
@@ -697,8 +761,8 @@ fn progress_tracker_still_fires_its_target_at_threshold() {
     );
 
     let mut entities = EntityRegistry::new();
-    spawn_with_tags(&mut entities, &["wave"]);
-    spawn_with_tags(&mut entities, &["wave"]);
+    let first = spawn_with_tags(&mut entities, &["wave"]);
+    let second = spawn_with_tags(&mut entities, &["wave"]);
 
     let mut tracker = ProgressTracker::new();
     tracker.initialize(&data, &entities);
@@ -706,10 +770,10 @@ fn progress_tracker_still_fires_its_target_at_threshold() {
     let sequence_registry = SequencedPrimitiveRegistry::new();
     let reaction_registry = ReactionPrimitiveRegistry::new();
 
-    let fired = tracker.on_entity_killed(&["wave".to_string()]);
+    let fired = tracker.on_entity_killed(first);
     assert!(fired.is_empty(), "half the wave is not the threshold");
 
-    let fired = tracker.on_entity_killed(&["wave".to_string()]);
+    let fired = tracker.on_entity_killed(second);
     assert_eq!(fired, vec!["release".to_string()]);
 
     dispatch_deferred_named_events_with_sequences(

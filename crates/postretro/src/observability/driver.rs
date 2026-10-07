@@ -381,12 +381,12 @@ fn run_headless_frame_end_removals(
 ) {
     crate::impact_effects::run_end_of_frame_removal_pass(
         &mut registry.borrow_mut(),
-        |_, pending_kill_credit| {
-            let Some(pending_kill_credit) = pending_kill_credit else {
+        |killed, pending_kill_credit| {
+            // An above-zero despawn carries no credit and reports no kill.
+            if pending_kill_credit.is_none() {
                 return;
-            };
-            next_tick_death_events
-                .extend(progress_tracker.on_entity_killed(&pending_kill_credit.tags));
+            }
+            next_tick_death_events.extend(progress_tracker.on_entity_killed(killed));
         },
     );
 }

@@ -776,6 +776,7 @@ const WORLD_QUERY_COMPONENTS: &[&str] = &[
     "fog_volume",
     "kinematic_mover",
     "trigger_volume",
+    "spawner",
     "particle",
     "sprite_visual",
 ];

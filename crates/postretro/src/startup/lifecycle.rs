@@ -196,6 +196,7 @@ impl App {
             &mut session.progress_tracker,
             &mut session.crossing_detector,
             &session.scripting.script_ctx,
+            SubscriberRebuild::Recompose,
         );
         session
             .scripting
@@ -1029,6 +1030,15 @@ pub(crate) fn install_world_gravity_and_nav(
         .map(crate::nav::NavGraph::from_section)
 }
 
+/// Which lifecycle moment rebuilds the subscribers. A `progress` counts kills
+/// among the entities carrying its tag at level install, so only an install
+/// captures that membership; a recompose keeps it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SubscriberRebuild {
+    LevelInstall,
+    Recompose,
+}
+
 /// Rebuild the level's reaction subscribers: reinitialize the kill-progress
 /// tracker and the state-crossing detector from the current data + entity
 /// registries and slot table. Free function so both [`App`]'s method and segment
@@ -1037,6 +1047,7 @@ fn rebuild_reaction_subscribers(
     progress_tracker: &mut postretro_scripting_core::reaction_dispatch::ProgressTracker,
     crossing_detector: &mut postretro_scripting_core::state_crossings::CrossingDetector,
     script_ctx: &postretro_entities::ScriptCtx,
+    rebuild: SubscriberRebuild,
 ) {
     {
         let mut data_registry = script_ctx.data_registry.borrow_mut();
@@ -1093,11 +1104,19 @@ fn rebuild_reaction_subscribers(
             );
         }
     }
-    progress_tracker.clear();
-    progress_tracker.initialize(
-        &script_ctx.data_registry.borrow(),
-        &script_ctx.registry.borrow(),
-    );
+    match rebuild {
+        SubscriberRebuild::LevelInstall => {
+            progress_tracker.clear();
+            progress_tracker.initialize(
+                &script_ctx.data_registry.borrow(),
+                &script_ctx.registry.borrow(),
+            );
+        }
+        SubscriberRebuild::Recompose => progress_tracker.recompose(
+            &script_ctx.data_registry.borrow(),
+            &script_ctx.registry.borrow(),
+        ),
+    }
     crossing_detector.clear();
     crossing_detector.initialize(
         &script_ctx.data_registry.borrow(),
@@ -3820,12 +3839,13 @@ pub(crate) mod tests {
             .data_registry
             .borrow_mut()
             .replace_global_crossings(vec![scoped_global_crossing("test.health", "healthLow")]);
-        {
+        let wave_member = {
             let ctx = script_ctx(&app);
             let mut entities = ctx.registry.borrow_mut();
             let id = entities.spawn(Transform::default());
             entities.set_tags(id, vec!["wave1".to_string()]).unwrap();
-        }
+            id
+        };
         script_ctx(&app)
             .slot_table
             .borrow_mut()
@@ -3845,7 +3865,7 @@ pub(crate) mod tests {
                 .as_mut()
                 .expect("test app session installed")
                 .progress_tracker
-                .on_entity_killed(&["wave1".to_string()]),
+                .on_entity_killed(wave_member),
             vec!["powerOn".to_string()],
         );
         script_ctx(&app)

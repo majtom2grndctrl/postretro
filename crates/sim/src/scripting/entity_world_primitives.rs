@@ -1,8 +1,9 @@
 // Entity/world scripting primitive handlers and registration.
 // See: context/lib/scripting.md
 
+use postretro_entities::provenance::{DescriptorProvenance, DescriptorSpawnPath};
 use postretro_entities::{
-    ComponentKind, ComponentValue, EntityId, ScriptCtx, ScriptError, Transform,
+    ComponentKind, ComponentValue, EntityId, EntityRegistry, ScriptCtx, ScriptError, Transform,
 };
 use postretro_lighting::script_primitives as light;
 use postretro_scripting_core::primitive_adapters::{
@@ -68,6 +69,9 @@ enum QueryFilter {
     TriggerVolume {
         tag: Option<String>,
     },
+    Spawner {
+        tag: Option<String>,
+    },
     /// Always returns an empty array. Particles and sprite-visuals are
     /// engine-managed; scripts have no business iterating individual ones.
     AlwaysEmpty,
@@ -83,18 +87,20 @@ fn parse_query_filter(component: &str, tag: Option<String>) -> Result<QueryFilte
         "fog_volume" => Ok(QueryFilter::FogVolume { tag }),
         "kinematic_mover" => Ok(QueryFilter::KinematicMover { tag }),
         "trigger_volume" => Ok(QueryFilter::TriggerVolume { tag }),
+        "spawner" => Ok(QueryFilter::Spawner { tag }),
         "particle" | "sprite_visual" => Ok(QueryFilter::AlwaysEmpty),
         other => Err(ScriptError::InvalidArgument {
             reason: format!(
                 "worldQuery: unknown component `{other}`; supported: \
-                 \"light\" | \"transform\" | \"emitter\" | \"fog_volume\" | \"kinematic_mover\" | \"trigger_volume\" | \"particle\" | \"sprite_visual\""
+                 \"light\" | \"transform\" | \"emitter\" | \"fog_volume\" | \"kinematic_mover\" | \"trigger_volume\" | \"spawner\" | \"particle\" | \"sprite_visual\""
             ),
         }),
     }
 }
 
 const WORLD_QUERY_DOC: &str = "Return an array of raw entity snapshots matching the filter. Available in definition and data contexts. \
-     Filter shape: { component: \"light\" | \"transform\" | \"emitter\" | \"fog_volume\" | \"kinematic_mover\" | \"trigger_volume\" | \"particle\" | \"sprite_visual\", tag?: string }. \
+     Returns map-placed instances only; an entity a runtime spawn carries never appears. \
+     Filter shape: { component: \"light\" | \"transform\" | \"emitter\" | \"fog_volume\" | \"kinematic_mover\" | \"trigger_volume\" | \"spawner\" | \"particle\" | \"sprite_visual\", tag?: string }. \
      `\"particle\"` and `\"sprite_visual\"` always return `[]` (engine-managed; scripts never iterate individual particles). \
      Unknown component values raise InvalidArgument. \
      The `world.ts` vocabulary module wraps these snapshots as `world.query` handles.";
@@ -115,6 +121,9 @@ fn collect_transform_handles_json(ctx: &ScriptCtx, tag: Option<&str>) -> serde_j
     let reg = ctx.registry.borrow();
     let mut arr: Vec<Value> = Vec::new();
     for (id, value) in reg.query_by_component_and_tag(ComponentKind::Transform, tag) {
+        if !is_map_placed(&reg, id) {
+            continue;
+        }
         let ComponentValue::Transform(t) = value else {
             continue;
         };
@@ -143,6 +152,9 @@ fn collect_emitter_handles_json(ctx: &ScriptCtx, tag: Option<&str>) -> serde_jso
     let reg = ctx.registry.borrow();
     let mut arr: Vec<Value> = Vec::new();
     for (id, value) in reg.query_by_component_and_tag(ComponentKind::BillboardEmitter, tag) {
+        if !is_map_placed(&reg, id) {
+            continue;
+        }
         let ComponentValue::BillboardEmitter(e) = value else {
             continue;
         };
@@ -179,6 +191,9 @@ fn collect_fog_volume_handles_json(ctx: &ScriptCtx, tag: Option<&str>) -> serde_
     let reg = ctx.registry.borrow();
     let mut arr: Vec<Value> = Vec::new();
     for (id, value) in reg.query_by_component_and_tag(ComponentKind::FogVolume, tag) {
+        if !is_map_placed(&reg, id) {
+            continue;
+        }
         let ComponentValue::FogVolume(f) = value else {
             continue;
         };
@@ -230,17 +245,23 @@ fn collect_fog_volume_handles_json(ctx: &ScriptCtx, tag: Option<&str>) -> serde_
     Value::Array(arr)
 }
 
-/// Collect kinematic-mover handles as JSON. Movers are queryable for their
-/// position and tags, while their deterministic phase remains engine-owned.
-fn collect_kinematic_mover_handles_json(ctx: &ScriptCtx, tag: Option<&str>) -> serde_json::Value {
+/// Collect identity-only member snapshots (`id`, `position`, `tags`) for a map
+/// kind whose runtime phase stays engine-owned: kinematic movers (deterministic
+/// phase), trigger volumes (arming and activation phase) and spawners (fire-time
+/// materialization). Position reads the entity's Transform.
+fn collect_identity_snapshots_json(
+    ctx: &ScriptCtx,
+    kind: ComponentKind,
+    tag: Option<&str>,
+) -> serde_json::Value {
     use serde_json::{Map, Value};
 
     let reg = ctx.registry.borrow();
     let mut arr = Vec::new();
-    for (id, value) in reg.query_by_component_and_tag(ComponentKind::KinematicMover, tag) {
-        let ComponentValue::KinematicMover(_) = value else {
+    for (id, _) in reg.query_by_component_and_tag(kind, tag) {
+        if !is_map_placed(&reg, id) {
             continue;
-        };
+        }
         let tags = reg.get_tags(id).unwrap_or(&[]).to_vec();
         let position = match reg.get_component::<Transform>(id) {
             Ok(t) => {
@@ -264,38 +285,16 @@ fn collect_kinematic_mover_handles_json(ctx: &ScriptCtx, tag: Option<&str>) -> s
     Value::Array(arr)
 }
 
-/// Collect trigger-volume handles as JSON. Triggers are queryable for their
-/// placement identity only; arming and activation phase remain engine-owned.
-fn collect_trigger_volume_handles_json(ctx: &ScriptCtx, tag: Option<&str>) -> serde_json::Value {
-    use serde_json::{Map, Value};
-
-    let reg = ctx.registry.borrow();
-    let mut arr = Vec::new();
-    for (id, value) in reg.query_by_component_and_tag(ComponentKind::TriggerVolume, tag) {
-        let ComponentValue::TriggerVolume(_) = value else {
-            continue;
-        };
-        let tags = reg.get_tags(id).unwrap_or(&[]).to_vec();
-        let position = match reg.get_component::<Transform>(id) {
-            Ok(t) => {
-                let mut p = Map::with_capacity(3);
-                p.insert("x".to_string(), Value::from(t.position.x as f64));
-                p.insert("y".to_string(), Value::from(t.position.y as f64));
-                p.insert("z".to_string(), Value::from(t.position.z as f64));
-                Value::Object(p)
-            }
-            Err(_) => Value::Null,
-        };
-        let mut obj = Map::with_capacity(3);
-        obj.insert("id".to_string(), Value::from(id.to_raw()));
-        obj.insert("position".to_string(), position);
-        obj.insert(
-            "tags".to_string(),
-            Value::Array(tags.into_iter().map(Value::String).collect()),
-        );
-        arr.push(Value::Object(obj));
-    }
-    Value::Array(arr)
+/// `worldQuery` returns map-placed instances only: map placement, or no
+/// descriptor provenance at all (built-in map kinds such as trigger volumes,
+/// spawners and FGD lights carry none). A light or emitter carried by a
+/// runtime-spawned NPC — or by a player pawn — never appears, so a member set
+/// is fixed at install.
+fn is_map_placed(reg: &EntityRegistry, id: EntityId) -> bool {
+    reg.get_component::<DescriptorProvenance>(id)
+        .map_or(true, |provenance| {
+            provenance.spawn_path == DescriptorSpawnPath::MapPlacement
+        })
 }
 
 /// Register the world-domain primitives: `worldQuery`, `worldGetGravity`, and
@@ -314,7 +313,11 @@ fn register_world_query(registry: &mut PrimitiveRegistry, ctx: ScriptCtx) {
                 let filter = parse_query_filter(&filter.component, filter.tag)?;
                 match filter {
                     QueryFilter::Light { tag } => {
-                        let handles = light::collect_light_handles(&ctx, tag.as_deref());
+                        let mut handles = light::collect_light_handles(&ctx, tag.as_deref());
+                        {
+                            let reg = ctx.registry.borrow();
+                            handles.retain(|handle| is_map_placed(&reg, handle.id()));
+                        }
                         Ok(JsonValue(light::handles_to_json(handles)))
                     }
                     QueryFilter::Transform { tag } => Ok(JsonValue(
@@ -327,12 +330,25 @@ fn register_world_query(registry: &mut PrimitiveRegistry, ctx: ScriptCtx) {
                     QueryFilter::FogVolume { tag } => Ok(JsonValue(
                         collect_fog_volume_handles_json(&ctx, tag.as_deref()),
                     )),
-                    QueryFilter::KinematicMover { tag } => Ok(JsonValue(
-                        collect_kinematic_mover_handles_json(&ctx, tag.as_deref()),
-                    )),
-                    QueryFilter::TriggerVolume { tag } => Ok(JsonValue(
-                        collect_trigger_volume_handles_json(&ctx, tag.as_deref()),
-                    )),
+                    QueryFilter::KinematicMover { tag } => {
+                        Ok(JsonValue(collect_identity_snapshots_json(
+                            &ctx,
+                            ComponentKind::KinematicMover,
+                            tag.as_deref(),
+                        )))
+                    }
+                    QueryFilter::TriggerVolume { tag } => {
+                        Ok(JsonValue(collect_identity_snapshots_json(
+                            &ctx,
+                            ComponentKind::TriggerVolume,
+                            tag.as_deref(),
+                        )))
+                    }
+                    QueryFilter::Spawner { tag } => Ok(JsonValue(collect_identity_snapshots_json(
+                        &ctx,
+                        ComponentKind::Spawner,
+                        tag.as_deref(),
+                    ))),
                     QueryFilter::AlwaysEmpty => Ok(JsonValue(serde_json::Value::Array(Vec::new()))),
                 }
             }
@@ -1224,5 +1240,179 @@ mod tests {
         let _: () = lua.load("worldSetGravity(-math.huge)").eval().unwrap();
         let _: () = lua.load("worldSetGravity(0/0)").eval().unwrap();
         assert!((ctx.gravity.get() - -2.0).abs() < 1e-6);
+    }
+
+    fn emitter_component()
+    -> postretro_entities::components::billboard_emitter::BillboardEmitterComponent {
+        postretro_entities::components::billboard_emitter::BillboardEmitterComponent {
+            rate: 6.0,
+            burst: None,
+            spread: 0.4,
+            lifetime: 3.0,
+            velocity: [0.0, 0.8, 0.0],
+            buoyancy: 0.2,
+            drag: 0.8,
+            size_over_lifetime: [0.3, 1.5].into(),
+            opacity_over_lifetime: [0.0, 0.8, 0.6, 0.0].into(),
+            color: [1.0, 1.0, 1.0],
+            sprite: "smoke".to_string(),
+            spin_rate: 0.0,
+            spin_animation: None,
+        }
+    }
+
+    /// Runs `worldQuery({ component, tag })` in QuickJS and returns the ids.
+    fn queried_ids(r: &PrimitiveRegistry, component: &str, tag: Option<&str>) -> Vec<u32> {
+        let rt = rquickjs::Runtime::new().unwrap();
+        let jsctx = rquickjs::Context::full(&rt).unwrap();
+        jsctx.with(|qjs| {
+            install_all(r, &qjs);
+            let tag = tag.map_or("null".to_string(), |tag| format!("{tag:?}"));
+            let got: String = qjs
+                .eval(format!(
+                    "JSON.stringify(worldQuery({{ component: {component:?}, tag: {tag} }}).map(h => h.id))"
+                ))
+                .unwrap();
+            serde_json::from_str(&got).unwrap()
+        })
+    }
+
+    // M8: a light or emitter a spawned NPC carries never appears, even when the
+    // NPC inherited the queried tag from its spawner. Map-placed instances (no
+    // provenance) still do.
+    #[test]
+    fn world_query_light_and_emitter_exclude_ones_carried_by_a_spawned_npc() {
+        const TAG: &str = "lamp";
+        let (ctx, map_light) = test_ctx_with_light(false, Some(TAG));
+        let (map_emitter, spawner) = {
+            let mut reg = ctx.registry.borrow_mut();
+            let emitter = reg
+                .try_spawn(Transform::default(), &[TAG.to_string()])
+                .unwrap();
+            reg.set_component(emitter, emitter_component()).unwrap();
+            let spawner = reg
+                .try_spawn(Transform::default(), &[TAG.to_string()])
+                .unwrap();
+            reg.set_component(
+                spawner,
+                postretro_entities::components::spawner::SpawnerComponent {
+                    archetype_name: "cultist".to_string(),
+                    count: 2,
+                    resolved: true,
+                },
+            )
+            .unwrap();
+            (emitter, spawner)
+        };
+        let mut descriptor =
+            crate::scripting::builtins::data_archetype_test_fixtures::behavior_enemy_descriptor(
+                "cultist",
+            );
+        descriptor.light = Some(
+            postretro_scripting_core::data_descriptors::LightDescriptor {
+                color: [1.0, 0.5, 0.25],
+                intensity: 3.0,
+                range: 12.0,
+                is_dynamic: true,
+            },
+        );
+        descriptor.emitter = Some(emitter_component());
+        let spawn_context = crate::spawner::SpawnContext::default();
+        spawn_context.replace_level_data(
+            [("cultist".to_string(), descriptor)].into_iter().collect(),
+            None,
+        );
+        crate::spawner::spawn_from_spawner_member(
+            &mut ctx.registry.borrow_mut(),
+            spawner,
+            &spawn_context,
+        );
+        {
+            // Precondition: the spawned NPCs carry a light, an emitter and the tag.
+            let reg = ctx.registry.borrow();
+            let carried_lights = reg
+                .query_by_component_and_tag(ComponentKind::Light, Some(TAG))
+                .count();
+            let carried_emitters = reg
+                .query_by_component_and_tag(ComponentKind::BillboardEmitter, Some(TAG))
+                .count();
+            assert_eq!(carried_lights, 3, "the map light plus two spawned carriers");
+            assert_eq!(
+                carried_emitters, 3,
+                "the map emitter plus two spawned carriers"
+            );
+        }
+
+        let r = registry_for(ctx);
+        for tag in [Some(TAG), None] {
+            assert_eq!(queried_ids(&r, "light", tag), vec![map_light.to_raw()]);
+            assert_eq!(queried_ids(&r, "emitter", tag), vec![map_emitter.to_raw()]);
+        }
+    }
+
+    // Spawner is a map query kind with the identity snapshot shape movers and
+    // triggers use: id, position, tags.
+    #[test]
+    fn world_query_spawner_returns_identity_snapshots_in_both_runtimes() {
+        let ctx = ScriptCtx::new();
+        let spawner = {
+            let mut reg = ctx.registry.borrow_mut();
+            let id = reg
+                .try_spawn(
+                    Transform {
+                        position: Vec3::new(1.0, 2.0, 3.0),
+                        ..Transform::default()
+                    },
+                    &["closet".to_string()],
+                )
+                .unwrap();
+            reg.set_component(
+                id,
+                postretro_entities::components::spawner::SpawnerComponent {
+                    archetype_name: "cultist".to_string(),
+                    count: 2,
+                    resolved: true,
+                },
+            )
+            .unwrap();
+            // A tagged non-spawner never answers a spawner query.
+            reg.try_spawn(Transform::default(), &["closet".to_string()])
+                .unwrap();
+            id
+        };
+        let r = registry_for(ctx);
+        let expected = json!([{
+            "id": spawner.to_raw(),
+            "position": { "x": 1, "y": 2, "z": 3 },
+            "tags": ["closet"],
+        }]);
+
+        let rt = rquickjs::Runtime::new().unwrap();
+        let jsctx = rquickjs::Context::full(&rt).unwrap();
+        jsctx.with(|qjs| {
+            install_all(&r, &qjs);
+            let got: String = qjs
+                .eval(r#"JSON.stringify(worldQuery({ component: "spawner", tag: "closet" }))"#)
+                .unwrap();
+            let got: serde_json::Value = serde_json::from_str(&got).unwrap();
+            assert_eq!(got, expected);
+            let none: String = qjs
+                .eval(r#"JSON.stringify(worldQuery({ component: "spawner", tag: "absent" }))"#)
+                .unwrap();
+            assert_eq!(none, "[]");
+        });
+
+        let lua = mlua::Lua::new();
+        install_all_lua(&r, &lua);
+        let (count, id, z): (i64, u32, f64) = lua
+            .load(
+                r#"
+                local hs = worldQuery({ component = "spawner" })
+                return #hs, hs[1].id, hs[1].position.z
+            "#,
+            )
+            .eval()
+            .unwrap();
+        assert_eq!((count, id, z), (1, spawner.to_raw(), 3.0));
     }
 }

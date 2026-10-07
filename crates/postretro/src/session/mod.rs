@@ -29,8 +29,9 @@ use crate::scripting::reactions::registry::{
     ReactionPrimitiveRegistry, register_emitter_reaction_primitives,
     register_fog_reaction_primitives, register_grant_reactions, register_mover_reaction_primitives,
     register_npc_state_reaction_primitives, register_sequenced_fog_primitives,
-    register_sequenced_mover_primitives, register_sequenced_trigger_primitives,
-    register_spawner_reaction_primitives, register_trigger_reaction_primitives,
+    register_sequenced_mover_primitives, register_sequenced_spawner_primitives,
+    register_sequenced_trigger_primitives, register_spawner_reaction_primitives,
+    register_trigger_reaction_primitives,
 };
 use crate::scripting::reactions::system_commands::{
     SystemReactionRegistry, register_system_reaction_primitives,
@@ -751,6 +752,11 @@ fn build_scripting_core(
         &mut sequence_registry,
         script_ctx.clone(),
         command_diagnostics.clone(),
+    );
+    register_sequenced_spawner_primitives(
+        &mut sequence_registry,
+        script_ctx.clone(),
+        spawn_context.clone(),
     );
 
     // Reaction-primitive handlers invoked by name when a `Primitive` reaction

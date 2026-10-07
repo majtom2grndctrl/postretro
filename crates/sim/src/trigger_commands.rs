@@ -14,7 +14,7 @@ use crate::health::reactions::{self as health_reactions, ApplyDamageArgs};
 use crate::mover_commands::{MoverCommandDiagnostics, apply_mover_command_to_targets};
 use crate::scripting::reactions::animation::{self as animation_reactions, SetAnimationStateArgs};
 use crate::scripting::reactions::npc_state::{UpdateNpcStateArgs, apply_update_npc_state_to_brain};
-use crate::spawner::{SpawnContext, spawn_from_spawner_tag};
+use crate::spawner::{SpawnContext, spawn_from_spawner_member, spawn_from_spawner_tag};
 use crate::trigger_system::{arm_trigger_targets, disarm_trigger_targets};
 
 /// The closed set of trigger work allowed in the VM-free fixed-tick seam.
@@ -374,15 +374,21 @@ impl BoundTriggerCommand {
                     apply_update_npc_state_to_brain(registry, entity, &args);
                 }
             }
-            Self::Spawn { target } => {
-                let BoundTarget::Tag(tag) = target else {
+            Self::Spawn { target } => match target {
+                BoundTarget::Tag(tag) => spawn_from_spawner_tag(registry, tag, spawn_context),
+                // A spawner member step: this spawner only, generation-checked
+                // like every member step (a stale id warn-skips in `resolve`).
+                BoundTarget::Entity(_) => {
+                    if let Some(&id) = target.resolve(registry, fire_context).as_slice().first() {
+                        spawn_from_spawner_member(registry, id, spawn_context);
+                    }
+                }
+                BoundTarget::Group(_) | BoundTarget::Activators | BoundTarget::FiredTrigger => {
                     log::warn!(
-                        "[Trigger] spawnFromSpawner requires a fire-time tag target; special target is invalid; skipping"
+                        "[Trigger] spawnFromSpawner requires a spawner member or tag target; skipping"
                     );
-                    return;
-                };
-                spawn_from_spawner_tag(registry, tag, spawn_context);
-            }
+                }
+            },
             Self::StoreSlot { .. } | Self::AddOwnerSlot { .. } => {
                 unreachable!("store slots execute through their store path")
             }

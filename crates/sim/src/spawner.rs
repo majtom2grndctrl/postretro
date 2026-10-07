@@ -16,10 +16,11 @@ use glam::Vec3;
 use postretro_entities::components::brain::BrainComponent;
 use postretro_entities::components::spawner::SpawnerComponent;
 use postretro_entities::provenance::DescriptorSpawnPath;
-use postretro_entities::{ComponentKind, EntityId, EntityRegistry, Transform};
+use postretro_entities::{ComponentKind, EntityId, EntityRegistry, ScriptCtx, Transform};
 use postretro_foundation::NavAgentParams;
 use postretro_scripting_core::data_descriptors::EntityTypeDescriptor;
 use postretro_scripting_core::reaction_registry::ReactionPrimitiveRegistry;
+use postretro_scripting_core::sequence::SequencedPrimitiveRegistry;
 
 use crate::scripting::builtins::data_archetype::{
     ai_capsule_center_from_feet_offset, attach_descriptor_components,
@@ -216,18 +217,73 @@ fn spawn_from_spawner_targets_inner(
         .filter_map(|id| {
             let spawner = registry.get_component::<SpawnerComponent>(id).ok()?.clone();
             let transform = *registry.get_component::<Transform>(id).ok()?;
-            Some((id, spawner, transform))
+            let tags = registry.get_tags(id).ok()?.to_vec();
+            Some(ResolvedSpawner {
+                id,
+                spawner,
+                transform,
+                tags,
+            })
         })
         .collect();
     spawn_resolved_spawners(registry, spawners, context);
 }
 
-fn spawn_resolved_spawners(
+/// A spawner member step (`s.fire()`): spawn from exactly this spawner, never
+/// from a sibling sharing its tag. The caller has already generation-checked
+/// `id`; an id that is live but carries no spawner warns and spawns nothing.
+/// Named dispatch, a scheduler landing and the trigger tick all land here.
+pub(crate) fn spawn_from_spawner_member(
     registry: &mut EntityRegistry,
-    spawners: Vec<(EntityId, SpawnerComponent, Transform)>,
+    id: EntityId,
     context: &SpawnContext,
 ) {
-    for (spawner_id, spawner, spawner_transform) in spawners {
+    if !matches!(
+        registry.has_component_kind(id, ComponentKind::Spawner),
+        Ok(true)
+    ) {
+        log::warn!("[Spawner] spawnFromSpawner step target {id:?} is not a spawner; skipping");
+        return;
+    }
+    spawn_from_spawner_targets_inner(registry, &[id], context);
+}
+
+/// Register the id-keyed `spawnFromSpawner` sequence step that a spawner
+/// member's `fire()` emits. Steps are not deduplicated: two `fire()` steps on
+/// one member spawn two batches. `SpawnContext` runtime-spawn authority still
+/// gates materialization.
+pub fn register_sequenced_spawner_primitives(
+    registry: &mut SequencedPrimitiveRegistry,
+    ctx: ScriptCtx,
+    context: SpawnContext,
+) {
+    registry.register("spawnFromSpawner", move |id, _args| {
+        spawn_from_spawner_member(&mut ctx.registry.borrow_mut(), id, &context);
+        Ok(())
+    });
+}
+
+struct ResolvedSpawner {
+    id: EntityId,
+    spawner: SpawnerComponent,
+    transform: Transform,
+    /// The spawner placement's tags. Each NPC it spawns carries them, as if
+    /// placed there, so `npcs({ tag })` reaches a closet's output.
+    tags: Vec<String>,
+}
+
+fn spawn_resolved_spawners(
+    registry: &mut EntityRegistry,
+    spawners: Vec<ResolvedSpawner>,
+    context: &SpawnContext,
+) {
+    for ResolvedSpawner {
+        id: spawner_id,
+        spawner,
+        transform: spawner_transform,
+        tags,
+    } in spawners
+    {
         if !spawner.resolved || spawner.count == 0 {
             continue;
         }
@@ -271,7 +327,7 @@ fn spawn_resolved_spawners(
                 rotation: spawner_transform.rotation,
                 scale: spawner_transform.scale,
             };
-            let Some(enemy) = registry.try_spawn(transform, &[]) else {
+            let Some(enemy) = registry.try_spawn(transform, &tags) else {
                 context.warn_capacity_exhaustion_once();
                 return;
             };
@@ -282,7 +338,7 @@ fn spawn_resolved_spawners(
                 key_values: [("enabled_on_spawn".to_string(), "true".to_string())]
                     .into_iter()
                     .collect(),
-                tags: Vec::new(),
+                tags: tags.clone(),
             };
             attach_descriptor_components(
                 registry,
@@ -496,10 +552,15 @@ mod tests {
         player
     }
 
+    // S1: a spawned NPC carries its spawner placement's tags, as if placed
+    // there; firing stays stateless across repeats.
     #[test]
-    fn repeated_fire_is_stateless_and_spawns_untagged_runtime_enemies() {
+    fn repeated_fire_is_stateless_and_spawned_npcs_carry_the_spawner_tags() {
         let mut registry = EntityRegistry::new();
-        add_spawner(&mut registry, TAG, 2, true, Transform::default());
+        let spawner = add_spawner(&mut registry, TAG, 2, true, Transform::default());
+        registry
+            .set_tags(spawner, vec![TAG.to_string(), "wing_b".to_string()])
+            .unwrap();
         let context = context();
 
         spawn_from_spawner_tag(&mut registry, TAG, &context);
@@ -507,8 +568,12 @@ mod tests {
 
         let enemies = spawned(&registry);
         assert_eq!(enemies.len(), 4);
-        for enemy in enemies {
-            assert!(registry.get_tags(enemy).unwrap().is_empty());
+        for &enemy in &enemies {
+            assert_eq!(
+                registry.get_tags(enemy).unwrap(),
+                &[TAG.to_string(), "wing_b".to_string()],
+                "each spawned NPC carries every spawner tag"
+            );
             assert_eq!(
                 registry
                     .get_component::<DescriptorProvenance>(enemy)
@@ -517,6 +582,31 @@ mod tests {
                 DescriptorSpawnPath::RuntimeSpawn
             );
             assert!(registry.get_component::<AgentComponent>(enemy).is_ok());
+        }
+        let group = postretro_scripting_core::group_resolution::resolve_group(
+            &registry,
+            &postretro_entities::GroupTarget {
+                kind: postretro_entities::GroupKind::Npc,
+                tag: Some("wing_b".to_string()),
+            },
+        );
+        assert_eq!(group, enemies, "`npcs({{ tag }})` reaches the spawned NPCs");
+    }
+
+    // S1: a spawner with no tags spawns untagged NPCs.
+    #[test]
+    fn untagged_spawner_spawns_untagged_npcs() {
+        let mut registry = EntityRegistry::new();
+        let spawner = add_spawner(&mut registry, TAG, 2, true, Transform::default());
+        registry.set_tags(spawner, Vec::new()).unwrap();
+        let context = context();
+
+        spawn_from_spawner_member(&mut registry, spawner, &context);
+
+        let enemies = spawned(&registry);
+        assert_eq!(enemies.len(), 2);
+        for enemy in enemies {
+            assert!(registry.get_tags(enemy).unwrap().is_empty());
         }
     }
 
@@ -674,48 +764,116 @@ mod tests {
         }
     }
 
+    // S2: `progress` counts kills only among the entities carrying its tag at
+    // install. NPCs a `wave`-tagged spawner releases later carry `wave` (S1) yet
+    // neither raise the total nor count.
     #[test]
-    fn runtime_spawn_kill_cannot_advance_install_scoped_tag_progress() {
+    fn progress_counts_only_install_time_members_not_later_spawns_carrying_the_tag() {
+        const WAVE: &str = "wave";
         let mut registry = EntityRegistry::new();
+        let placed: Vec<EntityId> = (0..2)
+            .map(|_| {
+                registry
+                    .try_spawn(Transform::default(), &[WAVE.to_string()])
+                    .unwrap()
+            })
+            .collect();
+        let spawner = add_spawner(&mut registry, TAG, 2, true, Transform::default());
         registry
-            .try_spawn(Transform::default(), &["wave".to_string()])
+            .set_tags(spawner, vec![TAG.to_string(), WAVE.to_string()])
             .unwrap();
-        add_spawner(&mut registry, TAG, 1, true, Transform::default());
         let context = context();
 
         let mut data = DataRegistry::new();
         data.reactions.push(NamedReaction {
             name: "waveProgress".to_string(),
             descriptor: ReactionDescriptor::Progress(ProgressDescriptor {
-                tag: "wave".to_string(),
-                at: 1.0,
+                tag: WAVE.to_string(),
+                // Install-time members: the two placed NPCs and the spawner
+                // itself (it carries `wave` too), so 2/3 crosses and 1/3 does
+                // not. Counting the two spawns would cross at the first placed
+                // kill (3/5).
+                at: 0.6,
                 fire: "release".to_string(),
             }),
         });
         let mut progress = ProgressTracker::new();
         progress.initialize(&data, &registry);
 
-        spawn_from_spawner_tag(&mut registry, TAG, &context);
-        let enemy = spawned(&registry).pop().expect("one runtime-spawned enemy");
-        assert_eq!(
-            registry
-                .get_component::<DescriptorProvenance>(enemy)
-                .unwrap()
-                .spawn_path,
-            DescriptorSpawnPath::RuntimeSpawn
-        );
-        assert!(registry.get_tags(enemy).unwrap().is_empty());
+        spawn_from_spawner_member(&mut registry, spawner, &context);
+        let released = spawned(&registry);
+        assert_eq!(released.len(), 2);
+        for &npc in &released {
+            assert!(
+                registry.get_tags(npc).unwrap().contains(&WAVE.to_string()),
+                "the released NPC inherits `wave`"
+            );
+            assert!(
+                progress.on_entity_killed(npc).is_empty(),
+                "a later spawn carrying `wave` never counts"
+            );
+        }
         assert!(
-            progress
-                .on_entity_killed(registry.get_tags(enemy).unwrap())
-                .is_empty(),
-            "an untagged runtime-spawn kill cannot decrement a tag-keyed progress total"
+            progress.on_entity_killed(placed[0]).is_empty(),
+            "one placed kill is a third of the install-time total"
         );
         assert_eq!(
-            progress.on_entity_killed(&["wave".to_string()]),
+            progress.on_entity_killed(placed[1]),
             vec!["release".to_string()],
-            "the install-scoped total still requires the original tagged entity kill"
+            "the total stays the three install-time members"
         );
+    }
+
+    // M5 / A5 seam: the member path spawns from that spawner only, and every
+    // call is a fresh batch.
+    #[test]
+    fn member_spawn_ignores_a_sibling_sharing_the_tag_and_repeats_are_two_batches() {
+        let mut registry = EntityRegistry::new();
+        let chosen = add_spawner(&mut registry, TAG, 2, true, Transform::default());
+        let sibling = add_spawner(
+            &mut registry,
+            TAG,
+            3,
+            true,
+            Transform {
+                position: Vec3::new(10.0, 0.0, 0.0),
+                ..Transform::default()
+            },
+        );
+        let context = context();
+
+        spawn_from_spawner_member(&mut registry, chosen, &context);
+        spawn_from_spawner_member(&mut registry, chosen, &context);
+
+        assert_eq!(spawned(&registry).len(), 4, "two batches of `chosen`'s 2");
+        let sibling_x = registry
+            .get_component::<Transform>(sibling)
+            .unwrap()
+            .position
+            .x;
+        assert!(
+            spawned(&registry).iter().all(|&id| {
+                registry.get_component::<Transform>(id).unwrap().position.x < sibling_x - 1.0
+            }),
+            "nothing spawns at the sibling"
+        );
+    }
+
+    #[test]
+    fn member_spawn_on_a_non_spawner_warns_and_spawns_nothing() {
+        let mut registry = EntityRegistry::new();
+        let not_a_spawner = registry
+            .try_spawn(Transform::default(), &[TAG.to_string()])
+            .unwrap();
+        let context = context();
+
+        let capture = postretro_test_log_capture::LogCapture::start();
+        spawn_from_spawner_member(&mut registry, not_a_spawner, &context);
+
+        assert!(spawned(&registry).is_empty());
+        assert!(capture.records().iter().any(|record| {
+            record.level == log::Level::Warn && record.message.contains("is not a spawner")
+        }));
     }
 
     #[test]

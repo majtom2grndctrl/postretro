@@ -20,6 +20,14 @@ pub struct LightQueryHandle {
     tags: Vec<String>,
 }
 
+impl LightQueryHandle {
+    /// The queried light entity, for caller-side filtering before
+    /// [`handles_to_json`].
+    pub fn id(&self) -> EntityId {
+        self.id
+    }
+}
+
 pub fn collect_light_handles(ctx: &ScriptCtx, tag: Option<&str>) -> Vec<LightQueryHandle> {
     let reg = ctx.registry.borrow();
     let mut out = Vec::new();
@@ -299,6 +307,7 @@ pub fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .variant("fog_volume", "")
         .variant("kinematic_mover", "")
         .variant("trigger_volume", "")
+        .variant("spawner", "Map-placed `entity_spawner` instances: id, position and tags.")
         .variant("particle", "Always returns []. Engine-managed; scripts never iterate individual particles.")
         .variant("sprite_visual", "Always returns []. Engine-managed.")
         .finish();

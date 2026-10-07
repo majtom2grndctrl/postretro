@@ -307,28 +307,32 @@ fn update_npc_state_rejects_tagless_and_unknown_key_bindings() {
 }
 
 #[test]
-fn spawn_from_spawner_requires_a_tag_target_at_binding() {
+fn spawn_from_spawner_binds_a_member_or_tag_target_and_rejects_others() {
     let args = serde_json::json!({});
     let slots = SlotTable::new();
 
-    let command = bind_command(
-        "spawnFromSpawner",
-        Some(BoundTarget::Tag("closet".into())),
-        &args,
-        &slots,
-        None,
-    )
-    .expect("tag-targeted spawner command binds");
-    assert_eq!(command.kind(), BoundTriggerCommandKind::Spawn);
+    for target in [
+        BoundTarget::Tag("closet".into()),
+        BoundTarget::Entity(postretro_entities::EntityId::from_raw(7)),
+    ] {
+        let command = bind_command("spawnFromSpawner", Some(target), &args, &slots, None)
+            .expect("a spawner member or raw tag target binds");
+        assert_eq!(command.kind(), BoundTriggerCommandKind::Spawn);
+    }
 
     for target in [
         None,
+        Some(BoundTarget::Tag(String::new())),
         Some(BoundTarget::Activators),
         Some(BoundTarget::FiredTrigger),
+        Some(BoundTarget::Group(postretro_entities::GroupTarget {
+            kind: postretro_entities::GroupKind::Npc,
+            tag: None,
+        })),
     ] {
         assert!(
             bind_command("spawnFromSpawner", target, &args, &slots, None).is_none(),
-            "spawnFromSpawner must reject an absent or special target"
+            "spawnFromSpawner must reject an absent, empty-tag, group or special target"
         );
     }
 }

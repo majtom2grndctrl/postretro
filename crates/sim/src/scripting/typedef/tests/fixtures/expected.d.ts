@@ -1285,7 +1285,7 @@ declare module "postretro" {
 
   export type LightComponent = { origin: Vec3; lightType: LightKind; intensity: number; color: Vec3; falloffModel: FalloffKind; falloffRange: number; coneAngleInner: number | null; coneAngleOuter: number | null; coneDirection: Vec3 | null; isDynamic: boolean; animation: LightAnimation | null };
 
-  /** Component-name literals accepted by `worldQuery` and the `world.query` SDK wrapper. New queryable component types extend this union. Valid values: `light`, `transform`, `emitter`, `fog_volume`, `kinematic_mover`, `trigger_volume`, `particle`, `sprite_visual`. */
+  /** Component-name literals accepted by `worldQuery` and the `world.query` SDK wrapper. New queryable component types extend this union. Valid values: `light`, `transform`, `emitter`, `fog_volume`, `kinematic_mover`, `trigger_volume`, `spawner`, `particle`, `sprite_visual`. */
   export type WorldQueryComponent =
     | "light"
     | "transform"
@@ -1293,6 +1293,8 @@ declare module "postretro" {
     | "fog_volume"
     | "kinematic_mover"
     | "trigger_volume"
+    /** Map-placed `entity_spawner` instances: id, position and tags. */
+    | "spawner"
     /** Always returns []. Engine-managed; scripts never iterate individual particles. */
     | "particle"
     /** Always returns []. Engine-managed. */
@@ -1374,7 +1376,7 @@ declare module "postretro" {
   /** Return the current world gravity in m/s² (negative = downward; positive = upward). Seeded from the worldspawn `initialGravity` KVP at level load and persists until the next level load or a `worldSetGravity` call. The `world.ts` vocabulary module wraps this as `world.getGravity`. */
   export function worldGetGravity(): number;
 
-  /** Return an array of raw entity snapshots matching the filter. Available in definition and data contexts. Filter shape: { component: "light" | "transform" | "emitter" | "fog_volume" | "kinematic_mover" | "trigger_volume" | "particle" | "sprite_visual", tag?: string }. `"particle"` and `"sprite_visual"` always return `[]` (engine-managed; scripts never iterate individual particles). Unknown component values raise InvalidArgument. The `world.ts` vocabulary module wraps these snapshots as `world.query` handles. */
+  /** Return an array of raw entity snapshots matching the filter. Available in definition and data contexts. Returns map-placed instances only; an entity a runtime spawn carries never appears. Filter shape: { component: "light" | "transform" | "emitter" | "fog_volume" | "kinematic_mover" | "trigger_volume" | "spawner" | "particle" | "sprite_visual", tag?: string }. `"particle"` and `"sprite_visual"` always return `[]` (engine-managed; scripts never iterate individual particles). Unknown component values raise InvalidArgument. The `world.ts` vocabulary module wraps these snapshots as `world.query` handles. */
   export function worldQuery<T extends WorldQueryComponent>(filter: { component: T; tag?: string | null }): ReadonlyArray<RawEntityForComponent<T>>;
 
   /** Set the world gravity in m/s² (negative = downward; positive = upward). NaN and non-finite values are silently ignored (a warning is logged) so a misbehaving script cannot wedge particle physics. Effect is immediate and persists until the next level load or another `worldSetGravity` call. The `world.ts` vocabulary module wraps this as `world.setGravity`. */

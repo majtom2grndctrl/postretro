@@ -575,7 +575,7 @@ fn trigger_fired_sequence_applies_activator_and_group_steps_before_the_wait_in_t
 
 // A4, tick half: a group step bound after a tag-targeted spawn on the same
 // edge sees the NPCs that spawn produced in the same tick. The `s.fire()`
-// member form and its sequence ordering belong to the spawner-member work.
+// member form is covered below (`trigger_tick_spawner_member_*`).
 #[test]
 fn trigger_tick_npc_group_after_a_spawn_on_the_same_edge_reaches_the_spawned_npcs() {
     let mut level = Level::new();
@@ -720,4 +720,174 @@ fn bound_group_commands_skip_silently_under_the_client_role_while_member_steps_a
     level.tick(&[local(pawn)]);
     assert_eq!(level.health(npc), START_HEALTH - 5.0);
     assert_eq!(level.health(pawn), START_HEALTH + 3.0 + 10.0 + 3.0);
+}
+
+fn cultist_spawn_context() -> SpawnContext {
+    let spawn_context = SpawnContext::default();
+    spawn_context.replace_level_data(
+        [(
+            "cultist".to_string(),
+            crate::scripting::builtins::data_archetype_test_fixtures::behavior_enemy_descriptor(
+                "cultist",
+            ),
+        )]
+        .into_iter()
+        .collect(),
+        None,
+    );
+    spawn_context
+}
+
+fn add_spawner(registry: &mut EntityRegistry, count: u32, position: Vec3) -> EntityId {
+    let id = registry
+        .try_spawn(
+            Transform {
+                position,
+                ..Transform::default()
+            },
+            &["closet".to_string()],
+        )
+        .unwrap();
+    registry
+        .set_component(
+            id,
+            SpawnerComponent {
+                archetype_name: "cultist".into(),
+                count,
+                resolved: true,
+            },
+        )
+        .unwrap();
+    id
+}
+
+fn brains(registry: &EntityRegistry) -> HashSet<EntityId> {
+    registry
+        .iter_with_kind(ComponentKind::Brain)
+        .map(|(id, _)| id)
+        .collect()
+}
+
+fn near(registry: &EntityRegistry, ids: &HashSet<EntityId>, anchor: EntityId) -> usize {
+    let origin = registry
+        .get_component::<Transform>(anchor)
+        .unwrap()
+        .position;
+    ids.iter()
+        .filter(|&&id| {
+            (registry.get_component::<Transform>(id).unwrap().position - origin).length() < 10.0
+        })
+        .count()
+}
+
+// M5 / A3 / A5, trigger tick: `[s.fire(), s.fire()]` Enter-bound spawns two
+// batches from `s` on the enter tick and nothing from a sibling sharing its
+// tag. The id step binds without the "requires a fire-time tag target"
+// warning, and nothing warns while it applies.
+#[test]
+fn trigger_tick_spawner_member_steps_spawn_from_that_spawner_only_one_batch_per_step() {
+    const COUNT: u32 = 2;
+    let mut level = Level::new();
+    let spawner = add_spawner(&mut level.registry, COUNT, OUTSIDE * 3.0);
+    let sibling = add_spawner(&mut level.registry, 3, OUTSIDE * -3.0);
+    let pawn = level.spawn_pawn(&[]);
+    level.registry.mark_local_player_pawn(pawn).unwrap();
+
+    let install_logs = level.install_with_spawn_context(
+        &format!(
+            r#"({{
+                reactions: [{{
+                    name: "release",
+                    sequence: [
+                        {{ id: {s}, primitive: "spawnFromSpawner" }},
+                        {{ id: {s}, primitive: "spawnFromSpawner" }},
+                    ],
+                }}],
+                triggerEvents: [{{ tag: "plate", event: "enter", fire: ["release"] }}],
+            }})"#,
+            s = spawner.to_raw(),
+        ),
+        cultist_spawn_context(),
+    );
+    assert!(
+        warnings(&install_logs).is_empty(),
+        "the member step binds cleanly, with no fire-time tag warning: {install_logs:?}"
+    );
+
+    level.move_to(pawn, INSIDE);
+    let entered = level.tick(&[local(pawn)]);
+    assert_eq!(
+        entered.commands,
+        vec![
+            BoundTriggerCommandKind::Spawn,
+            BoundTriggerCommandKind::Spawn
+        ]
+    );
+    assert!(warnings(&entered.logs).is_empty(), "{:?}", entered.logs);
+    assert!(!entered.residual_fired, "both steps apply in the tick");
+    let spawned = brains(&level.registry);
+    assert_eq!(
+        spawned.len(),
+        (2 * COUNT) as usize,
+        "two steps, two batches"
+    );
+    assert_eq!(
+        near(&level.registry, &spawned, spawner),
+        (2 * COUNT) as usize
+    );
+    assert_eq!(near(&level.registry, &spawned, sibling), 0);
+}
+
+// Q2 (A4), trigger tick: `[s.fire(), npcs().update(…)]` before any wait
+// reaches every NPC `s` spawned earlier in the same tick. Spawned NPCs arrive
+// aggro armed, so the step disarms to make its reach observable.
+#[test]
+fn trigger_tick_npc_group_step_after_a_spawner_member_step_reaches_the_just_spawned_npcs() {
+    const COUNT: u32 = 2;
+    let mut level = Level::new();
+    let spawner = add_spawner(&mut level.registry, COUNT, OUTSIDE * 3.0);
+    let pawn = level.spawn_pawn(&[]);
+    level.registry.mark_local_player_pawn(pawn).unwrap();
+
+    let install_logs = level.install_with_spawn_context(
+        &format!(
+            r#"({{
+                reactions: [{{
+                    name: "release",
+                    sequence: [
+                        {{ id: {s}, primitive: "spawnFromSpawner" }},
+                        {{ primitive: "updateNpcState", kind: "npc", args: {{ aggro: false }} }},
+                        {{ id: "@wait", primitive: "wait", args: {{ durationMs: 800 }} }},
+                        {{ id: {s}, primitive: "spawnFromSpawner" }},
+                    ],
+                }}],
+                triggerEvents: [{{ tag: "plate", event: "enter", fire: ["release"] }}],
+            }})"#,
+            s = spawner.to_raw(),
+        ),
+        cultist_spawn_context(),
+    );
+    assert!(warnings(&install_logs).is_empty(), "{install_logs:?}");
+
+    level.move_to(pawn, INSIDE);
+    let entered = level.tick(&[local(pawn)]);
+    assert_eq!(
+        entered.commands,
+        vec![
+            BoundTriggerCommandKind::Spawn,
+            BoundTriggerCommandKind::UpdateNpcState,
+        ],
+        "both pre-wait steps apply in the tick, in authored order"
+    );
+    assert!(entered.residual_fired, "the wait and its tail drain later");
+    let spawned = brains(&level.registry);
+    assert_eq!(
+        spawned.len(),
+        COUNT as usize,
+        "the post-wait spawn has not run"
+    );
+    assert!(
+        spawned.iter().all(|&id| !level.aggro(id)),
+        "every NPC spawned earlier in this tick is in the npc group"
+    );
 }

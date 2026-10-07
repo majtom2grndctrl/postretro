@@ -1,7 +1,7 @@
 //! Fade and ambient occlusion: the per-fragment terms that scale how much the
 //! march shows.
 
-use super::march::{SurfaceDepthHit, surface_depth_march_scale};
+use super::march::SurfaceDepthHit;
 use super::{SURFACE_DEPTH_EPS, above};
 
 /// Screen-space LOD (in base-mip texels per pixel, log2) at which the relief
@@ -57,37 +57,29 @@ pub fn surface_depth_fade(distance_meters: f32, fade_distance_meters: f32, lod: 
 /// Ambient occlusion factor for the SH indirect term.
 ///
 /// Measured from the material's PEAK raise, not the plane:
-/// `ao_fraction = clamp(peak_raise − height / scale, 0, 1)`. Mortar
-/// between raised stones darkens by its depth below the stone tops wherever
-/// the author put the plane; an all-mid-gray map, or a texel at the peak, gets
-/// none. With `peak_raise = 0` (a carve-only map) this is exactly the
-/// pre-signed formula, since `0 − h/s` and `(−h)/s` are the same float.
+/// `ao_fraction = clamp(peak_raise − height / scale, 0, 1)`. Mortar between
+/// raised stones darkens by its depth below the stone tops wherever the author
+/// put the plane; an all-mid-gray map, or a texel at the peak, gets none. With
+/// `peak_raise = 0` (a carve-only map) it is `(−h)/s`: depth below the plane.
 ///
-/// `peak_raise` is the quantized fraction from the uniform. The hit's height
-/// and `depth_scale_meters` are both post-fade, so their ratio is the raw texel
-/// value at every fade; the `fade` factor is what makes the occlusion degrade
-/// with the relief instead of popping at the fade boundary.
+/// The peak and the scale come from the hit: the quantized peak of the band
+/// the march walked, and the clamped scale it resolved the height with (the
+/// shader clamps before both). The hit's height and scale are both post-fade,
+/// so their ratio is the raw texel value at every fade; the `fade` factor is
+/// what makes the occlusion degrade with the relief instead of popping at the
+/// fade boundary.
 ///
-/// `scale` is [`surface_depth_march_scale`] of `depth_scale_meters` — the same
-/// clamped scale the march resolved the height with (the shader clamps before
-/// both). Dividing by the raw scale past `SURFACE_DEPTH_MAX_METERS` would
-/// report a full-depth hit as partly occluded.
-///
-/// Takes the whole view-march result so a starved march's flat result cannot be skipped: a starved hit is
-/// flat and never occludes (the shader's `carved = false` gate).
-pub fn surface_depth_ambient_occlusion(
-    hit: &SurfaceDepthHit,
-    peak_raise: f32,
-    depth_scale_meters: f32,
-    fade: f32,
-) -> f32 {
+/// Takes the whole view-march result so a starved march's flat result cannot
+/// be skipped: a starved hit is flat and never occludes (the shader's
+/// `carved = false` gate). The shader's `surface_depth_indirect_ao`.
+pub fn surface_depth_ambient_occlusion(hit: &SurfaceDepthHit, fade: f32) -> f32 {
     if hit.starved {
         return 1.0;
     }
-    let scale = surface_depth_march_scale(depth_scale_meters);
+    let scale = hit.depth_scale_meters;
     if !above(scale, SURFACE_DEPTH_EPS) {
         return 1.0;
     }
-    let below_peak = (peak_raise - hit.height_meters / scale).clamp(0.0, 1.0);
+    let below_peak = (hit.peak_raise - hit.height_meters / scale).clamp(0.0, 1.0);
     1.0 - SURFACE_DEPTH_AO_STRENGTH * fade * below_peak
 }

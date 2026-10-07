@@ -361,8 +361,7 @@ fn surface_depth_dda_setup(origin: vec2<f32>, dir: vec2<f32>) -> SurfaceDepthDda
 //
 // The march measures DESCENT from where the ray starts: the peak raise, or the
 // eye if lower. Per texel `T` the solid's top lies `solid(T) = (top - s(T)) *
-// scale` below the start, so the loop body is the same walk the carve-only
-// field used; the start just moved up from the plane to the peak.
+// scale` below the start.
 fn surface_depth_resolve(
     uv: vec2<f32>,
     world_position: vec3<f32>,
@@ -528,8 +527,12 @@ fn surface_depth_resolve(
         var walked = 0u;
 
         loop {
-            let solid = (top - surface_depth_texel(surface_depth_fold(dda.cell, dims_i), base_mip, levels))
-                * depth_scale_m;
+            // The eye's own column is see-through: with the eye inside the
+            // band every ray starts at its foot, so a texel there rising above
+            // the eye would stop them all at one point. It reads as the band's
+            // floor; every other texel blocks as usual.
+            let s = surface_depth_texel(surface_depth_fold(dda.cell, dims_i), base_mip, levels);
+            let solid = (top - select(s, trough, walked == 0u && s > top)) * depth_scale_m;
             let z_exit = min(dda.t_max.x, dda.t_max.y);
             // The ray was already inside this texel's solid when it entered: it
             // hit the SIDE wall it came through.

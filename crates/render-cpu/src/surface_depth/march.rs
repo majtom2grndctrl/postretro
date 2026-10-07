@@ -2,13 +2,11 @@
 //! shorter light-ray march that self-shadows it against one dynamic light.
 //!
 //! Both walk the texel grid as an exact Amanatides-Woo DDA parameterised by
-//! vertical distance in meters. The view march measures DESCENT from the
-//! material's peak raise; the light march measures RISE from the hit. Per
-//! texel `T` the solid's top is at signed height `s(T) · scale`, which in
-//! descent-from-peak terms is `solid(T) = (peak − s(T)) · scale ≥ 0`. Writing
-//! the field that way keeps the loop body the same walk it was when the field
-//! was carve-only: `solid` is still "how far below the ray's start the top
-//! sits", the start just moved up from the plane to the peak.
+//! vertical distance in meters. The view march measures DESCENT from where the
+//! ray starts, `top`: the material's peak raise, or the eye if lower. The light
+//! march measures RISE from the hit. Per texel `T` the solid's top sits at
+//! signed height `s(T) · scale`, which is `solid(T) = (top − s(T)) · scale`
+//! below the start.
 
 use super::height::{SurfaceDepthField, SurfaceRelief};
 use super::{SURFACE_DEPTH_EPS, SURFACE_DEPTH_MAX_METERS, above};
@@ -77,13 +75,21 @@ pub struct SurfaceDepthHit {
     /// Texel boundaries crossed. Only ever interesting for budgeting.
     pub steps: u32,
     /// The view ray exhausted its budget and resolved flat at the true plane.
-    /// A consumer treats this exactly like no march: no AO, no
-    /// self-shadow.
+    /// A consumer treats this exactly like no march: no AO, no self-shadow.
     pub starved: bool,
+    /// The vertical scale the march resolved with: [`surface_depth_march_scale`]
+    /// of the caller's post-fade scale. Zero on a flat result. AO and the
+    /// self-shadow march read it from here, so they cannot disagree with the
+    /// march about it.
+    pub depth_scale_meters: f32,
+    /// The quantized peak raise of the band the march walked. Zero on a flat
+    /// result. AO and the self-shadow clearance measure from it.
+    pub peak_raise: f32,
 }
 
 impl SurfaceDepthHit {
-    /// The flat result: original UV, height 0, geometric normal, top face.
+    /// The flat result: original UV, height 0, geometric normal, top face, and
+    /// no relief for AO or self-shadow to measure.
     pub const fn flat(uv: [f32; 2]) -> Self {
         Self {
             uv,
@@ -92,6 +98,8 @@ impl SurfaceDepthHit {
             face: SurfaceDepthFace::Top,
             steps: 0,
             starved: false,
+            depth_scale_meters: 0.0,
+            peak_raise: 0.0,
         }
     }
 }
@@ -152,9 +160,10 @@ pub fn surface_depth_dda_setup(origin: [f32; 2], dir: [f32; 2]) -> SurfaceDepthD
 /// March the view ray through the relief band.
 ///
 /// `band` is the QUANTIZED relief from the uniform; it must bound every texel
-/// the field returns, which load-time extraction over every mip guarantees.
-/// The ray enters the band at the peak raise — at `uv0 − dir · peak` in
-/// texel space, where the view ray crosses that height — and descends.
+/// the field returns, which the uniform guarantees by packing the band of the
+/// mip the march reads. The ray enters the band at the peak raise — at
+/// `uv0 − dir · peak` in texel space, where the view ray crosses that height —
+/// and descends.
 ///
 /// Eye bound: the march never starts behind the camera. `eye_height_meters`
 /// is how far the eye sits above the true plane along the surface normal —
@@ -162,7 +171,14 @@ pub fn surface_depth_dda_setup(origin: [f32; 2], dir: [f32; 2]) -> SurfaceDepthD
 /// the shader's `view_distance * descent`. The ray starts at `top = min(peak,
 /// eye_height / scale)`: a low slide eye or a camera hugging raised brick
 /// starts at the eye instead of `peak` behind it. Pass `f32::INFINITY` for a
-/// far eye; any eye above the peak marches bit-identically.
+/// far eye; any eye above the peak marches bit-identically. A NaN eye is a far
+/// eye, and an eye below the plane starts at the plane.
+///
+/// The eye's own texel column is see-through. With the eye inside the band,
+/// every fragment's ray starts at the eye's foot, so a column rising above the
+/// eye would stop them all at one point. Its top therefore reads as the band's
+/// floor; every other texel blocks as usual, including texels taller than the
+/// eye. A far eye starts above every texel, so the rule never fires for it.
 ///
 /// Per texel `T` the solid's top lies `solid(T) = (top − s(T)) · scale` below
 /// the start. Within `T` the ray spans `[z_enter, z_exit]`:
@@ -173,8 +189,7 @@ pub fn surface_depth_dda_setup(origin: [f32; 2], dir: [f32; 2]) -> SurfaceDepthD
 ///
 /// The first texel is entered through the start height, so its "entry face"
 /// is the geometric top: a texel at the peak resolves on the first iteration
-/// with the geometric normal, and so does a texel rising above an eye inside
-/// the band (`solid < 0`, a hit at the eye).
+/// with the geometric normal.
 ///
 /// Cost levers: an empty band marches nothing; a ray that leaves the
 /// starting texel only below the band's floor resolves that texel's top with
@@ -228,8 +243,9 @@ pub(super) fn march_surface_depth_full_loop(
     )
 }
 
-/// Whether the view ray stays inside its starting texel across the whole band: it crosses no texel boundary before descending `band_meters`, the
-/// band measured from where the ray starts.
+/// Whether the view ray stays inside its starting texel across the whole band:
+/// it crosses no texel boundary before descending `band_meters`, the band
+/// measured from where the ray starts.
 pub fn surface_depth_single_texel_band(dda: &SurfaceDepthDda, band_meters: f32) -> bool {
     dda.t_max[0].min(dda.t_max[1]) > band_meters
 }
@@ -252,8 +268,10 @@ fn march_view_ray(
         return SurfaceDepthHit::flat(uv0);
     }
     // Eye bound: start at the peak, or at the eye when it sits inside the
-    // band. A far eye leaves `top == peak` exactly. `f32::min` drops a NaN.
-    let top = band.peak_raise.min(eye_height_meters / scale);
+    // band. A far eye leaves `top == peak` exactly. `f32::min` drops a NaN
+    // first, so a NaN eye is a far eye; the `max` then starts an eye below the
+    // plane at the plane. The GPU's eye is never below it.
+    let top = band.peak_raise.min(eye_height_meters / scale).max(0.0);
     let top_m = top * scale;
 
     let dims = [field.width as f32, field.height as f32];
@@ -265,27 +283,26 @@ fn march_view_ray(
     // viewer from `p0`.
     let start = [p0[0] - dir[0] * top_m, p0[1] - dir[1] * top_m];
     let mut dda = surface_depth_dda_setup(start, dir);
+    let ray = ViewRay {
+        start,
+        dir,
+        dims,
+        top_m,
+        scale,
+        peak_raise: band.peak_raise,
+    };
 
-    // Single-texel early-out: the ray never leaves its starting texel above the band's floor, so
-    // it meets this texel's top. Exactly the loop's first iteration, whatever
-    // the texel holds: a top above the start (`solid <= 0`, an eye inside the
-    // band) is a hit at the start, and a top the ray does not reach inside
-    // this texel — below the band, or a NaN — is left to the loop.
+    // Single-texel early-out: the ray never leaves its starting texel above
+    // the band's floor, so it meets this texel's top. Exactly the loop's first
+    // iteration, whatever the texel holds: a top at the start is a hit there,
+    // and a top the ray does not reach inside this texel — below the band, or
+    // a NaN — is left to the loop.
     if single_texel_early_out && surface_depth_single_texel_band(&dda, (top - band.trough) * scale)
     {
-        let solid = (top - field.texel_height(dda.cell[0], dda.cell[1])) * scale;
+        let solid = (top - view_texel_height(field, dda.cell, top, band.trough, true)) * scale;
         if solid < dda.t_max[0].min(dda.t_max[1]) {
             let z_hit = if solid <= 0.0 { 0.0 } else { solid };
-            return resolve_view_hit(
-                start,
-                dir,
-                dims,
-                top_m,
-                z_hit,
-                [0.0, 0.0],
-                SurfaceDepthFace::Top,
-                0,
-            );
+            return ray.resolve(z_hit, [0.0, 0.0], SurfaceDepthFace::Top, 0);
         }
     }
 
@@ -296,7 +313,8 @@ fn march_view_ray(
     let mut walked = 0u32;
 
     let (z_hit, face, bias) = loop {
-        let solid = (top - field.texel_height(dda.cell[0], dda.cell[1])) * scale;
+        let s = view_texel_height(field, dda.cell, top, band.trough, walked == 0);
+        let solid = (top - s) * scale;
         let z_exit = dda.t_max[0].min(dda.t_max[1]);
         if z_enter >= solid {
             break (z_enter, entry_face, entry_bias);
@@ -339,31 +357,64 @@ fn march_view_ray(
         walked += 1;
     };
 
-    resolve_view_hit(start, dir, dims, top_m, z_hit, bias, face, walked)
+    ray.resolve(z_hit, bias, face, walked)
 }
 
-/// Turn a descent `z_hit` below the start height `top_m` into the reported
-/// hit. Shared by the loop and the single-texel early-out so both produce bit-identical
-/// results.
-#[allow(clippy::too_many_arguments)]
-fn resolve_view_hit(
+/// The height the view march tests texel `cell` at. The start cell is the
+/// eye's column whenever a texel there rises above the start, and reads as the
+/// band's `trough`: see-through, yet the ray still cannot leave the band.
+/// The shader's `select(.., trough, walked == 0u && s > top)`.
+fn view_texel_height(
+    field: &SurfaceDepthField<'_>,
+    cell: [i32; 2],
+    top: f32,
+    trough: f32,
+    start_cell: bool,
+) -> f32 {
+    let s = field.texel_height(cell[0], cell[1]);
+    if start_cell && s > top { trough } else { s }
+}
+
+/// One view ray through the band, in texel space.
+struct ViewRay {
     start: [f32; 2],
+    /// Texels per meter of descent.
     dir: [f32; 2],
     dims: [f32; 2],
+    /// Height of `start` above the plane, in meters.
     top_m: f32,
-    z_hit: f32,
-    bias: [f32; 2],
-    face: SurfaceDepthFace,
-    walked: u32,
-) -> SurfaceDepthHit {
-    let hit = [start[0] + dir[0] * z_hit, start[1] + dir[1] * z_hit];
-    SurfaceDepthHit {
-        uv: [(hit[0] + bias[0]) / dims[0], (hit[1] + bias[1]) / dims[1]],
-        march_uv: [hit[0] / dims[0], hit[1] / dims[1]],
-        height_meters: top_m - z_hit,
-        face,
-        steps: walked,
-        starved: false,
+    scale: f32,
+    peak_raise: f32,
+}
+
+impl ViewRay {
+    /// Turn a descent `z_hit` below the start into the reported hit. Shared by
+    /// the loop and the single-texel early-out so both produce bit-identical
+    /// results.
+    fn resolve(
+        &self,
+        z_hit: f32,
+        bias: [f32; 2],
+        face: SurfaceDepthFace,
+        walked: u32,
+    ) -> SurfaceDepthHit {
+        let hit = [
+            self.start[0] + self.dir[0] * z_hit,
+            self.start[1] + self.dir[1] * z_hit,
+        ];
+        SurfaceDepthHit {
+            uv: [
+                (hit[0] + bias[0]) / self.dims[0],
+                (hit[1] + bias[1]) / self.dims[1],
+            ],
+            march_uv: [hit[0] / self.dims[0], hit[1] / self.dims[1]],
+            height_meters: self.top_m - z_hit,
+            face,
+            steps: walked,
+            starved: false,
+            depth_scale_meters: self.scale,
+            peak_raise: self.peak_raise,
+        }
     }
 }
 
@@ -376,17 +427,17 @@ pub fn surface_depth_shadow_steps(max_steps: u32) -> u32 {
 /// Self-shadow one dynamic light: a second, shorter DDA from the hit point
 /// toward the light. Returns 1.0 lit, 0.0 occluded.
 ///
-/// Takes the whole view-march result, not its height, so a starved march's flat
-/// result cannot be skipped: a starved hit is flat, and a flat fragment never self-shadows
-/// (the shader's `carved = false` gate). The march starts at the hit's
-/// unbiased `march_uv`.
+/// Takes the whole view-march result, not its height, so a starved march's
+/// flat result cannot be skipped: a starved hit is flat, and a flat fragment
+/// never self-shadows (the shader's `carved = false` gate). The scale and peak
+/// come from the hit too, so they are the ones the view march used. The march
+/// starts at the hit's unbiased `march_uv`.
 ///
 /// The ray rises from the hit and ends as soon as it climbs above the
-/// material's PEAK raise — not the plane: with raised texels around, a
-/// hit on the plane can still be shadowed. A top hit at the peak height has
-/// nothing above it and skips the march. `peak_raise` is the quantized
-/// fraction from the uniform; `max_steps` is [`surface_depth_shadow_steps`]
-/// of the material's budget.
+/// material's PEAK raise — not the plane: with raised texels around, a hit on
+/// the plane can still be shadowed. A top hit at the peak height has nothing
+/// above it and skips the march. `max_steps` is
+/// [`surface_depth_shadow_steps`] of the material's budget.
 ///
 /// Legitimate against DYNAMIC lights only — the bake knows nothing about
 /// dynamic bodies (`rendering_pipeline.md` §4: "the runtime owns only the facts
@@ -402,15 +453,14 @@ pub fn surface_depth_light_visibility(
     field: &SurfaceDepthField<'_>,
     hit: &SurfaceDepthHit,
     light_uv_per_meter: [f32; 2],
-    depth_scale_meters: f32,
-    peak_raise: f32,
     max_steps: u32,
 ) -> f32 {
     if hit.starved {
         return 1.0;
     }
     let hit_uv = hit.march_uv;
-    let scale = surface_depth_march_scale(depth_scale_meters);
+    let scale = hit.depth_scale_meters;
+    let peak_raise = hit.peak_raise;
     // How far the light ray must rise before it clears the band.
     let clearance = peak_raise * scale - hit.height_meters;
     if !above(clearance, SURFACE_DEPTH_SHADOW_BIAS_M) {

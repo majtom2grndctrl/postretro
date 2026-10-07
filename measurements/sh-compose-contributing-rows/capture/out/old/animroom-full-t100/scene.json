@@ -1,0 +1,24 @@
+{
+  "map": "content/dev/maps/stress-warren-mini.prl",
+  "camera": {
+    "position": [
+      41.71,
+      3.23,
+      -20.5
+    ],
+    "yaw_deg": 0.0,
+    "pitch_deg": 0.0,
+    "fov_deg": 100.0
+  },
+  "resolution": [
+    640,
+    360
+  ],
+  "output": "/Users/dhiester/Projects/Personal/postretro/measurements/sh-compose-contributing-rows/capture/out/old/animroom-full-t100/capture.png",
+  "force_full_resident_sh_compose": true,
+  "measurement": {
+    "report": "/Users/dhiester/Projects/Personal/postretro/measurements/sh-compose-contributing-rows/capture/out/old/animroom-full-t100/report.json",
+    "warmup_frames": 1,
+    "sample_frames": 59
+  }
+}

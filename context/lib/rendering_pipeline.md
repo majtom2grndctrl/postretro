@@ -272,10 +272,9 @@ carries at least one CSR entry in the pass's section — indirect id 27, static-
 The compiler emits a sparse row for every brick a cluster covers, so many resident rows carry
 none. Those rows stay resident and dirty-tracked but never fire on a pass's per-source
 trigger. They stay exact because install, slot reuse, partial eviction, mask and control
-changes, force-full, and Pass A rewrites recompose rows regardless of contribution. Not built
-yet: landed membership counts every installed sparse row, empty or not. A level with id-35 base
-direct SH but neither id 41 nor id 45 samples that base uncomposed, so its direct passes hold
-no rows; without id 45, Pass B holds none.
+changes, force-full, and Pass A rewrites recompose rows regardless of contribution. A level
+with id-35 base direct SH but neither id 41 nor id 45 samples that base uncomposed, so its
+direct passes hold no rows; without id 45, Pass B holds none.
 
 Invariant: every stored slot a consumer can sample in frame N equals what full-resident
 compose would write in frame N, so no stale slot is sampled. Per-pass generations record

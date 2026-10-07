@@ -1,0 +1,1968 @@
+From e96ede40e9842342e52b8da84844ec68feb7e8c6 Mon Sep 17 00:00:00 2001
+From: Dan Hiester <dan.hiester@gmail.com>
+Date: Mon, 5 Oct 2026 21:21:09 -0700
+Subject: [PATCH 1/8] Spike probes: compose arm rewrites, per-level row counts,
+ capture atlas dump
+
+Throwaway branch for sh-compose-row-cost-spike; never lands.
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01Ue9BfgWtZZosYasgkpTmRz
+---
+ crates/postretro/src/capture/driver.rs        |   2 +
+ crates/postretro/src/capture/prepared.rs      |  10 +
+ .../src/render/animated_direct_sh_compose.rs  |  10 +-
+ crates/renderer/src/render/compose_spike.rs   | 621 ++++++++++++++++++
+ crates/renderer/src/render/mod.rs             |   1 +
+ crates/renderer/src/render/sh_compose.rs      |  10 +-
+ crates/renderer/src/render/sh_streaming.rs    |  10 +
+ .../sh_streaming/direct_compose/passes.rs     |  10 +-
+ .../renderer/src/render/sh_streaming/frame.rs |  10 +
+ .../src/render/sh_streaming/gpu/indirect.rs   |  10 +-
+ .../renderer/src/render/sh_streaming/setup.rs |   1 +
+ .../renderer/src/render/sh_streaming/tests.rs |   1 +
+ 12 files changed, 668 insertions(+), 28 deletions(-)
+ create mode 100644 crates/renderer/src/render/compose_spike.rs
+
+diff --git a/crates/postretro/src/capture/driver.rs b/crates/postretro/src/capture/driver.rs
+index 3b3641e3d..dd053a948 100644
+--- a/crates/postretro/src/capture/driver.rs
++++ b/crates/postretro/src/capture/driver.rs
+@@ -143,6 +143,7 @@ fn run_capture_inner(scene_arg: Option<&str>) -> Result<()> {
+         // The only readback is after all timed work. `scene_color` readback is
+         // already RGBA8 sRGB; PNG publication remains the legacy atomic path.
+         let rgba = prepared.capture_measurement_output_frame()?;
++        prepared.spike_dump_atlases()?;
+         write_capture_png(output_path, &rgba, width, height)?;
+         publish_staged_measurement_report(
+             staged_report,
+@@ -150,6 +151,7 @@ fn run_capture_inner(scene_arg: Option<&str>) -> Result<()> {
+         )?;
+     } else {
+         let rgba = prepared.capture_frame()?;
++        prepared.spike_dump_atlases()?;
+ 
+         // `scene_color` readback is already RGBA8 sRGB. Write only after all
+         // rendering succeeded, so invalid input or GPU failures never touch output.
+diff --git a/crates/postretro/src/capture/prepared.rs b/crates/postretro/src/capture/prepared.rs
+index b4cdbedeb..923536ead 100644
+--- a/crates/postretro/src/capture/prepared.rs
++++ b/crates/postretro/src/capture/prepared.rs
+@@ -301,6 +301,16 @@ impl PreparedCapture {
+             .map(|batch| batch.unwrap_or_default())
+     }
+ 
++    /// Spike-only: dump the composed SH atlases when
++    /// `POSTRETRO_SPIKE_ATLAS_DUMP` names a directory.
++    pub(super) fn spike_dump_atlases(&self) -> Result<()> {
++        if let Ok(dir) = std::env::var("POSTRETRO_SPIKE_ATLAS_DUMP") {
++            self.renderer
++                .spike_dump_sh_atlases(std::path::Path::new(&dir))?;
++        }
++        Ok(())
++    }
++
+     /// Render the prepared static workload through the unchanged PNG/readback
+     /// capture path.
+     pub(super) fn capture_frame(&mut self) -> Result<Vec<u8>> {
+diff --git a/crates/renderer/src/render/animated_direct_sh_compose.rs b/crates/renderer/src/render/animated_direct_sh_compose.rs
+index 129690193..4282f3707 100644
+--- a/crates/renderer/src/render/animated_direct_sh_compose.rs
++++ b/crates/renderer/src/render/animated_direct_sh_compose.rs
+@@ -313,14 +313,10 @@ pub(super) fn build_animated_direct_pass(
+         bind_group_layouts: &[Some(uniform_bind_group_layout), Some(&bind_group_layout)],
+         immediate_size: 0,
+     });
+-    let shader_source = [
+-        include_str!("../shaders/animated_direct_sh_compose.wgsl"),
+-        "\n",
+-        include_str!("../shaders/curve_eval.wgsl"),
+-        "\n",
++    let shader_source = super::compose_spike::compose_source(
++        super::compose_spike::ComposeShader::AnimatedDirect,
+         WGSL_DECODE_HELPER,
+-    ]
+-    .concat();
++    );
+     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+         label: Some("Animated Direct SH Compose Shader"),
+         source: wgpu::ShaderSource::Wgsl(shader_source.into()),
+diff --git a/crates/renderer/src/render/compose_spike.rs b/crates/renderer/src/render/compose_spike.rs
+new file mode 100644
+index 000000000..920b5f22c
+--- /dev/null
++++ b/crates/renderer/src/render/compose_spike.rs
+@@ -0,0 +1,621 @@
++// Spike-only probes for `sh-compose-row-cost-spike` (throwaway branch; never lands).
++// See: context/plans/in-progress/sh-compose-row-cost-spike/index.md
++//
++// `POSTRETRO_SPIKE_ARMS` (comma list) selects WGSL rewrites of the two SH compose
++// shaders at pipeline creation. Every rewrite is anchored on exact source text
++// and panics when its anchor does not match the expected count: an arm that
++// silently failed to apply would corrupt the experiment.
++//
++// Arm kinds (the findings note carries the same typing):
++// - floor / ablation: timing-only, never offered as a lever.
++// - lever: intended byte-identical to the baseline; proven by atlas dump.
++
++use std::sync::OnceLock;
++
++#[derive(Clone, Copy, PartialEq, Eq, Debug)]
++pub(crate) enum ComposeShader {
++    Indirect,
++    AnimatedDirect,
++}
++
++/// Application order is fixed (structural levers first, then ablations) so a
++/// stacked arm list composes the same way whatever order the env var names.
++const KNOWN_ARMS: &[&str] = &[
++    // levers
++    "scan-parallel",
++    "texel-outer",
++    "scale-shared",
++    "vec3-accum",
++    // floor and ablations
++    "floor",
++    "no-base",
++    "stores-off",
++    "accum-scalar",
++    "const-scale",
++    "rank0",
++    "skip-coarse",
++    "single-slot",
++];
++
++pub(crate) fn arms() -> &'static [&'static str] {
++    static ARMS: OnceLock<Vec<&'static str>> = OnceLock::new();
++    ARMS.get_or_init(|| {
++        let raw = std::env::var("POSTRETRO_SPIKE_ARMS").unwrap_or_default();
++        let selected = ordered_arms(&raw);
++        log::info!(
++            "[SH spike] compose arms: {}",
++            if selected.is_empty() {
++                "baseline".to_string()
++            } else {
++                selected.join(",")
++            }
++        );
++        selected
++    })
++}
++
++fn ordered_arms(raw: &str) -> Vec<&'static str> {
++    let requested: Vec<&str> = raw
++        .split(',')
++        .map(str::trim)
++        .filter(|arm| !arm.is_empty() && *arm != "baseline")
++        .collect();
++    for arm in &requested {
++        assert!(
++            KNOWN_ARMS.contains(arm),
++            "POSTRETRO_SPIKE_ARMS names unknown arm `{arm}`"
++        );
++    }
++    let mut selected: Vec<&'static str> = KNOWN_ARMS
++        .iter()
++        .copied()
++        .filter(|arm| requested.contains(arm))
++        .collect();
++    // texel-outer reads per-entry scales from the shared cache.
++    if selected.contains(&"texel-outer") && !selected.contains(&"scale-shared") {
++        let at = selected.iter().position(|a| *a == "texel-outer").unwrap() + 1;
++        selected.insert(at, "scale-shared");
++    }
++    selected
++}
++
++/// Build one compose shader's full source (shader + curve helpers + decode
++/// helper) and apply the selected arms.
++pub(crate) fn compose_source(shader: ComposeShader, decode_helper: &str) -> String {
++    build_source(shader, decode_helper, arms())
++}
++
++fn build_source(shader: ComposeShader, decode_helper: &str, arms: &[&str]) -> String {
++    let body = match shader {
++        ComposeShader::Indirect => include_str!("../shaders/sh_compose.wgsl"),
++        ComposeShader::AnimatedDirect => include_str!("../shaders/animated_direct_sh_compose.wgsl"),
++    };
++    let mut src = [
++        body,
++        "\n",
++        include_str!("../shaders/curve_eval.wgsl"),
++        "\n",
++        decode_helper,
++    ]
++    .concat();
++    for arm in arms {
++        // vec3-accum targets Pass B; the indirect accumulator already is vec3.
++        if *arm == "vec3-accum" && shader == ComposeShader::Indirect {
++            continue;
++        }
++        apply_arm(&mut src, shader, arm);
++    }
++    src
++}
++
++fn replace_n(src: &mut String, from: &str, to: &str, expected: usize, arm: &str) {
++    let found = src.matches(from).count();
++    assert_eq!(
++        found, expected,
++        "spike arm `{arm}`: anchor matched {found} times, expected {expected}: {from:?}"
++    );
++    *src = src.replace(from, to);
++}
++
++fn replace_once(src: &mut String, from: &str, to: &str, arm: &str) {
++    replace_n(src, from, to, 1, arm);
++}
++
++const LET_END: &str = "    let end = affinity_offsets[offset_index + 1u];\n";
++const LEVEL_BLOCK: &str = "    let level = cell_level(cell_index);
++    let offset_index = cell_index * 2u;
++    let start = affinity_offsets[offset_index];
++    let end = affinity_offsets[offset_index + 1u];
++";
++const ACCUM_COMMENT: &str =
++    "    // Keeping the accumulator private lets one shared kept lattice serve all\n";
++const SHARED_DECL: &str = "var<workgroup> shared_brick_indirection: u32;\n";
++
++fn apply_arm(src: &mut String, shader: ComposeShader, arm: &str) {
++    use ComposeShader::{AnimatedDirect, Indirect};
++    match arm {
++        "scan-parallel" => {
++            replace_once(
++                src,
++                SHARED_DECL,
++                "var<workgroup> shared_brick_indirection: u32;
++var<workgroup> spike_first_valid: atomic<u32>;
++var<workgroup> spike_words: array<u32, 64>;
++",
++                arm,
++            );
++            replace_once(
++                src,
++                "    if (local_probe == 0u) {
++        shared_brick_indirection = 0u;
++        for (var candidate_local = 0u;",
++                "    // spike scan-parallel: the scan takes the first valid candidate in
++    // local order, which is the lowest local index whose word decodes valid.
++    if (local_probe == 0u) {
++        atomicStore(&spike_first_valid, 64u);
++    }
++    workgroupBarrier();
++    var spike_word = 0u;
++    if (in_grid) {
++        spike_word = probe_indirection[probe_index];
++    }
++    spike_words[local_probe] = spike_word;
++    if (decode_sh_probe_indirection(spike_word).valid) {
++        atomicMin(&spike_first_valid, local_probe);
++    }
++    workgroupBarrier();
++    if (local_probe == 0u) {
++        let spike_first = atomicLoad(&spike_first_valid);
++        shared_brick_indirection = select(0u, spike_words[min(spike_first, 63u)], spike_first < 64u);
++    }
++    if (false) {
++        shared_brick_indirection = 0u;
++        for (var candidate_local = 0u;",
++                arm,
++            );
++        }
++        "texel-outer" => {
++            replace_once(src, LEVEL_BLOCK, "", arm);
++            let fused = match shader {
++                Indirect => {
++                    "    // spike texel-outer: L0 rows fuse base read, entry sum and store per
++    // texel, so their accumulator is one vec3 instead of a 36-entry array.
++    if (level == 0u) {
++        if (output_is_stored) {
++            let spike_animated = use_indirect_animated && local_probe_is_kept(cell_index, local_probe);
++            let spike_rank = within_cell_rank(cell_index, local_probe);
++            for (var texel_index = 0u; texel_index < TILE_TEXEL_COUNT; texel_index = texel_index + 1u) {
++                let tile_texel = vec2<u32>(
++                    texel_index % RUNTIME_TILE_DIMENSION,
++                    texel_index / RUNTIME_TILE_DIMENSION,
++                );
++                var spike_accum = vec3<f32>(0.0);
++                if (use_indirect_static) {
++                    spike_accum = sample_compact_base_atlas(stored_slot.slot, tile_texel).rgb;
++                }
++                if (spike_animated) {
++                    for (var entry = start; entry < end; entry = entry + 1u) {
++                        spike_accum = spike_accum
++                            + read_delta_texel(entry, spike_rank, tile_texel).rgb * spike_scale(entry, start, spike_cached);
++                    }
++                }
++                textureStore(
++                    sh_total_atlas,
++                    vec2<i32>(tile_origin.xy + tile_texel),
++                    i32(tile_origin.z),
++                    vec4<f32>(spike_accum, select(0.0, 1.0, stored_slot.valid)),
++                );
++            }
++        }
++        return;
++    }
++"
++                }
++                AnimatedDirect => {
++                    "    // spike texel-outer: L0 rows fuse intermediate read, entry sum and store
++    // per texel, so their accumulator is one vec3 instead of a 36-entry array.
++    if (level == 0u) {
++        if (output_is_stored) {
++            let spike_animated = local_probe_is_kept(cell_index, local_probe);
++            let spike_rank = within_cell_rank(cell_index, local_probe);
++            for (var texel_index = 0u; texel_index < TILE_TEXEL_COUNT; texel_index = texel_index + 1u) {
++                let tile_texel = vec2<u32>(
++                    texel_index % RUNTIME_TILE_DIMENSION,
++                    texel_index / RUNTIME_TILE_DIMENSION,
++                );
++                let atlas_texel = tile_origin.xy + tile_texel;
++                let uv = (vec2<f32>(atlas_texel) + 0.5)
++                    / vec2<f32>(textureDimensions(direct_intermediate_atlas));
++                var spike_accum = textureSampleLevel(
++                    direct_intermediate_atlas,
++                    intermediate_sampler,
++                    uv,
++                    i32(tile_origin.z),
++                    0.0,
++                ).rgb;
++                if (spike_animated) {
++                    for (var entry = start; entry < end; entry = entry + 1u) {
++                        spike_accum = spike_accum
++                            + read_delta_texel(entry, spike_rank, tile_texel).rgb * spike_scale(entry, start, spike_cached);
++                    }
++                }
++                textureStore(
++                    direct_composed_atlas,
++                    vec2<i32>(tile_origin.xy + tile_texel),
++                    i32(tile_origin.z),
++                    vec4<f32>(
++                        max(spike_accum, vec3<f32>(0.0)),
++                        select(0.0, 1.0, stored_slot.valid),
++                    ),
++                );
++            }
++        }
++        return;
++    }
++"
++                }
++            };
++            replace_once(
++                src,
++                ACCUM_COMMENT,
++                &format!("{LEVEL_BLOCK}{fused}{ACCUM_COMMENT}"),
++                arm,
++            );
++        }
++        "scale-shared" => {
++            replace_n(
++                src,
++                "animated_light_scale(affinity_lights[entry])",
++                "spike_scale(entry, start, spike_cached)",
++                2,
++                arm,
++            );
++            replace_once(
++                src,
++                SHARED_DECL,
++                "var<workgroup> shared_brick_indirection: u32;
++var<workgroup> spike_scales: array<vec3<f32>, 64>;
++
++fn spike_scale(entry: u32, start: u32, cached: bool) -> vec3<f32> {
++    if (cached) {
++        return spike_scales[entry - start];
++    }
++    return animated_light_scale(affinity_lights[entry]);
++}
++",
++                arm,
++            );
++            replace_once(
++                src,
++                LET_END,
++                "    let end = affinity_offsets[offset_index + 1u];
++    // spike scale-shared: one lane per CSR entry evaluates its light's scale
++    // once per workgroup instead of every lane evaluating every entry.
++    let spike_cached = end - start <= 64u;
++    if (spike_cached && local_probe < end - start) {
++        spike_scales[local_probe] = animated_light_scale(affinity_lights[start + local_probe]);
++    }
++    workgroupBarrier();
++",
++                arm,
++            );
++        }
++        "vec3-accum" => {
++            replace_once(
++                src,
++                "    var accum: array<vec4<f32>, 36>;",
++                "    var accum: array<vec3<f32>, 36>;",
++                arm,
++            );
++            replace_once(
++                src,
++                "            );
++        } else {
++            accum[texel_index] = vec4<f32>(0.0);",
++                "            ).rgb;
++        } else {
++            accum[texel_index] = vec3<f32>(0.0);",
++                arm,
++            );
++            replace_once(
++                src,
++                "                    accum[texel_index] = vec4<f32>(
++                        prior.rgb + read_delta_texel(entry, probe_rank, tile_texel).rgb * scale,
++                        prior.a,
++                    );",
++                "                    accum[texel_index] = prior + read_delta_texel(entry, probe_rank, tile_texel).rgb * scale;",
++                arm,
++            );
++            replace_once(
++                src,
++                "accum[texel_index] = vec4<f32>(prior.rgb + delta * scale, prior.a);",
++                "accum[texel_index] = prior + delta * scale;",
++                arm,
++            );
++        }
++        "floor" => {
++            replace_once(src, LET_END, "    let end = start; // spike floor\n", arm);
++        }
++        "no-base" => match shader {
++            Indirect => replace_once(
++                src,
++                "accum[texel_index] = sample_compact_base_atlas(stored_slot.slot, tile_texel).rgb;",
++                "accum[texel_index] = vec3<f32>(0.0); // spike no-base",
++                arm,
++            ),
++            AnimatedDirect => replace_once(
++                src,
++                "            accum[texel_index] = textureSampleLevel(
++                direct_intermediate_atlas,
++                intermediate_sampler,
++                uv,
++                i32(tile_origin.z),
++                0.0,
++            );",
++                "            accum[texel_index] = vec4<f32>(0.0); // spike no-base",
++                arm,
++            ),
++        },
++        "stores-off" => replace_once(
++            src,
++            "    if (output_is_stored) {
++        for (var texel_index = 0u; texel_index < TILE_TEXEL_COUNT; texel_index = texel_index + 1u) {
++            let tile_texel = vec2<u32>(
++                texel_index % RUNTIME_TILE_DIMENSION,
++                texel_index / RUNTIME_TILE_DIMENSION,
++            );
++            textureStore(",
++            "    // spike stores-off: a never-true guard the compiler cannot fold.
++    if (output_is_stored && accum[0].x == -1.0e30) {
++        for (var texel_index = 0u; texel_index < TILE_TEXEL_COUNT; texel_index = texel_index + 1u) {
++            let tile_texel = vec2<u32>(
++                texel_index % RUNTIME_TILE_DIMENSION,
++                texel_index / RUNTIME_TILE_DIMENSION,
++            );
++            textureStore(",
++            arm,
++        ),
++        "accum-scalar" => {
++            let (from, to) = match shader {
++                Indirect => (
++                    "    var accum: array<vec3<f32>, 36>;",
++                    "    var accum: array<vec3<f32>, 1>; // spike accum-scalar",
++                ),
++                AnimatedDirect => (
++                    "    var accum: array<vec4<f32>, 36>;",
++                    "    var accum: array<vec4<f32>, 1>; // spike accum-scalar",
++                ),
++            };
++            replace_once(src, from, to, arm);
++            replace_n(src, "accum[texel_index]", "accum[0]", 7, arm);
++        }
++        "const-scale" => replace_once(
++            src,
++            "fn animated_light_scale(light_index: u32) -> vec3<f32> {\n",
++            "fn animated_light_scale(light_index: u32) -> vec3<f32> {
++    return vec3<f32>(0.5); // spike const-scale
++}
++
++fn spike_unused_light_scale(light_index: u32) -> vec3<f32> {
++",
++            arm,
++        ),
++        "rank0" => replace_once(
++            src,
++            "        + probe_rank * grid.delta_probe_f16_stride\n",
++            "        + 0u * grid.delta_probe_f16_stride // spike rank0\n",
++            arm,
++        ),
++        "skip-coarse" => {
++            let from = match shader {
++                Indirect => {
++                    "            for (var entry = start; entry < end; entry = entry + 1u) {
++                if (local_probe < MAX_KEPT_TILES) {"
++                }
++                AnimatedDirect => {
++                    "        for (var entry = start; entry < end; entry = entry + 1u) {
++            if (local_probe < MAX_KEPT_TILES) {"
++                }
++            };
++            let to = from.replace("entry < end;", "entry < start; /* spike skip-coarse */");
++            replace_once(src, from, &to, arm);
++        }
++        "single-slot" => replace_once(
++            src,
++            "for (var slot = 0u; slot < MAX_KEPT_TILES; slot = slot + 1u) {",
++            "for (var slot = 0u; slot < 1u; slot = slot + 1u) { // spike single-slot",
++            arm,
++        ),
++        other => unreachable!("arm `{other}` validated in ordered_arms()"),
++    }
++}
++
++/// Per-pass composed-row mix for one window of compose frames: rows and CSR
++/// entries by brick level (L0/L1/L2), from the section's whole-level metadata.
++#[derive(Default)]
++pub(crate) struct RowCountWindow {
++    frames: u32,
++    min_rows: u64,
++    max_rows: u64,
++}
++
++impl RowCountWindow {
++    const WINDOW: u32 = 120;
++
++    pub(crate) fn record(
++        &mut self,
++        pass: &str,
++        rows: &[u32],
++        metadata: Option<&postretro_level_loader::ShStreamSparseMetadata>,
++    ) {
++        let Some(metadata) = metadata else {
++            return;
++        };
++        let total = rows.len() as u64;
++        if self.frames == 0 {
++            self.min_rows = total;
++            self.max_rows = total;
++        }
++        self.min_rows = self.min_rows.min(total);
++        self.max_rows = self.max_rows.max(total);
++        self.frames += 1;
++        if self.frames < Self::WINDOW {
++            return;
++        }
++        let mut counts = [0_u64; 6];
++        for &row in rows {
++            let row = row as usize;
++            let level = usize::from(metadata.cell_levels.get(row).copied().unwrap_or(0).min(2));
++            let entries = match (
++                metadata.affinity_offsets.get(row),
++                metadata.affinity_offsets.get(row + 1),
++            ) {
++                (Some(start), Some(end)) => u64::from(end.saturating_sub(*start)),
++                _ => 0,
++            };
++            counts[level] += 1;
++            counts[3 + level] += entries;
++        }
++        log::info!(
++            "[SH spike counts] {pass}: frames {frames} rows min {min} max {max} | last rows L0 {r0} L1 {r1} L2 {r2} | entries L0 {e0} L1 {e1} L2 {e2}",
++            frames = self.frames,
++            min = self.min_rows,
++            max = self.max_rows,
++            r0 = counts[0],
++            r1 = counts[1],
++            r2 = counts[2],
++            e0 = counts[3],
++            e1 = counts[4],
++            e2 = counts[5],
++        );
++        *self = Self::default();
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    fn validate(src: &str, label: &str) {
++        let module = naga::front::wgsl::parse_str(src)
++            .unwrap_or_else(|err| panic!("{label}: arm source parses: {}", err.emit_to_string(src)));
++        naga::valid::Validator::new(
++            naga::valid::ValidationFlags::all(),
++            naga::valid::Capabilities::all(),
++        )
++        .validate(&module)
++        .unwrap_or_else(|err| panic!("{label}: arm source validates: {err:?}"));
++    }
++
++    // Every arm, alone and in the stacks the batches use, must rewrite and validate.
++    #[test]
++    fn every_arm_rewrites_and_validates() {
++        let decode = crate::render::sh_indirection::WGSL_DECODE_HELPER;
++        let mut lists: Vec<String> = KNOWN_ARMS.iter().map(|a| (*a).to_string()).collect();
++        lists.extend(
++            [
++                "baseline",
++                "floor,no-base",
++                "floor,scan-parallel",
++                "floor,stores-off",
++                "texel-outer",
++                "scan-parallel,texel-outer,vec3-accum",
++            ]
++            .map(String::from),
++        );
++        for list in &lists {
++            let arms = ordered_arms(list);
++            for shader in [ComposeShader::Indirect, ComposeShader::AnimatedDirect] {
++                validate(&build_source(shader, decode, &arms), &format!("{list} {shader:?}"));
++            }
++        }
++    }
++}
++
++impl crate::render::Renderer {
++    /// Spike-only: copy the streamed composed indirect and animated-direct
++    /// atlases to `<dir>/{indirect,direct}.bin` (tight rows, all layers) plus a
++    /// `dims.json`. Blocks on the GPU; capture-only.
++    pub fn spike_dump_sh_atlases(&self, dir: &std::path::Path) -> anyhow::Result<()> {
++        use anyhow::Context as _;
++        let full = self.full();
++        let state = full
++            .sh_streaming
++            .as_ref()
++            .context("spike atlas dump needs streamed SH")?;
++        let (total, direct) = state
++            .spike_composed_atlases()
++            .context("spike atlas dump before streamed SH GPU init")?;
++        std::fs::create_dir_all(dir)?;
++        let mut dims = Vec::new();
++        for (name, texture) in [("indirect", Some(total)), ("direct", direct)] {
++            let Some(texture) = texture else {
++                continue;
++            };
++            let size = texture.size();
++            let texel_bytes = texture
++                .format()
++                .block_copy_size(None)
++                .context("atlas format has a copy size")?;
++            let tight = size.width * texel_bytes;
++            let padded = tight.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
++                * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
++            let buffer_size =
++                u64::from(padded) * u64::from(size.height) * u64::from(size.depth_or_array_layers);
++            let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
++                label: Some("Spike SH Atlas Dump"),
++                size: buffer_size,
++                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
++                mapped_at_creation: false,
++            });
++            let mut encoder = self
++                .device
++                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
++                    label: Some("Spike SH Atlas Dump Encoder"),
++                });
++            encoder.copy_texture_to_buffer(
++                wgpu::TexelCopyTextureInfo {
++                    texture,
++                    mip_level: 0,
++                    origin: wgpu::Origin3d::ZERO,
++                    aspect: wgpu::TextureAspect::All,
++                },
++                wgpu::TexelCopyBufferInfo {
++                    buffer: &buffer,
++                    layout: wgpu::TexelCopyBufferLayout {
++                        offset: 0,
++                        bytes_per_row: Some(padded),
++                        rows_per_image: Some(size.height),
++                    },
++                },
++                size,
++            );
++            self.queue.raw().submit(std::iter::once(encoder.finish()));
++            let slice = buffer.slice(..);
++            slice.map_async(wgpu::MapMode::Read, |_| {});
++            self.device
++                .poll(wgpu::PollType::wait_indefinitely())
++                .context("waiting for spike atlas dump")?;
++            let view = slice.get_mapped_range().context("spike atlas dump map")?;
++            let mut out = Vec::with_capacity(
++                tight as usize * size.height as usize * size.depth_or_array_layers as usize,
++            );
++            for row in view.chunks_exact(padded as usize) {
++                out.extend_from_slice(&row[..tight as usize]);
++            }
++            drop(view);
++            buffer.unmap();
++            std::fs::write(dir.join(format!("{name}.bin")), &out)?;
++            dims.push(format!(
++                "\"{name}\": {{\"width\": {}, \"height\": {}, \"layers\": {}, \"format\": \"{:?}\"}}",
++                size.width,
++                size.height,
++                size.depth_or_array_layers,
++                texture.format()
++            ));
++        }
++        std::fs::write(dir.join("dims.json"), format!("{{{}}}\n", dims.join(", ")))?;
++        log::info!("[SH spike] dumped composed SH atlases to {}", dir.display());
++        Ok(())
++    }
++}
+diff --git a/crates/renderer/src/render/mod.rs b/crates/renderer/src/render/mod.rs
+index f24596f0d..2ba9e2f98 100644
+--- a/crates/renderer/src/render/mod.rs
++++ b/crates/renderer/src/render/mod.rs
+@@ -1,6 +1,7 @@
+ // Renderer: GPU init, texture upload, depth pre-pass + forward pipelines, and draw.
+ // See: context/lib/rendering_pipeline.md
+ mod animated_direct_sh_compose;
++mod compose_spike;
+ mod animated_lightmap;
+ mod billboard_direct_scatter;
+ mod billboard_direct_scatter_compose;
+diff --git a/crates/renderer/src/render/sh_compose.rs b/crates/renderer/src/render/sh_compose.rs
+index 961b2bfe5..433bbb3a7 100644
+--- a/crates/renderer/src/render/sh_compose.rs
++++ b/crates/renderer/src/render/sh_compose.rs
+@@ -334,14 +334,10 @@ impl ShComposeResources {
+         });
+ 
+         // curve_eval.wgsl provides `sample_curve_catmull_rom` used by the shader.
+-        let shader_source = [
+-            include_str!("../shaders/sh_compose.wgsl"),
+-            "\n",
+-            include_str!("../shaders/curve_eval.wgsl"),
+-            "\n",
++        let shader_source = super::compose_spike::compose_source(
++            super::compose_spike::ComposeShader::Indirect,
+             WGSL_DECODE_HELPER,
+-        ]
+-        .concat();
++        );
+         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+             label: Some("SH Compose Shader"),
+             source: wgpu::ShaderSource::Wgsl(shader_source.into()),
+diff --git a/crates/renderer/src/render/sh_streaming.rs b/crates/renderer/src/render/sh_streaming.rs
+index 3ac85c4dc..376e73622 100644
+--- a/crates/renderer/src/render/sh_streaming.rs
++++ b/crates/renderer/src/render/sh_streaming.rs
+@@ -386,9 +386,19 @@ pub(super) struct ShResidencyState {
+     direct_compose_epoch: u64,
+     install_cpu: InstallCpuCounters,
+     gpu: Option<StreamingGpuPools>,
++    /// Spike-only: per-level row/entry mix of each composed plan (indirect, animated direct).
++    spike_row_counts: [crate::render::compose_spike::RowCountWindow; 2],
+ }
+ 
+ impl ShResidencyState {
++    /// Spike-only: the composed indirect total atlas and Pass B's composed
++    /// direct atlas, for the capture-time byte comparison.
++    pub(super) fn spike_composed_atlases(&self) -> Option<(&wgpu::Texture, Option<&wgpu::Texture>)> {
++        self.gpu
++            .as_ref()
++            .map(|gpu| (&gpu.total, gpu.direct_total.as_ref()))
++    }
++
+     /// Compose the streamed direct atlas after promotion assignment. Pass A
+     /// covers id-35 + id-41 and Pass B covers id-35 + id-41 + id-45. A
+     /// successful two-pass encode advances the direct epoch; promotion happens
+diff --git a/crates/renderer/src/render/sh_streaming/direct_compose/passes.rs b/crates/renderer/src/render/sh_streaming/direct_compose/passes.rs
+index b8d552917..41206a2cf 100644
+--- a/crates/renderer/src/render/sh_streaming/direct_compose/passes.rs
++++ b/crates/renderer/src/render/sh_streaming/direct_compose/passes.rs
+@@ -407,14 +407,10 @@ impl StreamingAnimatedPass {
+         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+             label: Some("Streamed Animated Direct SH Shader"),
+             source: wgpu::ShaderSource::Wgsl(
+-                [
+-                    include_str!("../../../shaders/animated_direct_sh_compose.wgsl"),
+-                    "\n",
+-                    include_str!("../../../shaders/curve_eval.wgsl"),
+-                    "\n",
++                crate::render::compose_spike::compose_source(
++                    crate::render::compose_spike::ComposeShader::AnimatedDirect,
+                     WGSL_DECODE_HELPER,
+-                ]
+-                .concat()
++                )
+                 .into(),
+             ),
+         });
+diff --git a/crates/renderer/src/render/sh_streaming/frame.rs b/crates/renderer/src/render/sh_streaming/frame.rs
+index 887541c25..8333a0b4f 100644
+--- a/crates/renderer/src/render/sh_streaming/frame.rs
++++ b/crates/renderer/src/render/sh_streaming/frame.rs
+@@ -248,6 +248,11 @@ impl ShResidencyState {
+                         animated_plan.rows(),
+                         animated_timestamp_writes,
+                     )?;
++                self.spike_row_counts[1].record(
++                    "animated-direct",
++                    animated_plan.rows(),
++                    self.source_metadata.animated_direct_delta.as_ref(),
++                );
+                 self.commit_animated_direct_compose(animated_plan, promotion_plan, dispatches);
+                 encoded_any = true;
+             }
+@@ -300,6 +305,11 @@ impl ShResidencyState {
+                 plan.rows(),
+                 timestamp_writes,
+             )?;
++            self.spike_row_counts[0].record(
++                "indirect",
++                plan.rows(),
++                self.source_metadata.indirect_delta.as_ref(),
++            );
+             self.commit_indirect_compose(plan, dispatches)
+         })();
+         self.compose_frame_plan = Some(frame_plan);
+diff --git a/crates/renderer/src/render/sh_streaming/gpu/indirect.rs b/crates/renderer/src/render/sh_streaming/gpu/indirect.rs
+index e9902ba3b..e90373d84 100644
+--- a/crates/renderer/src/render/sh_streaming/gpu/indirect.rs
++++ b/crates/renderer/src/render/sh_streaming/gpu/indirect.rs
+@@ -256,14 +256,10 @@ impl StreamingIndirectCompose {
+             bind_group_layouts: &[Some(uniform_bind_group_layout), Some(&bind_group_layout)],
+             immediate_size: 0,
+         });
+-        let shader_source = [
+-            include_str!("../../../shaders/sh_compose.wgsl"),
+-            "\n",
+-            include_str!("../../../shaders/curve_eval.wgsl"),
+-            "\n",
++        let shader_source = crate::render::compose_spike::compose_source(
++            crate::render::compose_spike::ComposeShader::Indirect,
+             WGSL_DECODE_HELPER,
+-        ]
+-        .concat();
++        );
+         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+             label: Some("Streamed SH Compose Shader"),
+             source: wgpu::ShaderSource::Wgsl(shader_source.into()),
+diff --git a/crates/renderer/src/render/sh_streaming/setup.rs b/crates/renderer/src/render/sh_streaming/setup.rs
+index 311fe71dc..e55812d7d 100644
+--- a/crates/renderer/src/render/sh_streaming/setup.rs
++++ b/crates/renderer/src/render/sh_streaming/setup.rs
+@@ -295,6 +295,7 @@ impl ShResidencyState {
+             indirect_compose_epoch: 0,
+             direct_compose_epoch: 0,
+             install_cpu: InstallCpuCounters::default(),
++            spike_row_counts: Default::default(),
+             gpu: None,
+         })
+     }
+diff --git a/crates/renderer/src/render/sh_streaming/tests.rs b/crates/renderer/src/render/sh_streaming/tests.rs
+index db8f9d739..0c715794f 100644
+--- a/crates/renderer/src/render/sh_streaming/tests.rs
++++ b/crates/renderer/src/render/sh_streaming/tests.rs
+@@ -447,6 +447,7 @@ fn coalesced_row_union_drops_a_row_after_its_last_contributor() {
+         indirect_compose_epoch: 0,
+         direct_compose_epoch: 0,
+         install_cpu: InstallCpuCounters::default(),
++        spike_row_counts: Default::default(),
+         gpu: None,
+     };
+     state.indirect_resident_rows = state.rebuilt_resident_rows()[0].iter().copied().collect();
+-- 
+2.55.0
+
+
+From db694612b8a902dc473c3da1c196351f11e45e46 Mon Sep 17 00:00:00 2001
+From: Dan Hiester <dan.hiester@gmail.com>
+Date: Mon, 5 Oct 2026 21:27:28 -0700
+Subject: [PATCH 2/8] Spike probes: const-tile lever arm
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01Ue9BfgWtZZosYasgkpTmRz
+---
+ crates/renderer/src/render/compose_spike.rs | 12 ++++++++++++
+ 1 file changed, 12 insertions(+)
+
+diff --git a/crates/renderer/src/render/compose_spike.rs b/crates/renderer/src/render/compose_spike.rs
+index 920b5f22c..7fb212436 100644
+--- a/crates/renderer/src/render/compose_spike.rs
++++ b/crates/renderer/src/render/compose_spike.rs
+@@ -26,6 +26,7 @@ const KNOWN_ARMS: &[&str] = &[
+     "texel-outer",
+     "scale-shared",
+     "vec3-accum",
++    "const-tile",
+     // floor and ablations
+     "floor",
+     "no-base",
+@@ -333,6 +334,16 @@ fn spike_scale(entry: u32, start: u32, cached: bool) -> vec3<f32> {
+                 arm,
+             );
+         }
++        "const-tile" => replace_once(
++            src,
++            "    let texel_index = tile_texel.y * grid.tile_dimension + tile_texel.x;
++    let texel_f16_count = grid.delta_probe_f16_stride
++        / (grid.tile_dimension * grid.tile_dimension);",
++            "    // spike const-tile: PRL validation pins the tile to 6x6 RGB16F texels.
++    let texel_index = tile_texel.y * RUNTIME_TILE_DIMENSION + tile_texel.x;
++    let texel_f16_count = 3u;",
++            arm,
++        ),
+         "floor" => {
+             replace_once(src, LET_END, "    let end = start; // spike floor\n", arm);
+         }
+@@ -520,6 +531,7 @@ mod tests {
+                 "floor,stores-off",
+                 "texel-outer",
+                 "scan-parallel,texel-outer,vec3-accum",
++                "scan-parallel,texel-outer,vec3-accum,const-tile",
+             ]
+             .map(String::from),
+         );
+-- 
+2.55.0
+
+
+From 39a3ff45399746a5a05caf503547788d28e34c35 Mon Sep 17 00:00:00 2001
+From: Dan Hiester <dan.hiester@gmail.com>
+Date: Mon, 5 Oct 2026 23:12:35 -0700
+Subject: [PATCH 3/8] Spike probes: paired A/B compose pipelines alternating
+ per frame
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01Ue9BfgWtZZosYasgkpTmRz
+---
+ crates/renderer/src/render/compose_spike.rs   | 71 +++++++++++++++++++
+ .../sh_streaming/direct_compose/passes.rs     | 28 +++-----
+ .../direct_compose/passes/animated_runtime.rs |  9 ++-
+ .../src/render/sh_streaming/gpu/indirect.rs   | 20 ++----
+ .../sh_streaming/gpu/indirect/runtime.rs      |  9 ++-
+ 5 files changed, 100 insertions(+), 37 deletions(-)
+
+diff --git a/crates/renderer/src/render/compose_spike.rs b/crates/renderer/src/render/compose_spike.rs
+index 7fb212436..e803bfdbd 100644
+--- a/crates/renderer/src/render/compose_spike.rs
++++ b/crates/renderer/src/render/compose_spike.rs
+@@ -55,6 +55,77 @@ pub(crate) fn arms() -> &'static [&'static str] {
+     })
+ }
+ 
++/// The paired B arm list (`POSTRETRO_SPIKE_ARMS_B`), when set. Its pipelines
++/// alternate with the A pipelines frame by frame inside one launch, so both
++/// arms share memory placement, clocks and thermal state.
++pub(crate) fn arms_b() -> Option<&'static [&'static str]> {
++    static ARMS_B: OnceLock<Option<Vec<&'static str>>> = OnceLock::new();
++    ARMS_B
++        .get_or_init(|| {
++            let raw = std::env::var("POSTRETRO_SPIKE_ARMS_B").ok()?;
++            let selected = ordered_arms(&raw);
++            log::info!(
++                "[SH spike] paired B compose arms: {}",
++                if selected.is_empty() {
++                    "baseline".to_string()
++                } else {
++                    selected.join(",")
++                }
++            );
++            Some(selected)
++        })
++        .as_deref()
++}
++
++/// A compose pipeline plus its optional paired-B twin. `next` alternates
++/// A, B, A, B per dispatch call when B exists.
++pub(crate) struct ComposePipelines {
++    a: wgpu::ComputePipeline,
++    b: Option<wgpu::ComputePipeline>,
++    calls: u64,
++}
++
++impl ComposePipelines {
++    pub(crate) fn new(
++        device: &wgpu::Device,
++        shader: ComposeShader,
++        decode_helper: &str,
++        label: &str,
++        layout: &wgpu::PipelineLayout,
++        entry_point: &str,
++    ) -> Self {
++        let build = |arms: &[&str], suffix: &str| {
++            let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
++                label: Some(&format!("{label} Shader{suffix}")),
++                source: wgpu::ShaderSource::Wgsl(build_source(shader, decode_helper, arms).into()),
++            });
++            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
++                label: Some(&format!("{label} Pipeline{suffix}")),
++                layout: Some(layout),
++                module: &module,
++                entry_point: Some(entry_point),
++                compilation_options: wgpu::PipelineCompilationOptions::default(),
++                cache: None,
++            })
++        };
++        Self {
++            a: build(arms(), ""),
++            b: arms_b().map(|arms| build(arms, " [B]")),
++            calls: 0,
++        }
++    }
++
++    /// The pipeline for this dispatch and whether it is the paired B arm.
++    pub(crate) fn next(&mut self) -> (&wgpu::ComputePipeline, bool) {
++        let use_b = self.b.is_some() && self.calls % 2 == 1;
++        self.calls += 1;
++        match (&self.b, use_b) {
++            (Some(b), true) => (b, true),
++            _ => (&self.a, false),
++        }
++    }
++}
++
+ fn ordered_arms(raw: &str) -> Vec<&'static str> {
+     let requested: Vec<&str> = raw
+         .split(',')
+diff --git a/crates/renderer/src/render/sh_streaming/direct_compose/passes.rs b/crates/renderer/src/render/sh_streaming/direct_compose/passes.rs
+index 41206a2cf..ef9f0d1fd 100644
+--- a/crates/renderer/src/render/sh_streaming/direct_compose/passes.rs
++++ b/crates/renderer/src/render/sh_streaming/direct_compose/passes.rs
+@@ -335,7 +335,7 @@ impl StreamingPromotionPass {
+ }
+ 
+ pub(super) struct StreamingAnimatedPass {
+-    pipeline: wgpu::ComputePipeline,
++    pipeline: crate::render::compose_spike::ComposePipelines,
+     bind_group_layout: wgpu::BindGroupLayout,
+     bind_group: wgpu::BindGroup,
+     sampler: wgpu::Sampler,
+@@ -404,24 +404,14 @@ impl StreamingAnimatedPass {
+             bind_group_layouts: &[Some(uniform_bind_group_layout), Some(&bgl)],
+             immediate_size: 0,
+         });
+-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+-            label: Some("Streamed Animated Direct SH Shader"),
+-            source: wgpu::ShaderSource::Wgsl(
+-                crate::render::compose_spike::compose_source(
+-                    crate::render::compose_spike::ComposeShader::AnimatedDirect,
+-                    WGSL_DECODE_HELPER,
+-                )
+-                .into(),
+-            ),
+-        });
+-        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+-            label: Some("Streamed Animated Direct SH Pipeline"),
+-            layout: Some(&pipeline_layout),
+-            module: &shader,
+-            entry_point: Some(ANIMATED_DIRECT_COMPOSE_ENTRY_POINT),
+-            compilation_options: wgpu::PipelineCompilationOptions::default(),
+-            cache: None,
+-        });
++        let pipeline = crate::render::compose_spike::ComposePipelines::new(
++            device,
++            crate::render::compose_spike::ComposeShader::AnimatedDirect,
++            WGSL_DECODE_HELPER,
++            "Streamed Animated Direct SH",
++            &pipeline_layout,
++            ANIMATED_DIRECT_COMPOSE_ENTRY_POINT,
++        );
+         let bind_group = Self::build_bind_group(
+             device,
+             &bgl,
+diff --git a/crates/renderer/src/render/sh_streaming/direct_compose/passes/animated_runtime.rs b/crates/renderer/src/render/sh_streaming/direct_compose/passes/animated_runtime.rs
+index 83225c091..d30de7dbe 100644
+--- a/crates/renderer/src/render/sh_streaming/direct_compose/passes/animated_runtime.rs
++++ b/crates/renderer/src/render/sh_streaming/direct_compose/passes/animated_runtime.rs
+@@ -85,11 +85,16 @@ impl StreamingAnimatedPass {
+             queue.write_buffer(&self.light_scale, 0, &light_scale);
+             self.last_light_scale = light_scale;
+         }
++        let (pipeline, is_b) = self.pipeline.next();
+         dispatch_dynamic_pass(
+             queue,
+             encoder,
+-            "Streamed Animated Direct SH",
+-            &self.pipeline,
++            if is_b {
++                "Streamed Animated Direct SH [B]"
++            } else {
++                "Streamed Animated Direct SH"
++            },
++            pipeline,
+             &self.bind_group,
+             Some(uniform_bind_group),
+             self.grid,
+diff --git a/crates/renderer/src/render/sh_streaming/gpu/indirect.rs b/crates/renderer/src/render/sh_streaming/gpu/indirect.rs
+index e90373d84..214e3357c 100644
+--- a/crates/renderer/src/render/sh_streaming/gpu/indirect.rs
++++ b/crates/renderer/src/render/sh_streaming/gpu/indirect.rs
+@@ -8,7 +8,7 @@ use super::*;
+ /// sparse pools; the loader only lends a decoded chunk until the queue writes
+ /// below have been planned.
+ pub(super) struct StreamingIndirectCompose {
+-    pipeline: wgpu::ComputePipeline,
++    pipeline: crate::render::compose_spike::ComposePipelines,
+     bind_group_layout: wgpu::BindGroupLayout,
+     bind_group: wgpu::BindGroup,
+     sampler: wgpu::Sampler,
+@@ -256,22 +256,14 @@ impl StreamingIndirectCompose {
+             bind_group_layouts: &[Some(uniform_bind_group_layout), Some(&bind_group_layout)],
+             immediate_size: 0,
+         });
+-        let shader_source = crate::render::compose_spike::compose_source(
++        let pipeline = crate::render::compose_spike::ComposePipelines::new(
++            device,
+             crate::render::compose_spike::ComposeShader::Indirect,
+             WGSL_DECODE_HELPER,
++            "Streamed SH Compose",
++            &pipeline_layout,
++            "compose_main",
+         );
+-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+-            label: Some("Streamed SH Compose Shader"),
+-            source: wgpu::ShaderSource::Wgsl(shader_source.into()),
+-        });
+-        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+-            label: Some("Streamed SH Compose Pipeline"),
+-            layout: Some(&pipeline_layout),
+-            module: &shader,
+-            entry_point: Some("compose_main"),
+-            compilation_options: wgpu::PipelineCompilationOptions::default(),
+-            cache: None,
+-        });
+         let bind_group = Self::build_bind_group(
+             device,
+             &bind_group_layout,
+diff --git a/crates/renderer/src/render/sh_streaming/gpu/indirect/runtime.rs b/crates/renderer/src/render/sh_streaming/gpu/indirect/runtime.rs
+index 72b356978..311ed8b9a 100644
+--- a/crates/renderer/src/render/sh_streaming/gpu/indirect/runtime.rs
++++ b/crates/renderer/src/render/sh_streaming/gpu/indirect/runtime.rs
+@@ -212,11 +212,16 @@ impl StreamingIndirectCompose {
+             });
+         }
+         queue.write_buffer(&self.grid_buffer, 0, &upload.bytes);
++        let (pipeline, is_b) = self.pipeline.next();
+         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+-            label: Some("Streamed SH Compose"),
++            label: Some(if is_b {
++                "Streamed SH Compose [B]"
++            } else {
++                "Streamed SH Compose"
++            }),
+             timestamp_writes,
+         });
+-        pass.set_pipeline(&self.pipeline);
++        pass.set_pipeline(pipeline);
+         pass.set_bind_group(0, uniform_bind_group, &[]);
+         for dispatch in &upload.dispatches {
+             pass.set_bind_group(1, &self.bind_group, &[dispatch.dynamic_offset]);
+-- 
+2.55.0
+
+
+From 264a2e051f8f35ca0cf0c2931ff14c5134f2017a Mon Sep 17 00:00:00 2001
+From: Dan Hiester <dan.hiester@gmail.com>
+Date: Mon, 5 Oct 2026 23:22:51 -0700
+Subject: [PATCH 4/8] Spike probes: array-free lever (no accumulator array,
+ direct L1/L2 reconstruction)
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01Ue9BfgWtZZosYasgkpTmRz
+---
+ crates/renderer/src/render/compose_spike.rs | 149 ++++++++++++++++++--
+ 1 file changed, 140 insertions(+), 9 deletions(-)
+
+diff --git a/crates/renderer/src/render/compose_spike.rs b/crates/renderer/src/render/compose_spike.rs
+index e803bfdbd..b066a4640 100644
+--- a/crates/renderer/src/render/compose_spike.rs
++++ b/crates/renderer/src/render/compose_spike.rs
+@@ -24,6 +24,7 @@ const KNOWN_ARMS: &[&str] = &[
+     // levers
+     "scan-parallel",
+     "texel-outer",
++    "array-free",
+     "scale-shared",
+     "vec3-accum",
+     "const-tile",
+@@ -127,7 +128,7 @@ impl ComposePipelines {
+ }
+ 
+ fn ordered_arms(raw: &str) -> Vec<&'static str> {
+-    let requested: Vec<&str> = raw
++    let mut requested: Vec<&str> = raw
+         .split(',')
+         .map(str::trim)
+         .filter(|arm| !arm.is_empty() && *arm != "baseline")
+@@ -138,17 +139,19 @@ fn ordered_arms(raw: &str) -> Vec<&'static str> {
+             "POSTRETRO_SPIKE_ARMS names unknown arm `{arm}`"
+         );
+     }
+-    let mut selected: Vec<&'static str> = KNOWN_ARMS
++    assert!(
++        !(requested.contains(&"texel-outer") && requested.contains(&"array-free")),
++        "texel-outer and array-free are alternative restructures"
++    );
++    // texel-outer and array-free read per-entry scales from the shared cache.
++    if requested.contains(&"texel-outer") || requested.contains(&"array-free") {
++        requested.push("scale-shared");
++    }
++    KNOWN_ARMS
+         .iter()
+         .copied()
+         .filter(|arm| requested.contains(arm))
+-        .collect();
+-    // texel-outer reads per-entry scales from the shared cache.
+-    if selected.contains(&"texel-outer") && !selected.contains(&"scale-shared") {
+-        let at = selected.iter().position(|a| *a == "texel-outer").unwrap() + 1;
+-        selected.insert(at, "scale-shared");
+-    }
+-    selected
++        .collect()
+ }
+ 
+ /// Build one compose shader's full source (shader + curve helpers + decode
+@@ -334,6 +337,131 @@ var<workgroup> spike_words: array<u32, 64>;
+                 arm,
+             );
+         }
++        "array-free" => {
++            replace_once(src, LEVEL_BLOCK, "", arm);
++            let (gate_l0, gate_coarse, base_init, store) = match shader {
++                Indirect => (
++                    "use_indirect_animated && local_probe_is_kept(cell_index, local_probe)",
++                    "use_indirect_animated",
++                    "                var spike_accum = vec3<f32>(0.0);
++                if (use_indirect_static) {
++                    spike_accum = sample_compact_base_atlas(stored_slot.slot, tile_texel).rgb;
++                }
++",
++                    "                textureStore(
++                    sh_total_atlas,
++                    vec2<i32>(tile_origin.xy + tile_texel),
++                    i32(tile_origin.z),
++                    vec4<f32>(spike_accum, select(0.0, 1.0, stored_slot.valid)),
++                );
++",
++                ),
++                AnimatedDirect => (
++                    "local_probe_is_kept(cell_index, local_probe)",
++                    "true",
++                    "                let atlas_texel = tile_origin.xy + tile_texel;
++                let uv = (vec2<f32>(atlas_texel) + 0.5)
++                    / vec2<f32>(textureDimensions(direct_intermediate_atlas));
++                var spike_accum = textureSampleLevel(
++                    direct_intermediate_atlas,
++                    intermediate_sampler,
++                    uv,
++                    i32(tile_origin.z),
++                    0.0,
++                ).rgb;
++",
++                    "                textureStore(
++                    direct_composed_atlas,
++                    vec2<i32>(tile_origin.xy + tile_texel),
++                    i32(tile_origin.z),
++                    vec4<f32>(
++                        max(spike_accum, vec3<f32>(0.0)),
++                        select(0.0, 1.0, stored_slot.valid),
++                    ),
++                );
++",
++                ),
++            };
++            let fused = format!(
++                "    // spike array-free: every level fuses the base read, the entry sum and the
++    // store per texel. L1/L2 lanes reconstruct from their own reads of the kept
++    // corner tiles, so the kernel holds no 36-entry accumulator and no barriers
++    // after the scale cache.
++    if (grid.row_count > 0u) {{
++        if (output_is_stored) {{
++            let spike_l0 = {gate_l0};
++            let spike_coarse = {gate_coarse};
++            let spike_rank = within_cell_rank(cell_index, local_probe);
++            let spike_rep = l2_representative_local(cell_index);
++            let spike_rep_kept = local_probe_is_kept(cell_index, spike_rep);
++            let spike_rep_rank = within_cell_rank(cell_index, spike_rep);
++            for (var texel_index = 0u; texel_index < TILE_TEXEL_COUNT; texel_index = texel_index + 1u) {{
++                let tile_texel = vec2<u32>(
++                    texel_index % RUNTIME_TILE_DIMENSION,
++                    texel_index / RUNTIME_TILE_DIMENSION,
++                );
++{base_init}                if (level == 0u) {{
++                    if (spike_l0) {{
++                        for (var entry = start; entry < end; entry = entry + 1u) {{
++                            spike_accum = spike_accum
++                                + read_delta_texel(entry, spike_rank, tile_texel).rgb * spike_scale(entry, start, spike_cached);
++                        }}
++                    }}
++                }} else if (spike_coarse) {{
++                    for (var entry = start; entry < end; entry = entry + 1u) {{
++                        var delta = vec3<f32>(0.0);
++                        if (level == 2u) {{
++                            var spike_tile = vec3<f32>(0.0);
++                            if (spike_rep_kept) {{
++                                spike_tile = read_delta_texel(entry, spike_rep_rank, tile_texel).rgb;
++                            }}
++                            delta = spike_tile * f32(spike_rep_kept);
++                        }} else {{
++                            delta = spike_reconstruct_l1(cell_index, entry, local_probe, tile_texel);
++                        }}
++                        spike_accum = spike_accum + delta * spike_scale(entry, start, spike_cached);
++                    }}
++                }}
++{store}            }}
++        }}
++        return;
++    }}
++"
++            );
++            replace_once(
++                src,
++                ACCUM_COMMENT,
++                &format!("{LEVEL_BLOCK}{fused}{ACCUM_COMMENT}"),
++                arm,
++            );
++            replace_once(
++                src,
++                "fn reconstruct_l1_shared_texel(",
++                "// spike array-free: the shared-lattice reconstruction, reading each kept
++// corner tile straight from the delta payload. Same slot order and arithmetic.
++fn spike_reconstruct_l1(cell: u32, entry: u32, target_local: u32, tile_texel: vec2<u32>) -> vec3<f32> {
++    var accum = vec3<f32>(0.0);
++    var weight_sum = 0.0;
++    for (var slot = 0u; slot < MAX_KEPT_TILES; slot = slot + 1u) {
++        let corner = l1_corner_local(slot);
++        if (local_probe_is_kept(cell, corner)) {
++            let weight = l1_corner_weight(target_local, corner);
++            if (weight > 0.0) {
++                accum = accum + read_delta_texel(entry, within_cell_rank(cell, corner), tile_texel).rgb * weight;
++                weight_sum = weight_sum + weight;
++            }
++        }
++    }
++    if (weight_sum > 0.0) {
++        return accum / weight_sum;
++    }
++    return vec3<f32>(0.0);
++}
++
++fn reconstruct_l1_shared_texel(",
++                arm,
++            );
++        }
+         "scale-shared" => {
+             replace_n(
+                 src,
+@@ -603,6 +731,9 @@ mod tests {
+                 "texel-outer",
+                 "scan-parallel,texel-outer,vec3-accum",
+                 "scan-parallel,texel-outer,vec3-accum,const-tile",
++                "array-free",
++                "floor,array-free",
++                "scan-parallel,array-free,const-tile",
+             ]
+             .map(String::from),
+         );
+-- 
+2.55.0
+
+
+From 2de1559e297fbb45df0f13d6c0e68996b0d7bf29 Mon Sep 17 00:00:00 2001
+From: Dan Hiester <dan.hiester@gmail.com>
+Date: Tue, 6 Oct 2026 00:39:48 -0700
+Subject: [PATCH 5/8] Spike probes: unroll36 and l0-only modifiers of
+ array-free
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01Ue9BfgWtZZosYasgkpTmRz
+---
+ crates/renderer/src/render/compose_spike.rs | 95 +++++++++++++++------
+ 1 file changed, 70 insertions(+), 25 deletions(-)
+
+diff --git a/crates/renderer/src/render/compose_spike.rs b/crates/renderer/src/render/compose_spike.rs
+index b066a4640..b9672de70 100644
+--- a/crates/renderer/src/render/compose_spike.rs
++++ b/crates/renderer/src/render/compose_spike.rs
+@@ -25,6 +25,8 @@ const KNOWN_ARMS: &[&str] = &[
+     "scan-parallel",
+     "texel-outer",
+     "array-free",
++    "unroll36",
++    "l0-only",
+     "scale-shared",
+     "vec3-accum",
+     "const-tile",
+@@ -143,6 +145,12 @@ fn ordered_arms(raw: &str) -> Vec<&'static str> {
+         !(requested.contains(&"texel-outer") && requested.contains(&"array-free")),
+         "texel-outer and array-free are alternative restructures"
+     );
++    for modifier in ["unroll36", "l0-only"] {
++        assert!(
++            !requested.contains(&modifier) || requested.contains(&"array-free"),
++            "`{modifier}` modifies array-free"
++        );
++    }
+     // texel-outer and array-free read per-entry scales from the shared cache.
+     if requested.contains(&"texel-outer") || requested.contains(&"array-free") {
+         requested.push("scale-shared");
+@@ -178,7 +186,7 @@ fn build_source(shader: ComposeShader, decode_helper: &str, arms: &[&str]) -> St
+         if *arm == "vec3-accum" && shader == ComposeShader::Indirect {
+             continue;
+         }
+-        apply_arm(&mut src, shader, arm);
++        apply_arm(&mut src, shader, arm, arms);
+     }
+     src
+ }
+@@ -206,7 +214,7 @@ const ACCUM_COMMENT: &str =
+     "    // Keeping the accumulator private lets one shared kept lattice serve all\n";
+ const SHARED_DECL: &str = "var<workgroup> shared_brick_indirection: u32;\n";
+ 
+-fn apply_arm(src: &mut String, shader: ComposeShader, arm: &str) {
++fn apply_arm(src: &mut String, shader: ComposeShader, arm: &str, all: &[&str]) {
+     use ComposeShader::{AnimatedDirect, Indirect};
+     match arm {
+         "scan-parallel" => {
+@@ -337,7 +345,11 @@ var<workgroup> spike_words: array<u32, 64>;
+                 arm,
+             );
+         }
++        // Modifiers of array-free; applied inside its rewrite.
++        "unroll36" | "l0-only" => {}
+         "array-free" => {
++            let unroll = all.contains(&"unroll36");
++            let l0_only = all.contains(&"l0-only");
+             replace_once(src, LEVEL_BLOCK, "", arm);
+             let (gate_l0, gate_coarse, base_init, store) = match shader {
+                 Indirect => (
+@@ -382,32 +394,18 @@ var<workgroup> spike_words: array<u32, 64>;
+ ",
+                 ),
+             };
+-            let fused = format!(
+-                "    // spike array-free: every level fuses the base read, the entry sum and the
+-    // store per texel. L1/L2 lanes reconstruct from their own reads of the kept
+-    // corner tiles, so the kernel holds no 36-entry accumulator and no barriers
+-    // after the scale cache.
+-    if (grid.row_count > 0u) {{
+-        if (output_is_stored) {{
+-            let spike_l0 = {gate_l0};
+-            let spike_coarse = {gate_coarse};
+-            let spike_rank = within_cell_rank(cell_index, local_probe);
+-            let spike_rep = l2_representative_local(cell_index);
+-            let spike_rep_kept = local_probe_is_kept(cell_index, spike_rep);
+-            let spike_rep_rank = within_cell_rank(cell_index, spike_rep);
+-            for (var texel_index = 0u; texel_index < TILE_TEXEL_COUNT; texel_index = texel_index + 1u) {{
+-                let tile_texel = vec2<u32>(
+-                    texel_index % RUNTIME_TILE_DIMENSION,
+-                    texel_index / RUNTIME_TILE_DIMENSION,
+-                );
+-{base_init}                if (level == 0u) {{
++            // The coarse branch is compiled out under l0-only: ids 27/45 are
++            // uniform L0 by compiler policy (`enforce_id41_only_coarsening_policy`).
++            let coarse_gate = if l0_only { "false" } else { "spike_coarse" };
++            let body = format!(
++                "{base_init}                if (level == 0u) {{
+                     if (spike_l0) {{
+                         for (var entry = start; entry < end; entry = entry + 1u) {{
+                             spike_accum = spike_accum
+                                 + read_delta_texel(entry, spike_rank, tile_texel).rgb * spike_scale(entry, start, spike_cached);
+                         }}
+                     }}
+-                }} else if (spike_coarse) {{
++                }} else if ({coarse_gate}) {{
+                     for (var entry = start; entry < end; entry = entry + 1u) {{
+                         var delta = vec3<f32>(0.0);
+                         if (level == 2u) {{
+@@ -422,8 +420,48 @@ var<workgroup> spike_words: array<u32, 64>;
+                         spike_accum = spike_accum + delta * spike_scale(entry, start, spike_cached);
+                     }}
+                 }}
+-{store}            }}
+-        }}
++{store}"
++            );
++            let texels = if unroll {
++                // spike unroll36: one block per texel with constant coordinates,
++                // so the texel loop carries no loop-bound counter or index math.
++                (0..36)
++                    .map(|t| {
++                        format!(
++                            "            {{
++                let tile_texel = vec2<u32>({x}u, {y}u);
++{body}            }}
++",
++                            x = t % 6,
++                            y = t / 6
++                        )
++                    })
++                    .collect::<String>()
++            } else {
++                format!(
++                    "            for (var texel_index = 0u; texel_index < TILE_TEXEL_COUNT; texel_index = texel_index + 1u) {{
++                let tile_texel = vec2<u32>(
++                    texel_index % RUNTIME_TILE_DIMENSION,
++                    texel_index / RUNTIME_TILE_DIMENSION,
++                );
++{body}            }}
++"
++                )
++            };
++            let fused = format!(
++                "    // spike array-free: every level fuses the base read, the entry sum and the
++    // store per texel. L1/L2 lanes reconstruct from their own reads of the kept
++    // corner tiles, so the kernel holds no 36-entry accumulator and no barriers
++    // after the scale cache.
++    if (grid.row_count > 0u) {{
++        if (output_is_stored) {{
++            let spike_l0 = {gate_l0};
++            let spike_coarse = {gate_coarse};
++            let spike_rank = within_cell_rank(cell_index, local_probe);
++            let spike_rep = l2_representative_local(cell_index);
++            let spike_rep_kept = local_probe_is_kept(cell_index, spike_rep);
++            let spike_rep_rank = within_cell_rank(cell_index, spike_rep);
++{texels}        }}
+         return;
+     }}
+ "
+@@ -721,7 +759,11 @@ mod tests {
+     #[test]
+     fn every_arm_rewrites_and_validates() {
+         let decode = crate::render::sh_indirection::WGSL_DECODE_HELPER;
+-        let mut lists: Vec<String> = KNOWN_ARMS.iter().map(|a| (*a).to_string()).collect();
++        let mut lists: Vec<String> = KNOWN_ARMS
++            .iter()
++            .filter(|a| !matches!(**a, "unroll36" | "l0-only"))
++            .map(|a| (*a).to_string())
++            .collect();
+         lists.extend(
+             [
+                 "baseline",
+@@ -734,6 +776,9 @@ mod tests {
+                 "array-free",
+                 "floor,array-free",
+                 "scan-parallel,array-free,const-tile",
++                "array-free,unroll36",
++                "array-free,l0-only",
++                "array-free,unroll36,l0-only",
+             ]
+             .map(String::from),
+         );
+-- 
+2.55.0
+
+
+From c9da0ad0e5afa3fadcd9a4dc2f0e50ec809128be Mon Sep 17 00:00:00 2001
+From: Dan Hiester <dan.hiester@gmail.com>
+Date: Tue, 6 Oct 2026 02:28:48 -0700
+Subject: [PATCH 6/8] Spike probes: log rows with entries and lane-weighted
+ entries
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01Ue9BfgWtZZosYasgkpTmRz
+---
+ crates/renderer/src/render/compose_spike.rs | 14 +++++++++++++-
+ 1 file changed, 13 insertions(+), 1 deletion(-)
+
+diff --git a/crates/renderer/src/render/compose_spike.rs b/crates/renderer/src/render/compose_spike.rs
+index b9672de70..95b55d2ab 100644
+--- a/crates/renderer/src/render/compose_spike.rs
++++ b/crates/renderer/src/render/compose_spike.rs
+@@ -711,6 +711,10 @@ impl RowCountWindow {
+             return;
+         }
+         let mut counts = [0_u64; 6];
++        // Rows the contributing-row filter would keep, and entries weighted by
++        // the row's kept (valid, L0) lanes: the work an L0 entry actually costs.
++        let mut rows_with_entries = 0_u64;
++        let mut lane_entries = 0_u64;
+         for &row in rows {
+             let row = row as usize;
+             let level = usize::from(metadata.cell_levels.get(row).copied().unwrap_or(0).min(2));
+@@ -723,9 +727,17 @@ impl RowCountWindow {
+             };
+             counts[level] += 1;
+             counts[3 + level] += entries;
++            if entries > 0 {
++                rows_with_entries += 1;
++                let lanes = metadata
++                    .valid_probe_masks
++                    .get(row)
++                    .map_or(0, |mask| u64::from(mask.count_ones()));
++                lane_entries += entries * lanes;
++            }
+         }
+         log::info!(
+-            "[SH spike counts] {pass}: frames {frames} rows min {min} max {max} | last rows L0 {r0} L1 {r1} L2 {r2} | entries L0 {e0} L1 {e1} L2 {e2}",
++            "[SH spike counts] {pass}: frames {frames} rows min {min} max {max} | last rows L0 {r0} L1 {r1} L2 {r2} | entries L0 {e0} L1 {e1} L2 {e2} | rows with entries {rows_with_entries} | lane-entries {lane_entries}",
+             frames = self.frames,
+             min = self.min_rows,
+             max = self.max_rows,
+-- 
+2.55.0
+
+
+From fe995a898dbee27776aee4c6107d1c5ad15de84f Mon Sep 17 00:00:00 2001
+From: Dan Hiester <dan.hiester@gmail.com>
+Date: Tue, 6 Oct 2026 02:40:30 -0700
+Subject: [PATCH 7/8] Spike probes: coalesced-b lever (texel-major section-45
+ tiles, repacked at upload)
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01Ue9BfgWtZZosYasgkpTmRz
+---
+ crates/renderer/src/render/compose_spike.rs   | 111 +++++++++++++++++-
+ .../direct_compose/passes/animated_runtime.rs |  27 +++++
+ 2 files changed, 136 insertions(+), 2 deletions(-)
+
+diff --git a/crates/renderer/src/render/compose_spike.rs b/crates/renderer/src/render/compose_spike.rs
+index 95b55d2ab..dac2ca249 100644
+--- a/crates/renderer/src/render/compose_spike.rs
++++ b/crates/renderer/src/render/compose_spike.rs
+@@ -30,6 +30,7 @@ const KNOWN_ARMS: &[&str] = &[
+     "scale-shared",
+     "vec3-accum",
+     "const-tile",
++    "coalesced-b",
+     // floor and ablations
+     "floor",
+     "no-base",
+@@ -67,6 +68,11 @@ pub(crate) fn arms_b() -> Option<&'static [&'static str]> {
+         .get_or_init(|| {
+             let raw = std::env::var("POSTRETRO_SPIKE_ARMS_B").ok()?;
+             let selected = ordered_arms(&raw);
++            assert_eq!(
++                selected.contains(&"coalesced-b"),
++                arms().contains(&"coalesced-b"),
++                "coalesced-b changes the delta layout, so both paired halves must carry it"
++            );
+             log::info!(
+                 "[SH spike] paired B compose arms: {}",
+                 if selected.is_empty() {
+@@ -182,8 +188,8 @@ fn build_source(shader: ComposeShader, decode_helper: &str, arms: &[&str]) -> St
+     ]
+     .concat();
+     for arm in arms {
+-        // vec3-accum targets Pass B; the indirect accumulator already is vec3.
+-        if *arm == "vec3-accum" && shader == ComposeShader::Indirect {
++        // vec3-accum and coalesced-b target Pass B only.
++        if matches!(*arm, "vec3-accum" | "coalesced-b") && shader == ComposeShader::Indirect {
+             continue;
+         }
+         apply_arm(&mut src, shader, arm, arms);
+@@ -581,6 +587,36 @@ fn spike_scale(entry: u32, start: u32, cached: bool) -> vec3<f32> {
+     let texel_f16_count = 3u;",
+             arm,
+         ),
++        "coalesced-b" => {
++            replace_once(
++                src,
++                "    let half_base = entry_delta_f16_offset(entry)
++        + probe_rank * grid.delta_probe_f16_stride
++        + texel_index * texel_f16_count;",
++                "    // spike coalesced-b: entry tiles are texel-major across kept probes.
++    let half_base = entry_delta_f16_offset(entry)
++        + texel_index * spike_kept_count * texel_f16_count
++        + probe_rank * texel_f16_count;",
++                arm,
++            );
++            replace_once(
++                src,
++                SHARED_DECL,
++                "var<workgroup> shared_brick_indirection: u32;
++var<private> spike_kept_count: u32;
++",
++                arm,
++            );
++            replace_once(
++                src,
++                "    let cell_index = packed_rows[workgroup.x % 4u];\n",
++                "    let cell_index = packed_rows[workgroup.x % 4u];
++    spike_kept_count = countOneBits(kept_probe_mask_word(cell_index, 0u))
++        + countOneBits(kept_probe_mask_word(cell_index, 1u));
++",
++                arm,
++            );
++        }
+         "floor" => {
+             replace_once(src, LET_END, "    let end = start; // spike floor\n", arm);
+         }
+@@ -678,6 +714,42 @@ fn spike_unused_light_scale(light_index: u32) -> vec3<f32> {
+     }
+ }
+ 
++/// Spike coalesced-b: whether Pass B's section-45 tiles upload texel-major.
++pub(crate) fn coalesced_animated_layout() -> bool {
++    arms().contains(&"coalesced-b")
++}
++
++/// Repack one sparse row's entry tiles from probe-major (`[rank][texel][rgb]`)
++/// to texel-major across the entry's kept probes (`[texel][rank][rgb]`).
++/// `entry_offsets` are absolute f16 offsets; `tile_f16_start` is the row's.
++pub(crate) fn repack_texel_major(tile_f16_start: u32, entry_offsets: &[u32], tiles: &[u16]) -> Vec<u16> {
++    const TEXELS: usize = 36;
++    const STRIDE: usize = TEXELS * 3;
++    let mut out = vec![0_u16; tiles.len()];
++    for (i, &offset) in entry_offsets.iter().enumerate() {
++        let begin = (offset - tile_f16_start) as usize;
++        let end = entry_offsets
++            .get(i + 1)
++            .map_or(tiles.len(), |next| (next - tile_f16_start) as usize);
++        let size = end - begin;
++        assert_eq!(size % STRIDE, 0, "spike coalesced-b: entry block is not whole probe tiles");
++        let probes = size / STRIDE;
++        for rank in 0..probes {
++            for texel in 0..TEXELS {
++                for channel in 0..3 {
++                    out[begin + texel * probes * 3 + rank * 3 + channel] =
++                        tiles[begin + rank * STRIDE + texel * 3 + channel];
++                }
++            }
++        }
++    }
++    if let Some(&first) = entry_offsets.first() {
++        let head = (first - tile_f16_start) as usize;
++        out[..head].copy_from_slice(&tiles[..head]);
++    }
++    out
++}
++
+ /// Per-pass composed-row mix for one window of compose frames: rows and CSR
+ /// entries by brick level (L0/L1/L2), from the section's whole-level metadata.
+ #[derive(Default)]
+@@ -767,6 +839,39 @@ mod tests {
+         .unwrap_or_else(|err| panic!("{label}: arm source validates: {err:?}"));
+     }
+ 
++    // The repack places each (rank, texel) triple where the coalesced read looks.
++    #[test]
++    fn repack_texel_major_matches_coalesced_addressing() {
++        let start = 10_u32;
++        let probes = [2_usize, 3];
++        let mut tiles = Vec::new();
++        let mut offsets = Vec::new();
++        for (entry, &n) in probes.iter().enumerate() {
++            offsets.push(start + tiles.len() as u32);
++            for rank in 0..n {
++                for texel in 0..36 {
++                    for c in 0..3 {
++                        tiles.push((entry * 10_000 + rank * 1000 + texel * 10 + c) as u16);
++                    }
++                }
++            }
++        }
++        let out = repack_texel_major(start, &offsets, &tiles);
++        for (entry, &n) in probes.iter().enumerate() {
++            let base = (offsets[entry] - start) as usize;
++            for rank in 0..n {
++                for texel in 0..36 {
++                    for c in 0..3 {
++                        assert_eq!(
++                            out[base + texel * n * 3 + rank * 3 + c],
++                            (entry * 10_000 + rank * 1000 + texel * 10 + c) as u16
++                        );
++                    }
++                }
++            }
++        }
++    }
++
+     // Every arm, alone and in the stacks the batches use, must rewrite and validate.
+     #[test]
+     fn every_arm_rewrites_and_validates() {
+@@ -791,6 +896,8 @@ mod tests {
+                 "array-free,unroll36",
+                 "array-free,l0-only",
+                 "array-free,unroll36,l0-only",
++                "coalesced-b",
++                "coalesced-b,array-free,unroll36",
+             ]
+             .map(String::from),
+         );
+diff --git a/crates/renderer/src/render/sh_streaming/direct_compose/passes/animated_runtime.rs b/crates/renderer/src/render/sh_streaming/direct_compose/passes/animated_runtime.rs
+index d30de7dbe..72d1311d7 100644
+--- a/crates/renderer/src/render/sh_streaming/direct_compose/passes/animated_runtime.rs
++++ b/crates/renderer/src/render/sh_streaming/direct_compose/passes/animated_runtime.rs
+@@ -41,6 +41,33 @@ impl StreamingAnimatedPass {
+         uploads: &mut StagedUploads,
+         rows: &[DirectSparseRowUpload<'_>],
+     ) -> Result<(), ShResidencyDrainError> {
++        if crate::render::compose_spike::coalesced_animated_layout() {
++            let repacked: Vec<Vec<u16>> = rows
++                .iter()
++                .map(|row| {
++                    crate::render::compose_spike::repack_texel_major(
++                        row.tile_f16_start,
++                        &row.entry_tile_f16_offsets,
++                        row.tile_f16,
++                    )
++                })
++                .collect();
++            let rows: Vec<DirectSparseRowUpload<'_>> = rows
++                .iter()
++                .zip(&repacked)
++                .map(|(row, tiles)| DirectSparseRowUpload {
++                    row: row.row,
++                    role: row.role,
++                    entry_start: row.entry_start,
++                    entry_end: row.entry_end,
++                    tile_f16_start: row.tile_f16_start,
++                    lights: row.lights,
++                    entry_tile_f16_offsets: row.entry_tile_f16_offsets.clone(),
++                    tile_f16: tiles,
++                })
++                .collect();
++            return self.sparse.upload_rows(uploads, &rows);
++        }
+         self.sparse.upload_rows(uploads, rows)
+     }
+ 
+-- 
+2.55.0
+
+
+From 6f326ef9b7f35f806d8b9d12edb741f95bddfc0f Mon Sep 17 00:00:00 2001
+From: Dan Hiester <dan.hiester@gmail.com>
+Date: Tue, 6 Oct 2026 21:27:26 -0700
+Subject: [PATCH 8/8] Probes: Pass A row window, Pass B upstream union,
+ old-membership toggle
+
+---
+ crates/renderer/src/render/compose_spike.rs     | 10 +++++++++-
+ crates/renderer/src/render/sh_streaming.rs      |  2 +-
+ .../renderer/src/render/sh_streaming/frame.rs   |  8 ++++++++
+ .../src/render/sh_streaming/row_refs.rs         | 17 ++++++++++++++++-
+ 4 files changed, 34 insertions(+), 3 deletions(-)
+
+diff --git a/crates/renderer/src/render/compose_spike.rs b/crates/renderer/src/render/compose_spike.rs
+index dac2ca249..18807a09e 100644
+--- a/crates/renderer/src/render/compose_spike.rs
++++ b/crates/renderer/src/render/compose_spike.rs
+@@ -767,6 +767,9 @@ impl RowCountWindow {
+         pass: &str,
+         rows: &[u32],
+         metadata: Option<&postretro_level_loader::ShStreamSparseMetadata>,
++        // Pass B: the same frame's Pass A rows, whose rewrite also changes
++        // Pass B input. Empty for the other passes.
++        upstream_rows: &[u32],
+     ) {
+         let Some(metadata) = metadata else {
+             return;
+@@ -786,6 +789,7 @@ impl RowCountWindow {
+         // Rows the contributing-row filter would keep, and entries weighted by
+         // the row's kept (valid, L0) lanes: the work an L0 entry actually costs.
+         let mut rows_with_entries = 0_u64;
++        let mut rows_with_entries_or_upstream = 0_u64;
+         let mut lane_entries = 0_u64;
+         for &row in rows {
+             let row = row as usize;
+@@ -799,6 +803,9 @@ impl RowCountWindow {
+             };
+             counts[level] += 1;
+             counts[3 + level] += entries;
++            if entries > 0 || upstream_rows.binary_search(&(row as u32)).is_ok() {
++                rows_with_entries_or_upstream += 1;
++            }
+             if entries > 0 {
+                 rows_with_entries += 1;
+                 let lanes = metadata
+@@ -809,7 +816,7 @@ impl RowCountWindow {
+             }
+         }
+         log::info!(
+-            "[SH spike counts] {pass}: frames {frames} rows min {min} max {max} | last rows L0 {r0} L1 {r1} L2 {r2} | entries L0 {e0} L1 {e1} L2 {e2} | rows with entries {rows_with_entries} | lane-entries {lane_entries}",
++            "[SH spike counts] {pass}: frames {frames} rows min {min} max {max} | last rows L0 {r0} L1 {r1} L2 {r2} | entries L0 {e0} L1 {e1} L2 {e2} | rows with entries {rows_with_entries} | lane-entries {lane_entries} | rows with entries or upstream {rows_with_entries_or_upstream} | upstream rows {upstream}",
+             frames = self.frames,
+             min = self.min_rows,
+             max = self.max_rows,
+@@ -819,6 +826,7 @@ impl RowCountWindow {
+             e0 = counts[3],
+             e1 = counts[4],
+             e2 = counts[5],
++            upstream = upstream_rows.len(),
+         );
+         *self = Self::default();
+     }
+diff --git a/crates/renderer/src/render/sh_streaming.rs b/crates/renderer/src/render/sh_streaming.rs
+index 376e73622..85810bc8b 100644
+--- a/crates/renderer/src/render/sh_streaming.rs
++++ b/crates/renderer/src/render/sh_streaming.rs
+@@ -387,7 +387,7 @@ pub(super) struct ShResidencyState {
+     install_cpu: InstallCpuCounters,
+     gpu: Option<StreamingGpuPools>,
+     /// Spike-only: per-level row/entry mix of each composed plan (indirect, animated direct).
+-    spike_row_counts: [crate::render::compose_spike::RowCountWindow; 2],
++    spike_row_counts: [crate::render::compose_spike::RowCountWindow; 3],
+ }
+ 
+ impl ShResidencyState {
+diff --git a/crates/renderer/src/render/sh_streaming/frame.rs b/crates/renderer/src/render/sh_streaming/frame.rs
+index 8333a0b4f..44e94ecfb 100644
+--- a/crates/renderer/src/render/sh_streaming/frame.rs
++++ b/crates/renderer/src/render/sh_streaming/frame.rs
+@@ -227,6 +227,12 @@ impl ShResidencyState {
+                         promotion_plan.rows(),
+                         promotion_timestamp_writes,
+                     )?;
++                self.spike_row_counts[2].record(
++                    "static-direct",
++                    promotion_plan.rows(),
++                    self.source_metadata.direct_delta.as_ref(),
++                    &[],
++                );
+                 self.commit_static_direct_compose(promotion_plan, dispatches);
+                 encoded_any = true;
+             }
+@@ -252,6 +258,7 @@ impl ShResidencyState {
+                     "animated-direct",
+                     animated_plan.rows(),
+                     self.source_metadata.animated_direct_delta.as_ref(),
++                    promotion_plan.rows(),
+                 );
+                 self.commit_animated_direct_compose(animated_plan, promotion_plan, dispatches);
+                 encoded_any = true;
+@@ -309,6 +316,7 @@ impl ShResidencyState {
+                 "indirect",
+                 plan.rows(),
+                 self.source_metadata.indirect_delta.as_ref(),
++                &[],
+             );
+             self.commit_indirect_compose(plan, dispatches)
+         })();
+diff --git a/crates/renderer/src/render/sh_streaming/row_refs.rs b/crates/renderer/src/render/sh_streaming/row_refs.rs
+index 0d6e02c4f..cc4be670e 100644
+--- a/crates/renderer/src/render/sh_streaming/row_refs.rs
++++ b/crates/renderer/src/render/sh_streaming/row_refs.rs
+@@ -11,6 +11,20 @@
+ use super::compose_plan::PassMembership;
+ use super::*;
+ 
++/// Spike probe: `POSTRETRO_SPIKE_OLD_MEMBERSHIP=1` restores the pre-change
++/// whole-domain membership, so one binary measures both arms.
++fn spike_old_membership() -> bool {
++    static OLD: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
++    *OLD.get_or_init(|| {
++        let old = std::env::var("POSTRETRO_SPIKE_OLD_MEMBERSHIP").is_ok_and(|value| value == "1");
++        log::info!(
++            "[SH spike] compose membership: {}",
++            if old { "whole-domain" } else { "entry-carrying" }
++        );
++        old
++    })
++}
++
+ /// Affinity-row sets an install or eviction can touch.
+ #[derive(Debug, Clone, Copy)]
+ pub(super) enum RowSet {
+@@ -219,7 +233,8 @@ impl ShResidencyState {
+     /// Entry counts are static per level, so this flips only with the ref,
+     /// and every ref flip already queues the row as membership-touched.
+     fn sparse_row_contributes(&self, table: RowRefTable, section_id: u32, row: u32) -> bool {
+-        self.row_ref_table(table).contains_key(&row) && self.sparse_row_has_entries(section_id, row)
++        self.row_ref_table(table).contains_key(&row)
++            && (spike_old_membership() || self.sparse_row_has_entries(section_id, row))
+     }
+ 
+     /// A row's current compose-planner membership, from the resident unions
+-- 
+2.55.0
+

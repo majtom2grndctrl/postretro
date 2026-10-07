@@ -18,10 +18,11 @@ pub(super) enum ComposePass {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(super) struct PassMembership {
     pub(super) resident: bool,
-    /// The row carries the pass's own streamed contribution.
+    /// The row's installed sparse row carries at least one CSR entry in the
+    /// pass's own section. Zero-entry rows stay resident without it.
     pub(super) contributing: bool,
-    /// Pass B only: the row carries a Pass-A (id-41) contribution, so its
-    /// promotion term changes when static weights do.
+    /// Pass B only: the row carries an id-41 entry, so its Pass-A promotion
+    /// term changes when static weights do.
     pub(super) upstream: bool,
 }
 

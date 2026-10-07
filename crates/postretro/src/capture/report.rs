@@ -532,6 +532,7 @@ struct ShStreamingLifecycleSummaryJson {
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 struct ShComposePassDiagnosticsJson {
     rows_composed: u64,
+    entry_rows_composed: u64,
     dispatches: u64,
     lagged_rows_composed: u64,
     resident_rows_still_lagging: u64,
@@ -541,6 +542,7 @@ impl From<postretro_renderer::ShComposePassDiagnostics> for ShComposePassDiagnos
     fn from(diagnostics: postretro_renderer::ShComposePassDiagnostics) -> Self {
         Self {
             rows_composed: diagnostics.rows_composed,
+            entry_rows_composed: diagnostics.entry_rows_composed,
             dispatches: diagnostics.dispatches,
             lagged_rows_composed: diagnostics.lagged_rows_composed,
             resident_rows_still_lagging: diagnostics.resident_rows_still_lagging,
@@ -1091,18 +1093,21 @@ mod tests {
             pool_growth_cpu_micros: 16,
             indirect_compose: postretro_renderer::ShComposePassDiagnostics {
                 rows_composed: 17,
+                entry_rows_composed: 16,
                 dispatches: 1,
                 lagged_rows_composed: 4,
                 resident_rows_still_lagging: 5,
             },
             static_direct_compose: postretro_renderer::ShComposePassDiagnostics {
                 rows_composed: 18,
+                entry_rows_composed: 17,
                 dispatches: 2,
                 lagged_rows_composed: 6,
                 resident_rows_still_lagging: 7,
             },
             animated_direct_compose: postretro_renderer::ShComposePassDiagnostics {
                 rows_composed: 19,
+                entry_rows_composed: 18,
                 dispatches: 3,
                 lagged_rows_composed: 8,
                 resident_rows_still_lagging: 9,
@@ -1145,6 +1150,7 @@ mod tests {
         assert_eq!(lifecycle["pool_growth_cpu_micros"], 16);
         assert_eq!(lifecycle["pool_growth_bytes"], 0);
         assert_eq!(lifecycle["indirect_compose"]["rows_composed"], 17);
+        assert_eq!(lifecycle["indirect_compose"]["entry_rows_composed"], 16);
         assert_eq!(lifecycle["indirect_compose"]["dispatches"], 1);
         assert_eq!(
             lifecycle["static_direct_compose"]["lagged_rows_composed"],

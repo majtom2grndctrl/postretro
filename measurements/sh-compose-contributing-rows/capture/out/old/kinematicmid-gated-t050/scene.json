@@ -1,0 +1,23 @@
+{
+  "map": "content/dev/maps/kinematic-platform.prl",
+  "camera": {
+    "position": [
+      -6.5,
+      2.82,
+      -27.94
+    ],
+    "yaw_deg": 0.0,
+    "pitch_deg": 0.0,
+    "fov_deg": 100.0
+  },
+  "resolution": [
+    640,
+    360
+  ],
+  "output": "/Users/dhiester/Projects/Personal/postretro/measurements/sh-compose-contributing-rows/capture/out/old/kinematicmid-gated-t050/capture.png",
+  "measurement": {
+    "report": "/Users/dhiester/Projects/Personal/postretro/measurements/sh-compose-contributing-rows/capture/out/old/kinematicmid-gated-t050/report.json",
+    "warmup_frames": 1,
+    "sample_frames": 29
+  }
+}

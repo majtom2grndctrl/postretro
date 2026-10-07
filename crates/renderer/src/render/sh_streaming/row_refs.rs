@@ -5,7 +5,8 @@
 //! row space, each the union of its tables' keys:
 //! indirect is base ∪ id-27; Pass A is id-35 ∪ id-41; Pass B is Pass A ∪
 //! id-45. Install and eviction both update these unions per touched row, so
-//! neither costs time proportional to the resident map.
+//! neither costs time proportional to the resident map. Compose membership
+//! narrows further: only entry-carrying sparse rows contribute.
 
 use super::compose_plan::PassMembership;
 use super::*;
@@ -201,16 +202,42 @@ impl ShResidencyState {
                     && self.direct_animated_resident_rows.contains(&row)))
     }
 
+    /// Whether `row`'s installed sparse row in `section_id` carries at least
+    /// one CSR entry. This reads the pool's row pair, the value compose
+    /// reads; zero-entry and evicted rows both hold the `[0, 0]` sentinel.
+    pub(super) fn sparse_row_has_entries(&self, section_id: u32, row: u32) -> bool {
+        self.sparse_pools
+            .get(&section_id)
+            .and_then(|pool| pool.row_pairs.get(row as usize))
+            .is_some_and(|&[start, end]| end > start)
+    }
+
+    /// Whether `row` contributes to the pass fed by `table`'s section. The
+    /// compiler emits a sparse row for every covered brick, but a row with
+    /// no entries composes to an animation-independent value, so it is
+    /// resident and dirty-tracked without joining the per-source trigger.
+    /// Entry counts are static per level, so this flips only with the ref,
+    /// and every ref flip already queues the row as membership-touched.
+    fn sparse_row_contributes(&self, table: RowRefTable, section_id: u32, row: u32) -> bool {
+        self.row_ref_table(table).contains_key(&row) && self.sparse_row_has_entries(section_id, row)
+    }
+
     /// A row's current compose-planner membership, from the resident unions
-    /// and contributing ref tables. A pass the level never dispatches reports
-    /// no membership, so the planner neither tracks nor retries its rows.
+    /// and entry-carrying sparse rows. A pass the level never dispatches
+    /// reports no membership, so the planner neither tracks nor retries its
+    /// rows.
     pub(super) fn compose_row_membership(&self, row: u32) -> RowMembership {
         let direct_resident = self.direct_compose_resident(row);
-        let static_contributing = self.direct_promotion_row_refs.contains_key(&row);
+        let static_contributing =
+            self.sparse_row_contributes(RowRefTable::DirectPromotion, DIRECT_DELTA_ID, row);
         let animated_direct = if self.animated_direct_compose_required {
             PassMembership {
                 resident: direct_resident,
-                contributing: self.direct_animated_row_refs.contains_key(&row),
+                contributing: self.sparse_row_contributes(
+                    RowRefTable::DirectAnimated,
+                    ANIMATED_DIRECT_DELTA_ID,
+                    row,
+                ),
                 upstream: static_contributing,
             }
         } else {
@@ -219,7 +246,11 @@ impl ShResidencyState {
         RowMembership {
             indirect: PassMembership {
                 resident: self.indirect_resident_rows.contains(&row),
-                contributing: self.indirect_delta_row_refs.contains_key(&row),
+                contributing: self.sparse_row_contributes(
+                    RowRefTable::IndirectDelta,
+                    INDIRECT_DELTA_ID,
+                    row,
+                ),
                 upstream: false,
             },
             static_direct: PassMembership {

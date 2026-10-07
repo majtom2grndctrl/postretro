@@ -30,6 +30,8 @@ mod compose_plan;
 #[cfg(test)]
 mod compose_plan_oracle;
 mod compose_staleness;
+#[cfg(test)]
+mod contributing_rows_tests;
 mod dense;
 mod diagnostics;
 mod direct_compose;
@@ -104,6 +106,11 @@ type SparseCapacityFloors = BTreeMap<u32, (u32, u32)>;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct ShComposePassDiagnostics {
     pub rows_composed: u64,
+    /// Composed rows whose pass input carries a CSR entry: the pass's own
+    /// section, or for Pass B also any row Pass A rewrote that frame,
+    /// whatever made Pass A plan it. On a settled frame without control
+    /// changes this equals `rows_composed`.
+    pub entry_rows_composed: u64,
     pub dispatches: u64,
     pub lagged_rows_composed: u64,
     pub resident_rows_still_lagging: u64,

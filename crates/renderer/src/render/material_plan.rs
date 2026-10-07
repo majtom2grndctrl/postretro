@@ -132,6 +132,10 @@ pub(crate) fn build_material_bind_group(
         material,
         specular_slot_is_surface_map(loaded.specular_texture.format()),
         loaded.specular_texture.mip_level_count(),
+        // Placeholder until the load path measures the slot's real band with
+        // `surface_relief_from_rg8_levels`: the widest band marches correctly
+        // for any map, only slower.
+        postretro_render_cpu::surface_depth::SurfaceRelief::FULL_RANGE,
     );
     let uniform_bytes = uniform_plan.uniform_bytes(surface_depth_quality);
     let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {

@@ -17,17 +17,20 @@ pub const MATERIAL_UNIFORM_SIZE: usize = 32;
 /// ```text
 ///   0..4   shininess                       16..20  surface_depth_meters
 ///   4..8   emissive_strength               20..24  surface_depth_fade_distance
-///   8..16  _pad (vec2<f32>)                24..28  surface_depth_quantize_levels
-///                                          28..32  surface_depth_march (packed)
+///   8..12  surface_depth_peak_raise        24..28  surface_depth_quantize_levels
+///  12..16  surface_depth_trough            28..32  surface_depth_march (packed)
 /// ```
 ///
-/// The second 16-byte row was already allocated and already zeroed before
-/// Surface Depth existed (`MATERIAL_UNIFORM_SIZE` has been 32 while the WGSL
-/// struct was 16), which is why this feature needs no buffer resize, no new
-/// binding, and no change to the 128-byte group-0 `Uniforms` ABI.
+/// Bytes 8..16 were padding until the signed height field: they now carry the
+/// material's relief band, QUANTIZED with its level count — the peak raise as a
+/// fraction in `[0, 1]`, the trough in `[−1, 0]`. The buffer has no padding
+/// left. The second 16-byte row was already allocated and already zeroed
+/// before Surface Depth existed, which is why the feature needs no buffer
+/// resize, no new binding, and no change to the 128-byte group-0 `Uniforms`
+/// ABI.
 ///
-/// An all-zero second row is the flat material: depth 0, no fade, no steps,
-/// has-depth clear.
+/// Every byte from 8 on is zero for the flat material: depth 0, empty band, no
+/// fade, no steps, has-depth clear.
 pub fn build_material_uniform(
     shininess: f32,
     emissive_strength: f32,
@@ -36,6 +39,8 @@ pub fn build_material_uniform(
     let mut bytes = [0u8; MATERIAL_UNIFORM_SIZE];
     bytes[0..4].copy_from_slice(&shininess.to_le_bytes());
     bytes[4..8].copy_from_slice(&emissive_strength.to_le_bytes());
+    bytes[8..12].copy_from_slice(&surface_depth.relief.peak_raise.to_le_bytes());
+    bytes[12..16].copy_from_slice(&surface_depth.relief.trough.to_le_bytes());
     bytes[16..20].copy_from_slice(&surface_depth.depth.depth_meters.to_le_bytes());
     bytes[20..24].copy_from_slice(&surface_depth.depth.fade_distance_meters.to_le_bytes());
     bytes[24..28].copy_from_slice(&(surface_depth.depth.quantize_levels as f32).to_le_bytes());
@@ -53,9 +58,9 @@ pub fn build_material_uniform(
 /// gameplay) and not a new group-0 uniform field (that struct is exactly 128
 /// bytes under a 4-way ABI contract).
 ///
-/// The two texture facts are recorded at bind-group build time from the slot
-/// that ACTUALLY loaded, not from the material prefix, so a later rewrite
-/// cannot resurrect a carve for a material whose `.prm` has no height sibling.
+/// The texture facts are recorded at bind-group build time from the slot that
+/// ACTUALLY loaded, not from the material prefix, so a later rewrite cannot
+/// resurrect a march for a material whose `.prm` has no height sibling.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MaterialUniformPlan {
     pub shininess: f32,
@@ -71,6 +76,10 @@ pub struct MaterialUniformPlan {
     /// Residency's requested base mip (D6.2), today always
     /// [`crate::surface_depth::SURFACE_DEPTH_RESIDENT_BASE_MIP`].
     pub requested_base_mip: u32,
+    /// The slot's RAW relief band, measured at load over every uploaded mip
+    /// by [`crate::surface_depth::surface_relief_from_rg8_levels`].
+    /// Quantization waits for the uniform build, where the level count is.
+    pub surface_relief: crate::surface_depth::SurfaceRelief,
 }
 
 impl MaterialUniformPlan {
@@ -79,6 +88,7 @@ impl MaterialUniformPlan {
         material: postretro_render_data::material::Material,
         specular_is_surface_map: bool,
         specular_mip_count: u32,
+        surface_relief: crate::surface_depth::SurfaceRelief,
     ) -> Self {
         Self {
             shininess: material.shininess(),
@@ -87,6 +97,7 @@ impl MaterialUniformPlan {
             specular_is_surface_map,
             specular_mip_count,
             requested_base_mip: crate::surface_depth::SURFACE_DEPTH_RESIDENT_BASE_MIP,
+            surface_relief,
         }
     }
 
@@ -107,6 +118,7 @@ impl MaterialUniformPlan {
                 self.specular_is_surface_map,
                 self.specular_mip_count,
                 self.requested_base_mip,
+                self.surface_relief,
             ),
         )
     }
@@ -116,9 +128,20 @@ impl MaterialUniformPlan {
 mod material_uniform_tests {
     use super::*;
     use crate::surface_depth::{
-        SURFACE_DEPTH_HAS_DEPTH_BIT, SurfaceDepthQuality, SurfaceDepthUniform,
+        SURFACE_DEPTH_HAS_DEPTH_BIT, SurfaceDepthQuality, SurfaceDepthUniform, SurfaceRelief,
+        surface_height_quantize,
     };
     use postretro_render_data::material::{Material, SurfaceDepth};
+
+    fn f32_at(bytes: &[u8; MATERIAL_UNIFORM_SIZE], offset: usize) -> f32 {
+        f32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap())
+    }
+
+    /// A concrete-like band: stones rise, mortar sinks to full depth.
+    const STONES: SurfaceRelief = SurfaceRelief {
+        peak_raise: 0.6,
+        trough: -1.0,
+    };
 
     #[test]
     fn material_uniform_packs_shininess_and_emissive_strength_in_first_row() {
@@ -126,11 +149,10 @@ mod material_uniform_tests {
         assert_eq!(bytes.len(), MATERIAL_UNIFORM_SIZE);
         assert_eq!(&bytes[0..4], &32.0f32.to_le_bytes());
         assert_eq!(&bytes[4..8], &4.0f32.to_le_bytes());
-        assert!(bytes[8..16].iter().all(|&byte| byte == 0));
     }
 
     #[test]
-    fn a_flat_material_leaves_the_second_row_all_zero() {
+    fn a_flat_material_leaves_everything_past_the_first_two_words_zero() {
         // The pre-Surface-Depth contents of this buffer, byte for byte: an
         // existing material must upload exactly what it used to.
         let bytes = build_material_uniform(32.0, 4.0, SurfaceDepthUniform::FLAT);
@@ -143,13 +165,14 @@ mod material_uniform_tests {
             SurfaceDepth {
                 depth_meters: 0.02,
                 quantize_levels: 12,
-                max_steps: 24,
+                max_steps: 48,
                 fade_distance_meters: 14.0,
             },
             SurfaceDepthQuality::On,
             true,
             11,
             crate::surface_depth::SURFACE_DEPTH_RESIDENT_BASE_MIP,
+            STONES,
         );
         let bytes = build_material_uniform(4.0, 0.0, resolved);
         assert_eq!(&bytes[16..20], &0.02f32.to_le_bytes());
@@ -157,7 +180,29 @@ mod material_uniform_tests {
         assert_eq!(&bytes[24..28], &12.0f32.to_le_bytes());
         let march = u32::from_le_bytes(bytes[28..32].try_into().unwrap());
         assert_ne!(march & SURFACE_DEPTH_HAS_DEPTH_BIT, 0);
-        assert_eq!(march & 0xFF, 24);
+        assert_eq!(march & 0xFF, 48);
+    }
+
+    /// Bytes 8..12 are the QUANTIZED peak, 12..16 the quantized trough: the
+    /// plan carries raw values and the build applies the material's levels.
+    #[test]
+    fn the_relief_band_rides_in_bytes_8_to_16_quantized_at_build() {
+        let raw = SurfaceRelief {
+            peak_raise: 0.3,
+            trough: -0.25,
+        };
+        let plan = MaterialUniformPlan::new(Material::Concrete, true, 11, raw);
+        assert_eq!(
+            plan.surface_relief, raw,
+            "the plan keeps the raw load values"
+        );
+        let bytes = plan.uniform_bytes(SurfaceDepthQuality::On);
+        let levels = Material::Concrete.surface_depth().quantize_levels as f32;
+        assert_eq!(f32_at(&bytes, 8), surface_height_quantize(0.3, levels));
+        assert_eq!(f32_at(&bytes, 12), surface_height_quantize(-0.25, levels));
+        // Concrete's 6 levels: 0.3 → 2/6, and −0.25 sits on a half step → −1/6.
+        assert_eq!(f32_at(&bytes, 8), 2.0 / 6.0);
+        assert_eq!(f32_at(&bytes, 12), -1.0 / 6.0);
     }
 
     // -- Player on/off switch (D5): the bytes a live rewrite uploads --
@@ -165,55 +210,63 @@ mod material_uniform_tests {
     /// A carving material with a real surface map: the plan the renderer keeps
     /// for a `.prm` whose specular slot baked to `Rg8Unorm`.
     fn carving_plan() -> MaterialUniformPlan {
-        MaterialUniformPlan::new(Material::Concrete, true, 11)
+        MaterialUniformPlan::new(Material::Concrete, true, 11, STONES)
     }
 
     #[test]
     fn off_uploads_bytes_identical_to_a_material_with_no_surface_map() {
         let plan = carving_plan();
-        // The same material as it would load with NO `_h.png` sibling: the
-        // pre-Surface-Depth bytes, byte for byte.
         let flat_material_bytes = build_material_uniform(
             Material::Concrete.shininess(),
             Material::Concrete.emissive_strength(),
             SurfaceDepthUniform::FLAT,
         );
-
         assert_eq!(
             plan.uniform_bytes(SurfaceDepthQuality::Off),
             flat_material_bytes,
             "Off must be bit-identical to the flat path",
         );
         assert!(
-            plan.uniform_bytes(SurfaceDepthQuality::Off)[16..]
+            plan.uniform_bytes(SurfaceDepthQuality::Off)[8..]
                 .iter()
                 .all(|&byte| byte == 0),
-            "Off must upload the historical all-zero second row",
+            "Off must upload the historical all-zero surface-depth bytes",
         );
     }
 
     #[test]
-    fn neither_state_alters_the_first_row() {
+    fn an_all_mid_gray_map_uploads_bytes_identical_to_no_map() {
+        // P4: an empty band marches nothing, so it costs what no map costs.
+        let mid_gray = MaterialUniformPlan::new(Material::Concrete, true, 11, SurfaceRelief::FLAT);
+        let no_map = MaterialUniformPlan::new(Material::Concrete, false, 1, SurfaceRelief::FLAT);
+        assert_eq!(
+            mid_gray.uniform_bytes(SurfaceDepthQuality::On),
+            no_map.uniform_bytes(SurfaceDepthQuality::On),
+        );
+    }
+
+    #[test]
+    fn neither_state_alters_shininess_or_emissive_strength() {
         let plan = carving_plan();
         let on = plan.uniform_bytes(SurfaceDepthQuality::On);
         for quality in SurfaceDepthQuality::ALL {
             assert_eq!(
-                plan.uniform_bytes(quality)[..16],
-                on[..16],
+                plan.uniform_bytes(quality)[..8],
+                on[..8],
                 "{quality:?} must not disturb shininess/emissive_strength",
             );
         }
     }
 
     #[test]
-    fn the_two_states_upload_distinct_second_row_bytes() {
+    fn the_two_states_upload_distinct_surface_depth_bytes() {
         let plan = carving_plan();
         let off = plan.uniform_bytes(SurfaceDepthQuality::Off);
         let on = plan.uniform_bytes(SurfaceDepthQuality::On);
         assert_ne!(
-            off[16..],
-            on[16..],
-            "the switch must actually change what the GPU reads",
+            off[8..],
+            on[8..],
+            "the switch must change what the GPU reads"
         );
 
         // `On` is the material's own tuning, verbatim, with the full budget.
@@ -229,18 +282,19 @@ mod material_uniform_tests {
         assert_eq!(on_march.max_steps, authored.max_steps);
         assert!(on_march.shadow_light_budget > 0);
 
-        // `Off` is the whole second row zeroed, budget included.
-        assert!(off[16..].iter().all(|&byte| byte == 0));
+        // `Off` is every surface-depth byte zeroed, band and budget included.
+        assert!(off[8..].iter().all(|&byte| byte == 0));
     }
 
     #[test]
     fn a_material_with_no_surface_map_is_switch_independent() {
         // The whole point of deciding has-depth from the LOADED slot: neither
-        // state may make a material without an `_h.png` sibling march.
-        let plan = MaterialUniformPlan::new(Material::Concrete, false, 11);
+        // state may make a material without an `_h.png` sibling march, even
+        // with a band that says it has relief.
+        let plan = MaterialUniformPlan::new(Material::Concrete, false, 11, STONES);
         for quality in SurfaceDepthQuality::ALL {
             assert!(
-                plan.uniform_bytes(quality)[16..].iter().all(|&b| b == 0),
+                plan.uniform_bytes(quality)[8..].iter().all(|&b| b == 0),
                 "{quality:?} must leave a map-less material on the flat path",
             );
         }
@@ -248,8 +302,6 @@ mod material_uniform_tests {
 
     #[test]
     fn a_switch_change_is_reversible_byte_for_byte() {
-        // `Off` must not be a one-way door: the plan retains the material's own
-        // untouched tuning, so returning to On restores the exact bytes.
         let plan = carving_plan();
         let on = plan.uniform_bytes(SurfaceDepthQuality::On);
         let _ = plan.uniform_bytes(SurfaceDepthQuality::Off);
@@ -258,7 +310,7 @@ mod material_uniform_tests {
 
     #[test]
     fn the_plan_records_the_first_row_from_the_material_prefix() {
-        let plan = MaterialUniformPlan::new(Material::Metal, true, 4);
+        let plan = MaterialUniformPlan::new(Material::Metal, true, 4, STONES);
         let bytes = plan.uniform_bytes(SurfaceDepthQuality::On);
         assert_eq!(&bytes[0..4], &Material::Metal.shininess().to_le_bytes());
         assert_eq!(
@@ -273,7 +325,7 @@ mod material_uniform_tests {
         // A one-level chain (the placeholder shape) can only ever load level 0.
         let plan = MaterialUniformPlan {
             requested_base_mip: 9,
-            ..MaterialUniformPlan::new(Material::Concrete, true, 1)
+            ..MaterialUniformPlan::new(Material::Concrete, true, 1, STONES)
         };
         let march = crate::surface_depth::unpack_surface_depth_march(u32::from_le_bytes(
             plan.uniform_bytes(SurfaceDepthQuality::On)[28..32]

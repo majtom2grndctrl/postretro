@@ -5,14 +5,17 @@ status: active
 read at: c855e3e18
 
 ## Corrections
-- None yet. No scripting, sim, entities, SDK or content source changed between the brief's `read at` 2bc52d471 and c855e3e18, so the grounded Decision reads hold.
+- No scripting, sim, entities, SDK or content source changed between the brief's `read at` 2bc52d471 and c855e3e18, so the grounded Decision reads hold.
+- AC M2 "(TS and Luau)" → only trigger-fanout-fixture has a `.luau` twin; arena-lights, switch-demo and coop-two-button-puzzles are TS only. Read as "each runtime twin that exists"; same meaning.
+- AC M2 → coop-two-button-puzzles has no map and arena-lights runs on campaign-test, so manifest data is captured by evaluating each script's `setupLevel` through `ScriptRuntime::run_data_script` over one fixed synthetic registry, emitting the raw returned JSON (keys sorted).
+- Path "split `data_script.luau`" → Luau's prelude has no `require`, so the split publishes part chunks through a temporary `__postretroDataScriptParts` global (`luau_prelude::evaluate_data_script_sdk`, mirrored in `script-compiler/src/light_membership.rs`). Part files are `--!nocheck` because their type names live in `data_script.luau`.
 
 ## Delegated answers
 - Which component marks the `npc` kind — `BrainComponent`, excluding any entity bound to a seat (`EntityRegistry::seat_for_pawn`). Brain is the existing "brain-driven character" marker `updateEnemyState` already filters on; the seat exclusion keeps a future brained pawn out of `npcs`.
 - Whether raw `worldQuery` stays visible in generated typedefs — hidden from the author-facing typedefs; the SDK lib declares it privately. A visible raw query reintroduces the kindless snapshot spelling the brief retires. If the SDK lib's compile cannot declare it privately, keep it visible but undocumented and record that here.
 
 ## Baseline (AC 1, AC 2)
-Baseline commit: c855e3e18 (`main` after the claim). Before-data is captured from that commit: manifest JSON for arena-lights, switch-demo, coop-two-button-puzzles, trigger-fanout-fixture (TS and Luau), and build-time light-membership output for every content map. A resumed session without the session scratchpad regenerates it from c855e3e18 in a throwaway worktree. Capture commands are recorded in Task 1's row once written.
+Baseline commit: c855e3e18 (`main` after the claim). Before-data is captured from that commit: manifest JSON for arena-lights, switch-demo, coop-two-button-puzzles, trigger-fanout-fixture (TS and Luau), and build-time light-membership output for every content map. A resumed session without the session scratchpad regenerates it from c855e3e18 in a throwaway worktree. Capture: `bash <scratchpad>/baseline/capture.sh <checkout> <out-dir>` then `diff -r baseline/before <out-dir>`; build the driver with `CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0` (own target dir, deleted after). M1 = the light-membership sidecar `scripts-build` hands `prl-build` for each of the 14 content maps with a data script (22 without are listed in `_no-data-script.txt`). M2 = `setupLevel` return JSON for arena-lights.ts, switch-demo.ts, coop-two-button-puzzles.ts, trigger-fanout-fixture.{ts,luau}. Deterministic across two runs; identical after Task 2's splits.
 
 ## AC-to-proof
 
@@ -60,8 +63,8 @@ Baseline commit: c855e3e18 (`main` after the claim). Before-data is captured fro
 
 | # | Task | Owner | Depends on | Status |
 |---|---|---|---|---|
-| 1 | Capture baselines (M1, M2) from c855e3e18; record commands here | worker | — | |
-| 2 | Behavior-preserving splits of `reaction_dispatch.rs`, `trigger_bindings.rs`, `data_script.ts`, `data_script.luau` (one commit each) | worker | 1 | |
+| 1 | Capture baselines (M1, M2) from c855e3e18; record commands here | worker | — | done |
+| 2 | Behavior-preserving splits of `reaction_dispatch.rs`, `trigger_bindings.rs`, `data_script.ts`, `data_script.luau` (one commit each) | worker | 1 | done — 11d23900c, b18ad72a9, 647960755, c58e35ced; scripting-core 749+2, sim 1246, script-compiler 37 pass; baselines identical |
 | 3 | First slice: wire `kind` on primitive descriptor + sequence entry (JS+Luau parse, rejections), `SequenceTarget` group arm, kind resolution (npc = Brain minus seat-bound, player = seat-bound), client role check, `updateEnemyState`→`updateNpcState`, light pass/`collect_membership` skip; test NPC spawned during wait | worker | 2 | |
 | 4 | Trigger tick path: group `BoundTarget` (kind, optional tag), `bind_sequence_step`/partition group arm; A1, A2, A4-tick, Q5, R1/R2 in tick | worker | 3 | |
 | 5 | Spawner member: `spawner` query kind + snapshot, sequenced/bound id `spawnFromSpawner`, spawned NPCs inherit tags, `progress` install-time membership (M5, S1, S2, A3–A5) | worker | 4 | |

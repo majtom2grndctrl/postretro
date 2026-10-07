@@ -57,8 +57,11 @@
 // below is `postretro_render_cpu::surface_depth`, which is unit-tested without
 // a GPU. The functions here keep that module's names and order so the two read
 // side by side: `height.rs` (encoding), `march.rs` (the DDAs), `shading.rs`
-// (fade, AO). One rule is GPU-only and has no CPU mirror: the texel→meters
-// conversion just below (`texels_per_m`, `texel_rate`, `depth_scale_m` under
+// (fade, AO). Parity is on RESULTS, not code shape: the view march below has
+// no single-texel early-out, and the light march steps a pre-folded texel
+// coordinate; neither changes a result. One rule is GPU-only and has no CPU
+// mirror: the texel→meters conversion just below (`texels_per_m`, `texel_rate`,
+// `depth_scale_m` under
 // `SURFACE_DEPTH_TEXEL_MODE`) needs a per-fragment UV Jacobian that only
 // exists mid-shader. That is accepted because this is a purely graphical
 // carve — collision uses the true brush plane, so a wrong conversion is a
@@ -224,19 +227,32 @@ fn surface_height_quantize(s: f32, levels: f32) -> f32 {
     return s;
 }
 
-// Wrapped, quantized signed height fetch. `textureLoad` does not wrap, so the
-// tile is folded by hand — `base_uv` samples through `AddressMode::Repeat` and
-// the march is free to walk off the edge of the texture.
+// Quantized signed height of one texel, at a coordinate already folded into
+// the tile (`surface_depth_fold`).
 //
 // Quantization is a live aesthetic dial: neighbouring texels snap onto shared
 // plateaus, giving fewer and larger terraces. It does not affect the DDA's
 // exactness — that comes from the field being constant per texel, not from the
 // value landing on a plateau.
-fn surface_depth_texel(coord: vec2<i32>, dims: vec2<i32>, level: u32, levels: f32) -> f32 {
-    var folded = coord % dims;
-    folded = select(folded + dims, folded, folded >= vec2<i32>(0, 0));
+fn surface_depth_texel(folded: vec2<i32>, level: u32, levels: f32) -> f32 {
     let stored_g = textureLoad(spec_texture, folded, level).g;
     return surface_height_quantize(surface_height_fraction(stored_g), levels);
+}
+
+// Fold a texel coordinate into the tile. `textureLoad` does not wrap, so the
+// tile is folded by hand — `base_uv` samples through `AddressMode::Repeat` and
+// the march is free to walk off the edge of the texture.
+fn surface_depth_fold(coord: vec2<i32>, dims: vec2<i32>) -> vec2<i32> {
+    let folded = coord % dims;
+    return select(folded + dims, folded, folded >= vec2<i32>(0, 0));
+}
+
+// Step a folded coordinate one texel along one axis (`step` is -1, 0 or 1),
+// wrapping at the tile edge. Equal to folding the unfolded coordinate after the
+// same step, because the input is already inside `[0, dim)`.
+fn surface_depth_fold_step(folded: i32, step: i32, dim: i32) -> i32 {
+    let next = folded + step;
+    return select(select(next, next - dim, next >= dim), next + dim, next < 0);
 }
 
 // ---- uniform.rs ---------------------------------------------------------
@@ -329,12 +345,6 @@ fn surface_depth_dda_setup(origin: vec2<f32>, dir: vec2<f32>) -> SurfaceDepthDda
         dda.t_delta.y = abs(1.0 / dir.y);
     }
     return dda;
-}
-
-// Whether the view ray stays inside its starting texel across the whole band
-// (P2): it crosses no texel boundary before descending `band_m`.
-fn surface_depth_single_texel_band(dda: SurfaceDepthDda, band_m: f32) -> bool {
-    return min(dda.t_max.x, dda.t_max.y) > band_m;
 }
 
 // Resolve a fragment's relief: derive the surface frame, fade, march the
@@ -495,19 +505,27 @@ fn surface_depth_resolve(
     var hit_normal_ts = vec3<f32>(0.0, 0.0, 1.0);
     var hit_bias = vec2<f32>(0.0, 0.0);
 
-    // P2: the ray never leaves its starting texel above the band's floor, and
-    // every texel's top is inside the band, so it meets this texel's top.
-    // Exactly what the loop's first iteration returns, without the loop.
-    if surface_depth_single_texel_band(dda, band_m) {
-        z_hit = (peak - surface_depth_texel(dda.cell, dims_i, base_mip, levels)) * depth_scale_m;
-    } else {
+    // No single-texel early-out (P2) here, unlike the CPU authority: it
+    // resolves exactly what the loop's first iteration does, so dropping it
+    // changes no result. Measured on AMD Metal, the extra branch made the
+    // whole forward shader slower, even with Surface Depth off.
+    //
+    // The view loop keeps folding each fetch and returning from inside on
+    // starvation. Stepping a pre-folded coordinate, or breaking out to resolve
+    // below, each cut the loop body by a third, yet each made every fragment
+    // slower — Surface Depth off included — through how the compiler laid out
+    // the rest of the shader. So did removing the scope block below, which
+    // pushed the mover pipeline from 121 to 186 registers. Measure on the AMD
+    // Mac before reshaping this function.
+    {
         var z_enter = 0.0;
         var entry_normal_ts = vec3<f32>(0.0, 0.0, 1.0);
         var entry_bias = vec2<f32>(0.0, 0.0);
         var walked = 0u;
 
         loop {
-            let solid = (peak - surface_depth_texel(dda.cell, dims_i, base_mip, levels)) * depth_scale_m;
+            let solid = (peak - surface_depth_texel(surface_depth_fold(dda.cell, dims_i), base_mip, levels))
+                * depth_scale_m;
             let z_exit = min(dda.t_max.x, dda.t_max.y);
             // The ray was already inside this texel's solid when it entered: it
             // hit the SIDE wall it came through.
@@ -635,6 +653,9 @@ fn surface_depth_light_visibility(depth: SurfaceDepthResult, to_light: vec3<f32>
 
     let p0 = depth.march_uv * dims;
     var dda = surface_depth_dda_setup(p0, dir);
+    // Fold once, then step the folded coordinate: a signed `%` per fetch lowers
+    // to an integer divide plus naga's guards, about sixty instructions.
+    var texel = surface_depth_fold(dda.cell, dims_i);
 
     for (var i: u32 = 0u; i < depth.shadow_steps; i = i + 1u) {
         // Rising past the peak means the ray has left the relief band.
@@ -643,11 +664,11 @@ fn surface_depth_light_visibility(depth: SurfaceDepthResult, to_light: vec3<f32>
         }
         var risen: f32;
         if dda.t_max.x <= dda.t_max.y {
-            dda.cell.x = dda.cell.x + dda.step_dir.x;
+            texel.x = surface_depth_fold_step(texel.x, dda.step_dir.x, dims_i.x);
             risen = dda.t_max.x;
             dda.t_max.x = dda.t_max.x + dda.t_delta.x;
         } else {
-            dda.cell.y = dda.cell.y + dda.step_dir.y;
+            texel.y = surface_depth_fold_step(texel.y, dda.step_dir.y, dims_i.y);
             risen = dda.t_max.y;
             dda.t_max.y = dda.t_max.y + dda.t_delta.y;
         }
@@ -655,7 +676,7 @@ fn surface_depth_light_visibility(depth: SurfaceDepthResult, to_light: vec3<f32>
         // risen` below it, the texel's top `solid` below it. Plateaus share
         // exact quantized values, so equality must read as lit.
         let solid = (depth.peak_raise
-            - surface_depth_texel(dda.cell, dims_i, depth.base_mip, depth.quantize_levels))
+            - surface_depth_texel(texel, depth.base_mip, depth.quantize_levels))
             * depth.depth_scale_m;
         if clearance - risen > solid + SURFACE_DEPTH_SHADOW_BIAS_M {
             return 0.0;

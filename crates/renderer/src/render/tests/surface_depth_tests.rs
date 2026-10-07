@@ -840,10 +840,11 @@ fn a_non_surface_map_slot_never_marches_even_when_its_g_would_read_as_max_raise(
 }
 
 /// The signed march's structure, pinned against the CPU authority's: it starts
-/// at the peak (D6), measures the band (P1/P4), keeps the single-texel
-/// early-out (P2), resolves a starved march flat (D7), reports a signed height
-/// along the view ray, measures AO from the peak (D5) and ends the shadow
-/// march at the peak's clearance (P3).
+/// at the peak (D6), measures the band (P1/P4), resolves a starved march flat
+/// (D7), reports a signed height along the view ray, measures AO from the peak
+/// (D5) and ends the shadow march at the peak's clearance (P3). The CPU's
+/// single-texel early-out (P2) has no GPU branch: it resolves exactly what the
+/// loop's first iteration does, so parity holds on results.
 #[test]
 fn the_shader_march_mirrors_the_signed_cpu_march() {
     let code = strip_line_comments(SNIPPET);
@@ -853,9 +854,7 @@ fn the_shader_march_mirrors_the_signed_cpu_march() {
         "let band_m = (peak - trough) * depth_scale_m;",
         "if !(band_m > 0.0) {",
         "let start = p0 - dir * peak_m;",
-        "if surface_depth_single_texel_band(dda, band_m) {",
-        "return min(dda.t_max.x, dda.t_max.y) > band_m;",
-        "let solid = (peak - surface_depth_texel(dda.cell, dims_i, base_mip, levels)) * depth_scale_m;",
+        "let solid = (peak - surface_depth_texel(surface_depth_fold(dda.cell, dims_i), base_mip, levels))",
         "if walked + 1u >= max_steps {",
         "let height_m = peak_m - z_hit;",
         "out.world_position = world_position + view_to_eye * (height_m / descent);",
@@ -876,7 +875,10 @@ fn the_shader_march_mirrors_the_signed_cpu_march() {
         .find("if walked + 1u >= max_steps {")
         .expect("starved branch");
     assert!(
-        code[starved..].trim_start_matches(|c: char| c != '\n').trim_start().starts_with("return flat_result;"),
+        code[starved..]
+            .trim_start_matches(|c: char| c != '\n')
+            .trim_start()
+            .starts_with("return flat_result;"),
         "a starved march must resolve flat at the plane (D7)",
     );
     // The old carve-only vocabulary must be gone so no consumer keeps the old
@@ -892,4 +894,40 @@ fn the_shader_march_mirrors_the_signed_cpu_march() {
             "{label} must read `height_m`, not the renamed depth field",
         );
     }
+}
+
+/// The march shapes that were measured on AMD Metal (Metal System Trace,
+/// `campaign-test`, GPU held at its top clock), pinned so a reshape is a
+/// deliberate re-measurement rather than an accident.
+///
+/// No single-texel early-out branch: dropping it changes no result and made the
+/// forward pass faster even with Surface Depth off. The light march folds once
+/// and steps the folded coordinate: a signed `%` per fetch lowers to an integer
+/// divide plus naga's guards, about sixty instructions a step.
+#[test]
+fn the_dda_shapes_hold_their_measured_cost() {
+    let code = strip_line_comments(SNIPPET);
+    assert!(
+        !code.contains("surface_depth_single_texel_band"),
+        "the GPU march has no single-texel early-out; the CPU keeps it as the \
+         authority's proof that it is exact",
+    );
+    let fold = &code[code.find("fn surface_depth_fold(").expect("fold")..];
+    assert!(
+        fold[..fold.find('}').expect("fold body")].contains(" % "),
+        "the modulo belongs to the fold",
+    );
+    assert_eq!(
+        code.matches(" % ").count(),
+        1,
+        "only `surface_depth_fold` may take a modulo",
+    );
+    let light = &code[code
+        .find("fn surface_depth_light_visibility(")
+        .expect("light march")..];
+    assert!(
+        light.contains("var texel = surface_depth_fold(dda.cell, dims_i);")
+            && light.matches("surface_depth_fold_step(texel.").count() == 2,
+        "the light march steps a folded coordinate on both axes",
+    );
 }

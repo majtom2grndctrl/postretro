@@ -40,6 +40,10 @@ byte-for-byte identical to today's — nothing reaches the runtime.
   is exactly 0 past the outer cone) and back-face (`max(n·l, 0)` is exactly 0 when the
   surface faces away). Compute against the SH bake's own `incident_radiance_at_point` — not
   the lightmap's `contribution_covers_shadowmask`, whose epsilon is a different predicate.
+- **Keep the range test ahead of the zero test.** For finite light parameters an out-of-range
+  term is already exactly zero, but a non-finite origin a `.map` can author (`parse_origin`
+  accepts `nan`) yields a NaN term, not zero. The range-only guard skipped it; keeping
+  `light_reaches_point` first preserves that, so the loop is bit-identical for every input.
 - **Exact zero, not an epsilon.** Skip only when the contribution is exactly zero. An
   epsilon (near-zero cone fringe) would drop a tiny nonzero term the f32 accumulation keeps,
   breaking byte-identity. Byte-identity is then true by construction: a light contributing
@@ -67,9 +71,8 @@ byte-for-byte identical to today's — nothing reaches the runtime.
 - **Non-goal — guards in the other bakes.** The lightmap already gates on the full term; the
   direct family culls by reach. They gain only the shared probe-snap reuse.
 - **Layer placement — compile-time, bake-internal.** No format, section, wire, or runtime
-  change; no cache-key or stage-version change (output is byte-identical and the guard is
-  internal to the bake loop — the executor confirms the cold SH cache key does not capture
-  the culled ray set).
+  change; no cache-key or stage-version change — warm and cold output is byte-identical and
+  `main`'s cache reads back identically (`research.md`).
 
 ## Acceptance
 
@@ -103,6 +106,13 @@ byte-for-byte identical to today's — nothing reaches the runtime.
 - [ ] A slightly front-facing hit point (`n·l > 0`): the light is kept, contribution
   byte-identical.
 
+**Guard boundaries the review added**
+- [ ] A light with a NaN origin is skipped on range, exactly as before (it sits in the
+  bit-identity fixture beside the culled lights, which now lead the slice so a renumbered seed
+  would change the bits).
+- [ ] A spot term just inside the outer cone, below the lightmap's `1e-12` coverage epsilon,
+  keeps its ray and reaches the bounce sample.
+
 **Regression guards**
 - [ ] The existing range-boundary behavior is preserved — a light at exactly its falloff
   range keeps or drops as before (the range early-out is subsumed, not regressed).
@@ -116,9 +126,9 @@ byte-for-byte identical to today's — nothing reaches the runtime.
   mechanism, not the shipping magnitude.
 
 ## Path
-- **Seam.** The pre-ray guard in `sample_radiance_rgb` (`sh_bake.rs`) — today `if
-  !light_reaches_point(light, hit.point) { continue; }` before seed derivation and the
-  `soft_visibility` trace. Reuse `light_contribution_lambert` / `incident_radiance_at_point`
+- **Seam.** The pre-ray guard in `sample_radiance_rgb` (`sh_bake.rs`), before seed
+  derivation and the `soft_visibility` trace — formerly the range-only `light_reaches_point`
+  alone, now `bounce_contribution`. Reuse `light_contribution_lambert` / `incident_radiance_at_point`
   (same module) as the zero predicate; do not reinvent the cone or `n·l` math. Precedent for
   the full-term gate: `light_texel_contribution_and_visibility` (`lightmap_bake.rs`).
 - **Seam (probe reuse).** `SoftProbes::new` (`lightmap_bake.rs`), the single constructor

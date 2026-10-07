@@ -86,7 +86,7 @@ impl FogQuality {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SurfaceDepthQuality {
-    /// Force flat — byte-identical to the pre-Surface-Depth render, zero cost.
+    /// Force flat — byte-identical to the pre-Surface-Depth render; the march never runs.
     Off,
     /// The full effect: every material's per-prefix values verbatim, with the
     /// full self-shadow budget.

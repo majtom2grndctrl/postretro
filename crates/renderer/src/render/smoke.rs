@@ -263,7 +263,7 @@ fn plan_baked_sprite_array(
     for (slot_index, slot_flag, allowed_formats) in [
         // Slot 1 is the specular slot in both of the forms `format_allowed_for_slot`
         // permits: single-channel `R8Unorm`, and the two-channel `Rg8Unorm`
-        // surface map (R specular, G depth) that a bundle with an `_h.png`
+        // surface map (R specular, G inverted height) that a bundle with an `_h.png`
         // height sibling bakes to. Pinning one of them here declined an
         // otherwise valid sidecar and silently dropped the collection to its
         // PNG fallback. The sprite path reads only `.r`, and both formats are

@@ -10,6 +10,7 @@ use postretro_level_format::texture_cache_keys::TextureCacheKeysSection;
 use postretro_render_cpu::loaded_texture::{
     TextureSlotPlan, TextureSlotPolicy, slot_levels, texture_slot_plan,
 };
+use postretro_render_cpu::surface_depth::{SurfaceReliefLevels, surface_relief_from_rg8_levels};
 
 const PLACEHOLDER_SIZE: u32 = 64;
 const CHECKER_SQUARE: u32 = 8;
@@ -19,19 +20,15 @@ const BLACK_RGBA: [u8; 4] = [0, 0, 0, 255];
 /// The placeholder bound to the specular slot when a material has no `_s.png`
 /// and no `_h.png`: a single-channel 1×1 black texel.
 ///
-/// Both channels of the surface map degrade through this one texture, and both
-/// degrade correctly with no runtime code:
-/// - R (specular intensity) is 0 — the zero specular response this placeholder
-///   has always provided.
-/// - G (depth below the surface) is 0 because WGSL expands a single-channel
-///   sample to `(r, 0, 0, 1)`. Surface Depth stores DEPTH rather than height
-///   precisely so that 0 means "flat" (design D1, `resource_management.md`
-///   §4.6), which makes a material without a height map render identically to
-///   before the feature existed.
+/// R (specular intensity) is 0 — the zero specular response this placeholder
+/// has always provided. G is NOT flat by itself: WGSL expands a single-channel
+/// sample to `(r, 0, 0, 1)`, and `g = 0` under the signed encoding is MAXIMUM
+/// RAISE. What keeps a material without a height map on its true plane is the
+/// has-depth bit, which `build_material_bind_group` sets only for an
+/// `Rg8Unorm` slot — and this placeholder must therefore stay a non-`Rg8Unorm`
+/// format, so that gate stays clear for it.
 ///
-/// Widening this placeholder to two channels, or giving its G byte a non-zero
-/// value, would silently lift every un-mapped material off its true plane.
-/// `absent_specular_placeholder_is_a_flat_surface_map` pins both facts.
+/// `absent_specular_placeholder_is_never_a_surface_map` pins both facts.
 const SPECULAR_PLACEHOLDER_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R8Unorm;
 const SPECULAR_PLACEHOLDER_PIXEL: [u8; 1] = [0];
 
@@ -68,6 +65,11 @@ pub struct LoadedTexture {
     /// is keyed by this value so no slot is over-clamped when sibling slots
     /// have different chain depths (e.g. corrupted diffuse with intact normal).
     pub mip_count: u32,
+    /// The specular slot's RAW relief band at every uploaded mip, measured from
+    /// the bytes actually uploaded. [`SurfaceReliefLevels::FLAT`] for any slot
+    /// that is not an `Rg8Unorm` surface map. The uniform build picks the base
+    /// mip's band and quantizes it with the material's level count.
+    pub surface_relief: SurfaceReliefLevels,
 }
 
 /// Row-layout classification for a `.prm`-backed upload format.
@@ -84,7 +86,7 @@ pub struct LoadedTexture {
 fn upload_bytes_per_pixel(format: wgpu::TextureFormat) -> Option<Option<u32>> {
     match format {
         wgpu::TextureFormat::Rgba8Unorm | wgpu::TextureFormat::Rgba8UnormSrgb => Some(Some(4)),
-        // The two-channel surface map: R specular, G depth. A material with an
+        // The two-channel surface map: R specular, G inverted height. A material with an
         // `_h.png` height sibling bakes its specular slot to this instead of
         // `R8Unorm`, so every world-material upload path must size it.
         wgpu::TextureFormat::Rg8Unorm => Some(Some(2)),
@@ -277,7 +279,7 @@ pub(super) fn prm_format_to_wgpu(format: PrmFormat) -> wgpu::TextureFormat {
         PrmFormat::Rgba8UnormSrgb => wgpu::TextureFormat::Rgba8UnormSrgb,
         PrmFormat::Rgba8Unorm => wgpu::TextureFormat::Rgba8Unorm,
         PrmFormat::R8Unorm => wgpu::TextureFormat::R8Unorm,
-        // Two-channel surface map: R specular, G depth (see `PrmFormat`).
+        // Two-channel surface map: R specular, G inverted height (see `PrmFormat`).
         PrmFormat::Rg8Unorm => wgpu::TextureFormat::Rg8Unorm,
         // BC5 two-channel (R,G) block-compressed normal map. Requires the
         // adapter's TEXTURE_COMPRESSION_BC feature (checked at device creation
@@ -380,6 +382,7 @@ pub(super) fn placeholder_loaded_texture(
         emissive_texture,
         emissive_view,
         mip_count: 1,
+        surface_relief: SurfaceReliefLevels::FLAT,
     }
 }
 
@@ -508,6 +511,7 @@ pub fn load_textures(
             emissive_texture,
             emissive_view,
             mip_count: plan.mip_count,
+            surface_relief: specular_surface_relief(&slot_results[1], plan.consume[1]),
         });
     }
 
@@ -582,6 +586,27 @@ pub(super) fn load_model_diffuse_texture(
         emissive_texture,
         emissive_view,
         mip_count: plan.mip_count,
+        // Models take the neutral specular placeholder: no surface map.
+        surface_relief: SurfaceReliefLevels::FLAT,
+    }
+}
+
+/// The raw relief band of every mip of the specular slot, from the exact bytes
+/// `upload_slot_or_placeholder` uploads for it.
+///
+/// Empty ([`SurfaceReliefLevels::FLAT`]) unless the slot is consumed AND decodes as
+/// an `Rg8Unorm` surface map — the same condition under which the bound
+/// texture has that format. Any other slot must never report relief: an R8
+/// slot's G would read as maximum raise under the signed encoding.
+fn specular_surface_relief(
+    slot_result: &Result<PrmSlot, PrmReadError>,
+    consume: bool,
+) -> SurfaceReliefLevels {
+    match slot_result {
+        Ok(slot) if consume && prm_format_to_wgpu(slot.format) == wgpu::TextureFormat::Rg8Unorm => {
+            surface_relief_from_rg8_levels(&slot_levels(slot))
+        }
+        _ => SurfaceReliefLevels::FLAT,
     }
 }
 
@@ -651,21 +676,24 @@ mod tests {
     /// Surface Depth's central safety property: a material WITHOUT a height
     /// map must render exactly as it did before the feature existed.
     ///
-    /// That holds with no runtime code at all, and this test exists to keep it
-    /// that way. The absent-specular placeholder is a single-channel `R8Unorm`
-    /// black texel; WGSL expands a single-channel sample to `(r, 0, 0, 1)`, so
-    /// the surface map's depth channel `.g` is already 0, and Surface Depth
-    /// stores depth-below-surface so that 0 means flat. Nothing about the
-    /// placeholder needed to change for the feature — but widening it to two
-    /// channels, or filling its G byte, would push every un-mapped material
-    /// off its true plane the moment the march reads it.
+    /// Under the signed encoding the placeholder's expanded `(r, 0, 0, 1)` has
+    /// `.g == 0`, which reads as MAXIMUM RAISE, so the placeholder is not flat
+    /// by itself. The has-depth gate keeps it on the true plane: the bit is set
+    /// only for an `Rg8Unorm` slot. This test pins the placeholder's side of
+    /// that bargain — it must stay a black single-channel texel that the gate
+    /// never classifies as a surface map. Widening it to two channels would
+    /// open the gate and lift every un-mapped material by its full depth.
     #[test]
-    fn absent_specular_placeholder_is_a_flat_surface_map() {
+    fn absent_specular_placeholder_is_never_a_surface_map() {
         assert_eq!(
             SPECULAR_PLACEHOLDER_FORMAT,
             wgpu::TextureFormat::R8Unorm,
-            "the specular placeholder must stay single-channel: WGSL's (r, 0, 0, 1) expansion \
-             is what makes the depth channel read 0 for a material with no height map",
+            "the specular placeholder must stay single-channel: its expanded g = 0 reads as \
+             maximum raise, so only the has-depth gate keeps it flat",
+        );
+        assert!(
+            !crate::render::specular_slot_is_surface_map(SPECULAR_PLACEHOLDER_FORMAT),
+            "the has-depth gate must never open for the specular placeholder",
         );
         assert_eq!(
             SPECULAR_PLACEHOLDER_PIXEL,
@@ -772,6 +800,48 @@ mod tests {
         assert_eq!(
             uploaded, payload_len,
             "the per-level uploads must consume the slot payload exactly",
+        );
+    }
+
+    fn slot(format: PrmFormat, width: u16, height: u16, payload: Vec<u8>) -> PrmSlot {
+        PrmSlot {
+            format,
+            width,
+            height,
+            level_count: 1,
+            payload,
+        }
+    }
+
+    /// The relief is measured from the bytes uploaded, in the slot's own
+    /// chain: a stored G of 0 is authored white (max raise), 255 is black.
+    #[test]
+    fn specular_relief_is_measured_from_the_uploaded_surface_map() {
+        // Two texels of [R, G]: authored 128 (stored 127) and authored 192
+        // (stored 63).
+        let slot = slot(PrmFormat::Rg8Unorm, 2, 1, vec![9, 127, 9, 63]);
+        let relief = specular_surface_relief(&Ok(slot), true).at(0);
+        assert_eq!(relief.peak_raise, 0.5);
+        assert_eq!(relief.trough, 0.0);
+    }
+
+    /// A single-channel or unconsumed specular slot has no relief, even when
+    /// its bytes would read as maximum raise (stored G = 0).
+    #[test]
+    fn a_non_surface_map_slot_reports_no_relief() {
+        let r8 = slot(PrmFormat::R8Unorm, 2, 1, vec![0, 0]);
+        assert_eq!(
+            specular_surface_relief(&Ok(r8), true),
+            SurfaceReliefLevels::FLAT
+        );
+        let unconsumed = slot(PrmFormat::Rg8Unorm, 1, 1, vec![0, 0]);
+        assert_eq!(
+            specular_surface_relief(&Ok(unconsumed), false),
+            SurfaceReliefLevels::FLAT
+        );
+        assert_eq!(
+            specular_surface_relief(&Err(PrmReadError::NotPresent), true),
+            SurfaceReliefLevels::FLAT
         );
     }
 

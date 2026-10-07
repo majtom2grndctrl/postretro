@@ -10,6 +10,7 @@
 - **Engineering conventions / code style** → `development_guide.md`
 - **Crate layering / where new code goes / dependency direction** → `development_guide.md` §Workspace
 - **Build and run commands / standard build configuration / which cargo profile and features to use** → `development_guide.md` §Build and run
+- **Worktree builds / where a worktree's `target/` goes / disk budget for parallel builds / A/B binaries from another commit** → `development_guide.md` §Worktree builds
 - **Crate dependency graph / blast radius / what depends on X** → `crate-graph.md` (generated); live queries via `cargo run -p xtask -- crate-graph --rdeps <crate>`
 - **Context file writing / updates** → `context_style_guide.md`
 - **Testing** → `testing_guide.md`
@@ -58,6 +59,7 @@
 - **3D model / glTF import (scale, pivot, material format)** → `resource_management.md` §7
 - **Scripting / primitives / SDK types / scripting crate boundaries / VM compile firewall** → `scripting.md`
 - **Reaction dispatch model / event sources / dispatch scopes / reaction parameters / occupancy exposure** → `scripting.md` §12
+- **Entity addressing / map members (`getMapEntities`) vs. groups (`npcs`, `players`) vs. subject tokens / per-member `.on` sources / spawned-NPC tags** → `scripting.md` §12 (Entity addressing)
 - **Netcode / multiplayer / co-op / replication / transport / wire format** → `networking.md`
 - **Live introspection channel / observe-live / localhost debug socket / reading a running session's state over a socket** → `networking.md` §Not netcode: the live introspection channel
 - **Joining a session / admission vs content parity / slot lifecycle / host level change / what gates vs what replicates** → `networking.md` §Admission and content parity · §Slot lifecycle · §What gates, and what replicates instead

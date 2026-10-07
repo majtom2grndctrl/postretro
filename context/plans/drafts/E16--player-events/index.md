@@ -6,7 +6,8 @@ Brief · resumable · Epic 16 · reads: `context/lib/scripting.md` §5, §10.4, 
 A requested capability, raised by the owner and by E24's direction review. In co-op a mod cannot react to one player's state changing — "when a player's XP reaches 100, level that player up", "when a submerged player runs out of air, damage that player". `onStateCrossing` runs on every machine over that machine's own view, so on the host it sees only the host's player; engine player slots hold only the local pawn's value; and E16 rejects crossings on mod per-owner slots outright. The host-only sources that do see every player, trigger events and impact policies, fire on spatial and hit edges, not state, and any sound or screen effect they fire plays on the host's machine. When done, a mod declares a per-player event over any per-player value; the host fires it once per player per edge, naming that player as command target and read owner; every owner-private engine player value is readable per player on the host; and the event's sounds and screen effects play on that player's own machine. E24's swim slots and E16's per-player XP level-up are the first consumers.
 
 ## Decisions
-- **A host-only sibling source, not a crossing mode.** `onPlayerEvent` registers and evaluates on host and single player only, never on a connected client — the trigger-event model (`plans/done/E18--trigger-event-params`). `onStateCrossing` keeps its meaning: every machine, its own view (`scripting.md` §10.4). A mode flag on crossings was rejected: one name would cover two machine sets, and forgetting the flag silently watches the host's player only.
+- **A host-only sibling source, not a crossing mode.** `players.on` registers and evaluates on host and single player only, never on a connected client — the trigger-event model (`plans/done/E18--trigger-event-params`). `onStateCrossing` keeps its meaning: every machine, its own view (`scripting.md` §10.4). A mode flag on crossings was rejected: one name would cover two machine sets, and forgetting the flag silently watches the host's player only.
+- **Spelled `players.on(edge, fire, options?)`.** `players` is a frozen SDK namespace, like `world`, standing for every player; `.on` returns a pure descriptor that takes effect only when returned under `playerEvents`, exactly as `onTriggerEvent` and `onStateCrossing` do. It is the first source not spelled `onX(…)`; aligning the other sources is the deferred crossings redesign's call. `getGameState().player` stays a tree of state refs and gains no methods.
 - **Evaluated once per authoritative tick, after the tick settles** — after the death sweep, so a condition sees this tick's damage and ammo. Frame-rate independent and inside the determinism gate. A slot written by a frame-end reaction drain is seen the following tick.
 - **Condition plus edge word.** The condition is a Bool expression in the fluent algebra (`read(ref)`, `.ge`, `.and`, …). `becomes(cond)` fires false→true, `ceases(cond)` true→false, `changes(cond)` both, publishing `on.rising`. A non-Bool condition is rejected at install, naming the event. There is no threshold form; a threshold is `read(x).ge(t)`.
 - **Inside the condition, a plain read of a per-player slot means the player being evaluated** — engine per-player slots and mod per-owner slots alike; global slots read as everywhere. This is the one place a plain per-owner read binds. E16's explicit-owner rule (`plans/done/E16--per-player-currency` Decisions) holds everywhere else; here the owner is the event's subject and cannot be the wrong player.
@@ -14,18 +15,18 @@ A requested capability, raised by the owner and by E24's direction review. In co
 - **`on.player` is the event's player, as command target and read owner.** It joins the `@activators` family: `damage`, `grantHealth`, `grantAmmo` and `addSlot` resolve it to that player's pawn or seat. `ref.byPlayer(on.player)` reads that player's value in the fired reaction. Both are legal only in reactions this source fires; a reaction using either, subscribed to any other source, is rejected at install, naming the reaction and the source (E18 sentinel rule). `Seat` never reaches the authoring surface (E16).
 - **Owner-private engine player slots become per-player.** The engine-state catalog marks them, and each has one host-side lookup from pawn to value that reads the pawn's components. Owner-private replication, condition reads and `byPlayer` reads all share that lookup, so no stored per-player copy can drift. The lookup lives below `netcode` so both the sim-side scope and replication reach it (`development_guide.md` §Workspace). A plain read anywhere else keeps meaning the local player — HUD binds, `bindState`, local crossings, impact-policy ambient reads. `byPlayer` on these refs takes `on.player` or `impact.source`. E24 adds its swim slots on this seam.
 - **Crossings are unchanged.** `onStateCrossing` on a mod per-owner slot stays rejected at bind (`plans/done/E16--per-player-currency` Decisions): accepting it would silently watch one player on the host, the trap this brief rejects in the mode-flag rival, and would fix crossing semantics ahead of the redesign this brief defers.
-- **Own-state presentation stays client-local; `onPlayerEvent` presentation is for host decisions.** An effect that reflects a player's own replicated state — a low-health vignette, an ammo warning, a swim splash — is a local `onStateCrossing` on that player's machine, with no host round trip and no loss (as `coop-trigger-screen-effects` and `movement--state-transition-feel` treat own-state feedback). `onPlayerEvent` carries presentation that follows a host decision: a level-up fanfare, a scald on overheat. `scripting.md` teaches the split.
+- **Own-state presentation stays client-local; `players.on` presentation is for host decisions.** An effect that reflects a player's own replicated state — a low-health vignette, an ammo warning, a swim splash — is a local `onStateCrossing` on that player's machine, with no host round trip and no loss (as `coop-trigger-screen-effects` and `movement--state-transition-feel` treat own-state feedback). `players.on` carries presentation that follows a host decision: a level-up fanfare, a scald on overheat. `scripting.md` teaches the split.
 - **Presentation plays on `on.player`'s own machine.** A `playSound`, `rumble`, `flashScreen`, `vignette` or `screenShake` step in a reaction this source fires runs locally when that player is the host's or single player's, and otherwise is sent to that client alone as a new Presentation-channel message kind, which the client turns back into the same local command. Unreliable, like other transient feedback (`networking.md` §Presentation events vs. replicated state); the receiving machine's accommodations (E23 flash limiter, reduce motion) apply. "World-anchored only" describes today's payloads, not the channel; the damage bearing rides slots because it is a continuous fact, and these are one-shot commands. The wire version bumps.
 - **No emitter.** This source publishes no `emitter`; `playSound(…, { at: on.emitter })` in its reaction warn-skips as for other emitterless sources (`scripting.md` §12). Its sounds play unpositioned on the player's machine.
 - **Non-goals.**
-  - Whose screen a *trigger*-fired effect belongs to: `coop-trigger-screen-effects` owns that policy and reuses this delivery path. Until it settles, routing is engine-chosen — `onPlayerEvent` presentation reaches the subject only, with no author override such as broadcasting to every player.
+  - Whose screen a *trigger*-fired effect belongs to: `coop-trigger-screen-effects` owns that policy and reuses this delivery path. Until it settles, routing is engine-chosen — `players.on` presentation reaches the subject only, with no author override such as broadcasting to every player.
   - Redesigning `onStateCrossing`. The owner suspects it predates a netplay-aware design; `research.md` §Symptom watch records evidence as it appears.
   - Per-player named engine events (`playerDied` carrying its player), `changes` over non-Bool values, positioned sounds heard by every nearby player, per-owner `accumulate`, and E16's open environmental-damage policy.
   - E24's swim slots themselves.
 
 ### Scripting surface
 ```ts
-import { onPlayerEvent, becomes, ceases, read, addSlot, damage, defineStore, defineReaction, getGameState } from "postretro";
+import { players, becomes, ceases, read, addSlot, damage, defineStore, defineReaction, getGameState } from "postretro";
 import type { PlayerEventParams } from "postretro";
 import { playSound, flashScreen, vignette, updateState, onStateCrossing } from "postretro/ui";
 
@@ -50,9 +51,9 @@ export function setupLevel() {
   return {
     reactions: [levelUp, scald, cooled, bleeding],
     playerEvents: [   // host decisions: run on the host, once per player
-      onPlayerEvent(becomes(read(progress.xp).ge(100).and(read(progress.level).lt(2))), [levelUp]),
-      onPlayerEvent(becomes(read(player.overheated)), [scald]),          // overheating burns the wielder
-      onPlayerEvent(ceases(read(player.overheated)), [cooled], { levels: ["campaign"] }),
+      players.on(becomes(read(progress.xp).ge(100).and(read(progress.level).lt(2))), [levelUp]),
+      players.on(becomes(read(player.overheated)), [scald]),          // overheating burns the wielder
+      players.on(ceases(read(player.overheated)), [cooled], { levels: ["campaign"] }),
     ],
     crossings: [      // own-state feedback: each machine, its own player
       onStateCrossing(player.health, { below: 25 }, [bleeding]),
@@ -60,7 +61,7 @@ export function setupLevel() {
   };
 }
 ```
-`onPlayerEvent(edge, fire, options?)` returns a descriptor for the `playerEvents` key on `setupLevel`'s manifest and on `ModManifest`; `options.levels` scopes it like crossings. `PlayerEventParams` carries `player` and `rising`. Luau mirrors it.
+`players.on(edge, fire, options?)` returns a descriptor for the `playerEvents` key on `setupLevel`'s manifest and on `ModManifest`; `options.levels` scopes it like crossings. `PlayerEventParams` carries `player` and `rising`. Luau mirrors it.
 
 ## Acceptance
 ### Automated
@@ -83,18 +84,18 @@ export function setupLevel() {
 - [ ] Every owner-private engine player slot resolves through the shared lookup; owner-private snapshots for two clients are byte-identical before and after the conversion.
 - [ ] A plain read of an engine player slot still means the local player in a HUD bind, `bindState`, a local `onStateCrossing` and an impact policy.
 - [ ] `byPlayer(impact.source)` on an engine player slot in an impact policy reads the source player's value.
-- [ ] A reaction using `on.player` as a target or a `byPlayer` owner, subscribed to `levelLoad`, a crossing or a trigger event, is rejected at install, naming the reaction and the source; the same reaction under `onPlayerEvent` installs.
+- [ ] A reaction using `on.player` as a target or a `byPlayer` owner, subscribed to `levelLoad`, a crossing or a trigger event, is rejected at install, naming the reaction and the source; the same reaction under `players.on` installs.
 - [ ] `on.player` resolving to a player whose pawn despawned before the drain warn-skips the command and leaves sibling commands applying.
 
 **Roles**
-- [ ] A connected client neither registers nor evaluates `onPlayerEvent`, and fires nothing from it.
+- [ ] A connected client neither registers nor evaluates `players.on`, and fires nothing from it.
 - [ ] `onStateCrossing` on a mod per-owner slot is still rejected at bind on every role, naming the slot (regression guard); a local crossing on `player.health` still fires on each machine for its own player.
 
 **Presentation**
 - [ ] Loopback harness, host plus two clients: a `flashScreen` from an event for client A arrives on A only — not the host, not client B. The host's own player's event presents on the host only.
 - [ ] Each presentation command round-trips the new message kind with identical fields; a dropped message presents nothing and breaks nothing.
 - [ ] A forwarded `flashScreen` passes through the receiving machine's flash limiter and reduce-motion scaling.
-- [ ] `playSound` with `at: on.emitter` in an `onPlayerEvent` reaction warn-skips; without `at` it plays.
+- [ ] `playSound` with `at: on.emitter` in a `players.on` reaction warn-skips; without `at` it plays.
 
 **Surface**
 - [ ] The Scripting surface example runs as a `content/dev` script, and its TypeScript and Luau twins produce byte-identical wire data.
@@ -119,7 +120,7 @@ export function setupLevel() {
 ## Boundary inventory
 | Name | Rust | Wire / serde | JS / TS | Luau | FGD KVP |
 |---|---|---|---|---|---|
-| Source builder | player-event descriptor | manifest JSON `playerEvents[]` | `onPlayerEvent(edge, fire, options?)` | `onPlayerEvent(edge, fire, options?)` | n/a |
+| Source builder | player-event descriptor | manifest JSON `playerEvents[]` | `players.on(edge, fire, options?)` | `players.on(edge, fire, options?)` | n/a |
 | Edge words | edge enum `Becomes \| Ceases \| Changes` | `"becomes"`, `"ceases"`, `"changes"` | `becomes(cond)`, `ceases(cond)`, `changes(cond)` | same | n/a |
 | Params | dispatch inputs | `@player` (target and owner token), `@rising` (Bool) | `PlayerEventParams { player, rising }` | same | n/a |
 | Manifest key | `LevelManifest`/`ModManifest` field | `playerEvents` | `playerEvents` | `playerEvents` | n/a |

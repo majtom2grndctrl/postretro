@@ -11,7 +11,7 @@ Read at 04f049215. Findings that inform the brief without deciding it.
 | Named gameplay events | yes | yes, over locally produced edges | yes | per command |
 | `levelLoad` | yes | yes | yes | per command |
 
-Command-side gates on a client: `owner_slot_writes_enabled` suppresses `addSlot` and sentiment writes; `SpawnContext` suppresses runtime spawns; the scheduler and auto-close timers are disabled. Presentation commands run on whichever machine drains them. Not verified: whether `damage`/`grantHealth`/`grantAmmo` from a client-drained reaction is suppressed — irrelevant here, since `onPlayerEvent` never runs on a client.
+Command-side gates on a client: `owner_slot_writes_enabled` suppresses `addSlot` and sentiment writes; `SpawnContext` suppresses runtime spawns; the scheduler and auto-close timers are disabled. Presentation commands run on whichever machine drains them. Not verified: whether `damage`/`grantHealth`/`grantAmmo` from a client-drained reaction is suppressed — irrelevant here, since `players.on` never runs on a client.
 
 Crossings are presentation observers by design: E18 trigger-event-fanout's acceptance has a host trigger write a shared slot and a client crossing fire a local reaction after replication. A code comment on the client branch of `dispatch_primitive` says clients compose the same descriptors "for presentation work".
 
@@ -25,7 +25,7 @@ On the host, `player.health` and the weapon slots hold the local pawn's value on
 - **`on.player` only as a command target.** Cheaper — no reaction-side owned reads — but the fired reaction could not read the crossing player's other values. The owner chose both.
 - **Present-to-player via slots** (the damage-bearing precedent: owner-private slots, no message kind). Right for a continuous fact a HUD binds; wrong for one-shot commands, which would need a write-then-observe idiom and a per-owner absolute reaction write that does not exist. The channel is world-anchored only by its current payloads: `ServerPresentationPayload::{Spawn, OverlayFact}`; `NetServer::send_presentation` addresses one client.
 - **Lift E16's per-owner crossing rejection** so a crossing watches the local projection. Drafted, then reversed after direction review: on the host it silently watches one player — the same trap as the mode-flag rival — and it would fix crossing semantics ahead of the deferred redesign. Content written against it would be the brief's one costly reversal.
-- **Own-state presentation through `onPlayerEvent`.** Drafted in the first sample (a low-health vignette). Reversed: a client-local crossing over the player's own replicated value has no host round trip and no loss, matching `coop-trigger-screen-effects` ("crossing-driven effects already run on the owning client") and `movement--state-transition-feel`.
+- **Own-state presentation through `players.on`.** Drafted in the first sample (a low-health vignette). Reversed: a client-local crossing over the player's own replicated value has no host round trip and no loss, matching `coop-trigger-screen-effects` ("crossing-driven effects already run on the owning client") and `movement--state-transition-feel`.
 - **Full split by authority.** The host source carries consequences only; all presentation is client-local crossings over replicated state, with no new message kind. Loses on host decisions that leave no replicated trace a client can observe — a non-replicating per-owner slot, a one-tick guarded edge, an effect declared once beside its consequence — which need forwarding. Wins the own-state case, which the brief adopts.
 - **Step-class partition across machines** (the `scripting.md` §12 trigger partition: consequential steps in-tick, presentation steps app-side), extended so a reaction's presentation steps run on the subject's machine automatically. Considered as the mechanism under present-to-player rather than a rival to it.
 - **Evaluate per frame** (the crossing stage). Sees settled slots but is frame-rate dependent — several ticks collapse into one observation — and sits outside the determinism gate. Evaluating in the Triggers stage would miss this tick's impacts, weapons and death sweep.
@@ -33,12 +33,13 @@ On the host, `player.health` and the weapon slots hold the local pawn's value on
 ## Milestones and the guard idiom
 Per-owner values survive level transitions, disconnect holds and (with `E16--per-player-persistence`) sessions, while edge memory is rebuilt at every level install. Under fire-at-first-sight, a milestone over such a value re-fires at each install, join and reclaim unless its condition goes false once handled. The guard (`xp ≥ 100 && level < 2`, with the reaction raising `level`) makes the condition self-extinguishing, so it is correct under any edge-memory loss — more robust than relying on edge memory, which arm-only also loses across installs. The reference example and the scripting docs teach it.
 
-## Symptom watch: is `onPlayerEvent` the shape `onStateCrossing` should have had?
+## Symptom watch: is `players.on` the shape `onStateCrossing` should have had?
 The owner asked to record evidence that the crossings API was designed before the engine's netplay shape was understood. Evidence so far:
 - The threshold form is redundant with the fluent algebra (`read(x).ge(t)` plus an edge word); it survives only as a second spelling with its own normalization (`raw / max`).
 - Crossings' arm-only first-sight rule suits HUD presentation but not gameplay.
-- `playerDied` is a single global event with no player token; in co-op a mod cannot tell who died. `onPlayerEvent(died, …)` would be its natural home.
+- `playerDied` is a single global event with no player token; in co-op a mod cannot tell who died. `players.on(died, …)` would be its natural home.
 - A local twin — `onStateEvent(becomes(cond), fire)` running on every machine over its own view — would make the two sources differ only in which machines run them. It is also where a per-owner HUD watcher belongs: designing it would retire the E16 per-owner crossing rejection without the trap a bare lift carries.
+- Spelling: the owner chose a listener-style `players.on(…)` over a free `onPlayerEvent(…)`. Every other source is a free `onX(…)` function, and the SDK's other namespaces (`world`, `brain`, `activation`, `fact`) group queries and runtime inputs, not sources. A family convention — `players.on`, plus something like `triggers.on` and a local `state.on` — is the redesign's to settle, so all sources move together.
 Add a line here whenever building or using either source turns up another.
 
 ## Consumers

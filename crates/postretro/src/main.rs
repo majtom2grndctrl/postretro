@@ -2069,6 +2069,22 @@ impl ApplicationHandler for App {
                     }
                     return;
                 };
+                // The capture prompt takes a wheel notch as `wheel_up` or
+                // `wheel_down`; it scrolls nothing.
+                if session.capture_prompt_is_active() {
+                    let y = match delta {
+                        winit::event::MouseScrollDelta::LineDelta(_, y) => y,
+                        winit::event::MouseScrollDelta::PixelDelta(p) => p.y as f32,
+                    };
+                    if y != 0.0 {
+                        session.offer_capture_press(if y > 0.0 {
+                            input::PhysicalInput::MouseWheelUp
+                        } else {
+                            input::PhysicalInput::MouseWheelDown
+                        });
+                    }
+                    return;
+                }
                 let forwards_to_gameplay = session
                     .ui_dispatch
                     .dispatch_event(None)

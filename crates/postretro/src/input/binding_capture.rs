@@ -125,6 +125,17 @@ mod tests {
     }
 
     #[test]
+    fn a_wheel_notch_binds_to_a_stepped_or_digital_command() {
+        let mut cycle = capture(Command::CycleWieldableNext, DeviceClass::KeyboardMouse);
+        cycle.offer_press(PhysicalInput::MouseWheelDown);
+        assert_eq!(cycle.take_candidate(), Some(PhysicalInput::MouseWheelDown));
+
+        let mut look = capture(Command::LookX, DeviceClass::KeyboardMouse);
+        look.offer_press(PhysicalInput::MouseWheelUp);
+        assert_eq!(look.take_candidate(), None, "a wheel notch cannot drive an analog command");
+    }
+
+    #[test]
     fn escape_is_capturable() {
         let mut prompt = capture(Command::NavCancel, DeviceClass::KeyboardMouse);
         prompt.offer_press(PhysicalInput::Key(KeyCode::Escape));

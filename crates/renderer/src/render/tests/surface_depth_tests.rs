@@ -193,8 +193,8 @@ fn material_uniform_member_offsets_match_the_cpu_packer() {
 
 /// Every tuning constant exists twice — once as the GPU-free authority in
 /// `postretro_render_cpu::surface_depth`, once in WGSL. Pin them together by
-/// VALUE (parsing the declared literal, so a reformat is not a failure);
-/// a silent divergence would make the CPU reference tests prove nothing.
+/// VALUE (parsing the declared literal, so a reformat is not a failure); a
+/// silent divergence would make the CPU reference tests prove nothing.
 #[test]
 fn shader_constants_match_the_cpu_reference() {
     fn declared(name: &str, ty: &str) -> String {
@@ -403,14 +403,12 @@ fn surface_depth_honors_the_hard_renderer_constraints() {
     // CHART_PADDING_TEXELS = 2 of gutter, so a parallax offset would pull a
     // neighbouring chart across it.
     //
-    // Asserted POSITIVELY, per call site, because the negative form this
-    // replaced — no line contains both `lightmap_uv` and `depth.` — was vacuous
-    // against the one refactor that actually breaks the constraint:
-    // `sample_lightmap_irradiance(shade_uv, ...)` in place of
-    // `in.lightmap_texel` contains neither token, so the test stayed green
-    // while the atlas was sampled at the marched UV. The shadowmask path is the worse half of that hole, since
-    // it is a layered atlas and `shadowmask_union_subtraction` forwards one
-    // UV to every promoted light on the fragment.
+    // Asserted positively, per call site. A negative form (no line names both
+    // `lightmap_uv` and `depth.`) passes `sample_lightmap_irradiance(shade_uv,
+    // ...)`, which samples the atlas at the marched UV. The shadowmask path
+    // matters most: it is a layered atlas, and `shadowmask_union_subtraction`
+    // forwards one UV to every promoted light on the fragment.
+    //
     // Forward plus the lightmap sampling helpers it composes.
     let forward_code = strip_line_comments(&format!("{FORWARD}\n{LIGHTMAP_SAMPLE}"));
     // The animated atlas is read at the block-remapped UV, a pure atlas
@@ -438,9 +436,8 @@ fn surface_depth_honors_the_hard_renderer_constraints() {
             // The texel must appear as a WHOLE argument, not merely somewhere
             // in the window: `sample_lightmap_irradiance(in.lightmap_texel +
             // parallax, ..)` contains the token but is exactly the offset this
-            // forbids.
-            // Its position varies — `shadowmask_union_subtraction` takes the
-            // world position first — so match any argument, not the first.
+            // forbids. Its position varies — `shadowmask_union_subtraction`
+            // takes the world position first — so match any argument.
             let accepted: &[&str] = if call == "sample_lightmap_animated(" {
                 &["animated.uv"]
             } else {
@@ -460,7 +457,8 @@ fn surface_depth_honors_the_hard_renderer_constraints() {
         }
         assert!(
             call_sites > 0,
-            "forward: no call site for `{call}`, so this guard asserts nothing —              the call was renamed or removed and the assertion list is stale",
+            "forward: no call site for `{call}`, so this guard asserts nothing — \
+             the call was renamed or removed and the assertion list is stale",
         );
     }
 
@@ -480,8 +478,8 @@ fn surface_depth_honors_the_hard_renderer_constraints() {
     }
 
     // The mover has no lightmap path at all, so it has nothing to offset. Pin
-    // that fact rather than looping the checks above over it, which is what the
-    // previous form did — vacuously, since the token never appears there.
+    // that fact: the checks above would pass on it vacuously, since the token
+    // never appears there.
     let kinematic_code = strip_line_comments(KINEMATIC);
     assert!(
         !kinematic_code.contains("lightmap_uv") && !kinematic_code.contains("lightmap_texel"),
@@ -538,8 +536,8 @@ fn surface_depth_honors_the_hard_renderer_constraints() {
 /// through thin walls. Surface Depth's side-wall normal points ALONG the surface
 /// (perpendicular to the surface NORMAL, lying in the tangent plane), so biasing
 /// along it would slide the lookup sideways across the face instead of lifting
-/// it off — the opposite of what the bias is for. The two
-/// normals must therefore stay separate arguments.
+/// it off — the opposite of what the bias is for. The two normals must
+/// therefore stay separate arguments.
 #[test]
 fn the_sh_lookup_bias_never_uses_the_dda_face_normal() {
     for (label, consumer, shading, bias) in [
@@ -555,15 +553,16 @@ fn the_sh_lookup_bias_never_uses_the_dda_face_normal() {
             code.contains(&format!(
                 "sample_sh_indirect(in.world_position, {shading}, {bias}, mesh_n)"
             )),
-            "{label}: SH indirect must evaluate for the DDA face normal but bias along              the bumped surface normal",
+            "{label}: SH indirect must evaluate for the DDA face normal but bias along \
+             the bumped surface normal",
         );
     }
 }
 
-/// The base mip must reach the shader as a parameter. A hardcoded 0
-/// would silently read non-resident data once streaming drops top mips, and
-/// the fade must key off the resident level's dimensions so a streamed-out
-/// surface map flattens instead of popping.
+/// The base mip must reach the shader as a parameter. A hardcoded 0 would
+/// silently read non-resident data once streaming drops top mips, and the fade
+/// must key off the resident level's dimensions so a streamed-out surface map
+/// flattens instead of popping.
 #[test]
 fn the_dda_base_mip_is_a_parameter_not_a_hardcoded_zero() {
     let code = strip_line_comments(SNIPPET);
@@ -762,8 +761,8 @@ fn both_world_pipelines_pass_naga_validation() {
     }
 }
 
-/// The player's Surface Depth switch reaches the shader as DATA in
-/// the per-material uniform, because the switch is applied by rewriting that
+/// The player's Surface Depth switch reaches the shader as DATA in the
+/// per-material uniform, because the switch is applied by rewriting that
 /// buffer — this engine has no shader-variant system, so anything the switch
 /// must turn off has to be decodable from the packed march word.
 #[test]
@@ -807,8 +806,8 @@ fn the_player_switch_reaches_the_shader_through_the_packed_march_word() {
 }
 
 /// The prefix-driven parameters reach the shader through uniform bytes 8..32
-/// (the relief band and the second row), and a material with no height sibling never sets the
-/// has-depth flag however deep its prefix asks to carve.
+/// (the relief band and the second row), and a material with no height sibling
+/// never sets the has-depth flag however deep its prefix asks to carve.
 #[test]
 fn material_parameters_are_prefix_driven_and_gated_on_the_loaded_slot() {
     let concrete = Material::Concrete.surface_depth();
@@ -922,69 +921,69 @@ fn a_non_surface_map_slot_never_marches_even_when_its_g_would_read_as_max_raise(
 /// at the peak or the eye, whichever is lower (the eye bound), measures the
 /// band, resolves a starved march flat, reports a signed height along the view
 /// ray, measures AO from the peak and ends the shadow march at the peak's
-/// clearance. The CPU's single-texel early-out has no GPU branch: it resolves exactly what the
-/// loop's first iteration does, so parity holds on results.
+/// clearance. The CPU's single-texel early-out has no GPU branch: it resolves
+/// exactly what the loop's first iteration does, so parity holds on results.
 #[test]
 fn the_shader_march_mirrors_the_signed_cpu_march() {
-    let code = strip_line_comments(SNIPPET);
-    for expected in [
-        "let peak = material.surface_depth_peak_raise;",
-        "let trough = material.surface_depth_trough;",
-        "let band_m = (peak - trough) * depth_scale_m;",
-        "if !(band_m > 0.0) {",
-        "let top = min(peak, view_distance * descent / depth_scale_m);",
-        "let top_m = top * depth_scale_m;",
-        "let start = p0 - dir * top_m;",
-        "let s = surface_depth_texel(surface_depth_fold(dda.cell, dims_i), base_mip, levels);",
-        "let solid = (top - select(s, trough, walked == 0u && s > top)) * depth_scale_m;",
-        "if walked + 1u >= max_steps {",
-        "let height_m = top_m - z_hit;",
-        "out.world_position = world_position + view_to_eye * (height_m / descent);",
-        "clamp(depth.peak_raise - depth.height_m / depth.depth_scale_m, 0.0, 1.0)",
-        "let clearance = depth.peak_raise * depth.depth_scale_m - depth.height_m;",
-        "if !(clearance > SURFACE_DEPTH_SHADOW_BIAS_M) {",
-        "if min(dda.t_max.x, dda.t_max.y) >= clearance {",
-        "if clearance - risen > solid + SURFACE_DEPTH_SHADOW_BIAS_M {",
-    ] {
-        assert!(
-            code.contains(expected),
-            "the shader march has drifted from the CPU authority: missing `{expected}`",
-        );
-    }
-    // The starved branch resolves flat: it must return the flat result, with
-    // `carved = false`, rather than a hit at the last crossed boundary.
-    let starved = code
-        .find("if walked + 1u >= max_steps {")
-        .expect("starved branch");
-    assert!(
-        code[starved..]
-            .trim_start_matches(|c: char| c != '\n')
-            .trim_start()
-            .starts_with("return flat_result;"),
-        "a starved march must resolve flat at the plane",
+    let code = normalized(&strip_line_comments(SNIPPET));
+    let resolve = function_body(&code, "surface_depth_resolve");
+    let light = function_body(&code, "surface_depth_light_visibility");
+    assert_pins(
+        "surface_depth_resolve",
+        resolve,
+        &[
+            "let peak = material.surface_depth_peak_raise;",
+            "let trough = material.surface_depth_trough;",
+            "let band_m = (peak - trough) * depth_scale_m;",
+            "if !(band_m > 0.0) { return flat_result; }",
+            "let top = min(peak, view_distance * descent / depth_scale_m);",
+            "let top_m = top * depth_scale_m;",
+            "let start = p0 - dir * top_m;",
+            // The eye's own column is see-through: the start cell reads as the
+            // band's floor when it rises above the start.
+            "let s = surface_depth_texel(surface_depth_fold(dda.cell, dims_i), base_mip, levels);",
+            "let solid = (top - select(s, trough, walked == 0u && s > top)) * depth_scale_m;",
+            "if walked + 1u >= max_steps { return flat_result; }",
+            "let height_m = top_m - z_hit;",
+        ],
+    );
+    assert_pins(
+        "surface_depth_indirect_ao",
+        function_body(&code, "surface_depth_indirect_ao"),
+        &["clamp(depth.peak_raise - depth.height_m / depth.depth_scale_m, 0.0, 1.0)"],
+    );
+    assert_pins(
+        "surface_depth_light_visibility",
+        light,
+        &[
+            "let clearance = depth.peak_raise * depth.depth_scale_m - depth.height_m;",
+            "if !(clearance > SURFACE_DEPTH_SHADOW_BIAS_M) { return 1.0; }",
+            "if min(dda.t_max.x, dda.t_max.y) >= clearance { return 1.0; }",
+            "if clearance - risen > solid + SURFACE_DEPTH_SHADOW_BIAS_M { return 0.0; }",
+        ],
     );
     // The eye bound needs the fragment-to-eye distance: both consumers pass the
-    // camera distance, not some other length.
+    // camera distance, not some other length, and shade along the same ray.
     for (label, consumer, camera) in [
         ("forward", FORWARD, "uniforms.camera_position"),
         ("kinematic brush", KINEMATIC, "camera.camera_position"),
     ] {
         let consumer = normalized(&strip_line_comments(consumer));
-        for expected in [
-            format!("let view_vector = {camera} - in.world_position;"),
-            "let view_distance = length(view_vector);".to_owned(),
-            "surface_depth_resolve( in.uv, in.world_position, mesh_n, V, view_distance,".to_owned(),
-        ] {
-            assert!(
-                consumer.contains(&expected),
-                "{label}: the eye bound must receive the camera distance: missing `{expected}`",
-            );
-        }
+        assert_pins(
+            label,
+            &consumer,
+            &[
+                &format!("let view_vector = {camera} - in.world_position;"),
+                "let view_distance = length(view_vector);",
+                "let V = normalize(view_vector);",
+                "surface_depth_resolve( in.uv, in.world_position, mesh_n, V, view_distance,",
+            ],
+        );
     }
     // The old carve-only vocabulary must be gone so no consumer keeps the old
     // sign by accident.
     assert!(
-        !code.contains(".depth_m") && !code.contains("    depth_m:"),
+        !code.contains(".depth_m") && !code.contains(" depth_m:"),
         "the signed field is `height_m`",
     );
     for (label, consumer) in [("forward", FORWARD), ("kinematic brush", KINEMATIC)] {
@@ -1048,13 +1047,26 @@ fn normalized(code: &str) -> String {
 }
 
 /// The body of `fn name(` up to the next `fn` in [`normalized`] code, for
-/// pins that must hold in one march and not merely somewhere in the snippet.
+/// pins that must hold in one function and not merely somewhere in the
+/// snippet.
 fn function_body<'a>(code: &'a str, name: &str) -> &'a str {
     let at = code
         .find(&format!("fn {name}("))
         .unwrap_or_else(|| panic!("snippet must declare {name}"));
     let rest = &code[at + 3..];
     &rest[..rest.find(" fn ").unwrap_or(rest.len())]
+}
+
+/// Assert every pin appears in `body`, verbatim after [`normalized`]. Pins are
+/// whole statements, terminator included, so a pin cannot pass on a prefix of
+/// an edited line.
+fn assert_pins(label: &str, body: &str, pins: &[&str]) {
+    for pin in pins {
+        assert!(
+            body.contains(pin),
+            "{label} has drifted from the CPU authority: missing `{pin}`",
+        );
+    }
 }
 
 /// Every step of the two DDAs that a reshape could silently change, pinned as
@@ -1067,58 +1079,17 @@ fn function_body<'a>(code: &'a str, name: &str) -> &'a str {
 #[test]
 fn the_shader_dda_steps_mirror_the_cpu_authority() {
     let code = normalized(&strip_line_comments(SNIPPET));
-    let mut pins = vec![
-        // DDA setup: start cell, sentinels, and per-axis step, first crossing
-        // and spacing. The zero test is `abs(dir) > EPS`; the CPU writes it
-        // `!above(|dir|, EPS)` so a NaN axis is zero on both sides.
+    // DDA setup: start cell, sentinels, and per-axis step, first crossing and
+    // spacing. The zero test is `abs(dir) > EPS`; the CPU writes it
+    // `!above(|dir|, EPS)` so a NaN axis is zero on both sides.
+    let mut setup = vec![
         "dda.cell = vec2<i32>(floor(origin));".to_owned(),
         "dda.t_max = vec2<f32>(SURFACE_DEPTH_FAR, SURFACE_DEPTH_FAR);".to_owned(),
         "dda.t_delta = vec2<f32>(SURFACE_DEPTH_FAR, SURFACE_DEPTH_FAR);".to_owned(),
         "dda.step_dir = vec2<i32>(0, 0);".to_owned(),
-        // The hit rules: `>=` on entry (side wall), strict `>` on exit (top).
-        "let z_exit = min(dda.t_max.x, dda.t_max.y);".to_owned(),
-        "if z_enter >= solid { z_hit = z_enter; hit_normal_ts = entry_normal_ts; hit_bias = entry_bias; break; }".to_owned(),
-        "if z_exit > solid { z_hit = solid; break; }".to_owned(),
-        // The view-march budget is floored at one iteration.
-        "let max_steps = max(packed & SURFACE_DEPTH_MAX_STEPS_MASK, 1u);".to_owned(),
-        // The resolved hit: unbiased march UV, biased sample UV, face normal
-        // from the TBN, top test.
-        "let hit_texel = start + dir * z_hit;".to_owned(),
-        "out.uv = (hit_texel + hit_bias) / dims;".to_owned(),
-        "out.march_uv = hit_texel / dims;".to_owned(),
-        "out.normal = normalize( tangent * hit_normal_ts.x + bitangent * hit_normal_ts.y + geo_normal * hit_normal_ts.z );".to_owned(),
-        "out.hit_top = hit_normal_ts.z > 0.5;".to_owned(),
-        // The self-shadow budget: half the view budget, never zero.
-        "out.shadow_steps = max(max_steps / 2u, 1u);".to_owned(),
-        "for (var i: u32 = 0u; i < depth.shadow_steps; i = i + 1u) {".to_owned(),
-        // The height is read from the G channel, at an explicit level.
-        "let stored_g = textureLoad(spec_texture, folded, level).g;".to_owned(),
-        // The fold and the folded step.
-        "let folded = coord % dims;".to_owned(),
-        "return select(folded + dims, folded, folded >= vec2<i32>(0, 0));".to_owned(),
-        "let next = folded + step;".to_owned(),
-        "return select(select(next, next - dim, next >= dim), next + dim, next < 0);".to_owned(),
-        // Fade: distance ramp, LOD ramp, LOD measured in resident texels, and
-        // the stricter of the two.
-        "if fade_distance_m <= 0.0 { return 0.0; }".to_owned(),
-        "let ramp = max(fade_distance_m * SURFACE_DEPTH_FADE_DISTANCE_FRACTION, SURFACE_DEPTH_EPS);".to_owned(),
-        "return clamp((fade_distance_m - distance_m) / ramp, 0.0, 1.0);".to_owned(),
-        "return clamp(1.0 - (lod - SURFACE_DEPTH_FADE_LOD_START) / SURFACE_DEPTH_FADE_LOD_RANGE, 0.0, 1.0);".to_owned(),
-        "let lod = log2(max(footprint, SURFACE_DEPTH_EPS));".to_owned(),
-        "let fade = min( surface_depth_distance_fade(view_distance, material.surface_depth_fade_distance), surface_depth_lod_fade(lod), );".to_owned(),
-        // AO: gated on a carved hit and its own mask bit, divided by the
-        // CLAMPED scale (the resolve clamps before both terms), and scaled by
-        // the fade.
-        "depth_scale_m = min(depth_scale_m, SURFACE_DEPTH_MAX_METERS * fade);".to_owned(),
-        "out.depth_scale_m = depth_scale_m;".to_owned(),
-        "if !depth.carved || (light_terms & LIGHT_TERM_DEPTH_AO) == 0u { return 1.0; }".to_owned(),
-        "if !(depth.depth_scale_m > SURFACE_DEPTH_EPS) { return 1.0; }".to_owned(),
-        "return 1.0 - SURFACE_DEPTH_AO_STRENGTH * depth.fade * clamp(depth.peak_raise - depth.height_m / depth.depth_scale_m, 0.0, 1.0);".to_owned(),
-        // A flat (starved) result never marches.
-        "fn surface_depth_light_visibility(depth: SurfaceDepthResult, to_light: vec3<f32>) -> f32 { if !depth.carved { return 1.0; }".to_owned(),
     ];
     for axis in ["x", "y"] {
-        pins.extend([
+        setup.extend([
             format!("if abs(dir.{axis}) > SURFACE_DEPTH_EPS {{"),
             format!("let positive = dir.{axis} > 0.0;"),
             format!("dda.step_dir.{axis} = select(-1, 1, positive);"),
@@ -1127,24 +1098,130 @@ fn the_shader_dda_steps_mirror_the_cpu_authority() {
             ),
             format!("dda.t_max.{axis} = (boundary - origin.{axis}) / dir.{axis};"),
             format!("dda.t_delta.{axis} = abs(1.0 / dir.{axis});"),
-            // Both marches advance the crossed axis by its spacing.
-            format!("dda.t_max.{axis} = dda.t_max.{axis} + dda.t_delta.{axis};"),
         ]);
     }
-    // Side hits: the normal is the crossed axis negated, and the sample UV is
-    // biased half a texel along the step, into the entered texel.
-    pins.extend([
-        "dda.cell.x = dda.cell.x + dda.step_dir.x; z_enter = dda.t_max.x; dda.t_max.x = dda.t_max.x + dda.t_delta.x; entry_normal_ts = vec3<f32>(-f32(dda.step_dir.x), 0.0, 0.0); entry_bias = vec2<f32>(f32(dda.step_dir.x) * SURFACE_DEPTH_SIDE_UV_BIAS_TEXELS, 0.0);".to_owned(),
-        "dda.cell.y = dda.cell.y + dda.step_dir.y; z_enter = dda.t_max.y; dda.t_max.y = dda.t_max.y + dda.t_delta.y; entry_normal_ts = vec3<f32>(0.0, -f32(dda.step_dir.y), 0.0); entry_bias = vec2<f32>(0.0, f32(dda.step_dir.y) * SURFACE_DEPTH_SIDE_UV_BIAS_TEXELS);".to_owned(),
-        "texel.x = surface_depth_fold_step(texel.x, dda.step_dir.x, dims_i.x); risen = dda.t_max.x;".to_owned(),
-        "texel.y = surface_depth_fold_step(texel.y, dda.step_dir.y, dims_i.y); risen = dda.t_max.y;".to_owned(),
-    ]);
-    for pin in &pins {
-        assert!(
-            code.contains(pin.as_str()),
-            "the shader DDA has drifted from the CPU authority: missing `{pin}`",
-        );
-    }
+    let setup: Vec<&str> = setup.iter().map(String::as_str).collect();
+    assert_pins(
+        "surface_depth_dda_setup",
+        function_body(&code, "surface_depth_dda_setup"),
+        &setup,
+    );
+
+    // The view march: the surface frame from the UV Jacobian
+    // (`surface_depth_basis`), the view ray (`surface_depth_view_ray`), the hit
+    // rules (`>=` on entry is a side wall, strict `>` on exit is the top), and
+    // the advance, which steps U on a corner tie and turns the crossed axis
+    // into the side normal and the half-texel sample bias.
+    assert_pins(
+        "surface_depth_resolve",
+        function_body(&code, "surface_depth_resolve"),
+        &[
+            "let packed = material.surface_depth_march;",
+            "let max_steps = max(packed & SURFACE_DEPTH_MAX_STEPS_MASK, 1u);",
+            "let det = ddx_uv.x * ddy_uv.y - ddx_uv.y * ddy_uv.x;",
+            "if !(abs(det) > SURFACE_DEPTH_DET_EPS) { return flat_result; }",
+            "let w_u = (ddx_world * ddy_uv.y - ddy_world * ddx_uv.y) / det;",
+            "let w_v = (ddy_world * ddx_uv.x - ddx_world * ddy_uv.x) / det;",
+            "let scale_u = length(w_u);",
+            "let scale_v = length(w_v);",
+            "if !(scale_u > SURFACE_DEPTH_EPS && scale_u < SURFACE_DEPTH_MAX_UV_SCALE_M) \
+             || !(scale_v > SURFACE_DEPTH_EPS && scale_v < SURFACE_DEPTH_MAX_UV_SCALE_M) { \
+             return flat_result; }",
+            "let t_raw = w_u - geo_normal * dot(w_u, geo_normal);",
+            "let b_raw = w_v - geo_normal * dot(w_v, geo_normal);",
+            "let t_len2 = dot(t_raw, t_raw);",
+            "let b_len2 = dot(b_raw, b_raw);",
+            "if !(t_len2 > SURFACE_DEPTH_EPS) || !(b_len2 > SURFACE_DEPTH_EPS) { return flat_result; }",
+            "let tangent = normalize(t_raw);",
+            "let bitangent = normalize(b_raw);",
+            "let uv_per_m = vec2<f32>(1.0 / scale_u, 1.0 / scale_v);",
+            "let descent = dot(view_to_eye, geo_normal);",
+            "if !(descent > SURFACE_DEPTH_MIN_DESCENT) { return flat_result; }",
+            "let into = -view_to_eye;",
+            "let dir_uv_per_m = vec2<f32>( dot(into, tangent) * uv_per_m.x / descent, \
+             dot(into, bitangent) * uv_per_m.y / descent, );",
+            "let levels = material.surface_depth_quantize_levels;",
+            "let p0 = uv * dims;",
+            "let dir = dir_uv_per_m * dims;",
+            "var dda = surface_depth_dda_setup(start, dir);",
+            "let z_exit = min(dda.t_max.x, dda.t_max.y);",
+            "if z_enter >= solid { z_hit = z_enter; hit_normal_ts = entry_normal_ts; \
+             hit_bias = entry_bias; break; }",
+            "if z_exit > solid { z_hit = solid; break; }",
+            "if dda.t_max.x <= dda.t_max.y { dda.cell.x = dda.cell.x + dda.step_dir.x; \
+             z_enter = dda.t_max.x; dda.t_max.x = dda.t_max.x + dda.t_delta.x; \
+             entry_normal_ts = vec3<f32>(-f32(dda.step_dir.x), 0.0, 0.0); \
+             entry_bias = vec2<f32>(f32(dda.step_dir.x) * SURFACE_DEPTH_SIDE_UV_BIAS_TEXELS, 0.0); \
+             } else { dda.cell.y = dda.cell.y + dda.step_dir.y; z_enter = dda.t_max.y; \
+             dda.t_max.y = dda.t_max.y + dda.t_delta.y; \
+             entry_normal_ts = vec3<f32>(0.0, -f32(dda.step_dir.y), 0.0); \
+             entry_bias = vec2<f32>(0.0, f32(dda.step_dir.y) * SURFACE_DEPTH_SIDE_UV_BIAS_TEXELS); }",
+            "walked = walked + 1u;",
+            "let hit_texel = start + dir * z_hit;",
+        ],
+    );
+
+    // The light march (`surface_depth_light_ray`, then
+    // `surface_depth_light_visibility`): the ray climbs from the UNBIASED hit
+    // UV, at the resident base mip, and advances the crossed axis by its own
+    // spacing — steps the view march's pins cannot stand in for.
+    assert_pins(
+        "surface_depth_light_visibility",
+        function_body(&code, "surface_depth_light_visibility"),
+        &[
+            "if !depth.carved { return 1.0; }",
+            "let rise = dot(to_light, depth.geo_normal);",
+            "if !(rise > SURFACE_DEPTH_EPS) { return 1.0; }",
+            "let dims_u = textureDimensions(spec_texture, depth.base_mip);",
+            "let dims = vec2<f32>(dims_u);",
+            "let dims_i = vec2<i32>(dims_u);",
+            "let dir = vec2<f32>( dot(to_light, depth.tangent) * depth.uv_per_m.x / rise, \
+             dot(to_light, depth.bitangent) * depth.uv_per_m.y / rise, ) * dims;",
+            "let p0 = depth.march_uv * dims;",
+            "var dda = surface_depth_dda_setup(p0, dir);",
+            "var texel = surface_depth_fold(dda.cell, dims_i);",
+            "for (var i: u32 = 0u; i < depth.shadow_steps; i = i + 1u) {",
+            "if dda.t_max.x <= dda.t_max.y { \
+             texel.x = surface_depth_fold_step(texel.x, dda.step_dir.x, dims_i.x); \
+             risen = dda.t_max.x; dda.t_max.x = dda.t_max.x + dda.t_delta.x; } else { \
+             texel.y = surface_depth_fold_step(texel.y, dda.step_dir.y, dims_i.y); \
+             risen = dda.t_max.y; dda.t_max.y = dda.t_max.y + dda.t_delta.y; }",
+            "let solid = (depth.peak_raise \
+             - surface_depth_texel(texel, depth.base_mip, depth.quantize_levels)) \
+             * depth.depth_scale_m;",
+        ],
+    );
+
+    // Encoding: one fetch of the G channel at an explicit level, decoded to the
+    // signed fraction, then quantized with the material's level count.
+    assert_eq!(
+        function_body(&code, "surface_depth_texel"),
+        "surface_depth_texel(folded: vec2<i32>, level: u32, levels: f32) -> f32 { \
+         let stored_g = textureLoad(spec_texture, folded, level).g; \
+         return surface_height_quantize(surface_height_fraction(stored_g), levels); }",
+        "the texel decode has drifted from `SurfaceDepthField::texel_height`",
+    );
+
+    // Fade: distance ramp, LOD ramp, LOD measured in resident texels, and the
+    // stricter of the two. AO: gated on a carved hit and its own mask bit,
+    // divided by the CLAMPED scale (the resolve clamps before both terms), and
+    // scaled by the fade.
+    assert_pins(
+        "surface_depth.wgsl",
+        &code,
+        &[
+            "if fade_distance_m <= 0.0 { return 0.0; }",
+            "let ramp = max(fade_distance_m * SURFACE_DEPTH_FADE_DISTANCE_FRACTION, SURFACE_DEPTH_EPS);",
+            "return clamp((fade_distance_m - distance_m) / ramp, 0.0, 1.0);",
+            "return clamp(1.0 - (lod - SURFACE_DEPTH_FADE_LOD_START) / SURFACE_DEPTH_FADE_LOD_RANGE, 0.0, 1.0);",
+            "let lod = log2(max(footprint, SURFACE_DEPTH_EPS));",
+            "let fade = min( surface_depth_distance_fade(view_distance, material.surface_depth_fade_distance), surface_depth_lod_fade(lod), );",
+            "depth_scale_m = min(depth_scale_m, SURFACE_DEPTH_MAX_METERS * fade);",
+            "if !depth.carved || (light_terms & LIGHT_TERM_DEPTH_AO) == 0u { return 1.0; }",
+            "if !(depth.depth_scale_m > SURFACE_DEPTH_EPS) { return 1.0; }",
+            "return 1.0 - SURFACE_DEPTH_AO_STRENGTH * depth.fade * clamp(depth.peak_raise - depth.height_m / depth.depth_scale_m, 0.0, 1.0);",
+        ],
+    );
 
     // Tie-break: U is stepped on a tie, in BOTH marches.
     for march in ["surface_depth_resolve", "surface_depth_light_visibility"] {
@@ -1158,35 +1235,225 @@ fn the_shader_dda_steps_mirror_the_cpu_authority() {
     }
 }
 
-/// The pinned fold and folded-step expressions, transcribed with WGSL's
-/// semantics (`%` truncates like Rust's; `select(f, t, c)` is `if c { t } else
-/// { f }`), wrap exactly like `AddressMode::Repeat`: stepping a folded
-/// coordinate equals folding the stepped one.
+/// Every `SurfaceDepthResult` field, assigned exactly once on each path from
+/// its pinned source. A consumer reads the carved result's peak, scale, fade,
+/// levels, mip and frame back for AO and the light march; one of them packed
+/// from the wrong local (`out.peak_raise = top`, say) breaks parity only in the
+/// cases that local differs, which no shape pin would notice.
 #[test]
-fn the_pinned_fold_expressions_wrap_like_repeat() {
-    let select = |f: i32, t: i32, c: bool| if c { t } else { f };
-    let fold = |coord: i32, dim: i32| {
-        let folded = coord % dim;
-        select(folded + dim, folded, folded >= 0)
-    };
-    let fold_step = |folded: i32, step: i32, dim: i32| {
-        let next = folded + step;
-        select(select(next, next - dim, next >= dim), next + dim, next < 0)
-    };
+fn every_result_field_is_packed_once_from_its_pinned_source() {
+    let module = naga::front::wgsl::parse_str(SHADER_SOURCE).expect("forward must parse");
+    let fields: Vec<String> = module
+        .types
+        .iter()
+        .find_map(|(_handle, ty)| match (&ty.name, &ty.inner) {
+            (Some(name), naga::TypeInner::Struct { members, .. })
+                if name == "SurfaceDepthResult" =>
+            {
+                Some(members.iter().filter_map(|m| m.name.clone()).collect())
+            }
+            _ => None,
+        })
+        .expect("snippet must declare SurfaceDepthResult");
+
+    /// `field = value` for every `out.field = value;` statement, in order.
+    fn assignments(body: &str) -> Vec<(String, String)> {
+        body.split(';')
+            .filter_map(|statement| {
+                let statement = statement.rsplit(['{', '}']).next().unwrap_or("").trim();
+                let (field, value) = statement.strip_prefix("out.")?.split_once(" = ")?;
+                Some((field.to_owned(), value.to_owned()))
+            })
+            .collect()
+    }
+
+    let code = normalized(&strip_line_comments(SNIPPET));
+    let flat = [
+        ("carved", "false"),
+        ("uv", "uv"),
+        ("march_uv", "uv"),
+        ("world_position", "world_position"),
+        ("normal", "geo_normal"),
+        ("hit_top", "true"),
+        ("height_m", "0.0"),
+        ("depth_scale_m", "0.0"),
+        ("peak_raise", "0.0"),
+        ("fade", "0.0"),
+        ("quantize_levels", "0.0"),
+        ("shadow_steps", "0u"),
+        ("shadow_light_budget", "0u"),
+        ("base_mip", "0u"),
+        ("tangent", "vec3<f32>(1.0, 0.0, 0.0)"),
+        ("bitangent", "vec3<f32>(0.0, 1.0, 0.0)"),
+        ("geo_normal", "geo_normal"),
+        ("uv_per_m", "vec2<f32>(0.0, 0.0)"),
+    ];
+    let carved = [
+        ("carved", "true"),
+        ("uv", "(hit_texel + hit_bias) / dims"),
+        ("march_uv", "hit_texel / dims"),
+        (
+            "world_position",
+            "world_position + view_to_eye * (height_m / descent)",
+        ),
+        (
+            "normal",
+            "normalize( tangent * hit_normal_ts.x + bitangent * hit_normal_ts.y \
+             + geo_normal * hit_normal_ts.z )",
+        ),
+        ("hit_top", "hit_normal_ts.z > 0.5"),
+        ("height_m", "height_m"),
+        ("depth_scale_m", "depth_scale_m"),
+        ("peak_raise", "peak"),
+        ("fade", "fade"),
+        ("quantize_levels", "levels"),
+        ("shadow_steps", "max(max_steps / 2u, 1u)"),
+        (
+            "shadow_light_budget",
+            "(packed >> SURFACE_DEPTH_SHADOW_BUDGET_SHIFT) & SURFACE_DEPTH_SHADOW_BUDGET_MASK",
+        ),
+        ("base_mip", "base_mip"),
+        ("tangent", "tangent"),
+        ("bitangent", "bitangent"),
+        ("geo_normal", "geo_normal"),
+        ("uv_per_m", "uv_per_m"),
+    ];
+    for (path, function, expected) in [
+        ("flat", "surface_depth_flat", &flat),
+        ("carved", "surface_depth_resolve", &carved),
+    ] {
+        let found = assignments(function_body(&code, function));
+        let expected: Vec<(String, String)> = expected
+            .iter()
+            .map(|&(field, value)| (field.to_owned(), value.to_owned()))
+            .collect();
+        assert_eq!(found, expected, "the {path} result's packing has drifted");
+        let mut packed: Vec<&String> = found.iter().map(|(field, _)| field).collect();
+        packed.sort();
+        let mut declared: Vec<&String> = fields.iter().collect();
+        declared.sort();
+        assert_eq!(
+            packed, declared,
+            "the {path} result must set every field once"
+        );
+    }
+}
+
+/// The fold and folded-step functions, read out of the shader and evaluated
+/// with WGSL's semantics, wrap exactly like `AddressMode::Repeat`: folding a
+/// coordinate is `rem_euclid`, and stepping a folded coordinate equals folding
+/// the stepped one.
+#[test]
+fn the_shader_fold_expressions_wrap_like_repeat() {
+    let module = naga::front::wgsl::parse_str(SHADER_SOURCE).expect("forward must parse");
+    let fold = ShaderIntFn::new(&module, "surface_depth_fold");
+    let fold_step = ShaderIntFn::new(&module, "surface_depth_fold_step");
     for dim in 1..=7 {
         for coord in -40..40 {
+            let folded = fold.call(&[vec![coord, coord - 3], vec![dim, dim + 1]]);
             assert_eq!(
-                fold(coord, dim),
-                coord.rem_euclid(dim),
-                "fold {coord} in {dim}"
+                folded,
+                vec![coord.rem_euclid(dim), (coord - 3).rem_euclid(dim + 1)],
+                "fold {coord} in {dim}",
             );
             for step in -1..=1 {
                 assert_eq!(
-                    fold_step(fold(coord, dim), step, dim),
-                    (coord + step).rem_euclid(dim),
+                    fold_step.call(&[vec![folded[0]], vec![step], vec![dim]]),
+                    vec![(coord + step).rem_euclid(dim)],
                     "step {step} from {coord} in {dim}",
                 );
             }
+        }
+    }
+}
+
+/// A shader function over `i32` scalars and vectors, evaluated straight from
+/// naga's IR: just the expressions the fold functions use, so a test checks
+/// the shader's own arithmetic rather than a hand copy of it.
+struct ShaderIntFn<'a> {
+    function: &'a naga::Function,
+    name: &'static str,
+}
+
+impl<'a> ShaderIntFn<'a> {
+    fn new(module: &'a naga::Module, name: &'static str) -> Self {
+        let (_handle, function) = module
+            .functions
+            .iter()
+            .find(|(_handle, function)| function.name.as_deref() == Some(name))
+            .unwrap_or_else(|| panic!("shader must declare {name}"));
+        Self { function, name }
+    }
+
+    /// Evaluate the function's `return` with these arguments. A value is its
+    /// components; a scalar is one component and broadcasts.
+    fn call(&self, args: &[Vec<i32>]) -> Vec<i32> {
+        let value = self
+            .function
+            .body
+            .iter()
+            .find_map(|statement| match statement {
+                naga::Statement::Return { value: Some(value) } => Some(*value),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("{} must return a value", self.name));
+        self.eval(value, args)
+    }
+
+    fn eval(&self, handle: naga::Handle<naga::Expression>, args: &[Vec<i32>]) -> Vec<i32> {
+        let zip = |a: Vec<i32>, b: Vec<i32>, f: &dyn Fn(i32, i32) -> i32| -> Vec<i32> {
+            let n = a.len().max(b.len());
+            (0..n)
+                .map(|i| f(a[i.min(a.len() - 1)], b[i.min(b.len() - 1)]))
+                .collect()
+        };
+        match &self.function.expressions[handle] {
+            naga::Expression::FunctionArgument(index) => args[*index as usize].clone(),
+            naga::Expression::Literal(naga::Literal::I32(value)) => vec![*value],
+            naga::Expression::Literal(naga::Literal::AbstractInt(value)) => {
+                vec![i32::try_from(*value).expect("literal fits i32")]
+            }
+            naga::Expression::ZeroValue(_) => vec![0],
+            naga::Expression::Splat { value, .. } => self.eval(*value, args),
+            naga::Expression::Compose { components, .. } => components
+                .iter()
+                .flat_map(|component| self.eval(*component, args))
+                .collect(),
+            naga::Expression::Binary { op, left, right } => {
+                let (a, b) = (self.eval(*left, args), self.eval(*right, args));
+                use naga::BinaryOperator as Op;
+                match op {
+                    // WGSL's `%` truncates toward zero, like Rust's.
+                    Op::Modulo => zip(a, b, &|x, y| x % y),
+                    Op::Add => zip(a, b, &|x, y| x + y),
+                    Op::Subtract => zip(a, b, &|x, y| x - y),
+                    Op::GreaterEqual => zip(a, b, &|x, y| i32::from(x >= y)),
+                    Op::Less => zip(a, b, &|x, y| i32::from(x < y)),
+                    other => panic!("{}: unsupported operator {other:?}", self.name),
+                }
+            }
+            // `select(reject, accept, condition)`, per component.
+            naga::Expression::Select {
+                condition,
+                accept,
+                reject,
+            } => {
+                let condition = self.eval(*condition, args);
+                let accept = self.eval(*accept, args);
+                let reject = self.eval(*reject, args);
+                let n = condition.len().max(accept.len()).max(reject.len());
+                let at = |v: &Vec<i32>, i: usize| v[i.min(v.len() - 1)];
+                (0..n)
+                    .map(|i| {
+                        if at(&condition, i) != 0 {
+                            at(&accept, i)
+                        } else {
+                            at(&reject, i)
+                        }
+                    })
+                    .collect()
+            }
+            other => panic!("{}: unsupported expression {other:?}", self.name),
         }
     }
 }

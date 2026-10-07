@@ -17,7 +17,7 @@ Read with `context/lib/resource_management.md` §4.6, `rendering_pipeline.md` §
 | D5 | Ambient occlusion (the SH-indirect-only darkening term) is measured from the material's **peak raise**, not the plane: `ao_fraction = clamp(peak_q − s_q, 0, 1)`, then the existing `1 − STRENGTH · fade · ao_fraction`. | AO tracks local relief wherever the author put the plane: mid-gray mortar between raised stones darkens by its depth below the stone tops. An all-mid-gray map (peak 0) gets none. A carve-only map (peak 0) is byte-identical to today. AO touches only the SH indirect term; dynamic light, side-face normals and self-shadow are unaffected. |
 | D6 | The march starts at the material's **peak raise**: the highest quantized raise of any texel in any uploaded mip of its surface map, computed once at load on the CPU. | A map that never exceeds mid-gray marches exactly like a pure carve. Flat mid-gray areas don't pay for raise they don't have. |
 | D7 | A march that exhausts its step budget resolves **flat at the true plane** (original UV, height 0, geometric normal, top hit) — not at the last boundary crossed. | Grazing starvation looks like today's "Off" rather than smearing the texture toward the viewer. |
-| D8 | The three existing `_h.png` assets keep their pixels and take on the new meaning. | Concrete stones now rise and its mortar sinks. The two Level Eleven sci-fi panels shift slightly. No content edits. |
+| D8 | The three existing `_h.png` assets keep their pixels and take on the new meaning. | Concrete stones now rise and its mortar sinks. *Amended after Track A:* Corrugated's peak quantizes to 0, so it is now carve-only with its top plateau on the plane (cheaper: 0.40× steps). Vent goes from two sunk plateaus 1 texel apart to +1 / −1 / −2 texels (1.42× steps). Vent's fate is an owner question at landing; no content edits until then. |
 | D9 | `texture-tool` maps diffuse mean luminance to mid-gray. | Generated maps rise and sink around the surface instead of carrying an arbitrary absolute offset. |
 
 ## Invariants (no track may break these)
@@ -61,9 +61,9 @@ Use `floor(x + 0.5)` in BOTH CPU and WGSL. Never `round()`: WGSL rounds half to 
 
 Doubling the span (D2) roughly doubles grazing-angle march length if nothing else changes. The owner's requirement is comparable visual results for comparable or less work. Treat cost as a first-class acceptance target, not a follow-up. Cost is measured two ways: **DDA steps** from the CPU reference (deterministic, test-gated), and **`forward` pass GPU time** from a Metal System Trace on this Mac (manual A/B; method in `rendering_pipeline.md` §12, "Without timestamp support" and "Machine-state confounders").
 
-**P1 — Relief band.** At load, alongside the peak (D6), compute the material's **trough**: the lowest quantized `s` across every uploaded mip, clamped to `≤ 0`. The march's vertical extent is `[trough, peak]`, not `[−1, peak]`. A map that never goes darker than mid-gray marches only its raised band. Pack the trough into bytes 12..16 of the material uniform as `surface_depth_trough: f32` (fraction in `[−1, 0]`). With this, bytes 8..16 are both used and the uniform has no padding left.
+**P1 — Relief band.** *Track A finding:* the band does not shorten the loop (texel data already bounds it). It feeds P2, P4 and the shadow exit. The real saving is D6's peak start. At load, alongside the peak (D6), compute the material's **trough**: the lowest quantized `s` across every uploaded mip, clamped to `≤ 0`. The march's vertical extent is `[trough, peak]`, not `[−1, peak]`. A map that never goes darker than mid-gray marches only its raised band. Pack the trough into bytes 12..16 of the material uniform as `surface_depth_trough: f32` (fraction in `[−1, 0]`). With this, bytes 8..16 are both used and the uniform has no padding left.
 
-**P2 — Single-texel early-out (exact).** If the view ray's UV footprint across the whole band `[trough, peak]` stays inside the starting texel, the hit is that texel's top. Resolve it with one fetch and no loop. This is exact, not an approximation, and covers the common near-perpendicular view of floors and walls.
+**P2 — Single-texel early-out (exact).** *Track A finding:* step-neutral on CPU, because the loop's first iteration already resolves these rays with zero steps. It is kept as a separate branch and proven bit-identical to the loop. On GPU it may still save loop setup; the Metal trace decides whether it stays. If the view ray's UV footprint across the whole band `[trough, peak]` stays inside the starting texel, the hit is that texel's top. Resolve it with one fetch and no loop. This is exact, not an approximation, and covers the common near-perpendicular view of floors and walls.
 
 **P3 — Band-relative shadow march.** The self-shadow march ends as soon as the ray climbs above the peak. Its budget stays as it is.
 
@@ -85,6 +85,19 @@ It records mean steps per fragment, p99 steps, and the starve rate (share of ray
 A target the levers above cannot reach is reported to the session with the numbers, not silently loosened.
 
 **Considered, not in this change:** maximum-mipmap / quadtree acceleration (Tevs et al. 2008) needs either a new texture, and the forward pass is at 16/16 sampled textures, or max-filtered G mips, which is a bake and format change against D4. If the harness shows P1–P4 miss the targets, this is the next lever, and it goes to the owner.
+
+**Track A result (pinned in `step_harness.rs`, 11264 rays per map):**
+
+| Map | Baseline mean / p99 / starve | New mean / p99 / starve |
+|---|---|---|
+| concrete_stone_030 | 1.547 / 20 / 0.60% | 1.594 / 24 / 0.07% |
+| Vent-001 | 3.431 / 14 / 0.71% | 4.868 / 22 / 0% |
+| CorrugatedMetalPanel-01V_64 | 4.746 / 15 / 5.06% | 1.880 / 10 / 0% |
+| synthetic carve-only | 2.993 / 23 / 1.15% | 3.130 / 24 / 0.36% |
+| synthetic all-mid-gray | 0 / 0 / 0 | 0 / 0 / 0 |
+| synthetic ±full-range | 2.337 / 12 / 0 | 5.598 / 23 / 0 |
+
+Session ruling: the carve-only miss (1.046×) is accepted. At the old cap it matches the baseline exactly; the excess is formerly-starved rays now finishing under D2's doubled caps. The Vent miss is a D8 content consequence and goes to the owner.
 
 ## Tracks and file ownership
 

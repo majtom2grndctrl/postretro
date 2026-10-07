@@ -64,7 +64,7 @@
 // `depth_scale_m` under
 // `SURFACE_DEPTH_TEXEL_MODE`) needs a per-fragment UV Jacobian that only
 // exists mid-shader. That is accepted because this is a purely graphical
-// carve — collision uses the true brush plane, so a wrong conversion is a
+// relief — collision uses the true brush plane, so a wrong conversion is a
 // visible on-screen error, not a corrupted game-logic value, and nothing
 // downstream (no save data, no netcode) depends on it.
 
@@ -352,12 +352,11 @@ fn surface_depth_dda_setup(origin: vec2<f32>, dir: vec2<f32>) -> SurfaceDepthDda
 // surface toward the camera.
 //
 // The UV frame comes from `dpdx(world_position) / dpdx(uv)` rather than from
-// the baked tangent on purpose. Height is expressed in METERS — there is no
-// texel-density convention for world materials, brush UV scale is authored
-// freely in TrenchBroom, and a texture-space scale would give the same material
-// a different physical height on differently scaled brushes. Taking the march
-// axes AND the meters->UV scale from one Jacobian makes them consistent by
-// construction. The baked tangent still owns normal mapping, which is a
+// the baked tangent on purpose. The march works in METERS whichever unit the
+// height was authored in (texel mode converts below, with this fragment's own
+// texel rate), and brush UV scale is authored freely in TrenchBroom. Taking the
+// march axes AND the meters->UV scale from one Jacobian makes them consistent
+// by construction. The baked tangent still owns normal mapping, which is a
 // different, authored tangent space.
 //
 // The march measures DESCENT from the peak raise. Per texel `T` the solid's top

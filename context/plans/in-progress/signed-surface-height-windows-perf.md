@@ -74,7 +74,7 @@ cargo run --release -p postretro --bin postretro --features capture -- --capture
 
 Run it 3 times per worktree, alternating between them.
 
-Read `forward` from `gpu_timing.windows` in `e1.json` (average over windows), and keep `e1.png` from each build. In the branch image the mortar should sink deeper and the stone tops should shift toward the camera compared with `main` (the concrete's stones now rise).
+Read `forward` from `gpu_timing.windows` in `e1.json` (average over windows), and keep `e1.png` from each build. In the branch image the stone tops should shift toward the camera compared with `main` (the concrete's stones now rise), and the step from mortar to stone top should read taller.
 
 ## What to report back
 

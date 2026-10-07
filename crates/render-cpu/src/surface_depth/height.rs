@@ -43,9 +43,9 @@ pub fn surface_height_fraction_from_byte(stored_byte: u8) -> f32 {
 
 /// Quantize a signed fraction onto `levels` terraces PER DIRECTION.
 ///
-/// `floor(x + 0.5)`, never `round()`: WGSL rounds half to even, Rust rounds
-/// half away from zero, and an exact half step is reachable (`s = −0.25` at
-/// `levels = 6` is `−1.5`). Both sides must agree bit for bit.
+/// `floor(x + 0.5)`, never a builtin rounding call: WGSL rounds half to even,
+/// Rust rounds half away from zero, and an exact half step is reachable
+/// (`s = −0.25` at `levels = 6` is `−1.5`). Both sides must agree bit for bit.
 ///
 /// Mid-gray (`s = 0`) quantizes to exactly `0.0` at every level count. `levels`
 /// is an f32 because the material uniform carries it as one; below 1 the value
@@ -116,7 +116,9 @@ impl SurfaceRelief {
 /// negative lobes, so a coarser mip can overshoot the base level's range, and
 /// residency may later make any level the one the march reads.
 ///
-/// An empty chain is [`SurfaceRelief::FLAT`]. A trailing odd byte is ignored.
+/// An empty chain is [`SurfaceRelief::FLAT`]. A level whose byte count is not
+/// two per texel is a debug assertion; a release build ignores a trailing odd
+/// byte.
 pub fn surface_relief_from_rg8_levels(levels: &[(u32, u32, &[u8])]) -> SurfaceRelief {
     let mut min_stored = u8::MAX;
     let mut max_stored = u8::MIN;

@@ -81,11 +81,12 @@ fn create_mip_sampler(
 /// Whether a loaded specular slot carries Surface Depth's second channel.
 ///
 /// `Rg8Unorm` is the surface map the level compiler bakes when a material has
-/// an `_h.png` sibling (R = specular, G = signed height around the surface plane). Every other
-/// legal specular format is single-channel, and WGSL expands those to
-/// `(r, 0, 0, 1)` — `.g == 0`, i.e. flat — so the flag is belt-and-braces over
-/// a degradation that is already a no-op. It exists so a material without a
-/// height map skips the march instead of paying for an all-zero one.
+/// an `_h.png` sibling (R = specular, G = signed height around the surface
+/// plane). Every other legal specular format is single-channel, and WGSL
+/// expands those to `(r, 0, 0, 1)`. Under the signed encoding `.g == 0` reads
+/// as MAXIMUM RAISE, not flat, so this flag is the only thing keeping a
+/// material without a height map on its true plane: the shader never marches
+/// without it.
 pub(crate) fn specular_slot_is_surface_map(format: wgpu::TextureFormat) -> bool {
     matches!(format, wgpu::TextureFormat::Rg8Unorm)
 }

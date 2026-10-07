@@ -79,7 +79,7 @@ Optional flags:
 - `--normal-strength <f32>` defaults to `0.5`.
 - `--quantize-levels <u8>` defaults to `18` for `64`/`64x64`, otherwise `24`. Use `0` to request the default.
 - `--height-strength <f32>` overrides the selected spec profile's default height/depth contrast strength (see table below). Values above `1.0` exaggerate relief; values below `1.0` flatten it.
-- `--height-quantize-levels <u8>` defaults to the same size-based default as `--quantize-levels` (`18` for `64`/`64x64`, otherwise `24`). Use `0` to request the default. Terraces split evenly below and above the surface, plus mid-gray itself: `2` yields sink / surface / rise. Lower level counts produce more pronounced, flatter plateaus — the intended retro read for the engine's terraced-depth parallax.
+- `--height-quantize-levels <u8>` defaults to the same size-based default as `--quantize-levels` (`18` for `64`/`64x64`, otherwise `24`). Use `0` to request the default. Terraces split evenly below and above the surface, plus mid-gray itself: `2` yields sink / surface / rise. An odd count rounds down to the even count below it. Lower level counts produce more pronounced, flatter plateaus — the intended retro read for the engine's terraced-depth parallax.
 
 Spec profiles also set the default `_h.png` height/depth strength (overridable with
 `--height-strength`); a cobblestone/masonry-like profile wants pronounced, plateau-like steps,

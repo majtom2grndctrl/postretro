@@ -113,8 +113,8 @@ pub fn surface_depth_has_map(march_word: u32, depth_meters: f32) -> bool {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SurfaceDepthQuality {
     /// Force flat. The material resolves to [`SurfaceDepthUniform::FLAT`], so
-    /// the uniform's surface-depth bytes are the historical all-zero and the
-    /// render is byte-identical to the pre-Surface-Depth engine at zero cost.
+    /// the uniform's surface-depth bytes are all zero, the march never runs,
+    /// and the render is byte-identical to the pre-Surface-Depth engine.
     Off,
     /// The full effect: the per-prefix values from `Material::surface_depth()`
     /// verbatim, with the full self-shadow budget. The default; the setting

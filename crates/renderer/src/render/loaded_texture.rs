@@ -28,7 +28,7 @@ const BLACK_RGBA: [u8; 4] = [0, 0, 0, 255];
 /// `Rg8Unorm` slot — and this placeholder must therefore stay a non-`Rg8Unorm`
 /// format, so that gate stays clear for it.
 ///
-/// `absent_specular_placeholder_is_a_flat_surface_map` pins both facts.
+/// `absent_specular_placeholder_is_never_a_surface_map` pins both facts.
 const SPECULAR_PLACEHOLDER_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R8Unorm;
 const SPECULAR_PLACEHOLDER_PIXEL: [u8; 1] = [0];
 
@@ -676,21 +676,24 @@ mod tests {
     /// Surface Depth's central safety property: a material WITHOUT a height
     /// map must render exactly as it did before the feature existed.
     ///
-    /// That holds with no runtime code at all, and this test exists to keep it
-    /// that way. The absent-specular placeholder is a single-channel `R8Unorm`
-    /// black texel; WGSL expands a single-channel sample to `(r, 0, 0, 1)`, so
-    /// the surface map's depth channel `.g` is already 0, and Surface Depth
-    /// stores depth-below-surface so that 0 means flat. Nothing about the
-    /// placeholder needed to change for the feature — but widening it to two
-    /// channels, or filling its G byte, would push every un-mapped material
-    /// off its true plane the moment the march reads it.
+    /// Under the signed encoding the placeholder's expanded `(r, 0, 0, 1)` has
+    /// `.g == 0`, which reads as MAXIMUM RAISE, so the placeholder is not flat
+    /// by itself. The has-depth gate keeps it on the true plane: the bit is set
+    /// only for an `Rg8Unorm` slot. This test pins the placeholder's side of
+    /// that bargain — it must stay a black single-channel texel that the gate
+    /// never classifies as a surface map. Widening it to two channels would
+    /// open the gate and lift every un-mapped material by its full depth.
     #[test]
-    fn absent_specular_placeholder_is_a_flat_surface_map() {
+    fn absent_specular_placeholder_is_never_a_surface_map() {
         assert_eq!(
             SPECULAR_PLACEHOLDER_FORMAT,
             wgpu::TextureFormat::R8Unorm,
-            "the specular placeholder must stay single-channel: WGSL's (r, 0, 0, 1) expansion \
-             is what makes the depth channel read 0 for a material with no height map",
+            "the specular placeholder must stay single-channel: its expanded g = 0 reads as \
+             maximum raise, so only the has-depth gate keeps it flat",
+        );
+        assert!(
+            !crate::render::specular_slot_is_surface_map(SPECULAR_PLACEHOLDER_FORMAT),
+            "the has-depth gate must never open for the specular placeholder",
         );
         assert_eq!(
             SPECULAR_PLACEHOLDER_PIXEL,

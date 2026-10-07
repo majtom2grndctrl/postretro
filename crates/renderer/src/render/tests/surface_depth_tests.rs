@@ -114,6 +114,83 @@ fn material_uniform_layout_is_mirrored_by_both_world_shaders() {
     }
 }
 
+/// Same names and the same span do not pin the ORDER: swapping the peak and
+/// trough declarations would still pass the test above while the shader read
+/// each from the other's bytes. Read every member's offset from naga and the
+/// value the CPU packer wrote at that offset.
+#[test]
+fn material_uniform_member_offsets_match_the_cpu_packer() {
+    let uniform = sd::SurfaceDepthUniform {
+        depth: postretro_render_data::material::SurfaceDepth {
+            depth_meters: 5.0,
+            quantize_levels: 3,
+            max_steps: 40,
+            fade_distance_meters: 9.0,
+        },
+        has_depth: true,
+        base_mip: 2,
+        shadow_light_budget: 1,
+        relief: sd::SurfaceRelief {
+            peak_raise: 0.5,
+            trough: -0.25,
+        },
+    };
+    let bytes = postretro_render_cpu::material_plan::build_material_uniform(7.0, 3.0, uniform);
+    let word = |offset: u32| {
+        let at = offset as usize;
+        u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap())
+    };
+    let expected_f32 = [
+        ("shininess", 7.0f32),
+        ("emissive_strength", 3.0),
+        ("surface_depth_peak_raise", 0.5),
+        ("surface_depth_trough", -0.25),
+        ("surface_depth_meters", 5.0),
+        ("surface_depth_fade_distance", 9.0),
+        ("surface_depth_quantize_levels", 3.0),
+    ];
+
+    for (label, composed) in world_pipeline_sources() {
+        let module = naga::front::wgsl::parse_str(composed).expect("composed shader must parse");
+        let members = module
+            .types
+            .iter()
+            .find_map(|(_handle, ty)| match (&ty.name, &ty.inner) {
+                (Some(name), naga::TypeInner::Struct { members, .. })
+                    if name == "MaterialUniform" =>
+                {
+                    Some(members.clone())
+                }
+                _ => None,
+            })
+            .expect("shader must declare struct MaterialUniform");
+        let offset_of = |name: &str| {
+            members
+                .iter()
+                .find(|member| member.name.as_deref() == Some(name))
+                .unwrap_or_else(|| panic!("{label}: MaterialUniform has no `{name}`"))
+                .offset
+        };
+        for (name, value) in expected_f32 {
+            assert_eq!(
+                f32::from_bits(word(offset_of(name))),
+                value,
+                "{label}: `{name}` reads bytes the CPU packer did not write it to",
+            );
+        }
+        assert_eq!(
+            word(offset_of("surface_depth_march")),
+            uniform.march_word(),
+            "{label}: `surface_depth_march` reads bytes the CPU packer did not write it to",
+        );
+        assert_eq!(
+            members.len(),
+            expected_f32.len() + 1,
+            "{label}: unpinned member"
+        );
+    }
+}
+
 /// Every tuning constant exists twice — once as the GPU-free authority in
 /// `postretro_render_cpu::surface_depth`, once in WGSL. Pin them together by
 /// VALUE (parsing the declared literal, so a reformat is not a failure);
@@ -911,6 +988,15 @@ fn the_dda_shapes_hold_their_measured_cost() {
         !code.contains("surface_depth_single_texel_band"),
         "the GPU march has no single-texel early-out; the CPU keeps it as the \
          authority's proof that it is exact",
+    );
+    // A GPU early-out would compare the ray's first crossing against the band
+    // height under some other name. `band_m` may only be declared and fed to
+    // the empty-band test (P4).
+    assert_eq!(
+        code.matches("band_m").count(),
+        2,
+        "`band_m` is read only by the empty-band test; a second reader is a \
+         single-texel early-out, which needs a re-measure on AMD Metal",
     );
     let fold = &code[code.find("fn surface_depth_fold(").expect("fold")..];
     assert!(

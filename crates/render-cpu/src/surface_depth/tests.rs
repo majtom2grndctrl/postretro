@@ -507,16 +507,16 @@ fn the_stored_byte_is_recovered_from_a_slightly_inexact_unorm() {
     }
 }
 
-/// `floor(x + 0.5)` and `round()` disagree at a negative exact half step, and
+/// `floor(x + 0.5)` and Rust's `f32::round` disagree at a negative exact half step, and
 /// WGSL's half-to-even disagrees with both elsewhere. The rule is floor.
 #[test]
 fn quantization_at_an_exact_half_step_follows_floor_plus_half() {
     // Authored 96 is s = −32/128 = −0.25 exactly.
     let s = surface_height_fraction(stored(&[96])[0]);
     assert_eq!(s, -0.25);
-    // 6 levels: −1.5 → floor(−1.0) = −1 → −1/6. round() gives −2; half-even −2.
+    // 6 levels: −1.5 → floor(−1.0) = −1 → −1/6. Half-away gives −2; half-even −2.
     assert_eq!(surface_height_quantize(s, 6.0), -1.0 / 6.0);
-    // 2 levels: −0.5 → floor(0.0) = 0. round() gives −1; half-even gives 0.
+    // 2 levels: −0.5 → floor(0.0) = 0. Half-away gives −1; half-even gives 0.
     assert_eq!(surface_height_quantize(s, 2.0), 0.0);
     // Positive half step: 0.25 · 6 = 1.5 → 2 → 1/3. Half-even would also give 2.
     assert_eq!(surface_height_quantize(0.25, 6.0), 2.0 / 6.0);
@@ -908,14 +908,28 @@ fn the_march_terminates_within_the_step_budget_at_any_angle() {
     }
 }
 
+/// A zero budget is clamped to one iteration, exactly as the shader's
+/// `max(max_steps, 1u)` does: it resolves whatever the first texel resolves.
 #[test]
-fn a_zero_step_budget_still_resolves_a_hit() {
+fn a_zero_step_budget_marches_like_a_budget_of_one() {
     let authored = [64u8; 4];
     let g = stored(&authored);
     let f = field(2, 2, &g, 0);
-    let hit = march_surface_depth(&f, [0.25, 0.25], [25.0, 0.0], 0.02, band(&authored, 0), 0);
-    assert!(hit.height_meters.is_finite());
-    assert!(hit.height_meters.abs() <= 0.02);
+    let relief = band(&authored, 0);
+    // Straight down: the first texel's top, half the depth below the plane.
+    let down = march_surface_depth(&f, [0.25, 0.25], [0.0, 0.0], 0.02, relief, 0);
+    assert!(!down.starved);
+    assert_eq!(down.face, SurfaceDepthFace::Top);
+    assert!((down.height_meters + 0.01).abs() < 1e-7);
+    // Grazing enough to leave the first texel: one iteration starves it flat.
+    for dir in [[0.0, 0.0], [25.0, 0.0], [400.0, -90.0]] {
+        assert_eq!(
+            march_surface_depth(&f, [0.25, 0.25], dir, 0.02, relief, 0),
+            march_surface_depth(&f, [0.25, 0.25], dir, 0.02, relief, 1),
+            "dir {dir:?}",
+        );
+    }
+    assert!(march_surface_depth(&f, [0.25, 0.25], [400.0, -90.0], 0.02, relief, 0).starved);
 }
 
 /// P2 is exact: wherever the single-texel early-out fires it returns what

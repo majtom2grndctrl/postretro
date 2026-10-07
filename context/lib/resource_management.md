@@ -173,7 +173,7 @@ the authored sRGB-content convention for this sibling.
 Per-texel signed height for texel-space parallax. Height does **not** get a `.prm` slot
 of its own — the forward pass is at its 16/16 sampled-texture budget — so it
 rides in the **G channel of the specular slot**, which becomes a two-channel
-"surface map" (`PrmFormat::Rg8Unorm`, wire tag 4): R specular, G depth.
+"surface map" (`PrmFormat::Rg8Unorm`, wire tag 4): R specular, G height.
 
 - **Naming:** `{name}_h.png` suffix.
 - **Format:** the authored PNG is grayscale; the baker reads its R channel.

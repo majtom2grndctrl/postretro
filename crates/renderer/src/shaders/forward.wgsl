@@ -122,7 +122,7 @@ struct MaterialUniform {
     // streaming will move it), bit 12 = the has-depth flag the bind-group
     // builder sets from the loaded specular slot's format, bits 13..15 unused,
     // bits 16..19 = how many dynamic lights this fragment may self-shadow (the
-    // player's quality tier rides here; zero at Low and Off), bits 20..31 unused.
+    // player's on/off switch rides here; zero at Off), bits 20..31 unused.
     surface_depth_march: u32,
 };
 @group(1) @binding(3) var<uniform> material: MaterialUniform;

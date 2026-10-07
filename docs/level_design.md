@@ -334,7 +334,7 @@ Depth character comes from the **material prefix** — the same first-token-befo
 
 The compiler does not know about prefixes — it bakes any `_h.png` it finds. So a `glass_*_h.png` compiles cleanly, makes that material's compiled surface texture twice the size it needed to be, and is then ignored at render time. Don't ship one.
 
-The map's shades decide *where* the surface sits high or low. The prefix decides *how far*: how deep black sinks, how high white rises, and how many flat terraces each direction snaps to. Depth applies in each direction, so a full-range `concrete` map spans twice its depth from deepest mortar to highest stone. Depths stay within a couple of centimeters each way.
+The map's shades decide *where* the surface sits high or low. The prefix decides *how far*: how deep black sinks, how high white rises, and how many flat terraces each direction snaps to. Depth applies in each direction, so a full-range `concrete` map spans twice its depth from deepest mortar to highest stone. Depth is counted in the texture's own texels — six each way at most, for `concrete` — so it follows the texture's pixel grid, not a fixed distance.
 
 #### Raised texels and the true surface
 
@@ -369,7 +369,7 @@ cargo run --release --manifest-path tools/texture-tool/Cargo.toml -- \
 
 #### The player's on/off setting
 
-Players get a **SURFACE DEPTH** setting in the graphics options: **Off** or **On**, defaulting to **On**. `On` is the full effect. `Off` renders exactly as the engine did before the feature existed, and costs nothing — it is there for machines that can't afford the per-pixel march. There is no middle setting. Author for `On`, but don't build a room whose readability depends on it — someone will be playing with it off.
+Players get a **SURFACE DEPTH** setting in the graphics options: **Off** or **On**, defaulting to **On**. `On` is the full effect. `Off` renders exactly as the engine did before the feature existed and skips the per-pixel march — it is there for machines that can't afford it. There is no middle setting. Author for `On`, but don't build a room whose readability depends on it — someone will be playing with it off.
 
 ### Model Texture Sidecars
 

@@ -822,8 +822,9 @@ fn height_map(
 /// The `_h.png` value the engine reads as the true surface plane.
 const HEIGHT_SURFACE: u8 = 128;
 
-/// Posterize a height value into `levels` terraces spread across 0..=255 with
-/// [`HEIGHT_SURFACE`] always one of them, so the mean-luminance region lands
+/// Posterize a height value into `levels / 2` terraces on each side of
+/// [`HEIGHT_SURFACE`], plus the surface itself (an odd count rounds down), so
+/// the mean-luminance region lands
 /// exactly on the surface rather than on whichever diffuse palette entry is
 /// nearest to 128. Terraces are the engine's aesthetic dial; their spatial
 /// boundaries still follow the diffuse's own.

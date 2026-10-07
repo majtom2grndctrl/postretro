@@ -59,7 +59,7 @@ Use `floor(x + 0.5)` in BOTH CPU and WGSL. Never `round()`: WGSL rounds half to 
 
 ## Performance (owner requirement)
 
-Doubling the span (D2) roughly doubles grazing-angle march length if nothing else changes. The owner's requirement is comparable visual results for comparable or less work. Treat cost as a first-class acceptance target, not a follow-up. This Mac has no GPU timing, so cost is measured as **DDA steps**, which the CPU reference reports deterministically.
+Doubling the span (D2) roughly doubles grazing-angle march length if nothing else changes. The owner's requirement is comparable visual results for comparable or less work. Treat cost as a first-class acceptance target, not a follow-up. Cost is measured two ways: **DDA steps** from the CPU reference (deterministic, test-gated), and **`forward` pass GPU time** from a Metal System Trace on this Mac (manual A/B; method in `rendering_pipeline.md` §12, "Without timestamp support" and "Machine-state confounders").
 
 **P1 — Relief band.** At load, alongside the peak (D6), compute the material's **trough**: the lowest quantized `s` across every uploaded mip, clamped to `≤ 0`. The march's vertical extent is `[trough, peak]`, not `[−1, peak]`. A map that never goes darker than mid-gray marches only its raised band. Pack the trough into bytes 12..16 of the material uniform as `surface_depth_trough: f32` (fraction in `[−1, 0]`). With this, bytes 8..16 are both used and the uniform has no padding left.
 
@@ -117,6 +117,7 @@ Compile-forced spillover outside your row is allowed if minimal, and must be rep
 - The shader-constant pin test covers every new constant and the quantization expression.
 - The naga validation and uniformity tests for `forward.wgsl` and `kinematic_brush.wgsl` pass.
 - `rg -n "round\(" crates/renderer/src/shaders/surface_depth.wgsl` returns nothing.
+- Metal System Trace A/B of the `forward` pass, per §12's method: `main` vs. this branch, same map, same camera, same machine state, window in front. Report per-frame `forward` time for each, the Surface Depth `Off` setting as a floor, and the machine-state readings. Delete the trace bundles and `instruments*.ktrace` temp files afterwards.
 - A captured frame of the concrete floor in `maps/campaign-test.prl` at a grazing angle, looked at by the agent, if a headless or offscreen capture path is reachable. Otherwise, report why not.
 
 **C.**
@@ -126,4 +127,4 @@ Compile-forced spillover outside your row is allowed if minimal, and must be rep
 
 ## Open questions
 
-- GPU cost of the doubled span is unmeasured (no GPU timing on this Mac). A Windows `POSTRETRO_GPU_TIMING` pass is a handoff, not a gate.
+- Windows `POSTRETRO_GPU_TIMING` cost on the perf-floor GPU (GTX 1660 Super) stays an all-backends cross-check handoff. The Mac trace is the gate this session can run.

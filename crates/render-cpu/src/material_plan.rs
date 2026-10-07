@@ -1,5 +1,5 @@
 // Material uniform packing and submesh material draw planning.
-// See: context/lib/rendering_pipeline.md §9
+// See: context/lib/rendering_pipeline.md §7.3, §9 · resource_management.md §4.6
 
 use std::path::Path;
 
@@ -21,13 +21,11 @@ pub const MATERIAL_UNIFORM_SIZE: usize = 32;
 ///  12..16  surface_depth_trough            28..32  surface_depth_march (packed)
 /// ```
 ///
-/// Bytes 8..16 were padding until the signed height field: they now carry the
-/// material's relief band, QUANTIZED with its level count — the peak raise as a
-/// fraction in `[0, 1]`, the trough in `[−1, 0]`. The buffer has no padding
-/// left. The second 16-byte row was already allocated and already zeroed
-/// before Surface Depth existed, which is why the feature needs no buffer
-/// resize, no new binding, and no change to the 128-byte group-0 `Uniforms`
-/// ABI.
+/// Bytes 8..16 carry the material's relief band, QUANTIZED with its level
+/// count — the peak raise as a fraction in `[0, 1]`, the trough in `[−1, 0]`.
+/// The buffer has no padding. Surface Depth fits the 32 bytes every material
+/// uploads, so it needs no buffer resize, no new binding, and no change to the
+/// 128-byte group-0 `Uniforms` ABI.
 ///
 /// Every byte from 8 on is zero for the flat material: depth 0, empty band, no
 /// fade, no steps, has-depth clear.
@@ -52,8 +50,8 @@ pub fn build_material_uniform(
 /// Depth state, with no GPU access.
 ///
 /// The renderer retains this beside each material's uniform buffer so the
-/// player-facing Surface Depth switch can be applied live by
-/// rewriting the buffer — `queue.write_buffer`, not a bind-group rebuild
+/// player-facing Surface Depth switch can be applied live by rewriting the
+/// buffer — `queue.write_buffer`, not a bind-group rebuild
 /// (`resource_management.md` §8.2: handles are stable, nothing allocates during
 /// gameplay) and not a new group-0 uniform field (that struct is exactly 128
 /// bytes under a 4-way ABI contract).
@@ -102,6 +100,22 @@ impl MaterialUniformPlan {
         }
     }
 
+    /// The Surface Depth fields this material uploads at `quality`: what
+    /// [`Self::uniform_bytes`] packs, for a caller that reports them.
+    pub fn surface_depth_uniform(
+        self,
+        quality: crate::surface_depth::SurfaceDepthQuality,
+    ) -> crate::surface_depth::SurfaceDepthUniform {
+        crate::surface_depth::SurfaceDepthUniform::resolve(
+            self.surface_depth,
+            quality,
+            self.specular_is_surface_map,
+            self.specular_mip_count,
+            self.requested_base_mip,
+            self.surface_relief,
+        )
+    }
+
     /// The exact 32 bytes this material uploads at `quality`.
     ///
     /// Deterministic and total: the same plan and state always produce the same
@@ -113,14 +127,7 @@ impl MaterialUniformPlan {
         build_material_uniform(
             self.shininess,
             self.emissive_strength,
-            crate::surface_depth::SurfaceDepthUniform::resolve(
-                self.surface_depth,
-                quality,
-                self.specular_is_surface_map,
-                self.specular_mip_count,
-                self.requested_base_mip,
-                self.surface_relief,
-            ),
+            self.surface_depth_uniform(quality),
         )
     }
 }
@@ -363,8 +370,30 @@ mod material_uniform_tests {
         assert_eq!(plan.uniform_bytes(SurfaceDepthQuality::On), on);
     }
 
+    /// The renderer's load log reports `surface_depth_uniform`, so it must be
+    /// exactly what the bytes pack — including FLAT for a flat prefix whose
+    /// slot still carries a surface map.
     #[test]
-    fn the_plan_records_the_first_row_from_the_material_prefix() {
+    fn the_reported_surface_depth_is_what_the_bytes_pack() {
+        for material in [Material::Concrete, Material::Glass] {
+            let plan = MaterialUniformPlan::new(material, true, 4, STONES);
+            for quality in SurfaceDepthQuality::ALL {
+                let packed = plan.surface_depth_uniform(quality);
+                assert_eq!(
+                    plan.uniform_bytes(quality),
+                    build_material_uniform(plan.shininess, plan.emissive_strength, packed),
+                );
+            }
+        }
+        let glass = MaterialUniformPlan::new(Material::Glass, true, 4, STONES);
+        assert_eq!(
+            glass.surface_depth_uniform(SurfaceDepthQuality::On),
+            crate::surface_depth::SurfaceDepthUniform::FLAT,
+        );
+    }
+
+    #[test]
+    fn the_plan_records_shininess_and_emissive_from_the_material_prefix() {
         let plan = MaterialUniformPlan::new(Material::Metal, true, 4, STONES);
         let bytes = plan.uniform_bytes(SurfaceDepthQuality::On);
         assert_eq!(&bytes[0..4], &Material::Metal.shininess().to_le_bytes());

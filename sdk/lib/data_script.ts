@@ -8,6 +8,23 @@ import type { RuntimeValue } from "postretro";
 import { numberNode, boolNode, numberRef, boolRef } from "./util/expression_refs";
 import type { NumberValue, BoolValue, NumberRef, BoolRef, RuntimeExpressionRefs } from "./util/expression_refs";
 export type { NumberValue, BoolValue, NumberRef, BoolRef, RuntimeExpressionRefs } from "./util/expression_refs";
+import { DISPATCH_PARAMS } from "./data_script/reactions";
+import type { TriggerEventDescriptor, TriggerPoolDescriptor } from "./data_script/trigger_events";
+export { defineReaction, scopeReactions, wait, fire } from "./data_script/reactions";
+export {
+  damage,
+  grantHealth,
+  grantAmmo,
+  addSlot,
+  armTrigger,
+  disarmTrigger,
+} from "./data_script/commands";
+export { onTriggerEvent, defineTriggerPool } from "./data_script/trigger_events";
+export type {
+  TriggerEventDescriptor,
+  TriggerEventOptions,
+  TriggerPoolDescriptor,
+} from "./data_script/trigger_events";
 
 /** Dispatch values published by a state-crossing fire. */
 export type CrossingParams = Readonly<{
@@ -196,7 +213,7 @@ type ModManifestInput = Omit<import("postretro").ModManifest, "stores"> & {
   readonly stores?: readonly (StoreDeclaration | StoreHandle)[];
 };
 
-type ReactionBody =
+export type ReactionBody =
   | ProgressReactionDescriptor
   | PrimitiveReactionDescriptor
   | SequenceReactionDescriptor;
@@ -506,254 +523,6 @@ export function defineImpactEvent(
   return impactEvent(id, eventFilter, policy, filter.levels, false);
 }
 
-type ReactionTracer<S> = (params: S) => ReactionBody;
-
-// This is deliberately one plain merged object rather than a Proxy. Sibling
-// dispatch specs add opaque, non-IR leaves (activators, trigger) alongside
-// these input nodes.
-const ACTIVATORS_TARGET = Object.freeze({}) as ActivatorsTarget;
-const TRIGGER_TARGET = Object.freeze({}) as TriggerTarget;
-// The emitter token carries its own wire spelling, so `playSound` (in the UI
-// reaction module) lowers it without importing this module's private tokens.
-const EMITTER_TARGET = Object.freeze({ __wire: "@emitter" }) as unknown as EmitterTarget;
-
-const DISPATCH_PARAMS = Object.freeze({
-  rising: Object.freeze({ op: "input", name: "@rising" } as const),
-  dt: Object.freeze({ op: "input", name: "@dt" } as const),
-  activators: ACTIVATORS_TARGET,
-  trigger: TRIGGER_TARGET,
-  occupancy: Object.freeze({ op: "input", name: "@occupancy" } as const),
-  emitter: EMITTER_TARGET,
-});
-
-export type TriggerEventDescriptor = {
-  tag: string;
-  event: "enter" | "exit";
-  fire: string[];
-  levels?: string[];
-};
-
-export type TriggerPoolDescriptor = {
-  tag: string;
-  arm?: number;
-  armPercentage?: number;
-  levels?: string[];
-};
-
-export type TriggerEventOptions = { levels?: string[] };
-
-type TriggerEventReaction = Reaction<{}> | Reaction<TriggerEventParams> | string;
-
-/** Build a trigger-event observer descriptor, lowering reaction handles to names. */
-export function onTriggerEvent(
-  filter: { tag: string },
-  event: "enter" | "exit",
-  fire: TriggerEventReaction[],
-  options?: TriggerEventOptions,
-): TriggerEventDescriptor {
-  const descriptor: TriggerEventDescriptor = {
-    tag: filter.tag,
-    event,
-    fire: fire.map((reaction) => typeof reaction === "string" ? reaction : reaction.name),
-  };
-  if (options?.levels !== undefined) descriptor.levels = options.levels;
-  return descriptor;
-}
-
-/** Apply damage to the current trigger activators or every entity with a tag. */
-export function damage(target: ActivatorsTarget | string, amount: number): PrimitiveReactionDescriptor {
-  if (typeof target === "string") {
-    return { primitive: "applyDamage", tag: target, args: { amount } };
-  }
-  const wireTarget = target === ACTIVATORS_TARGET ? "@activators" : "@invalid";
-  return { primitive: "applyDamage", target: wireTarget, args: { amount } } as PrimitiveReactionDescriptor;
-}
-
-/** Grant health to the current trigger activators or every entity with a tag. */
-export function grantHealth(
-  target: ActivatorsTarget | string,
-  amount: number,
-): PrimitiveReactionDescriptor {
-  if (typeof target === "string") {
-    return { primitive: "grantHealth", tag: target, args: { amount } };
-  }
-  const wireTarget = target === ACTIVATORS_TARGET ? "@activators" : "@invalid";
-  return { primitive: "grantHealth", target: wireTarget, args: { amount } } as PrimitiveReactionDescriptor;
-}
-
-/** Grant an ammo-reserve pool to the current trigger activators or every entity with a tag. */
-export function grantAmmo(
-  target: ActivatorsTarget | string,
-  type: string,
-  amount: number,
-): PrimitiveReactionDescriptor {
-  if (typeof target === "string") {
-    return { primitive: "grantAmmo", tag: target, args: { type, amount } };
-  }
-  const wireTarget = target === ACTIVATORS_TARGET ? "@activators" : "@invalid";
-  return {
-    primitive: "grantAmmo",
-    target: wireTarget,
-    args: { type, amount },
-  } as PrimitiveReactionDescriptor;
-}
-
-/** Add a delta to a per-owner numeric slot for the current trigger activators or every pawn with a tag. */
-export function addSlot(
-  target: ActivatorsTarget | string,
-  slot: StateRef<number>,
-  delta: number,
-): PrimitiveReactionDescriptor {
-  if (typeof target === "string") {
-    return { primitive: "addSlot", tag: target, args: { slot: slot.slot, delta } };
-  }
-  const wireTarget = target === ACTIVATORS_TARGET ? "@activators" : "@invalid";
-  return {
-    primitive: "addSlot",
-    target: wireTarget,
-    args: { slot: slot.slot, delta },
-  } as PrimitiveReactionDescriptor;
-}
-
-/** Arm the trigger volume that fired the current event. */
-export function armTrigger(target: TriggerTarget): SequenceStep[] {
-  const wireTarget = target === TRIGGER_TARGET ? "@trigger" : "@invalid";
-  return [{ id: wireTarget, primitive: "armTrigger", args: {} } as SequenceStep];
-}
-
-/** Disarm the trigger volume that fired the current event. */
-export function disarmTrigger(target: TriggerTarget): SequenceStep[] {
-  const wireTarget = target === TRIGGER_TARGET ? "@trigger" : "@invalid";
-  return [{ id: wireTarget, primitive: "disarmTrigger", args: {} } as SequenceStep];
-}
-
-/**
- * Enroll the rest of this sequence body with the host scheduler and stop; the
- * remaining steps resume after `durationMs` (rounded up to whole authoritative
- * ticks). `interruptible` (default `false`) lets the reaction's paired trigger
- * Exit edge cancel the remaining steps while parked.
- */
-export function wait(durationMs: number, opts?: { interruptible?: boolean }): SequenceStep[] {
-  return [{
-    id: "@wait",
-    primitive: "wait",
-    args: { durationMs, interruptible: opts?.interruptible ?? false },
-  } as SequenceStep];
-}
-
-/**
- * Dispatch a named reaction by handle or name from inside a sequence body.
- * `reaction` accepts a `Reaction<{}>` handle or a bare name string, resolved
- * exactly as `onTriggerEvent` resolves its `fire` entries. Typing the
- * parameter `Reaction<{}>` rather than `Reaction<S>` makes firing a scoped
- * reaction a compile-time error: a `fire` step dispatches on the app drain
- * with no fire-time dispatch context.
- */
-export function fire(reaction: Reaction<{}> | string): SequenceStep[] {
-  const event = typeof reaction === "string" ? reaction : reaction.name;
-  return [{ id: "@fire", primitive: "fire", args: { event } } as SequenceStep];
-}
-
-/**
- * Deterministic, run-stable id derived from a reaction body. Content-derived
- * (a stable string serialization of the body hashed with FNV-1a) so re-running
- * registration yields the same id — crossings and the `onPress` wire form
- * reference it, so it must not vary across runs.
- *
- * NOTE: the auto-id is run-stable within a runtime but NOT identical across
- * TS and Luau — each uses a different stable-stringify implementation. Do not
- * assume cross-runtime id parity; use an explicit `name` when the id must
- * match across both runtimes.
- */
-function autoReactionId(descriptor: ReactionBody): string {
-  const serialized = stableStringify(descriptor);
-  // FNV-1a (32-bit). Deterministic and dependency-free; collision risk is
-  // acceptable for author-named reaction ids and an explicit `name` overrides it.
-  let hash = 0x811c9dc5;
-  for (let i = 0; i < serialized.length; i++) {
-    hash ^= serialized.charCodeAt(i);
-    hash = Math.imul(hash, 0x01000193);
-  }
-  return `reaction_${(hash >>> 0).toString(16).padStart(8, "0")}`;
-}
-
-/** Order-stable JSON serialization: object keys are emitted sorted so two
- * structurally identical bodies always serialize identically. */
-function stableStringify(value: unknown): string {
-  if (value === null || typeof value !== "object") {
-    return JSON.stringify(value);
-  }
-  if (Array.isArray(value)) {
-    return `[${value.map(stableStringify).join(",")}]`;
-  }
-  const keys = Object.keys(value as Record<string, unknown>).sort();
-  const entries = keys.map(
-    (k) => `${JSON.stringify(k)}:${stableStringify((value as Record<string, unknown>)[k])}`,
-  );
-  return `{${entries.join(",")}}`;
-}
-
-/**
- * Build a named reaction descriptor. Pure: returns a plain object and performs
- * no FFI. `descriptor` accepts exactly one body shape: `progress`, `primitive`,
- * or `sequence`. `name` is optional; when omitted a deterministic, run-stable id
- * is derived from the body. Use explicit names when TS and Luau scripts must
- * agree. The returned handle can be passed to `Button.onPress` or crossing
- * `fire` entries.
- *
- * @param name Stable event/reaction name consumed by dispatch. Optional.
- * @param descriptor Reaction body data consumed later by Rust.
- */
-export function defineReaction(body: ReactionBody): Reaction<{}>;
-export function defineReaction(tracer: ReactionTracer<CrossingParams>): Reaction<CrossingParams>;
-export function defineReaction(tracer: ReactionTracer<TriggerEventParams>): Reaction<TriggerEventParams>;
-export function defineReaction(tracer: ReactionTracer<EmitterParams>): Reaction<EmitterParams>;
-export function defineReaction(
-  name: string,
-  descriptor: ReactionBody,
-): Reaction<{}>;
-export function defineReaction(
-  name: string,
-  tracer: ReactionTracer<CrossingParams>,
-): Reaction<CrossingParams>;
-export function defineReaction(
-  name: string,
-  tracer: ReactionTracer<TriggerEventParams>,
-): Reaction<TriggerEventParams>;
-export function defineReaction(
-  name: string,
-  tracer: ReactionTracer<EmitterParams>,
-): Reaction<EmitterParams>;
-export function defineReaction(
-  nameOrBody:
-    | string
-    | ReactionBody
-    | ReactionTracer<CrossingParams | TriggerEventParams | EmitterParams>,
-  descriptor?: ReactionBody | ReactionTracer<CrossingParams | TriggerEventParams | EmitterParams>,
-):
-  | Reaction<{}>
-  | Reaction<CrossingParams>
-  | Reaction<TriggerEventParams>
-  | Reaction<EmitterParams> {
-  const authored = typeof nameOrBody === "string" ? descriptor : nameOrBody;
-  const tracedBody = typeof authored === "function"
-    ? authored(DISPATCH_PARAMS)
-    : authored as ReactionBody;
-  const [name, body] =
-    typeof nameOrBody === "string"
-      ? [nameOrBody, tracedBody]
-      : [autoReactionId(tracedBody), tracedBody];
-  return { name, ...body } as Reaction<{}> | Reaction<CrossingParams> | Reaction<TriggerEventParams>;
-}
-
-/** Stamp a shared map-tag scope onto each reaction in a plain list. `tags` are matched against `ModMapEntry.tags`; omit scoping for every level. */
-export function scopeReactions<S>(
-  tags: string[],
-  list: Reaction<S>[],
-): Reaction<S>[] {
-  return list.map((reaction) => ({ ...reaction, levels: tags }));
-}
-
 /** Identity builder for entity type descriptors returned from `ModManifest.entities`. `descriptor` is the full archetype object: optional `canonicalName`, optional `components.inventory.loadout`, and optional component presets. Pure: no engine side effects. */
 /**
  * Lowers authored weapon descriptor references to the canonical names carried
@@ -843,11 +612,6 @@ export function defineWeaponPlacement(
   desc: import("postretro").WeaponPlacementDescriptor,
 ): import("postretro").WeaponPlacementDescriptor {
   return desc;
-}
-
-/** Identity builder for a trigger-pool declaration returned from a level or mod manifest. Engine parsing owns arming validation. */
-export function defineTriggerPool(pool: TriggerPoolDescriptor): TriggerPoolDescriptor {
-  return pool;
 }
 
 const MAGIC_SCHEMA_KEYS = new Set(["__proto__", "constructor", "prototype"]);

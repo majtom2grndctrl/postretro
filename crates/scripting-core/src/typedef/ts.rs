@@ -212,6 +212,7 @@ pub fn emit_ts_game_state_refs(out: &mut String) {
 //   sdk/lib/entities/fog_volumes.ts
 //   sdk/lib/util/keyframes.ts
 //   sdk/lib/data_script.ts  (re-exported via index.ts)
+//   sdk/lib/data_script/{reactions,commands,trigger_events}.ts  (re-exported via data_script.ts)
 //   sdk/lib/ui/{text,widgets,layout,tree,state}.ts
 // Drift between this block and those files causes IDE types that don't match
 // runtime behavior. Update this block whenever an SDK lib signature changes.

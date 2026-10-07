@@ -117,6 +117,16 @@ Split: D2's doubled relief ≈ 0.16 ms (the owner's priced choice). The remainin
 - loop-invariant math not hoisted;
 - per-fetch decode cost.
 
+**Track B2 result (4K clock-pinned Metal System Trace, 5 interleaved rounds, median per-frame `forward` ms; supersedes the 720p table above for decisions):**
+
+| Config | main | HEAD before B2 | after B2 (`9f099b784`) |
+|---|---|---|---|
+| Off | 22.83 | 23.13 | **22.51** |
+| On, equal relief | 25.97 (main's On) | 26.82 | 26.19 |
+| On, as committed | — | 27.06 | 26.42 |
+
+Off now beats `main` (−0.32 ms, every round). Equal relief is +0.21 ms (+0.8%) over `main` On: target not met, accepted because the loop restructures that close it raise Off cost on this compiler, and Off is the owner's priority. GPU drops P2 (the CPU keeps it). The light march steps a folded coordinate. The view loop keeps its in-loop starved return. Held for the owner: disabling naga bounds checks (`unsafe`, all backends).
+
 ## Tracks and file ownership
 
 | Track | Model | Owns | Starts |

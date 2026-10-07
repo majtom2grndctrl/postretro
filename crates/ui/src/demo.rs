@@ -64,6 +64,12 @@ pub fn build_accessibility_panel_descriptor() -> super::descriptor::AnchoredTree
     load_ui_fixture("accessibilityPanel.json")
 }
 
+/// The shipped controls panel shell (`core/ui/controlsPanel.json`).
+#[cfg(any(test, feature = "test-fixtures"))]
+pub fn build_controls_panel_shell() -> super::descriptor::AnchoredTree {
+    load_ui_fixture("controlsPanel.json")
+}
+
 /// The shipped frontend-menu descriptor (`core/ui/frontendMenu.json`).
 #[cfg(any(test, feature = "test-fixtures"))]
 pub fn build_frontend_menu_descriptor() -> super::descriptor::AnchoredTree {

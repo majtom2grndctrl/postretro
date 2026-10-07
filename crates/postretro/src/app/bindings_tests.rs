@@ -206,7 +206,7 @@ fn the_controls_panel_lists_dash_from_the_registry_before_any_level_loads() {
     // P6, R5: opening the panel from the frontend reads a table built from the
     // committed registry, with no level loaded.
     for with_dash in [true, false] {
-        let mut app = crate::startup::lifecycle::tests::test_app();
+        let mut app = crate::app::controls_panel::tests::test_app();
         let mut pawn = entity("pawn");
         pawn.movement = Some(movement(with_dash, false));
         app.session

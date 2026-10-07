@@ -206,8 +206,15 @@ fn tree(initial_focus: Option<&str>, children: Vec<Value>) -> AnchoredTree {
     serde_json::from_value(value).expect("engine controls descriptor is well formed")
 }
 
-/// The controls panel. `initial_focus` overrides the first row's first slot.
-pub(crate) fn build_controls_panel(rows: &[ControlsRow], initial_focus: Option<&str>) -> AnchoredTree {
+/// Id of the shell's row grid, which the engine fills.
+const ROWS_GRID_ID: &str = "controlsRows";
+/// Id of the shell's note explaining the displaced flag; dropped when no row
+/// carries the flag.
+const DISPLACED_NOTE_ID: &str = "controlsDisplacedNote";
+
+/// The grid cells and column count for the rows: a header row, a heading row
+/// per category, then each command's label, slot buttons, and RESET.
+fn row_cells(rows: &[ControlsRow]) -> (usize, Vec<Value>) {
     let slots = DeviceClass::ALL.map(|class| {
         rows.iter()
             .map(|row| row.inputs[class_index(class)].len())
@@ -266,44 +273,57 @@ pub(crate) fn build_controls_panel(rows: &[ControlsRow], initial_focus: Option<&
             ),
         ));
     }
+    (cols, cells)
+}
 
-    let mut children = vec![
-        text("CONTROLS", 24.0),
-        json!({
-            "kind": "grid",
-            "gap": 8.0,
-            "padding": 0.0,
-            "align": "center",
-            "cols": cols,
-            "focus": { "policy": "spatial" },
-            "children": cells,
-        }),
-    ];
-    if rows.iter().any(|row| row.displaced) {
-        children.push(text(
-            "! A DEFAULT FOR THIS COMMAND IS TAKEN BY ONE OF YOUR BINDINGS",
-            14.0,
-        ));
+/// The widget object `id` under `node`, depth first.
+fn find_widget<'a>(node: &'a mut Value, id: &str) -> Option<&'a mut Value> {
+    if node.get("id").and_then(Value::as_str) == Some(id) {
+        return Some(node);
     }
-    children.push(json!({
-        "kind": "hstack",
-        "gap": 12.0,
-        "padding": 0.0,
-        "align": "start",
-        "children": [
-            button(
-                "ctl_resetAll",
-                "RESET ALL",
-                &format!("{}resetAll", postretro_ui::actions::CONTROLS_ACTION_PREFIX),
-            ),
-            button("ctl_back", "BACK", postretro_ui::actions::CLOSE_DIALOG_ACTION),
-        ],
-    }));
+    let children = node.get_mut("children")?.as_array_mut()?;
+    children.iter_mut().find_map(|child| find_widget(child, id))
+}
+
+/// Drop the widget `id` from whichever container holds it.
+fn remove_widget(node: &mut Value, id: &str) -> bool {
+    let Some(children) = node.get_mut("children").and_then(Value::as_array_mut) else {
+        return false;
+    };
+    let before = children.len();
+    children.retain(|child| child.get("id").and_then(Value::as_str) != Some(id));
+    before != children.len() || children.iter_mut().any(|child| remove_widget(child, id))
+}
+
+/// The controls panel: the `core/ui/controlsPanel.json` shell with its row
+/// grid filled from `rows`. `initial_focus` overrides the first row's first
+/// slot. A shell with no row grid is drawn as authored, with a warning.
+pub(crate) fn build_controls_panel(
+    shell: &AnchoredTree,
+    rows: &[ControlsRow],
+    initial_focus: Option<&str>,
+) -> AnchoredTree {
+    let mut value = serde_json::to_value(shell).expect("a descriptor serializes");
+    let (cols, cells) = row_cells(rows);
+    match find_widget(&mut value["root"], ROWS_GRID_ID) {
+        Some(grid) => {
+            grid["cols"] = json!(cols);
+            grid["children"] = Value::Array(cells);
+        }
+        None => log::warn!(
+            "[UI] the controls panel shell has no `{ROWS_GRID_ID}` grid; its rows are not shown"
+        ),
+    }
+    if !rows.iter().any(|row| row.displaced) {
+        remove_widget(&mut value["root"], DISPLACED_NOTE_ID);
+    }
     let first = rows
         .first()
-        .map(|row| slot_id(row.command, DeviceClass::KeyboardMouse, 0))
-        .unwrap_or_else(|| "ctl_back".to_string());
-    tree(Some(initial_focus.unwrap_or(&first)), children)
+        .map(|row| slot_id(row.command, DeviceClass::KeyboardMouse, 0));
+    if let Some(focus) = initial_focus.map(str::to_string).or(first) {
+        value["initialFocus"] = json!(focus);
+    }
+    serde_json::from_value(value).expect("the filled controls panel is well formed")
 }
 
 /// The capture prompt. It has no focus stops: every input it sees is captured.
@@ -443,6 +463,18 @@ impl crate::session::Session {
     }
 }
 
+/// The engine shell the panel fills (`core/ui/controlsPanel.json`). Its name
+/// is reserved, so only the engine tier holds it.
+fn controls_shell(stack: &postretro_ui::modal_stack::ModalStack) -> Option<AnchoredTree> {
+    let shell = stack
+        .resolve_with_tier(CONTROLS_PANEL_NAME)
+        .map(|(_, tree)| tree.clone());
+    if shell.is_none() {
+        log::warn!("[UI] ui.openControls: the controls panel shell is not registered");
+    }
+    shell
+}
+
 /// Pop `name` when it is the top tree.
 fn pop_named(stack: &mut postretro_ui::modal_stack::ModalStack, name: &str) {
     if stack.active_name() == Some(name) {
@@ -461,8 +493,11 @@ impl App {
         if session.modal_stack.contains_pushed(CONTROLS_PANEL_NAME) {
             return;
         }
+        let Some(shell) = controls_shell(&session.modal_stack) else {
+            return;
+        };
         let rows = controls_rows(session.bindings.table(), session.bindings.author());
-        let panel = build_controls_panel(&rows, None);
+        let panel = build_controls_panel(&shell, &rows, None);
         session.controls.listed = rows.iter().map(|row| row.command).collect();
         session.controls.built_generation = Some(session.bindings.generation());
         session.modal_stack.push(CONTROLS_PANEL_NAME, panel);
@@ -648,7 +683,10 @@ impl App {
                     .find(|command| listed.contains(command))
             })
             .map(|command| slot_id(*command, DeviceClass::KeyboardMouse, 0));
-        let panel = build_controls_panel(&rows, initial_focus.as_deref());
+        let Some(shell) = controls_shell(&session.modal_stack) else {
+            return;
+        };
+        let panel = build_controls_panel(&shell, &rows, initial_focus.as_deref());
         session
             .modal_stack
             .replace_pushed_descriptor(CONTROLS_PANEL_NAME, &panel);
@@ -684,4 +722,4 @@ impl App {
 
 #[cfg(test)]
 #[path = "controls_panel_tests.rs"]
-mod tests;
+pub(crate) mod tests;

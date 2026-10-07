@@ -10,9 +10,25 @@ use crate::input::{
     Activator, AuthorLayer, BindingSources, DeviceClass, EffectiveTable, PlayerLayer,
     RelevanceFacts,
 };
-use crate::startup::lifecycle::tests::test_app;
+use crate::startup::lifecycle::tests::test_app as bare_test_app;
 use postretro_ui::actions::ControlsAction;
 use postretro_ui::demo::{CONTROLS_CAPTURE_NAME, CONTROLS_DIALOG_NAME, CONTROLS_PANEL_NAME};
+
+/// A test app with the engine's controls panel shell registered, as boot does.
+pub(crate) fn test_app() -> App {
+    let mut app = bare_test_app();
+    app.session.as_mut().unwrap().modal_stack.registry_mut().register(
+        CONTROLS_PANEL_NAME,
+        shell(),
+        postretro_ui::modal_stack::ScopeTier::Engine,
+        false,
+    );
+    app
+}
+
+fn shell() -> AnchoredTree {
+    postretro_ui::demo::build_controls_panel_shell()
+}
 
 const KBM: DeviceClass = DeviceClass::KeyboardMouse;
 const PAD: DeviceClass = DeviceClass::Gamepad;
@@ -123,7 +139,7 @@ fn each_slot_shows_its_activator_read_only() {
         vec![author_binding(key(KeyCode::ShiftLeft), ActivatorKind::Tap)],
     );
     let table = EffectiveTable::build(&author, &PlayerLayer::default(), all_facts(), false);
-    let panel = descriptor_text(&build_controls_panel(&controls_rows(&table, &author), None));
+    let panel = descriptor_text(&build_controls_panel(&shell(), &controls_rows(&table, &author), None));
     assert!(panel.contains("\"SHIFT LEFT (HOLD)\""), "{panel}");
     assert!(panel.contains("\"SHIFT LEFT (TAP)\""), "{panel}");
     assert!(
@@ -152,7 +168,7 @@ fn a_player_binding_that_took_an_author_default_flags_the_displaced_row() {
         .map(|row| row.command)
         .collect();
     assert_eq!(flagged, [Command::Reload]);
-    let panel = descriptor_text(&build_controls_panel(&rows, None));
+    let panel = descriptor_text(&build_controls_panel(&shell(), &rows, None));
     assert!(panel.contains("\"RELOAD !\""), "{panel}");
     assert!(panel.contains("TAKEN BY ONE OF YOUR BINDINGS"));
 
@@ -422,7 +438,7 @@ fn a_prompt_whose_command_becomes_irrelevant_closes_without_binding() {
         session.controls.built_generation = Some(session.bindings.generation());
         session
             .modal_stack
-            .push(CONTROLS_PANEL_NAME, build_controls_panel(&rows, None));
+            .push(CONTROLS_PANEL_NAME, build_controls_panel(&shell(), &rows, None));
     }
     app.apply_controls_action(ControlsAction::Capture {
         command: Command::Dash.id(),
@@ -441,6 +457,7 @@ fn a_prompt_whose_command_becomes_irrelevant_closes_without_binding() {
     assert_eq!(stack.active_name(), Some(CONTROLS_PANEL_NAME));
     assert!(session(&app).bindings.player().rows.is_empty());
     let panel = descriptor_text(&build_controls_panel(
+        &shell(),
         &controls_rows(session(&app).bindings.table(), session(&app).bindings.author()),
         None,
     ));
@@ -536,4 +553,28 @@ fn a_mod_tree_under_the_reserved_name_never_replaces_the_engine_panel() {
     assert_eq!(stack.active_tier(), Some(ScopeTier::Engine));
     let panel = descriptor_text(stack.retained_descriptors().last().unwrap());
     assert!(panel.contains("ctl_resetAll") && !panel.contains("IMPOSTOR"));
+}
+
+#[test]
+fn the_shipped_shell_frames_the_rows_the_engine_fills() {
+    let author = AuthorLayer::default();
+    let table = EffectiveTable::build(&author, &PlayerLayer::default(), all_facts(), false);
+    let rows = controls_rows(&table, &author);
+    let panel = build_controls_panel(&shell(), &rows, None);
+    let text = descriptor_text(&panel);
+    assert!(text.contains("\"id\":\"controlsRows\""));
+    assert!(text.contains("\"scroll\":{\"maxHeight\":420.0}"), "{text}");
+    assert!(text.contains("ctl_resetAll") && text.contains("ctl_back"));
+    assert!(
+        !text.contains("controlsDisplacedNote"),
+        "the note shows only when a row is flagged"
+    );
+    assert_eq!(
+        panel.initial_focus.as_deref(),
+        Some(slot_id(rows[0].command, KBM, 0).as_str())
+    );
+    assert!(
+        descriptor_text(&shell()).contains("\"children\":[]"),
+        "the shell ships an empty row grid"
+    );
 }

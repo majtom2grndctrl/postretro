@@ -579,6 +579,14 @@ impl Session {
                 "accessibilityPanel.json",
                 false,
             );
+            // The controls panel's shell; the engine fills its rows.
+            postretro_ui::tree_asset::register_tree_from_disk(
+                registry,
+                core_root,
+                postretro_ui::demo::CONTROLS_PANEL_NAME,
+                "controlsPanel.json",
+                false,
+            );
         }
 
         // 4. Net endpoint (M15 Phase 1, default single-player). A malformed flag

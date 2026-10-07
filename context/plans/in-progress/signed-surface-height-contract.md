@@ -17,7 +17,7 @@ Read with `context/lib/resource_management.md` §4.6, `rendering_pipeline.md` §
 | D5 | Ambient occlusion (the SH-indirect-only darkening term) is measured from the material's **peak raise**, not the plane: `ao_fraction = clamp(peak_q − s_q, 0, 1)`, then the existing `1 − STRENGTH · fade · ao_fraction`. | AO tracks local relief wherever the author put the plane: mid-gray mortar between raised stones darkens by its depth below the stone tops. An all-mid-gray map (peak 0) gets none. A carve-only map (peak 0) is byte-identical to today. AO touches only the SH indirect term; dynamic light, side-face normals and self-shadow are unaffected. |
 | D6 | The march starts at the material's **peak raise**: the highest quantized raise of any texel in any uploaded mip of its surface map, computed once at load on the CPU. | A map that never exceeds mid-gray marches exactly like a pure carve. Flat mid-gray areas don't pay for raise they don't have. |
 | D7 | A march that exhausts its step budget resolves **flat at the true plane** (original UV, height 0, geometric normal, top hit) — not at the last boundary crossed. | Grazing starvation looks like today's "Off" rather than smearing the texture toward the viewer. |
-| D8 | The three existing `_h.png` assets keep their pixels and take on the new meaning. | Concrete stones now rise and its mortar sinks. *Amended after Track A:* Corrugated's peak quantizes to 0, so it is now carve-only with its top plateau on the plane (cheaper: 0.40× steps). Vent goes from two sunk plateaus 1 texel apart to +1 / −1 / −2 texels (1.42× steps). Vent's fate is an owner question at landing; no content edits until then. |
+| D8 | The three existing `_h.png` assets keep their pixels and take on the new meaning. | Concrete stones now rise and its mortar sinks. *Amended after Track A:* Corrugated's peak quantizes to 0, so it is now carve-only with its top plateau on the plane (cheaper: 0.40× steps). Vent goes from two sunk plateaus 1 texel apart to +1 / −1 / −2 texels (1.42× steps). Owner ruling at landing: keep Vent's new relief; no content edits. |
 | D9 | `texture-tool` maps diffuse mean luminance to mid-gray. | Generated maps rise and sink around the surface instead of carrying an arbitrary absolute offset. |
 
 ## Invariants (no track may break these)
@@ -125,7 +125,7 @@ Split: D2's doubled relief ≈ 0.16 ms (the owner's priced choice). The remainin
 | On, equal relief | 25.97 (main's On) | 26.82 | 26.19 |
 | On, as committed | — | 27.06 | 26.42 |
 
-Off now beats `main` (−0.32 ms, every round). Equal relief is +0.21 ms (+0.8%) over `main` On: target not met, accepted because the loop restructures that close it raise Off cost on this compiler, and Off is the owner's priority. GPU drops P2 (the CPU keeps it). The light march steps a folded coordinate. The view loop keeps its in-loop starved return. Held for the owner: disabling naga bounds checks (`unsafe`, all backends).
+Off now beats `main` (−0.32 ms, every round). Equal relief is +0.21 ms (+0.8%) over `main` On: target not met, accepted because the loop restructures that close it raise Off cost on this compiler, and Off is the owner's priority. GPU drops P2 (the CPU keeps it). The light march steps a folded coordinate. The view loop keeps its in-loop starved return. Owner ruling: naga bounds checks stay on (declined: `unsafe` on every backend for a fraction of the +0.8%).
 
 ## Tracks and file ownership
 

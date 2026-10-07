@@ -327,10 +327,10 @@ Depth character comes from the **material prefix** — the same first-token-befo
 |--------|-------|
 | `concrete` | Deepest — the cobblestone and pavement case this is built for |
 | `grate` | Moderate |
-| `wood` | Shallow — plank gaps |
-| `metal` | Shallowest — panel seams and rivets |
+| `wood` | Shallow (same as `metal`) — plank gaps |
+| `metal` | Shallow — panel seams and rivets |
 | `glass`, `neon` | **Flat.** Deliberately |
-| anything else | A conservative carve, so a `_h.png` on an unrecognized prefix still shows up |
+| anything else | Moderate, so a `_h.png` on an unrecognized prefix still shows up |
 
 The compiler does not know about prefixes — it bakes any `_h.png` it finds. So a `glass_*_h.png` compiles cleanly, makes that material's compiled surface texture twice the size it needed to be, and is then ignored at render time. Don't ship one.
 

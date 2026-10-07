@@ -3349,3 +3349,47 @@ fn block_local_vertex_uv_addresses_the_same_chart_texel_as_the_bake_layer_uv() {
         "fixture must rebase through a nonzero block origin"
     );
 }
+
+#[test]
+fn soft_probes_reuse_matches_a_fresh_snap_for_every_light_and_count() {
+    // The per-thread point/spot memo must return exactly the set a fresh
+    // `probe_indices` snap derives, whatever order lights and counts arrive in:
+    // a count change must miss, and a different point or spot light at the same
+    // count shares the light-independent sphere snap.
+    let point = soft_point_light(0.5);
+    let mut spot = soft_point_light(1.5);
+    spot.light_type = LightType::Spot;
+    spot.origin = DVec3::new(-7.0, 2.0, 3.0);
+    spot.cone_direction = Some([0.0, -1.0, 0.0]);
+    spot.cone_angle_inner = Some(0.3);
+    spot.cone_angle_outer = Some(0.6);
+    let narrow_sun = soft_directional_light(0.01);
+    let wide_sun = soft_directional_light(8.0);
+
+    let lights = [&point, &spot, &narrow_sun, &wide_sun];
+    let counts = [
+        DEFAULT_AREA_SAMPLE_COUNT,
+        16,
+        DEFAULT_AREA_SAMPLE_COUNT,
+        SOFT_PROBE_SAMPLES,
+        1,
+        64,
+        DEFAULT_AREA_SAMPLE_COUNT,
+    ];
+    for &count in &counts {
+        for light in lights {
+            let fresh = probe_indices(light, count.max(SOFT_PROBE_SAMPLES));
+            for _ in 0..2 {
+                assert_eq!(
+                    SoftProbes::new(light, count),
+                    SoftProbes {
+                        full_samples: count.max(SOFT_PROBE_SAMPLES),
+                        probes: fresh,
+                    },
+                    "{:?} light at count {count}",
+                    light.light_type
+                );
+            }
+        }
+    }
+}

@@ -4,7 +4,7 @@
 
 use crate::ctx::ScriptCtx;
 use crate::data_descriptors::GroupTarget;
-use crate::group_resolution::resolve_group;
+use crate::group_resolution::{group_commands_apply_here, resolve_group};
 use crate::reaction_registry::ReactionPrimitiveRegistry;
 
 use super::primitive_dispatch::dispatch_add_owner_slot;
@@ -23,7 +23,7 @@ pub(super) fn dispatch_group(
     script_ctx: &ScriptCtx,
 ) {
     let kind = target.kind.as_wire();
-    if !script_ctx.owner_slot_writes_enabled.get() {
+    if !group_commands_apply_here(script_ctx) {
         log::debug!(
             "[Scripting] group command '{primitive}' on kind '{kind}' is host-only; skipped on this client"
         );

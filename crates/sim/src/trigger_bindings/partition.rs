@@ -128,7 +128,12 @@ pub(super) fn partition_direct_reaction(
                         commands.push(command);
                     }
                 } else {
-                    if !matches!(step.id, SequenceTarget::Entity(_)) {
+                    // A member or group presentation step drains app-side at
+                    // frame end, where a group resolves like any group step.
+                    if !matches!(
+                        step.id,
+                        SequenceTarget::Entity(_) | SequenceTarget::Group(_)
+                    ) {
                         log::warn!(
                             "[Trigger] sentinel target on presentation sequence step `{}` cannot drain app-side; not binding",
                             step.primitive

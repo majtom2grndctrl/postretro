@@ -44,24 +44,20 @@ pub(super) fn bind_primitive(
     slot_table: &SlotTable,
     script_ctx: Option<&ScriptCtx>,
 ) -> Option<BoundTriggerCommand> {
-    if primitive.primitive == "setState" && (primitive.tag.is_some() || primitive.target.is_some())
+    if primitive.primitive == "setState"
+        && (primitive.tag.is_some() || primitive.target.is_some() || primitive.kind.is_some())
     {
         log::warn!(
-            "[Trigger] setState is system-targeted and cannot carry a target tag or sentinel; not binding"
+            "[Trigger] setState is system-targeted and cannot carry a target tag, group or sentinel; not binding"
         );
         return None;
     }
-    if let Some(kind) = primitive.kind {
-        // A kindless tag binding would hit every tagged entity — a player pawn
-        // under an npc group included — so a group is never lowered to one.
-        log::warn!(
-            "[Trigger] group command `{}` on kind `{}` has no fixed-tick binding yet; not binding",
-            primitive.primitive,
-            kind.as_wire()
-        );
-        return None;
-    }
-    let target = if let Some(sentinel) = primitive.target.as_deref() {
+    // A group keeps its kind: lowering it to a kindless tag binding would hit
+    // every tagged entity, a player pawn under an npc group included. A
+    // tagless group is a complete target, so it never reads as "no target".
+    let target = if let Some(group) = primitive.group_target() {
+        Some(BoundTarget::Group(group))
+    } else if let Some(sentinel) = primitive.target.as_deref() {
         match sentinel {
             "@activators" => Some(BoundTarget::Activators),
             spelling => {
@@ -97,14 +93,7 @@ pub(super) fn bind_sequence_step(
     }
     let target = Some(match &step.id {
         SequenceTarget::Entity(id) => BoundTarget::Entity(*id),
-        SequenceTarget::Group(group) => {
-            log::warn!(
-                "[Trigger] group step `{}` on kind `{}` has no fixed-tick binding yet; not binding",
-                step.primitive,
-                group.kind.as_wire()
-            );
-            return None;
-        }
+        SequenceTarget::Group(group) => BoundTarget::Group(group.clone()),
         SequenceTarget::Activators => BoundTarget::Activators,
         SequenceTarget::FiredTrigger => BoundTarget::FiredTrigger,
         // Control steps never bind to an in-tick command: `BoundTarget` has no

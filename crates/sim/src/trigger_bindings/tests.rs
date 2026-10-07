@@ -420,7 +420,7 @@ fn update_npc_state_empty_tag_is_debug_noop_and_keeps_fanout_work() {
         Some(SlotValue::Number(1.0)),
     );
     assert!(captured.iter().any(|(level, message)| {
-        *level == log::Level::Debug && message.contains("empty Brain tag match")
+        *level == log::Level::Debug && message.contains("empty Brain match")
     }));
 }
 
@@ -455,7 +455,7 @@ fn update_npc_state_special_target_logs_and_skips() {
             .aggro_armed
     );
     assert!(captured.iter().any(|(level, message)| {
-        *level == log::Level::Warn && message.contains("requires a tag target")
+        *level == log::Level::Warn && message.contains("requires a tag or group target")
     }));
 }
 

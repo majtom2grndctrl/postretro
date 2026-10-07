@@ -7,7 +7,19 @@
 // between paths.
 
 use postretro_entities::registry::{ComponentKind, EntityId, EntityRegistry};
-use postretro_entities::{GroupKind, GroupTarget};
+use postretro_entities::{GroupKind, GroupTarget, ScriptCtx};
+
+/// Whether group commands apply on this machine: host and single player do, a
+/// connected client does not. Every machine runs the same reactions, so a
+/// group command reaching a client is normal content; callers skip it silently
+/// (debug at most). Named dispatch, scheduled steps and the trigger tick all
+/// ask here, so the role rule has one source.
+///
+/// The session derives the flag from its net endpoint
+/// (`owner_slot_writes_enabled`, which also gates owner-slot writes).
+pub fn group_commands_apply_here(script_ctx: &ScriptCtx) -> bool {
+    script_ctx.owner_slot_writes_enabled.get()
+}
 
 /// Resolve `target` against `registry` in registry slot order.
 ///

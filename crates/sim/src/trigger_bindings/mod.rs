@@ -2,6 +2,8 @@
 //! See: context/lib/entity_model.md §5 · context/lib/scripting.md §12
 
 mod command_binding;
+#[cfg(test)]
+mod group_tick_tests;
 mod install;
 mod partition;
 #[cfg(test)]

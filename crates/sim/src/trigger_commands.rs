@@ -2,9 +2,11 @@
 //! Governing context: `context/lib/development_guide.md` §4.3; `context/lib/scripting.md` §12.
 
 use postretro_entities::{
-    ComponentKind, EntityId, EntityRegistry, MoverCommand, ScriptCtx, SlotTable, SlotValue,
+    ComponentKind, EntityId, EntityRegistry, GroupTarget, MoverCommand, ScriptCtx, SlotTable,
+    SlotValue,
 };
 use postretro_foundation::{BoundProgram, IrValue, eval_and_write};
+use postretro_scripting_core::group_resolution::{group_commands_apply_here, resolve_group};
 use postretro_scripting_core::ir_scopes::DispatchScope;
 use postretro_scripting_core::store_bridge::{apply_store_slot_batch, validate_slot_value};
 
@@ -16,7 +18,8 @@ use crate::spawner::{SpawnContext, spawn_from_spawner_tag};
 use crate::trigger_system::{arm_trigger_targets, disarm_trigger_targets};
 
 /// The closed set of trigger work allowed in the VM-free fixed-tick seam.
-/// `Tag` targets mirror named primitive dispatch; `Entity` targets preserve a
+/// `Tag` targets mirror named primitive dispatch; `Group` targets resolve their
+/// kind through the shared group resolver; `Entity` targets preserve a
 /// directly-owned sequenced step without performing a reaction-name lookup.
 #[derive(Debug, Clone)]
 pub(crate) enum BoundTriggerCommand {
@@ -76,7 +79,12 @@ pub(crate) enum BoundStoreValue {
 
 #[derive(Debug, Clone)]
 pub(crate) enum BoundTarget {
+    /// Raw kindless tag: every tagged `Transform` entity at application.
     Tag(String),
+    /// `npcs({ tag? })` / `players()`: resolved at application through
+    /// `resolve_group`, never as a kindless tag scan — an npc group must not
+    /// reach a pawn carrying the same tag. Host / single player only.
+    Group(GroupTarget),
     Entity(EntityId),
     Activators,
     FiredTrigger,
@@ -178,6 +186,18 @@ impl BoundTriggerCommand {
         spawn_context: &SpawnContext,
         fire_context: &TriggerFireContext,
     ) {
+        if let Some(group) = self.group_target()
+            && !group_commands_apply_here(script_ctx)
+        {
+            // Trigger ticks run only on the host / single-player simulation
+            // path today; this keeps the group role rule true by construction
+            // should a client ever apply bound commands.
+            log::debug!(
+                "[Trigger] group command on kind '{}' is host-only; skipped on this client",
+                group.kind.as_wire()
+            );
+            return;
+        }
         match self {
             Self::StoreSlot { slot, value } => match value {
                 BoundStoreValue::Literal(value) => {
@@ -330,18 +350,23 @@ impl BoundTriggerCommand {
                 }
             }
             Self::UpdateNpcState { target, aggro } => {
-                let BoundTarget::Tag(tag) = target else {
-                    log::warn!(
-                        "[Trigger] updateNpcState requires a tag target; special target is invalid; skipping"
-                    );
-                    return;
+                let targets: Vec<_> = match target {
+                    BoundTarget::Tag(tag) => registry
+                        .query_by_component_and_tag(ComponentKind::Brain, Some(tag))
+                        .map(|(entity, _)| entity)
+                        .collect(),
+                    BoundTarget::Group(group) => resolve_group(registry, group),
+                    BoundTarget::Entity(_)
+                    | BoundTarget::Activators
+                    | BoundTarget::FiredTrigger => {
+                        log::warn!(
+                            "[Trigger] updateNpcState requires a tag or group target; special target is invalid; skipping"
+                        );
+                        return;
+                    }
                 };
-                let targets: Vec<_> = registry
-                    .query_by_component_and_tag(ComponentKind::Brain, Some(tag))
-                    .map(|(entity, _)| entity)
-                    .collect();
                 if targets.is_empty() {
-                    log::debug!("[Trigger] updateNpcState: empty Brain tag match, no-op");
+                    log::debug!("[Trigger] updateNpcState: empty Brain match, no-op");
                     return;
                 }
                 let args = UpdateNpcStateArgs { aggro: *aggro };
@@ -361,6 +386,27 @@ impl BoundTriggerCommand {
             Self::StoreSlot { .. } | Self::AddOwnerSlot { .. } => {
                 unreachable!("store slots execute through their store path")
             }
+        }
+    }
+
+    /// The group this command addresses, if any. Store writes carry no target.
+    fn group_target(&self) -> Option<&GroupTarget> {
+        let target = match self {
+            Self::Mover { target, .. }
+            | Self::Damage { target, .. }
+            | Self::GrantHealth { target, .. }
+            | Self::GrantAmmo { target, .. }
+            | Self::Arm { target }
+            | Self::Disarm { target }
+            | Self::AddOwnerSlot { target, .. }
+            | Self::AnimationState { target, .. }
+            | Self::UpdateNpcState { target, .. }
+            | Self::Spawn { target } => target,
+            Self::StoreSlot { .. } => return None,
+        };
+        match target {
+            BoundTarget::Group(group) => Some(group),
+            _ => None,
         }
     }
 
@@ -395,6 +441,8 @@ impl BoundTarget {
                     .map(|(id, _)| id)
                     .collect(),
             ),
+            // Same per-command target vector a tag scan allocates.
+            Self::Group(group) => ResolvedTargets::Owned(resolve_group(registry, group)),
             Self::Entity(id) => {
                 if registry.exists(*id) {
                     ResolvedTargets::Single(*id)

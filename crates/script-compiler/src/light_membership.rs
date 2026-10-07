@@ -39,6 +39,26 @@ const EMITTERS_LUAU: &str = include_str!("../../../sdk/lib/entities/emitters.lua
 const EXPRESSION_REFS_LUAU: &str = include_str!("../../../sdk/lib/util/expression_refs.luau");
 const ACTIVATION_LUAU: &str = include_str!("../../../sdk/lib/activation.luau");
 const DATA_SCRIPT_LUAU: &str = include_str!("../../../sdk/lib/data_script.luau");
+/// `data_script.luau` part chunks, evaluated in this order before it and
+/// published through the temporary `__postretroDataScriptParts` bridge,
+/// mirroring scripting-core's `evaluate_data_script_sdk`.
+const DATA_SCRIPT_PART_LUAU: &[(&str, &str, &str)] = &[
+    (
+        "reactions",
+        include_str!("../../../sdk/lib/data_script/reactions.luau"),
+        "sdk/lib/data_script/reactions.luau",
+    ),
+    (
+        "commands",
+        include_str!("../../../sdk/lib/data_script/commands.luau"),
+        "sdk/lib/data_script/commands.luau",
+    ),
+    (
+        "triggerEvents",
+        include_str!("../../../sdk/lib/data_script/trigger_events.luau"),
+        "sdk/lib/data_script/trigger_events.luau",
+    ),
+];
 const RUNTIME_LUAU: &str = include_str!("../../../sdk/lib/runtime.luau");
 const GAME_STATE_LUAU: &str = include_str!("../../../sdk/lib/game_state.luau");
 const BRAIN_LUAU: &str = include_str!("../../../sdk/lib/brain.luau");
@@ -463,7 +483,13 @@ fn install_lua_prelude(lua: &Lua, mod_root: &Path) -> mlua::Result<()> {
     globals.set("__postretroExpressionRefs", expression_refs)?;
     let activation = eval_lua_table(lua, ACTIVATION_LUAU, "sdk/lib/activation.luau")?;
     globals.set("activation", activation.clone())?;
+    let data_script_parts = lua.create_table()?;
+    globals.set("__postretroDataScriptParts", data_script_parts.clone())?;
+    for (key, source, name) in DATA_SCRIPT_PART_LUAU {
+        data_script_parts.set(*key, eval_lua_table(lua, source, name)?)?;
+    }
     let data = eval_lua_table(lua, DATA_SCRIPT_LUAU, "sdk/lib/data_script.luau")?;
+    globals.set("__postretroDataScriptParts", LuaValue::Nil)?;
     globals.set("__postretroExpressionRefs", LuaValue::Nil)?;
     const DATA_FIELDS: &[&str] = &[
         "defineReaction",

@@ -227,7 +227,12 @@ Higher-level vocabulary (`world`, `timeline`, `sequence`, etc.) is provided by t
 - `sdk/lib/entities/triggers.{ts,luau}` — trigger vocabulary: `TriggerVolumeHandle` wrapper with closed arm/disarm builders.
 - `sdk/lib/entities/transforms.{ts,luau}` — transform-only handle type (`TransformHandle`). Type-only; no runtime globals promoted.
 - `sdk/lib/util/keyframes.{ts,luau}` — structurally generic keyframe utilities: the `Keyframe` type alias, `timeline`, and `sequence`. Not light-specific; usable for any keyframed animation.
-- `sdk/lib/data_script.{ts,luau}` — definition-context vocabulary.
+- `sdk/lib/data_script.{ts,luau}` — definition-context vocabulary: shared descriptor types, impact events, stores, and mod/entity builders. Its parts live under `sdk/lib/data_script/`:
+  - `reactions.{ts,luau}` — `defineReaction`, the shared dispatch params and their opaque target tokens, `wait`/`fire`, `scopeReactions`.
+  - `commands.{ts,luau}` — target/command builders (`damage`, resource grants, `addSlot`, `armTrigger`/`disarmTrigger`; Luau also `enemies`/`spawner`).
+  - `trigger_events.{ts,luau}` — `onTriggerEvent`, `defineTriggerPool`.
+
+  TypeScript imports the parts and `data_script.ts` re-exports their builders. In Luau each part is its own chunk, evaluated before `data_script.luau` and published through the temporary `__postretroDataScriptParts` bridge; `data_script.luau` merges their builders into its returned table and the host clears the bridge (`luau_prelude::evaluate_data_script_sdk`, mirrored in `script-compiler`'s `light_membership.rs`).
 - `sdk/lib/ui/tree.{ts,luau}` — pure UI tree helpers: `Tree(...)` builds the placement envelope and `defineUiTree(...)` builds the returned registration entry without changing the manifest wire shape.
 - `sdk/lib/ui/theme.{ts,luau}` — pure theme authoring helpers. `defineTheme` preserves the flat theme maps accepted by `ModManifest.theme`; `getDesignTokens(theme)` returns nested token leaves that widget factories unwrap to flat token strings. Token leaves are runtime-authenticated in both runtimes; hand-built token-shaped records are rejected, and missing authored token paths throw instead of defaulting.
 

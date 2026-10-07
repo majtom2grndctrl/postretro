@@ -208,6 +208,7 @@ pub fn emit_luau_game_state_refs(out: &mut String) {
 //   sdk/lib/entities/fog_volumes.luau
 //   sdk/lib/util/keyframes.luau
 //   sdk/lib/data_script.luau  (embedded directly via include_str! in luau.rs)
+//   sdk/lib/data_script/{reactions,commands,trigger_events}.luau  (part chunks merged into data_script.luau)
 //   sdk/lib/ui/{text,widgets,layout,tree,state}.luau
 // Drift between this block and those files causes IDE types that don't match
 // runtime behavior. Update this block whenever an SDK lib signature changes.

@@ -1086,8 +1086,6 @@ fn malformed_reactions_do_not_discard_valid_manifest_siblings_in_either_vm() {
 
 #[test]
 fn luau_trigger_target_tokens_preserve_wrong_builder_tokens_for_validation() {
-    const DATA_SCRIPT_LUAU: &str = include_str!("../../../../../sdk/lib/data_script.luau");
-
     let lua = mlua::Lua::new();
     let expressions: mlua::Table = lua
         .load(include_str!(
@@ -1098,11 +1096,8 @@ fn luau_trigger_target_tokens_preserve_wrong_builder_tokens_for_validation() {
     lua.globals()
         .set("__postretroExpressionRefs", expressions)
         .unwrap();
-    let sdk: mlua::Table = lua
-        .load(DATA_SCRIPT_LUAU)
-        .set_name("data_script.luau")
-        .eval()
-        .expect("data-script SDK must load");
+    let sdk: mlua::Table =
+        crate::luau_prelude::evaluate_data_script_sdk(&lua).expect("data-script SDK must load");
     lua.globals().set("Postretro", sdk).unwrap();
     let value: LuaValue = lua
         .load(

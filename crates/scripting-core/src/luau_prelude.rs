@@ -56,6 +56,30 @@ const TRIGGERS_LUAU_SRC: &str = include_str!("../../../sdk/lib/entities/triggers
 /// returns.
 const DATA_SCRIPT_LUAU_SRC: &str = include_str!("../../../sdk/lib/data_script.luau");
 
+/// Part chunks of `data_script.luau`, evaluated in this order before it. Each
+/// returns a table whose `builders` the main module merges into its own; the
+/// temporary [`DATA_SCRIPT_PARTS_GLOBAL`] bridge carries them (and the shared
+/// dispatch-param tokens) across chunks and is cleared once the main module
+/// returns. `(bridge key, source, sdk/lib-relative path)`.
+const DATA_SCRIPT_PART_SOURCES: &[(&str, &str, &str)] = &[
+    (
+        "reactions",
+        include_str!("../../../sdk/lib/data_script/reactions.luau"),
+        "data_script/reactions.luau",
+    ),
+    (
+        "commands",
+        include_str!("../../../sdk/lib/data_script/commands.luau"),
+        "data_script/commands.luau",
+    ),
+    (
+        "triggerEvents",
+        include_str!("../../../sdk/lib/data_script/trigger_events.luau"),
+        "data_script/trigger_events.luau",
+    ),
+];
+const DATA_SCRIPT_PARTS_GLOBAL: &str = "__postretroDataScriptParts";
+
 /// Private identity-map implementation shared by the pure descriptor builders.
 const EXPRESSION_REFS_LUAU_SRC: &str = include_str!("../../../sdk/lib/util/expression_refs.luau");
 const EXPRESSION_REFS_GLOBAL: &str = "__postretroExpressionRefs";
@@ -663,14 +687,7 @@ pub fn evaluate_prelude(
         .map_err(|e| ScriptError::InvalidArgument {
             reason: format!("failed to install temporary descriptor-array metatable: {e}"),
         })?;
-    let data_sdk: Table = lua
-        .load(DATA_SCRIPT_LUAU_SRC)
-        .set_name("postretro/sdk/data_script.luau")
-        .eval()
-        .map_err(|e| ScriptError::ScriptThrew {
-            msg: format!("failed to evaluate SDK prelude `data_script.luau`: {e}"),
-            source_name: "sdk/lib/data_script.luau".to_string(),
-        })?;
+    let data_sdk = evaluate_data_script_sdk(lua)?;
     globals
         .set(ARRAY_METATABLE_GLOBAL, mlua::Value::Nil)
         .map_err(|e| ScriptError::InvalidArgument {
@@ -1013,6 +1030,52 @@ fn populate_virtual_modules(
     Ok(())
 }
 
+/// Evaluate `data_script.luau` and its part chunks, returning the merged
+/// builder table. The caller owns any other temporary bridges the module
+/// captures (`__postretroExpressionRefs`, `__postretroArrayMetatable`).
+pub(crate) fn evaluate_data_script_sdk(lua: &Lua) -> Result<Table, ScriptError> {
+    let globals = lua.globals();
+    let parts = lua
+        .create_table()
+        .map_err(|e| ScriptError::InvalidArgument {
+            reason: format!("failed to allocate data-script part bridge: {e}"),
+        })?;
+    globals
+        .set(DATA_SCRIPT_PARTS_GLOBAL, parts.clone())
+        .map_err(|e| ScriptError::InvalidArgument {
+            reason: format!("failed to install temporary data-script part bridge: {e}"),
+        })?;
+    for (key, source, path) in DATA_SCRIPT_PART_SOURCES {
+        let part: Table = lua
+            .load(*source)
+            .set_name(format!("postretro/sdk/{path}"))
+            .eval()
+            .map_err(|e| ScriptError::ScriptThrew {
+                msg: format!("failed to evaluate SDK prelude `{path}`: {e}"),
+                source_name: format!("sdk/lib/{path}"),
+            })?;
+        parts
+            .set(*key, part)
+            .map_err(|e| ScriptError::InvalidArgument {
+                reason: format!("failed to publish data-script part `{path}`: {e}"),
+            })?;
+    }
+    let data_sdk: Table = lua
+        .load(DATA_SCRIPT_LUAU_SRC)
+        .set_name("postretro/sdk/data_script.luau")
+        .eval()
+        .map_err(|e| ScriptError::ScriptThrew {
+            msg: format!("failed to evaluate SDK prelude `data_script.luau`: {e}"),
+            source_name: "sdk/lib/data_script.luau".to_string(),
+        })?;
+    globals
+        .set(DATA_SCRIPT_PARTS_GLOBAL, mlua::Value::Nil)
+        .map_err(|e| ScriptError::InvalidArgument {
+            reason: format!("failed to clear temporary data-script part bridge: {e}"),
+        })?;
+    Ok(data_sdk)
+}
+
 fn copy_fields_to_table(
     target: &Table,
     source: &Table,
@@ -1046,11 +1109,7 @@ mod tests {
         lua.globals()
             .set(EXPRESSION_REFS_GLOBAL, expression_refs)
             .unwrap();
-        let sdk: Table = lua
-            .load(DATA_SCRIPT_LUAU_SRC)
-            .set_name("postretro/sdk/data_script.luau")
-            .eval()
-            .expect("data-script SDK must evaluate");
+        let sdk = evaluate_data_script_sdk(&lua).expect("data-script SDK must evaluate");
 
         let actual = sdk
             .pairs::<String, mlua::Value>()

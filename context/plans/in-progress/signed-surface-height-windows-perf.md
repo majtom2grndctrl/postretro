@@ -2,7 +2,7 @@
 
 > **Read this when:** measuring `feat/signed-surface-height` against `main` on the Windows perf-floor GPU.
 > **Key question:** does the branch cost more than `main` with Surface Depth **Off**? Off is the fallback for weak machines and must not regress. On cost is secondary.
-> **Related:** `signed-surface-height-contract.md` (Track B GPU result table), `context/lib/rendering_pipeline.md` §12.
+> **Related:** `context/plans/done/signed-surface-height-contract.md` (Track B2 and round-1 GPU tables), `context/lib/rendering_pipeline.md` §12.
 
 The 1660 Super supports timestamp queries, so the engine's own `POSTRETRO_GPU_TIMING` works here. No Instruments equivalent needed.
 

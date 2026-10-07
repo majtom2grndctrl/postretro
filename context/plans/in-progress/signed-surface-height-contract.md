@@ -99,12 +99,31 @@ A target the levers above cannot reach is reported to the session with the numbe
 
 Session ruling: the carve-only miss (1.046×) is accepted. At the old cap it matches the baseline exactly; the excess is formerly-starved rays now finishing under D2's doubled caps. The Vent miss is a D8 content consequence and goes to the owner.
 
+**Track B GPU result (Metal System Trace, `forward` = Textured ∪ Kinematic pass union, one pose on `campaign-test` concrete walkway, 1280×720, 3 interleaved runs, noise ≈ ±0.2 ms):**
+
+| Config | Mean ms/frame | Marginal over Off |
+|---|---|---|
+| `main` | 5.04 | +0.32 |
+| branch as committed (D 6, cap 48) | 5.33 | +0.62 |
+| equal relief (D 3, L 3, cap 24) | 5.17 | +0.46 |
+| old cap (D 6, cap 24) | 5.27 | +0.55 |
+| Off | 4.71 | 0 |
+
+Split: D2's doubled relief ≈ 0.16 ms (the owner's priced choice). The remaining ≈ 0.13 ms is overhead of the signed march itself at equal relief. That overhead is the target of Track B2. Lowering the cap alone buys nothing measurable and introduces grazing flat patches; caps stay doubled.
+
+**Track B2 — GPU march overhead.** Goal: the equal-relief config's marginal ≤ `main`'s marginal, with enough runs to beat the noise. Without changing any D-decision or invariant above, the levers are:
+- register pressure / occupancy in the forward shader;
+- P2 as a separate GPU branch (may be dropped on the GPU if it costs; the CPU keeps the authority, and parity is defined on results, not code shape);
+- loop-invariant math not hoisted;
+- per-fetch decode cost.
+
 ## Tracks and file ownership
 
 | Track | Model | Owns | Starts |
 |---|---|---|---|
 | A — CPU authority | opus | `crates/render-data/src/material.rs`, `crates/render-cpu/src/surface_depth.rs` (+ any split modules under it), `crates/render-cpu/src/material_plan.rs` | First, on this branch |
 | B — GPU mirror | sonnet | `crates/renderer/src/shaders/{surface_depth,forward,kinematic_brush}.wgsl`, `crates/renderer/src/render/{loaded_texture,material_plan}.rs`, `crates/renderer/src/render/tests/surface_depth_tests.rs` | After A lands, on this branch |
+| B2 — GPU overhead | opus | B's renderer files, plus `crates/render-cpu/src/surface_depth/` only if parity requires it | After B |
 | C — tool + docs | session | `tools/texture-tool/`, `docs/level_design.md`, `context/lib/*`, comments in `level-format/src/prm.rs` and `level-compiler/src/texture_mips.rs` | Alongside / after |
 
 Compile-forced spillover outside your row is allowed if minimal, and must be reported.

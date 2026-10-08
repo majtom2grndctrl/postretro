@@ -15,6 +15,10 @@ pub struct SpawnerComponent {
     /// Number of enemies created for each fire. Invalid load-time input becomes
     /// zero, preserving the map entity while making it inert.
     pub count: u32,
+    /// Tags each spawned NPC carries, from the map's space-delimited
+    /// `spawned_tags` KVP. The spawner's own `_tags` never pass to its spawns,
+    /// so it can be addressed apart from its output. Empty spawns untagged NPCs.
+    pub spawned_tags: Vec<String>,
     /// Set during the post-dispatch level-install validation pass.
     pub resolved: bool,
 }

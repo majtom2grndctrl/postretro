@@ -193,10 +193,8 @@ fn materialize_remote_enemy_presentation(
 ) {
     let materialized =
         materialize_armed_remote_enemy(remote, descriptors, registry, Some(agent_params()));
-    if materialized {
-        if let Some(state) = remote.initial_animation_state.as_deref() {
-            super::client::apply_mesh_animation_state(registry, remote.entity_id, state, true);
-        }
+    if materialized && let Some(state) = remote.initial_animation_state.as_deref() {
+        super::client::apply_mesh_animation_state(registry, remote.entity_id, state, true);
     }
 }
 
@@ -1043,6 +1041,7 @@ fn host_armed_trap_pool_spawn_reaches_client() {
             SpawnerComponent {
                 archetype_name: ENEMY_CLASS.to_string(),
                 count: 1,
+                spawned_tags: Vec::new(),
                 resolved: true,
             },
         )
@@ -1064,6 +1063,7 @@ fn host_armed_trap_pool_spawn_reaches_client() {
                 descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                     primitive: "spawnFromSpawner".to_string(),
                     target: None,
+                    kind: None,
                     tag: Some("trap-spawner".to_string()),
                     args: serde_json::json!({}),
                     on_complete: None,
@@ -1232,6 +1232,7 @@ fn remote_enemy_spawn_baseline_applies_initial_mesh_animation_state() {
             local_player: false,
             entity_class: Some(ENEMY_CLASS.to_string()),
             active_weapon_archetype: None,
+            projectile_presentation: None,
             components: vec![
                 ComponentPayload::Transform(WireTransform {
                     position: [0.0, 0.0, 0.0],
@@ -1730,6 +1731,7 @@ fn remote_enemy_rebaseline_does_not_resurface_materialize_or_reset_animation() {
             local_player: false,
             entity_class: Some(ENEMY_CLASS.to_string()),
             active_weapon_archetype: None,
+            projectile_presentation: None,
             components: vec![ComponentPayload::Transform(WireTransform {
                 position: [5.0, 0.0, 0.0],
                 rotation: [0.0, 0.0, 0.0, 1.0],

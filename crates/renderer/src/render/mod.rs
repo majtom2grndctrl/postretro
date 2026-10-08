@@ -46,11 +46,16 @@ mod shadowmask;
 mod smoke;
 mod splash_pass;
 mod ui;
+pub(crate) mod uploads;
 
 #[cfg(test)]
 mod animated_atlas_parity_test;
 #[cfg(test)]
 mod curve_eval_test;
+#[cfg(all(test, feature = "dev-tools"))]
+mod debug_ui_gpu_test;
+#[cfg(all(test, windows))]
+mod dx12_fxc_test;
 /// Shared headless GPU harness for offscreen readback tests: the `pollster`
 /// device init (self-skip on no adapter) and texture readback. See
 /// `testing_guide.md` §3/§4.
@@ -59,17 +64,26 @@ pub(crate) mod gpu_test_harness;
 #[cfg(test)]
 mod lightmap_residency_test;
 #[cfg(test)]
+mod render_extent_gpu_test;
+#[cfg(test)]
+mod resolve_composite_gpu_test;
+#[cfg(test)]
 mod sdf_light_select_test;
 #[cfg(test)]
 mod shadowmask_sample_test;
 
 // --- Extracted submodules (module root is slim; impls split by concern) ---
+mod geometry_install_marks;
+mod geometry_ranges;
+#[cfg(all(test, debug_assertions))]
+mod geometry_ranges_gpu_test;
 mod material_plan;
 mod pipeline_layout;
 mod renderer_capture;
 mod renderer_debug_ui;
 mod renderer_diagnostics;
 mod renderer_dynamic_shadow_passes;
+mod renderer_extent;
 mod renderer_frame;
 mod renderer_full_init;
 mod renderer_geometry;
@@ -87,6 +101,15 @@ mod renderer_shadow_passes;
 mod renderer_splash;
 mod renderer_state;
 mod renderer_types;
+mod renderer_ui_layer;
+mod renderer_world_less_capture;
+#[cfg(test)]
+mod shadow_reach_probes;
+mod shadow_world_draws;
+#[cfg(test)]
+mod shadow_world_frame_tests;
+#[cfg(test)]
+mod visible_span_frame_tests;
 
 #[cfg(test)]
 mod tests;
@@ -102,12 +125,20 @@ use winit::window::Window;
 
 /// Linear HDR target shared by every gameplay scene pass.
 pub(super) const SCENE_COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+/// Game UI's native-res layer. sRGB so UI blends in linear space as it did into
+/// scene colour, at a quarter of the bytes of an HDR target; the resolve's load
+/// decodes it. It holds premultiplied colour: colour blends
+/// SrcAlpha/OneMinusSrcAlpha and alpha One/OneMinusSrcAlpha (wgpu
+/// ALPHA_BLENDING, also glyphon's), so over a transparent clear the layer holds
+/// premultiplied colour with coverage alpha.
+pub(super) const UI_LAYER_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 
 use crate::compute_cull::ComputeCullPipeline;
 use crate::lighting::lightmap::LightmapResources;
 use crate::lighting::spot_shadow::SpotShadowPool;
 use crate::render::loaded_texture::{
-    LoadedTexture, load_model_diffuse_texture, load_textures, placeholder_loaded_texture,
+    LoadedTexture, TextureLoadTiming, load_model_diffuse_texture, load_textures,
+    placeholder_loaded_texture,
 };
 use postretro_level_format::alpha_lights::ALPHA_LIGHT_LEAF_UNASSIGNED;
 use postretro_level_format::texture_cache_keys::TextureCacheKeysSection;
@@ -159,10 +190,10 @@ pub use sh_streaming::{
     ShComposePassDiagnostics, ShResidencyDrainError, ShResidencySnapshot,
     ShStreamingLiveDiagnostics,
 };
-pub(crate) use sh_streaming::{StagedUploads, StagingPool};
 use sh_volume::{ShVolumeResources, ShVolumeSections};
 use smoke::SmokePass;
 pub use smoke::{SpriteCollectionRegistration, sprite_specular_exponent_is_valid};
+pub(crate) use uploads::{StagedUploads, StagingPool, UploadQueue};
 
 // Cross-crate re-export: these items now live in `postretro_render_cpu`, kept
 // reachable here at their original `render::*` paths.
@@ -179,6 +210,7 @@ pub(crate) use postretro_render_cpu::mesh_instances;
 
 // Re-export the moved free items so they stay reachable at their original
 // `render::*` paths (external callers and sibling render modules depend on these).
+pub use geometry_ranges::{LevelGeometryRangeError, validate_level_geometry_ranges};
 pub use kinematic_brush::KinematicMoverInstance;
 pub(crate) use material_plan::*;
 pub(crate) use pipeline_layout::*;
@@ -201,8 +233,8 @@ pub use renderer_types::{
     CaptureGpuTimingState, CaptureGpuTimingWindow, CellOverlayState, ClearColor,
     DEFAULT_AMBIENT_FLOOR, DEFAULT_DYNAMIC_DIRECT_SCALE, DEFAULT_INDIRECT_SCALE, LevelGeometry,
     LevelGeometryLightmapStreaming, LevelGeometryShStorage, LocatorDiagnostics, PortalOverlayState,
-    PresentHandle, RUNTIME_DYNAMIC_LIGHT_RESERVE, Renderer, SpatialCellSetDiagnostics,
-    SpatialDiagnostics, WorldWireframeMode,
+    PresentHandle, RUNTIME_DYNAMIC_LIGHT_RESERVE, Renderer, SPLASH_CLEAR_COLOR,
+    SpatialCellSetDiagnostics, SpatialDiagnostics, WorldWireframeMode,
 };
 pub(crate) use renderer_types::{GpuTexture, POST_RETRO_ANISO_CLAMP};
 pub use rigid_occluder_depth::MoverOccluderAabb;
@@ -223,3 +255,6 @@ pub use sh_volume::DeltaVolumeMeta;
 use renderer_full_init::*;
 use renderer_init_pipelines::*;
 use renderer_init_resources::*;
+
+#[cfg(test)]
+pub(crate) use sh_streaming::UploadOrderSh;

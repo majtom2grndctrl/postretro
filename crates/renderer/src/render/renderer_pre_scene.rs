@@ -366,6 +366,12 @@ impl Renderer {
                     .map(|cull| cull.estimate_diagnostics(visible, &view_proj));
             }
 
+            // Both camera passes share this frame's drawable set, independently
+            // of cull routing and fog reach. Build before any later compose exit.
+            if let Some(cull) = &mut full.compute_cull {
+                cull.prepare_camera_ranges(full.cell_draw_index.as_ref(), visible);
+            }
+
             // Candidate-cull routing. Eligible iff ALL hold:
             //   * a valid loaded `CellDrawIndex`,
             //   * `VisibleCells::Culled` (a concrete visible-cell set), AND
@@ -486,49 +492,49 @@ impl Renderer {
                 }
             }
 
-            if let Some(cull) = &full.compute_cull {
-                if log::log_enabled!(log::Level::Debug) {
-                    let f = full.debug_frame;
+            if let Some(cull) = &full.compute_cull
+                && log::log_enabled!(log::Level::Debug)
+            {
+                let f = full.debug_frame;
 
-                    let bm = cull.debug_bitmask_fingerprint();
-                    if bm != full.debug_prev_bitmask {
-                        log::debug!(
-                            "[cull f={f}] visible-cell bitmask changed: pop={} hash={:#010x} (was pop={} hash={:#010x})",
-                            bm.0,
-                            bm.1,
-                            full.debug_prev_bitmask.0,
-                            full.debug_prev_bitmask.1,
-                        );
-                        full.debug_prev_bitmask = bm;
-                    }
+                let bm = cull.debug_bitmask_fingerprint();
+                if bm != full.debug_prev_bitmask {
+                    log::debug!(
+                        "[cull f={f}] visible-cell bitmask changed: pop={} hash={:#010x} (was pop={} hash={:#010x})",
+                        bm.0,
+                        bm.1,
+                        full.debug_prev_bitmask.0,
+                        full.debug_prev_bitmask.1,
+                    );
+                    full.debug_prev_bitmask = bm;
+                }
 
-                    let mut vp_hash = 0u32;
-                    for i in 0..4 {
-                        let col = view_proj.col(i);
-                        vp_hash ^= col.x.to_bits();
-                        vp_hash ^= col.y.to_bits().rotate_left(7);
-                        vp_hash ^= col.z.to_bits().rotate_left(13);
-                        vp_hash ^= col.w.to_bits().rotate_left(19);
-                    }
-                    if vp_hash != full.debug_prev_vp_hash {
-                        log::debug!("[cull f={f}] view_proj changed: hash={:#010x}", vp_hash);
-                        full.debug_prev_vp_hash = vp_hash;
-                    }
+                let mut vp_hash = 0u32;
+                for i in 0..4 {
+                    let col = view_proj.col(i);
+                    vp_hash ^= col.x.to_bits();
+                    vp_hash ^= col.y.to_bits().rotate_left(7);
+                    vp_hash ^= col.z.to_bits().rotate_left(13);
+                    vp_hash ^= col.w.to_bits().rotate_left(19);
+                }
+                if vp_hash != full.debug_prev_vp_hash {
+                    log::debug!("[cull f={f}] view_proj changed: hash={:#010x}", vp_hash);
+                    full.debug_prev_vp_hash = vp_hash;
+                }
 
-                    let cur_vis = match visible {
-                        VisibleCells::Culled(cells) => ("Culled", cells.len()),
-                        VisibleCells::DrawAll => ("DrawAll", 0),
-                    };
-                    if cur_vis != full.debug_prev_visible {
-                        log::debug!(
-                            "[cull f={f}] VisibleCells changed: {}(n={}) (was {}(n={}))",
-                            cur_vis.0,
-                            cur_vis.1,
-                            full.debug_prev_visible.0,
-                            full.debug_prev_visible.1,
-                        );
-                        full.debug_prev_visible = cur_vis;
-                    }
+                let cur_vis = match visible {
+                    VisibleCells::Culled(cells) => ("Culled", cells.len()),
+                    VisibleCells::DrawAll => ("DrawAll", 0),
+                };
+                if cur_vis != full.debug_prev_visible {
+                    log::debug!(
+                        "[cull f={f}] VisibleCells changed: {}(n={}) (was {}(n={}))",
+                        cur_vis.0,
+                        cur_vis.1,
+                        full.debug_prev_visible.0,
+                        full.debug_prev_visible.1,
+                    );
+                    full.debug_prev_visible = cur_vis;
                 }
             }
         }

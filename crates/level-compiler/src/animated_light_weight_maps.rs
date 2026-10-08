@@ -18,7 +18,8 @@ use crate::bake_control::BakeControl;
 
 use crate::bvh_build::BvhPrimitive;
 use crate::chart_raster::{
-    CHART_PADDING_TEXELS, ChartPlacement, chart_interior_dims, chart_texel_world_position,
+    CHART_PADDING_TEXELS, ChartPlacement, chart_interior_dims, chart_texel_seed,
+    chart_texel_world_position,
 };
 use crate::geometry::GeometryResult;
 use crate::lightmap_bake::{
@@ -28,6 +29,8 @@ use crate::map_data::MapLight;
 
 mod static_atlas_frame;
 
+#[cfg(test)]
+use static_atlas_frame::layer_rects_may_overlap;
 #[cfg(test)]
 pub(crate) use static_atlas_frame::rebase_to_cell_block;
 use static_atlas_frame::{
@@ -66,6 +69,9 @@ const WEIGHT_EPSILON: f32 = 1.0e-6;
 /// v8 caches section 25 v5: blocks keyed by lightmap cell block and
 /// block-local texels, identity pages the internal bake layers.
 ///
+/// v9: soft-visibility seeds key on the chart's frame and texel
+/// (`chart_raster::chart_texel_seed`), not bake-layer coordinates.
+///
 /// Pipeline orchestration caches this bake under the `animated_lm_weight_maps`
 /// key, which folds this `STAGE_VERSION` in alongside the input hash — the same
 /// per-stage version-constant pattern every cached stage uses. Bumping this
@@ -73,7 +79,7 @@ const WEIGHT_EPSILON: f32 = 1.0e-6;
 /// build. The `CacheKey`/STAGE_VERSION contract is exercised by
 /// `stage_version_bump_misses_then_hits` and `stage_version_bump_changes_cache_key`
 /// in this module's test suite.
-pub const STAGE_VERSION: u32 = 8;
+pub const STAGE_VERSION: u32 = 9;
 
 pub struct WeightMapInputs<'a> {
     pub bvh: &'a Bvh<f32, 3>,
@@ -505,16 +511,12 @@ fn bake_one_chunk(
                 continue;
             }
 
-            let world_p =
-                chart_texel_world_position(chart, tx_interior, ty_interior, interior_w, interior_h);
+            let world_p = chart_texel_world_position(chart, tx_interior, ty_interior);
             let surface_normal = chart.normal;
 
-            // Deterministic per-texel seed for soft-visibility sampling: a fixed
-            // integer hash of the texel's atlas coordinate. Same convention as the
-            // static lightmap stage (texel `(x, y)` hash, never `RandomState`), so
-            // the bake stays byte-identical across processes. `(ax, ay)` is the
-            // texel's stable identity in this loop.
-            let texel_seed = soft_visibility_texel_seed(ax, ay);
+            // The static bake's seed for this chart texel, so the animated
+            // weights and the static lightmap draw the same samples there.
+            let texel_seed = chart_texel_seed(chart, tx_interior, ty_interior);
 
             let offset_start = texel_lights.len() as u32;
             let mut count: u32 = 0;
@@ -593,22 +595,6 @@ fn bake_one_chunk(
         offset_counts,
         texel_lights,
     }
-}
-
-/// Deterministic per-texel seed for `soft_visibility`'s sample-lattice rotation,
-/// derived from a fixed integer hash of the texel's atlas coordinate `(x, y)`.
-/// No `RandomState`, no hash-order dependence — same `(x, y)` always yields the
-/// same seed, so the bake is byte-identical across processes. Mixing follows the
-/// SplitMix64 finalizer so adjacent texels decorrelate.
-///
-/// The static lightmap stage seeds the same way (deterministic per-texel) but with
-/// a different mixer (FNV-1a). The two need not match: each stage bakes into its
-/// own INDEPENDENT atlas, so per-stage determinism is all that's required.
-fn soft_visibility_texel_seed(x: u32, y: u32) -> u64 {
-    let mut z = ((x as u64) << 32) | (y as u64);
-    z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-    z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-    z ^ (z >> 31)
 }
 
 /// Strips base color and intensity so the weight is a neutral Lambert × falloff

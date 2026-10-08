@@ -32,41 +32,41 @@ resolver = "2"
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.99"
 license = "PolyForm-Noncommercial-1.0.0"
 
 [workspace.dependencies]
 # Windowing and GPU
 winit = "0.30"
-wgpu = "29"
-pollster = "0.4"
+wgpu = "30"
+pollster = "1"
 
 # Shaped, anti-aliased text rendering on wgpu (cosmic-text + its own atlas and
-# pipeline). Pinned to 0.11: that release depends on `wgpu ^29.0.0` (confirmed
-# via crates.io dependency metadata), matching the workspace `wgpu = "29"`. The
-# preceding line (0.10) targets `wgpu ^28`, so 0.11 is the compatible release.
+# pipeline). glyphon must match the workspace `wgpu` major; check its crates.io
+# wgpu requirement before bumping either.
 # glyphon ships its own pipeline/atlas — it is NOT routed through the UI quad
-# pipeline. See context/plans/in-progress/M13--ui-render-pass-slice.
-glyphon = "0.11"
+# pipeline. See context/lib/ui.md.
+glyphon = "0.12"
 
 # Math. `bytemuck` lets glam's `Vec3`/`Mat4` derive `Pod`/`Zeroable`, so the
 # CPU-side per-model `Aabb` is the plain bound type carried by skinned meshes
 # without a parallel array-of-`f32` mirror.
-glam = { version = "0.32", features = ["serde", "bytemuck"] }
+glam = { version = "0.33", features = ["serde", "bytemuck"] }
 
 # Flexbox/grid layout solver for the UI descriptor tree. Pure CPU — no wgpu
 # dependency, so the wgpu version-pinning rationale (see `glyphon` above) does
 # not apply. Drives device-pixel layout of the retained UI widget tree.
-taffy = "0.10"
+taffy = "0.14"
 
 # CPU text shaping/measurement used by the extracted UI crate. Pinned to the
-# version glyphon 0.11 depends on so the renderer text seam can share the same
+# version glyphon depends on so the renderer text seam can share the same
 # FontSystem type identity.
-cosmic-text = "0.18.2"
+cosmic-text = "0.19"
 
-# Collision (world-space trimesh queries; nalgebra types stay inside the
-# `collision` module). See context/lib/entity_model.md §7.
-parry3d = "0.17"
+# Collision (world-space trimesh queries). glam-native via glamx, so it needs
+# the workspace glam (^0.33.7); parry's shape, pose, and hit types stay inside
+# the physics `collision` module. See context/lib/entity_model.md §7.
+parry3d = "0.31"
 
 # GPU struct casting (#[repr(C)] → bytes, no `unsafe` at call sites)
 bytemuck = { version = "1", features = ["derive"] }
@@ -145,11 +145,11 @@ serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
 
 # Player options persistence: human-editable `settings.toml`. `toml` for the
-# wire format, `directories` to resolve the platform config dir. Neither touches
-# wgpu/the renderer — the options module is pure data + fs.
+# wire format, `directories` to resolve the per-user config and data dirs (one
+# engine chokepoint, `startup/app_dirs.rs`). Neither touches wgpu/the renderer.
 toml = "1"
 directories = "6"
-getrandom = "0.3"
+getrandom = "0.4"
 
 # OS accessibility preferences (reduced motion, contrast) with change events,
 # behind the app-side OS-preference seam. Safe API; `unsafe` stays internal.
@@ -164,9 +164,9 @@ windows = { version = "0.62", features = ["UI_ViewManagement"] }
 # Scripting runtimes (embedded). Default features; `parallel` OFF — scripting
 # is single-threaded, `Runtime: Send` is not required. See
 # context/plans/in-progress/scripting-foundation/plan-1-runtime-foundation.md §Sub-plan 2.
-rquickjs = { version = "0.11", default-features = true }
+rquickjs = { version = "0.14", default-features = true }
 # `luau` auto-enables vendored mode; do NOT list `vendored` redundantly.
-mlua = { version = "0.11", features = ["luau", "serde"] }
+mlua = { version = "0.12", features = ["luau", "serde"] }
 
 # Filesystem watcher (dev-mode hot reload). See
 # context/plans/in-progress/scripting-foundation/plan-1-runtime-foundation.md §Sub-plan 7.
@@ -209,15 +209,25 @@ opt-level = 3
 lto = "thin"
 strip = "symbols"
 
+# Default iteration profile: incremental, debug assertions on. Opt-level 2 trims
+# play-test frame cost; opt-level 3 bought little more. `lto = "off"` disables
+# rustc's implicit thin-local LTO (the default at opt-level >= 1), which
+# re-optimizes much of a crate after any codegen edit. Line tables keep
+# file:line backtraces and cut the binary from ~1.2 GB to ~0.4 GB. Together
+# they took a one-line main.rs edit from ~30 s to ~8 s (Linux, 2026-10).
 [profile.dev]
-opt-level = 1
+opt-level = 2
+lto = "off"
+debug = "line-tables-only"
 
 [profile.dev.package."*"]
 opt-level = 2
 
-[profile.dev-fast]
+# Slow alternate for stepping through workspace code in a debugger.
+[profile.dev-debug]
 inherits = "dev"
-debug = "line-tables-only"
+opt-level = 0
+debug = true
 
-[profile.dev-fast.package."*"]
+[profile.dev-debug.package."*"]
 opt-level = 2

@@ -6,7 +6,8 @@
 use std::collections::HashMap;
 
 use cosmic_text::FontSystem;
-use taffy::prelude::{NodeId, Size, TaffyTree};
+use taffy::prelude::{NodeId, Size, Style, TaffyTree};
+use taffy::{LayoutInput, LayoutOutput};
 
 use super::super::descriptor::{
     BindSource, FocusNeighbors as DescriptorFocusNeighbors, LocalState, Predicate, Widget,
@@ -16,6 +17,28 @@ use super::draw::{FocusNeighbors, NodeInteraction};
 use super::node_context::{BarExitFadeState, NodeContext, VisibilityState};
 use crate::text::measure_run;
 
+/// The single taffy measure-seam chokepoint: wrap `measure_node` in taffy's
+/// `compute_leaf_layout` so style-driven sizing (explicit sizes, min/max,
+/// padding, border) composes with the content measurement. Every
+/// `compute_layout_with_measure` call site routes through here.
+pub fn layout_leaf(
+    inputs: LayoutInput,
+    style: &Style,
+    node_context: Option<&mut NodeContext>,
+    font_system: &mut FontSystem,
+    image_sizes: &ImageSizes,
+) -> LayoutOutput {
+    taffy::compute_leaf_layout(
+        inputs,
+        style,
+        // No `calc()` lengths are authored, so nothing to resolve.
+        |_, _| 0.0,
+        |known_dimensions, _available_space| {
+            measure_node(known_dimensions, node_context, font_system, image_sizes)
+        },
+    )
+}
+
 /// taffy measure callback: resolve a leaf's intrinsic size from its content.
 /// Text nodes shape their `content` at `font_size` through `font_system` and
 /// report the real shaped-run extent; image nodes report their asset's natural
@@ -23,7 +46,7 @@ use crate::text::measure_run;
 /// asset/glyphs, not a wire-level number). Every other node has no intrinsic
 /// content, so it reports the size taffy already knows (`known_dimensions`,
 /// defaulting each unset axis to zero — the node sizes from its style/flex slot).
-pub fn measure_node(
+fn measure_node(
     known_dimensions: Size<Option<f32>>,
     node_context: Option<&mut NodeContext>,
     font_system: &mut FontSystem,
@@ -53,20 +76,52 @@ pub fn measure_node(
                 height: known_dimensions.height.unwrap_or(height),
             }
         }
-        Some(NodeContext::Image { asset }) => {
+        Some(NodeContext::Image {
+            asset,
+            width,
+            height,
+        }) => {
             // Natural reference size keyed by asset. An unregistered key collapses
             // the image to zero (it simply does not contribute size/draw) — the
             // renderer pre-registers every key it references.
-            let [w, h] = image_sizes.get(asset).copied().unwrap_or([0.0, 0.0]);
-            Size {
-                width: known_dimensions.width.unwrap_or(w),
-                height: known_dimensions.height.unwrap_or(h),
+            let natural = image_sizes.get(asset).copied().unwrap_or([0.0, 0.0]);
+            if width.is_none() && height.is_none() {
+                return Size {
+                    width: known_dimensions.width.unwrap_or(natural[0]),
+                    height: known_dimensions.height.unwrap_or(natural[1]),
+                };
             }
+            // A sized image's style pins its authored axes, so taffy usually
+            // already knows them; prefer the resolved size so a shrunk axis
+            // still drives the aspect of the other.
+            let [width, height] = authored_image_size(
+                natural,
+                known_dimensions.width.or(*width),
+                known_dimensions.height.or(*height),
+            );
+            Size { width, height }
         }
         _ => Size {
             width: known_dimensions.width.unwrap_or(0.0),
             height: known_dimensions.height.unwrap_or(0.0),
         },
+    }
+}
+
+/// Lay out an image with at least one pinned axis: both pinned give that exact
+/// box; one pinned derives the other from the `natural` aspect (zero when the
+/// asset's size is unknown).
+fn authored_image_size(natural: [f32; 2], width: Option<f32>, height: Option<f32>) -> [f32; 2] {
+    let [natural_width, natural_height] = natural;
+    match (width, height) {
+        (Some(width), Some(height)) => [width, height],
+        (Some(width), None) if natural_width > 0.0 => {
+            [width, width * natural_height / natural_width]
+        }
+        (None, Some(height)) if natural_height > 0.0 => {
+            [height * natural_width / natural_height, height]
+        }
+        (width, height) => [width.unwrap_or(0.0), height.unwrap_or(0.0)],
     }
 }
 
@@ -84,6 +139,7 @@ pub fn widget_id(widget: &Widget) -> Option<&String> {
         Widget::Slider(w) => Some(&w.id),
         Widget::Bar(w) => w.id.as_ref(),
         Widget::Ring(w) => w.id.as_ref(),
+        Widget::Glyph(w) => w.id.as_ref(),
         Widget::Announce(_) => None,
     }
 }
@@ -110,7 +166,11 @@ pub fn authored_focus_neighbors(widget: &Widget) -> Option<&DescriptorFocusNeigh
         Widget::Grid(w) => Some(&w.focus_neighbors),
         Widget::Button(w) => Some(&w.focus_neighbors),
         Widget::Slider(w) => Some(&w.focus_neighbors),
-        Widget::Spacer(_) | Widget::Bar(_) | Widget::Ring(_) | Widget::Announce(_) => None,
+        Widget::Spacer(_)
+        | Widget::Bar(_)
+        | Widget::Ring(_)
+        | Widget::Glyph(_)
+        | Widget::Announce(_) => None,
     }
 }
 
@@ -182,12 +242,29 @@ pub fn widget_a11y_state(
     };
     match widget {
         Widget::Button(w) => (
-            w.selected.as_ref().map(&resolve),
-            w.checked.as_ref().map(&resolve),
+            w.selected.as_ref().map(resolve),
+            w.checked.as_ref().map(resolve),
             w.disabled,
         ),
         Widget::Slider(w) => (None, None, w.disabled),
         _ => (None, None, false),
+    }
+}
+
+/// The role a widget authors, if any (not its implicit kind role).
+pub fn authored_role(widget: &Widget) -> Option<super::super::descriptor::Role> {
+    match widget {
+        Widget::Text(w) => w.role,
+        Widget::Panel(w) => w.role,
+        Widget::Image(w) => w.role,
+        Widget::VStack(w) | Widget::HStack(w) => w.role,
+        Widget::Grid(w) => w.role,
+        Widget::Spacer(w) => w.role,
+        Widget::Button(w) => w.role,
+        Widget::Slider(w) => w.role,
+        Widget::Bar(w) => w.role,
+        Widget::Ring(w) => w.role,
+        Widget::Glyph(_) | Widget::Announce(_) => None,
     }
 }
 
@@ -203,20 +280,6 @@ pub fn container_focus_policy(widget: &Widget) -> Option<&super::super::descript
     }
 }
 
-/// Whether `widget` or any descendant container declares `restoreOnReturn`.
-/// Surfaced tree-wide on the focus rect list: the focus engine restores this
-/// tree's saved focus on a returning pop when any of its containers opted in.
-pub fn any_restore_on_return(widget: &Widget) -> bool {
-    let declared = match widget {
-        Widget::VStack(w) | Widget::HStack(w) => w.restore_on_return,
-        Widget::Grid(w) => w.restore_on_return,
-        _ => false,
-    };
-    declared
-        || widget_children(widget)
-            .is_some_and(|children| children.iter().any(any_restore_on_return))
-}
-
 /// A container's `children` for the lockstep focus walk, or `None` for leaves.
 pub fn widget_children(widget: &Widget) -> Option<&[Widget]> {
     match widget {
@@ -226,8 +289,8 @@ pub fn widget_children(widget: &Widget) -> Option<&[Widget]> {
     }
 }
 
-/// A widget's optional `visibleWhen` reactive-visibility predicate (M13 G2, Task
-/// 2b). Lives on every widget variant; `None` means the node is always visible.
+/// A widget's optional `visibleWhen` reactive-visibility predicate.
+/// Lives on every widget variant; `None` means the node is always visible.
 /// Harvested in lockstep with the taffy tree (`harvest_visibility`) so the diff
 /// can toggle the matching node's taffy `Display`.
 fn widget_visible_when(widget: &Widget) -> Option<&Predicate> {
@@ -242,6 +305,7 @@ fn widget_visible_when(widget: &Widget) -> Option<&Predicate> {
         Widget::Slider(w) => w.visible_when.as_ref(),
         Widget::Bar(w) => w.visible_when.as_ref(),
         Widget::Ring(w) => w.visible_when.as_ref(),
+        Widget::Glyph(w) => w.visible_when.as_ref(),
         Widget::Announce(w) => w.visible_when.as_ref(),
     }
 }

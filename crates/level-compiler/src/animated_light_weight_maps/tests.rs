@@ -409,6 +409,7 @@ fn bake_real_multi_layer_fixture(
             width_texels: 64,
             height_texels: 64,
             leaf_index: 0,
+            window: None,
         },
         Chart {
             origin: glam::Vec3::new(2.0, 0.0, 0.0),
@@ -420,12 +421,13 @@ fn bake_real_multi_layer_fixture(
             width_texels: 64,
             height_texels: 64,
             leaf_index: 1,
+            window: None,
         },
     ];
 
     // This is a genuine two-layer pack: each leaf fills a 64x64 layer, so
     // `pack_layers` must open layer 1 without changing placement fields.
-    let pack = pack_layers(&charts, 64, 0.25).expect("fixture charts must pack");
+    let pack = pack_layers(&charts, 64).expect("fixture charts must pack");
     assert_eq!(pack.layer_count, 2, "fixture must exercise both layers");
     let layout = BlockLayout::whole_layers(
         pack.atlas_width,
@@ -822,6 +824,119 @@ fn overlap_assert_rejects_cross_face_rects_on_one_layer() {
     assert_no_overlapping_rects_per_layer(&chunks, &results);
 }
 
+fn rect_result(layer: u32, x: u32, y: u32, width: u32, height: u32) -> ChunkBakeResult {
+    ChunkBakeResult {
+        rect: ChunkAtlasRect {
+            compact_x: x,
+            compact_y: y,
+            width,
+            height,
+            texel_offset: 0,
+            block: 0,
+        },
+        layer,
+        offset_counts: Vec::new(),
+        texel_lights: Vec::new(),
+    }
+}
+
+fn zero_chunks(count: usize) -> Vec<AnimatedLightChunk> {
+    vec![
+        AnimatedLightChunk {
+            aabb_min: [0.0; 3],
+            face_index: 0,
+            aabb_max: [0.0; 3],
+            index_offset: 0,
+            uv_min: [0.0; 2],
+            uv_max: [0.0; 2],
+            index_count: 0,
+            _padding: 0,
+        };
+        count
+    ]
+}
+
+/// The pairwise half-open overlap test.
+fn pairwise_overlap(results: &[ChunkBakeResult]) -> bool {
+    results.iter().enumerate().any(|(i, a)| {
+        results[i + 1..].iter().any(|b| {
+            let (a, b) = (&a.rect, &b.rect);
+            a.compact_x < b.compact_x + b.width
+                && b.compact_x < a.compact_x + a.width
+                && a.compact_y < b.compact_y + b.height
+                && b.compact_y < a.compact_y + a.height
+        })
+    })
+}
+
+#[test]
+fn overlap_bitmap_agrees_with_pairwise_scan_on_random_layers() {
+    // xorshift64: deterministic, no dependency.
+    let mut state = 0x9E37_79B9_7F4A_7C15_u64;
+    let mut next = |bound: u32| {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        (state % u64::from(bound)) as u32
+    };
+    let mut occupancy = Vec::new();
+    let (mut overlapping, mut clear) = (0, 0);
+    for _ in 0..2_000 {
+        let count = 1 + next(12) as usize;
+        let results: Vec<ChunkBakeResult> = (0..count)
+            .map(|_| rect_result(0, next(200), next(40), 1 + next(90), 1 + next(12)))
+            .collect();
+        let indices: Vec<usize> = (0..count).collect();
+        let expected = pairwise_overlap(&results);
+        assert_eq!(
+            layer_rects_may_overlap(&results, &indices, &mut occupancy),
+            expected,
+            "rects {:?}",
+            results.iter().map(|r| r.rect).collect::<Vec<_>>()
+        );
+        if expected {
+            overlapping += 1;
+        } else {
+            clear += 1;
+        }
+    }
+    assert!(
+        overlapping > 100 && clear > 100,
+        "{overlapping} overlapping, {clear} clear"
+    );
+}
+
+#[test]
+fn overlap_assert_accepts_edge_sharing_rects_across_word_boundaries() {
+    // Abutting at x = 64 and x = 128, and rows touching at y = 3: no shared texel.
+    let results = vec![
+        rect_result(2, 0, 0, 64, 3),
+        rect_result(2, 64, 0, 64, 3),
+        rect_result(2, 128, 0, 1, 3),
+        rect_result(2, 60, 3, 70, 2),
+        rect_result(5, 60, 3, 70, 2),
+    ];
+    assert_no_overlapping_rects_per_layer(&zero_chunks(results.len()), &results);
+}
+
+#[test]
+#[should_panic(expected = "chunks 0 (face 0) and 2 (face 0) on bake layer 2")]
+fn overlap_assert_names_first_pair_when_one_texel_is_shared_across_a_word_boundary() {
+    let results = vec![
+        rect_result(2, 0, 0, 64, 3),
+        rect_result(2, 65, 0, 10, 3),
+        rect_result(2, 63, 2, 2, 1),
+    ];
+    assert_no_overlapping_rects_per_layer(&zero_chunks(results.len()), &results);
+}
+
+#[test]
+#[should_panic(expected = "overlapping atlas rects")]
+fn overlap_assert_keeps_rejecting_a_zero_width_rect_inside_another() {
+    let results = vec![rect_result(1, 3, 4, 2, 2), rect_result(1, 4, 4, 0, 2)];
+    assert_no_overlapping_rects_per_layer(&zero_chunks(results.len()), &results);
+}
+
 #[test]
 fn single_chunk_single_light_emits_one_light_per_covered_texel() {
     let section = bake_with_geometry_and_chunks(
@@ -924,6 +1039,74 @@ fn soft_light_partial_occluder_emits_fractional_weight() {
         "expected at least one penumbra texel with fractional (< fully-lit) \
              weight under soft visibility, found none",
     );
+}
+
+/// `floor_plus_partial_blocker_geometry` with a far 1 m quad prepended in
+/// the same cell: the floor becomes face 1 and, packed after the equal-size
+/// far quad, moves inside the cell block and so in the bake layer.
+fn far_quad_then_floor_plus_partial_blocker_geometry() -> GeometryResult {
+    let mut geo = floor_plus_partial_blocker_geometry();
+    let section = &mut geo.geometry;
+    let mut vertices = xz_quad_face(0.0, 1.0, 500.0);
+    vertices.append(&mut section.vertices);
+    section.vertices = vertices;
+    let mut indices = vec![0, 1, 2, 0, 2, 3];
+    indices.extend(section.indices.iter().map(|&index| index + 4));
+    section.indices = indices;
+    section.faces.insert(
+        0,
+        FaceMeta {
+            leaf_index: 0,
+            texture_index: 0,
+        },
+    );
+    for range in &mut geo.face_index_ranges {
+        range.index_offset += 6;
+    }
+    geo.face_index_ranges.insert(
+        0,
+        FaceIndexRange {
+            index_offset: 0,
+            index_count: 6,
+        },
+    );
+    geo
+}
+
+/// Soft-visibility seeds key on the chart, not its bake-layer coordinates or
+/// face index: the floor's penumbra weights are identical after an unrelated
+/// quad renumbers it and moves its placement.
+#[test]
+fn moved_and_renumbered_chart_bakes_identical_animated_weights() {
+    let alone = bake_with_geometry_and_chunks(
+        floor_plus_partial_blocker_geometry(),
+        vec![soft_animated_point_light_above()],
+        |charts| full_face_chunk(charts, 0, vec![0]),
+    );
+    let shifted = bake_with_geometry_and_chunks(
+        far_quad_then_floor_plus_partial_blocker_geometry(),
+        vec![soft_animated_point_light_above()],
+        |charts| full_face_chunk(charts, 1, vec![0]),
+    );
+    assert_ne!(
+        alone.to_bytes(),
+        shifted.to_bytes(),
+        "the far quad must move the floor's block placement"
+    );
+    let hard_max = alone
+        .texel_lights
+        .iter()
+        .map(|tl| tl.weight)
+        .fold(0.0_f32, f32::max);
+    assert!(
+        alone
+            .texel_lights
+            .iter()
+            .any(|tl| tl.weight > WEIGHT_EPSILON && tl.weight < hard_max * 0.95),
+        "fixture must bake a penumbra"
+    );
+    assert_eq!(alone.offset_counts, shifted.offset_counts);
+    assert_eq!(alone.texel_lights, shifted.texel_lights);
 }
 
 /// Task 4: fully-occluded texels under a soft light still emit *no* entry —
@@ -1249,6 +1432,7 @@ fn sibling_chunks_with_shared_uv_edge_pack_without_overlap() {
         width_texels: 8,
         height_texels: 8,
         leaf_index: 0,
+        window: None,
     };
     let placement = ChartPlacement {
         x: 0,
@@ -1328,6 +1512,7 @@ fn sibling_chunks_with_drifted_shared_uv_edge_pack_without_overlap() {
         width_texels: 3,
         height_texels: 322,
         leaf_index: 0,
+        window: None,
     };
     let placement = ChartPlacement {
         x: 0,
@@ -1374,6 +1559,7 @@ fn chunk_atlas_rect_handles_placement_at_and_beyond_atlas_bound() {
         width_texels: 8,
         height_texels: 8,
         leaf_index: 0,
+        window: None,
     };
     let atlas_size = 64u32;
 

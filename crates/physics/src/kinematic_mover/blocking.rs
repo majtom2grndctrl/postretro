@@ -3,7 +3,6 @@
 
 use std::collections::{HashMap, HashSet};
 
-use parry3d::math::Point;
 use parry3d::shape::Capsule;
 use postretro_entities::components::agent::AgentComponent;
 use postretro_entities::components::health::{
@@ -256,7 +255,7 @@ pub fn run_mover_blocking_pass(
                     if let Some(actual_penetration) = deepest_mover_push_penetration(
                         std::slice::from_ref(collider),
                         mover_poses,
-                        Point::new(position.x, position.y, position.z),
+                        *position,
                         capsule,
                     ) && mover_push_is_blocked_by_static(
                         static_world,
@@ -269,7 +268,7 @@ pub fn run_mover_blocking_pass(
                         && deepest_mover_penetration(
                             std::slice::from_ref(collider),
                             mover_poses,
-                            Point::new(position.x, position.y, position.z),
+                            *position,
                             capsule,
                         )
                         .is_some()
@@ -317,7 +316,7 @@ pub fn run_mover_blocking_pass(
                     if deepest_mover_push_penetration(
                         std::slice::from_ref(collider),
                         mover_poses,
-                        Point::new(position.x, position.y, position.z),
+                        *position,
                         capsule,
                     )
                     .is_some()
@@ -577,11 +576,7 @@ fn player_capsules(registry: &EntityRegistry) -> Vec<(EntityId, glam::Vec3, Caps
             Some((
                 entity,
                 transform.position,
-                Capsule::new(
-                    Point::new(0.0, -movement.capsule.half_height, 0.0),
-                    Point::new(0.0, movement.capsule.half_height, 0.0),
-                    movement.capsule.radius,
-                ),
+                Capsule::new_y(movement.capsule.half_height, movement.capsule.radius),
                 movement.ground,
             ))
         })
@@ -597,11 +592,7 @@ fn agent_capsules(registry: &EntityRegistry) -> Vec<(EntityId, glam::Vec3, Capsu
             Some((
                 entity,
                 transform.position,
-                Capsule::new(
-                    Point::new(0.0, -agent.half_height(), 0.0),
-                    Point::new(0.0, agent.half_height(), 0.0),
-                    agent.radius,
-                ),
+                Capsule::new_y(agent.half_height(), agent.radius),
             ))
         })
         .collect()
@@ -626,13 +617,15 @@ fn leading_mover_contact_penetration(
     position: glam::Vec3,
     capsule: &Capsule,
 ) -> Option<crate::collision::moving::MoverPenetration> {
-    let point = Point::new(position.x, position.y, position.z);
     if let Some(legs) = mover_poses.translation_legs(collider.mover_id)
         && !legs.is_empty()
     {
-        if let Some(contact) =
-            deepest_mover_penetration(std::slice::from_ref(collider), mover_poses, point, capsule)
-        {
+        if let Some(contact) = deepest_mover_penetration(
+            std::slice::from_ref(collider),
+            mover_poses,
+            position,
+            capsule,
+        ) {
             return Some(contact);
         }
         let base_pose = mover_poses.pose(collider.mover_id)?;
@@ -646,7 +639,7 @@ fn leading_mover_contact_penetration(
             if let Some(contact) = deepest_mover_push_penetration(
                 std::slice::from_ref(collider),
                 &leg_source,
-                point,
+                position,
                 capsule,
             ) {
                 latest_contact = Some(contact);
@@ -659,7 +652,7 @@ fn leading_mover_contact_penetration(
         let contact = deepest_mover_push_penetration(
             std::slice::from_ref(collider),
             mover_poses,
-            point,
+            position,
             capsule,
         );
         if contact.is_some() {
@@ -675,7 +668,7 @@ fn leading_mover_contact_penetration(
     deepest_mover_push_penetration(
         std::slice::from_ref(collider),
         &prospective_source,
-        point,
+        position,
         capsule,
     )
 }
@@ -695,7 +688,6 @@ impl MoverPoseSource for ProspectiveMoverPose {
 mod tests {
     use super::*;
     use glam::{Quat, Vec3};
-    use parry3d::{math::Isometry, shape::TriMesh};
     use postretro_entities::components::agent::AgentComponent;
     use postretro_entities::components::health::HealthComponent;
     use postretro_entities::{KinematicMoverConfig, KinematicMoverMode};
@@ -909,7 +901,7 @@ mod tests {
 
     fn add_player(registry: &mut EntityRegistry, health: Option<f32>) -> EntityId {
         let player = registry.spawn(Transform {
-            position: Vec3::new(0.0, 1.0, 0.0),
+            position: Vec3::Y,
             ..Transform::default()
         });
         registry
@@ -947,7 +939,7 @@ mod tests {
 
     fn add_enemy(registry: &mut EntityRegistry, health: Option<f32>) -> EntityId {
         let enemy = registry.spawn(Transform {
-            position: Vec3::new(0.0, 1.0, 0.0),
+            position: Vec3::Y,
             ..Transform::default()
         });
         registry
@@ -974,15 +966,12 @@ mod tests {
 
     fn blocking_static_wall() -> CollisionWorld {
         let points = vec![
-            Point::new(0.1, 0.0, -1.0),
-            Point::new(0.1, 2.0, -1.0),
-            Point::new(0.1, 2.0, 1.0),
-            Point::new(0.1, 0.0, 1.0),
+            Vec3::new(0.1, 0.0, -1.0),
+            Vec3::new(0.1, 2.0, -1.0),
+            Vec3::new(0.1, 2.0, 1.0),
+            Vec3::new(0.1, 0.0, 1.0),
         ];
-        CollisionWorld {
-            mesh: TriMesh::new(points, vec![[0, 1, 2], [0, 2, 3]]),
-            isometry: Isometry::identity(),
-        }
+        CollisionWorld::from_triangles_for_test(points, vec![[0, 1, 2], [0, 2, 3]])
     }
 
     #[test]
@@ -1892,7 +1881,7 @@ mod tests {
         let poses = moving_contact_pose(mover_id);
         let mut prospective_pose = poses.pose;
         prospective_pose.transform.position += prospective_pose.tick_delta;
-        let capsule = Capsule::new(Point::new(0.0, -0.5, 0.0), Point::new(0.0, 0.5, 0.0), 0.25);
+        let capsule = Capsule::new_y(0.5, 0.25);
 
         assert!(
             leading_mover_contact_penetration(
@@ -1948,13 +1937,8 @@ mod tests {
         assert!(poses.pose(mover_id).unwrap().tick_delta.length() < f32::EPSILON);
 
         let collider = swept_wall(mover_id);
-        let player_capsule =
-            Capsule::new(Point::new(0.0, -0.5, 0.0), Point::new(0.0, 0.5, 0.0), 0.25);
-        let enemy_capsule = Capsule::new(
-            Point::new(0.0, -0.75, 0.0),
-            Point::new(0.0, 0.75, 0.0),
-            0.25,
-        );
+        let player_capsule = Capsule::new_y(0.5, 0.25);
+        let enemy_capsule = Capsule::new_y(0.75, 0.25);
 
         assert!(
             leading_mover_contact_penetration(

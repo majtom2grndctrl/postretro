@@ -150,9 +150,9 @@ pub fn extract_frustum_planes_for_gpu(view_proj: &Mat4) -> [[f32; 4]; 6] {
 /// behind a plane (`dot(normal, p) + d < 0`), the whole box is outside that
 /// plane, hence outside the frustum.
 ///
-/// Shared by CPU caster culls and regression tests: entity bounds use it
-/// directly, and world-BVH tests replay the GPU cone-cull predicate. Keeping
-/// one CPU predicate aligned with the GPU convention makes those paths agree.
+/// Shared by the CPU shadow world reach (`render-cpu` `shadow_reach`), entity
+/// caster culls and their tests. Keeping one CPU predicate aligned with the
+/// camera cull's GPU convention makes those paths agree.
 pub fn aabb_intersects_frustum(aabb: &Aabb, planes: &[Vec4; 6]) -> bool {
     for plane in planes {
         let normal = plane.truncate();
@@ -192,7 +192,7 @@ pub fn aabb_intersects_frustum(aabb: &Aabb, planes: &[Vec4; 6]) -> bool {
 /// — guarantees the cull volume matches the rendered shadow frustum exactly.
 ///
 /// NDC z spans `[0, 1]` because `light_space_matrix()` uses glam's
-/// `perspective_rh` (Vulkan/D3D/Metal depth range), matching the cube corners
+/// `camera::rh::proj::directx::perspective` (wgpu depth range), matching the cube corners
 /// below. A non-invertible matrix (degenerate light) yields a point AABB at the
 /// origin, which the AABB-vs-frustum predicate handles without panicking.
 ///
@@ -271,7 +271,12 @@ mod tests {
 
     #[test]
     fn extract_frustum_planes_for_gpu_uses_webgpu_zero_to_one_near_plane() {
-        let m = Mat4::perspective_rh(std::f32::consts::FRAC_PI_2, 1.0, 0.1, 10.0);
+        let m = glam::camera::rh::proj::directx::perspective(
+            std::f32::consts::FRAC_PI_2,
+            1.0,
+            0.1,
+            10.0,
+        );
         let planes = extract_frustum_planes_for_gpu(&m);
 
         let r2 = matrix_row(&m, 2);

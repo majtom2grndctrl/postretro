@@ -90,16 +90,20 @@ fn sample_spot_shadow(
     }
 
     // Tunable-radius PCF: average a 3×3 grid of comparison samples spaced
-    // `SPOT_SHADOW_PCF_RADIUS` texels apart in UV. `textureSampleCompare`
+    // `SPOT_SHADOW_PCF_RADIUS` texels apart in UV. `textureSampleCompareLevel`
     // (CompareFunction::Less) returns 1.0 per tap when the fragment is closer
     // than the stored occluder depth (lit); the mean is the soft visibility.
+    // The explicit-level form matters: the shadow array has one mip, so it is
+    // identical to the implicit form, but an implicit-derivative sample inside
+    // the caller's varying-length light loop is something FXC (the DX12
+    // fallback compiler) can only compile by unrolling that loop, which fails.
     let texel = 1.0 / vec2<f32>(textureDimensions(spot_shadow_depth));
     let step = texel * SPOT_SHADOW_PCF_RADIUS;
     var lit = 0.0;
     for (var dy = -1; dy <= 1; dy = dy + 1) {
         for (var dx = -1; dx <= 1; dx = dx + 1) {
             let offset = vec2<f32>(f32(dx), f32(dy)) * step;
-            lit = lit + textureSampleCompare(
+            lit = lit + textureSampleCompareLevel(
                 spot_shadow_depth,
                 spot_shadow_compare,
                 uv + offset,
@@ -138,7 +142,7 @@ const POINT_SHADOW_DEPTH_BIAS: f32 = 0.08;
 // Project a light-local linear depth (distance along the dominant cube-face
 // axis, i.e. the largest-magnitude component of the light→fragment vector) into
 // the perspective NDC depth [0,1] the cube depth pass stored. The cube faces are
-// rendered with `Mat4::perspective_rh(90°, 1.0, near, far)` (wgpu z ∈ [0,1]), so
+// rendered with glam `rh::proj::directx::perspective(90°, 1.0, near, far)` (wgpu z ∈ [0,1]), so
 // for a view-space depth `d` (= dominant axis magnitude = -view_z) the stored
 // NDC z is `far/(far-near) - (near*far)/((far-near)*d)`. Matching this exactly
 // is why a plain linear-distance compare would mis-shadow.

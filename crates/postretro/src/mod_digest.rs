@@ -259,9 +259,9 @@ pub(crate) mod tests {
     use postretro_entities::{
         AirParams, BehaviorActivityDescriptor, BehaviorGraphDescriptor, BehaviorGraphEnvelope,
         CapsuleParams, EntityTypeDescriptor, FactionRegistry, FactionSentimentDescriptor,
-        FactionSentimentState, FallParams, FireMode, GroundParams, HealthDescriptor,
-        ImpactEventDescriptor, MeshDescriptor, MotionVerb, PlayerMovementDescriptor,
-        PrimitiveDescriptor, ReactionDescriptor, ScopedReaction, SpeedParams, WeaponDescriptor,
+        FactionSentimentState, FallParams, GroundParams, HealthDescriptor, ImpactEventDescriptor,
+        MeshDescriptor, MotionVerb, PlayerMovementDescriptor, PrimitiveDescriptor,
+        ReactionDescriptor, ScopedReaction, SpeedParams, WeaponDescriptor,
     };
     use postretro_foundation::ir::{IrNode, IrValue};
     use postretro_scripting_core::data_descriptors::{ModFontAssets, ModThemeTokens};
@@ -347,6 +347,7 @@ pub(crate) mod tests {
             name: "Digest fixture".to_string(),
             id: "com.postretro.digest-fixture".to_string(),
             version: "1.0.0".to_string(),
+            input: None,
             render: ModRenderProfile::default(),
             movers: Default::default(),
             audio: Default::default(),
@@ -362,6 +363,8 @@ pub(crate) mod tests {
             presentation_overlays: Vec::new(),
             theme: ModThemeTokens::default(),
             frontend: None,
+            ui_images: Default::default(),
+            loading: Default::default(),
             fonts: ModFontAssets::default(),
             maps: Vec::new(),
             reactions: Vec::new(),
@@ -493,8 +496,11 @@ pub(crate) mod tests {
             movement_spread_degrees: 0.0,
             spread_vertical_bias: 0.0,
             range: 64.0,
-            cooldown_ms: 100.0,
-            fire_mode: FireMode::Semi,
+            primary: postretro_foundation::WeaponActivationDescriptor::single(
+                postretro_foundation::ActivationTrigger::Press,
+                100.0,
+            ),
+            secondary: None,
             resolution: postretro_entities::ResolutionMode::Hitscan,
             projectile: None,
             splash: None,
@@ -880,6 +886,7 @@ pub(crate) mod tests {
                 descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                     primitive: "playSound".to_string(),
                     target: None,
+                    kind: None,
                     tag: None,
                     on_complete: None,
                     args: serde_json::json!({ "sound": "fixture" }),
@@ -984,6 +991,7 @@ pub(crate) mod tests {
     // enum variant is added; update the recipe and this sentinel together, never
     // widen either destructuring pattern with `..` or a wildcard arm.
     #[allow(dead_code)]
+    #[allow(clippy::too_many_arguments)]
     fn exhaustive_domain_sentinel(
         scoped: ScopedCrossing,
         crossing: CrossingDescriptor,

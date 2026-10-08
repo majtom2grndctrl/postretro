@@ -3,10 +3,11 @@
 
 use postretro_scripting_core::runtime::{ModBloomResolution, ModRenderProfile};
 
+use postretro_render_cpu::render_extent::RenderResolutionPolicy;
 use postretro_render_cpu::surface_depth::SurfaceDepthQuality as RendererSurfaceDepthQuality;
 
 use crate::App;
-use crate::options::{FogQuality, ShadowQuality, SurfaceDepthQuality};
+use crate::options::{FogQuality, RenderResolution, ShadowQuality, SurfaceDepthQuality};
 use crate::render::{BloomRenderProfile, BloomResolution};
 
 /// Translate the persisted shadow tier into the spot-shadow allocation used by
@@ -43,6 +44,28 @@ pub(crate) const fn renderer_surface_depth_quality(
     match quality {
         SurfaceDepthQuality::Off => RendererSurfaceDepthQuality::Off,
         SurfaceDepthQuality::On => RendererSurfaceDepthQuality::On,
+    }
+}
+
+/// Auto's scene-row cap. Player-options policy, not a renderer constant: it
+/// bounds visible pixel size on large 1× panels, so it reaches the renderer only
+/// through [`renderer_render_resolution`].
+pub(crate) const AUTO_MAX_SCENE_ROWS: u32 = 1440;
+
+/// Translate the persisted render resolution into the renderer's policy. The
+/// `match` is exhaustive with no `_` arm: a new option value must fail to
+/// compile here rather than silently pick a divisor.
+pub(crate) const fn renderer_render_resolution(
+    resolution: RenderResolution,
+) -> RenderResolutionPolicy {
+    match resolution {
+        RenderResolution::Auto => RenderResolutionPolicy::Auto {
+            max_scene_rows: AUTO_MAX_SCENE_ROWS,
+        },
+        RenderResolution::Native => RenderResolutionPolicy::Fixed { divisor: 1 },
+        RenderResolution::Half => RenderResolutionPolicy::Fixed { divisor: 2 },
+        RenderResolution::Third => RenderResolutionPolicy::Fixed { divisor: 3 },
+        RenderResolution::Quarter => RenderResolutionPolicy::Fixed { divisor: 4 },
     }
 }
 
@@ -101,6 +124,18 @@ impl App {
         }
     }
 
+    /// Apply the player's render resolution. The renderer only records it; the
+    /// next frame start rebuilds once if either extent changed, so this is safe
+    /// before and after full init and on a boot-only renderer.
+    ///
+    /// A `None` renderer (pre-window boot, or suspended) is a no-op; resume
+    /// replays full init, which re-applies the value from `PlayerOptions`.
+    pub(crate) fn apply_player_render_resolution(&mut self, resolution: RenderResolution) {
+        if let Some(renderer) = self.renderer.as_mut() {
+            renderer.set_render_resolution(renderer_render_resolution(resolution));
+        }
+    }
+
     /// Commit a mod's render profile to the renderer. Only the style moves:
     /// `set_bloom_render_profile` never touches the pass's `enabled` flag, so
     /// `POSTRETRO_BLOOM=0` and the dev-tools bloom toggle keep sole ownership
@@ -120,6 +155,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use postretro_render_cpu::render_extent::{Extent, RenderExtents, resolve_divisor};
     use postretro_scripting_core::runtime::ModBloomProfile;
 
     fn authored(resolution: ModBloomResolution, pixelated: bool) -> ModRenderProfile {
@@ -224,6 +260,89 @@ mod tests {
             RendererSurfaceDepthQuality::default(),
             RendererSurfaceDepthQuality::On,
         );
+    }
+
+    #[test]
+    fn every_render_resolution_maps_to_its_renderer_policy() {
+        // Drift guard: each persisted value is walked through an exhaustive
+        // match (no `_` arm), so a new value fails to compile here until it
+        // names its expected policy.
+        for resolution in [
+            RenderResolution::Auto,
+            RenderResolution::Native,
+            RenderResolution::Half,
+            RenderResolution::Third,
+            RenderResolution::Quarter,
+        ] {
+            let expected = match resolution {
+                RenderResolution::Auto => RenderResolutionPolicy::Auto {
+                    max_scene_rows: 1440,
+                },
+                RenderResolution::Native => RenderResolutionPolicy::Fixed { divisor: 1 },
+                RenderResolution::Half => RenderResolutionPolicy::Fixed { divisor: 2 },
+                RenderResolution::Third => RenderResolutionPolicy::Fixed { divisor: 3 },
+                RenderResolution::Quarter => RenderResolutionPolicy::Fixed { divisor: 4 },
+            };
+            assert_eq!(
+                renderer_render_resolution(resolution),
+                expected,
+                "{resolution:?} must map to {expected:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn auto_render_resolution_resolves_the_brief_divisor_table() {
+        // (scale factor, surface height) → divisor, through the chokepoint and
+        // the renderer's own resolver, with the real row cap. Width is
+        // irrelevant to Auto.
+        for (scale, height, expected) in [
+            (1.0, 1080, 1),
+            (1.0, 1440, 1),
+            (1.0, 2160, 2),
+            (1.25, 1080, 1),
+            (1.5, 2160, 2),
+            (2.0, 1440, 2),
+            (2.0, 1920, 2),
+            (2.0, 2880, 2),
+            (3.0, 2160, 3),
+            (0.5, 720, 1),
+            (1.0, 1441, 2),
+            (1.0, 1600, 2),
+            (2.0, 2881, 3),
+        ] {
+            let divisor = resolve_divisor(
+                renderer_render_resolution(RenderResolution::Auto),
+                scale,
+                Extent {
+                    width: 1920,
+                    height,
+                },
+            );
+            assert_eq!(
+                divisor, expected,
+                "Auto at scale {scale}, {height} rows must pick divisor {expected}",
+            );
+        }
+    }
+
+    #[test]
+    fn auto_render_resolution_keeps_one_x_surfaces_up_to_the_cap_native() {
+        // No-regression row: a 1× display up to 1440 rows renders the scene at
+        // the surface extent.
+        for (width, height) in [(2560, 1440), (1920, 1080), (1280, 720)] {
+            let surface = Extent { width, height };
+            let extents = RenderExtents::derive(
+                surface,
+                1.0,
+                renderer_render_resolution(RenderResolution::Auto),
+            );
+            assert_eq!(extents.divisor, 1, "{width}×{height} at 1× stays native");
+            assert_eq!(
+                extents.scene, surface,
+                "{width}×{height} at 1× stays native"
+            );
+        }
     }
 
     #[test]

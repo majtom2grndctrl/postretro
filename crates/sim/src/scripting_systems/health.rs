@@ -16,6 +16,7 @@ use postretro_entities::components::health::{
     ContributorLedger, ContributorLedgerEntry, ContributorLedgerOverflow, HealthComponent,
     PendingKillCredit,
 };
+use postretro_entities::components::inventory::Inventory;
 use postretro_entities::registry::{ComponentKind, ComponentValue, EntityId, EntityRegistry};
 use postretro_entities::{DeferredEffectComponent, DeferredEffectKind};
 
@@ -143,6 +144,10 @@ pub(crate) fn sweep_deaths(registry: &mut EntityRegistry) -> DeathReport {
     // component per entity_model.md ("a player by virtue of carrying
     // PlayerMovement").
     for id in dead {
+        // Pawns and corpses persist at zero HP. Stop their future shots now,
+        // before the one-shot death-report latch, rather than waiting for a
+        // later authored despawn. Holstered instances share this lifecycle.
+        cancel_owned_weapon_activations(registry, id);
         let is_player = registry
             .has_component_kind(id, ComponentKind::PlayerMovement)
             .unwrap_or(false);
@@ -214,6 +219,20 @@ pub(crate) fn sweep_deaths(registry: &mut EntityRegistry) -> DeathReport {
     }
 
     report
+}
+
+fn cancel_owned_weapon_activations(registry: &mut EntityRegistry, pawn: EntityId) {
+    let Ok(inventory) = registry.get_component::<Inventory>(pawn) else {
+        return;
+    };
+    let wieldables = inventory.wieldables;
+    for weapon in wieldables.into_iter().flatten() {
+        if let Ok(ComponentValue::Weapon(component)) =
+            registry.get_component_value_mut(weapon, ComponentKind::Weapon)
+        {
+            component.cancel_activation();
+        }
+    }
 }
 
 /// Cross-crate fixture seam for physics blocking tests.
@@ -358,6 +377,128 @@ mod tests {
         registry
             .set_component(id, PlayerMovementComponent::from_descriptor(&descriptor))
             .unwrap();
+    }
+
+    #[test]
+    fn death_cancels_every_owned_activation_while_pawn_and_projectiles_persist() {
+        use postretro_entities::components::projectile::ProjectileComponent;
+        use postretro_entities::components::weapon::WeaponComponent;
+        use postretro_entities::components::wieldable_state::WieldableState;
+        use postretro_foundation::{
+            ActivationCursor, ActivationLane, ActivationPhase, ActivationToken, WeaponDescriptor,
+        };
+
+        for player in [true, false] {
+            let mut registry = EntityRegistry::new();
+            let pawn = spawn_health_entity(&mut registry, 100.0, 0.0, &[]);
+            if player {
+                make_player(&mut registry, pawn);
+            } else {
+                make_brain(&mut registry, pawn);
+            }
+            let mut inventory = Inventory::default();
+            let resources = [
+                serde_json::Value::Null,
+                serde_json::json!({ "kind": "ammo", "type": "rounds", "magazine": 10, "reserve": 0 }),
+                serde_json::json!({ "kind": "heat", "heatPerShot": 10, "overheatAt": 100, "coolPerSecond": 5 }),
+                serde_json::json!({ "kind": "cell", "capacity": 100, "costPerShot": 10, "regenPerSecond": 5 }),
+            ];
+            let mut expected = Vec::new();
+            for (slot, resource) in resources.into_iter().enumerate() {
+                let id = registry.spawn(Transform::default());
+                inventory.wieldables[slot] = Some(id);
+                let descriptor: WeaponDescriptor = serde_json::from_value(serde_json::json!({
+                    "damage": 10, "range": 100, "resolution": "hitscan",
+                    "primary": { "trigger": "press", "recoveryMs": 300, "steps": [{ "kind": "shot" }] },
+                    "resource": resource,
+                })).unwrap();
+                let mut weapon =
+                    WeaponComponent::from_descriptor_with_canonical(&descriptor, Some("ion"));
+                weapon.magazine = 4;
+                if let Some(heat) = weapon.heat.as_mut() {
+                    heat.heat = 100.0;
+                    heat.overheated = true;
+                    heat.idle_ms = 12.0;
+                }
+                if let Some(cell) = weapon.cell.as_mut() {
+                    cell.charge = 35.0;
+                    cell.idle_ms = 12.0;
+                }
+                let charging = slot % 2 == 0;
+                let cursor = ActivationCursor {
+                    token: ActivationToken {
+                        start_tick: 12,
+                        lane: ActivationLane::Secondary,
+                    },
+                    pawn: pawn.to_raw(),
+                    accepted_tick: 12,
+                    last_real_tick: 13,
+                    last_advanced_tick: Some(13),
+                    phase: if charging {
+                        ActivationPhase::Charging
+                    } else {
+                        ActivationPhase::Executing
+                    },
+                    step: 2,
+                    ordinal: 1,
+                    due_tick: 20,
+                    charge: 0.5,
+                };
+                weapon.state = if charging {
+                    WieldableState::Charging(cursor)
+                } else {
+                    WieldableState::Executing(cursor)
+                };
+                weapon.cooldown_remaining_ms = 87.0;
+                registry.set_component(id, weapon.clone()).unwrap();
+                weapon.state = WieldableState::Idle;
+                expected.push((id, weapon, cursor));
+            }
+            registry.set_component(pawn, inventory.clone()).unwrap();
+            let projectile = registry.spawn(Transform::default());
+            let snapshot: ProjectileComponent = serde_json::from_value(serde_json::json!({
+                "direction": [0.0, 0.0, -1.0], "speed": 30.0, "radius": 0.2,
+                "remaining_range": 45.0, "remaining_lifetime": 2.0, "damage": 100.0,
+                "credit_source": "ion", "owner_pawn": pawn,
+                "owner_weapon": inventory.active_wieldable().unwrap(),
+                "spawned": false, "source_weapon": "ion",
+            }))
+            .unwrap();
+            registry
+                .set_component(projectile, snapshot.clone())
+                .unwrap();
+
+            assert_eq!(sweep_deaths(&mut registry).player_died, player);
+
+            assert!(registry.exists(pawn));
+            assert_eq!(
+                registry.get_component::<Inventory>(pawn).unwrap(),
+                &inventory
+            );
+            for (id, weapon, _) in &expected {
+                assert_eq!(
+                    registry.get_component::<WeaponComponent>(*id).unwrap(),
+                    weapon
+                );
+            }
+            assert_eq!(
+                registry
+                    .get_component::<ProjectileComponent>(projectile)
+                    .unwrap(),
+                &snapshot
+            );
+
+            // A restore into a corpse cannot bypass cleanup behind the report latch.
+            let (id, weapon, cursor) = &expected[0];
+            let mut restored = weapon.clone();
+            restored.state = WieldableState::Charging(*cursor);
+            registry.set_component(*id, restored).unwrap();
+            assert_eq!(sweep_deaths(&mut registry), DeathReport::default());
+            assert_eq!(
+                registry.get_component::<WeaponComponent>(*id).unwrap(),
+                weapon
+            );
+        }
     }
 
     #[test]

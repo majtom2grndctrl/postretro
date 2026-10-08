@@ -14,8 +14,8 @@ use crate::ui::descriptor::{
 use crate::ui::style_ranges::StyleRanges;
 
 use super::{
-    CrossingDescriptor, ImpactEventDescriptor, NamedReaction, TriggerEventDescriptor,
-    TriggerPoolDescriptor,
+    CrossingDescriptor, ImpactEventDescriptor, NamedReaction, TriggerPoolDescriptor,
+    VolumeTriggerEventDescriptor,
 };
 
 /// A script-registered UI tree: a named [`AnchoredTree`] plus its stack
@@ -157,6 +157,7 @@ fn validate_widget_sources(widget: &Widget, path: &str, allow_facts: bool) -> Re
             Ok(())
         }
         Widget::Spacer(spacer) => predicate(&spacer.visible_when, "visibleWhen"),
+        Widget::Glyph(glyph) => predicate(&glyph.visible_when, "visibleWhen"),
         Widget::Button(button) => {
             predicate(&button.selected, "selected")?;
             predicate(&button.checked, "checked")?;
@@ -260,6 +261,9 @@ fn validate_presentation_widget(widget: &Widget, path: &str) -> Result<(), Strin
         Widget::Spacer(_) => Err(format!(
             "{path}.kind `spacer` is not supported in passive presentation templates"
         )),
+        Widget::Glyph(_) => Err(format!(
+            "{path}.kind `glyph` is not supported in passive presentation templates"
+        )),
         Widget::Button(_) => Err(format!(
             "{path}.kind `button` is interactive and is not supported in passive presentation templates"
         )),
@@ -313,10 +317,10 @@ fn validate_text_tween(tween: Option<&TextTween>, field: &str) -> Result<(), Str
         return Ok(());
     };
     validate_non_negative_f32(tween.duration_ms, &format!("{field}.durationMs"))?;
-    if let Some(from) = tween.from {
-        if !from.is_finite() {
-            return Err(format!("{field}.from must be a finite f32"));
-        }
+    if let Some(from) = tween.from
+        && !from.is_finite()
+    {
+        return Err(format!("{field}.from must be a finite f32"));
     }
     Ok(())
 }
@@ -328,10 +332,10 @@ fn validate_style_ranges(ranges: Option<&StyleRanges>, field: &str) -> Result<()
     validate_positive_f32(ranges.max, &format!("{field}.max"))?;
     for (index, entry) in ranges.entries.iter().enumerate() {
         let entry_path = format!("{field}.entries[{index}]");
-        if let Some(up_to) = entry.up_to {
-            if !up_to.is_finite() {
-                return Err(format!("{entry_path}.upTo must be a finite f32"));
-            }
+        if let Some(up_to) = entry.up_to
+            && !up_to.is_finite()
+        {
+            return Err(format!("{entry_path}.upTo must be a finite f32"));
         }
         if let Some(color) = &entry.color {
             validate_color(color, &format!("{entry_path}.color"))?;
@@ -455,10 +459,11 @@ pub struct LevelManifest {
     /// from the widened `{ reactions, events, crossings, triggerEvents, triggerPools }` setup-manifest return and
     /// drained into the per-level `DataRegistry`; cleared on level unload.
     pub crossings: Vec<CrossingDescriptor>,
-    /// Trigger-volume enter/exit watchers declared via the `triggerEvents`
-    /// field. Composes with mod-global `ModManifest.triggerEvents` entries
-    /// matched by the `levels` tag selector; per-level and cleared on unload.
-    pub trigger_events: Vec<TriggerEventDescriptor>,
+    /// Level member trigger events (`t.on`) declared via the `triggerEvents`
+    /// field, keyed by volume. Tag-keyed entries are rejected here — they
+    /// belong in `ModManifest.triggerEvents`. Bound after the matching
+    /// mod-global events on a shared edge; per-level and cleared on unload.
+    pub trigger_events: Vec<VolumeTriggerEventDescriptor>,
     /// Trigger-volume pool declarations. Their `levels` selector is retained
     /// for the shared descriptor contract, but level-local pools always apply
     /// to the level that declared them.

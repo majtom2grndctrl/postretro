@@ -2,15 +2,14 @@ use super::super::topology::SeamPortalEndpoint;
 use super::*;
 use crate::sh_streaming::generation::FixedGenerationClock;
 use crate::streaming::cluster_hints::ClusterHints;
-use glam::{Mat4, Vec3};
+use glam::Vec3;
 use postretro_level_format::cluster_sh_payloads::DecodedClusterShPayload;
 use postretro_level_loader::{CellData, CellLocatorChild, LevelWorld};
 use postretro_test_log_capture::LogCapture;
 use postretro_visibility::VisibleCells;
 use std::sync::Arc;
 
-#[path = "sync_manifest_test_fixture.rs"]
-mod sync_manifest_test_fixture;
+use crate::sh_streaming::sync_manifest_test_fixture;
 
 pub(super) fn topology(
     cell_to_cluster: Vec<u32>,
@@ -332,8 +331,9 @@ fn closed_door_visibility_promotes_only_the_loader_resolved_seam_endpoint() {
     )
     .expect("doorway visibility world must be valid");
     let eye = Vec3::new(0.25, 0.0, 0.0);
-    let view_proj = Mat4::perspective_rh(std::f32::consts::FRAC_PI_2, 1.0, 0.1, 16.0)
-        * Mat4::look_at_rh(eye, eye + Vec3::X, Vec3::Y);
+    let view_proj =
+        glam::camera::rh::proj::directx::perspective(std::f32::consts::FRAC_PI_2, 1.0, 0.1, 16.0)
+            * glam::camera::rh::view::look_at_mat4(eye, eye + Vec3::X, Vec3::Y);
     let (visibility, _) = postretro_visibility::determine_visible_cells(
         eye,
         view_proj,
@@ -431,8 +431,9 @@ fn compiled_hinted_doorway_keeps_closed_visibility_and_warms_far_seam_endpoint()
     let near_bounds = &world.cells[near_cell as usize];
     let eye = (near_bounds.bounds_min + near_bounds.bounds_max) * 0.5;
     let portal_center = portal.polygon.iter().copied().sum::<Vec3>() / portal.polygon.len() as f32;
-    let view_proj = Mat4::perspective_rh(std::f32::consts::FRAC_PI_2, 1.0, 0.1, 128.0)
-        * Mat4::look_at_rh(eye, portal_center, Vec3::Y);
+    let view_proj =
+        glam::camera::rh::proj::directx::perspective(std::f32::consts::FRAC_PI_2, 1.0, 0.1, 128.0)
+            * glam::camera::rh::view::look_at_mat4(eye, portal_center, Vec3::Y);
     let visible = crate::render_preparation::VisibleRenderPreparation::for_level(
         &world,
         eye,
@@ -740,8 +741,9 @@ fn real_visible_cells(drawable_cell_count: usize) -> VisibleCells {
     )
     .expect("visibility fixture must be valid");
     let eye = Vec3::ZERO;
-    let view_proj = Mat4::perspective_rh(std::f32::consts::FRAC_PI_2, 1.0, 0.1, 64.0)
-        * Mat4::look_at_rh(eye, Vec3::NEG_Z, Vec3::Y);
+    let view_proj =
+        glam::camera::rh::proj::directx::perspective(std::f32::consts::FRAC_PI_2, 1.0, 0.1, 64.0)
+            * glam::camera::rh::view::look_at_mat4(eye, Vec3::NEG_Z, Vec3::Y);
     crate::render_preparation::VisibleRenderPreparation::for_level(
         &world,
         eye,

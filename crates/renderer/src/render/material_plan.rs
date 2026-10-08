@@ -29,7 +29,7 @@ const CHARACTER_MODEL_MIP_SAMPLER_FILTERING: MipSamplerFiltering = MipSamplerFil
 
 /// Create the Post Retro filtering pool's sampler: fully Linear min/mag/mip
 /// with `anisotropy_clamp = POST_RETRO_ANISO_CLAMP`, with a per-mip-count LOD
-/// clamp. wgpu 29 validates that aniso > 1 requires all three filters to be
+/// clamp. wgpu validates that aniso > 1 requires all three filters to be
 /// Linear. One sampler per distinct mip count is kept in
 /// `Renderer::mip_count_aniso_samplers` so world and mover materials bind the
 /// clamp that matches their uploaded mip chain. Bound at material binding 5.
@@ -81,11 +81,12 @@ fn create_mip_sampler(
 /// Whether a loaded specular slot carries Surface Depth's second channel.
 ///
 /// `Rg8Unorm` is the surface map the level compiler bakes when a material has
-/// an `_h.png` sibling (R = specular, G = depth below the surface). Every other
-/// legal specular format is single-channel, and WGSL expands those to
-/// `(r, 0, 0, 1)` — `.g == 0`, i.e. flat — so the flag is belt-and-braces over
-/// a degradation that is already a no-op. It exists so a material without a
-/// height map skips the march instead of paying for an all-zero one.
+/// an `_h.png` sibling (R = specular, G = signed height around the surface
+/// plane). Every other legal specular format is single-channel, and WGSL
+/// expands those to `(r, 0, 0, 1)`. Under the signed encoding `.g == 0` reads
+/// as MAXIMUM RAISE, not flat, so this flag is the only thing keeping a
+/// material without a height map on its true plane: the shader never marches
+/// without it.
 pub(crate) fn specular_slot_is_surface_map(format: wgpu::TextureFormat) -> bool {
     matches!(format, wgpu::TextureFormat::Rg8Unorm)
 }
@@ -93,12 +94,11 @@ pub(crate) fn specular_slot_is_surface_map(format: wgpu::TextureFormat) -> bool 
 /// One material's group-1 bind group together with the uniform buffer behind
 /// its binding 3, and the GPU-free plan that produced that buffer's contents.
 ///
-/// An earlier revision built the buffer and dropped the handle, leaving no way to reach
-/// the per-material parameters again. The player-facing Surface Depth tier
-/// needs exactly that reach: it is applied by REWRITING these buffers
-/// (`Renderer::set_surface_depth_quality`), never by rebuilding bind groups —
-/// gameplay must not allocate (`resource_management.md` §8.2) — and never by
-/// growing the 128-byte group-0 `Uniforms` ABI.
+/// The handle is retained because the player-facing Surface Depth switch is
+/// applied by REWRITING these buffers (`Renderer::set_surface_depth_quality`),
+/// never by rebuilding bind groups — gameplay must not allocate
+/// (`resource_management.md` §8.2) — and never by growing the 128-byte group-0
+/// `Uniforms` ABI.
 ///
 /// Ownership is unchanged: the renderer owns the buffer, it lives in the
 /// level's `gpu_textures` vector, and it dies with the level. No reference
@@ -122,9 +122,10 @@ pub(crate) fn build_material_bind_group(
     // loaded, not from the material prefix: only a two-channel `Rg8Unorm`
     // specular slot is a surface map. A prefix that wants depth but whose
     // `.prm` has no `_h.png` sibling binds the single-channel specular (or the
-    // 1x1 black placeholder) and must skip the march entirely rather than walk
-    // an all-zero field. The base mip is clamped to the slot's own uploaded
-    // chain so the shader's `textureLoad` level can never go out of range.
+    // 1x1 black placeholder) and must skip the march entirely: the
+    // placeholder's all-zero G would read as maximum raise. The base mip is
+    // clamped to the slot's own uploaded chain so the shader's `textureLoad`
+    // level can never go out of range.
     //
     // Both facts are recorded in the retained plan rather than folded away, so
     // a later quality rewrite re-derives from the same loaded truth.
@@ -132,7 +133,29 @@ pub(crate) fn build_material_bind_group(
         material,
         specular_slot_is_surface_map(loaded.specular_texture.format()),
         loaded.specular_texture.mip_level_count(),
+        // Measured at load from the bytes uploaded to that slot, every mip.
+        loaded.surface_relief,
     );
+    if uniform_plan.specular_is_surface_map {
+        // Report what the uniform packs, not a re-derivation of it: a flat
+        // prefix, an empty band or the switch at `Off` packs no band at all.
+        let packed = uniform_plan.surface_depth_uniform(surface_depth_quality);
+        if packed.has_depth {
+            let raw = uniform_plan.surface_relief.at(packed.base_mip);
+            log::debug!(
+                "[Loader] {label_prefix} surface depth band: peak {:+.4}, trough {:+.4} \
+                 (raw {:+.4} / {:+.4} at mip {}, {} levels per direction)",
+                packed.relief.peak_raise,
+                packed.relief.trough,
+                raw.peak_raise,
+                raw.trough,
+                packed.base_mip,
+                packed.depth.quantize_levels,
+            );
+        } else {
+            log::debug!("[Loader] {label_prefix} surface depth: flat");
+        }
+    }
     let uniform_bytes = uniform_plan.uniform_bytes(surface_depth_quality);
     let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some(&format!("{label_prefix} Uniform")),
@@ -179,13 +202,13 @@ pub(crate) fn build_material_bind_group(
     }
 }
 
-/// Rewrite one material's uniform buffer for a new Surface Depth tier.
+/// Rewrite one material's uniform buffer for a new Surface Depth setting.
 ///
 /// `queue.write_buffer` resolves on the queue timeline ahead of the frames
 /// recorded after it, so the change is live on the next presented frame with
 /// no level reload, no bind-group rebuild, and no allocation.
 pub(crate) fn rewrite_material_surface_depth(
-    queue: &wgpu::Queue,
+    queue: &crate::render::uploads::UploadQueue,
     uniform_buffer: &wgpu::Buffer,
     uniform_plan: MaterialUniformPlan,
     quality: SurfaceDepthQuality,

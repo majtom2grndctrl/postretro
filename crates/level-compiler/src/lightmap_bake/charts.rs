@@ -4,7 +4,6 @@
 use std::collections::HashSet;
 
 use glam::Vec3;
-use postretro_level_format::lightmap::LIGHTMAP_POOL_LAYER_EDGE;
 
 use super::LightmapBakeError;
 use crate::chart_raster::CHART_PADDING_TEXELS;
@@ -24,11 +23,26 @@ pub struct Chart {
     /// Includes padding.
     pub width_texels: u32,
     pub height_texels: u32,
-    /// BSP leaf this chart's face belongs to. The multi-bin packer keeps all of
-    /// one leaf's charts on a single atlas array layer (a leaf is the runtime
-    /// draw/visibility unit, so its charts must share a layer to avoid a
-    /// per-face layer switch in the hot path).
+    /// BSP leaf (runtime cell) this chart's face belongs to; cell blocks
+    /// group charts by it.
     pub leaf_index: u32,
+    /// `Some` for a sub-chart of a face cut past one pool layer: the window
+    /// onto its parent's texel grid. `None` for a chart that is its own grid.
+    pub window: Option<ChartWindow>,
+}
+
+/// A sub-chart's view of its parent chart's texel grid. The sub-chart's
+/// `uv_min`/`uv_extent` and texel extent describe the window itself; its
+/// texels' world positions, seeds and vertex UVs come from the parent-grid
+/// index, so neighbouring sub-charts bake bit-identical overlap texels.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ChartWindow {
+    /// The parent chart's UV rect and interior texel extent.
+    pub grid_uv_min: [f32; 2],
+    pub grid_uv_extent: [f32; 2],
+    pub grid_interior: [u32; 2],
+    /// The parent-grid texel of this chart's first interior texel.
+    pub origin: [u32; 2],
 }
 
 pub(super) fn plan_charts(
@@ -152,42 +166,10 @@ pub(super) fn plan_charts(
             width_texels,
             height_texels,
             leaf_index,
+            window: None,
         });
     }
     Ok(charts)
-}
-
-/// Reject a chart whose padded extent exceeds a pool layer, before packing:
-/// no cell block could hold it, and the block packer's candidate widths
-/// assume chart extents a pool layer bounds. `texel_density` and
-/// `scale_regions` are the ones `plan_charts` resolved each chart's density
-/// from, so the error names the density the face was charted at.
-pub(super) fn check_chart_extents(
-    charts: &[Chart],
-    texel_density: f32,
-    scale_regions: &[MapLightmapScaleRegion],
-) -> Result<(), LightmapBakeError> {
-    let global_density = texel_density.max(1.0e-4);
-    for (face_index, chart) in charts.iter().enumerate() {
-        if chart.width_texels > LIGHTMAP_POOL_LAYER_EDGE
-            || chart.height_texels > LIGHTMAP_POOL_LAYER_EDGE
-        {
-            return Err(LightmapBakeError::ChartTooLarge {
-                face_index,
-                width_texels: chart.width_texels,
-                height_texels: chart.height_texels,
-                max: LIGHTMAP_POOL_LAYER_EDGE,
-                u_extent_m: chart.uv_extent[0],
-                v_extent_m: chart.uv_extent[1],
-                density_m_per_texel: resolved_chart_density(
-                    chart.origin,
-                    global_density,
-                    scale_regions,
-                ),
-            });
-        }
-    }
-    Ok(())
 }
 
 /// Convert one finite chart extent to its padded texel dimension without a
@@ -249,5 +231,6 @@ pub(super) fn empty_chart_for_leaf(leaf_index: u32) -> Chart {
         width_texels: 1,
         height_texels: 1,
         leaf_index,
+        window: None,
     }
 }

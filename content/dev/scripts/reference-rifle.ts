@@ -1,4 +1,4 @@
-import { defineEntity, defineWeaponPlacement } from "postretro";
+import { activation, defineEntity, defineWeaponPlacement } from "postretro";
 
 const riflePlacement = defineWeaponPlacement({
   // Sit the rifle low in view, in line with the rocket launcher and plasma gun
@@ -12,8 +12,16 @@ export const referenceRifleEntity = defineEntity({
     weapon: {
       damage: 9.0,
       range: 80.0,
-      fireRateMs: 110.0,
-      fireMode: "auto",
+      primary: { trigger: "hold", recoveryMs: 110.0, steps: [activation.shot()] },
+      secondary: {
+        trigger: "press",
+        recoveryMs: 300,
+        steps: [
+          activation.shot(), activation.wait(80),
+          activation.shot(), activation.wait(80),
+          activation.shot(),
+        ],
+      },
       resolution: "hitscan",
       // Sustained fire opens the cone quickly, while the upward bias makes its
       // recoil-like accuracy loss legible without moving the camera.

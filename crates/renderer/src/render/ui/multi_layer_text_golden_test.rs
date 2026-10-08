@@ -31,7 +31,8 @@ use super::layout::Anchor;
 use super::theme::UiTheme;
 use super::tree::{ImageSizes, UiDrawData};
 use super::{UiComposition, UiInstance, UiPass, UiText};
-use crate::render::gpu_test_harness::{GpuCtx, Readback, read_texture_rgba8, try_init_gpu};
+use crate::render::gpu_test_harness::{GpuCtx, Readback, read_texture_rgba8_staged, try_init_gpu};
+use crate::render::uploads::UploadQueue;
 
 /// Offscreen target = the EXACT 1280x720 logical-reference canvas. At this size
 /// `layout::device_scale` is 1.0 with a zero letterbox origin, so a `TopLeft`
@@ -99,6 +100,7 @@ fn text_tree(content: &str, offset: [f32; 2]) -> AnchoredTree {
         text_entry_target: None,
         accessible_name: None,
         role: None,
+        restore_on_return: None,
     }
 }
 
@@ -140,6 +142,7 @@ fn layout_two_layers(
         &theme,
         0,
         postretro_ui::tree::TweenClock::easing(0.0),
+        postretro_ui::tree::ScrollInput::default(),
     );
     let upper = pass.layout_gameplay_tree(
         font_system,
@@ -153,6 +156,7 @@ fn layout_two_layers(
         &theme,
         0,
         postretro_ui::tree::TweenClock::easing(0.0),
+        postretro_ui::tree::ScrollInput::default(),
     );
     [lower, upper]
 }
@@ -200,10 +204,11 @@ fn render_single_composition(ctx: &GpuCtx) -> Readback {
         .create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("multi_layer_text single-composition encoder"),
         });
+    let uploads = UploadQueue::new(&ctx.device, ctx.queue.clone(), true);
     pass.encode(
         &mut font_system,
         &ctx.device,
-        &ctx.queue,
+        &uploads,
         &mut encoder,
         &view,
         [TARGET_W, TARGET_H],
@@ -211,7 +216,19 @@ fn render_single_composition(ctx: &GpuCtx) -> Readback {
         &composition,
     );
 
-    read_texture_rgba8(ctx, &target, TARGET_W, TARGET_H, encoder)
+    let expected_writes = 1
+        + composition
+            .batches
+            .iter()
+            .filter(|batch| !batch.instances.is_empty())
+            .count()
+        + composition
+            .ring_batches
+            .iter()
+            .filter(|batch| !batch.instances.is_empty())
+            .count();
+    assert_eq!(uploads.counts().writes, expected_writes as u64);
+    read_texture_rgba8_staged(ctx, &uploads, &target, TARGET_W, TARGET_H, encoder)
 }
 
 fn render_cross_layer_panel(ctx: &GpuCtx, alpha: f32) -> Readback {
@@ -260,10 +277,11 @@ fn render_cross_layer_panel(ctx: &GpuCtx, alpha: f32) -> Readback {
         .create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("multi_layer_text occlusion encoder"),
         });
+    let uploads = UploadQueue::new(&ctx.device, ctx.queue.clone(), true);
     pass.encode(
         &mut font_system,
         &ctx.device,
-        &ctx.queue,
+        &uploads,
         &mut encoder,
         &view,
         [TARGET_W, TARGET_H],
@@ -271,7 +289,19 @@ fn render_cross_layer_panel(ctx: &GpuCtx, alpha: f32) -> Readback {
         &composition,
     );
 
-    read_texture_rgba8(ctx, &target, TARGET_W, TARGET_H, encoder)
+    let expected_writes = 1
+        + composition
+            .batches
+            .iter()
+            .filter(|batch| !batch.instances.is_empty())
+            .count()
+        + composition
+            .ring_batches
+            .iter()
+            .filter(|batch| !batch.instances.is_empty())
+            .count();
+    assert_eq!(uploads.counts().writes, expected_writes as u64);
+    read_texture_rgba8_staged(ctx, &uploads, &target, TARGET_W, TARGET_H, encoder)
 }
 
 fn render_cross_layer_occlusion(ctx: &GpuCtx) -> Readback {

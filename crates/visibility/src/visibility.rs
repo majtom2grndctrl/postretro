@@ -694,8 +694,8 @@ mod tests {
     /// Build a view-projection matrix that sees everything in front along -Z.
     /// Camera at the given position, looking down -Z, with a wide FOV.
     fn wide_view_proj(position: Vec3) -> Mat4 {
-        let view = Mat4::look_at_rh(position, position + Vec3::NEG_Z, Vec3::Y);
-        let proj = Mat4::perspective_rh(
+        let view = glam::camera::rh::view::look_at_mat4(position, position + Vec3::NEG_Z, Vec3::Y);
+        let proj = glam::camera::rh::proj::directx::perspective(
             std::f32::consts::FRAC_PI_2, // 90-degree vertical FOV
             16.0 / 9.0,
             0.1,
@@ -1012,8 +1012,13 @@ mod tests {
         let world = two_cell_prl_world();
         let position = Vec3::new(50.0, 0.0, 0.0);
         // Looking down +X, away from cell 1.
-        let view = Mat4::look_at_rh(position, position + Vec3::X, Vec3::Y);
-        let proj = Mat4::perspective_rh(std::f32::consts::FRAC_PI_4, 1.0, 0.1, 4096.0);
+        let view = glam::camera::rh::view::look_at_mat4(position, position + Vec3::X, Vec3::Y);
+        let proj = glam::camera::rh::proj::directx::perspective(
+            std::f32::consts::FRAC_PI_4,
+            1.0,
+            0.1,
+            4096.0,
+        );
         let vp = proj * view;
 
         let mut scratch = Vec::new();
@@ -1275,8 +1280,13 @@ mod tests {
         // The locator always answers cell 0. Looking down +X from well outside
         // cell 0's AABB, no cell passes the frustum.
         let eye = Vec3::new(100.0, 0.0, 0.0);
-        let view = Mat4::look_at_rh(eye, eye + Vec3::X, Vec3::Y);
-        let proj = Mat4::perspective_rh(std::f32::consts::FRAC_PI_4, 1.0, 0.1, 4096.0);
+        let view = glam::camera::rh::view::look_at_mat4(eye, eye + Vec3::X, Vec3::Y);
+        let proj = glam::camera::rh::proj::directx::perspective(
+            std::f32::consts::FRAC_PI_4,
+            1.0,
+            0.1,
+            4096.0,
+        );
         let mut scratch = Vec::new();
         let (result, _frustum) = determine_visible_cells_with_step_limit(
             eye,

@@ -218,8 +218,6 @@ struct DeltaSnapshot {
     direct: DirectShDeltaVolumesSection,
     animated_direct: AnimatedDirectShDeltaVolumesSection,
     indirect_tally: crate::delta_sh_cache::DeltaShCacheTally,
-    direct_tally: crate::delta_sh_cache::DeltaShCacheTally,
-    animated_direct_tally: crate::delta_sh_cache::DeltaShCacheTally,
     direct_stats: crate::direct_sh_bake::DirectDeltaBakeStats,
 }
 
@@ -293,19 +291,16 @@ fn bake_deltas_with_controls(
         cache,
         indirect_control,
     );
-    let (animated_direct, animated_direct_tally) =
-        bake_animated_direct_sh_delta_volumes_controlled_with_tally(
-            &animated_inputs,
-            &config,
-            cache,
-            animated_control,
-        );
-    let (direct, direct_tally) = bake_direct_sh_delta_volumes_controlled_with_tally(
+    let (animated_direct, _) = bake_animated_direct_sh_delta_volumes_controlled_with_tally(
+        &animated_inputs,
+        &config,
+        animated_control,
+    );
+    let (direct, _) = bake_direct_sh_delta_volumes_controlled_with_tally(
         &direct_inputs,
         &config,
         &alpha_lights,
         &selected,
-        cache,
         direct_control,
     );
     let (direct, direct_stats) = direct.expect("selected static lights produce delta entries");
@@ -314,8 +309,6 @@ fn bake_deltas_with_controls(
         direct,
         animated_direct: animated_direct.expect("animated lights produce direct delta entries"),
         indirect_tally,
-        direct_tally,
-        animated_direct_tally,
         direct_stats,
     }
 }
@@ -367,7 +360,6 @@ fn bake_animated_delta_pair(
         bake_animated_direct_sh_delta_volumes_controlled_with_tally(
             &animated_inputs,
             &config,
-            cache,
             &control(),
         );
     (
@@ -381,7 +373,6 @@ fn bake_animated_delta_pair(
 fn bake_direct_delta_only(
     lights: &[MapLight],
     selected: &EntityShadowLightsSection,
-    cache: Option<&StageCache>,
     control: &BakeControl,
 ) -> (
     Option<(
@@ -415,7 +406,6 @@ fn bake_direct_delta_only(
         &ShConfig { probe_spacing: 1.0 },
         &alpha_lights,
         selected,
-        cache,
         control,
     )
 }
@@ -658,11 +648,13 @@ fn lightmap_density_and_scale_edits_preserve_pre_atlas_sh_and_chunk_identity() {
         );
     }
     assert_real_lightmap_section_miss(&cache, "baseline");
+    assert_uncached_delta_stages_untouched(&cache, "baseline");
 
     cache.clear_test_accesses();
     run_pre_atlas_and_fused_cache_fixture(&cache, 0.25, &[]);
     assert_pre_atlas_memos_hit_without_rewrite(&cache, "density edit");
     assert_real_lightmap_section_miss(&cache, "density edit");
+    assert_uncached_delta_stages_untouched(&cache, "density edit");
 
     let region = MapLightmapScaleRegion {
         min: [-10.0; 3],
@@ -674,20 +666,34 @@ fn lightmap_density_and_scale_edits_preserve_pre_atlas_sh_and_chunk_identity() {
     run_pre_atlas_and_fused_cache_fixture(&cache, 0.5, &[region]);
     assert_pre_atlas_memos_hit_without_rewrite(&cache, "scale-region edit");
     assert_real_lightmap_section_miss(&cache, "scale-region edit");
+    assert_uncached_delta_stages_untouched(&cache, "scale-region edit");
 
     let _ = std::fs::remove_dir_all(dir);
 }
 
-const PRE_ATLAS_MEMO_STAGE_IDS: [&str; 8] = [
+const PRE_ATLAS_MEMO_STAGE_IDS: [&str; 6] = [
     SH_GROUP_STAGE_ID,
     INDIRECT_DELTA_SH_STAGE_ID,
     DIRECT_SH_STAGE_ID,
-    ANIMATED_DIRECT_DELTA_SH_STAGE_ID,
-    DIRECT_SH_DELTA_STAGE_ID,
     BILLBOARD_DIRECT_SCATTER_STAGE_ID,
     ANIMATED_BILLBOARD_DIRECT_SCATTER_STAGE_ID,
     CHUNK_LIGHT_LIST_STAGE_ID,
 ];
+
+/// Delta stages that bake uncached: their entries cost more to cache than to
+/// compute.
+const UNCACHED_DELTA_STAGE_IDS: [&str; 2] =
+    [ANIMATED_DIRECT_DELTA_SH_STAGE_ID, DIRECT_SH_DELTA_STAGE_ID];
+
+fn assert_uncached_delta_stages_untouched(cache: &StageCache, build: &str) {
+    for stage_id in UNCACHED_DELTA_STAGE_IDS {
+        let access = cache.test_access(stage_id);
+        assert!(
+            access.read_attempts == 0 && access.read_hits == 0 && access.writes == 0,
+            "{build} must neither read nor write {stage_id}: {access:?}"
+        );
+    }
+}
 
 fn assert_pre_atlas_memos_hit_without_rewrite(cache: &StageCache, edit: &str) {
     for stage_id in PRE_ATLAS_MEMO_STAGE_IDS {
@@ -804,7 +810,6 @@ fn run_pre_atlas_and_fused_cache_fixture(
         let (animated_direct, _) = bake_animated_direct_sh_delta_volumes_controlled_with_tally(
             &animated_inputs,
             &sh_config,
-            Some(cache),
             &control(),
         );
         let animated_direct =
@@ -815,7 +820,6 @@ fn run_pre_atlas_and_fused_cache_fixture(
             &sh_config,
             &alpha_lights,
             &selection,
-            Some(cache),
             &control(),
         );
         assert!(
@@ -905,7 +909,7 @@ fn run_pre_atlas_and_fused_cache_fixture(
 }
 
 #[test]
-fn p3_p6_p7_p8_p12_delta_cache_locality_progress_stats_and_policy_identity() {
+fn delta_bakes_keep_indirect_locality_progress_stats_and_policy_identity() {
     let lights = delta_lights();
     let (dir, cache) = fresh_cache("delta_pipeline_pins");
     let cold = bake_deltas(&lights, None);
@@ -936,15 +940,13 @@ fn p3_p6_p7_p8_p12_delta_cache_locality_progress_stats_and_policy_identity() {
     );
     assert_eq!(
         first.direct_stats, cold.direct_stats,
-        "P3 cache-miss stats match --no-cache stats"
+        "P3 first-build stats match --no-cache stats"
     );
     assert_eq!(
         warm.direct_stats, cold.direct_stats,
-        "P3 all-hit stats reconstruct from the raw cached section"
+        "P3 warm stats match --no-cache stats"
     );
     assert_eq!(warm.indirect_tally.misses, 0);
-    assert_eq!(warm.direct_tally.misses, 0);
-    assert_eq!(warm.animated_direct_tally.misses, 0);
     assert_eq!(
         indirect_progress.total(),
         Some(warm.indirect.affinity_lights.len())
@@ -978,10 +980,6 @@ fn p3_p6_p7_p8_p12_delta_cache_locality_progress_stats_and_policy_identity() {
         recolored.indirect_tally.misses, 0,
         "P14 unitized indirect hit"
     );
-    assert_eq!(
-        recolored.animated_direct_tally.misses, 0,
-        "P14 unitized animated-direct hit"
-    );
 
     let mut animated_transport_edit = lights.clone();
     animated_transport_edit[2].origin.x -= 0.25;
@@ -997,23 +995,9 @@ fn p3_p6_p7_p8_p12_delta_cache_locality_progress_stats_and_policy_identity() {
         animated_partial.indirect_tally.misses,
         changed_animated_entries
     );
-    let changed_animated_direct_entries = cold
-        .animated_direct
-        .affinity_lights
-        .iter()
-        .filter(|&&animated_slot| animated_slot == 0)
-        .count();
-    assert_eq!(
-        animated_partial.animated_direct_tally.misses,
-        changed_animated_direct_entries
-    );
     assert_eq!(
         animated_partial.indirect_tally.hits + animated_partial.indirect_tally.misses,
         animated_partial.indirect.affinity_lights.len()
-    );
-    assert_eq!(
-        animated_partial.animated_direct_tally.hits + animated_partial.animated_direct_tally.misses,
-        animated_partial.animated_direct.affinity_lights.len()
     );
     assert_eq!(
         animated_partial.indirect.to_bytes(),
@@ -1041,20 +1025,6 @@ fn p3_p6_p7_p8_p12_delta_cache_locality_progress_stats_and_policy_identity() {
     static_edit[0].intensity = 2.0;
     let partial = bake_deltas(&static_edit, Some(&cache));
     let partial_cold = bake_deltas(&static_edit, None);
-    let changed_direct_entries = cold
-        .direct
-        .affinity_lights
-        .iter()
-        .filter(|&&selection_slot| selection_slot == 0)
-        .count();
-    assert_eq!(
-        partial.direct_tally.misses, changed_direct_entries,
-        "P7 direct locality"
-    );
-    assert_eq!(
-        partial.direct_tally.hits + partial.direct_tally.misses,
-        cold.direct.affinity_lights.len()
-    );
     assert_eq!(
         partial.direct.to_bytes(),
         partial_cold.direct.to_bytes(),
@@ -1063,7 +1033,7 @@ fn p3_p6_p7_p8_p12_delta_cache_locality_progress_stats_and_policy_identity() {
     assert_eq!(
         finalized_delta_bytes(partial),
         finalized_delta_bytes(partial_cold),
-        "P7 static-light partial hit stays byte-identical through the downstream pipeline"
+        "P7 static-light edit stays byte-identical to --no-cache through the downstream pipeline"
     );
     assert_eq!(
         finalized_delta_bytes(cold),
@@ -1076,6 +1046,7 @@ fn p3_p6_p7_p8_p12_delta_cache_locality_progress_stats_and_policy_identity() {
     let empty = bake_deltas_empty_animated(&static_only, Some(&cache));
     assert_eq!(empty.0, None);
     assert_eq!(empty.1.hits + empty.1.misses, 0);
+    assert_uncached_delta_stages_untouched(&cache, "every delta build");
     let _ = std::fs::remove_dir_all(dir);
 }
 
@@ -1108,6 +1079,43 @@ fn bake_deltas_empty_animated(
     )
 }
 
+/// Direct SH Delta and Animated Direct SH Delta bake uncached and still emit
+/// the --no-cache bytes; Delta SH keeps its per-entry cache.
+#[test]
+fn direct_and_animated_direct_delta_bake_uncached() {
+    let lights = delta_lights();
+    let (dir, cache) = fresh_cache("uncached_delta_stages");
+    let cold = bake_deltas(&lights, None);
+    let first = bake_deltas(&lights, Some(&cache));
+    let warm = bake_deltas(&lights, Some(&cache));
+    assert_uncached_delta_stages_untouched(&cache, "first and warm builds");
+    for (build, snapshot) in [("first", &first), ("warm", &warm)] {
+        assert_eq!(
+            snapshot.direct.to_bytes(),
+            cold.direct.to_bytes(),
+            "{build} direct bytes"
+        );
+        assert_eq!(
+            snapshot
+                .animated_direct
+                .try_to_bytes()
+                .expect("animated-direct codec"),
+            cold.animated_direct
+                .try_to_bytes()
+                .expect("cold animated-direct codec"),
+            "{build} animated-direct bytes"
+        );
+    }
+    assert_eq!(first.indirect_tally.hits, 0);
+    assert_eq!(warm.indirect_tally.misses, 0, "Delta SH keeps its cache");
+    let indirect = cache.test_access(INDIRECT_DELTA_SH_STAGE_ID);
+    assert!(
+        indirect.writes > 0 && indirect.read_hits > 0,
+        "{indirect:?}"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 #[test]
 fn p11_direct_stats_observe_raw_zero_entries_before_selection_retention_drop() {
     let mut zero_light = light(DVec3::ZERO, false);
@@ -1116,24 +1124,21 @@ fn p11_direct_stats_observe_raw_zero_entries_before_selection_retention_drop() {
     let selected = EntityShadowLightsSection {
         light_indices: vec![0],
     };
-    let (dir, cache) = fresh_cache("direct_zero_stats");
-    let (first, _) = bake_direct_delta_only(&lights, &selected, Some(&cache), &control());
-    let (warm, warm_tally) = bake_direct_delta_only(&lights, &selected, Some(&cache), &control());
-    let (raw, stats) = warm.expect("zero-radiance selected light still has reached cells");
+    let (first, _) = bake_direct_delta_only(&lights, &selected, &control());
+    let (repeat, _) = bake_direct_delta_only(&lights, &selected, &control());
+    let (raw, stats) = repeat.expect("zero-radiance selected light still has reached cells");
     let (_, first_stats) = first.expect("initial zero-radiance direct bake");
 
-    assert_eq!(warm_tally.misses, 0, "zero payloads must be cacheable");
-    assert_eq!(
-        stats, first_stats,
-        "warm stats reconstruct from raw cached CSR"
-    );
+    assert_eq!(stats, first_stats, "a repeat bake reproduces the stats");
     assert!(
         raw.affinity_lights.len() > 1,
         "fixture needs entries to drop"
     );
     assert!(
         raw.delta_subblocks
-            .chunks_exact(DELTA_TILE_TEXEL_F16_COUNT)
+            .as_chunks::<DELTA_TILE_TEXEL_F16_COUNT>()
+            .0
+            .iter()
             .all(|rgb| rgb.iter().all(|value| *value & 0x7fff == 0)),
         "zero authored intensity must produce zero RGB direct deltas"
     );
@@ -1161,25 +1166,31 @@ fn p11_direct_stats_observe_raw_zero_entries_before_selection_retention_drop() {
     let capture = LogCapture::start();
     crate::pipeline::log_direct_sh_delta_stats_for_test(Some(&stats), false);
     capture.assert_logged_once(Level::Info, "DirectShDeltaVolumes:");
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]
-fn p13_animated_direct_source_index_shift_misses_seeded_entries() {
+fn source_index_shift_reseeds_uncached_animated_direct() {
     let lights = delta_lights();
     let (dir, cache) = fresh_cache("animated_direct_source_index");
     bake_deltas(&lights, Some(&cache));
     let mut shifted = lights.clone();
     shifted.insert(0, light(DVec3::new(20.0, 0.0, 0.0), false));
     let shifted_result = bake_deltas(&shifted, Some(&cache));
-    assert!(
-        shifted_result.animated_direct_tally.misses > 0,
-        "P13 source-index seed shifts must miss animated-direct entries"
+    let shifted_cold = bake_deltas(&shifted, None);
+    assert_eq!(
+        shifted_result
+            .animated_direct
+            .try_to_bytes()
+            .expect("shifted warm animated-direct codec"),
+        shifted_cold
+            .animated_direct
+            .try_to_bytes()
+            .expect("shifted cold animated-direct codec"),
+        "P13 a source-index shift re-seeds animated-direct entries"
     );
     let repeat = bake_deltas(&lights, Some(&cache));
     assert_eq!(repeat.indirect_tally.misses, 0);
-    assert_eq!(repeat.animated_direct_tally.misses, 0);
-    assert_eq!(repeat.direct_tally.misses, 0);
+    assert_uncached_delta_stages_untouched(&cache, "P13 builds");
     let _ = std::fs::remove_dir_all(dir);
 }
 
@@ -1200,16 +1211,14 @@ fn p15_seed_zero_indirect_and_animated_direct_do_not_cross_serve_one_shared_cach
         "fixture must distinguish indirect transport from animated direct transport"
     );
 
-    // Both real bake entries fold the same geometry, one affinity cell,
-    // spacing, validity mask, unitized light postcard, and seed zero. The
-    // second stage must still miss because stage_id is the remaining axis.
+    // Both bakes fold the same geometry, one affinity cell, spacing, validity
+    // mask, unitized light and seed zero. Animated direct bakes uncached, so
+    // only the indirect entry may ever be served from the shared cache.
     let (dir, cache) = fresh_cache("seed_zero_cross_bake");
-    let (first_indirect, first_indirect_tally, first_animated, first_animated_tally) =
+    let (first_indirect, first_indirect_tally, first_animated, _) =
         bake_animated_delta_pair(&lights, &geometry, Some(&cache));
     assert_eq!(first_indirect_tally.hits, 0);
     assert_eq!(first_indirect_tally.misses, 1);
-    assert_eq!(first_animated_tally.hits, 0);
-    assert_eq!(first_animated_tally.misses, 1);
     assert_eq!(
         first_indirect.delta_subblocks,
         cold_indirect.delta_subblocks
@@ -1219,14 +1228,13 @@ fn p15_seed_zero_indirect_and_animated_direct_do_not_cross_serve_one_shared_cach
         cold_animated.delta_subblocks
     );
 
-    let (warm_indirect, warm_indirect_tally, warm_animated, warm_animated_tally) =
+    let (warm_indirect, warm_indirect_tally, warm_animated, _) =
         bake_animated_delta_pair(&lights, &geometry, Some(&cache));
     assert_eq!(warm_indirect_tally.misses, 0);
     assert_eq!(warm_indirect_tally.hits, 1);
-    assert_eq!(warm_animated_tally.misses, 0);
-    assert_eq!(warm_animated_tally.hits, 1);
     assert_eq!(warm_indirect.delta_subblocks, cold_indirect.delta_subblocks);
     assert_eq!(warm_animated.delta_subblocks, cold_animated.delta_subblocks);
+    assert_uncached_delta_stages_untouched(&cache, "seed-zero pair");
     let _ = std::fs::remove_dir_all(dir);
 }
 
@@ -1250,8 +1258,7 @@ fn five_sections_corruption_is_a_soft_miss_and_stage_versions_change_keys() {
             .expect("rebaked codec")
     );
     assert!(rebaked.indirect_tally.misses > 0);
-    assert!(rebaked.direct_tally.misses > 0);
-    assert!(rebaked.animated_direct_tally.misses > 0);
+    assert_uncached_delta_stages_untouched(&cache, "corrupted rebuild");
 
     let tree = tree_with_leaves(&[DVec3::ZERO]);
     let cell_key = cell_visibility_cache_key(&tree, &[], CELL_VISIBILITY_STAGE_VERSION);

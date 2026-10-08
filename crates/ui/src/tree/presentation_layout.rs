@@ -17,8 +17,9 @@ use super::draw::{UiDrawData, bar_max_value, bar_slot_value};
 use super::node_context::{NodeContext, VisibilityState};
 use super::predicate::PRESENTATION_FACT_SCOPE;
 use super::predicate::resolve_predicate;
+use super::scroll::{ScrollState, ScrollViews};
 use super::ui_tree_collect::collect_draw_data_from_layout_into;
-use super::widget_meta::{harvest_image_nodes, harvest_visibility, measure_node};
+use super::widget_meta::{harvest_image_nodes, harvest_visibility, layout_leaf};
 use super::{CellValues, ImageSizes};
 use crate::descriptor::Widget;
 use crate::layout::{REFERENCE_HEIGHT, REFERENCE_WIDTH};
@@ -37,6 +38,9 @@ pub struct PresentationTemplateLayout {
     node_ids: Vec<NodeId>,
     visibility: HashMap<NodeId, VisibilityState>,
     image_nodes: Vec<NodeId>,
+    /// A template's scroll containers clip their content but never scroll: a
+    /// passive presentation takes no input, so each offset stays at the top.
+    scroll: Vec<ScrollState>,
     dirty_text: Vec<NodeId>,
     visibility_flips: Vec<(NodeId, Display)>,
     capture_bar_exit: Vec<NodeId>,
@@ -62,6 +66,7 @@ impl PresentationTemplateLayout {
 
         let mut image_nodes = Vec::new();
         harvest_image_nodes(&taffy, root_widget, root, &mut image_nodes);
+        let scroll = ScrollViews::harvest(&taffy, root_widget, root).states;
 
         Self {
             taffy,
@@ -72,6 +77,7 @@ impl PresentationTemplateLayout {
             node_ids,
             visibility,
             image_nodes,
+            scroll,
             last_viewport: None,
             last_image_sizes_generation: None,
             #[cfg(any(test, feature = "test-fixtures"))]
@@ -171,8 +177,8 @@ impl PresentationTemplateLayout {
                         width: AvailableSpace::Definite(REFERENCE_WIDTH),
                         height: AvailableSpace::Definite(REFERENCE_HEIGHT),
                     },
-                    |known_dimensions, _available_space, _node_id, node_context, _style| {
-                        measure_node(known_dimensions, node_context, font_system, image_sizes)
+                    |inputs, _node_id, node_context, style| {
+                        layout_leaf(inputs, style, node_context, font_system, image_sizes)
                     },
                 )
                 .expect("taffy layout must succeed for a well-formed presentation template");
@@ -194,6 +200,7 @@ impl PresentationTemplateLayout {
             cell_values,
             time_seconds,
             &self.visibility,
+            &self.scroll,
             draw,
         );
     }
@@ -441,12 +448,12 @@ mod tests {
             padding: SpacingValue::Literal(0.0),
             align: Align::Start,
             width: None,
+            scroll: None,
             fill: None,
             border: None,
             id: None,
             focus_neighbors: Default::default(),
             focus: None,
-            restore_on_return: false,
             local_state: None,
             visible_when: None,
             role: None,
@@ -654,6 +661,8 @@ mod tests {
     fn presentation_image_uses_renderer_size_and_anchor_translation() {
         let root = Widget::Image(ImageWidget {
             asset: "presentation/icon".to_string(),
+            width: None,
+            height: None,
             id: None,
             focus_neighbors: Default::default(),
             label: None,
@@ -682,6 +691,37 @@ mod tests {
             anchored.images[0].1.instances[0].rect,
             [320.0, 180.0, 16.0, 8.0],
         );
+    }
+
+    #[test]
+    fn presentation_image_honors_an_authored_width_with_source_aspect() {
+        let root = Widget::Image(ImageWidget {
+            asset: "presentation/icon".to_string(),
+            width: Some(32.0),
+            height: None,
+            id: None,
+            focus_neighbors: Default::default(),
+            label: None,
+            decorative: true,
+            visible_when: None,
+            role: None,
+        });
+        let mut layout = PresentationTemplateLayout::from_widget(&root, &UiTheme::engine_default());
+        let mut image_sizes = ImageSizes::new();
+        image_sizes.insert("presentation/icon".to_string(), [16.0, 8.0]);
+        let mut font_system = crate::text::build_font_system();
+        let relative = layout.build_draw_data(
+            [1280, 720],
+            &mut font_system,
+            &image_sizes,
+            1,
+            &CellValues::new(),
+            0.0,
+        );
+
+        assert_eq!(relative.images.len(), 1);
+        let rect = relative.images[0].1.instances[0].rect;
+        assert_rect_approx(rect, [rect[0], rect[1], 32.0, 16.0]);
     }
 
     #[test]

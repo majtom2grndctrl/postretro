@@ -224,7 +224,7 @@ pub(super) fn build_diffuse_chain_impl(
 
     // Decode source PNG into linear-f32 buffer (RGB through LUT, A direct).
     let mut linear: Vec<f32> = Vec::with_capacity((width * height) as usize * channels);
-    for chunk in rgba.chunks_exact(4) {
+    for chunk in rgba.as_chunks::<4>().0 {
         linear.push(lut[chunk[0] as usize]);
         linear.push(lut[chunk[1] as usize]);
         linear.push(lut[chunk[2] as usize]);
@@ -255,7 +255,7 @@ pub(super) fn build_diffuse_chain_impl(
 /// Encode a linear-RGBA `f32` buffer to sRGB-tagged Rgba8 bytes, appending to
 /// the supplied payload.
 fn encode_diffuse_into(linear: &[f32], out: &mut Vec<u8>) {
-    for chunk in linear.chunks_exact(4) {
+    for chunk in linear.as_chunks::<4>().0 {
         out.push(linear_to_srgb_u8(chunk[0]));
         out.push(linear_to_srgb_u8(chunk[1]));
         out.push(linear_to_srgb_u8(chunk[2]));
@@ -293,10 +293,10 @@ pub(super) fn build_specular_chain_impl(r8: &[u8], width: u32, height: u32) -> V
 
 /// Build a two-channel surface-map mip chain (`PrmFormat::Rg8Unorm`).
 ///
-/// `rg` is interleaved `[specular, depth]` per texel at `width * height`
+/// `rg` is interleaved `[specular, inverted height]` per texel at `width * height`
 /// texels. Both channels are already linear and already in their stored
-/// sense — in particular the caller has inverted the authored height map to
-/// depth (`255 - height`) before interleaving, so mip 0 is a straight copy.
+/// sense — in particular the caller has inverted the authored height map
+/// (`255 - height`) before interleaving, so mip 0 is a straight copy.
 ///
 /// Filtering is the same Mitchell-Netravali (B = C = 1/3) separable path the
 /// single-channel specular chain uses, applied to both channels at once, so a
@@ -346,7 +346,7 @@ pub(super) fn build_normal_bc5_chain_impl(rgba: &[u8], width: u32, height: u32) 
 
     // Decode source RGB into the [-1, 1] interval (alpha kept in [0, 1]).
     let mut linear: Vec<f32> = Vec::with_capacity((width * height) as usize * channels);
-    for chunk in rgba.chunks_exact(4) {
+    for chunk in rgba.as_chunks::<4>().0 {
         linear.push((chunk[0] as f32) / 255.0 * 2.0 - 1.0);
         linear.push((chunk[1] as f32) / 255.0 * 2.0 - 1.0);
         linear.push((chunk[2] as f32) / 255.0 * 2.0 - 1.0);
@@ -395,7 +395,7 @@ pub(super) fn build_normal_bc5_chain_impl(rgba: &[u8], width: u32, height: u32) 
 /// but B and A are still written so the buffer is a valid Rgba8 level.
 fn renormalize_to_rgba8(linear: &[f32]) -> Vec<u8> {
     let mut out = Vec::with_capacity(linear.len());
-    for chunk in linear.chunks_exact(4) {
+    for chunk in linear.as_chunks::<4>().0 {
         let mut n = [chunk[0], chunk[1], chunk[2]];
         let len_sq = n[0] * n[0] + n[1] * n[1] + n[2] * n[2];
         let len = len_sq.sqrt();
@@ -696,8 +696,13 @@ pub fn bake_sprite_collection(
                 Ok(spec_frames) if frames_share_dimensions(&spec_frames, width, height) => {
                     let mut payload = Vec::new();
                     for frame in spec_frames {
-                        let r8: Vec<u8> =
-                            frame.rgba.chunks_exact(4).map(|pixel| pixel[0]).collect();
+                        let r8: Vec<u8> = frame
+                            .rgba
+                            .as_chunks::<4>()
+                            .0
+                            .iter()
+                            .map(|pixel| pixel[0])
+                            .collect();
                         payload.extend_from_slice(&build_specular_chain(&r8, width, height));
                     }
                     slots[1] = Some(PrmSlot {
@@ -774,14 +779,13 @@ pub fn bake_sprite_collection(
     // sprite domain discriminator, so it cannot collide with world/model keys.
     if let Ok(bytes) = std::fs::read(&prm_path) {
         let (header, parsed_slots) = PrmFile::from_bytes_partial(&bytes);
-        if let Ok(header) = header {
-            if header.bundle_hash == filename_key
-                && header.layer_count == layer_count
-                && header.slot_mask == slot_mask
-                && cache_entry_has_valid_declared_slots(&header, &parsed_slots)
-            {
-                return Some(filename_key);
-            }
+        if let Ok(header) = header
+            && header.bundle_hash == filename_key
+            && header.layer_count == layer_count
+            && header.slot_mask == slot_mask
+            && cache_entry_has_valid_declared_slots(&header, &parsed_slots)
+        {
+            return Some(filename_key);
         }
     }
 
@@ -830,21 +834,20 @@ pub fn bake_diffuse_texture(diffuse_path: &Path, cache_root: &Path) -> anyhow::R
     // A legacy richer world bundle may still occupy this pre-change
     // diffuse-addressed filename. Keep a structurally valid one intact because
     // model loading consumes only its diffuse slot.
-    if prm_path.exists() {
-        if let Ok(bytes) = std::fs::read(&prm_path) {
-            let (hdr_result, slots) = PrmFile::from_bytes_partial(&bytes);
-            if let Ok(hdr) = hdr_result {
-                let valid_slots =
-                    hdr.layer_count == 1 && cache_entry_has_valid_declared_slots(&hdr, &slots);
-                let matching_diffuse_only = hdr.slot_mask == PrmSlots::DIFFUSE
-                    && hdr.bundle_hash == bundle_hash
-                    && valid_slots;
-                let valid_richer_world_bundle = hdr.slot_mask.contains(PrmSlots::DIFFUSE)
-                    && hdr.slot_mask != PrmSlots::DIFFUSE
-                    && valid_slots;
-                if matching_diffuse_only || valid_richer_world_bundle {
-                    return Ok(filename_key);
-                }
+    if prm_path.exists()
+        && let Ok(bytes) = std::fs::read(&prm_path)
+    {
+        let (hdr_result, slots) = PrmFile::from_bytes_partial(&bytes);
+        if let Ok(hdr) = hdr_result {
+            let valid_slots =
+                hdr.layer_count == 1 && cache_entry_has_valid_declared_slots(&hdr, &slots);
+            let matching_diffuse_only =
+                hdr.slot_mask == PrmSlots::DIFFUSE && hdr.bundle_hash == bundle_hash && valid_slots;
+            let valid_richer_world_bundle = hdr.slot_mask.contains(PrmSlots::DIFFUSE)
+                && hdr.slot_mask != PrmSlots::DIFFUSE
+                && valid_slots;
+            if matching_diffuse_only || valid_richer_world_bundle {
+                return Ok(filename_key);
             }
         }
     }
@@ -1043,25 +1046,24 @@ pub fn bake_world_texture_mips(
         let prm_path = cache_root.join(format!("{}.prm", cache_filename_for_key(&filename_key)));
 
         // Cache hit: header and every declared slot parse, and bundle_hash matches.
-        if prm_path.exists() {
-            if let Ok(bytes) = std::fs::read(&prm_path) {
-                let (hdr_result, slots) = PrmFile::from_bytes_partial(&bytes);
-                if let Ok(hdr) = hdr_result {
-                    if hdr.layer_count == 1
-                        && hdr.bundle_hash == bundle_hash
-                        && cache_entry_has_valid_declared_slots(&hdr, &slots)
-                    {
-                        // Account the reused sidecar too: the report describes
-                        // what this level costs, not what this run rebaked.
-                        byte_summary.record_bundle(
-                            filename_key,
-                            name.clone(),
-                            MaterialBytes::from_parsed_slots(&slots, hdr.layer_count),
-                        );
-                        out.insert(name.clone(), filename_key);
-                        continue;
-                    }
-                }
+        if prm_path.exists()
+            && let Ok(bytes) = std::fs::read(&prm_path)
+        {
+            let (hdr_result, slots) = PrmFile::from_bytes_partial(&bytes);
+            if let Ok(hdr) = hdr_result
+                && hdr.layer_count == 1
+                && hdr.bundle_hash == bundle_hash
+                && cache_entry_has_valid_declared_slots(&hdr, &slots)
+            {
+                // Account the reused sidecar too: the report describes
+                // what this level costs, not what this run rebaked.
+                byte_summary.record_bundle(
+                    filename_key,
+                    name.clone(),
+                    MaterialBytes::from_parsed_slots(&slots, hdr.layer_count),
+                );
+                out.insert(name.clone(), filename_key);
+                continue;
             }
         }
 
@@ -1085,29 +1087,35 @@ pub fn bake_world_texture_mips(
         // Slot 1 is the specular slot in both of its forms. Without a height
         // sibling it stays single-channel `R8Unorm`, byte-identical to what it
         // has always baked. With one it becomes the two-channel surface map:
-        // R specular (or 0 when `_s.png` is absent), G depth. The SPECULAR
+        // R specular (or 0 when `_s.png` is absent), G the inverted height
+        // byte (`255 - height`). The SPECULAR
         // slot-mask bit is set if EITHER sibling is present.
         match (height_bytes.as_deref(), height_path.as_ref()) {
             (Some(hb), Some(hp)) => {
                 let (height_rgba, w, h) = decode_png_rgba(hb, hp)?;
-                // Authors write a conventional height map: white = raised.
-                // The stored channel is depth BELOW the surface, so invert
-                // here — that is what makes "no height sibling" and "depth 0"
-                // the same thing at sample time.
-                let depth: Vec<u8> = height_rgba.chunks_exact(4).map(|c| 255 - c[0]).collect();
+                // Stored as `255 - height`. The runtime re-centers on mid-gray
+                // (128 = the surface plane); the bake applies no zero point,
+                // because the bundle hash covers source PNG bytes only and a
+                // changed transform would silently reuse stale sidecars.
+                let inverted_height: Vec<u8> = height_rgba
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .map(|c| 255 - c[0])
+                    .collect();
 
                 let specular: Vec<u8> = match spec_bytes.as_deref().zip(spec_path.as_ref()) {
                     Some((sb, sp)) => {
                         let (spec_rgba, _, _) = decode_png_rgba(sb, sp)?;
-                        spec_rgba.chunks_exact(4).map(|c| c[0]).collect()
+                        spec_rgba.as_chunks::<4>().0.iter().map(|c| c[0]).collect()
                     }
-                    None => vec![0u8; depth.len()],
+                    None => vec![0u8; inverted_height.len()],
                 };
 
-                let mut rg: Vec<u8> = Vec::with_capacity(depth.len() * 2);
-                for (s, d) in specular.iter().zip(depth.iter()) {
+                let mut rg: Vec<u8> = Vec::with_capacity(inverted_height.len() * 2);
+                for (s, g) in specular.iter().zip(inverted_height.iter()) {
                     rg.push(*s);
-                    rg.push(*d);
+                    rg.push(*g);
                 }
 
                 let payload = build_surface_chain(&rg, w, h);
@@ -1125,7 +1133,7 @@ pub fn bake_world_texture_mips(
                     // Decode as RGBA; flatten to R8 (PNG authoring is typically L8 or
                     // RGBA8 with the spec data in R). We accept either.
                     let (rgba, w, h) = decode_png_rgba(b, p)?;
-                    let r8: Vec<u8> = rgba.chunks_exact(4).map(|c| c[0]).collect();
+                    let r8: Vec<u8> = rgba.as_chunks::<4>().0.iter().map(|c| c[0]).collect();
                     let payload = build_specular_chain(&r8, w, h);
                     slots_arr[1] = Some(PrmSlot {
                         format: PrmFormat::R8Unorm,
@@ -1302,16 +1310,16 @@ impl StageTextureBytes {
         // nothing, so the bundle would otherwise be reported light while
         // looking perfectly healthy.
         for (index, declared) in SLOT_MASK_BITS.iter().enumerate() {
-            if header.slot_mask.contains(*declared) {
-                if let Err(error) = &slots[index] {
-                    log::warn!(
-                        "[prl-build] byte report: baked sidecar {} for '{name}' declares a \
+            if header.slot_mask.contains(*declared)
+                && let Err(error) = &slots[index]
+            {
+                log::warn!(
+                    "[prl-build] byte report: baked sidecar {} for '{name}' declares a \
                          {} slot that does not parse: {error} — that slot is missing from \
                          the texture total",
-                        prm_path.display(),
-                        slot_label(index as u8)
-                    );
-                }
+                    prm_path.display(),
+                    slot_label(index as u8)
+                );
             }
         }
 
@@ -1496,7 +1504,8 @@ mod tests {
         assert_eq!(diffuse.payload.len(), per_layer_bytes * 2);
         for (layer, color) in [[255, 0, 0, 255], [0, 0, 255, 255]].iter().enumerate() {
             for pixel in diffuse.payload[layer * per_layer_bytes..(layer + 1) * per_layer_bytes]
-                .chunks_exact(4)
+                .as_chunks::<4>()
+                .0
             {
                 assert_eq!(pixel, color, "layer {layer} lost its frame identity");
             }
@@ -1970,7 +1979,7 @@ mod tests {
         // sRGB (the LUT round-trip introduces ±1 LSB on quantisation).
         // Total length should be 64 + 16 + 4 = 84 bytes.
         assert_eq!(payload.len(), 64 + 16 + 4);
-        for chunk in payload.chunks_exact(4) {
+        for chunk in payload.as_chunks::<4>().0 {
             for &c in &chunk[0..3] {
                 assert!(
                     (c as i32 - 128).abs() <= 1,
@@ -2029,7 +2038,7 @@ mod tests {
         let rgba8 = renormalize_to_rgba8(&linear);
         assert_eq!(rgba8.len(), 4 * 4 * 4);
 
-        for chunk in rgba8.chunks_exact(4) {
+        for chunk in rgba8.as_chunks::<4>().0 {
             let nx = (chunk[0] as f32) / 255.0 * 2.0 - 1.0;
             let ny = (chunk[1] as f32) / 255.0 * 2.0 - 1.0;
             let nz = (chunk[2] as f32) / 255.0 * 2.0 - 1.0;
@@ -2421,9 +2430,9 @@ mod tests {
         assert_eq!(header.expect("header parses").slot_mask, PrmSlots::SPECULAR);
         let slot = slots[1].as_ref().expect("surface-map slot parses");
         assert_eq!(slot.format, PrmFormat::Rg8Unorm);
-        for texel in slot.payload[..2 * 2 * 2].chunks_exact(2) {
+        for texel in slot.payload[..2 * 2 * 2].as_chunks::<2>().0 {
             assert_eq!(texel[0], 0);
-            assert_eq!(texel[1], 245, "depth = 255 - 10");
+            assert_eq!(texel[1], 245, "G = 255 - 10");
         }
 
         let _ = std::fs::remove_dir_all(&root);
@@ -2597,12 +2606,12 @@ mod tests {
     }
 
     /// A height sibling turns the specular slot into the two-channel surface
-    /// map: R is the authored specular, G is depth — the *inverse* of the
-    /// authored height, because the stored channel measures how far the
-    /// surface is carved below its true plane.
+    /// map: R is the authored specular, G is the inverted height byte
+    /// (`255 - height`). The runtime reads G = 0 as the highest raise and
+    /// G = 255 as the deepest sink around the mid-gray plane.
     #[test]
-    fn height_sibling_bakes_inverted_depth_into_the_specular_green_channel() {
-        let root = unique_temp_dir("height-inverts-to-depth");
+    fn height_sibling_bakes_inverted_height_into_the_specular_green_channel() {
+        let root = unique_temp_dir("height-inverts-into-green");
         let texture_root = root.join("textures");
         let collection = texture_root.join("stone");
         let cache_root = root.join("cache");
@@ -2614,7 +2623,7 @@ mod tests {
             solid_png_bytes(4, 4, [200, 0, 0, 255]),
         )
         .unwrap();
-        // Authored height: 60 = mostly recessed. Depth must read 255 - 60.
+        // Authored height: 60 = mostly recessed. G must read 255 - 60.
         std::fs::write(
             collection.join("cobble_h.png"),
             solid_png_bytes(4, 4, [60, 60, 60, 255]),
@@ -2647,9 +2656,13 @@ mod tests {
         assert_eq!(slot.level_count, expected_level_count(4, 4));
 
         // Mip 0 is the source interleave, untouched by filtering.
-        for texel in slot.payload[..4 * 4 * 2].chunks_exact(2) {
+        for texel in slot.payload[..4 * 4 * 2].as_chunks::<2>().0 {
             assert_eq!(texel[0], 200, "R keeps the authored specular");
-            assert_eq!(texel[1], 255 - 60, "G is depth = 255 - authored height");
+            assert_eq!(
+                texel[1],
+                255 - 60,
+                "G is the inverted height = 255 - authored height"
+            );
         }
 
         let _ = std::fs::remove_dir_all(&root);
@@ -2689,10 +2702,10 @@ mod tests {
         );
         let slot = slots[1].as_ref().expect("surface-map slot parses");
         assert_eq!(slot.format, PrmFormat::Rg8Unorm);
-        for texel in slot.payload[..4 * 4 * 2].chunks_exact(2) {
+        for texel in slot.payload[..4 * 4 * 2].as_chunks::<2>().0 {
             assert_eq!(texel[0], 0, "absent _s.png reads as zero specular");
-            // Fully white height (raised) carves to zero depth: flat.
-            assert_eq!(texel[1], 0, "white height is depth 0 — a true no-op");
+            // Fully white height inverts to G = 0: the highest raise, not flat.
+            assert_eq!(texel[1], 0, "white height stores G = 0");
         }
 
         let _ = std::fs::remove_dir_all(&root);
@@ -2812,7 +2825,12 @@ mod tests {
         let surface_chain = build_surface_chain_impl(&rg, w, h);
 
         assert_eq!(surface_chain.len(), specular_chain.len() * 2);
-        let reds: Vec<u8> = surface_chain.chunks_exact(2).map(|t| t[0]).collect();
+        let reds: Vec<u8> = surface_chain
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|t| t[0])
+            .collect();
         assert_eq!(
             reds, specular_chain,
             "the surface map's R channel must filter exactly as R8 specular does"

@@ -1,0 +1,53 @@
+{
+  "source": "raw/arena3-scan-parallel+texel-outer+vec3-accum+const-tile-r3-gpu.xml.gz",
+  "camera_frames": 148,
+  "frame_count_pass": "Streamed SH Compose (+ [B])",
+  "once_per_frame_counts": {
+    "UI Pass": 121,
+    "Screen Effects Resolve Pass": 0,
+    "Textured Pass": 121,
+    "Depth Pre-Pass": 122
+  },
+  "shadow_passes": {
+    "Promoted Spot Entity Shadow Depth Pass": {
+      "count": 937,
+      "total_ms": 85.283,
+      "per_frame_ms": 0.5762
+    }
+  },
+  "shadow_total_per_frame_ms": 0.5762,
+  "sum_labelled_passes_per_frame_ms": 28.5858,
+  "all_passes_per_frame_ms": {
+    "Streamed SH Compose": 8.3906,
+    "Streamed Animated Direct SH": 8.203,
+    "Skinned Mesh Pass": 3.383,
+    "Skinned Viewmodel Pass": 3.0235,
+    "Bloom Bright Pass": 2.8349,
+    "Promoted Spot Entity Shadow Depth Pass": 0.5762,
+    "Textured Pass": 0.5638,
+    "UI Pass": 0.5608,
+    "Billboard Direct Scatter Compose": 0.3224,
+    "Per-frame Upload Copies": 0.2165,
+    "Bloom Horizontal Gaussian Pass": 0.2005,
+    "Candidate Cull Pass": 0.0525,
+    "Bloom Vertical Gaussian Pass": 0.0494,
+    "Bloom Scene Composite Pass": 0.0492,
+    "Depth Pre-Pass": 0.0407,
+    "Bloom Downsample Pass": 0.0356,
+    "Bloom Upsample Pass": 0.0344,
+    "(wgpu internal) PendingWrites": 0.0259,
+    "Frame Encoder": 0.0229
+  },
+  "compose_per_encoder_ms": {
+    "Streamed Animated Direct SH": 8.2588,
+    "Streamed SH Compose": 8.3906
+  },
+  "compose_per_encoder_median_ms": {
+    "Streamed Animated Direct SH": 8.2315,
+    "Streamed SH Compose": 8.3567
+  },
+  "compose_encoder_counts": {
+    "Streamed Animated Direct SH": 147,
+    "Streamed SH Compose": 148
+  }
+}

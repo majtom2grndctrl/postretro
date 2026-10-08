@@ -31,7 +31,7 @@ pub(super) fn encode_blocks_bc5(
     blocks: &[CellBlock],
 ) -> Vec<[Vec<u8>; 2]> {
     assert!(
-        width % 4 == 0 && height % 4 == 0,
+        width.is_multiple_of(4) && height.is_multiple_of(4),
         "shadowmask atlas {width}x{height} is not 4-aligned; BC5 would truncate it"
     );
     let plane_texels = width as usize * height as usize;
@@ -53,9 +53,11 @@ pub(super) fn encode_blocks_bc5(
                 &mut image[row_index * texture_width as usize * 4..][..texture_width as usize * 4];
             let (left, right) = image_row.split_at_mut(width as usize * 4);
             for ((texel, left), right) in raw_row
-                .chunks_exact(4)
-                .zip(left.chunks_exact_mut(4))
-                .zip(right.chunks_exact_mut(4))
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .zip(left.as_chunks_mut::<4>().0.iter_mut())
+                .zip(right.as_chunks_mut::<4>().0.iter_mut())
             {
                 left[0] = texel[0];
                 left[1] = texel[1];

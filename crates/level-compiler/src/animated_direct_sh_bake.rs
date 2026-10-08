@@ -6,9 +6,8 @@ use crate::affinity_grid::{
     decompose_affinity_for_lights_with_policies,
 };
 use crate::bake_control::BakeControl;
-use crate::cache::StageCache;
 use crate::delta_drop_policy::ScriptMutableDescriptorSlots;
-use crate::delta_sh_cache::{DeltaShCacheInputs, DeltaShCacheTally, bake_or_load_delta_subblocks};
+use crate::delta_sh_cache::{DeltaShCacheTally, bake_delta_subblocks_uncached};
 use crate::light_namespaces::AnimatedBakedLights;
 use crate::map_data::MapLight;
 use crate::portals::Portal;
@@ -29,12 +28,16 @@ use postretro_level_format::octahedral::{
 const TILE_DIMENSION: u32 = DEFAULT_IRRADIANCE_TILE_DIMENSION;
 const TILE_BORDER: u32 = DEFAULT_IRRADIANCE_TILE_BORDER;
 
-/// Cache stage id for raw animated-direct `(affinity cell, light)` sub-blocks.
-/// It stays distinct from the other delta stages because their dense f16 payload
-/// shapes match and could otherwise cross-serve cache entries.
+/// Dormant cache stage id for raw animated-direct `(affinity cell, light)`
+/// sub-blocks: the stage bakes uncached. Kept so its key fold stays distinct
+/// from the other delta stages, whose dense f16 payload shape it shares, and is
+/// pinned by tests.
+#[cfg(test)]
 pub(crate) const ANIMATED_DIRECT_DELTA_SH_STAGE_ID: &str = "animated_direct_delta_sh_subblock";
 
-/// Bump when the animated-direct sub-block computation or its key inputs change.
+/// Dormant epoch for [`ANIMATED_DIRECT_DELTA_SH_STAGE_ID`]: the stage bakes
+/// uncached. Kept so the key fold the tests pin stays distinct.
+#[cfg(test)]
 pub(crate) const ANIMATED_DIRECT_DELTA_SH_STAGE_VERSION: u32 = 3;
 
 /// Inputs for the animated direct-SH delta bake. The probe grid comes from the
@@ -71,30 +74,22 @@ pub fn bake_animated_direct_sh_delta_volumes(
     inputs: &AnimatedDirectShBakeInputs<'_, '_>,
     config: &ShConfig,
 ) -> Option<AnimatedDirectShDeltaVolumesSection> {
-    bake_animated_direct_sh_delta_volumes_controlled(
-        inputs,
-        config,
-        None,
-        &BakeControl::unrestricted(),
-    )
+    bake_animated_direct_sh_delta_volumes_controlled(inputs, config, &BakeControl::unrestricted())
 }
 
 pub fn bake_animated_direct_sh_delta_volumes_controlled(
     inputs: &AnimatedDirectShBakeInputs<'_, '_>,
     config: &ShConfig,
-    cache: Option<&StageCache>,
     control: &BakeControl,
 ) -> Option<AnimatedDirectShDeltaVolumesSection> {
-    bake_animated_direct_sh_delta_volumes_controlled_with_tally(inputs, config, cache, control).0
+    bake_animated_direct_sh_delta_volumes_controlled_with_tally(inputs, config, control).0
 }
 
-/// Test-facing cache accounting for animated direct delta entries. This keeps
-/// the production stage API section-only while exposing the CSR locality
-/// contract to cross-bake tests.
+/// The stage bake plus its per-entry tally. The stage bakes uncached, so the
+/// tally reports every CSR entry as a miss.
 pub(crate) fn bake_animated_direct_sh_delta_volumes_controlled_with_tally(
     inputs: &AnimatedDirectShBakeInputs<'_, '_>,
     config: &ShConfig,
-    cache: Option<&StageCache>,
     control: &BakeControl,
 ) -> (
     Option<AnimatedDirectShDeltaVolumesSection>,
@@ -162,30 +157,12 @@ pub(crate) fn bake_animated_direct_sh_delta_volumes_controlled_with_tally(
 
     let entries = inputs.animated_lights.entries();
     let csr_cells = csr_entry_cells(&affinity_offsets);
-    let keyed_lights: Vec<MapLight> = entries
-        .iter()
-        .map(|entry| unit_radiance_light(entry.light))
-        .collect();
-    let light_seed_axes: Vec<u64> = entries
-        .iter()
-        .map(|entry| entry.source_index as u64)
-        .collect();
-    let valid_probe_masks = cache_valid_probe_masks(&layout, affinity_dims);
-    let cached_subblocks = bake_or_load_delta_subblocks(
-        &DeltaShCacheInputs {
-            stage_id: ANIMATED_DIRECT_DELTA_SH_STAGE_ID,
-            stage_version: ANIMATED_DIRECT_DELTA_SH_STAGE_VERSION,
-            geometry_hash: crate::sh_group::geometry_content_hash(inputs.sh_ctx.geometry),
-            affinity_dims,
-            affinity_lights: &affinity_lights,
-            csr_entry_cells: &csr_cells,
-            valid_probe_masks: &valid_probe_masks,
-            probe_spacing: config.probe_spacing,
-            light_seed_axes: &light_seed_axes,
-            expected_subblock_f16_len: PROBES_PER_CELL * FORMAT_DEFAULT_DELTA_PROBE_F16_STRIDE,
-        },
-        &keyed_lights,
-        cache,
+    // Uncached: these entries cost more to cache than to compute
+    // (`build_pipeline.md` §Build Cache).
+    let baked_subblocks = bake_delta_subblocks_uncached(
+        &affinity_lights,
+        &csr_cells,
+        PROBES_PER_CELL * FORMAT_DEFAULT_DELTA_PROBE_F16_STRIDE,
         control,
         |animated_index, cell| {
             let entry = &entries[animated_index as usize];
@@ -201,7 +178,7 @@ pub(crate) fn bake_animated_direct_sh_delta_volumes_controlled_with_tally(
     );
 
     debug_assert_eq!(
-        cached_subblocks.subblocks.len(),
+        baked_subblocks.subblocks.len(),
         affinity_lights.len() * PROBES_PER_CELL * FORMAT_DEFAULT_DELTA_PROBE_F16_STRIDE
     );
 
@@ -216,59 +193,21 @@ pub(crate) fn bake_animated_direct_sh_delta_volumes_controlled_with_tally(
             cell_levels: vec![0u8; decomposition.affinity_cell_count()],
             affinity_offsets,
             affinity_lights,
-            delta_subblocks: cached_subblocks.subblocks,
+            delta_subblocks: baked_subblocks.subblocks,
         }),
-        cached_subblocks.tally,
+        baked_subblocks.tally,
     )
 }
 
-/// Normalize a delta's single light to unit radiance before folding it into a
-/// cache key. Runtime animation descriptors apply authored color and intensity.
+/// Normalize a delta's single light to unit radiance, as the dormant cache key
+/// folds it: the stage bakes uncached, and the tests pin that fold. Runtime
+/// animation descriptors apply authored color and intensity.
+#[cfg(test)]
 fn unit_radiance_light(light: &MapLight) -> MapLight {
     let mut unit_light = light.clone();
     unit_light.intensity = 1.0;
     unit_light.color = [1.0; 3];
     unit_light
-}
-
-/// Cache-only per-cell validity masks. This mirrors the valid-probe gate in
-/// `bake_direct_subblock`, including probes outside a partial edge cell.
-fn cache_valid_probe_masks(layout: &ProbeGridLayout, affinity_dims: [u32; 3]) -> Vec<u64> {
-    let nx = layout.dims[0] as usize;
-    let ny = layout.dims[1] as usize;
-    let cell_count = affinity_dims[0] * affinity_dims[1] * affinity_dims[2];
-    (0..cell_count)
-        .map(|cell| {
-            let cell_x = cell % affinity_dims[0];
-            let cell_y = (cell / affinity_dims[0]) % affinity_dims[1];
-            let cell_z = cell / (affinity_dims[0] * affinity_dims[1]);
-            let mut mask = 0u64;
-            for local_z in 0..AFFINITY_FACTOR {
-                for local_y in 0..AFFINITY_FACTOR {
-                    for local_x in 0..AFFINITY_FACTOR {
-                        let probe_x = cell_x * AFFINITY_FACTOR + local_x;
-                        let probe_y = cell_y * AFFINITY_FACTOR + local_y;
-                        let probe_z = cell_z * AFFINITY_FACTOR + local_z;
-                        if probe_x >= layout.dims[0]
-                            || probe_y >= layout.dims[1]
-                            || probe_z >= layout.dims[2]
-                        {
-                            continue;
-                        }
-                        let probe_index =
-                            probe_z as usize * nx * ny + probe_y as usize * nx + probe_x as usize;
-                        if layout.validity[probe_index] != 0 {
-                            let local = (local_z * AFFINITY_FACTOR * AFFINITY_FACTOR
-                                + local_y * AFFINITY_FACTOR
-                                + local_x) as u64;
-                            mask |= 1u64 << local;
-                        }
-                    }
-                }
-            }
-            mask
-        })
-        .collect()
 }
 
 fn bake_direct_subblock(
@@ -817,7 +756,9 @@ mod tests {
         assert!(decoded.iter().all(|value| value.is_finite()));
         assert!(
             decoded
-                .chunks_exact(DELTA_TILE_TEXEL_F16_COUNT)
+                .as_chunks::<DELTA_TILE_TEXEL_F16_COUNT>()
+                .0
+                .iter()
                 .any(|rgb| rgb.iter().any(|&value| value > 0.0)),
             "the authored rest direction must produce direct transport even when a direction curve is present"
         );

@@ -1,5 +1,5 @@
 // Cursor capture and release for gameplay mouse handling.
-// See: context/lib/input.md $4
+// See: context/lib/input.md §4
 
 use winit::window::{CursorGrabMode, Window};
 

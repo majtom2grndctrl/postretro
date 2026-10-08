@@ -23,9 +23,11 @@ use crate::{
 };
 
 mod animated_atlas_stage;
+mod atlas_stage;
 mod cell_partition;
 mod finalized_publication;
 pub(crate) mod lightmap_stage;
+mod sdf_stage;
 mod stage_registry;
 use crate::{
     animated_direct_sh_bake, animated_light_chunks, animated_light_weight_maps,
@@ -651,6 +653,11 @@ fn run_after_parsing(
         &args.input,
         map_data.data_script.as_deref(),
         &map_data.lights,
+        crate::script_light_membership::map_members_from_map(
+            &map_data.kinematic_movers,
+            &map_data.trigger_volumes,
+            &map_data.map_entities,
+        ),
     )?;
     let (data_script_section, membership_manifest) = match compiled_data_script {
         Some(script) => (Some(script.section), Some(script.membership_manifest)),
@@ -776,7 +783,7 @@ fn run_after_parsing(
 
     let exterior_leaves = visibility::find_exterior_leaves(&result.tree, &generated_portals);
 
-    let vis_result = visibility::encode_vis(&result.tree, &exterior_leaves);
+    let mut vis_result = visibility::encode_vis(&result.tree, &exterior_leaves);
     finish_stage(
         &mut timings,
         reporter.as_ref(),
@@ -823,7 +830,7 @@ fn run_after_parsing(
     }
 
     let stage_start = begin_stage(reporter.as_ref(), StageId::BvhBuild);
-    let (bvh, bvh_primitives, bvh_section) =
+    let (mut bvh, mut bvh_primitives, mut bvh_section) =
         bvh_build::build_bvh(&geo_result).map_err(|e| anyhow::anyhow!("BVH build failed: {e}"))?;
     finish_stage(
         &mut timings,
@@ -862,7 +869,7 @@ fn run_after_parsing(
     // the encoded BSP leaf records (cell_id == BSP leaf index). Uncached — it is a
     // cheap CSR pass over data the (uncached) BVH stage just produced. Omitted for
     // zero-leaf maps; emission is independent of portal presence.
-    let cell_draw_index_section = cell_draw_index_bake::bake_cell_draw_index(
+    let mut cell_draw_index_section = cell_draw_index_bake::bake_cell_draw_index(
         &bvh_section.leaves,
         &vis_result.leaves_section.leaves,
     );
@@ -1206,7 +1213,6 @@ fn run_after_parsing(
         animated_direct_sh_bake::bake_animated_direct_sh_delta_volumes_controlled(
             &inputs,
             &sh_config,
-            stage_cache.as_ref(),
             &animated_direct_sh_control,
         )
     };
@@ -1270,7 +1276,6 @@ fn run_after_parsing(
                     &sh_config,
                     &alpha_lights_ns,
                     section,
-                    stage_cache.as_ref(),
                     &direct_sh_delta_control,
                 )
             });
@@ -1687,28 +1692,46 @@ fn run_after_parsing(
     );
 
     let stage_start = begin_stage(reporter.as_ref(), StageId::AtlasPreparation);
-    // The canonical cell partition resolves here, once: lightmap blocks are
+    // An oversize face is cut here; the face-identity set (leaf face ranges,
+    // BVH, CellDrawIndex) is then rebuilt over the cut geometry, and the
+    // canonical cell partition resolves from it, once: lightmap blocks are
     // stored in its cluster order, and the ClusterDirectory stage consumes the
-    // same plan. Its inputs are all final after Visibility and the BVH build.
-    let cell_partition =
-        cell_partition::plan_cell_partition(cell_partition::CellPartitionInputs {
-            generated_portals: &generated_portals,
-            streaming_seam_regions: &map_data.streaming_seam_regions,
-            stream_resident_regions: &map_data.stream_resident_regions,
-            stream_priority_regions: &map_data.stream_priority_regions,
-            leaves: &vis_result.leaves_section,
-            exterior_leaves: &exterior_leaves,
-            bvh: &bvh_section,
-        })?;
+    // same plan. Nothing after this point names faces of the pre-cut set; the
+    // SDF reads the pre-cut geometry's positions only (below).
     let atlas_control = BakeControl::new(Arc::clone(&governor), &StageProgress::indeterminate());
-    let prepared_atlas = lightmap_stage::prepare(
-        &map_data,
+    let atlas_stage::AtlasStageOutput {
+        prepared: prepared_atlas,
+        partition: cell_partition,
+        rebuilt,
+        pre_cut_geometry,
+    } = atlas_stage::prepare_atlas_stage(
+        atlas_stage::AtlasStageInputs {
+            map_data: &map_data,
+            static_lights: &static_baked_lights,
+            animated_lights: &animated_baked_lights,
+            config: &lightmap_config,
+            generated_portals: &generated_portals,
+            exterior_leaves: &exterior_leaves,
+            control: &atlas_control,
+        },
         &mut geo_result,
-        &static_baked_lights,
-        &lightmap_config,
-        &cell_partition.cell_clusters(),
-        &atlas_control,
+        &mut vis_result.leaves_section,
+        &bvh_section,
     )?;
+    // A whole geometry copy: keep it only for the SDF stage that reads it.
+    let pre_cut_geometry = pre_cut_geometry.filter(|_| map_needs_sdf_atlas(&map_data.lights));
+    if let Some(rebuilt) = rebuilt {
+        bvh = rebuilt.bvh;
+        bvh_primitives = rebuilt.primitives;
+        bvh_section = rebuilt.bvh_section;
+        cell_draw_index_section = rebuilt.cell_draw_index;
+    }
+    if args.verbose {
+        lightmap_stage::log_predicted_peak(
+            &prepared_atlas,
+            lightmap_config.uncompressed_irradiance,
+        );
+    }
     let final_lightmap_density = lightmap_config.lightmap_density;
     finish_stage(
         &mut timings,
@@ -1967,35 +1990,15 @@ fn run_after_parsing(
             voxel_size_m: args.voxel_size,
             ..sdf_bake::SdfConfig::default()
         };
-        let section = {
-            // Positions, indices and BSP solidity only: the key captures
-            // triangle order, and the lightmap attributes atlas preparation
-            // wrote stay out of it.
-            let sdf_key = sdf_bake::cache_key(&geo_result, &result.tree, &sdf_config);
-
-            let cached = stage_cache.as_ref().and_then(|c| c.get(&sdf_key));
-            let cached_section = cached.and_then(|bytes| {
-                postretro_level_format::sdf_atlas::SdfAtlasSection::from_bytes(&bytes)
-                    .map_err(|e| log::warn!("[cache] corrupt sdf_atlas entry, re-baking: {e}"))
-                    .ok()
-            });
-
-            if let Some(section) = cached_section {
-                log::info!("[cache] sdf_atlas hit");
-                section
-            } else {
-                log::info!("[cache] sdf_atlas miss");
-                let ctx = sdf_bake::SdfBakeCtx {
-                    geometry: &geo_result,
-                    tree: &result.tree,
-                };
-                let section = sdf_bake::bake_sdf_atlas(&ctx, &sdf_config);
-                if let Some(ref c) = stage_cache {
-                    c.put(&sdf_key, &section.to_bytes());
-                }
-                section
-            }
-        };
+        // The SDF describes the surface, which the cut leaves unchanged: it
+        // bakes from the pre-cut geometry so density edits keep its key.
+        let section = sdf_stage::bake_or_load_sdf_atlas(
+            pre_cut_geometry.as_ref().unwrap_or(&geo_result),
+            &result.tree,
+            &sdf_config,
+            stage_cache.as_ref(),
+        );
+        drop(pre_cut_geometry);
         finish_stage(
             &mut timings,
             reporter.as_ref(),
@@ -2127,7 +2130,7 @@ fn run_after_parsing(
     );
 
     if let Some(cache) = stage_cache.as_ref() {
-        cache.warn_if_live_set_exceeds(args.cache_max_bytes);
+        cache.finish_successful_build(args.cache_max_bytes);
     }
     reporter.finalize(&timings, started.elapsed());
 

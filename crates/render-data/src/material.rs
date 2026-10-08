@@ -53,19 +53,23 @@ pub struct MaterialProperties {
 /// from `dpdx(world_position) / dpdx(uv)`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SurfaceDepth {
-    /// How far below the true surface plane a fully-black `_h` texel carves.
-    /// Meters, or a count of albedo texels — see [`SURFACE_DEPTH_TEXEL_MODE`].
-    /// `0.0` disables the effect for this material in either unit.
+    /// The relief's reach in EACH direction from the polygon plane: a
+    /// fully-black `_h` texel sinks this far below it, a fully-white one rises
+    /// 127/128 of it above (mid-gray `#808080` is the plane). Meters, or a
+    /// count of albedo texels — see [`SURFACE_DEPTH_TEXEL_MODE`]. `0.0`
+    /// disables the effect for this material in either unit.
     pub depth_meters: f32,
-    /// Plateau count for the in-shader quantization `floor(h * levels) / levels`.
-    /// `0` leaves the stored 8-bit value untouched. This is an aesthetic dial:
-    /// fewer levels read as larger, more deliberately retro terraces. The DDA
-    /// is exact either way — exactness comes from the field being constant per
-    /// texel, not from the value being quantized.
+    /// Terraces PER DIRECTION for the in-shader quantization of the signed
+    /// height fraction `s`: `floor(s * levels + 0.5) / levels`. `0` leaves the
+    /// stored 8-bit value untouched. This is an aesthetic dial: fewer levels
+    /// read as larger, more deliberately retro terraces. The DDA is exact
+    /// either way — exactness comes from the field being constant per texel,
+    /// not from the value being quantized.
     pub quantize_levels: u32,
     /// Hard cap on texels the view-ray DDA may walk. Grazing angles traverse
     /// many texels per fragment; this is the per-fragment budget, not a
-    /// quality knob.
+    /// quality knob. Sized for the full signed span — up to twice the depth —
+    /// and never above 255, the width of its packed field.
     pub max_steps: u32,
     /// Distance in meters at which the effect has faded fully flat. Beyond it
     /// the march is skipped entirely. Also a straight perf win: at range the
@@ -99,12 +103,13 @@ pub const fn surface_depth_is_texel_relative() -> bool {
     SURFACE_DEPTH_TEXEL_MODE == 1
 }
 
-/// Hard ceiling on an authored carve depth in METERS.
+/// Hard ceiling on an authored depth in METERS, in each direction.
 ///
-/// This bounds how far the SHADED surface may sit below the real one. Collision
-/// still uses the true plane — the player walks on the stone tops — so the
-/// ceiling is the budget for how much visual/physical mismatch the look is
-/// worth. Past it a carve stops reading as relief and starts reading as a hole.
+/// This bounds how far the SHADED surface may sit from the real one, above or
+/// below. Collision still uses the true plane, so the ceiling is the budget for
+/// how much visual/physical mismatch the look is worth. Past it a sink stops
+/// reading as relief and starts reading as a hole, and a raise starts visibly
+/// floating free of the polygon edges.
 ///
 /// Tuned by eye on hardware, not derived. In TEXEL mode this is also the only
 /// bound on the resolved depth, since the authored cap is a texel count there
@@ -112,15 +117,16 @@ pub const fn surface_depth_is_texel_relative() -> bool {
 /// arbitrarily deep carve on a coarsely-scaled face.
 pub const SURFACE_DEPTH_MAX_METERS: f32 = 0.2;
 
-/// Hard ceiling on an authored carve depth in TEXELS.
+/// Hard ceiling on an authored depth in TEXELS, in each direction.
 ///
-/// Horizontal travel through the carve is `N * tan(theta)` texels, so 32 is
-/// already past what a 24-step budget resolves at a grazing angle.
+/// Horizontal travel through the relief is up to `2N * tan(theta)` texels (the
+/// signed span is twice the depth), so 32 is already far past what any shipped
+/// step budget resolves at a grazing angle.
 pub const SURFACE_DEPTH_MAX_TEXELS: f32 = 32.0;
 
 /// The ceiling for whichever unit [`SURFACE_DEPTH_TEXEL_MODE`] selects.
 ///
-/// Capping a texel count at the METERS ceiling would shrink every carve by the
+/// Capping a texel count at the METERS ceiling would shrink every relief by the
 /// ratio between the two ceilings — 120x for Concrete's 6, 40x for a 2 — with no
 /// error at all, which is the quiet failure this exists to prevent. So the cap
 /// and the unit are chosen together, in one place.
@@ -133,7 +139,7 @@ pub const fn surface_depth_max_authored() -> f32 {
 }
 
 impl SurfaceDepth {
-    /// The flat material: no carve, no march, byte-identical shading to the
+    /// The flat material: no relief, no march, byte-identical shading to the
     /// pre-Surface-Depth path.
     pub const FLAT: Self = Self {
         depth_meters: 0.0,
@@ -142,7 +148,7 @@ impl SurfaceDepth {
         fade_distance_meters: 0.0,
     };
 
-    /// Whether this material asks for any carve at all.
+    /// Whether this material asks for any relief at all.
     pub const fn is_enabled(self) -> bool {
         self.depth_meters > 0.0
     }
@@ -185,9 +191,14 @@ impl Material {
     /// Surface Depth tuning for this material prefix.
     ///
     /// Depths are chosen against the aesthetic, not a measurement: cobblestone
-    /// and pavement (`concrete`) carve the deepest because that is the look the
+    /// and pavement (`concrete`) reach the furthest because that is the look the
     /// feature exists for; panel and plank seams are shallow; `glass` and
-    /// `neon` are flat because a carved light source or pane reads as a defect.
+    /// `neon` are flat because a relief on a light source or pane reads as a
+    /// defect.
+    ///
+    /// Every `max_steps` is sized for the signed span: the depth applies in
+    /// each direction, so a full-range map spans twice its depth, and its
+    /// grazing-angle travel grows with it.
     ///
     /// A material whose baked `.prm` has no height sibling stays flat whatever
     /// this returns — the bind group clears the has-depth flag (see
@@ -216,38 +227,39 @@ impl Material {
     /// only where the budget happened to run out.
     ///
     /// `quantize_levels` equals the texel depth so every plateau lands exactly
-    /// one texel down, which is the terracing the albedo lattice can express.
+    /// one texel up or down, which is the terracing the albedo lattice can
+    /// express.
     fn surface_depth_texels(self) -> SurfaceDepth {
         match self {
             Material::Concrete => SurfaceDepth {
                 depth_meters: 6.0,
                 quantize_levels: 6,
-                max_steps: 24,
+                max_steps: 48,
                 fade_distance_meters: 14.0,
             },
             Material::Metal => SurfaceDepth {
                 depth_meters: 2.0,
                 quantize_levels: 2,
-                max_steps: 16,
+                max_steps: 32,
                 fade_distance_meters: 10.0,
             },
             Material::Grate => SurfaceDepth {
                 depth_meters: 3.0,
                 quantize_levels: 3,
-                max_steps: 16,
+                max_steps: 32,
                 fade_distance_meters: 10.0,
             },
             Material::Wood => SurfaceDepth {
                 depth_meters: 2.0,
                 quantize_levels: 2,
-                max_steps: 16,
+                max_steps: 32,
                 fade_distance_meters: 10.0,
             },
             Material::Glass | Material::Neon => SurfaceDepth::FLAT,
             Material::Default => SurfaceDepth {
                 depth_meters: 3.0,
                 quantize_levels: 3,
-                max_steps: 16,
+                max_steps: 32,
                 fade_distance_meters: 10.0,
             },
         }
@@ -261,14 +273,14 @@ impl Material {
             Material::Concrete => SurfaceDepth {
                 depth_meters: 0.020,
                 quantize_levels: 12,
-                max_steps: 24,
+                max_steps: 48,
                 fade_distance_meters: 14.0,
             },
             // Panel seams and rivets: shallow, tight terracing.
             Material::Metal => SurfaceDepth {
                 depth_meters: 0.006,
                 quantize_levels: 8,
-                max_steps: 16,
+                max_steps: 32,
                 fade_distance_meters: 10.0,
             },
             // Open grating reads as depth even at a glance; keep it modest so
@@ -276,14 +288,14 @@ impl Material {
             Material::Grate => SurfaceDepth {
                 depth_meters: 0.010,
                 quantize_levels: 6,
-                max_steps: 16,
+                max_steps: 32,
                 fade_distance_meters: 10.0,
             },
             // Plank gaps.
             Material::Wood => SurfaceDepth {
                 depth_meters: 0.008,
                 quantize_levels: 8,
-                max_steps: 16,
+                max_steps: 32,
                 fade_distance_meters: 10.0,
             },
             // Flat by intent, not by omission.
@@ -293,7 +305,7 @@ impl Material {
             Material::Default => SurfaceDepth {
                 depth_meters: 0.010,
                 quantize_levels: 8,
-                max_steps: 16,
+                max_steps: 32,
                 fade_distance_meters: 10.0,
             },
         }
@@ -340,18 +352,27 @@ pub fn parse_prefix(texture_name: &str) -> &str {
     }
 }
 
+/// Every recognized material prefix, lowercase. Any other prefix is
+/// [`Material::Default`]. `tools/texture-tool` derives its default height
+/// terraces from the same prefixes; a test in this crate keeps the two tables
+/// in step.
+pub const MATERIAL_PREFIXES: [(&str, Material); 6] = [
+    ("metal", Material::Metal),
+    ("concrete", Material::Concrete),
+    ("grate", Material::Grate),
+    ("neon", Material::Neon),
+    ("glass", Material::Glass),
+    ("wood", Material::Wood),
+];
+
 /// Look up the material variant for a given prefix string.
 fn lookup_material(prefix: &str) -> Option<Material> {
     // Case-insensitive match: texture names from BSP data may vary in case.
-    match prefix.to_lowercase().as_str() {
-        "metal" => Some(Material::Metal),
-        "concrete" => Some(Material::Concrete),
-        "grate" => Some(Material::Grate),
-        "neon" => Some(Material::Neon),
-        "glass" => Some(Material::Glass),
-        "wood" => Some(Material::Wood),
-        _ => None,
-    }
+    let prefix = prefix.to_lowercase();
+    MATERIAL_PREFIXES
+        .iter()
+        .find(|(name, _)| *name == prefix)
+        .map(|&(_, material)| material)
 }
 
 /// Derive a material from a texture name. Returns `Material::Default` for
@@ -659,6 +680,7 @@ mod tests {
     /// every other test in this module, so without this a bad edit to it sits
     /// dormant until someone flips the switch.
     #[test]
+    #[allow(clippy::type_complexity)]
     fn every_carving_material_in_either_unit_bounds_its_march() {
         let tables: [(fn(Material) -> SurfaceDepth, f32, &str); 2] = [
             (
@@ -693,6 +715,12 @@ mod tests {
                     depth.depth_meters,
                 );
                 assert!(depth.max_steps >= 1, "{mat:?} ({unit}): needs a DDA step");
+                // The packed march word gives the cap one byte.
+                assert!(
+                    depth.max_steps <= u32::from(u8::MAX),
+                    "{mat:?} ({unit}): {} steps overflow the packed byte",
+                    depth.max_steps,
+                );
                 assert!(
                     depth.fade_distance_meters > 0.0,
                     "{mat:?} ({unit}): needs a finite fade distance",
@@ -754,7 +782,7 @@ mod tests {
             // become the wrong unit's number the moment the switch moves.
             assert!(
                 depth.depth_meters <= surface_depth_max_authored(),
-                "{mat:?}: {} is deeper than the inward-carve contract allows ({} max, {})",
+                "{mat:?}: {} reaches past the relief ceiling ({} max, {})",
                 depth.depth_meters,
                 surface_depth_max_authored(),
                 if surface_depth_is_texel_relative() {

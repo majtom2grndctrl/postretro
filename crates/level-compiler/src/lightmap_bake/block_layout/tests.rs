@@ -19,6 +19,7 @@ fn chart(width: u32, height: u32, cell: u32) -> Chart {
         width_texels: width,
         height_texels: height,
         leaf_index: cell,
+        window: None,
     }
 }
 
@@ -123,74 +124,297 @@ fn cell_block_order_is_cluster_major_then_cell_id() {
 }
 
 #[test]
-fn cell_block_pack_rejects_a_block_past_the_pool_layer_edge_and_accepts_one_at_it() {
+fn cell_block_pack_accepts_a_block_at_the_pool_layer_edge() {
     let at_edge = [chart(LIGHTMAP_POOL_LAYER_EDGE, 12, 0), chart(9, 9, 1)];
     let pack = pack(&at_edge, BlockOrdering::by_cell_id(2));
+    assert_eq!(pack.layout.blocks.len(), 2, "one block per fitting cell");
     assert_eq!(pack.layout.blocks[0].width, LIGHTMAP_POOL_LAYER_EDGE);
+}
 
-    // Each of cell 5's charts fits a pool layer, so the earlier chart-size
-    // check passes them; together they cover more than a layer's area, so no
-    // block holding all three can fit one.
+/// Charts of each block, in block-id order.
+fn block_members(pack: &BlockedPack) -> Vec<Vec<usize>> {
+    let mut members = vec![Vec::new(); pack.layout.blocks.len()];
+    for (chart, &block) in pack.layout.chart_blocks.iter().enumerate() {
+        members[block as usize].push(chart);
+    }
+    members
+}
+
+#[test]
+fn oversized_cell_packs_into_several_blocks_each_within_the_pool_edge() {
+    // Each of cell 5's charts fits a pool layer on its own; together they
+    // cover more than a layer's area, so no single block can hold them.
     let side = LIGHTMAP_POOL_LAYER_EDGE * 3 / 4;
-    let past_edge = [
+    let charts = [
         chart(9, 9, 0),
         chart(side, side, 5),
         chart(side, side, 5),
         chart(side, side, 5),
+        chart(40, 24, 5),
     ];
     assert!(
-        super::super::charts::check_chart_extents(&past_edge, 1.0, &[]).is_ok(),
+        charts
+            .iter()
+            .all(|c| c.width_texels <= LIGHTMAP_POOL_LAYER_EDGE
+                && c.height_texels <= LIGHTMAP_POOL_LAYER_EDGE),
         "every chart fits a pool layer on its own"
     );
-    let error = pack_cell_blocks(
-        &past_edge,
+    let pack = pack(&charts, BlockOrdering::by_cell_id(2));
+    let layout = &pack.layout;
+    let cells: Vec<u32> = layout.blocks.iter().map(|b| b.cell_id).collect();
+    assert_eq!(cells, [0, 5, 5, 5], "cell 5 splits into three blocks");
+    for block in &layout.blocks {
+        assert!(block.width <= LIGHTMAP_POOL_LAYER_EDGE);
+        assert!(block.height <= LIGHTMAP_POOL_LAYER_EDGE);
+    }
+    // Every chart lands in exactly one block, of its own cell, inside it.
+    assert_eq!(layout.chart_blocks.len(), charts.len());
+    for (index, (chart, placement)) in charts.iter().zip(&pack.placements).enumerate() {
+        let block = &layout.blocks[layout.chart_blocks[index] as usize];
+        assert_eq!(block.cell_id, chart.leaf_index);
+        assert!(block.contains(
+            placement.layer,
+            placement.x,
+            placement.y,
+            chart.width_texels,
+            chart.height_texels
+        ));
+    }
+    let members = block_members(&pack);
+    assert!(members.iter().all(|m| !m.is_empty()), "no empty block");
+    assert_eq!(members.iter().map(Vec::len).sum::<usize>(), charts.len());
+}
+
+#[test]
+fn fitting_cells_pack_one_block_each_exactly_as_the_single_block_packer() {
+    let charts = mixed_cells();
+    let pack = pack(&charts, BlockOrdering::by_cell_id(2));
+    let align = pack.layout.alignment();
+    for (block_id, members) in block_members(&pack).iter().enumerate() {
+        let block = &pack.layout.blocks[block_id];
+        let sizes: Vec<(u32, u32)> = members
+            .iter()
+            .map(|&i| (charts[i].width_texels, charts[i].height_texels))
+            .collect();
+        let single = super::super::cell_blocks::pack_cell_block(&sizes, align)
+            .expect("a charted cell packs");
+        assert_eq!((block.width, block.height), (single.width, single.height));
+        let local: Vec<(u32, u32)> = members
+            .iter()
+            .map(|&i| pack.layout.local_placement(i, &pack.placements[i]))
+            .collect();
+        assert_eq!(local, single.placements, "block {block_id} placements");
+    }
+}
+
+/// Whether a `w × h` rect fits anywhere in the free texels of a
+/// `width × height` block holding `occupied` rects `(x, y, w, h)`. Brute
+/// force over a summed-area table, independent of the packer it checks.
+fn fits_free_space(
+    width: u32,
+    height: u32,
+    occupied: &[(u32, u32, u32, u32)],
+    w: u32,
+    h: u32,
+) -> bool {
+    if w > width || h > height {
+        return false;
+    }
+    let (bw, bh) = (width as usize, height as usize);
+    let mut grid = vec![0u32; bw * bh];
+    for &(x, y, rw, rh) in occupied {
+        for yy in y..y + rh {
+            for xx in x..x + rw {
+                grid[yy as usize * bw + xx as usize] = 1;
+            }
+        }
+    }
+    let stride = bw + 1;
+    let mut sat = vec![0u32; stride * (bh + 1)];
+    for y in 0..bh {
+        for x in 0..bw {
+            sat[(y + 1) * stride + x + 1] =
+                grid[y * bw + x] + sat[y * stride + x + 1] + sat[(y + 1) * stride + x]
+                    - sat[y * stride + x];
+        }
+    }
+    let (w, h) = (w as usize, h as usize);
+    (0..=bh - h).any(|y| {
+        (0..=bw - w).any(|x| {
+            sat[(y + h) * stride + x + w] + sat[y * stride + x]
+                == sat[y * stride + x + w] + sat[(y + h) * stride + x]
+        })
+    })
+}
+
+/// Deterministic pseudo-random chart extents in `[low, high]`.
+fn scattered_charts(count: u32, low: u32, high: u32, cell: u32, seed: u32) -> Vec<Chart> {
+    let span = high - low + 1;
+    (0..count)
+        .map(|i| {
+            let a = (i.wrapping_mul(2_654_435_761) ^ seed).rotate_left(7);
+            let b = (i.wrapping_mul(40_503) ^ seed.rotate_left(13)).wrapping_mul(2_246_822_519);
+            chart(low + a % span, low + (b >> 7) % span, cell)
+        })
+        .collect()
+}
+
+#[test]
+fn oversized_cell_blocks_are_trimmed_and_no_later_chart_fits_an_earlier_block() {
+    let pool_edge = 256;
+    let mut charts = scattered_charts(90, 9, 120, 2, 17);
+    charts.extend(scattered_charts(20, 4, 60, 1, 5));
+    let pack = pack_cell_blocks_within(
+        &charts,
         BlockOrdering::by_cell_id(2),
+        pool_edge,
         &BakeControl::unrestricted(),
     )
-    .expect_err("a cell block past a pool layer must fail the build");
-    match error {
-        LightmapBakeError::BlockTooLarge {
-            cell_id,
-            width,
-            height,
-            max,
-            largest_chart_face,
-        } => {
-            assert_eq!(
-                (cell_id, max, largest_chart_face),
-                (5, LIGHTMAP_POOL_LAYER_EDGE, 1)
-            );
-            assert!(width > LIGHTMAP_POOL_LAYER_EDGE || height > LIGHTMAP_POOL_LAYER_EDGE);
+    .expect("fixture cells pack");
+    let layout = &pack.layout;
+    let align = layout.alignment();
+    let members = block_members(&pack);
+    let cell_two: Vec<usize> = (0..layout.blocks.len())
+        .filter(|&b| layout.blocks[b].cell_id == 2)
+        .collect();
+    assert!(cell_two.len() >= 3, "cell 2 must split: {}", cell_two.len());
+
+    for &block_id in &cell_two {
+        let block = &layout.blocks[block_id];
+        let rects: Vec<(u32, u32, u32, u32)> = members[block_id]
+            .iter()
+            .map(|&i| {
+                let (x, y) = layout.local_placement(i, &pack.placements[i]);
+                (x, y, charts[i].width_texels, charts[i].height_texels)
+            })
+            .collect();
+        // Trimmed: the block is the aligned bounding box of its charts.
+        let right = rects.iter().map(|r| r.0 + r.2).max().unwrap();
+        let bottom = rects.iter().map(|r| r.1 + r.3).max().unwrap();
+        assert!(block.width <= pool_edge && block.height <= pool_edge);
+        assert_eq!(
+            block.width,
+            right.div_ceil(align) * align,
+            "block {block_id} width"
+        );
+        assert_eq!(
+            block.height,
+            bottom.div_ceil(align) * align,
+            "block {block_id} height"
+        );
+        // Fill rule: no chart of a later block of this cell fits here.
+        for &later in cell_two.iter().filter(|&&b| b > block_id) {
+            for &i in &members[later] {
+                assert!(
+                    !fits_free_space(
+                        block.width,
+                        block.height,
+                        &rects,
+                        charts[i].width_texels,
+                        charts[i].height_texels
+                    ),
+                    "chart {i} in block {later} fits block {block_id}'s free space"
+                );
+            }
         }
-        other => panic!("expected BlockTooLarge, got {other}"),
     }
 }
 
 #[test]
-fn block_limits_reject_an_extent_past_the_pool_layer_on_either_axis() {
-    let extent = |width, height| BlockExtent {
-        cell_id: 4,
-        width,
-        height,
-        largest_chart_face: 0,
-    };
+fn quarter_edge_oversized_cell_occupies_at_most_one_layer_past_its_texel_area() {
     let edge = LIGHTMAP_POOL_LAYER_EDGE;
-    assert!(check_block_limits(1, [extent(edge, edge)]).is_ok());
-    for past in [extent(edge + 4, 4), extent(4, edge + 4)] {
-        let message = check_block_limits(1, [past])
-            .expect_err("oversize block must fail")
-            .to_string();
-        assert!(message.contains("cell 4"), "{message}");
-        assert!(message.contains(&format!("{edge}x{edge}")), "{message}");
-    }
+    let charts = scattered_charts(150, 40, edge / 4, 0, 99);
+    let area: u64 = charts
+        .iter()
+        .map(|c| u64::from(c.width_texels) * u64::from(c.height_texels))
+        .sum();
+    let layer_area = u64::from(edge) * u64::from(edge);
+    assert!(
+        area > layer_area && area <= 4 * layer_area,
+        "fixture area {area}"
+    );
+    let pack = pack(&charts, BlockOrdering::by_cell_id(2));
+    assert!(pack.layout.blocks.len() >= 2);
+    assert_eq!(pack.layer_dim, edge);
+    let layers: BTreeSet<u32> = pack.layout.blocks.iter().map(|b| b.layer).collect();
+    let needed = area.div_ceil(layer_area);
+    assert!(
+        layers.len() as u64 <= needed + 1,
+        "{} layers for {needed} layers of texel area",
+        layers.len()
+    );
+}
+
+#[test]
+fn multi_block_cells_are_contiguous_in_cluster_cell_sub_block_order() {
+    let pool_edge = 128;
+    let mut charts = scattered_charts(30, 20, 90, 4, 3);
+    charts.extend(scattered_charts(30, 20, 90, 1, 8));
+    charts.extend(scattered_charts(3, 5, 20, 2, 1));
+    // Cells 1, 2, 4 in clusters 1, 0, 0.
+    let clusters = [9, 1, 0, 9, 0];
+    let pack = pack_cell_blocks_within(
+        &charts,
+        BlockOrdering {
+            direction_texel_scale: 2,
+            cell_clusters: &clusters,
+        },
+        pool_edge,
+        &BakeControl::unrestricted(),
+    )
+    .expect("fixture cells pack");
+    let order: Vec<u32> = pack.layout.blocks.iter().map(|b| b.cell_id).collect();
+    let mut runs = order.clone();
+    runs.dedup();
+    assert_eq!(
+        runs,
+        [2, 4, 1],
+        "cluster-major, then cell, each cell contiguous"
+    );
+    assert!(order.iter().filter(|&&c| c == 4).count() >= 2);
+    assert!(order.iter().filter(|&&c| c == 1).count() >= 2);
+}
+
+#[test]
+fn multi_block_pack_is_identical_with_one_worker_and_many() {
+    use std::sync::Arc;
+
+    use crate::governor::Governor;
+    use crate::reporter::StageProgress;
+
+    let mut charts = scattered_charts(80, 9, 100, 3, 21);
+    charts.extend(scattered_charts(80, 9, 100, 0, 22));
+    // Fitting cells too; every chart must fit the 256 test pool edge.
+    charts.extend(mixed_cells().into_iter().filter(|c| c.width_texels <= 256));
+    let run = |workers: usize| {
+        let progress = StageProgress::indeterminate();
+        let control = BakeControl::new(Arc::new(Governor::new(workers, false)), &progress);
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(workers)
+            .build()
+            .expect("worker pool")
+            .install(|| {
+                pack_cell_blocks_within(&charts, BlockOrdering::by_cell_id(2), 256, &control)
+                    .expect("fixture cells pack")
+            })
+    };
+    let one = run(1);
+    let many = run(4);
+    assert!(one.layout.blocks.len() > 6, "fixture must split cells");
+    assert_eq!(one.layout, many.layout);
+    assert_eq!(one.placements, many.placements);
+    assert_eq!(
+        (one.layer_dim, one.layer_count),
+        (many.layer_dim, many.layer_count)
+    );
 }
 
 #[test]
 fn block_count_limit_rejects_one_past_the_vertex_id_limit_and_accepts_the_limit() {
-    // Synthetic counts drive the chokepoint directly: packing 65,535 cells is
-    // not what this proves.
-    assert!(check_block_limits(MAX_LIGHTMAP_BLOCKS as usize, []).is_ok());
-    let error = check_block_limits(MAX_LIGHTMAP_BLOCKS as usize + 1, [])
+    // P11: synthetic counts drive the chokepoint directly, which
+    // `pack_cell_blocks_within` feeds every block of every multi-block cell.
+    assert!(check_block_limits(MAX_LIGHTMAP_BLOCKS as usize).is_ok());
+    let error = check_block_limits(MAX_LIGHTMAP_BLOCKS as usize + 1)
         .expect_err("one block past the vertex id limit must fail the build");
     assert!(matches!(
         error,

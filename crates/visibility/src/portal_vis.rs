@@ -823,11 +823,11 @@ mod tests {
 
     fn make_camera_frustum(position: Vec3, look_dir: Vec3) -> Frustum {
         let target = position + look_dir;
-        let view = Mat4::look_at_rh(position, target, Vec3::Y);
+        let view = glam::camera::rh::view::look_at_mat4(position, target, Vec3::Y);
         let aspect = 16.0 / 9.0;
         let hfov = 100.0_f32.to_radians();
         let vfov = 2.0 * ((hfov / 2.0).tan() / aspect).atan();
-        let proj = Mat4::perspective_rh(vfov, aspect, 0.1, 4096.0);
+        let proj = glam::camera::rh::proj::directx::perspective(vfov, aspect, 0.1, 4096.0);
         extract_test_frustum(proj * view)
     }
 
@@ -1997,8 +1997,8 @@ mod tests {
 
         let aspect = 16.0 / 9.0;
         let vfov = 2.0 * ((HFOV / 2.0).tan() / aspect).atan();
-        let view = Mat4::look_at_rh(camera_pos, camera_pos + look_dir, Vec3::Y);
-        let proj = Mat4::perspective_rh(vfov, aspect, NEAR, FAR);
+        let view = glam::camera::rh::view::look_at_mat4(camera_pos, camera_pos + look_dir, Vec3::Y);
+        let proj = glam::camera::rh::proj::directx::perspective(vfov, aspect, NEAR, FAR);
         let frustum = extract_frustum_planes(proj * view);
 
         // Precondition: at least one portal vertex must lie outside at
@@ -2105,8 +2105,8 @@ mod tests {
 
         let aspect = 16.0 / 9.0;
         let vfov = 2.0 * ((HFOV / 2.0).tan() / aspect).atan();
-        let view = Mat4::look_at_rh(camera_pos, camera_pos + look_dir, Vec3::Y);
-        let proj = Mat4::perspective_rh(vfov, aspect, NEAR, FAR);
+        let view = glam::camera::rh::view::look_at_mat4(camera_pos, camera_pos + look_dir, Vec3::Y);
+        let proj = glam::camera::rh::proj::directx::perspective(vfov, aspect, NEAR, FAR);
         let frustum = extract_frustum_planes(proj * view);
 
         let visible = portal_traverse(camera_pos, 0, &frustum, &world, false);

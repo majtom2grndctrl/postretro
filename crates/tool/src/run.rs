@@ -6,13 +6,15 @@
 //! failure modes is an error: the wrong materials root degrades every world
 //! texture to a placeholder (`build_pipeline.md` §Baked texture mips), and a
 //! `core/` the engine cannot find degrades the pause menu, frontend menu,
-//! on-screen keyboard and splash to warnings (`ui.md` §5).
+//! on-screen keyboard and splash to warnings (`ui.md` §5). It also names the
+//! package as `--app-name`, so an authoring run keeps its settings and saves
+//! where the shipped game's launcher does.
 //!
 //! The two are separate lookups in both directions. The game comes from the
 //! project; the engine's own assets come from the install; neither falls back
 //! to the other.
 //!
-//! See: context/lib/build_pipeline.md §Baked texture mips · context/lib/ui.md §5
+//! See: context/lib/build_pipeline.md §Authoring launch · context/lib/ui.md §5
 
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -112,9 +114,13 @@ fn absolute(path: PathBuf) -> Result<PathBuf, String> {
 
 /// Prepend the flags the project already answers, unless the caller set them.
 ///
-/// An explicit `--mod`, `--baked-root`, or `--core-root` wins outright rather
-/// than being shadowed: the engine reads the first occurrence of each, so
-/// supplying ours unconditionally would silently discard the caller's.
+/// An explicit `--mod`, `--app-name`, `--baked-root`, or `--core-root` wins
+/// outright rather than being shadowed: the engine reads the first occurrence
+/// of each, so supplying ours unconditionally would silently discard the
+/// caller's.
+///
+/// `--app-name` is the package name, as the payload launcher passes it, so an
+/// author sees the settings and saves their players' first launch would.
 ///
 /// `--core-root` and the content flags are independent by design. The engine's
 /// own assets come from the install; the game comes from the project; neither
@@ -124,10 +130,14 @@ fn engine_arguments(
     core_root: Option<PathBuf>,
     engine_args: Vec<OsString>,
 ) -> Vec<OsString> {
-    let mut launch_args = Vec::with_capacity(engine_args.len() + 6);
+    let mut launch_args = Vec::with_capacity(engine_args.len() + 8);
     if !names_flag(&engine_args, &["--mod"]) {
         launch_args.push(OsString::from("--mod"));
         launch_args.push(OsString::from(project.mod_name()));
+    }
+    if !names_flag(&engine_args, &["--app-name"]) {
+        launch_args.push(OsString::from("--app-name"));
+        launch_args.push(OsString::from(&project.manifest().package.name));
     }
     if !names_flag(&engine_args, &["--baked-root"]) {
         launch_args.push(OsString::from("--baked-root"));
@@ -228,17 +238,21 @@ mod tests {
         PathBuf::from("/install/core")
     }
 
-    /// The three flags travel together or not at all: the baked root without the
+    /// The three paths travel together or not at all: the baked root without the
     /// mod root launches against the wrong content, the mod root without the
     /// baked root is the silent-placeholder defect itself, and without the core
     /// root the pause menu, frontend menu, keyboard and splash are all absent.
+    /// The package rides along as the app name, so an authoring run writes its
+    /// settings and saves where the shipped game's launcher does.
     #[test]
-    fn launch_supplies_the_mod_the_baked_root_and_the_core_root() {
+    fn launch_supplies_the_mod_the_app_name_the_baked_root_and_the_core_root() {
         assert_eq!(
             engine_arguments(&project(), Some(core_root()), os_args(&["maps/e1m1.prl"])),
             os_args(&[
                 "--mod",
                 "core",
+                "--app-name",
+                "game",
                 "--baked-root",
                 &baked_root(),
                 "--core-root",
@@ -254,21 +268,38 @@ mod tests {
             engine_arguments(
                 &project(),
                 None,
-                os_args(&["--mod", "expansion", "--baked-root=/elsewhere/baked"]),
+                os_args(&[
+                    "--mod",
+                    "expansion",
+                    "--app-name",
+                    "other-game",
+                    "--baked-root=/elsewhere/baked",
+                ]),
             ),
-            os_args(&["--mod", "expansion", "--baked-root=/elsewhere/baked"])
+            os_args(&[
+                "--mod",
+                "expansion",
+                "--app-name",
+                "other-game",
+                "--baked-root=/elsewhere/baked",
+            ])
         );
 
-        // The equals form suppresses the tool's mod too — but not its baked
-        // root or its core root.
+        // The equals form suppresses the tool's mod and app name too — but not
+        // its baked root or its core root.
         assert_eq!(
-            engine_arguments(&project(), Some(core_root()), os_args(&["--mod=expansion"])),
+            engine_arguments(
+                &project(),
+                Some(core_root()),
+                os_args(&["--mod=expansion", "--app-name=other-game"]),
+            ),
             os_args(&[
                 "--baked-root",
                 &baked_root(),
                 "--core-root",
                 "/install/core",
                 "--mod=expansion",
+                "--app-name=other-game",
             ])
         );
     }
@@ -291,6 +322,8 @@ mod tests {
             os_args(&[
                 "--mod",
                 "core",
+                "--app-name",
+                "game",
                 "--baked-root",
                 &baked_root(),
                 "--core-root",

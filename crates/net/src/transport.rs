@@ -441,10 +441,10 @@ impl NetServer {
                 )
             {
                 let previous = self.holding_diagnostics.get(&client_id).cloned();
-                if let Some(cause) = self.reevaluate_parity(Some(client_id)) {
-                    if previous.as_ref() != Some(&cause) {
-                        outcomes.push(HandshakeOutcome::ParityHeld { client_id, cause });
-                    }
+                if let Some(cause) = self.reevaluate_parity(Some(client_id))
+                    && previous.as_ref() != Some(&cause)
+                {
+                    outcomes.push(HandshakeOutcome::ParityHeld { client_id, cause });
                 }
             }
         }
@@ -524,10 +524,10 @@ impl NetServer {
                     }
                 }
                 Some(cause) => {
-                    if matches!(state, Some(SlotState::Participating)) {
-                        if let Some(event) = self.slots.demote(client_id, cause.clone()) {
-                            self.pending_lifecycle.push(event);
-                        }
+                    if matches!(state, Some(SlotState::Participating))
+                        && let Some(event) = self.slots.demote(client_id, cause.clone())
+                    {
+                        self.pending_lifecycle.push(event);
                     }
                     if self.parity_declarations.contains_key(&client_id) {
                         let _ = self.send_divergence(client_id, cause.clone());
@@ -704,6 +704,28 @@ impl NetServer {
 
     pub fn send_input(&mut self, client_id: ClientId, payload: Vec<u8>) {
         self.server.send_message(client_id, Channel::Input, payload);
+    }
+
+    /// Reliable observer facts belong to exactly this participation generation.
+    pub fn send_weapon_cues(&mut self, client_id: ClientId, cues: Vec<wire::WeaponCue>) -> bool {
+        if !self.is_participating(client_id) {
+            return false;
+        }
+        let Some(participation_epoch) = self.participation_epochs.get(&client_id).copied() else {
+            return false;
+        };
+        let message = wire::WeaponCuesMessage {
+            participation_epoch,
+            cues,
+        };
+        if !message.is_valid() {
+            return false;
+        }
+        self.send_input(
+            client_id,
+            wire::encode(&wire::ServerMessage::WeaponCues(message)),
+        );
+        true
     }
 
     /// Send one transient server presentation event to its exact recipient.
@@ -922,38 +944,38 @@ impl NetClient {
         if !self.client.is_connected() {
             return;
         }
-        if !self.admission_sent {
-            if let Some((mod_id, mod_version)) = self.mod_identity.clone() {
+        if !self.admission_sent
+            && let Some((mod_id, mod_version)) = self.mod_identity.clone()
+        {
+            self.client.send_message(
+                Channel::Control,
+                wire::encode(&ClientControlMessage::Admission {
+                    protocol: protocol_version(),
+                    mod_id,
+                    mod_version,
+                }),
+            );
+            self.admission_sent = true;
+        }
+        if !self.parity_sent
+            && let Some(mod_digest) = self.mod_digest
+        {
+            self.client.send_message(
+                Channel::Control,
+                wire::encode(&ClientControlMessage::Parity(ParityDeclaration {
+                    mod_digest,
+                    level: self.level_parity.clone(),
+                })),
+            );
+            self.parity_sent = true;
+            if !self.join_seed_sent {
                 self.client.send_message(
                     Channel::Control,
-                    wire::encode(&ClientControlMessage::Admission {
-                        protocol: protocol_version(),
-                        mod_id,
-                        mod_version,
+                    wire::encode(&ClientControlMessage::JoinSeed {
+                        slots: self.join_seed.clone(),
                     }),
                 );
-                self.admission_sent = true;
-            }
-        }
-        if !self.parity_sent {
-            if let Some(mod_digest) = self.mod_digest {
-                self.client.send_message(
-                    Channel::Control,
-                    wire::encode(&ClientControlMessage::Parity(ParityDeclaration {
-                        mod_digest,
-                        level: self.level_parity.clone(),
-                    })),
-                );
-                self.parity_sent = true;
-                if !self.join_seed_sent {
-                    self.client.send_message(
-                        Channel::Control,
-                        wire::encode(&ClientControlMessage::JoinSeed {
-                            slots: self.join_seed.clone(),
-                        }),
-                    );
-                    self.join_seed_sent = true;
-                }
+                self.join_seed_sent = true;
             }
         }
     }
@@ -1018,6 +1040,16 @@ impl NetClient {
 
     pub fn drain_input(&mut self) -> Vec<Vec<u8>> {
         drain_client_channel(&mut self.client, Channel::Input)
+            .into_iter()
+            .filter(|bytes| match wire::decode::<wire::ServerMessage>(bytes) {
+                Ok(wire::ServerMessage::WeaponCues(message)) => {
+                    self.client.is_connected()
+                        && self.active_participation_epoch == Some(message.participation_epoch)
+                        && message.is_valid()
+                }
+                _ => true,
+            })
+            .collect()
     }
 
     pub fn drain_snapshots(&mut self) -> Vec<Vec<u8>> {
@@ -1092,10 +1124,9 @@ impl NetClient {
                 if matches!(
                     message,
                     ServerControlMessage::Divergence(DivergenceReason::Holding(_))
-                ) {
-                    if let Some(epoch) = frame.participation_epoch {
-                        self.retire_participation(epoch);
-                    }
+                ) && let Some(epoch) = frame.participation_epoch
+                {
+                    self.retire_participation(epoch);
                 }
                 Some(message)
             })
@@ -1357,6 +1388,107 @@ mod tests {
         assert!(server.send_presentation(RELAY_CLIENT_ID, current.clone()));
         relay_server_to_client(&mut server, &mut client);
         assert_eq!(client.drain_presentation(), vec![current]);
+    }
+
+    fn observer_cue(ordinal: u8) -> wire::WeaponCue {
+        wire::WeaponCue {
+            shot_id: wire::WireShotId {
+                pawn: 7,
+                start_tick: 20,
+                lane: 1,
+                ordinal,
+            },
+            kind: wire::WeaponCueKind::Activate,
+            sound: Some("alt_fire".into()),
+            additional_sound: None,
+            alias: Some("alt_activate".into()),
+            anchor: wire::WeaponCueAnchor::Entity {
+                entity: wire::NetworkId(7),
+                origin: [1.0, 2.0, 3.0],
+            },
+        }
+    }
+
+    #[test]
+    fn weapon_cues_reliable_delivery_survives_loss_duplicate_and_reordered_packets_once() {
+        let (mut server, mut client) = participate_relay_pair();
+        relay_server_to_client(&mut server, &mut client);
+        let _ = client.drain_control();
+        assert!(server.send_weapon_cues(RELAY_CLIENT_ID, vec![observer_cue(0)]));
+        let lost = server.packets_to_send(RELAY_CLIENT_ID);
+        assert!(!lost.is_empty());
+        assert!(server.send_weapon_cues(RELAY_CLIENT_ID, vec![observer_cue(1)]));
+        server.update_connections(Duration::from_millis(400));
+        let mut packets = server.packets_to_send(RELAY_CLIENT_ID);
+        packets.reverse();
+        for packet in &packets {
+            client.process_packet(packet);
+            client.process_packet(packet);
+        }
+        // Any earlier lost packet that arrives late must also be inert.
+        for packet in lost {
+            client.process_packet(&packet);
+        }
+        let messages: Vec<_> = client
+            .drain_input()
+            .into_iter()
+            .filter_map(
+                |bytes| match wire::decode::<wire::ServerMessage>(&bytes).unwrap() {
+                    wire::ServerMessage::WeaponCues(message) => Some(message),
+                    _ => None,
+                },
+            )
+            .collect();
+        let ordinals: Vec<_> = messages
+            .into_iter()
+            .flat_map(|message| message.cues)
+            .map(|cue| cue.shot_id.ordinal)
+            .collect();
+        assert_eq!(ordinals, [0, 1]);
+        assert!(client.drain_input().is_empty());
+    }
+
+    #[test]
+    fn weapon_cues_ignore_retired_participation_and_malformed_payloads() {
+        let (mut server, mut client) = participate_relay_pair();
+        relay_server_to_client(&mut server, &mut client);
+        let _ = client.drain_control();
+        let old_epoch = client.active_participation_epoch.unwrap();
+        assert!(server.send_weapon_cues(RELAY_CLIENT_ID, vec![observer_cue(0)]));
+        let delayed = server.packets_to_send(RELAY_CLIENT_ID);
+        server.set_level_parity(None);
+        let _ = server.poll_handshakes();
+        relay_server_to_client(&mut server, &mut client);
+        let _ = client.drain_control();
+        assert!(!server.send_weapon_cues(RELAY_CLIENT_ID, vec![observer_cue(1)]));
+        server.set_level_parity(Some(("test-level".into(), [9; 32])));
+        let _ = server.poll_handshakes();
+        relay_server_to_client(&mut server, &mut client);
+        let _ = client.drain_control();
+        assert_ne!(client.active_participation_epoch, Some(old_epoch));
+        for packet in delayed {
+            client.process_packet(&packet);
+        }
+        assert!(client.drain_input().is_empty());
+        let mut invalid = observer_cue(0);
+        invalid.shot_id.lane = 7;
+        let epoch = client.active_participation_epoch.unwrap();
+        server.send_input(
+            RELAY_CLIENT_ID,
+            wire::encode(&wire::ServerMessage::WeaponCues(wire::WeaponCuesMessage {
+                participation_epoch: epoch,
+                cues: vec![invalid],
+            })),
+        );
+        assert!(server.send_weapon_cues(RELAY_CLIENT_ID, vec![observer_cue(1)]));
+        server.update_connections(Duration::from_millis(400));
+        relay_server_to_client(&mut server, &mut client);
+        let accepted = client.drain_input();
+        assert_eq!(accepted.len(), 1);
+        let wire::ServerMessage::WeaponCues(message) = wire::decode(&accepted[0]).unwrap() else {
+            panic!("current cue");
+        };
+        assert_eq!(message.cues[0].shot_id.ordinal, 1);
     }
 
     #[test]

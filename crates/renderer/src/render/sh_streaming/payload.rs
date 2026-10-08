@@ -71,7 +71,9 @@ fn f16_halves(bytes: &[u8]) -> Vec<u16> {
         return halves;
     }
     bytes
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|half| u16::from_le_bytes([half[0], half[1]]))
         .collect()
 }

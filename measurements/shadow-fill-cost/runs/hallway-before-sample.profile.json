@@ -1,0 +1,27 @@
+{
+  "label": "hallway-before-sample",
+  "main_thread_samples": 7381,
+  "frame_ms": 32.183,
+  "paths": {
+    "hal_draw_indexed_indirect": {
+      "samples": 412,
+      "ms_per_frame": 1.7964
+    },
+    "hal_draw_indexed": {
+      "samples": 0,
+      "ms_per_frame": 0.0
+    },
+    "core_encode_render_pass": {
+      "samples": 961,
+      "ms_per_frame": 4.1902
+    },
+    "core_command_encoder_finish": {
+      "samples": 1093,
+      "ms_per_frame": 4.7658
+    },
+    "shadow_reach_walk": {
+      "samples": 0,
+      "ms_per_frame": 0.0
+    }
+  }
+}

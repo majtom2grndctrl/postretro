@@ -21,8 +21,7 @@ M.positionalSoundShotgunEntity = defineEntity({
       pelletCount = 8,
       spreadDegrees = 5,
       range = 64.0,
-      fireRateMs = 700.0,
-      fireMode = "semi",
+      primary = { trigger = "press", recoveryMs = 700.0, steps = { activation.shot() } },
       resolution = "hitscan",
       resource = {
         kind = "ammo",

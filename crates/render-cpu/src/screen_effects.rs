@@ -15,6 +15,8 @@ const SHAKE_REFERENCE_HEIGHT: f32 = 720.0;
 const REDUCE_MOTION_SLOT: &str = "accessibility.reduceMotion";
 const SCREEN_SHAKE_SCALE_SLOT: &str = "accessibility.screenShakeScale";
 
+/// The resolve's per-frame uniform. The effect channels pack from slots here;
+/// the renderer fills the layout fields (`covers_hud`, `scene_divisor`).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
 pub struct EffectUniform {
@@ -22,6 +24,39 @@ pub struct EffectUniform {
     pub vignette: [f32; 4],
     pub shake: [f32; 2],
     pub _pad: [f32; 2],
+    /// Per-effect covers-HUD switches, nonzero = the effect also reaches the
+    /// UI layer. Order matches [`CoversHud`].
+    pub covers_hud: [u32; 3],
+    /// Surface pixels per scene pixel on each axis. 0 reads as 1.
+    pub scene_divisor: u32,
+}
+
+// Mirrors the `EffectUniform` struct in shaders/screen_effects.wgsl (flash @0,
+// vignette @16, shake @32, _pad @40, covers_hud @48, scene_divisor @60); wgpu
+// checks the size only at draw time, so pin the layout at compile time.
+const _: () = {
+    assert!(std::mem::size_of::<EffectUniform>() == 64);
+    assert!(std::mem::offset_of!(EffectUniform, covers_hud) == 48);
+    assert!(std::mem::offset_of!(EffectUniform, scene_divisor) == 60);
+};
+
+/// Which screen effects reach the UI layer as well as the scene. The single
+/// home for an effect that must cover the HUD.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CoversHud {
+    pub flash: bool,
+    pub vignette: bool,
+    pub shake: bool,
+}
+
+impl CoversHud {
+    pub fn packed(self) -> [u32; 3] {
+        [
+            u32::from(self.flash),
+            u32::from(self.vignette),
+            u32::from(self.shake),
+        ]
+    }
 }
 
 pub fn pack_effect_uniform(slot_values: &HashMap<String, SlotValue>) -> EffectUniform {
@@ -32,14 +67,14 @@ pub fn pack_effect_uniform(slot_values: &HashMap<String, SlotValue>) -> EffectUn
     if let Some(v) = slot_vec4(slot_values.get("screen.vignette")) {
         uniform.vignette = v;
     }
-    if let Some(shake) = read_array(slot_values, "screen.shake") {
-        if shake.len() >= 2 {
-            let scale = presented_shake_scale(slot_values);
-            uniform.shake = [
-                shake[0] * scale / SHAKE_REFERENCE_WIDTH,
-                shake[1] * scale / SHAKE_REFERENCE_HEIGHT,
-            ];
-        }
+    if let Some(shake) = read_array(slot_values, "screen.shake")
+        && shake.len() >= 2
+    {
+        let scale = presented_shake_scale(slot_values);
+        uniform.shake = [
+            shake[0] * scale / SHAKE_REFERENCE_WIDTH,
+            shake[1] * scale / SHAKE_REFERENCE_HEIGHT,
+        ];
     }
     uniform
 }

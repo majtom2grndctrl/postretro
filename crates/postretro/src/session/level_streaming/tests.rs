@@ -520,7 +520,7 @@ fn sh_mode_change_mid_level_keeps_the_lightmap_session_and_its_resident_blocks()
     let mut sh = None;
     assert!(
         level
-            .ensure_sessions(&mut sh, wanted(ShStreamingMode::SyncProof), &make_sh)
+            .ensure_sessions(&mut sh, wanted(ShStreamingMode::SyncProof), make_sh)
             .unwrap()
     );
     level
@@ -545,7 +545,7 @@ fn sh_mode_change_mid_level_keeps_the_lightmap_session_and_its_resident_blocks()
 
     assert!(
         level
-            .ensure_sessions(&mut sh, wanted(ShStreamingMode::Async), &make_sh)
+            .ensure_sessions(&mut sh, wanted(ShStreamingMode::Async), make_sh)
             .unwrap()
     );
     assert!(
@@ -632,7 +632,7 @@ fn a_mid_level_lightmap_decline_keeps_sh_for_its_pending_outcome() {
     };
     let mut level = LevelStreaming::default();
     let mut sh = None;
-    assert!(level.ensure_sessions(&mut sh, wanted, &make_sh).unwrap());
+    assert!(level.ensure_sessions(&mut sh, wanted, make_sh).unwrap());
     level
         .install_spawn_lightmap(&world, eye_in_cell(0), |batch| {
             Ok(model_drain(&mut model, batch))
@@ -671,7 +671,7 @@ fn a_mid_level_lightmap_decline_keeps_sh_for_its_pending_outcome() {
     // lightmap session stays parked, and the lightmap never returns.
     let sh_generation = sh.as_ref().unwrap().generation();
     for _ in 0..3 {
-        assert!(level.ensure_sessions(&mut sh, wanted, &make_sh).unwrap());
+        assert!(level.ensure_sessions(&mut sh, wanted, make_sh).unwrap());
         assert!(level.lightmap().is_none());
         assert_eq!(
             sh.as_ref().unwrap().generation(),

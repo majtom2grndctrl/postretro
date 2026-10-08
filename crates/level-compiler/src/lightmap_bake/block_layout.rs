@@ -3,20 +3,20 @@
 
 use std::collections::BTreeMap;
 
-use postretro_level_format::lightmap::{
-    LIGHTMAP_POOL_LAYER_EDGE, LightmapHeader, LightmapMode, MAX_LIGHTMAP_BLOCKS,
-};
+#[cfg(test)]
+use postretro_level_format::lightmap::LIGHTMAP_POOL_LAYER_EDGE;
+use postretro_level_format::lightmap::{LightmapHeader, LightmapMode, MAX_LIGHTMAP_BLOCKS};
 use rayon::prelude::*;
 
 use super::atlas_pack::{GroupPackError, pack_groups_into_layers};
-use super::cell_blocks::pack_cell_block;
+use super::cell_blocks::{CellSubBlock, PackedBlock, pack_cell_sub_blocks};
 use super::charts::Chart;
 use super::encode::normalized_direction_texel_scale;
 use super::{LightmapBakeError, MAX_ATLAS_DIMENSION, MAX_ATLAS_LAYERS};
 use crate::bake_control::BakeControl;
 use crate::chart_raster::ChartPlacement;
 
-/// One cell's lightmap block: its extent, and where the bake placed it inside
+/// One lightmap block of a cell: its extent, and where the bake placed it inside
 /// an internal bake layer. The block id is its index in [`BlockLayout::blocks`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CellBlock {
@@ -141,55 +141,18 @@ impl BlockOrdering<'_> {
     }
 }
 
-/// Extent of one packed block, for the limit check.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct BlockExtent {
-    pub cell_id: u32,
-    pub width: u32,
-    pub height: u32,
-    /// Face whose chart is the cell's largest, for the error message.
-    pub largest_chart_face: usize,
-}
-
-/// The one chokepoint for the runtime's block limits: a vertex names a block
-/// as `id + 1` in a `u16`, and every block must fit one pool layer.
-pub(crate) fn check_block_limits(
-    block_count: usize,
-    extents: impl IntoIterator<Item = BlockExtent>,
-) -> Result<(), LightmapBakeError> {
+/// The one chokepoint for the runtime's block-count limit: a vertex names a
+/// block as `id + 1` in a `u16`. Block extents need no check: the
+/// oversize-face cut bounds every chart, and cell packing every block, by the
+/// pool layer edge.
+pub(crate) fn check_block_limits(block_count: usize) -> Result<(), LightmapBakeError> {
     if block_count > MAX_LIGHTMAP_BLOCKS as usize {
         return Err(LightmapBakeError::BlockCountOverflow {
             count: block_count,
             max: MAX_LIGHTMAP_BLOCKS,
         });
     }
-    for extent in extents {
-        if extent.width > LIGHTMAP_POOL_LAYER_EDGE || extent.height > LIGHTMAP_POOL_LAYER_EDGE {
-            return Err(LightmapBakeError::BlockTooLarge {
-                cell_id: extent.cell_id,
-                width: extent.width,
-                height: extent.height,
-                max: LIGHTMAP_POOL_LAYER_EDGE,
-                largest_chart_face: extent.largest_chart_face,
-            });
-        }
-    }
     Ok(())
-}
-
-/// Face of the largest chart among `members` by texel area, the lowest face
-/// on ties: the face an oversize-block error names.
-fn largest_chart_face(charts: &[Chart], members: &[usize]) -> usize {
-    members
-        .iter()
-        .copied()
-        .max_by_key(|&i| {
-            (
-                u64::from(charts[i].width_texels) * u64::from(charts[i].height_texels),
-                std::cmp::Reverse(i),
-            )
-        })
-        .unwrap_or(0)
 }
 
 /// Charts packed into cell blocks, and the blocks packed into bake layers.
@@ -202,14 +165,28 @@ pub(crate) struct BlockedPack {
     pub layer_count: u32,
 }
 
-/// Pack each cell's charts into one block (`pack_cell_block`), order blocks
-/// cluster-major (cluster, then cell id), reject what the runtime cannot hold,
-/// and pack blocks in block order into uniform bake layers so the per-layer
-/// bake, shadowmask fill, and cache partitions keep their layer loops.
-/// Callers reject charts past a pool layer first (`check_chart_extents`).
+/// Pack each cell's charts into one or more blocks
+/// (`pack_cell_blocks_within`), order blocks cluster-major (cluster, then cell
+/// id, then sub-block), reject what the runtime cannot hold, and pack blocks
+/// in block order into uniform bake layers so the per-layer bake, shadowmask
+/// fill, and cache partitions keep their layer loops. A cell's blocks are
+/// therefore contiguous in block-id order. Every chart must fit the pool
+/// layer edge (the oversize-face cut).
+#[cfg(test)]
 pub(crate) fn pack_cell_blocks(
     charts: &[Chart],
     ordering: BlockOrdering<'_>,
+    control: &BakeControl,
+) -> Result<BlockedPack, LightmapBakeError> {
+    pack_cell_blocks_within(charts, ordering, LIGHTMAP_POOL_LAYER_EDGE, control)
+}
+
+/// [`pack_cell_blocks`] against `pool_edge`: production passes the runtime's
+/// pool layer edge, tests a smaller one to drive multi-block cells cheaply.
+pub(crate) fn pack_cell_blocks_within(
+    charts: &[Chart],
+    ordering: BlockOrdering<'_>,
+    pool_edge: u32,
     control: &BakeControl,
 ) -> Result<BlockedPack, LightmapBakeError> {
     let direction_texel_scale = normalized_direction_texel_scale(ordering.direction_texel_scale);
@@ -223,7 +200,7 @@ pub(crate) fn pack_cell_blocks(
     let mut cells: Vec<(u32, Vec<usize>)> = by_cell.into_iter().collect();
     cells.sort_by_key(|(cell_id, _)| ordering.sort_key(*cell_id));
 
-    let packed: Vec<_> = cells
+    let per_cell: Vec<Vec<CellSubBlock>> = cells
         .par_iter()
         .map(|(_, members)| {
             let _permit = control.governor().enter();
@@ -231,39 +208,36 @@ pub(crate) fn pack_cell_blocks(
                 .iter()
                 .map(|&i| (charts[i].width_texels, charts[i].height_texels))
                 .collect();
-            pack_cell_block(&sizes, alignment).expect("a cell with charts packs a block")
+            pack_cell_sub_blocks(&sizes, alignment, pool_edge)
         })
         .collect();
 
-    check_block_limits(
-        packed.len(),
-        cells
-            .iter()
-            .zip(&packed)
-            .map(|((cell_id, members), block)| BlockExtent {
-                cell_id: *cell_id,
-                width: block.width,
-                height: block.height,
-                largest_chart_face: largest_chart_face(charts, members),
-            }),
-    )?;
+    // Flatten to block-id order; members become chart indices.
+    let packed: Vec<(u32, Vec<usize>, PackedBlock)> = cells
+        .iter()
+        .zip(per_cell)
+        .flat_map(|((cell_id, members), sub_blocks)| {
+            sub_blocks.into_iter().map(move |sub| {
+                let charts_of_block = sub.members.iter().map(|&m| members[m]).collect();
+                (*cell_id, charts_of_block, sub.block)
+            })
+        })
+        .collect();
 
-    let extents: Vec<(u32, u32)> = packed.iter().map(|b| (b.width, b.height)).collect();
+    check_block_limits(packed.len())?;
+
+    let extents: Vec<(u32, u32)> = packed.iter().map(|(_, _, b)| (b.width, b.height)).collect();
     let singles: Vec<Vec<usize>> = (0..packed.len()).map(|i| vec![i]).collect();
     let layers = pack_groups_into_layers(&extents, &singles, MAX_ATLAS_DIMENSION, MAX_ATLAS_LAYERS)
         .map_err(|error| match error {
             GroupPackError::LayerOverflow { layer_count, max } => {
                 LightmapBakeError::LayerOverflow { layer_count, max }
             }
-            // Unreachable after the pool-layer check: a block is at most one
-            // pool layer, which is smaller than a bake layer's cap.
-            GroupPackError::GroupTooLarge { group } => LightmapBakeError::BlockTooLarge {
-                cell_id: cells[group].0,
-                width: packed[group].width,
-                height: packed[group].height,
-                max: MAX_ATLAS_DIMENSION,
-                largest_chart_face: largest_chart_face(charts, &cells[group].1),
-            },
+            // Cell packing bounds every block by the pool layer edge, which
+            // never exceeds a bake layer's cap.
+            GroupPackError::GroupTooLarge { group } => {
+                unreachable!("block {group} exceeds an empty bake layer")
+            }
         })?;
 
     let mut blocks = Vec::with_capacity(packed.len());
@@ -276,11 +250,8 @@ pub(crate) fn pack_cell_blocks(
         };
         charts.len()
     ];
-    for (block_id, (((cell_id, members), block), origin)) in cells
-        .iter()
-        .zip(&packed)
-        .zip(&layers.placements)
-        .enumerate()
+    for (block_id, ((cell_id, members, block), origin)) in
+        packed.iter().zip(&layers.placements).enumerate()
     {
         assert!(
             origin.x % alignment == 0 && origin.y % alignment == 0,

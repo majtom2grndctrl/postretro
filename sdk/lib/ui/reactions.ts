@@ -299,6 +299,17 @@ export function showDialog(
   return { primitive: "showDialog", args };
 }
 
+/** Reserved operations for the engine display-mode picker and confirmation. */
+export type DisplayModeOperation = "next" | "previous" | "apply" | "keep" | "revert";
+
+/**
+ * Build a reserved display-mode action. `next`/`previous` browse without saving;
+ * `apply` commits the selection (exclusive opens the engine confirmation).
+ */
+export function displayModeAction<O extends DisplayModeOperation>(op: O): `ui.displayMode.${O}` {
+  return `ui.displayMode.${op}`;
+}
+
 /**
  * The engine-shipped on-screen keyboard's registry name. `openTextEntry` opens
  * this tree; the engine loads its descriptor from `core/ui/keyboard.json`
@@ -333,17 +344,24 @@ export const QUIT_TO_MENU_ACTION = "ui.quitToMenu";
  */
 export const OPEN_ACCESSIBILITY_ACTION = "ui.openAccessibility";
 
+/**
+ * Reserved button `onPress` action that opens the engine controls panel,
+ * built from the mod's commands; players rebind there.
+ */
+export const OPEN_CONTROLS_ACTION = "ui.openControls";
+
 /** Accessibility toggles a menu button may cycle. */
 export type AccessibilityToggleField = "reduceMotion" | "flashLimiter" | "monoAudio";
 
-/** Accessibility numeric fields a mod menu button may step, each within [0, 1]. */
+/** Accessibility numeric fields a mod menu button may step, each within its range ([0, 1], or [1, 3] for `holdTimingScale`). */
 export type AccessibilityNumericField =
   | "screenShakeScale"
   | "viewFeelScale"
   | "masterVolume"
   | "sfxVolume"
   | "musicVolume"
-  | "uiVolume";
+  | "uiVolume"
+  | "holdTimingScale";
 
 /**
  * The reserved `onPress` action for one accessibility field:

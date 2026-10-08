@@ -70,7 +70,7 @@ const BC6H_WEIGHTS_4: [u32; 16] = [0, 4, 9, 13, 17, 21, 26, 30, 34, 38, 43, 47, 
 /// must be exactly `width·height·4` f32s.
 pub fn encode_bc6h_rgb_from_f32_rgba(rgba: &[f32], width: u32, height: u32) -> Vec<u8> {
     debug_assert!(
-        width >= 4 && height >= 4 && width % 4 == 0 && height % 4 == 0,
+        width >= 4 && height >= 4 && width.is_multiple_of(4) && height.is_multiple_of(4),
         "BC6H input must be ≥4 and a multiple of 4 in both dimensions (got {width}×{height})"
     );
     debug_assert_eq!(

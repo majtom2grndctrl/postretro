@@ -1,0 +1,11 @@
+{
+  "path": "/Users/dhiester/Library/Application Support/postretro/settings.toml",
+  "sha256": "5ca5c64af06eb9997ecc7faa48bd32191d6ac01bd9e9611478bcc2e4a5e459eb",
+  "graphics": {
+    "vsync": null,
+    "render_resolution": "auto",
+    "shadow_quality": "low",
+    "fog_quality": "low",
+    "surface_depth_quality": "off"
+  }
+}

@@ -123,12 +123,7 @@ impl Manifest {
 
 /// The validated mod name.
 fn validate_package(package: &RawPackage) -> Result<String, String> {
-    if !is_normal_component(&package.name) {
-        return Err(format!(
-            "package `{}`: name must be one normal path component",
-            package.name
-        ));
-    }
+    validate_package_name(&package.name)?;
     if package.mod_root.is_some() {
         return Err(format!(
             "package: `mod_root` was replaced by `mod`, which takes the mod's name \
@@ -143,6 +138,38 @@ fn validate_package(package: &RawPackage) -> Result<String, String> {
     })?;
     validate_mod_name(&mod_name).map_err(|error| format!("package {error}"))?;
     Ok(mod_name)
+}
+
+/// The package name is the game's player-data identity: every launcher and
+/// `run` pass it as `--app-name <name>`, and the engine names its per-user
+/// directories after it at boot. So this is the engine's `--app-name` rule, not
+/// a looser one — a name it refuses would ship a launcher that fails at boot.
+/// `crates/postretro/src/startup/app_name_cases.toml` holds both checks to the
+/// same verdicts.
+///
+/// Blank, `.` and `..` are judged after whitespace is removed: Linux strips all
+/// whitespace from the name before naming the directory, so `" "` becomes an
+/// empty name and `". ."` or `" .."` become `..` — the parent of the config
+/// directory.
+fn validate_package_name(name: &str) -> Result<(), String> {
+    let stripped: String = name.split_whitespace().collect();
+    if name.starts_with('-') {
+        Err(format!(
+            "package `{name}`: a package name cannot start with `-`, since the engine \
+             refuses a launcher's `--app-name {name}` at boot: the value looks like a flag"
+        ))
+    } else if matches!(stripped.as_str(), "" | "." | "..") {
+        Err(format!(
+            "package `{name}`: name cannot be blank, `.` or `..`, even with whitespace \
+             around or between the dots — Linux drops whitespace when naming the directory"
+        ))
+    } else if is_normal_component(name) {
+        Ok(())
+    } else {
+        Err(format!(
+            "package `{name}`: name must be one normal path component"
+        ))
+    }
 }
 
 /// A mod is named, never pathed: one plain directory name, which the tool
@@ -328,7 +355,17 @@ args = ["--lightmap-density", "0.02"]
 
     #[test]
     fn rejects_every_invalid_package_name_and_mod_name() {
-        for name in [".", "..", "C:", "nested/name", "nested\\\\name", ""] {
+        for name in [
+            ".",
+            "..",
+            "C:",
+            "nested/name",
+            "nested\\\\name",
+            "",
+            " ",
+            " ..",
+            "-x",
+        ] {
             let input = format!("[package]\nname = \"{name}\"\nmod = \"dev\"\n");
             let error = Manifest::parse(&input).unwrap_err();
             assert!(error.contains("package"), "{error}");
@@ -362,6 +399,52 @@ args = ["--lightmap-density", "0.02"]
             assert!(
                 error.contains("cannot start with `-`"),
                 "{mod_name}: {error}"
+            );
+        }
+    }
+
+    /// The package name reaches the engine as `--app-name <name>`, which the
+    /// engine refuses at boot when flag-shaped — so `dist` and `sdk-dist`, which
+    /// read the manifest before any stage runs, refuse it first. Punctuation
+    /// inside a name is fine and parses.
+    #[test]
+    fn manifest_refuses_a_flag_shaped_package_name_and_accepts_punctuation_inside() {
+        for name in ["-x", "--dev"] {
+            let input = format!("[package]\nname = \"{name}\"\nmod = \"dev\"\n");
+            let error = Manifest::parse(&input).unwrap_err();
+            assert!(error.contains("cannot start with `-`"), "{name}: {error}");
+            assert!(error.contains("--app-name"), "{name}: {error}");
+        }
+        for name in ["my.game", "my-game", "my_game"] {
+            let input = format!("[package]\nname = \"{name}\"\nmod = \"dev\"\n");
+            let manifest = Manifest::parse(&input).expect("an engine-accepted name parses");
+            assert_eq!(manifest.package.name, name);
+        }
+    }
+
+    /// The engine's `--app-name` suite asserts this same table. One file, two
+    /// checks, one verdict per case: a package name the tool accepts can never
+    /// ship in a launcher the engine refuses at boot.
+    #[test]
+    fn package_name_check_matches_the_engines_app_name_verdicts() {
+        #[derive(Deserialize)]
+        struct Cases {
+            accepted: Vec<String>,
+            rejected: Vec<String>,
+        }
+        let cases: Cases = toml::from_str(include_str!(
+            "../../postretro/src/startup/app_name_cases.toml"
+        ))
+        .expect("the shared app-name case table parses");
+        assert!(!cases.accepted.is_empty() && !cases.rejected.is_empty());
+
+        for name in &cases.accepted {
+            assert_eq!(validate_package_name(name), Ok(()), "{name:?}");
+        }
+        for name in &cases.rejected {
+            assert!(
+                validate_package_name(name).is_err(),
+                "{name:?} was accepted"
             );
         }
     }

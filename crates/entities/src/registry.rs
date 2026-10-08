@@ -122,8 +122,9 @@ pub enum ComponentKind {
     /// `PlayerMovement`/`Agent` — never reachable through `worldQuery`). See
     /// `components::brain`.
     Brain = 12,
-    /// Deterministic linear mover. Scripts query mover handles through
-    /// `world.query`; raw phase remains engine-owned and non-attachable.
+    /// Deterministic linear mover. Scripts address movers as
+    /// `getMapEntities("mover")` member handles; raw phase remains
+    /// engine-owned and non-attachable.
     KinematicMover = 13,
     /// Engine-owned trigger configuration and mutable arming state.
     TriggerVolume = 14,
@@ -323,7 +324,7 @@ pub struct FogVolumeComponent {
 impl FogVolumeComponent {
     /// Script-facing field list, paired with the camelCase keys the FFI
     /// boundary uses. Centralized so adding a runtime-tweakable field updates
-    /// every read/write site (`into_js`, `into_lua`, `world.query` JSON shape)
+    /// every read/write site (`into_js`, `into_lua`, `worldQuery` JSON shape)
     /// in one place. The wire-shared struct keeps snake_case Rust idents; the
     /// camelCase mapping lives only here.
     pub fn camel_fields(&self) -> [(&'static str, f32); 7] {
@@ -464,7 +465,8 @@ impl Component for WeaponComponent {
         }
     }
 
-    fn into_value(self) -> ComponentValue {
+    fn into_value(mut self) -> ComponentValue {
+        self.ensure_activation_programs();
         ComponentValue::Weapon(self)
     }
 }
@@ -721,7 +723,7 @@ pub struct EntityRegistry {
     light_membership_generation: u64,
     /// Parallel column of per-entity tag lists. Space-delimited in the PRL
     /// wire format; stored here as pre-split `Vec<String>` per slot. An entity
-    /// matches `world.query({ tag: "t" })` when any of its tags equals `"t"`.
+    /// matches a `{ tag: "t" }` filter when any of its tags equals `"t"`.
     /// Empty vec means untagged. Column is resized in lockstep with `components`.
     tags: Vec<Vec<String>>,
     /// Per-entity key/value bag carried over from the FGD `.map` entity that
@@ -892,7 +894,7 @@ impl EntityRegistry {
     }
 
     /// Attach (or overwrite) the tag list on an entity. An empty vec clears
-    /// all tags. `world.query` checks membership: an entity matches filter
+    /// all tags. Tag filters check membership: an entity matches filter
     /// tag `"t"` when any of its tags equals `"t"`.
     pub fn set_tags(&mut self, id: EntityId, tags: Vec<String>) -> Result<(), RegistryError> {
         let index = self.validate(id)?;
@@ -910,7 +912,8 @@ impl EntityRegistry {
     /// When `tag_filter` is `None`, every entity with the component matches.
     ///
     /// Yields `(EntityId, &ComponentValue)` pairs in slot-index order. Used by
-    /// the `world.query` primitive.
+    /// the `worldQuery` primitive behind `getMapEntities` and by group
+    /// resolution (`npcs`, `players`), which relies on that order.
     pub fn query_by_component_and_tag<'a>(
         &'a self,
         kind: ComponentKind,
@@ -1312,6 +1315,23 @@ impl EntityRegistry {
         for id in live_ids {
             let _ = self.despawn(id);
         }
+        // Every non-retired slot is free now. Rebuild the free list so `pop()`
+        // yields the lowest index first: the next level then allocates slots in
+        // ascending order, and slot-order walks (`worldQuery`, group
+        // resolution) visit entities in spawn order, as they did on the first
+        // load. Sorting by `EntityId` does not recover that order: its `Ord`
+        // compares generation first, and generations differ per slot. Only
+        // reuse order changes; each slot keeps the generation `despawn` bumped,
+        // and retired slots stay out of circulation.
+        self.free_list.clear();
+        self.free_list.extend(
+            self.slots
+                .iter()
+                .enumerate()
+                .rev()
+                .filter(|(_, slot)| !slot.retired)
+                .map(|(idx, _)| idx as u16),
+        );
         self.impact_dispatches.clear();
         self.presentation_spawns.clear();
         self.world_point_presentation_spawns.clear();
@@ -1374,9 +1394,12 @@ impl EntityRegistry {
     pub fn set_component_value(
         &mut self,
         id: EntityId,
-        value: ComponentValue,
+        mut value: ComponentValue,
     ) -> Result<(), RegistryError> {
         let index = self.validate(id)?;
+        if let ComponentValue::Weapon(weapon) = &mut value {
+            weapon.ensure_activation_programs();
+        }
         let kind = value.kind();
         let adds_light =
             kind == ComponentKind::Light && self.components[kind as usize][index].is_none();
@@ -1796,6 +1819,43 @@ mod tests {
         registry.clear_for_level_unload();
 
         assert!(registry.take_presentation_spawns().is_empty());
+    }
+
+    // Regression: unload despawned ascending onto a LIFO free list, so the next
+    // level allocated descending slots and slot-order queries answered in
+    // reverse spawn order.
+    #[test]
+    fn level_unload_reallocates_slots_in_ascending_order_with_bumped_generations() {
+        let mut registry = EntityRegistry::new();
+        let first: Vec<EntityId> = (0..4)
+            .map(|_| {
+                registry
+                    .try_spawn(Transform::default(), &["member".to_string()])
+                    .expect("capacity available")
+            })
+            .collect();
+
+        registry.clear_for_level_unload();
+
+        let second: Vec<EntityId> = (0..4)
+            .map(|_| {
+                registry
+                    .try_spawn(Transform::default(), &["member".to_string()])
+                    .expect("capacity available")
+            })
+            .collect();
+
+        let indices: Vec<u16> = second.iter().map(|id| id.index()).collect();
+        assert_eq!(indices, vec![0, 1, 2, 3]);
+        for (old, new) in first.iter().zip(&second) {
+            assert_eq!(new.generation(), old.generation() + 1);
+            assert!(!registry.exists(*old), "stale id must not revive");
+        }
+        let queried: Vec<EntityId> = registry
+            .query_by_component_and_tag(ComponentKind::Transform, Some("member"))
+            .map(|(id, _)| id)
+            .collect();
+        assert_eq!(queried, second, "query order matches spawn order");
     }
 
     #[test]

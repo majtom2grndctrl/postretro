@@ -393,14 +393,14 @@ mod tests {
     #[test]
     fn focus_field_less_widget_round_trips_byte_identically() {
         // A pre-F widget carrying none of the new focus fields (`id`,
-        // `focusNeighbors`, `focus`, `restoreOnReturn`) keeps its EXACT wire form:
+        // `focusNeighbors`, `focus`) keeps its EXACT wire form:
         // every new field skip-serializes when absent/default, so the descriptor is
         // byte-identical across a round-trip. The locked-wire guarantee for Task 3.
         let json = r#"{"kind":"vstack","gap":4.0,"padding":8.0,"align":"start","children":[{"kind":"text","content":"hi","fontSize":12.0,"color":[1.0,1.0,1.0,1.0]}]}"#;
         let widget: Widget = serde_json::from_str(json).expect("must deserialize");
         let reserialized = serde_json::to_string(&widget).expect("must serialize");
         assert_eq!(reserialized, json);
-        for key in ["\"id\"", "focusNeighbors", "\"focus\"", "restoreOnReturn"] {
+        for key in ["\"id\"", "focusNeighbors", "\"focus\""] {
             assert!(!reserialized.contains(key), "absent {key} emits no key");
         }
     }
@@ -451,12 +451,23 @@ mod tests {
 
     #[test]
     fn anchored_tree_initial_focus_and_restore_on_return_round_trip() {
-        // `initialFocus` lives on the envelope beside `captureMode`;
-        // `restoreOnReturn` on the container. Both round-trip byte-identically.
-        let json = r#"{"anchor":"center","offset":[0.0,0.0],"root":{"kind":"vstack","gap":0.0,"padding":0.0,"align":"start","restoreOnReturn":true,"children":[]},"captureMode":"capture","initialFocus":"btnA"}"#;
+        // `initialFocus` and `restoreOnReturn` live on the envelope beside
+        // `captureMode` and round-trip byte-identically. An explicit `false` is
+        // kept (it opts the tree out); an absent key means on.
+        let json = r#"{"anchor":"center","offset":[0.0,0.0],"root":{"kind":"vstack","gap":0.0,"padding":0.0,"align":"start","children":[]},"captureMode":"capture","initialFocus":"btnA","restoreOnReturn":false}"#;
         let tree: AnchoredTree = serde_json::from_str(json).expect("deserialize");
         assert_eq!(tree.initial_focus.as_deref(), Some("btnA"));
+        assert_eq!(tree.restore_on_return, Some(false));
+        assert!(!tree.restores_on_return());
         assert_eq!(serde_json::to_string(&tree).unwrap(), json);
+        let absent: AnchoredTree = serde_json::from_str(
+            r#"{"anchor":"center","offset":[0.0,0.0],"root":{"kind":"spacer","flexGrow":1.0}}"#,
+        )
+        .expect("deserialize");
+        assert!(absent.restores_on_return(), "restore is on by default");
+        // A container no longer carries the flag.
+        let on_container = r#"{"anchor":"center","offset":[0.0,0.0],"root":{"kind":"vstack","gap":0.0,"padding":0.0,"align":"start","restoreOnReturn":true,"children":[]}}"#;
+        assert!(serde_json::from_str::<AnchoredTree>(on_container).is_err());
     }
 
     // --- M13 Text-Entry, Task 3: text-entry target envelope field ---

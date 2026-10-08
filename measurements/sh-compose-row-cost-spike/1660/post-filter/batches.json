@@ -1,0 +1,21 @@
+{
+  "machine": "see ../batches.json (same machine, driver, backend and settings)",
+  "build": {
+    "probe_tree": "feature commit 00da7fe6d + measurements/sh-compose-contributing-rows/probes.patch (local commit 627fc6e65, not pushed)",
+    "command": "CARGO_PROFILE_RELEASE_STRIP=none cargo build --release -p postretro -p postretro-script-compiler --features postretro/capture",
+    "postretro_exe_sha256": "3f3983c8a545f0f0234bba189227f5261149e23201acef0574f9186112023801",
+    "scripts_build_exe_sha256": "96d1405e2bf7fe51e45e33e03020b19e5515f92c7a2f4eec8bca5ae6fd286164",
+    "start_script": "content/dev/start-script.js rebuilt from feat/sh-compose-contributing-rows start-script.ts with that scripts-build"
+  },
+  "fixtures": {
+    "campaign-test.prl": "1b5942df88af66ef",
+    "stress-warren-hallway-inspection.prl": "210112eeffbbd134",
+    "kinematic-platform.prl": "2bf5c40b97fa6c29"
+  },
+  "batch": {
+    "poses": ["arena", "kinstation", "campaign"],
+    "arms": ["old", "new", "new-array-free,unroll36", "new-floor"],
+    "rounds": 3,
+    "summary": "summary.json"
+  }
+}

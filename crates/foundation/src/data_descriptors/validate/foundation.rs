@@ -212,13 +212,20 @@ pub fn is_portable_content_relative_asset_path(path: &str) -> bool {
 /// A descriptor sound key names a registry entry: the content-relative path
 /// under `sounds/` without its extension (`sfx/door_open`). Whether the key is
 /// actually loaded is checked after the sound registry loads, as a warning.
+/// Observer cue names share this UTF-8 byte bound. The wire crate mirrors the
+/// value to retain its independent floor; netcode asserts compatibility.
+pub const MAX_DESCRIPTOR_CUE_NAME_BYTES: usize = 256;
+
 pub fn validate_sound_key(field_path: &str, key: &str) -> Result<(), DescriptorError> {
-    if is_portable_content_relative_asset_path(key) {
+    if !key.trim().is_empty()
+        && key.len() <= MAX_DESCRIPTOR_CUE_NAME_BYTES
+        && is_portable_content_relative_asset_path(key)
+    {
         Ok(())
     } else {
         Err(DescriptorError::InvalidShape {
             reason: format!(
-                "`{field_path}` must be a non-empty sound key using forward slashes with no parent traversal, got `{key}`"
+                "`{field_path}` must be a non-empty sound key of at most 256 UTF-8 bytes using forward slashes with no parent traversal, got `{key}`"
             ),
         })
     }

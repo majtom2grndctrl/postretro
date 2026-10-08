@@ -270,8 +270,8 @@
 "style" "0"
 }
 // entity 16
-// Scripts-first repeating pickup. Its onTriggerEvent binding lives in the map
-// data script, so prl-build's inert-trigger warning is expected.
+// Scripts-first repeating pickup. Its trigger member on enter binding lives in
+// the map data script, so prl-build's inert-trigger warning is expected.
 {
 "classname" "trigger_volume"
 "name" "ammo_pickup_volume"

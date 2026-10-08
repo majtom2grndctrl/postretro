@@ -152,3 +152,33 @@ pub(super) fn corridor_input() -> DryRunInput {
         pairs,
     )
 }
+
+/// Cell 0's charts (two 1500² and a 500×1000) cover more than one 2048² pool
+/// layer, so the bake packs them into two blocks: the first 1500² with the
+/// 500×1000 beside it, trimmed to 2000×1500, then the second 1500² alone.
+/// Cell 1 owns one 64² block. Stored blocks and chart placements are that
+/// layout, in block order.
+pub(super) fn multi_block_input() -> DryRunInput {
+    let mut formats = bc6h_formats(64, 3, true);
+    for (block, (cell, width, height)) in
+        formats
+            .blocks
+            .iter_mut()
+            .zip([(0, 2000, 1500), (0, 1500, 1500), (1, 64, 64)])
+    {
+        block.cell = cell;
+        block.width = width;
+        block.height = height;
+    }
+    input(
+        formats,
+        &[0, 1],
+        vec![
+            chart(0, 0, 0, 0, 1500, 1500),
+            chart(0, 1, 0, 0, 1500, 1500),
+            chart(0, 0, 1500, 0, 500, 1000),
+            chart(1, 2, 0, 0, 64, 64),
+        ],
+        Vec::new(),
+    )
+}

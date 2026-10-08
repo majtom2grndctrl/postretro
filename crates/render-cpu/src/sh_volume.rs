@@ -759,8 +759,10 @@ mod tests {
         assert_eq!(direction_count, 4);
 
         let samples: Vec<f32> = samples_bytes
-            .chunks_exact(4)
-            .map(|c| f32::from_ne_bytes(c.try_into().unwrap()))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|c| f32::from_ne_bytes(*c))
             .collect();
         for (i, sample) in [dir0, dir1, dir2, dir3].iter().enumerate() {
             let base = direction_offset + i * 3;

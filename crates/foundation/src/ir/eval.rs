@@ -17,8 +17,9 @@
 //     bounds (`lo > hi`) naturally yield the `hi` operand;
 //   - `lerp(a, b, t) = a + (b - a) * t`, then finite-guarded.
 //
-// No per-tick logging: numeric edge cases are absorbed silently per the
-// semantics above. The only fallible phase is bind, which runs once.
+// No per-tick logging: legacy evaluation absorbs numeric edge cases silently.
+// `eval_value_checked` shares that walk and retains failure evidence for callers
+// whose contract requires rejecting invalid arithmetic.
 
 use super::IrValue;
 use super::bind::{BoundNode, BoundProgram};
@@ -29,7 +30,23 @@ use super::scope::BindingScope;
 /// carries an output. Allocation-free: the recursive walk touches only the
 /// already-allocated bound tree and stack-resident `IrValue`s.
 pub fn eval_value<S: BindingScope>(program: &BoundProgram<S>, scope: &S) -> IrValue {
-    eval_node(&program.root, scope)
+    eval_node(&program.root, scope, &mut false)
+}
+
+/// An evaluated path produced non-finite arithmetic or divided by zero.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IrEvalError;
+
+/// Use the same totalizing walk while retaining numeric failure evidence.
+/// A later add or clamp cannot hide an invalid intermediate result. Unchosen
+/// select branches retain the existing lazy evaluation semantics.
+pub fn eval_value_checked<S: BindingScope>(
+    program: &BoundProgram<S>,
+    scope: &S,
+) -> Result<IrValue, IrEvalError> {
+    let mut invalid = false;
+    let value = eval_node(&program.root, scope, &mut invalid);
+    if invalid { Err(IrEvalError) } else { Ok(value) }
 }
 
 /// Evaluate a bound program and, if it carries a write handle, write the root's
@@ -48,63 +65,92 @@ pub fn eval_and_write<S: BindingScope>(program: &BoundProgram<S>, scope: &mut S)
 
 /// Recursively evaluate one bound node. Total and allocation-free: every arm
 /// folds to a stack `IrValue`, reading `Input` leaves through the scope.
-fn eval_node<S: BindingScope>(node: &BoundNode<S::InputHandle>, scope: &S) -> IrValue {
+fn eval_node<S: BindingScope>(
+    node: &BoundNode<S::InputHandle>,
+    scope: &S,
+    invalid: &mut bool,
+) -> IrValue {
     match node {
-        BoundNode::Const(value) => *value,
-        BoundNode::Input(handle) => scope.read(handle),
+        BoundNode::Const(value) => checked_leaf(*value, invalid),
+        BoundNode::Input(handle) => checked_leaf(scope.read(handle), invalid),
 
-        BoundNode::Add(a, b) => arith(eval_num(a, scope) + eval_num(b, scope)),
-        BoundNode::Sub(a, b) => arith(eval_num(a, scope) - eval_num(b, scope)),
-        BoundNode::Mul(a, b) => arith(eval_num(a, scope) * eval_num(b, scope)),
+        BoundNode::Add(a, b) => {
+            let value = eval_num(a, scope, invalid) + eval_num(b, scope, invalid);
+            arith(value, invalid)
+        }
+        BoundNode::Sub(a, b) => {
+            let value = eval_num(a, scope, invalid) - eval_num(b, scope, invalid);
+            arith(value, invalid)
+        }
+        BoundNode::Mul(a, b) => {
+            let value = eval_num(a, scope, invalid) * eval_num(b, scope, invalid);
+            arith(value, invalid)
+        }
         BoundNode::Div(a, b) => {
-            let denom = eval_num(b, scope);
+            let denom = eval_num(b, scope, invalid);
             // Division by zero is total: yield 0.0 rather than producing an
             // infinity/NaN the finite guard would have to scrub anyway.
             if denom == 0.0 {
+                *invalid = true;
                 IrValue::Number(0.0)
             } else {
-                arith(eval_num(a, scope) / denom)
+                let value = eval_num(a, scope, invalid) / denom;
+                arith(value, invalid)
             }
         }
 
         BoundNode::Clamp { x, lo, hi } => {
-            let x = eval_num(x, scope);
-            let lo = eval_num(lo, scope);
-            let hi = eval_num(hi, scope);
+            let x = eval_num(x, scope, invalid);
+            let lo = eval_num(lo, scope, invalid);
+            let hi = eval_num(hi, scope, invalid);
             // min(max(x, lo), hi): total for any bounds. Inverted bounds
             // (lo > hi) collapse to the `hi` operand, which is the pinned
             // semantics. f32::min/max also propagate the non-NaN operand, so a
             // NaN bound does not poison the result; the finite guard catches a
             // NaN `x` that survives both clamps.
-            arith(x.max(lo).min(hi))
+            arith(x.max(lo).min(hi), invalid)
         }
         BoundNode::Lerp { a, b, t } => {
-            let a = eval_num(a, scope);
-            let b = eval_num(b, scope);
-            let t = eval_num(t, scope);
-            arith(a + (b - a) * t)
+            let a = eval_num(a, scope, invalid);
+            let b = eval_num(b, scope, invalid);
+            let t = eval_num(t, scope, invalid);
+            arith(a + (b - a) * t, invalid)
         }
 
-        BoundNode::Lt(a, b) => IrValue::Bool(eval_num(a, scope) < eval_num(b, scope)),
-        BoundNode::Le(a, b) => IrValue::Bool(eval_num(a, scope) <= eval_num(b, scope)),
-        BoundNode::Gt(a, b) => IrValue::Bool(eval_num(a, scope) > eval_num(b, scope)),
-        BoundNode::Ge(a, b) => IrValue::Bool(eval_num(a, scope) >= eval_num(b, scope)),
+        BoundNode::Lt(a, b) => {
+            IrValue::Bool(eval_num(a, scope, invalid) < eval_num(b, scope, invalid))
+        }
+        BoundNode::Le(a, b) => {
+            IrValue::Bool(eval_num(a, scope, invalid) <= eval_num(b, scope, invalid))
+        }
+        BoundNode::Gt(a, b) => {
+            IrValue::Bool(eval_num(a, scope, invalid) > eval_num(b, scope, invalid))
+        }
+        BoundNode::Ge(a, b) => {
+            IrValue::Bool(eval_num(a, scope, invalid) >= eval_num(b, scope, invalid))
+        }
 
-        BoundNode::Eq(a, b) => {
-            IrValue::Bool(values_equal(eval_node(a, scope), eval_node(b, scope)))
+        BoundNode::Eq(a, b) => IrValue::Bool(values_equal(
+            eval_node(a, scope, invalid),
+            eval_node(b, scope, invalid),
+        )),
+        BoundNode::Ne(a, b) => IrValue::Bool(!values_equal(
+            eval_node(a, scope, invalid),
+            eval_node(b, scope, invalid),
+        )),
+        BoundNode::And(a, b) => {
+            IrValue::Bool(eval_bool(a, scope, invalid) && eval_bool(b, scope, invalid))
         }
-        BoundNode::Ne(a, b) => {
-            IrValue::Bool(!values_equal(eval_node(a, scope), eval_node(b, scope)))
+        BoundNode::Or(a, b) => {
+            IrValue::Bool(eval_bool(a, scope, invalid) || eval_bool(b, scope, invalid))
         }
-        BoundNode::And(a, b) => IrValue::Bool(eval_bool(a, scope) && eval_bool(b, scope)),
-        BoundNode::Or(a, b) => IrValue::Bool(eval_bool(a, scope) || eval_bool(b, scope)),
-        BoundNode::Not(x) => IrValue::Bool(!eval_bool(x, scope)),
+        BoundNode::Not(x) => IrValue::Bool(!eval_bool(x, scope, invalid)),
 
         BoundNode::Select { cond, a, b } => {
-            if eval_bool(cond, scope) {
-                eval_node(a, scope)
+            if eval_bool(cond, scope, invalid) {
+                eval_node(a, scope, invalid)
             } else {
-                eval_node(b, scope)
+                eval_node(b, scope, invalid)
             }
         }
     }
@@ -114,8 +160,12 @@ fn eval_node<S: BindingScope>(node: &BoundNode<S::InputHandle>, scope: &S) -> Ir
 /// guarantees the projection, so a `Bool` here is a bind bug; eval stays total
 /// by treating it as type-zero rather than panicking.
 #[inline]
-fn eval_num<S: BindingScope>(node: &BoundNode<S::InputHandle>, scope: &S) -> f32 {
-    match eval_node(node, scope) {
+fn eval_num<S: BindingScope>(
+    node: &BoundNode<S::InputHandle>,
+    scope: &S,
+    invalid: &mut bool,
+) -> f32 {
+    match eval_node(node, scope, invalid) {
         IrValue::Number(value) => value,
         IrValue::Bool(_) => 0.0,
     }
@@ -124,8 +174,12 @@ fn eval_num<S: BindingScope>(node: &BoundNode<S::InputHandle>, scope: &S) -> f32
 /// Evaluate a node bind proved to be `Bool` and extract the `bool`. As with
 /// [`eval_num`], a type surprise degrades to `false` rather than panicking.
 #[inline]
-fn eval_bool<S: BindingScope>(node: &BoundNode<S::InputHandle>, scope: &S) -> bool {
-    match eval_node(node, scope) {
+fn eval_bool<S: BindingScope>(
+    node: &BoundNode<S::InputHandle>,
+    scope: &S,
+    invalid: &mut bool,
+) -> bool {
+    match eval_node(node, scope, invalid) {
         IrValue::Bool(value) => value,
         IrValue::Number(_) => false,
     }
@@ -134,8 +188,21 @@ fn eval_bool<S: BindingScope>(node: &BoundNode<S::InputHandle>, scope: &S) -> bo
 /// Per-node finite guard: coerce a non-finite arithmetic result (`NaN`/`±Inf`)
 /// to `0.0`, keeping eval total. Applied at every arithmetic/clamp/lerp node.
 #[inline]
-fn arith(value: f32) -> IrValue {
-    IrValue::Number(if value.is_finite() { value } else { 0.0 })
+fn arith(value: f32, invalid: &mut bool) -> IrValue {
+    if value.is_finite() {
+        IrValue::Number(value)
+    } else {
+        *invalid = true;
+        IrValue::Number(0.0)
+    }
+}
+
+#[inline]
+fn checked_leaf(value: IrValue, invalid: &mut bool) -> IrValue {
+    if matches!(value, IrValue::Number(number) if !number.is_finite()) {
+        *invalid = true;
+    }
+    value
 }
 
 /// Equality over same-typed operands (bind guarantees the operands share a

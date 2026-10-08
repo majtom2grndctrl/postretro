@@ -136,10 +136,10 @@ pub fn evaluate(
     if let Some(pulse) = &entry.pulse {
         color[3] = (color[3] * pulse_factor(pulse, now)).clamp(0.0, 1.0);
     }
-    if let Some(flash) = &entry.flash {
-        if let Some(entered) = state.flash_entered_at {
-            color[3] = (color[3] * flash_factor(flash, now - entered)).clamp(0.0, 1.0);
-        }
+    if let Some(flash) = &entry.flash
+        && let Some(entered) = state.flash_entered_at
+    {
+        color[3] = (color[3] * flash_factor(flash, now - entered)).clamp(0.0, 1.0);
     }
     color
 }

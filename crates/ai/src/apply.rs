@@ -12,7 +12,8 @@ use super::{
 use crate::agent_steering;
 use crate::ai_host::AiHost;
 use crate::emission::entity_emitter;
-use crate::sim::{EnemyProjectilePresentationSpawn, ProjectileSource};
+use crate::sim::EnemyProjectilePresentationSpawn;
+use crate::weapon_controller::AiWeaponControllers;
 use glam::Quat;
 use postretro_entities::components::brain::BrainComponent;
 use postretro_entities::components::health::{DamageContext, DamageProducer};
@@ -45,6 +46,7 @@ pub(super) fn apply_outcomes<H>(
     tick_dt: f32,
     warned: &mut std::collections::HashSet<String>,
     blocked_warned: &mut std::collections::HashSet<postretro_entities::EntityId>,
+    weapons: &mut AiWeaponControllers,
     host: &mut H,
 ) -> super::AiTickResult
 where
@@ -75,6 +77,7 @@ where
                 .get_component::<BrainComponent>(outcome.id)
                 .is_err()
         {
+            weapons.remove_actor(outcome.id);
             continue;
         }
 
@@ -82,6 +85,9 @@ where
         // action so a reaction reads the state the brain is now IN.
         if let Some(entered) = outcome.entered.take() {
             events.push(AiEmission {
+                sounds: None,
+                action: None,
+                shot_id: None,
                 address: entered.on_enter.map(Cow::Owned),
                 emitter: entity_emitter(registry, outcome.id),
                 cue: AiCue::Entered {
@@ -131,16 +137,17 @@ where
                     // help — `set_destination` deliberately leaves the plan
                     // intact and `agent_steering::tick` owns the replan — so the
                     // message says which tick it is describing instead.
-                    if let Some(state) = path_state.as_ref() {
-                        if state.blocked && blocked_warned.insert(outcome.id) {
-                            log::warn!(
-                                "[AI] enemy {} entered this tick blocked: as of the last \
+                    if let Some(state) = path_state.as_ref()
+                        && state.blocked
+                        && blocked_warned.insert(outcome.id)
+                    {
+                        log::warn!(
+                            "[AI] enemy {} entered this tick blocked: as of the last \
                                  steering tick its agent had no path to the destination it \
                                  was chasing, so it is holding position. Warned once per \
                                  enemy.",
-                                outcome.id
-                            );
-                        }
+                            outcome.id
+                        );
                     }
                 }
             }
@@ -190,6 +197,7 @@ where
         // chokepoint to the SELECTED target id. Projectile attacks instead
         // materialize a host-owned flight entity; the shared projectile stage
         // resolves its later contact through that same chokepoint.
+        let mut weapon_request = None;
         if let (Some(pending), Some(target)) = (outcome.attack.take(), outcome.target)
             && !invalidated_entities.contains(&target.entity)
             && selected_target_alive(registry, target.entity)
@@ -230,41 +238,16 @@ where
                         false
                     }
                 }
-                AttackOutcome::Projectile {
-                    launch,
-                    descriptor_class,
-                } => {
-                    // Enemies have no materialized weapon entity. The projectile
-                    // impact path uses this id only as engine-internal damage
-                    // context provenance, never as a weapon lookup.
-                    // The projectile records the weapon it was fired from, so
-                    // its contact sounds like that weapon, not like the enemy.
-                    let source = ProjectileSource {
-                        weapon: Some(descriptor_class.clone()),
-                        activation: None,
-                    };
-                    let projectile =
-                        host.spawn_projectile(registry, outcome.id, outcome.id, *launch, source);
-                    if let Some(projectile) = projectile
-                        && commit_attack_fire(
-                            registry,
-                            outcome.id,
-                            pending.attack_name,
-                            pending.cooldown_ms,
-                        )
-                    {
-                        projectile_spawns.push(EnemyProjectilePresentationSpawn {
-                            projectile,
-                            descriptor_class,
-                        });
-                        true
-                    } else {
-                        false
-                    }
+                AttackOutcome::Projectile { request } => {
+                    weapon_request = Some(request);
+                    false
                 }
             };
             if attack_fired {
                 events.push(AiEmission {
+                    sounds: None,
+                    action: None,
+                    shot_id: None,
                     address: Some(Cow::Borrowed(ENEMY_ATTACK_EVENT)),
                     emitter: entity_emitter(registry, outcome.id),
                     cue: AiCue::Attack {
@@ -273,6 +256,46 @@ where
                     },
                 });
             }
+        }
+
+        // Existing executions advance even after the activity's first-fire
+        // latch closes. Apply rechecks the selected target before the shared
+        // executor may debit or produce this tick's immutable shot.
+        let weapon_aim = outcome.weapon_aim.filter(|_| {
+            outcome.target.is_some_and(|target| {
+                !invalidated_entities.contains(&target.entity)
+                    && selected_target_alive(registry, target.entity)
+                    && !host.is_quiescent(registry, target.entity)
+            })
+        });
+        if let Some(fire) = weapons.advance_actor(
+            registry,
+            outcome.id,
+            weapon_request,
+            weapon_aim,
+            tick_dt.max(0.0) * 1000.0,
+            host,
+        ) && commit_attack_fire(
+            registry,
+            outcome.id,
+            fire.attack_name.clone(),
+            fire.recovery_ms,
+        ) {
+            projectile_spawns.push(EnemyProjectilePresentationSpawn {
+                projectile: fire.projectile,
+                descriptor_class: fire.canonical_weapon,
+            });
+            events.push(AiEmission {
+                sounds: Some(fire.sounds),
+                action: Some(fire.action),
+                shot_id: Some(fire.shot_id),
+                address: Some(Cow::Borrowed(ENEMY_ATTACK_EVENT)),
+                emitter: entity_emitter(registry, outcome.id),
+                cue: AiCue::Attack {
+                    graph: outcome.brain.graph.clone(),
+                    attack: fire.attack_name,
+                },
+            });
         }
 
         // Animation: on a state change or locomotion stop/resume, request the
@@ -304,7 +327,7 @@ where
         }
         // Fold the locomotion latch into whatever the component NOW holds. The
         // damage chokepoint and `on_impact` ran since the publish above, and
-        // either can mutate this entity's brain (`apply_update_enemy_state_to_brain`
+        // either can mutate this entity's brain (`apply_update_npc_state_to_brain`
         // writes exactly this component); writing the pre-callback snapshot back
         // would silently discard that. The latch is the only field this pass
         // still owns. A missing component means the entity did not survive the

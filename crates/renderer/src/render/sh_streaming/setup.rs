@@ -130,76 +130,14 @@ impl ShResidencyState {
         let sparse_capacity_floors = sparse_capacity_floors(sources, &sparse_row_owner)?;
         let dense_layout = derive_dense_node_layout(base)?;
         let dense_node = dense_layout.nodes;
-        let mut node_owner = BTreeMap::<StoredNode, u32>::new();
-        for (dense_index, node) in dense_node.iter().copied().enumerate() {
-            if let Some(node) = node {
-                let owner =
-                    dense_owner[dense_index].ok_or(ShResidencyDrainError::MissingDenseOwner {
-                        cluster_id: 0,
-                        dense_index: dense_index as u32,
-                    })?;
-                node_owner
-                    .entry(node)
-                    .and_modify(|prior| *prior = (*prior).min(owner))
-                    .or_insert(owner);
-            }
-        }
-
-        let mut nodes_by_owner = BTreeMap::<u32, Vec<StoredNode>>::new();
-        for (&node, &owner) in &node_owner {
-            nodes_by_owner.entry(owner).or_default().push(node);
-        }
-
-        let mut owner_dependencies = vec![BTreeSet::new(); cluster_count as usize];
-        for cluster_id in 0..cluster_count {
-            let cluster = &directory.clusters[cluster_id as usize];
-            let start = cluster.range_start as usize;
-            let end = start.checked_add(cluster.range_count as usize).ok_or(
-                ShResidencyDrainError::MalformedChunk {
-                    cluster_id,
-                    reason: "cluster range end overflows",
-                },
-            )?;
-            for range in
-                directory
-                    .ranges
-                    .get(start..end)
-                    .ok_or(ShResidencyDrainError::MalformedChunk {
-                        cluster_id,
-                        reason: "cluster range exceeds id-49",
-                    })?
-            {
-                let resource = &directory.resources[range.resource_index as usize];
-                let range_end = range.start + range.count;
-                if resource.section_id == INDIRECT_BASE_ID {
-                    for dense in range.start..range_end {
-                        // A chunk can carry the dense writer and its stored
-                        // node closure from different canonical clusters. Both
-                        // must already be sampleable: the writer owns the
-                        // indirection word while the node owner owns the tile
-                        // bytes that word addresses.
-                        if let Some(Some(owner)) = dense_owner.get(dense as usize)
-                            && *owner != cluster_id
-                        {
-                            owner_dependencies[cluster_id as usize].insert(*owner);
-                        }
-                        if let Some(Some(node)) = dense_node.get(dense as usize)
-                            && let Some(&owner) = node_owner.get(node)
-                            && owner != cluster_id
-                        {
-                            owner_dependencies[cluster_id as usize].insert(owner);
-                        }
-                    }
-                } else if matches!(
-                    resource.section_id,
-                    INDIRECT_DELTA_ID | DIRECT_DELTA_ID | ANIMATED_DIRECT_DELTA_ID
-                ) && range.role == ClusterRangeRole::Halo
-                    && range.owner_cluster_id != cluster_id
-                {
-                    owner_dependencies[cluster_id as usize].insert(range.owner_cluster_id);
-                }
-            }
-        }
+        let NodeOwnership {
+            node_owner,
+            nodes_by_owner,
+        } = derive_node_ownership(&dense_node, &dense_owner, base.grid_dimensions)?;
+        let owner_dependencies =
+            derive_owner_dependencies(directory, &dense_owner, &dense_node, |node| {
+                node_owner.get(node).copied()
+            })?;
 
         let mut sparse_pools = BTreeMap::new();
         for (section_id, metadata) in [
@@ -332,7 +270,7 @@ impl ShResidencyState {
                 .global_base_slot
                 .checked_add(layout.tile_count)
                 .ok_or(ShResidencyDrainError::SlotOverflow)?;
-            Ok(total.max(end))
+            Ok::<_, ShResidencyDrainError>(total.max(end))
         })?;
         let fixed_metadata_bytes = gpu::initial_fixed_metadata_bytes(
             manifest.base(),

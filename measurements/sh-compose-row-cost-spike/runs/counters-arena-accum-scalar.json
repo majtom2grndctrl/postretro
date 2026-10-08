@@ -1,0 +1,62 @@
+{
+  "Streamed SH Compose": {
+    "intervals": 72,
+    "Vertex Shader Occupancy": 86.845,
+    "Vertex Shader Occupancy samples": 8688,
+    "Fragment Shader Occupancy": 0.0,
+    "Fragment Shader Occupancy samples": 8688,
+    "Compute Shader Occupancy": 0.004,
+    "Compute Shader Occupancy samples": 8688,
+    "Last Level Cache Read": 1.436,
+    "Last Level Cache Read samples": 8688,
+    "Last Level Cache Written": 2311.215,
+    "Last Level Cache Written samples": 8688,
+    "ALUutilization": 99.662,
+    "ALUutilization samples": 8688
+  },
+  "Streamed Animated Direct SH": {
+    "intervals": 72,
+    "Vertex Shader Occupancy": 86.357,
+    "Vertex Shader Occupancy samples": 10428,
+    "Fragment Shader Occupancy": 0.0,
+    "Fragment Shader Occupancy samples": 10428,
+    "Compute Shader Occupancy": 0.0,
+    "Compute Shader Occupancy samples": 10428,
+    "Last Level Cache Read": 0.0,
+    "Last Level Cache Read samples": 10428,
+    "Last Level Cache Written": 2669.3,
+    "Last Level Cache Written samples": 10428,
+    "ALUutilization": 100.0,
+    "ALUutilization samples": 10428
+  },
+  "Streamed SH Compose [B]": {
+    "intervals": 72,
+    "Vertex Shader Occupancy": 73.984,
+    "Vertex Shader Occupancy samples": 4831,
+    "Fragment Shader Occupancy": 0.0,
+    "Fragment Shader Occupancy samples": 4831,
+    "Compute Shader Occupancy": 0.0,
+    "Compute Shader Occupancy samples": 4831,
+    "Last Level Cache Read": 1597.503,
+    "Last Level Cache Read samples": 4831,
+    "Last Level Cache Written": 4386.358,
+    "Last Level Cache Written samples": 4831,
+    "ALUutilization": 99.32,
+    "ALUutilization samples": 4831
+  },
+  "Streamed Animated Direct SH [B]": {
+    "intervals": 72,
+    "Vertex Shader Occupancy": 87.782,
+    "Vertex Shader Occupancy samples": 4567,
+    "Fragment Shader Occupancy": 0.0,
+    "Fragment Shader Occupancy samples": 4567,
+    "Compute Shader Occupancy": 0.0,
+    "Compute Shader Occupancy samples": 4567,
+    "Last Level Cache Read": 0.715,
+    "Last Level Cache Read samples": 4567,
+    "Last Level Cache Written": 5940.88,
+    "Last Level Cache Written samples": 4567,
+    "ALUutilization": 100.0,
+    "ALUutilization samples": 4567
+  }
+}

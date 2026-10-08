@@ -50,7 +50,7 @@ pub fn encode_bc5_rg_masks(rgba: &[u8], width: u32, height: u32) -> Vec<u8> {
 
 fn encode_bc5_rg_with(rgba: &[u8], width: u32, height: u32, modes: Bc4Modes) -> Vec<u8> {
     debug_assert!(
-        width >= 4 && height >= 4 && width % 4 == 0 && height % 4 == 0,
+        width >= 4 && height >= 4 && width.is_multiple_of(4) && height.is_multiple_of(4),
         "BC5 input must be ≥4 and a multiple of 4 in both dimensions (got {width}×{height})"
     );
     debug_assert_eq!(

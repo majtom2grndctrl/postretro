@@ -35,9 +35,13 @@ mod growth;
 mod indirect;
 mod isolated_tiles;
 mod setup;
-mod staged_uploads;
-mod staging_pool;
 mod upload;
+#[cfg(test)]
+mod upload_order_fixture;
+#[cfg(test)]
+mod upload_order_tests;
+#[cfg(test)]
+pub(crate) use upload_order_fixture::UploadOrderSh;
 
 use bindings::{create_grid_info, create_sample_bind_groups};
 use capacity::preflight_initial_resource_limits;
@@ -45,12 +49,12 @@ pub(in crate::render::sh_streaming) use capacity::{
     initial_fixed_metadata_bytes, sparse_compose_capacity,
 };
 
+pub(crate) use crate::render::uploads::StagedUploads;
+pub(crate) use crate::render::uploads::StagingPool;
+#[cfg(test)]
+pub(in crate::render::sh_streaming) use crate::render::uploads::staged_uploads::append_f16_words;
 use indirect::{RetiredIndirectSparseResources, StreamingIndirectCompose};
 use isolated_tiles::{pack_isolated_upload_span, plan_isolated_uploads};
-pub(crate) use staged_uploads::StagedUploads;
-#[cfg(test)]
-pub(in crate::render::sh_streaming) use staged_uploads::append_f16_words;
-pub(crate) use staging_pool::StagingPool;
 
 const PHYSICAL_TILE_DIMENSION: u32 = 8;
 const BIND_DELTA_SUBBLOCKS: u32 = 20;
@@ -175,7 +179,7 @@ struct RetiringDenseGeneration {
 /// explicit without folding its one sizing input into the bundle.
 pub(super) struct DenseGrowthInputs<'a> {
     pub(super) device: &'a wgpu::Device,
-    pub(super) queue: &'a wgpu::Queue,
+    pub(super) queue: &'a crate::render::uploads::UploadQueue,
     pub(super) base: &'a ShStreamBaseMetadata,
     pub(super) sources: &'a ShStreamSourceMetadata,
     pub(super) probe_occlusion_enabled: bool,

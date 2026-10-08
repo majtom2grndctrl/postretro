@@ -57,8 +57,8 @@ pub struct SpotShadowPool {
     /// Per-slot light-space matrix for the occupant of each shadow slot, written
     /// during `update_dynamic_light_slots`. This is the SAME
     /// `light_space_matrix(candidate)` value uploaded to bind-group-5's matrices
-    /// buffer — one source of truth, read by the shadow-depth render loop to
-    /// build the slot's GPU cone-cull frustum planes. `None` = slot unoccupied.
+    /// buffer — one source of truth, read by the shadow-depth render loop for
+    /// the slot's world reach and entity cone cull. `None` = slot unoccupied.
     pub slot_cone_matrices: [Option<Mat4>; SHADOW_POOL_SIZE],
     /// Per-slot entity-occluder gate, written alongside `slot_cone_matrices` in
     /// `update_dynamic_light_slots`. `true` only when the slot's occupant passes
@@ -177,7 +177,7 @@ impl SpotShadowPool {
         // (`CubeShadowPool::sampling_view`). Sampled by the forward pass via
         // `textureSampleCompareLevel` (reusing the binding-1 comparison
         // sampler); BOUND but not sampled by the fog pass. FRAGMENT only —
-        // the COMPUTE-visible shadow consumers (cone cull) never read it.
+        // the COMPUTE-visible shadow consumers never read it.
         //
         // Present ONLY when `cube_array_supported`: a `CubeArray` BGL entry
         // requires `DownlevelFlags::CUBE_ARRAY_TEXTURES`, so omitting it lets the
@@ -266,7 +266,7 @@ impl SpotShadowPool {
             ..Default::default()
         });
 
-        // `CompareFunction::Less`: textureSampleCompare returns 1.0 (lit)
+        // `CompareFunction::Less`: textureSampleCompareLevel returns 1.0 (lit)
         // when the fragment's depth is less than the stored (light-nearest)
         // depth — i.e. the fragment is closer than the shadow caster, so
         // it's not occluded.
@@ -542,7 +542,7 @@ mod tests {
 
     /// AC#2: a world AABB inside the cone is classified inside; one fully
     /// outside the cone (behind the light, opposite the aim) is classified
-    /// outside. Same predicate the GPU per-slot cull mirrors.
+    /// outside. Same predicate the CPU shadow world reach walks with.
     #[test]
     fn cone_frustum_classifies_inside_and_outside_aabbs() {
         let light = spot_down_neg_z();

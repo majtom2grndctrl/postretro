@@ -8,7 +8,7 @@ use super::*;
 pub(super) const LIGHT_INFLUENCE_SIZE: usize = 16;
 
 fn bridge_record_count(bytes_len: usize, stride: usize, capacity: usize) -> Option<usize> {
-    if bytes_len % stride != 0 {
+    if !bytes_len.is_multiple_of(stride) {
         return None;
     }
     let count = bytes_len / stride;
@@ -25,7 +25,7 @@ fn bridge_dynamic_prefix_count(
     animated_baked_count: usize,
 ) -> Option<usize> {
     let total_count = bytes_len.checked_div(stride)?;
-    if bytes_len % stride != 0 || total_count < animated_baked_count {
+    if !bytes_len.is_multiple_of(stride) || total_count < animated_baked_count {
         return None;
     }
     let dynamic_count = total_count - animated_baked_count;
@@ -113,7 +113,7 @@ fn validate_bridge_snapshot(
     }
     let sample_slot_bytes =
         postretro_render_cpu::sh_volume::SCRIPTED_FLOATS_PER_LIGHT * std::mem::size_of::<f32>();
-    if samples_bytes_len % sample_slot_bytes != 0
+    if !samples_bytes_len.is_multiple_of(sample_slot_bytes)
         || samples_bytes_len > scripted_light_capacity * sample_slot_bytes
         || !bridge_descriptors_fit_produced_samples(
             descriptor_bytes,
@@ -175,8 +175,10 @@ fn bridge_descriptors_fit_produced_samples(
     };
 
     forward_descriptors
-        .chunks_exact(sh_volume::ANIMATION_DESCRIPTOR_SIZE)
-        .all(descriptor_fits)
+        .as_chunks::<{ sh_volume::ANIMATION_DESCRIPTOR_SIZE }>()
+        .0
+        .iter()
+        .all(|descriptor| descriptor_fits(descriptor))
         && compose_descriptor_writes
             .iter()
             .all(|(_, descriptor)| descriptor_fits(descriptor))
@@ -876,10 +878,10 @@ impl Renderer {
             * postretro_render_cpu::sh_volume::SCRIPTED_FLOATS_PER_LIGHT
             * std::mem::size_of::<f32>();
         if samples_bytes.len() > sample_capacity
-            || samples_bytes.len()
-                % (postretro_render_cpu::sh_volume::SCRIPTED_FLOATS_PER_LIGHT
-                    * std::mem::size_of::<f32>())
-                != 0
+            || !samples_bytes.len().is_multiple_of(
+                postretro_render_cpu::sh_volume::SCRIPTED_FLOATS_PER_LIGHT
+                    * std::mem::size_of::<f32>(),
+            )
         {
             log::warn!(
                 "[Renderer] upload_bridge_samples: bridge produced {} bytes; scripted region \
@@ -996,7 +998,7 @@ impl Renderer {
             self.full_mut().fog.set_canonical_volumes(&[], &[], 0);
             return;
         }
-        if bytes.len() % stride != 0 {
+        if !bytes.len().is_multiple_of(stride) {
             log::warn!(
                 "[Renderer] upload_fog_volumes: byte length {} is not a multiple of \
                  FogVolume stride {}; skipping.",
@@ -1050,7 +1052,7 @@ impl Renderer {
             full.fog.point_count = 0;
             return;
         }
-        if bytes.len() % stride != 0 {
+        if !bytes.len().is_multiple_of(stride) {
             log::warn!(
                 "[Renderer] upload_fog_points: byte length {} is not a multiple of \
                  FogPointLight stride {}; skipping.",
@@ -1067,22 +1069,15 @@ impl Renderer {
 
     /// Set the global `fog_pixel_scale` from worldspawn. No-op when unchanged.
     pub fn set_fog_pixel_scale(&mut self, scale: u32) {
-        let Self {
-            device,
-            surface_config,
-            full,
-            ..
-        } = self;
+        // Fog scatter divides the scene extent, so a map's fog reads the same
+        // at every render resolution.
+        let scene = self.scene_extent();
+        let Self { device, full, .. } = self;
         let full = full
             .as_mut()
             .expect("renderer full-init must complete before full-ready paths run");
-        full.fog.set_pixel_scale(
-            device,
-            scale,
-            surface_config.width,
-            surface_config.height,
-            &full.depth_view,
-        );
+        full.fog
+            .set_pixel_scale(device, scale, scene.width, scene.height, &full.depth_view);
     }
 
     pub fn set_light_effective_brightness(&mut self, effective_brightness: &[f32]) {

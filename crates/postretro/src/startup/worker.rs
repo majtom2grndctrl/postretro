@@ -5,11 +5,11 @@
 // See: context/lib/boot_sequence.md · context/lib/build_pipeline.md §PRL section IDs · §Baked texture mips
 
 use std::path::{Path, PathBuf};
-use std::sync::mpsc;
+use std::sync::{Arc, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use postretro_level_loader::LevelWorld;
+use postretro_level_loader::{LevelWorld, LoadProgress};
 
 /// Delivered to the main thread after the worker completes. All fields are plain
 /// `Send` — no GPU handles.
@@ -21,7 +21,8 @@ pub(crate) struct LevelPayload {
     /// absent or unusable directories surface per-texture warnings from
     /// `load_textures` and degrade those entries to placeholders.
     pub prm_cache_root: PathBuf,
-    /// Spliced into level-load `StartupTimings` between `worker_dispatch` and `worker_delivered`.
+    /// Worker-thread stages, attached to `worker_delivered` in level-load `StartupTimings`
+    /// (they ran inside its interval, so they are shown with it, not added to it).
     pub timings: Vec<(&'static str, Duration)>,
 }
 
@@ -34,27 +35,35 @@ const _: fn() = || {
 pub(crate) type LoadOutcome = Result<LevelPayload, anyhow::Error>;
 
 /// Send errors are ignored — dropped receiver means the window closed during load.
+/// The worker advances `progress` as the PRL parse consumes the file; the main
+/// thread reads it for the loading screen.
 pub(crate) fn spawn_level_worker(
     map_path: PathBuf,
     content_root: PathBuf,
     baked_root: Option<PathBuf>,
+    progress: Arc<LoadProgress>,
     sender: mpsc::Sender<LoadOutcome>,
 ) -> JoinHandle<()> {
     thread::spawn(move || {
-        let outcome = run_worker(&map_path, &content_root, baked_root.as_deref());
+        let outcome = run_worker(&map_path, &content_root, baked_root.as_deref(), &progress);
         // Receiver dropped = window closed during load; nothing to do.
         let _ = sender.send(outcome);
     })
 }
 
-fn run_worker(map_path: &Path, content_root: &Path, baked_root: Option<&Path>) -> LoadOutcome {
+fn run_worker(
+    map_path: &Path,
+    content_root: &Path,
+    baked_root: Option<&Path>,
+    progress: &Arc<LoadProgress>,
+) -> LoadOutcome {
     let mut timings: Vec<(&'static str, Duration)> = Vec::with_capacity(2);
     let cursor = Instant::now();
 
     let prm_cache_root = resolve_prm_root(content_root, baked_root);
 
     let path_str = map_path.to_string_lossy().into_owned();
-    let level = match postretro_level_loader::load_prl(&path_str) {
+    let level = match postretro_level_loader::load_prl_with_progress(&path_str, progress) {
         Ok(world) => {
             log::info!("[Loader] PRL loaded successfully from {path_str}");
             Some(world)
@@ -220,6 +229,7 @@ mod tests {
             PathBuf::from("does-not-exist.prl"),
             PathBuf::from("."),
             None,
+            Arc::new(LoadProgress::new()),
             tx,
         );
         // Drop receiver before worker sends — send returns Err(SendError), which is swallowed.

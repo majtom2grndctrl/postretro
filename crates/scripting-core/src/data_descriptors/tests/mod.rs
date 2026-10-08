@@ -10,7 +10,9 @@ mod entity;
 mod frontend;
 mod g2_fields;
 mod health;
+mod input_block;
 mod knockback;
+mod loading_manifest;
 mod maps;
 mod mesh;
 mod movement_core;
@@ -22,3 +24,5 @@ mod reactions;
 mod sounds;
 mod ui_bridge;
 mod ui_bridge_drains;
+
+mod activation;

@@ -1,8 +1,9 @@
 
 -- ---------------------------------------------------------------------------
 -- SDK library — embedded into every Luau context via `include_str!` and
--- evaluated during state construction. `world.luau`'s return value becomes
--- global `world`; `util/keyframes.luau` supplies `timeline` and `sequence`.
+-- evaluated during state construction. `map_entities.luau` supplies
+-- `getMapEntities`, `gravity.luau` supplies `getGravity` / `setGravity`, and
+-- `util/keyframes.luau` supplies `timeline` and `sequence`.
 -- Animation curve construction lives on entity handles
 -- (`LightEntityHandle`, `FogVolumeHandle`) as capability methods, not as
 -- bare globals.
@@ -22,7 +23,7 @@ export type AnimatableVec3<Channel> = {
   cycle: (self: any, opts: { values: {Vec3}, periodMs: number }) -> {SequenceStep},
 }
 
---- Typed light handle returned by `world:query({ component = "light" })`.
+--- Light member returned by `getMapEntities("light")`.
 --- Composes the brightness scalar capability with vec3 channels declared
 --- directly (Luau lacks TS-style multiple-interface extension; secondary
 --- channels are inlined).
@@ -40,16 +41,7 @@ export type LightEntityHandle = {
   sweep: (self: LightEntityHandle, opts: { values: {Vec3}, periodMs: number }) -> {SetLightAnimationStep},
 }
 
---- Generic entity handle returned by `world:query` when the component is
---- not "light", "emitter", "fog_volume", "kinematic_mover", or
---- "trigger_volume". Carries only id, position, and tags.
-export type EntityHandle = {
-  id: EntityId,
-  position: Vec3,
-  tags: {string},
-}
-
---- Typed fog-volume handle returned by `world:query({ component = "fog_volume" })`.
+--- Fog member returned by `getMapEntities("fog")`.
 --- Composes the density scalar capability with secondary saturation
 --- methods declared directly.
 export type FogVolumeHandle = {
@@ -65,7 +57,7 @@ export type FogVolumeHandle = {
   fadeSaturation: (self: FogVolumeHandle, opts: { from: number, to: number, periodMs: number }) -> {SetFogAnimationStep},
 }
 
---- Typed mover handle returned by `world:query({ component = "kinematic_mover" })`.
+--- Mover member returned by `getMapEntities("mover")`.
 --- Raw mover phase is engine-managed; methods return closed command steps.
 export type MoverEntityHandle = {
   id: EntityId,
@@ -82,48 +74,73 @@ export type MoverEntityHandle = {
   setBlockPolicy: (self: MoverEntityHandle, policy: "displace" | "reverse" | "stop" | "crush") -> {MoverSetBlockPolicyStep},
 }
 
---- Typed trigger handle returned by `world:query({ component = "trigger_volume" })`.
+--- Trigger member returned by `getMapEntities("trigger")`.
 --- Arming state remains engine-owned; methods return closed command steps.
---- Switch entities also emit a `trigger_volume` component and are
---- indistinguishable from authored trigger volumes here; separate them with
---- a tag convention.
+--- Switch entities also emit a trigger volume and are indistinguishable from
+--- authored trigger volumes here; separate them with a tag convention.
 export type TriggerVolumeHandle = {
   id: EntityId,
   position: Vec3,
   tags: {string},
   arm: (self: TriggerVolumeHandle) -> {ArmTriggerStep},
   disarm: (self: TriggerVolumeHandle) -> {DisarmTriggerStep},
+  --- Fire `fire` on this volume's `event` edge, and on no sibling volume
+  --- sharing its tag. Return the entry from `setupLevel`'s `triggerEvents`.
+  on: (self: TriggerVolumeHandle, event: "enter" | "exit", fire: {Reaction<any> | string}) -> VolumeTriggerEventDescriptor,
 }
 
---- `world` vocabulary global. Wraps `worldQuery` with a typed handle.
---- `"light"` returns `LightEntityHandle` values (with capability methods);
---- `"emitter"` returns `EmitterEntity` values carrying the full
---- `BillboardEmitterComponent` snapshot under `component`; `"fog_volume"`
---- returns `FogVolumeHandle` values; `"kinematic_mover"` returns
---- `MoverEntityHandle`; `"trigger_volume"` returns `TriggerVolumeHandle`;
---- other components fall back to the bare `EntityHandle` shape.
-export type World = {
-  query: ((self: World, filter: { component: "light", tag: string? }) -> {LightEntityHandle})
-       & ((self: World, filter: { component: "emitter", tag: string? }) -> {EmitterEntity})
-       & ((self: World, filter: { component: "fog_volume", tag: string? }) -> {FogVolumeHandle})
-       & ((self: World, filter: { component: "kinematic_mover", tag: string? }) -> {MoverEntityHandle})
-       & ((self: World, filter: { component: "trigger_volume", tag: string? }) -> {TriggerVolumeHandle})
-       & ((self: World, filter: WorldQueryFilter) -> {EntityHandle}),
-  --- Current world gravity in m/s² (negative = downward; positive = upward).
-  --- Seeded from the worldspawn `initialGravity` KVP at level load and
-  --- persists until the next level load or `setGravity` call.
-  getGravity: (self: World) -> number,
-  --- Set world gravity in m/s² (negative = downward; positive = upward).
-  --- NaN and non-finite values are silently ignored with a warning logged.
-  --- Effect is immediate and persists until the next level load or another
-  --- `setGravity` call.
-  setGravity: (self: World, value: number) -> (),
+--- Snapshot of a map-placed spawner: id, position, its own tags, and
+--- `spawnedTags`, the tags each NPC it spawns carries. Its own tags never
+--- pass to its spawns.
+export type SpawnerEntity = {
+  id: EntityId,
+  position: Vec3,
+  tags: {string},
+  spawnedTags: {string},
 }
+
+--- Spawner member returned by `getMapEntities("spawner")`.
+export type SpawnerEntityHandle = {
+  id: EntityId,
+  position: Vec3,
+  tags: {string},
+  spawnedTags: {string},
+  --- Spawn one batch from this spawner, and from no sibling sharing its tag.
+  fire: (self: SpawnerEntityHandle) -> {SpawnFromSpawnerStep},
+}
+
+--- Map-placed kinds `getMapEntities` accepts. NPCs and players are groups
+--- (`npcs`, `players`), not members.
+export type MapEntityKind = "mover" | "trigger" | "light" | "fog" | "emitter" | "spawner"
+
+--- Narrows a member query to instances carrying `tag`.
+export type MapEntityFilter = { tag: string? }
+
+--- Return the map-placed members of `kind`, optionally only those carrying
+--- `filter.tag`, in authored map order. Membership is fixed at install: an
+--- instance a runtime spawn carries never appears. Returns an empty array on
+--- no match. An unknown kind raises naming the call. Callable only inside a
+--- level's data script (module evaluation or `setupLevel`); elsewhere it
+--- raises. `"emitter"` yields the snapshot only, with no verbs.
+declare getMapEntities: ((kind: "mover", filter: MapEntityFilter?) -> {MoverEntityHandle})
+  & ((kind: "trigger", filter: MapEntityFilter?) -> {TriggerVolumeHandle})
+  & ((kind: "light", filter: MapEntityFilter?) -> {LightEntityHandle})
+  & ((kind: "fog", filter: MapEntityFilter?) -> {FogVolumeHandle})
+  & ((kind: "emitter", filter: MapEntityFilter?) -> {EmitterEntity})
+  & ((kind: "spawner", filter: MapEntityFilter?) -> {SpawnerEntityHandle})
+
+--- Current world gravity in m/s² (negative = downward; positive = upward).
+--- Seeded from the worldspawn `initialGravity` KVP at level load and
+--- persists until the next level load or `setGravity` call.
+declare function getGravity(): number
+
+--- Set world gravity in m/s² (negative = downward; positive = upward).
+--- NaN and non-finite values are ignored with a warning. Effect is immediate
+--- and persists until the next level load or another `setGravity` call.
+declare function setGravity(value: number): ()
 
 --- Per-channel keyframe accepted by `timeline` / `sequence`.
 export type Keyframe = {number}
-
-declare world: World
 
 --- Validate `{absolute_ms, ...value}` keyframes; pass-through on success.
 declare function timeline(keyframes: {Keyframe}): {Keyframe}
@@ -239,30 +256,36 @@ export type ProgressReactionDescriptor = {
   progress: { tag: string, at: number, fire: string },
 }
 
---- Primitive reaction body: invokes the named Rust primitive. A non-empty
---- `tag` targets matching entities. Tag-targeted primitives include
---- emitter/fog/mover commands, `applyDamage`, `grantHealth`, `grantAmmo`, `addSlot`,
---- `setAnimationState`, `updateEnemyState`, `spawnFromSpawner`, `armTrigger`,
---- and `disarmTrigger`. In a trigger-event reaction, `applyDamage`,
---- `grantHealth`, `grantAmmo`, and `addSlot` may instead target `@activators`. True system
---- reactions carry neither `tag` nor `target` and enqueue typed engine commands
---- such as `playSound`, `rumble`, `flashScreen`, and the UI-stack reactions.
---- `args` carries the primitive's typed payload (e.g. `{ rate = 0 }`
---- for `setEmitterRate`, `{ sound = "alarm" }` for `playSound`).
+--- Primitive reaction body: invokes the named Rust primitive. A group command
+--- (`npcs(...)`, `players()`) carries `kind` and an optional `tag` filter; a
+--- subject-token command (`on.activators`, `on.trigger`) carries `target =
+--- "@activators"` or `target = "@trigger"`. A raw descriptor with only a
+--- non-empty `tag` resolves over every entity carrying it — the form for fog,
+--- emitter and animation primitives (`setFogScatter`, `setEmitterRate`,
+--- `setAnimationState`), which have no typed builder. True system reactions
+--- carry neither and enqueue typed engine commands such as `playSound`,
+--- `rumble`, `flashScreen`, and the UI-stack reactions. `args` carries the
+--- primitive's typed payload (e.g. `{ rate = 0 }` for `setEmitterRate`,
+--- `{ sound = "alarm" }` for `playSound`).
 export type PrimitiveReactionDescriptor = {
   primitive: string,
+  kind: GroupKind?,
   tag: string?,
-  target: "@activators"?,
+  target: SubjectTokenTarget?,
   args: { [string]: any }?,
   onComplete: string?,
 }
 
---- Tag-targeted trigger primitive `armTrigger` takes no payload; its target
---- comes from `PrimitiveReactionDescriptor.tag`.
+--- Trigger primitive `armTrigger` takes no payload; its target is a trigger
+--- member's id (a member handle's `:arm()`), a subject-token command
+--- (`on.trigger:arm()` carries `target = "@trigger"`), or a raw descriptor's
+--- `tag`.
 export type ArmTriggerArgs = {}
 
---- Tag-targeted trigger primitive `disarmTrigger` takes no payload; its target
---- comes from `PrimitiveReactionDescriptor.tag`.
+--- Trigger primitive `disarmTrigger` takes no payload; its target is a
+--- trigger member's id (a member handle's `:disarm()`), a subject-token command
+--- (`on.trigger:disarm()` carries `target = "@trigger"`), or a raw
+--- descriptor's `tag`.
 export type DisarmTriggerArgs = {}
 
 --- One step in a `sequence` reaction body: invokes the named sequenced
@@ -361,15 +384,21 @@ export type MoverSetBlockPolicyStep = {
 }
 
 export type ArmTriggerStep = {
-  id: EntityId | "@trigger",
+  id: EntityId,
   primitive: "armTrigger",
   args: ArmTriggerArgs,
 }
 
 export type DisarmTriggerStep = {
-  id: EntityId | "@trigger",
+  id: EntityId,
   primitive: "disarmTrigger",
   args: DisarmTriggerArgs,
+}
+
+--- Sequence step that spawns one batch from one spawner member (`s:fire()`).
+export type SpawnFromSpawnerStep = {
+  id: EntityId,
+  primitive: "spawnFromSpawner",
 }
 
 --- Control-step payload for `WaitStep`. `interruptible` defaults to `false`
@@ -396,11 +425,11 @@ export type FireStep = {
 
 --- Union of every supported sequence step shape. New sequenced primitives
 --- extend this union.
-export type SequenceStep = SetLightAnimationStep | SetFogDensityStep | SetFogGlowStep | SetFogEdgeSoftnessStep | SetFogFalloffStep | SetFogParamsStep | SetFogAnimationStep | MoverStartStep | MoverStopStep | MoverReverseStep | MoverGoToPathNodeStep | MoverSetSpinRateStep | MoverSetBlockPolicyStep | ArmTriggerStep | DisarmTriggerStep | WaitStep | FireStep
+export type SequenceStep = SetLightAnimationStep | SetFogDensityStep | SetFogGlowStep | SetFogEdgeSoftnessStep | SetFogFalloffStep | SetFogParamsStep | SetFogAnimationStep | MoverStartStep | MoverStopStep | MoverReverseStep | MoverGoToPathNodeStep | MoverSetSpinRateStep | MoverSetBlockPolicyStep | ArmTriggerStep | DisarmTriggerStep | SpawnFromSpawnerStep | GroupCommand | SubjectTokenCommand | WaitStep | FireStep
 
---- Sequence reaction body: ordered entity-targeted primitive and control
---- steps. Entity steps begin in array order; `fire` queues a named dispatch,
---- while `wait` stops the current drain and resumes the remaining tail later.
+--- Sequence reaction body: ordered member, group, subject-token and control
+--- steps. Steps begin in array order; `fire` queues a named dispatch, while
+--- `wait` stops the current drain and resumes the remaining tail later.
 export type SequenceReactionDescriptor = {
   sequence: {SequenceStep},
 }
@@ -409,13 +438,31 @@ export type SequenceReactionDescriptor = {
 --- into the descriptor at the top level so the Rust deserializer reads
 --- both fields from one flat table.
 export type ProgressNamedReactionDescriptor = { name: string, levels: {string}?, progress: { tag: string, at: number, fire: string } }
-export type PrimitiveNamedReactionDescriptor = { name: string, levels: {string}?, primitive: string, tag: string?, target: "@activators"?, args: { [string]: any }?, onComplete: string? }
+export type PrimitiveNamedReactionDescriptor = { name: string, levels: {string}?, primitive: string, kind: GroupKind?, tag: string?, target: SubjectTokenTarget?, args: { [string]: any }?, onComplete: string? }
 export type SequenceNamedReactionDescriptor = { name: string, levels: {string}?, sequence: {SequenceStep} }
 export type NamedReactionDescriptor = ProgressNamedReactionDescriptor | PrimitiveNamedReactionDescriptor | SequenceNamedReactionDescriptor
 export type CrossingParams = { rising: RuntimeRead }
 export type TickParams = { dt: RuntimeRead }
-export type ActivatorsTarget = { __triggerActivatorsTarget: true }
-export type TriggerTarget = { __firedTriggerTarget: true }
+--- The pawns that caused the current trigger edge (`on.activators`). Legal
+--- only before any `wait`. Call its verbs with `:`.
+export type ActivatorsTarget = {
+  --- Damage this fire's activators by a finite, non-negative amount.
+  damage: (self: ActivatorsTarget, amount: number) -> SubjectTokenCommand,
+  --- Add health to this fire's activators.
+  grantHealth: (self: ActivatorsTarget, amount: number) -> SubjectTokenCommand,
+  --- Add `amount` to this fire's activators' named ammo-reserve pool.
+  grantAmmo: (self: ActivatorsTarget, type: string, amount: number) -> SubjectTokenCommand,
+  --- Add `delta` to this fire's activators' value of a per-owner numeric slot.
+  addSlot: (self: ActivatorsTarget, slot: StateRef<number>, delta: number) -> SubjectTokenCommand,
+}
+--- The trigger volume that fired the current edge (`on.trigger`). Legal only
+--- before any `wait`. Call its verbs with `:`.
+export type TriggerTarget = {
+  --- Arm the volume that fired and clear its once/rearm state.
+  arm: (self: TriggerTarget) -> SubjectTokenCommand,
+  --- Disarm the volume that fired.
+  disarm: (self: TriggerTarget) -> SubjectTokenCommand,
+}
 export type TriggerEventParams = { activators: ActivatorsTarget, trigger: TriggerTarget, occupancy: RuntimeRead }
 --- Opaque anchor for where the current named gameplay event happened. Legal
 --- only as `playSound`'s `at`.
@@ -429,7 +476,7 @@ export type EmitterParams = { emitter: EmitterTarget }
 export type PlaySoundOptions = { bus: string?, at: EmitterTarget? }
 export type Reaction<S> = NamedReactionDescriptor
 
---- Impact-policy IR skin. These refs lower to the existing closed runtime IR;
+--- Shared fluent-expression IR skin. These refs lower to the existing closed runtime IR;
 --- boolean composition is represented exclusively through `select`.
 export type NumberValue = number | NumberRef | RuntimeValue
 export type BoolValue = boolean | BoolRef | RuntimeValue
@@ -457,6 +504,43 @@ export type RuntimeExpressionRefs = {
   number: (value: RuntimeValue) -> NumberRef,
   bool: (value: RuntimeValue) -> BoolRef,
 }
+--- Independent shot multipliers. Omitted axes use 1; expressions may read only `activation.charge`.
+export type ActivationShotScale = {
+  --- Direct or splash damage multiplier, applied once. Finite range: [0, 64].
+  damage: NumberValue?,
+  --- Hitscan distance or projectile travel cap multiplier. Finite range: (0, 64].
+  range: NumberValue?,
+  --- Projectile travel-speed multiplier. Finite range: (0, 64].
+  projectileSpeed: NumberValue?,
+  --- Projectile swept collision-radius multiplier. Finite range: (0, 64].
+  projectileRadius: NumberValue?,
+  --- Projectile visual-size multiplier; collision and splash radius are independent. Finite range: (0, 64].
+  projectileSize: NumberValue?,
+  --- Direct and splash knockback-speed multiplier. Finite range: [0, 64].
+  knockbackSpeed: NumberValue?,
+  --- Per-shot ammo, heat, or cell-cost multiplier. Finite range: (0, 64]; positive ammo costs round up.
+  resourceCost: NumberValue?,
+}
+
+--- Shot options. Multipliers accept finite literals, fluent refs, or numeric `runtime.*` IR.
+export type ActivationShotOptions = {
+  --- Independent multipliers, defaulting to 1. Only the read-only `charge` input is allowed.
+  scale: ActivationShotScale?,
+}
+
+--- Closed weapon-action data builders. Programs allow at most 64 steps and 16 shots.
+export type Activation = {
+  --- Normalized start-to-release charge in [0, 1]; uncharged actions read 1. No state-store reads or writes. Use `activation.charge:times(9):plus(1)`.
+  charge: NumberRef,
+  --- Build an ordinary shot. First and last steps must be shots, with a positive wait between shots.
+  shot: (options: ActivationShotOptions?) -> ActivationStepDescriptor,
+  --- Build a wait in milliseconds: finite (0, 60000], rounded up to whole ticks. Total quantized waits are at most 60 seconds.
+  wait: (durationMs: number) -> ActivationStepDescriptor,
+}
+
+--- Pure weapon-action builders; no callbacks or gameplay execution.
+declare activation: Activation
+
 type ImpactEffectWire =
   { primitive: "despawn", target: "@impact.target", args: { afterMs: number? } }
   | { primitive: "playAnim", target: "@impact.target", args: { clip: string } }
@@ -602,7 +686,10 @@ export type LevelManifest = {
   reactions: {NamedReactionDescriptor},
   events: {ImpactEvent}?,
   crossings: {CrossingDescriptor}?,
-  triggerEvents: {TriggerEventDescriptor}?,
+  --- Level trigger events, keyed by volume: build each with a trigger
+  --- member's `on`. A tag-keyed entry belongs in `ModManifest.triggerEvents`
+  --- (`defineTriggerEvent`) and is rejected here.
+  triggerEvents: {VolumeTriggerEventDescriptor}?,
   triggerPools: {TriggerPoolDescriptor}?,
   --- Per-level UI trees (name + `AnchoredTree` + optional `alwaysOn` / `hideBelow`). Optional; same shape
   --- as `ModManifest.uiTrees` but level-scoped (cleared on unload). Malformed
@@ -633,34 +720,69 @@ declare defineReaction: (
 --- through a manifest's `events` child.
 declare function defineImpactEvent(id: string, filter: ImpactEventFilter, build: (Impact) -> {EffectOrGroup}): ImpactEvent
 
+--- Mod-global trigger event: a standing rule keyed by tag, accepted only in
+--- `ModManifest.triggerEvents`. Build it with `defineTriggerEvent`.
 export type TriggerEventDescriptor = { tag: string, event: "enter" | "exit", fire: {string}, levels: {string}? }
+--- Level trigger event: one volume's edge, keyed by the member's id. Build it
+--- with a trigger member's `on`; accepted only in `setupLevel`'s `triggerEvents`.
+export type VolumeTriggerEventDescriptor = { trigger: EntityId, event: "enter" | "exit", fire: {string} }
 --- A seeded trap-pool declaration; exactly one arming form is required.
 export type TriggerPoolDescriptor = { tag: string, arm: number?, armPercentage: number?, levels: {string}? }
-export type TriggerEventOptions = { levels: {string}? }
-declare function onTriggerEvent(filter: { tag: string }, event: "enter" | "exit", fire: {Reaction<any> | string}, options: TriggerEventOptions?): TriggerEventDescriptor
-declare function damage(target: ActivatorsTarget | string, amount: number): PrimitiveReactionDescriptor
-declare function grantHealth(target: ActivatorsTarget | string, amount: number): PrimitiveReactionDescriptor
-declare function grantAmmo(target: ActivatorsTarget | string, type: string, amount: number): PrimitiveReactionDescriptor
---- Add a delta to one per-owner numeric slot for each selected player pawn.
-declare function addSlot(target: ActivatorsTarget | string, slot: StateRef<number>, delta: number): PrimitiveReactionDescriptor
---- Select a live enemy group by tag. Its tag resolves at reaction fire time.
-export type EnemyGroupFilter = { tag: string? }
---- Typed, additive partial for consequential enemy-state updates.
-export type EnemyStateUpdateArgs = { aggro: boolean? }
---- Fire-time-tag enemy handle. `update` emits one primitive descriptor.
-export type EnemyGroup = {
-  update: (self: EnemyGroup, fields: EnemyStateUpdateArgs) -> PrimitiveReactionDescriptor,
+--- Authored form of `defineTriggerEvent`: `fire` takes reaction handles or names.
+export type TriggerEventRule = { tag: string, event: "enter" | "exit", fire: {Reaction<any> | string}, levels: {string}? }
+--- Declare a mod-global trigger event: every volume carrying `tag` fires
+--- `fire` on `event`, in each level the `levels` selector matches (every level
+--- when omitted). Return it from `ModManifest.triggerEvents`; a level binds its
+--- own volumes with a trigger member's `on`.
+declare function defineTriggerEvent(rule: TriggerEventRule): TriggerEventDescriptor
+
+--- Kinds a group command addresses.
+export type GroupKind = "npc" | "player"
+--- One group command: a primitive descriptor carrying `kind` (and an optional
+--- `tag` filter) instead of a target. Legal both as a reaction body and
+--- directly as a sequence entry; the group resolves when the command takes
+--- effect, so NPCs spawned or players joined before then are included.
+export type GroupCommand = { primitive: string, kind: GroupKind, tag: string?, args: { [string]: any } }
+--- The subject a token command addresses: this fire's activators or the volume
+--- that fired.
+export type SubjectTokenTarget = "@activators" | "@trigger"
+--- One subject-token command (`on.activators`, `on.trigger`): a primitive
+--- descriptor whose `target` names the fire's subject. Legal both as a reaction
+--- body and directly as a sequence entry, but only before any `wait`.
+export type SubjectTokenCommand = { primitive: string, target: SubjectTokenTarget, args: { [string]: any } }
+--- Selects the NPCs a group command reaches. Omit `tag` for every NPC.
+export type NpcGroupFilter = { tag: string? }
+--- Typed, additive partial for NPC state updates.
+export type NpcStateUpdateArgs = { aggro: boolean? }
+--- Brain-driven characters that are not players, whatever their faction
+--- sentiment. Opaque: no members, no length; `#group`, `group[1]` and any
+--- name but a verb raise. Commands run on the host and in single player only.
+export type NpcGroup = {
+  --- Apply a typed partial to each NPC's state.
+  update: (self: NpcGroup, fields: NpcStateUpdateArgs) -> GroupCommand,
+  --- Damage each NPC by a finite, non-negative amount.
+  damage: (self: NpcGroup, amount: number) -> GroupCommand,
 }
-declare function enemies(filter: EnemyGroupFilter): EnemyGroup
---- Selects a live spawner group by tag. Its tag resolves at reaction fire time.
-export type SpawnerFilter = { tag: string }
---- Fire-time-tag spawner handle. `fire` emits one primitive descriptor.
-export type SpawnerHandle = {
-  fire: (self: SpawnerHandle) -> PrimitiveReactionDescriptor,
+--- Every player pawn bound to a seat; a seat in a disconnect hold is skipped,
+--- and single player reaches the local pawn. Opaque: no members, no length;
+--- `#group`, `group[1]` and any name but a verb raise. Commands run on the
+--- host and in single player only.
+export type PlayerGroup = {
+  --- Damage each player by a finite, non-negative amount.
+  damage: (self: PlayerGroup, amount: number) -> GroupCommand,
+  --- Add health to each player.
+  grantHealth: (self: PlayerGroup, amount: number) -> GroupCommand,
+  --- Add `amount` to each player's named ammo-reserve pool.
+  grantAmmo: (self: PlayerGroup, type: string, amount: number) -> GroupCommand,
+  --- Add `delta` to each player's value of a per-owner numeric slot.
+  addSlot: (self: PlayerGroup, slot: StateRef<number>, delta: number) -> GroupCommand,
 }
-declare function spawner(filter: SpawnerFilter): SpawnerHandle
-declare function armTrigger(target: TriggerTarget): {SequenceStep}
-declare function disarmTrigger(target: TriggerTarget): {SequenceStep}
+--- Address NPCs, optionally narrowed to those carrying `tag`. Resolved when
+--- each command takes effect, sequence steps included.
+declare function npcs(filter: NpcGroupFilter?): NpcGroup
+--- Address every seat-bound player pawn. Resolved when each command takes
+--- effect, sequence steps included.
+declare function players(): PlayerGroup
 --- Enroll the rest of this sequence body with the host scheduler and stop;
 --- the remaining steps resume after `durationMs` (rounded up to whole
 --- authoritative ticks). `interruptible` (default `false`) lets the
@@ -668,7 +790,7 @@ declare function disarmTrigger(target: TriggerTarget): {SequenceStep}
 --- parked.
 declare function wait(durationMs: number, opts: { interruptible: boolean? }?): {SequenceStep}
 --- Dispatch a named reaction by handle or name from inside a sequence body,
---- resolved exactly as `onTriggerEvent` resolves its `fire` entries. Luau
+--- resolved exactly as a trigger member's `on` resolves its `fire` entries. Luau
 --- has no phantom-typed scope gate; a scoped reaction fired this way is
 --- rejected at install (V4b), not at author time.
 declare function fire(reaction: Reaction<any> | string): {SequenceStep}
@@ -779,6 +901,9 @@ declare EXIT_TO_DESKTOP_ACTION: "ui.exitToDesktop"
 --- Reserved button `onPress` action that opens the engine accessibility panel.
 declare OPEN_ACCESSIBILITY_ACTION: "ui.openAccessibility"
 
+--- Reserved button `onPress` action that opens the engine controls panel.
+declare OPEN_CONTROLS_ACTION: "ui.openControls"
+
 --- The reserved `onPress` action for one accessibility field. Toggles `cycle`;
 --- numeric fields `increase` or `decrease`. `AccessibilityToggleField` and
 --- `AccessibilityNumericField` are declared in virtual_module.luau — they type
@@ -871,7 +996,7 @@ declare function clearText(ref: Ref<string>): PrimitiveReactionDescriptor
 
 -- ---------------------------------------------------------------------------
 -- State-store declarations. `defineStore` is special-cased in the typedef
--- generator (mirroring `worldQuery`): per-slot value types live only in the
+-- generator: per-slot value types live only in the
 -- runtime `schema` argument, absent at typedef emission. Luau cannot map schema
 -- keys through conditional types, so the returned `state` map preserves readable
 -- vs writable capability as a union instead of treating every slot as writable.
@@ -927,6 +1052,7 @@ export type ModManifestInput = {
   render: RenderProfile?,
   movers: MoverDefaults?,
   audio: AudioProfile?,
+  input: ModInput?,
   switching: SwitchingDescriptor?,
   defaultWeaponPlacement: WeaponPlacementDescriptor?,
   entities: {EntityTypeDescriptor}?,
@@ -938,6 +1064,8 @@ export type ModManifestInput = {
   presentationOverlays: PresentationOverlay?,
   theme: ThemeTokens?,
   fonts: { [string]: string }?,
+  uiImages: { [string]: string }?,
+  loading: ModLoading?,
   maps: {ModMapEntry}?,
   frontend: Frontend?,
   reactions: {NamedReactionDescriptor}?,
@@ -1131,14 +1259,20 @@ export type PanelProps = { fill: WidgetColor, border: BorderProp?, bind: PanelBi
 declare function Panel(props: PanelProps): WidgetDescriptor
 
 --- Props for `Image`. No bind. Name-XOR-decorative (M13 G2): exactly one of `label` or `decorative = true` (the union narrows it; neither/both errors).
-export type ImageProps = { asset: string, id: string?, focusNeighbors: FocusNeighborsProp?, visibleWhen: Predicate?, role: WidgetRole? } & ({ label: string } | { decorative: true })
---- An `image` leaf referencing a texture asset by key; sizes from the asset's natural dimensions. Exactly one of `label` / `decorative = true` is required.
+export type ImageProps = { asset: string, width: number?, height: number?, id: string?, focusNeighbors: FocusNeighborsProp?, visibleWhen: Predicate?, role: WidgetRole? } & ({ label: string } | { decorative: true })
+--- An `image` leaf referencing a texture asset by key. Without `width` / `height` (logical-reference px) it takes the asset's natural size; one keeps the source aspect; both give an exact box. Exactly one of `label` / `decorative = true` is required.
 declare function Image(props: ImageProps): WidgetDescriptor
 
 --- Props for `Spacer`. `flexGrow` defaults to 1. No bind.
 export type SpacerProps = { flexGrow: number?, id: string?, visibleWhen: Predicate?, role: WidgetRole? }
 --- A `spacer` leaf claiming a proportional share of leftover space.
 declare function Spacer(props: SpacerProps?): WidgetDescriptor
+
+--- Props for `Glyph`. `command` is a command ID.
+export type GlyphProps = { command: CommandId, id: string?, visibleWhen: Predicate? }
+
+--- The glyph for a command on the player's current device: the mod's art for the input bound to it, else that input's label, else nothing when it is unbound there or irrelevant. Follows rebinding and the confirm/cancel swap.
+declare function Glyph(props: GlyphProps): WidgetDescriptor
 
 --- One `Button.valueText` case: `text` shows while every predicate in `when` holds. An absent or empty `when` always holds.
 export type ValueTextCase = { when: { Predicate }?, text: LocalizedText }
@@ -1190,16 +1324,22 @@ export type FocusKind = "linear" | "spatial"
 --- table with `wrap` and `repeat` options; `repeat` controls held navigation
 --- events inside the container.
 export type FocusPolicyProp = FocusKind | { policy: FocusKind, wrap: boolean?, ["repeat"]: RepeatPolicyProp? }
+--- A vertical scroll viewport for `VStack`/`Grid`: the container sizes to its
+--- content up to `maxHeight` logical px, then clips and scrolls. Focus outside
+--- the viewport scrolls into view by the minimum distance, and the pointer wheel
+--- scrolls it. It creates no focus stop or group; on an `HStack` it is ignored
+--- with a load-time diagnostic.
+export type ScrollProp = { maxHeight: number }
 --- Props for `VStack`/`HStack`. `gap` and `padding` default to 0; `align`
 --- defaults to `"start"`; `width` fixes the stack width in logical-reference
 --- pixels; optional `fill`/`border` draw a backdrop behind the
 --- arranged children. Stack containers may declare `localState`; stack and grid
 --- containers both accept `visibleWhen` and `role`.
-export type StackProps = { gap: WidgetSpacing?, padding: WidgetSpacing?, align: WidgetAlign?, width: number?, id: string?, focusNeighbors: FocusNeighborsProp?, focus: FocusPolicyProp?, restoreOnReturn: boolean?, fill: WidgetColor?, border: BorderProp?, localState: { scope: string, cells: { [string]: number | boolean | string | {number} } }?, visibleWhen: Predicate?, role: WidgetRole? }
+export type StackProps = { gap: WidgetSpacing?, padding: WidgetSpacing?, align: WidgetAlign?, width: number?, scroll: ScrollProp?, id: string?, focusNeighbors: FocusNeighborsProp?, focus: FocusPolicyProp?, fill: WidgetColor?, border: BorderProp?, localState: { scope: string, cells: { [string]: number | boolean | string | {number} } }?, visibleWhen: Predicate?, role: WidgetRole? }
 --- Props for `Grid`. `cols` is required and must be an integer >= 1. Children
 --- flow row-major across columns; grid currently has no backdrop fill/border
 --- and no `localState`.
-export type GridProps = { gap: WidgetSpacing?, padding: WidgetSpacing?, align: WidgetAlign?, id: string?, focusNeighbors: FocusNeighborsProp?, focus: FocusPolicyProp?, restoreOnReturn: boolean?, cols: number, visibleWhen: Predicate?, role: WidgetRole? }
+export type GridProps = { gap: WidgetSpacing?, padding: WidgetSpacing?, align: WidgetAlign?, id: string?, focusNeighbors: FocusNeighborsProp?, focus: FocusPolicyProp?, cols: number, scroll: ScrollProp?, visibleWhen: Predicate?, role: WidgetRole? }
 
 --- A vertical stack (`vstack`): `children` is a POSITIONAL second argument.
 declare function VStack(props: StackProps?, children: {WidgetDescriptor}?): WidgetDescriptor
@@ -1218,11 +1358,13 @@ export type WidgetAnchor = "topLeft" | "top" | "topRight" | "left" | "center" | 
 export type WidgetCaptureMode = "capture" | "passthrough"
 --- Placement envelope props for `Tree`. `anchor` + `offset` position the root in
 --- 1280x720 logical UI space; `captureMode`, `initialFocus`, and
---- `textEntryTarget` control modal/input behavior.
-export type TreeProps = { anchor: WidgetAnchor, offset: {number}, captureMode: WidgetCaptureMode?, initialFocus: string?, textEntryTarget: Ref<string>?, accessibleName: string?, role: WidgetRole? }
+--- `textEntryTarget` control modal/input behavior. `restoreOnReturn` (on by
+--- default) returns focus to the control it left when a tree pushed above
+--- closes; `false` lands on `initialFocus`.
+export type TreeProps = { anchor: WidgetAnchor, offset: {number}, captureMode: WidgetCaptureMode?, initialFocus: string?, textEntryTarget: Ref<string>?, accessibleName: string?, role: WidgetRole?, restoreOnReturn: boolean? }
 --- The flat `AnchoredTree` envelope produced by `Tree(...)` and stored in UI
 --- registries. `textEntryTarget` is serialized to its dotted state-slot name.
-export type AnchoredTreeDescriptor = { anchor: WidgetAnchor, offset: {number}, root: WidgetDescriptor, captureMode: WidgetCaptureMode?, initialFocus: string?, textEntryTarget: string?, accessibleName: string?, role: WidgetRole? }
+export type AnchoredTreeDescriptor = { anchor: WidgetAnchor, offset: {number}, root: WidgetDescriptor, captureMode: WidgetCaptureMode?, initialFocus: string?, textEntryTarget: string?, accessibleName: string?, role: WidgetRole?, restoreOnReturn: boolean? }
 --- Wrap a root widget descriptor in the `AnchoredTree` placement envelope. `root` is a POSITIONAL second argument.
 declare function Tree(props: TreeProps, root: WidgetDescriptor): AnchoredTreeDescriptor
 --- Props accepted by `defineUiTree`. The returned object preserves the runtime
@@ -1478,4 +1620,4 @@ declare function state(name: string): RuntimeGuardNode
 -- Rust `NavIntent` enum (input/ui_nav.rs). Luau has no template-literal types,
 -- so this is a flat string union over the same closed set.
 -- See: context/research/ui-layer.md §16.
-export type NavIntent = "nav.up" | "nav.down" | "nav.left" | "nav.right" | "nav.next" | "nav.prev" | "nav.confirm" | "nav.cancel" | "nav.menu" | "nav.options"
+export type NavIntent = "nav.up" | "nav.down" | "nav.left" | "nav.right" | "nav.next" | "nav.prev" | "nav.confirm" | "nav.cancel" | "nav.menu" | "nav.options" | "nav.tabNext" | "nav.tabPrev"

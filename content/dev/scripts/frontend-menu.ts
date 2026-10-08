@@ -8,14 +8,19 @@ import {
   Button,
   CLOSE_DIALOG_ACTION,
   EXIT_TO_DESKTOP_ACTION,
+  Glyph,
   Grid,
   HStack,
+  OPEN_CONTROLS_ACTION,
+  QUIT_TO_MENU_ACTION,
   Slider,
   Switch,
   Text,
   Tree,
   VStack,
   accessibilityAction,
+  bindState,
+  displayModeAction,
   defineUiTree,
   getGameState,
   loadLevel,
@@ -67,6 +72,9 @@ export const mapCatalog = defineMapCatalog([
     path: "maps/combat-demo.prl",
     name: "Combat + Emissive Test",
     tags: ["combat", "emissive", "recommended"],
+    // Overrides the mod-wide loading pool for this map (it is also the
+    // frontend backdrop, so its loading screen shows at every boot).
+    loadingTree: "dev.loading.combatDemo",
   },
   {
     id: "splash-damage-demo",
@@ -96,10 +104,24 @@ function levelButton(entry: ModMapEntry) {
   });
 }
 
+// A column of level buttons that scrolls once it outgrows the screen. Scroll
+// opens no focus group, so both columns' buttons share the level select's
+// spatial group: Left and Right cross between columns.
 function section(title: string, entries: ModMapEntry[]) {
   return VStack({ gap: 6, align: "stretch" }, [
     Text({ content: title, fontSize: 16 }),
-    ...entries.map(levelButton),
+    VStack({ gap: 6, align: "stretch", scroll: { maxHeight: 360 } }, entries.map(levelButton)),
+  ]);
+}
+
+/// Device-aware prompts: each glyph follows the player's last device and
+/// their bindings.
+function promptRow() {
+  return HStack({ gap: 8, align: "center" }, [
+    Glyph({ command: "nav_confirm" }),
+    Text({ content: "SELECT", fontSize: 14, color: COLOR_MUTED }),
+    Glyph({ command: "nav_cancel" }),
+    Text({ content: "BACK", fontSize: 14, color: COLOR_MUTED }),
   ]);
 }
 
@@ -127,7 +149,7 @@ export const devLevelSelectMenu = defineUiTree({
         focus: { policy: "linear", wrap: true },
       },
       [
-        HStack({ gap: 18, align: "start" }, [
+        HStack({ gap: 18, align: "start", focus: { policy: "spatial" } }, [
           section("Recommended", mapsTagged("recommended")),
           section("Development Tests", mapsTagged("test")),
         ]),
@@ -136,10 +158,70 @@ export const devLevelSelectMenu = defineUiTree({
           label: "BACK",
           onPress: CLOSE_DIALOG_ACTION,
         }),
+        promptRow(),
       ],
     ),
   ),
 });
+
+// Dev EXIT and QUIT confirmations: each opens a dialog whose initial focus is
+// the safe choice, so a second confirm pressed on the next frame cancels.
+const EXIT_CONFIRM_NAME = "dev.exitConfirm";
+const QUIT_CONFIRM_NAME = "dev.quitConfirm";
+
+function confirmDialog(name: string, prompt: string, label: string, action: string, idPrefix: string) {
+  return defineUiTree({
+    name,
+    tree: Tree(
+      {
+        anchor: "center",
+        offset: [0, 0],
+        captureMode: "capture",
+        // The safe choice: a repeated confirm never takes the action.
+        initialFocus: `${idPrefix}Cancel`,
+        accessibleName: prompt,
+        role: "group",
+      },
+      VStack(
+        {
+          gap: 14,
+          padding: 20,
+          align: "start",
+          fill: COLOR_PANEL,
+          focus: { policy: "linear" },
+        },
+        [
+          Text({ content: prompt, fontSize: 22, color: COLOR_ACCENT }),
+          HStack({ gap: 12, padding: 0, align: "start" }, [
+            Button({ id: `${idPrefix}Cancel`, label: "CANCEL", onPress: CLOSE_DIALOG_ACTION }),
+            Button({ id: `${idPrefix}Confirm`, label, onPress: action }),
+          ]),
+        ],
+      ),
+    ),
+  });
+}
+
+export const exitConfirm = confirmDialog(
+  EXIT_CONFIRM_NAME,
+  "EXIT TO DESKTOP?",
+  "EXIT",
+  EXIT_TO_DESKTOP_ACTION,
+  "exitConfirm",
+);
+
+export const quitConfirm = confirmDialog(
+  QUIT_CONFIRM_NAME,
+  "QUIT TO THE MAIN MENU?",
+  "QUIT",
+  QUIT_TO_MENU_ACTION,
+  "quitConfirm",
+);
+
+/** EXIT buttons press this: it opens the exit confirmation. */
+export const askExit = defineReaction("dev.askExit", openMenu(EXIT_CONFIRM_NAME));
+/** QUIT TO MENU buttons press this: it opens the quit confirmation. */
+export const askQuit = defineReaction("dev.askQuit", openMenu(QUIT_CONFIRM_NAME));
 
 const openPlay = defineReaction("frontend.openPlay", openMenu(LEVEL_SELECT_MENU_NAME));
 /** Opens the tabbed options screen; the pause menu opens it too. */
@@ -168,19 +250,50 @@ export const frontendMenu = defineUiTree({
         Text({ content: "POSTRETRO", fontSize: 36, color: COLOR_ACCENT }),
         Button({ id: "frontendPlay", label: "PLAY", onPress: openPlay }),
         Button({ id: "frontendOptions", label: "OPTIONS", onPress: openOptions }),
-        Button({ id: "frontendExit", label: "EXIT", onPress: EXIT_TO_DESKTOP_ACTION }),
+        Button({ id: "frontendExit", label: "EXIT", onPress: askExit }),
       ],
     ),
   ),
 });
 
-const options = getGameState().options;
+const { options, window } = getGameState();
+
+const WINDOW_MODE_CHOICES = [
+  { value: "windowed", id: "optionsWindowed", label: "WINDOWED" },
+  { value: "borderless", id: "optionsBorderless", label: "BORDERLESS" },
+  { value: "exclusive", id: "optionsExclusive", label: "EXCLUSIVE" },
+] as const;
+
+/// Render resolution choices, in display order. ASCII fractions render in every
+/// bundled typeface.
+const RENDER_RESOLUTION_CHOICES = [
+  { value: "auto", id: "optionsRenderResolutionAuto", label: "AUTO" },
+  { value: "native", id: "optionsRenderResolutionNative", label: "NATIVE" },
+  { value: "half", id: "optionsRenderResolutionHalf", label: "1/2" },
+  { value: "third", id: "optionsRenderResolutionThird", label: "1/3" },
+  { value: "quarter", id: "optionsRenderResolutionQuarter", label: "1/4" },
+] as const;
 
 const optionReactions: NamedReactionDescriptor[] = [
+  ...WINDOW_MODE_CHOICES.map(({ value }) =>
+    defineReaction(`frontend.options.windowMode.${value}`, updateState(options.windowMode, value)),
+  ),
   defineReaction("frontend.options.invertY.off", updateState(options.invertY, false)),
   defineReaction("frontend.options.invertY.on", updateState(options.invertY, true)),
   defineReaction("frontend.options.crouchMode.hold", updateState(options.crouchMode, "hold")),
   defineReaction("frontend.options.crouchMode.toggle", updateState(options.crouchMode, "toggle")),
+  defineReaction("frontend.options.sprintMode.hold", updateState(options.sprintMode, "hold")),
+  defineReaction("frontend.options.sprintMode.toggle", updateState(options.sprintMode, "toggle")),
+  defineReaction("frontend.options.gamepadInvertY.off", updateState(options.gamepadInvertY, false)),
+  defineReaction("frontend.options.gamepadInvertY.on", updateState(options.gamepadInvertY, true)),
+  defineReaction(
+    "frontend.options.swapConfirmCancel.off",
+    updateState(options.swapConfirmCancel, false),
+  ),
+  defineReaction(
+    "frontend.options.swapConfirmCancel.on",
+    updateState(options.swapConfirmCancel, true),
+  ),
   defineReaction("frontend.options.shadowQuality.low", updateState(options.shadowQuality, "low")),
   defineReaction(
     "frontend.options.shadowQuality.medium",
@@ -200,6 +313,12 @@ const optionReactions: NamedReactionDescriptor[] = [
   defineReaction(
     "frontend.options.surfaceDepthQuality.on",
     updateState(options.surfaceDepthQuality, "on"),
+  ),
+  ...RENDER_RESOLUTION_CHOICES.map(({ value }) =>
+    defineReaction(
+      `frontend.options.renderResolution.${value}`,
+      updateState(options.renderResolution, value),
+    ),
   ),
 ];
 
@@ -234,6 +353,39 @@ function radioChoice(id: string, label: string, checked: Predicate, onPress: str
     },
     onPress,
   });
+}
+
+/// An OFF/ON radio pair for a boolean option, firing
+/// `frontend.options.<field>.off|on`.
+function offOnChoices(idPrefix: string, field: string, slot: typeof options.invertY) {
+  return optionChoices([
+    radioChoice(`${idPrefix}Off`, "OFF", stateEquals(slot, false), `frontend.options.${field}.off`),
+    radioChoice(`${idPrefix}On`, "ON", stateEquals(slot, true), `frontend.options.${field}.on`),
+  ]);
+}
+
+/// A slider over `[min, max]` bound to an option's working copy.
+function rangeSlider(
+  id: string,
+  labelledBy: string,
+  bind: typeof options.mouseSensitivity,
+  min: number,
+  max: number,
+  step: number,
+  decimalPlaces: number,
+) {
+  return optionValue(
+    Slider({
+      id,
+      labelledBy,
+      bind,
+      min,
+      max,
+      step,
+      valueDisplay: { min, max, decimalPlaces },
+      capturesNav: ["nav.left", "nav.right"],
+    }),
+  );
 }
 
 function optionLabel(id: string, label: string, note?: string) {
@@ -292,8 +444,13 @@ function optionsPanel(id: string, children: WidgetDescriptor[]) {
   return VStack({ id, gap: 10, align: "stretch", role: "group" }, children);
 }
 
+// Each panel's grid is its own spatial focus group nested in the screen's
+// linear group: Up from the top row leaves for the tab strip, Down from the
+// bottom row reaches BACK, and returning lands on the control last focused.
 const controlsPanel = optionsPanel("optionsPanelControls", [
-  Grid({ gap: 12, align: "stretch", cols: 2 }, [
+  Grid({ gap: 12, align: "stretch", cols: 2, focus: { policy: "spatial" } }, [
+    optionLabel("optionsRebindLabel", "BINDINGS", "Keyboard, mouse and gamepad"),
+    optionValue(Button({ id: "optionsRebind", label: "CONTROLS", onPress: OPEN_CONTROLS_ACTION })),
     optionLabel("optionsMouseSensitivityLabel", "MOUSE SENSITIVITY"),
     optionValue(
       Slider({
@@ -349,11 +506,93 @@ const controlsPanel = optionsPanel("optionsPanelControls", [
         "frontend.options.crouchMode.toggle",
       ),
     ]),
+    optionLabel("optionsSprintModeLabel", "SPRINT MODE"),
+    optionChoices([
+      radioChoice(
+        "optionsSprintHold",
+        "HOLD",
+        stateEquals(options.sprintMode, "hold"),
+        "frontend.options.sprintMode.hold",
+      ),
+      radioChoice(
+        "optionsSprintToggle",
+        "TOGGLE",
+        stateEquals(options.sprintMode, "toggle"),
+        "frontend.options.sprintMode.toggle",
+      ),
+    ]),
+    optionLabel("optionsGamepadLookSensitivityLabel", "GAMEPAD LOOK SPEED"),
+    rangeSlider(
+      "optionsGamepadLookSensitivity",
+      "optionsGamepadLookSensitivityLabel",
+      options.gamepadLookSensitivity,
+      0.5,
+      8,
+      0.25,
+      2,
+    ),
+    optionLabel("optionsGamepadLookDeadZoneLabel", "GAMEPAD LOOK DEAD ZONE"),
+    rangeSlider(
+      "optionsGamepadLookDeadZone",
+      "optionsGamepadLookDeadZoneLabel",
+      options.gamepadLookDeadZone,
+      0,
+      0.5,
+      0.05,
+      2,
+    ),
+    optionLabel("optionsGamepadInvertYLabel", "GAMEPAD INVERT Y"),
+    offOnChoices("optionsGamepadInvertY", "gamepadInvertY", options.gamepadInvertY),
+    optionLabel("optionsSwapConfirmCancelLabel", "SWAP CONFIRM / CANCEL", "For pads with confirm on the right"),
+    offOnChoices("optionsSwapConfirmCancel", "swapConfirmCancel", options.swapConfirmCancel),
   ]),
 ]);
 
+function displayModeControls(value: (typeof WINDOW_MODE_CHOICES)[number]["value"]) {
+  const disabled = value === "borderless";
+  const color: [number, number, number, number] = [1, 1, 1, disabled ? 0.8 : 1];
+  const visibleWhen = stateEquals(options.windowMode, value);
+  const suffix = value === "windowed" ? "" : value === "exclusive" ? "Exclusive" : "Borderless";
+  const button = (id: string, label: string, op: "previous" | "next" | "apply", inactive = false) => Button({
+    id: `${id}${suffix}`,
+    label,
+    onPress: displayModeAction(op),
+    disabled: disabled || inactive,
+    bind: visibleWhen,
+    styleRanges: { max: 1, entries: [{ color: inactive ? [1, 1, 1, 0.8] : color }] },
+  });
+  return VStack({ gap: 6, align: "start", visibleWhen }, [
+    HStack({ gap: 4, align: "center" }, [
+      button("displayModePrev", "<", "previous"),
+      Text({ content: "", color, bind: bindState(window.displayModeWidth, { format: "{}x", decimalPlaces: 0 }) }),
+      Text({ content: "", color, bind: bindState(window.displayModeHeight, { decimalPlaces: 0 }) }),
+      Text({ content: "", color, bind: bindState(window.displayModeRefreshHz, { format: " @ {} Hz", decimalPlaces: 0 }) }),
+      button("displayModeNext", ">", "next"),
+    ]),
+    ...(disabled ? [button("displayModeApply", "APPLY RESOLUTION", "apply")] : [
+      VStack({ visibleWhen: stateEquals(window.displayModeCanApply, true) }, [
+        button("displayModeApply", "APPLY RESOLUTION", "apply"),
+      ]),
+      VStack({ visibleWhen: stateEquals(window.displayModeCanApply, false) }, [
+        button("displayModeApplyDisabled", "APPLY RESOLUTION", "apply", true),
+      ]),
+    ]),
+  ]);
+}
+
 const graphicsPanel = optionsPanel("optionsPanelGraphics", [
-  Grid({ gap: 12, align: "stretch", cols: 2 }, [
+  Grid({ gap: 12, align: "stretch", cols: 2, focus: { policy: "spatial" } }, [
+    optionLabel("optionsWindowModeLabel", "WINDOW MODE"),
+    optionChoices(WINDOW_MODE_CHOICES.map(({ value, id, label }) =>
+      radioChoice(id, label, stateEquals(options.windowMode, value), `frontend.options.windowMode.${value}`),
+    )),
+    VStack({ id: "optionsDisplayModeLabel", align: "start" }, WINDOW_MODE_CHOICES.map(({ value }) => Text({
+      content: "DISPLAY MODE",
+      fontSize: 14,
+      color: [1, 1, 1, value === "borderless" ? 0.8 : 1],
+      visibleWhen: stateEquals(options.windowMode, value),
+    }))),
+    optionValue(VStack({ align: "start" }, WINDOW_MODE_CHOICES.map(({ value }) => displayModeControls(value)))),
     optionLabel("optionsShadowQualityLabel", "SHADOW QUALITY", "Applies after reload"),
     optionChoices([
       radioChoice(
@@ -411,6 +650,17 @@ const graphicsPanel = optionsPanel("optionsPanelGraphics", [
         "frontend.options.surfaceDepthQuality.on",
       ),
     ]),
+    optionLabel("optionsRenderResolutionLabel", "RENDER RESOLUTION"),
+    optionChoices(
+      RENDER_RESOLUTION_CHOICES.map(({ value, id, label }) =>
+        radioChoice(
+          id,
+          label,
+          stateEquals(options.renderResolution, value),
+          `frontend.options.renderResolution.${value}`,
+        ),
+      ),
+    ),
   ]),
 ]);
 
@@ -438,7 +688,7 @@ const followsSystem = stateEquals(accessibility.reduceMotionFollowsSystem, true)
 const motionReduced = stateEquals(accessibility.reduceMotion, true);
 
 const accessibilityPanel = optionsPanel("optionsPanelAccessibility", [
-  Grid({ gap: 12, align: "stretch", cols: 2 }, [
+  Grid({ gap: 12, align: "stretch", cols: 2, focus: { policy: "spatial" } }, [
     optionLabel("optionsReduceMotionLabel", "REDUCE MOTION"),
     valueButton("optionsReduceMotion", "optionsReduceMotionLabel", "reduceMotion", [
       { when: [followsSystem, motionReduced], text: "SYSTEM (ON)" },
@@ -459,6 +709,16 @@ const accessibilityPanel = optionsPanel("optionsPanelAccessibility", [
       "optionsA11yViewFeelScaleLabel",
       options.viewFeelScale,
       0.1,
+    ),
+    optionLabel("optionsHoldTimingScaleLabel", "HOLD TIMING", "Longer tap and hold windows"),
+    rangeSlider(
+      "optionsHoldTimingScale",
+      "optionsHoldTimingScaleLabel",
+      options.holdTimingScale,
+      1,
+      3,
+      0.25,
+      2,
     ),
     optionLabel("optionsFlashLimiterLabel", "FLASH LIMITER"),
     valueButton(
@@ -497,11 +757,12 @@ export const optionsMenu = defineUiTree({
       accessibleName: "Player options",
       role: "group",
     },
-    // One linear focus group spans the tab strip, the visible panel and BACK, so
-    // every stop is reachable from every tab. The tab strip deliberately declares
-    // no focus policy of its own: a nested group would trap nav inside the strip.
-    // Hidden panels drop out of the focus export. `restoreOnReturn` brings focus
-    // back to the last-focused control when a tree pushed above this one closes.
+    // The screen is one linear group holding three stops: the tab strip (a
+    // nested horizontal group that wraps), the visible panel's grid (a nested
+    // spatial group), and BACK. Down from a tab enters the panel; the bumpers
+    // switch tabs from anywhere. Hidden panels drop out of the focus export.
+    // Closing a tree pushed above this one returns focus to the last-focused
+    // control (restore is on by default).
     VStack(
       {
         localState: optionsTabState.scope,
@@ -511,11 +772,13 @@ export const optionsMenu = defineUiTree({
         width: 640,
         fill: COLOR_PANEL,
         focus: { policy: "linear", wrap: true },
-        restoreOnReturn: true,
       },
       [
         Text({ content: "OPTIONS", fontSize: 24, color: COLOR_ACCENT }),
-        HStack({ gap: 6, align: "stretch", role: "tablist" }, OPTIONS_TABS.map(optionsTabButton)),
+        HStack(
+          { gap: 6, align: "stretch", role: "tablist", focus: { policy: "linear", wrap: true } },
+          OPTIONS_TABS.map(optionsTabButton),
+        ),
         VStack(
           { align: "stretch" },
           Switch(optionsTab, {
@@ -525,6 +788,7 @@ export const optionsMenu = defineUiTree({
           }),
         ),
         Button({ id: "optionsBack", label: "BACK", onPress: CLOSE_DIALOG_ACTION }),
+        promptRow(),
       ],
     ),
   ),
@@ -533,6 +797,8 @@ export const optionsMenu = defineUiTree({
 export const frontendReactions: NamedReactionDescriptor[] = [
   openPlay,
   openOptions,
+  askExit,
+  askQuit,
   ...frontendStartReactions,
   ...optionReactions,
   ...optionsTabReactions,

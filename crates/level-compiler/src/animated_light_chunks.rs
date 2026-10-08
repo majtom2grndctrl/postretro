@@ -169,7 +169,7 @@ pub fn build_animated_light_chunks(
 
             let chart = &face_charts[face_index_usize];
 
-            let face_aabb = project_uv_to_world_aabb(chart, chart.uv_min, chart.uv_extent);
+            let face_aabb = project_uv_to_world_aabb(chart, chart.uv_min, chart_uv_max(chart));
             let candidates: Vec<u32> = animated
                 .iter()
                 .enumerate()
@@ -202,11 +202,16 @@ pub fn build_animated_light_chunks(
                 // floor so a degenerate chart still bottoms out reasonably.
                 let min_u_extent = chart_u_pitch.max(global_min_uv_extent);
                 let min_v_extent = chart_v_pitch.max(global_min_uv_extent);
+                let grid = TexelGrid {
+                    interior: [interior_w as u32, interior_h as u32],
+                    pitch: [chart_u_pitch, chart_v_pitch],
+                };
                 recurse(
                     face_index,
                     chart,
-                    chart.uv_min,
-                    chart.uv_extent,
+                    &grid,
+                    [0, 0],
+                    grid.interior,
                     &candidates,
                     &animated,
                     min_u_extent,
@@ -263,12 +268,46 @@ struct AnimatedLight {
     radius: f32,
 }
 
+/// A chart's interior texel grid, which chunks split along.
+struct TexelGrid {
+    interior: [u32; 2],
+    pitch: [f32; 2],
+}
+
+impl TexelGrid {
+    /// UV of texel edge `t` on `axis`. The chart's own edges are its exact
+    /// UV bounds, so an unsplit chunk spans the chart bit for bit.
+    fn edge_uv(&self, chart: &Chart, axis: usize, t: u32) -> f32 {
+        if t == 0 {
+            chart.uv_min[axis]
+        } else if t == self.interior[axis] {
+            chart_uv_max(chart)[axis]
+        } else {
+            chart.uv_min[axis] + t as f32 * self.pitch[axis]
+        }
+    }
+}
+
+fn chart_uv_max(chart: &Chart) -> [f32; 2] {
+    [
+        chart.uv_min[0] + chart.uv_extent[0],
+        chart.uv_min[1] + chart.uv_extent[1],
+    ]
+}
+
+/// Subdivide the chunk covering interior texels `lo..hi` until each holds at
+/// most the per-chunk light cap. Chunks split on whole texels, so a chunk's UV
+/// edge sits on a texel edge — half a texel from every texel center — and
+/// `chunk_atlas_rect`'s center-ownership rounding never flips, however large
+/// the chart's UVs (a cut face's sub-chart can sit tens of meters from its
+/// frame's origin).
 #[allow(clippy::too_many_arguments)]
 fn recurse(
     face_index: u32,
     chart: &Chart,
-    uv_min: [f32; 2],
-    uv_extent: [f32; 2],
+    grid: &TexelGrid,
+    lo: [u32; 2],
+    hi: [u32; 2],
     candidate_indices: &[u32],
     animated: &[AnimatedLight],
     min_u_extent: f32,
@@ -279,7 +318,9 @@ fn recurse(
     overflow_drops: &mut u64,
     overflow_log_count: &mut u64,
 ) {
-    let (aabb_min, aabb_max) = project_uv_to_world_aabb(chart, uv_min, uv_extent);
+    let uv_min = [grid.edge_uv(chart, 0, lo[0]), grid.edge_uv(chart, 1, lo[1])];
+    let uv_max = [grid.edge_uv(chart, 0, hi[0]), grid.edge_uv(chart, 1, hi[1])];
+    let (aabb_min, aabb_max) = project_uv_to_world_aabb(chart, uv_min, uv_max);
 
     let mut hits: Vec<u32> = candidate_indices
         .iter()
@@ -294,16 +335,18 @@ fn recurse(
         return;
     }
 
-    // Termination floor: the face's (u_axis, v_axis) basis is orthonormal
-    // (see lightmap_bake.rs), so `uv_extent` is along the face's own basis.
-    // An axis is "splittable" if halving it leaves each half >= the chart's
-    // per-axis UV-per-texel pitch — otherwise the resulting chunks contain
-    // zero texel centers and collapse to identical 1x1 atlas rects in
-    // `chunk_atlas_rect` (tripping the overlap assertion). Use a small
-    // epsilon so floating-point halving doesn't flake at exactly 2x pitch.
+    // Termination floor: an axis is "splittable" if halving its texels leaves
+    // each half at least one texel and at least the per-axis UV floor (the
+    // face's (u_axis, v_axis) basis is orthonormal, so texels times pitch is
+    // extent along the face). Use a small epsilon so the floor doesn't flake
+    // at exactly 2x pitch.
     let split_eps = 1.0e-5;
-    let u_splittable = uv_extent[0] * 0.5 >= min_u_extent - split_eps;
-    let v_splittable = uv_extent[1] * 0.5 >= min_v_extent - split_eps;
+    let len = [hi[0] - lo[0], hi[1] - lo[1]];
+    // The floor tests half the chunk's extent, as the UV-midpoint split did,
+    // so the split decisions match it; `len >= 2` keeps each half a texel.
+    let half_uv = |axis: usize| len[axis] as f32 * grid.pitch[axis] * 0.5;
+    let u_splittable = len[0] >= 2 && half_uv(0) >= min_u_extent - split_eps;
+    let v_splittable = len[1] >= 2 && half_uv(1) >= min_v_extent - split_eps;
     let at_min_extent = !u_splittable && !v_splittable;
 
     if hits.len() <= MAX_ANIMATED_LIGHTS_PER_CHUNK || at_min_extent {
@@ -334,7 +377,7 @@ fn recurse(
             aabb_max: aabb_max.to_array(),
             index_offset,
             uv_min,
-            uv_max: [uv_min[0] + uv_extent[0], uv_min[1] + uv_extent[1]],
+            uv_max,
             index_count: hits.len() as u32,
             _padding: 0,
         });
@@ -345,36 +388,25 @@ fn recurse(
     // to the other when the preferred axis can no longer be split below its
     // chart-pitch floor. `at_min_extent` above guarantees at least one axis
     // is splittable here.
-    let prefer_u = uv_extent[0] >= uv_extent[1];
+    let prefer_u = uv_max[0] - uv_min[0] >= uv_max[1] - uv_min[1];
     let split_u = match (u_splittable, v_splittable) {
         (true, true) => prefer_u,
         (true, false) => true,
         (false, true) => false,
         (false, false) => unreachable!("at_min_extent guard above"),
     };
-    let (left_min, left_extent, right_min, right_extent) = if split_u {
-        let half = uv_extent[0] * 0.5;
-        (
-            uv_min,
-            [half, uv_extent[1]],
-            [uv_min[0] + half, uv_min[1]],
-            [uv_extent[0] - half, uv_extent[1]],
-        )
-    } else {
-        let half = uv_extent[1] * 0.5;
-        (
-            uv_min,
-            [uv_extent[0], half],
-            [uv_min[0], uv_min[1] + half],
-            [uv_extent[0], uv_extent[1] - half],
-        )
-    };
+    let axis = if split_u { 0 } else { 1 };
+    let mid = lo[axis] + len[axis] / 2;
+    let (mut left_hi, mut right_lo) = (hi, lo);
+    left_hi[axis] = mid;
+    right_lo[axis] = mid;
 
     recurse(
         face_index,
         chart,
-        left_min,
-        left_extent,
+        grid,
+        lo,
+        left_hi,
         &hits,
         animated,
         min_u_extent,
@@ -388,8 +420,9 @@ fn recurse(
     recurse(
         face_index,
         chart,
-        right_min,
-        right_extent,
+        grid,
+        right_lo,
+        hi,
         &hits,
         animated,
         min_u_extent,
@@ -405,11 +438,9 @@ fn recurse(
 /// Project a face-local UV rectangle (in world-meter units) to its world-space
 /// AABB via the chart's (origin, u_axis, v_axis) basis. The four UV corners
 /// project to four world points; the AABB is their component-wise extent.
-fn project_uv_to_world_aabb(chart: &Chart, uv_min: [f32; 2], uv_extent: [f32; 2]) -> (Vec3, Vec3) {
-    let u0 = uv_min[0];
-    let v0 = uv_min[1];
-    let u1 = u0 + uv_extent[0];
-    let v1 = v0 + uv_extent[1];
+fn project_uv_to_world_aabb(chart: &Chart, uv_min: [f32; 2], uv_max: [f32; 2]) -> (Vec3, Vec3) {
+    let [u0, v0] = uv_min;
+    let [u1, v1] = uv_max;
     let corner = |u: f32, v: f32| chart.origin + chart.u_axis * u + chart.v_axis * v;
     let p00 = corner(u0, v0);
     let p10 = corner(u1, v0);
@@ -418,6 +449,40 @@ fn project_uv_to_world_aabb(chart: &Chart, uv_min: [f32; 2], uv_extent: [f32; 2]
     let mn = p00.min(p10).min(p01).min(p11);
     let mx = p00.max(p10).max(p01).max(p11);
     (mn, mx)
+}
+
+/// Faces with geometry whose chart overlaps an animated light's influence,
+/// by the same test the chunk builder applies: an upper bound, known at
+/// atlas preparation, on the animated blocks the bake can emit (each
+/// animated face is one block, and the unlit-chunk cull only drops faces).
+pub fn animated_candidate_face_count(
+    animated_lights: &AnimatedBakedLights<'_>,
+    face_charts: &[Chart],
+    face_index_ranges: &[FaceIndexRange],
+) -> usize {
+    let spheres: Vec<(Vec3, f32)> = animated_lights
+        .entries()
+        .iter()
+        .map(|e| &e.influence)
+        .filter(|infl| infl.radius != f32::MAX && infl.radius > 0.0)
+        .map(|infl| (Vec3::from(infl.center), infl.radius))
+        .collect();
+    if spheres.is_empty() {
+        return 0;
+    }
+    debug_assert_eq!(face_charts.len(), face_index_ranges.len());
+    face_charts
+        .iter()
+        .zip(face_index_ranges)
+        .filter(|(_, range)| range.index_count > 0)
+        .filter(|(chart, _)| {
+            let (aabb_min, aabb_max) =
+                project_uv_to_world_aabb(chart, chart.uv_min, chart_uv_max(chart));
+            spheres
+                .iter()
+                .any(|&(center, radius)| sphere_overlaps_aabb(center, radius, aabb_min, aabb_max))
+        })
+        .count()
 }
 
 /// Sphere-vs-AABB overlap by closest-point distance.
@@ -446,6 +511,7 @@ mod tests {
             width_texels: 32,
             height_texels: 32,
             leaf_index: 0,
+            window: None,
         }
     }
 
@@ -461,6 +527,7 @@ mod tests {
             width_texels: 32,
             height_texels: 32,
             leaf_index: 0,
+            window: None,
         }
     }
 
@@ -824,6 +891,7 @@ mod tests {
             width_texels: 8,
             height_texels: 8,
             leaf_index: 0,
+            window: None,
         };
         // Eight lights spread across the face → forces subdivision below cap.
         let uv_centers = [

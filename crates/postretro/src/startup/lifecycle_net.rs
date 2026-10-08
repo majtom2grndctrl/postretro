@@ -86,15 +86,20 @@ impl App {
     }
 
     pub(crate) fn clear_surface_lifetime_level_state(&mut self) {
+        self.ai_runtime.cancel_weapon_activations();
         // Fog- and trigger-volume entities live in the script registry;
         // clearing their bridge id tables and trigger state prevents stale
         // slots or bindings if a future surface re-creation re-runs
-        // `populate_from_level`. collision_world is reset for the same
-        // reason — it must be a clean placeholder before resume populates it.
+        // `populate_from_level`. Install replaces collision_world by
+        // assignment, so its reset here serves Frontend and suspend: no
+        // collision persists without a level.
         // Called both from `unload_level` (session installed) and the suspend
         // path (session may be absent if suspend arrives pre-install), so the
         // session-owned state clears are guarded — a no-op with no session yet.
         if let Some(session) = self.session.as_mut() {
+            postretro_sim::weapon::execution::cancel_weapon_activations(
+                &mut session.scripting.script_ctx.registry.borrow_mut(),
+            );
             session.scripting.command_diagnostics.clear();
             session.scripting.auto_close_timers.clear();
             session.scripting.spawn_context.clear();
@@ -128,6 +133,8 @@ impl App {
         self.trigger_pool_report = TriggerPoolInstallReport::default();
         self.client_fire_resolutions.clear();
         self.client_predicted_shots.clear();
+        self.client_weapon.clear();
+        self.observer_weapon_cues.clear();
         self.client_reload_edges = Default::default();
         self.client_overheat_edge = Default::default();
     }
@@ -145,6 +152,7 @@ impl App {
     /// | progress tracker, death-event carryover, world presentation intake/pool/fact tracking, active wieldable, client weapon prediction state, camera pose | |
     /// | streaming sessions (SH and lightmap), the level's read issuer and workers | |
     pub(crate) fn unload_level(&mut self) {
+        let unload_started = std::time::Instant::now();
         self.cpu_timer.level_changed();
         self.clear_net_level_parity();
         // `net_endpoint` and `audio` are session-owned; reset/release them through
@@ -227,6 +235,12 @@ impl App {
         self.script_time = 0.0;
         self.anim_time = 0.0;
         self.boot_state = BootState::Frontend;
+        // Unload runs before `begin_level_load` resets `level_timings`, so
+        // line C never carries it; this line is its only record.
+        log::info!(
+            "[Startup] unload_level={:.1}ms",
+            unload_started.elapsed().as_secs_f64() * 1000.0
+        );
     }
 
     /// Forget the installed level on a still-live endpoint. Both unload and

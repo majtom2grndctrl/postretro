@@ -6,6 +6,8 @@
 // the quads with matching painter depths.
 // See: context/lib/ui.md
 
+use crate::render::uploads::UploadQueue;
+
 use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
 
@@ -143,6 +145,10 @@ pub(crate) struct UiPass {
     /// Bind group for the white-texel batch (panels). Rebuilt only if the
     /// uniform buffer changes, which it never does after construction.
     white_bind_group: wgpu::BindGroup,
+    /// The quad pipeline's bind-group layout and sampler, kept so an `image`
+    /// widget asset uploaded later binds the same way the white texel does.
+    image_bind_group_layout: wgpu::BindGroupLayout,
+    image_sampler: wgpu::Sampler,
 
     /// glyphon shaped-text half of the pass. Owns its pipeline, atlas, and
     /// per-span draw recorders. See `text`.
@@ -461,6 +467,8 @@ impl UiPass {
             ring_bind_group,
             white_view,
             white_bind_group,
+            image_bind_group_layout: bind_group_layout.clone(),
+            image_sampler: sampler.clone(),
             text,
             depth_texture: None,
             depth_view: None,
@@ -511,7 +519,7 @@ impl UiPass {
     /// disjoint per-command GPU-buffer invariant.
     ///
     /// Single color target plus a private UI depth target; the caller's `load` op
-    /// controls whether the color surface is cleared first. The depth target is
+    /// controls whether the color target (the UI layer) is cleared first. The depth target is
     /// always cleared. `load` rides alongside `&UiComposition` because
     /// clear-vs-load is a target concern, not a composition one.
     ///
@@ -530,7 +538,7 @@ impl UiPass {
         &mut self,
         font_system: &mut FontSystem,
         device: &wgpu::Device,
-        queue: &wgpu::Queue,
+        queue: &UploadQueue,
         encoder: &mut wgpu::CommandEncoder,
         view: &wgpu::TextureView,
         viewport: [u32; 2],
@@ -554,10 +562,9 @@ impl UiPass {
         );
 
         // Give each batch its OWN region of the instance buffer, sized to the
-        // SUM of all batch instance counts. `queue.write_buffer` is a
-        // queue-timeline op: every staged write lands (last-wins per region)
-        // BEFORE the single submitted command buffer executes. Writing each
-        // batch to offset 0 would therefore have every draw read the LAST
+        // SUM of all batch instance counts. The deferred upload batch lands
+        // every write (last-wins per region) before the submitted draws execute.
+        // Writing each batch to offset 0 would have every draw read the LAST
         // batch's data — recording a draw between writes does not snapshot the
         // buffer, since the writes resolve on the queue timeline, not the
         // command-recording timeline. Disjoint per-batch regions sidestep this.
@@ -590,12 +597,13 @@ impl UiPass {
         let prepared_text_batches = self.text.prepare_text_batches(
             font_system,
             device,
-            queue,
+            queue.raw(),
             TextPrepareInput {
                 viewport,
                 texts,
                 buffers: &text_buffers,
                 depths: &text_depths,
+                clips: &composition.text_clips,
             },
             &text_ranges,
         );
@@ -634,7 +642,31 @@ impl UiPass {
         // order, without relying on a non-zero `first_instance`.
         let mut offset = 0u64;
         let mut ring_offset = 0u64;
+        // Scroll viewports scissor their shape batches. The pass starts with
+        // the full-layer scissor; it changes only when a command's clip does.
+        let full_scissor = [0, 0, viewport[0].max(1), viewport[1].max(1)];
+        let mut scissor = full_scissor;
         for command in &composition.commands {
+            let clip = match *command {
+                UiDrawCommand::Quad(batch_index) => batches[batch_index].clip,
+                UiDrawCommand::Ring(batch_index) => ring_batches[batch_index].clip,
+                // Text clips through its per-area `TextBounds`, so its span
+                // draws under the full-layer scissor.
+                UiDrawCommand::Text(_) => None,
+            };
+            let wanted = match clip {
+                Some(clip) => scissor_for_clip(clip, viewport),
+                None => Some(full_scissor),
+            };
+            // A clip that covers nothing skips the command; buffer offsets
+            // advance only for written batches, so later ones stay aligned.
+            let Some(rect) = wanted else {
+                continue;
+            };
+            if rect != scissor {
+                pass.set_scissor_rect(rect[0], rect[1], rect[2], rect[3]);
+                scissor = rect;
+            }
             match *command {
                 UiDrawCommand::Quad(batch_index) => {
                     let ordered = &batches[batch_index];
@@ -773,7 +805,7 @@ fn create_ui_quad_pipeline(
         vertex: wgpu::VertexState {
             module: shader,
             entry_point: Some("vs_main"),
-            buffers: std::slice::from_ref(instance_layout),
+            buffers: &[Some(instance_layout.clone())],
             compilation_options: wgpu::PipelineCompilationOptions::default(),
         },
         primitive: wgpu::PrimitiveState {
@@ -790,7 +822,10 @@ fn create_ui_quad_pipeline(
             entry_point: Some("fs_main"),
             targets: &[Some(wgpu::ColorTargetState {
                 format: color_format,
-                // Standard alpha blend over the existing surface contents.
+                // Standard alpha blend over the existing target contents. Over the
+                // transparent-cleared UI layer this accumulates premultiplied
+                // colour with coverage alpha (colour SrcAlpha/OneMinusSrcAlpha,
+                // alpha One/OneMinusSrcAlpha via ALPHA_BLENDING).
                 blend: Some(wgpu::BlendState::ALPHA_BLENDING),
                 write_mask: wgpu::ColorWrites::ALL,
             })],
@@ -814,7 +849,7 @@ fn create_ui_ring_pipeline(
         vertex: wgpu::VertexState {
             module: shader,
             entry_point: Some("vs_main"),
-            buffers: std::slice::from_ref(instance_layout),
+            buffers: &[Some(instance_layout.clone())],
             compilation_options: wgpu::PipelineCompilationOptions::default(),
         },
         primitive: wgpu::PrimitiveState {
@@ -889,6 +924,84 @@ pub(crate) fn push_focus_ring(
     draw.push_quad(bar([ox, oy + oh - t, ow, t]));
     draw.push_quad(bar([ox, oy + t, t, (oh - 2.0 * t).max(0.0)]));
     draw.push_quad(bar([ox + ow - t, oy + t, t, (oh - 2.0 * t).max(0.0)]));
+}
+
+/// Slack, in device px, for treating a focused stop as flush with a scroll
+/// viewport edge.
+const FOCUS_RING_EDGE_EPSILON: f32 = 0.5;
+
+/// The clip a focus ring draws under when its stop sits in a scroll viewport
+/// `clip` (device px `[x, y, w, h]`). The ring sits `inset` px outside the
+/// stop, and scroll-into-view leaves a stop flush with the viewport edge, so
+/// clipping to the viewport itself would always cut that side's bar. Each
+/// edge the stop reaches (sits inside of, or flush with) grows by the ring's
+/// reach; an edge that cuts the stop stays, so a partly scrolled-out stop's
+/// ring is cut where its content is. `None` when no part of the stop shows:
+/// a stop scrolled out of view draws no ring.
+pub(crate) fn focus_ring_clip(rect: [f32; 4], clip: [f32; 4], inset: f32) -> Option<[f32; 4]> {
+    let reach = inset.max(0.0) + FOCUS_RING_THICKNESS;
+    let eps = FOCUS_RING_EDGE_EPSILON;
+    let (clip_right, clip_bottom) = (clip[0] + clip[2], clip[1] + clip[3]);
+    let (rect_right, rect_bottom) = (rect[0] + rect[2], rect[1] + rect[3]);
+    let visible_w = rect_right.min(clip_right) - rect[0].max(clip[0]);
+    let visible_h = rect_bottom.min(clip_bottom) - rect[1].max(clip[1]);
+    if visible_w <= 0.0 || visible_h <= 0.0 {
+        return None;
+    }
+    let left = if rect[0] >= clip[0] - eps {
+        clip[0] - reach
+    } else {
+        clip[0]
+    };
+    let top = if rect[1] >= clip[1] - eps {
+        clip[1] - reach
+    } else {
+        clip[1]
+    };
+    let right = if rect_right <= clip_right + eps {
+        clip_right + reach
+    } else {
+        clip_right
+    };
+    let bottom = if rect_bottom <= clip_bottom + eps {
+        clip_bottom + reach
+    } else {
+        clip_bottom
+    };
+    Some([left, top, right - left, bottom - top])
+}
+
+impl UiPass {
+    /// Upload an RGBA8 image for `image` widgets: its texture and the bind
+    /// group its batches bind, laid out like the white texel's.
+    pub(crate) fn upload_image(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        image: &UiTexture,
+    ) -> (wgpu::Texture, wgpu::BindGroup) {
+        let texture = upload_ui_texture(device, queue, image);
+        let view = texture.create_view(&Default::default());
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("UI Image Bind Group"),
+            layout: &self.image_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: self.uniform_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&self.image_sampler),
+                },
+            ],
+        });
+        (texture, bind_group)
+    }
 }
 
 /// Upload a CPU RGBA8 `UiTexture` and return the GPU texture. sRGB format so
@@ -1023,6 +1136,54 @@ mod tests {
                 .iter()
                 .all(|op| matches!(op, tree::UiPaintOp::Quad { .. })),
             "focus ring quads append after focused content",
+        );
+    }
+
+    // A full-width row scrolled flush to the viewport's bottom keeps every
+    // bar of its ring: each edge it reaches grows by the ring's reach.
+    #[test]
+    fn a_flush_full_width_stop_keeps_its_whole_ring_inside_the_grown_clip() {
+        let clip = [100.0, 100.0, 200.0, 100.0];
+        let rect = [100.0, 160.0, 200.0, 40.0];
+        let inset = 4.0;
+        let ring = focus_ring_clip(rect, clip, inset).expect("the stop shows");
+        let reach = inset + FOCUS_RING_THICKNESS;
+        assert_eq!(
+            ring,
+            [
+                100.0 - reach,
+                100.0 - reach,
+                200.0 + 2.0 * reach,
+                100.0 + 2.0 * reach
+            ]
+        );
+        // Every ring bar lies inside the clip.
+        let outer = [
+            rect[0] - inset,
+            rect[1] - inset,
+            rect[2] + 2.0 * inset,
+            rect[3] + 2.0 * inset,
+        ];
+        assert!(outer[0] >= ring[0] && outer[1] >= ring[1]);
+        assert!(outer[0] + outer[2] <= ring[0] + ring[2]);
+        assert!(outer[1] + outer[3] <= ring[1] + ring[3]);
+    }
+
+    // A stop cut by the viewport's bottom keeps that edge, so its ring's side
+    // bars stop where its content does; a stop scrolled fully out draws none.
+    #[test]
+    fn a_cut_stop_rings_within_the_cutting_edge_and_a_hidden_stop_draws_no_ring() {
+        let clip = [100.0, 100.0, 200.0, 100.0];
+        let cut = focus_ring_clip([100.0, 180.0, 200.0, 40.0], clip, 4.0).expect("partly shown");
+        assert_eq!(cut[1] + cut[3], 200.0, "the cutting bottom edge stays");
+        assert!(cut[1] < 100.0, "the reached top edge grows");
+        assert_eq!(
+            focus_ring_clip([100.0, 210.0, 200.0, 40.0], clip, 4.0),
+            None
+        );
+        assert_eq!(
+            focus_ring_clip([100.0, 200.0, 200.0, 40.0], clip, 4.0),
+            None
         );
     }
 }

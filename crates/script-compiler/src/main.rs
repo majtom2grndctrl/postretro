@@ -32,6 +32,10 @@
 //! scripts-build --prelude --sdk-root <DIR> --out <OUTPUT.js>
 //! ```
 //!
+//! The `--light-table` file is a `LightTable` JSON document. Its optional
+//! `mapMembers` array (omitted when empty) carries mover, trigger-volume and
+//! spawner identity records, which build-side `getMapEntities` answers from.
+//!
 //! In `--prelude` mode the bundler entry is `<DIR>/prelude.ts` and every named
 //! export is rewritten as a `globalThis.<name> = <name>` assignment so the
 //! resulting script, when evaluated in a QuickJS context, installs the SDK

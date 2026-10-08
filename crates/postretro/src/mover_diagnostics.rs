@@ -60,9 +60,11 @@ fn mover_overlay_segments(
 }
 
 fn normalized_rotation(rotation: Quat) -> Quat {
-    (rotation.is_finite() && rotation.length_squared() > f32::EPSILON)
-        .then_some(rotation.normalize())
-        .unwrap_or(Quat::IDENTITY)
+    if rotation.is_finite() && rotation.length_squared() > f32::EPSILON {
+        rotation.normalize()
+    } else {
+        Quat::IDENTITY
+    }
 }
 
 /// Append current rotating-mover diagnostics to the established debug-line

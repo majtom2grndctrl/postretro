@@ -1,12 +1,12 @@
 # Testing Guide
 
-> **Read this when:** writing new tests, deciding what to test, or reasoning about test strategy.
+> **Read this when:** adding, updating, or removing tests, deciding what to test, or reasoning about test strategy.
 > **Key invariant:** tests document Postretro-specific behavior and cross-subsystem interactions — not language features or crate internals.
 > **Related:** [Development Guide](./development_guide.md)
 
 ---
 
-## 1. Test Targets
+## 1. Test Selection
 
 ### Priority targets
 
@@ -25,7 +25,15 @@ Test it if **all** of these hold:
 - Crosses a boundary or shows how the system behaves at a seam
 - Captures a real scenario or documents a contract for future readers
 
-Skip it otherwise.
+Apply these criteria to new and existing tests.
+
+### Existing coverage
+
+When adding coverage, review existing tests for the affected behavior in the same change.
+
+Extend an existing test when old and new behavior belong to the same scenario or contract. Preserve assertions for existing behavior; update the name if its scope changes. Add a separate test when combining scenarios would obscure intent or make failures harder to diagnose.
+
+Remove tests that duplicate retained coverage, exercise retired behavior, or no longer meet the decision criteria. Before removing one, confirm it protects no distinct contract, boundary, edge case, or regression that still matters. Move any useful assertions into retained tests first. Similar setup alone does not make tests redundant.
 
 ---
 
@@ -156,6 +164,8 @@ Some suites are expensive and must not be run reflexively:
 **Keep `GATE_FIXTURES` cheap, and profile before adding to it.** Bake cost tracks probe and texel counts, not `.map` file size. One large fixture can dwarf the rest of the list combined — dropping `occlusion-test` cut the gates 7× (1812s → 260s) while the animated-weight-map fixtures are sub-second each. A full-compile timing is a poor proxy for a gate's share, because the gates bake probes twice and weight large volumes far more heavily.
 
 **Default verification while iterating.** Run `cargo check` plus targeted tests for the touched crate or module: `cargo test -p <crate> <name_filter>`. Narrow to one target to skip the `tests/` suite: `--lib` for a library crate, `--bin <name>` for a binary. Run full `cargo test` once, as the final coordinator gate after integration, review, and fixes.
+
+**Feature-gated code needs its feature in the gate.** Plain `cargo test` and `cargo clippy` never compile code behind a cargo feature — `dev-tools` tests and the `capture` test targets included. When a change touches feature-gated code, or a dependency that code uses, the final gate also runs tests and `clippy --all-targets -- -D warnings` with that feature (e.g. `--workspace --features postretro/dev-tools`). A dependency upgrade reaches every feature set; gate them all.
 
 **Read the test count, not the exit status.** A target-and-filter pair matching nothing prints `0 passed` and exits `ok` — a pass and a no-op look identical at a glance. `--lib` on a binary crate is the standing trap: `postretro-level-compiler` exposes only texture helpers from its lib, so the compiler internals (map parsing, entity dispatch) live in the `prl-build` bin target and `--lib` reaches none of them. Use `--bin prl-build` there. Whatever the target, confirm the count matches the tests you meant to run.
 

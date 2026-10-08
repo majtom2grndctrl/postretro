@@ -243,6 +243,8 @@ impl ScriptRuntime {
             #[cfg(debug_assertions)]
             staged_manifest_lane: None,
             #[cfg(debug_assertions)]
+            committed_staged_generation: None,
+            #[cfg(debug_assertions)]
             active_mod_init_dependencies: None,
             #[cfg(debug_assertions)]
             deferred_mesh_descriptors: None,
@@ -340,12 +342,23 @@ impl ScriptRuntime {
         Vec::new()
     }
 
-    pub fn latest_staged_manifest_generation(&self) -> Option<u64> {
+    /// Generation of the latest staged build requested, not necessarily
+    /// committed, or `None` when no staged lane exists. Its one reader, the
+    /// stale-result check, exists only in debug builds, and so does this.
+    #[cfg(debug_assertions)]
+    pub(crate) fn latest_staged_manifest_generation(&self) -> Option<u64> {
+        self.staged_manifest_lane
+            .as_ref()
+            .map(|lane| lane.latest_requested_generation())
+    }
+
+    /// Generation of the latest staged build that committed, or `None` if none
+    /// has (always `None` in release builds). Unlike the requested generation,
+    /// a failed, stale, or rejected build never advances it.
+    pub fn committed_staged_manifest_generation(&self) -> Option<u64> {
         #[cfg(debug_assertions)]
         {
-            self.staged_manifest_lane
-                .as_ref()
-                .map(|lane| lane.latest_requested_generation())
+            self.committed_staged_generation
         }
         #[cfg(not(debug_assertions))]
         {
@@ -723,6 +736,7 @@ impl ScriptRuntime {
                 apply_summary.dropped_missing_targets,
                 dependency_count,
             );
+            self.committed_staged_generation = Some(result.generation);
             return StagedManifestCommitOutcome::Committed {
                 generation: result.generation,
                 descriptor_count: ctx.data_registry.borrow().entities.len(),
@@ -828,9 +842,9 @@ mod tests {
     use crate::components::brain::BrainComponent;
     use crate::components::health::HealthComponent;
     use crate::data_descriptors::{
-        BehaviorGraphDescriptor, EntityTypeDescriptor, FireMode, HealthDescriptor,
-        InventoryDescriptor, MeshDescriptor, ProjectileBodyVisual, ProjectileDescriptor,
-        ProjectileTrailVisual, ProjectileVisual, ResolutionMode, WeaponDescriptor,
+        BehaviorGraphDescriptor, EntityTypeDescriptor, HealthDescriptor, InventoryDescriptor,
+        MeshDescriptor, ProjectileBodyVisual, ProjectileDescriptor, ProjectileTrailVisual,
+        ProjectileVisual, ResolutionMode, WeaponDescriptor,
     };
     use crate::provenance::{DescriptorComponentKind, DescriptorProvenance, DescriptorSpawnPath};
     use crate::registry::{ComponentKind, Transform};
@@ -1595,8 +1609,11 @@ mod tests {
             movement_spread_degrees: 0.0,
             spread_vertical_bias: 0.0,
             range: 64.0,
-            cooldown_ms: 100.0,
-            fire_mode: FireMode::Semi,
+            primary: postretro_foundation::WeaponActivationDescriptor::single(
+                postretro_foundation::ActivationTrigger::Press,
+                100.0,
+            ),
+            secondary: None,
             resolution: ResolutionMode::Hitscan,
             projectile: None,
             splash: None,

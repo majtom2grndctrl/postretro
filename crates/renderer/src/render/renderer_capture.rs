@@ -62,6 +62,7 @@ impl Renderer {
         // Capture reports the renderer's CPU stages but no submit: its submit
         // blocks on the device, which is not CPU recording cost.
         self.cpu_frame.clear();
+        self.commit_native_capture_extents();
         let cpu = std::rc::Rc::clone(&self.cpu_frame);
         let drain_scope = cpu.scope(super::cpu_stages::RenderStage::ShDrain);
         let outcome = self.drain_sh_residency(sh_drain_batch)?;
@@ -93,14 +94,17 @@ impl Renderer {
                 render_world,
             )?;
 
-            if self.capture_gpu_timing_state == CaptureGpuTimingState::Active {
-                if let Some(timing) = self.full_mut().frame_timing.as_mut() {
-                    timing.encode_resolve(&mut encoder);
-                }
+            if self.capture_gpu_timing_state == CaptureGpuTimingState::Active
+                && let Some(timing) = self.full_mut().frame_timing.as_mut()
+            {
+                timing.encode_resolve(&mut encoder);
             }
             self.queue.submit(std::iter::once(encoder.finish()));
             self.complete_capture_measurement_submission()
         })();
+        if frame.is_ok() {
+            self.queue.complete_frame();
+        }
         Ok(ShDrainFrameResult {
             outcome,
             compose_submitted,
@@ -175,6 +179,7 @@ impl Renderer {
         // The PNG frame is never folded into a CPU window, so its drain goes
         // untimed; clearing keeps a prior sample's stages from reading as its.
         self.cpu_frame.clear();
+        self.commit_native_capture_extents();
         let outcome = self.drain_sh_residency(sh_drain_batch)?;
         let frame = (|| -> Result<(Vec<u8>, bool)> {
             self.update_per_frame_uniforms(view_proj, camera_position, animation_time_seconds);
@@ -202,8 +207,8 @@ impl Renderer {
                 render_world,
             )?;
 
-            let width = self.surface_config.width;
-            let height = self.surface_config.height;
+            let capture_extent = self.render_extents().surface;
+            let (width, height) = (capture_extent.width, capture_extent.height);
             // The PNG path reads tightly packed RGBA8, so resolve HDR scene color to
             // a capture-only LDR target first. Capture shares the window tonemap but
             // uses an at-rest effect uniform instead of transient screen effects.
@@ -214,7 +219,15 @@ impl Renderer {
                 width,
                 height,
             );
-            let pixels = self.read_texture_rgba8(&capture_color, width, height, encoder)?;
+            self.queue.submit(std::iter::once(encoder.finish()));
+            self.queue.assert_empty("PNG capture scene submit");
+            let readback_encoder =
+                self.device
+                    .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                        label: Some("PNG Readback Encoder"),
+                    });
+            let pixels =
+                self.read_texture_rgba8(&capture_color, width, height, readback_encoder)?;
             Ok((pixels, compose_succeeded))
         })();
         // The readback helper owns submission. A successful return therefore
@@ -224,6 +237,9 @@ impl Renderer {
             .as_ref()
             .is_ok_and(|(_, compose_succeeded)| *compose_succeeded);
         let frame = frame.map(|(pixels, _)| pixels);
+        if frame.is_ok() {
+            self.queue.complete_frame();
+        }
         Ok(ShDrainFrameResult {
             outcome,
             compose_submitted,

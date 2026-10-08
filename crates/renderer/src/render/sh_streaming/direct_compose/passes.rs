@@ -259,14 +259,14 @@ impl StreamingPromotionPass {
 
     pub(super) fn clear_all_row_pairs(
         &self,
-        queue: &wgpu::Queue,
+        queue: &crate::render::uploads::UploadQueue,
     ) -> Result<(), ShResidencyDrainError> {
         self.sparse.clear_all_row_pairs(queue)
     }
 
     pub(super) fn dispatch(
         &mut self,
-        queue: &wgpu::Queue,
+        queue: &crate::render::uploads::UploadQueue,
         encoder: &mut wgpu::CommandEncoder,
         light_term_mask: LightTermMask,
         debug_override: DirectShDebugOverride,
@@ -510,7 +510,7 @@ mod animated_runtime;
 
 #[allow(clippy::too_many_arguments)]
 fn dispatch_dynamic_pass(
-    queue: &wgpu::Queue,
+    queue: &crate::render::uploads::UploadQueue,
     encoder: &mut wgpu::CommandEncoder,
     label: &'static str,
     pipeline: &wgpu::ComputePipeline,

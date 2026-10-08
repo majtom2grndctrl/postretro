@@ -197,7 +197,7 @@ impl AtlasFormats {
             * irr.bytes;
         let scale = self.direction_texel_scale.max(1);
         assert!(
-            width % scale == 0 && height % scale == 0,
+            width.is_multiple_of(scale) && height.is_multiple_of(scale),
             "layer extent {width}x{height} does not divide into the direction scale {scale}"
         );
         let direction =

@@ -1,0 +1,24 @@
+{
+  "map": "content/dev/maps/stress-warren-hallway-inspection.prl",
+  "camera": {
+    "position": [
+      21.13,
+      4.04,
+      30.48
+    ],
+    "yaw_deg": 0.0,
+    "pitch_deg": 0.0,
+    "fov_deg": 100.0
+  },
+  "resolution": [
+    640,
+    360
+  ],
+  "output": "/Users/dhiester/Projects/Personal/postretro/measurements/sh-compose-contributing-rows/capture/out/new/arena-full-t050/capture.png",
+  "force_full_resident_sh_compose": true,
+  "measurement": {
+    "report": "/Users/dhiester/Projects/Personal/postretro/measurements/sh-compose-contributing-rows/capture/out/new/arena-full-t050/report.json",
+    "warmup_frames": 1,
+    "sample_frames": 29
+  }
+}

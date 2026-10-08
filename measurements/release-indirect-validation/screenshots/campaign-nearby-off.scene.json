@@ -1,0 +1,18 @@
+{
+  "map": "content/dev/maps/campaign-test.prl",
+  "camera": {
+    "position": [
+      -63.8368,
+      2.3288,
+      -45.9232
+    ],
+    "yaw_deg": -55,
+    "pitch_deg": -8,
+    "fov_deg": 100
+  },
+  "resolution": [
+    1280,
+    720
+  ],
+  "output": "measurements/release-indirect-validation/screenshots/campaign-nearby-off.png"
+}

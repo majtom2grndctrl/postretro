@@ -9,9 +9,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use postretro_level_format::SectionId;
-use postretro_level_format::cluster_directory::{
-    ClusterDirectorySection, ClusterRangeRole, ClusterResourceDomain,
-};
+#[cfg(test)]
+use postretro_level_format::cluster_directory::ClusterRangeRole;
+use postretro_level_format::cluster_directory::{ClusterDirectorySection, ClusterResourceDomain};
 use postretro_level_format::cluster_sh_payloads::DecodedClusterShPayload;
 use postretro_level_format::delta_sh_volumes::delta_probe_f16_stride;
 use postretro_level_format::sh_reconstruct::{Level, stored_delta_tiles};
@@ -30,6 +30,8 @@ mod compose_plan;
 #[cfg(test)]
 mod compose_plan_oracle;
 mod compose_staleness;
+#[cfg(test)]
+mod contributing_rows_tests;
 mod dense;
 mod diagnostics;
 mod direct_compose;
@@ -41,6 +43,10 @@ mod install_journal;
 #[cfg(test)]
 mod install_tests;
 mod lifecycle;
+mod node_map;
+mod node_ownership;
+#[cfg(test)]
+mod node_ownership_tests;
 mod ownership;
 mod patches;
 mod payload;
@@ -62,11 +68,13 @@ pub use diagnostics::ShStreamingLiveDiagnostics;
 use diagnostics::{InstallCpuCounters, PoolGrowthCounters};
 use direct_compose::DirectSparseRowUpload;
 use floor::plan_initial_pool_floor;
+pub(crate) use gpu::StagedUploads;
 use gpu::StreamingGpuPools;
 use gpu::{AtlasShape, buffer_with_zeroes, checked_cell_count, sparse_compose_capacity, u32_bytes};
-pub(crate) use gpu::{StagedUploads, StagingPool};
 use install::InstallGpu;
 use install_journal::InstallJournal;
+use node_map::NodeMap;
+use node_ownership::{NodeOwnership, derive_node_ownership, derive_owner_dependencies};
 use ownership::{StoredNode, StoredNodeLayout, derive_dense_node_layout, rewrite_slot};
 use patches::SlotRun;
 use payload::{ParsedSparseRow, SparseInstallPlan, parse_sparse_rows};
@@ -104,6 +112,11 @@ type SparseCapacityFloors = BTreeMap<u32, (u32, u32)>;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct ShComposePassDiagnostics {
     pub rows_composed: u64,
+    /// Composed rows whose pass input carries a CSR entry: the pass's own
+    /// section, or for Pass B also any row Pass A rewrote that frame,
+    /// whatever made Pass A plan it. On a settled frame without control
+    /// changes this equals `rows_composed`.
+    pub entry_rows_composed: u64,
     pub dispatches: u64,
     pub lagged_rows_composed: u64,
     pub resident_rows_still_lagging: u64,
@@ -269,6 +282,22 @@ impl fmt::Display for ShResidencyDrainError {
 
 impl std::error::Error for ShResidencyDrainError {}
 
+impl From<crate::render::uploads::UploadError> for ShResidencyDrainError {
+    fn from(error: crate::render::uploads::UploadError) -> Self {
+        use crate::render::uploads::UploadError;
+        match error {
+            UploadError::Alignment => Self::GpuCapacity {
+                reason: "streamed buffer upload is not word aligned",
+            },
+            UploadError::Bounds => Self::SlotOverflow,
+            UploadError::TexturePayload => Self::MalformedChunk {
+                cluster_id: 0,
+                reason: "streamed texture upload rows disagree with their payload",
+            },
+        }
+    }
+}
+
 impl ShResidencyDrainError {
     /// Only a submitted replacement that is still fenced is retryable. An
     /// adapter limit, malformed pool shape, or arithmetic overflow is a real
@@ -308,8 +337,8 @@ pub(super) struct ShResidencyState {
     dense_owner: Vec<Option<u32>>,
     dense_node: Vec<Option<StoredNode>>,
     dense_node_local_slot: Vec<Option<u32>>,
-    node_layouts: BTreeMap<StoredNode, StoredNodeLayout>,
-    node_owner: BTreeMap<StoredNode, u32>,
+    node_layouts: NodeMap<StoredNodeLayout>,
+    node_owner: NodeMap<u32>,
     nodes_by_owner: BTreeMap<u32, Vec<StoredNode>>,
     node_slots: BTreeMap<StoredNode, PoolRange>,
     owner_dependencies: Vec<BTreeSet<u32>>,
@@ -661,3 +690,6 @@ fn required_compose_epochs(
         },
     ))
 }
+
+#[cfg(test)]
+pub(crate) use gpu::UploadOrderSh;

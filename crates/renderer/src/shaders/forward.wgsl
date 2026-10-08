@@ -82,9 +82,12 @@ fn animated_baked_light_tail_count() -> u32 {
 // Per-material emissive color. `Rgba8UnormSrgb` decodes to linear through the
 // hardware texture path, like base_texture; the black placeholder is a no-op.
 @group(1) @binding(1) var emissive_texture: texture_2d<f32>;
-// Per-material specular texture (R8Unorm sampled as .r). 1×1 black when the
-// diffuse's `_s.png` sibling is absent — zeros `spec_int` without any
-// shader branching. See context/lib/resource_management.md §4.1.
+// Per-material specular slot, sampled as .r: R8Unorm specular, or the
+// Rg8Unorm surface map (R specular, G stored height) when the diffuse has an
+// `_h.png` sibling. 1×1 black R8Unorm when neither sibling exists, which zeros
+// `spec_int` without a branch; its G reads as maximum raise, so the has-depth
+// bit is the only guard keeping Surface Depth off it. See
+// context/lib/resource_management.md §4.1, §4.6.
 @group(1) @binding(2) var spec_texture: texture_2d<f32>;
 
 struct MaterialUniform {
@@ -92,30 +95,37 @@ struct MaterialUniform {
     shininess: f32,
     // Prefix-driven static multiplier for the emissive texture.
     emissive_strength: f32,
-    _pad: vec2<f32>,
-    // --- Surface Depth (second 16-byte row) ---
-    // Already-allocated, already-zeroed slack: `MATERIAL_UNIFORM_SIZE` has been
-    // 32 on the CPU while this struct was 16, so the feature needs no buffer
-    // resize, no new binding, and no change to the 128-byte group-0 `Uniforms`
-    // ABI. An all-zero row is the flat material.
+    // --- Surface Depth (bytes 8..32) ---
+    // The CPU buffer was already 32 bytes while this struct was 16, so the
+    // feature needs no buffer resize, no new binding, and no change to the
+    // 128-byte group-0 `Uniforms` ABI. Every byte from 8 on is zero for the flat
+    // material.
     //
-    // Inward carve below the true surface plane, in METERS. There is no
+    // Relief band (bytes 8..16): the QUANTIZED peak raise, as a fraction of the
+    // relief scale in [0, 1], and the trough in [-1, 0]. Both come from the
+    // band of the mip the march reads; the CPU measures every uploaded mip at
+    // load. The march starts at the peak and walks only the band down to the
+    // trough; an empty band marches nothing.
+    surface_depth_peak_raise: f32,
+    surface_depth_trough: f32,
+    // Relief scale in each direction around the true surface plane (authored
+    // mid-gray): black sinks this far, white rises ~this far. Units per
+    // `SURFACE_DEPTH_TEXEL_MODE` (albedo texels today). There is no
     // texel-density convention for world materials — brush UV scale is authored
-    // freely in TrenchBroom — so a texture-space scale would give the same
-    // material a different physical depth on differently scaled brushes. 0
+    // freely in TrenchBroom — so the shader converts to meters per fragment. 0
     // disables the march entirely.
     surface_depth_meters: f32,
-    // Distance at which the carve has faded fully flat, in meters.
+    // Distance at which the relief has faded fully flat, in meters.
     surface_depth_fade_distance: f32,
-    // Plateau count for the in-shader quantization `floor(h * levels) / levels`;
-    // 0 leaves the stored 8-bit value alone.
+    // Terraces PER DIRECTION for the in-shader quantization of the signed height
+    // `floor(s * levels + 0.5) / levels`; 0 leaves the stored 8-bit value alone.
     surface_depth_quantize_levels: f32,
     // Packed: bits 0..7 = max DDA steps, bits 8..11 = the RESIDENT base mip the
-    // DDA reads at (D6.2 — a parameter, never a hardcoded 0 in WGSL, because
+    // DDA reads at (a parameter, never a hardcoded 0 in WGSL, because
     // streaming will move it), bit 12 = the has-depth flag the bind-group
     // builder sets from the loaded specular slot's format, bits 13..15 unused,
     // bits 16..19 = how many dynamic lights this fragment may self-shadow (the
-    // player's quality tier rides here; zero at Low and Off), bits 20..31 unused.
+    // player's on/off switch rides here; zero at Off), bits 20..31 unused.
     surface_depth_march: u32,
 };
 @group(1) @binding(3) var<uniform> material: MaterialUniform;
@@ -926,7 +936,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // textureSampleGrad as explicit gradients before conditional texture reads.
     let ddx = dpdx(in.uv);
     let ddy = dpdy(in.uv);
-    // World-space footprint of the same fragment. Surface Depth carves in
+    // World-space footprint of the same fragment. Surface Depth marches in
     // METERS and needs world-units-per-UV-unit to reach UV space; taking it
     // here keeps every derivative in uniform control flow, which the naga
     // uniformity test enforces. The march itself calls no derivative.
@@ -937,16 +947,16 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     let view_vector = uniforms.camera_position - in.world_position;
     let view_distance = length(view_vector);
-    // normalize(), not a divide by `view_distance`: this runs at EVERY quality
-    // tier including Off, and v/sqrt(dot(v,v)) is not required to round to the
+    // normalize(), not a divide by `view_distance`: this runs with Surface
+    // Depth on or off, and v/sqrt(dot(v,v)) is not required to round to the
     // same bits as the rsqrt normalize() lowers to. Keeping it exact is what
     // makes Off byte-identical to the pre-Surface-Depth render.
     let V = normalize(view_vector);
 
-    // Surface Depth: march the surface map's depth channel and shade the texel
+    // Surface Depth: march the surface map's height channel and shade the texel
     // face this pixel's view ray actually lands on. When the march is inactive
-    // — flat material, no `_h.png` sibling (the 1x1 black R8 placeholder reads
-    // `.g == 0`), faded out, degenerate UV chart, edge-on fragment — it returns
+    // — flat material, no `_h.png` sibling (the has-depth bit is clear), faded
+    // out, degenerate UV chart, edge-on fragment — it returns
     // `in.uv`, `in.world_position` and the geometric normal unchanged, so
     // everything below is the pre-Surface-Depth path exactly.
     //
@@ -1245,8 +1255,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // Surface Depth self-shadowing is budgeted: at most
     // `depth.shadow_light_budget` marches per fragment, spent on the first
     // contributing lights in loop order. The budget rides the per-material
-    // uniform because the player's quality tier switches it off by rewriting
-    // that buffer — `Low` and `Off` send zero, and so does every flat fragment.
+    // uniform because the player's on/off switch turns it off by rewriting
+    // that buffer — `Off` sends zero, and so does every flat fragment.
     var depth_shadow_marches: u32 = 0u;
     for (var i: u32 = 0u; i < light_count; i = i + 1u) {
         // Influence-volume early-out: pure optimization — no pixel change.

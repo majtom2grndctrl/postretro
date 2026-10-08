@@ -1,4 +1,4 @@
-//! Owns shared per-entry cache for sparse delta-SH bakes.
+//! Per-entry sparse delta-SH sub-block bakes, cached (indirect) or uncached.
 //! Governing contracts: `context/lib/build_pipeline.md` §Build Cache.
 
 use rayon::prelude::*;
@@ -26,7 +26,9 @@ pub(crate) struct DeltaShCachedSubblocks {
     pub(crate) tally: DeltaShCacheTally,
 }
 
-/// The cache-key inputs shared by all three delta-SH bakes.
+/// Cache-key inputs for a cached delta-SH bake. Only the indirect delta bake
+/// caches; the direct and animated-direct bakes call
+/// [`bake_delta_subblocks_uncached`] and build no key inputs.
 pub(crate) struct DeltaShCacheInputs<'a> {
     pub(crate) stage_id: &'a str,
     pub(crate) stage_version: u32,
@@ -44,10 +46,11 @@ pub(crate) struct DeltaShCacheInputs<'a> {
 
 /// Build one `(affinity cell, light)` key.
 ///
-/// This is `pub(crate)` so every delta bake and its version-contract tests use
-/// one explicit fold order. The stage id/version live in [`CacheKey`] itself;
-/// callers must provide distinct ids because the raw f16 payload shapes match
-/// across the three delta sections.
+/// This is `pub(crate)` so the cached bake and every delta stage's
+/// version-contract tests use one explicit fold order. The stage id/version
+/// live in [`CacheKey`] itself; stage ids must stay distinct because the raw
+/// f16 payload shapes match across the three delta sections, including the two
+/// uncached direct-delta stages whose dormant key folds the tests still pin.
 pub(crate) struct DeltaShEntryKeyInputs<'a> {
     pub(crate) stage_id: &'a str,
     pub(crate) stage_version: u32,
@@ -94,10 +97,11 @@ pub(crate) fn delta_sh_entry_cache_key(inputs: &DeltaShEntryKeyInputs<'_>) -> Ca
 
 /// Bake or load every CSR entry while preserving the input's exact entry order.
 ///
-/// `key_lights` and `light_seed_axes` are indexed by `affinity_lights`:
-/// unitizing callers pass normalized unit-radiance copies and a zero seed axis,
-/// while direct callers pass authored lights and their source/static indices.
-/// The closure receives `(light_index, cell)` and returns one dense f16 block.
+/// `key_lights` and `light_seed_axes` are indexed by `affinity_lights`; the
+/// indirect bake passes unit-radiance copies and a zero seed axis. With no
+/// cache, this checks the same key-table indices, then bakes through
+/// [`bake_delta_subblocks_uncached`]. The closure receives
+/// `(light_index, cell)` and returns one dense f16 block.
 pub(crate) fn bake_or_load_delta_subblocks<F>(
     inputs: &DeltaShCacheInputs<'_>,
     key_lights: &[MapLight],
@@ -120,11 +124,14 @@ where
     );
 
     let Some(stage_cache) = cache else {
-        let subblocks = inputs
-            .affinity_lights
-            .par_iter()
-            .zip(inputs.csr_entry_cells.par_iter())
-            .map(|(&light_index, &cell)| {
+        // The cached path's index contract, so a cold bake fails where a warm
+        // one would.
+        return bake_delta_subblocks_uncached(
+            inputs.affinity_lights,
+            inputs.csr_entry_cells,
+            inputs.expected_subblock_f16_len,
+            control,
+            |light_index, cell| {
                 key_lights
                     .get(light_index as usize)
                     .expect("delta cache light index must be in the keyed light table");
@@ -136,29 +143,9 @@ where
                     .valid_probe_masks
                     .get(cell as usize)
                     .expect("delta cache cell must have a probe-validity mask");
-
-                let subblock = {
-                    let _permit = control.governor().enter();
-                    bake_subblock(light_index, cell)
-                };
-                assert_eq!(
-                    subblock.len(),
-                    inputs.expected_subblock_f16_len,
-                    "delta sub-block bake must produce the stage's fixed dense payload length"
-                );
-                control.advance(1);
-                subblock
-            })
-            .flatten()
-            .collect();
-
-        return DeltaShCachedSubblocks {
-            subblocks,
-            tally: DeltaShCacheTally {
-                hits: 0,
-                misses: inputs.affinity_lights.len(),
+                bake_subblock(light_index, cell)
             },
-        };
+        );
     };
 
     let entries: Vec<(Vec<u16>, bool)> = inputs
@@ -230,6 +217,55 @@ where
     DeltaShCachedSubblocks { subblocks, tally }
 }
 
+/// Bake every CSR entry with no cache, preserving the input's exact entry
+/// order. Each entry takes one bake permit and advances progress once. The
+/// tally reports every entry as a miss, as [`DeltaShCacheTally`] defines for a
+/// cache-disabled bake. The closure receives `(light_index, cell)` and returns
+/// one dense f16 block of `expected_subblock_f16_len` halves.
+pub(crate) fn bake_delta_subblocks_uncached<F>(
+    affinity_lights: &[u32],
+    csr_entry_cells: &[u32],
+    expected_subblock_f16_len: usize,
+    control: &BakeControl,
+    bake_subblock: F,
+) -> DeltaShCachedSubblocks
+where
+    F: Fn(u32, u32) -> Vec<u16> + Sync,
+{
+    assert_eq!(
+        affinity_lights.len(),
+        csr_entry_cells.len(),
+        "delta CSR lights and cells must stay entry-parallel"
+    );
+
+    let subblocks = affinity_lights
+        .par_iter()
+        .zip(csr_entry_cells.par_iter())
+        .map(|(&light_index, &cell)| {
+            let subblock = {
+                let _permit = control.governor().enter();
+                bake_subblock(light_index, cell)
+            };
+            assert_eq!(
+                subblock.len(),
+                expected_subblock_f16_len,
+                "delta sub-block bake must produce the stage's fixed dense payload length"
+            );
+            control.advance(1);
+            subblock
+        })
+        .flatten()
+        .collect();
+
+    DeltaShCachedSubblocks {
+        subblocks,
+        tally: DeltaShCacheTally {
+            hits: 0,
+            misses: affinity_lights.len(),
+        },
+    }
+}
+
 fn affinity_cell_coord(cell: u32, affinity_dims: [u32; 3]) -> (u32, u32, u32) {
     let cell_x = cell % affinity_dims[0];
     let cell_y = (cell / affinity_dims[0]) % affinity_dims[1];
@@ -251,7 +287,9 @@ fn decode_subblock(bytes: &[u8], expected_f16_len: usize) -> Option<Vec<u16>> {
     }
     Some(
         bytes
-            .chunks_exact(std::mem::size_of::<u16>())
+            .as_chunks::<{ std::mem::size_of::<u16>() }>()
+            .0
+            .iter()
             .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
             .collect(),
     )
@@ -466,5 +504,33 @@ mod tests {
         assert_eq!(calls.load(Ordering::Relaxed), 2);
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn uncached_bake_keeps_entry_order_and_reports_every_entry_as_a_miss() {
+        let progress = StageProgress::indeterminate();
+        let control = BakeControl::new(Arc::new(Governor::new(2, false)), &progress);
+        let lights: Vec<u32> = (0..64).map(|entry| entry % 3).collect();
+        let cells: Vec<u32> = (0..64).collect();
+
+        let baked =
+            bake_delta_subblocks_uncached(&lights, &cells, 2, &control, |light_index, cell| {
+                vec![light_index as u16, cell as u16]
+            });
+
+        let expected: Vec<u16> = lights
+            .iter()
+            .zip(&cells)
+            .flat_map(|(&light, &cell)| [light as u16, cell as u16])
+            .collect();
+        assert_eq!(baked.subblocks, expected);
+        assert_eq!(
+            baked.tally,
+            DeltaShCacheTally {
+                hits: 0,
+                misses: 64
+            }
+        );
+        assert_eq!(progress.completed(), 64);
     }
 }

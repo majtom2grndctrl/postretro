@@ -795,11 +795,11 @@ pub fn validate_brain_animation_states(
              the mesh's default animation state `{current}`; seeding `{rest}` so the enemy \
              does not present `{current}` until its first state change",
         );
-        if let Ok(mut mesh) = registry.get_component::<MeshComponent>(entity).cloned() {
-            if let Some(animation) = mesh.animation.as_mut() {
-                animation.current_state = rest;
-                let _ = registry.set_component(entity, mesh);
-            }
+        if let Ok(mut mesh) = registry.get_component::<MeshComponent>(entity).cloned()
+            && let Some(animation) = mesh.animation.as_mut()
+        {
+            animation.current_state = rest;
+            let _ = registry.set_component(entity, mesh);
         }
     }
 

@@ -33,7 +33,7 @@ impl LightmapStreamState {
     pub(super) fn execute(
         &mut self,
         device: &wgpu::Device,
-        queue: &wgpu::Queue,
+        queue: &crate::render::uploads::UploadQueue,
         ready: &[PreparedLightmapBlock],
     ) -> Result<Executed, LightmapResidencyDrainError> {
         let plan = self.model.plan();
@@ -122,7 +122,12 @@ impl LightmapStreamState {
         }
         for write in &plan.table_writes {
             let mut entry = [0u8; BLOCK_TABLE_ENTRY_BYTES];
-            for (bytes, word) in entry.chunks_exact_mut(4).zip(write.entry.to_words()) {
+            for (bytes, word) in entry
+                .as_chunks_mut::<4>()
+                .0
+                .iter_mut()
+                .zip(write.entry.to_words())
+            {
                 bytes.copy_from_slice(&word.to_ne_bytes());
             }
             let offset = u64::from(write.index) * BLOCK_TABLE_ENTRY_BYTES as u64;
@@ -138,7 +143,7 @@ impl LightmapStreamState {
 
         if let Some((_, next)) = grown {
             let previous = std::mem::replace(&mut self.textures, next);
-            self.retiring = Some(RetiringPool::after_submitted_work(queue, previous));
+            self.retiring = Some(RetiringPool::after_submitted_work(queue.raw(), previous));
             executed.grew = true;
         }
         Ok(executed)

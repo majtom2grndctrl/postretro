@@ -27,6 +27,8 @@ pub(crate) struct BlockLeadResult {
     /// packing-quality reference, not the walks' baseline.
     pub static_layers: Vec<u32>,
     /// Blocks in M(c) too large for any pool layer, summed over camera cells.
+    /// An invariant check: cell packing bounds every block by the pool edge,
+    /// so this stays zero.
     pub unplaceable_blocks: usize,
 }
 

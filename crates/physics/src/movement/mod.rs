@@ -324,8 +324,7 @@ mod tests {
         deepest_mover_penetration,
     };
     use glam::Quat;
-    use parry3d::math::{Isometry, Point};
-    use parry3d::shape::{Capsule, TriMesh};
+    use parry3d::shape::Capsule;
     use postretro_entities::Transform;
     use postretro_foundation::{
         AirParams, BobParams, BoolOrIr, CapsuleParams, CrouchParams, DashParams, FallParams,
@@ -449,50 +448,46 @@ mod tests {
     /// Triangles use CCW winding when viewed from the side the player is on so
     /// parry's contact normals point back toward the player.
     fn ledge_and_wall_world() -> CollisionWorld {
-        let mut points: Vec<Point<f32>> = Vec::new();
+        let mut points: Vec<Vec3> = Vec::new();
         let mut tris: Vec<[u32; 3]> = Vec::new();
 
         // Floor: y=0, x∈[-20,20], z∈[-10,10]. Up-facing normal +Y.
         let f0 = points.len() as u32;
-        points.push(Point::new(-20.0, 0.0, -10.0));
-        points.push(Point::new(20.0, 0.0, -10.0));
-        points.push(Point::new(20.0, 0.0, 10.0));
-        points.push(Point::new(-20.0, 0.0, 10.0));
+        points.push(Vec3::new(-20.0, 0.0, -10.0));
+        points.push(Vec3::new(20.0, 0.0, -10.0));
+        points.push(Vec3::new(20.0, 0.0, 10.0));
+        points.push(Vec3::new(-20.0, 0.0, 10.0));
         tris.push([f0, f0 + 1, f0 + 2]);
         tris.push([f0, f0 + 2, f0 + 3]);
 
         // Step ledge top: y=0.3, x∈[5,15], z∈[-10,10]. Up-facing +Y.
         let l0 = points.len() as u32;
-        points.push(Point::new(5.0, 0.3, -10.0));
-        points.push(Point::new(15.0, 0.3, -10.0));
-        points.push(Point::new(15.0, 0.3, 10.0));
-        points.push(Point::new(5.0, 0.3, 10.0));
+        points.push(Vec3::new(5.0, 0.3, -10.0));
+        points.push(Vec3::new(15.0, 0.3, -10.0));
+        points.push(Vec3::new(15.0, 0.3, 10.0));
+        points.push(Vec3::new(5.0, 0.3, 10.0));
         tris.push([l0, l0 + 1, l0 + 2]);
         tris.push([l0, l0 + 2, l0 + 3]);
 
         // Step ledge riser: x=5, y∈[0,0.3], z∈[-10,10]. Normal facing -X.
         let r0 = points.len() as u32;
-        points.push(Point::new(5.0, 0.0, -10.0));
-        points.push(Point::new(5.0, 0.0, 10.0));
-        points.push(Point::new(5.0, 0.3, 10.0));
-        points.push(Point::new(5.0, 0.3, -10.0));
+        points.push(Vec3::new(5.0, 0.0, -10.0));
+        points.push(Vec3::new(5.0, 0.0, 10.0));
+        points.push(Vec3::new(5.0, 0.3, 10.0));
+        points.push(Vec3::new(5.0, 0.3, -10.0));
         tris.push([r0, r0 + 1, r0 + 2]);
         tris.push([r0, r0 + 2, r0 + 3]);
 
         // Wall: x=15, y∈[0.3,5], z∈[-10,10]. Normal facing -X.
         let w0 = points.len() as u32;
-        points.push(Point::new(15.0, 0.3, -10.0));
-        points.push(Point::new(15.0, 0.3, 10.0));
-        points.push(Point::new(15.0, 5.0, 10.0));
-        points.push(Point::new(15.0, 5.0, -10.0));
+        points.push(Vec3::new(15.0, 0.3, -10.0));
+        points.push(Vec3::new(15.0, 0.3, 10.0));
+        points.push(Vec3::new(15.0, 5.0, 10.0));
+        points.push(Vec3::new(15.0, 5.0, -10.0));
         tris.push([w0, w0 + 1, w0 + 2]);
         tris.push([w0, w0 + 2, w0 + 3]);
 
-        let mesh = TriMesh::new(points, tris);
-        CollisionWorld {
-            mesh,
-            isometry: Isometry::identity(),
-        }
+        CollisionWorld::from_triangles_for_test(points, tris)
     }
 
     /// Returns a component just above the floor with no velocity, airborne.
@@ -554,6 +549,7 @@ mod tests {
             );
         }
 
+        #[allow(clippy::too_many_arguments)]
         fn set_pose(
             &mut self,
             mover_id: u32,
@@ -1014,19 +1010,9 @@ mod tests {
         let mut component = PlayerMovementComponent::from_descriptor(&canonical_descriptor());
         let start_position = Vec3::new(0.7, 1.2, 0.7);
         let mut position = start_position;
-        let capsule = Capsule::new(
-            Point::new(0.0, -component.capsule.half_height, 0.0),
-            Point::new(0.0, component.capsule.half_height, 0.0),
-            component.capsule.radius,
-        );
+        let capsule = Capsule::new_y(component.capsule.half_height, component.capsule.radius);
         assert!(
-            deepest_mover_penetration(
-                &movers,
-                &poses,
-                Point::new(position.x, position.y, position.z),
-                &capsule,
-            )
-            .is_none(),
+            deepest_mover_penetration(&movers, &poses, position, &capsule,).is_none(),
             "the final pose must be clear so the rotational sweep is required"
         );
         tick_on_mover(&mut component, &mut position, &world, &movers, &poses);
@@ -1036,13 +1022,7 @@ mod tests {
             "the rotating face crossing must displace the stationary capsule: position={position:?}"
         );
         assert!(
-            deepest_mover_penetration(
-                &movers,
-                &poses,
-                Point::new(position.x, position.y, position.z),
-                &capsule,
-            )
-            .is_none(),
+            deepest_mover_penetration(&movers, &poses, position, &capsule,).is_none(),
             "displaced player must not remain overlapped by the rotated mover"
         );
     }
@@ -1063,32 +1043,16 @@ mod tests {
         );
         let mut component = PlayerMovementComponent::from_descriptor(&canonical_descriptor());
         let mut position = Vec3::new(0.1, 1.2, 0.7);
-        let capsule = Capsule::new(
-            Point::new(0.0, -component.capsule.half_height, 0.0),
-            Point::new(0.0, component.capsule.half_height, 0.0),
-            component.capsule.radius,
-        );
+        let capsule = Capsule::new_y(component.capsule.half_height, component.capsule.radius);
         assert!(
-            deepest_mover_penetration(
-                &movers,
-                &poses,
-                Point::new(position.x, position.y, position.z),
-                &capsule,
-            )
-            .is_some(),
+            deepest_mover_penetration(&movers, &poses, position, &capsule,).is_some(),
             "the pure rotator must end overlapped for final-pose recovery"
         );
 
         tick_on_mover(&mut component, &mut position, &world, &movers, &poses);
 
         assert!(
-            deepest_mover_penetration(
-                &movers,
-                &poses,
-                Point::new(position.x, position.y, position.z),
-                &capsule,
-            )
-            .is_none(),
+            deepest_mover_penetration(&movers, &poses, position, &capsule,).is_none(),
             "final-pose recovery must leave no persistent pure-rotation overlap"
         );
     }
@@ -1389,30 +1353,26 @@ mod tests {
     /// (y∈[0,5], z∈[-20,20]). Used to isolate wall-slide behavior from the
     /// step-up probe path.
     fn flat_floor_and_wall_world() -> CollisionWorld {
-        let mut points: Vec<Point<f32>> = Vec::new();
+        let mut points: Vec<Vec3> = Vec::new();
         let mut tris: Vec<[u32; 3]> = Vec::new();
 
         let f0 = points.len() as u32;
-        points.push(Point::new(-20.0, 0.0, -20.0));
-        points.push(Point::new(20.0, 0.0, -20.0));
-        points.push(Point::new(20.0, 0.0, 20.0));
-        points.push(Point::new(-20.0, 0.0, 20.0));
+        points.push(Vec3::new(-20.0, 0.0, -20.0));
+        points.push(Vec3::new(20.0, 0.0, -20.0));
+        points.push(Vec3::new(20.0, 0.0, 20.0));
+        points.push(Vec3::new(-20.0, 0.0, 20.0));
         tris.push([f0, f0 + 1, f0 + 2]);
         tris.push([f0, f0 + 2, f0 + 3]);
 
         let w0 = points.len() as u32;
-        points.push(Point::new(5.0, 0.0, -20.0));
-        points.push(Point::new(5.0, 0.0, 20.0));
-        points.push(Point::new(5.0, 5.0, 20.0));
-        points.push(Point::new(5.0, 5.0, -20.0));
+        points.push(Vec3::new(5.0, 0.0, -20.0));
+        points.push(Vec3::new(5.0, 0.0, 20.0));
+        points.push(Vec3::new(5.0, 5.0, 20.0));
+        points.push(Vec3::new(5.0, 5.0, -20.0));
         tris.push([w0, w0 + 1, w0 + 2]);
         tris.push([w0, w0 + 2, w0 + 3]);
 
-        let mesh = TriMesh::new(points, tris);
-        CollisionWorld {
-            mesh,
-            isometry: Isometry::identity(),
-        }
+        CollisionWorld::from_triangles_for_test(points, tris)
     }
 
     /// Broad floor with `y = slope * x`. The upward-facing contact normal is
@@ -1421,16 +1381,12 @@ mod tests {
     fn sloped_floor_world(slope: f32) -> CollisionWorld {
         let y = |x: f32| slope * x;
         let points = vec![
-            Point::new(-20.0, y(-20.0), -20.0),
-            Point::new(20.0, y(20.0), -20.0),
-            Point::new(20.0, y(20.0), 20.0),
-            Point::new(-20.0, y(-20.0), 20.0),
+            Vec3::new(-20.0, y(-20.0), -20.0),
+            Vec3::new(20.0, y(20.0), -20.0),
+            Vec3::new(20.0, y(20.0), 20.0),
+            Vec3::new(-20.0, y(-20.0), 20.0),
         ];
-        let mesh = TriMesh::new(points, vec![[0, 2, 1], [0, 3, 2]]);
-        CollisionWorld {
-            mesh,
-            isometry: Isometry::identity(),
-        }
+        CollisionWorld::from_triangles_for_test(points, vec![[0, 2, 1], [0, 3, 2]])
     }
 
     #[test]
@@ -1691,11 +1647,7 @@ mod tests {
     fn step_up_lift_returns_none_at_pure_wall() {
         let desc = canonical_descriptor();
         let world = flat_floor_and_wall_world();
-        let capsule = Capsule::new(
-            Point::new(0.0, -desc.capsule.half_height, 0.0),
-            Point::new(0.0, desc.capsule.half_height, 0.0),
-            desc.capsule.radius,
-        );
+        let capsule = Capsule::new_y(desc.capsule.half_height, desc.capsule.radius);
         let cos_walkable = desc.ground.max_slope.to_radians().cos();
         let floor_y = desc.capsule.half_height + desc.capsule.radius;
         // Position the capsule just shy of the wall (wall at x=5) so the
@@ -1729,11 +1681,7 @@ mod tests {
     fn step_up_lift_returns_some_at_walkable_step() {
         let desc = canonical_descriptor();
         let world = ledge_and_wall_world();
-        let capsule = Capsule::new(
-            Point::new(0.0, -desc.capsule.half_height, 0.0),
-            Point::new(0.0, desc.capsule.half_height, 0.0),
-            desc.capsule.radius,
-        );
+        let capsule = Capsule::new_y(desc.capsule.half_height, desc.capsule.radius);
         let cos_walkable = desc.ground.max_slope.to_radians().cos();
         let floor_y = desc.capsule.half_height + desc.capsule.radius;
         // Approach the step riser at x=5 from the floor side. Lift the
@@ -1973,41 +1921,37 @@ mod tests {
     /// a player driven into the corner experiences both wall normals (-X, -Z)
     /// in the same tick — the geometric setup the deadzone targets.
     fn corner_world() -> CollisionWorld {
-        let mut points: Vec<Point<f32>> = Vec::new();
+        let mut points: Vec<Vec3> = Vec::new();
         let mut tris: Vec<[u32; 3]> = Vec::new();
 
         // Floor.
         let f0 = points.len() as u32;
-        points.push(Point::new(-20.0, 0.0, -20.0));
-        points.push(Point::new(20.0, 0.0, -20.0));
-        points.push(Point::new(20.0, 0.0, 20.0));
-        points.push(Point::new(-20.0, 0.0, 20.0));
+        points.push(Vec3::new(-20.0, 0.0, -20.0));
+        points.push(Vec3::new(20.0, 0.0, -20.0));
+        points.push(Vec3::new(20.0, 0.0, 20.0));
+        points.push(Vec3::new(-20.0, 0.0, 20.0));
         tris.push([f0, f0 + 1, f0 + 2]);
         tris.push([f0, f0 + 2, f0 + 3]);
 
         // East wall at x=5 facing -X.
         let e0 = points.len() as u32;
-        points.push(Point::new(5.0, 0.0, -20.0));
-        points.push(Point::new(5.0, 0.0, 5.0));
-        points.push(Point::new(5.0, 5.0, 5.0));
-        points.push(Point::new(5.0, 5.0, -20.0));
+        points.push(Vec3::new(5.0, 0.0, -20.0));
+        points.push(Vec3::new(5.0, 0.0, 5.0));
+        points.push(Vec3::new(5.0, 5.0, 5.0));
+        points.push(Vec3::new(5.0, 5.0, -20.0));
         tris.push([e0, e0 + 1, e0 + 2]);
         tris.push([e0, e0 + 2, e0 + 3]);
 
         // North wall at z=5 facing -Z.
         let n0 = points.len() as u32;
-        points.push(Point::new(-20.0, 0.0, 5.0));
-        points.push(Point::new(-20.0, 5.0, 5.0));
-        points.push(Point::new(5.0, 5.0, 5.0));
-        points.push(Point::new(5.0, 0.0, 5.0));
+        points.push(Vec3::new(-20.0, 0.0, 5.0));
+        points.push(Vec3::new(-20.0, 5.0, 5.0));
+        points.push(Vec3::new(5.0, 5.0, 5.0));
+        points.push(Vec3::new(5.0, 0.0, 5.0));
         tris.push([n0, n0 + 1, n0 + 2]);
         tris.push([n0, n0 + 2, n0 + 3]);
 
-        let mesh = TriMesh::new(points, tris);
-        CollisionWorld {
-            mesh,
-            isometry: Isometry::identity(),
-        }
+        CollisionWorld::from_triangles_for_test(points, tris)
     }
 
     /// Drive the player diagonally toward the corner at (x=5, z=5) until the
@@ -4731,33 +4675,29 @@ mod tests {
     /// stand-up probe: the ceiling sits at a tunable height above the player so
     /// the head-rise sweep does or does not hit it.
     fn floor_and_ceiling_world(ceiling_y: f32) -> CollisionWorld {
-        let mut points: Vec<Point<f32>> = Vec::new();
+        let mut points: Vec<Vec3> = Vec::new();
         let mut tris: Vec<[u32; 3]> = Vec::new();
 
         // Floor: y=0, up-facing +Y.
         let f0 = points.len() as u32;
-        points.push(Point::new(-20.0, 0.0, -10.0));
-        points.push(Point::new(20.0, 0.0, -10.0));
-        points.push(Point::new(20.0, 0.0, 10.0));
-        points.push(Point::new(-20.0, 0.0, 10.0));
+        points.push(Vec3::new(-20.0, 0.0, -10.0));
+        points.push(Vec3::new(20.0, 0.0, -10.0));
+        points.push(Vec3::new(20.0, 0.0, 10.0));
+        points.push(Vec3::new(-20.0, 0.0, 10.0));
         tris.push([f0, f0 + 1, f0 + 2]);
         tris.push([f0, f0 + 2, f0 + 3]);
 
         // Ceiling: y=ceiling_y, wound so the normal faces down (−Y) toward the
         // player below.
         let c0 = points.len() as u32;
-        points.push(Point::new(-20.0, ceiling_y, -10.0));
-        points.push(Point::new(20.0, ceiling_y, 10.0));
-        points.push(Point::new(20.0, ceiling_y, -10.0));
-        points.push(Point::new(-20.0, ceiling_y, 10.0));
+        points.push(Vec3::new(-20.0, ceiling_y, -10.0));
+        points.push(Vec3::new(20.0, ceiling_y, 10.0));
+        points.push(Vec3::new(20.0, ceiling_y, -10.0));
+        points.push(Vec3::new(-20.0, ceiling_y, 10.0));
         tris.push([c0, c0 + 1, c0 + 2]);
         tris.push([c0, c0 + 3, c0 + 1]);
 
-        let mesh = TriMesh::new(points, tris);
-        CollisionWorld {
-            mesh,
-            isometry: Isometry::identity(),
-        }
+        CollisionWorld::from_triangles_for_test(points, tris)
     }
 
     #[test]

@@ -199,6 +199,7 @@ pub struct ClientReplication {
     /// anchoring uses the local descriptor's authored hitbox when a model socket
     /// or derived skeletal bound is unavailable; no combat component is created.
     remote_entity_classes: HashMap<NetworkId, String>,
+    projectile_presentations: HashMap<NetworkId, postretro_net::wire::WireProjectilePresentation>,
     /// Entities awaiting a full-baseline refresh, keyed by `NetworkId`. An entry here
     /// resends a `BaselineRefreshRequest` on the 5 Hz cadence; the matching
     /// `FullBaseline` apply clears it.
@@ -521,6 +522,7 @@ impl ClientReplication {
         self.baselines.clear();
         self.active_weapon_archetypes.clear();
         self.remote_entity_classes.clear();
+        self.projectile_presentations.clear();
         self.pending_repairs.clear();
         self.interp = RemoteInterpolationBuffer::default();
         self.remote_enemy_walk_playback.clear();
@@ -562,6 +564,7 @@ impl ClientReplication {
         self.baselines.clear();
         self.active_weapon_archetypes.clear();
         self.remote_entity_classes.clear();
+        self.projectile_presentations.clear();
         self.pending_repairs.clear();
         self.interp = RemoteInterpolationBuffer::default();
         self.remote_enemy_walk_playback.clear();
@@ -620,8 +623,33 @@ impl ClientReplication {
         self.map.get(&network_id).copied()
     }
 
-    /// Descriptor class for a mapped remote presentation entity. The class is
-    /// cached by descriptor-aware receive glue and cleared with the mapping.
+    /// Frozen visual facts retained with the mapped projectile's baseline.
+    pub(crate) fn projectile_presentation(
+        &self,
+        network_id: NetworkId,
+    ) -> Option<postretro_net::wire::WireProjectilePresentation> {
+        self.projectile_presentations.get(&network_id).copied()
+    }
+
+    fn retain_projectile_presentation(
+        &mut self,
+        registry: &mut EntityRegistry,
+        network_id: NetworkId,
+        facts: Option<postretro_net::wire::WireProjectilePresentation>,
+    ) {
+        if let Some(facts) = facts {
+            self.projectile_presentations.insert(network_id, facts);
+            if let Some(id) = self.entity_for_network_id(network_id) {
+                super::projectile_presentation::apply_projectile_presentation_facts(
+                    registry, id, facts,
+                );
+            }
+        } else {
+            self.projectile_presentations.remove(&network_id);
+        }
+    }
+
+    /// Descriptor class for a mapped remote presentation entity.
     pub(crate) fn remote_entity_class(&self, network_id: NetworkId) -> Option<&str> {
         self.remote_entity_classes
             .get(&network_id)
@@ -667,10 +695,10 @@ impl ClientReplication {
         // Old or duplicate sequence: ignore the whole snapshot. The unreliable
         // snapshot channel can deliver an older packet after a newer one; applying it
         // would regress state. Sequence 0 is a valid first snapshot (None < Some(0)).
-        if let Some(latest) = self.latest_sequence {
-            if snapshot.sequence <= latest {
-                return ApplyOutcome::default();
-            }
+        if let Some(latest) = self.latest_sequence
+            && snapshot.sequence <= latest
+        {
+            return ApplyOutcome::default();
         }
         self.latest_sequence = Some(snapshot.sequence);
         self.acked_server_tick = snapshot.server_tick;
@@ -690,6 +718,7 @@ impl ClientReplication {
                     last_processed_client_tick,
                     entity_class,
                     active_weapon_archetype,
+                    projectile_presentation,
                 } => {
                     if self.apply_full_baseline(
                         registry,
@@ -704,6 +733,11 @@ impl ClientReplication {
                         entity_class.as_deref(),
                         &mut outcome,
                     ) {
+                        self.retain_projectile_presentation(
+                            registry,
+                            NetworkId(*network_id),
+                            *projectile_presentation,
+                        );
                         acked_baselines.push((*network_id, *baseline_id));
                         self.maybe_surface_active_weapon_attachment(
                             NetworkId(*network_id),
@@ -739,6 +773,7 @@ impl ClientReplication {
                     last_processed_client_tick,
                     entity_class,
                     active_weapon_archetype,
+                    projectile_presentation,
                 } => {
                     if self.apply_delta(
                         registry,
@@ -754,6 +789,11 @@ impl ClientReplication {
                         entity_class.as_deref(),
                         &mut outcome,
                     ) {
+                        self.retain_projectile_presentation(
+                            registry,
+                            NetworkId(*network_id),
+                            *projectile_presentation,
+                        );
                         acked_baselines.push((*network_id, *new_baseline_id));
                         self.maybe_surface_active_weapon_attachment(
                             NetworkId(*network_id),
@@ -952,17 +992,15 @@ impl ClientReplication {
                 // meshless. The local pawn is excluded: its descriptor presentation
                 // rides `armed_local_pawn` on the movement path, never the remote-entity
                 // mesh path.
-                if !local_player {
-                    if let Some(class) = entity_class {
-                        outcome.remote_entities.push(RemoteEntityMaterialize {
-                            network_id,
-                            entity_id: id,
-                            entity_class: class.to_string(),
-                            initial_animation_state: first_mesh_animation_state(components),
-                            active_weapon_archetype: None,
-                            weapon_attachment_changed: false,
-                        });
-                    }
+                if !local_player && let Some(class) = entity_class {
+                    outcome.remote_entities.push(RemoteEntityMaterialize {
+                        network_id,
+                        entity_id: id,
+                        entity_class: class.to_string(),
+                        initial_animation_state: first_mesh_animation_state(components),
+                        active_weapon_archetype: None,
+                        weapon_attachment_changed: false,
+                    });
                 }
                 true
             }
@@ -1328,6 +1366,7 @@ impl ClientReplication {
             .remove(&network_id);
         self.active_weapon_archetypes.remove(&network_id);
         self.remote_entity_classes.remove(&network_id);
+        self.projectile_presentations.remove(&network_id);
         self.mover_network_ids.remove(&network_id);
         if self.local_pawn == Some(network_id) {
             self.local_pawn = None;
@@ -1348,6 +1387,7 @@ impl ClientReplication {
             if previous_network != network_id {
                 self.active_weapon_archetypes.remove(&previous_network);
                 self.remote_entity_classes.remove(&previous_network);
+                self.projectile_presentations.remove(&previous_network);
             }
         }
     }
@@ -1357,6 +1397,7 @@ impl ClientReplication {
         self.reverse_map.remove(&entity_id);
         self.active_weapon_archetypes.remove(&network_id);
         self.remote_entity_classes.remove(&network_id);
+        self.projectile_presentations.remove(&network_id);
         Some(entity_id)
     }
 
@@ -1676,7 +1717,13 @@ impl ClientReplication {
             let Some(pose) = self.interp.presented_pose(network_id, render_server_tick) else {
                 continue; // no samples buffered yet
             };
-            let _ = registry.set_presentation_transform(entity_id, pose.transform);
+            let mut transform = pose.transform;
+            if let Some(facts) = self.projectile_presentations.get(&network_id)
+                && facts.sprite_size.is_none()
+            {
+                transform.scale = Vec3::splat(facts.model_scale);
+            }
+            let _ = registry.set_presentation_transform(entity_id, transform);
             // Diagnostics-only: record the presented remote pose to detect stepped /
             // low-effective-rate interpolation output (position + orientation).
             self.netdiag.record_remote(
@@ -2255,15 +2302,15 @@ fn validate_kinematic_mover_state_binding(
         );
         return None;
     };
-    if let Some(bound) = bound_mover_id {
-        if bound != wire.mover_id {
-            log::warn!(
-                "[Net] KinematicMoverState mover_id {} would rebind {network_id:?} from mover_id {}; dropping phase",
-                wire.mover_id,
-                bound
-            );
-            return None;
-        }
+    if let Some(bound) = bound_mover_id
+        && bound != wire.mover_id
+    {
+        log::warn!(
+            "[Net] KinematicMoverState mover_id {} would rebind {network_id:?} from mover_id {}; dropping phase",
+            wire.mover_id,
+            bound
+        );
+        return None;
     }
     if mover.mover_id != wire.mover_id {
         log::warn!(
@@ -2585,6 +2632,7 @@ mod tests {
             // Generic (non-local) baseline fixture: no descriptor class.
             entity_class: None,
             active_weapon_archetype: None,
+            projectile_presentation: None,
             components,
         }
     }
@@ -2605,6 +2653,7 @@ mod tests {
             // Generic (non-local) delta fixture: no descriptor class.
             entity_class: None,
             active_weapon_archetype: None,
+            projectile_presentation: None,
             components,
         }
     }
@@ -3314,6 +3363,7 @@ mod tests {
             local_player: false,
             entity_class: Some("player".to_string()),
             active_weapon_archetype: Some("reference_pistol".to_string()),
+            projectile_presentation: None,
             components: vec![
                 transform_payload(x),
                 movement_payload_with_velocity_and_pitch([12.0, 0.0, 4.0], aim_pitch),
@@ -4612,6 +4662,7 @@ mod tests {
             // materialized it from; the client materializes the matching component.
             entity_class: Some("player".to_string()),
             active_weapon_archetype: None,
+            projectile_presentation: None,
             components,
         }
     }
@@ -4631,6 +4682,7 @@ mod tests {
             local_player: true,
             entity_class: Some("player".to_string()),
             active_weapon_archetype: None,
+            projectile_presentation: None,
             components,
         }
     }
@@ -4789,6 +4841,7 @@ mod tests {
             local_player: false,
             entity_class: Some(entity_class.to_string()),
             active_weapon_archetype: None,
+            projectile_presentation: None,
             components,
         }
     }
@@ -4808,6 +4861,7 @@ mod tests {
             local_player: false,
             entity_class: Some(entity_class.to_string()),
             active_weapon_archetype: None,
+            projectile_presentation: None,
             components,
         }
     }

@@ -7,15 +7,22 @@ use postretro_level_format::cluster_directory::{
 };
 use postretro_level_format::{self as prl_format, SectionId};
 
+use std::sync::Arc;
+
 use crate::lightmap_stream::{LightmapStreamingMode, requested_lightmap_streaming_mode};
+use crate::load_progress::LoadProgress;
 use crate::prl::{LevelWorld, PrlLoadError};
 use crate::prl_container::PrlContainer;
 use crate::prl_file::PrlFile;
 use crate::prl_loader::{MAX_DELTA_SECTION_BINDING_BYTES, load_prl_from_container};
 use crate::sh_stream::{
     ShStreamManifest, ShStreamingMode, load_manifest_positionally, read_container_positionally,
-    read_section_positionally, read_vec_at, requested_streaming_mode,
+    read_section_positionally, read_vec_at_in_chunks, requested_streaming_mode,
 };
+
+/// The whole-file backing reads its image in pieces this size so progress
+/// moves during the read rather than after it.
+const WHOLE_IMAGE_READ_CHUNK_BYTES: u64 = 8 * 1024 * 1024;
 
 type StreamingManifestLoad = (
     std::sync::Arc<PrlFile>,
@@ -32,6 +39,20 @@ struct LoadModes {
 }
 
 pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
+    load_prl_with_progress(path, &Arc::new(LoadProgress::new()))
+}
+
+/// [`load_prl`], reporting to `progress` as the load consumes the file.
+///
+/// Units are bytes this load reads: every section it decodes, plus, on the
+/// whole-file backing, the image read itself. Sections the load leaves on
+/// disk (streamed SH bodies and payloads, streamed lightmap blocks) are not
+/// counted. The plan is fixed once the backing is chosen, after the table and
+/// any streaming manifest are read; a successful return leaves `done == total`.
+pub fn load_prl_with_progress(
+    path: &str,
+    progress: &Arc<LoadProgress>,
+) -> Result<LevelWorld, PrlLoadError> {
     let (file, metadata, manifest) = load_stream_manifest_if_present(path)?;
     let modes = LoadModes {
         sh: match manifest {
@@ -48,6 +69,7 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
         modes,
         MAX_DELTA_SECTION_BINDING_BYTES,
         MAX_ANIMATED_BILLBOARD_DIRECT_SCATTER_SECTION_BYTES,
+        progress,
     )
 }
 
@@ -65,6 +87,7 @@ fn load_prl_with_modes(
     modes: LoadModes,
     max_delta_section_binding_bytes: u64,
     max_scatter_section_bytes: u64,
+    progress: &Arc<LoadProgress>,
 ) -> Result<LevelWorld, PrlLoadError> {
     let sh_manifest = match modes.sh {
         Some(ShStreamingMode::SyncProof | ShStreamingMode::Async) => manifest,
@@ -72,23 +95,73 @@ fn load_prl_with_modes(
     };
     let lightmap_may_stream =
         modes.lightmap == LightmapStreamingMode::Stream && table_may_stream_lightmaps(&metadata);
-    if sh_manifest.is_none() && !lightmap_may_stream {
-        return load_prl_from_retained_file(
+    let world = if sh_manifest.is_none() && !lightmap_may_stream {
+        load_prl_from_retained_file(
             file,
             metadata,
             max_delta_section_binding_bytes,
             max_scatter_section_bytes,
             modes.lightmap,
+            progress,
+        )
+    } else {
+        let sh_bodies_streamed = sh_manifest.is_some();
+        let planned = planned_section_reads(&metadata, sh_bodies_streamed);
+        progress.begin(planned.iter().map(|(_, size)| size).sum());
+        load_prl_from_container(
+            PrlContainer::from_positional(file, metadata, sh_bodies_streamed)
+                .with_progress(progress.clone(), planned),
+            max_delta_section_binding_bytes,
+            max_scatter_section_bytes,
+            sh_manifest,
+            modes.lightmap,
+        )
+    }?;
+    progress.finish();
+    Ok(world)
+}
+
+/// `(id, size)` of every section the decode may read whole: each registered
+/// id once, as the table lookup finds it. Left out are ids no decode reads
+/// (retired BSP and SH volume ids, unknown ids), the id-50 payloads only the
+/// streaming manifest touches, and, when SH streams, the SH bodies it leaves
+/// on disk plus the id-49 directory the manifest already parsed. Sections the
+/// decode turns out to skip leave the plan when the load settles or finishes.
+pub(crate) fn planned_section_reads(
+    metadata: &prl_format::ContainerMeta,
+    sh_bodies_streamed: bool,
+) -> Vec<(u32, u64)> {
+    let mut planned: Vec<(u32, u64)> = Vec::new();
+    for entry in &metadata.sections {
+        let Some(id) = SectionId::from_u32(entry.section_id) else {
+            continue;
+        };
+        let never_read_whole = matches!(
+            id,
+            SectionId::BspNodes
+                | SectionId::BspLeaves
+                | SectionId::ShVolume
+                | SectionId::ClusterShPayloads
         );
+        let streamed = sh_bodies_streamed
+            && matches!(
+                id,
+                SectionId::DeltaShVolumes
+                    | SectionId::OctahedralShVolume
+                    | SectionId::DirectShVolume
+                    | SectionId::DirectShDeltaVolumes
+                    | SectionId::AnimatedDirectShDeltaVolumes
+                    | SectionId::ClusterDirectory
+            );
+        let already_planned = planned
+            .iter()
+            .any(|(planned_id, _)| *planned_id == entry.section_id);
+        if never_read_whole || streamed || already_planned {
+            continue;
+        }
+        planned.push((entry.section_id, entry.size));
     }
-    let sh_bodies_streamed = sh_manifest.is_some();
-    load_prl_from_container(
-        PrlContainer::from_positional(file, metadata, sh_bodies_streamed),
-        max_delta_section_binding_bytes,
-        max_scatter_section_bytes,
-        sh_manifest,
-        modes.lightmap,
-    )
+    planned
 }
 
 /// A table that can never stream lightmaps bypasses the lightmap environment
@@ -162,6 +235,17 @@ pub(crate) fn load_prl_with_modes_for_test(
     sh: ShStreamingMode,
     lightmap: LightmapStreamingMode,
 ) -> Result<LevelWorld, PrlLoadError> {
+    load_prl_with_modes_reporting_for_test(path, sh, lightmap, &Arc::new(LoadProgress::new()))
+}
+
+/// [`load_prl_with_modes_for_test`], reporting to `progress`.
+#[cfg(test)]
+pub(crate) fn load_prl_with_modes_reporting_for_test(
+    path: &str,
+    sh: ShStreamingMode,
+    lightmap: LightmapStreamingMode,
+    progress: &Arc<LoadProgress>,
+) -> Result<LevelWorld, PrlLoadError> {
     let (file, metadata, manifest) = load_stream_manifest_if_present(path)?;
     let modes = LoadModes {
         sh: manifest.as_ref().map(|_| sh),
@@ -174,6 +258,7 @@ pub(crate) fn load_prl_with_modes_for_test(
         modes,
         MAX_DELTA_SECTION_BINDING_BYTES,
         MAX_ANIMATED_BILLBOARD_DIRECT_SCATTER_SECTION_BYTES,
+        progress,
     )
 }
 
@@ -199,12 +284,25 @@ fn load_prl_from_retained_file(
     max_delta_section_binding_bytes: u64,
     max_scatter_section_bytes: u64,
     lightmap_requested: LightmapStreamingMode,
+    progress: &Arc<LoadProgress>,
 ) -> Result<LevelWorld, PrlLoadError> {
     let file_len = file.len()?;
-    let file_data = read_vec_at(&file, 0, file_len, "legacy PRL image")?;
+    // The image read is real work here, unlike the positional backing, so it
+    // shares the plan with the section decodes that follow it.
+    let planned = planned_section_reads(&metadata, false);
+    progress.begin(file_len + planned.iter().map(|(_, size)| size).sum::<u64>());
+    let file_data = read_vec_at_in_chunks(
+        &file,
+        0,
+        file_len,
+        WHOLE_IMAGE_READ_CHUNK_BYTES,
+        "legacy PRL image",
+        |piece| progress.advance(piece),
+    )?;
     let reads = Some(file.read_counters().clone());
     load_prl_from_container(
-        PrlContainer::from_whole_bytes(file_data, metadata, reads),
+        PrlContainer::from_whole_bytes(file_data, metadata, reads)
+            .with_progress(progress.clone(), planned),
         max_delta_section_binding_bytes,
         max_scatter_section_bytes,
         None,

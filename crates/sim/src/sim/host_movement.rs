@@ -215,6 +215,17 @@ mod tests {
             .unwrap()
             .position;
 
+        // First tick: settle grounded. A pawn starts Airborne by design
+        // (`PlayerMovementComponent::from_descriptor`), and a first-tick
+        // forward input only gets air control: 9.7e-5 of travel, under
+        // `EPSILON`.
+        let _ = run_host_movement_tick(
+            &mut registry,
+            &world,
+            GRAVITY,
+            &[(driven, idle_input())],
+            DT,
+        );
         let inputs = vec![(driven, forward_input())];
         let _ = run_host_movement_tick(&mut registry, &world, GRAVITY, &inputs, DT);
 
@@ -264,6 +275,12 @@ mod tests {
         let world = floor_world();
         let mover = spawn_pawn(&mut registry, Vec3::new(0.0, 1.21, 0.0));
         let idler = spawn_pawn(&mut registry, Vec3::new(5.0, 1.21, 0.0));
+        // First tick: settle both grounded. Pawns start Airborne by design
+        // (`PlayerMovementComponent::from_descriptor`), and a first-tick
+        // forward input only gets air control: 9.7e-5 of travel, under
+        // `EPSILON`.
+        let settle = vec![(mover, idle_input()), (idler, idle_input())];
+        let _ = run_host_movement_tick(&mut registry, &world, GRAVITY, &settle, DT);
 
         let mover_before = registry.get_component::<Transform>(mover).unwrap().position;
         let idler_before = registry.get_component::<Transform>(idler).unwrap().position;

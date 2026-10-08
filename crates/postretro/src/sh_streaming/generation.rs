@@ -20,7 +20,7 @@ static NEXT_RESIDENCY_GENERATION: AtomicU64 = AtomicU64::new(1);
 impl GenerationClock for ProcessGenerationClock {
     fn take_generation(&self) -> Option<u64> {
         NEXT_RESIDENCY_GENERATION
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
                 (current != 0).then(|| current.checked_add(1).unwrap_or(0))
             })
             .ok()

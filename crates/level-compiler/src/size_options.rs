@@ -124,7 +124,7 @@ pub(crate) fn format_size_for_help(bytes: u64) -> String {
     const KIB: u64 = 1024;
 
     for (unit, suffix) in [(TIB, "TiB"), (GIB, "GiB"), (MIB, "MiB"), (KIB, "KiB")] {
-        if bytes >= unit && bytes % unit == 0 {
+        if bytes >= unit && bytes.is_multiple_of(unit) {
             return format!("{} {suffix}", bytes / unit);
         }
     }

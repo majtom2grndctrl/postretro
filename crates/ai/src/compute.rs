@@ -52,7 +52,7 @@ use super::targeting::{
 use super::{AttackOutcome, EnemyOutcome, EnteredActivity, PendingAttack};
 use crate::agent_steering;
 use crate::nav::find_path;
-use crate::weapon::ProjectileLaunch;
+use crate::weapon_controller::{WeaponAim, WeaponAttackRequest};
 use postretro_foundation::{ActionVerb, BRAIN_NO_TARGET_DISTANCE, MotionVerb};
 
 /// Pass 2: evaluate each immutable enemy snapshot into an outcome.
@@ -480,6 +480,12 @@ pub(super) fn evaluate(
         let post_slew_facing_is_within_tolerance = target_perception.is_some_and(|perception| {
             yaw_within_attack_tolerance(post_slew_yaw, perception.target_aim - perception.enemy_eye)
         });
+        let weapon_aim = target_perception.and_then(|perception| {
+            Some(WeaponAim {
+                origin: perception.enemy_eye,
+                direction: (perception.target_aim - perception.enemy_eye).try_normalize()?,
+            })
+        });
 
         // (4) Attack: the active firing leaf latches one graph-wide attack on
         // its first clear dwell tick. Its own cooldown must have elapsed, the
@@ -523,31 +529,15 @@ pub(super) fn evaluate(
                             return None;
                         }
 
-                        let perception = target_perception?;
-                        let origin = perception.enemy_eye;
-                        let direction = (perception.target_aim - origin).try_normalize()?;
-                        let credit_source = resolved
-                            .credit_source()
-                            .unwrap_or_else(|| resolved.canonical_weapon_name())
-                            .to_string();
+                        weapon_aim?;
                         Some((
                             name.clone(),
                             resolved.cooldown_ms(),
                             AttackOutcome::Projectile {
-                                launch: Box::new(ProjectileLaunch {
-                                    knockback_impulse: resolved.knockback_impulse(direction),
-                                    origin,
-                                    direction,
-                                    speed: resolved.projectile().speed,
-                                    radius: resolved.projectile().radius,
-                                    range: resolved.range(),
-                                    lifetime: resolved.projectile().lifetime_ms / 1000.0,
-                                    damage: resolved.damage(),
-                                    credit_source,
-                                    descriptor: resolved.projectile().clone(),
-                                    splash: resolved.splash().cloned(),
-                                }),
-                                descriptor_class: resolved.canonical_weapon_name().to_string(),
+                                request: WeaponAttackRequest {
+                                    canonical_weapon: resolved.canonical_weapon_name().to_string(),
+                                    attack_name: name.clone(),
+                                },
                             },
                         ))
                     } else {
@@ -604,6 +594,7 @@ pub(super) fn evaluate(
             graph_reseated,
             state_changed,
             attack: attack_outcome,
+            weapon_aim,
             prior_standoff_distance,
             standoff_distance,
             entered,

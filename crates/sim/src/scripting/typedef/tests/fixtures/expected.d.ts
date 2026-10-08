@@ -85,7 +85,7 @@ declare module "postretro" {
     /** How many particles start each second. Must be a finite number ≥ 0; use 0 to stop the steady stream. A `burst` is separate. */
     rate: number;
     /** Optional one-time particle count. The engine emits it once when this component is materialized, then clears it; null means no one-off puff. */
-    burst: number | null;
+    burst?: number | null;
     /** How widely directions vary around `velocity`, in radians. Must be finite and ≥ 0; 0 keeps the exact direction. */
     spread: number;
     /** How long every particle remains alive, in seconds. Must be finite and greater than 0; 0.5 means half a second. */
@@ -107,7 +107,7 @@ declare module "postretro" {
     /** Billboard rotation speed in radians per second. 0 does not rotate; positive and negative values turn opposite ways. */
     spin_rate: number;
     /** Optional change to `spin_rate` over time. null keeps the chosen spin rate constant. */
-    spin_animation: SpinAnimation | null;
+    spin_animation?: SpinAnimation | null;
   };
 
   /** A timed change to a billboard emitter's rotation speed. The engine samples the supplied curve evenly during the duration. */
@@ -135,7 +135,7 @@ declare module "postretro" {
     /** Normalized-lifetime opacity curve, sampled evenly from spawn to death. */
     opacity_curve: ReadonlyArray<number>;
     /** Back-reference to the parent emitter entity, consulted only for spin-rate lookup each tick. null once the emitter has despawned (orphaned particle). */
-    emitter: EntityId | null;
+    emitter?: EntityId | null;
   };
 
   /** Per-frame visual state of a sprite as a `sprite_visual` component. Authored by the particle simulation each tick and consumed by the billboard render integration. */
@@ -157,17 +157,17 @@ declare module "postretro" {
     /** Total period of the loop, in milliseconds. */
     periodMs: number;
     /** Starting phase in [0.0, 1.0). Values outside this range are normalized via rem_euclid. */
-    phase: number | null;
+    phase?: number | null;
     /** Total full periods to play; null loops forever. */
-    playCount: number | null;
+    playCount?: number | null;
     /** Per-sample density curve. null leaves the static density unchanged. */
-    density: ReadonlyArray<number> | null;
+    density?: ReadonlyArray<number> | null;
     /** Per-sample saturation curve. null leaves the static saturation unchanged. */
-    saturation: ReadonlyArray<number> | null;
+    saturation?: ReadonlyArray<number> | null;
     /** Per-sample animation curve for the `min_brightness` channel (scatter brightness floor). null leaves the static min_brightness unchanged. Each sample clamped to `[0, +∞)`; empty curve is rejected. */
-    minBrightness: ReadonlyArray<number> | null;
+    minBrightness?: ReadonlyArray<number> | null;
     /** Per-sample animation curve for the `light_range` channel (scales how far lights reach inside this fog). null leaves the static light_range unchanged. Each sample must be strictly positive and finite; non-positive or non-finite samples clamp to `0.001`; empty curve is rejected. */
-    lightRange: ReadonlyArray<number> | null;
+    lightRange?: ReadonlyArray<number> | null;
   };
 
   /** Script-facing fog-volume component shape. Carried by `FogVolume` ECS entities; the AABB is baked at level load and lives in the FogVolumeBridge side-table — it is not exposed here because it is not runtime-settable. */
@@ -189,10 +189,10 @@ declare module "postretro" {
     /** Scales how far lights reach inside this fog. 1.0 = same range as open air, 2.0 = double range, 0.5 = half range. Strictly positive; clamps to 0.001. Default 1.0. */
     lightRange: number;
     /** Optional animation carrying any combination of density, saturation, minBrightness, and lightRange curves. null holds the static state. */
-    animation: FogAnimation | null;
+    animation?: FogAnimation | null;
   };
 
-  /** Entity handle returned by `world.query` when filtering for fog-volume entities. */
+  /** Fog-volume snapshot that `getMapEntities("fog")` wraps into a `FogVolumeHandle`. */
   export type FogVolumeEntity = {
     id: EntityId;
     /** Volume center at query time (AABB midpoint, baked at level load). */
@@ -235,12 +235,12 @@ declare module "postretro" {
     loadout?: ReadonlyArray<WeaponEntityDescriptor>;
   };
 
-  /** Valid values: `semi`, `auto`. */
-  export type FireMode =
-    /** One shot per press. */
-    | "semi"
-    /** Continuous fire while held. */
-    | "auto";
+  /** Valid values: `press`, `hold`. */
+  export type ActivationTrigger =
+    /** Start once per fresh press. A charged action executes on explicit release; holding at full charge does not fire. */
+    | "press"
+    /** Start again while held after the previous execution and shared recovery finish. Cannot combine with charge. */
+    | "hold";
 
   /** Valid values: `auto`, `press`. */
   export type TouchMode =
@@ -447,7 +447,7 @@ declare module "postretro" {
     /** Refuse fire until heat cools all the way to 0. */
     | "lockout";
 
-  /** Heat tuning for a weapon. Each shot adds heat and heat cools over time. The shot that reaches `overheatAt` still fires, then the weapon overheats: pulls are refused silently until heat cools to exactly 0. The lockout lasts `overheatAt / coolPerSecond` seconds. Heat is a gate on top of `fireRateMs`, not a replacement; both must pass. Heat has no reserve, no pickups and no reload. Every copy of the weapon cools every tick, held or holstered, so switching away to cool a gun works. */
+  /** Heat tuning for a weapon. Each shot adds heat and heat cools over time. The shot that reaches `overheatAt` still fires, then the weapon overheats: pulls are refused silently until heat cools to exactly 0. The lockout lasts `overheatAt / coolPerSecond` seconds. Heat and shared activation recovery must both permit each new execution. Heat has no reserve, no pickups and no reload. Every copy of the weapon cools every tick, held or holstered, so switching away to cool a gun works. */
   export type HeatResource = {
     /** Heat added by each shot. Must be finite, > 0 and <= `overheatAt`. */
     heatPerShot: number;
@@ -510,6 +510,83 @@ declare module "postretro" {
     rotation?: PlacementRotation;
   };
 
+  /** Optional charge timing, valid only with trigger `press`. Release before minMs cancels without firing or spending; full charge does not auto-fire. */
+  export type ActivationCharge = {
+    /** Minimum held duration in milliseconds. Finite and >= 0; must be <= fullMs. */
+    minMs: number;
+    /** Held duration giving normalized charge 1. Finite milliseconds in (0, 60000]; charge grows linearly from zero elapsed time. */
+    fullMs: number;
+  };
+
+  /** Action-specific fire and impact sound keys, at most 256 UTF-8 bytes each. Each authored field overrides its weapon default; omission inherits that default. Uses the originating action for delayed impacts. */
+  export type ActivationSounds = {
+    /** Override the weapon fire sound for every accepted shot. A sound key under the mod sounds/ tree, without its extension. */
+    fire?: string;
+    /** Override the weapon impact sound. Existing per-shot/per-tick contact aggregation applies. */
+    impact?: string;
+  };
+
+  /** Optional named reactions dispatched alongside built-in activate/impact events. Aliases must be non-empty, at most 256 UTF-8 bytes, and differ from the built-in address. */
+  export type ActivationEmits = {
+    /** Additional activate reaction name, fired once per accepted shot; cannot equal `activate`. */
+    activate?: string;
+    /** Additional impact reaction name with the originating action's provenance; cannot equal `impact`. */
+    impact?: string;
+  };
+
+  /** Raw independent shot multipliers, defaulting to 1. Numeric IR may read only the read-only `charge` input; use activation.shot() to lower fluent NumberRef values. Invalid literals reject content; invalid evaluated or final scaled values cancel execution and warn once per descriptor/field. */
+  export type ShotScaleDescriptor = {
+    /** Direct or splash damage multiplier, applied once. Finite range: [0, 64]; defaults to 1. */
+    damage?: number | RuntimeValue;
+    /** Hitscan distance or projectile travel cap multiplier. Finite range: (0, 64]; defaults to 1. */
+    range?: number | RuntimeValue;
+    /** Projectile travel-speed multiplier. Finite range: (0, 64]; defaults to 1. */
+    projectileSpeed?: number | RuntimeValue;
+    /** Projectile swept collision-radius multiplier. Finite range: (0, 64]; defaults to 1. */
+    projectileRadius?: number | RuntimeValue;
+    /** Projectile visual-size multiplier, independent of collision and splash radius. Finite range: (0, 64]; defaults to 1. */
+    projectileSize?: number | RuntimeValue;
+    /** Direct and splash knockback-speed multiplier. Finite range: [0, 64]; defaults to 1. */
+    knockbackSpeed?: number | RuntimeValue;
+    /** Ammo, heat, or cell cost multiplier per shot. Finite range: (0, 64]; defaults to 1. Positive scaled ammo cost rounds up; heat/cell retain fractional cost. */
+    resourceCost?: number | RuntimeValue;
+  };
+
+  /** One ordinary authored shot attempt. It samples current aim and freezes resolved tuning; there is no burst opcode. */
+  export type ActivationShotStep = {
+    /** Independent multipliers for this shot, defaulting to 1. Use activation.shot() for fluent refs. */
+    scale?: ShotScaleDescriptor;
+  };
+
+  /** Wait before the following shot, advanced by fixed simulation ticks. */
+  export type ActivationWaitStep = {
+    /** Finite wait in milliseconds in (0, 60000], rounded up to whole fixed ticks with a one-tick minimum. Total quantized waits cannot exceed 60 seconds. */
+    durationMs: number;
+  };
+
+  /** Closed action step with kind `shot` or `wait`. At most 64 steps and 16 shots; first and last must be shots, with a positive wait between shots. */
+  export type ActivationStepDescriptor =
+    /** One ordinary shot, with optional independent scale values. */
+    | ({ kind: "shot" } & ActivationShotStep)
+    /** A positive fixed-tick delay in milliseconds. */
+    | ({ kind: "wait" } & ActivationWaitStep);
+
+  /** Bounded primary or secondary action data. At most 64 steps and 16 shots; first/last steps are shots and every pair of shots has a positive wait. One execution owns the weapon; actions share resources and recovery. No callback or runtime repetition is retained. */
+  export type WeaponActivationDescriptor = {
+    /** Press starts once per fresh edge; hold restarts after execution and recovery while held. Charge requires press. */
+    trigger: ActivationTrigger;
+    /** Shared start-gate recovery after each accepted shot, in finite milliseconds [0, 60000]. Zero is allowed; remaining recovery survives completion/cancellation. */
+    recoveryMs: number;
+    /** Closed shot/wait program: at most 64 steps, 16 shots, first and last shots, positive waits between shots, and at most 60 seconds of quantized waits. */
+    steps: ReadonlyArray<ActivationStepDescriptor>;
+    /** Optional charge timing for press only. minMs may be 0 and must be <= fullMs; fullMs is positive and <= 60000. */
+    charge?: ActivationCharge;
+    /** Optional per-action fire/impact overrides of weapon defaults. */
+    sounds?: ActivationSounds;
+    /** Optional named reactions added alongside built-in activate/impact events. */
+    emits?: ActivationEmits;
+  };
+
   /** Authored weapon component preset. Descriptor-owned tuning data; maps do not override these params. Spawn-time player equip materializes a separate wieldable instance entity from this descriptor. */
   export type WeaponDescriptor = {
     /** Optional direct-hit push. Applies per hitscan pellet or projectile entity contact, independently of damage. Composes with splash.knockback when both are authored. */
@@ -534,10 +611,10 @@ declare module "postretro" {
     spreadVerticalBias?: number;
     /** Maximum hitscan distance in metres, or the second travel cap for a projectile. Must be finite and > 0. */
     range: number;
-    /** Minimum interval between shots in milliseconds. Must be finite and > 0. */
-    fireRateMs: number;
-    /** Semi or automatic input gate. */
-    fireMode: FireMode;
+    /** Required primary action. Press/hold trigger, recovery, and bounded shot/wait steps; use activation.shot() and activation.wait(). */
+    primary: WeaponActivationDescriptor;
+    /** Optional alternate-fire action using the same weapon tuning, resource storage, and recovery. Secondary wins simultaneous fresh starts; both wait until the current execution finishes. */
+    secondary?: WeaponActivationDescriptor;
     /** Shot resolution mode. `projectile` requires the descriptor-owned `projectile` block. */
     resolution: ResolutionMode;
     /** Required exactly when `resolution` is `projectile`; omit for hitscan. Projectile tuning is descriptor-owned and never an FGD KVP. */
@@ -550,7 +627,7 @@ declare module "postretro" {
     thirdPersonModel?: string;
     /** Optional content-relative model rendered as this weapon's first-person viewmodel. Must be non-empty, use forward slashes, and contain neither an absolute path nor parent traversal. */
     viewmodel?: string;
-    /** Optional sound keys for this weapon's events, played whoever wields it. Each key names a sound under the mod's `sounds/` directory without its extension (`sfx/pistol_fire`). Presentation only; never replicated. */
+    /** Optional sound keys for this weapon's events, played whoever wields it. Each key names a sound under the mod's `sounds/` directory without its extension (`sfx/pistol_fire`). Presentation only; resolved fire/impact keys accompany observer cues, while weapon tuning excludes sound keys. */
     sounds?: WeaponSounds;
     /** Optional per-weapon first-person placement. Position uses metres from screen center (right/up/forward map to +X/+Y/-Z) and rotation uses degrees. Whole-value resolution is per-instance (future) > this field > character (future) > mod `defaultWeaponPlacement` > legacy BASE_OFFSET with zero rotation. v1 supplies no character or per-instance placement. It never changes the third-person hand socket. */
     placement?: WeaponPlacementDescriptor;
@@ -566,7 +643,7 @@ declare module "postretro" {
     blockDuringReload?: boolean;
   };
 
-  /** Sound keys for a weapon's events. Every field is optional; an absent one plays nothing. Unknown keys are rejected. Fire, dry fire, overheat and reload play at the firing pawn; impact plays once per activation per tick, at the contact nearest the listener. An unknown sound key warns once when the level installs. */
+  /** Sound keys for a weapon's events. Every field is optional; an absent one plays nothing. Unknown keys are rejected. Fire, dry fire, overheat and reload play at the firing pawn; impact plays once per shot per tick, at the contact nearest the listener. An unknown sound key warns once when the level installs. */
   export type WeaponSounds = {
     /** Played on `activate`. */
     fire?: string;
@@ -1015,6 +1092,8 @@ declare module "postretro" {
     name: string;
     /** Authoritative classification tags for filtering plus `levels` selection on mod-global reactions, impact events, crossings, trigger events, and trigger pools. Optional; missing/null normalizes to empty. */
     tags?: ReadonlyArray<string>;
+    /** Loading-screen tree for this map: one UI tree registry name or an array to pick from at random. Optional; overrides `ModManifest.loading.tree` for loads of this map. Unregistered names are skipped; a malformed value warns and is treated as absent, as is an empty array. */
+    loadingTree?: string | ReadonlyArray<string>;
   };
 
   /** Static camera pose used while a mod frontend menu is presented. All fields are required when `ModManifest.frontend` is present. */
@@ -1035,6 +1114,12 @@ declare module "postretro" {
     backgroundLevel?: string;
     /** Static menu camera pose. Required. */
     camera: MenuCamera;
+  };
+
+  /** Mod-wide loading-screen declaration supplied via `ModManifest.loading`. The engine shows the chosen tree on every level-load frame; bind a `Bar` to `loading.progress` for a progress bar. */
+  export type ModLoading = {
+    /** Loading-screen tree: one UI tree registry name or an array; each load picks one registered name uniformly at random. A map's `loadingTree` overrides it. Unregistered names are skipped; with none left the engine `loadingScreen` tree shows. A malformed value warns and is treated as absent, as is an empty array. */
+    tree: string | ReadonlyArray<string>;
   };
 
   /** Theme token maps supplied via `ModManifest.theme`. Three category-scoped maps: colors (linear-RGBA), fonts (registered family name), spacing (logical px). Each is optional; overrides merge per-token into the engine default. */
@@ -1099,6 +1184,159 @@ declare module "postretro" {
     attenuation?: AudioAttenuation;
   };
 
+  /** Stable ID of an engine command that an `input` block can label, show or hide, and bind. The set is engine-closed. Valid values: `move_forward`, `move_back`, `move_left`, `move_right`, `move_up`, `move_down`, `look_x`, `look_y`, `sprint`, `jump`, `dash`, `crouch`, `use`, `drop`, `shoot`, `alt_fire`, `reload`, `select_wieldable_1`, `select_wieldable_2`, `select_wieldable_3`, `select_wieldable_4`, `select_wieldable_5`, `select_wieldable_6`, `select_wieldable_7`, `select_wieldable_8`, `select_wieldable_9`, `select_wieldable_10`, `cycle_wieldable_next`, `cycle_wieldable_previous`, `toggle_last_wieldable`, `nav_up`, `nav_down`, `nav_left`, `nav_right`, `nav_next`, `nav_prev`, `nav_tab_next`, `nav_tab_prev`, `nav_confirm`, `nav_cancel`, `nav_menu`, `nav_options`, `text_backspace`, `text_space`, `text_commit`. */
+  export type CommandId =
+    /** Move forward. Digital; a half-axis stick input carries its magnitude. Accepts `press` or `hold`. */
+    | "move_forward"
+    /** Move backward. Digital; a half-axis stick input carries its magnitude. Accepts `press` or `hold`. */
+    | "move_back"
+    /** Strafe left. Digital; a half-axis stick input carries its magnitude. Accepts `press` or `hold`. */
+    | "move_left"
+    /** Strafe right. Digital; a half-axis stick input carries its magnitude. Accepts `press` or `hold`. */
+    | "move_right"
+    /** Fly-cam up. Dev-only: always bound to engine defaults and hidden from the controls panel. */
+    | "move_up"
+    /** Fly-cam down. Dev-only: always bound to engine defaults and hidden from the controls panel. */
+    | "move_down"
+    /** Look horizontally; positive looks right. Analog: accepts axes only (`mouse_x`, stick axes) and only `press`. */
+    | "look_x"
+    /** Look vertically; positive looks up. Analog: accepts axes only (`mouse_y`, stick axes) and only `press`. */
+    | "look_y"
+    /** Sprint. Accepts `press` or `hold`. */
+    | "sprint"
+    /** Jump. */
+    | "jump"
+    /** Dash. Relevant only when a movement descriptor declares dash. */
+    | "dash"
+    /** Crouch. Accepts `press` or `hold`. Relevant only when a movement descriptor declares crouch. */
+    | "crouch"
+    /** Use or interact. */
+    | "use"
+    /** Drop the wielded item. */
+    | "drop"
+    /** Primary fire. Accepts only `press`. */
+    | "shoot"
+    /** Secondary fire. Accepts only `press`. Relevant only when a weapon declares a secondary activation. */
+    | "alt_fire"
+    /** Reload. Relevant only when a weapon uses a magazine resource. */
+    | "reload"
+    /** Select wieldable slot 1. */
+    | "select_wieldable_1"
+    /** Select wieldable slot 2. */
+    | "select_wieldable_2"
+    /** Select wieldable slot 3. */
+    | "select_wieldable_3"
+    /** Select wieldable slot 4. */
+    | "select_wieldable_4"
+    /** Select wieldable slot 5. */
+    | "select_wieldable_5"
+    /** Select wieldable slot 6. */
+    | "select_wieldable_6"
+    /** Select wieldable slot 7. */
+    | "select_wieldable_7"
+    /** Select wieldable slot 8. */
+    | "select_wieldable_8"
+    /** Select wieldable slot 9. */
+    | "select_wieldable_9"
+    /** Select wieldable slot 10. */
+    | "select_wieldable_10"
+    /** Cycle to the next wieldable, one step per wheel notch or press. Accepts only `press`. */
+    | "cycle_wieldable_next"
+    /** Cycle to the previous wieldable, one step per wheel notch or press. Accepts only `press`. */
+    | "cycle_wieldable_previous"
+    /** Switch back to the previously wielded item. */
+    | "toggle_last_wieldable"
+    /** Menu: move focus up. UI commands are always shown. */
+    | "nav_up"
+    /** Menu: move focus down. */
+    | "nav_down"
+    /** Menu: move focus left. */
+    | "nav_left"
+    /** Menu: move focus right. */
+    | "nav_right"
+    /** Menu: move focus to the next control. */
+    | "nav_next"
+    /** Menu: move focus to the previous control. */
+    | "nav_prev"
+    /** Menu: activate the next tab, wrapping. Steps Next in a menu with no tabs. */
+    | "nav_tab_next"
+    /** Menu: activate the previous tab, wrapping. Steps Prev in a menu with no tabs. */
+    | "nav_tab_prev"
+    /** Menu: confirm. Must stay bound on each device class, and cannot be hidden. */
+    | "nav_confirm"
+    /** Menu: cancel or back. Must stay bound on each device class, and cannot be hidden. */
+    | "nav_cancel"
+    /** Open the pause menu. Must stay bound on each device class, and cannot be hidden. */
+    | "nav_menu"
+    /** Menu: options. */
+    | "nav_options"
+    /** On-screen keyboard: backspace, live while a text-entry menu is on top. */
+    | "text_backspace"
+    /** On-screen keyboard: space, live while a text-entry menu is on top. */
+    | "text_space"
+    /** On-screen keyboard: commit, live while a text-entry menu is on top. */
+    | "text_commit";
+
+  /** When a binding fires. Each command accepts a fixed set; an activator outside it is diagnosed and that command's device class falls back to the engine default. Valid values: `press`, `release`, `tap`, `hold`. */
+  export type InputActivator =
+    /** Fire on the press. This is the default. */
+    | "press"
+    /** Fire on release. */
+    | "release"
+    /** Fire on release when the input was held no longer than `threshold`. */
+    | "tap"
+    /** Fire once the input has been held for `threshold`. */
+    | "hold";
+
+  /** One default binding for a command. Players rebind the input only: this input keeps its activator wherever it sits, and an input that replaces it takes its activator. A wheel notch always fires on press. */
+  export type ModInputBinding = {
+    /** Physical input name: a W3C `KeyboardEvent.code` (`KeyW`, `ShiftLeft`), a mouse name (`mouse_left`, `wheel_up`, `mouse_x`), or a gamepad position (`south`, `left_shoulder`, `left_stick_press`, `left_stick_x`, `left_stick_up`). An unknown name is diagnosed and the device class falls back. */
+    input: string;
+    /** When the binding fires. Optional; defaults to `"press"`. */
+    activator?: InputActivator;
+    /** Seconds: a `tap`'s maximum or a `hold`'s minimum. Finite and greater than 0. Clamped to 0.05–5 s. Optional; defaults to 0.2, scaled by the player's hold-timing setting. */
+    threshold?: number;
+  };
+
+  /** Author settings for one command. Every field is optional. */
+  export type ModInputCommand = {
+    /** Name shown in the controls panel. Optional. */
+    label?: string;
+    /** Controls-panel group heading. Optional. */
+    category?: string;
+    /** Sort position within the category. Optional. */
+    order?: number;
+    /** `true` forces the command shown and bound, `false` hidden and unbound, overriding relevance derived from the mod's data. Optional. Ignored, with a warning, on every UI command and on the dev-only `move_up` and `move_down`. */
+    show?: boolean;
+    /** Default keyboard and mouse bindings. Optional; omission keeps the engine default, and an empty list leaves the command unbound. */
+    keyboardMouse?: ReadonlyArray<ModInputBinding>;
+    /** Default gamepad bindings. Optional; omission keeps the engine default, and an empty list leaves the command unbound. */
+    gamepad?: ReadonlyArray<ModInputBinding>;
+  };
+
+  /** Command settings keyed by command ID. Commands left out keep their engine defaults. */
+  export type ModInputCommands = Partial<Record<CommandId, ModInputCommand>>;
+
+  /** Glyph art directory per device family. A glyph's asset is `<dir>/<input>`, for example `ui/glyphs/xbox/south`. Missing art draws the input's label (`east` draws "EAST", `KeyW` draws "W"). */
+  export type ModInputGlyphs = {
+    /** Keyboard and mouse glyph directory. Optional. */
+    keyboardMouse?: string;
+    /** Xbox-layout glyph directory, also used for unrecognized pads. Optional. */
+    xbox?: string;
+    /** PlayStation glyph directory. Optional. */
+    playstation?: string;
+    /** Nintendo glyph directory. Optional. */
+    nintendo?: string;
+  };
+
+  /** The game's commands, default bindings, and glyph art. Each command and device class is validated on its own: an unknown command ID, unknown input, refused activator, or a default leaving `nav_confirm`, `nav_cancel`, or `nav_menu` unbound is diagnosed, and that command and device class fall back to the engine default. */
+  export type ModInput = {
+    /** Command settings keyed by command ID. Optional; omission leaves every command on its engine defaults. */
+    commands?: ModInputCommands;
+    /** Glyph art per device family. Optional. */
+    glyphs?: ModInputGlyphs;
+  };
+
   /** Mod-global switching policy. Omit the whole block to preserve immediate direct selection, zero cycle dwell, and reload interruption. */
   export type SwitchingDescriptor = {
     /** Whether a direct slot-select action emits a commit immediately. Input-layer policy only. */
@@ -1143,6 +1381,8 @@ declare module "postretro" {
     movers?: MoverDefaults;
     /** Static audio preferences for the entire mod. Optional; defaults to 2 to 60 metre linear attenuation. */
     audio?: AudioProfile;
+    /** The game's commands, default bindings, and glyph art. Optional; omission keeps the engine's default bindings. Malformed entries warn and fall back per command and device class; they never reject the manifest. */
+    input?: ModInput;
     /** Mod-global switching policy. Optional; omission preserves immediate direct selection, zero cycle dwell, and reload interruption. */
     switching?: SwitchingDescriptor;
     /** Optional mod-global first-person weapon placement. It is the lowest authored tier in whole-value resolution: per-instance (future) > per-weapon > character (future) > this default > legacy BASE_OFFSET with zero rotation. v1 supplies no character or per-instance placement. It never changes the third-person hand socket. */
@@ -1165,6 +1405,10 @@ declare module "postretro" {
     theme?: ThemeTokens;
     /** Font assets: family name → TTF asset path. Optional; changing custom font assets requires an engine restart. */
     fonts?: { readonly [token: string]: string };
+    /** UI images: image name → PNG path relative to the mod root. Optional. Each loads into the UI image registry under its name at mod init and after a hot reload, so any tree can show it with `Image({ asset: name })`. Names beginning `engine/` are reserved. A reserved name, a non-string value, a path that leaves the mod, a missing file, or an undecodable PNG warns and skips that entry. */
+    uiImages?: { readonly [name: string]: string };
+    /** Mod-wide loading screen. Optional; omission shows the engine fallback loading screen. */
+    loading?: ModLoading;
     /** Pre-load-discoverable map catalog. Optional; use catalog ids with `loadLevel(id)` and `frontend.backgroundLevel`. */
     maps?: ReadonlyArray<ModMapEntry>;
     /** Mod-defined frontend menu declaration. Optional; omission clears the mod frontend and presents the engine fallback menu. */
@@ -1175,7 +1419,7 @@ declare module "postretro" {
     events?: ReadonlyArray<ImpactEvent>;
     /** Engine-global state-crossing watchers. Optional; survive level unload and compose into active level behavior by `levels` tag selectors. */
     crossings?: ReadonlyArray<CrossingDescriptor>;
-    /** Trigger-volume enter/exit observers. Optional; compose by level tags. */
+    /** Mod-global trigger events, each a standing rule keyed by tag: build each with `defineTriggerEvent({ tag, event, fire, levels? })`. Optional; `levels` selects the map tags it binds in. A volume-keyed entry (a trigger member's `on`) belongs in `setupLevel` and is rejected here. */
     triggerEvents?: ReadonlyArray<TriggerEventDescriptor>;
     /** Trigger-volume arming pools. Optional; compose by level tags. */
     triggerPools?: ReadonlyArray<TriggerPoolDescriptor>;
@@ -1193,42 +1437,22 @@ declare module "postretro" {
     /** Total period of the loop, in milliseconds. */
     periodMs: number;
     /** Starting phase in [0.0, 1.0). Values outside this range are normalized via rem_euclid. */
-    phase: number | null;
+    phase?: number | null;
     /** Total full periods to play; null loops forever. */
-    playCount: number | null;
+    playCount?: number | null;
     /** Whether the animation starts in the active state. null defaults to true; false mirrors the FGD `_start_inactive` flag. */
-    startActive: boolean | null;
+    startActive?: boolean | null;
     /** Per-sample brightness curve. */
-    brightness: ReadonlyArray<number> | null;
+    brightness?: ReadonlyArray<number> | null;
     /** Per-sample color curve. Accepted on dynamic and authored static lights; baked indirect stays at the authored color. */
-    color: ReadonlyArray<Vec3> | null;
+    color?: ReadonlyArray<Vec3> | null;
     /** Per-sample direction curve. Non-unit samples are silently normalized. */
-    direction: ReadonlyArray<Vec3> | null;
+    direction?: ReadonlyArray<Vec3> | null;
   };
 
-  export type LightComponent = { origin: Vec3; lightType: LightKind; intensity: number; color: Vec3; falloffModel: FalloffKind; falloffRange: number; coneAngleInner: number | null; coneAngleOuter: number | null; coneDirection: Vec3 | null; isDynamic: boolean; animation: LightAnimation | null };
+  export type LightComponent = { origin: Vec3; lightType: LightKind; intensity: number; color: Vec3; falloffModel: FalloffKind; falloffRange: number; coneAngleInner?: number | null; coneAngleOuter?: number | null; coneDirection?: Vec3 | null; isDynamic: boolean; animation?: LightAnimation | null };
 
-  /** Component-name literals accepted by `worldQuery` and the `world.query` SDK wrapper. New queryable component types extend this union. Valid values: `light`, `transform`, `emitter`, `fog_volume`, `kinematic_mover`, `trigger_volume`, `particle`, `sprite_visual`. */
-  export type WorldQueryComponent =
-    | "light"
-    | "transform"
-    | "emitter"
-    | "fog_volume"
-    | "kinematic_mover"
-    | "trigger_volume"
-    /** Always returns []. Engine-managed; scripts never iterate individual particles. */
-    | "particle"
-    /** Always returns []. Engine-managed. */
-    | "sprite_visual";
-
-  export type WorldQueryFilter = {
-    /** Component name to query. */
-    component: WorldQueryComponent;
-    /** Optional tag filter (exact string match). */
-    tag: string | null;
-  };
-
-  /** Generic entity handle returned by `world.query` when the component type is not known at compile time. */
+  /** Generic entity snapshot: id, position and tags. */
   export type Entity = {
     id: EntityId;
     /** Entity position at query time. */
@@ -1237,7 +1461,7 @@ declare module "postretro" {
     tags: ReadonlyArray<string>;
   };
 
-  /** Entity handle returned by `world.query` when filtering for billboard emitter entities. */
+  /** Emitter member returned by `getMapEntities("emitter")`: a snapshot only, with no verbs. */
   export type EmitterEntity = {
     id: EntityId;
     /** Emitter position at query time (from the entity's Transform). */
@@ -1248,7 +1472,7 @@ declare module "postretro" {
     component: BillboardEmitterComponent;
   };
 
-  /** Entity handle returned by `world.query` when filtering for light entities. */
+  /** Light snapshot that `getMapEntities("light")` wraps into a `LightEntityHandle`. */
   export type LightEntity = {
     id: EntityId;
     /** Light origin at query time. */
@@ -1261,7 +1485,7 @@ declare module "postretro" {
     component: LightComponent;
   };
 
-  /** Raw mover snapshot returned by `worldQuery` when filtering for kinematic movers. The SDK world-query wrapper exposes closed command-reaction builders; raw mover components remain engine-managed. */
+  /** Mover snapshot that `getMapEntities("mover")` wraps into a `MoverEntityHandle` with closed command builders; raw mover components remain engine-managed. */
   export type MoverEntity = {
     id: EntityId;
     /** Mover position at query time (from the entity's Transform). */
@@ -1270,7 +1494,7 @@ declare module "postretro" {
     tags: ReadonlyArray<string>;
   };
 
-  /** Raw trigger snapshot returned by `worldQuery` when filtering for trigger volumes. Arming and activation phase remain engine-managed; the SDK wrapper exposes only arm/disarm command builders. */
+  /** Trigger snapshot that `getMapEntities("trigger")` wraps into a `TriggerVolumeHandle` (`arm`, `disarm`, `on`). Arming and activation phase remain engine-managed. */
   export type TriggerVolumeEntity = {
     id: EntityId;
     /** Trigger position at query time (from the entity's Transform). */
@@ -1294,18 +1518,16 @@ declare module "postretro" {
   /** Write an engine-global state slot by stable dotted name. The value must exactly match the declared slot type. Finite numbers are clamped to the declared inclusive range. Per-owner slots require an owner-addressed write and are rejected. Readonly slots reject script writes with a warning and remain unchanged. Available in definition and data contexts. */
   export function storeWrite(name: string, value: unknown): void;
 
-  /** Return the current world gravity in m/s² (negative = downward; positive = upward). Seeded from the worldspawn `initialGravity` KVP at level load and persists until the next level load or a `worldSetGravity` call. The `world.ts` vocabulary module wraps this as `world.getGravity`. */
+  /** Return the current world gravity in m/s² (negative = downward; positive = upward). Seeded from the worldspawn `initialGravity` KVP at level load and persists until the next level load or a `worldSetGravity` call. The SDK wraps this as `getGravity`. */
   export function worldGetGravity(): number;
 
-  /** Return an array of raw entity snapshots matching the filter. Available in definition and data contexts. Filter shape: { component: "light" | "transform" | "emitter" | "fog_volume" | "kinematic_mover" | "trigger_volume" | "particle" | "sprite_visual", tag?: string }. `"particle"` and `"sprite_visual"` always return `[]` (engine-managed; scripts never iterate individual particles). Unknown component values raise InvalidArgument. The `world.ts` vocabulary module wraps these snapshots as `world.query` handles. */
-  export function worldQuery<T extends WorldQueryComponent>(filter: { component: T; tag?: string | null }): ReadonlyArray<RawEntityForComponent<T>>;
-
-  /** Set the world gravity in m/s² (negative = downward; positive = upward). NaN and non-finite values are silently ignored (a warning is logged) so a misbehaving script cannot wedge particle physics. Effect is immediate and persists until the next level load or another `worldSetGravity` call. The `world.ts` vocabulary module wraps this as `world.setGravity`. */
+  /** Set the world gravity in m/s² (negative = downward; positive = upward). NaN and non-finite values are silently ignored (a warning is logged) so a misbehaving script cannot wedge particle physics. Effect is immediate and persists until the next level load or another `worldSetGravity` call. The SDK wraps this as `setGravity`. */
   export function worldSetGravity(value: number): void;
   /** Generated engine-owned state reference tree returned by `getGameState()`. */
   export type GameStateRefs = {
     readonly accessibility: {
       readonly flashLimiter: ComputedRef<boolean>;
+      readonly holdTimingScale: ComputedRef<number>;
       readonly masterVolume: ComputedRef<number>;
       readonly monoAudio: ComputedRef<boolean>;
       readonly musicVolume: ComputedRef<number>;
@@ -1319,21 +1541,33 @@ declare module "postretro" {
     readonly input: {
       readonly mode: ComputedRef<"pointer" | "focus">;
     };
+    readonly loading: {
+      readonly levelName: ComputedRef<string>;
+      readonly progress: ComputedRef<number>;
+    };
     readonly options: {
       readonly crouchMode: Ref<"hold" | "toggle">;
       readonly fogQuality: Ref<"low" | "medium" | "high">;
+      readonly gamepadInvertY: Ref<boolean>;
+      readonly gamepadLookDeadZone: Ref<number>;
+      readonly gamepadLookSensitivity: Ref<number>;
+      readonly holdTimingScale: Ref<number>;
       readonly invertY: Ref<boolean>;
       readonly masterVolume: Ref<number>;
       readonly monoAudio: Ref<boolean>;
       readonly mouseSensitivity: Ref<number>;
       readonly musicVolume: Ref<number>;
       readonly reduceMotion: Ref<boolean>;
+      readonly renderResolution: Ref<"auto" | "native" | "half" | "third" | "quarter">;
       readonly screenShakeScale: Ref<number>;
       readonly sfxVolume: Ref<number>;
       readonly shadowQuality: Ref<"low" | "medium" | "high">;
+      readonly sprintMode: Ref<"hold" | "toggle">;
       readonly surfaceDepthQuality: Ref<"off" | "on">;
+      readonly swapConfirmCancel: Ref<boolean>;
       readonly uiVolume: Ref<number>;
       readonly viewFeelScale: Ref<number>;
+      readonly windowMode: Ref<"windowed" | "borderless" | "exclusive">;
     };
     readonly player: {
       readonly ammo: ComputedRef<number>;
@@ -1353,6 +1587,8 @@ declare module "postretro" {
         readonly pending: ComputedRef<string>;
         readonly switching: ComputedRef<boolean>;
       };
+      readonly weaponChargeProgress: ComputedRef<number>;
+      readonly weaponCharging: ComputedRef<boolean>;
       readonly weaponCooldownMs: ComputedRef<number>;
       readonly weaponResource: ComputedRef<"none" | "ammo" | "heat" | "cell">;
     };
@@ -1366,6 +1602,15 @@ declare module "postretro" {
     };
     readonly ui: {
       readonly textEntry: Ref<string>;
+    };
+    readonly window: {
+      readonly displayModeBitDepth: ComputedRef<number>;
+      readonly displayModeCanApply: ComputedRef<boolean>;
+      readonly displayModeHeight: ComputedRef<number>;
+      readonly displayModeMonitor: ComputedRef<string>;
+      readonly displayModeRefreshHz: ComputedRef<number>;
+      readonly displayModeRevertSeconds: ComputedRef<number>;
+      readonly displayModeWidth: ComputedRef<number>;
     };
   };
 
@@ -1394,7 +1639,7 @@ declare module "postretro" {
     readonly __channel?: Channel;
   }
 
-  /** Typed light handle returned by `world.query({ component: "light" })`. Composes the brightness scalar capability with vec3 channels declared directly (TypeScript collapses duplicate method names, so secondary vec3 channels are not pulled in via `AnimatableVec3` extension). */
+  /** Light member returned by `getMapEntities("light")`. Composes the brightness scalar capability with vec3 channels declared directly (TypeScript collapses duplicate method names, so secondary vec3 channels are not pulled in via `AnimatableVec3` extension). */
   export interface LightEntityHandle extends LightEntity, AnimatableScalar<"brightness"> {
     /** Cycle through RGB colors over `periodMs`. Works on dynamic and authored static lights. */
     colorShift(opts: { values: Vec3[]; periodMs: number }): SequenceStep[];
@@ -1402,7 +1647,7 @@ declare module "postretro" {
     sweep(opts: { values: Vec3[]; periodMs: number }): SequenceStep[];
   }
 
-  /** Typed fog-volume handle returned by `world.query({ component: "fog_volume" })`. Composes the density scalar capability with secondary saturation methods declared directly. */
+  /** Fog member returned by `getMapEntities("fog")`. Composes the density scalar capability with secondary saturation methods declared directly. */
   export interface FogVolumeHandle extends FogVolumeEntity, AnimatableScalar<"density"> {
     /** Looping sine pulse on the `saturation` channel. */
     pulseSaturation(opts: { min: number; max: number; periodMs: number }): SequenceStep[];
@@ -1410,7 +1655,7 @@ declare module "postretro" {
     fadeSaturation(opts: { from: number; to: number; periodMs: number }): SequenceStep[];
   }
 
-  /** Typed mover handle returned by `world.query({ component: "kinematic_mover" })`. Raw mover phase is engine-managed; methods build closed command steps. */
+  /** Mover member returned by `getMapEntities("mover")`. Raw mover phase is engine-managed; methods build closed command steps. */
   export interface MoverEntityHandle extends MoverEntity {
     start(): SequenceStep[];
     stop(): SequenceStep[];
@@ -1425,53 +1670,53 @@ declare module "postretro" {
     setBlockPolicy(policy: "displace" | "reverse" | "stop" | "crush"): SequenceStep[];
   }
 
-  /** Typed trigger handle returned by `world.query({ component: "trigger_volume" })`. Arming state remains engine-owned; methods build closed command steps. Switch entities also emit a `trigger_volume` component and are indistinguishable from authored trigger volumes here; separate them with a tag convention. */
+  /** Trigger member returned by `getMapEntities("trigger")`. Arming state remains engine-owned; methods build closed command steps. Switch entities also emit a trigger volume and are indistinguishable from authored trigger volumes here; separate them with a tag convention. */
   export interface TriggerVolumeHandle extends TriggerVolumeEntity {
+    /** Arm the trigger and clear its once/rearm state. */
     arm(): SequenceStep[];
+    /** Disarm the trigger. */
     disarm(): SequenceStep[];
+    /** Fire `fire` on this volume's `event` edge, and on no sibling volume sharing its tag. Return the entry from `setupLevel`'s `triggerEvents`. */
+    on(event: "enter" | "exit", fire: TriggerEventReaction[]): VolumeTriggerEventDescriptor;
   }
 
-  /** Maps a component-name literal to the rich `world.query` handle type. `"light"`
-   * yields `LightEntityHandle` (capability methods); `"emitter"` yields
-   * `EmitterEntity` (id, position, tags, plus the full `BillboardEmitterComponent`
-   * snapshot under `component`); `"fog_volume"` yields `FogVolumeHandle`; and
-   * `"kinematic_mover"` yields `MoverEntityHandle`; `"trigger_volume"`
-   * yields `TriggerVolumeHandle`.
-   * Other component names fall back to the bare `Entity` shape (`id`,
-   * `position`, `tags`). */
-  export type EntityForComponent<T extends WorldQueryComponent> =
-    T extends "light" ? LightEntityHandle :
-    T extends "emitter" ? EmitterEntity :
-    T extends "fog_volume" ? FogVolumeHandle :
-    T extends "kinematic_mover" ? MoverEntityHandle :
-    T extends "trigger_volume" ? TriggerVolumeHandle :
-    Entity;
+  /** Snapshot of a map-placed spawner: id, position, its own tags, and `spawnedTags`, the tags each NPC it spawns carries. Its own tags never pass to its spawns. */
+  export type SpawnerEntity = {
+    id: EntityId;
+    position: Vec3;
+    tags: ReadonlyArray<string>;
+    spawnedTags: ReadonlyArray<string>;
+  };
 
-  /** Maps a component-name literal to the unwrapped `worldQuery` snapshot
-   * type. `world.query` applies the capability and command-builder wrappers
-   * represented by `EntityForComponent` above. */
-  export type RawEntityForComponent<T extends WorldQueryComponent> =
-    T extends "light" ? LightEntity :
-    T extends "emitter" ? EmitterEntity :
-    T extends "fog_volume" ? FogVolumeEntity :
-    T extends "kinematic_mover" ? MoverEntity :
-    T extends "trigger_volume" ? TriggerVolumeEntity :
-    Entity;
-
-  /** Vocabulary object installed as `globalThis.world`. */
-  export interface World {
-    query<T extends WorldQueryComponent>(filter: {
-      component: T;
-      tag?: string | null;
-    }): EntityForComponent<T>[];
-    /** Current world gravity in m/s² (negative = downward; positive = upward). Seeded from the worldspawn `initialGravity` KVP at level load and persists until the next level load or `setGravity` call. */
-    getGravity(): number;
-    /** Set world gravity in m/s² (negative = downward; positive = upward). NaN and non-finite values are silently ignored with a warning logged. Effect is immediate and persists until the next level load or another `setGravity` call. */
-    setGravity(value: number): void;
+  /** Spawner member returned by `getMapEntities("spawner")`. */
+  export interface SpawnerEntityHandle extends SpawnerEntity {
+    /** Spawn one batch from this spawner, and from no sibling sharing its tag. */
+    fire(): SequenceStep[];
   }
 
-  /** `world` vocabulary global. Wraps `worldQuery` with a typed handle. */
-  export const world: World;
+  /** Map-placed kinds `getMapEntities` accepts. NPCs and players are groups (`npcs`, `players`), not members. */
+  export type MapEntityKind = "mover" | "trigger" | "light" | "fog" | "emitter" | "spawner";
+
+  /** The member handle each map kind yields. `"emitter"` yields the snapshot only (id, position, tags, and the `BillboardEmitterComponent` under `component`); it has no verbs. */
+  export type MapEntityForKind<K extends MapEntityKind> =
+    K extends "mover" ? MoverEntityHandle :
+    K extends "trigger" ? TriggerVolumeHandle :
+    K extends "light" ? LightEntityHandle :
+    K extends "fog" ? FogVolumeHandle :
+    K extends "emitter" ? EmitterEntity :
+    K extends "spawner" ? SpawnerEntityHandle :
+    never;
+
+  /** Narrows a member query to instances carrying `tag`. */
+  export type MapEntityFilter = { tag?: string };
+
+  /** Return the map-placed members of `kind`, optionally only those carrying `tag`, in authored map order. Membership is fixed at install: an instance a runtime spawn carries never appears. Returns `[]` on no match. Callable only inside a level's data script (module evaluation or `setupLevel`); elsewhere it raises. */
+  export function getMapEntities<K extends MapEntityKind>(kind: K, filter?: MapEntityFilter): MapEntityForKind<K>[];
+
+  /** Current world gravity in m/s² (negative = downward; positive = upward). Seeded from the worldspawn `initialGravity` KVP at level load and persists until the next level load or `setGravity` call. */
+  export function getGravity(): number;
+  /** Set world gravity in m/s² (negative = downward; positive = upward). NaN and non-finite values are ignored with a warning. Effect is immediate and persists until the next level load or another `setGravity` call. */
+  export function setGravity(value: number): void;
 
   /** Per-channel keyframe accepted by `timeline` / `sequence`. */
   export type Keyframe<T extends number[]> = [number, ...T];
@@ -1495,26 +1740,27 @@ declare module "postretro" {
     progress: { tag: string; at: number; fire: string };
   };
 
-  /** Primitive reaction body: invokes the named Rust primitive. A non-empty `tag` targets matching entities; tag-targeted primitives include emitter/fog/mover commands, `applyDamage`, `grantHealth`, `grantAmmo`, `addSlot`, `setAnimationState`, `updateEnemyState`, `spawnFromSpawner`, `armTrigger`, and `disarmTrigger`. In a trigger-event reaction, `applyDamage`, `grantHealth`, `grantAmmo`, and `addSlot` may instead carry `target: "@activators"`. True system reactions carry neither `tag` nor `target` and enqueue typed engine commands such as `playSound`, `rumble`, `flashScreen`, and the UI-stack reactions. `args` carries the primitive's typed payload (e.g. `{ rate: 0 }` for `setEmitterRate`, `{ sound: "alarm" }` for `playSound`). */
+  /** Primitive reaction body: invokes the named Rust primitive. A group command (`npcs(...)`, `players()`) carries `kind` and an optional `tag` filter; a subject-token command (`on.activators`, `on.trigger`) carries `target: "@activators"` or `target: "@trigger"`. A raw descriptor with only a non-empty `tag` resolves over every entity carrying it — the form for fog, emitter and animation primitives (`setFogScatter`, `setEmitterRate`, `setAnimationState`), which have no typed builder. True system reactions carry neither and enqueue typed engine commands such as `playSound`, `rumble`, `flashScreen`, and the UI-stack reactions. `args` carries the primitive's typed payload (e.g. `{ rate: 0 }` for `setEmitterRate`, `{ sound: "alarm" }` for `playSound`). */
   export type PrimitiveReactionDescriptor = {
     primitive: string;
+    kind?: GroupKind;
     tag?: string;
-    target?: "@activators";
+    target?: SubjectTokenTarget;
     args?: Record<string, unknown>;
     onComplete?: string;
   };
 
-  /** Tag-targeted trigger primitive `armTrigger` takes no payload; its target comes from `PrimitiveReactionDescriptor.tag`. */
+  /** Trigger primitive `armTrigger` takes no payload; its target is a trigger member's id (a member handle's `arm()`), a subject-token command (`on.trigger.arm()` carries `target: "@trigger"`), or a raw descriptor's `tag`. */
   export interface ArmTriggerArgs {
     readonly [key: string]: never;
   }
 
-  /** Tag-targeted trigger primitive `disarmTrigger` takes no payload; its target comes from `PrimitiveReactionDescriptor.tag`. */
+  /** Trigger primitive `disarmTrigger` takes no payload; its target is a trigger member's id (a member handle's `disarm()`), a subject-token command (`on.trigger.disarm()` carries `target: "@trigger"`), or a raw descriptor's `tag`. */
   export interface DisarmTriggerArgs {
     readonly [key: string]: never;
   }
 
-  /** One step in a `sequence` reaction body: invokes the named sequenced primitive against the given entity with `args`. Sequence steps target a single `EntityId`; tag-targeted primitives belong on the `Primitive` reaction path. */
+  /** One step in a `sequence` reaction body: invokes the named sequenced primitive against the given entity with `args`. A member step targets a single `EntityId`; a group command (`GroupCommand`) resolves its group when it runs; a subject-token command (`SubjectTokenCommand`) addresses the fire's subject and is legal only before any `wait`. */
   export type SetLightAnimationStep = {
     id: EntityId;
     primitive: "setLightAnimation";
@@ -1586,9 +1832,11 @@ declare module "postretro" {
   export type MoverSetBlockPolicyStep = { id: EntityId; primitive: "moverSetBlockPolicy"; args: { policy: "displace" | "reverse" | "stop" | "crush" } };
 
   /** Sequence step that arms one trigger volume. */
-  export type ArmTriggerStep = { id: EntityId | "@trigger"; primitive: "armTrigger"; args: ArmTriggerArgs };
+  export type ArmTriggerStep = { id: EntityId; primitive: "armTrigger"; args: ArmTriggerArgs };
   /** Sequence step that disarms one trigger volume. */
-  export type DisarmTriggerStep = { id: EntityId | "@trigger"; primitive: "disarmTrigger"; args: DisarmTriggerArgs };
+  export type DisarmTriggerStep = { id: EntityId; primitive: "disarmTrigger"; args: DisarmTriggerArgs };
+  /** Sequence step that spawns one batch from one spawner member (`s.fire()`). */
+  export type SpawnFromSpawnerStep = { id: EntityId; primitive: "spawnFromSpawner"; args?: never };
 
   /** Control-step payload for `WaitStep`. `interruptible` defaults to `false` when omitted by the author. */
   export interface WaitArgs { readonly durationMs: number; readonly interruptible: boolean; }
@@ -1617,10 +1865,13 @@ declare module "postretro" {
     | MoverSetBlockPolicyStep
     | ArmTriggerStep
     | DisarmTriggerStep
+    | SpawnFromSpawnerStep
+    | GroupCommand
+    | SubjectTokenCommand
     | WaitStep
     | FireStep;
 
-  /** Sequence reaction body: ordered entity-targeted primitive and control steps. Entity steps begin in array order; `fire` queues a named dispatch, while `wait` stops the current drain and resumes the remaining tail after its delay. */
+  /** Sequence reaction body: ordered member, group, subject-token and control steps. Steps begin in array order; `fire` queues a named dispatch, while `wait` stops the current drain and resumes the remaining tail after its delay. */
   export type SequenceReactionDescriptor = {
     sequence: SequenceStep[];
   };
@@ -1638,8 +1889,26 @@ declare module "postretro" {
   export type TickParams = Readonly<{ dt: RuntimeRead }>;
   const activatorsTargetBrand: unique symbol;
   const triggerTargetBrand: unique symbol;
-  export type ActivatorsTarget = Readonly<{ readonly [activatorsTargetBrand]: true }>;
-  export type TriggerTarget = Readonly<{ readonly [triggerTargetBrand]: true }>;
+  /** The pawns that caused the current trigger edge (`on.activators`). Legal only before any `wait`. */
+  export interface ActivatorsTarget {
+    readonly [activatorsTargetBrand]: true;
+    /** Damage this fire's activators by a finite, non-negative amount. */
+    damage(amount: number): SubjectTokenCommand;
+    /** Add health to this fire's activators. */
+    grantHealth(amount: number): SubjectTokenCommand;
+    /** Add `amount` to this fire's activators' named ammo-reserve pool. */
+    grantAmmo(type: string, amount: number): SubjectTokenCommand;
+    /** Add `delta` to this fire's activators' value of a per-owner numeric slot. */
+    addSlot(slot: StateRef<number>, delta: number): SubjectTokenCommand;
+  }
+  /** The trigger volume that fired the current edge (`on.trigger`). Legal only before any `wait`. */
+  export interface TriggerTarget {
+    readonly [triggerTargetBrand]: true;
+    /** Arm the volume that fired and clear its once/rearm state. */
+    arm(): SubjectTokenCommand;
+    /** Disarm the volume that fired. */
+    disarm(): SubjectTokenCommand;
+  }
   export type TriggerEventParams = Readonly<{ activators: ActivatorsTarget; trigger: TriggerTarget; occupancy: RuntimeRead }>;
   const emitterTargetBrand: unique symbol;
   /** Opaque anchor for where the current named gameplay event happened. Legal only as `playSound`'s `at`. */
@@ -1650,7 +1919,7 @@ declare module "postretro" {
   /** Named reaction with a type-only, contravariant dispatch-scope marker. */
   export type Reaction<S = {}> = NamedReactionDescriptor & { readonly [reactionScopeBrand]?: (scope: S) => void };
 
-  // Impact-policy IR skin. This vocabulary lowers to the existing closed
+  // Shared fluent-expression IR skin. This vocabulary lowers to the existing closed
   // RuntimeValue op set; boolean composition is represented exclusively with
   // `select` nodes.
   const numBrand: unique symbol;
@@ -1686,6 +1955,43 @@ declare module "postretro" {
     number(value: RuntimeValue): NumberRef;
     bool(value: RuntimeValue): BoolRef;
   }>;
+  /** Independent shot multipliers. Omitted axes use 1; expressions may read only `activation.charge`. */
+  export type ActivationShotScale = Readonly<{
+    /** Direct or splash damage multiplier, applied once. Finite range: [0, 64]. */
+    damage?: NumberValue;
+    /** Hitscan distance or projectile travel cap multiplier. Finite range: (0, 64]. */
+    range?: NumberValue;
+    /** Projectile travel-speed multiplier. Finite range: (0, 64]. */
+    projectileSpeed?: NumberValue;
+    /** Projectile swept collision-radius multiplier. Finite range: (0, 64]. */
+    projectileRadius?: NumberValue;
+    /** Projectile visual-size multiplier; collision and splash radius are independent. Finite range: (0, 64]. */
+    projectileSize?: NumberValue;
+    /** Direct and splash knockback-speed multiplier. Finite range: [0, 64]. */
+    knockbackSpeed?: NumberValue;
+    /** Per-shot ammo, heat, or cell-cost multiplier. Finite range: (0, 64]; positive ammo costs round up. */
+    resourceCost?: NumberValue;
+  }>;
+
+  /** Shot options. Multipliers accept finite literals, fluent refs, or numeric `runtime.*` IR. */
+  export type ActivationShotOptions = Readonly<{
+    /** Independent multipliers, defaulting to 1. Only the read-only `charge` input is allowed. */
+    scale?: ActivationShotScale;
+  }>;
+
+  /** Closed weapon-action data builders. Programs allow at most 64 steps and 16 shots. */
+  export type Activation = Readonly<{
+    /** Normalized start-to-release charge in [0, 1]; uncharged actions read 1. No state-store reads or writes. */
+    charge: NumberRef;
+    /** Build an ordinary shot. First and last steps must be shots, with a positive wait between shots. */
+    shot(options?: ActivationShotOptions): ActivationStepDescriptor;
+    /** Build a wait in milliseconds: finite (0, 60000], rounded up to whole ticks. Total quantized waits are at most 60 seconds. */
+    wait(durationMs: number): ActivationStepDescriptor;
+  }>;
+
+  /** Pure weapon-action builders; no callbacks or gameplay execution. */
+  export const activation: Activation;
+
   /** Opaque closed impact effect. Construct through TargetHandle, SourceHandle, `set`, or `update`. */
   export interface Effect { readonly [effectBrand]: true; }
   export type GatedEffect = { when?: BoolRef; do: readonly Effect[] };
@@ -1762,7 +2068,8 @@ declare module "postretro" {
     reactions: NamedReactionDescriptor[];
     events?: readonly ImpactEvent[];
     crossings?: CrossingDescriptor[];
-    triggerEvents?: TriggerEventDescriptor[];
+    /** Level trigger events, keyed by volume: build each with a trigger member's `on`. A tag-keyed entry belongs in `ModManifest.triggerEvents` (`defineTriggerEvent`) and is rejected here. */
+    triggerEvents?: VolumeTriggerEventDescriptor[];
     triggerPools?: TriggerPoolDescriptor[];
     /** Per-level UI trees (name + `AnchoredTree` + optional `alwaysOn` / `hideBelow`). Optional; same shape as `ModManifest.uiTrees` but level-scoped (cleared on unload). Malformed entries are logged and skipped. */
     uiTrees?: ReadonlyArray<ModUiTree>;
@@ -1824,37 +2131,56 @@ declare module "postretro" {
     tracer: (params: EmitterParams) => ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor,
   ): Reaction<EmitterParams>;
 
+  /** Mod-global trigger event: a standing rule keyed by tag, accepted only in `ModManifest.triggerEvents`. Build it with `defineTriggerEvent`. */
   export type TriggerEventDescriptor = { tag: string; event: "enter" | "exit"; fire: string[]; levels?: string[] };
+  /** Level trigger event: one volume's edge, keyed by the member's id. Build it with a trigger member's `on`; accepted only in `setupLevel`'s `triggerEvents`. */
+  export type VolumeTriggerEventDescriptor = { trigger: EntityId; event: "enter" | "exit"; fire: string[] };
+  /** A reaction a trigger edge fires: a sourceless or trigger-scoped handle, or a bare name. */
+  export type TriggerEventReaction = Reaction<{}> | Reaction<TriggerEventParams> | string;
+  /** Authored form of `defineTriggerEvent`. */
+  export type TriggerEventRule = { tag: string; event: "enter" | "exit"; fire: TriggerEventReaction[]; levels?: string[] };
   /** A seeded trap-pool declaration; exactly one arming form is required. */
   export type TriggerPoolDescriptor = { tag: string; arm?: number; armPercentage?: number; levels?: string[] };
-  export type TriggerEventOptions = { levels?: string[] };
-  export function onTriggerEvent(filter: { tag: string }, event: "enter" | "exit", fire: (Reaction<{}> | Reaction<TriggerEventParams> | string)[], options?: TriggerEventOptions): TriggerEventDescriptor;
-  export function damage(target: ActivatorsTarget | string, amount: number): PrimitiveReactionDescriptor;
-  export function grantHealth(target: ActivatorsTarget | string, amount: number): PrimitiveReactionDescriptor;
-  export function grantAmmo(target: ActivatorsTarget | string, type: string, amount: number): PrimitiveReactionDescriptor;
-  /** Add a delta to one per-owner numeric slot for each selected player pawn. */
-  export function addSlot(target: ActivatorsTarget | string, slot: StateRef<number>, delta: number): PrimitiveReactionDescriptor;
-  /** Select a live enemy group by tag. Its tag resolves at reaction fire time. */
-  export type EnemyGroupFilter = { tag?: string };
-  /** Typed, additive partial for consequential enemy-state updates. */
-  export type EnemyStateUpdateArgs = { aggro?: boolean };
-  /** Fire-time-tag enemy handle. `update` emits one primitive descriptor. */
-  export interface EnemyGroup {
-    update(fields: EnemyStateUpdateArgs): PrimitiveReactionDescriptor;
+  /** Declare a mod-global trigger event: every volume carrying `tag` fires `fire` on `event`, in each level the `levels` selector matches (every level when omitted). Return it from `ModManifest.triggerEvents`; a level binds its own volumes with a trigger member's `on`. */
+  export function defineTriggerEvent(rule: TriggerEventRule): TriggerEventDescriptor;
+
+  /** Kinds a group command addresses. */
+  export type GroupKind = "npc" | "player";
+  /** One group command: a primitive descriptor carrying `kind` (and an optional `tag` filter) instead of a target. Legal both as a reaction body and directly as a sequence entry; the group resolves when the command takes effect, so NPCs spawned or players joined before then are included. */
+  export type GroupCommand = { primitive: string; kind: GroupKind; tag?: string; args: Record<string, unknown> };
+  /** The subject a token command addresses: this fire's activators or the volume that fired. */
+  export type SubjectTokenTarget = "@activators" | "@trigger";
+  /** One subject-token command (`on.activators`, `on.trigger`): a primitive descriptor whose `target` names the fire's subject. Legal both as a reaction body and directly as a sequence entry, but only before any `wait`, because the fire context does not survive one. */
+  export type SubjectTokenCommand = { primitive: string; target: SubjectTokenTarget; args: Record<string, unknown> };
+  /** Selects the NPCs a group command reaches. Omit `tag` for every NPC. */
+  export type NpcGroupFilter = { tag?: string };
+  /** Typed, additive partial for NPC state updates. */
+  export type NpcStateUpdateArgs = { aggro?: boolean };
+  /** Brain-driven characters that are not players, whatever their faction sentiment. Opaque: no members, no length. Commands run on the host and in single player only. */
+  export interface NpcGroup {
+    /** Apply a typed partial to each NPC's state. */
+    update(fields: NpcStateUpdateArgs): GroupCommand;
+    /** Damage each NPC by a finite, non-negative amount. */
+    damage(amount: number): GroupCommand;
   }
-  export function enemies(filter: EnemyGroupFilter): EnemyGroup;
-  /** Selects a live spawner group by tag. Its tag resolves at reaction fire time. */
-  export type SpawnerFilter = { tag: string };
-  /** Fire-time-tag spawner handle. `fire` emits one primitive descriptor. */
-  export interface SpawnerHandle {
-    fire(): PrimitiveReactionDescriptor;
+  /** Every player pawn bound to a seat; a seat in a disconnect hold is skipped, and single player reaches the local pawn. Opaque: no members, no length. Commands run on the host and in single player only. */
+  export interface PlayerGroup {
+    /** Damage each player by a finite, non-negative amount. */
+    damage(amount: number): GroupCommand;
+    /** Add health to each player. */
+    grantHealth(amount: number): GroupCommand;
+    /** Add `amount` to each player's named ammo-reserve pool. */
+    grantAmmo(type: string, amount: number): GroupCommand;
+    /** Add `delta` to each player's value of a per-owner numeric slot. */
+    addSlot(slot: StateRef<number>, delta: number): GroupCommand;
   }
-  export function spawner(filter: SpawnerFilter): SpawnerHandle;
-  export function armTrigger(target: TriggerTarget): SequenceStep[];
-  export function disarmTrigger(target: TriggerTarget): SequenceStep[];
+  /** Address NPCs, optionally narrowed to those carrying `tag`. Resolved when each command takes effect, sequence steps included. */
+  export function npcs(filter?: NpcGroupFilter): NpcGroup;
+  /** Address every seat-bound player pawn. Resolved when each command takes effect, sequence steps included. */
+  export function players(): PlayerGroup;
   /** Enroll the rest of this sequence body with the host scheduler and stop; the remaining steps resume after `durationMs` (rounded up to whole authoritative ticks). `interruptible` (default `false`) lets the reaction's paired trigger Exit edge cancel the remaining steps while parked. */
   export function wait(durationMs: number, opts?: { interruptible?: boolean }): SequenceStep[];
-  /** Dispatch a named reaction by handle or name from inside a sequence body, resolved exactly as `onTriggerEvent` resolves its `fire` entries. `Reaction<{}>` (not `Reaction<S>`) makes firing a scoped reaction a compile-time error. */
+  /** Dispatch a named reaction by handle or name from inside a sequence body, resolved exactly as a trigger member's `on` resolves its `fire` entries. `Reaction<{}>` (not `Reaction<S>`) makes firing a scoped reaction a compile-time error. */
   export function fire(reaction: Reaction<{}> | string): SequenceStep[];
 
   /** Stamp a shared map-tag scope onto each reaction in a plain list. `tags` are matched against `ModMapEntry.tags`; omit scoping for every level. */
@@ -1865,7 +2191,7 @@ declare module "postretro" {
 
   // -------------------------------------------------------------------------
   // State-store declarations. `defineStore` is special-cased in the typedef
-  // generator (mirroring `worldQuery`): per-slot value types live only in the
+  // generator: per-slot value types live only in the
   // runtime `schema` argument, absent at typedef emission, so the typed state
   // reference map is supplied by this hand-written generic instead of registry
   // emission.
@@ -1971,6 +2297,7 @@ declare module "postretro" {
     textEntryTarget?: string;
     accessibleName?: string;
     role?: WidgetRole;
+    restoreOnReturn?: boolean;
   };
   /** Motion easing used by passive world-anchored presentation templates. */
   export type PresentationEasing = "linear" | "easeIn" | "easeOut" | "easeInOut";
@@ -2254,10 +2581,11 @@ declare module "postretro" {
     | "up" | "down" | "left" | "right"
     | "next" | "prev"
     | "confirm" | "cancel"
-    | "menu" | "options";
+    | "menu" | "options"
+    | "tabNext" | "tabPrev";
 
   /** A UI navigation intent wire name. Template-literal type over the closed
-   * `NavIntentName` set, so only `"nav.up"` … `"nav.options"` type-check. */
+   * `NavIntentName` set, so only `"nav.up"` … `"nav.tabPrev"` type-check. */
   export type NavIntent = `nav.${NavIntentName}`;
 }
 
@@ -2280,6 +2608,7 @@ declare module "postretro/ui" {
     CrossingDescriptor,
     NumberValue,
     RuntimeValue,
+    CommandId,
   } from "postretro";
 
   /** Linear RGBA color token value. Components are in display-linear 0-1 space; alpha is the fourth element. */
@@ -2429,13 +2758,17 @@ declare module "postretro/ui" {
   /** Build a solid panel widget descriptor. Pure; no engine side effect. */
   export function Panel(props: PanelProps): WidgetDescriptor;
   /** Props for `Image`. `asset` is a UI texture key. Exactly one accessible-name path is required: `label` for meaningful images or `decorative: true` for ignored imagery. */
-  export type ImageProps = { asset: string; id?: string; focusNeighbors?: FocusNeighborsProp; visibleWhen?: Predicate; role?: WidgetRole } & ({ label: string; decorative?: never } | { decorative: true; label?: never });
-  /** Build an image widget descriptor sized from the texture asset's natural dimensions. */
+  export type ImageProps = { asset: string; width?: number; height?: number; id?: string; focusNeighbors?: FocusNeighborsProp; visibleWhen?: Predicate; role?: WidgetRole } & ({ label: string; decorative?: never } | { decorative: true; label?: never });
+  /** Build an image widget descriptor. Without `width` / `height` (logical-reference px) it takes the texture asset's natural size; one keeps the source aspect; both give an exact box. */
   export function Image(props: ImageProps): WidgetDescriptor;
   /** Props for `Spacer`. `flexGrow` is a finite proportional share of leftover space; defaults to 1. */
   export type SpacerProps = { flexGrow?: number; id?: string; visibleWhen?: Predicate; role?: WidgetRole };
   /** Build a spacer widget descriptor. */
   export function Spacer(props?: SpacerProps): WidgetDescriptor;
+  /** Props for `Glyph`. `command` is a command ID. */
+  export type GlyphProps = { command: CommandId; id?: string; visibleWhen?: Predicate };
+  /** The glyph for a command on the player's current device: the mod's art for the input bound to it, else that input's label, else nothing when it is unbound there or irrelevant. Follows rebinding and the confirm/cancel swap. */
+  export function Glyph(props: GlyphProps): WidgetDescriptor;
   /** One `Button.valueText` case: `text` shows while every predicate in `when` holds. An absent or empty `when` always holds. */
   export type ValueTextCase = { when?: Predicate[]; text: LocalizedText };
   /** Props for `Button`. `id` is required for focus/activation. `onPress` accepts a `defineReaction` handle, bare reaction name, or reserved `ui.*` action. Exactly one of `label` or `labelledBy` is required. `valueText` makes the visible text follow state: the first case whose predicates all hold, else `label`. */
@@ -2466,10 +2799,12 @@ declare module "postretro/ui" {
 
   export type FocusKind = "linear" | "spatial";
   export type FocusPolicyProp = FocusKind | { policy: FocusKind; wrap?: boolean; repeat?: RepeatPolicyProp };
+  /** A vertical scroll viewport for `VStack`/`Grid`: sizes to content up to `maxHeight`, then clips and scrolls. Ignored with a diagnostic on `HStack`. */
+  export type ScrollProp = { maxHeight: number };
   /** Props for `VStack`/`HStack`. `gap`/`padding` default to 0, `align` defaults to `"start"`, `width` fixes the stack width in logical-reference pixels, and optional `localState` declares presentation-only cells scoped to this container. */
-  export type StackProps = { gap?: WidgetSpacing; padding?: WidgetSpacing; align?: WidgetAlign; width?: number; id?: string; focusNeighbors?: FocusNeighborsProp; focus?: FocusPolicyProp; restoreOnReturn?: boolean; fill?: WidgetColor; border?: BorderProp; localState?: { scope: string; cells: Record<string, CellInit> }; visibleWhen?: Predicate; role?: WidgetRole };
+  export type StackProps = { gap?: WidgetSpacing; padding?: WidgetSpacing; align?: WidgetAlign; width?: number; scroll?: ScrollProp; id?: string; focusNeighbors?: FocusNeighborsProp; focus?: FocusPolicyProp; fill?: WidgetColor; border?: BorderProp; localState?: { scope: string; cells: Record<string, CellInit> }; visibleWhen?: Predicate; role?: WidgetRole };
   /** Props for `Grid`. `cols` is required and must be an integer >= 1; children flow row-major. */
-  export type GridProps = { gap?: WidgetSpacing; padding?: WidgetSpacing; align?: WidgetAlign; id?: string; focusNeighbors?: FocusNeighborsProp; focus?: FocusPolicyProp; restoreOnReturn?: boolean; cols: number; visibleWhen?: Predicate; role?: WidgetRole };
+  export type GridProps = { gap?: WidgetSpacing; padding?: WidgetSpacing; align?: WidgetAlign; id?: string; focusNeighbors?: FocusNeighborsProp; focus?: FocusPolicyProp; cols: number; scroll?: ScrollProp; visibleWhen?: Predicate; role?: WidgetRole };
   /** Build a vertical stack descriptor. `children` is positional, not a prop. */
   export function VStack(props?: StackProps, children?: WidgetDescriptor[]): WidgetDescriptor;
   /** Build a horizontal stack descriptor. `children` is positional, not a prop. */
@@ -2479,9 +2814,9 @@ declare module "postretro/ui" {
 
   export type WidgetAnchor = "topLeft" | "top" | "topRight" | "left" | "center" | "right" | "bottomLeft" | "bottom" | "bottomRight";
   export type WidgetCaptureMode = "capture" | "passthrough";
-  /** Props for `Tree`. `anchor` and `offset` place the root in 1280x720 logical UI space. `captureMode` defaults to `"passthrough"`; `initialFocus` names a widget id; `textEntryTarget` is a writable string state ref. */
-  export type TreeProps = { anchor: WidgetAnchor; offset: [number, number]; captureMode?: WidgetCaptureMode; initialFocus?: string; textEntryTarget?: Ref<string>; accessibleName?: string; role?: WidgetRole };
-  export type AnchoredTreeDescriptor = { anchor: WidgetAnchor; offset: [number, number]; root: WidgetDescriptor; captureMode?: WidgetCaptureMode; initialFocus?: string; textEntryTarget?: string; accessibleName?: string; role?: WidgetRole };
+  /** Props for `Tree`. `anchor` and `offset` place the root in 1280x720 logical UI space. `captureMode` defaults to `"passthrough"`; `initialFocus` names a widget id; `textEntryTarget` is a writable string state ref; `restoreOnReturn` (on by default) returns focus to the control it left when a tree pushed above closes, and `false` lands on `initialFocus` instead. */
+  export type TreeProps = { anchor: WidgetAnchor; offset: [number, number]; captureMode?: WidgetCaptureMode; initialFocus?: string; textEntryTarget?: Ref<string>; accessibleName?: string; role?: WidgetRole; restoreOnReturn?: boolean };
+  export type AnchoredTreeDescriptor = { anchor: WidgetAnchor; offset: [number, number]; root: WidgetDescriptor; captureMode?: WidgetCaptureMode; initialFocus?: string; textEntryTarget?: string; accessibleName?: string; role?: WidgetRole; restoreOnReturn?: boolean };
   /** Wrap a root widget in an anchored tree placement envelope. Pure; registration happens through `defineUiTree` and manifest data. */
   export function Tree(props: TreeProps, root: WidgetDescriptor): AnchoredTreeDescriptor;
   /** Props accepted by `defineUiTree`. `name` is the registry key; `tree` is from `Tree`; `alwaysOn` renders as a base layer such as HUD; `hideBelow` visually occludes retained lower pushed trees. */
@@ -2534,10 +2869,20 @@ declare module "postretro/ui" {
   export const QUIT_TO_MENU_ACTION: "ui.quitToMenu";
   /** Reserved `Button.onPress` action that opens the engine accessibility panel. */
   export const OPEN_ACCESSIBILITY_ACTION: "ui.openAccessibility";
+  /** Reserved `Button.onPress` action that opens the engine controls panel. */
+  export const OPEN_CONTROLS_ACTION: "ui.openControls";
   /** Accessibility toggles a menu button may cycle. */
   export type AccessibilityToggleField = "reduceMotion" | "flashLimiter" | "monoAudio";
-  /** Accessibility numeric fields a mod menu button may step, each within [0, 1]. */
-  export type AccessibilityNumericField = "screenShakeScale" | "viewFeelScale" | "masterVolume" | "sfxVolume" | "musicVolume" | "uiVolume";
+  /** Accessibility numeric fields a mod menu button may step, each within its range ([0, 1], or [1, 3] for `holdTimingScale`). */
+  export type AccessibilityNumericField = "screenShakeScale" | "viewFeelScale" | "masterVolume" | "sfxVolume" | "musicVolume" | "uiVolume" | "holdTimingScale";
+  /** Reserved operations for the engine display-mode picker and confirmation. */
+  export type DisplayModeOperation = "next" | "previous" | "apply" | "keep" | "revert";
+  /**
+   * Build a reserved `ui.displayMode.<op>` action. `next`/`previous` browse without saving;
+   * `apply` commits the selection (exclusive opens the engine confirmation).
+   */
+  export function displayModeAction<O extends DisplayModeOperation>(op: O): `ui.displayMode.${O}`;
+
   /** The reserved `onPress` action for one accessibility field. Toggles `cycle`; numeric fields `increase` or `decrease`. */
   export function accessibilityAction<F extends AccessibilityToggleField>(field: F, op: "cycle"): `ui.accessibility.cycle.${F}`;
   export function accessibilityAction<F extends AccessibilityNumericField, O extends "increase" | "decrease">(field: F, op: O): `ui.accessibility.${O}.${F}`;

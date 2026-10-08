@@ -339,8 +339,8 @@ fn project_triangle_mask(positions: &[Vec3], indices: &[u32]) -> Vec<(u32, u32)>
     );
     let aspect = width as f32 / height as f32;
     let vfov = 2.0 * ((super::RECEIVER_FOV_DEG.to_radians() / 2.0).tan() / aspect).atan();
-    let view_proj = Mat4::perspective_rh(vfov, aspect, 0.01, 1000.0)
-        * Mat4::look_at_rh(eye, eye + direction, Vec3::Y);
+    let view_proj = glam::camera::rh::proj::directx::perspective(vfov, aspect, 0.01, 1000.0)
+        * glam::camera::rh::view::look_at_mat4(eye, eye + direction, Vec3::Y);
     let screen: Vec<_> = positions
         .iter()
         .map(|&position| {
@@ -357,7 +357,7 @@ fn project_triangle_mask(positions: &[Vec3], indices: &[u32]) -> Vec<(u32, u32)>
         })
         .collect();
     let mut mask = vec![false; (width * height) as usize];
-    for triangle in indices.chunks_exact(3) {
+    for triangle in indices.as_chunks::<3>().0 {
         let [a, b, c] = [
             screen[triangle[0] as usize],
             screen[triangle[1] as usize],

@@ -5,6 +5,11 @@ use super::*;
 use crate::render::sh_compose_dispatch::build_dynamic_compose_grid_upload_for_rows_into;
 
 impl StreamingIndirectCompose {
+    #[cfg(test)]
+    pub(in crate::render::sh_streaming::gpu) fn affinity_lights_for_test(&self) -> &wgpu::Buffer {
+        &self.affinity_lights
+    }
+
     /// Dense growth changes only the sampled/storage atlas views and the
     /// compact atlas geometry. The renderer-owned CSR backing remains live
     /// in this family; rebuilding it here would transiently duplicate every
@@ -70,7 +75,7 @@ impl StreamingIndirectCompose {
                 reason: "parsed sparse row does not match its header counts",
             });
         }
-        if tile_f16_start % 2 != 0 {
+        if !tile_f16_start.is_multiple_of(2) {
             return Err(ShResidencyDrainError::GpuCapacity {
                 reason: "streamed sparse tile allocation is not word aligned",
             });
@@ -177,7 +182,7 @@ impl StreamingIndirectCompose {
 
     pub(in crate::render::sh_streaming::gpu) fn dispatch<'a>(
         &mut self,
-        queue: &wgpu::Queue,
+        queue: &crate::render::uploads::UploadQueue,
         encoder: &mut wgpu::CommandEncoder,
         uniform_bind_group: &wgpu::BindGroup,
         rows: &[u32],
@@ -234,13 +239,18 @@ impl StreamingIndirectCompose {
         {
             return Err(ShResidencyDrainError::SlotOverflow);
         }
-        uploads.write_buffer(&self.affinity_offsets, offset, &u32_bytes(&[0, 0]))
+        uploads
+            .write_buffer(&self.affinity_offsets, offset, &u32_bytes(&[0, 0]))
+            .map_err(Into::into)
     }
 
-    pub(in crate::render::sh_streaming::gpu) fn clear_all_row_pairs(&self, queue: &wgpu::Queue) {
+    pub(in crate::render::sh_streaming::gpu) fn clear_all_row_pairs(
+        &self,
+        queue: &crate::render::uploads::UploadQueue,
+    ) {
         let zeroes = vec![0; usize::try_from(self.affinity_offsets.size()).unwrap_or(0)];
         if !zeroes.is_empty() {
-            queue.write_buffer(&self.affinity_offsets, 0, &zeroes);
+            queue.direct_write_buffer(&self.affinity_offsets, 0, &zeroes);
         }
     }
 

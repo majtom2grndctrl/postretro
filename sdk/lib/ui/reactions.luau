@@ -273,6 +273,14 @@ function UiReactionsSdk.showDialog(tree: string, onCommit: string?): PrimitiveRe
   return { primitive = "showDialog", args = args }
 end
 
+export type DisplayModeOperation = "next" | "previous" | "apply" | "keep" | "revert"
+
+--- Build a reserved display-mode action. `next`/`previous` browse without saving;
+--- `apply` commits the selection (exclusive opens the engine confirmation).
+function UiReactionsSdk.displayModeAction(op: DisplayModeOperation): string
+  return `ui.displayMode.{op}`
+end
+
 --- The engine-shipped on-screen keyboard's registry name. `openTextEntry` opens
 --- this tree; the engine loads its descriptor from `core/ui/keyboard.json`
 --- at boot. The keyboard edits the `ui.textEntry` writable String slot.
@@ -297,10 +305,14 @@ UiReactionsSdk.QUIT_TO_MENU_ACTION = "ui.quitToMenu"
 --- panel is engine-owned and works under a mod that registers no reactions.
 UiReactionsSdk.OPEN_ACCESSIBILITY_ACTION = "ui.openAccessibility"
 
+--- Reserved button `onPress` action that opens the engine controls panel,
+--- built from the mod's commands; players rebind there.
+UiReactionsSdk.OPEN_CONTROLS_ACTION = "ui.openControls"
+
 --- The reserved `onPress` action for one accessibility field:
 --- `ui.accessibility.<op>.<field>`. Toggles (`reduceMotion`, `flashLimiter`,
 --- `monoAudio`) `cycle`; numeric fields (`screenShakeScale`, `viewFeelScale`,
---- `masterVolume`, `sfxVolume`, `musicVolume`, `uiVolume`) `increase` or
+--- `masterVolume`, `sfxVolume`, `musicVolume`, `uiVolume`, `holdTimingScale`) `increase` or
 --- `decrease`. The action writes the player's setting exactly as the engine
 --- accessibility panel's control does.
 function UiReactionsSdk.accessibilityAction(field: string, op: string): string

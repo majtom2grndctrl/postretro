@@ -5,14 +5,14 @@ use super::common::*;
 
 fn parse_js_ammo_resource(resource: &str) -> Result<EntityTypeDescriptor, DescriptorError> {
     let src = format!(
-        r#"({{ components: {{ weapon: {{ damage: 12, range: 64, fireRateMs: 180, fireMode: "semi", resolution: "hitscan", resource: {resource} }} }} }})"#
+        r#"({{ components: {{ weapon: {{ damage: 12, range: 64, primary : {{ trigger : "press", recoveryMs : 180, steps : [{{ kind: "shot" }}] }},  resolution: "hitscan", resource: {resource} }} }} }})"#
     );
     eval_js(&src, entity_descriptor_from_js)
 }
 
 fn parse_lua_ammo_resource(resource: &str) -> Result<EntityTypeDescriptor, DescriptorError> {
     let src = format!(
-        r#"return {{ components = {{ weapon = {{ damage = 12, range = 64, fireRateMs = 180, fireMode = "semi", resolution = "hitscan", resource = {resource} }} }} }}"#
+        r#"return {{ components = {{ weapon = {{ damage = 12, range = 64, primary = {{ trigger = "press", recoveryMs = 180, steps = {{ {{ kind = "shot" }} }} }},  resolution = "hitscan", resource = {resource} }} }} }}"#
     );
     eval_lua(&src, entity_descriptor_from_lua)
 }
@@ -26,14 +26,14 @@ fn ammo_resource(descriptor: EntityTypeDescriptor) -> AmmoResource {
 
 fn parse_js_weapon_stats(stats: &str) -> Result<EntityTypeDescriptor, DescriptorError> {
     let src = format!(
-        r#"({{ components: {{ weapon: {{ damage: 12, range: 64, fireRateMs: 180, fireMode: "semi", resolution: "hitscan"{stats} }} }} }})"#
+        r#"({{ components: {{ weapon: {{ damage: 12, range: 64, primary : {{ trigger : "press", recoveryMs : 180, steps : [{{ kind: "shot" }}] }},  resolution: "hitscan"{stats} }} }} }})"#
     );
     eval_js(&src, entity_descriptor_from_js)
 }
 
 fn parse_lua_weapon_stats(stats: &str) -> Result<EntityTypeDescriptor, DescriptorError> {
     let src = format!(
-        r#"return {{ components = {{ weapon = {{ damage = 12, range = 64, fireRateMs = 180, fireMode = "semi", resolution = "hitscan"{stats} }} }} }}"#
+        r#"return {{ components = {{ weapon = {{ damage = 12, range = 64, primary = {{ trigger = "press", recoveryMs = 180, steps = {{ {{ kind = "shot" }} }} }},  resolution = "hitscan"{stats} }} }} }}"#
     );
     eval_lua(&src, entity_descriptor_from_lua)
 }
@@ -215,10 +215,10 @@ fn js_entity_descriptor_with_inventory_and_weapon_component_deserializes() {
             weapon: {
                 damage: 12.0,
                 range: 64.0,
-                fireRateMs: 180.0,
+                primary : { trigger : "press", recoveryMs : 180.0, steps : [{ kind: "shot" }] },
                 lowerMs: 25,
                 raiseMs: 40,
-                fireMode: "semi",
+
                 resolution: "hitscan",
                 creditSource: "player.reference-pistol:primary"
             }
@@ -229,10 +229,13 @@ fn js_entity_descriptor_with_inventory_and_weapon_component_deserializes() {
     let weapon = d.weapon.expect("weapon present");
     assert_eq!(weapon.damage, 12.0);
     assert_eq!(weapon.range, 64.0);
-    assert_eq!(weapon.cooldown_ms, 180.0);
+    assert_eq!(weapon.primary.recovery_ms, 180.0);
     assert_eq!(weapon.lower_ms, 25);
     assert_eq!(weapon.raise_ms, 40);
-    assert_eq!(weapon.fire_mode, FireMode::Semi);
+    assert_eq!(
+        weapon.primary.trigger,
+        postretro_foundation::ActivationTrigger::Press
+    );
     assert_eq!(weapon.resolution, ResolutionMode::Hitscan);
     assert_eq!(
         weapon.credit_source.as_deref(),
@@ -288,8 +291,8 @@ fn js_weapon_descriptor_without_credit_source_parses_as_none() {
             weapon: {
                 damage: 12.0,
                 range: 64.0,
-                fireRateMs: 180.0,
-                fireMode: "semi",
+                primary : { trigger : "press", recoveryMs : 180.0, steps : [{ kind: "shot" }] },
+
                 resolution: "hitscan"
             }
         }
@@ -358,14 +361,14 @@ fn paired_weapon_pellet_stats_reject_out_of_range_values() {
 #[test]
 fn projectile_weapon_rejects_multi_pellet_authoring_in_both_vms() {
     let js = r#"({ components: { weapon: {
-        damage: 12, pelletCount: 2, range: 64, fireRateMs: 180,
-        fireMode: "semi", resolution: "projectile",
+        damage: 12, pelletCount: 2, range: 64, primary : { trigger : "press", recoveryMs : 180, steps : [{ kind: "shot" }] },
+         resolution: "projectile",
         projectile: { speed: 24, radius: 0.1, lifetimeMs: 1500,
           visual: { body: { kind: "sprite", sprite: "sprites/bolt.png" } } }
     } } })"#;
     let lua = r#"return { components = { weapon = {
-        damage = 12, pelletCount = 2, range = 64, fireRateMs = 180,
-        fireMode = "semi", resolution = "projectile",
+        damage = 12, pelletCount = 2, range = 64, primary = { trigger = "press", recoveryMs = 180, steps = { { kind = "shot" } } },
+         resolution = "projectile",
         projectile = { speed = 24, radius = 0.1, lifetimeMs = 1500,
           visual = { body = { kind = "sprite", sprite = "sprites/bolt.png" } } }
     } } }"#;
@@ -386,8 +389,8 @@ fn projectile_weapon_rejects_multi_pellet_authoring_in_both_vms() {
 #[test]
 fn projectile_trail_spin_animation_has_quickjs_luau_parity() {
     let js = r#"({ components: { weapon: {
-        damage: 12, range: 64, fireRateMs: 180,
-        fireMode: "semi", resolution: "projectile",
+        damage: 12, range: 64, primary : { trigger : "press", recoveryMs : 180, steps : [{ kind: "shot" }] },
+         resolution: "projectile",
         projectile: { speed: 24, radius: 0.1, lifetimeMs: 1500, visual: {
           body: { kind: "sprite", sprite: "sprites/bolt.png" },
           trail: { sprite: "sprites/trail.png", spinAnimation: {
@@ -396,8 +399,8 @@ fn projectile_trail_spin_animation_has_quickjs_luau_parity() {
         } }
     } } })"#;
     let lua = r#"return { components = { weapon = {
-        damage = 12, range = 64, fireRateMs = 180,
-        fireMode = "semi", resolution = "projectile",
+        damage = 12, range = 64, primary = { trigger = "press", recoveryMs = 180, steps = { { kind = "shot" } } },
+         resolution = "projectile",
         projectile = { speed = 24, radius = 0.1, lifetimeMs = 1500, visual = {
           body = { kind = "sprite", sprite = "sprites/bolt.png" },
           trail = { sprite = "sprites/trail.png", spinAnimation = {
@@ -426,16 +429,16 @@ fn projectile_trail_spin_animation_has_quickjs_luau_parity() {
 #[test]
 fn projectile_trail_function_is_rejected_with_vm_parity() {
     let js = r#"({ components: { weapon: {
-        damage: 12, range: 64, fireRateMs: 180,
-        fireMode: "semi", resolution: "projectile",
+        damage: 12, range: 64, primary : { trigger : "press", recoveryMs : 180, steps : [{ kind: "shot" }] },
+         resolution: "projectile",
         projectile: { speed: 24, radius: 0.1, lifetimeMs: 1500, visual: {
           body: { kind: "sprite", sprite: "sprites/bolt.png" },
           trail: function () {}
         } }
     } } })"#;
     let lua = r#"return { components = { weapon = {
-        damage = 12, range = 64, fireRateMs = 180,
-        fireMode = "semi", resolution = "projectile",
+        damage = 12, range = 64, primary = { trigger = "press", recoveryMs = 180, steps = { { kind = "shot" } } },
+         resolution = "projectile",
         projectile = { speed = 24, radius = 0.1, lifetimeMs = 1500, visual = {
           body = { kind = "sprite", sprite = "sprites/bolt.png" },
           trail = function() end
@@ -458,16 +461,16 @@ fn projectile_trail_function_is_rejected_with_vm_parity() {
 #[test]
 fn projectile_trail_spin_animation_function_is_rejected_with_vm_parity() {
     let js = r#"({ components: { weapon: {
-        damage: 12, range: 64, fireRateMs: 180,
-        fireMode: "semi", resolution: "projectile",
+        damage: 12, range: 64, primary : { trigger : "press", recoveryMs : 180, steps : [{ kind: "shot" }] },
+         resolution: "projectile",
         projectile: { speed: 24, radius: 0.1, lifetimeMs: 1500, visual: {
           body: { kind: "sprite", sprite: "sprites/bolt.png" },
           trail: { sprite: "sprites/trail.png", spinAnimation: function () {} }
         } }
     } } })"#;
     let lua = r#"return { components = { weapon = {
-        damage = 12, range = 64, fireRateMs = 180,
-        fireMode = "semi", resolution = "projectile",
+        damage = 12, range = 64, primary = { trigger = "press", recoveryMs = 180, steps = { { kind = "shot" } } },
+         resolution = "projectile",
         projectile = { speed = 24, radius = 0.1, lifetimeMs = 1500, visual = {
           body = { kind = "sprite", sprite = "sprites/bolt.png" },
           trail = { sprite = "sprites/trail.png", spinAnimation = function() end }
@@ -509,14 +512,14 @@ fn paired_weapon_pellet_spread_rejects_non_finite_values_at_the_conversion_bound
 fn weapon_model_paths_have_js_luau_parity() {
     let js = eval_js(
         r#"({ components: { weapon: {
-            damage: 12, range: 64, fireRateMs: 180, fireMode: "semi", resolution: "hitscan",
+            damage: 12, range: 64, primary : { trigger : "press", recoveryMs : 180, steps : [{ kind: "shot" }] },  resolution: "hitscan",
             thirdPersonModel: "models/smg/model.gltf", viewmodel: "models/smg/model.gltf"
         } } })"#,
         |ctx, v| entity_descriptor_from_js(ctx, v).unwrap(),
     );
     let lua = eval_lua(
         r#"return { components = { weapon = {
-            damage = 12, range = 64, fireRateMs = 180, fireMode = "semi", resolution = "hitscan",
+            damage = 12, range = 64, primary = { trigger = "press", recoveryMs = 180, steps = { { kind = "shot" } } },  resolution = "hitscan",
             thirdPersonModel = "models/smg/model.gltf", viewmodel = "models/smg/model.gltf"
         } } }"#,
         |v| entity_descriptor_from_lua(v).unwrap(),
@@ -535,10 +538,10 @@ fn weapon_model_paths_have_js_luau_parity() {
 fn optional_weapon_model_paths_reject_empty_js_and_luau_values() {
     for field in ["thirdPersonModel", "viewmodel"] {
         let js = format!(
-            r#"({{ components: {{ weapon: {{ damage: 12, range: 64, fireRateMs: 180, fireMode: "semi", resolution: "hitscan", {field}: "" }} }} }})"#
+            r#"({{ components: {{ weapon: {{ damage: 12, range: 64, primary : {{ trigger : "press", recoveryMs : 180, steps : [{{ kind: "shot" }}] }},  resolution: "hitscan", {field}: "" }} }} }})"#
         );
         let lua = format!(
-            r#"return {{ components = {{ weapon = {{ damage = 12, range = 64, fireRateMs = 180, fireMode = "semi", resolution = "hitscan", {field} = "" }} }} }}"#
+            r#"return {{ components = {{ weapon = {{ damage = 12, range = 64, primary = {{ trigger = "press", recoveryMs = 180, steps = {{ {{ kind = "shot" }} }} }},  resolution = "hitscan", {field} = "" }} }} }}"#
         );
         let js_error = eval_js(&js, entity_descriptor_from_js).unwrap_err();
         let lua_error = eval_lua(&lua, entity_descriptor_from_lua).unwrap_err();
@@ -555,10 +558,10 @@ fn optional_weapon_model_paths_reject_empty_js_and_luau_values() {
 fn optional_weapon_model_paths_reject_unsupported_vm_values_with_field_errors() {
     for field in ["thirdPersonModel", "viewmodel"] {
         let js = format!(
-            r#"({{ components: {{ weapon: {{ damage: 12, range: 64, fireRateMs: 180, fireMode: "semi", resolution: "hitscan", {field}: () => {{}} }} }} }})"#
+            r#"({{ components: {{ weapon: {{ damage: 12, range: 64, primary : {{ trigger : "press", recoveryMs : 180, steps : [{{ kind: "shot" }}] }},  resolution: "hitscan", {field}: () => {{}} }} }} }})"#
         );
         let lua = format!(
-            r#"return {{ components = {{ weapon = {{ damage = 12, range = 64, fireRateMs = 180, fireMode = "semi", resolution = "hitscan", {field} = function() end }} }} }}"#
+            r#"return {{ components = {{ weapon = {{ damage = 12, range = 64, primary = {{ trigger = "press", recoveryMs = 180, steps = {{ {{ kind = "shot" }} }} }},  resolution = "hitscan", {field} = function() end }} }} }}"#
         );
         let js_error = eval_js(&js, entity_descriptor_from_js)
             .unwrap_err()
@@ -583,7 +586,7 @@ fn optional_weapon_model_paths_reject_unsupported_vm_values_with_field_errors() 
 fn weapon_placement_has_quickjs_luau_parity_and_rejects_unsupported_values() {
     let js = eval_js(
         r#"({ components: { weapon: {
-            damage: 12, range: 64, fireRateMs: 180, fireMode: "semi", resolution: "hitscan",
+            damage: 12, range: 64, primary : { trigger : "press", recoveryMs : 180, steps : [{ kind: "shot" }] },  resolution: "hitscan",
             placement: {
                 positionFromCenter: { right: 0.32, up: -0.28, forward: 0.62 },
                 rotation: { yaw: 10, roll: -5 }
@@ -593,7 +596,7 @@ fn weapon_placement_has_quickjs_luau_parity_and_rejects_unsupported_values() {
     );
     let lua = eval_lua(
         r#"return { components = { weapon = {
-            damage = 12, range = 64, fireRateMs = 180, fireMode = "semi", resolution = "hitscan",
+            damage = 12, range = 64, primary = { trigger = "press", recoveryMs = 180, steps = { { kind = "shot" } } },  resolution = "hitscan",
             placement = {
                 positionFromCenter = { right = 0.32, up = -0.28, forward = 0.62 },
                 rotation = { yaw = 10, roll = -5 }
@@ -610,7 +613,7 @@ fn weapon_placement_has_quickjs_luau_parity_and_rejects_unsupported_values() {
 
     let js_error = eval_js(
         r#"({ components: { weapon: {
-            damage: 12, range: 64, fireRateMs: 180, fireMode: "semi", resolution: "hitscan",
+            damage: 12, range: 64, primary : { trigger : "press", recoveryMs : 180, steps : [{ kind: "shot" }] },  resolution: "hitscan",
             placement: () => {}
         } } })"#,
         entity_descriptor_from_js,
@@ -619,7 +622,7 @@ fn weapon_placement_has_quickjs_luau_parity_and_rejects_unsupported_values() {
     .to_string();
     let lua_error = eval_lua(
         r#"return { components = { weapon = {
-            damage = 12, range = 64, fireRateMs = 180, fireMode = "semi", resolution = "hitscan",
+            damage = 12, range = 64, primary = { trigger = "press", recoveryMs = 180, steps = { { kind = "shot" } } },  resolution = "hitscan",
             placement = function() end
         } } }"#,
         entity_descriptor_from_lua,
@@ -647,11 +650,11 @@ fn optional_weapon_model_paths_reject_escape_and_platform_absolute_forms_in_both
     ] {
         for field in ["thirdPersonModel", "viewmodel"] {
             let js = format!(
-                r#"({{ components: {{ weapon: {{ damage: 12, range: 64, fireRateMs: 180, fireMode: "semi", resolution: "hitscan", {field}: {invalid:?} }} }} }})"#
+                r#"({{ components: {{ weapon: {{ damage: 12, range: 64, primary : {{ trigger : "press", recoveryMs : 180, steps : [{{ kind: "shot" }}] }},  resolution: "hitscan", {field}: {invalid:?} }} }} }})"#
             );
             let lua_value = invalid.replace('\\', "\\\\").replace('"', "\\\"");
             let lua = format!(
-                r#"return {{ components = {{ weapon = {{ damage = 12, range = 64, fireRateMs = 180, fireMode = "semi", resolution = "hitscan", {field} = "{lua_value}" }} }} }}"#
+                r#"return {{ components = {{ weapon = {{ damage = 12, range = 64, primary = {{ trigger = "press", recoveryMs = 180, steps = {{ {{ kind = "shot" }} }} }},  resolution = "hitscan", {field} = "{lua_value}" }} }} }}"#
             );
             let js_error = eval_js(&js, entity_descriptor_from_js)
                 .unwrap_err()
@@ -970,8 +973,8 @@ fn js_weapon_descriptor_rejects_invalid_credit_source() {
             weapon: {
                 damage: 12.0,
                 range: 64.0,
-                fireRateMs: 180.0,
-                fireMode: "semi",
+                primary : { trigger : "press", recoveryMs : 180.0, steps : [{ kind: "shot" }] },
+
                 resolution: "hitscan",
                 creditSource: "bad source"
             }
@@ -991,8 +994,8 @@ fn js_top_level_weapon_key_is_not_a_component_alias() {
         weapon: {
             damage: 12.0,
             range: 64.0,
-            fireRateMs: 180.0,
-            fireMode: "semi",
+            primary : { trigger : "press", recoveryMs : 180.0, steps : [{ kind: "shot" }] },
+
             resolution: "hitscan"
         }
     })"#;
@@ -1048,10 +1051,10 @@ fn lua_entity_descriptor_with_inventory_and_weapon_component_deserializes() {
             weapon = {
                 damage = 12.0,
                 range = 64.0,
-                fireRateMs = 180.0,
+                primary = { trigger = "hold", recoveryMs = 180.0, steps = { { kind = "shot" } } },
                 lowerMs = 25,
                 raiseMs = 40,
-                fireMode = "auto",
+
                 resolution = "hitscan",
                 creditSource = "player.reference-pistol:alt",
             }
@@ -1061,10 +1064,13 @@ fn lua_entity_descriptor_with_inventory_and_weapon_component_deserializes() {
     assert_eq!(d.inventory.unwrap().loadout, ["reference_pistol"]);
     let weapon = d.weapon.expect("weapon present");
     assert_eq!(weapon.damage, 12.0);
-    assert_eq!(weapon.cooldown_ms, 180.0);
+    assert_eq!(weapon.primary.recovery_ms, 180.0);
     assert_eq!(weapon.lower_ms, 25);
     assert_eq!(weapon.raise_ms, 40);
-    assert_eq!(weapon.fire_mode, FireMode::Auto);
+    assert_eq!(
+        weapon.primary.trigger,
+        postretro_foundation::ActivationTrigger::Hold
+    );
     assert_eq!(weapon.resolution, ResolutionMode::Hitscan);
     assert_eq!(
         weapon.credit_source.as_deref(),
@@ -1074,14 +1080,18 @@ fn lua_entity_descriptor_with_inventory_and_weapon_component_deserializes() {
 
 #[test]
 fn luau_loadout_builder_rejects_invalid_descriptor_references() {
-    const DATA_SCRIPT_LUAU: &str = include_str!("../../../../../sdk/lib/data_script.luau");
-
     let lua = mlua::Lua::new();
-    let sdk: mlua::Table = lua
-        .load(DATA_SCRIPT_LUAU)
-        .set_name("data_script.luau")
+    let expressions: mlua::Table = lua
+        .load(include_str!(
+            "../../../../../sdk/lib/util/expression_refs.luau"
+        ))
         .eval()
-        .expect("data-script SDK evaluates");
+        .unwrap();
+    lua.globals()
+        .set("__postretroExpressionRefs", expressions)
+        .unwrap();
+    let sdk: mlua::Table =
+        crate::luau_prelude::evaluate_data_script_sdk(&lua).expect("data-script SDK evaluates");
     lua.globals()
         .set("Postretro", sdk)
         .expect("SDK installs for test");
@@ -1133,8 +1143,8 @@ fn lua_weapon_descriptor_without_credit_source_parses_as_none() {
             weapon = {
                 damage = 12.0,
                 range = 64.0,
-                fireRateMs = 180.0,
-                fireMode = "auto",
+                primary = { trigger = "hold", recoveryMs = 180.0, steps = { { kind = "shot" } } },
+
                 resolution = "hitscan",
             }
         }
@@ -1153,8 +1163,8 @@ fn lua_weapon_descriptor_rejects_invalid_credit_source() {
             weapon = {
                 damage = 12.0,
                 range = 64.0,
-                fireRateMs = 180.0,
-                fireMode = "auto",
+                primary = { trigger = "hold", recoveryMs = 180.0, steps = { { kind = "shot" } } },
+
                 resolution = "hitscan",
                 creditSource = "rocket/primary",
             }

@@ -27,9 +27,9 @@ use crate::scripting::primitives::light::register_sequenced_light_primitives;
 use crate::scripting::primitives::register_all;
 use crate::scripting::reactions::registry::{
     ReactionPrimitiveRegistry, register_emitter_reaction_primitives,
-    register_enemy_state_reaction_primitives, register_fog_reaction_primitives,
-    register_grant_reactions, register_mover_reaction_primitives,
-    register_sequenced_fog_primitives, register_sequenced_mover_primitives,
+    register_fog_reaction_primitives, register_grant_reactions, register_mover_reaction_primitives,
+    register_npc_state_reaction_primitives, register_sequenced_fog_primitives,
+    register_sequenced_mover_primitives, register_sequenced_spawner_primitives,
     register_sequenced_trigger_primitives, register_spawner_reaction_primitives,
     register_trigger_reaction_primitives,
 };
@@ -70,6 +70,28 @@ pub(crate) struct Session {
     /// Keyboard/mouse/gamepad action state. Seeded at build with the loaded
     /// look preferences. See: context/lib/input.md
     pub(crate) input_system: input::InputSystem,
+
+    /// Binding layers (author, player, swap) and the effective table the
+    /// input system runs. Rebuilt by `App::refresh_effective_bindings`.
+    pub(crate) bindings: input::BindingState,
+
+    /// The mod's glyph art the renderer holds.
+    pub(crate) glyph_art: crate::app::glyph_art::GlyphArtState,
+
+    /// The mod's `uiImages` and the engine's images the renderer holds.
+    pub(crate) mod_ui_images: crate::app::ui_images::ModUiImages,
+
+    /// The committed mod loading pool and the load the screen is showing.
+    pub(crate) loading_screen: crate::startup::loading_screen::LoadingScreenState,
+
+    /// The device family glyphs follow, settled once per frame.
+    pub(crate) device_family: input::DeviceFamilyTracker,
+
+    /// The engine controls panel's capture prompt and pending conflict.
+    pub(crate) controls: crate::app::controls_panel::ControlsPanelState,
+
+    /// Slider value steps captured this frame, applied at the command drain.
+    pub(crate) pending_slider_steps: Vec<crate::app::ui_actions::PendingSliderStep>,
 
     /// Per-tick gameplay-input latch; neutralized while a modal captures input.
     pub(crate) gameplay_input_latch: input::GameplayInputLatch,
@@ -232,6 +254,13 @@ pub(crate) struct Session {
     /// See: context/lib/player_options.md
     pub(crate) settings_path: Option<PathBuf>,
 
+    /// Per-user data directory each mod's `state.json` lives under, resolved with
+    /// `settings_path` from the one app name at boot stage 1 so per-player rows
+    /// stay keyed by this settings file's `player_id`. `None` when the platform
+    /// exposes no data directory; persistence is then disabled for the run.
+    /// See: context/lib/build_pipeline.md §Distribution packaging
+    pub(crate) data_dir: Option<PathBuf>,
+
     /// Currently committed mod frontend declaration. Successful staged mod-init
     /// commits replace this snapshot. Inner `Option` is genuine runtime absence:
     /// `None` falls back to the engine/default frontend behavior.
@@ -269,6 +298,55 @@ pub(crate) struct Session {
     /// `Renderer` as `debug_ui_gpu`. See: context/lib/boot_sequence.md §1, §5.
     #[cfg(feature = "dev-tools")]
     pub(crate) debug_ui: Option<render::debug_ui::DebugUi>,
+}
+
+/// The focus-engine key of a pushed modal instance.
+pub(crate) fn modal_focus_key(
+    name: &str,
+    instance: postretro_ui::modal_stack::ModalInstance,
+) -> String {
+    format!("{name}#{}", instance.id())
+}
+
+impl Session {
+    /// The focus-engine key and registry name of the tree on top: a pushed
+    /// modal is keyed by name and instance, so a fresh push never inherits the
+    /// focus a previous instance of the same tree had; with no modal, the
+    /// fallback tree (HUD or frontend root) is keyed by name.
+    pub(crate) fn ui_focus_target(&self, fallback: &str) -> (String, String) {
+        match (
+            self.modal_stack.active_name(),
+            self.modal_stack.active_instance(),
+        ) {
+            (Some(name), Some(instance)) => (modal_focus_key(name, instance), name.to_string()),
+            _ => (fallback.to_string(), fallback.to_string()),
+        }
+    }
+
+    /// Drop saved focus for modal instances no longer on the stack, once
+    /// enough have accumulated to matter; a settled frame does no work.
+    pub(crate) fn prune_ui_focus(&mut self) {
+        if self.ui_focus.tree_count() <= self.modal_stack.len() + 8 {
+            return;
+        }
+        let stack = &self.modal_stack;
+        self.ui_focus
+            .retain_trees(|key| match key.rsplit_once('#') {
+                Some((_, id)) => id.parse().is_ok_and(|id| stack.contains_instance_id(id)),
+                None => true,
+            });
+    }
+
+    /// Which UI commands are live under the top of the modal stack.
+    pub(crate) fn ui_nav_context(&self) -> input::UiNavContext {
+        if self.modal_stack.active_text_entry_target().is_some() {
+            input::UiNavContext::TextEntry
+        } else if self.ui_dispatch.mode() == input::UiCaptureMode::Capture {
+            input::UiNavContext::Capture
+        } else {
+            input::UiNavContext::Open
+        }
+    }
 }
 
 /// Scripting tranche grouped under [`Session`]. The whole group is built at
@@ -392,7 +470,7 @@ impl Session {
     /// install redraw — no `await`, no yield. This is the sole session
     /// construction site; all `ScriptCtx` clones are distributed here. It
     /// builds, in boot-order:
-    /// 1. player options I/O (load + first-run default write), seeding input;
+    /// 1. finish preloaded player options (identity + first-run write), seeding input;
     /// 2. the fault-tolerant audio subsystem (silent on kira failure);
     /// 3. the scripting bootstrap (`ScriptCtx::new` / `register_all` /
     ///    `ScriptRuntime::new` / SDK-type emission), the Rust-side registries,
@@ -417,16 +495,13 @@ impl Session {
     pub(crate) fn build(
         raw_args: &[String],
         core_root: &postretro_ui::CoreRoot,
+        app_dirs: &crate::startup::app_dirs::AppDirs,
+        boot_options: options::boot::BootOptions,
         boot_timings: &mut StartupTimings,
     ) -> Result<Self> {
-        // 1. Player options load first so the loaded look preferences seed the
-        //    `InputSystem` constructed below. On first boot (no file present),
-        //    write defaults so the human gets an editable starting file. Runtime
-        //    changes save after the debounce window and flush on options close or
-        //    clean exit. A missing config dir or save failure is logged, not fatal:
-        //    boot proceeds on in-memory defaults. See: context/lib/player_options.md §3.
-        let settings_path = options::settings_path();
-        let player_options = load_player_options(settings_path.as_deref());
+        // The document was read before window creation. Identity and first-run
+        // writes stay here, after the splash has presented.
+        let (player_options, settings_path) = boot_options.finish();
 
         // 2. Audio: fault-tolerant. A kira/device failure logs and runs silent
         //    (`audio` stays `None`) — never a crash. `audio_init_complete` is
@@ -456,6 +531,12 @@ impl Session {
         input_system.set_mouse_sensitivity(player_options.mouse_sensitivity);
         input_system.set_invert_y(player_options.invert_y);
         input_system.set_scroll_notch_pixels(player_options.scroll_notch_pixels);
+        input_system.set_gamepad_look_sensitivity(player_options.gamepad_look_sensitivity);
+        input_system.set_gamepad_look_dead_zone(player_options.gamepad_look_dead_zone);
+        input_system.set_gamepad_invert_y(player_options.gamepad_invert_y);
+        input_system.set_hold_timing_scale(player_options.accessibility.hold_timing_scale);
+        let mut bindings = input::BindingState::default();
+        bindings.set_swap_confirm_cancel(player_options.swap_confirm_cancel);
 
         // Register engine built-in trees through the one shared load-and-register
         // path (`tree_asset::register_tree_from_disk`): each built-in screen's
@@ -500,12 +581,36 @@ impl Session {
                 "keyboard.json",
                 false,
             );
+            postretro_ui::tree_asset::register_tree_from_disk(
+                registry,
+                core_root,
+                postretro_ui::demo::DISPLAY_MODE_CONFIRM_NAME,
+                "displayModeConfirm.json",
+                false,
+            );
             // The engine accessibility panel: reserved name, never shadowed.
             postretro_ui::tree_asset::register_tree_from_disk(
                 registry,
                 core_root,
                 postretro_ui::demo::ACCESSIBILITY_PANEL_NAME,
                 "accessibilityPanel.json",
+                false,
+            );
+            // The controls panel's shell; the engine fills its rows.
+            postretro_ui::tree_asset::register_tree_from_disk(
+                registry,
+                core_root,
+                postretro_ui::demo::CONTROLS_PANEL_NAME,
+                "controlsPanel.json",
+                false,
+            );
+            // The fallback loading screen; a mod tree of the same name, or a
+            // mod or catalog loading pool, replaces it.
+            postretro_ui::tree_asset::register_tree_from_disk(
+                registry,
+                core_root,
+                crate::startup::loading_screen::LOADING_SCREEN_NAME,
+                "loadingScreen.json",
                 false,
             );
         }
@@ -600,6 +705,13 @@ impl Session {
 
         Ok(Self {
             input_system,
+            bindings,
+            glyph_art: Default::default(),
+            mod_ui_images: Default::default(),
+            loading_screen: Default::default(),
+            device_family: Default::default(),
+            controls: Default::default(),
+            pending_slider_steps: Vec::new(),
             gameplay_input_latch: input::GameplayInputLatch::new(),
             ui_dispatch: input::UiDispatch::new(),
             gamepad_system: input::gamepad::GamepadSystem::new(),
@@ -640,6 +752,7 @@ impl Session {
             options_bridge,
             os_preferences,
             settings_path,
+            data_dir: app_dirs.data_dir().map(Path::to_path_buf),
             // Committed by mod-init later this same install frame; engine/default
             // frontend until then.
             frontend: None,
@@ -655,57 +768,14 @@ impl Session {
     }
 }
 
-/// Load persisted options and ensure a durable device identity exists when it
-/// can be saved. Called only by [`Session::build`], never by `PlayerOptions::load`,
-/// so pure loading and sanitization remain deterministic.
+/// Test helper that completes a boot-options preload, including identity and
+/// persistence behavior. Production consumes the preloaded owner after the
+/// first present; pure `PlayerOptions::load` remains deterministic.
+#[cfg(test)]
 fn load_player_options(settings_path: Option<&Path>) -> options::PlayerOptions {
-    let Some(path) = settings_path else {
-        log::warn!(
-            "[Options] no platform config directory; running on in-memory defaults without persistence"
-        );
-        return options::PlayerOptions::default();
-    };
-
-    let (mut player_options, load_status) = options::PlayerOptions::load_with_status(path);
-    let missing_settings = load_status == options::PlayerOptionsLoadStatus::Missing;
-    let can_persist = load_status != options::PlayerOptionsLoadStatus::Unavailable;
-    let mut generated_identity = false;
-
-    if player_options.player_id.is_none() && can_persist {
-        let mut player_id = [0; 16];
-        match getrandom::fill(&mut player_id) {
-            Ok(()) => {
-                player_options.player_id = Some(player_id);
-                // An unreadable stored id is useless; the new one replaces it.
-                player_options.mark_written(options::keys::PLAYER_ID);
-                generated_identity = true;
-            }
-            Err(err) => log::warn!(
-                "[Options] failed to generate device identity: {err}; connecting anonymously"
-            ),
-        }
-    }
-
-    if missing_settings || generated_identity {
-        match player_options.save(path) {
-            Ok(()) if missing_settings => log::info!(
-                "[Options] no settings file found; wrote defaults to {}",
-                path.display()
-            ),
-            Ok(()) => {}
-            Err(err) => {
-                log::warn!(
-                    "[Options] failed to persist device identity to {}: {err}; connecting anonymously",
-                    path.display()
-                );
-                if generated_identity {
-                    player_options.player_id = None;
-                }
-            }
-        }
-    }
-
-    player_options
+    options::boot::BootOptions::load(settings_path.map(Path::to_path_buf))
+        .finish()
+        .0
 }
 
 /// Preserve the local seat/carry ledger when session identity entropy fails.
@@ -784,12 +854,17 @@ fn build_scripting_core(
         script_ctx.clone(),
         command_diagnostics.clone(),
     );
+    register_sequenced_spawner_primitives(
+        &mut sequence_registry,
+        script_ctx.clone(),
+        spawn_context.clone(),
+    );
 
     // Reaction-primitive handlers invoked by name when a `Primitive` reaction
     // fires. Populated once at startup; survives level reloads.
     let mut reaction_registry = ReactionPrimitiveRegistry::new();
     register_emitter_reaction_primitives(&mut reaction_registry);
-    register_enemy_state_reaction_primitives(&mut reaction_registry);
+    register_npc_state_reaction_primitives(&mut reaction_registry);
     register_grant_reactions(&mut reaction_registry);
     register_fog_reaction_primitives(&mut reaction_registry);
     register_mover_reaction_primitives(
@@ -957,7 +1032,7 @@ impl ScriptingCore {
 // A reduced session-construction path beside `Session::build`: the scripting core
 // only (script runtime + context, registries, classname dispatch, the data-script
 // runner living on the runtime), with no audio, input, UI/modal stack, net
-// endpoint, player options I/O, or window. The headless driver
+// endpoint, player options completion, or window. The headless driver
 // (`observability::driver`) loads a `.prl` map, runs fixed ticks with scripted
 // commands, dumps world state, and exits — without a GPU or display server. A net
 // endpoint is deliberately omitted, not designed out: Epic 15 Phase 4's dedicated
@@ -1096,6 +1171,15 @@ mod headless_tests {
     }
 }
 
+/// The focus export when it describes the tree named `name`, or `None` while it
+/// still describes another tree (the stack changed earlier this frame).
+pub(crate) fn focus_rects_for<'a>(
+    rects: Option<&'a postretro_ui::tree::FocusRectList>,
+    name: &str,
+) -> Option<&'a postretro_ui::tree::FocusRectList> {
+    rects.filter(|rects| rects.owner.as_ref().is_none_or(|owner| owner.name == name))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1126,6 +1210,79 @@ mod tests {
 
         let reloaded = options::PlayerOptions::load(&path);
         assert_eq!(reloaded.player_id, generated.player_id);
+    }
+
+    /// Every file under `root`, by path, with its bytes.
+    fn snapshot(root: &Path) -> std::collections::BTreeMap<PathBuf, Vec<u8>> {
+        let mut files = std::collections::BTreeMap::new();
+        let mut pending = vec![root.to_path_buf()];
+        while let Some(dir) = pending.pop() {
+            for entry in std::fs::read_dir(&dir).expect("read snapshot directory") {
+                let path = entry.expect("snapshot entry").path();
+                if path.is_dir() {
+                    pending.push(path);
+                } else {
+                    let bytes = std::fs::read(&path).expect("read snapshot file");
+                    files.insert(path, bytes);
+                }
+            }
+        }
+        files
+    }
+
+    /// P1: a game's first launch, with the bare-launch directory already holding
+    /// settings and state, starts from defaults and a fresh `player_id` under its
+    /// own name — so the accessibility panel shows again — and reads or writes
+    /// nothing under `postretro/`.
+    #[test]
+    fn first_launch_under_a_new_app_name_leaves_the_postretro_directory_untouched() {
+        use crate::scripting::state_persistence::{load_persisted_state, state_path};
+        use crate::startup::app_dirs::AppDirs;
+
+        let home = tempdir().expect("temporary home directory");
+        let bare_root = home.path().join("postretro");
+        let bare = AppDirs::at(&bare_root.join("config"), &bare_root.join("data"));
+        let game = AppDirs::at(
+            &home.path().join("my-game/config"),
+            &home.path().join("my-game/data"),
+        );
+
+        // An earlier bare launch: customized settings with an identity and a
+        // shown panel, plus a mod's saved state.
+        let bare_settings = bare.settings_path().expect("bare settings path");
+        std::fs::create_dir_all(bare_settings.parent().unwrap()).unwrap();
+        std::fs::write(
+            &bare_settings,
+            "invert_y = true\naccessibility_panel_shown = true\n",
+        )
+        .unwrap();
+        let bare_options = load_player_options(Some(&bare_settings));
+        let bare_state = state_path(bare.data_dir(), "dev").expect("bare state path");
+        std::fs::create_dir_all(bare_state.parent().unwrap()).unwrap();
+        std::fs::write(&bare_state, r#"{"version":4,"slots":{}}"#).unwrap();
+        let before = snapshot(&bare_root);
+
+        let game_settings = game.settings_path().expect("game settings path");
+        let game_options = load_player_options(Some(&game_settings));
+        let game_state = state_path(game.data_dir(), "dev").expect("game state path");
+
+        assert!(game_settings.exists(), "first launch writes defaults");
+        assert!(!game_options.invert_y);
+        assert!(!game_options.accessibility_panel_shown);
+        assert!(game_options.player_id.is_some());
+        assert_ne!(game_options.player_id, bare_options.player_id);
+        assert_eq!(
+            options::PlayerOptions::load(&game_settings).player_id,
+            game_options.player_id,
+            "the fresh identity is persisted under the new name"
+        );
+        assert!(
+            load_persisted_state(&game_state)
+                .expect("an absent state file is not an error")
+                .is_none(),
+            "restore under the new name finds no state"
+        );
+        assert_eq!(snapshot(&bare_root), before);
     }
 
     #[test]

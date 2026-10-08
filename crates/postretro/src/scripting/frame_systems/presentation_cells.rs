@@ -203,12 +203,12 @@ mod tests {
                 padding: SpacingValue::Literal(0.0),
                 align: Align::Start,
                 width: None,
+                scroll: None,
                 fill: None,
                 border: None,
                 id: None,
                 focus_neighbors: Default::default(),
                 focus: None,
-                restore_on_return: false,
                 local_state: Some(LocalState {
                     scope: scope.to_string(),
                     cells: cells(init),

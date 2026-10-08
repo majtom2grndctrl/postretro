@@ -36,8 +36,8 @@ for but deferred — additively, as a separate axis, never by redefining `percei
 ### Out of scope
 
 - The **sightline / line-of-sight refinement** — tightening the gate from portal-reachability
-  toward true anti-penumbra visibility. Deferred to a later spec (`drafts/perf-anti-penumbra-pvs`
-  holds the math). It lands as a *separate additive axis* consulted by consumers that want hard
+  toward true anti-penumbra visibility. Deferred to a later spec (`context/research/cell-visibility-substrate.md`
+  §Sightline construction holds the math). It lands as a *separate additive axis* consulted by consumers that want hard
   visibility (render-adjacent net/VFX culling), never as a redefinition of `perceivable` — so it
   cannot break audio, which needs around-corner coupling.
 - Dynamic geometry — doors/movers/destructibles as dynamic portals, blocker masks, the widened
@@ -646,7 +646,7 @@ the bake. Each row is concrete enough to write a test from; the task tests refer
   it holds a portal it is perceivable but reads coupled-but-no-graded, as does any pair routable
   only through it (AC4/AC5).
 - **Deferred sightline axis.** When a measured consumer needs hard visibility, add a per-pair
-  line-of-sight refinement (the anti-penumbra math in `drafts/perf-anti-penumbra-pvs`) as a *new*
+  line-of-sight refinement (the anti-penumbra math in `context/research/cell-visibility-substrate.md` §Sightline construction) as a *new*
   axis at a version bump — consulted by that consumer, ignored by audio. It narrows nothing in the
   three v1 fields, so no consumer churns.
 - **Split-before-extend.** `pack.rs`, `prl_loader.rs`, and `pipeline.rs` are already multi-thousand-

@@ -47,6 +47,12 @@ pub(crate) struct PrototypeCommand {
 impl PrototypeCommand {
     fn to_sim_command(self) -> SimCommand {
         SimCommand {
+            input_tick: 0,
+            secondary_button: crate::weapon::FireButtonState {
+                pressed: false,
+                active: false,
+            },
+            activation: postretro_foundation::ActivationInput::default(),
             movement: MovementInput {
                 wish_dir: self.wish_dir,
                 jump_pressed: self.jump_pressed,
@@ -139,8 +145,9 @@ impl PrototypeHarness {
         }
     }
 
-    fn tick(&mut self, command: PrototypeCommand) {
-        let sim_command = command.to_sim_command();
+    fn tick(&mut self, input_tick: u32, command: PrototypeCommand) {
+        let mut sim_command = command.to_sim_command();
+        sim_command.input_tick = input_tick;
         simulate_tick(
             self.registry.clone(),
             &self.world,
@@ -303,7 +310,7 @@ impl PredictReconcilePrototype {
     }
 
     fn predict_client(&mut self, tick: u32, command: PrototypeCommand) {
-        self.client.tick(command);
+        self.client.tick(tick, command);
         let predicted = self.client.snapshot(tick);
         self.history.push(ClientHistoryEntry {
             tick,
@@ -330,7 +337,7 @@ impl PredictReconcilePrototype {
                 .server_commands
                 .pop_front()
                 .expect("front checked above");
-            self.server.tick(scheduled.command);
+            self.server.tick(scheduled.input_tick, scheduled.command);
             let snapshot = self.server.snapshot(scheduled.input_tick);
             self.last_server_snapshot = snapshot.clone();
             self.authoritative_snapshots.push_back(ScheduledSnapshot {
@@ -378,7 +385,7 @@ impl PredictReconcilePrototype {
         for index in replay_start..self.history.len() {
             let tick = self.history[index].tick;
             let command = self.history[index].command;
-            self.client.tick(command);
+            self.client.tick(tick, command);
             self.history[index].predicted = self.client.snapshot(tick);
         }
 

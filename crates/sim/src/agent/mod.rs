@@ -121,8 +121,8 @@ pub(crate) fn collide_and_slide(
     // step beneath the lifted position. Pure walls skip the lift.
     let horiz = Vec3::new(velocity.x, 0.0, velocity.z);
     let horiz_speed = horiz.length();
-    if velocity.y <= 0.0 {
-        if let Some(lifted) = step_up_lift(
+    if velocity.y <= 0.0
+        && let Some(lifted) = step_up_lift(
             world,
             collision_shape,
             capsule,
@@ -130,9 +130,9 @@ pub(crate) fn collide_and_slide(
             horiz,
             horiz_speed,
             remaining_dt,
-        ) {
-            current_pos = lifted;
-        }
+        )
+    {
+        current_pos = lifted;
     }
 
     // Iterative project-and-advance slide.
@@ -186,11 +186,11 @@ pub(crate) fn collide_and_slide(
     // envelope so it does not float a tick after cresting a step or sliding off
     // a wall corner. Only when not climbing (vertical velocity non-positive).
     let mut grounded = hit_floor;
-    if velocity.y <= 1e-3 {
-        if let Some(snapped) = ground_stick(world, collision_shape, capsule, current_pos) {
-            current_pos = snapped;
-            grounded = true;
-        }
+    if velocity.y <= 1e-3
+        && let Some(snapped) = ground_stick(world, collision_shape, capsule, current_pos)
+    {
+        current_pos = snapped;
+        grounded = true;
     }
 
     // Once resting on the floor, stop accumulating downward speed so the next
@@ -280,10 +280,10 @@ fn ground_stick(
     let max_down = step_height + STEP_UP_LIFT_MARGIN + SKIN_DISTANCE + 0.03;
 
     // Swept down-cast: returns the toi from the capsule's lower hemisphere.
-    if let Some(h) = cast_capsule(world, position, collision_shape, Vec3::NEG_Y, max_down) {
-        if h.normal.y >= COS_WALKABLE {
-            return Some(position - Vec3::new(0.0, h.time_of_impact, 0.0));
-        }
+    if let Some(h) = cast_capsule(world, position, collision_shape, Vec3::NEG_Y, max_down)
+        && h.normal.y >= COS_WALKABLE
+    {
+        return Some(position - Vec3::new(0.0, h.time_of_impact, 0.0));
     }
 
     // Fallback: a thin center ray ignores wall geometry on the side and finds

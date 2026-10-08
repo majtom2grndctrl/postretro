@@ -92,8 +92,8 @@ struct AnimatedLightScaleUniformLayout {
 
 const ANIMATED_LIGHT_SCALE_SIZE: usize =
     ANIMATED_LIGHT_SCALE_HEADER_SIZE + MAX_ANIMATED_BAKED_LIGHTS * size_of::<f32>();
-const _: () = assert!(MAX_ANIMATED_BAKED_LIGHTS % 4 == 0);
-const _: () = assert!(ANIMATED_LIGHT_SCALE_SIZE % 16 == 0);
+const _: () = assert!(MAX_ANIMATED_BAKED_LIGHTS.is_multiple_of(4));
+const _: () = assert!(ANIMATED_LIGHT_SCALE_SIZE.is_multiple_of(16));
 const _: () = assert!(size_of::<AnimatedLightScaleUniformLayout>() == ANIMATED_LIGHT_SCALE_SIZE);
 const _: () = assert!(
     std::mem::offset_of!(AnimatedLightScaleUniformLayout, compose_weights)

@@ -10,7 +10,8 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
 use std::rc::Rc;
 
-use mlua::{Compiler, Function, Lua, Table};
+use mlua::chunk::Compiler;
+use mlua::{Function, Lua, Table};
 
 use super::error::ScriptError;
 use super::luau_require::{LuauRequireTracker, install_require_resolver};
@@ -143,7 +144,7 @@ impl LuauSubsystem {
         // prefix even though we're loading binary chunks.
         lua.load(&bytecode)
             .set_name(name)
-            .set_mode(mlua::ChunkMode::Binary)
+            .set_mode(mlua::chunk::ChunkMode::Binary)
             .eval::<T>()
             .map_err(|e| {
                 // mlua's Display impl for CallbackError / RuntimeError already
@@ -219,10 +220,10 @@ pub fn build_lua_state_with_require_tracking(
         install_require_resolver(&lua, root, require_tracker, virtual_modules)?;
     }
 
-    // 6. SDK prelude — installs `world`, `timeline`, `sequence`,
+    // 6. SDK prelude — installs `getMapEntities`, `timeline`, `sequence`,
     //    `defineReaction`, and emitter constructors as bare globals.
     //    Capability methods (pulse, fade, flicker, etc.) live on handles
-    //    returned by `world:query`; they are not bare globals.
+    //    returned by `getMapEntities`; they are not bare globals.
     //    Must run before `sandbox(true)` because the prelude writes to `_G`,
     //    and after primitive install because the prelude calls them.
     super::luau_prelude::evaluate_prelude(&lua, virtual_modules.as_ref())?;

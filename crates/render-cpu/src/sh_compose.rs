@@ -807,7 +807,9 @@ mod tests {
             .map(|index| index as u16 ^ 0x5a5a)
             .collect();
         let words: Vec<u32> = halves
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|pair| pair[0] as u32 | (pair[1] as u32) << 16)
             .collect();
 

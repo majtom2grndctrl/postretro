@@ -211,6 +211,7 @@ fn analytic_and_baked_chart_walks_both_skip_non_positive_extent() {
         width_texels: 5,
         height_texels: 5,
         leaf_index: 0,
+        window: None,
     }];
     let placements = vec![ChartPlacement {
         x: 0,
@@ -631,7 +632,7 @@ fn sparse_presence_and_reconstruction_preserve_dense_edge_semantics() {
         Vec3::new(20.0, 0.0, 20.0),
         Vec3::Y,
         0,
-        1,
+        &SoftProbes::new(&light, 1),
         |_, _| true,
     );
     assert!(
@@ -639,8 +640,16 @@ fn sparse_presence_and_reconstruction_preserve_dense_edge_semantics() {
         "an unreached texel must have no record"
     );
 
-    let occluded = bake_sparse_layer_texel(3, &light, world_p, Vec3::Y, 0, 1, |_, _| false)
-        .expect("analytic coverage survives full occlusion");
+    let occluded = bake_sparse_layer_texel(
+        3,
+        &light,
+        world_p,
+        Vec3::Y,
+        0,
+        &SoftProbes::new(&light, 1),
+        |_, _| false,
+    )
+    .expect("analytic coverage survives full occlusion");
     assert_eq!(occluded.raw_visibility.to_bits(), 0.0f32.to_bits());
     let (irradiance, weighted_dir) =
         reconstruct_light_texel(&light, world_p, Vec3::Y, occluded.raw_visibility);
@@ -694,14 +703,36 @@ fn sparse_writer_uses_adjacent_values_around_coverage_epsilon() {
     ));
 
     light.intensity = below;
-    assert!(bake_sparse_layer_texel(0, &light, Vec3::ZERO, Vec3::Y, 0, 1, |_, _| true).is_none());
+    assert!(
+        bake_sparse_layer_texel(
+            0,
+            &light,
+            Vec3::ZERO,
+            Vec3::Y,
+            0,
+            &SoftProbes::new(&light, 1),
+            |_, _| true
+        )
+        .is_none()
+    );
     light.intensity = above;
-    assert!(bake_sparse_layer_texel(0, &light, Vec3::ZERO, Vec3::Y, 0, 1, |_, _| true).is_some());
+    assert!(
+        bake_sparse_layer_texel(
+            0,
+            &light,
+            Vec3::ZERO,
+            Vec3::Y,
+            0,
+            &SoftProbes::new(&light, 1),
+            |_, _| true
+        )
+        .is_some()
+    );
 }
 
 #[test]
 fn sparse_cache_epochs_are_pinned() {
-    assert_eq!(LAYER_FORMAT_VERSION, 7);
+    assert_eq!(LAYER_FORMAT_VERSION, 9);
     assert_eq!(LIGHTMAP_SECTION_VERSION, 4);
 }
 
@@ -759,7 +790,9 @@ fn empty_sparse_partition_roundtrips_and_has_no_fold_effect() {
     assert!(
         folded
             .irradiance
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .all(|rgba| rgba[..3].iter().all(|value| value.to_bits() == 0))
     );
 }
@@ -852,6 +885,56 @@ fn layer_input_hash_changes_when_light_moves() {
         h_base, h_moved,
         "moving the light must change its layer cache key"
     );
+}
+
+// The hoisted key parts must reproduce the established digest layout, or
+// every cached partition would silently miss.
+#[test]
+fn layer_key_context_reproduces_the_layer_input_hash_layout() {
+    let mut geo = two_quad_geometry();
+    let light = point_light([0.5, 1.0, 0.5], 5.0);
+    let static_lights =
+        crate::light_namespaces::StaticBakedLights::from_lights(std::slice::from_ref(&light));
+    let prepared = prepare_atlas(&mut geo, &static_lights, DENSITY, &[]).unwrap();
+    let (_, prims, _) = build_bvh(&geo).unwrap();
+    let shared = SharedAtlas {
+        charts: &prepared.charts,
+        placements: &prepared.placements,
+        atlas_width: prepared.atlas_width,
+        atlas_height: prepared.atlas_height,
+        layout: &prepared.layout,
+    };
+    for target_layer in [0u32, 3] {
+        let mut expected = blake3::Hasher::new();
+        expected.update(&postcard::to_allocvec(&light).unwrap());
+        expected.update(&geometry_slice_hash(
+            &light,
+            &prims,
+            &geo,
+            geometry_world_aabb(&geo),
+        ));
+        expected.update(&DENSITY.to_le_bytes());
+        expected.update(&AREA_SAMPLES.to_le_bytes());
+        expected.update(&atlas_layout_fingerprint(&shared));
+        expected.update(&target_layer.to_le_bytes());
+        let expected = *expected.finalize().as_bytes();
+
+        let context = LayerKeyContext::new(&shared, &geo, DENSITY, AREA_SAMPLES);
+        let prefix = context.light_prefix(&light, &prims, &geo);
+        assert_eq!(LayerKeyContext::layer_hash(&prefix, target_layer), expected);
+        assert_eq!(
+            layer_input_hash(
+                &light,
+                &shared,
+                &prims,
+                &geo,
+                DENSITY,
+                AREA_SAMPLES,
+                target_layer
+            ),
+            expected
+        );
+    }
 }
 
 #[test]
@@ -1031,8 +1114,10 @@ fn all_sdf_fallback_encodes_every_block_uncovered() {
         assert!(
             block
                 .direction
-                .chunks_exact(2)
-                .all(|texel| texel == [128, 255])
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .all(|texel| *texel == [128, 255])
         );
     }
 }
@@ -1052,6 +1137,7 @@ fn lone_chart_layout_fingerprint(
         width_texels,
         height_texels,
         leaf_index: 0,
+        window: None,
     }];
     // Both P2 variants remain at the packer's 64² minimum and at the same
     // sole-chart placement. Only the resolved chart dimensions may re-key.
@@ -1645,6 +1731,7 @@ fn direction_texel_scale_rekeys_section_without_rekeying_light_layers() {
         width_texels: 5,
         height_texels: 5,
         leaf_index: 0,
+        window: None,
     }];
     let placements = [ChartPlacement {
         x: 0,
@@ -1699,6 +1786,7 @@ fn all_sdf_section_cache_rekeys_when_prepared_dimensions_change() {
         width_texels: 5,
         height_texels: 5,
         leaf_index: 0,
+        window: None,
     }];
     let placements = [ChartPlacement {
         x: 0,

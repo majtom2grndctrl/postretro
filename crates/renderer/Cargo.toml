@@ -29,9 +29,9 @@ postretro-visibility.workspace = true
 wgpu.workspace = true
 winit.workspace = true
 
-egui = { version = "0.34", optional = true }
-egui-wgpu = { version = "0.34", optional = true, features = ["winit"] }
-egui-winit = { version = "0.34", optional = true }
+egui = { version = "0.36", optional = true }
+egui-wgpu = { version = "0.36", optional = true, features = ["winit"] }
+egui-winit = { version = "0.36", optional = true }
 
 [features]
 dev-tools = [
@@ -42,8 +42,11 @@ dev-tools = [
 ]
 
 [dev-dependencies]
-naga = { version = "29", features = ["wgsl-in"] }
+postretro-sim = { workspace = true, features = ["test-support"] }
+syn = { version = "3", features = ["full", "visit"] }
+proc-macro2 = { version = "1", features = ["span-locations"] }
+naga = { version = "30", features = ["wgsl-in"] }
 postretro-test-log-capture.workspace = true
 postretro-ui = { workspace = true, features = ["test-fixtures"] }
 proptest.workspace = true
-splines = "4"
+splines = "5"

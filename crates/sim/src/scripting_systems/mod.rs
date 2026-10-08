@@ -6,6 +6,8 @@
 // See: context/lib/scripting.md
 
 pub mod flash_decay;
+#[cfg(test)]
+mod group_command_tests;
 pub mod health;
 pub mod hit_zones;
 pub mod mesh_anim;
@@ -15,6 +17,8 @@ pub mod reaction_scheduler;
 mod reaction_scheduler_ordering_tests;
 pub mod shake_decay;
 pub mod slot_accumulators;
+#[cfg(test)]
+mod spawner_member_tests;
 pub mod system_reactions;
 pub mod trigger_volume_bridge;
 pub mod ui_proxy;

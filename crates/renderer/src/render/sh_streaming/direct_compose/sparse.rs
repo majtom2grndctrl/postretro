@@ -150,16 +150,18 @@ impl StreamingSparseBuffers {
                 reason: "streamed direct sparse row clear exceeds metadata",
             });
         }
-        uploads.write_buffer(&self.row_pairs, u64::from(row) * 8, &[0; 8])
+        uploads
+            .write_buffer(&self.row_pairs, u64::from(row) * 8, &[0; 8])
+            .map_err(Into::into)
     }
 
     pub(super) fn clear_all_row_pairs(
         &self,
-        queue: &wgpu::Queue,
+        queue: &crate::render::uploads::UploadQueue,
     ) -> Result<(), ShResidencyDrainError> {
         let byte_len = usize::try_from(self.row_pairs.size())
             .map_err(|_| ShResidencyDrainError::SlotOverflow)?;
-        queue.write_buffer(&self.row_pairs, 0, &vec![0; byte_len]);
+        queue.direct_write_buffer(&self.row_pairs, 0, &vec![0; byte_len]);
         Ok(())
     }
 

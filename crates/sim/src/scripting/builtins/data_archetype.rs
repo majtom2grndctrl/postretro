@@ -714,15 +714,13 @@ pub(crate) fn attach_descriptor_components(
         let _ = validate_brain_animation_states(registry, id);
     }
 
-    if attach_weapon {
-        if let Some(weapon_desc) = descriptor.weapon.as_ref() {
-            let component = WeaponComponent::from_descriptor_with_canonical(
-                weapon_desc,
-                descriptor.canonical_name.as_deref(),
-            );
-            let _ = registry.set_component(id, component);
-            owned_components.insert(DescriptorComponentKind::Weapon);
-        }
+    if attach_weapon && let Some(weapon_desc) = descriptor.weapon.as_ref() {
+        let component = WeaponComponent::from_descriptor_with_canonical(
+            weapon_desc,
+            descriptor.canonical_name.as_deref(),
+        );
+        let _ = registry.set_component(id, component);
+        owned_components.insert(DescriptorComponentKind::Weapon);
     }
 
     if let Some(canonical_name) = descriptor.canonical_name.clone() {
@@ -1068,9 +1066,8 @@ mod tests {
         ProjectileBodyVisual, ProjectileDescriptor, ProjectileTrailVisual, ProjectileVisual,
     };
     use postretro_scripting_core::data_descriptors::{
-        AirParams, AmmoResource, CapsuleParams, FallParams, FireMode, GroundParams,
-        PlayerMovementDescriptor, ReloadStyle, ResolutionMode, SpeedParams, TouchMode,
-        TouchableDescriptor, WeaponDescriptor,
+        AirParams, AmmoResource, CapsuleParams, FallParams, GroundParams, PlayerMovementDescriptor,
+        ReloadStyle, ResolutionMode, SpeedParams, TouchMode, TouchableDescriptor, WeaponDescriptor,
     };
     use std::collections::HashMap;
 
@@ -2202,8 +2199,11 @@ mod tests {
                 movement_spread_degrees: 0.0,
                 spread_vertical_bias: 0.0,
                 range: 64.0,
-                cooldown_ms: 180.0,
-                fire_mode: FireMode::Semi,
+                primary: postretro_foundation::WeaponActivationDescriptor::single(
+                    postretro_foundation::ActivationTrigger::Press,
+                    180.0,
+                ),
+                secondary: None,
                 resolution: ResolutionMode::Hitscan,
                 projectile: None,
                 splash: None,

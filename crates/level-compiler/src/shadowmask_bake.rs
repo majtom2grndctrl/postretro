@@ -50,14 +50,18 @@ pub const SHADOWMASK_ATLAS_STAGE_ID: &str = "shadowmask_atlas";
 /// `ShadowmaskAtlasSection::to_bytes` payload semantics.
 ///
 /// v5: `SMB6`, one pair of BC5 group planes per lightmap cell block.
-pub const SHADOWMASK_ATLAS_STAGE_VERSION: u32 = 5;
+///
+/// v6: raw visibility follows the chart-local soft-visibility seeds. The key
+/// also folds `LAYER_FORMAT_VERSION`, whose bump already misses old memos;
+/// this one marks the stage's own output change.
+pub const SHADOWMASK_ATLAS_STAGE_VERSION: u32 = 6;
 
 /// A pool layer holds the two mask groups side by side, so it is
 /// `SHADOWMASK_GROUP_COUNT` pool edges wide and must fit the pinned device
 /// texture dimension. The old whole-layer omission rule (id 42 dropped when
-/// the lightmap layer could not double) cannot trigger any more: the build
-/// already rejects a block wider than a pool layer, and the doubled pool
-/// layer fits by construction.
+/// the lightmap layer could not double) cannot trigger any more: the
+/// oversize-face cut and cell packing bound every block by the pool layer
+/// edge, and the doubled pool layer fits by construction.
 pub(crate) const MAX_SHADOWMASK_TEXTURE_WIDTH: u32 = lightmap_bake::MAX_ATLAS_DIMENSION;
 
 const _: () =
@@ -209,7 +213,7 @@ pub(crate) fn prepare_fused_shadowmask<'a>(
     if shared.placements.is_empty() {
         return Ok(no_section(started, ShadowmaskOverlapReport::NoSelection));
     }
-    if shared.atlas_width % 4 != 0 || shared.atlas_height % 4 != 0 {
+    if !shared.atlas_width.is_multiple_of(4) || !shared.atlas_height.is_multiple_of(4) {
         return Err(ShadowmaskBakeError::MisalignedAtlas {
             width: shared.atlas_width,
             height: shared.atlas_height,
@@ -218,30 +222,33 @@ pub(crate) fn prepare_fused_shadowmask<'a>(
     let layer_count = layer_count_from_shared(shared);
     let mut selected = Vec::with_capacity(selection.light_indices.len());
     let mut compact_index_by_source = HashMap::new();
-    let mut layer_input_hashes =
-        Vec::with_capacity(selection.light_indices.len() * layer_count as usize);
+    // The layer keys feed only the memo key, so an uncached bake hashes nothing.
+    let key_context = cache.map(|_| {
+        lightmap_layer::LayerKeyContext::new(shared, geometry, lightmap_density, area_sample_count)
+    });
+    let mut layer_input_hashes = Vec::new();
     for (selection_index, &alpha_index) in selection.light_indices.iter().enumerate() {
         let Some(entry) = alpha_lights.entries().get(alpha_index as usize) else {
             log::warn!(
                 "[ShadowmaskAtlas] selected AlphaLights index {alpha_index} is out of range; marking dropped"
             );
-            for target_layer in 0..layer_count {
-                layer_input_hashes.push(invalid_selected_light_hash(alpha_index, target_layer));
+            if key_context.is_some() {
+                for target_layer in 0..layer_count {
+                    layer_input_hashes.push(invalid_selected_light_hash(alpha_index, target_layer));
+                }
             }
             continue;
         };
         compact_index_by_source.insert(entry.source_index, selected.len());
         selected.push((selection_index, alpha_index, entry.light));
-        for target_layer in 0..layer_count {
-            layer_input_hashes.push(lightmap_layer::layer_input_hash(
-                entry.light,
-                shared,
-                primitives,
-                geometry,
-                lightmap_density,
-                area_sample_count,
-                target_layer,
-            ));
+        if let Some(context) = &key_context {
+            let prefix = context.light_prefix(entry.light, primitives, geometry);
+            for target_layer in 0..layer_count {
+                layer_input_hashes.push(lightmap_layer::LayerKeyContext::layer_hash(
+                    &prefix,
+                    target_layer,
+                ));
+            }
         }
     }
 
@@ -272,6 +279,15 @@ pub(crate) fn prepare_fused_shadowmask<'a>(
     if let (Some(cache), Some(key)) = (cache, section_key.as_ref()) {
         if let Some(memo) = read_shadowmask_memo(cache, key, selection, shared) {
             log::info!("[cache] shadowmask_atlas hit");
+            // The memo stands in for the selected partitions it summarizes;
+            // the next prune must keep them as the fallback for a light edit.
+            for hash in &layer_input_hashes {
+                cache.mark_used(&CacheKey::new(
+                    "lightmap_layer",
+                    lightmap_layer::LAYER_FORMAT_VERSION,
+                    hash,
+                ));
+            }
             control.governor().checkpoint();
             control.advance(fused_total);
             return Ok(FusedShadowmaskPlan {

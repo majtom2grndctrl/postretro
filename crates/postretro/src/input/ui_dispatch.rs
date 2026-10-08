@@ -112,6 +112,10 @@ pub struct PointerPos {
 pub enum UiIntentPayload {
     /// Directional / activation navigation, gamepad-first.
     Nav(NavIntent),
+    /// An on-screen keyboard shortcut (`text_backspace`, `text_space`,
+    /// `text_commit`), produced only while a text-entry tree is on top. It
+    /// activates the keyboard tree's own key without moving focus.
+    TextShortcut(super::commands::Command),
     /// A pointer click at a device-pixel position (hit-tested by the focus
     /// engine, Task 3).
     PointerClick { pos: PointerPos },

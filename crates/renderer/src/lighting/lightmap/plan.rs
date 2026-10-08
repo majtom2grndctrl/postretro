@@ -216,7 +216,7 @@ fn place_pool(
     max_texture_dimension_2d: u32,
 ) -> Result<AllResidentPool, String> {
     let scale = header.direction_texel_scale.max(1);
-    if LIGHTMAP_POOL_LAYER_EDGE % scale != 0 {
+    if !LIGHTMAP_POOL_LAYER_EDGE.is_multiple_of(scale) {
         return Err(format!(
             "direction texel scale {scale} does not divide the {LIGHTMAP_POOL_LAYER_EDGE}-texel \
              pool layer"

@@ -175,11 +175,17 @@ pub enum NodeContext {
         style_state: RefCell<StyleEffectState>,
     },
     /// Textured image quad. `asset` is the texture key the renderer binds; the
-    /// rect comes from layout. The image sizes from the asset's natural reference
-    /// dimensions via the measure seam (see `measure_node`) — content-driven, so
-    /// `asset` doubles as the size key. Image batching/binding lands in the
-    /// renderer; the tree records the key so the draw step can group by it.
-    Image { asset: String },
+    /// rect comes from layout. Unsized, the image takes the asset's natural
+    /// reference dimensions via the measure seam (see `layout_leaf`), so
+    /// `asset` doubles as the size key. An authored `width` / `height` is also
+    /// pinned on the node's style; the measure seam derives a missing axis from
+    /// the source aspect. Image batching/binding lands in the renderer; the
+    /// tree records the key so the draw step can group by it.
+    Image {
+        asset: String,
+        width: Option<f32>,
+        height: Option<f32>,
+    },
     /// Horizontal value bar. Draws a `background` quad filling
     /// its laid-out rect, then a `fill` quad whose width is normalized across
     /// `[min, max]` and clamped to `[0, 1]` of the rect width. `value` resolves from `bind`'s slot (the eased

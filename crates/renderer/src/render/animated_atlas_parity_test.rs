@@ -52,6 +52,7 @@ fn try_init_gpu() -> Option<GpuCtx> {
         power_preference: wgpu::PowerPreference::default(),
         compatible_surface: None,
         force_fallback_adapter: false,
+        apply_limit_buckets: false,
     }))
     .ok()?;
     eprintln!(
@@ -574,8 +575,9 @@ fn run(
     });
 
     let mut encoder = device.create_command_encoder(&Default::default());
+    let uploads = crate::render::uploads::UploadQueue::new(device, ctx.queue.clone(), true);
     resources.dispatch(
-        &ctx.queue,
+        &uploads,
         &mut encoder,
         &uniform_bind_group,
         &VisibleCells::DrawAll,
@@ -618,7 +620,7 @@ fn run(
             depth_or_array_layers: 1,
         },
     );
-    ctx.queue.submit([encoder.finish()]);
+    uploads.submit([encoder.finish()]);
 
     let slice = readback.slice(..);
     let (sender, receiver) = std::sync::mpsc::channel();
@@ -632,7 +634,9 @@ fn run(
         .recv()
         .expect("map callback")
         .expect("readback maps");
-    let data = slice.get_mapped_range();
+    let data = slice
+        .get_mapped_range()
+        .expect("buffer mapped for readback");
     let pixel = |x: u32, y: u32| -> [f32; 4] {
         let at = (y * row_bytes + x * 16) as usize;
         std::array::from_fn(|c| {

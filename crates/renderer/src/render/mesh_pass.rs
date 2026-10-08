@@ -36,7 +36,7 @@
 // assume. The shader reads its instance via `@builtin(instance_index)`.
 //
 // Coordinate basis: the engine world is Y-up, right-handed, metric (camera
-// builds via `look_at_rh` / `perspective_rh` with up = +Y; the level compiler
+// builds via glam's `camera::rh` view / projection with up = +Y; the level compiler
 // works in meters). glTF is ALSO Y-up, right-handed, meters, and positions are
 // stored verbatim. So the glTF→engine basis conversion is the IDENTITY — no
 // axis swap, no mirror, no scale. Winding matches too: glTF front faces are CCW
@@ -1136,7 +1136,7 @@ impl MeshPass {
                 // normal-map pass yet; committing it now lets depth-only,
                 // lighting, and normal-map passes reuse this vertex layout
                 // without a format change.
-                buffers: &[wgpu::VertexBufferLayout {
+                buffers: &[Some(wgpu::VertexBufferLayout {
                     array_stride: std::mem::size_of::<postretro_model::mesh::SkinnedVertex>()
                         as wgpu::BufferAddress,
                     step_mode: wgpu::VertexStepMode::Vertex,
@@ -1178,7 +1178,7 @@ impl MeshPass {
                             format: wgpu::VertexFormat::Unorm8x4,
                         },
                     ],
-                }],
+                })],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             },
             primitive: wgpu::PrimitiveState {
@@ -1444,7 +1444,7 @@ impl MeshPass {
     #[allow(clippy::too_many_arguments)] // Mirrors the fixed group-2 light uniform fields.
     pub fn write_light_params(
         &self,
-        queue: &wgpu::Queue,
+        queue: &crate::render::uploads::UploadQueue,
         light_count: u32,
         dynamic_light_count: u32,
         scripted_light_count: u32,
@@ -1639,7 +1639,7 @@ impl MeshPass {
     /// the plan already holds only surviving, in-budget instances.
     pub fn plan_and_upload(
         &mut self,
-        queue: &wgpu::Queue,
+        queue: &crate::render::uploads::UploadQueue,
         plans: &[&MeshFramePlan],
         scratch: &mut Vec<BonePaletteEntry>,
         cpu: &postretro_stage_timing::StageFrame<super::cpu_stages::RenderStage>,
@@ -1707,10 +1707,9 @@ impl MeshPass {
                     // sample it below and keep it at frame end. Missing/stale tags are
                     // left unmarked and will fall back during sampling, then evict.
                     if let Some(FadeSource::Snapshot { tag, .. }) = inst.sample.fade.map(|f| f.from)
+                        && snapshot_store.matching(inst.phase_seed, tag).is_some()
                     {
-                        if snapshot_store.matching(inst.phase_seed, tag).is_some() {
-                            active_snapshot_fades.insert(inst.phase_seed, tag);
-                        }
+                        active_snapshot_fades.insert(inst.phase_seed, tag);
                     }
 
                     // Time-slicing decision. Sample when the collector asked
@@ -1778,7 +1777,7 @@ impl MeshPass {
     /// the existing group-0 allocation size/layout for bind-group compatibility.
     pub(super) fn write_viewmodel_view_projection(
         &self,
-        queue: &wgpu::Queue,
+        queue: &crate::render::uploads::UploadQueue,
         view_projection: glam::Mat4,
     ) {
         let mut data = [0u8; UNIFORM_SIZE];

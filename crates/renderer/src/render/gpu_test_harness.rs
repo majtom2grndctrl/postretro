@@ -14,6 +14,8 @@
 //
 // See: context/lib/testing_guide.md §3, §4
 
+use super::uploads::UploadQueue;
+
 /// A headless `wgpu` device + queue for offscreen rendering. No surface, no
 /// window — the golden tests render into a `COPY_SRC` texture and read it back.
 pub(crate) struct GpuCtx {
@@ -25,23 +27,45 @@ pub(crate) struct GpuCtx {
 /// headless-CI case). Every caller self-skips on `None` so adapter absence
 /// can never be the thing that fails CI.
 pub(crate) fn try_init_gpu() -> Option<GpuCtx> {
+    try_init_gpu_with_features(wgpu::Features::empty())
+}
+
+pub(crate) fn try_init_gpu_with_features(required_features: wgpu::Features) -> Option<GpuCtx> {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
         backends: wgpu::Backends::PRIMARY,
         ..wgpu::InstanceDescriptor::new_without_display_handle()
     });
-    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-        power_preference: wgpu::PowerPreference::default(),
+    let adapter = match pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+        power_preference: wgpu::PowerPreference::HighPerformance,
         compatible_surface: None,
         force_fallback_adapter: false,
-    }))
-    .ok()?;
-    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-        label: Some("GPU test harness Device"),
-        required_features: wgpu::Features::empty(),
-        required_limits: wgpu::Limits::default(),
-        ..Default::default()
-    }))
-    .ok()?;
+        apply_limit_buckets: false,
+    })) {
+        Ok(adapter) => adapter,
+        Err(error) => {
+            eprintln!("GPU test skipped: no adapter available ({error})");
+            return None;
+        }
+    };
+    if !adapter.features().contains(required_features) {
+        eprintln!("GPU test skipped: adapter lacks {required_features:?}");
+        return None;
+    }
+    let identity = adapter.get_info();
+    eprintln!("[UploadAdapter] {} {:?}", identity.name, identity.backend);
+    let (device, queue) =
+        match pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            label: Some("GPU test harness Device"),
+            required_features,
+            required_limits: wgpu::Limits::default(),
+            ..Default::default()
+        })) {
+            Ok(gpu) => gpu,
+            Err(error) => {
+                eprintln!("GPU test skipped: device unavailable ({error})");
+                return None;
+            }
+        };
     Some(GpuCtx { device, queue })
 }
 
@@ -77,7 +101,47 @@ pub(crate) fn read_texture_rgba8(
     texture: &wgpu::Texture,
     width: u32,
     height: u32,
+    encoder: wgpu::CommandEncoder,
+) -> Readback {
+    read_texture_rgba8_with_submit(ctx, texture, width, height, encoder, |command| {
+        ctx.queue.submit([command]);
+    })
+}
+
+/// Read pixels from work whose renderer-owned writes use the deferred batch.
+/// Pixel assertions also prove that the upload copies executed before the draws.
+pub(crate) fn read_texture_rgba8_staged(
+    ctx: &GpuCtx,
+    uploads: &UploadQueue,
+    texture: &wgpu::Texture,
+    width: u32,
+    height: u32,
+    encoder: wgpu::CommandEncoder,
+) -> Readback {
+    let before = uploads.counts();
+    assert!(
+        before.writes > 0,
+        "golden must exercise staged renderer writes"
+    );
+    assert_eq!(before.direct_writes, 0);
+    let pixels = read_texture_rgba8_with_submit(ctx, texture, width, height, encoder, |command| {
+        uploads.submit([command]);
+    });
+    let after = uploads.counts();
+    assert_eq!(after.submits, before.submits + 1);
+    assert_eq!(after.batches, before.batches + 1);
+    assert!(after.copies > before.copies);
+    uploads.assert_empty("golden frame exit");
+    pixels
+}
+
+fn read_texture_rgba8_with_submit(
+    ctx: &GpuCtx,
+    texture: &wgpu::Texture,
+    width: u32,
+    height: u32,
     mut encoder: wgpu::CommandEncoder,
+    submit: impl FnOnce(wgpu::CommandBuffer),
 ) -> Readback {
     let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
     let unpadded = width * 4;
@@ -111,7 +175,7 @@ pub(crate) fn read_texture_rgba8(
             depth_or_array_layers: 1,
         },
     );
-    ctx.queue.submit(std::iter::once(encoder.finish()));
+    submit(encoder.finish());
 
     let slice = buffer.slice(..);
     let (tx, rx) = std::sync::mpsc::channel();
@@ -123,7 +187,9 @@ pub(crate) fn read_texture_rgba8(
         .expect("poll");
     rx.recv().expect("map channel").expect("map ok");
 
-    let data = slice.get_mapped_range();
+    let data = slice
+        .get_mapped_range()
+        .expect("buffer mapped for readback");
     let mut tight = Vec::with_capacity((unpadded * height) as usize);
     for row in 0..height {
         let start = (row * padded) as usize;

@@ -89,6 +89,7 @@ fn composite_fixture() -> AnchoredTree {
             padding: SpacingValue::Literal(6.0),
             align: Align::Start,
             width: None,
+            scroll: None,
             // Backdrop fill makes the outer container emit a panel quad sized to
             // its content (the canonical quad-producing path now that bare panels
             // have no intrinsic size).
@@ -97,7 +98,6 @@ fn composite_fixture() -> AnchoredTree {
             id: None,
             focus_neighbors: Default::default(),
             focus: None,
-            restore_on_return: false,
             local_state: None,
             visible_when: None,
             role: None,
@@ -107,12 +107,12 @@ fn composite_fixture() -> AnchoredTree {
                     padding: SpacingValue::Literal(0.0),
                     align: Align::Start,
                     width: None,
+                    scroll: None,
                     fill: None,
                     border: None,
                     id: None,
                     focus_neighbors: Default::default(),
                     focus: None,
-                    restore_on_return: false,
                     local_state: None,
                     visible_when: None,
                     role: None,
@@ -123,15 +123,17 @@ fn composite_fixture() -> AnchoredTree {
                     padding: SpacingValue::Literal(0.0),
                     align: Align::Start,
                     cols: 2,
+                    scroll: None,
                     id: None,
                     focus_neighbors: Default::default(),
                     focus: None,
-                    restore_on_return: false,
                     visible_when: None,
                     role: None,
                     children: vec![
                         Widget::Image(ImageWidget {
                             asset: "ui/icon_a".into(),
+                            width: None,
+                            height: None,
                             id: None,
                             focus_neighbors: Default::default(),
                             label: None,
@@ -141,6 +143,8 @@ fn composite_fixture() -> AnchoredTree {
                         }),
                         Widget::Image(ImageWidget {
                             asset: "ui/icon_b".into(),
+                            width: None,
+                            height: None,
                             id: None,
                             focus_neighbors: Default::default(),
                             label: None,
@@ -157,6 +161,7 @@ fn composite_fixture() -> AnchoredTree {
         text_entry_target: None,
         accessible_name: None,
         role: None,
+        restore_on_return: None,
     }
 }
 
@@ -305,12 +310,12 @@ fn empty_gameplay_tree_early_outs_the_ui_pass() {
             padding: SpacingValue::Literal(0.0),
             align: Align::Start,
             width: None,
+            scroll: None,
             fill: None,
             border: None,
             id: None,
             focus_neighbors: Default::default(),
             focus: None,
-            restore_on_return: false,
             local_state: None,
             visible_when: None,
             role: None,
@@ -321,6 +326,7 @@ fn empty_gameplay_tree_early_outs_the_ui_pass() {
         text_entry_target: None,
         accessible_name: None,
         role: None,
+        restore_on_return: None,
     };
     let draw_empty = {
         let mut ui = UiTree::from_descriptor(&empty, &UiTheme::engine_default());

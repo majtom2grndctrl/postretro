@@ -3,6 +3,7 @@
 
 #[cfg(feature = "load-prl")]
 mod lightmap_stream;
+mod load_progress;
 mod prl;
 #[cfg(feature = "load-prl")]
 mod prl_animated_atlas;
@@ -14,6 +15,8 @@ mod prl_file;
 mod prl_lighting;
 #[cfg(feature = "load-prl")]
 mod prl_lightmap;
+#[cfg(all(test, feature = "load-prl"))]
+mod prl_load_progress_tests;
 #[cfg(all(test, feature = "load-prl"))]
 mod prl_load_test_fixtures;
 #[cfg(feature = "load-prl")]
@@ -34,6 +37,7 @@ pub use lightmap_stream::{
     LightmapPoolReport, LightmapStorage, LightmapStreamManifest, LightmapStreamingMode,
     LightmapTarget, PreparedLightmapBlock, requested_lightmap_streaming_mode,
 };
+pub use load_progress::LoadProgress;
 pub use prl::{
     CellData, CellId, CellLocatorChild, CellLocatorNodeData, CellLocatorSide, CellLocatorTrace,
     CellLocatorTraceStep, CellVisibility, CoupledCellPair, CouplingTuple, FalloffModel, LevelWorld,
@@ -51,7 +55,7 @@ pub use prl_lighting::LevelWorldLighting;
 #[cfg(feature = "load-prl")]
 pub use prl_lightmap::GpuLightingPayloads;
 #[cfg(feature = "load-prl")]
-pub use prl_streaming::load_prl;
+pub use prl_streaming::{load_prl, load_prl_with_progress};
 #[cfg(feature = "load-prl")]
 pub use sh_stream::{
     PreparedShCluster, ShDrainBatch, ShDrainOutcome, ShStorage, ShStreamBaseMetadata,

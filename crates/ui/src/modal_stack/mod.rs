@@ -18,12 +18,25 @@ use super::descriptor::{AnchoredTree, CaptureMode};
 use postretro_scripting_core::data_descriptors::RegisteredUiTree;
 pub use registry::{ScopeTier, UiTreeRegistry};
 
+/// Opaque identity for one modal-stack push. Clearing and reopening a tree
+/// creates a new instance, so an old identity cannot refer to the new push.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ModalInstance(u64);
+
+impl ModalInstance {
+    /// A stable number for this push, unique for the stack's lifetime.
+    pub fn id(self) -> u64 {
+        self.0
+    }
+}
+
 /// One tree currently on the modal stack: its registry name, the descriptor
 /// instance pushed, and the optional `onCommit` reaction carried from the
 /// `PushTree` that opened it. `on_commit` is carried on the stack entry; the App
 /// fires it from the text-entry commit path.
 #[derive(Debug, Clone, PartialEq)]
 struct StackedTree {
+    instance: ModalInstance,
     name: String,
     descriptor: AnchoredTree,
     tier: ScopeTier,
@@ -45,9 +58,41 @@ struct StackedTree {
 pub struct ModalStack {
     registry: UiTreeRegistry,
     stack: Vec<StackedTree>,
+    next_instance: u64,
 }
 
 impl ModalStack {
+    fn new_instance(&mut self) -> ModalInstance {
+        self.next_instance = self
+            .next_instance
+            .checked_add(1)
+            .expect("modal instance counter exhausted");
+        ModalInstance(self.next_instance)
+    }
+
+    pub fn active_instance(&self) -> Option<ModalInstance> {
+        self.stack.last().map(|tree| tree.instance)
+    }
+    /// Replace the descriptor of every pushed instance named `name`, keeping its
+    /// instance identity, so an engine panel built from live data updates in
+    /// place and keeps its focus.
+    pub fn replace_pushed_descriptor(&mut self, name: &str, descriptor: &AnchoredTree) {
+        for tree in self.stack.iter_mut().filter(|tree| tree.name == name) {
+            tree.descriptor = descriptor.clone();
+        }
+    }
+
+    /// Whether a pushed instance with this id is still on the stack.
+    pub fn contains_instance_id(&self, id: u64) -> bool {
+        self.stack.iter().any(|tree| tree.instance.0 == id)
+    }
+    pub fn contains_instance(&self, instance: ModalInstance) -> bool {
+        self.stack.iter().any(|tree| tree.instance == instance)
+    }
+    pub fn remove_instance(&mut self, instance: ModalInstance) {
+        self.stack.retain(|tree| tree.instance != instance);
+    }
+
     pub fn new() -> Self {
         Self::default()
     }
@@ -159,7 +204,9 @@ impl ModalStack {
             );
             return;
         };
+        let instance = self.new_instance();
         self.stack.push(StackedTree {
+            instance,
             name: name.to_string(),
             descriptor,
             tier,
@@ -182,7 +229,9 @@ impl ModalStack {
             return false;
         };
         descriptor.capture_mode = CaptureMode::Capture;
+        let instance = self.new_instance();
         self.stack.push(StackedTree {
+            instance,
             name: name.to_string(),
             descriptor,
             tier,
@@ -219,7 +268,9 @@ impl ModalStack {
     /// Engine push API: push a descriptor tree directly (pause/dialog opened from
     /// Rust, not via a registered name). `name` labels the entry for diagnostics.
     pub fn push(&mut self, name: impl Into<String>, descriptor: AnchoredTree) {
+        let instance = self.new_instance();
         self.stack.push(StackedTree {
+            instance,
             name: name.into(),
             descriptor,
             tier: ScopeTier::Engine,
@@ -247,13 +298,11 @@ impl ModalStack {
     }
 
     /// Number of trees on the stack.
-    #[cfg(any(test, feature = "test-fixtures"))]
     pub fn len(&self) -> usize {
         self.stack.len()
     }
 
     /// True when no tree is on the stack.
-    #[cfg(any(test, feature = "test-fixtures"))]
     pub fn is_empty(&self) -> bool {
         self.stack.is_empty()
     }
@@ -372,12 +421,12 @@ mod tests {
                 padding: SpacingValue::Literal(0.0),
                 align: Align::Start,
                 width: None,
+                scroll: None,
                 fill: None,
                 border: None,
                 id: None,
                 focus_neighbors: Default::default(),
                 focus: None,
-                restore_on_return: false,
                 local_state: None,
                 visible_when: None,
                 role: None,
@@ -388,6 +437,7 @@ mod tests {
             text_entry_target: None,
             accessible_name: None,
             role: None,
+            restore_on_return: None,
         }
     }
 
@@ -1115,8 +1165,8 @@ mod tests {
     /// rejected on every registration path, and the engine panel remains. Other
     /// built-in names keep their shadowing.
     #[test]
-    fn the_accessibility_panel_name_is_reserved_on_every_registration_path() {
-        use crate::demo::{ACCESSIBILITY_PANEL_NAME, PAUSE_MENU_NAME};
+    fn engine_panel_and_confirm_names_are_reserved_on_every_registration_path() {
+        use crate::demo::{ACCESSIBILITY_PANEL_NAME, DISPLAY_MODE_CONFIRM_NAME, PAUSE_MENU_NAME};
         use log::Level;
         use postretro_test_log_capture::LogCapture;
 
@@ -1134,30 +1184,29 @@ mod tests {
 
         let capture = LogCapture::start();
         let mut stack = ModalStack::new();
-        stack.registry_mut().register(
-            ACCESSIBILITY_PANEL_NAME,
-            engine.clone(),
-            ScopeTier::Engine,
-            false,
-        );
         stack
             .registry_mut()
             .register(PAUSE_MENU_NAME, engine.clone(), ScopeTier::Engine, false);
-
-        stack.register_script_trees([script(ACCESSIBILITY_PANEL_NAME)], ScopeTier::Mod);
-        stack.register_script_trees([script(ACCESSIBILITY_PANEL_NAME)], ScopeTier::Level);
-        stack.replace_script_tree_tier(
-            [script(ACCESSIBILITY_PANEL_NAME), script(PAUSE_MENU_NAME)],
-            ScopeTier::Mod,
-        );
-
-        let (tier, panel) = stack.resolve_with_tier(ACCESSIBILITY_PANEL_NAME).unwrap();
-        assert_eq!(tier, ScopeTier::Engine);
-        assert_eq!(
-            panel.capture_mode,
-            CaptureMode::Capture,
-            "the engine panel remains"
-        );
+        for name in [
+            ACCESSIBILITY_PANEL_NAME,
+            DISPLAY_MODE_CONFIRM_NAME,
+            crate::demo::CONTROLS_PANEL_NAME,
+            crate::demo::CONTROLS_CAPTURE_NAME,
+            crate::demo::CONTROLS_DIALOG_NAME,
+        ] {
+            stack
+                .registry_mut()
+                .register(name, engine.clone(), ScopeTier::Engine, false);
+            stack.register_script_trees([script(name)], ScopeTier::Mod);
+            stack.register_script_trees([script(name)], ScopeTier::Level);
+            stack.replace_script_tree_tier([script(name), script(PAUSE_MENU_NAME)], ScopeTier::Mod);
+            let (tier, panel) = stack.resolve_with_tier(name).unwrap();
+            assert_eq!(tier, ScopeTier::Engine);
+            assert_eq!(panel.capture_mode, CaptureMode::Capture);
+            stack.push_named(name, None);
+            assert_eq!(stack.active_name(), Some(name));
+            stack.pop();
+        }
         let (pause_tier, _) = stack.resolve_with_tier(PAUSE_MENU_NAME).unwrap();
         assert_eq!(pause_tier, ScopeTier::Mod, "pauseMenu still shadows");
 
@@ -1166,12 +1215,11 @@ mod tests {
             .iter()
             .filter(|r| {
                 r.level == Level::Warn
-                    && r.message
-                        .contains("reserved for the engine accessibility panel")
+                    && r.message.contains("reserved for an engine panel or dialog")
             })
             .count();
         assert_eq!(
-            rejections, 3,
+            rejections, 15,
             "mod init, level load and staged reload each warn"
         );
     }

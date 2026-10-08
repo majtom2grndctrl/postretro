@@ -384,7 +384,7 @@ mod tests {
             section.grid_dimensions,
             &words,
         );
-        for texel in packed.chunks_exact(4) {
+        for texel in packed.as_chunks::<4>().0 {
             assert_eq!(&texel[..2], &[0x1234, 0xabcd]);
         }
     }

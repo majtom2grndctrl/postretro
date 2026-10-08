@@ -2,19 +2,23 @@
 // byte-identical pre-BC6H atlas.
 // See: context/lib/build_pipeline.md (Lightmap id 22)
 
+use std::cell::Cell;
+
 use glam::Vec3;
 use rayon::prelude::*;
 
 use crate::affinity_grid::{AABB_PADDING_METERS, light_aabb};
 use crate::bake_control::BakeControl;
 use crate::bvh_build::BvhPrimitive;
-use crate::chart_raster::{ChartPlacement, chart_interior_dims, chart_texel_world_position};
+use crate::chart_raster::{
+    ChartPlacement, chart_interior_dims, chart_texel_seed, chart_texel_world_position,
+};
 use crate::geometry::GeometryResult;
 #[cfg(test)]
 use crate::lightmap_bake::light_texel_is_covered;
 use crate::lightmap_bake::{
-    BlockLayout, Chart, CompositedAtlas, light_contribution_and_direction,
-    light_texel_contribution_and_visibility, segment_clear, texel_seed,
+    BlockLayout, Chart, CompositedAtlas, SoftProbes, light_contribution_and_direction,
+    light_texel_contribution_and_visibility_with, segment_clear_remembering,
 };
 #[cfg(test)]
 use crate::map_data::LightType;
@@ -25,7 +29,7 @@ mod cache_keys;
 
 pub(crate) use cache_keys::atlas_layout_fingerprint;
 pub use cache_keys::{
-    layer_input_hash, section_input_hash, validate_cached_lightmap_section,
+    LayerKeyContext, layer_input_hash, section_input_hash, validate_cached_lightmap_section,
     validate_layer_partition,
 };
 
@@ -36,7 +40,14 @@ pub use cache_keys::{
 /// separately from the per-group SH and animated-weight-map stages.
 ///
 /// v7: layers are internal bake layers holding packed cell blocks.
-pub const LAYER_FORMAT_VERSION: u32 = 7;
+///
+/// v8: soft-visibility seeds key on the chart's frame and texel
+/// (`chart_raster::chart_texel_seed`), not bake-layer coordinates.
+///
+/// v9: shadow rays test the chart walk's last occluding triangle first, which
+/// also catches a hit the box test misses by rounding where the triangle meets
+/// its box's boundary.
+pub const LAYER_FORMAT_VERSION: u32 = 9;
 
 /// Bump when the composite/dilate/`encode_section` pipeline or
 /// `LightmapSection::to_bytes` serialization changes. Folded into the
@@ -86,15 +97,15 @@ fn bake_sparse_layer_texel(
     world_p: Vec3,
     surface_normal: Vec3,
     seed: u64,
-    area_sample_count: u32,
+    probes: &SoftProbes,
     trace: impl Fn(Vec3, Vec3) -> bool,
 ) -> Option<LayerTexel> {
-    let (_, _, raw_visibility) = light_texel_contribution_and_visibility(
+    let (_, _, raw_visibility) = light_texel_contribution_and_visibility_with(
         light,
         world_p,
         surface_normal,
         seed,
-        area_sample_count,
+        || *probes,
         trace,
     );
     sparse_layer_texel(idx, raw_visibility)
@@ -235,8 +246,8 @@ pub struct SharedAtlas<'a> {
 
 /// One global atlas layer's in-progress, ordered light fold.
 ///
-/// The production warm path retains only this one atlas plane plus one
-/// light/layer cache partition at a time. `weighted_dir` deliberately stays
+/// The fused walk retains only this one atlas plane plus the partitions its
+/// light window holds (`lightmap_stage::window`). `weighted_dir` deliberately stays
 /// separate from the finished direction buffer so normalization still occurs
 /// once, after the complete global-light-order fold.
 pub struct IncrementalLayerAccumulator {
@@ -302,8 +313,7 @@ impl IncrementalLayerAccumulator {
             let atlas_y = texel.idx / atlas.atlas_width;
             let tx = (atlas_x - placement.x - padding) as i32;
             let ty = (atlas_y - placement.y - padding) as i32;
-            let (interior_w, interior_h) = chart_interior_dims(chart);
-            let world_p = chart_texel_world_position(chart, tx, ty, interior_w, interior_h);
+            let world_p = chart_texel_world_position(chart, tx, ty);
             let (irradiance, weighted_dir) =
                 reconstruct_light_texel(light, world_p, chart.normal, texel.raw_visibility);
             self.atlas.irradiance[idx * 4] += irradiance.x;
@@ -343,9 +353,9 @@ pub fn layer_influence_aabb(light: &MapLight, world_aabb: (DVec3, DVec3)) -> (DV
 /// Bake one light's contribution layer across the shared atlas.
 ///
 /// Mirrors `bake_face_chart`'s per-texel structure exactly but for a single
-/// light: same chart interior walk, same `texel_seed`, same
-/// `light_texel_contribution_and_visibility` helper (which shares the
-/// monolithic Lambert + soft-visibility math). Directional lights are
+/// light: same chart interior walk, same `chart_texel_seed`, same Lambert +
+/// soft-visibility math (`light_texel_contribution_and_visibility_with`, fed a
+/// `SoftProbes` built once per chart rather than per texel). Directional lights are
 /// evaluated across every chart texel, but sparse records are emitted only for
 /// analytically reached, contributing samples.
 ///
@@ -489,6 +499,10 @@ pub(crate) fn bake_light_layer_chart_controlled(
         0
     };
     let mut texels = Vec::with_capacity(capacity);
+    let probes = SoftProbes::new(light, area_sample_count);
+    // One chart's texels are walked in order on one thread, so the occluder
+    // cache stays local to this `(light, chart)` unit.
+    let last_occluder = Cell::new(None);
     for_each_light_layer_chart_texel_controlled(atlas, face_idx, control, |sample| {
         if let Some(texel) = bake_sparse_layer_texel(
             sample.idx,
@@ -496,8 +510,10 @@ pub(crate) fn bake_light_layer_chart_controlled(
             sample.world_p,
             sample.surface_normal,
             sample.seed,
-            area_sample_count,
-            |from, to| segment_clear(bvh, primitives, geometry, from, to),
+            &probes,
+            |from, to| {
+                segment_clear_remembering(bvh, primitives, geometry, from, to, &last_occluder)
+            },
         ) {
             texels.push(texel);
         }
@@ -570,9 +586,9 @@ pub(crate) fn for_each_light_layer_chart_texel(
             // `LightmapLayer.target_layer`, not folded into `idx`.
             let idx = atlas_y as u32 * atlas.atlas_width + atlas_x as u32;
 
-            let world_p = chart_texel_world_position(chart, tx, ty, interior_w, interior_h);
+            let world_p = chart_texel_world_position(chart, tx, ty);
             let surface_normal = chart.normal;
-            let seed = texel_seed(atlas_x as u32, atlas_y as u32);
+            let seed = chart_texel_seed(chart, tx, ty);
 
             let sample = ChartWalkSample {
                 idx,

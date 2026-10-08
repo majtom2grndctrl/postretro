@@ -60,6 +60,7 @@ pub(crate) fn read_lightmap_for_residency(
         log_lightmap_residency(mode, reason, 0);
         return Ok((None, residency_read(mode, Vec::new())));
     };
+    container.settle_section(SectionId::Lightmap as u32, prefix.len() as u64);
     let block_count = index.header.block_count;
     let (mode, reason) = select_lightmap_residency(inputs, block_count);
     log_lightmap_residency(mode, reason, block_count);
@@ -101,6 +102,7 @@ impl LightmapResidencyRead {
         else {
             return Ok(None);
         };
+        container.settle_section(SectionId::ShadowmaskAtlas as u32, prefix.len() as u64);
         log::info!(
             "[PRL] ShadowmaskAtlas: {} cell block(s), {} selected channel entr(y/ies), index only ({} B read)",
             index.records.len(),

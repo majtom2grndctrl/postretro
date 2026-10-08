@@ -1,0 +1,18 @@
+{
+  "map": "content/dev/maps/stress-warren-hallway-inspection.prl",
+  "camera": {
+    "position": [
+      42.2656,
+      2.9384,
+      63.3984
+    ],
+    "yaw_deg": 180,
+    "pitch_deg": 0,
+    "fov_deg": 100
+  },
+  "resolution": [
+    1280,
+    720
+  ],
+  "output": "measurements/release-indirect-validation/screenshots/hallway-reverse-on.png"
+}

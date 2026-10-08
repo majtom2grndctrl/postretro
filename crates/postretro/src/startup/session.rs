@@ -17,6 +17,7 @@ use winit::event_loop::EventLoop;
 use crate::camera::Camera;
 use crate::frame_timing::{FrameRateMeter, FrameTiming, InterpolableState};
 use crate::input;
+use crate::startup::app_dirs::{APP_NAME_FLAG, AppDirs, validate_app_name};
 use crate::startup::{LevelSource, StartupTimings};
 use crate::trigger_pools::{TriggerPoolSeedPolicy, entropy_seed};
 use crate::{App, collision, kinematic_mover, runtime_movers, view_feel};
@@ -97,7 +98,7 @@ enum PoolSeedArg {
 /// Deferred-startup owner. Carries the raw inputs needed to construct the entire
 /// `Session` after the first visible logo frame paints. It hands its raw argv to
 /// [`Session::build`], the sole session construction site, which builds every
-/// session-lifetime field (options I/O, audio, the scripting core, input/UI/modal
+/// session-lifetime field (options completion, audio, the scripting core, input/UI/modal
 /// group, and the net endpoint). It is taken and consumed exactly once by
 /// `App::install_pending_session`; suspend/resume keeps it unconsumed until the
 /// install commits, so a resume that re-enters the splash loop never runs deferred
@@ -107,12 +108,20 @@ pub(crate) struct PendingSessionInit {
     /// `Session::build` — never before the first visible frame.
     /// See: context/lib/networking.md.
     raw_args: Vec<String>,
+    /// Per-user directories resolved once at stage 1; every settings and
+    /// `state.json` read and write takes them from here, never re-resolving.
+    app_dirs: AppDirs,
+    boot_options: crate::options::boot::BootOptions,
 }
 
 impl PendingSessionInit {
+    pub(crate) fn player_options(&self) -> &crate::options::PlayerOptions {
+        self.boot_options.options()
+    }
+
     /// Construct the whole `Session` after the first logo frame and install it
     /// into `app.session`. `Session::build` runs synchronously, whole-or-nothing:
-    /// it builds options I/O, the fault-tolerant audio subsystem, the scripting
+    /// it builds options completion, the fault-tolerant audio subsystem, the scripting
     /// core + input/UI/modal group, and the net endpoint (degrading to
     /// single-player on parse/transport failure). It records the
     /// `audio_init_complete`, `script_runtime_ctor`, and `net_endpoint_complete`
@@ -131,9 +140,14 @@ impl PendingSessionInit {
         // degrade in place inside `build`. `boot_timings` is threaded in so the
         // deferred-session marks record behind first pixels.
         // See: context/lib/boot_sequence.md §1.
-        let session =
-            crate::session::Session::build(&self.raw_args, &app.core_root, &mut app.boot_timings)
-                .context("failed to build session")?;
+        let session = crate::session::Session::build(
+            &self.raw_args,
+            &app.core_root,
+            &self.app_dirs,
+            self.boot_options,
+            &mut app.boot_timings,
+        )
+        .context("failed to build session")?;
         app.session = Some(session);
         app.boot_timings.record("session_init_complete");
         Ok(())
@@ -145,8 +159,9 @@ impl PendingSessionInit {
 /// event loop, returning the constructed `App` in the `Booting` state.
 ///
 /// Ordering: minimal pre-event-loop work (logging, boot-timing setup, raw arg
-/// collection, content-root / boot-map selection) runs first, THEN
-/// `EventLoop::new`. The entire `Session` (options I/O, audio, the scripting
+/// collection, content-root / boot-map selection, app-name / per-user directory
+/// resolution — which can fail boot) runs first, THEN
+/// `EventLoop::new`. The entire `Session` (options completion, audio, the scripting
 /// bootstrap, the input/UI/modal group, and the net endpoint) is constructed
 /// post-first-pixel by `Session::build` through `PendingSessionInit`. Mod init,
 /// the hot-reload watcher, debug-UI lazy-init, and the level-load worker spawn
@@ -160,8 +175,8 @@ pub(crate) fn build_session() -> Result<BootSession> {
     let mut boot_timings = StartupTimings::new();
 
     // Minimal pre-event-loop work: raw args plus just enough parsing to identify
-    // the content root and optional boot map. Net role is intentionally NOT
-    // parsed here — it defers into `PendingSessionInit`.
+    // the content root, optional boot map, and per-user directories. Net role is
+    // intentionally NOT parsed here — it defers into `PendingSessionInit`.
     let args: Vec<String> = std::env::args().collect();
     // Parse once before either windowed or headless execution branches. The
     // resolved policy itself is chosen at each install so windowed restarts get
@@ -214,6 +229,9 @@ pub(crate) fn build_session() -> Result<BootSession> {
     let map_arg = resolve_map_path(&args);
     let content_root = resolve_content_root(&args, map_arg.as_deref())?;
     let map_path = boot_map_path(&args, map_arg.as_deref(), &content_root)?;
+    let app_dirs = resolve_app_dirs(&args)?;
+    let boot_options = crate::options::boot::BootOptions::load(app_dirs.settings_path());
+    let windowed = args.iter().any(|arg| arg == "--windowed");
     // Logged because a mismatch between this and the directory `prl-build` wrote
     // into surfaces only as per-texture placeholder warnings; the two paths in
     // the log are what makes that diagnosable.
@@ -224,6 +242,7 @@ pub(crate) fn build_session() -> Result<BootSession> {
     let core_root = postretro_ui::CoreRoot::from_flag(core_root_arg(&args));
     log::info!("[Engine] Content root: {}", content_root.display());
     log::info!("[Engine] Core root: {}", core_root.path().display());
+    log::info!("[Engine] Player data: {}", app_dirs.describe());
     if let Some(baked_root) = baked_root.as_ref() {
         log::info!(
             "[Engine] Baked root: {} (materials at {})",
@@ -233,7 +252,7 @@ pub(crate) fn build_session() -> Result<BootSession> {
     }
     boot_timings.record("args_parsed");
 
-    // Event loop is created AHEAD of the whole session build (options I/O, audio,
+    // Event loop is created AHEAD of the whole session build (options completion, audio,
     // the scripting bootstrap, and net-endpoint setup) so the window can come up
     // as early as practical. The entire `Session` is built post-first-pixel by
     // `PendingSessionInit::install`. See: context/lib/boot_sequence.md §1.
@@ -266,6 +285,7 @@ pub(crate) fn build_session() -> Result<BootSession> {
     let app = App {
         renderer: None,
         window_state: None,
+        window_modes: crate::app::window_modes::WindowModes::new(windowed),
         level: None,
         nav_graph: None,
         map_path,
@@ -282,9 +302,11 @@ pub(crate) fn build_session() -> Result<BootSession> {
         observe_live,
         remote_player_presentation: crate::netcode::ClientPresentationInputs::default(),
         crouch_toggle_active: false,
+        sprint_toggle_active: false,
         ai_runtime: postretro_ai::AiRuntime::new(),
         cursor_pos: None,
-        nav_stick_tracker: input::StickNavTracker::new(),
+        ui_wheel: None,
+        nav_stick_tracker: input::StickNavTrackers::new(),
         frame_timing: FrameTiming::new(initial_state),
         view_feel_state: view_feel::ViewFeelState::default(),
         view_feel_followed_pawn: None,
@@ -316,6 +338,8 @@ pub(crate) fn build_session() -> Result<BootSession> {
         trigger_bindings: crate::trigger_bindings::TriggerBindingTable::default(),
         trigger_pool_report: crate::trigger_pools::TriggerPoolInstallReport::default(),
         client_fire_resolutions: Vec::new(),
+        client_weapon: Default::default(),
+        observer_weapon_cues: Vec::new(),
         client_predicted_shots: crate::weapon::ClientPredictedShots::new(),
         client_reload_edges: Default::default(),
         client_overheat_edge: Default::default(),
@@ -341,7 +365,11 @@ pub(crate) fn build_session() -> Result<BootSession> {
         level_worker: None,
         level_requests: VecDeque::new(),
         boot_load: false,
-        pending_session: Some(PendingSessionInit { raw_args: args }),
+        pending_session: Some(PendingSessionInit {
+            raw_args: args,
+            app_dirs,
+            boot_options,
+        }),
         #[cfg(feature = "dev-tools")]
         debug_chase_agent: None,
     };
@@ -349,15 +377,16 @@ pub(crate) fn build_session() -> Result<BootSession> {
     Ok(BootSession { event_loop, app })
 }
 
-/// Every flag naming a directory — `--mod` names one by its name under
-/// `content/` — in one list, read by the scanners that extract a value and by
-/// the positional-map scan that must step over one.
+/// Every flag naming a directory, in one list, read by the scanners that extract
+/// a value and by the positional-map scan that must step over one. `--mod` names
+/// a directory under `content/` and `--app-name` the per-user config and data
+/// directories, each by name.
 ///
 /// Keeping it in one place is what holds the invariant. A flag added to only
 /// half of them leaves its *value* exposed to `resolve_map_path`, which then
 /// loads a directory as the level — the defect `--baked-root` hit and
 /// `--core-root` would hit next.
-const PATH_FLAGS: [&str; 3] = ["--mod", "--baked-root", "--core-root"];
+const PATH_FLAGS: [&str; 4] = ["--mod", "--baked-root", "--core-root", APP_NAME_FLAG];
 
 /// Recover the positional map-path argument (the raw-path dev bypass), skipping
 /// the values consumed by [`PATH_FLAGS`], `--pool-seed`, `--observe-live`, and
@@ -402,13 +431,17 @@ pub(crate) fn resolve_map_path(args: &[String]) -> Option<String> {
     None
 }
 
-/// Read the value of one directory-naming flag, in `--flag <dir>` or
-/// `--flag=<dir>` form.
+/// Read the value of one [`PATH_FLAGS`] flag, in `--flag <value>` or
+/// `--flag=<value>` form. The value is a directory path, or a bare name for
+/// `--mod` and `--app-name`.
 ///
-/// Shared by every flag in [`PATH_FLAGS`] so they cannot drift apart. Absent, or
-/// present with no value, yields `None` — a bare flag never silently resolves to
-/// the current directory, and an empty value is treated as absence. The scan
-/// steps over the other path flags' values so one flag never swallows another's.
+/// Shared by every flag in [`PATH_FLAGS`] so they cannot drift apart. The first
+/// occurrence of the flag decides: absent, or present with no value — bare,
+/// `--flag=`, or followed by another flag — yields `None`, and a later
+/// occurrence is never consulted. A bare flag never silently resolves to the
+/// current directory; callers that must refuse a nameless flag tell it from an
+/// absent one with `names_flag`. The scan steps over the other path flags'
+/// values so one flag never swallows another's.
 fn path_flag_value(args: &[String], flag: &str) -> Option<PathBuf> {
     debug_assert!(
         PATH_FLAGS.contains(&flag),
@@ -423,10 +456,9 @@ fn path_flag_value(args: &[String], flag: &str) -> Option<PathBuf> {
                 .map(PathBuf::from);
         }
         if let Some(value) = arg.strip_prefix(equals_form.as_str()) {
-            if !value.is_empty() {
-                return Some(PathBuf::from(value));
-            }
-            continue;
+            // An empty `--flag=` is the first occurrence like any other, so it
+            // yields `None` here rather than letting a later occurrence win.
+            return (!value.is_empty()).then(|| PathBuf::from(value));
         }
         if PATH_FLAGS.contains(&arg.as_str())
             && iter.peek().is_some_and(|value| !value.starts_with("--"))
@@ -574,6 +606,28 @@ fn baked_root_arg(args: &[String]) -> Option<PathBuf> {
 /// against the working directory exactly as before the flag existed.
 fn core_root_arg(args: &[String]) -> Option<PathBuf> {
     path_flag_value(args, "--core-root")
+}
+
+/// Resolve the per-user config and data directories from `--app-name`, once.
+///
+/// Read like `--mod`: first occurrence wins, and a flag with no value — bare,
+/// `--app-name=`, or followed by another flag — is refused rather than treated
+/// as absent. A launcher whose package-name variable came out empty would
+/// otherwise write its players' settings and saves under `postretro` with no
+/// error.
+fn resolve_app_dirs(args: &[String]) -> Result<AppDirs> {
+    match path_flag_value(args, APP_NAME_FLAG) {
+        Some(name) => {
+            let name = name.to_string_lossy();
+            validate_app_name(&name).map_err(anyhow::Error::msg)?;
+            Ok(AppDirs::resolve(Some(&name)))
+        }
+        None if names_flag(args, APP_NAME_FLAG) => anyhow::bail!(
+            "{APP_NAME_FLAG} needs a name — the game's package name, which names its \
+             settings and save directory"
+        ),
+        None => Ok(AppDirs::resolve(None)),
+    }
 }
 
 /// Select the content root: `content/<name>` for `--mod <name>`, otherwise the
@@ -1241,6 +1295,7 @@ mod tests {
         for args in [
             &["--mod"][..],
             &["--mod="][..],
+            &["--mod=", "--mod", "dev"][..],
             &["--mod", "--baked-root", "/project/baked"][..],
             &["--mod", "", "maps/dev.prl"][..],
         ] {
@@ -1580,5 +1635,98 @@ mod tests {
 
         let zero = vec!["postretro".to_string(), "--observe-live=0".to_string()];
         assert_eq!(observe_live_port_arg(&zero), None);
+    }
+
+    fn argv(args: &[&str]) -> Vec<String> {
+        std::iter::once("postretro")
+            .chain(args.iter().copied())
+            .map(String::from)
+            .collect()
+    }
+
+    /// Resolution against the same name, so a test can compare without
+    /// depending on the host's directory layout.
+    fn app_dirs_for(args: &[&str]) -> Result<AppDirs> {
+        resolve_app_dirs(&argv(args))
+    }
+
+    #[test]
+    fn app_name_flag_resolves_the_named_directories_in_both_forms() {
+        let named = AppDirs::resolve(Some("my-game"));
+        assert_eq!(app_dirs_for(&["--app-name", "my-game"]).unwrap(), named);
+        assert_eq!(app_dirs_for(&["--app-name=my-game"]).unwrap(), named);
+        assert_eq!(app_dirs_for(&[]).unwrap(), AppDirs::resolve(None));
+    }
+
+    /// P3: the first occurrence wins, as it does for `--mod`, so a caller's
+    /// own `--app-name` ahead of a launcher's is the one honoured.
+    #[test]
+    fn app_name_given_twice_resolves_under_the_first() {
+        assert_eq!(
+            app_dirs_for(&["--app-name", "first", "--app-name", "second"]).unwrap(),
+            AppDirs::resolve(Some("first")),
+        );
+    }
+
+    /// P5: a nameless `--app-name` is a boot error, never the `postretro`
+    /// fallback — an unset `--app-name "$PACKAGE"` would otherwise write a
+    /// game's player data under the bare-launch directory.
+    #[test]
+    fn an_app_name_flag_without_a_name_is_refused() {
+        for args in [
+            &["--app-name"][..],
+            &["--app-name="][..],
+            &["--app-name=", "--app-name", "foo"][..],
+            &["--app-name", "--mod", "dev"][..],
+            &["--app-name", "", "maps/x.prl"][..],
+        ] {
+            let error = app_dirs_for(args)
+                .expect_err("a nameless --app-name is refused")
+                .to_string();
+            assert!(
+                error.contains("--app-name needs a name"),
+                "{args:?}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_invalid_app_name_is_refused_naming_the_flag() {
+        for name in ["", " ", ".", "..", "-x", "a/b", "a\\b", "C:"] {
+            for args in [
+                vec!["--app-name".to_string(), name.to_string()],
+                vec![format!("--app-name={name}")],
+            ] {
+                let args: Vec<&str> = args.iter().map(String::as_str).collect();
+                let error = app_dirs_for(&args)
+                    .expect_err("an invalid app name is refused")
+                    .to_string();
+                assert!(error.contains("--app-name"), "{args:?}: {error}");
+            }
+        }
+        for name in ["my.game", "my-game", "my_game"] {
+            assert_eq!(
+                app_dirs_for(&["--app-name", name]).unwrap(),
+                AppDirs::resolve(Some(name)),
+            );
+        }
+    }
+
+    /// P4: the launcher's shape — `--mod` and `--app-name`, no map — boots the
+    /// frontend, and a map after `--app-name` is still the map.
+    #[test]
+    fn app_name_value_is_not_mistaken_for_the_map_path() {
+        assert_eq!(
+            boot_map(&["--mod", "dev", "--app-name", "my-game"]).unwrap(),
+            None
+        );
+        assert_eq!(
+            resolve_map_path(&argv(&["--app-name", "my-game", "maps/x.prl"])).as_deref(),
+            Some("maps/x.prl"),
+        );
+        assert_eq!(
+            boot_map(&["--app-name", "my-game", "maps/x.prl"]).unwrap(),
+            Some(PathBuf::from("maps/x.prl")),
+        );
     }
 }

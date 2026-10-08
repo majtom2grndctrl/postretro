@@ -1,0 +1,37 @@
+# App-name verdicts shared by the engine's `--app-name` check
+# (`startup/app_dirs.rs`) and `postretro-tool`'s package-name check
+# (`crates/tool/src/manifest.rs`). Both suites assert every case, so the tool can
+# never ship a launcher whose `--app-name <package>` the engine refuses at boot.
+# See: context/lib/build_pipeline.md §Distribution packaging (§Player-data directory)
+
+accepted = [
+    "postretro",
+    "postretro-dev",
+    "postretro-dev-sdk",
+    "my.game",
+    "my-game",
+    "my_game",
+    "My Game",
+    "runner's-mod",
+    "50%off",
+    "g",
+]
+
+rejected = [
+    "",
+    " ",
+    "\t ",
+    ".",
+    "..",
+    " . ",
+    ". .",
+    ".. ",
+    " ..",
+    "-x",
+    "--dev",
+    "a/b",
+    "/abs",
+    "a\\b",
+    "C:",
+    "game:stream",
+]

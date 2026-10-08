@@ -404,7 +404,7 @@ pub struct MapLight {
     /// table.
     pub animated_slot: Option<u32>,
     /// From LightTags section (ID 26). Space-delimited on wire; split here.
-    /// `world.query({ tag: "t" })` matches when any tag equals `"t"`.
+    /// A `{ tag: "t" }` script filter matches when any tag equals `"t"`.
     pub tags: Vec<String>,
     /// Runtime cell id for portal-graph reachability and chunk light lists.
     /// `u32::MAX` (`ALPHA_LIGHT_LEAF_UNASSIGNED` on the legacy wire) means the
@@ -718,7 +718,7 @@ pub struct LevelWorld {
     /// Downscale factor (1=full-res, 8=coarsest). Defaults to 4 when absent.
     #[cfg(feature = "load-prl")]
     pub fog_pixel_scale: u32,
-    /// Seeds `App::current_gravity` so `world.getGravity()` sees the authored value before scripts run.
+    /// Seeds `App::current_gravity` so `getGravity()` sees the authored value before scripts run.
     #[cfg(feature = "load-prl")]
     pub initial_gravity: f32,
     /// `masks[C]` has bit `i` set when fog volume `i` overlaps cell `C`.
@@ -3658,7 +3658,8 @@ mod tests {
     #[test]
     fn load_prl_rejects_bvh_leaf_index_range_past_geometry_indices() {
         let mut bvh = sample_bvh_section();
-        bvh.leaves[0].index_offset = 5;
+        // Regression: a mid-triangle offset rejected on alignment before bounds.
+        bvh.leaves[0].index_offset = 6;
         bvh.leaves[0].index_count = 3;
         let sections = vec![
             prl_format::SectionBlob {
@@ -3677,7 +3678,83 @@ mod tests {
         let tmp = write_prl_fixture(sections, "postretro_test_bvh_leaf_index_oob.prl");
         let err = load_prl(tmp.to_str().unwrap()).unwrap_err();
         assert!(
-            matches!(err, PrlLoadError::SectionValidation { section: "Bvh", .. }),
+            matches!(&err, PrlLoadError::SectionValidation { section: "Bvh", message }
+                if message == "BVH leaf 0 index range [6..9) exceeds Geometry index count 6"),
+            "got {err:?}"
+        );
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn load_prl_accepts_bvh_leaf_index_range_at_geometry_boundary() {
+        let bvh = sample_bvh_section();
+        let sections = vec![
+            geometry_blob(sample_geometry()),
+            bvh_blob(bvh),
+            default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
+        ];
+        let tmp = write_prl_fixture(sections, "postretro_test_bvh_leaf_index_boundary.prl");
+        let world = load_prl(tmp.to_str().unwrap()).unwrap();
+        let last = world.bvh.leaves.last().unwrap();
+        assert_eq!(last.index_offset, 3);
+        assert_eq!(last.index_count, 3);
+        assert_eq!(world.indices.len(), 6);
+        assert_eq!(
+            (last.index_offset + last.index_count) as usize,
+            world.indices.len()
+        );
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    fn sample_bvh_with_empty_leaf(index_offset: u32) -> BvhSection {
+        let mut bvh = sample_bvh_section();
+        // Keep both drawable cells covered; the empty leaf needs no CSR span.
+        let mut empty_leaf = bvh.leaves[1];
+        empty_leaf.index_offset = index_offset;
+        empty_leaf.index_count = 0;
+        bvh.leaves.push(empty_leaf);
+        let mut branch = bvh.nodes[0];
+        branch.skip_index = 5;
+        bvh.nodes.insert(2, branch);
+        bvh.nodes[0].skip_index = 5;
+        bvh.nodes[3].skip_index = 4;
+        let mut empty_node = bvh.nodes[3];
+        empty_node.skip_index = 5;
+        empty_node.left_child_or_leaf_index = 2;
+        bvh.nodes.push(empty_node);
+        bvh
+    }
+
+    #[test]
+    fn load_prl_accepts_empty_bvh_leaf_at_geometry_boundary() {
+        let sections = vec![
+            geometry_blob(sample_geometry()),
+            bvh_blob(sample_bvh_with_empty_leaf(6)),
+            default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
+        ];
+        let tmp = write_prl_fixture(sections, "postretro_test_bvh_empty_leaf_boundary.prl");
+        let world = load_prl(tmp.to_str().unwrap()).unwrap();
+        assert_eq!(world.bvh.leaves[2].index_offset, 6);
+        assert_eq!(world.bvh.leaves[2].index_count, 0);
+        assert_eq!(world.indices.len(), 6);
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn load_prl_rejects_empty_bvh_leaf_past_geometry_boundary() {
+        let sections = vec![
+            geometry_blob(sample_geometry()),
+            bvh_blob(sample_bvh_with_empty_leaf(9)),
+            default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
+        ];
+        let tmp = write_prl_fixture(sections, "postretro_test_bvh_empty_leaf_past_boundary.prl");
+        let err = load_prl(tmp.to_str().unwrap()).unwrap_err();
+        assert!(
+            matches!(&err, PrlLoadError::SectionValidation { section: "Bvh", message }
+                if message == "BVH leaf 2 index range [9..9) exceeds Geometry index count 6"),
             "got {err:?}"
         );
         std::fs::remove_file(&tmp).ok();
@@ -3748,6 +3825,7 @@ mod tests {
     #[test]
     fn load_prl_rejects_bvh_leaf_index_range_overflow() {
         let mut bvh = sample_bvh_section();
+        // u32::MAX is divisible by 3, so alignment cannot mask overflow.
         bvh.leaves[0].index_offset = u32::MAX;
         bvh.leaves[0].index_count = 3;
         let sections = vec![
@@ -3767,7 +3845,8 @@ mod tests {
         let tmp = write_prl_fixture(sections, "postretro_test_bvh_leaf_index_overflow.prl");
         let err = load_prl(tmp.to_str().unwrap()).unwrap_err();
         assert!(
-            matches!(err, PrlLoadError::SectionValidation { section: "Bvh", .. }),
+            matches!(&err, PrlLoadError::SectionValidation { section: "Bvh", message }
+                if message == "BVH leaf 0 index_offset 4294967295 + index_count 3 overflows u32"),
             "got {err:?}"
         );
         std::fs::remove_file(&tmp).ok();

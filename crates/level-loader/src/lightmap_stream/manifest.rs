@@ -69,12 +69,12 @@ impl LightmapStreamManifest {
                 ));
             }
         };
-        if let Some(shadowmask) = &shadowmask {
-            if shadowmask.records.len() != lightmap.records.len() {
-                return Err(lightmap_stream_error(
-                    "shadowmask block count differs from the lightmap's",
-                ));
-            }
+        if let Some(shadowmask) = &shadowmask
+            && shadowmask.records.len() != lightmap.records.len()
+        {
+            return Err(lightmap_stream_error(
+                "shadowmask block count differs from the lightmap's",
+            ));
         }
         Ok(Self {
             file,

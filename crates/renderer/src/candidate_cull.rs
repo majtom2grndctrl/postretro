@@ -1,14 +1,6 @@
-// GPU candidate cull: gather only visible cells' owned BVH leaves (from the
-// baked `CellDrawIndex` CSR) and dispatch one invocation per candidate leaf,
-// instead of the legacy whole-BVH tree walk. Writes the SAME global per-leaf
-// indirect/status slots as `ComputeCullPipeline`, so the draw path
-// (`bucket_ranges` / `draw_indirect_buckets`) is byte-for-byte unchanged.
+// GPU candidate cull gathers visible cells into the shared global leaf slots.
+// Both camera passes draw one visible range list independent of cull routing.
 // See: context/lib/rendering_pipeline.md §7.1
-//
-// This module is split per development_guide.md §4.1:
-//   * `gather_candidate_leaves` — pure, GPU-free data-logic (dedupe visible
-//     cell ids, CSR expansion). Unit-tested without a GPU.
-//   * `CandidateCullPipeline` — the wgpu dispatch layer.
 
 use std::collections::HashSet;
 #[cfg(feature = "dev-tools")]
@@ -224,7 +216,12 @@ impl SubmittedCounterReadback {
 
         for slot in 0..Self::RING_DEPTH {
             if self.map_ready[slot].swap(false, Ordering::AcqRel) {
-                let view = self.slots[slot].slice(0..4).get_mapped_range();
+                let view = self.slots[slot]
+                    .slice(0..4)
+                    .get_mapped_range()
+                    .expect(
+                    "map_ready follows a successful map of this range; fails only after device loss (no recovery contract)",
+                );
                 let value = u32::from_le_bytes([view[0], view[1], view[2], view[3]]);
                 drop(view);
                 self.slots[slot].unmap();
@@ -433,7 +430,7 @@ impl CandidateCullPipeline {
     /// `indirect_buffer`, `cull_status_buffer`, and `leaf_buffer` are the
     /// camera cull's existing global buffers, threaded in so the candidate path
     /// writes the same per-leaf slots. Clearing only `total_leaves * stride`
-    /// bytes leaves any future shadow/entity/packed non-camera regions of a
+    /// bytes leaves any future entity/packed non-camera regions of a
     /// shared buffer untouched.
     ///
     /// The candidate leaves come from this pipeline's own [`Self::gather`]
@@ -443,7 +440,7 @@ impl CandidateCullPipeline {
     pub fn dispatch(
         &mut self,
         device: &wgpu::Device,
-        queue: &wgpu::Queue,
+        queue: &crate::render::uploads::UploadQueue,
         encoder: &mut wgpu::CommandEncoder,
         leaf_buffer: &wgpu::Buffer,
         indirect_buffer: &wgpu::Buffer,

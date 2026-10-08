@@ -78,8 +78,9 @@ Organized as five milestones along dependency seams. Shipped: the impact-policy 
 - [x] **heat + cell resources** — the other two resource-union variants plus the per-tick resource update (heat dissipates, cells regen — independent of fire).
 - [ ] **dual-wield** — generalize the single active reference to a primary/off-hand pair; resolves the activation-trigger fork (`weapon-model.md` §9).
 - [ ] **augments / attachments** — the unified slotted-modifier system (internal augments and visible attachments are one mechanism); composes stat deltas + behavior hooks through the `effective()` seam. Visible attachments ride the Epic 21 socket system.
-- [ ] **charge-on-activation** — charge level (0..1) scales listed stats at release; orthogonal to the resource, so it composes with any resource kind.
-- [ ] **secondary activation** — alt-fire, filling the `secondary` block seam; includes a primary-use that spawns a persistent tracked entity for a secondary to resolve (the detonator pattern).
+- [x] **charge-on-activation** — charge level (0..1) scales listed stats at release; orthogonal to the resource, so it composes with any resource kind.
+- [x] **secondary activation** — an optional alternate action beside primary fire. Each activation declares its behavior and events; charge composes with either.
+- [ ] **tracked deployables** — primary activation places persistent entities owned by the weapon instance; secondary activation acts on them, such as detonating placed charges. Defines ownership, limits, and cleanup.
 
 ### Resolution Modes
 
@@ -176,8 +177,8 @@ Epic hub + research: `context/plans/ready/E23--accessibility/`. Five units, each
 - [x] **U1 — Preferences and comfort floor** — accessibility preference substrate with OS seeding and tolerant per-field storage; flash limiter on `screen.flash` and `screen.vignette` (on by default); reduce motion; per-bus volume and mono audio. No dependency; concurrent with U3. Brief: `context/plans/done/E23--preferences-comfort-floor/` (landed with gaps; frame limiter withdrawn).
 - [ ] **U1 follow-up — Photosensitivity source floor** — the flash rules at every other primitive content can strobe with (light animation, UI, emissives, flipbooks, camera cuts, load loops), plus reduced flashing for engine effects. Seed: `context/plans/drafts/E23--photosensitivity-source-floor/`.
 - [ ] **U2 — Visual accessibility** — theme variants (engine high-contrast fallback), tokenized engine visuals, authored focus visuals, contrast diagnostic, text scale. After U1 (its fields sit on U1's substrate).
-- [ ] **U3 — Gamepad and input** — focus-group fix, console menu conventions (restore-on-return, hold-repeat, tabs, scroll, glyphs, confirmation dialogs), full remapping, gamepad look options, hold/toggle sprint. No dependency; concurrent with U1.
-- [ ] **U4 — Screen reader** — engine accessibility snapshot projected through `accesskit_winit`; window created hidden and shown after the adapter exists. After U3's focus-group fix (the snapshot's focusable set).
+- [x] **U3 — Gamepad and input** — focus-group fix, console menu conventions (restore-on-return, hold-repeat, tabs, scroll, glyphs, confirmation dialogs), full remapping, gamepad look options, hold/toggle sprint. No dependency; concurrent with U1.
+- [ ] **U4 — Screen reader** — engine accessibility snapshot projected through `accesskit_winit`; window created hidden and shown after the adapter exists. After U3's focus-group fix (the snapshot's focusable set). Repeat the Windows saved-window-mode boot matrix after integrating hidden-window visibility order.
 - [ ] **U5 — Hearing and directional cues** — captions per sound asset, subtitle primitive with speaker, directional damage indicator, sound-direction cues. Damage direction after U1; captions and cues after U2.
 
 **Testable outcome:** a player on first boot gets OS contrast, reduced-motion, and text-scale preferences without touching a menu; a mod's strobe is tamed unless the player turns the limiter off; NVDA, VoiceOver, and Orca read and operate every dev menu; a gamepad-only player completes every dev menu and remaps any action; captions show for authored sounds with a direction arrow; a hit from the left shows a left-side indicator.

@@ -1,0 +1,54 @@
+{
+  "label": "debug-override-off",
+  "pid": 32438,
+  "build": "debug",
+  "map": "campaign-test.prl",
+  "override": "off",
+  "elapsed": 7.43,
+  "exit": -15,
+  "timing_windows": 1,
+  "foreground_checks": [
+    {
+      "elapsed": 0.21,
+      "windows": 0,
+      "state": "front_pid=16506 target_pid=32438 foreground=false",
+      "error": ""
+    },
+    {
+      "elapsed": 1.41,
+      "windows": 0,
+      "state": "activated=true\nfront_pid=32438 target_pid=32438 foreground=true\nwindow_id=32384 bounds={\n    Height = 752;\n    Width = 1280;\n    X = 256;\n    Y = 115;\n}",
+      "error": ""
+    },
+    {
+      "elapsed": 2.56,
+      "windows": 0,
+      "state": "front_pid=32438 target_pid=32438 foreground=true\nwindow_id=32384 bounds={\n    Height = 752;\n    Width = 1280;\n    X = 256;\n    Y = 115;\n}",
+      "error": ""
+    },
+    {
+      "elapsed": 3.71,
+      "windows": 0,
+      "state": "front_pid=32438 target_pid=32438 foreground=true\nwindow_id=32384 bounds={\n    Height = 752;\n    Width = 1280;\n    X = 256;\n    Y = 115;\n}",
+      "error": ""
+    },
+    {
+      "elapsed": 4.87,
+      "windows": 0,
+      "state": "front_pid=32438 target_pid=32438 foreground=true\nwindow_id=32384 bounds={\n    Height = 752;\n    Width = 1280;\n    X = 256;\n    Y = 115;\n}",
+      "error": ""
+    },
+    {
+      "elapsed": 6.02,
+      "windows": 0,
+      "state": "front_pid=32438 target_pid=32438 foreground=true\nwindow_id=32384 bounds={\n    Height = 752;\n    Width = 1280;\n    X = 256;\n    Y = 115;\n}",
+      "error": ""
+    },
+    {
+      "elapsed": 7.17,
+      "windows": 1,
+      "state": "front_pid=32438 target_pid=32438 foreground=true\nwindow_id=32384 bounds={\n    Height = 752;\n    Width = 1280;\n    X = 256;\n    Y = 115;\n}",
+      "error": ""
+    }
+  ]
+}

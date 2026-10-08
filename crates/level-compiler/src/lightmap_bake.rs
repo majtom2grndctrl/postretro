@@ -1,13 +1,14 @@
 // Directional lightmap baker.
 // See: context/lib/build_pipeline.md §Compiler pipeline
 
+use std::cell::Cell;
 use std::sync::Mutex;
 
 use bvh::bvh::Bvh;
 use bvh::ray::Ray;
 use glam::Vec3;
 use nalgebra::{Point3, Vector3};
-use postretro_level_format::lightmap::LightmapSection;
+use postretro_level_format::lightmap::{LIGHTMAP_POOL_LAYER_EDGE, LightmapSection};
 use rayon::prelude::*;
 
 use crate::bake_control::BakeControl;
@@ -19,10 +20,16 @@ mod block_layout;
 mod cell_blocks;
 mod charts;
 mod encode;
+mod face_cut;
 mod reference;
 
+#[cfg(test)]
+pub(crate) use atlas_layout::prepare_atlas_within;
 use atlas_layout::scatter_chart_into_atlas;
-pub use atlas_layout::{PreparedAtlas, prepare_atlas, prepare_atlas_ordered};
+pub use atlas_layout::{
+    CutCharts, PreparedAtlas, pack_cut_charts, plan_cut_charts, prepare_atlas,
+    prepare_atlas_ordered,
+};
 #[cfg(test)]
 pub(crate) use atlas_layout::{chart_texel_position, quantize_lightmap_uv};
 pub(crate) use atlas_pack::MaxRects;
@@ -31,8 +38,10 @@ pub(crate) use atlas_pack::{pack_layers, pack_layers_with_layer_limit};
 
 pub use block_layout::{BlockLayout, BlockOrdering, CellBlock};
 #[cfg(test)]
-pub(crate) use cell_blocks::{CANDIDATE_WIDTHS, PackedBlock, pack_cell_block};
-pub use charts::Chart;
+pub(crate) use cell_blocks::{
+    CANDIDATE_WIDTHS, PackedBlock, pack_cell_block, pack_cell_sub_blocks,
+};
+pub use charts::{Chart, ChartWindow};
 pub(crate) use encode::{BlockSectionBuilder, copy_unit_rect, irradiance_format};
 #[cfg(test)]
 pub(crate) use reference::{bake_monolithic_atlas, bake_monolithic_atlas_controlled};
@@ -42,6 +51,7 @@ use crate::chart_raster::{CHART_PADDING_TEXELS, ChartPlacement};
 use crate::geometry::GeometryResult;
 use crate::light_namespaces::StaticBakedLights;
 use crate::map_data::{FalloffModel, LightType, MapLight, MapLightmapScaleRegion};
+use crate::ray_traversal::BoundedRay;
 
 /// Default atlas texel density: 4 cm per texel.
 pub const DEFAULT_TEXEL_DENSITY_METERS: f32 = 0.04;
@@ -90,24 +100,11 @@ const SAMPLING_LATTICE_OFFSET: u64 = 0x5048_4542_414b_4552; // "PHBAKER"
 #[derive(Debug, Error)]
 pub enum LightmapBakeError {
     #[error(
-        "lightmap atlas layer overflow: packing the charts needs {layer_count} array layers \
-         but the atlas supports at most {max}; raise `texel_density` or split the map"
+        "lightmap atlas layer overflow: the charts need {layer_count} bake layers but the \
+         compiler allows at most {max}; raise `--lightmap-density` (or `_lightmap_density`), \
+         lower a region's `_lightmap_scale`, or split the map"
     )]
     LayerOverflow { layer_count: u32, max: u32 },
-    #[error(
-        "lightmap chart too large: face {face_index} needs {width_texels}x{height_texels} texels at \
-         {density_m_per_texel} m/texel (limit {max}); face extent {u_extent_m} x {v_extent_m} m. \
-         Raise `texel_density` or subdivide the face."
-    )]
-    ChartTooLarge {
-        face_index: usize,
-        width_texels: u32,
-        height_texels: u32,
-        max: u32,
-        u_extent_m: f32,
-        v_extent_m: f32,
-        density_m_per_texel: f32,
-    },
     #[error(
         "lightmap chart has an invalid resolved density: face {face_index} resolved to \
          {density_m_per_texel} m/texel; scale regions must yield a finite positive density"
@@ -118,8 +115,8 @@ pub enum LightmapBakeError {
     },
     #[error(
         "lightmap chart dimension overflow: face {face_index} {axis} extent {extent_m} m at \
-         {density_m_per_texel} m/texel requires {texels} texels; raise `texel_density` or reduce \
-         `_lightmap_scale`"
+         {density_m_per_texel} m/texel requires {texels} texels; raise `--lightmap-density` or \
+         reduce `_lightmap_scale`"
     )]
     ChartDimensionOverflow {
         face_index: usize,
@@ -129,9 +126,9 @@ pub enum LightmapBakeError {
         texels: f32,
     },
     #[error(
-        "lightmap leaf too large: BVH leaf {leaf_index}'s {chart_count} charts can't fit a single \
-         {max_dim}x{max_dim} atlas layer, and the leaf-cohesion invariant forbids splitting a leaf \
-         across layers. Raise `texel_density` or split the map."
+        "lightmap leaf too large: leaf {leaf_index}'s {chart_count} chart(s) can't fit a single \
+         {max_dim}x{max_dim} atlas layer (an uncut chart past the layer, or a leaf whose charts \
+         must share one). Raise `--lightmap-density` or split the map."
     )]
     LeafTooLarge {
         leaf_index: u32,
@@ -139,21 +136,9 @@ pub enum LightmapBakeError {
         max_dim: u32,
     },
     #[error(
-        "lightmap cell block too large: cell {cell_id}'s charts pack into a {width}x{height} \
-         block, over the {max}x{max} runtime pool layer (largest chart: face \
-         {largest_chart_face}). Raise `texel_density`, lower `_lightmap_scale` over the cell, or \
-         split the cell's surfaces."
-    )]
-    BlockTooLarge {
-        cell_id: u32,
-        width: u32,
-        height: u32,
-        max: u32,
-        largest_chart_face: usize,
-    },
-    #[error(
         "lightmap block count {count} exceeds the vertex block-id limit {max}: vertices name a \
-         block as a u16 `id + 1`. Merge cells or bake fewer lightmapped cells."
+         block as a u16 `id + 1`, and a cell past one pool layer counts every one of its \
+         blocks. Coarsen the lightmap density, or bake fewer lightmapped cells."
     )]
     BlockCountOverflow { count: usize, max: u32 },
 }
@@ -305,12 +290,27 @@ pub fn bake_lightmap_controlled(
     config: &LightmapConfig,
     control: &BakeControl,
 ) -> Result<LightmapBakeOutput, LightmapBakeError> {
-    let texel_density = config.lightmap_density;
-    let prepared = prepare_atlas(
+    let cut = plan_cut_charts(
         inputs.geometry,
         inputs.lights,
-        texel_density,
+        config.lightmap_density,
         inputs.scale_regions,
+        LIGHTMAP_POOL_LAYER_EDGE,
+    )?;
+    // The caller's BVH indexes the geometry as it stood before this call; a
+    // cut rewrites the index buffer under it. The compiler pipeline cuts in
+    // its atlas stage and rebuilds the BVH there.
+    assert!(
+        cut.face_remap.is_none(),
+        "bake_lightmap cannot cut an oversize face under a prebuilt BVH;          prepare the atlas and rebuild the BVH first"
+    );
+    let prepared = pack_cut_charts(
+        inputs.geometry,
+        inputs.lights,
+        cut.charts,
+        BlockOrdering::by_cell_id(DIRECTION_TEXEL_SCALE),
+        LIGHTMAP_POOL_LAYER_EDGE,
+        &BakeControl::unrestricted(),
     )?;
 
     bake_prepared_lightmap_controlled(inputs, config, prepared, control)
@@ -448,9 +448,9 @@ fn bake_layered_section_controlled(
 
 /// Bake one global atlas layer into a one-layer composited buffer.
 ///
-/// `placement.layer` is intentionally retained while baking so the fixed
-/// atlas-space sample seed stays unchanged. It is rebased only for the scatter
-/// destination because the temporary atlas has exactly one layer.
+/// The placement only routes the scatter, its layer rebased to 0 because the
+/// temporary atlas has exactly one layer; seeds come from the chart, not the
+/// placement.
 #[allow(clippy::too_many_arguments)]
 fn bake_atlas_layer_controlled(
     bvh: &Bvh<f32, 3>,
@@ -493,7 +493,6 @@ fn bake_atlas_layer_controlled(
             geometry,
             static_lights,
             chart,
-            placement,
             area_sample_count,
         );
 
@@ -693,6 +692,27 @@ pub(crate) fn light_texel_contribution_and_visibility(
     area_sample_count: u32,
     trace: impl Fn(Vec3, Vec3) -> bool,
 ) -> (Vec3, Vec3, Option<f32>) {
+    light_texel_contribution_and_visibility_with(
+        light,
+        world_p,
+        surface_normal,
+        seed,
+        || SoftProbes::new(light, area_sample_count),
+        trace,
+    )
+}
+
+/// [`light_texel_contribution_and_visibility`] with the light's probe set
+/// supplied by the caller, so a chart walk computes it once rather than per
+/// texel. `probes` runs only for a soft (non-zero-radius) emitter.
+pub(crate) fn light_texel_contribution_and_visibility_with(
+    light: &MapLight,
+    world_p: Vec3,
+    surface_normal: Vec3,
+    seed: u64,
+    probes: impl FnOnce() -> SoftProbes,
+    trace: impl Fn(Vec3, Vec3) -> bool,
+) -> (Vec3, Vec3, Option<f32>) {
     let (contribution, to_light) = light_contribution_and_direction(light, world_p, surface_normal);
     if !contribution_covers_shadowmask(contribution.length_squared()) {
         return (Vec3::ZERO, Vec3::ZERO, None);
@@ -703,14 +723,7 @@ pub(crate) fn light_texel_contribution_and_visibility(
     // sample of the emitter — a multi-texel penumbra instead of a hard 1-texel
     // step. `sdf` lights are filtered out of the static set upstream (their
     // direct shadow resolves at runtime), so no double-shadow.
-    let v = soft_visibility(
-        world_p,
-        surface_normal,
-        light,
-        seed,
-        area_sample_count,
-        trace,
-    );
+    let v = soft_visibility_with(world_p, surface_normal, light, seed, probes, trace);
     if v <= 0.0 {
         return (Vec3::ZERO, Vec3::ZERO, Some(0.0));
     }
@@ -758,26 +771,6 @@ fn spot_cone(light: &MapLight, light_to_surface: Vec3) -> f32 {
 fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
     let t = ((x - e0) / (e1 - e0).max(1.0e-4)).clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
-}
-
-/// Deterministic per-texel seed for `soft_visibility`'s sample-lattice rotation.
-/// An FNV-1a hash of the atlas-space `(x, y)` — a fixed integer mix, never a
-/// `RandomState` or any hash whose seed varies between processes — so the bake is
-/// byte-identical across separate runs (the build cache reuses stored bytes
-/// verbatim and would break on any run-to-run drift); `soft_visibility` XORs this
-/// with `SAMPLING_LATTICE_OFFSET` internally.
-///
-/// The animated weight-map stage derives its own per-texel seed with a different
-/// mixer (SplitMix64). The two need not match: they bake into INDEPENDENT atlases,
-/// so each only needs to be deterministic within its own stage — not byte-identical
-/// to the other.
-pub(crate) fn texel_seed(x: u32, y: u32) -> u64 {
-    const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
-    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
-    let mut h = FNV_OFFSET;
-    h = (h ^ x as u64).wrapping_mul(FNV_PRIME);
-    h = (h ^ y as u64).wrapping_mul(FNV_PRIME);
-    h
 }
 
 // `soft_visibility` and its sampling helpers are the Task-2 deliverable of
@@ -956,7 +949,8 @@ fn probe_indices(light: &MapLight, full_samples: u32) -> [u32; SOFT_PROBE_SAMPLE
 /// Un-rotated (seed == 0) sample direction for index `i` of `count`, using the
 /// emitter's per-light-type lattice mapping. Used only to pick the probe subset
 /// (`probe_indices`); the live sampling re-derives targets through
-/// `area_sample_target` with the real seed.
+/// `area_sample_target` with the real seed. The Point/Spot arm must stay
+/// light-independent: `SoftProbes::new` memoizes its snap keyed by count alone.
 fn probe_sample_direction(light: &MapLight, i: u32, count: u32) -> Vec3 {
     match light.light_type {
         LightType::Point | LightType::Spot => fibonacci_sphere_sample(i, count, 0),
@@ -982,8 +976,9 @@ fn probe_sample_direction(light: &MapLight, i: u32, count: u32) -> Vec3 {
 ///
 /// Determinism: the sample pattern is a fixed Fibonacci lattice (mirroring
 /// `sh_bake.rs`'s convention) rotated by `seed`. No RNG, no hash-order dependence —
-/// the caller supplies `seed` deterministically (texel `(x, y)` hash, or
-/// probe/ray/light indices) so the same inputs yield byte-identical output.
+/// the caller supplies `seed` deterministically (`chart_raster::chart_texel_seed`
+/// for texels, or probe/ray/light indices) so the same inputs yield
+/// byte-identical output.
 ///
 /// `full_samples` is the area-sample-count bake knob (Task 6): the escalated
 /// (penumbra) sample target. The fixed `SOFT_PROBE_SAMPLES` probe set is a spread
@@ -999,6 +994,72 @@ pub(crate) fn soft_visibility(
     light: &MapLight,
     seed: u64,
     full_samples: u32,
+    trace: impl Fn(Vec3, Vec3) -> bool,
+) -> f32 {
+    soft_visibility_with(
+        surface_point,
+        surface_normal,
+        light,
+        seed,
+        || SoftProbes::new(light, full_samples),
+        trace,
+    )
+}
+
+/// A light's probe subset at one escalated sample count. It depends only on
+/// the light and the count: the lightmap builds it once per chart, and point
+/// and spot lights also reuse one snap per thread (see `new`), so per-call
+/// callers need not hoist it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SoftProbes {
+    full_samples: u32,
+    probes: [u32; SOFT_PROBE_SAMPLES as usize],
+}
+
+impl SoftProbes {
+    /// `full_samples` is clamped to at least the probe count, as in
+    /// [`soft_visibility`].
+    pub(crate) fn new(light: &MapLight, full_samples: u32) -> Self {
+        let full_samples = full_samples.max(SOFT_PROBE_SAMPLES);
+        let probes = match light.light_type {
+            // Point and spot probe sets snap on the unrotated sphere lattice,
+            // which depends on the count alone, so per-call callers (the SH
+            // bounce, delta and scatter bakes) reuse one snap per thread
+            // instead of re-deriving it for every receiver and light.
+            LightType::Point | LightType::Spot => SPHERE_PROBE_INDICES.with(|memo| {
+                if let Some((count, probes)) = memo.get()
+                    && count == full_samples
+                {
+                    return probes;
+                }
+                let probes = probe_indices(light, full_samples);
+                memo.set(Some((full_samples, probes)));
+                probes
+            }),
+            LightType::Directional => probe_indices(light, full_samples),
+        };
+        Self {
+            full_samples,
+            probes,
+        }
+    }
+}
+
+thread_local! {
+    /// The last point/spot probe set this thread snapped, keyed by its count.
+    /// One entry suffices: a stage bakes at one count, and stages run in turn.
+    static SPHERE_PROBE_INDICES: std::cell::Cell<Option<(u32, [u32; SOFT_PROBE_SAMPLES as usize])>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// [`soft_visibility`] with a caller-supplied probe set; `probes` runs only
+/// for a soft (non-zero-radius) emitter.
+pub(crate) fn soft_visibility_with(
+    surface_point: Vec3,
+    surface_normal: Vec3,
+    light: &MapLight,
+    seed: u64,
+    probes: impl FnOnce() -> SoftProbes,
     trace: impl Fn(Vec3, Vec3) -> bool,
 ) -> f32 {
     let origin = surface_point + surface_normal * RAY_EPSILON;
@@ -1021,8 +1082,10 @@ pub(crate) fn soft_visibility(
     // only adds the in-between samples and the penumbra fraction stays
     // `clear / full_samples`. The subset spreads across the whole emitter (both
     // poles and all azimuths), so a penumbra anywhere splits the probes.
-    let full_samples = full_samples.max(SOFT_PROBE_SAMPLES);
-    let probes = probe_indices(light, full_samples);
+    let SoftProbes {
+        full_samples,
+        probes,
+    } = probes();
     let mut clear = 0u32;
     for &i in &probes {
         if trace(
@@ -1156,6 +1219,76 @@ pub(crate) fn segment_clear(
     from: Vec3,
     to: Vec3,
 ) -> bool {
+    segment_clear_remembering(bvh, primitives, geometry, from, to, &Cell::new(None))
+}
+
+/// [`segment_clear`] that tests `last_occluder` first and records the triangle
+/// that blocks this segment. Neighbouring texels lit by one light are mostly
+/// blocked by the same triangle, so a sequential walk over one `(light, chart)`
+/// skips most traversals in shadow. The cached triangle is tested with the same
+/// ray and hit predicate as the traversal, so it changes only which triangle is
+/// found first, not the answer — barring a hit the traversal's box test misses
+/// by rounding, which the cache then reports as blocked. That miss needs the
+/// hit on the box's boundary: at an axis-aligned edge or a vertex of the
+/// triangle, at any ray angle. `last_occluder` holds the triangle's first
+/// index-buffer offset into `geometry`.
+pub(crate) fn segment_clear_remembering(
+    bvh: &Bvh<f32, 3>,
+    primitives: &[BvhPrimitive],
+    geometry: &GeometryResult,
+    from: Vec3,
+    to: Vec3,
+    last_occluder: &Cell<Option<usize>>,
+) -> bool {
+    let delta = to - from;
+    let length = delta.length();
+    if length < RAY_EPSILON {
+        return true;
+    }
+    let dir = delta / length;
+    let origin = from + dir * RAY_EPSILON;
+    let max_distance = length - RAY_EPSILON;
+    let geom = &geometry.geometry;
+    let blocks = |tri: usize| {
+        let p0 = Vec3::from(geom.vertices[geom.indices[tri] as usize].position);
+        let p1 = Vec3::from(geom.vertices[geom.indices[tri + 1] as usize].position);
+        let p2 = Vec3::from(geom.vertices[geom.indices[tri + 2] as usize].position);
+        ray_triangle_hit(origin, dir, p0, p1, p2)
+            .is_some_and(|dist| dist > 0.0 && dist < max_distance)
+    };
+    if last_occluder.get().is_some_and(blocks) {
+        return false;
+    }
+    let ray = Ray::new(
+        Point3::new(origin.x, origin.y, origin.z),
+        Vector3::new(dir.x, dir.y, dir.z),
+    );
+    let query = BoundedRay::new(&ray, max_distance);
+    for prim in bvh.traverse_iterator(&query, primitives) {
+        let start = prim.index_offset as usize;
+        let end = start + prim.index_count as usize;
+        let mut tri = start;
+        while tri + 3 <= end {
+            if blocks(tri) {
+                last_occluder.set(Some(tri));
+                return false;
+            }
+            tri += 3;
+        }
+    }
+    true
+}
+
+/// The unbounded reference scan: the occlusion answer [`segment_clear`] must
+/// match.
+#[cfg(test)]
+pub(crate) fn segment_clear_full_scan(
+    bvh: &Bvh<f32, 3>,
+    primitives: &[BvhPrimitive],
+    geometry: &GeometryResult,
+    from: Vec3,
+    to: Vec3,
+) -> bool {
     let delta = to - from;
     let length = delta.length();
     if length < RAY_EPSILON {
@@ -1181,10 +1314,11 @@ pub(crate) fn segment_clear(
             let p0 = Vec3::from(geom.vertices[i0].position);
             let p1 = Vec3::from(geom.vertices[i1].position);
             let p2 = Vec3::from(geom.vertices[i2].position);
-            if let Some(dist) = ray_triangle_hit(origin, dir, p0, p1, p2) {
-                if dist > 0.0 && dist < max_distance {
-                    return false;
-                }
+            if let Some(dist) = ray_triangle_hit(origin, dir, p0, p1, p2)
+                && dist > 0.0
+                && dist < max_distance
+            {
+                return false;
             }
         }
     }
@@ -1278,5 +1412,7 @@ fn dilate_edges(
     }
 }
 
+#[cfg(test)]
+mod reseed_baseline_tests;
 #[cfg(test)]
 mod tests;

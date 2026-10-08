@@ -135,8 +135,8 @@ pub(super) fn validate_projected_sources(
     base: &ShStreamBaseMetadata,
     sources: &ShStreamSourceMetadata,
 ) -> Result<(), PrlLoadError> {
-    if let Some(direct) = &sources.direct {
-        if direct.grid_origin != base.grid_origin
+    if let Some(direct) = &sources.direct
+        && (direct.grid_origin != base.grid_origin
             || direct.cell_size != base.cell_size
             || direct.grid_dimensions != base.grid_dimensions
             || direct.tile_dimension != base.tile_dimension
@@ -145,12 +145,11 @@ pub(super) fn validate_projected_sources(
             || direct.layer_count != base.layer_count
             || direct.tiles_per_layer != base.tiles_per_layer
             || direct.atlas_tiles_per_row != base.atlas_tiles_per_row
-            || direct.irradiance_format != base.irradiance_format
-        {
-            return Err(stream_error(
-                "id-35 metadata does not exactly match id-34 streamed metadata",
-            ));
-        }
+            || direct.irradiance_format != base.irradiance_format)
+    {
+        return Err(stream_error(
+            "id-35 metadata does not exactly match id-34 streamed metadata",
+        ));
     }
     for sparse in [
         sources.indirect_delta.as_ref(),

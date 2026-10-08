@@ -31,6 +31,7 @@ use crate::light_namespaces::{AnimatedBakedLights, StaticBakedLights};
 use crate::lightmap_bake::soft_visibility;
 use crate::map_data::{FalloffModel, LightAnimation, LightType, MapLight};
 use crate::partition::{BspTree, find_leaf_for_point};
+use crate::ray_traversal::BoundedRay;
 
 /// Default grid cell size in meters. Overridden by `--probe-spacing`.
 pub const DEFAULT_PROBE_SPACING: f32 = 1.0;
@@ -633,6 +634,50 @@ struct Hit {
     distance: f32,
 }
 
+/// Test one leaf's triangles against the ray; keeps the nearest hit in
+/// `best`, with a later equal-distance hit never replacing an earlier one.
+/// Returns whether `best` changed.
+fn closest_hit_in_leaf(
+    ctx: &RaytracingCtx<'_>,
+    prim: &BvhPrimitive,
+    ray_origin: Vec3,
+    ray_dir: Vec3,
+    max_distance: f32,
+    best: &mut Option<Hit>,
+) -> bool {
+    let geom = &ctx.geometry.geometry;
+    let start = prim.index_offset as usize;
+    let end = start + prim.index_count as usize;
+    let mut tri = start;
+    let mut changed = false;
+    while tri + 3 <= end {
+        let i0 = geom.indices[tri] as usize;
+        let i1 = geom.indices[tri + 1] as usize;
+        let i2 = geom.indices[tri + 2] as usize;
+        tri += 3;
+
+        let p0 = Vec3::from(geom.vertices[i0].position);
+        let p1 = Vec3::from(geom.vertices[i1].position);
+        let p2 = Vec3::from(geom.vertices[i2].position);
+
+        if let Some((dist, normal)) = ray_triangle_hit(ray_origin, ray_dir, p0, p1, p2)
+            && dist > RAY_EPSILON
+            && dist < max_distance
+        {
+            let update = best.as_ref().map(|b| dist < b.distance).unwrap_or(true);
+            if update {
+                *best = Some(Hit {
+                    point: ray_origin + ray_dir * dist,
+                    normal,
+                    distance: dist,
+                });
+                changed = true;
+            }
+        }
+    }
+    changed
+}
+
 fn closest_hit(
     ctx: &RaytracingCtx<'_>,
     ray_origin: Vec3,
@@ -643,42 +688,20 @@ fn closest_hit(
         Point3::new(ray_origin.x, ray_origin.y, ray_origin.z),
         Vector3::new(ray_dir.x, ray_dir.y, ray_dir.z),
     );
-    let geom = &ctx.geometry.geometry;
+    let query = BoundedRay::new(&ray, max_distance);
     let mut best: Option<Hit> = None;
-
-    for prim in ctx.bvh.traverse_iterator(&ray, ctx.primitives) {
-        let start = prim.index_offset as usize;
-        let end = start + prim.index_count as usize;
-        let mut tri = start;
-        while tri + 3 <= end {
-            let i0 = geom.indices[tri] as usize;
-            let i1 = geom.indices[tri + 1] as usize;
-            let i2 = geom.indices[tri + 2] as usize;
-            tri += 3;
-
-            let p0 = Vec3::from(geom.vertices[i0].position);
-            let p1 = Vec3::from(geom.vertices[i1].position);
-            let p2 = Vec3::from(geom.vertices[i2].position);
-
-            if let Some((dist, normal)) = ray_triangle_hit(ray_origin, ray_dir, p0, p1, p2) {
-                if dist > RAY_EPSILON && dist < max_distance {
-                    let update = best.as_ref().map(|b| dist < b.distance).unwrap_or(true);
-                    if update {
-                        best = Some(Hit {
-                            point: ray_origin + ray_dir * dist,
-                            normal,
-                            distance: dist,
-                        });
-                    }
-                }
-            }
+    for prim in ctx.bvh.traverse_iterator(&query, ctx.primitives) {
+        if closest_hit_in_leaf(ctx, prim, ray_origin, ray_dir, max_distance, &mut best)
+            && let Some(hit) = &best
+        {
+            query.shrink_to(hit.distance);
         }
     }
 
-    if let Some(h) = best.as_mut() {
-        if h.distance >= max_distance {
-            return None;
-        }
+    if let Some(h) = best.as_mut()
+        && h.distance >= max_distance
+    {
+        return None;
     }
     best
 }
@@ -729,7 +752,7 @@ fn segment_clear(ctx: &RaytracingCtx<'_>, from: Vec3, to: Vec3) -> bool {
     );
     let max_distance = length - RAY_EPSILON;
     let geom = &ctx.geometry.geometry;
-    for prim in ctx.bvh.traverse_iterator(&ray, ctx.primitives) {
+    let blocks = |prim: &BvhPrimitive| {
         let start = prim.index_offset as usize;
         let end = start + prim.index_count as usize;
         let mut tri = start;
@@ -741,14 +764,70 @@ fn segment_clear(ctx: &RaytracingCtx<'_>, from: Vec3, to: Vec3) -> bool {
             let p0 = Vec3::from(geom.vertices[i0].position);
             let p1 = Vec3::from(geom.vertices[i1].position);
             let p2 = Vec3::from(geom.vertices[i2].position);
-            if let Some((dist, _)) = ray_triangle_hit(origin, dir, p0, p1, p2) {
-                if dist > 0.0 && dist < max_distance {
-                    return false;
-                }
+            if let Some((dist, _)) = ray_triangle_hit(origin, dir, p0, p1, p2)
+                && dist > 0.0
+                && dist < max_distance
+            {
+                return true;
             }
         }
+        false
+    };
+    let query = BoundedRay::new(&ray, max_distance);
+    !ctx.bvh
+        .traverse_iterator(&query, ctx.primitives)
+        .any(blocks)
+}
+
+/// The unbounded reference scan: the closest hit [`closest_hit`] must match.
+#[cfg(test)]
+fn closest_hit_full_scan(
+    ctx: &RaytracingCtx<'_>,
+    ray_origin: Vec3,
+    ray_dir: Vec3,
+    max_distance: f32,
+) -> Option<Hit> {
+    let ray = Ray::new(
+        Point3::new(ray_origin.x, ray_origin.y, ray_origin.z),
+        Vector3::new(ray_dir.x, ray_dir.y, ray_dir.z),
+    );
+    let mut best: Option<Hit> = None;
+    for prim in ctx.bvh.traverse_iterator(&ray, ctx.primitives) {
+        closest_hit_in_leaf(ctx, prim, ray_origin, ray_dir, max_distance, &mut best);
     }
-    true
+    best.filter(|h| h.distance < max_distance)
+}
+
+/// The unbounded reference scan: the occlusion answer [`segment_clear`] must
+/// match.
+#[cfg(test)]
+fn segment_clear_full_scan(ctx: &RaytracingCtx<'_>, from: Vec3, to: Vec3) -> bool {
+    let delta = to - from;
+    let length = delta.length();
+    if length < RAY_EPSILON {
+        return true;
+    }
+    let dir = delta / length;
+    let origin = from + dir * RAY_EPSILON;
+    let ray = Ray::new(
+        Point3::new(origin.x, origin.y, origin.z),
+        Vector3::new(dir.x, dir.y, dir.z),
+    );
+    let max_distance = length - RAY_EPSILON;
+    let geom = &ctx.geometry.geometry;
+    !ctx.bvh.traverse_iterator(&ray, ctx.primitives).any(|prim| {
+        let start = prim.index_offset as usize;
+        let end = start + prim.index_count as usize;
+        (start..end)
+            .step_by(3)
+            .filter(|tri| tri + 3 <= end)
+            .any(|tri| {
+                let p =
+                    |k: usize| Vec3::from(geom.vertices[geom.indices[tri + k] as usize].position);
+                ray_triangle_hit(origin, dir, p(0), p(1), p(2))
+                    .is_some_and(|(dist, _)| dist > 0.0 && dist < max_distance)
+            })
+    })
 }
 
 /// Normal-free incident radiance reaching `point` from `light`, plus the unit
@@ -861,6 +940,21 @@ fn light_reaches_point(light: &MapLight, point: Vec3) -> bool {
             point.distance(light_origin) <= light.falloff_range.max(1.0e-4)
         }
     }
+}
+
+/// The SH bounce's pre-ray guard: a light's Lambert term at a bounce hit, or
+/// `None` when its shadow ray is provably wasted because the term is exactly
+/// zero — beyond range, past a spot's outer cone, or behind the surface. Exact
+/// zero, not an epsilon: a near-zero term still accumulates. The range test
+/// runs first because a non-finite light origin yields a NaN term rather than
+/// zero; skipping it on range keeps this bit-identical to the range-only guard
+/// it extends for every input.
+fn bounce_contribution(light: &MapLight, hit_point: Vec3, hit_normal: Vec3) -> Option<Vec3> {
+    if !light_reaches_point(light, hit_point) {
+        return None;
+    }
+    let contribution = light_contribution_lambert(light, hit_point, hit_normal);
+    (contribution != Vec3::ZERO).then_some(contribution)
 }
 
 /// Must match `cone_attenuation` in `forward.wgsl` — Hermite cubic smoothstep
@@ -1291,21 +1385,21 @@ fn sample_radiance_rgb(
         Some(hit) => {
             let mut radiance = Vec3::ZERO;
             for (light_index, light) in lights.iter().enumerate() {
-                // This must precede `global_index` and seed derivation: a light
-                // beyond range has zero falloff, so its soft-visibility trace is
-                // provably wasted. Kept lights retain their original slice/global
-                // index and therefore their deterministic visibility seed.
-                if !light_reaches_point(light, hit.point) {
+                // This must precede `global_index` and seed derivation: a skipped
+                // light would only add `0 × visibility`. Kept lights retain their
+                // original slice/global index and therefore their deterministic
+                // visibility seed.
+                let Some(contribution) = bounce_contribution(light, hit.point, hit.normal) else {
                     continue;
-                }
+                };
                 let global_index = light_global_indices
                     .map(|g| g[light_index])
                     .unwrap_or(light_index as u64);
                 let seed = soft_visibility_seed(probe_index, ray_index, global_index);
                 // SH bounce is low-frequency, so it has no author-facing
-                // sample-count knob — it always uses the default full-sample
-                // target (Task 6 wires the knob only to the lightmap and animated
-                // stages).
+                // sample-count knob — it always uses the default escalated
+                // sample count (Task 6 wires the knob only to the lightmap and
+                // animated stages); agreeing probes never escalate.
                 let v = soft_visibility(
                     hit.point,
                     hit.normal,
@@ -1317,7 +1411,7 @@ fn sample_radiance_rgb(
                 if v <= 0.0 {
                     continue;
                 }
-                radiance += light_contribution_lambert(light, hit.point, hit.normal) * v;
+                radiance += contribution * v;
             }
             (
                 radiance * BOUNCE_ALBEDO / std::f32::consts::PI,
@@ -1613,6 +1707,132 @@ mod tests {
             light_reaches_point(&directional, Vec3::new(-10_000.0, 0.0, 0.0)),
             "directional lights must never be skipped by range"
         );
+    }
+
+    // The `bounce_guard_*` tests pin both sides of each factor the bounce guard
+    // folds — range, cone, and facing — through the production predicate, so a
+    // guard that stops culling, or culls a light that still contributes, fails.
+    fn bounce_skips(light: &MapLight, point: Vec3, normal: Vec3) -> bool {
+        bounce_contribution(light, point, normal).is_none()
+    }
+
+    #[test]
+    fn bounce_guard_range_skips_beyond_and_at_range_only_for_linear() {
+        let range = 10.0;
+        let at_range = Vec3::new(range, 0.0, 0.0);
+        let beyond_range = Vec3::new(range + 0.001, 0.0, 0.0);
+        let facing_light = Vec3::NEG_X;
+
+        for light_type in [LightType::Point, LightType::Spot] {
+            for falloff_model in [
+                FalloffModel::Linear,
+                FalloffModel::InverseDistance,
+                FalloffModel::InverseSquared,
+            ] {
+                let mut light = point_light_with_falloff(falloff_model, range);
+                light.light_type = light_type;
+                // Aim spots at the receivers so only range varies.
+                light.cone_direction = Some([1.0, 0.0, 0.0]);
+                light.cone_angle_inner = Some(0.5);
+                light.cone_angle_outer = Some(0.8);
+
+                assert!(
+                    bounce_skips(&light, beyond_range, facing_light),
+                    "{light_type:?} light with {falloff_model:?} falloff must skip strictly beyond range"
+                );
+                // Inverse models are nonzero exactly at range and must keep the
+                // ray; Linear is exactly zero there, so skipping it is lossless.
+                let expect_skip = falloff_model == FalloffModel::Linear;
+                assert_eq!(
+                    bounce_skips(&light, at_range, facing_light),
+                    expect_skip,
+                    "{light_type:?} light with {falloff_model:?} falloff at exactly range"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn bounce_guard_cone_skips_iff_cone_attenuation_is_zero() {
+        // Spot at the origin aimed down +X; receivers on a 5 m arc sweep the
+        // outer cone edge in both directions, each facing the light.
+        let mut spot = point_light_with_falloff(FalloffModel::InverseSquared, 50.0);
+        spot.light_type = LightType::Spot;
+        spot.cone_direction = Some([1.0, 0.0, 0.0]);
+        spot.cone_angle_inner = Some(0.3);
+        spot.cone_angle_outer = Some(0.6);
+
+        let mut skipped = 0;
+        let mut kept = 0;
+        for step in 0..=120 {
+            let angle = 0.5 + step as f32 * (0.2 / 120.0);
+            let point = Vec3::new(angle.cos(), angle.sin(), 0.0) * 5.0;
+            let normal = -point.normalize();
+            // The cone factor exactly as `incident_radiance_at_point` derives it.
+            let dist = point.length();
+            let cone = spot_cone_attenuation(&spot, -(-point / dist));
+            assert_eq!(
+                bounce_skips(&spot, point, normal),
+                cone == 0.0,
+                "spot at {angle} rad off axis: skip must match exactly-zero cone attenuation ({cone})"
+            );
+            if cone == 0.0 {
+                skipped += 1;
+            } else {
+                kept += 1;
+            }
+        }
+        assert!(
+            skipped > 0 && kept > 0,
+            "the sweep must straddle the outer cone edge"
+        );
+    }
+
+    #[test]
+    fn bounce_guard_facing_skips_perpendicular_and_back_for_every_light_type() {
+        let point = Vec3::ZERO;
+        let mut lights = Vec::new();
+        let mut light = point_light_with_falloff(FalloffModel::InverseSquared, 50.0);
+        light.origin = DVec3::new(0.0, 5.0, 0.0);
+        lights.push(light.clone());
+        let mut spot = light.clone();
+        spot.light_type = LightType::Spot;
+        spot.cone_direction = Some([0.0, -1.0, 0.0]);
+        spot.cone_angle_inner = Some(0.3);
+        spot.cone_angle_outer = Some(0.6);
+        lights.push(spot);
+        let mut sun = light;
+        sun.light_type = LightType::Directional;
+        sun.cone_direction = Some([0.0, -1.0, 0.0]);
+        lights.push(sun);
+
+        for light in &lights {
+            let kind = light.light_type;
+            assert!(
+                !bounce_skips(light, point, Vec3::Y),
+                "{kind:?}: a surface facing the light must keep its ray"
+            );
+            assert!(
+                !bounce_skips(light, point, Vec3::new(0.01, 1.0, 0.0).normalize()),
+                "{kind:?}: a slightly front-facing surface must keep its ray"
+            );
+            assert!(
+                bounce_skips(light, point, Vec3::X),
+                "{kind:?}: a surface exactly perpendicular to the light must skip"
+            );
+            assert!(
+                bounce_skips(light, point, Vec3::NEG_Y),
+                "{kind:?}: a surface facing away from the light must skip"
+            );
+        }
+
+        // A front-facing sun is never culled, however far away the receiver.
+        let sun = &lights[2];
+        assert!(!bounce_skips(
+            sun,
+            Vec3::new(-10_000.0, 0.0, 10_000.0),
+            Vec3::Y
+        ));
     }
 
     #[test]
@@ -2430,6 +2650,232 @@ mod tests {
         );
     }
 
+    /// The full-term guard must leave every per-ray sample bit-identical to the
+    /// range-only guard it replaced. The reference below is that prior loop: it
+    /// traces every in-range light and multiplies by the Lambert term afterward.
+    /// The mixed light set includes lights the new guard culls (out-of-cone spot,
+    /// back-facing point, spot and sun) beside lights it keeps, on soft and hard
+    /// emitters, so each kept light's seed and trace are exercised alongside.
+    #[test]
+    fn sample_radiance_rgb_full_term_guard_matches_range_only_reference_bit_identically() {
+        fn range_only_reference(
+            ctx: &RaytracingCtx<'_>,
+            origin: Vec3,
+            dir: Vec3,
+            lights: &[&MapLight],
+            far_sentinel: f32,
+            probe_index: u64,
+            ray_index: u64,
+        ) -> (Vec3, f32) {
+            match closest_hit(ctx, origin + dir * RAY_EPSILON, dir, f32::INFINITY) {
+                None => (Vec3::from(SKY_COLOR), far_sentinel),
+                Some(hit) => {
+                    let mut radiance = Vec3::ZERO;
+                    for (light_index, light) in lights.iter().enumerate() {
+                        if !light_reaches_point(light, hit.point) {
+                            continue;
+                        }
+                        let seed = soft_visibility_seed(probe_index, ray_index, light_index as u64);
+                        let v = soft_visibility(
+                            hit.point,
+                            hit.normal,
+                            light,
+                            seed,
+                            crate::lightmap_bake::DEFAULT_AREA_SAMPLE_COUNT,
+                            |from, to| segment_clear(ctx, from, to),
+                        );
+                        if v <= 0.0 {
+                            continue;
+                        }
+                        radiance += light_contribution_lambert(light, hit.point, hit.normal) * v;
+                    }
+                    (
+                        radiance * BOUNCE_ALBEDO / std::f32::consts::PI,
+                        hit.distance,
+                    )
+                }
+            }
+        }
+
+        // Floor at y = 0 plus a half-plane occluder at y = 2.5 over +X, so the
+        // soft overhead light sits in a penumbra and escalates.
+        let floor_a = [[-8.0, 0.0, -8.0], [8.0, 0.0, -8.0], [8.0, 0.0, 8.0]];
+        let floor_b = [[-8.0, 0.0, -8.0], [8.0, 0.0, 8.0], [-8.0, 0.0, 8.0]];
+        let occluder_a = [[0.0, 2.5, -4.0], [4.0, 2.5, -4.0], [4.0, 2.5, 4.0]];
+        let occluder_b = [[0.0, 2.5, -4.0], [4.0, 2.5, 4.0], [0.0, 2.5, 4.0]];
+        let geometry = multi_triangle_geometry(&[floor_a, floor_b, occluder_a, occluder_b]);
+        let (bvh, primitives, _) = build_bvh(&geometry).expect("fixture builds a BVH");
+        let ctx = RaytracingCtx {
+            bvh: &bvh,
+            primitives: &primitives,
+            geometry: &geometry,
+        };
+
+        let soft_overhead = soft_point_light(DVec3::new(0.0, 5.0, 0.0), 2.0);
+        let hard_overhead = soft_point_light(DVec3::new(-3.0, 4.0, 1.0), 0.0);
+        let mut in_cone_spot = soft_point_light(DVec3::new(1.0, 6.0, -1.0), 0.5);
+        in_cone_spot.light_type = LightType::Spot;
+        in_cone_spot.cone_direction = Some([0.0, -1.0, 0.0]);
+        in_cone_spot.cone_angle_inner = Some(0.4);
+        in_cone_spot.cone_angle_outer = Some(0.9);
+        let mut out_of_cone_spot = in_cone_spot.clone();
+        out_of_cone_spot.cone_direction = Some([0.0, 1.0, 0.0]);
+        let below_floor_point = soft_point_light(DVec3::new(0.0, -3.0, 0.0), 1.0);
+        let mut below_floor_spot = below_floor_point.clone();
+        below_floor_spot.light_type = LightType::Spot;
+        below_floor_spot.cone_direction = Some([0.0, 1.0, 0.0]);
+        below_floor_spot.cone_angle_inner = Some(0.4);
+        below_floor_spot.cone_angle_outer = Some(0.9);
+        let mut front_sun = soft_point_light(DVec3::ZERO, 0.0);
+        front_sun.light_type = LightType::Directional;
+        front_sun.cone_direction = Some(Vec3::new(0.3, -1.0, 0.2).normalize().to_array());
+        front_sun.angular_diameter = 2.0;
+        let mut back_sun = front_sun.clone();
+        back_sun.cone_direction = Some([0.0, 1.0, 0.0]);
+        // A non-finite origin a `.map` can author: its Lambert term is NaN, not
+        // zero, so only the range test skips it — as the range-only guard did.
+        let nan_origin_point = soft_point_light(DVec3::new(f64::NAN, 0.0, 0.0), 1.0);
+
+        // Culled lights lead, so the penumbra light behind them would take a
+        // different visibility seed if the guard renumbered kept lights.
+        let lights = [
+            &out_of_cone_spot,
+            &nan_origin_point,
+            &soft_overhead,
+            &hard_overhead,
+            &below_floor_point,
+            &in_cone_spot,
+            &back_sun,
+            &below_floor_spot,
+            &front_sun,
+        ];
+
+        // Every culled light really is culled at the floor hit; every kept light
+        // really contributes — otherwise the comparison proves nothing.
+        let floor_hit = Vec3::new(0.5, 0.0, 0.5);
+        for (light, culled) in [
+            (&out_of_cone_spot, true),
+            (&below_floor_point, true),
+            (&below_floor_spot, true),
+            (&back_sun, true),
+            (&soft_overhead, false),
+            (&hard_overhead, false),
+            (&in_cone_spot, false),
+            (&front_sun, false),
+            (&nan_origin_point, true),
+        ] {
+            assert_eq!(
+                bounce_contribution(light, floor_hit, Vec3::Y).is_none(),
+                culled,
+                "fixture light {:?} at {:?} must be {}",
+                light.light_type,
+                light.origin,
+                if culled { "culled" } else { "kept" }
+            );
+        }
+
+        let mut lit_samples = 0;
+        let mut seed_sensitive_samples = 0;
+        for (ray_index, (x, z)) in [
+            (0.5, 0.5),
+            (2.0, -1.0),
+            (-2.5, 3.0),
+            (1.5, 1.5),
+            (-4.0, -4.0),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let origin = Vec3::new(x, 1.0, z);
+            let dir = Vec3::new(0.05, -1.0, 0.03).normalize();
+            let guarded =
+                sample_radiance_rgb(&ctx, origin, dir, &lights, None, 100.0, 7, ray_index as u64);
+            let reference =
+                range_only_reference(&ctx, origin, dir, &lights, 100.0, 7, ray_index as u64);
+            assert_eq!(
+                [
+                    guarded.0.x.to_bits(),
+                    guarded.0.y.to_bits(),
+                    guarded.0.z.to_bits(),
+                    guarded.1.to_bits(),
+                ],
+                [
+                    reference.0.x.to_bits(),
+                    reference.0.y.to_bits(),
+                    reference.0.z.to_bits(),
+                    reference.1.to_bits(),
+                ],
+                "ray from ({x}, {z}): full-term guard must match the range-only reference bit-for-bit"
+            );
+            if guarded.0 != Vec3::ZERO {
+                lit_samples += 1;
+            }
+            // Renumbering kept lights — dropping the culled ones before seeding —
+            // must change the bits, or this test could not catch a seed shift.
+            let renumbered =
+                range_only_reference(&ctx, origin, dir, &lights[2..], 100.0, 7, ray_index as u64);
+            if renumbered.0 != reference.0 {
+                seed_sensitive_samples += 1;
+            }
+        }
+        assert!(
+            lit_samples > 0,
+            "the fixture must produce lit samples to compare"
+        );
+        assert!(
+            seed_sensitive_samples > 0,
+            "some sample must depend on the kept lights' seeds"
+        );
+    }
+
+    /// A spot term just inside the outer cone is tiny but nonzero, so the guard
+    /// must keep its ray: an epsilon cut (the lightmap's `1e-12` coverage test is
+    /// the nearest rival) would drop light the range-only guard kept.
+    #[test]
+    fn sample_radiance_rgb_keeps_a_tiny_nonzero_cone_fringe_term() {
+        let floor_a = [[-8.0, 0.0, -8.0], [8.0, 0.0, -8.0], [8.0, 0.0, 8.0]];
+        let floor_b = [[-8.0, 0.0, -8.0], [8.0, 0.0, 8.0], [-8.0, 0.0, 8.0]];
+        let geometry = multi_triangle_geometry(&[floor_a, floor_b]);
+        let (bvh, primitives, _) = build_bvh(&geometry).expect("floor builds a BVH");
+        let ctx = RaytracingCtx {
+            bvh: &bvh,
+            primitives: &primitives,
+            geometry: &geometry,
+        };
+
+        // Spot 5 m above the origin aimed straight down; the ray lands at x = 2,
+        // a hair inside the outer cone.
+        let mut fringe_spot = soft_point_light(DVec3::new(0.0, 5.0, 0.0), 0.0);
+        fringe_spot.light_type = LightType::Spot;
+        fringe_spot.cone_direction = Some([0.0, -1.0, 0.0]);
+        fringe_spot.cone_angle_inner = Some(0.1);
+        fringe_spot.cone_angle_outer = Some((2.0_f32 / 5.0).atan() + 1.0e-5);
+
+        let hit = Vec3::new(2.0, 0.0, 0.0);
+        let term = bounce_contribution(&fringe_spot, hit, Vec3::Y)
+            .expect("a nonzero fringe term must keep its ray");
+        assert!(
+            term.length_squared() > 0.0 && term.length_squared() < 1.0e-12,
+            "fixture must sit in the near-zero fringe, got {term}"
+        );
+
+        let (radiance, _) = sample_radiance_rgb(
+            &ctx,
+            Vec3::new(2.0, 1.0, 0.0),
+            Vec3::NEG_Y,
+            &[&fringe_spot],
+            None,
+            100.0,
+            0,
+            0,
+        );
+        assert_ne!(
+            radiance,
+            Vec3::ZERO,
+            "the fringe term must reach the bounce sample"
+        );
+    }
+
     /// Task 4b: the SH bounce term scales by the `[0, 1]` soft-visibility fraction,
     /// not a binary 0/1 gate. A receiver floor under a soft (area) light, with a
     /// half-plane occluder blocking part of the light's sphere, must bounce
@@ -3219,5 +3665,542 @@ mod tests {
         );
         let hits = bvh.traverse(&ray, &prims);
         assert!(!hits.is_empty(), "ray should hit the triangle face AABB");
+    }
+
+    /// Two triangles creased along the shared edge x = 0, y = 0 (z in -1..1),
+    /// opening upward (left face y = -x, right face y = x), in one face (one
+    /// BVH leaf) or as two faces (two leaves). A far floor, a far wall and
+    /// scattered tiles give the tree nodes for the bound to prune.
+    fn crease_geometry(shared_leaf: bool) -> GeometryResult {
+        let left = [[0.0, 0.0, -1.0], [0.0, 0.0, 1.0], [-1.0, 1.0, 0.0]];
+        let right = [[0.0, 0.0, -1.0], [0.0, 0.0, 1.0], [1.0, 1.0, 0.0]];
+        let mut triangles = vec![
+            left,
+            right,
+            [
+                [-20.0, -6.0, -20.0],
+                [20.0, -6.0, -20.0],
+                [20.0, -6.0, 20.0],
+            ],
+            [
+                [-20.0, -6.0, -20.0],
+                [20.0, -6.0, 20.0],
+                [-20.0, -6.0, 20.0],
+            ],
+            [[8.0, -6.0, -20.0], [8.0, 10.0, -20.0], [8.0, 10.0, 20.0]],
+        ];
+        for k in 0..12 {
+            let x = -7.0 + k as f32 * 1.25;
+            triangles.push([[x, -3.0, -4.0], [x + 0.5, -3.0, -4.0], [x, -2.5, -3.5]]);
+        }
+        let mut geometry = multi_triangle_geometry(&triangles);
+        if shared_leaf {
+            geometry.face_index_ranges[0].index_count = 6;
+            geometry.face_index_ranges.remove(1);
+            geometry.geometry.faces.remove(1);
+        }
+        geometry
+    }
+
+    fn hit_parts(hit: Option<Hit>) -> Option<(f32, Vec3, Vec3)> {
+        hit.map(|h| (h.distance, h.normal, h.point))
+    }
+
+    /// Rays aimed at points on the crease edge from several origins.
+    fn crease_edge_rays() -> Vec<(Vec3, Vec3)> {
+        let origins = [
+            Vec3::new(0.0, 5.0, 0.0),
+            Vec3::new(3.0, 4.0, 1.0),
+            Vec3::new(-2.0, 3.0, -1.0),
+            Vec3::new(0.25, 6.0, -0.5),
+        ];
+        let mut rays = Vec::new();
+        for origin in origins {
+            for z in [-0.75, -0.3, 0.0, 0.4, 0.9] {
+                rays.push((origin, (Vec3::new(0.0, 0.0, z) - origin).normalize()));
+            }
+        }
+        rays
+    }
+
+    #[test]
+    fn bounded_closest_hit_matches_full_scan_on_shared_crease_edges() {
+        for shared_leaf in [true, false] {
+            let geo = crease_geometry(shared_leaf);
+            let (bvh, prims, _) = build_bvh(&geo).unwrap();
+            let ctx = RaytracingCtx {
+                bvh: &bvh,
+                primitives: &prims,
+                geometry: &geo,
+            };
+            let mut edge_hits = 0;
+            for (origin, dir) in crease_edge_rays() {
+                let full = hit_parts(closest_hit_full_scan(&ctx, origin, dir, f32::INFINITY));
+                let bounded = hit_parts(closest_hit(&ctx, origin, dir, f32::INFINITY));
+                assert_eq!(
+                    bounded, full,
+                    "shared_leaf {shared_leaf}, ray {origin} {dir}"
+                );
+                let Some((distance, _, point)) = full else {
+                    panic!("ray {origin} {dir} must hit the crease");
+                };
+                if point.x.abs() < 1e-4 && point.y.abs() < 1e-4 {
+                    edge_hits += 1;
+                }
+                // Finite bounds at, just under and just over the hit distance.
+                for max in [
+                    distance,
+                    distance.next_down(),
+                    distance.next_up(),
+                    distance * 0.5,
+                ] {
+                    assert_eq!(
+                        hit_parts(closest_hit(&ctx, origin, dir, max)),
+                        hit_parts(closest_hit_full_scan(&ctx, origin, dir, max)),
+                        "shared_leaf {shared_leaf}, ray {origin} {dir}, max {max}"
+                    );
+                }
+            }
+            // A ray exactly on the shared edge can slip between the two
+            // triangles and hit something farther; most must land on the edge so
+            // the tie is exercised.
+            assert!(
+                edge_hits * 2 > crease_edge_rays().len(),
+                "{edge_hits} rays landed on the edge"
+            );
+        }
+    }
+
+    #[test]
+    fn bounded_segment_clear_matches_full_scan_at_segment_end() {
+        let geo = crease_geometry(false);
+        let (bvh, prims, _) = build_bvh(&geo).unwrap();
+        let ctx = RaytracingCtx {
+            bvh: &bvh,
+            primitives: &prims,
+            geometry: &geo,
+        };
+        let (mut clear, mut blocked) = (0, 0);
+        for x in [-0.6f32, -0.2, 0.0, 0.2, 0.55] {
+            let from = Vec3::new(x, 5.0, 0.3);
+            // The crease surface under `from` sits at y = |x|.
+            let surface = x.abs();
+            for end_y in [
+                surface + 0.01,
+                surface + RAY_EPSILON,
+                surface.next_up(),
+                surface,
+                surface.next_down(),
+                surface - RAY_EPSILON,
+                surface - 0.01,
+                -1.0,
+                -6.0,
+                -7.0,
+            ] {
+                let to = Vec3::new(x, end_y, 0.3);
+                let full = segment_clear_full_scan(&ctx, from, to);
+                assert_eq!(segment_clear(&ctx, from, to), full, "sh: {from} -> {to}");
+                assert_eq!(
+                    crate::lightmap_bake::segment_clear(&bvh, &prims, &geo, from, to),
+                    crate::lightmap_bake::segment_clear_full_scan(&bvh, &prims, &geo, from, to),
+                    "lightmap: {from} -> {to}"
+                );
+                if full {
+                    clear += 1;
+                } else {
+                    blocked += 1;
+                }
+            }
+        }
+        assert!(clear > 0 && blocked > 0, "{clear} clear, {blocked} blocked");
+    }
+
+    #[test]
+    fn bounded_traversal_matches_stock_rejection_of_undefined_slab() {
+        // Rays lying in a box face plane, parallel to it: the floor's flat box
+        // (y = -6), the wall's (x = 8), and the crease leaf's top face (y = 1).
+        // The stock slab test sees NaN there and rejects the box; the bounded
+        // query must answer as the unbounded reference scan does.
+        let geo = crease_geometry(true);
+        let (bvh, prims, _) = build_bvh(&geo).unwrap();
+        let ctx = RaytracingCtx {
+            bvh: &bvh,
+            primitives: &prims,
+            geometry: &geo,
+        };
+        let rays = [
+            (Vec3::new(-30.0, -6.0, 0.0), Vec3::X),
+            (Vec3::new(8.0, 2.0, -30.0), Vec3::Z),
+            (Vec3::new(-5.0, 1.0, 0.0), Vec3::X),
+            (Vec3::new(0.0, 1.0, -5.0), Vec3::Z),
+        ];
+        for (origin, dir) in rays {
+            for max in [f32::INFINITY, 12.0] {
+                assert_eq!(
+                    hit_parts(closest_hit(&ctx, origin, dir, max)),
+                    hit_parts(closest_hit_full_scan(&ctx, origin, dir, max)),
+                    "ray {origin} {dir}, max {max}"
+                );
+            }
+            let to = origin + dir * 40.0;
+            assert_eq!(
+                segment_clear(&ctx, origin, to),
+                segment_clear_full_scan(&ctx, origin, to),
+                "segment {origin} -> {to}"
+            );
+        }
+    }
+
+    #[test]
+    fn sub_epsilon_start_hit_never_tightens_bound() {
+        // Each ray starts on the triangle the traversal reaches first, so that
+        // triangle reports a hit under RAY_EPSILON. Closest-hit ignores it; were
+        // it to shrink the bound, the farther real hit would be pruned.
+        let geo = crease_geometry(true);
+        let (bvh, prims, _) = build_bvh(&geo).unwrap();
+        let ctx = RaytracingCtx {
+            bvh: &bvh,
+            primitives: &prims,
+            geometry: &geo,
+        };
+        let starts = [
+            (Vec3::new(0.5, 0.5, 0.0), Vec3::new(-0.3, -1.0, 0.1)),
+            (Vec3::new(-0.4, 0.4, 0.2), Vec3::new(0.2, -1.0, -0.1)),
+            (Vec3::new(0.25, 0.25, -0.5), Vec3::new(0.0, -1.0, 0.0)),
+        ];
+        for (origin, toward) in starts {
+            let dir = toward.normalize();
+            let bounded = hit_parts(closest_hit(&ctx, origin, dir, f32::INFINITY));
+            assert_eq!(
+                bounded,
+                hit_parts(closest_hit_full_scan(&ctx, origin, dir, f32::INFINITY)),
+                "ray {origin} {dir}"
+            );
+            let (distance, _, _) = bounded.expect("the ray reaches the floor or a tile");
+            assert!(
+                distance > 1.0,
+                "kept hit {distance} is past the start triangle"
+            );
+        }
+    }
+
+    /// xorshift64: deterministic, no dependency.
+    struct XorShift(u64);
+
+    impl XorShift {
+        fn unit(&mut self) -> f32 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            (self.0 >> 40) as f32 / (1u64 << 24) as f32
+        }
+
+        fn range(&mut self, lo: f32, hi: f32) -> f32 {
+            lo + (hi - lo) * self.unit()
+        }
+
+        /// Log-uniform in `[10^lo, 10^hi]`.
+        fn log_range(&mut self, lo: f32, hi: f32) -> f32 {
+            10f32.powf(self.range(lo, hi))
+        }
+
+        fn index(&mut self, len: usize) -> usize {
+            ((self.unit() * len as f32) as usize).min(len - 1)
+        }
+
+        fn sign(&mut self) -> f32 {
+            if self.unit() < 0.5 { -1.0 } else { 1.0 }
+        }
+
+        fn unit_vec(&mut self) -> Vec3 {
+            loop {
+                let v = Vec3::new(
+                    self.range(-1.0, 1.0),
+                    self.range(-1.0, 1.0),
+                    self.range(-1.0, 1.0),
+                );
+                let len = v.length();
+                if len > 0.1 && len <= 1.0 {
+                    return v / len;
+                }
+            }
+        }
+    }
+
+    /// Cut offsets across a sloped face. Each 3 cm strip is a sliver: split on
+    /// its diagonal over the 30 m strip length, each triangle is ~1:1000.
+    const STRIP_CUTS: [f32; 15] = [
+        -20.0, -16.0, -15.97, -12.0, -8.0, -7.97, -4.0, 0.0, 0.03, 4.0, 8.0, 8.03, 12.0, 16.0, 20.0,
+    ];
+
+    /// Cuts with a wide strip on both sides.
+    const WIDE_STRIP_CUTS: [f32; 5] = [-12.0, -4.0, 4.0, 12.0, 16.0];
+
+    /// A sloped face `y = centre.y + a (x - centre.x) + b (z - centre.z)`, cut
+    /// into strips along `x = const` planes (`cut_x`) or `z = const` planes.
+    /// Strips span 30 m along the cuts.
+    #[derive(Clone, Copy)]
+    struct SlopedFace {
+        centre: Vec3,
+        a: f32,
+        b: f32,
+        cut_x: bool,
+    }
+
+    impl SlopedFace {
+        fn point(&self, x: f32, z: f32) -> Vec3 {
+            let y = self.centre.y + self.a * (x - self.centre.x) + self.b * (z - self.centre.z);
+            Vec3::new(x, y, z)
+        }
+
+        fn normal(&self) -> Vec3 {
+            Vec3::new(-self.a, 1.0, -self.b).normalize()
+        }
+
+        /// The face point `cut` across the cuts and `along` them, both offsets
+        /// from the centre. Shared edge vertices come out bit-identical.
+        fn at(&self, cut: f32, along: f32) -> Vec3 {
+            if self.cut_x {
+                self.point(self.centre.x + cut, self.centre.z + along)
+            } else {
+                self.point(self.centre.x + along, self.centre.z + cut)
+            }
+        }
+
+        fn strip_triangles(&self) -> Vec<[[f32; 3]; 3]> {
+            let mut triangles = Vec::new();
+            for pair in STRIP_CUTS.windows(2) {
+                let (c0, c1) = (pair[0], pair[1]);
+                let p00 = self.at(c0, -15.0).to_array();
+                let p10 = self.at(c1, -15.0).to_array();
+                let p11 = self.at(c1, 15.0).to_array();
+                let p01 = self.at(c0, 15.0).to_array();
+                triangles.push([p00, p10, p11]);
+                triangles.push([p00, p11, p01]);
+            }
+            triangles
+        }
+    }
+
+    /// The lightmap occlusion answer with no box test: each triangle in turn is
+    /// handed to the occluder cache, which tests it before any traversal.
+    fn lightmap_clear_by_every_triangle(
+        bvh: &Bvh<f32, 3>,
+        prims: &[BvhPrimitive],
+        geo: &GeometryResult,
+        from: Vec3,
+        to: Vec3,
+    ) -> bool {
+        (0..geo.geometry.indices.len()).step_by(3).all(|tri| {
+            crate::lightmap_bake::segment_clear_remembering(
+                bvh,
+                prims,
+                geo,
+                from,
+                to,
+                &std::cell::Cell::new(Some(tri)),
+            )
+        })
+    }
+
+    /// A flat triangle's box is flat, and the stock box test can reject it, by
+    /// rounding, for a ray the triangle test hits at the triangle's edge. The
+    /// traversal then reports the segment clear; the occluder cache, holding
+    /// that triangle, reports it blocked. The ray is steep: the rounding is in
+    /// the slab bounds, not the angle.
+    #[test]
+    fn lightmap_segment_clear_occluder_cache_catches_flat_box_rounding_leak() {
+        let geo = multi_triangle_geometry(&[[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0]]]);
+        let (bvh, prims, _) = build_bvh(&geo).unwrap();
+        // Crosses z = 0 at the triangle's x = 1 edge.
+        let from = Vec3::from_array([1068354961, 1063499892, 1065798143].map(f32::from_bits));
+        let to = Vec3::from_array([1059964654, 1061407677, 3211917106].map(f32::from_bits));
+
+        assert!(
+            crate::lightmap_bake::segment_clear(&bvh, &prims, &geo, from, to),
+            "the stock box test must reject this ray's box for the leak to exist"
+        );
+        let empty = std::cell::Cell::new(None);
+        assert!(crate::lightmap_bake::segment_clear_remembering(
+            &bvh, &prims, &geo, from, to, &empty
+        ));
+        assert_eq!(empty.get(), None, "a clear traversal records no occluder");
+        let holding = std::cell::Cell::new(Some(0));
+        assert!(!crate::lightmap_bake::segment_clear_remembering(
+            &bvh, &prims, &geo, from, to, &holding
+        ));
+        assert_eq!(holding.get(), Some(0));
+    }
+
+    /// Randomized parity against the unbounded reference scans, on geometry
+    /// that stresses Möller–Trumbore rounding: vertices 100–500 m from the
+    /// origin, large rotated triangles, and two crossing sloped faces cut into
+    /// strips along axis-aligned planes, as BSP splits leave them, with 3 cm
+    /// slivers sharing the cut edges. Rays graze toward shared edges, the
+    /// faces' crossing line (two hits millimetres apart) and large triangles;
+    /// segments end just short of, at and just past the nearest hit.
+    ///
+    /// The rays stay inside the prune slack's envelope. On a sliver, MT's `t`
+    /// error grows with ray length over graze, so rays toward the sloped faces
+    /// keep `length <= 100 m * graze`, and near misses past a strip's outer end
+    /// aim only at wide strips: near a sliver's ends the error reaches metres,
+    /// past any finite slack. That is the open case the fixture digest gate
+    /// watches.
+    #[test]
+    fn bounded_queries_match_full_scan_on_random_rounding_stress() {
+        let mut rng = XorShift(0x2545_F491_4F6C_DD1D);
+        let last_occluder = std::cell::Cell::new(None);
+        let centre = Vec3::new(210.0, 190.0, -260.0);
+        let faces = [
+            SlopedFace {
+                centre,
+                a: 0.37,
+                b: -0.21,
+                cut_x: true,
+            },
+            SlopedFace {
+                centre,
+                a: 0.33,
+                b: -0.18,
+                cut_x: false,
+            },
+        ];
+        let mut triangles: Vec<[[f32; 3]; 3]> =
+            faces.iter().flat_map(SlopedFace::strip_triangles).collect();
+        let large_start = triangles.len();
+        let large_count = 48;
+        for _ in 0..large_count {
+            let centre_dir = rng.unit_vec();
+            triangles.push([(); 3].map(|()| {
+                let dir = (centre_dir + rng.unit_vec() * 0.35).normalize();
+                (dir * rng.range(100.0, 500.0)).to_array()
+            }));
+        }
+        let geo = multi_triangle_geometry(&triangles);
+        let (bvh, prims, _) = build_bvh(&geo).unwrap();
+        let ctx = RaytracingCtx {
+            bvh: &bvh,
+            primitives: &prims,
+            geometry: &geo,
+        };
+
+        let (mut hits, mut misses, mut clear, mut blocked) = (0, 0, 0, 0);
+        for i in 0..3_000 {
+            let (origin, dir) = if i < 1_600 {
+                // Near-grazing toward a shared cut edge, or just past a wide
+                // strip's outer end.
+                let face = faces[rng.index(2)];
+                let jitter = [0.0, 0.0, 1e-5, -1e-5, 1e-3, -1e-3][rng.index(6)];
+                let (cut, along) = if rng.unit() < 0.25 {
+                    let cut = WIDE_STRIP_CUTS[rng.index(WIDE_STRIP_CUTS.len())];
+                    (cut, rng.sign() * (15.0 + rng.log_range(-4.0, -1.0)))
+                } else {
+                    let cut = STRIP_CUTS[1 + rng.index(STRIP_CUTS.len() - 2)];
+                    (cut, rng.range(-14.0, 14.0))
+                };
+                let target = face.at(cut + jitter, along);
+                let theta = rng.range(0.0, std::f32::consts::TAU);
+                let tangent = (Vec3::new(1.0, face.a, 0.0) * theta.cos()
+                    + Vec3::new(0.0, face.b, 1.0) * theta.sin())
+                .normalize();
+                let graze = rng.log_range(-2.0, -0.5);
+                let dir = (tangent + face.normal() * (graze * rng.sign())).normalize();
+                (target - dir * rng.range(0.5, 100.0 * graze), dir)
+            } else if i < 2_300 {
+                // Toward the faces' crossing line, where 0.04 dx = 0.03 dz.
+                let k = rng.range(-11.0, 11.0);
+                let target = faces[0].point(centre.x + k, centre.z + k * 4.0 / 3.0);
+                let dir = loop {
+                    let dir = rng.unit_vec();
+                    if faces.iter().all(|f| dir.dot(f.normal()).abs() >= 0.1) {
+                        break dir;
+                    }
+                };
+                (target - dir * rng.range(0.5, 10.0), dir)
+            } else {
+                // Toward a large triangle's interior or edge, grazing to 1e-3.
+                let [p0, p1, p2] = triangles[large_start + rng.index(large_count)].map(Vec3::from);
+                let (mut w1, mut w2) = (rng.unit(), rng.unit());
+                if w1 + w2 > 1.0 {
+                    (w1, w2) = (1.0 - w1, 1.0 - w2);
+                }
+                if rng.unit() < 0.3 {
+                    w2 = 1.0 - w1;
+                }
+                let target = p0 + (p1 - p0) * w1 + (p2 - p0) * w2;
+                let normal = (p1 - p0).cross(p2 - p0).normalize();
+                let (e0, e1) = normal.any_orthonormal_pair();
+                let theta = rng.range(0.0, std::f32::consts::TAU);
+                let tangent = e0 * theta.cos() + e1 * theta.sin();
+                let graze = rng.log_range(-3.0, 0.0);
+                let dir = (tangent + normal * (graze * rng.sign())).normalize();
+                (target - dir * rng.range(1.0, 200.0), dir)
+            };
+
+            let full = hit_parts(closest_hit_full_scan(&ctx, origin, dir, f32::INFINITY));
+            assert_eq!(
+                hit_parts(closest_hit(&ctx, origin, dir, f32::INFINITY)),
+                full,
+                "ray {i}: {origin} {dir}"
+            );
+            let ends = if let Some((distance, _, _)) = full {
+                hits += 1;
+                for max in [distance, distance.next_up()] {
+                    assert_eq!(
+                        hit_parts(closest_hit(&ctx, origin, dir, max)),
+                        hit_parts(closest_hit_full_scan(&ctx, origin, dir, max)),
+                        "ray {i}: {origin} {dir}, max {max}"
+                    );
+                }
+                [distance - 1e-3, distance, distance + 1e-3, distance + 2e-2]
+            } else {
+                misses += 1;
+                [1.0, 50.0, 400.0, 1_000.0]
+            };
+            for end in ends {
+                let to = origin + dir * end;
+                let full_clear = segment_clear_full_scan(&ctx, origin, to);
+                assert_eq!(
+                    segment_clear(&ctx, origin, to),
+                    full_clear,
+                    "sh, ray {i}: {origin} -> {to}"
+                );
+                let lightmap_full =
+                    crate::lightmap_bake::segment_clear_full_scan(&bvh, &prims, &geo, origin, to);
+                assert_eq!(
+                    crate::lightmap_bake::segment_clear(&bvh, &prims, &geo, origin, to),
+                    lightmap_full,
+                    "lightmap, ray {i}: {origin} -> {to}"
+                );
+                // The occluder cache carries across rays, so later queries test
+                // an unrelated triangle first. It may only add a blocked answer
+                // the box test lost to rounding, so a disagreement must be a
+                // real hit by some triangle.
+                let remembered = crate::lightmap_bake::segment_clear_remembering(
+                    &bvh,
+                    &prims,
+                    &geo,
+                    origin,
+                    to,
+                    &last_occluder,
+                );
+                if remembered != lightmap_full {
+                    assert!(
+                        lightmap_full
+                            && !lightmap_clear_by_every_triangle(&bvh, &prims, &geo, origin, to),
+                        "lightmap remembering, ray {i}: {origin} -> {to}"
+                    );
+                }
+                if full_clear {
+                    clear += 1;
+                } else {
+                    blocked += 1;
+                }
+            }
+        }
+        assert!(
+            hits > 2_000 && misses > 100 && clear > 3_000 && blocked > 3_000,
+            "{hits} hits, {misses} misses, {clear} clear, {blocked} blocked"
+        );
     }
 }

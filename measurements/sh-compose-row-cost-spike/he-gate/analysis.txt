@@ -1,0 +1,110 @@
+### sh_compose
+animated_light_scale             -              buf_len_clamp animation_descriptor_indices 1
+animated_light_scale             -              buf_len_clamp descriptors            1
+buffer                           -              buf_len_clamp affinity_offsets       2
+buffer                           -              buf_len_clamp probe_indirection      2
+buffer                           -              idx_clamp(const) packed_rows         1
+buffer                           -              idx_clamp(const) row_ids             1
+buffer                           -              int_div_guard                        7
+buffer                           loop_bound_1   buf_len_clamp probe_indirection      1
+buffer                           loop_bound_1   loop_counter                         1
+buffer                           loop_bound_2   idx_clamp(const) accum               2
+buffer                           loop_bound_2   int_div_guard                        2
+buffer                           loop_bound_2   loop_counter                         1
+buffer                           loop_bound_3   buf_len_clamp affinity_lights        1
+buffer                           loop_bound_3   loop_counter                         1
+buffer                           loop_bound_4   idx_clamp(const) accum               2
+buffer                           loop_bound_4   int_div_guard                        2
+buffer                           loop_bound_4   loop_counter                         1
+buffer                           loop_bound_5   buf_len_clamp affinity_lights        1
+buffer                           loop_bound_5   idx_clamp(const) shared_kept_present 2
+buffer                           loop_bound_5   loop_counter                         1
+buffer                           loop_bound_6   idx_clamp(const) shared_kept_tiles   1
+buffer                           loop_bound_6   int_div_guard                        2
+buffer                           loop_bound_6   loop_counter                         1
+buffer                           loop_bound_7   idx_clamp(const) shared_kept_tiles   1
+buffer                           loop_bound_7   int_div_guard                        2
+buffer                           loop_bound_7   loop_counter                         1
+buffer                           loop_bound_8   idx_clamp(const) accum               2
+buffer                           loop_bound_8   idx_clamp(const) shared_kept_tiles   1
+buffer                           loop_bound_8   loop_counter                         1
+buffer                           loop_bound_9   idx_clamp(const) accum               1
+buffer                           loop_bound_9   int_div_guard                        2
+buffer                           loop_bound_9   loop_counter                         1
+cell_level                       -              buf_len_clamp delta_compaction_meta  1
+entry_delta_f16_offset           -              buf_len_clamp delta_compaction_meta  1
+kept_probe_mask_word             -              int_div_guard                        2
+l1_node_corner_probe             -              int_div_guard                        1
+l1_shared_slot                   -              int_div_guard                        3
+local_probe_coord                -              int_div_guard                        4
+local_probe_is_kept              -              int_div_guard                        2
+read_delta_texel                 -              buf_len_clamp delta_subblocks        2
+read_delta_texel                 -              int_div_guard                        2
+reconstruct_l1_shared_texel      loop_bound     idx_clamp(const) shared_kept_present 1
+reconstruct_l1_shared_texel      loop_bound     idx_clamp(const) shared_kept_tiles   1
+reconstruct_l1_shared_texel      loop_bound     loop_counter                         1
+sample_color_catmull_rom         -              buf_len_clamp anim_samples           15
+sample_color_catmull_rom         -              int_div_guard                        4
+sample_compact_base_atlas        -              int_div_guard                        3
+sample_curve_catmull_rom         -              buf_len_clamp anim_samples           5
+sample_curve_catmull_rom         -              int_div_guard                        4
+slot_tile_origin                 -              int_div_guard                        4
+stored_slot_for_invocation       -              int_div_guard                        1
+valid_probe_mask_word            -              buf_len_clamp delta_compaction_meta  1
+within_cell_rank                 -              int_div_guard                        2
+### animated_direct
+animated_compose_weight          -              idx_clamp(const) compose_weights     1
+animated_compose_weight          -              idx_clamp(const) packed              1
+animated_compose_weight          -              int_div_guard                        2
+animated_light_scale             -              buf_len_clamp animation_descriptor_indices 1
+animated_light_scale             -              buf_len_clamp descriptors            1
+buffer                           -              buf_len_clamp affinity_offsets       2
+buffer                           -              buf_len_clamp probe_indirection      2
+buffer                           -              idx_clamp(const) packed_rows         1
+buffer                           -              idx_clamp(const) row_ids             1
+buffer                           -              int_div_guard                        7
+buffer                           loop_bound_1   buf_len_clamp probe_indirection      1
+buffer                           loop_bound_1   loop_counter                         1
+buffer                           loop_bound_2   idx_clamp(const) accum               2
+buffer                           loop_bound_2   int_div_guard                        2
+buffer                           loop_bound_2   loop_counter                         1
+buffer                           loop_bound_3   buf_len_clamp affinity_lights        1
+buffer                           loop_bound_3   loop_counter                         1
+buffer                           loop_bound_4   idx_clamp(const) accum               2
+buffer                           loop_bound_4   int_div_guard                        2
+buffer                           loop_bound_4   loop_counter                         1
+buffer                           loop_bound_5   buf_len_clamp affinity_lights        1
+buffer                           loop_bound_5   idx_clamp(const) shared_kept_present 2
+buffer                           loop_bound_5   loop_counter                         1
+buffer                           loop_bound_6   idx_clamp(const) shared_kept_tiles   1
+buffer                           loop_bound_6   int_div_guard                        2
+buffer                           loop_bound_6   loop_counter                         1
+buffer                           loop_bound_7   idx_clamp(const) shared_kept_tiles   1
+buffer                           loop_bound_7   int_div_guard                        2
+buffer                           loop_bound_7   loop_counter                         1
+buffer                           loop_bound_8   idx_clamp(const) accum               2
+buffer                           loop_bound_8   idx_clamp(const) shared_kept_tiles   1
+buffer                           loop_bound_8   loop_counter                         1
+buffer                           loop_bound_9   idx_clamp(const) accum               1
+buffer                           loop_bound_9   int_div_guard                        2
+buffer                           loop_bound_9   loop_counter                         1
+cell_level                       -              buf_len_clamp delta_compaction_meta  1
+entry_delta_f16_offset           -              buf_len_clamp delta_compaction_meta  1
+kept_probe_mask_word             -              int_div_guard                        2
+l1_node_corner_probe             -              int_div_guard                        1
+l1_shared_slot                   -              int_div_guard                        3
+local_probe_coord                -              int_div_guard                        4
+local_probe_is_kept              -              int_div_guard                        2
+read_delta_texel                 -              buf_len_clamp delta_subblocks        2
+read_delta_texel                 -              int_div_guard                        2
+reconstruct_l1_shared_texel      loop_bound     idx_clamp(const) shared_kept_present 1
+reconstruct_l1_shared_texel      loop_bound     idx_clamp(const) shared_kept_tiles   1
+reconstruct_l1_shared_texel      loop_bound     loop_counter                         1
+sample_color_catmull_rom         -              buf_len_clamp anim_samples           15
+sample_color_catmull_rom         -              int_div_guard                        4
+sample_curve_catmull_rom         -              buf_len_clamp anim_samples           5
+sample_curve_catmull_rom         -              int_div_guard                        4
+slot_tile_origin                 -              int_div_guard                        4
+stored_slot_for_invocation       -              int_div_guard                        1
+valid_probe_mask_word            -              buf_len_clamp delta_compaction_meta  1
+within_cell_rank                 -              int_div_guard                        2

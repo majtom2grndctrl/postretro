@@ -39,6 +39,8 @@ pub enum RenderStage {
     MeshPoseSamples,
     /// Spot and cube shadow depth.
     ShadowDepth,
+    /// CPU BVH walks that find each shadow region's world reach.
+    ShadowReach,
     /// Depth pre-pass and SDF shadow.
     DepthSdf,
     Forward,
@@ -76,6 +78,7 @@ impl StageSet for RenderStage {
         Self::MeshPoseSampling,
         Self::MeshPoseSamples,
         Self::ShadowDepth,
+        Self::ShadowReach,
         Self::DepthSdf,
         Self::Forward,
         Self::KinematicBrush,
@@ -112,6 +115,7 @@ impl StageSet for RenderStage {
             Self::MeshPoseSampling => "mesh_pose_sampling",
             Self::MeshPoseSamples => "mesh_pose_samples",
             Self::ShadowDepth => "rec_shadow_depth",
+            Self::ShadowReach => "rec_shadow_reach",
             Self::DepthSdf => "rec_depth_sdf",
             Self::Forward => "rec_forward",
             Self::KinematicBrush => "rec_kinematic_brush",
@@ -139,6 +143,7 @@ impl StageSet for RenderStage {
             | Self::ShCompose
             | Self::DirectShCompose => Some(Self::PreScene),
             Self::CullDiagnostics => Some(Self::Cull),
+            Self::ShadowReach => Some(Self::ShadowDepth),
             _ => Some(Self::Record),
         }
     }

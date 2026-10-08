@@ -48,19 +48,17 @@ pub(crate) fn collect_agent_overlay_snapshots_for_view(
             continue;
         };
         let transform = registry.get_component::<Transform>(id).ok();
-        if include_geometry {
-            if let Some(transform) = transform {
-                geometry.push(AgentOverlayGeometry {
-                    id,
-                    position: transform.position,
-                    path: agent.path.clone(),
-                    waypoint_cursor: agent.waypoint_cursor,
-                    velocity: agent.velocity,
-                    destination: agent.destination,
-                    planned_destination: agent.planned_destination,
-                    radius: agent.radius,
-                });
-            }
+        if include_geometry && let Some(transform) = transform {
+            geometry.push(AgentOverlayGeometry {
+                id,
+                position: transform.position,
+                path: agent.path.clone(),
+                waypoint_cursor: agent.waypoint_cursor,
+                velocity: agent.velocity,
+                destination: agent.destination,
+                planned_destination: agent.planned_destination,
+                radius: agent.radius,
+            });
         }
         if !include_labels {
             continue;
@@ -284,11 +282,11 @@ pub(crate) fn emit_agent_overlay_geometry(
             );
         }
         if state.destinations {
-            if let Some(planned_destination) = agent_overlay_planned_destination(agent) {
-                if Some(planned_destination) != agent_overlay_live_destination(agent) {
-                    for (start, end) in agent_marker_segments(planned_destination, agent.radius) {
-                        renderer.push_debug_line(start, end, COLOR_AGENT_PLANNED_DESTINATION);
-                    }
+            if let Some(planned_destination) = agent_overlay_planned_destination(agent)
+                && Some(planned_destination) != agent_overlay_live_destination(agent)
+            {
+                for (start, end) in agent_marker_segments(planned_destination, agent.radius) {
+                    renderer.push_debug_line(start, end, COLOR_AGENT_PLANNED_DESTINATION);
                 }
             }
             if let Some(destination) = agent_overlay_live_destination(agent) {

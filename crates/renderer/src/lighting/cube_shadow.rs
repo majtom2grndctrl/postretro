@@ -1,14 +1,12 @@
 // Dynamic point-light cube-array shadow pool: per-light 6-face omnidirectional
 // depth, ranked into a fixed-capacity cube-array. Each occupied face renders
-// cone-culled WORLD geometry (static occluders — crates, pillars) plus skinned
+// its reached WORLD geometry (static occluders — crates, pillars) plus skinned
 // entity occluders, mirroring the spot pool's occluder split.
 //
 // WHY per-face world draws fit the budget: a naive world draw costs 6 full
-// world-BVH rasterizations per point light. The per-region GPU frustum cull
-// (`shadow_cull.rs`, one indirect sub-region per (slot, face) gated by that
-// face's 90° frustum) bounds the world cost to the geometry each face can
-// actually see, which is what lets dynamic point lights shadow static geometry
-// under a predictable budget.
+// world rasterizations per point light. Each face draws only the cells its 90°
+// frustum reaches, walked on the CPU (`shadow_world_draws.rs`), which is what
+// lets dynamic point lights shadow static geometry under a predictable budget.
 //
 // See: context/lib/rendering_pipeline.md §7.1 (shadow passes), §4 (lighting)
 
@@ -23,7 +21,7 @@ pub const CUBE_NEAR_CLIP: f32 = 0.1;
 
 /// Number of cube slots in the pool, sized to realistic concurrent demand after
 /// PVS culling + influence ranking — NOT worst case. Each occupied slot draws
-/// cone-culled world geometry + entity occluders into 6 faces, so the cost
+/// reached world geometry + entity occluders into 6 faces, so the cost
 /// (and the VRAM) scales with this.
 ///
 /// VRAM justification: a `Depth32Float` cube-array is
@@ -49,7 +47,7 @@ pub const CUBE_FACES: usize = 6;
 ///
 /// WHY this is not the plain +X,-X,+Y,-Y,+Z,-Z hardware face order: the
 /// hardware cube-sampling convention's per-face (s, t, major-axis) basis is
-/// LEFT-handed, so no right-handed `look_at_rh` view can reproduce it — one
+/// LEFT-handed, so no right-handed `look_at` view can reproduce it — one
 /// mirror is required somewhere between render and sample. Rather than mirror
 /// the projection (which reverses triangle winding and would need `Cw`
 /// variants of the shared depth pipelines), the shader mirrors the LOOKUP:
@@ -107,11 +105,20 @@ pub fn cube_face_matrices(light: &MapLight) -> [Mat4; CUBE_FACES] {
     let far = light.falloff_range.max(0.5);
     // 90° vertical FOV, aspect 1.0 — adjacent faces meet exactly at their shared
     // edge, so the 6 frusta partition all directions.
-    let proj = Mat4::perspective_rh(std::f32::consts::FRAC_PI_2, 1.0, CUBE_NEAR_CLIP, far);
+    let proj = glam::camera::rh::proj::directx::perspective(
+        std::f32::consts::FRAC_PI_2,
+        1.0,
+        CUBE_NEAR_CLIP,
+        far,
+    );
 
     let mut matrices = [Mat4::IDENTITY; CUBE_FACES];
     for face in 0..CUBE_FACES {
-        let view = Mat4::look_at_rh(eye, eye + CUBE_FACE_DIRS[face], CUBE_FACE_UPS[face]);
+        let view = glam::camera::rh::view::look_at_mat4(
+            eye,
+            eye + CUBE_FACE_DIRS[face],
+            CUBE_FACE_UPS[face],
+        );
         matrices[face] = proj * view;
     }
     matrices

@@ -174,6 +174,30 @@ const cellBar = Bar({
   },
 });
 
+const chargeMeter = VStack(
+  {
+    gap: spacing.hud.rowGap,
+    align: "end",
+    visibleWhen: stateEquals(player.weaponCharging, true),
+  },
+  [
+    Text({
+      content: "CHARGE",
+      color: color.hud.text,
+      font: font.hud.status,
+      fontSize: 18.0,
+    }),
+    Bar({
+      bind: bindState(player.weaponChargeProgress),
+      max: 1.0,
+      width: 160.0,
+      height: 12.0,
+      fill: color.warning,
+      background: color.hud.health.background,
+    }),
+  ],
+);
+
 // Ammo lives in the lower-right corner, headed by the current weapon's name.
 export const ammoReadout = defineUiTree({
   name: "hud.ammo",
@@ -198,6 +222,7 @@ export const ammoReadout = defineUiTree({
           [ammo, ammoReserve],
         ),
         cellBar,
+        chargeMeter,
       ],
     ),
   ),

@@ -1,5 +1,6 @@
 // UI widget factories: capitalized constructors for the nine non-container
-// widget kinds — Text, Panel, Image, Button, Slider, Bar, Ring, Spacer, Announce.
+// widget kinds — Text, Panel, Image, Button, Slider, Bar, Ring, Spacer, Announce,
+// Glyph.
 // (Containers — VStack/HStack/Grid — live in `./layout`.) Each mirrors the
 // `emitter()` precedent: a `Props` object validated synchronously, throwing a
 // field-named `Error`, returning a plain descriptor object whose keys are the
@@ -13,6 +14,7 @@
 // accepts a reaction handle or a bare name string.
 // See: context/lib/ui.md · context/lib/scripting.md §7
 
+import type { CommandId } from "postretro";
 import type { LocalizedText } from "./text";
 import type { ColorToken, FontToken, SpacingToken } from "./theme";
 import { __unwrapThemeToken } from "./theme";
@@ -758,6 +760,10 @@ export function validateBorder(value: unknown, factory: string): BorderProp {
  */
 export type ImageProps = {
   asset: string;
+  /** Logical-reference px. Alone, the height follows the source aspect. */
+  width?: number;
+  /** Logical-reference px. Alone, the width follows the source aspect. */
+  height?: number;
   id?: string;
   focusNeighbors?: FocusNeighborsProp;
   visibleWhen?: Predicate;
@@ -765,8 +771,9 @@ export type ImageProps = {
 } & ({ label: string; decorative?: never } | { decorative: true; label?: never });
 
 /**
- * An `image` leaf referencing a texture asset by key; it sizes from the asset's
- * natural pixel dimensions. No bind capability. Exactly one of `label` /
+ * An `image` leaf referencing a texture asset by key. Without `width` /
+ * `height` it takes the asset's natural size; one of them keeps the source
+ * aspect; both give an exact box. No bind capability. Exactly one of `label` /
  * `decorative: true` is required (the bridge enforces the same precondition).
  * Mirrors `ImageWidget`.
  */
@@ -788,6 +795,14 @@ export function Image(props: ImageProps): WidgetDescriptor {
     );
   }
   const out: WidgetDescriptor = { kind: "image", asset: props.asset };
+  for (const field of ["width", "height"] as const) {
+    const value = props[field];
+    if (value !== undefined) {
+      requireFiniteNumber(value, field, "Image");
+      if (value <= 0) throw new Error(`Image: \`${field}\` must be greater than zero`);
+      out[field] = value;
+    }
+  }
   applyFocusFields(out, props, "Image");
   if (hasLabel) {
     requireNonemptyString(p.label, "label", "Image");
@@ -822,6 +837,34 @@ export function Spacer(props: SpacerProps = {}): WidgetDescriptor {
     out.id = props.id;
   }
   applyA11yFields(out, props, "Spacer");
+  return out;
+}
+
+// --- Glyph ------------------------------------------------------------------
+
+/** Props for `Glyph`. `command` is a command ID such as `"nav_confirm"`. */
+export type GlyphProps = {
+  command: CommandId;
+  id?: string;
+  visibleWhen?: Predicate;
+};
+
+/**
+ * The glyph for a command on the player's current device: the mod's art for
+ * the input bound to it, else that input's label, else nothing when the command
+ * is unbound there or irrelevant. Follows rebinding and the confirm/cancel
+ * swap. Mirrors `GlyphWidget`.
+ */
+export function Glyph(props: GlyphProps): WidgetDescriptor {
+  requireObject(props, "Glyph");
+  requireNonemptyString(props.command, "command", "Glyph");
+  const out: WidgetDescriptor = { kind: "glyph", command: props.command };
+  if (props.id !== undefined) {
+    requireNonemptyString(props.id, "id", "Glyph");
+    out.id = props.id;
+  }
+  const visibleWhen = buildPredicate(props.visibleWhen, "visibleWhen", "Glyph");
+  if (visibleWhen !== undefined) out.visibleWhen = visibleWhen;
   return out;
 }
 

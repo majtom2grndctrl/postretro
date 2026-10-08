@@ -2,7 +2,7 @@
 // result types, and the hot-reload dependency classifier.
 // See: context/lib/scripting.md
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 #[cfg(debug_assertions)]
 use std::ffi::OsString;
 #[cfg(debug_assertions)]
@@ -10,6 +10,8 @@ use std::path::Path;
 #[cfg(debug_assertions)]
 use std::path::PathBuf;
 
+use super::input_block::ModInputBlock;
+use super::loading_screen::ModLoading;
 use crate::ctx::ScriptCtx;
 use crate::data_descriptors::{
     EntityTypeDescriptor, ImpactEventDescriptor, ModFontAssets, ModThemeTokens,
@@ -126,6 +128,10 @@ pub struct ModManifestResult {
     /// Mod-global audio preferences parsed from the optional `audio` object.
     /// Malformed values warn and fall back to the engine seed.
     pub audio: ModAudioProfile,
+    /// The author's optional `input` block: commands, default bindings, and
+    /// glyph art. `None` when the manifest has no block (the engine table
+    /// applies). Malformed parts warn and degrade; never fatal.
+    pub input: Option<ModInputBlock>,
     /// Mod-global weapon-switching rules. Omission resolves to the engine
     /// compatibility defaults before this manifest is committed.
     pub switching: SwitchingDescriptor,
@@ -174,6 +180,16 @@ pub struct ModManifestResult {
     /// successful staged mod-init commit replaces this snapshot whole; omission
     /// returns the app to its fallback frontend.
     pub frontend: Option<Frontend>,
+    /// Mod UI images from the manifest's `uiImages` field: image registry key
+    /// → mod-relative PNG path. Names under `engine/` and paths that leave the
+    /// mod root were warned and dropped at parse time; whether each file exists
+    /// and decodes is checked when the app loads it. Replaced whole by a
+    /// successful staged mod-init commit.
+    pub ui_images: BTreeMap<String, String>,
+    /// Mod-wide loading-screen declaration from the manifest's `loading`
+    /// field. Default (empty pool) when absent or malformed. Replaced whole by a
+    /// successful staged mod-init commit, like [`Self::frontend`].
+    pub loading: ModLoading,
     /// Font assets (family → TTF path) from the mod manifest's `fonts` field.
     /// Default (empty) when absent. Installed via `register_ui_font` by the
     /// boot caller.
@@ -508,6 +524,10 @@ pub struct ScriptRuntime {
     pub(super) watcher: Option<crate::watcher::ScriptWatcher>,
     #[cfg(debug_assertions)]
     pub(super) staged_manifest_lane: Option<StagedManifestBuildLane>,
+    /// Generation of the latest staged build that committed. Requested
+    /// generations that were stale, failed, or rejected never move it.
+    #[cfg(debug_assertions)]
+    pub(super) committed_staged_generation: Option<u64>,
     #[cfg(debug_assertions)]
     pub(super) active_mod_init_dependencies: Option<ActiveModInitDependencies>,
     /// Full descriptor snapshot from the latest staged reload whose mesh or

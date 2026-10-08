@@ -13,7 +13,8 @@ impl Renderer {
     /// Present an acquired frame handle. Surface ownership stays inside the
     /// renderer; callers only decide whether to present a returned handle.
     pub fn present(&self, handle: PresentHandle) {
-        handle.present();
+        self.queue.assert_empty("present");
+        handle.present(self.queue.raw());
     }
 
     /// Upload the decoded boot-splash logo into the boot splash pass and build
@@ -22,10 +23,11 @@ impl Renderer {
     /// (e.g. on resume) swaps the texture. Returns the decoded pixel dimensions
     /// for boot logging.
     pub fn install_splash_pixels(&mut self, loaded: &postretro_ui::UiTexture) -> [u32; 2] {
+        self.queue.assert_empty("boot splash install");
         self.boot_splash
             .as_mut()
             .expect("splash pixels require a windowed renderer")
-            .install_logo(&self.device, &self.queue, loaded)
+            .install_logo(&self.device, self.queue.raw(), loaded)
     }
 
     /// Render one boot-splash frame to the swapchain: clear to black, then draw
@@ -37,6 +39,10 @@ impl Renderer {
     /// The boot splash writes the swapchain directly — it never touches
     /// `scene_color`, the UI pass, or `UiReadSnapshot` (rendering_pipeline §7.8).
     pub fn render_splash_frame(&mut self) -> Result<Option<PresentHandle>> {
+        self.queue.assert_empty("boot splash frame");
+        // Splash and loading frames have no camera; commit here so a resize
+        // still reconfigures the swapchain once before acquire.
+        self.commit_extents();
         let Some(handle) = self.acquire_present_handle("splash frame")? else {
             return Ok(None);
         };
@@ -53,9 +59,10 @@ impl Renderer {
         self.boot_splash
             .as_ref()
             .expect("splash rendering requires a windowed renderer")
-            .encode(&self.queue, &mut encoder, &view, viewport);
+            .encode(self.queue.raw(), &mut encoder, &view, viewport);
 
-        self.queue.submit(std::iter::once(encoder.finish()));
+        self.queue
+            .submit_unbatched(std::iter::once(encoder.finish()), "boot splash");
         Ok(Some(handle))
     }
 
@@ -72,6 +79,45 @@ impl Renderer {
     /// the render signature stable. The boot splash does NOT use this.
     pub fn set_ui_snapshot(&mut self, snapshot: postretro_ui::UiReadSnapshot) {
         self.full_mut().ui_snapshot = snapshot;
+    }
+
+    /// Upload an RGBA8 image (`width * height * 4` bytes) under `key`, so
+    /// `image` widgets naming that key draw it. Re-registering a key replaces
+    /// it. Engine images, mod `uiImages`, and glyph art all load through here
+    /// once the renderer is full-ready.
+    ///
+    /// Refuses, uploading nothing, an image with a zero axis or one larger
+    /// than the device's 2D texture limit: the texture creation would fail
+    /// validation, and authored art must never be fatal. The error names the
+    /// size so the caller's warning can name the entry.
+    pub fn register_ui_image(
+        &mut self,
+        key: &str,
+        rgba: Vec<u8>,
+        width: u32,
+        height: u32,
+    ) -> Result<(), String> {
+        let max_edge = self.device.limits().max_texture_dimension_2d;
+        if width == 0 || height == 0 || width > max_edge || height > max_edge {
+            return Err(format!(
+                "{width}x{height} px is outside the device's 1..={max_edge} px texture size"
+            ));
+        }
+        let image = postretro_ui::UiTexture {
+            data: rgba,
+            width,
+            height,
+        };
+        let device = &self.device;
+        let queue = self.queue.raw();
+        let full = self
+            .full
+            .as_mut()
+            .expect("renderer full-init must complete before UI images upload");
+        let (texture, bind_group) = full.ui.upload_image(device, queue, &image);
+        full.ui_images
+            .register_uploaded(key, texture, bind_group, [width, height]);
+        Ok(())
     }
 
     /// Store the elapsed presented-frame time the photosensitivity limiter
@@ -104,6 +150,7 @@ impl Renderer {
         &mut self,
         templates: Vec<postretro_scripting_core::data_descriptors::PresentationTemplate>,
     ) {
+        self.queue.assert_empty("committed manifest replacement");
         self.full_mut().ui.replace_presentation_templates(templates);
     }
 
@@ -122,7 +169,7 @@ impl Renderer {
             .as_ref()
             .expect("renderer full-init must complete before full-ready paths run");
         let viewport = [surface_config.width, surface_config.height];
-        // Resolve each focusable button's `selected`/`checked` predicate (M13 G2)
+        // Resolve each focusable button's `selected`/`checked` predicate
         // against the same frame snapshot the draw build used, so the a11y readback
         // matches the author-wired highlight.
         // The export carries the owner recorded with the retained top layer's

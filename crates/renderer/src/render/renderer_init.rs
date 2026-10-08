@@ -24,6 +24,37 @@ fn renderer_backends_from_env() -> Result<wgpu::Backends> {
     renderer_backends(wgpu::Backends::from_env())
 }
 
+/// Release safety relies on the checked baked leaf/index mapping (§5).
+/// Preserve every other wgpu build-default flag, regardless of diagnostic features.
+fn renderer_instance_flags(
+    debug_assertions: bool,
+    override_value: Option<&std::ffi::OsStr>,
+) -> wgpu::InstanceFlags {
+    let mut flags = wgpu::InstanceFlags::from_build_config();
+    flags.set(
+        wgpu::InstanceFlags::VALIDATION_INDIRECT_CALL,
+        override_value.map_or(debug_assertions, |value| value != "0"),
+    );
+    flags
+}
+
+fn renderer_instance_flags_from_env() -> wgpu::InstanceFlags {
+    let override_value = std::env::var_os("WGPU_VALIDATION_INDIRECT_CALL");
+    let flags = renderer_instance_flags(cfg!(debug_assertions), override_value.as_deref());
+    let state = if flags.contains(wgpu::InstanceFlags::VALIDATION_INDIRECT_CALL) {
+        "on"
+    } else {
+        "off"
+    };
+    let source = if override_value.is_some() {
+        "WGPU_VALIDATION_INDIRECT_CALL override"
+    } else {
+        "build default"
+    };
+    log::info!("[Renderer] indirect-call validation: {state} ({source})");
+    flags
+}
+
 impl Renderer {
     /// Boot phase: build only the minimal GPU state needed to present the boot
     /// splash — instance, surface, adapter, device, queue, surface configuration,
@@ -43,11 +74,14 @@ impl Renderer {
     /// `install_textures`.
     pub fn new(window: &Arc<Window>) -> Result<Self> {
         let size = window.inner_size();
+        // macOS sends no scale-factor event at launch, so read it here.
+        let scale_factor = window.scale_factor();
         let backends = renderer_backends_from_env()?;
         log::info!("[Renderer] wgpu backend selection: {backends:?}");
 
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends,
+            flags: renderer_instance_flags_from_env(),
             ..wgpu::InstanceDescriptor::new_without_display_handle()
         });
 
@@ -59,6 +93,10 @@ impl Renderer {
             power_preference: wgpu::PowerPreference::default(),
             compatible_surface: Some(&surface),
             force_fallback_adapter: false,
+            // Bucketing is browser anti-fingerprinting; it would clamp the
+            // adapter limits the device request below relies on. False is
+            // wgpu's default, spelled out because the struct literal needs it.
+            apply_limit_buckets: false,
         }))
         .context("no suitable GPU adapter found")?;
 
@@ -87,6 +125,7 @@ impl Renderer {
             alpha_mode: surface_caps.alpha_modes[0],
             desired_maximum_frame_latency: 2,
             view_formats: vec![],
+            color_space: wgpu::SurfaceColorSpace::Auto,
         };
         surface.configure(&device, &surface_config);
         log::info!("[Renderer] vsync on");
@@ -96,9 +135,18 @@ impl Renderer {
         let boot_splash = splash_pass::BootSplashPass::new(&device, surface_format);
 
         Ok(Self {
-            device,
-            queue,
+            device: device.clone(),
+            queue: UploadQueue::new(&device, queue, false),
+            #[cfg(test)]
+            injected_acquire_failure: false,
             surface: Some(surface),
+            extent_state: postretro_render_cpu::render_extent::ExtentState::new(
+                postretro_render_cpu::render_extent::Extent::new(size.width, size.height),
+                scale_factor,
+                // Native until the app applies the player's render resolution,
+                // which it does before full init builds any scene target.
+                postretro_render_cpu::render_extent::RenderResolutionPolicy::default(),
+            ),
             surface_config,
             is_surface_configured: true,
             surface_reconfigure_pending: false,
@@ -127,18 +175,31 @@ impl Renderer {
     /// path deliberately creates neither a window nor a `wgpu::Surface`; the
     /// scene target is the capture output and no present path is available.
     pub fn new_offscreen(capture_width: u32, capture_height: u32) -> Result<Self> {
-        validate_offscreen_capture_dimensions(capture_width, capture_height)?;
         let backends = renderer_backends_from_env()?;
         log::info!("[Renderer] wgpu backend selection: {backends:?}");
 
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends,
+            flags: renderer_instance_flags_from_env(),
             ..wgpu::InstanceDescriptor::new_without_display_handle()
         });
+        Self::new_offscreen_on(&instance, capture_width, capture_height)
+    }
+
+    /// `new_offscreen` against a caller-built instance. Tests use it to pin a
+    /// backend and its options without touching process environment.
+    pub(in crate::render) fn new_offscreen_on(
+        instance: &wgpu::Instance,
+        capture_width: u32,
+        capture_height: u32,
+    ) -> Result<Self> {
+        validate_offscreen_capture_dimensions(capture_width, capture_height)?;
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::default(),
             compatible_surface: None,
             force_fallback_adapter: false,
+            // See `Renderer::new`.
+            apply_limit_buckets: false,
         }))
         .context("frame capture requires a GPU adapter")?;
         let (
@@ -160,12 +221,18 @@ impl Renderer {
         // renders the default (full) tier.
         let surface_depth_quality =
             postretro_render_cpu::surface_depth::SurfaceDepthQuality::default();
+        // Capture renders at its requested resolution, divisor 1, with no
+        // window scale factor.
+        let extent_state = postretro_render_cpu::render_extent::ExtentState::new(
+            postretro_render_cpu::render_extent::Extent::new(capture_width, capture_height),
+            1.0,
+            postretro_render_cpu::render_extent::RenderResolutionPolicy::default(),
+        );
         let full = build_full_renderer(
             &device,
             &queue,
             capture_format,
-            capture_width,
-            capture_height,
+            extent_state.committed(),
             has_multi_draw_indirect,
             cube_array_supported,
             bloom_render_profile,
@@ -173,9 +240,12 @@ impl Renderer {
             surface_depth_quality,
         )?;
         Ok(Self {
-            device,
-            queue,
+            device: device.clone(),
+            queue: UploadQueue::new(&device, queue, true),
+            #[cfg(test)]
+            injected_acquire_failure: false,
             surface: None,
+            extent_state,
             // Retained as the renderer's common target dimensions/format store.
             // Offscreen construction never configures or accesses a surface.
             surface_config: wgpu::SurfaceConfiguration {
@@ -187,6 +257,7 @@ impl Renderer {
                 alpha_mode: wgpu::CompositeAlphaMode::Opaque,
                 desired_maximum_frame_latency: 2,
                 view_formats: vec![],
+                color_space: wgpu::SurfaceColorSpace::Auto,
             },
             is_surface_configured: false,
             surface_reconfigure_pending: false,
@@ -207,7 +278,7 @@ impl Renderer {
 
     /// Build (or rebuild) the full renderer from current boot state. Idempotent
     /// across surface recreation: any existing `FullRenderer` is dropped (its GPU
-    /// resources released) and a fresh one built from the live `surface_config`,
+    /// resources released) and a fresh one built at the committed extents,
     /// so a suspend→resume that recreates the surface can re-run completion
     /// without re-running app-side deferred session init. Builds with no level
     /// loaded; level data installs later via `install_level_geometry`.
@@ -215,12 +286,14 @@ impl Renderer {
     /// No raw wgpu handles cross the app boundary — the app calls this; the
     /// renderer stays the sole GPU owner.
     pub fn finish_full_init(&mut self) -> Result<()> {
+        // Take any recorded resize, scale or render-resolution change first, so
+        // the full renderer builds once at the final extents.
+        self.commit_extents();
         let full = build_full_renderer(
             &self.device,
-            &self.queue,
+            self.queue.raw(),
             self.surface_config.format,
-            self.surface_config.width,
-            self.surface_config.height,
+            self.extent_state.committed(),
             self.has_multi_draw_indirect,
             self.cube_array_supported,
             self.bloom_render_profile,
@@ -228,6 +301,7 @@ impl Renderer {
             self.surface_depth_quality,
         )?;
         self.full = Some(Box::new(full));
+        self.queue.enable();
         log::info!("[Renderer] Full renderer initialization complete");
         Ok(())
     }
@@ -372,6 +446,39 @@ fn capture_gpu_timing_state(
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::OsStr;
+
+    #[test]
+    fn indirect_validation_policy_changes_only_its_bit_for_every_build_and_override() {
+        let bit = wgpu::InstanceFlags::VALIDATION_INDIRECT_CALL;
+        let other_defaults = wgpu::InstanceFlags::from_build_config() & !bit;
+        for debug in [false, true] {
+            for (value, expected) in [
+                (None, debug),
+                (Some("0"), false),
+                (Some("1"), true),
+                (Some(""), true),
+                (Some("false"), true),
+                (Some("00"), true),
+            ] {
+                let flags = super::renderer_instance_flags(debug, value.map(OsStr::new));
+                assert_eq!(
+                    flags.contains(bit),
+                    expected,
+                    "debug={debug}, override={value:?}"
+                );
+                assert_eq!(
+                    flags & !bit,
+                    other_defaults,
+                    "debug={debug}, override={value:?}"
+                );
+            }
+        }
+        assert_eq!(
+            super::renderer_instance_flags(cfg!(debug_assertions), None).contains(bit),
+            cfg!(debug_assertions),
+        );
+    }
     use super::*;
 
     #[test]

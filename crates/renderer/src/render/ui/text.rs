@@ -29,10 +29,11 @@ pub(crate) struct UiTextRenderer {
     #[allow(dead_code)]
     glyph_cache: GlyphCache,
     /// Device-resolution uniform glyphon maps glyph positions against. Set from
-    /// the backbuffer size each frame in `prepare`.
+    /// the UI layer (surface extent) each frame in `prepare`.
     viewport: Viewport,
-    /// glyphon's glyph atlas, built with the sRGB surface format so coverage
-    /// blends correctly against the sRGB swapchain (see `new`).
+    /// Built by `TextAtlas::new`, which uses glyphon's default Accurate colour
+    /// mode: glyph colours convert to
+    /// linear in the shader, and the sRGB UI layer blends in linear space.
     text_atlas: TextAtlas,
     /// One glyphon draw recorder per text span in the mixed paint stream. Each
     /// owns a distinct vertex buffer, so every span can be prepared before the
@@ -52,6 +53,9 @@ pub(crate) struct TextPrepareInput<'a> {
     pub(crate) texts: &'a [UiText],
     pub(crate) buffers: &'a [TextBuffer],
     pub(crate) depths: &'a [f32],
+    /// Per-text device-pixel clip (a scroll viewport), parallel to `texts`;
+    /// `None` bounds the run by the whole layer.
+    pub(crate) clips: &'a [Option<[f32; 4]>],
 }
 
 impl UiTextRenderer {
@@ -113,16 +117,11 @@ impl UiTextRenderer {
         for (i, t) in texts.iter().enumerate() {
             let metrics = Metrics::new(t.font_size, t.font_size * LINE_HEIGHT_FACTOR);
             let mut buffer = TextBuffer::new(font_system, metrics);
-            // Bound the layout box to the backbuffer: glyphon needs a finite
+            // Bound the layout box to the UI layer (surface extent): glyphon needs a finite
             // layout size to resolve the run (an unbounded box has nothing to lay
             // glyphs against).
-            buffer.set_size(
-                font_system,
-                Some(viewport[0] as f32),
-                Some(viewport[1] as f32),
-            );
+            buffer.set_size(Some(viewport[0] as f32), Some(viewport[1] as f32));
             buffer.set_text(
-                font_system,
                 &t.content,
                 &Attrs::new().family(Family::Name(&t.family)).metadata(i),
                 Shaping::Advanced,
@@ -173,6 +172,7 @@ impl UiTextRenderer {
             texts,
             buffers,
             depths,
+            clips,
         } = input;
 
         if texts.is_empty() || batches.is_empty() {
@@ -183,6 +183,11 @@ impl UiTextRenderer {
             texts.len(),
             depths.len(),
             "each shaped UI text run needs one painter depth",
+        );
+        debug_assert_eq!(
+            texts.len(),
+            clips.len(),
+            "each shaped UI text run needs one clip entry",
         );
 
         // Once-per-submit guard: one coordinated preparation phase may fill
@@ -225,17 +230,13 @@ impl UiTextRenderer {
                 let areas = texts[range.clone()]
                     .iter()
                     .zip(&buffers[range.clone()])
-                    .map(|(t, buffer)| TextArea {
+                    .zip(&clips[range.clone()])
+                    .map(|((t, buffer), clip)| TextArea {
                         buffer,
                         left: t.position[0],
                         top: t.position[1],
                         scale: 1.0,
-                        bounds: TextBounds {
-                            left: 0,
-                            top: 0,
-                            right: viewport[0] as i32,
-                            bottom: viewport[1] as i32,
-                        },
+                        bounds: text_bounds(*clip, viewport),
                         default_color: GlyphColor::rgba(
                             t.color[0], t.color[1], t.color[2], t.color[3],
                         ),
@@ -288,6 +289,29 @@ impl UiTextRenderer {
     }
 }
 
+/// glyphon bounds for one text run: its scroll viewport cut to the layer, or
+/// the whole layer when nothing clips it. A clip outside the layer collapses
+/// to an empty box, which draws no glyph.
+fn text_bounds(clip: Option<[f32; 4]>, viewport: [u32; 2]) -> TextBounds {
+    let (right, bottom) = (viewport[0] as i32, viewport[1] as i32);
+    let Some(clip) = clip else {
+        return TextBounds {
+            left: 0,
+            top: 0,
+            right,
+            bottom,
+        };
+    };
+    let left = (clip[0].floor() as i32).clamp(0, right);
+    let top = (clip[1].floor() as i32).clamp(0, bottom);
+    TextBounds {
+        left,
+        top,
+        right: ((clip[0] + clip[2]).ceil() as i32).clamp(left, right),
+        bottom: ((clip[1] + clip[3]).ceil() as i32).clamp(top, bottom),
+    }
+}
+
 fn font_face_ids_for_family(font_system: &FontSystem, family: &str) -> HashSet<String> {
     font_system
         .db()
@@ -311,6 +335,30 @@ fn font_family_gained_face(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_clipped_text_run_is_bounded_by_its_scroll_viewport_within_the_layer() {
+        let unclipped = text_bounds(None, [1280, 720]);
+        assert_eq!(
+            (
+                unclipped.left,
+                unclipped.top,
+                unclipped.right,
+                unclipped.bottom
+            ),
+            (0, 0, 1280, 720),
+        );
+        let clipped = text_bounds(Some([100.5, 50.0, 200.0, 80.25]), [1280, 720]);
+        assert_eq!(
+            (clipped.left, clipped.top, clipped.right, clipped.bottom),
+            (100, 50, 301, 131),
+        );
+        let outside = text_bounds(Some([1400.0, 800.0, 50.0, 50.0]), [1280, 720]);
+        assert_eq!(
+            outside.left, outside.right,
+            "an off-layer clip draws no glyph"
+        );
+    }
 
     #[test]
     fn font_delta_validation_rejects_malformed_bytes_when_family_already_exists() {

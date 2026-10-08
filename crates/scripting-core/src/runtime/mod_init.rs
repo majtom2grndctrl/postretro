@@ -90,12 +90,12 @@ impl ScriptRuntime {
         // ambiguous state above.
         #[cfg(debug_assertions)]
         {
-            if ts_path.is_file() {
-                if let Err(e) = compile_start_script(&ts_path, &js_path) {
-                    return Err(ScriptError::InvalidArgument {
-                        reason: format!("mod-init: failed to compile `{}`: {e}", ts_path.display()),
-                    });
-                }
+            if ts_path.is_file()
+                && let Err(e) = compile_start_script(&ts_path, &js_path)
+            {
+                return Err(ScriptError::InvalidArgument {
+                    reason: format!("mod-init: failed to compile `{}`: {e}", ts_path.display()),
+                });
             }
         }
         // `ts_path` is only consulted in debug builds; suppress the unused

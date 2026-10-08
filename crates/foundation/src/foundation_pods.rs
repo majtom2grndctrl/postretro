@@ -45,4 +45,8 @@ pub struct ModMapEntry {
     pub path: String,
     pub name: String,
     pub tags: Vec<String>,
+    /// Per-map loading-screen tree pool (`loadingTree`): UI tree registry
+    /// names, deduplicated in authored order. Empty means absent; the load
+    /// falls back to the mod-wide pool.
+    pub loading_tree: Vec<String>,
 }

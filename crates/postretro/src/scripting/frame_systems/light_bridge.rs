@@ -730,7 +730,7 @@ impl LightBridge {
             }
         }
 
-        // Commit settled components so a subsequent `world.query` observes
+        // Commit settled components so a subsequent `getMapEntities` observes
         // post-animation static state.
         for (map_idx, id, settled_component, had_radius_animation) in settled {
             // Stale-id error means the entity was despawned between read and write; ignore.
@@ -973,18 +973,18 @@ impl LightBridge {
             // from its own descriptor buffer (group 1 binding 4) — the offsets
             // we just baked point into the shared `anim_samples` scripted
             // region, which both the forward and compose paths sample.
-            if let Some(slot) = self.shape[map_idx].animated_slot {
-                if !self.preserve_baked_descriptors.contains(&id) {
-                    self.staged_compose_descriptor_writes.push((
-                        slot,
-                        pack_compose_animation_descriptor(
-                            component,
-                            snapshot,
-                            brightness_offset,
-                            color_offset,
-                        ),
-                    ));
-                }
+            if let Some(slot) = self.shape[map_idx].animated_slot
+                && !self.preserve_baked_descriptors.contains(&id)
+            {
+                self.staged_compose_descriptor_writes.push((
+                    slot,
+                    pack_compose_animation_descriptor(
+                        component,
+                        snapshot,
+                        brightness_offset,
+                        color_offset,
+                    ),
+                ));
             }
         }
 
@@ -3475,7 +3475,7 @@ mod tests {
 
     // Regression: the scripting bridge was populated from the renderer's
     // dynamic-only list, so a script-reserved baked light was absent from
-    // world.query and could never install its compose descriptor.
+    // getMapEntities and could never install its compose descriptor.
     #[test]
     fn full_authored_order_exposes_static_light_without_entering_direct_buffer() {
         let mut scripted_static = sample_point_light();
@@ -3735,7 +3735,7 @@ mod tests {
         assert_eq!(live_runtime_count(&bridge), 2);
 
         crate::sim::advance_client_presentation_effects(&mut registry, 0.020);
-        crate::impact_effects::run_end_of_frame_removal_pass(&mut registry, |_, _| {});
+        crate::impact_effects::run_end_of_frame_removal_pass(&mut registry, |_| {});
         let lights_bytes = bridge
             .update(&mut registry, 0.020, 0.0)
             .expect("client-side despawns dirty the bridge")
@@ -3853,7 +3853,9 @@ mod tests {
             assert_eq!(live.lights_bytes.len(), CONCURRENT_LIGHTS * GPU_LIGHT_SIZE);
             assert!(
                 live.lights_bytes
-                    .chunks_exact(GPU_LIGHT_SIZE)
+                    .as_chunks::<GPU_LIGHT_SIZE>()
+                    .0
+                    .iter()
                     .all(|record| record.iter().any(|&byte| byte != 0)),
                 "every live runtime light must produce a non-zero forward record"
             );
@@ -4260,7 +4262,9 @@ mod tests {
         assert!(
             update
                 .lights_bytes
-                .chunks_exact(GPU_LIGHT_SIZE)
+                .as_chunks::<GPU_LIGHT_SIZE>()
+                .0
+                .iter()
                 .all(|record| record.iter().any(|&byte| byte != 0)),
             "batched runtime enrollment must upload every live forward record"
         );
@@ -4538,7 +4542,12 @@ mod tests {
 
         let update = bridge.update(&mut registry, 0.0, 0.0).unwrap();
         assert_eq!(update.animated_window_brightness, vec![0.0, 0.6, 0.6]);
-        let records: Vec<&[u8]> = update.lights_bytes.chunks_exact(GPU_LIGHT_SIZE).collect();
+        let records: Vec<&[u8; GPU_LIGHT_SIZE]> = update
+            .lights_bytes
+            .as_chunks::<GPU_LIGHT_SIZE>()
+            .0
+            .iter()
+            .collect();
         assert_eq!(records.len(), 3);
         assert!(records[0].iter().all(|&byte| byte == 0));
         assert_eq!(records[1], records[2]);

@@ -1,0 +1,178 @@
+[2026-10-06T09:30:48Z INFO  postretro] [Engine] Postretro starting
+[2026-10-06T09:30:48Z INFO  postretro::startup::session] [Engine] Content root: /Users/dhiester/Projects/Personal/postretro-shspike/content/dev
+[2026-10-06T09:30:48Z INFO  postretro::startup::session] [Engine] Core root: core
+[2026-10-06T09:30:48Z INFO  postretro::startup::session] [Engine] Player data: config /Users/dhiester/Library/Application Support/postretro, data /Users/dhiester/Library/Application Support/postretro
+[2026-10-06T09:30:49Z INFO  postretro_renderer::render::renderer_init] [Renderer] wgpu backend selection: Backends(VULKAN | METAL | DX12 | BROWSER_WEBGPU)
+[2026-10-06T09:30:49Z INFO  postretro_renderer::render::renderer_init] [Renderer] indirect-call validation: off (build default)
+[2026-10-06T09:30:49Z INFO  postretro_renderer::render::renderer_init] [Renderer] GPU adapter: AMD Radeon Pro 5300M (backend=Metal, type=DiscreteGpu, vendor=0x0000, device=0x0000, driver= )
+[2026-10-06T09:30:49Z INFO  postretro_renderer::render::renderer_init] [Renderer] Indirect execution supported (multi_draw_indexed_indirect)
+[2026-10-06T09:30:49Z INFO  postretro_renderer::render::renderer_init] [Renderer] Cube-array textures supported (dynamic point shadows enabled)
+[2026-10-06T09:30:49Z INFO  postretro_renderer::render::renderer_init] [Renderer] vsync on
+[2026-10-06T09:30:49Z INFO  postretro] [Engine] Window ready
+[2026-10-06T09:30:49Z INFO  postretro::startup::splash_lifecycle] [Engine] Splash loaded: 2028×582
+[2026-10-06T09:30:49Z INFO  postretro::startup::splash_lifecycle] [Startup] args_parsed=0.3ms, event_loop_created=90.3ms, window_created=280.8ms, wgpu_init=1066.1ms, first_black_frame=209.8ms, splash_decoded=8.0ms, splash_uploaded=7.4ms, first_splash_frame=14.3ms
+[2026-10-06T09:30:50Z INFO  postretro::session] [Audio] Initialized
+[2026-10-06T09:30:50Z INFO  postretro_renderer::render::renderer_init_resources] [Renderer] ChunkLightList absent — specular path iterates the full spec buffer
+[2026-10-06T09:30:50Z INFO  postretro_renderer::render::sdf_atlas] [SdfAtlas] no atlas — shadow pass disabled (section absent or empty-geometry bake)
+[2026-10-06T09:30:50Z INFO  postretro_renderer::render::compose_spike] [SH spike] compose arms: baseline
+[2026-10-06T09:30:50Z INFO  postretro_renderer::render::sh_compose] [Renderer] SH compose: base grid 1×1×1, 0 animated delta light(s)
+[2026-10-06T09:30:50Z INFO  postretro_renderer::render::renderer_full_init] [Renderer] Spot shadow pool initialized (96 × 512×512 Depth32Float = 96 MiB VRAM)
+[2026-10-06T09:30:50Z INFO  postretro_renderer::render::renderer_full_init] [Renderer] Pipeline ready (no geometry loaded)
+[2026-10-06T09:30:50Z INFO  postretro_renderer::render::renderer_init] [Renderer] Full renderer initialization complete
+[2026-10-06T09:30:50Z WARN  postretro_foundation::data_descriptors::types::behavior::recursive] components.behavior: activities [startle] are unreachable at `components.behavior`
+[2026-10-06T09:30:50Z WARN  postretro_foundation::data_descriptors::types::behavior::recursive] components.behavior: activities [startle] are unreachable at `components.behavior`
+[2026-10-06T09:30:50Z INFO  postretro_scripting_core::runtime::mod_init] [Mod-init] mod `dev` initialized
+[2026-10-06T09:30:50Z WARN  postretro_ui::modal_stack::registry] [UI] mod tree 'hud' shadows the engine built-in of the same name (reskin path)
+[2026-10-06T09:30:50Z WARN  postretro_ui::modal_stack::registry] [UI] mod tree 'pauseMenu' shadows the engine built-in of the same name (reskin path)
+[2026-10-06T09:30:50Z INFO  postretro::startup::splash_lifecycle] [State] restored persistent slots from /Users/dhiester/Library/Application Support/postretro/postretro.dev/state.json
+[2026-10-06T09:30:50Z INFO  postretro::startup::splash_lifecycle] [Startup] mod_init=371.3ms
+[2026-10-06T09:30:50Z INFO  postretro::startup::splash_lifecycle] [Startup] args_parsed=0.3ms, event_loop_created=90.3ms, window_created=280.8ms, wgpu_init=1066.1ms, first_black_frame=209.8ms, splash_decoded=8.0ms, splash_uploaded=7.4ms, first_splash_frame=14.3ms, audio_init_complete=196.8ms, script_runtime_ctor=17.8ms, net_endpoint_complete=0.7ms, os_reader_started=0.1ms, session_init_complete=56.1ms, renderer_full_init_complete=81.5ms, boot_worker_dispatch=18.3ms
+[2026-10-06T09:30:50Z WARN  postretro_level_loader::prl_loader] [Material] Unknown prefix 'Metal-Panel' in texture 'Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004' — using default material
+[2026-10-06T09:30:50Z WARN  postretro_level_loader::prl_loader] [Material] Unknown prefix 'Metal-Panel-004' in texture 'Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel-004_Section-001' — using default material
+[2026-10-06T09:30:50Z WARN  postretro_level_loader::prl_loader] [Material] Unknown prefix 'default' in texture 'default_dirt_011' — using default material
+[2026-10-06T09:30:50Z INFO  postretro_level_loader::prl_loader] [PRL] Geometry: 3094 vertices, 4638 indices, 774 faces, 14 textures referenced
+[2026-10-06T09:30:50Z INFO  postretro_level_loader::prl_loader] [PRL] BVH: 1547 nodes, 774 leaves, root=0
+[2026-10-06T09:30:50Z INFO  postretro_level_loader::prl_loader] [PRL] Cells: 464 cells, 1638 portal refs loaded
+[2026-10-06T09:30:50Z INFO  postretro_level_loader::prl_loader] [PRL] CellVisibility: 464 cells, 4837 coupled pair(s)
+[2026-10-06T09:30:50Z INFO  postretro_level_loader::prl_loader] [PRL] CellResidencySet: 464 camera cells, 21000 entries, max lead 32768
+[2026-10-06T09:30:50Z INFO  postretro_level_loader::prl_loader] [PRL] CellLocator: 463 node(s) loaded
+[2026-10-06T09:30:50Z INFO  postretro_level_loader::prl_loader] [PRL] AlphaLights: 32 lights loaded
+[2026-10-06T09:30:50Z INFO  postretro_level_loader::prl_loader] [PRL] LightTags: 18 tagged lights
+[2026-10-06T09:30:50Z INFO  postretro_level_loader::prl_loader] [PRL] LightInfluence: 32 records loaded
+[2026-10-06T09:30:50Z INFO  postretro_level_loader::prl_loader] [PRL] Resolved 5 map-light → animated-slot mapping(s)
+[2026-10-06T09:30:50Z INFO  postretro_level_loader::lightmap_stream::storage] [PRL] Lightmap residency: stream, 198 cell block(s) (residency set, usable portals and cell blocks present)
+[2026-10-06T09:30:50Z INFO  postretro_level_loader::lightmap_stream::load] [PRL] Lightmap: 198 cell block(s), index only (7148 B read)
+[2026-10-06T09:30:50Z INFO  postretro_level_loader::lightmap_stream::load] [PRL] ShadowmaskAtlas: 198 cell block(s), 4 selected channel entr(y/ies), index only (5560 B read)
+[2026-10-06T09:30:50Z INFO  postretro_level_loader::prl_loader] [PRL] SdfAtlas section missing — runtime SDF shadow pass disabled (legacy PRL or no SDF bake)
+[2026-10-06T09:30:50Z INFO  postretro_level_loader::prl_loader] [PRL] ChunkLightList: 11×4×16 grid, 243 indices
+[2026-10-06T09:30:50Z INFO  postretro_level_loader::prl_lightmap] [PRL] AnimatedLightChunks: 154 chunks, 158 flat indices
+[2026-10-06T09:30:50Z INFO  postretro_level_loader::prl_lightmap] [PRL] AnimatedLightWeightMaps: 154 chunks, 154 blocks on 4 pages of 1024², 2551686 covered texels, 1395198 weight entries
+[2026-10-06T09:30:50Z INFO  postretro_level_loader::prl_loader] [PRL] EntityShadowLights: 4 selected static light(s)
+[2026-10-06T09:30:50Z INFO  postretro_level_loader::prl_loader] [PRL] DataScript: 8339 bytes from `/Users/dhiester/Projects/Personal/postretro/content/dev/scripts/arena-lights.ts`
+[2026-10-06T09:30:50Z INFO  postretro_level_loader::prl_loader] [PRL] MapEntity: 277 entities
+[2026-10-06T09:30:50Z INFO  postretro_level_loader::prl_loader] [PRL] KinematicGeometry: 3 movers, 6 waypoints, 72 vertices, 108 indices
+[2026-10-06T09:30:50Z INFO  postretro_level_loader::prl_loader] [PRL] TriggerVolumes: 5 trigger(s): 1 touch, 4 use; commands: 1 start, 0 stop, 0 reverse, 4 go_to_path_node
+[2026-10-06T09:30:50Z INFO  postretro_level_loader::prl_loader] [PRL] FogVolumes: 5 volumes, pixel_scale=0, initial_gravity=-30
+[2026-10-06T09:30:50Z INFO  postretro_level_loader::prl_loader] [PRL] FogCellMasks: 464 cells
+[2026-10-06T09:30:50Z INFO  postretro_level_loader::prl_loader] [PRL] NavMesh: 290×449 grid, cell_size=0.2500m, 350 region(s), 423 portal(s)
+[2026-10-06T09:30:50Z INFO  postretro_level_loader::prl_loader] [PRL] CellDrawIndex: 464 cells, 548 spans (candidate-cull index loaded)
+[2026-10-06T09:30:50Z INFO  postretro_level_loader::prl_loader] [PRL] Loaded: 3094 vertices, 4638 indices (1546 triangles), 774 faces, 464 cells, bvh=[1547 nodes, 774 leaves], portals=819, textures=14
+[2026-10-06T09:30:50Z INFO  postretro::startup::worker] [Loader] PRL loaded successfully from /Users/dhiester/Projects/Personal/postretro-shspike/content/dev/maps/campaign-test.prl
+[2026-10-06T09:30:50Z WARN  postretro::startup::lifecycle] [Material] Unknown prefix 'default' in texture 'default_dirt_011' — using default material
+[2026-10-06T09:30:50Z WARN  postretro::startup::lifecycle] [Material] Unknown prefix 'Metal-Panel' in texture 'Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-003' — using default material
+[2026-10-06T09:30:50Z WARN  postretro::startup::lifecycle] [Material] Unknown prefix 'Metal-Panel-004' in texture 'Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel-004_Section-001' — using default material
+[2026-10-06T09:30:50Z INFO  postretro_renderer::render::renderer_models] [Renderer] Textures installed: 14
+[2026-10-06T09:30:50Z INFO  postretro_renderer::render::sdf_atlas] [SdfAtlas] no atlas — shadow pass disabled (section absent or empty-geometry bake)
+[2026-10-06T09:30:50Z INFO  postretro_renderer::render::sh_compose] [Renderer] SH compose: base grid 1×1×1, 0 animated delta light(s)
+[2026-10-06T09:30:50Z INFO  postretro_renderer::render::animated_lightmap] [Renderer] Animated lightmap atlases 1024x1024x4 pages, ~48 MiB VRAM (Rgba16Float irradiance + Rgba8Unorm direction)
+[2026-10-06T09:30:50Z INFO  postretro_renderer::render::animated_lightmap] [Renderer] Animated lightmap: 154 chunks, 2551686 covered texels, 1395198 weight entries, 42413 dispatch tiles
+[2026-10-06T09:30:50Z INFO  postretro_renderer::lighting::lightmap::stream] [Renderer] Lightmap pool (streamed): 198 cell block(s), first generation 7 layer(s) of 2048² plus a spare, shadowmask resident
+[2026-10-06T09:30:50Z INFO  postretro_renderer::render::renderer_resources] [Renderer] Lightmap residency: static_irradiance 33554432 B, static_direction 16777216 B, shadowmask 67108864 B, animated_irradiance 33554432 B, animated_direction 16777216 B; total 167772160 B (160.00 MiB)
+[2026-10-06T09:30:50Z INFO  postretro_renderer::compute_cull] [Renderer] BVH cull pipeline ready: 1547 nodes, 774 leaves, 13 buckets, multi_draw=true
+[2026-10-06T09:30:50Z INFO  postretro_renderer::candidate_cull] [Renderer] Candidate cull pipeline ready: total_leaves=774
+[2026-10-06T09:30:50Z INFO  postretro_renderer::render::renderer_resources] [Renderer] Geometry installed: 4638 indices, bvh_leaves=774
+[2026-10-06T09:30:50Z INFO  postretro::runtime_movers] [Loader] kinematic mover 0 (`campaign_bridge_west_door`): spin static(axis=[0.000, 0.000, 0.000], accel=0.00 deg/s², carry_yaw=false); phase(current_rate=0.00 deg/s, target_rate=0.00 deg/s)
+[2026-10-06T09:30:50Z INFO  postretro::runtime_movers] [Loader] kinematic mover 1 (`campaign_bridge_east_door`): spin static(axis=[0.000, 0.000, 0.000], accel=0.00 deg/s², carry_yaw=false); phase(current_rate=0.00 deg/s, target_rate=0.00 deg/s)
+[2026-10-06T09:30:50Z INFO  postretro::runtime_movers] [Loader] kinematic mover 2 (`campaign_plus_bridge_crusher`): spin static(axis=[0.000, 0.000, 0.000], accel=0.00 deg/s², carry_yaw=false); phase(current_rate=0.00 deg/s, target_rate=0.00 deg/s)
+[2026-10-06T09:30:50Z INFO  postretro::startup::lifecycle::lifecycle_world_cpu] [Loader] spawned 3 kinematic mover entity/entities
+[2026-10-06T09:30:50Z INFO  postretro::startup::lifecycle::lifecycle_world_cpu] [Loader] dispatched 276 map entities; 2 classname(s) handled by built-in handlers
+[2026-10-06T09:30:50Z WARN  postretro_entities::data_registry] [Loader] duplicate active reaction name `levelLoad` in composed reaction set; all matching reactions will fire
+[2026-10-06T09:30:50Z WARN  postretro_entities::data_registry] [Loader] duplicate active reaction name `levelLoad` in composed reaction set; all matching reactions will fire
+[2026-10-06T09:30:50Z WARN  postretro_entities::data_registry] [Loader] duplicate active reaction name `levelLoad` in composed reaction set; all matching reactions will fire
+[2026-10-06T09:30:50Z WARN  postretro_entities::data_registry] [Loader] duplicate active reaction name `levelLoad` in composed reaction set; all matching reactions will fire
+[2026-10-06T09:30:50Z WARN  postretro_entities::data_registry] [Loader] duplicate active reaction name `levelLoad` in composed reaction set; all matching reactions will fire
+[2026-10-06T09:30:50Z WARN  postretro_entities::data_registry] [Loader] duplicate active reaction name `levelLoad` in composed reaction set; all matching reactions will fire
+[2026-10-06T09:30:50Z WARN  postretro_sim::trigger_bindings] [Trigger] trigger-event tag `faction_sentiment_story` matched no trigger volumes; descriptor is inert
+[2026-10-06T09:30:50Z INFO  postretro::startup::lifecycle::lifecycle_world_cpu] [Loader] dispatched 2 map entities through descriptor archetypes
+[2026-10-06T09:30:50Z INFO  postretro_sim::scripting::builtins::data_archetype] [Loader] spawned 1 player(s) from 1 player_spawn entries
+[2026-10-06T09:30:50Z INFO  postretro_sim::trigger_pools] [TriggerPools] seed=4420725746922982116
+[2026-10-06T09:30:50Z INFO  postretro_renderer::render::renderer_models] [Model] skinned model animation: 1 clip(s) ['mixamo.com' (5.85s)], 26 joints
+[2026-10-06T09:30:50Z INFO  postretro_renderer::render::renderer_models] [Model] skinned model uploaded: 1 clip(s) parsed, 0 tag(s)
+[2026-10-06T09:30:50Z INFO  postretro_renderer::render::renderer_models] [Model] skinned model uploaded: 0 clip(s) parsed, 0 tag(s)
+[2026-10-06T09:30:50Z INFO  postretro_renderer::render::renderer_models] [Model] skinned model uploaded: 0 clip(s) parsed, 0 tag(s)
+[2026-10-06T09:30:51Z INFO  postretro_renderer::render::renderer_models] [Model] skinned model animation: 50 clip(s) ['crouching_turn_90_left' (1.30s), 'crouching_turn_90_right' (1.27s), 'death_crouching_headshot_front' (1.93s), 'death_from_back_headshot' (3.73s), 'death_from_front_headshot' (2.87s), 'death_from_right' (3.33s), 'death_from_the_back' (3.00s), 'death_from_the_front' (3.47s), 'exo_red' (0.07s), 'idle' (2.13s), 'idle_aiming' (2.13s), 'idle_crouching' (2.13s), 'idle_crouching_aiming' (2.03s), 'jump_down' (0.70s), 'jump_loop' (0.97s), 'jump_up' (0.57s), 'run_backward' (0.53s), 'run_backward_left' (0.53s), 'run_backward_right' (0.53s), 'run_forward' (0.53s), 'run_forward_left' (0.53s), 'run_forward_right' (0.53s), 'run_left' (0.53s), 'run_right' (0.53s), 'sprint_backward' (0.53s), 'sprint_backward_left' (0.53s), 'sprint_backward_right' (0.53s), 'sprint_forward' (0.53s), 'sprint_forward_left' (0.53s), 'sprint_forward_right' (0.53s), 'sprint_left' (0.53s), 'sprint_right' (0.53s), 'turn_90_left' (1.03s), 'turn_90_right' (1.03s), 'walk_backward' (1.03s), 'walk_backward_left' (1.03s), 'walk_backward_right' (1.03s), 'walk_crouching_backward' (1.03s), 'walk_crouching_backward_left' (1.03s), 'walk_crouching_backward_right' (1.03s), 'walk_crouching_forward' (1.03s), 'walk_crouching_forward_left' (1.03s), 'walk_crouching_forward_right' (1.03s), 'walk_crouching_left' (1.03s), 'walk_crouching_right' (1.03s), 'walk_forward' (1.03s), 'walk_forward_left' (1.03s), 'walk_forward_right' (1.03s), 'walk_left' (1.03s), 'walk_right' (1.03s)], 66 joints
+[2026-10-06T09:30:51Z INFO  postretro_renderer::render::renderer_models] [Model] skinned model uploaded: 50 clip(s) parsed, 0 tag(s)
+[2026-10-06T09:30:51Z INFO  postretro_renderer::render::renderer_models] [Model] skinned model uploaded: 0 clip(s) parsed, 0 tag(s)
+[2026-10-06T09:30:51Z INFO  postretro_renderer::render::renderer_models] [Model] skinned model uploaded: 0 clip(s) parsed, 0 tag(s)
+[2026-10-06T09:30:51Z INFO  postretro_renderer::render::renderer_models] [Model] skinned model uploaded: 0 clip(s) parsed, 0 tag(s)
+[2026-10-06T09:30:51Z INFO  postretro_renderer::render::renderer_models] [Model] skinned model uploaded: 0 clip(s) parsed, 0 tag(s)
+[2026-10-06T09:30:51Z INFO  postretro_renderer::render::renderer_models] [Model] skinned model uploaded: 0 clip(s) parsed, 0 tag(s)
+[2026-10-06T09:30:51Z INFO  postretro_renderer::render::renderer_models] [Model] skinned model uploaded: 0 clip(s) parsed, 0 tag(s)
+[2026-10-06T09:30:51Z INFO  postretro::startup::lifecycle] [Model] uploaded 10 distinct mesh model(s) for this level
+[2026-10-06T09:30:51Z WARN  postretro] [HitZones] archetype 'reference_enemy' declares health.zoneMultipliers tag 'head' absent from model 'models/reference_enemy_kaykit_knight/scene.gltf' — that multiplier never applies
+[2026-10-06T09:30:51Z WARN  postretro] [HitZones] archetype 'reference_enemy' declares health.zoneMultipliers tag 'leg' absent from model 'models/reference_enemy_kaykit_knight/scene.gltf' — that multiplier never applies
+[2026-10-06T09:30:51Z WARN  postretro] [HitZones] archetype 'limitator' declares health.zoneMultipliers tag 'head' absent from model 'models/limitator/model.gltf' — that multiplier never applies
+[2026-10-06T09:30:51Z WARN  postretro] [HitZones] archetype 'limitator' declares health.zoneMultipliers tag 'leg' absent from model 'models/limitator/model.gltf' — that multiplier never applies
+[2026-10-06T09:30:51Z WARN  postretro] [HitZones] archetype 'crossfire_raider' declares health.zoneMultipliers tag 'head' absent from model 'models/reference_enemy_kaykit_knight/scene.gltf' — that multiplier never applies
+[2026-10-06T09:30:51Z WARN  postretro] [HitZones] archetype 'crossfire_raider' declares health.zoneMultipliers tag 'leg' absent from model 'models/reference_enemy_kaykit_knight/scene.gltf' — that multiplier never applies
+[2026-10-06T09:30:51Z WARN  postretro] [HitZones] archetype 'crossfire_sentinel' declares health.zoneMultipliers tag 'head' absent from model 'models/reference_enemy_kaykit_knight/scene.gltf' — that multiplier never applies
+[2026-10-06T09:30:51Z WARN  postretro] [HitZones] archetype 'crossfire_sentinel' declares health.zoneMultipliers tag 'leg' absent from model 'models/reference_enemy_kaykit_knight/scene.gltf' — that multiplier never applies
+[2026-10-06T09:30:51Z WARN  postretro] [HitZones] archetype 'faction_sentiment_cabal' declares health.zoneMultipliers tag 'head' absent from model 'models/reference_enemy_kaykit_knight/scene.gltf' — that multiplier never applies
+[2026-10-06T09:30:51Z WARN  postretro] [HitZones] archetype 'faction_sentiment_cabal' declares health.zoneMultipliers tag 'leg' absent from model 'models/reference_enemy_kaykit_knight/scene.gltf' — that multiplier never applies
+[2026-10-06T09:30:51Z WARN  postretro] [HitZones] archetype 'faction_sentiment_resistance' declares health.zoneMultipliers tag 'head' absent from model 'models/reference_enemy_kaykit_knight/scene.gltf' — that multiplier never applies
+[2026-10-06T09:30:51Z WARN  postretro] [HitZones] archetype 'faction_sentiment_resistance' declares health.zoneMultipliers tag 'leg' absent from model 'models/reference_enemy_kaykit_knight/scene.gltf' — that multiplier never applies
+[2026-10-06T09:30:51Z WARN  postretro] [HitZones] archetype 'pose_fixture_enemy' declares health.zoneMultipliers tag 'head' absent from model 'models/pose-modifier-fixture/joint_zones.gltf' — that multiplier never applies
+[2026-10-06T09:30:51Z INFO  postretro_scripting_core::reaction_dispatch] [Scripting] dispatch primitive 'setFogScatter' on tag 'pulse_fog' (3 targets)
+[2026-10-06T09:30:51Z WARN  postretro_scripting_core::reaction_dispatch] [Scripting] primitive 'setFogScatter' is not registered; reaction had no effect
+[2026-10-06T09:30:51Z WARN  postretro_render_cpu::fx::smoke] [Smoke] Collection directory '/Users/dhiester/Projects/Personal/postretro-shspike/content/dev/textures/impact' not found — no frames loaded
+[2026-10-06T09:30:51Z WARN  postretro_renderer::render::smoke] [Smoke][invalid-sprite-array] Collection 'impact' has invalid sprite frame data or an extent unsupported by this device; falling back to a 1x1 white array layer
+[2026-10-06T09:30:51Z INFO  symphonia_format_ogg::demuxer] starting new physical stream
+[2026-10-06T09:30:51Z INFO  symphonia_format_ogg::demuxer] selected vorbis mapper for stream with serial=0x561bb450
+[2026-10-06T09:30:51Z INFO  symphonia_format_ogg::demuxer] starting new physical stream
+[2026-10-06T09:30:51Z INFO  symphonia_format_ogg::demuxer] selected vorbis mapper for stream with serial=0x561923ca
+[2026-10-06T09:30:51Z INFO  symphonia_format_ogg::demuxer] starting new physical stream
+[2026-10-06T09:30:51Z INFO  symphonia_format_ogg::demuxer] selected vorbis mapper for stream with serial=0x561c7945
+[2026-10-06T09:30:51Z INFO  symphonia_format_ogg::demuxer] starting new physical stream
+[2026-10-06T09:30:51Z INFO  symphonia_format_ogg::demuxer] selected vorbis mapper for stream with serial=0x562fb532
+[2026-10-06T09:30:51Z INFO  symphonia_format_ogg::demuxer] starting new physical stream
+[2026-10-06T09:30:51Z INFO  symphonia_format_ogg::demuxer] selected vorbis mapper for stream with serial=0x5618a07c
+[2026-10-06T09:30:51Z INFO  symphonia_format_ogg::demuxer] starting new physical stream
+[2026-10-06T09:30:51Z INFO  symphonia_format_ogg::demuxer] selected vorbis mapper for stream with serial=0x75e64971
+[2026-10-06T09:30:51Z INFO  symphonia_format_ogg::demuxer] starting new physical stream
+[2026-10-06T09:30:51Z INFO  symphonia_format_ogg::demuxer] selected vorbis mapper for stream with serial=0x32ef
+[2026-10-06T09:30:51Z INFO  symphonia_format_ogg::demuxer] starting new physical stream
+[2026-10-06T09:30:51Z INFO  symphonia_format_ogg::demuxer] selected vorbis mapper for stream with serial=0x35a6
+[2026-10-06T09:30:51Z INFO  symphonia_format_ogg::demuxer] starting new physical stream
+[2026-10-06T09:30:51Z INFO  symphonia_format_ogg::demuxer] selected vorbis mapper for stream with serial=0x4554
+[2026-10-06T09:30:51Z INFO  symphonia_format_ogg::demuxer] starting new physical stream
+[2026-10-06T09:30:51Z INFO  symphonia_format_ogg::demuxer] selected vorbis mapper for stream with serial=0x45fe
+[2026-10-06T09:30:51Z INFO  symphonia_format_ogg::demuxer] starting new physical stream
+[2026-10-06T09:30:51Z INFO  symphonia_format_ogg::demuxer] selected vorbis mapper for stream with serial=0x561aef5b
+[2026-10-06T09:30:51Z INFO  symphonia_format_ogg::demuxer] starting new physical stream
+[2026-10-06T09:30:51Z INFO  symphonia_format_ogg::demuxer] selected vorbis mapper for stream with serial=0x734d8e91
+[2026-10-06T09:30:51Z INFO  symphonia_format_ogg::demuxer] starting new physical stream
+[2026-10-06T09:30:51Z INFO  symphonia_format_ogg::demuxer] selected vorbis mapper for stream with serial=0x734d4cea
+[2026-10-06T09:30:51Z INFO  symphonia_format_ogg::demuxer] starting new physical stream
+[2026-10-06T09:30:51Z INFO  symphonia_format_ogg::demuxer] selected vorbis mapper for stream with serial=0x734e5386
+[2026-10-06T09:30:51Z INFO  symphonia_format_ogg::demuxer] starting new physical stream
+[2026-10-06T09:30:51Z INFO  symphonia_format_ogg::demuxer] selected vorbis mapper for stream with serial=0x734d0b43
+[2026-10-06T09:30:51Z INFO  symphonia_format_ogg::demuxer] starting new physical stream
+[2026-10-06T09:30:51Z INFO  symphonia_format_ogg::demuxer] selected vorbis mapper for stream with serial=0x734cc99c
+[2026-10-06T09:30:51Z INFO  symphonia_format_ogg::demuxer] starting new physical stream
+[2026-10-06T09:30:51Z INFO  symphonia_format_ogg::demuxer] selected vorbis mapper for stream with serial=0x734e952d
+[2026-10-06T09:30:51Z INFO  symphonia_format_ogg::demuxer] starting new physical stream
+[2026-10-06T09:30:51Z INFO  symphonia_format_ogg::demuxer] selected vorbis mapper for stream with serial=0x735918ec
+[2026-10-06T09:30:51Z INFO  symphonia_format_ogg::demuxer] starting new physical stream
+[2026-10-06T09:30:51Z INFO  symphonia_format_ogg::demuxer] selected vorbis mapper for stream with serial=0x734e11df
+[2026-10-06T09:30:51Z INFO  symphonia_format_ogg::demuxer] starting new physical stream
+[2026-10-06T09:30:51Z INFO  symphonia_format_ogg::demuxer] selected vorbis mapper for stream with serial=0x735b2624
+[2026-10-06T09:30:51Z INFO  symphonia_format_ogg::demuxer] starting new physical stream
+[2026-10-06T09:30:51Z INFO  symphonia_format_ogg::demuxer] selected vorbis mapper for stream with serial=0x735beb19
+[2026-10-06T09:30:51Z INFO  symphonia_format_ogg::demuxer] starting new physical stream
+[2026-10-06T09:30:51Z INFO  symphonia_format_ogg::demuxer] selected vorbis mapper for stream with serial=0x73595a93
+[2026-10-06T09:30:51Z INFO  symphonia_format_ogg::demuxer] starting new physical stream
+[2026-10-06T09:30:51Z INFO  symphonia_format_ogg::demuxer] selected vorbis mapper for stream with serial=0x735ba972
+[2026-10-06T09:30:51Z INFO  postretro_audio::assets] [Audio] loaded 24 sound(s) from /Users/dhiester/Projects/Personal/postretro-shspike/content/dev/sounds
+[2026-10-06T09:30:51Z INFO  postretro::session::level_streaming::sessions] [Lightmap streaming] spawn preload: camera cell 359, 104 of 104 pair(s) installed, 35.9 MiB read in 176.0 ms
+[2026-10-06T09:30:51Z INFO  postretro] [Startup] worker_dispatch=0.0ms, prl_parse=211.6ms, worker_delivered=214.6ms, static_collision=0.5ms, texture_upload=199.8ms, uv_normalize=0.0ms, geometry_upload=132.0ms, bridges_populated=0.5ms, classname_dispatch=4.5ms, data_script=7.2ms, archetype_sweep=0.5ms, model_load=338.4ms, level_load_event=0.1ms, audio_load=46.4ms, streaming_preload=185.4ms, first_level_frame=140.0ms
+[2026-10-06T09:30:53Z INFO  postretro_renderer::render::compose_spike] [SH spike counts] indirect: frames 120 rows min 480 max 874 | last rows L0 730 L1 0 L2 0 | entries L0 352 L1 0 L2 0 | rows with entries 352 | lane-entries 12201
+[2026-10-06T09:30:53Z INFO  postretro_renderer::render::compose_spike] [SH spike counts] animated-direct: frames 120 rows min 480 max 874 | last rows L0 730 L1 0 L2 0 | entries L0 352 L1 0 L2 0 | rows with entries 352 | lane-entries 12201
+[2026-10-06T09:30:53Z INFO  postretro::cpu_timing::frame_timer] [CpuTiming] frames=120 total=16.708/35.219ms work=6.488/35.153ms wait=10.220/27.840ms wait_acquire=10.127/27.793ms wait_present=0.093/3.277ms unattributed=0.006/0.029ms housekeeping=0.006/0.010ms input=0.017/0.058ms snapshot_apply=0.005/0.008ms fixed_step=0.194/0.673ms sim_tick=0.183/0.619ms(115/120) sim_movers=0.009/0.023ms(115/120) sim_movement=0.022/0.094ms(115/120) sim_triggers=0.030/0.102ms(115/120) sim_projectiles=0.007/0.020ms(115/120) sim_ai=0.012/0.033ms(115/120) sim_steering=0.064/0.254ms(115/120) sim_weapons=0.015/0.042ms(115/120) presentation=0.002/0.005ms audio=0.002/0.021ms script_drain=0.015/0.041ms frame_end_removal=0.000/0.001ms host_send=0.002/0.002ms eye=0.004/0.005ms visibility=0.250/0.357ms portal_walk=0.235/0.340ms walk_considered=1235.0/1235 walk_accepted=162.0/162 walk_rejected_blocked=0.0/0 walk_rejected_solid=0.0/0 walk_rejected_clipped=911.0/911 walk_rejected_narrow=0.0/0 walk_rejected_invalid=0.0/0 walk_rejected_cycle=162.0/162 walk_rejected_depth=0.0/0 render_prep=0.866/8.337ms lightmap_residency=0.005/0.006ms lightmap_drain=0.004/0.005ms render=5.065/27.061ms render_sh_drain=0.369/21.715ms render_record=1.139/1.843ms rec_mesh_plan=0.010/0.029ms rec_light_slots=0.033/0.071ms rec_pre_scene=0.335/0.652ms rec_sh_compose_prep=0.066/0.223ms rec_cull=0.039/0.137ms rec_cull_diagnostics=0.005/0.014ms rec_animated_lm=0.180/0.317ms rec_sh_compose=0.023/0.065ms rec_direct_sh=0.026/0.098ms rec_mesh_upload=0.027/0.081ms mesh_pose_sampling=0.020/0.072ms mesh_pose_samples=2.0/2 rec_shadow_depth=0.044/0.258ms rec_shadow_reach=0.041/0.130ms(5/120) rec_depth_sdf=0.006/0.026ms rec_forward=0.011/0.127ms rec_kinematic_brush=0.004/0.021ms rec_skinned_mesh=0.003/0.041ms rec_fog=0.007/0.063ms rec_bloom=0.030/0.150ms rec_overlay=0.000/0.000ms rec_viewmodel=0.003/0.026ms rec_ui=0.615/0.968ms rec_resolve=0.005/0.021ms render_submit=3.480/7.635ms frame_tail=0.054/0.919ms ticks=1.1/14
+[2026-10-06T09:30:55Z INFO  postretro::session::lightmap_streaming_diagnostics] [Lightmap streaming] last 5.0 s: 104 pairs requested (0 reads, id 22 15.4 MiB, id 42 20.5 MiB), 104 installs, 0 evictions, 0 refusals, 0 deferrals, 0 failed installs, 0 failed reads, 0 repacks, 0 growths, visible misses (may overlap) 0 outside baked set, 0 not resident | now: lead 16.0 of 32.0 m, resident 104 of 198 blocks 35.9 MiB (id 22 15.4 MiB, id 42 20.5 MiB), mandatory 104 blocks 35.9 MiB (id 22 15.4 MiB, id 42 20.5 MiB), pool 7 layers (peak 7, cap 15) 112.0 MiB + 0 B retiring, growth peak 0 B, install last 87.73 ms / max 87.73 ms
+[2026-10-06T09:30:55Z INFO  postretro::session::sh_streaming_diagnostics] [SH streaming] last 5.0 s: 8 reads (1 coalesced) 14.8 MiB incl. 0 B gap, 9 installs 14.8 MiB, 7 misses, 1 evictions, 0 retries, 0 cancelled, 0 discarded (0 B), 0 budget-limited drains, 0 pool growths (+0 B), install CPU 36.80 ms (growth 0.00 ms) | compose frame: indirect 730 rows/1 dispatches (730 lagged, 339 remain), static-direct 0/0 (0 lagged, 0 remain), animated-direct 730/1 (730 lagged, 339 remain), planning 0.057 ms | now: 8 targets (8 warm), 8 sampleable, 0 queued, 0 ready, 0/8 permits, pool 9.4 MiB of 71.0 MiB, read latency p50 2.8 / p95 2.8 / max 2.8 ms, decode max 1.8 ms, largest drain 5.3 MiB, slowest install 21.71 ms (steady 21.71 ms)
+[2026-10-06T09:30:55Z INFO  postretro_renderer::render::compose_spike] [SH spike counts] indirect: frames 120 rows min 730 max 730 | last rows L0 730 L1 0 L2 0 | entries L0 352 L1 0 L2 0 | rows with entries 352 | lane-entries 12201
+[2026-10-06T09:30:55Z INFO  postretro_renderer::render::compose_spike] [SH spike counts] animated-direct: frames 120 rows min 730 max 730 | last rows L0 730 L1 0 L2 0 | entries L0 352 L1 0 L2 0 | rows with entries 352 | lane-entries 12201
+[2026-10-06T09:30:55Z INFO  postretro::cpu_timing::frame_timer] [CpuTiming] frames=120 total=17.098/34.882ms work=6.204/8.640ms wait=10.894/27.926ms wait_acquire=10.841/27.873ms wait_present=0.053/0.162ms unattributed=0.006/0.008ms housekeeping=0.006/0.011ms input=0.017/0.041ms snapshot_apply=0.006/0.011ms fixed_step=0.271/0.481ms sim_tick=0.252/0.442ms(118/120) sim_movers=0.013/0.032ms(118/120) sim_movement=0.022/0.077ms(118/120) sim_triggers=0.039/0.073ms(118/120) sim_projectiles=0.012/0.034ms(118/120) sim_ai=0.019/0.038ms(118/120) sim_steering=0.091/0.160ms(118/120) sim_weapons=0.020/0.086ms(118/120) presentation=0.002/0.003ms audio=0.002/0.008ms script_drain=0.016/0.037ms frame_end_removal=0.000/0.001ms host_send=0.002/0.002ms eye=0.004/0.009ms visibility=0.258/0.424ms portal_walk=0.240/0.394ms walk_considered=1235.0/1235 walk_accepted=162.0/162 walk_rejected_blocked=0.0/0 walk_rejected_solid=0.0/0 walk_rejected_clipped=911.0/911 walk_rejected_narrow=0.0/0 walk_rejected_invalid=0.0/0 walk_rejected_cycle=162.0/162 walk_rejected_depth=0.0/0 render_prep=1.092/2.745ms lightmap_residency=0.005/0.086ms lightmap_drain=0.004/0.005ms render=4.474/5.704ms render_sh_drain=0.004/0.006ms render_record=1.166/1.687ms rec_mesh_plan=0.011/0.125ms rec_light_slots=0.033/0.066ms rec_pre_scene=0.341/0.627ms rec_sh_compose_prep=0.062/0.118ms rec_cull=0.041/0.104ms rec_cull_diagnostics=0.005/0.007ms rec_animated_lm=0.188/0.439ms rec_sh_compose=0.023/0.077ms rec_direct_sh=0.026/0.069ms rec_mesh_upload=0.029/0.085ms mesh_pose_sampling=0.022/0.075ms mesh_pose_samples=2.0/2 rec_shadow_depth=0.045/0.158ms rec_shadow_reach=0.024/0.027ms(4/120) rec_depth_sdf=0.006/0.034ms rec_forward=0.010/0.051ms rec_kinematic_brush=0.004/0.015ms rec_skinned_mesh=0.003/0.031ms rec_fog=0.007/0.045ms rec_bloom=0.033/0.112ms rec_overlay=0.000/0.000ms rec_viewmodel=0.004/0.072ms rec_ui=0.632/1.030ms rec_resolve=0.005/0.022ms render_submit=3.225/4.088ms frame_tail=0.050/0.828ms ticks=1.0/2
+[2026-10-06T09:30:57Z INFO  postretro_renderer::render::compose_spike] [SH spike counts] indirect: frames 120 rows min 730 max 730 | last rows L0 730 L1 0 L2 0 | entries L0 352 L1 0 L2 0 | rows with entries 352 | lane-entries 12201
+[2026-10-06T09:30:57Z INFO  postretro_renderer::render::compose_spike] [SH spike counts] animated-direct: frames 120 rows min 730 max 730 | last rows L0 730 L1 0 L2 0 | entries L0 352 L1 0 L2 0 | rows with entries 352 | lane-entries 12201
+[2026-10-06T09:30:57Z INFO  postretro::cpu_timing::frame_timer] [CpuTiming] frames=120 total=16.952/34.411ms work=6.802/28.597ms wait=10.149/27.464ms wait_acquire=10.099/27.409ms wait_present=0.051/0.127ms unattributed=0.006/0.020ms housekeeping=0.005/0.007ms input=0.017/0.047ms snapshot_apply=0.006/0.039ms fixed_step=0.343/0.707ms sim_tick=0.320/0.654ms(118/120) sim_movers=0.017/0.043ms(118/120) sim_movement=0.021/0.033ms(118/120) sim_triggers=0.049/0.099ms(118/120) sim_projectiles=0.016/0.044ms(118/120) sim_ai=0.026/0.053ms(118/120) sim_steering=0.118/0.225ms(118/120) sim_weapons=0.023/0.047ms(118/120) presentation=0.002/0.003ms audio=0.002/0.003ms script_drain=0.015/0.020ms frame_end_removal=0.000/0.001ms host_send=0.002/0.003ms eye=0.004/0.004ms visibility=0.260/0.338ms portal_walk=0.239/0.318ms walk_considered=1235.0/1235 walk_accepted=162.0/162 walk_rejected_blocked=0.0/0 walk_rejected_solid=0.0/0 walk_rejected_clipped=911.0/911 walk_rejected_narrow=0.0/0 walk_rejected_invalid=0.0/0 walk_rejected_cycle=162.0/162 walk_rejected_depth=0.0/0 render_prep=1.528/23.794ms lightmap_residency=0.005/0.006ms lightmap_drain=0.004/0.008ms render=4.571/5.574ms render_sh_drain=0.004/0.013ms render_record=1.186/1.762ms rec_mesh_plan=0.010/0.040ms rec_light_slots=0.033/0.076ms rec_pre_scene=0.344/0.502ms rec_sh_compose_prep=0.064/0.123ms rec_cull=0.041/0.073ms rec_cull_diagnostics=0.006/0.018ms rec_animated_lm=0.190/0.313ms rec_sh_compose=0.023/0.098ms rec_direct_sh=0.026/0.104ms rec_mesh_upload=0.029/0.065ms mesh_pose_sampling=0.021/0.057ms mesh_pose_samples=2.0/2 rec_shadow_depth=0.049/0.168ms rec_shadow_reach=0.022/0.027ms(8/120) rec_depth_sdf=0.006/0.045ms rec_forward=0.011/0.065ms rec_kinematic_brush=0.004/0.024ms rec_skinned_mesh=0.004/0.050ms rec_fog=0.007/0.025ms rec_bloom=0.033/0.133ms rec_overlay=0.000/0.000ms rec_viewmodel=0.004/0.048ms rec_ui=0.643/1.036ms rec_resolve=0.005/0.011ms render_submit=3.303/3.996ms frame_tail=0.043/0.882ms ticks=1.0/2

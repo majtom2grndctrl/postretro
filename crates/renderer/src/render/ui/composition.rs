@@ -16,6 +16,9 @@ pub(super) struct OrderedUiBatch<'a> {
     pub(super) order: usize,
     pub(super) bind_group: &'a wgpu::BindGroup,
     pub(super) writes_depth: bool,
+    /// Device-pixel `[x, y, w, h]` scissor from a scroll viewport; `None`
+    /// draws over the whole layer.
+    pub(super) clip: Option<[f32; 4]>,
 }
 
 /// An SDF ring batch with a unique painter-depth order. Ring instances use a
@@ -23,6 +26,7 @@ pub(super) struct OrderedUiBatch<'a> {
 pub(super) struct OrderedRingBatch {
     pub(super) instances: Vec<UiRingInstance>,
     pub(super) order: usize,
+    pub(super) clip: Option<[f32; 4]>,
 }
 
 pub(super) struct OrderedTextBatch {
@@ -61,6 +65,10 @@ pub(crate) struct UiComposition<'a> {
     pub(super) ring_batches: Vec<OrderedRingBatch>,
     pub(super) texts: Vec<UiText>,
     pub(super) text_orders: Vec<usize>,
+    /// Per-text clip, parallel to `texts`: a scroll viewport bounds the run's
+    /// glyphs (glyphon `TextBounds` is per text area, so a clip change never
+    /// splits a text batch).
+    pub(super) text_clips: Vec<Option<[f32; 4]>>,
     pub(super) text_batches: Vec<OrderedTextBatch>,
     pub(super) commands: Vec<UiDrawCommand>,
     pub(super) order_count: usize,
@@ -86,6 +94,7 @@ impl<'a> UiComposition<'a> {
         let mut ring_batches: Vec<OrderedRingBatch> = Vec::new();
         let mut texts: Vec<UiText> = Vec::new();
         let mut text_orders: Vec<usize> = Vec::new();
+        let mut text_clips: Vec<Option<[f32; 4]>> = Vec::new();
         let mut text_batches: Vec<OrderedTextBatch> = Vec::new();
         let mut commands: Vec<UiDrawCommand> = Vec::new();
         let mut order = 0usize;
@@ -98,6 +107,7 @@ impl<'a> UiComposition<'a> {
                     ring_batches: &mut ring_batches,
                     texts: &mut texts,
                     text_orders: &mut text_orders,
+                    text_clips: &mut text_clips,
                     text_batches: &mut text_batches,
                     commands: &mut commands,
                     order: &mut order,
@@ -135,7 +145,8 @@ impl<'a> UiComposition<'a> {
                 );
             }
 
-            for op in &draw.paint_order {
+            for (at, op) in draw.paint_order.iter().enumerate() {
+                let clip = draw.paint_clip(at);
                 match *op {
                     tree::UiPaintOp::Quad { index } => {
                         if let Some(instance) = draw.quads.instances.get(index).copied() {
@@ -145,6 +156,7 @@ impl<'a> UiComposition<'a> {
                                 instance,
                                 order,
                                 true,
+                                clip,
                             );
                             commands.push(UiDrawCommand::Quad(batches.len() - 1));
                             order += 1;
@@ -166,6 +178,7 @@ impl<'a> UiComposition<'a> {
                                 instance,
                                 order,
                                 false,
+                                clip,
                             );
                             commands.push(UiDrawCommand::Quad(batches.len() - 1));
                             order += 1;
@@ -176,6 +189,7 @@ impl<'a> UiComposition<'a> {
                             ring_batches.push(OrderedRingBatch {
                                 instances: vec![instance],
                                 order,
+                                clip,
                             });
                             commands.push(UiDrawCommand::Ring(ring_batches.len() - 1));
                             order += 1;
@@ -184,6 +198,7 @@ impl<'a> UiComposition<'a> {
                     tree::UiPaintOp::Text { index } => {
                         if let Some(text) = draw.texts.get(index) {
                             text_orders.push(order);
+                            text_clips.push(clip);
                             texts.push(text.clone());
                             append_ordered_text_batch(
                                 &mut text_batches,
@@ -201,6 +216,7 @@ impl<'a> UiComposition<'a> {
             ring_batches,
             texts,
             text_orders,
+            text_clips,
             text_batches,
             commands,
             order_count: order,
@@ -223,6 +239,7 @@ impl<'a> UiComposition<'a> {
                 order,
                 bind_group: batch.bind_group,
                 writes_depth: batch.list.instances.iter().all(instance_writes_depth),
+                clip: None,
             })
             .collect();
         let mut commands: Vec<UiDrawCommand> =
@@ -239,17 +256,12 @@ impl<'a> UiComposition<'a> {
             batches,
             ring_batches: Vec::new(),
             text_orders: std::iter::repeat_n(text_order, texts.len()).collect(),
+            text_clips: vec![None; texts.len()],
             texts,
             text_batches,
             commands,
             order_count,
         }
-    }
-
-    /// `true` when the composition records nothing — no quad, ring, or text batches.
-    /// The gameplay path early-outs the UI pass on this.
-    pub fn is_empty(&self) -> bool {
-        self.batches.is_empty() && self.ring_batches.is_empty() && self.texts.is_empty()
     }
 }
 
@@ -278,12 +290,14 @@ pub(super) fn append_ordered_quad_batch<'a>(
     instance: UiInstance,
     order: usize,
     allow_depth_write: bool,
+    clip: Option<[f32; 4]>,
 ) {
     batches.push(OrderedUiBatch {
         instances: vec![instance],
         order,
         bind_group,
         writes_depth: allow_depth_write && instance_writes_depth(&instance),
+        clip,
     });
 }
 
@@ -297,6 +311,7 @@ pub(super) struct LegacyDrawAppend<'a, 'out> {
     pub(super) ring_batches: &'out mut Vec<OrderedRingBatch>,
     pub(super) texts: &'out mut Vec<UiText>,
     pub(super) text_orders: &'out mut Vec<usize>,
+    pub(super) text_clips: &'out mut Vec<Option<[f32; 4]>>,
     pub(super) text_batches: &'out mut Vec<OrderedTextBatch>,
     pub(super) commands: &'out mut Vec<UiDrawCommand>,
     pub(super) order: &'out mut usize,
@@ -311,6 +326,7 @@ impl<'a, 'out> LegacyDrawAppend<'a, 'out> {
                 order: *self.order,
                 bind_group: self.white_bind_group,
                 writes_depth: draw.quads.instances.iter().all(instance_writes_depth),
+                clip: None,
             });
             self.commands
                 .push(UiDrawCommand::Quad(self.batches.len() - 1));
@@ -326,6 +342,7 @@ impl<'a, 'out> LegacyDrawAppend<'a, 'out> {
                     order: *self.order,
                     bind_group,
                     writes_depth: false,
+                    clip: None,
                 });
                 self.commands
                     .push(UiDrawCommand::Quad(self.batches.len() - 1));
@@ -336,6 +353,7 @@ impl<'a, 'out> LegacyDrawAppend<'a, 'out> {
             self.ring_batches.push(OrderedRingBatch {
                 instances: draw.rings.clone(),
                 order: *self.order,
+                clip: None,
             });
             self.commands
                 .push(UiDrawCommand::Ring(self.ring_batches.len() - 1));
@@ -344,6 +362,8 @@ impl<'a, 'out> LegacyDrawAppend<'a, 'out> {
         if !draw.texts.is_empty() {
             self.text_orders
                 .extend(std::iter::repeat_n(*self.order, draw.texts.len()));
+            self.text_clips
+                .extend(std::iter::repeat_n(None, draw.texts.len()));
             self.texts.extend_from_slice(&draw.texts);
             let batch_index = self.text_batches.len();
             self.text_batches.push(OrderedTextBatch {
@@ -357,4 +377,42 @@ impl<'a, 'out> LegacyDrawAppend<'a, 'out> {
 
 pub(super) fn instance_writes_depth(instance: &UiInstance) -> bool {
     instance.color[3] >= 1.0
+}
+
+/// A device-pixel clip as a scissor `[x, y, w, h]` within the `viewport`
+/// (whole pixels, outward-rounded so an edge pixel the clip touches still
+/// draws). `None` when the clip and the viewport do not overlap: the command
+/// draws nothing.
+pub(super) fn scissor_for_clip(clip: [f32; 4], viewport: [u32; 2]) -> Option<[u32; 4]> {
+    let x0 = clip[0].floor().max(0.0);
+    let y0 = clip[1].floor().max(0.0);
+    let x1 = (clip[0] + clip[2]).ceil().min(viewport[0] as f32);
+    let y1 = (clip[1] + clip[3]).ceil().min(viewport[1] as f32);
+    if x1 <= x0 || y1 <= y0 {
+        return None;
+    }
+    Some([x0 as u32, y0 as u32, (x1 - x0) as u32, (y1 - y0) as u32])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_scroll_clip_becomes_a_scissor_inside_the_viewport_and_an_empty_one_draws_nothing() {
+        assert_eq!(
+            scissor_for_clip([10.5, 20.0, 100.0, 40.25], [1280, 720]),
+            Some([10, 20, 101, 41]),
+        );
+        assert_eq!(
+            scissor_for_clip([-50.0, 700.0, 100.0, 100.0], [1280, 720]),
+            Some([0, 700, 50, 20]),
+            "a clip past the layer edge is cut to the viewport",
+        );
+        assert_eq!(scissor_for_clip([0.0, 0.0, 0.0, 30.0], [1280, 720]), None);
+        assert_eq!(
+            scissor_for_clip([2000.0, 0.0, 10.0, 10.0], [1280, 720]),
+            None
+        );
+    }
 }

@@ -2,7 +2,6 @@
 // See: context/lib/movement.md §4
 
 use glam::{Vec2, Vec3};
-use parry3d::math::{Point, Vector};
 use parry3d::shape::Capsule;
 
 use crate::collision::SKIN_DISTANCE;
@@ -102,24 +101,12 @@ pub(super) fn step_up_lift(
     }
     let dir = horiz_vel / horiz_speed;
     let probe_dist = (horiz_speed * remaining_dt).max(step_height + radius);
-    let probe = cast_capsule_query(
-        collision,
-        Point::new(current_pos.x, current_pos.y, current_pos.z),
-        capsule,
-        Vector::new(dir.x, dir.y, dir.z),
-        probe_dist,
-    )?;
+    let probe = cast_capsule_query(collision, current_pos, capsule, dir, probe_dist)?;
     if !(probe.time_of_impact < probe_dist && probe.normal.y.abs() < cos_walkable) {
         return None;
     }
     let lifted = current_pos + Vec3::new(0.0, step_height + STEP_UP_LIFT_MARGIN, 0.0);
-    let lifted_probe = cast_capsule_query(
-        collision,
-        Point::new(lifted.x, lifted.y, lifted.z),
-        capsule,
-        Vector::new(dir.x, dir.y, dir.z),
-        probe_dist,
-    );
+    let lifted_probe = cast_capsule_query(collision, lifted, capsule, dir, probe_dist);
     let lifted_clear = match lifted_probe {
         None => true,
         Some(h) => h.time_of_impact >= probe_dist - SKIN_DISTANCE,
@@ -137,13 +124,7 @@ pub(super) fn step_up_lift(
     // motion).
     let forward_offset = (probe.time_of_impact + radius + SKIN_DISTANCE).min(radius + step_height);
     let sample = lifted + dir * forward_offset;
-    let down_probe = cast_capsule_query(
-        collision,
-        Point::new(sample.x, sample.y, sample.z),
-        capsule,
-        Vector::new(0.0, -1.0, 0.0),
-        step_height + 0.1,
-    );
+    let down_probe = cast_capsule_query(collision, sample, capsule, Vec3::NEG_Y, step_height + 0.1);
     let lifted_lands_on_walkable = match down_probe {
         Some(h) => h.normal.y >= cos_walkable,
         None => false,
@@ -182,11 +163,7 @@ pub(super) fn integrate_collision(
     jumped: bool,
 ) -> (Vec3, SubstrateResult) {
     // 7. Move + collide. Iterative sweep-and-slide against the world trimesh.
-    let capsule = Capsule::new(
-        Point::new(0.0, -component.capsule.half_height, 0.0),
-        Point::new(0.0, component.capsule.half_height, 0.0),
-        component.capsule.radius,
-    );
+    let capsule = Capsule::new_y(component.capsule.half_height, component.capsule.radius);
 
     let mut current_pos = apply_mover_carry(position, previous_ground, collision);
     current_pos =
@@ -206,8 +183,8 @@ pub(super) fn integrate_collision(
     let horiz_vel = Vec3::new(component.velocity.x, 0.0, component.velocity.z);
     let horiz_speed = horiz_vel.length();
     let step_height = component.ground_params.step_height;
-    if component.is_grounded() {
-        if let Some(lifted) = step_up_lift(
+    if component.is_grounded()
+        && let Some(lifted) = step_up_lift(
             collision,
             &capsule,
             current_pos,
@@ -217,9 +194,9 @@ pub(super) fn integrate_collision(
             component.cos_walkable,
             remaining_dt,
             component.capsule.radius,
-        ) {
-            current_pos = lifted;
-        }
+        )
+    {
+        current_pos = lifted;
     }
 
     if component.is_grounded() && component.velocity.y.abs() < 1e-3 {
@@ -256,13 +233,7 @@ pub(super) fn integrate_collision(
         if max_toi * max_toi < SLIDE_REMAINING_EPSILON_SQ {
             break;
         }
-        let hit = cast_capsule_query(
-            collision,
-            Point::new(current_pos.x, current_pos.y, current_pos.z),
-            &capsule,
-            Vector::new(dir.x, dir.y, dir.z),
-            max_toi,
-        );
+        let hit = cast_capsule_query(collision, current_pos, &capsule, dir, max_toi);
         match hit {
             None => {
                 current_pos += velocity * remaining_dt;
@@ -424,13 +395,8 @@ pub(super) fn integrate_collision(
         if step_height > 0.0 {
             // covers step_height + STEP_UP_LIFT_MARGIN + SKIN_DISTANCE + headroom
             let max_down = step_height + STEP_UP_LIFT_MARGIN + SKIN_DISTANCE + 0.03;
-            let down_hit = cast_capsule_query(
-                collision,
-                Point::new(current_pos.x, current_pos.y, current_pos.z),
-                &capsule,
-                Vector::new(0.0, -1.0, 0.0),
-                max_down,
-            );
+            let down_hit =
+                cast_capsule_query(collision, current_pos, &capsule, Vec3::NEG_Y, max_down);
             let mut snapped = false;
             if let Some(h) = down_hit {
                 let n = h.normal;
@@ -452,29 +418,24 @@ pub(super) fn integrate_collision(
                 let half_height = component.capsule.half_height;
                 let radius = component.capsule.radius;
                 let ray_max = max_down + half_height + radius;
-                let ray_hit = cast_ray_query(
-                    collision,
-                    Point::new(current_pos.x, current_pos.y, current_pos.z),
-                    Vector::new(0.0, -1.0, 0.0),
-                    ray_max,
-                );
-                if let Some(h) = ray_hit {
-                    if h.normal.y >= component.cos_walkable {
-                        // Ray TOI is distance from capsule center to the
-                        // surface; the capsule rests with its lower hemisphere
-                        // at `half_height + radius` below center, separated by
-                        // SKIN_DISTANCE.
-                        let target_gap = half_height + radius + SKIN_DISTANCE;
-                        let drop = h.time_of_impact - target_gap;
-                        // Only snap downward, and only if the floor is within
-                        // the same envelope the swept downcast would have
-                        // covered.
-                        if drop > 0.0 && drop <= max_down {
-                            current_pos.y -= drop;
-                            hit_floor_this_tick = true;
-                            last_floor_normal = Some(h.normal);
-                            ground_ref_this_tick = ground_ref_from_hit(h);
-                        }
+                let ray_hit = cast_ray_query(collision, current_pos, Vec3::NEG_Y, ray_max);
+                if let Some(h) = ray_hit
+                    && h.normal.y >= component.cos_walkable
+                {
+                    // Ray TOI is distance from capsule center to the
+                    // surface; the capsule rests with its lower hemisphere
+                    // at `half_height + radius` below center, separated by
+                    // SKIN_DISTANCE.
+                    let target_gap = half_height + radius + SKIN_DISTANCE;
+                    let drop = h.time_of_impact - target_gap;
+                    // Only snap downward, and only if the floor is within
+                    // the same envelope the swept downcast would have
+                    // covered.
+                    if drop > 0.0 && drop <= max_down {
+                        current_pos.y -= drop;
+                        hit_floor_this_tick = true;
+                        last_floor_normal = Some(h.normal);
+                        ground_ref_this_tick = ground_ref_from_hit(h);
                     }
                 }
             }
@@ -523,9 +484,9 @@ pub(super) fn integrate_collision(
 
 fn cast_capsule_query(
     collision: &CombinedCollisionWorld<'_>,
-    pos: Point<f32>,
+    pos: Vec3,
     capsule: &Capsule,
-    dir: Vector<f32>,
+    dir: Vec3,
     max_toi: f32,
 ) -> Option<CombinedCastHit> {
     cast_capsule_combined_parry(
@@ -541,8 +502,8 @@ fn cast_capsule_query(
 
 fn cast_ray_query(
     collision: &CombinedCollisionWorld<'_>,
-    origin: Point<f32>,
-    dir: Vector<f32>,
+    origin: Vec3,
+    dir: Vec3,
     max_toi: f32,
 ) -> Option<CombinedCastHit> {
     cast_ray_combined_parry(
@@ -650,21 +611,11 @@ pub(super) fn standup_clearance_probe(
         // Already standing-or-taller: no growth needed, so nothing to clear.
         return true;
     }
-    // Build the crouched-size parry capsule (radius unchanged). nalgebra types
-    // stay inside this collision-boundary call; the result crosses back as a
-    // plain bool.
-    let capsule = Capsule::new(
-        Point::new(0.0, -crouched_half_height, 0.0),
-        Point::new(0.0, crouched_half_height, 0.0),
-        component.capsule.radius,
-    );
-    let hit = cast_capsule_query(
-        collision,
-        Point::new(position.x, position.y, position.z),
-        &capsule,
-        Vector::new(0.0, 1.0, 0.0),
-        head_rise,
-    );
+    // Build the crouched-size parry capsule (radius unchanged). The parry
+    // shape stays inside this collision-boundary call; the result crosses back
+    // as a plain bool.
+    let capsule = Capsule::new_y(crouched_half_height, component.capsule.radius);
+    let hit = cast_capsule_query(collision, position, &capsule, Vec3::Y, head_rise);
     // A hit strictly within the head-rise distance blocks standing. `None`
     // (nothing within range) or a hit at/after the full rise is clear.
     match hit {

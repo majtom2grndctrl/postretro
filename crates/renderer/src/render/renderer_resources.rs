@@ -46,9 +46,10 @@ impl Renderer {
         let full = full
             .as_mut()
             .expect("renderer full-init must complete before full-ready paths run");
+        queue.assert_empty("smoke collection install");
         full.smoke_pass.register_collection(
             device,
-            queue,
+            queue.raw(),
             collection_id,
             SpriteCollectionAssetSource {
                 asset,
@@ -62,6 +63,7 @@ impl Renderer {
     /// Release all level-owned GPU resources while keeping the device, queue,
     /// surface, UI, and window-facing state alive for the no-level Frontend.
     pub fn release_level_resources(&mut self) {
+        self.queue.assert_empty("level unload");
         let empty_keys = TextureCacheKeysSection::default();
         let empty_texture_names: Vec<String> = Vec::new();
         let empty_materials: Vec<Material> = Vec::new();
@@ -127,12 +129,18 @@ impl Renderer {
     /// Replaces dummy buffers with real geometry; rebuilds lighting, SH, lightmap, and cull pipeline.
     /// Takes the level's GPU-only lightmap and shadowmask payloads by value and
     /// drops them once their textures exist.
+    /// Call `validate_level_geometry_ranges` before the first install step;
+    /// release indirect draws rely on its checked leaf/index-buffer mapping.
     /// See: context/lib/boot_sequence.md §3 (Level Install Order)
     pub fn install_level_geometry(
         &mut self,
         geometry: &LevelGeometry<'_>,
         gpu_lighting_payloads: postretro_level_loader::GpuLightingPayloads,
     ) {
+        debug_assert!(
+            validate_level_geometry_ranges(&geometry.bvh.leaves, geometry.indices.len()).is_ok(),
+            "level geometry must pass the indirect index-range check before installation"
+        );
         let Self {
             device,
             queue,
@@ -141,9 +149,11 @@ impl Renderer {
             full,
             ..
         } = self;
+        let _installation = queue.installation();
         let full = full
             .as_mut()
             .expect("renderer full-init must complete before full-ready paths run");
+        let mut install_marks = super::geometry_install_marks::GeometryInstallMarks::start();
 
         // Drop the prior generation at the level boundary. Construction waits
         // until the fresh shared SH resources below exist, because streamed
@@ -203,6 +213,9 @@ impl Renderer {
             contents: &vertex_data,
             usage: wgpu::BufferUsages::VERTEX,
         });
+        // Indirect slots copy only these checked leaves' baked ranges, and all
+        // world indirect passes bind this complete array. Recreate every cull
+        // owner below before drawing; no slot may survive an index-buffer swap.
         full.index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("World Index Buffer"),
             contents: &index_data,
@@ -329,7 +342,6 @@ impl Renderer {
         full.promoted_depth_cache_missing_layer_warned = false;
         full.promoted_depth_cache_promoted_count = 0;
         full.promoted_depth_cache_world_render_skips = 0;
-        full.promoted_depth_cache_cull_dispatch_skips = 0;
         full.promoted_depth_cache_timing_open = false;
         full.dynamic_depth_cache.reset_level(
             device,
@@ -447,7 +459,7 @@ impl Renderer {
         let mut sh_allocation_ledger = sh_residency::ShAllocationLedger::new();
         full.sh_volume_resources = ShVolumeResources::new(
             device,
-            queue,
+            queue.raw(),
             ShVolumeSections {
                 sh: geometry.sh_volume,
                 stream_base_present: matches!(
@@ -483,7 +495,7 @@ impl Renderer {
                     .and_then(|mut state| {
                         state.initialize_gpu(
                             device,
-                            queue,
+                            queue.raw(),
                             manifest,
                             full.probe_occlusion_enabled,
                             &mut full.sh_volume_resources,
@@ -551,7 +563,8 @@ impl Renderer {
             promoted_cube_cache,
         );
 
-        full.sdf_atlas_resources = SdfAtlasResources::new(device, queue, geometry.sdf_atlas);
+        install_marks.mark("buffers_and_sh_streaming");
+        full.sdf_atlas_resources = SdfAtlasResources::new(device, queue.raw(), geometry.sdf_atlas);
         full.lightmap_mode = geometry.lightmap_mode;
         let compose_sh_volume = geometry
             .sh_volume
@@ -671,9 +684,10 @@ impl Renderer {
                 geometry.animated_light_weight_maps,
             ),
         );
+        install_marks.mark("sdf_atlas_and_compose");
         full.lightmap_resources = LightmapResources::new(
             device,
-            queue,
+            queue.raw(),
             geometry.lightmap,
             geometry.shadowmask_atlas,
             &static_pool,
@@ -726,6 +740,7 @@ impl Renderer {
             sdf_shadow_sh_grid,
         );
 
+        install_marks.mark("lightmap_and_sdf_shadow");
         // --- BVH + compute cull ---
         full.bvh_leaves = bvh_leaves;
         // Per-cell draw index for the candidate-cull path. Cloned alongside the
@@ -751,38 +766,13 @@ impl Renderer {
             .as_ref()
             .map(|c| crate::candidate_cull::CandidateCullPipeline::new(device, c.total_leaves()));
 
-        // Rebuild both shadow cull owners against the freshly-uploaded BVH
-        // buffers — their per-region bind groups reference the camera cull's
-        // node/leaf storage, so a stale reference would point at the old BVH.
-        // Spot: one region per pool slot. Cube: one region per (slot, face)
-        // layer, only when the cube pool exists (adapter CUBE_ARRAY_TEXTURES).
-        full.shadow_cull = full.compute_cull.as_ref().map(|c| {
-            crate::shadow_cull::ShadowCullPipeline::new(
-                device,
-                c.node_buffer(),
-                c.leaf_buffer(),
-                c.total_leaves(),
-                c.bucket_ranges().to_vec(),
-                c.has_multi_draw_indirect(),
-                crate::lighting::spot_shadow::SHADOW_POOL_SIZE,
-            )
-        });
-        full.cube_shadow_cull = if full.cube_shadow_pool.is_some() {
-            full.compute_cull.as_ref().map(|c| {
-                crate::shadow_cull::ShadowCullPipeline::new(
-                    device,
-                    c.node_buffer(),
-                    c.leaf_buffer(),
-                    c.total_leaves(),
-                    c.bucket_ranges().to_vec(),
-                    c.has_multi_draw_indirect(),
-                    crate::lighting::cube_shadow::CUBE_COUNT
-                        * crate::lighting::cube_shadow::CUBE_FACES,
-                )
-            })
-        } else {
-            None
-        };
+        install_marks.mark("bvh_and_cull");
+        // Shadow reach follows the installed BVH: the first fill after install
+        // walks this level's tree, and no range from the previous level survives.
+        full.shadow_world = super::shadow_world_draws::ShadowWorldDraws::install(
+            Some(geometry.bvh),
+            full.index_count,
+        );
 
         full.has_geometry = has_geometry;
         full.last_lights_upload.clear();
@@ -803,6 +793,7 @@ impl Renderer {
             &mut full.mover_occluder_aabbs,
         );
 
+        install_marks.log(has_geometry);
         if has_geometry {
             log::info!(
                 "[Renderer] Geometry installed: {} indices, bvh_leaves={}",

@@ -1,6 +1,7 @@
 --!strict
 -- UI widget factories (M13 G1a, Task 3): capitalized constructors for the nine
--- non-container widget kinds -- Text, Panel, Image, Button, Slider, Bar, Ring, Spacer, Announce.
+-- non-container widget kinds -- Text, Panel, Image, Button, Slider, Bar, Ring, Spacer, Announce,
+-- Glyph.
 -- (Containers -- VStack/HStack/Grid -- live in `layout.luau`.) Each mirrors the
 -- `emitter()` precedent: a props table validated synchronously (throwing a
 -- field-named error), documented defaults, a plain descriptor table whose keys
@@ -519,8 +520,10 @@ end
 
 -- --- Image ------------------------------------------------------------------
 
---- An `image` leaf referencing a texture asset by key; sizes from the asset's
---- natural pixel dimensions. No bind capability. Name-XOR-decorative (M13 G2):
+--- An `image` leaf referencing a texture asset by key. Without `width` /
+--- `height` (logical-reference px) it takes the asset's natural size; one of
+--- them keeps the source aspect; both give an exact box. No bind capability.
+--- Name-XOR-decorative (M13 G2):
 --- exactly one of `label` (accessible name) or `decorative = true` (hidden from
 --- a11y) is required -- neither or both errors. Mirrors `ImageWidget`.
 function UiWidgetsSdk.Image(props: any): WidgetDescriptor
@@ -538,6 +541,16 @@ function UiWidgetsSdk.Image(props: any): WidgetDescriptor
     error("Image: needs an accessible name: set exactly one of `label` or `decorative: true`")
   end
   local out: { [string]: any } = { kind = "image", asset = props.asset }
+  for _, field in { "width", "height" } do
+    local value = props[field]
+    if value ~= nil then
+      requireFiniteNumber(value, field, "Image")
+      if value <= 0 then
+        error(`Image: \`{field}\` must be greater than zero`)
+      end
+      out[field] = value
+    end
+  end
   applyFocusFields(out, props, "Image")
   if hasLabel then
     requireNonemptyString(props.label, "label", "Image")
@@ -565,6 +578,27 @@ function UiWidgetsSdk.Spacer(props: any?): WidgetDescriptor
     out.id = p.id
   end
   applyA11yFields(out, p, "Spacer")
+  return out
+end
+
+-- --- Glyph ------------------------------------------------------------------
+
+--- The glyph for a command on the player's current device: the mod's art for
+--- the input bound to it, else that input's label, else nothing when the command
+--- is unbound there or irrelevant. Follows rebinding and the confirm/cancel
+--- swap. Mirrors `GlyphWidget`.
+function UiWidgetsSdk.Glyph(props: any): WidgetDescriptor
+  requireObject(props, "Glyph")
+  requireNonemptyString(props.command, "command", "Glyph")
+  local out: { [string]: any } = { kind = "glyph", command = props.command }
+  if props.id ~= nil then
+    requireNonemptyString(props.id, "id", "Glyph")
+    out.id = props.id
+  end
+  local visibleWhen = buildPredicate(props.visibleWhen, "visibleWhen", "Glyph")
+  if visibleWhen ~= nil then
+    out.visibleWhen = visibleWhen
+  end
   return out
 end
 

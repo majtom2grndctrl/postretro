@@ -85,7 +85,7 @@ impl OverlapGraph {
 
 fn record_assignment_operation(operation_count: &mut usize, checkpoint: &mut impl FnMut()) {
     *operation_count = (*operation_count).saturating_add(1);
-    if *operation_count % SHADOWMASK_ASSIGNMENT_CHECKPOINT_OPERATIONS == 0 {
+    if (*operation_count).is_multiple_of(SHADOWMASK_ASSIGNMENT_CHECKPOINT_OPERATIONS) {
         checkpoint();
     }
 }

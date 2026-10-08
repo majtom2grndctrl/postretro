@@ -68,11 +68,11 @@ M.factionSentimentReactions = {
   M.factionSentimentPlayerChoice,
 }
 M.factionSentimentTriggerEvents = {
-  onTriggerEvent(
-    { tag = "faction_sentiment_story" },
-    "enter",
-    { M.factionSentimentStoryBeat, M.factionSentimentPlayerChoice }
-  ),
+  defineTriggerEvent({
+    tag = "faction_sentiment_story",
+    event = "enter",
+    fire = { M.factionSentimentStoryBeat, M.factionSentimentPlayerChoice },
+  }),
 }
 
 return M

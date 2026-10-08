@@ -35,6 +35,9 @@ impl ScriptRuntime {
     /// The context is created and dropped within this call.
     /// See: context/lib/scripting.md §2 (Data context lifecycle)
     pub fn run_data_script(&self, section: &DataScriptSection, mod_root: &Path) -> LevelManifest {
+        // Map-member queries (`getMapEntities`) succeed only while this marker
+        // is held; anywhere else they raise naming the call.
+        let _level_data_context = crate::level_data_context::LevelDataContext::enter();
         // Anything that isn't `.luau` runs through QuickJS, mirroring
         // `run_script_file`'s policy: prl-build emits `.js` from `.ts`, so the
         // on-disk extension is the only signal available at runtime.
@@ -240,15 +243,16 @@ fn run_data_script_luau(
 
     // Mirror `LuauSubsystem::run_source`'s compile+load shape so traceback
     // formatting stays consistent.
-    let bytecode = mlua::Compiler::new()
-        .compile(source)
-        .map_err(|e| ScriptError::ScriptThrew {
-            msg: e.to_string(),
-            source_name: source_path.to_string(),
-        })?;
+    let bytecode =
+        mlua::chunk::Compiler::new()
+            .compile(source)
+            .map_err(|e| ScriptError::ScriptThrew {
+                msg: e.to_string(),
+                source_name: source_path.to_string(),
+            })?;
     lua.load(&bytecode)
         .set_name(source_path)
-        .set_mode(mlua::ChunkMode::Binary)
+        .set_mode(mlua::chunk::ChunkMode::Binary)
         .exec()
         .map_err(|e| ScriptError::ScriptThrew {
             msg: e.to_string(),

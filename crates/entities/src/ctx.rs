@@ -53,6 +53,8 @@ pub struct ScriptCtx {
     /// Whether this process owns authoritative per-seat state mutations.
     /// Connected clients still compose reaction descriptors so they can render
     /// presentation work, but owner-slot additions must remain host-only.
+    /// Also the host/single-player role gate for every npc/player group
+    /// command (`group_resolution::group_commands_apply_here` reuses it).
     pub owner_slot_writes_enabled: Rc<Cell<bool>>,
     /// System-reaction command queue (M13 HUD dynamics). System reactions
     /// (`Primitive` descriptors with no `tag`) push typed commands here; `App`

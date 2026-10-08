@@ -55,11 +55,21 @@ import {
 } from "./scripts/hud";
 import { pauseMenu } from "./scripts/pause-menu";
 import {
+  loadingCombatDemo,
+  loadingHazard,
+  loadingImages,
+  loadingNeon,
+  loadingPool,
+} from "./scripts/loading-screens";
+import { devInput } from "./scripts/input";
+import {
   devLevelSelectMenu,
+  exitConfirm,
   frontendMenu,
   frontendReactions,
   mapCatalog,
   optionsMenu,
+  quitConfirm,
 } from "./scripts/frontend-menu";
 import {
   ammoOnKill,
@@ -99,6 +109,7 @@ export default defineMod({
   },
   // Dogfoods the mod-wide positional attenuation surface (`audio.md` §5).
   audio: { attenuation: positionalSoundAttenuation },
+  input: devInput,
   frontend: {
     menuTree: frontendMenu.name,
     backgroundLevel: "combat-demo",
@@ -116,16 +127,30 @@ export default defineMod({
     spreadReticle,
     reloadMeterTree,
     pauseMenu,
+    exitConfirm,
+    quitConfirm,
     frontendMenu,
     devLevelSelectMenu,
     optionsMenu,
+    loadingHazard,
+    loadingNeon,
+    loadingCombatDemo,
   ],
+  // DEV FIXTURE: mod loading screens. Images any tree may draw by key, and a
+  // mod-wide pool the engine picks from per load; the combat demo's catalog
+  // entry overrides the pool (scripts/loading-screens.ts).
+  uiImages: loadingImages,
+  loading: { tree: loadingPool },
   // DEV FIXTURE — these remain global so any dev map using the shared combat
   // policies exposes floating damage and recently-damaged enemy feedback.
   presentationTemplates: [damageNumber, damagedEnemyBar],
   presentationOverlays: damagedEnemyOverlay,
   theme: hudTheme,
-  reactions: [...frontendReactions, ...factionSentimentReactions, ...positionalSoundReactions],
+  reactions: [
+    ...frontendReactions,
+    ...factionSentimentReactions,
+    ...positionalSoundReactions,
+  ],
   // The combat demo's unique target tags make these mod-global policies work
   // for both catalog and direct CLI map loads. `enemyDeath` must precede its
   // `combatZombieLifecycle` override: registration order is iteration order, and

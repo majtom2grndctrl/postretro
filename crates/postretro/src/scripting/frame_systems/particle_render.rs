@@ -506,6 +506,10 @@ mod tests {
             .set_component(
                 id,
                 ProjectileComponent {
+                    source_sounds: None,
+                    predicted_visible: true,
+                    source_action: None,
+                    source_shot: None,
                     knockback_impulse: [0.0; 3],
                     direction: [0.0, 0.0, -1.0],
                     speed: 40.0,
@@ -770,7 +774,13 @@ mod tests {
 
         let local = spawn_projectile_sprite(&mut registry, Vec3::ZERO, SPRITE);
         let predicted = spawn_projectile_sprite(&mut registry, Vec3::X, SPRITE);
-        for (id, predicted_shot_id) in [(local, None), (predicted, Some(9))] {
+        let shot_id = postretro_foundation::ShotId::from_parts(
+            4,
+            9,
+            postretro_foundation::ActivationLane::Primary,
+            0,
+        );
+        for (id, predicted_shot_id) in [(local, None), (predicted, Some(shot_id))] {
             let mut component = registry
                 .get_component::<ProjectileComponent>(id)
                 .unwrap()
@@ -824,7 +834,7 @@ mod tests {
             .get(SPRITE)
             .expect("all three bodies share the animated collection");
         assert_eq!(bytes.len(), 3 * SPRITE_INSTANCE_SIZE);
-        for instance in bytes.chunks_exact(SPRITE_INSTANCE_SIZE) {
+        for instance in bytes.as_chunks::<SPRITE_INSTANCE_SIZE>().0 {
             let age = f32::from_ne_bytes(instance[12..16].try_into().unwrap());
             assert!(
                 (age - elapsed).abs() < 1e-6,

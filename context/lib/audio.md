@@ -1,7 +1,7 @@
 # Audio
 
 > **Read this when:** working on sound playback, sound events and their placement, authored sound fields, reverb zones, or audio accessibility — volume and mono options, captions, subtitles, sound-direction cues.
-> **Key invariant:** audio never touches wgpu or renderer types. It takes listener state and sound requests; kira produces output inside the audio crate. Gameplay sounds are presentation: host-local, resolved after the tick loop, never on the wire.
+> **Key invariant:** audio never touches wgpu or renderer types. It takes listener state and local sound requests; kira produces output inside the audio crate. Gameplay sound playback resolves after the tick loop; frozen observer weapon cues may carry keys across the wire.
 > **Related:** [Architecture Index](./index.md) · [Development Guide](./development_guide.md) · [Build Pipeline](./build_pipeline.md) · [Scripting](./scripting.md) §12 · [Networking](./networking.md) §Combat authority · [Player Options](./player_options.md) §5
 
 ---
@@ -39,7 +39,7 @@ Master, SFX, Music, and UI volumes are player options (`player_options.md` §5) 
 
 ## 2. Playback Crate
 
-kira 0.12 handles playback, mixing, and spatialization. Engine code configures tracks and spatial parameters through kira's API, only inside `postretro-audio`. kira pulls glam 0.32 transitively; its math types do not cross into engine code.
+kira 0.12 handles playback, mixing, and spatialization. Engine code configures tracks and spatial parameters through kira's API, only inside `postretro-audio`. kira's types — including the math types in its spatial API — stay inside `postretro-audio`, even where they match the engine's own glam.
 
 ---
 
@@ -71,7 +71,7 @@ Surface-material-aware routing (varying impact sounds by surface) and a material
 
 ### Sound sources
 
-Gameplay sounds are presentation. They resolve on the app drain after the tick loop (`crates/postretro/src/sound_events/`) and stay host-local: no sound key or sound request enters the wire, the replicated snapshot, or the movement tuning payload. The sim hands the drain **emissions**: each named event paired with its emitter and the descriptor identity its sound resolves from. An emitter is an entity plus its origin at the tick, or an impact's contact set. The emission types live in `postretro-entities`, so the sim/AI seam shares one definition.
+Gameplay sounds are presentation. Playback resolves locally on the app drain after the tick loop (`crates/postretro/src/sound_events/`). Frozen observer weapon cues carry sound keys on the reliable Input channel; sound requests remain local, and movement tuning carries no sounds. The sim hands the drain **emissions**: each named event paired with its emitter and retained presentation provenance. An emitter is an entity plus its origin at the tick, or an impact's contact set. The emission types live in `postretro-entities`, so the sim/AI seam shares one definition.
 
 There are two authoring paths. When both name the same event, both play; neither suppresses the other.
 
@@ -83,15 +83,16 @@ There are two authoring paths. When both name the same event, both play; neither
 | Kind | Descriptor field | Plays on |
 |------|------------------|----------|
 | Weapon | `sounds` { `fire`, `dryFire`, `impact`, `reloadStart`, `reloadShell`, `reloadComplete`, `overheat` } | Fire, dry fire, impact, reload start / shell loaded / completed, overheat |
+| Weapon action | `primary` / `secondary` `sounds` { `fire`, `impact` } | Overrides that action's fire/impact defaults |
 | Player movement | `movement.sounds` { `land`, `jump` } | Landing, jumping |
 | Enemy attack | the attack's `sound` | That attack's `enemyAttack` |
 | Behavior activity | the activity's `sound` | Entry, whether or not `onEnter` is authored |
 | Mover | FGD `open_sound`, `close_sound`, `blocked_sound`, `crush_sound` (PRL KinematicGeometry v7, `build_pipeline.md`) | The matching mover edge; crush once per victim |
 
-Every field is optional; an unknown key inside `sounds` is rejected. An event whose descriptor names no sound plays nothing and warns nothing. Weapon sounds resolve by the weapon's canonical name through a table built at level install and rebuilt on each committed hot reload, so the next event plays the reloaded key. Enemy sounds resolve from the behavior graph the brain held when the event fired. Mover keys ride the mover component, as its `*_event` addresses do.
+Every sound field is optional; an unknown key inside `sounds` is rejected. An event naming no sound plays nothing and warns nothing. Each shot freezes its effective fire/impact keys, including weapon-default fallbacks, and its action aliases. Delayed impact keeps those keys through switching, despawn, or hot reload. Shared reload/dry-fire/overheat sounds remain weapon-owned and resolve through the canonical-name table rebuilt at install and committed hot reload. Enemy sounds resolve from the behavior graph the brain held when the event fired. Mover keys ride the mover component, as its `*_event` addresses do.
 
-- **Weapon sounds follow the weapon, whoever wields it.** An enemy attack that names a weapon plays that weapon's fire sound at the enemy, plus the attack's own `sound` when authored. A projectile records at spawn the weapon it was fired from and its activation, so its contact resolves sounds from the projectile, not from the shooter.
-- **An impact is one event per activation per tick**, carrying every contact of that tick. A multi-pellet hitscan shot yields one impact sound; projectile contacts sharing an activation on one tick yield one; a shot with no contact yields none. Splash is not a contact. Projectile and hitscan contacts both fire `impact` reactions, whoever fired them, enemy projectiles included. On the host, a remote client's shot yields one impact carrying every validated contact (`networking.md` §Combat authority).
+- **Weapon sounds follow the weapon, whoever wields it.** An enemy attack that names a weapon plays its primary action's fire sound at the enemy, plus the attack's own `sound` when authored. Projectiles retain originating shot/action data, so contacts never look up the shooter's current execution. Action aliases dispatch alongside built-in `activate` / `impact` at the same emitter; descriptor sound plays once for the built-in event.
+- **An impact is one event per shot per tick**, carrying every contact of that tick. A multi-pellet hitscan shot yields one impact sound; projectiles from the same shot contacting on one tick yield one; a shot with no contact yields none. Splash is not a contact. Projectile and hitscan contacts both fire `impact` reactions, whoever fired them, enemy projectiles included. On the host, a remote client's shot yields one impact carrying every validated contact (`networking.md` §Combat authority).
 - **Anchors:**
   - Fire, dry fire, overheat and reload anchor at the firing pawn.
   - Enemy attack and activity entry anchor at the enemy.
@@ -102,11 +103,11 @@ Every field is optional; an unknown key inside `sounds` is rejected. An event wh
   - An anchor's point is captured at fire time from the emitter's current pose, falling back to the origin stamped at the tick, so an emitter despawned the same tick still has a position.
 - **Unknown sound keys** are checked after the registry loads, at level install and at each committed hot reload. The check covers descriptor fields, mover keys, and `playSound` reactions. An unknown key warns once, and the level still loads. The play-time drop remains as a backstop.
 - **A connected client hears its own actions.**
-  - Fire, dry fire and impacts come from its fire prediction. Every pull the fire gate passes is predicted and declared as a fire; the replicated resource and reload state choose only its presentation, and only while each value names the client's own active slot. An idle, empty magazine or a cell that cannot pay the shot presents a dry fire (the dry-fire sound alone); a pull a running reload or an overheat refuses presents nothing; otherwise the fire sound, muzzle FX and impact play. Predicted hitscan keeps world contacts and every contact's normal; predicted projectiles supply their own contacts, and a dry or silent pull shows none (`networking.md` §Combat authority).
+  - Every scheduled shot resolves and declares through local execution prediction. Replicated resource/reload samples choose cosmetics only while naming the local active slot. Insufficient ammo/cell presents a dry-fire sound; a reload or overheat refusal presents nothing; otherwise frozen fire/impact keys and muzzle FX play. Hitscan keeps world contacts and normals. A cosmetically hidden predicted projectile still sweeps and declares contacts; authoritative denial ends future work (`networking.md` §Combat authority).
   - Reload edges derive from the replicated owner-private reload and ammo slots, attributed to the weapon the client holds in the host wieldable slot the reload flag names (every value read must name that slot; a frame mixing slots is held), plus that weapon's reload style and capacity, one round trip late. Start is the reload flag rising, unless the rise shows full progress — a replayed completion endpoint. A shell is ammo rising during a per-shell reload; shells that arrive in one snapshot sound once. Complete is the flag falling after the last sample held while reloading showed completion — magazine full, reserve empty, or a magazine reload at full progress — or a fall in which ammo rose by exactly what the reserve fell while the client wields that weapon. Any other fall — a cancel, a switch the host performs — plays nothing; a switch the host refuses keeps the reload tracked. Only a reload whose start the client saw on the projected weapon yields shells or a complete.
   - The overheat cue is the replicated overheat latch rising on the weapon the client holds in the named slot, while that slot is its active one. A frame whose heat values name different slots is held, and a latch first seen already raised plays nothing.
   - Landing and jumping come from its predicted movement. Movement sounds never ride the tuning payload, so the client resolves them from its local descriptor.
-  - Remote peers', enemies' and movers' sounds play nothing on a client: those events are host-only until peer audio lands.
+  - Remote players' and enemies' weapon fire/impact arrive as reliable ordered observer cues with frozen sound keys, aliases, shot identity, and captured anchors. The firing owner is excluded; it already predicts these cues. Receivers resolve local sound assets and deliver each built-in and alias at the captured emitter. Enemy attack sounds may accompany the weapon cue. Other remote movement, behavior-entry, and mover sounds remain host-only.
 
 ---
 
@@ -133,7 +134,7 @@ Audio information is made visible for players who cannot hear it.
 - **Authoring.** Captions are keyed per sound asset, so every play path — `playSound` and descriptor sounds — captions without reshaping. A scripted subtitle primitive carries a speaker.
 - **Display.** Captions and cues draw in an engine-owned UI layer above the mod HUD, resolving theme tokens and the selected variant (`ui.md` §2), sized by text scale. A caption holds at least a minimum time after its sound starts; repeat plays within the hold refresh one entry; enabling captions mid-sound captions the rest of that sound. Caption background opacity is a player option.
 - **Direction.** A positional sound's caption carries a direction arrow computed at the spatial chokepoint and updated as the listener turns. Sound-direction cues mark off-screen positional sounds on their side and hold at least as long as a caption. 2D, UI, and music sounds get neither.
-- **Client-local.** Captions derive client-side from sounds the client plays locally. No caption or sound key ever goes on the wire.
+- **Client-local.** Captions derive client-side from sounds the client plays locally. Caption data stays off the wire; observer weapon cues already carry sound keys.
 
 ---
 

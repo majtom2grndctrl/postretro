@@ -10,7 +10,8 @@ fn world_material_uniform_mirrors_shininess_and_emissive_strength_packing() {
     for shader in [forward, kinematic] {
         assert!(shader.contains("shininess: f32,"));
         assert!(shader.contains("emissive_strength: f32,"));
-        assert!(shader.contains("_pad: vec2<f32>,"));
+        assert!(shader.contains("surface_depth_peak_raise: f32,"));
+        assert!(shader.contains("surface_depth_trough: f32,"));
     }
     assert!(forward.contains("@group(1) @binding(1) var emissive_texture"));
     assert!(kinematic.contains("@group(1) @binding(1) var emissive_texture"));
@@ -279,12 +280,12 @@ fn depth_prepass_wgsl_parses() {
     );
 }
 
-/// The depth pre-pass attachment is recreated at the surface size on resize.
+/// The depth pre-pass attachment is recreated at the scene extent when it changes.
 /// Actual texture creation needs a GPU device (unavailable in `cargo test`);
 /// the size decision is factored into `prepass_attachment_extent`, asserted
 /// here. Zero-size transients clamp to 1 so texture creation stays valid.
 #[test]
-fn prepass_attachment_extent_matches_surface_size() {
+fn prepass_attachment_extent_matches_scene_extent() {
     let e = prepass_attachment_extent(1920, 1080);
     assert_eq!(
         (e.width, e.height, e.depth_or_array_layers),

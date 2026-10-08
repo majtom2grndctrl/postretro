@@ -981,11 +981,11 @@ mod tests {
                         } else {
                             None
                         };
-                        if let Some(next) = next.filter(|&next| !tree.leaves[next].is_solid) {
-                            if !reachable[next] {
-                                reachable[next] = true;
-                                queue.push_back(next);
-                            }
+                        if let Some(next) = next.filter(|&next| !tree.leaves[next].is_solid)
+                            && !reachable[next]
+                        {
+                            reachable[next] = true;
+                            queue.push_back(next);
                         }
                     }
                 }

@@ -12,6 +12,18 @@ pub struct ClearColor {
     pub a: f64,
 }
 
+/// The boot splash background: the linear form of the splash art's uniform
+/// sRGB 8-bit `(28, 33, 39)` background, for an sRGB attachment. The boot
+/// splash pass clears to it, and Loading frames clear to it too so the
+/// splash→loading-screen handoff has no color step. Derivation:
+/// `splash_pass.rs`.
+pub const SPLASH_CLEAR_COLOR: ClearColor = ClearColor {
+    r: 0.011612,
+    g: 0.015209,
+    b: 0.020289,
+    a: 1.0,
+};
+
 /// Adapter identity retained as plain data for capture measurement reports.
 ///
 /// The renderer obtains this while it still owns the `wgpu::Adapter`; callers
@@ -82,8 +94,9 @@ impl PresentHandle {
             .create_view(&wgpu::TextureViewDescriptor::default())
     }
 
-    pub(super) fn present(self) {
-        self.output.present();
+    /// wgpu 30 presents through the queue, not the surface texture.
+    pub(super) fn present(self, queue: &wgpu::Queue) {
+        queue.present(self.output);
     }
 }
 
@@ -111,15 +124,15 @@ pub(crate) const MAX_ANIMATED_BAKED_LIGHTS: usize = 256;
 /// One installed world/mover material: its group-1 bind group plus the uniform
 /// buffer behind binding 3 and the GPU-free plan that fills it.
 ///
-/// The buffer handle is RETAINED (an earlier revision dropped it) so the player's Surface
-/// Depth tier can be applied live by rewriting buffer contents rather than
-/// rebuilding bind groups. Ownership follows the level: this vector is replaced
-/// wholesale by `install_textures` and dropped with the level, so there is
-/// still no reference counting and nothing to release by hand
-/// (`resource_management.md` §8.2).
+/// The buffer handle is retained so the player's Surface Depth switch can be
+/// applied live by rewriting buffer contents rather than rebuilding bind
+/// groups. Ownership follows the level: this vector is replaced wholesale by
+/// `install_textures` and dropped with the level, so there is still no
+/// reference counting and nothing to release by hand (`resource_management.md`
+/// §8.2).
 ///
 /// Skinned models deliberately do NOT flow through here: they are out of
-/// Surface Depth's scope (design D3), they bind `Material::Default` against a
+/// Surface Depth's scope, they bind `Material::Default` against a
 /// neutral single-channel specular placeholder, and their bind groups are
 /// owned by the mesh pass.
 pub(crate) struct GpuTexture {
@@ -406,7 +419,7 @@ impl Default for SpatialDiagnostics {
     }
 }
 
-/// Hardware anisotropy cap for the Post Retro filtering pool. wgpu 29 requires
+/// Hardware anisotropy cap for the Post Retro filtering pool. wgpu requires
 /// `anisotropy_clamp >= 1`; 16 is the common ceiling exposed by desktop adapters
 /// and the visual point of diminishing returns for grazing-angle sharpness.
 pub const POST_RETRO_ANISO_CLAMP: u16 = 16;
@@ -659,11 +672,18 @@ pub(super) fn animated_baked_promotion_weight(
 ///   Loading completion, Running, UI pass, scene render) requires it.
 pub struct Renderer {
     pub(super) device: wgpu::Device,
-    pub(super) queue: wgpu::Queue,
+    pub(super) queue: UploadQueue,
+    #[cfg(test)]
+    pub(super) injected_acquire_failure: bool,
     /// Present surface for a windowed renderer. Offscreen capture deliberately
     /// has no surface and never reaches the present/splash paths.
     pub(super) surface: Option<wgpu::Surface<'static>>,
     pub(super) surface_config: wgpu::SurfaceConfiguration,
+    /// Recorded window size, scale factor and render resolution, and the
+    /// surface and scene extents last committed from them. `surface_config`
+    /// mirrors the committed surface; every scene target sizes to the
+    /// committed scene extent (`renderer_extent.rs`).
+    pub(super) extent_state: postretro_render_cpu::render_extent::ExtentState,
     pub(super) is_surface_configured: bool,
     pub(super) surface_reconfigure_pending: bool,
     /// CPU stage timing gate, handed in by the binary after construction.
@@ -701,7 +721,7 @@ pub struct Renderer {
     /// rebuild live GPU resources from the setter.
     pub(super) spot_shadow_map_resolution: u32,
 
-    /// Player-facing Surface Depth tier (design D5). Boot state, like the
+    /// Player-facing Surface Depth switch. Boot state, like the
     /// bloom profile, so a full-renderer rebuild after surface recovery keeps
     /// the player's choice instead of silently returning to the default.
     ///
@@ -998,7 +1018,6 @@ pub(super) struct FullRenderer {
     pub(super) promoted_depth_cache_frame_plan: PromotedDepthCacheFramePlan,
     pub(super) promoted_depth_cache_promoted_count: u32,
     pub(super) promoted_depth_cache_world_render_skips: u32,
-    pub(super) promoted_depth_cache_cull_dispatch_skips: u32,
     pub(super) promoted_depth_cache_timing_open: bool,
     pub(super) dynamic_depth_cache: DynamicDepthCacheGpu,
     pub(super) dynamic_depth_cache_frame_plan: DynamicDepthCachePlan,
@@ -1055,17 +1074,10 @@ pub(super) struct FullRenderer {
     /// `PortalStepLimitFallback`),
     /// otherwise the whole-BVH tree walk runs. `None` for maps with no BVH.
     pub(super) candidate_cull: Option<crate::candidate_cull::CandidateCullPipeline>,
-    /// Per-slot cone cull for the spot-shadow depth passes. Sibling to
-    /// `compute_cull`, sharing its read-only BVH node/leaf buffers. `None` for
-    /// maps with no BVH (kept in lockstep with `compute_cull`).
-    pub(super) shadow_cull: Option<crate::shadow_cull::ShadowCullPipeline>,
-    /// Per-FACE frustum cull for the point cube-shadow depth passes: one
-    /// indirect sub-region per `(cube slot, face)` layer
-    /// (`CUBE_COUNT × CUBE_FACES` regions), planes from that face's 90°
-    /// perspective matrix. Same construction and lockstep-rebuild contract as
-    /// `shadow_cull`; additionally `None` when the cube pool itself is off
-    /// (adapter lacks `CUBE_ARRAY_TEXTURES`).
-    pub(super) cube_shadow_cull: Option<crate::shadow_cull::ShadowCullPipeline>,
+    /// CPU reach for shadow world depth: the installed level's reach index and
+    /// the walk scratch every spot slot and cube face reuses. Rebuilt by every
+    /// level install.
+    pub(super) shadow_world: super::shadow_world_draws::ShadowWorldDraws,
 
     pub(super) wireframe_cull_status_pipeline: wgpu::RenderPipeline,
     pub(super) wireframe_visible_pipeline: wgpu::RenderPipeline,
@@ -1189,10 +1201,10 @@ pub(super) struct FullRenderer {
 
     /// CPU-side count of skinned and rigid ENTITY occluders submitted into spot
     /// shadow slots last frame, summed across slots (each counted once per slot
-    /// it casts into). Mirrors `shadow-cone-cull`'s submitted-instance counter —
-    /// no GPU readback. Verifies the "enemy outside the cone is not drawn"
-    /// acceptance criterion: an occluder the per-light cone cull rejects is never
-    /// added here. Reset to 0 at the start of the spot-shadow depth loop.
+    /// it casts into) — no GPU readback. Verifies the "enemy outside the cone is
+    /// not drawn" acceptance criterion: an occluder the per-light cone cull
+    /// rejects is never added here. Reset to 0 at the start of the spot-shadow
+    /// depth loop.
     pub(super) spot_entity_occluders_submitted: u32,
 
     /// CPU-side count of skinned and rigid ENTITY occluders submitted into CUBE

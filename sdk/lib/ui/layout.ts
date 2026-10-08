@@ -39,6 +39,15 @@ export type FocusPolicyProp =
   | FocusKind
   | { policy: FocusKind; wrap?: boolean; repeat?: RepeatPolicyProp };
 
+/**
+ * A vertical scroll viewport for a `VStack` or `Grid`: the container sizes to
+ * its content up to `maxHeight` logical px, then clips and scrolls. Focus
+ * outside the viewport scrolls it into view; the pointer wheel scrolls it. It
+ * creates no focus stop or group. On an `HStack` it is ignored with a
+ * load-time diagnostic.
+ */
+export type ScrollProp = { maxHeight: number };
+
 /** Common container props shared by VStack/HStack/Grid (minus children). */
 type ContainerCommonProps = {
   gap?: WidgetSpacing;
@@ -47,7 +56,6 @@ type ContainerCommonProps = {
   id?: string;
   focusNeighbors?: FocusNeighborsProp;
   focus?: FocusPolicyProp;
-  restoreOnReturn?: boolean;
   visibleWhen?: Predicate;
   role?: WidgetRole;
 };
@@ -56,6 +64,8 @@ type ContainerCommonProps = {
 export type StackProps = ContainerCommonProps & {
   /** Fixed width in logical-reference pixels. Omit for content-driven sizing. */
   width?: number;
+  /** Vertical scroll viewport. Honored on `VStack`; ignored with a diagnostic on `HStack`. */
+  scroll?: ScrollProp;
   fill?: WidgetColor;
   border?: BorderProp;
   localState?: { scope: string; cells: Record<string, number | boolean | string | [number, number, number, number]> };
@@ -64,6 +74,8 @@ export type StackProps = ContainerCommonProps & {
 /** Props for `Grid`. Adds the required `cols`; no backdrop fill/border. */
 export type GridProps = ContainerCommonProps & {
   cols: number;
+  /** Vertical scroll viewport. */
+  scroll?: ScrollProp;
 };
 
 // --- Validation helpers (container-local) ------------------------------------
@@ -279,6 +291,19 @@ function validateLocalState(value: unknown, factory: string): StackProps["localS
   return value as StackProps["localState"];
 }
 
+function buildScroll(value: unknown, factory: string): ScrollProp | undefined {
+  if (value === undefined) return undefined;
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`${factory}: \`scroll\` must be a { maxHeight } object`);
+  }
+  const maxHeight = (value as Record<string, unknown>).maxHeight;
+  requireFiniteNumber(maxHeight, "scroll.maxHeight", factory);
+  if ((maxHeight as number) <= 0) {
+    throw new Error(`${factory}: \`scroll.maxHeight\` must be greater than 0`);
+  }
+  return { maxHeight: maxHeight as number };
+}
+
 function validateChildren(children: unknown, factory: string): WidgetDescriptor[] {
   if (!Array.isArray(children)) {
     throw new Error(`${factory}: \`children\` must be an array of widget descriptors`);
@@ -294,7 +319,7 @@ function validateChildren(children: unknown, factory: string): WidgetDescriptor[
 /**
  * Build the shared container fields in Rust declaration order, appending into
  * `out` (which already carries `kind` plus `gap`/`padding`/`align` — and `cols`
- * for a grid). Emits `id`, `focusNeighbors`, `focus`, `restoreOnReturn` only
+ * for a grid). Emits `id`, `focusNeighbors`, `focus` only
  * when authored (matching each field's `skip_serializing_if`), then `children`
  * last (always present, even when empty). Stack-only `fill`/`border` are inserted
  * by the caller BEFORE this runs so the field order stays correct.
@@ -314,13 +339,6 @@ function applyCommonTail(
   if (neighbors !== undefined) out.focusNeighbors = neighbors;
   const focus = buildFocusPolicy(props.focus, factory);
   if (focus !== undefined) out.focus = focus;
-  if (props.restoreOnReturn !== undefined) {
-    if (typeof props.restoreOnReturn !== "boolean") {
-      throw new Error(`${factory}: \`restoreOnReturn\` must be a boolean`);
-    }
-    // Skip-serializes when false (the default) — emit only true.
-    if (props.restoreOnReturn) out.restoreOnReturn = true;
-  }
   if (localState !== undefined) out.localState = localState;
   const visibleWhen = buildPredicate(props.visibleWhen, "visibleWhen", factory);
   if (visibleWhen !== undefined) out.visibleWhen = visibleWhen;
@@ -367,7 +385,11 @@ function buildStack(
     if (props.width <= 0) throw new Error(`${factory}: \`width\` must be greater than 0`);
     out.width = props.width;
   }
-  // width/fill/border come before the common tail in the Rust struct order.
+  // An HStack's `scroll` is still emitted: the engine's drain diagnoses and
+  // ignores it, so the authoring mistake surfaces in the load log.
+  const scroll = buildScroll(props.scroll, factory);
+  if (scroll !== undefined) out.scroll = scroll;
+  // width/scroll/fill/border come before the common tail in the Rust struct order.
   if (props.fill !== undefined) out.fill = validateColor(props.fill, "fill", factory);
   if (props.border !== undefined) out.border = validateBorder(props.border, factory);
   const localState = validateLocalState(props.localState, factory);
@@ -399,6 +421,8 @@ export function Grid(props: GridProps, children: WidgetDescriptor[] = []): Widge
   const kids = validateChildren(children, "Grid");
 
   const out: WidgetDescriptor = { kind: "grid", gap, padding, align, cols: props.cols };
+  const scroll = buildScroll(props.scroll, "Grid");
+  if (scroll !== undefined) out.scroll = scroll;
   applyCommonTail(out, props, kids, "Grid");
   return out;
 }

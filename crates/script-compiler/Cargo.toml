@@ -29,19 +29,22 @@ path = "src/main.rs"
 #
 # Individual swc_* sub-crates version independently; pins below reflect the
 # versions currently published by swc-project that compose cleanly with
-# swc_ecma_transforms_typescript 46.
-swc_atoms = "9"
-swc_bundler = { version = "48", default-features = false }
-swc_common = "21"
-swc_ecma_ast = "23"
-swc_ecma_loader = "21"
-swc_ecma_parser = { version = "39", default-features = false, features = ["typescript"] }
-swc_ecma_codegen = "26"
-swc_ecma_transforms_base = "42"
-swc_ecma_transforms_typescript = "46"
-swc_ecma_visit = "23"
+# swc_ecma_transforms_typescript 55.
+swc_atoms = "10"
+swc_bundler = { version = "56", default-features = false }
+swc_common = "26"
+swc_ecma_ast = "29"
+swc_ecma_loader = "27"
+swc_ecma_parser = { version = "45", default-features = false, features = ["typescript"] }
+swc_ecma_codegen = "32"
+swc_ecma_transforms_base = "49"
+swc_ecma_transforms_typescript = "55"
+swc_ecma_visit = "29"
 anyhow.workspace = true
 mlua.workspace = true
+# VM-free payload validator shared with the runtime reaction converters, so the
+# light pass reserves only what the runtime installs.
+postretro-foundation.workspace = true
 postretro-level-format = { workspace = true, features = ["serde"] }
 rquickjs.workspace = true
 serde_json.workspace = true

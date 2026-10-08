@@ -5,10 +5,8 @@
 use super::super::*;
 use super::common::*;
 
-const JS_WEAPON: &str =
-    r#"damage: 12, range: 64, fireRateMs: 180, fireMode: "semi", resolution: "hitscan""#;
-const LUA_WEAPON: &str =
-    r#"damage = 12, range = 64, fireRateMs = 180, fireMode = "semi", resolution = "hitscan""#;
+const JS_WEAPON: &str = r#"damage: 12, range: 64, primary : { trigger : "press", recoveryMs : 180, steps : [{ kind: "shot" }] },  resolution: "hitscan""#;
+const LUA_WEAPON: &str = r#"damage = 12, range = 64, primary = { trigger = "press", recoveryMs = 180, steps = { { kind = "shot" } } },  resolution = "hitscan""#;
 
 fn js_weapon(extra: &str) -> String {
     format!("({{ components: {{ weapon: {{ {JS_WEAPON}{extra} }} }} }})")

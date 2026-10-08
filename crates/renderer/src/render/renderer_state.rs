@@ -21,7 +21,7 @@ impl Renderer {
         self.spot_shadow_map_resolution
     }
 
-    /// Apply the player's Surface Depth tier (design D5).
+    /// Apply the player's Surface Depth switch.
     ///
     /// Live and allocation-free: every installed world/mover material's uniform
     /// BUFFER is rewritten in place with `queue.write_buffer`. Bind groups,
@@ -65,7 +65,7 @@ impl Renderer {
         );
     }
 
-    /// The Surface Depth tier currently applied to every installed material.
+    /// The Surface Depth setting currently applied to every installed material.
     pub fn surface_depth_quality(
         &self,
     ) -> postretro_render_cpu::surface_depth::SurfaceDepthQuality {
@@ -76,6 +76,7 @@ impl Renderer {
     /// retained in boot state so a later full-renderer rebuild keeps the active
     /// profile rather than silently returning to the default.
     pub fn set_bloom_render_profile(&mut self, profile: BloomRenderProfile) {
+        self.queue.assert_empty("hot-reload render-profile commit");
         if self.bloom_render_profile == profile {
             return;
         }
@@ -255,11 +256,6 @@ impl Renderer {
     #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
     pub fn promoted_depth_cache_world_render_skips(&self) -> u32 {
         self.full().promoted_depth_cache_world_render_skips
-    }
-
-    #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
-    pub fn promoted_depth_cache_cull_dispatch_skips(&self) -> u32 {
-        self.full().promoted_depth_cache_cull_dispatch_skips
     }
 
     #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
@@ -443,7 +439,7 @@ impl Renderer {
 
     /// Boot-ready: the surface/device/queue/boot-splash exist and the surface is
     /// configured. The boot splash path requires only this. True immediately
-    /// after `Renderer::new`, and re-true after a resize reconfigures the surface.
+    /// after `Renderer::new`, and re-true after an extent commit reconfigures the surface.
     pub fn is_boot_ready(&self) -> bool {
         self.is_surface_configured
     }

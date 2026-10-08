@@ -9,6 +9,8 @@
 
 - **Engineering conventions / code style** → `development_guide.md`
 - **Crate layering / where new code goes / dependency direction** → `development_guide.md` §Workspace
+- **Build and run commands / standard build configuration / which cargo profile and features to use** → `development_guide.md` §Build and run
+- **Worktree builds / where a worktree's `target/` goes / disk budget for parallel builds / A/B binaries from another commit** → `development_guide.md` §Worktree builds
 - **Crate dependency graph / blast radius / what depends on X** → `crate-graph.md` (generated); live queries via `cargo run -p xtask -- crate-graph --rdeps <crate>`
 - **Context file writing / updates** → `context_style_guide.md`
 - **Testing** → `testing_guide.md`
@@ -17,8 +19,10 @@
 - **SH probe streaming / cluster residency / warm set / read scheduling / streaming diagnostics** → `rendering_pipeline.md` §Cluster SH residency · ids 46/49/50: `build_pipeline.md` §PRL section IDs
 - **Lightmap/shadowmask residency / cell blocks / lightmap pool / vertex block table / lightmap miss policy / `POSTRETRO_LIGHTMAP_STREAMING` / shared SH+lightmap read issuer and drain budget** → `rendering_pipeline.md` §4 (Lightmap cell-block residency) · ids 22/42/51: `build_pipeline.md` §PRL section IDs
 - **Frame capture / offscreen readback / headless (surfaceless) rendering** → `rendering_pipeline.md` §7.8
+- **Render resolution / HiDPI / scene extent vs surface extent / integer upscale / native UI layer / covers-HUD effect switches** → `rendering_pipeline.md` §7.8 · `player_options.md` §4 · `ui.md` §5
 - **Projectile visuals / emissive billboards / flipbook sprite bodies / mover-attached dynamic lights / impact-flash light / animated light radius** → `rendering_pipeline.md` §4, §7.4 · `resource_management.md` §6
 - **PRL format / level compiler / runtime portal vis** → `build_pipeline.md` §PRL Compilation
+- **Portal walk cost bound / bounded-region walk / visible-set superset contract (what consumers may assume)** → `rendering_pipeline.md` §2
 - **Cell→cell coupling relation / baked cell-visibility substrate / network relevance, audio occlusion, AI-perception broad phase, or VFX cull shared foundation** → `build_pipeline.md` §PRL section IDs
 - **Brush roles / which brushes participate in the BSP** → `build_pipeline.md` §Compiler pipeline
 - **Bake stage ordering / what a compiler stage may depend on / where atlas preparation runs** → `build_pipeline.md` §Compiler pipeline
@@ -31,12 +35,14 @@
 - **Distribution / packaging a runnable build / `dist` payload layout / launcher / `.dist-incomplete` / which levels ship** → `build_pipeline.md` §Distribution packaging
 - **Modder SDK bundle / shipping the content tools / `prl-build` + `scripts-build` in a distribution / `sdk-dist`** → `build_pipeline.md` §Distribution packaging (§SDK bundle)
 - **`postretro-tool` / `postretro.toml` project marker / project discovery / helper-binary resolution / why `xtask` cannot ship** → `build_pipeline.md` §Distribution packaging (§The project marker, §Why the tool is not xtask)
+- **Player-data directory / where `settings.toml` and `state.json` live / `--app-name` / per-game user directories** → `build_pipeline.md` §Distribution packaging (§Player-data directory) · `player_options.md` §2
 - **Authoring launch against a project / `postretro-tool run` / `--core-root` / `--install-root` / who supplies `--baked-root` and `--cache-dir`** → `build_pipeline.md` §Distribution packaging (§Authoring launch) · `ui.md` §5 · `docs/external-projects.md` (author-facing)
 - **Where `.prm` sidecars live / materials-root derivation / mod root shape / `--baked-root` / game content in a repo outside the engine install** → `build_pipeline.md` §Baked texture mips
 - **Input format adapters / adding a new map source format / what Quake or TrenchBroom vocabulary may cross into shared compiler stages** → `build_pipeline.md` §Source-format neutrality
-- **Input handling / gamepad** → `input.md`
-- **Remapping / rebinding / key bindings / UI nav from the binding table / console menu conventions (restore focus, hold-to-repeat)** → `player_options.md` §6 · `input.md` §5, §7
+- **Input handling / gamepad / triggers / active pad / device family (glyph family by vendor id)** → `input.md`
+- **Remapping / rebinding / key bindings / author default bindings / manifest `input` block / command relevance / tap-hold activators / controls panel / rebind capture / UI nav from the binding table / console menu conventions (restore focus, hold-to-repeat, nested groups, tabs, scroll, glyphs, text-entry shortcuts)** → `player_options.md` §6 · `input.md` §2, §5, §7 · `ui.md` §4, §4.1
 - **Player options / settings persistence / mouse sensitivity / invert-Y / view_feel_scale** → `player_options.md`
+- **Window modes / fullscreen / exclusive display mode / mode confirm / `--windowed`** → `player_options.md` §7 · `boot_sequence.md` §1 (Window mode) · `ui.md` §4.1
 - **Accessibility preferences / OS preference seeding / `accessibility.*` slots / reduce motion / per-field settings fallback** → `player_options.md` §5, §2
 - **Accessibility panel / `ui.openAccessibility` / accessibility field actions / missing-entry warning / first-launch panel hold** → `ui.md` §4.1 · `input.md` §5 · `boot_sequence.md` §First-launch hold
 - **Animated lightmap compact atlas / block table / section 25 paging / lightmap-family memory meter** → `rendering_pipeline.md` §7.1 (Animated lightmap compose), §7.8 (Lightmap-family byte meter) · format: `build_pipeline.md` §PRL section IDs
@@ -53,6 +59,7 @@
 - **3D model / glTF import (scale, pivot, material format)** → `resource_management.md` §7
 - **Scripting / primitives / SDK types / scripting crate boundaries / VM compile firewall** → `scripting.md`
 - **Reaction dispatch model / event sources / dispatch scopes / reaction parameters / occupancy exposure** → `scripting.md` §12
+- **Entity addressing / map members (`getMapEntities`) vs. groups (`npcs`, `players`) vs. subject tokens / per-member `.on` sources / spawned-NPC tags** → `scripting.md` §12 (Entity addressing)
 - **Netcode / multiplayer / co-op / replication / transport / wire format** → `networking.md`
 - **Live introspection channel / observe-live / localhost debug socket / reading a running session's state over a socket** → `networking.md` §Not netcode: the live introspection channel
 - **Joining a session / admission vs content parity / slot lifecycle / host level change / what gates vs what replicates** → `networking.md` §Admission and content parity · §Slot lifecycle · §What gates, and what replicates instead
@@ -73,6 +80,8 @@
 - **Frame timing / game loop** → `rendering_pipeline.md` §1 · `entity_model.md` §5
 - **CPU profiling / per-stage CPU timing / Tracy / GPU pass timing / Metal System Trace when timestamps are unsupported / Mac perf measurement confounders / diagnostic env vars vs features** → `rendering_pipeline.md` §12 · `development_guide.md` §6.4
 - **Boot / startup / splash / level-load sequence / mod loading** → `boot_sequence.md`
+- **Level-load timing / log line C / per-stage install, texture, geometry and unload marks / where load time goes** → `boot_sequence.md` §Startup timing vocabulary
+- **Loading screen / loading tree pools / `loading.progress` / level-load progress counter / install deferral / mod `uiImages`** → `boot_sequence.md` §1 (Loading screen), §2 · `ui.md` §5
 - **Experimental spikes / build-to-learn specs** → `experimental_spikes.md`
 - **3rd party library docs** → use `context7` tool (wgpu, winit, kira, glam).
 
@@ -85,6 +94,15 @@
 **Aesthetic:** Low-poly 3D environments + blocky pixelated textures; with modern embellishments like baked volumetric indirect lighting (SH irradiance volumes), normal-mapped surfaces, dynamic direct lighting, and billboard sprite volumetrics that react to light.
 
 **Architectural northstar:** Lean, wgpu-driven pipeline — not a resource heavy modern engine with retro filters. Near-instant boot, tiny binary, and _some_ retro filters, but used sparingly.
+
+### 1.1 Targets and altitude
+
+Design inputs for every renderer, baker, and netcode decision, not stretch goals.
+
+- **Pre-RTX.** No dependence on hardware ray-tracing APIs. Lightweight ray work is in bounds when bounded and either offline in the baker or a cheap runtime trace against baked structures (BVH, SDF, probe volumes). Mac/Metal is a perf target.
+- **Ambitious perf inside that era.** Bake over compute. Bound every bake and pass to where the player can be and see: no probes or texels in the void outside the hull, no bake rays through solid geometry or past a light's reach. Measure, don't assume.
+- **Smooth PvE co-op.** Prediction, reconciliation, and interpolation done well, validated at realistic latency. PvP, live service, and full lag compensation stay non-goals (§4).
+- **Altitude.** Destination clear → build the full shape in strides. Cut breadth before correctness or performance (`development_guide.md` §1.3).
 
 ---
 

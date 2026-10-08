@@ -18,10 +18,11 @@ use super::bindings::{
     drive_ring_scalar_binding, drive_text_binding,
 };
 use super::build::build_node;
-use super::draw::{UiDrawData, bar_max_value, bar_slot_value};
+use super::draw::{UiDrawData, anchor_fractions, bar_max_value, bar_slot_value, canvas_origin};
 use super::node_context::ValueText;
 use super::predicate::{resolve_predicate, resolve_value_text};
-use super::widget_meta::{harvest_image_nodes, harvest_visibility, measure_node};
+use super::scroll::{Placement, ScrollInput, ScrollViews};
+use super::widget_meta::{harvest_image_nodes, harvest_visibility, layout_leaf};
 use super::{CellValues, ImageSizes};
 
 pub use super::node_context::{NodeContext, VisibilityState};
@@ -75,6 +76,9 @@ pub struct UiTree {
     /// Renderer-provided generation for `ImageSizes` used by the last retained
     /// layout. Fresh/test one-shot layout does not cache this external input.
     last_image_sizes_generation: Option<u64>,
+    /// Scroll containers and their retained offsets. Empty for a tree with no
+    /// `scroll` container, which then does no scroll work at all.
+    pub(super) scroll: ScrollViews,
 }
 
 impl UiTree {
@@ -101,6 +105,7 @@ impl UiTree {
         harvest_visibility(&taffy, &tree.root, root, None, &mut visibility);
         let mut image_nodes = Vec::new();
         harvest_image_nodes(&taffy, &tree.root, root, &mut image_nodes);
+        let scroll = ScrollViews::harvest(&taffy, &tree.root, root);
         Self {
             taffy,
             root,
@@ -117,6 +122,39 @@ impl UiTree {
             visibility,
             image_nodes,
             last_image_sizes_generation: None,
+            scroll,
+        }
+    }
+
+    /// Carry scroll offsets and scroll focus memory over from `previous`, the
+    /// same layer's tree before this one replaced it (its descriptor or theme
+    /// changed under the same owner). Without it a rebuild drops every list
+    /// back to its top. Call before this tree's first retained build: that
+    /// build's layout clamps each carried offset to the new content.
+    pub fn carry_scroll_from(&mut self, previous: &UiTree) {
+        if self.scroll.is_empty() {
+            return;
+        }
+        self.scroll.carry_from(&previous.scroll);
+    }
+
+    /// Where the laid-out root sits on the device: its reference origin (the
+    /// anchor plus offset, pivoted by the root's size), the reference→device
+    /// scale, and the letterboxed canvas origin. Shared by the draw walk, the focus export,
+    /// and the scroll update so all three project identically.
+    pub(super) fn placement(&self, device_size: [u32; 2]) -> Placement {
+        let root_size = self.taffy.layout(self.root).expect("root has layout").size;
+        let (afx, afy) = anchor_fractions(self.anchor);
+        let anchor_x = REFERENCE_WIDTH * afx + self.offset[0];
+        let anchor_y = REFERENCE_HEIGHT * afy + self.offset[1];
+        let scale = super::super::layout::device_scale(device_size);
+        Placement {
+            root_origin: [
+                anchor_x - root_size.width * afx,
+                anchor_y - root_size.height * afy,
+            ],
+            scale,
+            canvas_origin: canvas_origin(device_size, scale),
         }
     }
 
@@ -262,8 +300,8 @@ impl UiTree {
                         width: AvailableSpace::Definite(REFERENCE_WIDTH),
                         height: AvailableSpace::Definite(REFERENCE_HEIGHT),
                     },
-                    |known_dimensions, _available_space, _node_id, node_context, _style| {
-                        measure_node(known_dimensions, node_context, font_system, image_sizes)
+                    |inputs, _node_id, node_context, style| {
+                        layout_leaf(inputs, style, node_context, font_system, image_sizes)
                     },
                 )
                 .expect("taffy layout must succeed for a well-formed UI tree");
@@ -318,6 +356,7 @@ impl UiTree {
             slot_values,
             cell_values,
             TweenClock::easing(time_seconds),
+            ScrollInput::default(),
         )
     }
 
@@ -341,6 +380,9 @@ impl UiTree {
         // display values on it: a tween's normalized progress is
         // `(now - start_time) / duration`, and snapping makes every duration 0.
         clock: TweenClock,
+        // The top tree's focused id and pointer wheel for its scroll
+        // containers; a lower layer passes the default and holds its offsets.
+        scroll_input: ScrollInput<'_>,
     ) -> UiDrawData {
         let time_seconds = clock.now;
         // Subscriber-aware diff + tween driver: resolve bound nodes against the
@@ -377,8 +419,8 @@ impl UiTree {
                         width: AvailableSpace::Definite(REFERENCE_WIDTH),
                         height: AvailableSpace::Definite(REFERENCE_HEIGHT),
                     },
-                    |known_dimensions, _available_space, _node_id, node_context, _style| {
-                        measure_node(known_dimensions, node_context, font_system, image_sizes)
+                    |inputs, _node_id, node_context, style| {
+                        layout_leaf(inputs, style, node_context, font_system, image_sizes)
                     },
                 )
                 .expect("taffy layout must succeed for a well-formed UI tree");
@@ -392,9 +434,18 @@ impl UiTree {
         // when there is no cached list yet (first retained frame). Otherwise
         // return the cached list — a true no-change frame walks nothing.
         let layout_recomputed = viewport_changed || structural_or_content;
+        // Scroll offsets are presentation state applied at draw time: moving
+        // one rebuilds the draw list but never relays out. A tree without a
+        // scroll container skips this entirely.
+        let scrolled = !self.scroll.is_empty() && {
+            let placement = self.placement(device_size);
+            self.scroll
+                .update(&self.taffy, placement, layout_recomputed, scroll_input)
+        };
         let needs_rebuild = layout_recomputed
             || appearance_changed
             || content_changed
+            || scrolled
             || self.cached_draw_data.is_none();
 
         if needs_rebuild {
@@ -413,7 +464,7 @@ impl UiTree {
     }
 
     /// Depth-first collect every node id under `node` (inclusive) into `out`.
-    /// taffy 0.10 has no whole-tree id iterator, so the diff walks the parent→
+    /// taffy has no whole-tree id iterator, so the diff walks the parent→
     /// children graph from the root to enumerate nodes to resolve.
     pub(super) fn collect_node_ids(&self, node: NodeId, out: &mut Vec<NodeId>) {
         out.push(node);
@@ -506,8 +557,8 @@ impl UiTree {
                         diff.content_changed = true;
                         dirty_text.push(node);
                     }
-                    if let Some(bind) = bind {
-                        if drive_text_binding(
+                    if let Some(bind) = bind
+                        && drive_text_binding(
                             bind,
                             bind_scope.as_deref(),
                             content,
@@ -517,10 +568,10 @@ impl UiTree {
                             slot_values,
                             cell_values,
                             clock,
-                        ) {
-                            diff.content_changed = true;
-                            dirty_text.push(node);
-                        }
+                        )
+                    {
+                        diff.content_changed = true;
+                        dirty_text.push(node);
                     }
                     if style_ranges.is_some()
                         && let Some(predicate) = predicate_bind

@@ -182,6 +182,7 @@ fn one_texel_chart() -> Chart {
         width_texels: 5,
         height_texels: 5,
         leaf_index: 0,
+        window: None,
     }
 }
 
@@ -2495,8 +2496,10 @@ fn shadowmask_bc5_encode_error_on_fixture_bakes() {
         used_channels.sort_unstable();
         used_channels.dedup();
         let errors: Vec<u8> = raw
-            .chunks_exact(4)
-            .zip(decoded.chunks_exact(4))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(decoded.as_chunks::<4>().0.iter())
             .flat_map(|(raw, decoded)| {
                 used_channels
                     .iter()
@@ -3374,8 +3377,8 @@ fn pre_analytic_layer_cache_is_reused_without_rebake() {
 
 #[test]
 fn shadowmask_cache_epochs_pin_sparse_layer_values() {
-    assert_eq!(SHADOWMASK_ATLAS_STAGE_VERSION, 5);
-    assert_eq!(lightmap_layer::LAYER_FORMAT_VERSION, 7);
+    assert_eq!(SHADOWMASK_ATLAS_STAGE_VERSION, 6);
+    assert_eq!(lightmap_layer::LAYER_FORMAT_VERSION, 9);
     assert_eq!(lightmap_layer::LIGHTMAP_SECTION_VERSION, 4);
 }
 

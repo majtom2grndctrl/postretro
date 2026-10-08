@@ -203,10 +203,10 @@ pub struct TweenState<T> {
 /// Map descriptor cross-axis `Align` to taffy `AlignItems`.
 fn align_items(align: Align) -> AlignItems {
     match align {
-        Align::Start => AlignItems::Start,
-        Align::Center => AlignItems::Center,
-        Align::End => AlignItems::End,
-        Align::Stretch => AlignItems::Stretch,
+        Align::Start => AlignItems::START,
+        Align::Center => AlignItems::CENTER,
+        Align::End => AlignItems::END,
+        Align::Stretch => AlignItems::STRETCH,
     }
 }
 

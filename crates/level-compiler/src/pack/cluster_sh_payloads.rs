@@ -227,9 +227,9 @@ mod tests {
             * layout.atlas_height as usize
             * 8;
         let mut compact_atlas = vec![0; byte_len];
-        for (index, texel) in compact_atlas.chunks_exact_mut(8).enumerate() {
+        for (index, texel) in compact_atlas.as_chunks_mut::<8>().0.iter_mut().enumerate() {
             let value = u16::try_from(index).unwrap_or(u16::MAX).to_le_bytes();
-            for channel in texel.chunks_exact_mut(2) {
+            for channel in texel.as_chunks_mut::<2>().0 {
                 channel.copy_from_slice(&value);
             }
         }
@@ -351,7 +351,7 @@ mod tests {
                         + x)
                         * 8;
                     let value = u16::try_from(slot + 1).unwrap().to_le_bytes();
-                    for channel in compact_atlas[offset..offset + 8].chunks_exact_mut(2) {
+                    for channel in compact_atlas[offset..offset + 8].as_chunks_mut::<2>().0 {
                         channel.copy_from_slice(&value);
                     }
                 }
@@ -1029,7 +1029,7 @@ mod tests {
             .find(|block| block.kind == BLOCK_KIND_PROBE_PATCHES)
             .unwrap();
         let patch_body = &decoded.bytes[patches.body.clone()];
-        for patch in patch_body.chunks_exact(16) {
+        for patch in patch_body.as_chunks::<16>().0 {
             let word = u32::from_le_bytes(patch[4..8].try_into().unwrap());
             assert_eq!(word >> PROBE_INDIRECTION_SLOT_SHIFT, 0);
             assert_eq!(

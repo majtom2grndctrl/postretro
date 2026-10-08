@@ -22,6 +22,14 @@ pub(super) struct SyntheticMap {
     clusters: [u32; 3],
     /// Sparse families the map bakes, in chunk order.
     sparse_sections: &'static [u32],
+    /// `(section, row)` pairs whose sparse row carries no CSR entry, as the
+    /// compiler emits for a covered brick no light reaches. Every other row
+    /// carries one entry.
+    empty_rows: BTreeSet<(u32, u32)>,
+    /// Sparse rows (every family) owned by a cluster other than the one
+    /// owning the brick's base probes, so evicting that owner leaves the row
+    /// resident through its base: a partial eviction.
+    sparse_owner_overrides: BTreeMap<u32, u32>,
 }
 
 impl SyntheticMap {
@@ -30,14 +38,37 @@ impl SyntheticMap {
     pub(super) fn new(grid: [u32; 3], cluster_bricks: [u32; 3]) -> Self {
         let bricks = grid.map(|axis| axis / 4);
         let clusters = [0, 1, 2].map(|axis| bricks[axis] / cluster_bricks[axis]);
-        assert!((0..3).all(|axis| grid[axis] % 4 == 0 && bricks[axis] % cluster_bricks[axis] == 0));
+        assert!(
+            (0..3).all(
+                |axis| grid[axis].is_multiple_of(4) && bricks[axis] % cluster_bricks[axis] == 0
+            )
+        );
         Self {
             grid,
             bricks,
             cluster_bricks,
             clusters,
             sparse_sections: &SPARSE_SECTIONS,
+            empty_rows: BTreeSet::new(),
+            sparse_owner_overrides: BTreeMap::new(),
         }
+    }
+
+    /// The same map with `row`'s sparse rows owned by `cluster_id`.
+    pub(super) fn with_sparse_row_owner(mut self, row: u32, cluster_id: u32) -> Self {
+        self.sparse_owner_overrides.insert(row, cluster_id);
+        self
+    }
+
+    /// The same map with `rows` carrying no entry in `section_id`.
+    pub(super) fn with_empty_rows(mut self, section_id: u32, rows: &[u32]) -> Self {
+        self.empty_rows
+            .extend(rows.iter().map(|&row| (section_id, row)));
+        self
+    }
+
+    pub(super) fn entry_count(&self, section_id: u32, row: u32) -> u32 {
+        u32::from(!self.empty_rows.contains(&(section_id, row)))
     }
 
     /// The same map with an id-35 base but no id-41 or id-45 data, as a level
@@ -68,12 +99,12 @@ impl SyntheticMap {
         x + y * self.bricks[0] + z * self.bricks[0] * self.bricks[1]
     }
 
-    fn row_count(&self) -> u32 {
+    pub(super) fn row_count(&self) -> u32 {
         self.bricks.iter().product()
     }
 
     /// Sparse rows owned by a cluster, one per brick, in chunk order.
-    fn cluster_rows(&self, cluster_id: u32) -> Vec<u32> {
+    pub(super) fn cluster_rows(&self, cluster_id: u32) -> Vec<u32> {
         let origin = self.cluster_origin_brick(cluster_id);
         let mut rows = Vec::new();
         for z in 0..self.cluster_bricks[2] {
@@ -84,6 +115,25 @@ impl SyntheticMap {
             }
         }
         rows
+    }
+
+    fn sparse_owner(&self, row: u32) -> u32 {
+        if let Some(&owner) = self.sparse_owner_overrides.get(&row) {
+            return owner;
+        }
+        let [bx, by, _] = self.bricks;
+        let brick = [row % bx, row / bx % by, row / (bx * by)];
+        let [cx, cy, _] = self.clusters;
+        let cluster = [0, 1, 2].map(|axis| brick[axis] / self.cluster_bricks[axis]);
+        cluster[0] + cluster[1] * cx + cluster[2] * cx * cy
+    }
+
+    /// Sparse rows a cluster owns in every family, ascending: its bricks'
+    /// rows unless overridden.
+    fn cluster_sparse_rows(&self, cluster_id: u32) -> Vec<u32> {
+        (0..self.row_count())
+            .filter(|&row| self.sparse_owner(row) == cluster_id)
+            .collect()
     }
 
     /// Dense probes owned by a cluster, in chunk order.
@@ -136,17 +186,23 @@ impl SyntheticMap {
                     });
                 }
             }
+            // One range per run of consecutive owned rows.
+            let mut runs: Vec<(u32, u32)> = Vec::new();
+            for row in self.cluster_sparse_rows(cluster_id) {
+                match runs.last_mut() {
+                    Some((start, count)) if *start + *count == row => *count += 1,
+                    _ => runs.push((row, 1)),
+                }
+            }
             for resource_index in 1..=self.sparse_sections.len() as u32 {
-                for z in 0..self.cluster_bricks[2] {
-                    for y in 0..self.cluster_bricks[1] {
-                        ranges.push(ClusterRangeRecord {
-                            resource_index,
-                            start: self.brick_row([origin[0], origin[1] + y, origin[2] + z]),
-                            count: self.cluster_bricks[0],
-                            owner_cluster_id: cluster_id,
-                            role: ClusterRangeRole::Owned,
-                        });
-                    }
+                for &(start, count) in &runs {
+                    ranges.push(ClusterRangeRecord {
+                        resource_index,
+                        start,
+                        count,
+                        owner_cluster_id: cluster_id,
+                        role: ClusterRangeRole::Owned,
+                    });
                 }
             }
             clusters.push(ClusterRecord {
@@ -173,7 +229,7 @@ impl SyntheticMap {
         }
     }
 
-    fn base(&self) -> postretro_level_loader::ShStreamBaseMetadata {
+    pub(super) fn base(&self) -> postretro_level_loader::ShStreamBaseMetadata {
         postretro_level_loader::ShStreamBaseMetadata {
             grid_origin: [0.0; 3],
             cell_size: [1.0; 3],
@@ -200,9 +256,15 @@ impl SyntheticMap {
         }
     }
 
-    fn sources(&self) -> postretro_level_loader::ShStreamSourceMetadata {
+    pub(super) fn sources(&self) -> postretro_level_loader::ShStreamSourceMetadata {
         let rows = self.row_count() as usize;
         let sparse = |section_id, animation_descriptor_indices| {
+            let mut affinity_offsets = vec![0];
+            for row in 0..rows as u32 {
+                affinity_offsets
+                    .push(affinity_offsets[row as usize] + self.entry_count(section_id, row));
+            }
+            let entries = *affinity_offsets.last().unwrap() as usize;
             postretro_level_loader::ShStreamSparseMetadata {
                 section_id,
                 internal_version: 1,
@@ -211,8 +273,8 @@ impl SyntheticMap {
                 tile_border: 1,
                 valid_probe_masks: vec![u64::MAX; rows],
                 cell_levels: vec![2; rows],
-                affinity_offsets: (0..=rows as u32).collect(),
-                affinity_lights: vec![0; rows],
+                affinity_offsets,
+                affinity_lights: vec![0; entries],
                 animation_descriptor_indices,
             }
         };
@@ -314,20 +376,28 @@ impl SyntheticMap {
             &patch_words,
         );
 
-        let rows = self.cluster_rows(cluster_id);
+        let rows = self.cluster_sparse_rows(cluster_id);
         let row_count = rows.len() as u32;
         for &section_id in self.sparse_sections {
-            let mut words = vec![row_count, row_count, row_count * ENTRY_TILE_F16, 0];
-            for (index, &row) in rows.iter().enumerate() {
-                words.extend_from_slice(&[row, index as u32, 1, 1]);
+            let entry_total: u32 = rows
+                .iter()
+                .map(|&row| self.entry_count(section_id, row))
+                .sum();
+            let mut words = vec![row_count, entry_total, entry_total * ENTRY_TILE_F16, 0];
+            let mut first_entry = 0;
+            for &row in &rows {
+                let count = self.entry_count(section_id, row);
+                words.extend_from_slice(&[row, first_entry, count, 1]);
+                first_entry += count;
             }
-            for index in 0..row_count {
+            for index in 0..entry_total {
                 words.extend_from_slice(&[0, index * ENTRY_TILE_F16, ENTRY_TILE_F16, 0]);
             }
-            // Two f16 halves per u32 word.
+            // Two f16 halves per u32 word. Every payload is zero, as a
+            // retained zero-payload record's is.
             words.extend(std::iter::repeat_n(
                 0,
-                (row_count * ENTRY_TILE_F16 / 2) as usize,
+                (entry_total * ENTRY_TILE_F16 / 2) as usize,
             ));
             push_block(section_id, SPARSE_ROWS_BLOCK, row_count, &words);
         }
@@ -613,9 +683,20 @@ fn eviction_releases_rows_incrementally_to_what_a_full_rebuild_produces() {
 /// full membership view exact.
 #[test]
 fn touched_rows_cover_every_compose_membership_change() {
+    touched_rows_cover_membership_changes_on(two_cluster_map());
+    // Zero-entry and entry-carrying rows in every sparse section: membership
+    // counts only the latter, and rollback must restore both.
+    touched_rows_cover_membership_changes_on(
+        two_cluster_map()
+            .with_empty_rows(INDIRECT_DELTA_ID, &[1, 2])
+            .with_empty_rows(DIRECT_DELTA_ID, &[0, 3])
+            .with_empty_rows(ANIMATED_DIRECT_DELTA_ID, &[1, 3]),
+    );
+}
+
+fn touched_rows_cover_membership_changes_on(map: SyntheticMap) {
     use compose_plan::{ComposePass, ComposePlannerFrame, RowMembership};
 
-    let map = two_cluster_map();
     let mut state = map.state();
     let [width, height, depth] = state.grid_dimensions();
     let rows = width.div_ceil(4) * height.div_ceil(4) * depth.div_ceil(4);
@@ -664,9 +745,32 @@ fn touched_rows_cover_every_compose_membership_change() {
 
     let mut bad_patch = map.prepared(&state, 1);
     corrupt_last_probe_patch(&mut bad_patch);
-    let operations: [&dyn Fn(&mut ShResidencyState); 7] = [
+    let operations: [&dyn Fn(&mut ShResidencyState); 8] = [
         &|state| state.install(None, &map.prepared(state, 0)).unwrap(),
         &|state| assert!(state.install(None, &bad_patch).is_err()),
+        // Fails inside sparse allocation. Cluster 1's id-27 and id-41 rows
+        // and its first id-45 row already hold provisional refs and row
+        // pairs when a stale live row refuses its last id-45 row, so the
+        // rollback releases refs it added.
+        &|state| {
+            let blocked = *map.cluster_rows(1).last().unwrap();
+            let pool = state
+                .sparse_pools
+                .get_mut(&ANIMATED_DIRECT_DELTA_ID)
+                .unwrap();
+            pool.install(blocked, 1, ENTRY_TILE_F16).unwrap();
+            let prepared = map.prepared(state, 1);
+            assert_eq!(
+                state.install(None, &prepared),
+                Err(malformed(1, "sparse row cannot allocate pool range"))
+            );
+            assert!(!state.compose_membership_touched.rows().is_empty());
+            let pool = state
+                .sparse_pools
+                .get_mut(&ANIMATED_DIRECT_DELTA_ID)
+                .unwrap();
+            pool.evict(blocked).unwrap();
+        },
         &|state| state.install(None, &map.prepared(state, 1)).unwrap(),
         &|state| state.evict(&mut StagedUploads::default(), 1).unwrap(),
         &|state| state.evict(&mut StagedUploads::default(), 0).unwrap(),

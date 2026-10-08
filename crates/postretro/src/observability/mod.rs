@@ -163,10 +163,10 @@ mod tests {
     use postretro_entities::{
         ActionVerb, AirParams, AmmoReserve, AttackParams, BehaviorActivityDescriptor,
         BehaviorGraphDescriptor, BehaviorGraphEnvelope, CapsuleParams, ComponentValue,
-        DescriptorProvenance, DescriptorSpawnPath, EntityId, FallParams, FireMode,
-        FogVolumeComponent, GroundParams, KinematicMoverComponent, KinematicMoverMode, MotionVerb,
-        MoverCommand, PlayerMovementDescriptor, ResolutionMode, SpeedParams, Transform,
-        TriggerActivation, TriggerFireMode, TriggerVolumeComponent, WeaponDescriptor,
+        DescriptorProvenance, DescriptorSpawnPath, EntityId, FallParams, FogVolumeComponent,
+        GroundParams, KinematicMoverComponent, KinematicMoverMode, MotionVerb, MoverCommand,
+        PlayerMovementDescriptor, ResolutionMode, SpeedParams, Transform, TriggerActivation,
+        TriggerFireMode, TriggerVolumeComponent, WeaponDescriptor,
     };
     use std::collections::{BTreeSet, HashMap};
 
@@ -299,8 +299,11 @@ mod tests {
                     movement_spread_degrees: 0.0,
                     spread_vertical_bias: 0.0,
                     range: 20.0,
-                    cooldown_ms: 100.0,
-                    fire_mode: FireMode::Semi,
+                    primary: postretro_foundation::WeaponActivationDescriptor::single(
+                        postretro_foundation::ActivationTrigger::Press,
+                        100.0,
+                    ),
+                    secondary: None,
                     resolution: ResolutionMode::Hitscan,
                     projectile: None,
                     splash: None,
@@ -407,6 +410,7 @@ mod tests {
                 ComponentValue::Spawner(postretro_entities::components::spawner::SpawnerComponent {
                     archetype_name: String::new(),
                     count: 0,
+                    spawned_tags: Vec::new(),
                     resolved: false,
                 })
             }
@@ -426,6 +430,10 @@ mod tests {
                 },
             ),
             ComponentKind::Projectile => ComponentValue::Projectile(ProjectileComponent {
+                source_sounds: None,
+                predicted_visible: true,
+                source_action: None,
+                source_shot: None,
                 activation: None,
                 source_weapon: None,
                 knockback_impulse: [0.0; 3],

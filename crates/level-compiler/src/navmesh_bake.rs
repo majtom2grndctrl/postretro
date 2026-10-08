@@ -158,7 +158,7 @@ fn collect_triangles(geo: &GeometryResult) -> Vec<Triangle> {
     let verts = &geo.geometry.vertices;
     let indices = &geo.geometry.indices;
     let mut triangles = Vec::with_capacity(indices.len() / 3);
-    for tri in indices.chunks_exact(3) {
+    for tri in indices.as_chunks::<3>().0 {
         let a = Vec3::from(verts[tri[0] as usize].position);
         let b = Vec3::from(verts[tri[1] as usize].position);
         let c = Vec3::from(verts[tri[2] as usize].position);
@@ -336,22 +336,22 @@ fn merge_column(fragments: &mut [Fragment], agent_height: f32) -> Vec<Span> {
 
     let mut spans: Vec<Span> = Vec::new();
     for frag in fragments.iter() {
-        if let Some(last) = spans.last_mut() {
-            if frag.min_y - last.top_y <= merge_eps {
-                last.top_y = last.top_y.max(frag.max_y);
-                if frag.walkable {
-                    // The standable floor is the lowest walkable fragment; a
-                    // walkable fragment merging onto a non-walkable span (a thin
-                    // deck's top over its own underside) lifts the floor to it.
-                    last.floor_y = if last.walkable {
-                        last.floor_y.min(frag.min_y)
-                    } else {
-                        frag.min_y
-                    };
-                    last.walkable = true;
-                }
-                continue;
+        if let Some(last) = spans.last_mut()
+            && frag.min_y - last.top_y <= merge_eps
+        {
+            last.top_y = last.top_y.max(frag.max_y);
+            if frag.walkable {
+                // The standable floor is the lowest walkable fragment; a
+                // walkable fragment merging onto a non-walkable span (a thin
+                // deck's top over its own underside) lifts the floor to it.
+                last.floor_y = if last.walkable {
+                    last.floor_y.min(frag.min_y)
+                } else {
+                    frag.min_y
+                };
+                last.walkable = true;
             }
+            continue;
         }
         spans.push(Span {
             floor_y: frag.min_y,

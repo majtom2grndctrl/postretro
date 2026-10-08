@@ -8,6 +8,7 @@ mod agent_diagnostics;
 mod app;
 mod camera;
 mod frame_eye;
+mod host_activations;
 #[cfg(test)]
 mod candidate_cull {
     pub use postretro_renderer::{GatherStatus, gather_candidate_leaves};
@@ -26,7 +27,9 @@ mod cpu_timing;
 mod door_occluder_diagnostics;
 pub(crate) use postretro_sim::frame_timing;
 use postretro_sim::{impact_effects, impact_policy};
+mod client_weapon;
 mod input;
+mod weapon_observers;
 // App-side lightmap cell-block residency: demand from the baked set, block
 // reads through the shared issuer, and bounded renderer drain batches.
 mod lightmap_streaming;
@@ -249,12 +252,16 @@ fn client_drain_control(app: &mut App, controls: Vec<ServerControlMessage>) {
                     endpoint.demote_client_state(&mut registry);
                     registry.clear_presentation_spawns();
                     drop(registry);
+                    app.client_weapon
+                        .suspend(&session.scripting.script_ctx.registry.borrow());
                     session.gameplay_input_latch.clear();
                     session.presentation_pool.clear_world_instances();
                     session.client_overlay_facts.clear();
                 }
                 app.client_fire_resolutions.clear();
                 app.client_predicted_shots.clear();
+                app.client_weapon.clear();
+                app.observer_weapon_cues.clear();
             }
             ServerControlMessage::Tuning(bytes) => {
                 let script_ctx = app
@@ -635,6 +642,109 @@ fn resolve_crouch_intent(mode: options::CrouchMode, button: ButtonState, latch: 
     }
 }
 
+/// The sprint twin of [`resolve_crouch_intent`]: in toggle mode each press edge
+/// of the resolved command (a hold binding's edge comes when its threshold
+/// passes) flips the latch.
+fn resolve_sprint_intent(mode: options::SprintMode, button: ButtonState, latch: &mut bool) -> bool {
+    match mode {
+        options::SprintMode::Hold => button.is_active(),
+        options::SprintMode::Toggle => {
+            if matches!(button, ButtonState::Pressed) {
+                *latch = !*latch;
+            }
+            *latch
+        }
+    }
+}
+
+/// What one frame's gamepad poll asks of the App once the session borrow ends.
+#[derive(Debug, Default, Clone, Copy)]
+struct GamepadPollVotes {
+    /// A gamepad nav intent arrived: a `focus`-mode signal.
+    nav_seen: bool,
+    /// `nav.menu` (gamepad Start) was pressed.
+    menu_toggle: bool,
+    /// A pad disconnect or switch lifted Shoot or AltFire to neutral.
+    weapon_lifted: bool,
+}
+
+/// Poll the gamepad once in the Input stage, before the `UiDispatch`
+/// `take_ready`/`advance_frame` pair, so pad nav intents ride the keyboard's
+/// N→N+1 contract. Feeds the pad into the input system, hands presses to an
+/// open capture prompt, releases the focus engine's repeat clocks, and queues
+/// text shortcuts and nav intents only while a capturing tree owns input.
+/// See: context/lib/input.md §7
+fn poll_gamepad(
+    session: &mut session::Session,
+    nav_sticks: &mut input::StickNavTrackers,
+    frame_dt: f32,
+) -> GamepadPollVotes {
+    let mut votes = GamepadPollVotes::default();
+    let context = session.ui_nav_context();
+    let capture_prompt = session.capture_prompt_is_active();
+    let Some(gp) = session.gamepad_system.as_mut() else {
+        return votes;
+    };
+    let mut gp_nav = gp.update(
+        &mut session.input_system,
+        nav_sticks,
+        session.bindings.ui_nav(),
+        context,
+    );
+    if !gp_nav.presses.is_empty() {
+        session.device_family.note_pad(gp_nav.vendor_id);
+    }
+    votes.weapon_lifted = gp_nav
+        .lifted_commands
+        .iter()
+        .any(|command| matches!(command, input::Action::Shoot | input::Action::AltFire));
+    if capture_prompt {
+        // The capture prompt takes the pad's presses; a captured press neither
+        // navigates nor opens the menu.
+        for press in std::mem::take(&mut gp_nav.presses) {
+            session.controls.offer_press(press);
+        }
+        gp_nav.nav_intents.clear();
+    }
+    // Advance any active rumble's timeout and stop it once its duration
+    // elapses (started by a drained `Rumble` command on a prior frame).
+    gp.tick_rumble(frame_dt);
+    // A confirm RELEASE stops the activation-repeat clock — the gamepad twin of
+    // the keyboard Enter-release.
+    if gp_nav.confirm_released {
+        session.ui_focus.release_confirm_repeat();
+    }
+    if gp_nav.text_shortcut_released {
+        session.ui_focus.release_shortcut_repeat();
+    }
+    // No directional input held releases the directional hold-to-repeat clock,
+    // mirroring the arrow-key-up path.
+    if gp_nav.directional_released {
+        session.ui_focus.release_repeat();
+    }
+    votes.nav_seen = !gp_nav.nav_intents.is_empty();
+    let capture = session.ui_dispatch.mode() == input::UiCaptureMode::Capture;
+    if capture {
+        for command in gp_nav.text_shortcuts {
+            session
+                .ui_dispatch
+                .enqueue_intent(input::UiIntentPayload::TextShortcut(command));
+        }
+    }
+    for intent in gp_nav.nav_intents {
+        if intent == input::NavIntent::Menu {
+            votes.menu_toggle = true;
+            continue;
+        }
+        if capture {
+            session
+                .ui_dispatch
+                .enqueue_intent(input::UiIntentPayload::Nav(intent));
+        }
+    }
+    votes
+}
+
 /// Client-side tick path for static PRL-loaded movers. The host replicates
 /// mover *phase*, not a transform or carried-light pose; render consumers read
 /// the transform reconstructed here through the same interpolation accessor.
@@ -659,6 +769,7 @@ pub(crate) struct App {
     renderer: Option<Renderer>,
 
     window_state: Option<WindowState>,
+    window_modes: app::window_modes::WindowModes,
     level: Option<postretro_level_loader::LevelWorld>,
     /// Runtime navigation graph, built once when a level with a baked navmesh
     /// loads. `None` when the map has no navmesh bake. Pathfinding reads this in
@@ -718,6 +829,8 @@ pub(crate) struct App {
     /// the movement component. Inert in `CrouchMode::Hold` (hold tracks the
     /// button level directly). See: context/lib/input.md, context/lib/player_options.md
     crouch_toggle_active: bool,
+    /// Sprint's toggle-mode latch, the crouch latch's twin.
+    sprint_toggle_active: bool,
 
     /// Warn-once state for the enemy-AI tick. Content-keyed diagnostics (e.g.
     /// `anim:<name>` for an animation state that fails to switch,
@@ -738,11 +851,16 @@ pub(crate) struct App {
     /// See: context/lib/input.md §7
     cursor_pos: Option<input::PointerPos>,
 
+    /// Pointer wheel a capturing UI tree consumed since the last UI snapshot,
+    /// at the cursor. Taken onto the next snapshot, where the top tree scrolls
+    /// the scroll container under the cursor. See: context/lib/ui.md §4
+    ui_wheel: Option<postretro_ui::UiWheelScroll>,
+
     /// Edge detector turning the gamepad nav stick (left stick) into discrete
     /// D-pad-style nav intents: one intent per push past the dead zone. Polled
     /// in the input stage before the `take_ready`/`advance_frame` pair so
     /// gamepad nav shares the keyboard's N→N+1 contract. See: context/lib/input.md §7
-    nav_stick_tracker: input::StickNavTracker,
+    nav_stick_tracker: input::StickNavTrackers,
 
     frame_timing: FrameTiming,
 
@@ -761,7 +879,7 @@ pub(crate) struct App {
     view_feel_descriptor: Option<postretro_foundation::ViewFeelParams>,
 
     /// Parallel to `input_system`; same key events, debug actions only.
-    /// See: context/lib/input.md §7
+    /// See: context/lib/input.md §8
     diagnostic_inputs: input::DiagnosticInputs,
 
     /// One-shot flag: set by `DumpPortalWalk`, consumed and cleared on the
@@ -811,7 +929,7 @@ pub(crate) struct App {
     /// (close) the registered `pauseMenu` via the engine push/pop API. `nav.menu` opens
     /// the menu from gameplay where the UI-dispatch seam is `Passthrough` and so
     /// queues nothing — hence the dedicated punch-through, mirroring how
-    /// `ToggleDebugPanel` bypasses the capture gate. See: context/lib/input.md §7.
+    /// `ToggleDebugPanel` bypasses the capture gate. See: context/lib/input.md §5.
     pending_menu_toggle: bool,
 
     /// Whether the engine accessibility panel was on the stack at the last
@@ -856,6 +974,8 @@ pub(crate) struct App {
     /// clients retain the default empty report because they never run the pass.
     trigger_pool_report: trigger_pools::TriggerPoolInstallReport,
 
+    client_weapon: client_weapon::ClientWeaponFrame,
+    observer_weapon_cues: Vec<netcode::weapon_cues::ObserverWeaponCueDelivery>,
     client_fire_resolutions: Vec<weapon::ClientFireResolution>,
     client_predicted_shots: weapon::ClientPredictedShots,
     /// Connected-client reload edges derived from replicated slots.
@@ -949,7 +1069,7 @@ pub(crate) struct App {
     mod_timings: StartupTimings,
 
     /// Per-stage durations for log line C — level load. Worker-thread stages
-    /// are merged in between `worker_dispatch` and `worker_delivered`; see
+    /// are attached to `worker_delivered`, which contains them; see the
     /// `StartupTimings` doc comment.
     level_timings: StartupTimings,
 
@@ -1111,6 +1231,72 @@ fn effective_render_yaw(
     settled_camera_yaw + mover_yaw_render_residual(carry_ground, mover_states, alpha)
 }
 
+/// One frame's displayed gameplay aim, before cosmetic view-feel offsets.
+/// Both connected shots and render-eye assembly consume this selected pose.
+#[derive(Clone, Copy)]
+pub(crate) struct PresentedAimPose {
+    position: Vec3,
+    yaw: f32,
+    pitch: f32,
+}
+
+impl PresentedAimPose {
+    fn aim_ray(self) -> (Vec3, Vec3) {
+        Camera::new(self.position, self.yaw, self.pitch).aim_ray()
+    }
+
+    fn frame_eye_inputs(
+        self,
+        aspect: f32,
+        driver: Option<frame_eye::ViewFeelDriver>,
+        movement_edges: &[view_feel::TimedMovementEdge],
+        frame_dt: f32,
+        view_feel_scale: f32,
+    ) -> frame_eye::FrameEyeInputs<'_> {
+        frame_eye::FrameEyeInputs {
+            presented_eye: self.position,
+            aspect,
+            render_yaw: self.yaw,
+            pitch: self.pitch,
+            driver,
+            movement_edges,
+            frame_dt,
+            view_feel_scale,
+        }
+    }
+}
+
+impl App {
+    fn presented_aim_pose(&self, alpha: f32) -> PresentedAimPose {
+        PresentedAimPose {
+            // Timing already carries the connected owner's presentation correction.
+            position: self.frame_timing.interpolated_state().position,
+            yaw: effective_render_yaw(
+                self.camera.yaw,
+                self.mover_yaw_carry_ground,
+                &self.kinematic_mover_tick_states,
+                alpha,
+            ),
+            // Look is render-rate, including frames with no fixed tick.
+            pitch: self.camera.pitch,
+        }
+    }
+
+    fn render_aim_pose(&self, gameplay_aim: PresentedAimPose) -> PresentedAimPose {
+        if self.frontend_menu_is_present() {
+            // The authored menu camera is held independently of a prior rider's
+            // mover carry state, including while a submenu is on top.
+            PresentedAimPose {
+                position: self.camera.position,
+                yaw: self.camera.yaw,
+                pitch: self.camera.pitch,
+            }
+        } else {
+            gameplay_aim
+        }
+    }
+}
+
 /// Reconcile the mover pose table at the same seam that owns camera yaw. The
 /// start-of-tick correction preserves the rider's camera-to-platform offset;
 /// the refreshed tick delta is then committed once by the ordinary input seam.
@@ -1198,6 +1384,7 @@ fn build_sim_command(
     snapshot: &input::ActionSnapshot,
     camera: &Camera,
     crouch_intent: bool,
+    sprint_intent: bool,
     dash_pressed: bool,
     shoot_pressed: bool,
     select_pressed: bool,
@@ -1205,7 +1392,7 @@ fn build_sim_command(
     drop_pressed: bool,
 ) -> sim::SimCommand {
     let jump_pressed = snapshot.button(Action::Jump).is_active();
-    let sprint = snapshot.button(Action::Sprint).is_active();
+    let sprint = sprint_intent;
     let shoot = snapshot.button(Action::Shoot);
     let reload = snapshot.button(Action::Reload);
     let select_slot = select_pressed
@@ -1228,6 +1415,12 @@ fn build_sim_command(
         .flatten();
 
     sim::SimCommand {
+        input_tick: 0,
+        secondary_button: postretro_sim::weapon::FireButtonState {
+            pressed: snapshot.button(Action::AltFire) == ButtonState::Pressed,
+            active: snapshot.button(Action::AltFire).is_active(),
+        },
+        activation: postretro_foundation::ActivationInput::default(),
         movement: movement::MovementInput {
             wish_dir: glam::Vec2::new(
                 snapshot.axis_value(Action::MoveRight),
@@ -1251,58 +1444,6 @@ fn build_sim_command(
         use_pressed,
         drop_pressed,
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-struct ClientFrameFireCommand {
-    client_tick: u32,
-    button: weapon::FireButtonState,
-    elapsed_ms: f32,
-}
-
-#[cfg(test)]
-fn client_fire_ticks_for_post_loop(
-    commands: &[ClientFrameFireCommand],
-    weapon: &postretro_entities::components::weapon::WeaponComponent,
-) -> Vec<u32> {
-    client_fire_commands_for_post_loop(commands, weapon)
-        .into_iter()
-        .map(|command| command.client_tick)
-        .collect()
-}
-
-/// Select the logical fire ticks the host will authorize, retaining their
-/// frame-relative simulation times so client bloom can replay the same order.
-fn client_fire_commands_for_post_loop(
-    commands: &[ClientFrameFireCommand],
-    weapon: &postretro_entities::components::weapon::WeaponComponent,
-) -> Vec<ClientFrameFireCommand> {
-    let mut selected = Vec::new();
-    let mut cooldown_ms = weapon.cooldown_remaining_ms.max(0.0);
-    let mut previous_elapsed_ms = 0.0;
-    let stats = weapon.effective();
-
-    for command in commands {
-        let elapsed_delta_ms = (command.elapsed_ms - previous_elapsed_ms).max(0.0);
-        cooldown_ms = (cooldown_ms - elapsed_delta_ms).max(0.0);
-        previous_elapsed_ms = command.elapsed_ms;
-
-        let wants_fire = match stats.fire_mode {
-            postretro_foundation::FireMode::Semi => {
-                command.button.pressed && !weapon.shoot_press_consumed
-            }
-            postretro_foundation::FireMode::Auto => command.button.active,
-        };
-        if weapon.state.allows_fire() && wants_fire && cooldown_ms <= 0.0 {
-            selected.push(*command);
-            cooldown_ms = stats.cooldown_ms;
-            if stats.fire_mode == postretro_foundation::FireMode::Semi {
-                break;
-            }
-        }
-    }
-
-    selected
 }
 
 fn build_post_movement_command(camera: &Camera) -> sim::PostMovementCommand {
@@ -1356,6 +1497,12 @@ fn reconcile_client_weapon_cooldown_from_slot_table(
     else {
         return false;
     };
+    // Slot snapshots have no activation identity. After this instance begins
+    // fixed prediction, only correlated activation outcomes may change recovery.
+    // The replicated slot remains available to presentation/HUD independently.
+    if component.last_activation_tick.is_some() {
+        return false;
+    }
     predicted.reconcile_cooldown(weapon_id, &mut component, cooldown_ms);
     let _ = registry.set_component(weapon_id, component);
     true
@@ -1399,13 +1546,6 @@ fn client_fire_muzzle_terms(
             .copied()
             .map(Vec3::from_array),
     })
-}
-
-fn client_fire_snapshot_for_post_loop<'a>(
-    fixed_tick_snapshot: Option<&'a input::ActionSnapshot>,
-    zero_tick_snapshot: Option<&'a input::ActionSnapshot>,
-) -> Option<&'a input::ActionSnapshot> {
-    fixed_tick_snapshot.or(zero_tick_snapshot)
 }
 
 fn has_player_pawn(registry: &postretro_entities::EntityRegistry) -> bool {
@@ -1655,7 +1795,7 @@ fn save_connected_client_per_owner_state(session: &mut crate::session::Session) 
         return;
     };
     let mod_id = mod_id.to_owned();
-    let Some(state_path) = state_path(&mod_id) else {
+    let Some(state_path) = state_path(session.data_dir.as_deref(), &mod_id) else {
         if session.state_store_lifecycle.disable_persistence() {
             log::warn!(
                 "[State] platform data directory is unavailable; persistent state is disabled for this run"
@@ -1752,6 +1892,18 @@ impl ApplicationHandler for App {
         // resume (resume resets to Booting and recreates the window).
         // See: context/lib/boot_sequence.md §1.
         self.boot_timings.record("window_created");
+        let options = self
+            .session
+            .as_ref()
+            .map(|session| &session.player_options)
+            .or_else(|| {
+                self.pending_session
+                    .as_ref()
+                    .map(|pending| pending.player_options())
+            });
+        if let Some(options) = options {
+            self.window_modes.apply_boot(&window, event_loop, options);
+        }
 
         let mut renderer = match Renderer::new(&window) {
             Ok(r) => r,
@@ -1762,6 +1914,10 @@ impl ApplicationHandler for App {
             }
         };
         self.boot_timings.record("wgpu_init");
+        // A saved exclusive mode may wait for the surface (window_modes).
+        if let Some(options) = options {
+            self.window_modes.finish_boot(&window, options);
+        }
         renderer.set_cpu_timing(self.cpu_timer.gate());
 
         // Splash decode + upload is deferred to the first Splash frame's
@@ -1769,8 +1925,11 @@ impl ApplicationHandler for App {
         // as fast as possible. See `run_splash_frame` and
         // `context/lib/boot_sequence.md` §1 (Splash state machine).
 
-        let size = window.inner_size();
-        self.camera.update_aspect(size.width, size.height);
+        // Provisional: the renderer read the window's size and scale factor at
+        // build, but the player's render resolution is applied at full init.
+        // Every frame's `commit_render_extents` sets the aspect that projects.
+        let scene = renderer.scene_extent();
+        self.camera.update_aspect(scene.width, scene.height);
 
         self.renderer = Some(renderer);
         self.window_state = Some(WindowState { window });
@@ -1811,6 +1970,7 @@ impl ApplicationHandler for App {
     }
 
     fn suspended(&mut self, _event_loop: &ActiveEventLoop) {
+        self.apply_display_mode_action(postretro_ui::actions::DisplayModeAction::Revert);
         // Audit which boot phase a suspend interrupts. The resume path resets to
         // `Booting` and re-drives the splash loop; the single-commit guards
         // (`pending_session.take`, renderer full-ready idempotence) keep session
@@ -1886,11 +2046,18 @@ impl ApplicationHandler for App {
         let egui_consumed: bool = false;
 
         match event {
+            // Size and scale only record here. macOS can deliver both in one
+            // dispatch; the frame's `commit_render_extents` rebuilds once from
+            // the final values. egui-winit received this event above.
             WindowEvent::Resized(size) => {
                 if let Some(renderer) = self.renderer.as_mut() {
-                    renderer.resize(size.width, size.height);
+                    renderer.record_surface_size(size.width, size.height);
                 }
-                self.camera.update_aspect(size.width, size.height);
+            }
+            WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+                if let Some(renderer) = self.renderer.as_mut() {
+                    renderer.record_scale_factor(scale_factor);
+                }
             }
             WindowEvent::CloseRequested => {
                 self.release_cursor_for_exit();
@@ -1913,7 +2080,7 @@ impl ApplicationHandler for App {
                 // exactly like gamepad Start) and Escape inside a capturing tree —
                 // including an open text-entry modal — to `nav.cancel`. The Shift state is
                 // the diagnostic resolver's modifier tracking (the Shift key-down was seen
-                // by the general arm before this Esc). See: context/lib/input.md §7.
+                // by the general arm before this Esc). See: context/lib/input.md §5.
                 self.release_cursor_for_exit();
                 log::info!("[Engine] Shutting down");
                 event_loop.exit();
@@ -1941,6 +2108,17 @@ impl ApplicationHandler for App {
                 let Some(session) = self.session.as_mut() else {
                     return;
                 };
+                if state.is_pressed() {
+                    session.device_family.note_keyboard_mouse();
+                }
+                // The capture prompt takes mouse buttons too; a captured click
+                // activates nothing.
+                if session.capture_prompt_is_active() {
+                    if state.is_pressed() {
+                        session.offer_capture_press(input::PhysicalInput::MouseButton(button));
+                    }
+                    return;
+                }
                 if !session
                     .ui_dispatch
                     .dispatch_event(click_intent)
@@ -1979,10 +2157,34 @@ impl ApplicationHandler for App {
                     }
                     return;
                 };
+                // The capture prompt takes a whole wheel notch as `wheel_up`
+                // or `wheel_down` and scrolls nothing. Partial travel, such as
+                // trackpad momentum, neither binds the wheel nor cancels.
+                if session.capture_prompt_is_active() {
+                    if let Some(notch) = session.input_system.capture_wheel_notch(delta) {
+                        session.offer_capture_press(notch);
+                    }
+                    return;
+                }
                 let forwards_to_gameplay = session
                     .ui_dispatch
                     .dispatch_event(None)
                     .forwards_to_gameplay();
+                if !forwards_to_gameplay {
+                    // A capturing tree consumed the wheel: it scrolls the scroll
+                    // container under the cursor on the next UI snapshot.
+                    if let Some(pos) = self.cursor_pos {
+                        let (lines, pixels) = match delta {
+                            winit::event::MouseScrollDelta::LineDelta(_, y) => (y, 0.0),
+                            winit::event::MouseScrollDelta::PixelDelta(p) => (0.0, p.y as f32),
+                        };
+                        self.ui_wheel.get_or_insert_default().accumulate(
+                            [pos.x as f32, pos.y as f32],
+                            lines,
+                            pixels,
+                        );
+                    }
+                }
                 if forwards_to_gameplay && session.input_focus == InputFocus::Gameplay {
                     session.input_system.handle_mouse_wheel(delta);
                 } else if input::wheel_diagnostics_enabled() {
@@ -2028,7 +2230,11 @@ impl ApplicationHandler for App {
                         input::cursor::release_cursor(&ws.window);
                     }
                     if let Some(session) = self.session.as_mut() {
+                        // Leaving the window abandons a capture unchanged.
+                        session.abandon_capture();
                         session.input_system.clear_all();
+                        self.client_weapon
+                            .suspend(&session.scripting.script_ctx.registry.borrow());
                         session.gameplay_input_latch.clear();
                     }
                     self.diagnostic_inputs.clear_modifiers();
@@ -2047,11 +2253,12 @@ impl ApplicationHandler for App {
                 // CPU stage timing: frontend and early-returned frames never
                 // commit. See: context/lib/rendering_pipeline.md §12
                 self.cpu_timer.begin_frame(now);
-                // OS preference replies land ahead of the Input stage, so a
-                // player write later this frame wins over them (UO1).
-                self.poll_os_preferences();
                 let cpu_stages = self.cpu_timer.stages();
                 let stage_scope = cpu_stages.scope(cpu_timing::FrameStage::Housekeeping);
+                // OS preference replies land ahead of the Input stage, so a
+                // player write later this frame wins over them.
+                self.poll_os_preferences();
+                self.poll_window_mode_readback();
 
                 #[cfg(feature = "observe-live")]
                 self.drain_observe_live_requests();
@@ -2081,6 +2288,7 @@ impl ApplicationHandler for App {
                 }
 
                 if !self.drive_boot_state_for_redraw(event_loop, frame_dt) {
+                    self.service_window_modes();
                     return;
                 }
 
@@ -2088,8 +2296,8 @@ impl ApplicationHandler for App {
                 // after the boot/install boundary but before any same-frame UI
                 // dispatch or gameplay ticks. A `levelLoad` wait enrolled while a
                 // ready world installs above therefore advances on this redraw's
-                // first tick (O1/O2/O31). A UI wait enrolled below stamps the new
-                // counter and remains protected from this redraw's ticks (O51).
+                // first tick. A UI wait enrolled below stamps the new counter and
+                // remains protected from this redraw's ticks.
                 // Distinct from `frame_timing.begin_frame`.
                 if let Some(session) = self.session.as_ref() {
                     session.scripting.scheduler.begin_frame();
@@ -2115,6 +2323,9 @@ impl ApplicationHandler for App {
 
                 drop(stage_scope);
                 let stage_scope = cpu_stages.scope(cpu_timing::FrameStage::Input);
+                // Registry, layer, or host-tuning changes from earlier frames
+                // rebuild the binding table before this frame's input reads it.
+                self.refresh_effective_bindings();
 
                 // The frame's animation sample clock is a single value shared by
                 // game-side hit-zone pose resolution and render collection. It is
@@ -2134,72 +2345,40 @@ impl ApplicationHandler for App {
                     frozen,
                 );
 
-                // Tail of the Input stage: poll the gamepad. This must run
-                // BEFORE the `take_ready`/`advance_frame` pair below so gamepad
-                // nav intents land in `pending` ahead of promotion and share the
-                // keyboard's N→N+1 contract — a gamepad nav consumed this frame
-                // first reaches game logic next frame, never same-frame. (gilrs
-                // previously polled *after* promotion, which would have leaked
-                // gamepad intents a frame early.) The intents are enqueued only
-                // while a capturing tree owns input (`Capture` mode); under
-                // `Passthrough` they are dropped here, exactly as keyboard
-                // events forward through the seam. See: context/lib/input.md §7
+                // Tail of the Input stage: poll the gamepad, BEFORE the
+                // `take_ready`/`advance_frame` pair below (see `poll_gamepad`).
                 // Reached only in Running (Frontend returned above), so the
                 // session is installed. Disjoint borrows of the session group and
                 // the non-session `nav_stick_tracker`; mode-signal and menu-toggle
                 // votes are collected and applied after the borrow ends.
-                let (gamepad_nav_seen, gamepad_menu_toggle) = {
+                let gamepad_votes = {
                     let App {
                         session,
                         nav_stick_tracker,
                         ..
                     } = self;
-                    let mut nav_seen = false;
-                    let mut menu_toggle = false;
-                    if let Some(session) = session.as_mut() {
-                        if let Some(gp) = session.gamepad_system.as_mut() {
-                            let gp_nav = gp.update(&mut session.input_system, nav_stick_tracker);
-                            // Advance any active rumble's timeout in the input stage
-                            // and stop it once its duration elapses (started by a
-                            // drained `Rumble` command on a prior frame).
-                            gp.tick_rumble(frame_dt);
-                            // A confirm (South) RELEASE stops the activation-repeat
-                            // clock — the gamepad twin of the keyboard Enter-release.
-                            if gp_nav.confirm_released {
-                                session.ui_focus.release_confirm_repeat();
-                            }
-                            // No directional input held releases the directional
-                            // hold-to-repeat clock, mirroring the arrow-key-up path.
-                            if gp_nav.directional_released {
-                                session.ui_focus.release_repeat();
-                            }
-                            // Any gamepad nav intent is a `focus`-mode signal.
-                            nav_seen = !gp_nav.nav_intents.is_empty();
-                            // `nav.menu` (gamepad Start) toggles the pause menu via
-                            // the punch-through flag (Passthrough queues nothing);
-                            // other nav intents enqueue only while capturing.
-                            let capture =
-                                session.ui_dispatch.mode() == input::UiCaptureMode::Capture;
-                            for intent in gp_nav.nav_intents {
-                                if intent == input::NavIntent::Menu {
-                                    menu_toggle = true;
-                                    continue;
-                                }
-                                if capture {
-                                    session
-                                        .ui_dispatch
-                                        .enqueue_intent(input::UiIntentPayload::Nav(intent));
-                                }
-                            }
-                        }
-                    }
-                    (nav_seen, menu_toggle)
+                    session
+                        .as_mut()
+                        .map_or_else(GamepadPollVotes::default, |session| {
+                            poll_gamepad(session, nav_stick_tracker, frame_dt)
+                        })
                 };
-                if gamepad_nav_seen {
+                if gamepad_votes.nav_seen {
                     self.record_mode_signal(scripting_systems::input_mode::ModeSignal::NavInput);
                 }
-                if gamepad_menu_toggle {
+                // `nav.menu` (gamepad Start) toggles the pause menu via the
+                // punch-through flag (Passthrough queues nothing).
+                if gamepad_votes.menu_toggle {
                     self.pending_menu_toggle = true;
+                }
+                // A pad lost or switched mid-charge cancels the activation, as
+                // focus loss does: neutral input is never a charge release.
+                if gamepad_votes.weapon_lifted
+                    && let Some(session) = self.session.as_mut()
+                {
+                    self.client_weapon
+                        .suspend(&session.scripting.script_ctx.registry.borrow());
+                    session.gameplay_input_latch.activation.suspend();
                 }
 
                 // Resolve this frame's input-mode signal into the engine-owned
@@ -2216,7 +2395,15 @@ impl ApplicationHandler for App {
                         .scripting
                         .input_mode_tracker
                         .update(mode_signal, frame_dt);
+                    // Mouse motion moves glyphs to keyboard-and-mouse only once
+                    // it passes the pointer-mode debounce.
+                    if resolved_input_mode == input::InputMode::Pointer
+                        && session.ui_input_mode != input::InputMode::Pointer
+                    {
+                        session.device_family.note_keyboard_mouse();
+                    }
                     session.ui_input_mode = resolved_input_mode;
+                    session.device_family.end_frame();
                 }
 
                 // Game-logic phase begins here. Read the UI captures made
@@ -2250,6 +2437,9 @@ impl ApplicationHandler for App {
                 // below. Returns whether a commit or cancel fired so the pause-menu
                 // path is skipped this frame.
                 let text_entry_consumed_nav = self.resolve_text_entry_intents(&ui_intents);
+                // Shortcuts resolve after a commit or cancel, so one landing on
+                // the frame text entry closes does nothing.
+                self.apply_text_shortcuts(&ui_intents, frame_dt);
 
                 // Focus engine (game-logic phase): split the drained intents into
                 // nav (directional/confirm/cancel/next/prev) and pointer clicks,
@@ -2279,7 +2469,9 @@ impl ApplicationHandler for App {
                         }
                         input::UiIntentPayload::PointerClick { pos } => click_positions.push(*pos),
                         // Text / Backspace are text-entry edits, resolved above.
-                        input::UiIntentPayload::Text(_) | input::UiIntentPayload::Backspace => {}
+                        input::UiIntentPayload::Text(_)
+                        | input::UiIntentPayload::Backspace
+                        | input::UiIntentPayload::TextShortcut(_) => {}
                     }
                 }
                 // Slider nav-capture (M13 Goal F, Task 4): the focused slider gets
@@ -2296,14 +2488,16 @@ impl ApplicationHandler for App {
                 let cursor = self.cursor_pos;
                 let focus_result = {
                     let session = self.session.as_mut().expect("running session installed");
-                    let active_key = session
-                        .modal_stack
-                        .active_name()
-                        .map(str::to_string)
-                        .unwrap_or_else(|| postretro_ui::tree_asset::HUD_NAME.to_string());
+                    let (active_key, active_name) =
+                        session.ui_focus_target(postretro_ui::tree_asset::HUD_NAME);
+                    session.prune_ui_focus();
+                    let rects = crate::session::focus_rects_for(
+                        session.ui_focus_rects.as_ref(),
+                        &active_name,
+                    );
                     session.ui_focus.tick(
                         Some(active_key.as_str()),
-                        session.ui_focus_rects.as_ref(),
+                        rects,
                         &nav_intents,
                         cursor,
                         &click_positions,
@@ -2312,6 +2506,10 @@ impl ApplicationHandler for App {
                     )
                 };
                 self.ui_focused_id = focus_result.focused.clone();
+                self.apply_slider_repeat_steps(focus_result.slider_steps);
+                for tab in &focus_result.activations {
+                    self.fire_focused_button_activation(Some(tab));
+                }
 
                 // Button activation: a `confirm` (gamepad
                 // confirm or pointer click — the focus engine reports both as
@@ -2355,6 +2553,11 @@ impl ApplicationHandler for App {
                     }
                 }
 
+                // After the frame's activations: resolve a capture and refresh
+                // the controls panel.
+                self.update_controls_panel();
+                self.sync_glyph_art();
+
                 let ui_captures_gameplay = {
                     let session = self.session.as_ref().expect("running session installed");
                     gameplay_capture_gate_for_frame(
@@ -2368,7 +2571,7 @@ impl ApplicationHandler for App {
                 // Capturing UI still drains raw input to prevent stale deltas from
                 // replaying later, but the consumed look is neutral so player aim
                 // cannot move while a modal owns input.
-                let (gameplay_snapshot, zero_tick_fire_snapshot) = {
+                let gameplay_snapshot = {
                     let session = self.session.as_mut().expect("running session installed");
                     let drained_look = session.input_system.drain_look_inputs();
                     let look = if ui_captures_gameplay {
@@ -2377,6 +2580,12 @@ impl ApplicationHandler for App {
                         drained_look
                     };
                     let frame_snapshot = session.input_system.snapshot();
+                    if ui_captures_gameplay {
+                        let registry = session.scripting.script_ctx.registry.borrow();
+                        self.client_weapon.suspend(&registry);
+                        let token = self.client_weapon.suppressed.map(|(_, token)| token);
+                        session.gameplay_input_latch.activation.set_active(token);
+                    }
                     let gameplay_snapshot = gameplay_snapshot_for_capture_state(
                         &mut session.gameplay_input_latch,
                         &frame_snapshot,
@@ -2415,14 +2624,35 @@ impl ApplicationHandler for App {
                         .scripting
                         .player_hud_state
                         .set_pending_weapon_slot(pending_weapon_slot);
-                    let zero_tick_fire_snapshot =
-                        (!ui_captures_gameplay && ticks == 0).then_some(frame_snapshot);
                     // Apply look rotation once at render rate, not once per tick —
                     // so zero-tick frames still consume accumulated mouse motion.
                     self.camera
                         .rotate(look.yaw_delta(frame_dt), look.pitch_delta(frame_dt));
-                    (gameplay_snapshot, zero_tick_fire_snapshot)
+                    gameplay_snapshot
                 };
+
+                if ticks == 0 && self.is_connected_client() {
+                    let session = self.session.as_mut().expect("running session installed");
+                    if let Some(token) = session.gameplay_input_latch.activation.take_cancel() {
+                        let mut command = build_sim_command(
+                            &input::ActionSnapshot::neutral(),
+                            &self.camera,
+                            false,
+                            false,
+                            false,
+                            false,
+                            false,
+                            false,
+                            false,
+                        );
+                        command.activation.cancel = Some(token);
+                        let _ = netcode::client_send_input_command(
+                            session.net_endpoint.as_mut(),
+                            &command,
+                            self.camera.pitch,
+                        );
+                    }
+                }
 
                 // The script tranche lives on `Session` (built post-first-pixel).
                 // Clone the `ScriptCtx` handle once for this Game-logic phase (cheap
@@ -2478,7 +2708,7 @@ impl ApplicationHandler for App {
                 let mut pending_mover_events = Vec::new();
                 let mut pending_trigger_residuals = Vec::new();
                 let mut repointed_pawns = Vec::new();
-                let mut sent_client_fire_commands: Vec<ClientFrameFireCommand> = Vec::new();
+
                 let mut host_snapshot_due = false;
                 // Death-event names accumulate here and join the sequence-aware
                 // post-tick batch below, so a `progress` reaction naming a sequence
@@ -2520,12 +2750,22 @@ impl ApplicationHandler for App {
                         snapshot.button(Action::Crouch),
                         &mut self.crouch_toggle_active,
                     );
+                    let sprint_mode = self
+                        .session
+                        .as_ref()
+                        .map(|session| session.player_options.sprint_mode)
+                        .unwrap_or_default();
+                    let sprint_intent = resolve_sprint_intent(
+                        sprint_mode,
+                        snapshot.button(Action::Sprint),
+                        &mut self.sprint_toggle_active,
+                    );
 
                     for tick_index in 0..ticks {
                         let forward_axis = snapshot.axis_value(Action::MoveForward);
                         let right_axis = snapshot.axis_value(Action::MoveRight);
                         let up_axis = snapshot.axis_value(Action::MoveUp);
-                        let sprint = snapshot.button(Action::Sprint).is_active();
+                        let sprint = sprint_intent;
 
                         let speed = if sprint {
                             camera::MOVE_SPEED * camera::SPRINT_MULTIPLIER
@@ -2619,6 +2859,7 @@ impl ApplicationHandler for App {
                             snapshot,
                             &self.camera,
                             crouch_intent,
+                            sprint_intent,
                             dash_pressed,
                             shoot_pressed,
                             false,
@@ -2626,6 +2867,26 @@ impl ApplicationHandler for App {
                             drop_pressed,
                         );
                         command.select_slot = select_slot;
+                        let input_tick = netcode::client_peek_next_command_tick(
+                            self.session.as_ref().and_then(|s| s.net_endpoint.as_ref()),
+                        );
+                        let active_token = {
+                            let registry = script_ctx.registry.borrow();
+                            local_active_wieldable(&registry).and_then(|(_, id)| registry.get_component::<postretro_entities::components::weapon::WeaponComponent>(id).ok()).and_then(|component| component.state.activation_cursor()).map(|cursor| cursor.token)
+                        };
+                        let capture = &mut self
+                            .session
+                            .as_mut()
+                            .expect("running session installed")
+                            .gameplay_input_latch
+                            .activation;
+                        capture.set_active(active_token);
+                        let input_tick = input_tick.unwrap_or_else(|| capture.next_local_tick());
+                        command.input_tick = input_tick;
+                        command.activation = capture.command(input_tick);
+                        if tick_index > 0 {
+                            command.secondary_button.pressed = false;
+                        }
 
                         // Connected-client prediction (M15 Phase 3 Task 3): send one
                         // Input command and advance ONLY the local pawn's movement
@@ -2664,27 +2925,6 @@ impl ApplicationHandler for App {
                             if let Some(pawn) = repointed {
                                 repointed_pawns.push(pawn);
                             }
-                            let (allows_fire, allows_reload) = {
-                                let registry = script_ctx.registry.borrow();
-                                local_active_wieldable(&registry)
-                                    .and_then(|(_, weapon)| {
-                                        registry
-                                            .get_component::<postretro_entities::components::weapon::WeaponComponent>(weapon)
-                                            .ok()
-                                    })
-                                    .map_or((false, false), |weapon| {
-                                        (weapon.state.allows_fire(), weapon.state.allows_reload())
-                                    })
-                            };
-                            if !allows_fire {
-                                command.fire_button = weapon::FireButtonState {
-                                    pressed: false,
-                                    active: false,
-                                };
-                            }
-                            if !allows_reload {
-                                command.reload = false;
-                            }
                             if switch_accepted && let Some(slot) = command.select_slot {
                                 self.client_declare_switch(slot);
                             }
@@ -2696,6 +2936,11 @@ impl ApplicationHandler for App {
                             let prediction_tick = {
                                 let _scope =
                                     prediction_cpu.scope(cpu_timing::PredictionStage::Movement);
+                                self.predict_client_weapon_command(
+                                    &mut command,
+                                    input_tick,
+                                    tick_dt,
+                                );
                                 self.client_predict_movement_tick(&command, tick_dt)
                             };
                             if let Some(prediction_tick) = prediction_tick {
@@ -2728,11 +2973,6 @@ impl ApplicationHandler for App {
                                             age: (ticks - tick_index - 1) as f32 * tick_dt,
                                         }),
                                 );
-                                sent_client_fire_commands.push(ClientFrameFireCommand {
-                                    client_tick: prediction_tick.client_tick,
-                                    button: command.fire_button,
-                                    elapsed_ms: (tick_index + 1) as f32 * tick_dt * 1000.0,
-                                });
                             }
                             // Tick-rate camera follow tracks the PRESENTED local pose:
                             // the gameplay-authoritative (snapped) registry pose plus the
@@ -2937,8 +3177,8 @@ impl ApplicationHandler for App {
                         // frame-end drain, after every tick's accumulator pass. An
                         // instance enrolled this frame is skipped via its stamp.
                         // This tick's paired-trigger Exit fires cancel matching
-                        // interruptible instances before the countdown advances
-                        // (O4), so an Exit on the exact landing tick wins.
+                        // interruptible instances before the countdown advances,
+                        // so an Exit on the exact landing tick wins.
                         scripting
                             .scheduler
                             .evaluate(&tick_events.trigger_exit_fires);
@@ -2968,10 +3208,10 @@ impl ApplicationHandler for App {
                             &mut session.scripting.slot_accumulator_bindings,
                             tick_dt,
                         );
-                        self.host_record_authorized_shots(&tick_events.authorized_shots);
-                        self.host_send_rejected_projectile_fire_verdicts(
-                            &tick_events.rejected_remote_projectile_fires,
+                        self.host_record_activation_progress(
+                            &tick_events.remote_activation_progress,
                         );
+                        self.host_record_authorized_shots(&tick_events.authorized_shots);
                         self.host_spawn_projectile_presentations(
                             &script_ctx.registry,
                             &tick_events.remote_projectile_presentation_launches,
@@ -2995,6 +3235,7 @@ impl ApplicationHandler for App {
                                 age: (ticks - tick_index - 1) as f32 * tick_dt,
                             },
                         ));
+                        self.publish_observer_weapon_cues(&tick_events.weapon, &tick_events.ai);
                         pending_ai_events.extend(tick_events.ai);
                         append_tick_weapon_script_events(
                             &mut pending_weapon_script_events,
@@ -3037,12 +3278,8 @@ impl ApplicationHandler for App {
 
                 // Regression: a turntable's transform slerps through this tick while
                 // carry_yaw previously held the local view until the next input seam.
-                let render_camera_yaw = effective_render_yaw(
-                    self.camera.yaw,
-                    self.mover_yaw_carry_ground,
-                    &self.kinematic_mover_tick_states,
-                    frame_result.alpha,
-                );
+                let presented_aim = self.presented_aim_pose(frame_result.alpha);
+                let render_camera_yaw = presented_aim.yaw;
 
                 // Task 6 client remote interpolation: sample each remote entity's
                 // buffer at `estimated_server_tick - interpolation_delay` and write the
@@ -3060,11 +3297,9 @@ impl ApplicationHandler for App {
                 self.update_client_presentation_pose_inputs(frame_anim_time, render_camera_yaw);
                 self.update_client_overlay_anchors(&script_ctx, frame_anim_time);
                 self.run_client_fire_path_post_loop(
-                    gameplay_snapshot.as_ref(),
-                    zero_tick_fire_snapshot.as_ref(),
-                    &sent_client_fire_commands,
                     frame_dt,
                     frame_anim_time,
+                    presented_aim,
                     &mut pending_weapon_script_events,
                 );
                 if self.is_connected_client() {
@@ -3178,6 +3413,18 @@ impl ApplicationHandler for App {
                             },
                         ));
                     }
+                    for cue in &self.observer_weapon_cues {
+                        for key in [cue.sound.as_deref(), cue.additional_sound.as_deref()]
+                            .into_iter()
+                            .flatten()
+                        {
+                            requests.push(sound_events::frozen_sound(
+                                key,
+                                &cue.emitter,
+                                &mut scene,
+                            ));
+                        }
+                    }
                     requests.append(&mut client_sounds);
                     (edges, requests, listener_attached)
                 };
@@ -3236,9 +3483,47 @@ impl ApplicationHandler for App {
                         &script_ctx,
                     ));
                     pending_trigger_follow_ups.extend(drain_named_events_with_sequences(
-                        pending_weapon_script_events
+                        pending_ai_events
                             .iter()
-                            .map(|emission| (emission.address, Some(emission.emitter.clone()))),
+                            .filter(|emission| emission.shot_id.is_some())
+                            .flat_map(|emission| {
+                                std::iter::once("activate")
+                                    .chain(
+                                        emission
+                                            .action
+                                            .as_ref()
+                                            .and_then(|a| a.emits.as_ref())
+                                            .and_then(|e| e.activate.as_deref()),
+                                    )
+                                    .map(move |address| (address, Some(emission.emitter.clone())))
+                            }),
+                        &script_ctx.data_registry.borrow(),
+                        &session.scripting.sequence_registry,
+                        &session.scripting.reaction_registry,
+                        &session.scripting.system_registry,
+                        &script_ctx,
+                    ));
+                    pending_trigger_follow_ups.extend(drain_named_events_with_sequences(
+                        self.observer_weapon_cues.iter().flat_map(|cue| {
+                            let builtin = match cue.kind {
+                                netcode::weapon_cues::WeaponCueKind::Activate => "activate",
+                                netcode::weapon_cues::WeaponCueKind::Impact => "impact",
+                            };
+                            std::iter::once(builtin)
+                                .chain(cue.alias.as_deref())
+                                .map(move |address| (address, Some(cue.emitter.clone())))
+                        }),
+                        &script_ctx.data_registry.borrow(),
+                        &session.scripting.sequence_registry,
+                        &session.scripting.reaction_registry,
+                        &session.scripting.system_registry,
+                        &script_ctx,
+                    ));
+                    pending_trigger_follow_ups.extend(drain_named_events_with_sequences(
+                        pending_weapon_script_events.iter().flat_map(|emission| {
+                            sound_events::weapon_emission_addresses(emission)
+                                .map(move |address| (address, Some(emission.emitter.clone())))
+                        }),
                         &script_ctx.data_registry.borrow(),
                         &session.scripting.sequence_registry,
                         &session.scripting.reaction_registry,
@@ -3269,14 +3554,14 @@ impl ApplicationHandler for App {
                             continue;
                         };
                         // Scope the origin guard to THIS residual iteration only,
-                        // released before the deferred batch below (O54): a `wait`
+                        // released before the deferred batch below: a `wait`
                         // reached synchronously here keys its instance to this
                         // `(trigger, player)`, while a batch-seeded `fire` stays
-                        // sourceless. The paired-enter standing check (O52/O60)
-                        // reads the trigger system from the session the drain
-                        // already holds — an interruptible instance parks only
-                        // while its origin's enter is live, so a player who left
-                        // within the frame does not park an uncancellable beat.
+                        // sourceless. The paired-enter standing check reads the
+                        // trigger system from the session the drain already
+                        // holds — an interruptible instance parks only while its
+                        // origin's enter is live, so a player who left within
+                        // the frame does not park an uncancellable beat.
                         let paired_enter_standing = session
                             .trigger_system
                             .paired_enters()
@@ -3314,18 +3599,18 @@ impl ApplicationHandler for App {
                     // dispatch and OUTSIDE any origin guard: a resumed tail runs
                     // where a trigger residual runs, but each landing gets its own
                     // deferred-dispatch call so a `fire`-seeded child's depth is
-                    // attributable per instance (O27, O65). The scheduler owns its
-                    // tails as `Vec<SequenceStep>` and never mints a
-                    // `TriggerResidualHandle`, so this never resolves through
-                    // `self.trigger_bindings` (O33). `take_landings` (inside
-                    // `drain_landings`) `mem::take`s the queue, so nothing borrows
-                    // it across the block — no need to move it onto `App`.
+                    // attributable per instance. The scheduler owns its tails as
+                    // `Vec<SequenceStep>` and never mints a `TriggerResidualHandle`,
+                    // so this never resolves through `self.trigger_bindings`.
+                    // `take_landings` (inside `drain_landings`) `mem::take`s the
+                    // queue, so nothing borrows it across the block — no need to
+                    // move it onto `App`.
                     //
                     // Before draining, drop any interruptible instance whose keyed
                     // trigger left the level mid-wait: `paired_enters` retains only
                     // live triggers, so a surviving parked interruptible instance
                     // absent from it has no Exit to ever cancel on and must not land
-                    // uncancelled (O63).
+                    // uncancelled.
                     session
                         .scripting
                         .scheduler
@@ -3370,6 +3655,10 @@ impl ApplicationHandler for App {
                     session
                         .scripting
                         .player_hud_state
+                        .set_charge_presentation_suppression(self.client_weapon.suppressed);
+                    session
+                        .scripting
+                        .player_hud_state
                         .tick_for_role_and_report_sampled_weapon(is_connected_client, None)
                 } else {
                     None
@@ -3411,6 +3700,7 @@ impl ApplicationHandler for App {
                 }
 
                 self.update_player_options(frame_dt, options_menu_was_open);
+                self.commit_render_extents();
 
                 // Connected-client per-owner persistence runs exactly after the
                 // second command drain: every fixed tick and same-frame crossing
@@ -3439,16 +3729,10 @@ impl ApplicationHandler for App {
                 // rendered frame, before replication and render observe state.
                 impact_effects::run_end_of_frame_removal_pass(
                     &mut script_ctx.registry.borrow_mut(),
-                    |_, pending_kill_credit| {
-                        let Some(pending_kill_credit) = pending_kill_credit else {
-                            return;
-                        };
+                    |removal| {
                         let session = self.session.as_mut().expect("running session installed");
-                        session.pending_death_events.extend(
-                            session
-                                .progress_tracker
-                                .on_entity_killed(&pending_kill_credit.tags),
-                        );
+                        let fired = removal.report_to_progress(&mut session.progress_tracker);
+                        session.pending_death_events.extend(fired);
                     },
                 );
 
@@ -3491,10 +3775,10 @@ impl ApplicationHandler for App {
                 self.reconcile_ui_focus();
                 self.apply_frontend_menu_camera_pose_if_present();
 
-                // Position interpolated from tick-state slots; yaw/pitch from
-                // `self.camera` directly so zero-tick frames still see this
-                // frame's look rotation.
-                let interp = self.frame_timing.interpolated_state();
+                // Gameplay rendering shares the pose used by post-loop shots.
+                // A frontend menu opened by this frame's reactions has its own
+                // camera hold, applied above after the command drains settle.
+                let presented_aim = self.render_aim_pose(presented_aim);
 
                 // M15 Phase 3 Task 5: the connected client's local-pawn presentation
                 // offset is already baked into the camera pose `frame_timing` carries
@@ -3507,7 +3791,7 @@ impl ApplicationHandler for App {
                 // and portal apex continuously across each reconcile snap.
                 // Single-player and the host carry a ZERO offset, so this is the bare
                 // interpolated eye for them, unchanged.
-                let presented_eye = interp.position;
+                let presented_eye = presented_aim.position;
 
                 // View-feel assembly (movement.md D1/D5/D6) runs once per frame,
                 // here, ahead of the audio step: render and the audio listener
@@ -3547,16 +3831,13 @@ impl ApplicationHandler for App {
                     .map(|resolved| resolved.presented_view_feel_scale())
                     .unwrap_or(1.0);
                 let eye = frame_eye::assemble_frame_eye(
-                    frame_eye::FrameEyeInputs {
-                        presented_eye,
-                        aspect: self.camera.aspect(),
-                        render_yaw: render_camera_yaw,
-                        pitch: self.camera.pitch,
-                        driver: view_feel_driver,
-                        movement_edges: &pending_movement_edges,
+                    presented_aim.frame_eye_inputs(
+                        self.camera.aspect(),
+                        view_feel_driver,
+                        &pending_movement_edges,
                         frame_dt,
                         view_feel_scale,
-                    },
+                    ),
                     frame_eye::ViewFeelTracking {
                         state: &mut self.view_feel_state,
                         followed_pawn: &mut self.view_feel_followed_pawn,
@@ -3716,11 +3997,15 @@ impl ApplicationHandler for App {
                     );
                 }
 
+                // World anchors project into the span the upscaled scene
+                // covers (scene × divisor, anchored top-left), so each lands on
+                // the scene pixel it marks even when the surface does not
+                // divide evenly. Committed this frame, so never a 0×0 minimize.
                 let presentation_viewport = self
-                    .window_state
+                    .renderer
                     .as_ref()
-                    .map(|state| state.window.inner_size())
-                    .map(|size| [size.width, size.height])
+                    .map(|renderer| renderer.render_extents().upscaled_scene())
+                    .map(|span| [span.width, span.height])
                     .unwrap_or([0, 0]);
                 let is_connected_client = self.is_connected_client();
 
@@ -3995,7 +4280,7 @@ impl ApplicationHandler for App {
                             // Camera eye position — the same value that seeds
                             // the portal flood-fill — drives the per-instance
                             // animation time-slicing distance bucket.
-                            interp.position,
+                            render_eye_position,
                             &session.hit_zone_store,
                         );
 
@@ -4184,10 +4469,10 @@ impl ApplicationHandler for App {
                     // the SH diagnostic overlay can push debug lines that
                     // the frame's debug-line pass will pick up. Tessellated
                     // paint jobs are stashed and consumed after the frame
-                    // by `render_debug_ui`.
+                    // by `render_debug_ui`; texture deltas queue on the
+                    // `DebugUi` so a frame that never presents carries them.
                     #[cfg(feature = "dev-tools")]
                     let debug_ui_frame: Option<(
-                        egui::TexturesDelta,
                         Vec<egui::epaint::ClippedPrimitive>,
                         f32,
                     )> = {
@@ -4278,11 +4563,8 @@ impl ApplicationHandler for App {
                                 let paint_jobs = debug_ui
                                     .ctx
                                     .tessellate(full_output.shapes, full_output.pixels_per_point);
-                                out = Some((
-                                    full_output.textures_delta,
-                                    paint_jobs,
-                                    window.scale_factor() as f32,
-                                ));
+                                debug_ui.pending_textures.push(full_output.textures_delta);
+                                out = Some((paint_jobs, window.scale_factor() as f32));
                             }
                         }
                         // Clear the debug-line buffer unconditionally each
@@ -4387,7 +4669,7 @@ impl ApplicationHandler for App {
                     // second `self.session.as_mut()` here would alias it.
                     let frontend_menu_is_present =
                         frontend_root_is_pushed(&session.modal_stack, frontend_menu_name);
-                    let ui_snapshot = Self::build_ui_read_snapshot(
+                    let mut ui_snapshot = Self::build_ui_read_snapshot(
                         &session.modal_stack,
                         &mut session.presentation_cells,
                         &script_ctx.slot_table.borrow(),
@@ -4396,6 +4678,8 @@ impl ApplicationHandler for App {
                         self.ui_focused_id.clone(),
                         frontend_menu_is_present,
                     );
+                    ui_snapshot.wheel = self.ui_wheel.take();
+                    crate::app::glyph_art::resolve_snapshot_glyphs(&mut ui_snapshot, session);
                     renderer.set_ui_snapshot(ui_snapshot);
                     let limiter_frame = Self::next_limiter_frame(&mut self.last_resolve_at, now);
                     renderer.set_limiter_frame(limiter_frame);
@@ -4476,17 +4760,19 @@ impl ApplicationHandler for App {
 
                         #[cfg(feature = "dev-tools")]
                         {
-                            if let Some((textures_delta, paint_jobs, scale)) = debug_ui_frame {
-                                if let Err(err) = renderer.render_debug_ui(
+                            if let Some((paint_jobs, scale)) = debug_ui_frame
+                                && let Some(debug_ui) =
+                                    self.session.as_mut().and_then(|s| s.debug_ui.as_mut())
+                                && let Err(err) = renderer.render_debug_ui(
                                     &mut present_handle,
-                                    textures_delta,
+                                    debug_ui.pending_textures.delta_mut(),
                                     paint_jobs,
                                     scale,
-                                ) {
-                                    self.exit_result = Err(err);
-                                    event_loop.exit();
-                                    return;
-                                }
+                                )
+                            {
+                                self.exit_result = Err(err);
+                                event_loop.exit();
+                                return;
                             }
                         }
                         let present_start = self.cpu_timer.gate().is_enabled().then(Instant::now);
@@ -4560,32 +4846,32 @@ impl ApplicationHandler for App {
                     .renderer
                     .as_ref()
                     .map(|r| if r.vsync_enabled() { "on" } else { "off" });
-                if let Some(ws) = self.window_state.as_ref() {
-                    if self.last_title_update.elapsed() >= Duration::from_millis(250) {
-                        self.last_title_update = Instant::now();
-                        self.title_buffer.clear();
+                if let Some(ws) = self.window_state.as_ref()
+                    && self.last_title_update.elapsed() >= Duration::from_millis(250)
+                {
+                    self.last_title_update = Instant::now();
+                    self.title_buffer.clear();
+                    let _ = write!(
+                        &mut self.title_buffer,
+                        "Postretro | {region_label}:{} path:{path_label} | draw:{} all:{}{walk_reach_col} | pos: ({:.0}, {:.0}, {:.0})",
+                        stats.camera_cell,
+                        stats.drawn_faces,
+                        stats.total_faces,
+                        pos.x,
+                        pos.y,
+                        pos.z,
+                    );
+                    if let Some(label) = vsync_label {
+                        let _ = write!(&mut self.title_buffer, " | vsync:{label}");
+                    }
+                    if let Some(ft) = self.frame_rate_meter.stats() {
                         let _ = write!(
                             &mut self.title_buffer,
-                            "Postretro | {region_label}:{} path:{path_label} | draw:{} all:{}{walk_reach_col} | pos: ({:.0}, {:.0}, {:.0})",
-                            stats.camera_cell,
-                            stats.drawn_faces,
-                            stats.total_faces,
-                            pos.x,
-                            pos.y,
-                            pos.z,
+                            " frame: {:.1}/{:.1}/{:.1} ms",
+                            ft.min_ms, ft.avg_ms, ft.max_ms,
                         );
-                        if let Some(label) = vsync_label {
-                            let _ = write!(&mut self.title_buffer, " | vsync:{label}");
-                        }
-                        if let Some(ft) = self.frame_rate_meter.stats() {
-                            let _ = write!(
-                                &mut self.title_buffer,
-                                " frame: {:.1}/{:.1}/{:.1} ms",
-                                ft.min_ms, ft.avg_ms, ft.max_ms,
-                            );
-                        }
-                        ws.window.set_title(&self.title_buffer);
                     }
+                    ws.window.set_title(&self.title_buffer);
                 }
 
                 // Measure from `now` at handler entry so the sample spans all
@@ -4619,6 +4905,9 @@ impl ApplicationHandler for App {
         let Some(session) = self.session.as_mut() else {
             return;
         };
+        if let DeviceEvent::MouseMotion { delta } = event {
+            session.offer_capture_mouse_motion(delta.0, delta.1);
+        }
         // UI-dispatch seam, ahead of the gameplay forward: a captured raw
         // delta is consumed by the UI layer and must not reach the look path.
         // Mirrors the `window_event` seam; the decision is the mode flag. A raw
@@ -4690,7 +4979,7 @@ impl ApplicationHandler for App {
                     .committed_store_slots()
                     .clone();
                 let script_ctx = session.scripting.script_ctx.clone();
-                if let Some(state_path) = state_path(&mod_id) {
+                if let Some(state_path) = state_path(session.data_dir.as_deref(), &mod_id) {
                     let mut collected = collect_persisted_state(
                         &script_ctx.slot_table.borrow(),
                         identity.as_ref(),
@@ -5213,6 +5502,7 @@ impl App {
         result: &StagedManifestBuildResult,
         outcome: &StagedManifestCommitOutcome,
     ) {
+        self.commit_staged_loading_manifest(result, outcome);
         let Some((ui_trees, theme, frontend)) = staged_ui_commit_payload(result, outcome) else {
             return;
         };
@@ -5488,43 +5778,28 @@ impl App {
         if self.session.is_none() {
             return true;
         }
+        self.refresh_effective_bindings();
 
         // Gamepad poll: disjoint borrows of the session group and the
         // non-session `nav_stick_tracker`. A nav intent votes `focus` mode;
-        // recorded after the borrow ends.
-        let nav_input_seen = {
+        // recorded after the borrow ends. The frontend has no pause menu, so a
+        // `nav.menu` vote is dropped.
+        let gamepad_votes = {
             let App {
                 session,
                 nav_stick_tracker,
                 ..
             } = self;
             let session = session.as_mut().expect("frontend session installed");
-            let mut nav_input_seen = false;
-            if let Some(gp) = session.gamepad_system.as_mut() {
-                let gp_nav = gp.update(&mut session.input_system, nav_stick_tracker);
-                gp.tick_rumble(frame_dt);
-                if gp_nav.confirm_released {
-                    session.ui_focus.release_confirm_repeat();
-                }
-                if gp_nav.directional_released {
-                    session.ui_focus.release_repeat();
-                }
-                nav_input_seen = !gp_nav.nav_intents.is_empty();
-                let capture = session.ui_dispatch.mode() == input::UiCaptureMode::Capture;
-                for intent in gp_nav.nav_intents {
-                    if intent == input::NavIntent::Menu {
-                        continue;
-                    }
-                    if capture {
-                        session
-                            .ui_dispatch
-                            .enqueue_intent(input::UiIntentPayload::Nav(intent));
-                    }
-                }
-            }
-            nav_input_seen
+            let votes = poll_gamepad(session, nav_stick_tracker, frame_dt);
+            // No snapshot reads gameplay input on these frames, so the pad's
+            // gameplay edges are cancelled every frame instead of replaying as
+            // presses on the first Running frame. A pad input still held then
+            // stays inert until pressed again.
+            session.input_system.suspend_gameplay();
+            votes
         };
-        if nav_input_seen {
+        if gamepad_votes.nav_seen {
             self.record_mode_signal(scripting_systems::input_mode::ModeSignal::NavInput);
         }
 
@@ -5536,12 +5811,19 @@ impl App {
                 .scripting
                 .input_mode_tracker
                 .update(mode_signal, frame_dt);
+            if ui_input_mode == input::InputMode::Pointer
+                && session.ui_input_mode != input::InputMode::Pointer
+            {
+                session.device_family.note_keyboard_mouse();
+            }
             session.ui_input_mode = ui_input_mode;
+            session.device_family.end_frame();
             let ui_intents = session.ui_dispatch.take_ready();
             session.ui_dispatch.advance_frame();
             ui_intents
         };
         let text_entry_consumed_nav = self.resolve_text_entry_intents(&ui_intents);
+        self.apply_text_shortcuts(&ui_intents, frame_dt);
 
         let mut nav_intents: Vec<input::NavIntent> = Vec::new();
         let mut click_positions: Vec<input::PointerPos> = Vec::new();
@@ -5556,7 +5838,9 @@ impl App {
                     nav_intents.push(*nav);
                 }
                 input::UiIntentPayload::PointerClick { pos } => click_positions.push(*pos),
-                input::UiIntentPayload::Text(_) | input::UiIntentPayload::Backspace => {}
+                input::UiIntentPayload::Text(_)
+                | input::UiIntentPayload::Backspace
+                | input::UiIntentPayload::TextShortcut(_) => {}
             }
         }
         self.apply_slider_nav_capture(&mut nav_intents);
@@ -5565,14 +5849,13 @@ impl App {
         let cursor_pos = self.cursor_pos;
         let focus_result = {
             let session = self.session.as_mut().expect("frontend session installed");
-            let active_key = session
-                .modal_stack
-                .active_name()
-                .map(str::to_string)
-                .unwrap_or(frontend_menu_tree_name);
+            let (active_key, active_name) = session.ui_focus_target(&frontend_menu_tree_name);
+            session.prune_ui_focus();
+            let rects =
+                crate::session::focus_rects_for(session.ui_focus_rects.as_ref(), &active_name);
             session.ui_focus.tick(
                 Some(active_key.as_str()),
-                session.ui_focus_rects.as_ref(),
+                rects,
                 &nav_intents,
                 cursor_pos,
                 &click_positions,
@@ -5581,6 +5864,10 @@ impl App {
             )
         };
         self.ui_focused_id = focus_result.focused.clone();
+        self.apply_slider_repeat_steps(focus_result.slider_steps);
+        for tab in &focus_result.activations {
+            self.fire_focused_button_activation(Some(tab));
+        }
         if focus_result.confirmed {
             self.fire_focused_button_activation(focus_result.focused.as_deref());
         }
@@ -5588,10 +5875,15 @@ impl App {
             && !text_entry_consumed_nav
             && !self.frontend_menu_is_top()
             && let Some(session) = self.session.as_mut()
+            && !session.capture_prompt_is_active()
         {
             session.modal_stack.pop();
         }
         self.pending_menu_toggle = false;
+        // After the frame's activations: resolve a capture and refresh the
+        // controls panel.
+        self.update_controls_panel();
+        self.sync_glyph_art();
 
         if self.pending_exit_to_desktop {
             self.pending_exit_to_desktop = false;
@@ -5608,10 +5900,12 @@ impl App {
         if has_system_commands {
             self.dispatch_system_commands();
         }
+        // Commit reloads before options stage uploads for the upcoming frame.
+        self.poll_staged_manifest_results();
         self.update_player_options(frame_dt, options_menu_was_open);
+        self.commit_render_extents();
         self.reconcile_ui_focus();
         self.apply_frontend_menu_camera_pose_if_present();
-        self.poll_staged_manifest_results();
         true
     }
 
@@ -5624,7 +5918,7 @@ impl App {
         let Some(session) = self.session.as_mut() else {
             return;
         };
-        let ui_snapshot = Self::build_ui_read_snapshot(
+        let mut ui_snapshot = Self::build_ui_read_snapshot(
             &session.modal_stack,
             &mut session.presentation_cells,
             &session.scripting.script_ctx.slot_table.borrow(),
@@ -5633,78 +5927,15 @@ impl App {
             self.ui_focused_id.clone(),
             frontend_menu_is_present,
         );
-
-        let Some(renderer) = self.renderer.as_mut() else {
-            return;
-        };
-        // Frontend renders through the full UI/scene path — requires full-ready.
-        if !renderer.is_full_ready() {
-            return;
-        }
-
-        #[cfg(feature = "dev-tools")]
-        renderer.clear_debug_lines();
-
-        renderer.set_ui_snapshot(ui_snapshot);
-        let limiter_frame = Self::next_limiter_frame(&mut self.last_resolve_at, frame_start);
-        renderer.set_limiter_frame(limiter_frame);
-        let recycled_inputs = renderer.set_presentation_draw_inputs(Vec::new());
-        session
-            .presentation_pool
-            .recycle_draw_inputs(recycled_inputs);
-        let visible_render = render_preparation::VisibleRenderPreparation::empty_world();
-        session.clear_level_streaming();
-        let sh_frame_result = match renderer.render_frame_indirect(
-            &mut session.font_system,
-            visible_render.camera_cull(),
-            &visible_render.light_reachable_cell_mask,
-            &visible_render.reachable_cell_aabbs,
-            &visible_render.fog_reachable,
-            render::ShSampleRegionSets {
-                visible_cells: &visible_render.visible_cells,
-                fog_cells: &visible_render.fog_reachable,
-                movers: &[],
-            },
-            None,
-            glam::Mat4::IDENTITY,
-            &[],
-            self.script_time,
+        ui_snapshot.wheel = self.ui_wheel.take();
+        crate::app::glyph_art::resolve_snapshot_glyphs(&mut ui_snapshot, session);
+        self.present_world_less_frame(
+            event_loop,
+            frame_start,
+            ui_snapshot,
             FRONTEND_CLEAR_COLOR,
-            false,
-            postretro_level_loader::ShDrainBatch::default(),
-        ) {
-            Ok(result) => result,
-            Err(err) => {
-                self.exit_result = Err(err.into());
-                event_loop.exit();
-                return;
-            }
-        };
-        let compose_submitted = sh_frame_result.compose_submitted;
-        if let Err(err) = session.apply_sh_streaming_outcome(sh_frame_result.outcome, renderer) {
-            self.exit_result = Err(err);
-            event_loop.exit();
-            return;
-        }
-        let present_handle = match sh_frame_result.frame {
-            Ok(present_handle) => present_handle,
-            Err(err) => {
-                self.exit_result = Err(err);
-                event_loop.exit();
-                return;
-            }
-        };
-        session.mark_sh_streaming_compose_submitted(compose_submitted);
-        let exported_rects = renderer.export_ui_focus_rects();
-        if let Some(session) = self.session.as_mut() {
-            session.ui_focus_rects = Some(exported_rects);
-        }
-        if let Some(present_handle) = present_handle {
-            renderer.present(present_handle);
-        }
-
-        let frame_cpu = Instant::now().duration_since(frame_start);
-        self.frame_rate_meter.record(frame_cpu);
+            true,
+        );
     }
 
     fn request_redraw(&self) {
@@ -6096,6 +6327,8 @@ impl App {
                 }
             }
         }
+        // Slider steps land after this frame's queued writes.
+        self.apply_pending_slider_steps(&script_ctx);
     }
 
     /// Net poll plus client apply (M15 Phase 1). Thin delegation to
@@ -6106,6 +6339,7 @@ impl App {
     /// into `App`. This is a no-op for single-player and for the host, which
     /// serializes post-loop instead.
     fn net_poll_and_apply(&mut self, frame_dt: f32) {
+        self.observer_weapon_cues.clear();
         let dt = std::time::Duration::from_secs_f32(frame_dt);
         // `net_poll_and_apply` stays on `App` (it drives `net_endpoint`, now
         // session-owned). Clone the `ScriptCtx` handle up front so the
@@ -6600,6 +6834,7 @@ impl App {
                         state_slots,
                         command_queues,
                         pending_hit_declarations,
+                        open_shots,
                         client_id,
                         server_tick,
                         server_now_us,
@@ -6622,7 +6857,7 @@ impl App {
                 // local sim tick is the engine frame counter; the estimator reads
                 // its own monotonic clock for send/receive microseconds.
                 let client_tick = script_ctx.frame.get() as u32;
-                let shot_verdicts = netcode::client_drive_time_sync(client, time_sync, client_tick);
+                let shot_facts = netcode::client_drive_time_sync(client, time_sync, client_tick);
                 let presentation_messages = client.drain_presentation();
                 // Decode + apply every snapshot received this frame through the
                 // Phase 2 client state machine, arm prediction off any `local_player`
@@ -6637,13 +6872,75 @@ impl App {
                 // once per rendered frame before this frame can spawn new ones.
                 sim::advance_client_presentation_effects(&mut registry, frame_dt);
                 let mut slot_table = script_ctx.slot_table.borrow_mut();
-                for verdict in shot_verdicts {
-                    let _ = self.client_predicted_shots.apply_verdict(
-                        &mut registry,
-                        verdict.shot_id,
-                        verdict.accept,
-                        verdict.hit_accepted,
-                    );
+                for outcome in time_sync.drain_activation_outcomes() {
+                    if let Some(effect) = self.client_weapon.records.outcome(&mut registry, outcome)
+                    {
+                        if effect.terminal {
+                            session
+                                .gameplay_input_latch
+                                .activation
+                                .terminal(effect.token);
+                        }
+                        if let Some(recovery) = effect.recovery_ms
+                            && let Ok(postretro_entities::ComponentValue::Weapon(component)) =
+                                registry.get_component_value_mut(
+                                    effect.weapon,
+                                    postretro_entities::ComponentKind::Weapon,
+                                )
+                        {
+                            self.client_predicted_shots.reconcile_cooldown(
+                                effect.weapon,
+                                component,
+                                recovery,
+                            );
+                        }
+                        if effect.rejected {
+                            self.client_weapon.due.retain(|queued| {
+                                queued.weapon != effect.weapon
+                                    || (queued.shot.activation.shot_id.start_tick
+                                        != effect.token.start_tick
+                                        || queued.shot.activation.shot_id.lane != effect.token.lane)
+                            });
+                            let shots: Vec<_> = registry
+                                .iter_with_kind(postretro_entities::ComponentKind::Projectile)
+                                .filter_map(|(_, value)| {
+                                    let postretro_entities::ComponentValue::Projectile(projectile) =
+                                        value
+                                    else {
+                                        return None;
+                                    };
+                                    projectile.predicted_shot_id.filter(|id| {
+                                        id.start_tick == effect.token.start_tick
+                                            && id.lane == effect.token.lane
+                                            && projectile.owner_weapon == effect.weapon
+                                    })
+                                })
+                                .collect();
+                            for id in shots {
+                                let _ = self.client_predicted_shots.apply_verdict(
+                                    &mut registry,
+                                    id,
+                                    false,
+                                    false,
+                                );
+                            }
+                        }
+                    }
+                }
+                for fact in shot_facts {
+                    match fact {
+                        netcode::ClientShotFact::Verdict(verdict) => {
+                            let _ = self.client_predicted_shots.apply_verdict(
+                                &mut registry,
+                                netcode::wire_convert::shot_id_from_wire(verdict.shot_id),
+                                verdict.accept,
+                                verdict.hit_accepted,
+                            );
+                        }
+                        netcode::ClientShotFact::HitRefused(shot_id) => {
+                            let _ = self.client_predicted_shots.refuse_hit(shot_id);
+                        }
+                    }
                 }
                 let mover_target_tick = time_sync
                     .estimated_server_tick()
@@ -6679,6 +6976,22 @@ impl App {
                         *applied_movement_tuning_generation != *tuning_generation,
                     )
                 };
+                // This owner projection can arrive on a zero-tick frame. Death
+                // clears charge feedback/input immediately, without changing
+                // the local health simulation or previously produced flights.
+                self.client_weapon.apply_owner_liveness(
+                    &mut registry,
+                    &slot_table,
+                    &mut session.gameplay_input_latch.activation,
+                );
+                self.observer_weapon_cues
+                    .extend(time_sync.drain_weapon_cues().filter_map(|cue| {
+                        netcode::weapon_cues::materialize_observer_weapon_cue(
+                            cue,
+                            replication,
+                            &registry,
+                        )
+                    }));
                 netcode::ingest_client_presentation_messages(
                     &mut registry,
                     presentation_messages,
@@ -6747,330 +7060,6 @@ impl App {
         // Restore the spawn-point cache taken before the endpoint borrow. The host
         // needs it on every future accept; `mem::take` only borrowed it for this call.
         self.host_spawn_points = host_spawn_points;
-    }
-
-    fn run_client_fire_path_post_loop(
-        &mut self,
-        snapshot: Option<&input::ActionSnapshot>,
-        zero_tick_snapshot: Option<&input::ActionSnapshot>,
-        sent_fire_commands: &[ClientFrameFireCommand],
-        frame_dt: f32,
-        frame_anim_time: f64,
-        pending_weapon_script_events: &mut Vec<postretro_sim::emission::WeaponEmission>,
-    ) {
-        self.client_fire_resolutions.clear();
-        if !self.is_connected_client() {
-            return;
-        }
-        self.run_client_fire_path_post_loop_inner(
-            snapshot,
-            zero_tick_snapshot,
-            sent_fire_commands,
-            frame_dt,
-            frame_anim_time,
-            pending_weapon_script_events,
-        );
-        // Connected clients never enter the host simulation seam. Advance their
-        // locally predicted projectiles once here, after interpolation wrote the
-        // rendered poses, so they cannot double-advance in a catch-up tick.
-        self.advance_client_predicted_projectiles(
-            frame_dt,
-            frame_anim_time,
-            pending_weapon_script_events,
-        );
-    }
-
-    fn run_client_fire_path_post_loop_inner(
-        &mut self,
-        snapshot: Option<&input::ActionSnapshot>,
-        zero_tick_snapshot: Option<&input::ActionSnapshot>,
-        sent_fire_commands: &[ClientFrameFireCommand],
-        frame_dt: f32,
-        frame_anim_time: f64,
-        pending_weapon_script_events: &mut Vec<postretro_sim::emission::WeaponEmission>,
-    ) {
-        let Some(snapshot) = client_fire_snapshot_for_post_loop(snapshot, zero_tick_snapshot)
-        else {
-            return;
-        };
-        let Some(local_pawn_network_id) = netcode::client_local_pawn_network_id(
-            self.session
-                .as_ref()
-                .and_then(|session| session.net_endpoint.as_ref()),
-        ) else {
-            return;
-        };
-
-        let shoot = snapshot.button(Action::Shoot);
-        let button = weapon::FireButtonState {
-            pressed: matches!(shoot, ButtonState::Pressed),
-            active: shoot.is_active(),
-        };
-        let mut zero_tick_fire_command =
-            zero_tick_snapshot
-                .filter(|_| button.pressed)
-                .map(|snapshot| {
-                    build_sim_command(
-                        snapshot,
-                        &self.camera,
-                        false,
-                        false,
-                        true,
-                        false,
-                        false,
-                        false,
-                    )
-                });
-        let Some(session) = self.session.as_ref() else {
-            return;
-        };
-        let script_ctx = session.scripting.script_ctx.clone();
-        let (local_pawn, active_slot, weapon_id, mut component, pellet_salt_name) = {
-            let registry = script_ctx.registry.borrow();
-            let Some((active_slot, weapon_id)) = local_active_wieldable(&registry) else {
-                if zero_tick_fire_command.is_some()
-                    && let Some(session) = self.session.as_mut()
-                {
-                    session.gameplay_input_latch.clear_pressed(Action::Shoot);
-                }
-                return;
-            };
-            let local_pawn = registry
-                .local_player_movement_pawn()
-                .expect("an active local wieldable belongs to the local pawn");
-            let Ok(component) = registry
-                .get_component::<postretro_entities::components::weapon::WeaponComponent>(weapon_id)
-                .cloned()
-            else {
-                return;
-            };
-            let pellet_salt_name = weapon::pellet_salt_name(&registry, weapon_id, &component);
-            (
-                local_pawn,
-                active_slot,
-                weapon_id,
-                component,
-                pellet_salt_name,
-            )
-        };
-        let Some(fire_terms) = session
-            .net_endpoint
-            .as_ref()
-            .and_then(|endpoint| match endpoint {
-                netcode::NetEndpoint::Client { tuning, .. } => tuning.as_deref(),
-                netcode::NetEndpoint::Host { .. } => None,
-            })
-            .and_then(|tuning| client_fire_muzzle_terms(tuning, active_slot))
-        else {
-            return;
-        };
-        if let Some(command) = zero_tick_fire_command.as_mut() {
-            command.firing_slot = u8::try_from(active_slot).unwrap_or_default();
-        }
-        let selected_fire_commands = if zero_tick_fire_command.is_some() {
-            netcode::client_peek_next_command_tick(
-                self.session
-                    .as_ref()
-                    .and_then(|session| session.net_endpoint.as_ref()),
-            )
-            .into_iter()
-            .map(|client_tick| ClientFrameFireCommand {
-                client_tick,
-                button,
-                // A zero-tick input has no earlier logical-tick boundary in
-                // this frame, so it preserves the legacy post-frame timing.
-                elapsed_ms: (frame_dt.max(0.0)) * 1000.0,
-            })
-            .collect::<Vec<_>>()
-        } else {
-            client_fire_commands_for_post_loop(sent_fire_commands, &component)
-        };
-        let logical_tick_elapsed_ms = zero_tick_fire_command
-            .is_some()
-            .then(Vec::new)
-            .unwrap_or_else(|| {
-                sent_fire_commands
-                    .iter()
-                    .map(|command| command.elapsed_ms)
-                    .collect()
-            });
-        let Some(first_selected) = selected_fire_commands.first().copied() else {
-            let _ = weapon::advance_client_fire_state(
-                &mut component,
-                button,
-                frame_dt,
-                &logical_tick_elapsed_ms,
-            );
-            let mut registry = script_ctx.registry.borrow_mut();
-            let _ = registry.set_component(weapon_id, component);
-            if zero_tick_fire_command.is_some() {
-                if let Some(session) = self.session.as_mut() {
-                    session.gameplay_input_latch.clear_pressed(Action::Shoot);
-                }
-            }
-            return;
-        };
-        // Every pull the fire gate passes is predicted and declared below, so
-        // the host applies damage whenever it fires. The replicated magazine
-        // and reload state only choose what the pull presents, and only while
-        // each value describes this client's own active slot.
-        let presentation = weapon::client_pull_presentation(
-            &component,
-            active_slot,
-            &netcode::client_weapon_projection(session.net_endpoint.as_ref()),
-        );
-        let selected_shot_elapsed_ms = selected_fire_commands
-            .iter()
-            .map(|command| command.elapsed_ms)
-            .collect::<Vec<_>>();
-        let (aim_origin, aim_direction) = self.camera.aim_ray();
-        let cooldown_before_ms = component.cooldown_remaining_ms;
-        let resolution = {
-            let registry = script_ctx.registry.borrow();
-            weapon::resolve_client_fire(
-                Some(local_pawn),
-                &mut component,
-                &pellet_salt_name,
-                active_slot,
-                button,
-                aim_origin,
-                aim_direction,
-                &fire_terms.placement,
-                fire_terms.muzzle_offset,
-                first_selected.client_tick,
-                &selected_shot_elapsed_ms,
-                &logical_tick_elapsed_ms,
-                &self.collision_world,
-                &registry,
-                &session.hit_zone_store,
-                frame_anim_time,
-                frame_dt,
-            )
-        };
-        let cooldown_after_ms = component.cooldown_remaining_ms;
-        {
-            let mut registry = script_ctx.registry.borrow_mut();
-            let _ = registry.set_component(weapon_id, component);
-        }
-        if let Some(resolution) = resolution {
-            if let Some(command) = zero_tick_fire_command.as_ref() {
-                let aim_pitch = self.camera.pitch;
-                let sent_tick = netcode::client_send_input_command(
-                    self.session
-                        .as_mut()
-                        .and_then(|session| session.net_endpoint.as_mut()),
-                    command,
-                    aim_pitch,
-                );
-                if sent_tick != Some(resolution.client_tick) {
-                    return;
-                }
-                if let Some(session) = self.session.as_mut() {
-                    session.gameplay_input_latch.clear_pressed(Action::Shoot);
-                }
-            }
-            let shot_id = netcode::shot_id_raw(local_pawn_network_id, resolution.client_tick);
-            let projectile_launch = resolution.projectile_launch.clone();
-            self.client_predicted_shots.predict(
-                shot_id,
-                weapon_id,
-                &resolution,
-                cooldown_before_ms,
-                cooldown_after_ms,
-                presentation,
-            );
-            let (shooter, weapon_name) = {
-                let registry = script_ctx.registry.borrow();
-                (
-                    postretro_sim::emission::entity_emitter(&registry, local_pawn),
-                    postretro_sim::emission::descriptor_name(&registry, weapon_id),
-                )
-            };
-            // The presentation picks the emissions and whether a predicted
-            // projectile is shown; every presentation still declares the shot.
-            // Emissions drain with the shared sequence-aware named-event batch;
-            // a host reject rolls this shot's presentation state back in
-            // reconcile.
-            let contacts = resolution.impact_contacts();
-            let effects = weapon::client_pull_effects(
-                presentation,
-                projectile_launch.is_some(),
-                !contacts.is_empty(),
-            );
-            let mut contacts = Some(contacts);
-            for address in effects.addresses {
-                let emitter = if address == "impact" {
-                    // A predicted hitscan shot's contacts, wall hits included,
-                    // are its one `impact`, heard now at the contact nearest
-                    // the listener.
-                    postretro_sim::emission::Emitter::Contacts(contacts.take().unwrap_or_default())
-                } else {
-                    shooter.clone()
-                };
-                pending_weapon_script_events.push(postretro_sim::emission::WeaponEmission {
-                    address,
-                    emitter,
-                    weapon: weapon_name.clone(),
-                });
-            }
-            let projectile_spawned = effects.spawn_projectile
-                && projectile_launch.is_some_and(|launch| {
-                    sim::spawn_projectile(
-                        &mut script_ctx.registry.borrow_mut(),
-                        local_pawn,
-                        weapon_id,
-                        launch,
-                        Some(shot_id),
-                        sim::ProjectileSource {
-                            weapon: weapon_name,
-                            activation: None,
-                        },
-                    )
-                    .is_some()
-                });
-            let declared = match effects.declaration {
-                weapon::ClientShotDeclaration::ResolvedNow => Some((
-                    resolution.hits.as_slice(),
-                    resolution.world_contacts.as_slice(),
-                )),
-                // A projectile that could not materialize cannot declare later,
-                // so it retires its authorized shot now with the same valid
-                // empty declaration used on normal expiry.
-                weapon::ClientShotDeclaration::OnProjectileResolution if projectile_spawned => None,
-                weapon::ClientShotDeclaration::OnProjectileResolution
-                | weapon::ClientShotDeclaration::EmptyNow => Some((&[][..], &[][..])),
-            };
-            if let Some((hits, world_contacts)) = declared {
-                let _ = netcode::client_send_hit_declaration(
-                    self.session
-                        .as_mut()
-                        .and_then(|session| session.net_endpoint.as_mut()),
-                    shot_id,
-                    hits,
-                    world_contacts,
-                );
-            }
-            // Only the first tick casts a ray (once per frame, at the rendered pose);
-            // each later tick in a multi-tick frame still authorized a host shot, so
-            // send an empty declaration per remaining tick to retire it and keep
-            // shot_id accounting balanced with the host without extra ray casts.
-            for command in selected_fire_commands.iter().skip(1) {
-                let shot_id = netcode::shot_id_raw(local_pawn_network_id, command.client_tick);
-                let _ = netcode::client_send_hit_declaration(
-                    self.session
-                        .as_mut()
-                        .and_then(|session| session.net_endpoint.as_mut()),
-                    shot_id,
-                    &[],
-                    &[],
-                );
-            }
-            self.client_fire_resolutions.push(resolution);
-        } else if zero_tick_fire_command.is_some() {
-            if let Some(session) = self.session.as_mut() {
-                session.gameplay_input_latch.clear_pressed(Action::Shoot);
-            }
-        }
     }
 
     /// Derive the local pawn's reload edges and overheat cue from its
@@ -7188,31 +7177,39 @@ impl App {
                         shot_id,
                         impact,
                         source_weapon,
+                        source_action,
+                        source_sounds,
+                        visible,
                     } => {
                         // The client hears its own predicted projectile land.
-                        pending_weapon_script_events.push(
-                            postretro_sim::emission::WeaponEmission {
-                                address: "impact",
-                                emitter: postretro_sim::emission::Emitter::Contacts(vec![
-                                    postretro_sim::emission::ImpactContact::new(
-                                        impact.point,
-                                        impact.normal,
-                                        impact.target,
-                                    ),
-                                ]),
-                                weapon: source_weapon,
-                            },
-                        );
-                        declarations.push((shot_id, Some(impact)));
+                        if visible {
+                            pending_weapon_script_events.push(
+                                postretro_sim::emission::WeaponEmission {
+                                    sounds: source_sounds,
+                                    action: source_action,
+                                    shot_id: Some(shot_id),
+                                    address: "impact",
+                                    emitter: postretro_sim::emission::Emitter::Contacts(vec![
+                                        postretro_sim::emission::ImpactContact::new(
+                                            impact.point,
+                                            impact.normal,
+                                            impact.target,
+                                        ),
+                                    ]),
+                                    weapon: source_weapon,
+                                },
+                            );
+                        }
+                        declarations.push((shot_id, Some(impact), visible));
                     }
                     sim::PredictedProjectileResolution::Expired { shot_id } => {
-                        declarations.push((shot_id, None));
+                        declarations.push((shot_id, None, false));
                     }
                 },
             );
         }
 
-        for (shot_id, impact) in declarations {
+        for (shot_id, impact, visible) in declarations {
             let predicted_entity_hit = impact
                 .as_ref()
                 .is_some_and(|impact| impact.target.is_some());
@@ -7223,7 +7220,10 @@ impl App {
                 shot_id,
                 impact.as_ref(),
             );
-            if predicted_entity_hit && sent_records.is_some_and(|record_count| record_count > 0) {
+            if visible
+                && predicted_entity_hit
+                && sent_records.is_some_and(|record_count| record_count > 0)
+            {
                 self.client_predicted_shots.mark_hitmarker(shot_id);
             }
         }
@@ -7625,6 +7625,8 @@ impl App {
         let Some(netcode::NetEndpoint::Host {
             allocator,
             weaponless_fire_logged,
+            command_queues,
+            server,
             tick,
             ..
         }) = self
@@ -7635,16 +7637,34 @@ impl App {
             return Vec::new();
         };
 
+        let mut registry = script_ctx.registry.borrow_mut();
         resolved
             .iter()
             .map(|resolved| {
-                Self::prepare_remote_pawn_command(
+                host_activations::observe_lifecycle(
+                    &mut registry,
                     allocator,
-                    &script_ctx.registry.borrow(),
+                    command_queues,
+                    server,
+                    resolved.client_id,
+                    resolved.pawn,
+                    *tick,
+                );
+                let mut command = Self::prepare_remote_pawn_command(
+                    allocator,
+                    &registry,
                     weaponless_fire_logged,
                     *tick,
                     resolved,
-                )
+                );
+                host_activations::guard_initiation(
+                    &registry,
+                    allocator,
+                    command_queues,
+                    server,
+                    &mut command,
+                );
+                command
             })
             .collect()
     }
@@ -7661,8 +7681,11 @@ impl App {
             .get_component::<postretro_entities::components::inventory::Inventory>(resolved.pawn)
             .ok()
             .and_then(|inventory| inventory.wieldables.get(firing_slot).copied().flatten());
-        let wants_fire =
-            resolved.command.fire_button.pressed || resolved.command.fire_button.active;
+        let wants_fire = resolved.command.fire_button.pressed
+            || resolved.command.fire_button.active
+            || resolved.command.secondary_button.pressed
+            || resolved.command.secondary_button.active
+            || resolved.command.activation.initiation.is_some();
         if weapon.is_none() && wants_fire && weaponless_fire_logged.insert(resolved.pawn) {
             log::warn!(
                 "[Net] pawn {} declared unowned firing slot {}; rejecting remote fire",
@@ -7670,12 +7693,21 @@ impl App {
                 resolved.command.firing_slot,
             );
         }
+        // The remote machine reads only this identity's pawn. It derives each
+        // actual shot from the admitted initiation and authored ordinal.
         let shot_id = allocator
             .network_id_for_entity(resolved.pawn)
             .map(|network_id| {
-                postretro_combat_model::ShotId::from_parts(network_id, resolved.client_tick)
+                postretro_combat_model::ShotId::from_parts(
+                    (network_id).0,
+                    resolved.client_tick,
+                    postretro_foundation::ActivationLane::Primary,
+                    0,
+                )
             });
         sim::RemotePawnCommand {
+            real_command: resolved.source == netcode::ResolutionSource::Real,
+            rejected_activation: resolved.rejected_activation,
             pawn: resolved.pawn,
             owner_client_id: resolved.client_id,
             weapon,
@@ -7700,28 +7732,6 @@ impl App {
         };
         for shot in shots {
             open_shots.record(shot.shot.clone(), shot.owner_client_id);
-        }
-    }
-
-    fn host_send_rejected_projectile_fire_verdicts(
-        &mut self,
-        rejections: &[sim::RemoteProjectileFireRejection],
-    ) {
-        let Some(netcode::NetEndpoint::Host { server, .. }) = self
-            .session
-            .as_mut()
-            .and_then(|session| session.net_endpoint.as_mut())
-        else {
-            return;
-        };
-        for rejection in rejections {
-            netcode::send_shot_verdict(
-                server,
-                rejection.owner_client_id,
-                rejection.shot_id.raw(),
-                false,
-                false,
-            );
         }
     }
 
@@ -8279,6 +8289,12 @@ impl App {
         // those modifiers. Accepted because the symmetric stale-state
         // protection is worth more than the one-keystroke regression.
         session.input_system.clear_all();
+        self.client_weapon
+            .suspend(&session.scripting.script_ctx.registry.borrow());
+        session
+            .gameplay_input_latch
+            .activation
+            .set_active(self.client_weapon.suppressed.map(|(_, token)| token));
         session.gameplay_input_latch.clear();
         self.diagnostic_inputs.clear_modifiers();
     }
@@ -8551,13 +8567,20 @@ mod tests {
             !production.contains("mark_sh_streaming_compose_submitted(present_handle.is_some())"),
             "surface acquisition/presentation is not proof that SH compose encoded"
         );
+        // Frontend, first-launch-hold, and Loading frames share the
+        // world-less presenter.
+        let world_less = include_str!("app/world_less_frame.rs");
         assert_eq!(
             production
                 .matches("mark_sh_streaming_compose_submitted(compose_submitted)")
-                .count(),
+                .count()
+                + world_less
+                    .matches("mark_sh_streaming_compose_submitted(compose_submitted)")
+                    .count(),
             2,
-            "gameplay and frontend paths must consume the renderer-owned signal"
+            "gameplay and world-less paths must consume the renderer-owned signal"
         );
+        assert!(!world_less.contains("present_handle.is_some())"));
     }
 
     // A connected client skips the global clean-exit save; its private
@@ -8975,7 +8998,6 @@ mod tests {
     fn closet_reveal_closed_loaded_door_hides_interior_until_it_moves() {
         use crate::scripting_systems::mesh_anim::MeshClipTables;
         use crate::scripting_systems::mesh_render::MeshRenderCollector;
-        use glam::Mat4;
         use postretro_entities::{EntityRegistry, Transform, components::mesh::MeshComponent};
         use postretro_level_format::geometry::Vertex;
         use postretro_level_format::kinematic_geometry::{
@@ -9142,8 +9164,17 @@ mod tests {
             .expect("closet enemy mesh installs");
 
         let camera_position = Vec3::new(40.0, -80.0, 48.0);
-        let view = Mat4::look_at_rh(camera_position, camera_position + Vec3::X, Vec3::Y);
-        let view_proj = Mat4::perspective_rh(std::f32::consts::FRAC_PI_2, 1.0, 0.1, 512.0) * view;
+        let view = glam::camera::rh::view::look_at_mat4(
+            camera_position,
+            camera_position + Vec3::X,
+            Vec3::Y,
+        );
+        let view_proj = glam::camera::rh::proj::directx::perspective(
+            std::f32::consts::FRAC_PI_2,
+            1.0,
+            0.1,
+            512.0,
+        ) * view;
         let visibility = |blocked_portals: &[bool]| {
             let (result, _) = postretro_visibility::determine_visible_cells(
                 camera_position,
@@ -9653,8 +9684,11 @@ mod tests {
                 movement_spread_degrees: 0.0,
                 spread_vertical_bias: 0.0,
                 range: 1.0,
-                cooldown_ms: 1.0,
-                fire_mode: postretro_foundation::FireMode::Semi,
+                primary: postretro_foundation::WeaponActivationDescriptor::single(
+                    postretro_foundation::ActivationTrigger::Press,
+                    1.0,
+                ),
+                secondary: None,
                 resolution: postretro_foundation::ResolutionMode::Hitscan,
                 projectile: None,
                 splash: None,
@@ -9790,7 +9824,7 @@ mod tests {
         let replacement_muzzle = [-0.3, 0.4, -1.2];
         let local_component_muzzle = Vec3::new(9.0, 8.0, 7.0);
         let local_data_placement = placement(8.0, 7.0, 6.0, 45.0);
-        let local_data_registry = vec![weapon_viewmodel_descriptor(
+        let local_data_registry = [weapon_viewmodel_descriptor(
             "reference_pistol",
             Some("models/local/view.gltf"),
             Some(local_data_placement),
@@ -9801,7 +9835,16 @@ mod tests {
             placement: host_placement.clone(),
             muzzle_offset: Some(host_muzzle),
             range: 64.0,
-            cooldown_ms: 100.0,
+            primary: postretro_foundation::WeaponActivationDescriptor::single(
+                postretro_foundation::ActivationTrigger::Press,
+                100.0,
+            ),
+            secondary: None,
+            damage: 10.0,
+            knockback: None,
+            projectile: None,
+            splash: None,
+            resource: None,
             pellet_count: 1,
             spread_degrees: 0.0,
             bloom_per_shot_degrees: 0.0,
@@ -9810,10 +9853,10 @@ mod tests {
             bloom_decay_delay_ms: 0.0,
             movement_spread_degrees: 0.0,
             spread_vertical_bias: 0.0,
-            fire_mode: postretro_foundation::FireMode::Semi,
             resolution: postretro_foundation::ResolutionMode::Projectile,
             lower_ms: 0,
             raise_ms: 0,
+            block_during_reload: None,
         });
         let initial = postretro_combat_model::TuningPayload::new(None, slots.clone());
         let terms = client_fire_muzzle_terms(&initial, 0).expect("host row exists");
@@ -10091,8 +10134,11 @@ mod tests {
 
     #[test]
     fn viewmodel_world_transform_keeps_shared_shader_positions_in_world_space() {
-        let view =
-            glam::Mat4::look_at_rh(Vec3::new(6.0, 2.0, 4.0), Vec3::new(5.0, 2.5, 3.0), Vec3::Y);
+        let view = glam::camera::rh::view::look_at_mat4(
+            Vec3::new(6.0, 2.0, 4.0),
+            Vec3::new(5.0, 2.5, 3.0),
+            Vec3::Y,
+        );
         let placement = resolve_weapon_placement(None, None, None, None);
         let camera_space =
             viewmodel_camera_space_transform(Vec3::X, Vec3::ZERO, 0.0, 0.0, 0.0, &placement);
@@ -10127,8 +10173,10 @@ mod tests {
             )
             .unwrap();
         let weapon_id = registry.spawn(postretro_entities::Transform::default());
-        let mut component =
-            weapon::test_fixtures::weapon_component(postretro_foundation::FireMode::Semi, 100.0);
+        let mut component = weapon::test_fixtures::weapon_component(
+            postretro_foundation::ActivationTrigger::Press,
+            100.0,
+        );
         component.cooldown_remaining_ms = 72.0;
         registry.set_component(weapon_id, component).unwrap();
         let mut inventory = postretro_entities::components::inventory::Inventory::default();
@@ -10189,11 +10237,15 @@ mod tests {
             .unwrap();
         let weapon_a = registry.spawn(postretro_entities::Transform::default());
         let weapon_b = registry.spawn(postretro_entities::Transform::default());
-        let mut component_a =
-            weapon::test_fixtures::weapon_component(postretro_foundation::FireMode::Semi, 100.0);
+        let mut component_a = weapon::test_fixtures::weapon_component(
+            postretro_foundation::ActivationTrigger::Press,
+            100.0,
+        );
         component_a.cooldown_remaining_ms = 80.0;
-        let mut component_b =
-            weapon::test_fixtures::weapon_component(postretro_foundation::FireMode::Semi, 100.0);
+        let mut component_b = weapon::test_fixtures::weapon_component(
+            postretro_foundation::ActivationTrigger::Press,
+            100.0,
+        );
         component_b.cooldown_remaining_ms = 11.0;
         registry.set_component(weapon_a, component_a).unwrap();
         registry.set_component(weapon_b, component_b).unwrap();
@@ -10204,8 +10256,14 @@ mod tests {
         registry.set_component(pawn, inventory).unwrap();
 
         let mut predicted = weapon::ClientPredictedShots::new();
-        predicted.predict(
+        let shot_id = postretro_foundation::ShotId::from_parts(
+            4,
             7,
+            postretro_foundation::ActivationLane::Primary,
+            0,
+        );
+        predicted.predict(
+            shot_id,
             weapon_a,
             &weapon::ClientFireResolution {
                 world_contacts: Vec::new(),
@@ -10240,7 +10298,7 @@ mod tests {
             "A's authoritative sample must not overwrite locally-active B"
         );
 
-        let _ = predicted.apply_verdict(&mut registry, 7, false, false);
+        let _ = predicted.apply_verdict(&mut registry, shot_id, false, false);
         assert_eq!(
             registry
                 .get_component::<postretro_entities::components::weapon::WeaponComponent>(weapon_a,)
@@ -10251,410 +10309,7 @@ mod tests {
         );
     }
 
-    #[test]
-    fn zero_tick_frame_shoot_press_reaches_post_loop_client_fire_snapshot() {
-        let mut latch = input::GameplayInputLatch::new();
-        let zero_tick_snapshot =
-            input::ActionSnapshot::with_button_state(Action::Shoot, ButtonState::Pressed);
-
-        let fixed_tick_snapshot = latch.snapshot_for_ticks(&zero_tick_snapshot, 0);
-        assert!(
-            fixed_tick_snapshot.is_none(),
-            "fixed gameplay intentionally waits for a later tick"
-        );
-        let selected = client_fire_snapshot_for_post_loop(
-            fixed_tick_snapshot.as_ref(),
-            Some(&zero_tick_snapshot),
-        )
-        .expect("post-loop client fire still sees the render-frame click");
-
-        assert_eq!(selected.button(Action::Shoot), ButtonState::Pressed);
-    }
-
-    fn client_fire_selection_state(
-        fire_mode: postretro_foundation::FireMode,
-        cooldown_remaining_ms: f32,
-        cooldown_ms: f32,
-    ) -> postretro_entities::components::weapon::WeaponComponent {
-        let mut component = weapon::test_fixtures::weapon_component(fire_mode, cooldown_ms);
-        component.cooldown_remaining_ms = cooldown_remaining_ms;
-        component
-    }
-
-    fn spawn_owned_test_weapon(
-        component: postretro_entities::components::weapon::WeaponComponent,
-    ) -> (
-        std::rc::Rc<std::cell::RefCell<postretro_entities::EntityRegistry>>,
-        postretro_entities::EntityId,
-        postretro_entities::EntityId,
-    ) {
-        use postretro_entities::components::inventory::Inventory;
-
-        let registry = std::rc::Rc::new(std::cell::RefCell::new(
-            postretro_entities::EntityRegistry::new(),
-        ));
-        let (pawn, weapon) = {
-            let mut registry = registry.borrow_mut();
-            let pawn = registry.spawn(postretro_entities::Transform::default());
-            let weapon = registry.spawn(postretro_entities::Transform::default());
-            registry
-                .set_component(weapon, component)
-                .expect("test weapon attaches");
-            let mut inventory = Inventory::default();
-            inventory.wieldables[0] = Some(weapon);
-            registry
-                .set_component(pawn, inventory)
-                .expect("test pawn owns the weapon");
-            (pawn, weapon)
-        };
-        (registry, pawn, weapon)
-    }
-
-    fn run_client_wieldable_prepass(
-        registry: &std::rc::Rc<std::cell::RefCell<postretro_entities::EntityRegistry>>,
-        pawn: postretro_entities::EntityId,
-        button: weapon::FireButtonState,
-        tick_dt: f32,
-    ) {
-        let _ = sim::simulate_client_wieldable_tick(
-            registry.clone(),
-            &collision::CollisionWorld::new(),
-            &scripting_systems::hit_zones::HitZoneStore::new(),
-            Some(pawn),
-            false,
-            None,
-            button,
-            false,
-            0.0,
-            tick_dt,
-        );
-    }
-
-    #[test]
-    fn client_fire_tick_selection_keeps_press_independent_of_pruned_history() {
-        let state = client_fire_selection_state(postretro_foundation::FireMode::Semi, 0.0, 100.0);
-        let commands = [
-            ClientFrameFireCommand {
-                client_tick: 41,
-                button: weapon::FireButtonState {
-                    pressed: true,
-                    active: true,
-                },
-                elapsed_ms: 16.0,
-            },
-            ClientFrameFireCommand {
-                client_tick: 42,
-                button: weapon::FireButtonState {
-                    pressed: false,
-                    active: true,
-                },
-                elapsed_ms: 32.0,
-            },
-        ];
-
-        assert_eq!(client_fire_ticks_for_post_loop(&commands, &state), vec![41]);
-    }
-
-    // Regression: the connected-client wieldable prepass advanced bloom before
-    // the post-loop prediction clock advanced the same 16 ms again.
-    #[test]
-    fn idle_client_wieldable_prepass_and_post_loop_match_host_bloom_clock() {
-        let mut initial =
-            client_fire_selection_state(postretro_foundation::FireMode::Auto, 100.0, 100.0);
-        initial.spread_degrees = 2.0;
-        initial.bloom_accumulator_degrees = 4.0;
-        initial.bloom_decay_degrees_per_second = 10.0;
-        initial.bloom_decay_delay_ms = 30.0;
-        let button = weapon::FireButtonState {
-            pressed: false,
-            active: false,
-        };
-        let world = collision::CollisionWorld::new();
-        let hit_zones = scripting_systems::hit_zones::HitZoneStore::new();
-        let (host_registry, host_pawn, host_weapon) = spawn_owned_test_weapon(initial.clone());
-        let (client_registry, client_pawn, client_weapon) = spawn_owned_test_weapon(initial);
-
-        sim::run_local_weapon_fire_for_test(
-            &host_registry,
-            host_pawn,
-            &weapon::WeaponFireCommand {
-                button,
-                aim_origin: Vec3::ZERO,
-                aim_direction: Vec3::NEG_Z,
-                can_fire: true,
-            },
-            &world,
-            &hit_zones,
-            0.016,
-        );
-        run_client_wieldable_prepass(&client_registry, client_pawn, button, 0.016);
-
-        let mut client_state = client_registry
-            .borrow()
-            .get_component::<postretro_entities::components::weapon::WeaponComponent>(client_weapon)
-            .expect("client weapon persists")
-            .clone();
-        assert!((client_state.bloom_accumulator_degrees - 4.0).abs() < f32::EPSILON);
-        assert!(client_state.bloom_idle_ms.abs() < f32::EPSILON);
-        let _ = weapon::advance_client_fire_state(&mut client_state, button, 0.016, &[16.0]);
-        let host_state = host_registry
-            .borrow()
-            .get_component::<postretro_entities::components::weapon::WeaponComponent>(host_weapon)
-            .expect("host weapon persists")
-            .clone();
-
-        assert!((host_state.bloom_accumulator_degrees - 4.0).abs() < f32::EPSILON);
-        assert!((host_state.bloom_idle_ms - 16.0).abs() < f32::EPSILON);
-        assert!((host_state.effective_spread_degrees(0.0, 0.0) - 6.0).abs() < f32::EPSILON);
-        assert!(
-            (client_state.bloom_accumulator_degrees - host_state.bloom_accumulator_degrees).abs()
-                < 1.0e-6
-        );
-        assert!((client_state.bloom_idle_ms - host_state.bloom_idle_ms).abs() < 1.0e-6);
-        assert!(
-            (client_state.effective_spread_degrees(0.0, 0.0)
-                - host_state.effective_spread_degrees(0.0, 0.0))
-            .abs()
-                < 1.0e-6
-        );
-    }
-
-    // Regression: one frame-wide bloom tick collapsed a delay crossing that the
-    // host evaluated at three fixed logical boundaries.
-    #[test]
-    fn unselected_client_fire_hitch_replays_host_bloom_boundaries() {
-        let mut initial =
-            client_fire_selection_state(postretro_foundation::FireMode::Auto, 100.0, 100.0);
-        initial.spread_degrees = 2.0;
-        initial.bloom_accumulator_degrees = 4.0;
-        initial.bloom_decay_degrees_per_second = 10.0;
-        initial.bloom_decay_delay_ms = 30.0;
-        let commands = [
-            ClientFrameFireCommand {
-                client_tick: 7,
-                button: weapon::FireButtonState {
-                    pressed: true,
-                    active: true,
-                },
-                elapsed_ms: 16.0,
-            },
-            ClientFrameFireCommand {
-                client_tick: 8,
-                button: weapon::FireButtonState {
-                    pressed: false,
-                    active: true,
-                },
-                elapsed_ms: 32.0,
-            },
-            ClientFrameFireCommand {
-                client_tick: 9,
-                button: weapon::FireButtonState {
-                    pressed: false,
-                    active: true,
-                },
-                elapsed_ms: 48.0,
-            },
-        ];
-        assert!(
-            client_fire_commands_for_post_loop(&commands, &initial).is_empty(),
-            "cooldown suppresses every logical fire command"
-        );
-
-        let world = collision::CollisionWorld::new();
-        let hit_zones = scripting_systems::hit_zones::HitZoneStore::new();
-        let (host_registry, host_pawn, host_weapon) = spawn_owned_test_weapon(initial.clone());
-        let (client_registry, client_pawn, client_weapon) = spawn_owned_test_weapon(initial);
-        for command in &commands {
-            sim::run_local_weapon_fire_for_test(
-                &host_registry,
-                host_pawn,
-                &weapon::WeaponFireCommand {
-                    button: command.button,
-                    aim_origin: Vec3::ZERO,
-                    aim_direction: Vec3::NEG_Z,
-                    can_fire: true,
-                },
-                &world,
-                &hit_zones,
-                0.016,
-            );
-            run_client_wieldable_prepass(&client_registry, client_pawn, command.button, 0.016);
-        }
-
-        let mut client_state = client_registry
-            .borrow()
-            .get_component::<postretro_entities::components::weapon::WeaponComponent>(client_weapon)
-            .expect("client weapon persists")
-            .clone();
-        let elapsed = commands.map(|command| command.elapsed_ms);
-        let _ = weapon::advance_client_fire_state(
-            &mut client_state,
-            commands[0].button,
-            0.048,
-            &elapsed,
-        );
-        let host_state = host_registry
-            .borrow()
-            .get_component::<postretro_entities::components::weapon::WeaponComponent>(host_weapon)
-            .expect("host weapon persists")
-            .clone();
-
-        assert!((client_state.bloom_accumulator_degrees - 3.68).abs() < 1.0e-5);
-        assert!((client_state.bloom_idle_ms - 48.0).abs() < 1.0e-5);
-        assert!((client_state.effective_spread_degrees(0.0, 0.0) - 5.68).abs() < 1.0e-5);
-        assert!(
-            (client_state.bloom_accumulator_degrees - host_state.bloom_accumulator_degrees).abs()
-                < 1.0e-5
-        );
-        assert!(
-            (client_state.cooldown_remaining_ms - host_state.cooldown_remaining_ms).abs() < 1.0e-5
-        );
-        assert!((client_state.bloom_idle_ms - host_state.bloom_idle_ms).abs() < 1.0e-5);
-        assert!(
-            (client_state.effective_spread_degrees(0.0, 0.0)
-                - host_state.effective_spread_degrees(0.0, 0.0))
-            .abs()
-                < 1.0e-5
-        );
-    }
-
-    #[test]
-    fn held_auto_fire_hitch_keeps_client_bloom_aligned_with_host() {
-        let mut initial =
-            client_fire_selection_state(postretro_foundation::FireMode::Auto, 0.0, 20.0);
-        initial.spread_degrees = 2.0;
-        initial.bloom_accumulator_degrees = 4.0;
-        initial.bloom_per_shot_degrees = 1.0;
-        initial.bloom_max_degrees = 8.0;
-        initial.bloom_decay_degrees_per_second = 10.0;
-        initial.bloom_decay_delay_ms = 30.0;
-        let commands = [
-            ClientFrameFireCommand {
-                client_tick: 7,
-                button: weapon::FireButtonState {
-                    pressed: true,
-                    active: true,
-                },
-                elapsed_ms: 16.0,
-            },
-            ClientFrameFireCommand {
-                client_tick: 8,
-                button: weapon::FireButtonState {
-                    pressed: false,
-                    active: true,
-                },
-                elapsed_ms: 32.0,
-            },
-            ClientFrameFireCommand {
-                client_tick: 9,
-                button: weapon::FireButtonState {
-                    pressed: false,
-                    active: true,
-                },
-                elapsed_ms: 48.0,
-            },
-        ];
-
-        let selected = client_fire_commands_for_post_loop(&commands, &initial);
-        assert_eq!(
-            selected
-                .iter()
-                .map(|command| command.client_tick)
-                .collect::<Vec<_>>(),
-            vec![7, 9],
-            "the first tick owns the rendered HIT; later eligible auto shots get miss declarations"
-        );
-
-        // Regression: the fire-suppressed client prepass and frame-wide bloom
-        // replay double-advanced the clock during a sustained-fire hitch.
-        let (host_registry, host_pawn, host_weapon) = spawn_owned_test_weapon(initial.clone());
-        let (client_registry, client_pawn, client_weapon) = spawn_owned_test_weapon(initial);
-        let collision_world = collision::CollisionWorld::new();
-        let hit_zone_store = scripting_systems::hit_zones::HitZoneStore::new();
-        for command in &commands {
-            sim::run_local_weapon_fire_for_test(
-                &host_registry,
-                host_pawn,
-                &weapon::WeaponFireCommand {
-                    button: command.button,
-                    aim_origin: Vec3::ZERO,
-                    aim_direction: Vec3::NEG_Z,
-                    can_fire: true,
-                },
-                &collision_world,
-                &hit_zone_store,
-                0.016,
-            );
-            run_client_wieldable_prepass(&client_registry, client_pawn, command.button, 0.016);
-        }
-
-        let mut state = client_registry
-            .borrow()
-            .get_component::<postretro_entities::components::weapon::WeaponComponent>(client_weapon)
-            .expect("client weapon persists")
-            .clone();
-        assert!((state.bloom_accumulator_degrees - 4.0).abs() < f32::EPSILON);
-        assert!(state.bloom_idle_ms.abs() < f32::EPSILON);
-        let selected_shot_elapsed_ms = selected
-            .iter()
-            .map(|command| command.elapsed_ms)
-            .collect::<Vec<_>>();
-        let registry = client_registry.borrow();
-        let resolution = weapon::resolve_client_fire(
-            None,
-            &mut state,
-            "weapon.unknown",
-            0,
-            commands[0].button,
-            Vec3::ZERO,
-            Vec3::NEG_Z,
-            &WeaponPlacementDescriptor::default(),
-            None,
-            selected[0].client_tick,
-            &selected_shot_elapsed_ms,
-            &commands.map(|command| command.elapsed_ms),
-            &collision_world,
-            &registry,
-            &hit_zone_store,
-            0.0,
-            0.048,
-        )
-        .expect("the first selected auto tick resolves the frame's one cast");
-        let host_state = host_registry
-            .borrow()
-            .get_component::<postretro_entities::components::weapon::WeaponComponent>(host_weapon)
-            .expect("host weapon persists")
-            .clone();
-
-        assert_eq!(resolution.client_tick, 7);
-        assert_eq!(state.shells_fired, 1, "only the first selected shot casts");
-        assert_eq!(
-            host_state.shells_fired, 2,
-            "the host resolves both logical shots"
-        );
-        assert!(
-            (state.bloom_accumulator_degrees - 5.84).abs() < 1.0e-5,
-            "the replay preserves the delayed-decay timing between 16ms and 48ms shots"
-        );
-        assert!(
-            (state.bloom_accumulator_degrees - host_state.bloom_accumulator_degrees).abs() < 1.0e-5,
-            "the next client cone matches the host bloom accumulator"
-        );
-        assert!(
-            (state.bloom_idle_ms - host_state.bloom_idle_ms).abs() < 1.0e-5,
-            "the next client decay boundary matches the host idle clock"
-        );
-        assert!(
-            (state.effective_spread_degrees(0.0, 0.0)
-                - host_state.effective_spread_degrees(0.0, 0.0))
-            .abs()
-                < 1.0e-5,
-            "the next client cone and local player.spread match host bloom"
-        );
-        assert_eq!(selected[1].client_tick, 9);
-    }
-
-    fn minimal_player_descriptor() -> PlayerMovementDescriptor {
+    pub(crate) fn minimal_player_descriptor() -> PlayerMovementDescriptor {
         PlayerMovementDescriptor {
             sounds: None,
             knockback: Default::default(),
@@ -10719,7 +10374,7 @@ mod tests {
             .set_component(
                 first,
                 weapon::test_fixtures::weapon_component(
-                    postretro_foundation::FireMode::Semi,
+                    postretro_foundation::ActivationTrigger::Press,
                     100.0,
                 ),
             )
@@ -10728,7 +10383,7 @@ mod tests {
             .set_component(
                 third,
                 weapon::test_fixtures::weapon_component(
-                    postretro_foundation::FireMode::Semi,
+                    postretro_foundation::ActivationTrigger::Press,
                     100.0,
                 ),
             )
@@ -10862,12 +10517,12 @@ mod tests {
                     padding: SpacingValue::Literal(0.0),
                     align: Align::Start,
                     width: None,
+                    scroll: None,
                     fill: None,
                     border: None,
                     id: None,
                     focus_neighbors: Default::default(),
                     focus: None,
-                    restore_on_return: false,
                     local_state: None,
                     visible_when: None,
                     role: None,
@@ -10878,6 +10533,7 @@ mod tests {
                 text_entry_target: None,
                 accessible_name: None,
                 role: None,
+                restore_on_return: None,
             }
         }
 
@@ -10987,6 +10643,70 @@ mod tests {
         assert!(!frontend_root_is_pushed(&stack, "frontend.menuTree"));
     }
 
+    // Regression: a late frontend camera hold inherited the prior rider's mover yaw residual.
+    #[test]
+    fn frontend_render_eye_uses_authored_camera_without_retained_mover_yaw() {
+        use postretro_ui::modal_stack::ScopeTier;
+
+        let mut app = crate::startup::lifecycle::tests::test_app();
+        app.camera.yaw = 0.3;
+        app.mover_yaw_carry_ground = postretro_foundation::GroundRef::Mover(7);
+        app.kinematic_mover_tick_states = mover_yaw_states(true, Quat::from_rotation_y(0.4));
+        let gameplay_aim = app.presented_aim_pose(0.5);
+        assert!((app.render_aim_pose(gameplay_aim).yaw - 0.5).abs() < 1.0e-5);
+
+        let menu_position = Vec3::new(4.0, 2.0, 8.0);
+        {
+            let session = app.session.as_mut().unwrap();
+            session.frontend = Some(Frontend {
+                menu_tree: "frontend.menuTree".to_string(),
+                background_level: None,
+                camera: MenuCamera {
+                    position: menu_position.to_array(),
+                    yaw: -0.6,
+                    pitch: -0.1,
+                },
+            });
+            let tree = postretro_ui::demo::build_frontend_menu_descriptor();
+            session.modal_stack.registry_mut().register(
+                "frontend.menuTree",
+                tree.clone(),
+                ScopeTier::Mod,
+                false,
+            );
+            session.modal_stack.registry_mut().register(
+                "frontend.options",
+                tree,
+                ScopeTier::Mod,
+                false,
+            );
+            session.modal_stack.push_named("frontend.menuTree", None);
+            session.modal_stack.push_named("frontend.options", None);
+        }
+        // Same late App boundary as rendering after post-loop reaction drains.
+        app.apply_frontend_menu_camera_pose_if_present();
+        let held_aim = app.render_aim_pose(gameplay_aim);
+        let eye = frame_eye::assemble_frame_eye(
+            held_aim.frame_eye_inputs(app.camera.aspect(), None, &[], 0.0, 1.0),
+            frame_eye::ViewFeelTracking {
+                state: &mut app.view_feel_state,
+                followed_pawn: &mut app.view_feel_followed_pawn,
+                descriptor: &mut app.view_feel_descriptor,
+            },
+        );
+        let (authored_eye, authored_forward) = Camera::new(menu_position, -0.6, -0.1).aim_ray();
+        assert!(eye.camera.eye_position.distance(authored_eye) < 1.0e-5);
+        assert!(eye.camera.forward.distance(authored_forward) < 1.0e-5);
+        assert_eq!(
+            app.mover_yaw_carry_ground,
+            postretro_foundation::GroundRef::Mover(7)
+        );
+        assert!(
+            (app.presented_aim_pose(0.5).yaw - held_aim.yaw).abs() > 0.1,
+            "retained mover carry would visibly rotate the held frontend camera"
+        );
+    }
+
     #[test]
     fn sim_catchup_pushes_interpolation_state_per_tick() {
         use std::cell::RefCell;
@@ -11033,6 +10753,12 @@ mod tests {
         let mut mover_states = kinematic_mover::MoverTickStateTable::default();
         let remote_inputs = Vec::new();
         let command = sim::SimCommand {
+            input_tick: 0,
+            secondary_button: postretro_sim::weapon::FireButtonState {
+                pressed: false,
+                active: false,
+            },
+            activation: postretro_foundation::ActivationInput::default(),
             movement: movement::MovementInput {
                 wish_dir: glam::Vec2::ZERO,
                 jump_pressed: false,
@@ -11055,7 +10781,11 @@ mod tests {
         };
 
         let mut pushed_states = Vec::new();
-        for _ in 0..2 {
+        for input_tick in 0..2 {
+            let command = sim::SimCommand {
+                input_tick,
+                ..command.clone()
+            };
             let _events = sim::simulate_tick(
                 registry.clone(),
                 &world,
@@ -11099,6 +10829,9 @@ mod tests {
     fn catch_up_weapon_script_events_preserve_tick_order_and_same_tick_fire_order() {
         let pawn = postretro_entities::EntityId::from_raw(1);
         let from_pawn = |address| postretro_sim::emission::WeaponEmission {
+            sounds: None,
+            action: None,
+            shot_id: None,
             address,
             emitter: postretro_sim::emission::Emitter::Entity {
                 id: pawn,
@@ -11188,6 +10921,7 @@ mod tests {
                 descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                     primitive: "playSound".to_string(),
                     target: None,
+                    kind: None,
                     tag: None,
                     on_complete: None,
                     args: serde_json::json!({ "sound": "door_open", "bus": "sfx" }),
@@ -11246,6 +10980,7 @@ mod tests {
                 descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                     primitive: "playSound".to_string(),
                     target: None,
+                    kind: None,
                     tag: None,
                     on_complete: None,
                     args: serde_json::json!({
@@ -11333,6 +11068,7 @@ mod tests {
                 descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                     primitive: "playSound".to_string(),
                     target: None,
+                    kind: None,
                     tag: None,
                     on_complete: None,
                     args: serde_json::json!({ "sound": "fixtures/door_open", "at": "@emitter" }),
@@ -11428,7 +11164,7 @@ mod tests {
         let script_ctx = ScriptCtx::new();
         let pawn = script_ctx.registry.borrow_mut().spawn(Transform::default());
         let weapon: postretro_foundation::WeaponDescriptor = serde_json::from_value(serde_json::json!({
-            "damage": 5.0, "range": 50.0, "fireRateMs": 100.0, "fireMode": "semi", "resolution": "hitscan",
+            "damage": 5.0, "range": 50.0, "primary": { "trigger": "press", "recoveryMs": 100.0, "steps": [{ "kind": "shot" }] },  "resolution": "hitscan",
             "sounds": { "fire": "sfx/pistol_fire" }
         }))
         .expect("weapon parses");
@@ -11449,6 +11185,9 @@ mod tests {
             },
         ]);
         let emission = postretro_sim::emission::WeaponEmission {
+            sounds: None,
+            action: None,
+            shot_id: None,
             address: "activate",
             emitter: postretro_sim::emission::entity_emitter(&script_ctx.registry.borrow(), pawn),
             weapon: Some("pistol".to_string()),
@@ -11476,6 +11215,7 @@ mod tests {
                 descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                     primitive: "playSound".to_string(),
                     target: None,
+                    kind: None,
                     tag: None,
                     on_complete: None,
                     args: serde_json::json!({ "sound": "sfx/brass" }),
@@ -11558,6 +11298,7 @@ mod tests {
             descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                 primitive: "playSound".to_string(),
                 target: None,
+                kind: None,
                 tag: None,
                 on_complete: None,
                 args: serde_json::json!({ "sound": "event_chain", "bus": "sfx" }),
@@ -11720,6 +11461,54 @@ mod tests {
     }
 
     #[test]
+    fn toggle_sprint_latches_on_the_hold_resolution_and_releases_on_the_next() {
+        use input::{Activator, ActivatorKind, Binding, PhysicalInput};
+        let shift = PhysicalInput::Key(winit::keyboard::KeyCode::ShiftLeft);
+        let mut sys = InputSystem::new(vec![
+            Binding::new(shift, Action::Sprint)
+                .with_activator(Activator::with_threshold(ActivatorKind::Hold, 0.2)),
+        ]);
+        let mut latch = false;
+        let sprint_at = |sys: &mut InputSystem, t: f64, latch: &mut bool| {
+            let snap = sys.snapshot_at(t);
+            resolve_sprint_intent(
+                options::SprintMode::Toggle,
+                snap.button(Action::Sprint),
+                latch,
+            )
+        };
+        sys.handle_keyboard_event_at(winit::keyboard::KeyCode::ShiftLeft, true, 0.0);
+        assert!(
+            !sprint_at(&mut sys, 0.1, &mut latch),
+            "not before the hold resolves"
+        );
+        assert!(
+            sprint_at(&mut sys, 0.25, &mut latch),
+            "latches at the threshold"
+        );
+        sys.handle_keyboard_event_at(winit::keyboard::KeyCode::ShiftLeft, false, 0.3);
+        assert!(
+            sprint_at(&mut sys, 0.35, &mut latch),
+            "stays latched after release"
+        );
+        sys.handle_keyboard_event_at(winit::keyboard::KeyCode::ShiftLeft, true, 1.0);
+        assert!(sprint_at(&mut sys, 1.1, &mut latch));
+        assert!(
+            !sprint_at(&mut sys, 1.25, &mut latch),
+            "the next resolution releases it"
+        );
+
+        // Hold mode follows the command.
+        let mut hold_latch = false;
+        let snap = sys.snapshot_at(1.5);
+        assert!(resolve_sprint_intent(
+            options::SprintMode::Hold,
+            snap.button(Action::Sprint),
+            &mut hold_latch
+        ));
+    }
+
+    #[test]
     fn sim_command_reuses_frame_resolved_crouch_toggle_across_catchup_ticks() {
         let mut input_system = InputSystem::new(default_bindings());
         input_system.set_physical_input(
@@ -11745,6 +11534,7 @@ mod tests {
                     &snapshot,
                     &camera,
                     crouch_intent,
+                    false,
                     false,
                     false,
                     false,
@@ -11785,6 +11575,7 @@ mod tests {
                     &snapshot,
                     &camera,
                     false,
+                    false,
                     dash_pressed,
                     false,
                     false,
@@ -11821,6 +11612,7 @@ mod tests {
                     &camera,
                     false,
                     false,
+                    false,
                     shoot_pressed,
                     false,
                     false,
@@ -11854,7 +11646,9 @@ mod tests {
         let camera = Camera::new(Vec3::ZERO, 0.0, 0.0);
         let commands: Vec<sim::SimCommand> = (0..2)
             .map(|_| {
-                build_sim_command(&snapshot, &camera, false, false, false, false, false, false)
+                build_sim_command(
+                    &snapshot, &camera, false, false, false, false, false, false, false,
+                )
             })
             .collect();
 
@@ -11887,6 +11681,7 @@ mod tests {
                     false,
                     false,
                     false,
+                    false,
                     drop_pressed,
                 )
             })
@@ -11909,6 +11704,11 @@ mod tests {
         queues.ingest_for_test(
             client_id,
             &postretro_net::wire::InputCommand {
+                secondary_button: postretro_net::wire::WireFireButtonState {
+                    pressed: false,
+                    active: false,
+                },
+                activation: postretro_net::wire::WireActivationInput::default(),
                 client_tick: tick,
                 movement: postretro_net::wire::WireMovementInput {
                     wish_dir: [0.0, 0.0],
@@ -11944,6 +11744,11 @@ mod tests {
         queues.ingest_for_test(
             7,
             &postretro_net::wire::InputCommand {
+                secondary_button: postretro_net::wire::WireFireButtonState {
+                    pressed: false,
+                    active: false,
+                },
+                activation: postretro_net::wire::WireActivationInput::default(),
                 client_tick: 33,
                 movement: postretro_net::wire::WireMovementInput {
                     wish_dir: [0.0, 0.0],
@@ -12026,6 +11831,11 @@ mod tests {
         queues.ingest_for_test(
             7,
             &postretro_net::wire::InputCommand {
+                secondary_button: postretro_net::wire::WireFireButtonState {
+                    pressed: false,
+                    active: false,
+                },
+                activation: postretro_net::wire::WireActivationInput::default(),
                 client_tick: 33,
                 movement: postretro_net::wire::WireMovementInput {
                     wish_dir: [0.0, 0.0],
@@ -12101,6 +11911,12 @@ mod tests {
         let mut mover_states = kinematic_mover::MoverTickStateTable::default();
         let remote_inputs = Vec::new();
         let command = sim::SimCommand {
+            input_tick: 0,
+            secondary_button: postretro_sim::weapon::FireButtonState {
+                pressed: false,
+                active: false,
+            },
+            activation: postretro_foundation::ActivationInput::default(),
             movement: movement::MovementInput {
                 wish_dir: glam::Vec2::ZERO,
                 jump_pressed: false,
@@ -12273,16 +12089,16 @@ mod tests {
             };
             let dest = target_dir.join(name);
             let source = ensure_scripts_build();
-            if let (Ok(cs), Ok(cd)) = (source.canonicalize(), dest.canonicalize()) {
-                if cs == cd {
-                    return true;
-                }
+            if let (Ok(cs), Ok(cd)) = (source.canonicalize(), dest.canonicalize())
+                && cs == cd
+            {
+                return true;
             }
             let modified = |path: &Path| std::fs::metadata(path).and_then(|m| m.modified()).ok();
-            if let (Some(dest_mtime), Some(source_mtime)) = (modified(&dest), modified(&source)) {
-                if dest_mtime >= source_mtime {
-                    return true;
-                }
+            if let (Some(dest_mtime), Some(source_mtime)) = (modified(&dest), modified(&source))
+                && dest_mtime >= source_mtime
+            {
+                return true;
             }
             let staging = dest.with_file_name(format!("{name}.tmp.{}", std::process::id()));
             std::fs::copy(&source, &staging)
@@ -12334,6 +12150,179 @@ mod tests {
             .expect("cargo build scripts-build");
         assert!(status.success(), "failed to build scripts-build");
         scripts_build_binary().expect("scripts-build should exist after build")
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn dev_input_block_validates_cleanly_and_shares_shift() {
+        use crate::input::{ActivatorKind, Command, DeviceClass, EffectiveTable, PhysicalInput};
+        use postretro_test_log_capture::LogCapture;
+
+        if !install_scripts_build_next_to_current_exe() {
+            eprintln!("skipping: could not install scripts-build next to test binary");
+            return;
+        }
+        let mut rt = test_runtime();
+        rt.run_mod_init(&workspace_root().join("content/dev"))
+            .expect("development TypeScript mod entry bundles and initializes");
+        let manifest = rt.mod_manifest().expect("dev mod manifest exists");
+        let capture = LogCapture::start();
+        let author = crate::input::author_layer_from_block(manifest.input.as_ref());
+        capture.assert_not_logged(log::Level::Warn, "[Input]");
+        assert_eq!(author.glyphs.xbox.as_deref(), Some("ui/glyphs/xbox"));
+
+        let facts = crate::input::RelevanceFacts {
+            dash: true,
+            crouch: true,
+            magazine: true,
+            secondary: true,
+        };
+        let table = EffectiveTable::build(&author, &Default::default(), facts, false);
+        let shift = PhysicalInput::Key(winit::keyboard::KeyCode::ShiftLeft);
+        let on_shift: Vec<(Command, ActivatorKind)> = table
+            .entries()
+            .iter()
+            .filter(|e| e.class == DeviceClass::KeyboardMouse && e.input == shift)
+            .map(|e| (e.command, e.activator.kind))
+            .collect();
+        assert_eq!(
+            on_shift,
+            [
+                (Command::Sprint, ActivatorKind::Hold),
+                (Command::Dash, ActivatorKind::Tap)
+            ],
+            "tap-Shift dashes and hold-Shift sprints"
+        );
+        assert!(table.conflicting_pairs().is_empty());
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn dev_exit_and_quit_confirmations_land_a_repeated_confirm_on_cancel() {
+        // Confirm on EXIT opens the confirmation; a second confirm on the next
+        // frame lands on its safe choice and closes it. A confirmation closed
+        // and reopened on one frame lands there too.
+        use crate::input::{InputMode, NavIntent};
+        use postretro_ui::tree::CellValues;
+
+        if !install_scripts_build_next_to_current_exe() {
+            eprintln!("skipping: could not install scripts-build next to test binary");
+            return;
+        }
+        let mut rt = test_runtime();
+        rt.run_mod_init(&workspace_root().join("content/dev"))
+            .expect("development TypeScript mod entry bundles and initializes");
+        let manifest = rt.mod_manifest().expect("dev mod manifest exists");
+        let tree = |name: &str| {
+            manifest
+                .ui_trees
+                .iter()
+                .find(|tree| tree.name == name)
+                .unwrap_or_else(|| panic!("dev manifest exports {name}"))
+                .tree
+                .clone()
+        };
+        let reactions: Vec<&str> = manifest
+            .reactions
+            .iter()
+            .map(|r| r.reaction.name.as_str())
+            .collect();
+        for (name, prefix, reaction, action) in [
+            (
+                "dev.exitConfirm",
+                "exitConfirm",
+                "dev.askExit",
+                postretro_ui::actions::EXIT_TO_DESKTOP_ACTION,
+            ),
+            (
+                "dev.quitConfirm",
+                "quitConfirm",
+                "dev.askQuit",
+                postretro_ui::actions::QUIT_TO_MENU_ACTION,
+            ),
+        ] {
+            assert!(reactions.contains(&reaction), "{reaction} is registered");
+            let dialog = tree(name);
+            let cancel = format!("{prefix}Cancel");
+            let confirm = format!("{prefix}Confirm");
+            assert_eq!(dialog.initial_focus.as_deref(), Some(cancel.as_str()));
+            assert_eq!(
+                button_action(&dialog.root, &cancel),
+                Some(postretro_ui::actions::CLOSE_DIALOG_ACTION)
+            );
+            assert_eq!(button_action(&dialog.root, &confirm), Some(action));
+
+            let theme = postretro_ui::theme::UiTheme::engine_default();
+            let mut retained = postretro_ui::tree::UiTree::from_descriptor(&dialog, &theme);
+            let mut font_system = postretro_ui::text::build_font_system();
+            let slots = std::collections::HashMap::new();
+            let cells = CellValues::new();
+            retained.build_draw_data_retained(
+                [1280, 720],
+                &mut font_system,
+                &postretro_ui::tree::ImageSizes::new(),
+                &slots,
+                &cells,
+                0.0,
+            );
+            let mut rects = retained.export_focus_rects(&dialog, [1280, 720], &slots, &cells);
+            rects.owner = Some(postretro_ui::tree::FocusRectOwner {
+                name: name.to_string(),
+                tier: postretro_ui::modal_stack::ScopeTier::Mod,
+            });
+
+            let mut app = crate::startup::lifecycle::tests::test_app();
+            let tick = |app: &mut App, intents: &[NavIntent]| {
+                let session = app.session.as_mut().unwrap();
+                let (key, _) = session.ui_focus_target("hud");
+                let result = session.ui_focus.tick(
+                    Some(&key),
+                    Some(&rects),
+                    intents,
+                    None,
+                    &[],
+                    InputMode::Focus,
+                    0.016,
+                );
+                session.ui_focus_rects = Some(rects.clone());
+                app.ui_focused_id = result.focused.clone();
+                if result.confirmed {
+                    app.fire_focused_button_activation(result.focused.as_deref());
+                }
+                result
+            };
+            // Frame N: the first confirm pushed the dialog (the reaction's
+            // effect). Frame N+1: the second confirm.
+            app.session
+                .as_mut()
+                .unwrap()
+                .modal_stack
+                .push(name, dialog.clone());
+            let result = tick(&mut app, &[NavIntent::Confirm]);
+            assert_eq!(result.focused.as_deref(), Some(cancel.as_str()));
+            assert!(
+                !app.pending_exit_to_desktop,
+                "{name}: the game keeps running"
+            );
+            assert_eq!(
+                app.session.as_ref().unwrap().modal_stack.active_name(),
+                None,
+                "{name}: the confirmation closed"
+            );
+
+            // Focus the destructive choice, then close and reopen on one frame;
+            // the fresh push lands on the safe choice.
+            let stack = &mut app.session.as_mut().unwrap().modal_stack;
+            stack.push(name, dialog.clone());
+            tick(&mut app, &[]);
+            let moved = tick(&mut app, &[NavIntent::Right]);
+            assert_eq!(moved.focused.as_deref(), Some(confirm.as_str()));
+            let stack = &mut app.session.as_mut().unwrap().modal_stack;
+            stack.pop();
+            stack.push(name, dialog.clone());
+            let reopened = tick(&mut app, &[]);
+            assert_eq!(reopened.focused.as_deref(), Some(cancel.as_str()), "{name}");
+        }
     }
 
     #[cfg(debug_assertions)]
@@ -12395,8 +12384,13 @@ mod tests {
         );
         assert_eq!(
             button_action(&mod_pause.root, "pauseExitDesktop"),
-            Some(postretro_ui::actions::EXIT_TO_DESKTOP_ACTION),
-            "Exit to Desktop resolves to the generic reserved quit action wire value",
+            Some("dev.askExit"),
+            "Exit to Desktop asks first",
+        );
+        assert_eq!(
+            button_action(&mod_pause.root, "pauseQuitToMenu"),
+            Some("dev.askQuit"),
+            "Quit to Menu asks first",
         );
 
         let theme = postretro_ui::theme::UiTheme::engine_default();
@@ -12642,7 +12636,7 @@ mod tests {
         );
         assert_eq!(
             button_action(&title.root, "frontendExit"),
-            Some(postretro_ui::actions::EXIT_TO_DESKTOP_ACTION)
+            Some("dev.askExit")
         );
         assert_eq!(
             button_action(&title.root, "frontendAccessibility"),
@@ -12668,6 +12662,32 @@ mod tests {
             button_action(&tree("frontend.devLevelSelect").root, "levelSelectBack"),
             Some(postretro_ui::actions::CLOSE_DIALOG_ACTION)
         );
+        {
+            use postretro_ui::descriptor::{FocusKind, Widget};
+            let Widget::VStack(select_root) = &tree("frontend.devLevelSelect").root else {
+                panic!("level select root is a vstack");
+            };
+            let Some(Widget::HStack(columns)) = select_root.children.first() else {
+                panic!("level select opens with its columns");
+            };
+            assert_eq!(
+                columns.focus.as_ref().map(|focus| focus.kind()),
+                Some(FocusKind::Spatial),
+                "level select is spatial: Left and Right cross columns"
+            );
+            for column in &columns.children {
+                let Widget::VStack(column) = column else {
+                    panic!("each column is a vstack");
+                };
+                assert!(
+                    column.children.iter().any(|child| matches!(
+                        child,
+                        Widget::VStack(list) if list.scroll.is_some()
+                    )),
+                    "each column's list scrolls"
+                );
+            }
+        }
 
         let options_registration = manifest
             .ui_trees
@@ -12697,7 +12717,7 @@ mod tests {
             "one focus group spans the tab strip, the visible panel and BACK"
         );
         assert!(
-            options_root.restore_on_return,
+            options_tree.restores_on_return(),
             "closing a tree pushed above returns focus to the control it left"
         );
         let tab_state = options_root
@@ -12764,9 +12784,14 @@ mod tests {
                 _ => None,
             })
             .expect("the options root carries a tablist strip outside every panel");
-        assert!(
-            tab_strip.focus.is_none(),
-            "a focus policy on the strip would open a nested group and trap nav in it"
+        let strip_focus = tab_strip
+            .focus
+            .as_ref()
+            .expect("the strip is its own nested group");
+        assert_eq!(
+            (strip_focus.kind(), strip_focus.wrap()),
+            (postretro_ui::descriptor::FocusKind::Linear, true),
+            "the strip steps across its tabs and wraps; Down leaves for the panel"
         );
         let tab_ids: Vec<&str> = tab_strip
             .children
@@ -12797,22 +12822,36 @@ mod tests {
                 "optionsTabControls",
                 "controls",
                 "optionsPanelControls",
-                8,
+                20,
                 &[
+                    "optionsRebind",
                     "optionsMouseSensitivity",
                     "optionsInvertYOff",
                     "optionsInvertYOn",
                     "optionsViewFeelScale",
                     "optionsCrouchHold",
                     "optionsCrouchToggle",
+                    "optionsSprintHold",
+                    "optionsSprintToggle",
+                    "optionsGamepadLookSensitivity",
+                    "optionsGamepadLookDeadZone",
+                    "optionsGamepadInvertYOff",
+                    "optionsGamepadInvertYOn",
+                    "optionsSwapConfirmCancelOff",
+                    "optionsSwapConfirmCancelOn",
                 ][..],
             ),
             (
                 "optionsTabGraphics",
                 "graphics",
                 "optionsPanelGraphics",
-                6,
+                12,
                 &[
+                    "optionsWindowed",
+                    "optionsBorderless",
+                    "optionsExclusive",
+                    "displayModePrev",
+                    "displayModeNext",
                     "optionsShadowLow",
                     "optionsShadowMedium",
                     "optionsShadowHigh",
@@ -12821,16 +12860,22 @@ mod tests {
                     "optionsFogHigh",
                     "optionsSurfaceDepthOff",
                     "optionsSurfaceDepthOn",
+                    "optionsRenderResolutionAuto",
+                    "optionsRenderResolutionNative",
+                    "optionsRenderResolutionHalf",
+                    "optionsRenderResolutionThird",
+                    "optionsRenderResolutionQuarter",
                 ][..],
             ),
             (
                 "optionsTabAccessibility",
                 "accessibility",
                 "optionsPanelAccessibility",
-                // A label and a control for each of the nine accessibility fields.
-                18,
+                // A label and a control for each of the ten accessibility fields.
+                20,
                 &[
                     "optionsReduceMotion",
+                    "optionsHoldTimingScale",
                     "optionsScreenShakeScale",
                     "optionsA11yViewFeelScale",
                     "optionsFlashLimiter",
@@ -12885,6 +12930,11 @@ mod tests {
             let grids = grids_in(panel_widget);
             assert_eq!(grids.len(), 1, "{panel_id} lays its rows out in one grid");
             assert_eq!(grids[0].cols, 2);
+            assert_eq!(
+                grids[0].focus.as_ref().map(|focus| focus.kind()),
+                Some(postretro_ui::descriptor::FocusKind::Spatial),
+                "{panel_id}: its grid is a nested spatial group"
+            );
             assert_eq!(grids[0].children.len(), grid_len, "{panel_id} grid cells");
             assert!(
                 grids[0]
@@ -12905,6 +12955,11 @@ mod tests {
             grids_in(&options_tree.root).len(),
             3,
             "no grid sits outside the three tab panels"
+        );
+        assert_eq!(
+            button_action(&options_tree.root, "optionsRebind"),
+            Some(postretro_ui::actions::OPEN_CONTROLS_ACTION),
+            "the controls tab opens the engine controls panel"
         );
 
         // Every toggle is one value button on the right, named by its label on
@@ -13025,6 +13080,194 @@ mod tests {
         );
         assert_eq!(checked.equals, Some(PredicateValue::String("high".into())));
 
+        let graphics_panel = find_by_id(&options_tree.root, "optionsPanelGraphics")
+            .expect("graphics panel is in the options tree");
+        for (id, value) in [
+            ("optionsWindowed", "windowed"),
+            ("optionsBorderless", "borderless"),
+            ("optionsExclusive", "exclusive"),
+        ] {
+            let button = find_button(graphics_panel, id)
+                .unwrap_or_else(|| panic!("{id} is a window-mode radio button"));
+            assert_eq!(button.role, Some(Role::Radio));
+            let checked = button
+                .checked
+                .as_ref()
+                .expect("radio exposes checked state");
+            assert_eq!(button.bind.as_ref(), Some(checked));
+            assert_eq!(
+                checked.source,
+                BindSource::Slot {
+                    slot: "options.windowMode".into()
+                }
+            );
+            assert_eq!(checked.equals, Some(PredicateValue::String(value.into())));
+            assert_eq!(
+                button.on_press,
+                format!("frontend.options.windowMode.{value}")
+            );
+            let reaction = manifest
+                .reactions
+                .iter()
+                .find(|reaction| reaction.reaction.name == button.on_press)
+                .unwrap_or_else(|| panic!("{id} names a registered reaction"));
+            let ReactionDescriptor::Primitive(primitive) = &reaction.reaction.descriptor else {
+                panic!("{id} reaction is a primitive");
+            };
+            assert_eq!(primitive.primitive, "setState");
+            assert_eq!(
+                primitive.args,
+                serde_json::json!({ "slot": "options.windowMode", "value": value })
+            );
+        }
+        for (id, action) in [
+            ("displayModePrev", "ui.displayMode.previous"),
+            ("displayModeNext", "ui.displayMode.next"),
+        ] {
+            assert_eq!(button_action(graphics_panel, id), Some(action));
+        }
+        let display_label = find_by_id(graphics_panel, "optionsDisplayModeLabel")
+            .expect("display-mode label is in the graphics panel");
+        let Widget::VStack(display_label) = display_label else {
+            panic!("display-mode label groups the three mode-specific labels");
+        };
+        let expected_slots = [
+            "window.displayModeWidth",
+            "window.displayModeHeight",
+            "window.displayModeRefreshHz",
+        ];
+        for (value, suffix, opacity) in [
+            ("windowed", "", 1.0),
+            ("exclusive", "Exclusive", 1.0),
+            ("borderless", "Borderless", 0.8),
+        ] {
+            let visible_when = Predicate {
+                source: BindSource::Slot {
+                    slot: "options.windowMode".into(),
+                },
+                equals: Some(PredicateValue::String(value.into())),
+            };
+            let label = display_label
+                .children
+                .iter()
+                .find_map(|widget| match widget {
+                    Widget::Text(text) if text.visible_when.as_ref() == Some(&visible_when) => {
+                        Some(text)
+                    }
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("{value} display-mode label has its own visibility"));
+            assert_eq!(
+                label.color,
+                postretro_ui::descriptor::ColorValue::Literal([1.0, 1.0, 1.0, opacity])
+            );
+
+            let mut panel_widgets = Vec::new();
+            collect_widgets(graphics_panel, &mut panel_widgets);
+            let controls = panel_widgets
+                .iter()
+                .filter_map(|widget| match widget {
+                    Widget::VStack(container)
+                        if container.visible_when.as_ref() == Some(&visible_when) =>
+                    {
+                        Some(*widget)
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                controls.len(),
+                1,
+                "one display-mode control group is shown for {value}"
+            );
+            let mut control_widgets = Vec::new();
+            collect_widgets(controls[0], &mut control_widgets);
+            for (base_id, action) in [
+                ("displayModePrev", "ui.displayMode.previous"),
+                ("displayModeNext", "ui.displayMode.next"),
+            ] {
+                let id = format!("{base_id}{suffix}");
+                let button = find_button(controls[0], &id)
+                    .unwrap_or_else(|| panic!("{value} display-mode group includes {id}"));
+                assert_eq!(button.on_press, action);
+                assert_eq!(button.visible_when, None);
+                assert_eq!(button.bind.as_ref(), Some(&visible_when));
+                assert_eq!(button.disabled, value == "borderless");
+                let color = button.style_ranges.as_ref().unwrap().entries[0]
+                    .color
+                    .as_ref()
+                    .unwrap();
+                assert_eq!(
+                    color,
+                    &postretro_ui::descriptor::ColorValue::Literal([1.0, 1.0, 1.0, opacity])
+                );
+            }
+            let apply_variants: &[(&str, bool, f32)] = if value == "borderless" {
+                &[("displayModeApply", true, 0.8)]
+            } else {
+                &[
+                    ("displayModeApply", false, 1.0),
+                    ("displayModeApplyDisabled", true, 0.8),
+                ]
+            };
+            for (base_id, disabled, alpha) in apply_variants {
+                let id = format!("{base_id}{suffix}");
+                let button = find_button(controls[0], &id).unwrap();
+                assert_eq!(button.on_press, "ui.displayMode.apply");
+                assert_eq!(button.visible_when, None);
+                assert_eq!(button.bind.as_ref(), Some(&visible_when));
+                assert_eq!(button.disabled, *disabled);
+                assert_eq!(
+                    button.style_ranges.as_ref().unwrap().entries[0]
+                        .color
+                        .as_ref()
+                        .unwrap(),
+                    &postretro_ui::descriptor::ColorValue::Literal([1.0, 1.0, 1.0, *alpha])
+                );
+                if value != "borderless" {
+                    let predicate = Predicate {
+                        source: BindSource::Slot {
+                            slot: "window.displayModeCanApply".into(),
+                        },
+                        equals: Some(PredicateValue::Boolean(!*disabled)),
+                    };
+                    assert!(
+                        control_widgets.iter().any(|widget| match widget {
+                            Widget::VStack(container)
+                                if container.visible_when.as_ref() == Some(&predicate) =>
+                                find_button(widget, &id).is_some(),
+                            _ => false,
+                        }),
+                        "{id} is guarded by its eligibility predicate"
+                    );
+                }
+            }
+
+            let mut display_bindings = Vec::new();
+            for widget in &control_widgets {
+                if let Widget::Text(text) = widget
+                    && let Some(bind) = &text.bind
+                    && let BindSource::Slot { slot } = &bind.source
+                    && slot.starts_with("window.displayMode")
+                {
+                    display_bindings.push(slot.as_str());
+                    assert_eq!(
+                        text.visible_when, None,
+                        "the parent control group owns {value} text visibility",
+                    );
+                    assert_eq!(
+                        text.color,
+                        postretro_ui::descriptor::ColorValue::Literal([1.0, 1.0, 1.0, opacity]),
+                        "{value} display text uses the branch opacity",
+                    );
+                }
+            }
+            assert_eq!(
+                display_bindings, expected_slots,
+                "{value} display-mode row binds size and refresh to readonly window slots",
+            );
+        }
+
         let reaction = manifest
             .reactions
             .iter()
@@ -13057,12 +13300,12 @@ mod tests {
                     padding: SpacingValue::Literal(0.0),
                     align: Align::Start,
                     width: None,
+                    scroll: None,
                     fill: None,
                     border: None,
                     id: None,
                     focus_neighbors: Default::default(),
                     focus: None,
-                    restore_on_return: false,
                     local_state: None,
                     visible_when: None,
                     role: None,
@@ -13073,6 +13316,7 @@ mod tests {
                 text_entry_target: None,
                 accessible_name: None,
                 role: None,
+                restore_on_return: None,
             }
         }
 
@@ -13309,12 +13553,12 @@ mod tests {
                     padding: SpacingValue::Literal(0.0),
                     align: Align::Start,
                     width: None,
+                    scroll: None,
                     fill: None,
                     border: None,
                     id: None,
                     focus_neighbors: Default::default(),
                     focus: None,
-                    restore_on_return: false,
                     local_state: None,
                     visible_when: None,
                     role: None,
@@ -13325,6 +13569,7 @@ mod tests {
                 text_entry_target: None,
                 accessible_name: None,
                 role: None,
+                restore_on_return: None,
             },
             always_on: true,
             hide_below: false,
@@ -13342,6 +13587,7 @@ mod tests {
                     name: "UiCommit".to_string(),
                     id: "ui-commit".to_string(),
                     version: "1".to_string(),
+                    input: None,
                     render: Default::default(),
                     movers: Default::default(),
                     audio: Default::default(),
@@ -13374,6 +13620,8 @@ mod tests {
                             pitch: -0.5,
                         },
                     }),
+                    ui_images: Default::default(),
+                    loading: Default::default(),
                     store_declarations: Default::default(),
                     dependency_paths: Vec::new(),
                 },
@@ -13952,6 +14200,7 @@ mod tests {
                 SpawnerComponent {
                     archetype_name: "spawner_only".to_string(),
                     count: 1,
+                    spawned_tags: Vec::new(),
                     resolved: true,
                 },
             )
@@ -14293,6 +14542,14 @@ mod tests {
             Some(&SlotValue::Boolean(false)),
             "local player.weapon.switching defaults false and is cloned",
         );
+        assert_eq!(
+            snapshot.get("player.weaponCharging"),
+            Some(&SlotValue::Boolean(false)),
+        );
+        assert_eq!(
+            snapshot.get("player.weaponChargeProgress"),
+            Some(&SlotValue::Number(0.0)),
+        );
         // `screen.flash` carries its default transparent value, so it is present.
         assert_eq!(
             snapshot.get("screen.flash"),
@@ -14311,6 +14568,41 @@ mod tests {
             snapshot.get("ui.textEntry"),
             Some(&SlotValue::String(String::new())),
             "engine-owned ui.textEntry defaults to empty string and is cloned",
+        );
+        assert_eq!(
+            snapshot.get("options.windowMode"),
+            Some(&SlotValue::Enum("windowed".to_string())),
+            "window-mode working copy defaults to the windowed enum",
+        );
+        for slot in [
+            "window.displayModeWidth",
+            "window.displayModeHeight",
+            "window.displayModeRefreshHz",
+            "window.displayModeBitDepth",
+            "window.displayModeRevertSeconds",
+        ] {
+            assert_eq!(
+                snapshot.get(slot),
+                Some(&SlotValue::Number(0.0)),
+                "engine-owned {slot} is a value-bearing number defaulting to zero",
+            );
+        }
+        assert_eq!(
+            snapshot.get("window.displayModeMonitor"),
+            Some(&SlotValue::String(String::new())),
+            "engine-owned window.displayModeMonitor is an empty string when no mode is picked",
+        );
+        assert_eq!(
+            snapshot.get("window.displayModeCanApply"),
+            Some(&SlotValue::Boolean(false)),
+            "engine-owned Apply eligibility defaults false and is cloned",
+        );
+        assert!(
+            table
+                .get("window.displayModeCanApply")
+                .unwrap()
+                .schema
+                .readonly
         );
         // `screen.vignette`/`screen.shake` default to zeroed arrays, so they are
         // value-bearing and present (the screen-effects resolve reads them).
@@ -14344,10 +14636,19 @@ mod tests {
             !snapshot.contains_key("player.cell"),
             "value-less weapon-resource numbers are skipped",
         );
+        // The loading slots are value-bearing at their defaults (0 and "").
+        assert_eq!(
+            snapshot.get("loading.progress"),
+            Some(&SlotValue::Number(0.0))
+        );
+        assert_eq!(
+            snapshot.get("loading.levelName"),
+            Some(&SlotValue::String(String::new()))
+        );
         assert_eq!(
             snapshot.len(),
-            38,
-            "only the set player.health and default-valued reload-feedback + local weapon display + weapon-resource kind and overheat latch + player.spread + screen effects + input.mode + ui.textEntry + fourteen options slots + ten accessibility slots appear",
+            58,
+            "only value-bearing player, screen, input, loading, UI, options, accessibility and window slots appear, plus the explicitly set player.health",
         );
     }
 
@@ -14583,12 +14884,12 @@ mod tests {
                     padding: SpacingValue::Literal(0.0),
                     align: Align::Start,
                     width: None,
+                    scroll: None,
                     fill: None,
                     border: None,
                     id: None,
                     focus_neighbors: Default::default(),
                     focus: None,
-                    restore_on_return: false,
                     local_state,
                     visible_when: None,
                     role: None,
@@ -14599,6 +14900,7 @@ mod tests {
                 text_entry_target: None,
                 accessible_name: None,
                 role: None,
+                restore_on_return: None,
             }
         }
 

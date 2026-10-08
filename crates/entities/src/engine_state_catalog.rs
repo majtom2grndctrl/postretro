@@ -347,11 +347,15 @@ fn sdk_path_string(path: &[&str]) -> String {
 
 const INPUT_MODE_VALUES: &[&str] = &["pointer", "focus"];
 const CROUCH_MODE_VALUES: &[&str] = &["hold", "toggle"];
+const SPRINT_MODE_VALUES: &[&str] = &["hold", "toggle"];
 const QUALITY_VALUES: &[&str] = &["low", "medium", "high"];
 /// Surface Depth is off/on, not a low/medium/high ladder: it is a pure cost
 /// lever, and the middle tier it once had never changed the carve depth.
 /// See `context/lib/player_options.md` §4.
 const SURFACE_DEPTH_QUALITY_VALUES: &[&str] = &["off", "on"];
+/// Scene render resolution: Auto or an integer divisor of the surface. Same
+/// names as the `settings.toml` values. See `context/lib/player_options.md` §4.
+const RENDER_RESOLUTION_VALUES: &[&str] = &["auto", "native", "half", "third", "quarter"];
 
 const BUILTIN_ENGINE_STATE: &[EngineStateCatalogEntry<'static>] = &[
     // Accessibility preferences: engine-owned, readonly, always-live resolved
@@ -384,6 +388,16 @@ const BUILTIN_ENGINE_STATE: &[EngineStateCatalogEntry<'static>] = &[
         value_type: EngineStateValueType::Number,
         default: EngineStateDefault::Number(1.0),
         range: Some(NumericRange { min: 0.0, max: 1.0 }),
+        persist: false,
+        capability: EngineStateCapability::Readonly,
+        network: ReplicationScope::None,
+    },
+    EngineStateCatalogEntry {
+        wire_name: "accessibility.holdTimingScale",
+        sdk_path: &["accessibility", "holdTimingScale"],
+        value_type: EngineStateValueType::Number,
+        default: EngineStateDefault::Number(1.0),
+        range: Some(NumericRange { min: 1.0, max: 3.0 }),
         persist: false,
         capability: EngineStateCapability::Readonly,
         network: ReplicationScope::None,
@@ -634,6 +648,28 @@ const BUILTIN_ENGINE_STATE: &[EngineStateCatalogEntry<'static>] = &[
         network: ReplicationScope::None,
     },
     EngineStateCatalogEntry {
+        wire_name: "player.weaponCharging",
+        sdk_path: &["player", "weaponCharging"],
+        value_type: EngineStateValueType::Boolean,
+        default: EngineStateDefault::Boolean(false),
+        range: None,
+        persist: false,
+        capability: EngineStateCapability::Readonly,
+        // Active-instance predicted charge is local presentation on every role.
+        network: ReplicationScope::None,
+    },
+    EngineStateCatalogEntry {
+        wire_name: "player.weaponChargeProgress",
+        sdk_path: &["player", "weaponChargeProgress"],
+        value_type: EngineStateValueType::Number,
+        default: EngineStateDefault::Number(0.0),
+        range: Some(NumericRange { min: 0.0, max: 1.0 }),
+        persist: false,
+        capability: EngineStateCapability::Readonly,
+        // Normalized fixed-tick progress; independent of cell resource charge.
+        network: ReplicationScope::None,
+    },
+    EngineStateCatalogEntry {
         wire_name: "player.weaponCooldownMs",
         sdk_path: &["player", "weaponCooldownMs"],
         value_type: EngineStateValueType::Number,
@@ -786,6 +822,58 @@ const BUILTIN_ENGINE_STATE: &[EngineStateCatalogEntry<'static>] = &[
         network: ReplicationScope::None,
     },
     EngineStateCatalogEntry {
+        wire_name: "options.sprintMode",
+        sdk_path: &["options", "sprintMode"],
+        value_type: EngineStateValueType::Enum {
+            values: SPRINT_MODE_VALUES,
+        },
+        default: EngineStateDefault::Enum("hold"),
+        range: None,
+        persist: false,
+        capability: EngineStateCapability::Writable,
+        network: ReplicationScope::None,
+    },
+    EngineStateCatalogEntry {
+        wire_name: "options.gamepadLookSensitivity",
+        sdk_path: &["options", "gamepadLookSensitivity"],
+        value_type: EngineStateValueType::Number,
+        default: EngineStateDefault::Number(2.5),
+        range: Some(NumericRange { min: 0.5, max: 8.0 }),
+        persist: false,
+        capability: EngineStateCapability::Writable,
+        network: ReplicationScope::None,
+    },
+    EngineStateCatalogEntry {
+        wire_name: "options.gamepadLookDeadZone",
+        sdk_path: &["options", "gamepadLookDeadZone"],
+        value_type: EngineStateValueType::Number,
+        default: EngineStateDefault::Number(0.15),
+        range: Some(NumericRange { min: 0.0, max: 0.5 }),
+        persist: false,
+        capability: EngineStateCapability::Writable,
+        network: ReplicationScope::None,
+    },
+    EngineStateCatalogEntry {
+        wire_name: "options.gamepadInvertY",
+        sdk_path: &["options", "gamepadInvertY"],
+        value_type: EngineStateValueType::Boolean,
+        default: EngineStateDefault::Boolean(false),
+        range: None,
+        persist: false,
+        capability: EngineStateCapability::Writable,
+        network: ReplicationScope::None,
+    },
+    EngineStateCatalogEntry {
+        wire_name: "options.swapConfirmCancel",
+        sdk_path: &["options", "swapConfirmCancel"],
+        value_type: EngineStateValueType::Boolean,
+        default: EngineStateDefault::Boolean(false),
+        range: None,
+        persist: false,
+        capability: EngineStateCapability::Writable,
+        network: ReplicationScope::None,
+    },
+    EngineStateCatalogEntry {
         wire_name: "options.shadowQuality",
         sdk_path: &["options", "shadowQuality"],
         value_type: EngineStateValueType::Enum {
@@ -821,6 +909,100 @@ const BUILTIN_ENGINE_STATE: &[EngineStateCatalogEntry<'static>] = &[
         capability: EngineStateCapability::Writable,
         network: ReplicationScope::None,
     },
+    EngineStateCatalogEntry {
+        wire_name: "options.windowMode",
+        sdk_path: &["options", "windowMode"],
+        value_type: EngineStateValueType::Enum {
+            values: &["windowed", "borderless", "exclusive"],
+        },
+        default: EngineStateDefault::Enum("windowed"),
+        range: None,
+        persist: false,
+        capability: EngineStateCapability::Writable,
+        network: ReplicationScope::None,
+    },
+    EngineStateCatalogEntry {
+        wire_name: "window.displayModeCanApply",
+        sdk_path: &["window", "displayModeCanApply"],
+        value_type: EngineStateValueType::Boolean,
+        default: EngineStateDefault::Boolean(false),
+        range: None,
+        persist: false,
+        capability: EngineStateCapability::Readonly,
+        network: ReplicationScope::None,
+    },
+    EngineStateCatalogEntry {
+        wire_name: "window.displayModeWidth",
+        sdk_path: &["window", "displayModeWidth"],
+        value_type: EngineStateValueType::Number,
+        default: EngineStateDefault::Number(0.0),
+        range: None,
+        persist: false,
+        capability: EngineStateCapability::Readonly,
+        network: ReplicationScope::None,
+    },
+    EngineStateCatalogEntry {
+        wire_name: "window.displayModeHeight",
+        sdk_path: &["window", "displayModeHeight"],
+        value_type: EngineStateValueType::Number,
+        default: EngineStateDefault::Number(0.0),
+        range: None,
+        persist: false,
+        capability: EngineStateCapability::Readonly,
+        network: ReplicationScope::None,
+    },
+    EngineStateCatalogEntry {
+        wire_name: "window.displayModeRefreshHz",
+        sdk_path: &["window", "displayModeRefreshHz"],
+        value_type: EngineStateValueType::Number,
+        default: EngineStateDefault::Number(0.0),
+        range: None,
+        persist: false,
+        capability: EngineStateCapability::Readonly,
+        network: ReplicationScope::None,
+    },
+    EngineStateCatalogEntry {
+        wire_name: "window.displayModeBitDepth",
+        sdk_path: &["window", "displayModeBitDepth"],
+        value_type: EngineStateValueType::Number,
+        default: EngineStateDefault::Number(0.0),
+        range: None,
+        persist: false,
+        capability: EngineStateCapability::Readonly,
+        network: ReplicationScope::None,
+    },
+    EngineStateCatalogEntry {
+        wire_name: "window.displayModeMonitor",
+        sdk_path: &["window", "displayModeMonitor"],
+        value_type: EngineStateValueType::String,
+        default: EngineStateDefault::String(""),
+        range: None,
+        persist: false,
+        capability: EngineStateCapability::Readonly,
+        network: ReplicationScope::None,
+    },
+    EngineStateCatalogEntry {
+        wire_name: "window.displayModeRevertSeconds",
+        sdk_path: &["window", "displayModeRevertSeconds"],
+        value_type: EngineStateValueType::Number,
+        default: EngineStateDefault::Number(0.0),
+        range: None,
+        persist: false,
+        capability: EngineStateCapability::Readonly,
+        network: ReplicationScope::None,
+    },
+    EngineStateCatalogEntry {
+        wire_name: "options.renderResolution",
+        sdk_path: &["options", "renderResolution"],
+        value_type: EngineStateValueType::Enum {
+            values: RENDER_RESOLUTION_VALUES,
+        },
+        default: EngineStateDefault::Enum("auto"),
+        range: None,
+        persist: false,
+        capability: EngineStateCapability::Writable,
+        network: ReplicationScope::None,
+    },
     // Accessibility working copies. The flash limiter has none: only the
     // engine panel changes it.
     EngineStateCatalogEntry {
@@ -839,6 +1021,16 @@ const BUILTIN_ENGINE_STATE: &[EngineStateCatalogEntry<'static>] = &[
         value_type: EngineStateValueType::Number,
         default: EngineStateDefault::Number(1.0),
         range: Some(NumericRange { min: 0.0, max: 1.0 }),
+        persist: false,
+        capability: EngineStateCapability::Writable,
+        network: ReplicationScope::None,
+    },
+    EngineStateCatalogEntry {
+        wire_name: "options.holdTimingScale",
+        sdk_path: &["options", "holdTimingScale"],
+        value_type: EngineStateValueType::Number,
+        default: EngineStateDefault::Number(1.0),
+        range: Some(NumericRange { min: 1.0, max: 3.0 }),
         persist: false,
         capability: EngineStateCapability::Writable,
         network: ReplicationScope::None,
@@ -891,6 +1083,29 @@ const BUILTIN_ENGINE_STATE: &[EngineStateCatalogEntry<'static>] = &[
         range: None,
         persist: false,
         capability: EngineStateCapability::Writable,
+        network: ReplicationScope::None,
+    },
+    // Level-load presentation: written by the app while a level loads and
+    // reset to these defaults when the load ends. Client-local; never
+    // replicated or persisted.
+    EngineStateCatalogEntry {
+        wire_name: "loading.progress",
+        sdk_path: &["loading", "progress"],
+        value_type: EngineStateValueType::Number,
+        default: EngineStateDefault::Number(0.0),
+        range: Some(NumericRange { min: 0.0, max: 1.0 }),
+        persist: false,
+        capability: EngineStateCapability::Readonly,
+        network: ReplicationScope::None,
+    },
+    EngineStateCatalogEntry {
+        wire_name: "loading.levelName",
+        sdk_path: &["loading", "levelName"],
+        value_type: EngineStateValueType::String,
+        default: EngineStateDefault::String(""),
+        range: None,
+        persist: false,
+        capability: EngineStateCapability::Readonly,
         network: ReplicationScope::None,
     },
     EngineStateCatalogEntry {
@@ -1059,6 +1274,36 @@ mod tests {
     }
 
     #[test]
+    fn built_in_loading_slots_are_readonly_client_local_presentation() {
+        let catalog = engine_state_catalog().unwrap();
+        let entry = |wire_name: &str| {
+            *catalog
+                .entries()
+                .iter()
+                .find(|entry| entry.wire_name == wire_name)
+                .unwrap_or_else(|| panic!("{wire_name} must be declared"))
+        };
+
+        let progress = entry("loading.progress");
+        assert_eq!(progress.sdk_path, &["loading", "progress"]);
+        assert_eq!(progress.value_type, EngineStateValueType::Number);
+        assert_eq!(progress.default, EngineStateDefault::Number(0.0));
+        assert_eq!(progress.range, Some(NumericRange { min: 0.0, max: 1.0 }));
+
+        let level_name = entry("loading.levelName");
+        assert_eq!(level_name.sdk_path, &["loading", "levelName"]);
+        assert_eq!(level_name.value_type, EngineStateValueType::String);
+        assert_eq!(level_name.default, EngineStateDefault::String(""));
+        assert_eq!(level_name.range, None);
+
+        for slot in [progress, level_name] {
+            assert_eq!(slot.capability, EngineStateCapability::Readonly);
+            assert_eq!(slot.network, ReplicationScope::None);
+            assert!(!slot.persist);
+        }
+    }
+
+    #[test]
     fn built_in_catalog_preserves_wire_names_and_capabilities() {
         let catalog = engine_state_catalog().unwrap();
         let entries = catalog.entries();
@@ -1071,6 +1316,7 @@ mod tests {
             wire_names,
             vec![
                 "accessibility.flashLimiter",
+                "accessibility.holdTimingScale",
                 "accessibility.masterVolume",
                 "accessibility.monoAudio",
                 "accessibility.musicVolume",
@@ -1081,20 +1327,30 @@ mod tests {
                 "accessibility.uiVolume",
                 "accessibility.viewFeelScale",
                 "input.mode",
+                "loading.levelName",
+                "loading.progress",
                 "options.crouchMode",
                 "options.fogQuality",
+                "options.gamepadInvertY",
+                "options.gamepadLookDeadZone",
+                "options.gamepadLookSensitivity",
+                "options.holdTimingScale",
                 "options.invertY",
                 "options.masterVolume",
                 "options.monoAudio",
                 "options.mouseSensitivity",
                 "options.musicVolume",
                 "options.reduceMotion",
+                "options.renderResolution",
                 "options.screenShakeScale",
                 "options.sfxVolume",
                 "options.shadowQuality",
+                "options.sprintMode",
                 "options.surfaceDepthQuality",
+                "options.swapConfirmCancel",
                 "options.uiVolume",
                 "options.viewFeelScale",
+                "options.windowMode",
                 "player.ammo",
                 "player.ammoReserve",
                 "player.cell",
@@ -1110,6 +1366,8 @@ mod tests {
                 "player.weapon.current",
                 "player.weapon.pending",
                 "player.weapon.switching",
+                "player.weaponChargeProgress",
+                "player.weaponCharging",
                 "player.weaponCooldownMs",
                 "player.weaponResource",
                 "screen.flash",
@@ -1117,6 +1375,13 @@ mod tests {
                 "screen.vignette",
                 "session.openSeats",
                 "ui.textEntry",
+                "window.displayModeBitDepth",
+                "window.displayModeCanApply",
+                "window.displayModeHeight",
+                "window.displayModeMonitor",
+                "window.displayModeRefreshHz",
+                "window.displayModeRevertSeconds",
+                "window.displayModeWidth",
             ]
         );
 
@@ -1135,6 +1400,7 @@ mod tests {
             "options.shadowQuality",
             "options.fogQuality",
             "options.surfaceDepthQuality",
+            "options.renderResolution",
             "options.reduceMotion",
             "options.screenShakeScale",
             "options.masterVolume",
@@ -1142,6 +1408,13 @@ mod tests {
             "options.musicVolume",
             "options.uiVolume",
             "options.monoAudio",
+            "options.windowMode",
+            "options.sprintMode",
+            "options.gamepadLookSensitivity",
+            "options.gamepadLookDeadZone",
+            "options.gamepadInvertY",
+            "options.swapConfirmCancel",
+            "options.holdTimingScale",
         ] {
             let entry = entries
                 .iter()
@@ -1150,6 +1423,80 @@ mod tests {
             assert_eq!(entry.capability, EngineStateCapability::Writable);
             assert_eq!(entry.network, ReplicationScope::None);
             assert!(!entry.persist, "PlayerOptions owns settings persistence");
+        }
+
+        let window_mode = entries
+            .iter()
+            .find(|entry| entry.wire_name == "options.windowMode")
+            .unwrap();
+        assert_eq!(window_mode.sdk_path, &["options", "windowMode"]);
+        assert_eq!(
+            window_mode.value_type,
+            EngineStateValueType::Enum {
+                values: &["windowed", "borderless", "exclusive"]
+            }
+        );
+        assert_eq!(window_mode.default, EngineStateDefault::Enum("windowed"));
+        assert_eq!(window_mode.range, None);
+        assert_eq!(window_mode.capability, EngineStateCapability::Writable);
+        assert_eq!(window_mode.network, ReplicationScope::None);
+        assert!(!window_mode.persist);
+
+        for (wire_name, sdk_path, value_type, default) in [
+            (
+                "window.displayModeCanApply",
+                &["window", "displayModeCanApply"][..],
+                EngineStateValueType::Boolean,
+                EngineStateDefault::Boolean(false),
+            ),
+            (
+                "window.displayModeWidth",
+                &["window", "displayModeWidth"][..],
+                EngineStateValueType::Number,
+                EngineStateDefault::Number(0.0),
+            ),
+            (
+                "window.displayModeHeight",
+                &["window", "displayModeHeight"][..],
+                EngineStateValueType::Number,
+                EngineStateDefault::Number(0.0),
+            ),
+            (
+                "window.displayModeRefreshHz",
+                &["window", "displayModeRefreshHz"][..],
+                EngineStateValueType::Number,
+                EngineStateDefault::Number(0.0),
+            ),
+            (
+                "window.displayModeBitDepth",
+                &["window", "displayModeBitDepth"][..],
+                EngineStateValueType::Number,
+                EngineStateDefault::Number(0.0),
+            ),
+            (
+                "window.displayModeMonitor",
+                &["window", "displayModeMonitor"][..],
+                EngineStateValueType::String,
+                EngineStateDefault::String(""),
+            ),
+            (
+                "window.displayModeRevertSeconds",
+                &["window", "displayModeRevertSeconds"][..],
+                EngineStateValueType::Number,
+                EngineStateDefault::Number(0.0),
+            ),
+        ] {
+            let entry = entries
+                .iter()
+                .find(|entry| entry.wire_name == wire_name)
+                .unwrap();
+            assert_eq!(entry.sdk_path, sdk_path);
+            assert_eq!(entry.value_type, value_type);
+            assert_eq!(entry.default, default);
+            assert_eq!(entry.range, None);
+            assert!(!entry.persist, "{wire_name} is transient engine UI state");
+            assert_eq!(entry.capability, EngineStateCapability::Readonly);
+            assert_eq!(entry.network, ReplicationScope::None);
         }
 
         let player_max_health = entries
@@ -1313,6 +1660,38 @@ mod tests {
     }
 
     #[test]
+    fn weapon_charge_hud_slots_are_local_readonly_and_normalized() {
+        let catalog = engine_state_catalog().unwrap();
+        for (wire_name, value_type, default, range) in [
+            (
+                "player.weaponCharging",
+                EngineStateValueType::Boolean,
+                EngineStateDefault::Boolean(false),
+                None,
+            ),
+            (
+                "player.weaponChargeProgress",
+                EngineStateValueType::Number,
+                EngineStateDefault::Number(0.0),
+                Some(NumericRange { min: 0.0, max: 1.0 }),
+            ),
+        ] {
+            let entry = catalog
+                .entries()
+                .iter()
+                .find(|entry| entry.wire_name == wire_name)
+                .unwrap();
+            assert_eq!(entry.sdk_path.join("."), wire_name);
+            assert_eq!(entry.value_type, value_type);
+            assert_eq!(entry.default, default);
+            assert_eq!(entry.range, range);
+            assert_eq!(entry.capability, EngineStateCapability::Readonly);
+            assert_eq!(entry.network, ReplicationScope::None);
+            assert!(!entry.persist);
+        }
+    }
+
+    #[test]
     fn player_owner_private_slots_are_replicated_except_local_presentation_slots() {
         // Server-authoritative player facts replicate owner-private (server sends
         // each only to the owning client); every other built-in slot stays
@@ -1351,6 +1730,8 @@ mod tests {
             "player.weapon.current",
             "player.weapon.pending",
             "player.weapon.switching",
+            "player.weaponCharging",
+            "player.weaponChargeProgress",
         ] {
             let entry = entries
                 .iter()

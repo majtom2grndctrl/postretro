@@ -5,7 +5,7 @@ use postretro_level_format::geometry::{FaceMeta, GeometrySection, Vertex};
 
 use super::attribution::attribute;
 use super::dry_run_test_fixtures::{
-    METER, bc6h_formats, chart, corridor_input, input, pair, raw_formats,
+    METER, bc6h_formats, chart, corridor_input, input, multi_block_input, pair, raw_formats,
 };
 use super::inputs::reconstruct_charts;
 use super::layouts::{cluster_ordered_layout, stored_repack_matches};
@@ -511,6 +511,26 @@ fn stored_repack_places_degenerate_face_placeholders_like_the_bake() {
     let check = stored_repack_matches(&fixture);
     assert!(check.error.is_none());
     assert!(!check.reproduces_stored(), "{check:?}");
+}
+
+#[test]
+fn stored_repack_matches_every_block_of_a_multi_block_cell_in_order() {
+    let mut fixture = multi_block_input();
+    let check = stored_repack_matches(&fixture);
+    assert!(check.reproduces_stored(), "{check:?}");
+    assert_eq!((check.matched, check.total), (4, 4));
+
+    // Cell 0's stored blocks in the other order: each repacked block now
+    // meets the other's extent.
+    fixture.formats.blocks.swap(0, 1);
+    let check = stored_repack_matches(&fixture);
+    assert!(!check.reproduces_stored(), "{check:?}");
+    assert!(!check.dims_match);
+
+    // A cell short of its second stored block does not reproduce either.
+    let mut fixture = multi_block_input();
+    fixture.formats.blocks[1].cell = 1;
+    assert!(!stored_repack_matches(&fixture).reproduces_stored());
 }
 
 #[test]

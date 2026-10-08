@@ -1,0 +1,2365 @@
+// Pass B of direct SH composition: adds animated baked direct transport.
+// `curve_eval.wgsl` is concatenated after this source at pipeline build time.
+
+struct Uniforms {
+    view_proj: mat4x4<f32>,
+    camera_position: vec3<f32>,
+    ambient_floor: f32,
+    light_count: u32,
+    time: f32,
+    light_term_mask: u32,
+    _pad: u32,
+};
+
+struct AnimationDescriptor {
+    period: f32,
+    phase: f32,
+    brightness_offset: u32,
+    brightness_count: u32,
+    base_color: vec3<f32>,
+    color_offset: u32,
+    color_count: u32,
+    is_active: u32,
+    direction_offset: u32,
+    direction_count: u32,
+};
+
+struct GridDims {
+    grid_dimensions: vec3<u32>,
+    tile_dimension: u32,
+    atlas_dimensions: vec2<u32>,
+    tile_border: u32,
+    delta_probe_f16_stride: u32,
+    affinity_dims: vec3<u32>,
+    atlas_tiles_per_row: u32,
+    tiles_per_layer: u32,
+    atlas_layer_count: u32,
+    compact_atlas_tiles_per_row: u32,
+    compact_atlas_tiles_per_layer: u32,
+    physical_tile_stride: u32,
+    _reserved0: u32,
+    row_count: u32,
+    _pad0: u32,
+    row_ids: array<vec4<u32>, 4091>,
+};
+
+// Binding 26 stays a uniform because Pass B already uses all eight supported
+// storage-buffer bindings. The vec4 array preserves the raw section-45
+// AnimatedBakedLights namespace without runtime-sized uniform data.
+struct AnimatedLightScale {
+    enabled: u32,
+    light_index: u32,
+    _pad0: u32,
+    _pad1: u32,
+    compose_weights: array<vec4<f32>, 64>,
+};
+
+@group(0) @binding(0) var<uniform> uniforms: Uniforms;
+
+@group(1) @binding(0) var direct_intermediate_atlas: texture_2d_array<f32>;
+@group(1) @binding(2) var intermediate_sampler: sampler;
+@group(1) @binding(1) var direct_composed_atlas: texture_storage_2d_array<rgba16float, write>;
+@group(1) @binding(18) var<uniform> grid: GridDims;
+@group(1) @binding(20) var<storage, read> delta_subblocks: array<u32>;
+@group(1) @binding(21) var<storage, read> affinity_offsets: array<u32>;
+@group(1) @binding(22) var<storage, read> descriptors: array<AnimationDescriptor>;
+@group(1) @binding(23) var<storage, read> anim_samples: array<f32>;
+@group(1) @binding(24) var<storage, read> affinity_lights: array<u32>;
+@group(1) @binding(25) var<storage, read> animation_descriptor_indices: array<u32>;
+// Pass-B-only uniform: `light_index` is an AnimatedBakedLights index, unlike
+// Pass A's binding-27 promotion-selection override. `compose_weights` carries
+// `(1 - w)` keyed by that same raw index.
+@group(1) @binding(26) var<uniform> animated_light_scale_uniform: AnimatedLightScale;
+// Low/high u32 words for every affinity-cell valid-probe mask, followed by one
+// widened coarsening level per cell, then one f16-half payload offset for every
+// post-drop CSR entry. id-27 and id-45 share this metadata layout, so their
+// accessors stay in lockstep; it describes the id-45 delta reconstruction.
+@group(1) @binding(27) var<storage, read> delta_compaction_meta: array<u32>;
+// Pass B reads the compact intermediate and writes the compact final direct
+// atlas at the id-34-derived slot carried by this Task-3 buffer.
+@group(1) @binding(28) var<storage, read> probe_indirection: array<u32>;
+
+const AFFINITY_FACTOR: u32 = 4u;
+const INVALID_DESCRIPTOR_INDEX: u32 = 0xffffffffu;
+const MAX_ANIMATED_BAKED_LIGHTS: u32 = 256u;
+const LIGHT_TERM_BAKED_DIRECT_ANIMATED: u32 = 0x10u;
+// PRL validation pins the runtime tile dimension to 6. Keeping the shared
+// lattice fixed-size makes one brick workgroup fit well below the 16 KiB
+// WebGPU workgroup-storage floor.
+const RUNTIME_TILE_DIMENSION: u32 = 6u;
+const TILE_TEXEL_COUNT: u32 = RUNTIME_TILE_DIMENSION * RUNTIME_TILE_DIMENSION;
+const MAX_KEPT_TILES: u32 = 8u;
+
+// L1 stores at most its eight local corners; L2 stores one synthesized mean.
+// The workgroup loads each stored tile once per CSR entry, then each valid
+// output probe reconstructs from this brick-local lattice.
+var<workgroup> shared_kept_tiles: array<vec4<f32>, 288>;
+var<workgroup> shared_kept_present: array<u32, 8>;
+var<workgroup> shared_brick_indirection: u32;
+var<workgroup> spike_scales: array<vec3<f32>, 64>;
+
+fn spike_scale(entry: u32, start: u32, cached: bool) -> vec3<f32> {
+    if (cached) {
+        return spike_scales[entry - start];
+    }
+    return animated_light_scale(affinity_lights[entry]);
+}
+
+fn compaction_meta_offset_base() -> u32 {
+    return grid.affinity_dims.x * grid.affinity_dims.y * grid.affinity_dims.z * 3u;
+}
+
+fn valid_probe_mask_word(cell: u32, word: u32) -> u32 {
+    return delta_compaction_meta[cell * 2u + word];
+}
+
+// This accessor follows the shared id-27/id-45 metadata layout. Pass B
+// reconstructs valid L1/L2 output probes from the brick-local kept lattice.
+fn cell_level(cell: u32) -> u32 {
+    let cell_count = grid.affinity_dims.x * grid.affinity_dims.y * grid.affinity_dims.z;
+    return delta_compaction_meta[cell_count * 2u + cell];
+}
+
+fn l1_corner_mask_word(word: u32) -> u32 {
+    return select(0x00009009u, 0x90090000u, word == 1u);
+}
+
+fn l2_representative_local(cell: u32) -> u32 {
+    let low = valid_probe_mask_word(cell, 0u);
+    if (low != 0u) {
+        return firstTrailingBit(low);
+    }
+    let high = valid_probe_mask_word(cell, 1u);
+    if (high != 0u) {
+        return 32u + firstTrailingBit(high);
+    }
+    return 0u;
+}
+
+fn kept_probe_mask_word(cell: u32, word: u32) -> u32 {
+    let valid = valid_probe_mask_word(cell, word);
+    let level = cell_level(cell);
+    if (level == 1u) {
+        return valid & l1_corner_mask_word(word);
+    }
+    if (level == 2u) {
+        if (valid_probe_mask_word(cell, 0u) == 0u && valid_probe_mask_word(cell, 1u) == 0u) {
+            return 0u;
+        }
+        let representative = l2_representative_local(cell);
+        if (representative / 32u == word) {
+            return 1u << (representative % 32u);
+        }
+        return 0u;
+    }
+    // The loader rejects levels outside 0..=2. Treat an impossible value as
+    // L0 rather than indexing a non-existent compact tile.
+    return valid;
+}
+
+fn local_probe_is_kept(cell: u32, local_probe: u32) -> bool {
+    let word = local_probe / 32u;
+    let bit = local_probe % 32u;
+    return (kept_probe_mask_word(cell, word) & (1u << bit)) != 0u;
+}
+
+fn within_cell_rank(cell: u32, local_probe: u32) -> u32 {
+    let word = local_probe / 32u;
+    let bit = local_probe % 32u;
+    let prior_words = select(0u, countOneBits(kept_probe_mask_word(cell, 0u)), word == 1u);
+    let earlier_in_word = countOneBits(kept_probe_mask_word(cell, word) & ((1u << bit) - 1u));
+    return prior_words + earlier_in_word;
+}
+
+fn entry_delta_f16_offset(entry: u32) -> u32 {
+    return delta_compaction_meta[compaction_meta_offset_base() + entry];
+}
+
+fn read_delta_texel(
+    entry: u32,
+    probe_rank: u32,
+    tile_texel: vec2<u32>,
+) -> vec4<f32> {
+    let texel_index = tile_texel.y * grid.tile_dimension + tile_texel.x;
+    let texel_f16_count = grid.delta_probe_f16_stride
+        / (grid.tile_dimension * grid.tile_dimension);
+    let half_base = entry_delta_f16_offset(entry)
+        + probe_rank * grid.delta_probe_f16_stride
+        + texel_index * texel_f16_count;
+    let word_base = half_base / 2u;
+    let first = unpack2x16float(delta_subblocks[word_base]);
+    let second = unpack2x16float(delta_subblocks[word_base + 1u]);
+    let rgb = select(
+        vec3<f32>(first.x, first.y, second.x),
+        vec3<f32>(first.y, second.x, second.y),
+        (half_base & 1u) != 0u,
+    );
+    return vec4<f32>(rgb, 0.0);
+}
+
+fn local_probe_coord(local_probe: u32) -> vec3<u32> {
+    return vec3<u32>(
+        local_probe % AFFINITY_FACTOR,
+        (local_probe / AFFINITY_FACTOR) % AFFINITY_FACTOR,
+        local_probe / (AFFINITY_FACTOR * AFFINITY_FACTOR),
+    );
+}
+
+fn slot_tile_origin(slot: u32) -> vec3<u32> {
+    let tiles_per_layer = max(grid.tiles_per_layer, 1u);
+    let tile_slot = slot % tiles_per_layer;
+    let tiles_per_row = max(grid.atlas_tiles_per_row, 1u);
+    return vec3<u32>(
+        (tile_slot % tiles_per_row) * grid.physical_tile_stride,
+        (tile_slot / tiles_per_row) * grid.physical_tile_stride,
+        slot / tiles_per_layer,
+    );
+}
+
+fn local_probe_is_l1_corner(local_probe: u32) -> bool {
+    let local = local_probe_coord(local_probe);
+    return (local.x == 0u || local.x == AFFINITY_FACTOR - 1u)
+        && (local.y == 0u || local.y == AFFINITY_FACTOR - 1u)
+        && (local.z == 0u || local.z == AFFINITY_FACTOR - 1u);
+}
+
+struct ComposeStoredSlot {
+    write: bool,
+    valid: bool,
+    slot: u32,
+}
+
+fn stored_slot_for_invocation(
+    brick: vec3<u32>,
+    local_probe: u32,
+    in_grid: bool,
+    local_indirection: ShProbeIndirection,
+    brick_indirection: ShProbeIndirection,
+) -> ComposeStoredSlot {
+    if (!in_grid || !brick_indirection.valid) {
+        return ComposeStoredSlot(false, false, 0u);
+    }
+    if (brick_indirection.level == 0u) {
+        return ComposeStoredSlot(
+            local_indirection.valid,
+            local_indirection.valid,
+            local_indirection.slot,
+        );
+    }
+    let node_edge = 1u << brick_indirection.scale;
+    let node_origin = (brick / vec3<u32>(node_edge)) * vec3<u32>(node_edge);
+    let node_origin_writer = all(brick == node_origin);
+    if (
+        brick_indirection.level == 1u
+            && local_probe_is_l1_corner(local_probe)
+            && node_origin_writer
+    ) {
+        return ComposeStoredSlot(
+            true,
+            local_indirection.valid,
+            brick_indirection.slot + l1_shared_slot(local_probe),
+        );
+    }
+    if (brick_indirection.level == 2u && local_probe == 0u && node_origin_writer) {
+        return ComposeStoredSlot(true, true, brick_indirection.slot);
+    }
+    return ComposeStoredSlot(false, false, 0u);
+}
+
+fn l1_shared_slot(local_probe: u32) -> u32 {
+    let local = local_probe_coord(local_probe);
+    return (local.x / (AFFINITY_FACTOR - 1u))
+        + (local.y / (AFFINITY_FACTOR - 1u)) * 2u
+        + (local.z / (AFFINITY_FACTOR - 1u)) * 4u;
+}
+
+fn l1_node_corner_probe(brick: vec3<u32>, local_probe: u32, scale: u32) -> vec3<u32> {
+    let node_edge = 1u << scale;
+    let node_origin = (brick / vec3<u32>(node_edge)) * vec3<u32>(node_edge);
+    let probe_origin = node_origin * AFFINITY_FACTOR;
+    let probe_span = node_edge * AFFINITY_FACTOR - 1u;
+    let slot = l1_shared_slot(local_probe);
+    let corner_offset = vec3<u32>(slot & 1u, (slot >> 1u) & 1u, (slot >> 2u) & 1u);
+    return probe_origin + corner_offset * probe_span;
+}
+
+fn l1_corner_local(slot: u32) -> u32 {
+    let local = vec3<u32>(
+        select(0u, AFFINITY_FACTOR - 1u, (slot & 1u) != 0u),
+        select(0u, AFFINITY_FACTOR - 1u, (slot & 2u) != 0u),
+        select(0u, AFFINITY_FACTOR - 1u, (slot & 4u) != 0u),
+    );
+    return local.x + local.y * AFFINITY_FACTOR + local.z * AFFINITY_FACTOR * AFFINITY_FACTOR;
+}
+
+fn l1_corner_weight(target_local: u32, corner_local: u32) -> f32 {
+    let target_coord = local_probe_coord(target_local);
+    let corner = local_probe_coord(corner_local);
+    let t = vec3<f32>(target_coord) / f32(AFFINITY_FACTOR - 1u);
+    let wx = select(1.0 - t.x, t.x, corner.x == AFFINITY_FACTOR - 1u);
+    let wy = select(1.0 - t.y, t.y, corner.y == AFFINITY_FACTOR - 1u);
+    let wz = select(1.0 - t.z, t.z, corner.z == AFFINITY_FACTOR - 1u);
+    return wx * wy * wz;
+}
+
+// spike array-free: the shared-lattice reconstruction, reading each kept
+// corner tile straight from the delta payload. Same slot order and arithmetic.
+fn spike_reconstruct_l1(cell: u32, entry: u32, target_local: u32, tile_texel: vec2<u32>) -> vec3<f32> {
+    var accum = vec3<f32>(0.0);
+    var weight_sum = 0.0;
+    for (var slot = 0u; slot < MAX_KEPT_TILES; slot = slot + 1u) {
+        let corner = l1_corner_local(slot);
+        if (local_probe_is_kept(cell, corner)) {
+            let weight = l1_corner_weight(target_local, corner);
+            if (weight > 0.0) {
+                accum = accum + read_delta_texel(entry, within_cell_rank(cell, corner), tile_texel).rgb * weight;
+                weight_sum = weight_sum + weight;
+            }
+        }
+    }
+    if (weight_sum > 0.0) {
+        return accum / weight_sum;
+    }
+    return vec3<f32>(0.0);
+}
+
+fn reconstruct_l1_shared_texel(target_local: u32, texel_index: u32) -> vec3<f32> {
+    var accum = vec3<f32>(0.0);
+    var weight_sum = 0.0;
+    for (var slot = 0u; slot < MAX_KEPT_TILES; slot = slot + 1u) {
+        if (shared_kept_present[slot] != 0u) {
+            let weight = l1_corner_weight(target_local, l1_corner_local(slot));
+            if (weight > 0.0) {
+                accum = accum + shared_kept_tiles[slot * TILE_TEXEL_COUNT + texel_index].rgb * weight;
+                weight_sum = weight_sum + weight;
+            }
+        }
+    }
+    if (weight_sum > 0.0) {
+        return accum / weight_sum;
+    }
+    return vec3<f32>(0.0);
+}
+
+fn animated_compose_weight(light_index: u32) -> f32 {
+    // Capped overflow is deliberately full baked delta. It cannot be a
+    // promotion candidate and must not read outside the fixed uniform.
+    if (light_index >= MAX_ANIMATED_BAKED_LIGHTS) {
+        return 1.0;
+    }
+    let packed = animated_light_scale_uniform.compose_weights[light_index / 4u];
+    return clamp(packed[light_index % 4u], 0.0, 1.0);
+}
+
+fn animated_light_scale(light_index: u32) -> vec3<f32> {
+    if ((uniforms.light_term_mask & LIGHT_TERM_BAKED_DIRECT_ANIMATED) == 0u) {
+        return vec3<f32>(0.0);
+    }
+    if (
+        animated_light_scale_uniform.enabled != 0u
+            && light_index != animated_light_scale_uniform.light_index
+    ) {
+        return vec3<f32>(0.0);
+    }
+    let descriptor_index = animation_descriptor_indices[light_index];
+    if (descriptor_index == INVALID_DESCRIPTOR_INDEX || descriptor_index >= arrayLength(&descriptors)) {
+        return vec3<f32>(0.0);
+    }
+    let desc = descriptors[descriptor_index];
+    if (desc.is_active == 0u) {
+        return vec3<f32>(0.0);
+    }
+
+    let t = animation_curve_t(desc.period, desc.phase, uniforms.time);
+    let brightness = max(
+        sample_curve_catmull_rom(desc.brightness_offset, desc.brightness_count, t),
+        0.0,
+    );
+    var color = desc.base_color;
+    if (desc.color_count > 0u) {
+        // For color-animation descriptors base_color is intensity splatted
+        // across RGB. Delta tiles contain unit-radiance transport, so this is
+        // the single authored-radiance application.
+        color = max(
+            sample_color_catmull_rom(desc.color_offset, desc.color_count, t, vec3<f32>(1.0)),
+            vec3<f32>(0.0),
+        ) * desc.base_color;
+    }
+    return color * brightness * animated_compose_weight(light_index);
+}
+
+@compute @workgroup_size(8, 8, 1)
+fn animated_compose_main(
+    @builtin(workgroup_id) workgroup: vec3<u32>,
+    @builtin(local_invocation_id) local_id: vec3<u32>,
+) {
+    // One workgroup owns one 4×4×4 affinity brick. Only stored-slot owners
+    // write; the remaining invocations still participate in shared barriers.
+    if (workgroup.x >= grid.row_count) {
+        return;
+    }
+    let packed_rows = grid.row_ids[workgroup.x / 4u];
+    let cell_index = packed_rows[workgroup.x % 4u];
+    let affinity_row_width = max(grid.affinity_dims.x, 1u);
+    let affinity_layer_size = affinity_row_width * max(grid.affinity_dims.y, 1u);
+    let brick = vec3<u32>(
+        cell_index % affinity_row_width,
+        (cell_index / affinity_row_width) % max(grid.affinity_dims.y, 1u),
+        cell_index / affinity_layer_size,
+    );
+    let local_probe = local_id.x + local_id.y * 8u;
+    let probe = brick * AFFINITY_FACTOR + local_probe_coord(local_probe);
+    let in_grid = !any(probe >= grid.grid_dimensions);
+    let probe_index = probe.x
+        + probe.y * grid.grid_dimensions.x
+        + probe.z * grid.grid_dimensions.x * grid.grid_dimensions.y;
+    var local_indirection = decode_sh_probe_indirection(0u);
+    if (in_grid) {
+        local_indirection = decode_sh_probe_indirection(probe_indirection[probe_index]);
+    }
+    if (local_probe == 0u) {
+        shared_brick_indirection = 0u;
+        for (var candidate_local = 0u; candidate_local < AFFINITY_FACTOR * AFFINITY_FACTOR * AFFINITY_FACTOR; candidate_local = candidate_local + 1u) {
+            let candidate_probe = brick * AFFINITY_FACTOR + local_probe_coord(candidate_local);
+            if (!any(candidate_probe >= grid.grid_dimensions)) {
+                let candidate_index = candidate_probe.x
+                    + candidate_probe.y * grid.grid_dimensions.x
+                    + candidate_probe.z * grid.grid_dimensions.x * grid.grid_dimensions.y;
+                let candidate_word = probe_indirection[candidate_index];
+                if (decode_sh_probe_indirection(candidate_word).valid) {
+                    shared_brick_indirection = candidate_word;
+                    break;
+                }
+            }
+        }
+    }
+    workgroupBarrier();
+    let brick_indirection = decode_sh_probe_indirection(shared_brick_indirection);
+    var stored_indirection = local_indirection;
+    if (
+        brick_indirection.level == 1u
+            && brick_indirection.scale > 0u
+            && local_probe_is_l1_corner(local_probe)
+    ) {
+        let node_edge = 1u << brick_indirection.scale;
+        let node_origin = (brick / vec3<u32>(node_edge)) * vec3<u32>(node_edge);
+        if (all(brick == node_origin)) {
+            let corner_probe = l1_node_corner_probe(
+                brick, local_probe, brick_indirection.scale,
+            );
+            let corner_index = corner_probe.x
+                + corner_probe.y * grid.grid_dimensions.x
+                + corner_probe.z * grid.grid_dimensions.x * grid.grid_dimensions.y;
+            stored_indirection = decode_sh_probe_indirection(probe_indirection[corner_index]);
+        }
+    }
+    let stored_slot = stored_slot_for_invocation(
+        brick,
+        local_probe,
+        in_grid,
+        stored_indirection,
+        brick_indirection,
+    );
+    let output_is_stored = stored_slot.write;
+    let tile_origin = slot_tile_origin(stored_slot.slot);
+
+    let level = cell_level(cell_index);
+    let offset_index = cell_index * 2u;
+    let start = affinity_offsets[offset_index];
+    let end = affinity_offsets[offset_index + 1u];
+    // spike scale-shared: one lane per CSR entry evaluates its light's scale
+    // once per workgroup instead of every lane evaluating every entry.
+    let spike_cached = end - start <= 64u;
+    if (spike_cached && local_probe < end - start) {
+        spike_scales[local_probe] = animated_light_scale(affinity_lights[start + local_probe]);
+    }
+    workgroupBarrier();
+    // spike array-free: every level fuses the base read, the entry sum and the
+    // store per texel. L1/L2 lanes reconstruct from their own reads of the kept
+    // corner tiles, so the kernel holds no 36-entry accumulator and no barriers
+    // after the scale cache.
+    if (grid.row_count > 0u) {
+        if (output_is_stored) {
+            let spike_l0 = local_probe_is_kept(cell_index, local_probe);
+            let spike_coarse = true;
+            let spike_rank = within_cell_rank(cell_index, local_probe);
+            let spike_rep = l2_representative_local(cell_index);
+            let spike_rep_kept = local_probe_is_kept(cell_index, spike_rep);
+            let spike_rep_rank = within_cell_rank(cell_index, spike_rep);
+            {
+                let tile_texel = vec2<u32>(0u, 0u);
+                let atlas_texel = tile_origin.xy + tile_texel;
+                let uv = (vec2<f32>(atlas_texel) + 0.5)
+                    / vec2<f32>(textureDimensions(direct_intermediate_atlas));
+                var spike_accum = textureSampleLevel(
+                    direct_intermediate_atlas,
+                    intermediate_sampler,
+                    uv,
+                    i32(tile_origin.z),
+                    0.0,
+                ).rgb;
+                if (level == 0u) {
+                    if (spike_l0) {
+                        for (var entry = start; entry < end; entry = entry + 1u) {
+                            spike_accum = spike_accum
+                                + read_delta_texel(entry, spike_rank, tile_texel).rgb * spike_scale(entry, start, spike_cached);
+                        }
+                    }
+                } else if (spike_coarse) {
+                    for (var entry = start; entry < end; entry = entry + 1u) {
+                        var delta = vec3<f32>(0.0);
+                        if (level == 2u) {
+                            var spike_tile = vec3<f32>(0.0);
+                            if (spike_rep_kept) {
+                                spike_tile = read_delta_texel(entry, spike_rep_rank, tile_texel).rgb;
+                            }
+                            delta = spike_tile * f32(spike_rep_kept);
+                        } else {
+                            delta = spike_reconstruct_l1(cell_index, entry, local_probe, tile_texel);
+                        }
+                        spike_accum = spike_accum + delta * spike_scale(entry, start, spike_cached);
+                    }
+                }
+                textureStore(
+                    direct_composed_atlas,
+                    vec2<i32>(tile_origin.xy + tile_texel),
+                    i32(tile_origin.z),
+                    vec4<f32>(
+                        max(spike_accum, vec3<f32>(0.0)),
+                        select(0.0, 1.0, stored_slot.valid),
+                    ),
+                );
+            }
+            {
+                let tile_texel = vec2<u32>(1u, 0u);
+                let atlas_texel = tile_origin.xy + tile_texel;
+                let uv = (vec2<f32>(atlas_texel) + 0.5)
+                    / vec2<f32>(textureDimensions(direct_intermediate_atlas));
+                var spike_accum = textureSampleLevel(
+                    direct_intermediate_atlas,
+                    intermediate_sampler,
+                    uv,
+                    i32(tile_origin.z),
+                    0.0,
+                ).rgb;
+                if (level == 0u) {
+                    if (spike_l0) {
+                        for (var entry = start; entry < end; entry = entry + 1u) {
+                            spike_accum = spike_accum
+                                + read_delta_texel(entry, spike_rank, tile_texel).rgb * spike_scale(entry, start, spike_cached);
+                        }
+                    }
+                } else if (spike_coarse) {
+                    for (var entry = start; entry < end; entry = entry + 1u) {
+                        var delta = vec3<f32>(0.0);
+                        if (level == 2u) {
+                            var spike_tile = vec3<f32>(0.0);
+                            if (spike_rep_kept) {
+                                spike_tile = read_delta_texel(entry, spike_rep_rank, tile_texel).rgb;
+                            }
+                            delta = spike_tile * f32(spike_rep_kept);
+                        } else {
+                            delta = spike_reconstruct_l1(cell_index, entry, local_probe, tile_texel);
+                        }
+                        spike_accum = spike_accum + delta * spike_scale(entry, start, spike_cached);
+                    }
+                }
+                textureStore(
+                    direct_composed_atlas,
+                    vec2<i32>(tile_origin.xy + tile_texel),
+                    i32(tile_origin.z),
+                    vec4<f32>(
+                        max(spike_accum, vec3<f32>(0.0)),
+                        select(0.0, 1.0, stored_slot.valid),
+                    ),
+                );
+            }
+            {
+                let tile_texel = vec2<u32>(2u, 0u);
+                let atlas_texel = tile_origin.xy + tile_texel;
+                let uv = (vec2<f32>(atlas_texel) + 0.5)
+                    / vec2<f32>(textureDimensions(direct_intermediate_atlas));
+                var spike_accum = textureSampleLevel(
+                    direct_intermediate_atlas,
+                    intermediate_sampler,
+                    uv,
+                    i32(tile_origin.z),
+                    0.0,
+                ).rgb;
+                if (level == 0u) {
+                    if (spike_l0) {
+                        for (var entry = start; entry < end; entry = entry + 1u) {
+                            spike_accum = spike_accum
+                                + read_delta_texel(entry, spike_rank, tile_texel).rgb * spike_scale(entry, start, spike_cached);
+                        }
+                    }
+                } else if (spike_coarse) {
+                    for (var entry = start; entry < end; entry = entry + 1u) {
+                        var delta = vec3<f32>(0.0);
+                        if (level == 2u) {
+                            var spike_tile = vec3<f32>(0.0);
+                            if (spike_rep_kept) {
+                                spike_tile = read_delta_texel(entry, spike_rep_rank, tile_texel).rgb;
+                            }
+                            delta = spike_tile * f32(spike_rep_kept);
+                        } else {
+                            delta = spike_reconstruct_l1(cell_index, entry, local_probe, tile_texel);
+                        }
+                        spike_accum = spike_accum + delta * spike_scale(entry, start, spike_cached);
+                    }
+                }
+                textureStore(
+                    direct_composed_atlas,
+                    vec2<i32>(tile_origin.xy + tile_texel),
+                    i32(tile_origin.z),
+                    vec4<f32>(
+                        max(spike_accum, vec3<f32>(0.0)),
+                        select(0.0, 1.0, stored_slot.valid),
+                    ),
+                );
+            }
+            {
+                let tile_texel = vec2<u32>(3u, 0u);
+                let atlas_texel = tile_origin.xy + tile_texel;
+                let uv = (vec2<f32>(atlas_texel) + 0.5)
+                    / vec2<f32>(textureDimensions(direct_intermediate_atlas));
+                var spike_accum = textureSampleLevel(
+                    direct_intermediate_atlas,
+                    intermediate_sampler,
+                    uv,
+                    i32(tile_origin.z),
+                    0.0,
+                ).rgb;
+                if (level == 0u) {
+                    if (spike_l0) {
+                        for (var entry = start; entry < end; entry = entry + 1u) {
+                            spike_accum = spike_accum
+                                + read_delta_texel(entry, spike_rank, tile_texel).rgb * spike_scale(entry, start, spike_cached);
+                        }
+                    }
+                } else if (spike_coarse) {
+                    for (var entry = start; entry < end; entry = entry + 1u) {
+                        var delta = vec3<f32>(0.0);
+                        if (level == 2u) {
+                            var spike_tile = vec3<f32>(0.0);
+                            if (spike_rep_kept) {
+                                spike_tile = read_delta_texel(entry, spike_rep_rank, tile_texel).rgb;
+                            }
+                            delta = spike_tile * f32(spike_rep_kept);
+                        } else {
+                            delta = spike_reconstruct_l1(cell_index, entry, local_probe, tile_texel);
+                        }
+                        spike_accum = spike_accum + delta * spike_scale(entry, start, spike_cached);
+                    }
+                }
+                textureStore(
+                    direct_composed_atlas,
+                    vec2<i32>(tile_origin.xy + tile_texel),
+                    i32(tile_origin.z),
+                    vec4<f32>(
+                        max(spike_accum, vec3<f32>(0.0)),
+                        select(0.0, 1.0, stored_slot.valid),
+                    ),
+                );
+            }
+            {
+                let tile_texel = vec2<u32>(4u, 0u);
+                let atlas_texel = tile_origin.xy + tile_texel;
+                let uv = (vec2<f32>(atlas_texel) + 0.5)
+                    / vec2<f32>(textureDimensions(direct_intermediate_atlas));
+                var spike_accum = textureSampleLevel(
+                    direct_intermediate_atlas,
+                    intermediate_sampler,
+                    uv,
+                    i32(tile_origin.z),
+                    0.0,
+                ).rgb;
+                if (level == 0u) {
+                    if (spike_l0) {
+                        for (var entry = start; entry < end; entry = entry + 1u) {
+                            spike_accum = spike_accum
+                                + read_delta_texel(entry, spike_rank, tile_texel).rgb * spike_scale(entry, start, spike_cached);
+                        }
+                    }
+                } else if (spike_coarse) {
+                    for (var entry = start; entry < end; entry = entry + 1u) {
+                        var delta = vec3<f32>(0.0);
+                        if (level == 2u) {
+                            var spike_tile = vec3<f32>(0.0);
+                            if (spike_rep_kept) {
+                                spike_tile = read_delta_texel(entry, spike_rep_rank, tile_texel).rgb;
+                            }
+                            delta = spike_tile * f32(spike_rep_kept);
+                        } else {
+                            delta = spike_reconstruct_l1(cell_index, entry, local_probe, tile_texel);
+                        }
+                        spike_accum = spike_accum + delta * spike_scale(entry, start, spike_cached);
+                    }
+                }
+                textureStore(
+                    direct_composed_atlas,
+                    vec2<i32>(tile_origin.xy + tile_texel),
+                    i32(tile_origin.z),
+                    vec4<f32>(
+                        max(spike_accum, vec3<f32>(0.0)),
+                        select(0.0, 1.0, stored_slot.valid),
+                    ),
+                );
+            }
+            {
+                let tile_texel = vec2<u32>(5u, 0u);
+                let atlas_texel = tile_origin.xy + tile_texel;
+                let uv = (vec2<f32>(atlas_texel) + 0.5)
+                    / vec2<f32>(textureDimensions(direct_intermediate_atlas));
+                var spike_accum = textureSampleLevel(
+                    direct_intermediate_atlas,
+                    intermediate_sampler,
+                    uv,
+                    i32(tile_origin.z),
+                    0.0,
+                ).rgb;
+                if (level == 0u) {
+                    if (spike_l0) {
+                        for (var entry = start; entry < end; entry = entry + 1u) {
+                            spike_accum = spike_accum
+                                + read_delta_texel(entry, spike_rank, tile_texel).rgb * spike_scale(entry, start, spike_cached);
+                        }
+                    }
+                } else if (spike_coarse) {
+                    for (var entry = start; entry < end; entry = entry + 1u) {
+                        var delta = vec3<f32>(0.0);
+                        if (level == 2u) {
+                            var spike_tile = vec3<f32>(0.0);
+                            if (spike_rep_kept) {
+                                spike_tile = read_delta_texel(entry, spike_rep_rank, tile_texel).rgb;
+                            }
+                            delta = spike_tile * f32(spike_rep_kept);
+                        } else {
+                            delta = spike_reconstruct_l1(cell_index, entry, local_probe, tile_texel);
+                        }
+                        spike_accum = spike_accum + delta * spike_scale(entry, start, spike_cached);
+                    }
+                }
+                textureStore(
+                    direct_composed_atlas,
+                    vec2<i32>(tile_origin.xy + tile_texel),
+                    i32(tile_origin.z),
+                    vec4<f32>(
+                        max(spike_accum, vec3<f32>(0.0)),
+                        select(0.0, 1.0, stored_slot.valid),
+                    ),
+                );
+            }
+            {
+                let tile_texel = vec2<u32>(0u, 1u);
+                let atlas_texel = tile_origin.xy + tile_texel;
+                let uv = (vec2<f32>(atlas_texel) + 0.5)
+                    / vec2<f32>(textureDimensions(direct_intermediate_atlas));
+                var spike_accum = textureSampleLevel(
+                    direct_intermediate_atlas,
+                    intermediate_sampler,
+                    uv,
+                    i32(tile_origin.z),
+                    0.0,
+                ).rgb;
+                if (level == 0u) {
+                    if (spike_l0) {
+                        for (var entry = start; entry < end; entry = entry + 1u) {
+                            spike_accum = spike_accum
+                                + read_delta_texel(entry, spike_rank, tile_texel).rgb * spike_scale(entry, start, spike_cached);
+                        }
+                    }
+                } else if (spike_coarse) {
+                    for (var entry = start; entry < end; entry = entry + 1u) {
+                        var delta = vec3<f32>(0.0);
+                        if (level == 2u) {
+                            var spike_tile = vec3<f32>(0.0);
+                            if (spike_rep_kept) {
+                                spike_tile = read_delta_texel(entry, spike_rep_rank, tile_texel).rgb;
+                            }
+                            delta = spike_tile * f32(spike_rep_kept);
+                        } else {
+                            delta = spike_reconstruct_l1(cell_index, entry, local_probe, tile_texel);
+                        }
+                        spike_accum = spike_accum + delta * spike_scale(entry, start, spike_cached);
+                    }
+                }
+                textureStore(
+                    direct_composed_atlas,
+                    vec2<i32>(tile_origin.xy + tile_texel),
+                    i32(tile_origin.z),
+                    vec4<f32>(
+                        max(spike_accum, vec3<f32>(0.0)),
+                        select(0.0, 1.0, stored_slot.valid),
+                    ),
+                );
+            }
+            {
+                let tile_texel = vec2<u32>(1u, 1u);
+                let atlas_texel = tile_origin.xy + tile_texel;
+                let uv = (vec2<f32>(atlas_texel) + 0.5)
+                    / vec2<f32>(textureDimensions(direct_intermediate_atlas));
+                var spike_accum = textureSampleLevel(
+                    direct_intermediate_atlas,
+                    intermediate_sampler,
+                    uv,
+                    i32(tile_origin.z),
+                    0.0,
+                ).rgb;
+                if (level == 0u) {
+                    if (spike_l0) {
+                        for (var entry = start; entry < end; entry = entry + 1u) {
+                            spike_accum = spike_accum
+                                + read_delta_texel(entry, spike_rank, tile_texel).rgb * spike_scale(entry, start, spike_cached);
+                        }
+                    }
+                } else if (spike_coarse) {
+                    for (var entry = start; entry < end; entry = entry + 1u) {
+                        var delta = vec3<f32>(0.0);
+                        if (level == 2u) {
+                            var spike_tile = vec3<f32>(0.0);
+                            if (spike_rep_kept) {
+                                spike_tile = read_delta_texel(entry, spike_rep_rank, tile_texel).rgb;
+                            }
+                            delta = spike_tile * f32(spike_rep_kept);
+                        } else {
+                            delta = spike_reconstruct_l1(cell_index, entry, local_probe, tile_texel);
+                        }
+                        spike_accum = spike_accum + delta * spike_scale(entry, start, spike_cached);
+                    }
+                }
+                textureStore(
+                    direct_composed_atlas,
+                    vec2<i32>(tile_origin.xy + tile_texel),
+                    i32(tile_origin.z),
+                    vec4<f32>(
+                        max(spike_accum, vec3<f32>(0.0)),
+                        select(0.0, 1.0, stored_slot.valid),
+                    ),
+                );
+            }
+            {
+                let tile_texel = vec2<u32>(2u, 1u);
+                let atlas_texel = tile_origin.xy + tile_texel;
+                let uv = (vec2<f32>(atlas_texel) + 0.5)
+                    / vec2<f32>(textureDimensions(direct_intermediate_atlas));
+                var spike_accum = textureSampleLevel(
+                    direct_intermediate_atlas,
+                    intermediate_sampler,
+                    uv,
+                    i32(tile_origin.z),
+                    0.0,
+                ).rgb;
+                if (level == 0u) {
+                    if (spike_l0) {
+                        for (var entry = start; entry < end; entry = entry + 1u) {
+                            spike_accum = spike_accum
+                                + read_delta_texel(entry, spike_rank, tile_texel).rgb * spike_scale(entry, start, spike_cached);
+                        }
+                    }
+                } else if (spike_coarse) {
+                    for (var entry = start; entry < end; entry = entry + 1u) {
+                        var delta = vec3<f32>(0.0);
+                        if (level == 2u) {
+                            var spike_tile = vec3<f32>(0.0);
+                            if (spike_rep_kept) {
+                                spike_tile = read_delta_texel(entry, spike_rep_rank, tile_texel).rgb;
+                            }
+                            delta = spike_tile * f32(spike_rep_kept);
+                        } else {
+                            delta = spike_reconstruct_l1(cell_index, entry, local_probe, tile_texel);
+                        }
+                        spike_accum = spike_accum + delta * spike_scale(entry, start, spike_cached);
+                    }
+                }
+                textureStore(
+                    direct_composed_atlas,
+                    vec2<i32>(tile_origin.xy + tile_texel),
+                    i32(tile_origin.z),
+                    vec4<f32>(
+                        max(spike_accum, vec3<f32>(0.0)),
+                        select(0.0, 1.0, stored_slot.valid),
+                    ),
+                );
+            }
+            {
+                let tile_texel = vec2<u32>(3u, 1u);
+                let atlas_texel = tile_origin.xy + tile_texel;
+                let uv = (vec2<f32>(atlas_texel) + 0.5)
+                    / vec2<f32>(textureDimensions(direct_intermediate_atlas));
+                var spike_accum = textureSampleLevel(
+                    direct_intermediate_atlas,
+                    intermediate_sampler,
+                    uv,
+                    i32(tile_origin.z),
+                    0.0,
+                ).rgb;
+                if (level == 0u) {
+                    if (spike_l0) {
+                        for (var entry = start; entry < end; entry = entry + 1u) {
+                            spike_accum = spike_accum
+                                + read_delta_texel(entry, spike_rank, tile_texel).rgb * spike_scale(entry, start, spike_cached);
+                        }
+                    }
+                } else if (spike_coarse) {
+                    for (var entry = start; entry < end; entry = entry + 1u) {
+                        var delta = vec3<f32>(0.0);
+                        if (level == 2u) {
+                            var spike_tile = vec3<f32>(0.0);
+                            if (spike_rep_kept) {
+                                spike_tile = read_delta_texel(entry, spike_rep_rank, tile_texel).rgb;
+                            }
+                            delta = spike_tile * f32(spike_rep_kept);
+                        } else {
+                            delta = spike_reconstruct_l1(cell_index, entry, local_probe, tile_texel);
+                        }
+                        spike_accum = spike_accum + delta * spike_scale(entry, start, spike_cached);
+                    }
+                }
+                textureStore(
+                    direct_composed_atlas,
+                    vec2<i32>(tile_origin.xy + tile_texel),
+                    i32(tile_origin.z),
+                    vec4<f32>(
+                        max(spike_accum, vec3<f32>(0.0)),
+                        select(0.0, 1.0, stored_slot.valid),
+                    ),
+                );
+            }
+            {
+                let tile_texel = vec2<u32>(4u, 1u);
+                let atlas_texel = tile_origin.xy + tile_texel;
+                let uv = (vec2<f32>(atlas_texel) + 0.5)
+                    / vec2<f32>(textureDimensions(direct_intermediate_atlas));
+                var spike_accum = textureSampleLevel(
+                    direct_intermediate_atlas,
+                    intermediate_sampler,
+                    uv,
+                    i32(tile_origin.z),
+                    0.0,
+                ).rgb;
+                if (level == 0u) {
+                    if (spike_l0) {
+                        for (var entry = start; entry < end; entry = entry + 1u) {
+                            spike_accum = spike_accum
+                                + read_delta_texel(entry, spike_rank, tile_texel).rgb * spike_scale(entry, start, spike_cached);
+                        }
+                    }
+                } else if (spike_coarse) {
+                    for (var entry = start; entry < end; entry = entry + 1u) {
+                        var delta = vec3<f32>(0.0);
+                        if (level == 2u) {
+                            var spike_tile = vec3<f32>(0.0);
+                            if (spike_rep_kept) {
+                                spike_tile = read_delta_texel(entry, spike_rep_rank, tile_texel).rgb;
+                            }
+                            delta = spike_tile * f32(spike_rep_kept);
+                        } else {
+                            delta = spike_reconstruct_l1(cell_index, entry, local_probe, tile_texel);
+                        }
+                        spike_accum = spike_accum + delta * spike_scale(entry, start, spike_cached);
+                    }
+                }
+                textureStore(
+                    direct_composed_atlas,
+                    vec2<i32>(tile_origin.xy + tile_texel),
+                    i32(tile_origin.z),
+                    vec4<f32>(
+                        max(spike_accum, vec3<f32>(0.0)),
+                        select(0.0, 1.0, stored_slot.valid),
+                    ),
+                );
+            }
+            {
+                let tile_texel = vec2<u32>(5u, 1u);
+                let atlas_texel = tile_origin.xy + tile_texel;
+                let uv = (vec2<f32>(atlas_texel) + 0.5)
+                    / vec2<f32>(textureDimensions(direct_intermediate_atlas));
+                var spike_accum = textureSampleLevel(
+                    direct_intermediate_atlas,
+                    intermediate_sampler,
+                    uv,
+                    i32(tile_origin.z),
+                    0.0,
+                ).rgb;
+                if (level == 0u) {
+                    if (spike_l0) {
+                        for (var entry = start; entry < end; entry = entry + 1u) {
+                            spike_accum = spike_accum
+                                + read_delta_texel(entry, spike_rank, tile_texel).rgb * spike_scale(entry, start, spike_cached);
+                        }
+                    }
+                } else if (spike_coarse) {
+                    for (var entry = start; entry < end; entry = entry + 1u) {
+                        var delta = vec3<f32>(0.0);
+                        if (level == 2u) {
+                            var spike_tile = vec3<f32>(0.0);
+                            if (spike_rep_kept) {
+                                spike_tile = read_delta_texel(entry, spike_rep_rank, tile_texel).rgb;
+                            }
+                            delta = spike_tile * f32(spike_rep_kept);
+                        } else {
+                            delta = spike_reconstruct_l1(cell_index, entry, local_probe, tile_texel);
+                        }
+                        spike_accum = spike_accum + delta * spike_scale(entry, start, spike_cached);
+                    }
+                }
+                textureStore(
+                    direct_composed_atlas,
+                    vec2<i32>(tile_origin.xy + tile_texel),
+                    i32(tile_origin.z),
+                    vec4<f32>(
+                        max(spike_accum, vec3<f32>(0.0)),
+                        select(0.0, 1.0, stored_slot.valid),
+                    ),
+                );
+            }
+            {
+                let tile_texel = vec2<u32>(0u, 2u);
+                let atlas_texel = tile_origin.xy + tile_texel;
+                let uv = (vec2<f32>(atlas_texel) + 0.5)
+                    / vec2<f32>(textureDimensions(direct_intermediate_atlas));
+                var spike_accum = textureSampleLevel(
+                    direct_intermediate_atlas,
+                    intermediate_sampler,
+                    uv,
+                    i32(tile_origin.z),
+                    0.0,
+                ).rgb;
+                if (level == 0u) {
+                    if (spike_l0) {
+                        for (var entry = start; entry < end; entry = entry + 1u) {
+                            spike_accum = spike_accum
+                                + read_delta_texel(entry, spike_rank, tile_texel).rgb * spike_scale(entry, start, spike_cached);
+                        }
+                    }
+                } else if (spike_coarse) {
+                    for (var entry = start; entry < end; entry = entry + 1u) {
+                        var delta = vec3<f32>(0.0);
+                        if (level == 2u) {
+                            var spike_tile = vec3<f32>(0.0);
+                            if (spike_rep_kept) {
+                                spike_tile = read_delta_texel(entry, spike_rep_rank, tile_texel).rgb;
+                            }
+                            delta = spike_tile * f32(spike_rep_kept);
+                        } else {
+                            delta = spike_reconstruct_l1(cell_index, entry, local_probe, tile_texel);
+                        }
+                        spike_accum = spike_accum + delta * spike_scale(entry, start, spike_cached);
+                    }
+                }
+                textureStore(
+                    direct_composed_atlas,
+                    vec2<i32>(tile_origin.xy + tile_texel),
+                    i32(tile_origin.z),
+                    vec4<f32>(
+                        max(spike_accum, vec3<f32>(0.0)),
+                        select(0.0, 1.0, stored_slot.valid),
+                    ),
+                );
+            }
+            {
+                let tile_texel = vec2<u32>(1u, 2u);
+                let atlas_texel = tile_origin.xy + tile_texel;
+                let uv = (vec2<f32>(atlas_texel) + 0.5)
+                    / vec2<f32>(textureDimensions(direct_intermediate_atlas));
+                var spike_accum = textureSampleLevel(
+                    direct_intermediate_atlas,
+                    intermediate_sampler,
+                    uv,
+                    i32(tile_origin.z),
+                    0.0,
+                ).rgb;
+                if (level == 0u) {
+                    if (spike_l0) {
+                        for (var entry = start; entry < end; entry = entry + 1u) {
+                            spike_accum = spike_accum
+                                + read_delta_texel(entry, spike_rank, tile_texel).rgb * spike_scale(entry, start, spike_cached);
+                        }
+                    }
+                } else if (spike_coarse) {
+                    for (var entry = start; entry < end; entry = entry + 1u) {
+                        var delta = vec3<f32>(0.0);
+                        if (level == 2u) {
+                            var spike_tile = vec3<f32>(0.0);
+                            if (spike_rep_kept) {
+                                spike_tile = read_delta_texel(entry, spike_rep_rank, tile_texel).rgb;
+                            }
+                            delta = spike_tile * f32(spike_rep_kept);
+                        } else {
+                            delta = spike_reconstruct_l1(cell_index, entry, local_probe, tile_texel);
+                        }
+                        spike_accum = spike_accum + delta * spike_scale(entry, start, spike_cached);
+                    }
+                }
+                textureStore(
+                    direct_composed_atlas,
+                    vec2<i32>(tile_origin.xy + tile_texel),
+                    i32(tile_origin.z),
+                    vec4<f32>(
+                        max(spike_accum, vec3<f32>(0.0)),
+                        select(0.0, 1.0, stored_slot.valid),
+                    ),
+                );
+            }
+            {
+                let tile_texel = vec2<u32>(2u, 2u);
+                let atlas_texel = tile_origin.xy + tile_texel;
+                let uv = (vec2<f32>(atlas_texel) + 0.5)
+                    / vec2<f32>(textureDimensions(direct_intermediate_atlas));
+                var spike_accum = textureSampleLevel(
+                    direct_intermediate_atlas,
+                    intermediate_sampler,
+                    uv,
+                    i32(tile_origin.z),
+                    0.0,
+                ).rgb;
+                if (level == 0u) {
+                    if (spike_l0) {
+                        for (var entry = start; entry < end; entry = entry + 1u) {
+                            spike_accum = spike_accum
+                                + read_delta_texel(entry, spike_rank, tile_texel).rgb * spike_scale(entry, start, spike_cached);
+                        }
+                    }
+                } else if (spike_coarse) {
+                    for (var entry = start; entry < end; entry = entry + 1u) {
+                        var delta = vec3<f32>(0.0);
+                        if (level == 2u) {
+                            var spike_tile = vec3<f32>(0.0);
+                            if (spike_rep_kept) {
+                                spike_tile = read_delta_texel(entry, spike_rep_rank, tile_texel).rgb;
+                            }
+                            delta = spike_tile * f32(spike_rep_kept);
+                        } else {
+                            delta = spike_reconstruct_l1(cell_index, entry, local_probe, tile_texel);
+                        }
+                        spike_accum = spike_accum + delta * spike_scale(entry, start, spike_cached);
+                    }
+                }
+                textureStore(
+                    direct_composed_atlas,
+                    vec2<i32>(tile_origin.xy + tile_texel),
+                    i32(tile_origin.z),
+                    vec4<f32>(
+                        max(spike_accum, vec3<f32>(0.0)),
+                        select(0.0, 1.0, stored_slot.valid),
+                    ),
+                );
+            }
+            {
+                let tile_texel = vec2<u32>(3u, 2u);
+                let atlas_texel = tile_origin.xy + tile_texel;
+                let uv = (vec2<f32>(atlas_texel) + 0.5)
+                    / vec2<f32>(textureDimensions(direct_intermediate_atlas));
+                var spike_accum = textureSampleLevel(
+                    direct_intermediate_atlas,
+                    intermediate_sampler,
+                    uv,
+                    i32(tile_origin.z),
+                    0.0,
+                ).rgb;
+                if (level == 0u) {
+                    if (spike_l0) {
+                        for (var entry = start; entry < end; entry = entry + 1u) {
+                            spike_accum = spike_accum
+                                + read_delta_texel(entry, spike_rank, tile_texel).rgb * spike_scale(entry, start, spike_cached);
+                        }
+                    }
+                } else if (spike_coarse) {
+                    for (var entry = start; entry < end; entry = entry + 1u) {
+                        var delta = vec3<f32>(0.0);
+                        if (level == 2u) {
+                            var spike_tile = vec3<f32>(0.0);
+                            if (spike_rep_kept) {
+                                spike_tile = read_delta_texel(entry, spike_rep_rank, tile_texel).rgb;
+                            }
+                            delta = spike_tile * f32(spike_rep_kept);
+                        } else {
+                            delta = spike_reconstruct_l1(cell_index, entry, local_probe, tile_texel);
+                        }
+                        spike_accum = spike_accum + delta * spike_scale(entry, start, spike_cached);
+                    }
+                }
+                textureStore(
+                    direct_composed_atlas,
+                    vec2<i32>(tile_origin.xy + tile_texel),
+                    i32(tile_origin.z),
+                    vec4<f32>(
+                        max(spike_accum, vec3<f32>(0.0)),
+                        select(0.0, 1.0, stored_slot.valid),
+                    ),
+                );
+            }
+            {
+                let tile_texel = vec2<u32>(4u, 2u);
+                let atlas_texel = tile_origin.xy + tile_texel;
+                let uv = (vec2<f32>(atlas_texel) + 0.5)
+                    / vec2<f32>(textureDimensions(direct_intermediate_atlas));
+                var spike_accum = textureSampleLevel(
+                    direct_intermediate_atlas,
+                    intermediate_sampler,
+                    uv,
+                    i32(tile_origin.z),
+                    0.0,
+                ).rgb;
+                if (level == 0u) {
+                    if (spike_l0) {
+                        for (var entry = start; entry < end; entry = entry + 1u) {
+                            spike_accum = spike_accum
+                                + read_delta_texel(entry, spike_rank, tile_texel).rgb * spike_scale(entry, start, spike_cached);
+                        }
+                    }
+                } else if (spike_coarse) {
+                    for (var entry = start; entry < end; entry = entry + 1u) {
+                        var delta = vec3<f32>(0.0);
+                        if (level == 2u) {
+                            var spike_tile = vec3<f32>(0.0);
+                            if (spike_rep_kept) {
+                                spike_tile = read_delta_texel(entry, spike_rep_rank, tile_texel).rgb;
+                            }
+                            delta = spike_tile * f32(spike_rep_kept);
+                        } else {
+                            delta = spike_reconstruct_l1(cell_index, entry, local_probe, tile_texel);
+                        }
+                        spike_accum = spike_accum + delta * spike_scale(entry, start, spike_cached);
+                    }
+                }
+                textureStore(
+                    direct_composed_atlas,
+                    vec2<i32>(tile_origin.xy + tile_texel),
+                    i32(tile_origin.z),
+                    vec4<f32>(
+                        max(spike_accum, vec3<f32>(0.0)),
+                        select(0.0, 1.0, stored_slot.valid),
+                    ),
+                );
+            }
+            {
+                let tile_texel = vec2<u32>(5u, 2u);
+                let atlas_texel = tile_origin.xy + tile_texel;
+                let uv = (vec2<f32>(atlas_texel) + 0.5)
+                    / vec2<f32>(textureDimensions(direct_intermediate_atlas));
+                var spike_accum = textureSampleLevel(
+                    direct_intermediate_atlas,
+                    intermediate_sampler,
+                    uv,
+                    i32(tile_origin.z),
+                    0.0,
+                ).rgb;
+                if (level == 0u) {
+                    if (spike_l0) {
+                        for (var entry = start; entry < end; entry = entry + 1u) {
+                            spike_accum = spike_accum
+                                + read_delta_texel(entry, spike_rank, tile_texel).rgb * spike_scale(entry, start, spike_cached);
+                        }
+                    }
+                } else if (spike_coarse) {
+                    for (var entry = start; entry < end; entry = entry + 1u) {
+                        var delta = vec3<f32>(0.0);
+                        if (level == 2u) {
+                            var spike_tile = vec3<f32>(0.0);
+                            if (spike_rep_kept) {
+                                spike_tile = read_delta_texel(entry, spike_rep_rank, tile_texel).rgb;
+                            }
+                            delta = spike_tile * f32(spike_rep_kept);
+                        } else {
+                            delta = spike_reconstruct_l1(cell_index, entry, local_probe, tile_texel);
+                        }
+                        spike_accum = spike_accum + delta * spike_scale(entry, start, spike_cached);
+                    }
+                }
+                textureStore(
+                    direct_composed_atlas,
+                    vec2<i32>(tile_origin.xy + tile_texel),
+                    i32(tile_origin.z),
+                    vec4<f32>(
+                        max(spike_accum, vec3<f32>(0.0)),
+                        select(0.0, 1.0, stored_slot.valid),
+                    ),
+                );
+            }
+            {
+                let tile_texel = vec2<u32>(0u, 3u);
+                let atlas_texel = tile_origin.xy + tile_texel;
+                let uv = (vec2<f32>(atlas_texel) + 0.5)
+                    / vec2<f32>(textureDimensions(direct_intermediate_atlas));
+                var spike_accum = textureSampleLevel(
+                    direct_intermediate_atlas,
+                    intermediate_sampler,
+                    uv,
+                    i32(tile_origin.z),
+                    0.0,
+                ).rgb;
+                if (level == 0u) {
+                    if (spike_l0) {
+                        for (var entry = start; entry < end; entry = entry + 1u) {
+                            spike_accum = spike_accum
+                                + read_delta_texel(entry, spike_rank, tile_texel).rgb * spike_scale(entry, start, spike_cached);
+                        }
+                    }
+                } else if (spike_coarse) {
+                    for (var entry = start; entry < end; entry = entry + 1u) {
+                        var delta = vec3<f32>(0.0);
+                        if (level == 2u) {
+                            var spike_tile = vec3<f32>(0.0);
+                            if (spike_rep_kept) {
+                                spike_tile = read_delta_texel(entry, spike_rep_rank, tile_texel).rgb;
+                            }
+                            delta = spike_tile * f32(spike_rep_kept);
+                        } else {
+                            delta = spike_reconstruct_l1(cell_index, entry, local_probe, tile_texel);
+                        }
+                        spike_accum = spike_accum + delta * spike_scale(entry, start, spike_cached);
+                    }
+                }
+                textureStore(
+                    direct_composed_atlas,
+                    vec2<i32>(tile_origin.xy + tile_texel),
+                    i32(tile_origin.z),
+                    vec4<f32>(
+                        max(spike_accum, vec3<f32>(0.0)),
+                        select(0.0, 1.0, stored_slot.valid),
+                    ),
+                );
+            }
+            {
+                let tile_texel = vec2<u32>(1u, 3u);
+                let atlas_texel = tile_origin.xy + tile_texel;
+                let uv = (vec2<f32>(atlas_texel) + 0.5)
+                    / vec2<f32>(textureDimensions(direct_intermediate_atlas));
+                var spike_accum = textureSampleLevel(
+                    direct_intermediate_atlas,
+                    intermediate_sampler,
+                    uv,
+                    i32(tile_origin.z),
+                    0.0,
+                ).rgb;
+                if (level == 0u) {
+                    if (spike_l0) {
+                        for (var entry = start; entry < end; entry = entry + 1u) {
+                            spike_accum = spike_accum
+                                + read_delta_texel(entry, spike_rank, tile_texel).rgb * spike_scale(entry, start, spike_cached);
+                        }
+                    }
+                } else if (spike_coarse) {
+                    for (var entry = start; entry < end; entry = entry + 1u) {
+                        var delta = vec3<f32>(0.0);
+                        if (level == 2u) {
+                            var spike_tile = vec3<f32>(0.0);
+                            if (spike_rep_kept) {
+                                spike_tile = read_delta_texel(entry, spike_rep_rank, tile_texel).rgb;
+                            }
+                            delta = spike_tile * f32(spike_rep_kept);
+                        } else {
+                            delta = spike_reconstruct_l1(cell_index, entry, local_probe, tile_texel);
+                        }
+                        spike_accum = spike_accum + delta * spike_scale(entry, start, spike_cached);
+                    }
+                }
+                textureStore(
+                    direct_composed_atlas,
+                    vec2<i32>(tile_origin.xy + tile_texel),
+                    i32(tile_origin.z),
+                    vec4<f32>(
+                        max(spike_accum, vec3<f32>(0.0)),
+                        select(0.0, 1.0, stored_slot.valid),
+                    ),
+                );
+            }
+            {
+                let tile_texel = vec2<u32>(2u, 3u);
+                let atlas_texel = tile_origin.xy + tile_texel;
+                let uv = (vec2<f32>(atlas_texel) + 0.5)
+                    / vec2<f32>(textureDimensions(direct_intermediate_atlas));
+                var spike_accum = textureSampleLevel(
+                    direct_intermediate_atlas,
+                    intermediate_sampler,
+                    uv,
+                    i32(tile_origin.z),
+                    0.0,
+                ).rgb;
+                if (level == 0u) {
+                    if (spike_l0) {
+                        for (var entry = start; entry < end; entry = entry + 1u) {
+                            spike_accum = spike_accum
+                                + read_delta_texel(entry, spike_rank, tile_texel).rgb * spike_scale(entry, start, spike_cached);
+                        }
+                    }
+                } else if (spike_coarse) {
+                    for (var entry = start; entry < end; entry = entry + 1u) {
+                        var delta = vec3<f32>(0.0);
+                        if (level == 2u) {
+                            var spike_tile = vec3<f32>(0.0);
+                            if (spike_rep_kept) {
+                                spike_tile = read_delta_texel(entry, spike_rep_rank, tile_texel).rgb;
+                            }
+                            delta = spike_tile * f32(spike_rep_kept);
+                        } else {
+                            delta = spike_reconstruct_l1(cell_index, entry, local_probe, tile_texel);
+                        }
+                        spike_accum = spike_accum + delta * spike_scale(entry, start, spike_cached);
+                    }
+                }
+                textureStore(
+                    direct_composed_atlas,
+                    vec2<i32>(tile_origin.xy + tile_texel),
+                    i32(tile_origin.z),
+                    vec4<f32>(
+                        max(spike_accum, vec3<f32>(0.0)),
+                        select(0.0, 1.0, stored_slot.valid),
+                    ),
+                );
+            }
+            {
+                let tile_texel = vec2<u32>(3u, 3u);
+                let atlas_texel = tile_origin.xy + tile_texel;
+                let uv = (vec2<f32>(atlas_texel) + 0.5)
+                    / vec2<f32>(textureDimensions(direct_intermediate_atlas));
+                var spike_accum = textureSampleLevel(
+                    direct_intermediate_atlas,
+                    intermediate_sampler,
+                    uv,
+                    i32(tile_origin.z),
+                    0.0,
+                ).rgb;
+                if (level == 0u) {
+                    if (spike_l0) {
+                        for (var entry = start; entry < end; entry = entry + 1u) {
+                            spike_accum = spike_accum
+                                + read_delta_texel(entry, spike_rank, tile_texel).rgb * spike_scale(entry, start, spike_cached);
+                        }
+                    }
+                } else if (spike_coarse) {
+                    for (var entry = start; entry < end; entry = entry + 1u) {
+                        var delta = vec3<f32>(0.0);
+                        if (level == 2u) {
+                            var spike_tile = vec3<f32>(0.0);
+                            if (spike_rep_kept) {
+                                spike_tile = read_delta_texel(entry, spike_rep_rank, tile_texel).rgb;
+                            }
+                            delta = spike_tile * f32(spike_rep_kept);
+                        } else {
+                            delta = spike_reconstruct_l1(cell_index, entry, local_probe, tile_texel);
+                        }
+                        spike_accum = spike_accum + delta * spike_scale(entry, start, spike_cached);
+                    }
+                }
+                textureStore(
+                    direct_composed_atlas,
+                    vec2<i32>(tile_origin.xy + tile_texel),
+                    i32(tile_origin.z),
+                    vec4<f32>(
+                        max(spike_accum, vec3<f32>(0.0)),
+                        select(0.0, 1.0, stored_slot.valid),
+                    ),
+                );
+            }
+            {
+                let tile_texel = vec2<u32>(4u, 3u);
+                let atlas_texel = tile_origin.xy + tile_texel;
+                let uv = (vec2<f32>(atlas_texel) + 0.5)
+                    / vec2<f32>(textureDimensions(direct_intermediate_atlas));
+                var spike_accum = textureSampleLevel(
+                    direct_intermediate_atlas,
+                    intermediate_sampler,
+                    uv,
+                    i32(tile_origin.z),
+                    0.0,
+                ).rgb;
+                if (level == 0u) {
+                    if (spike_l0) {
+                        for (var entry = start; entry < end; entry = entry + 1u) {
+                            spike_accum = spike_accum
+                                + read_delta_texel(entry, spike_rank, tile_texel).rgb * spike_scale(entry, start, spike_cached);
+                        }
+                    }
+                } else if (spike_coarse) {
+                    for (var entry = start; entry < end; entry = entry + 1u) {
+                        var delta = vec3<f32>(0.0);
+                        if (level == 2u) {
+                            var spike_tile = vec3<f32>(0.0);
+                            if (spike_rep_kept) {
+                                spike_tile = read_delta_texel(entry, spike_rep_rank, tile_texel).rgb;
+                            }
+                            delta = spike_tile * f32(spike_rep_kept);
+                        } else {
+                            delta = spike_reconstruct_l1(cell_index, entry, local_probe, tile_texel);
+                        }
+                        spike_accum = spike_accum + delta * spike_scale(entry, start, spike_cached);
+                    }
+                }
+                textureStore(
+                    direct_composed_atlas,
+                    vec2<i32>(tile_origin.xy + tile_texel),
+                    i32(tile_origin.z),
+                    vec4<f32>(
+                        max(spike_accum, vec3<f32>(0.0)),
+                        select(0.0, 1.0, stored_slot.valid),
+                    ),
+                );
+            }
+            {
+                let tile_texel = vec2<u32>(5u, 3u);
+                let atlas_texel = tile_origin.xy + tile_texel;
+                let uv = (vec2<f32>(atlas_texel) + 0.5)
+                    / vec2<f32>(textureDimensions(direct_intermediate_atlas));
+                var spike_accum = textureSampleLevel(
+                    direct_intermediate_atlas,
+                    intermediate_sampler,
+                    uv,
+                    i32(tile_origin.z),
+                    0.0,
+                ).rgb;
+                if (level == 0u) {
+                    if (spike_l0) {
+                        for (var entry = start; entry < end; entry = entry + 1u) {
+                            spike_accum = spike_accum
+                                + read_delta_texel(entry, spike_rank, tile_texel).rgb * spike_scale(entry, start, spike_cached);
+                        }
+                    }
+                } else if (spike_coarse) {
+                    for (var entry = start; entry < end; entry = entry + 1u) {
+                        var delta = vec3<f32>(0.0);
+                        if (level == 2u) {
+                            var spike_tile = vec3<f32>(0.0);
+                            if (spike_rep_kept) {
+                                spike_tile = read_delta_texel(entry, spike_rep_rank, tile_texel).rgb;
+                            }
+                            delta = spike_tile * f32(spike_rep_kept);
+                        } else {
+                            delta = spike_reconstruct_l1(cell_index, entry, local_probe, tile_texel);
+                        }
+                        spike_accum = spike_accum + delta * spike_scale(entry, start, spike_cached);
+                    }
+                }
+                textureStore(
+                    direct_composed_atlas,
+                    vec2<i32>(tile_origin.xy + tile_texel),
+                    i32(tile_origin.z),
+                    vec4<f32>(
+                        max(spike_accum, vec3<f32>(0.0)),
+                        select(0.0, 1.0, stored_slot.valid),
+                    ),
+                );
+            }
+            {
+                let tile_texel = vec2<u32>(0u, 4u);
+                let atlas_texel = tile_origin.xy + tile_texel;
+                let uv = (vec2<f32>(atlas_texel) + 0.5)
+                    / vec2<f32>(textureDimensions(direct_intermediate_atlas));
+                var spike_accum = textureSampleLevel(
+                    direct_intermediate_atlas,
+                    intermediate_sampler,
+                    uv,
+                    i32(tile_origin.z),
+                    0.0,
+                ).rgb;
+                if (level == 0u) {
+                    if (spike_l0) {
+                        for (var entry = start; entry < end; entry = entry + 1u) {
+                            spike_accum = spike_accum
+                                + read_delta_texel(entry, spike_rank, tile_texel).rgb * spike_scale(entry, start, spike_cached);
+                        }
+                    }
+                } else if (spike_coarse) {
+                    for (var entry = start; entry < end; entry = entry + 1u) {
+                        var delta = vec3<f32>(0.0);
+                        if (level == 2u) {
+                            var spike_tile = vec3<f32>(0.0);
+                            if (spike_rep_kept) {
+                                spike_tile = read_delta_texel(entry, spike_rep_rank, tile_texel).rgb;
+                            }
+                            delta = spike_tile * f32(spike_rep_kept);
+                        } else {
+                            delta = spike_reconstruct_l1(cell_index, entry, local_probe, tile_texel);
+                        }
+                        spike_accum = spike_accum + delta * spike_scale(entry, start, spike_cached);
+                    }
+                }
+                textureStore(
+                    direct_composed_atlas,
+                    vec2<i32>(tile_origin.xy + tile_texel),
+                    i32(tile_origin.z),
+                    vec4<f32>(
+                        max(spike_accum, vec3<f32>(0.0)),
+                        select(0.0, 1.0, stored_slot.valid),
+                    ),
+                );
+            }
+            {
+                let tile_texel = vec2<u32>(1u, 4u);
+                let atlas_texel = tile_origin.xy + tile_texel;
+                let uv = (vec2<f32>(atlas_texel) + 0.5)
+                    / vec2<f32>(textureDimensions(direct_intermediate_atlas));
+                var spike_accum = textureSampleLevel(
+                    direct_intermediate_atlas,
+                    intermediate_sampler,
+                    uv,
+                    i32(tile_origin.z),
+                    0.0,
+                ).rgb;
+                if (level == 0u) {
+                    if (spike_l0) {
+                        for (var entry = start; entry < end; entry = entry + 1u) {
+                            spike_accum = spike_accum
+                                + read_delta_texel(entry, spike_rank, tile_texel).rgb * spike_scale(entry, start, spike_cached);
+                        }
+                    }
+                } else if (spike_coarse) {
+                    for (var entry = start; entry < end; entry = entry + 1u) {
+                        var delta = vec3<f32>(0.0);
+                        if (level == 2u) {
+                            var spike_tile = vec3<f32>(0.0);
+                            if (spike_rep_kept) {
+                                spike_tile = read_delta_texel(entry, spike_rep_rank, tile_texel).rgb;
+                            }
+                            delta = spike_tile * f32(spike_rep_kept);
+                        } else {
+                            delta = spike_reconstruct_l1(cell_index, entry, local_probe, tile_texel);
+                        }
+                        spike_accum = spike_accum + delta * spike_scale(entry, start, spike_cached);
+                    }
+                }
+                textureStore(
+                    direct_composed_atlas,
+                    vec2<i32>(tile_origin.xy + tile_texel),
+                    i32(tile_origin.z),
+                    vec4<f32>(
+                        max(spike_accum, vec3<f32>(0.0)),
+                        select(0.0, 1.0, stored_slot.valid),
+                    ),
+                );
+            }
+            {
+                let tile_texel = vec2<u32>(2u, 4u);
+                let atlas_texel = tile_origin.xy + tile_texel;
+                let uv = (vec2<f32>(atlas_texel) + 0.5)
+                    / vec2<f32>(textureDimensions(direct_intermediate_atlas));
+                var spike_accum = textureSampleLevel(
+                    direct_intermediate_atlas,
+                    intermediate_sampler,
+                    uv,
+                    i32(tile_origin.z),
+                    0.0,
+                ).rgb;
+                if (level == 0u) {
+                    if (spike_l0) {
+                        for (var entry = start; entry < end; entry = entry + 1u) {
+                            spike_accum = spike_accum
+                                + read_delta_texel(entry, spike_rank, tile_texel).rgb * spike_scale(entry, start, spike_cached);
+                        }
+                    }
+                } else if (spike_coarse) {
+                    for (var entry = start; entry < end; entry = entry + 1u) {
+                        var delta = vec3<f32>(0.0);
+                        if (level == 2u) {
+                            var spike_tile = vec3<f32>(0.0);
+                            if (spike_rep_kept) {
+                                spike_tile = read_delta_texel(entry, spike_rep_rank, tile_texel).rgb;
+                            }
+                            delta = spike_tile * f32(spike_rep_kept);
+                        } else {
+                            delta = spike_reconstruct_l1(cell_index, entry, local_probe, tile_texel);
+                        }
+                        spike_accum = spike_accum + delta * spike_scale(entry, start, spike_cached);
+                    }
+                }
+                textureStore(
+                    direct_composed_atlas,
+                    vec2<i32>(tile_origin.xy + tile_texel),
+                    i32(tile_origin.z),
+                    vec4<f32>(
+                        max(spike_accum, vec3<f32>(0.0)),
+                        select(0.0, 1.0, stored_slot.valid),
+                    ),
+                );
+            }
+            {
+                let tile_texel = vec2<u32>(3u, 4u);
+                let atlas_texel = tile_origin.xy + tile_texel;
+                let uv = (vec2<f32>(atlas_texel) + 0.5)
+                    / vec2<f32>(textureDimensions(direct_intermediate_atlas));
+                var spike_accum = textureSampleLevel(
+                    direct_intermediate_atlas,
+                    intermediate_sampler,
+                    uv,
+                    i32(tile_origin.z),
+                    0.0,
+                ).rgb;
+                if (level == 0u) {
+                    if (spike_l0) {
+                        for (var entry = start; entry < end; entry = entry + 1u) {
+                            spike_accum = spike_accum
+                                + read_delta_texel(entry, spike_rank, tile_texel).rgb * spike_scale(entry, start, spike_cached);
+                        }
+                    }
+                } else if (spike_coarse) {
+                    for (var entry = start; entry < end; entry = entry + 1u) {
+                        var delta = vec3<f32>(0.0);
+                        if (level == 2u) {
+                            var spike_tile = vec3<f32>(0.0);
+                            if (spike_rep_kept) {
+                                spike_tile = read_delta_texel(entry, spike_rep_rank, tile_texel).rgb;
+                            }
+                            delta = spike_tile * f32(spike_rep_kept);
+                        } else {
+                            delta = spike_reconstruct_l1(cell_index, entry, local_probe, tile_texel);
+                        }
+                        spike_accum = spike_accum + delta * spike_scale(entry, start, spike_cached);
+                    }
+                }
+                textureStore(
+                    direct_composed_atlas,
+                    vec2<i32>(tile_origin.xy + tile_texel),
+                    i32(tile_origin.z),
+                    vec4<f32>(
+                        max(spike_accum, vec3<f32>(0.0)),
+                        select(0.0, 1.0, stored_slot.valid),
+                    ),
+                );
+            }
+            {
+                let tile_texel = vec2<u32>(4u, 4u);
+                let atlas_texel = tile_origin.xy + tile_texel;
+                let uv = (vec2<f32>(atlas_texel) + 0.5)
+                    / vec2<f32>(textureDimensions(direct_intermediate_atlas));
+                var spike_accum = textureSampleLevel(
+                    direct_intermediate_atlas,
+                    intermediate_sampler,
+                    uv,
+                    i32(tile_origin.z),
+                    0.0,
+                ).rgb;
+                if (level == 0u) {
+                    if (spike_l0) {
+                        for (var entry = start; entry < end; entry = entry + 1u) {
+                            spike_accum = spike_accum
+                                + read_delta_texel(entry, spike_rank, tile_texel).rgb * spike_scale(entry, start, spike_cached);
+                        }
+                    }
+                } else if (spike_coarse) {
+                    for (var entry = start; entry < end; entry = entry + 1u) {
+                        var delta = vec3<f32>(0.0);
+                        if (level == 2u) {
+                            var spike_tile = vec3<f32>(0.0);
+                            if (spike_rep_kept) {
+                                spike_tile = read_delta_texel(entry, spike_rep_rank, tile_texel).rgb;
+                            }
+                            delta = spike_tile * f32(spike_rep_kept);
+                        } else {
+                            delta = spike_reconstruct_l1(cell_index, entry, local_probe, tile_texel);
+                        }
+                        spike_accum = spike_accum + delta * spike_scale(entry, start, spike_cached);
+                    }
+                }
+                textureStore(
+                    direct_composed_atlas,
+                    vec2<i32>(tile_origin.xy + tile_texel),
+                    i32(tile_origin.z),
+                    vec4<f32>(
+                        max(spike_accum, vec3<f32>(0.0)),
+                        select(0.0, 1.0, stored_slot.valid),
+                    ),
+                );
+            }
+            {
+                let tile_texel = vec2<u32>(5u, 4u);
+                let atlas_texel = tile_origin.xy + tile_texel;
+                let uv = (vec2<f32>(atlas_texel) + 0.5)
+                    / vec2<f32>(textureDimensions(direct_intermediate_atlas));
+                var spike_accum = textureSampleLevel(
+                    direct_intermediate_atlas,
+                    intermediate_sampler,
+                    uv,
+                    i32(tile_origin.z),
+                    0.0,
+                ).rgb;
+                if (level == 0u) {
+                    if (spike_l0) {
+                        for (var entry = start; entry < end; entry = entry + 1u) {
+                            spike_accum = spike_accum
+                                + read_delta_texel(entry, spike_rank, tile_texel).rgb * spike_scale(entry, start, spike_cached);
+                        }
+                    }
+                } else if (spike_coarse) {
+                    for (var entry = start; entry < end; entry = entry + 1u) {
+                        var delta = vec3<f32>(0.0);
+                        if (level == 2u) {
+                            var spike_tile = vec3<f32>(0.0);
+                            if (spike_rep_kept) {
+                                spike_tile = read_delta_texel(entry, spike_rep_rank, tile_texel).rgb;
+                            }
+                            delta = spike_tile * f32(spike_rep_kept);
+                        } else {
+                            delta = spike_reconstruct_l1(cell_index, entry, local_probe, tile_texel);
+                        }
+                        spike_accum = spike_accum + delta * spike_scale(entry, start, spike_cached);
+                    }
+                }
+                textureStore(
+                    direct_composed_atlas,
+                    vec2<i32>(tile_origin.xy + tile_texel),
+                    i32(tile_origin.z),
+                    vec4<f32>(
+                        max(spike_accum, vec3<f32>(0.0)),
+                        select(0.0, 1.0, stored_slot.valid),
+                    ),
+                );
+            }
+            {
+                let tile_texel = vec2<u32>(0u, 5u);
+                let atlas_texel = tile_origin.xy + tile_texel;
+                let uv = (vec2<f32>(atlas_texel) + 0.5)
+                    / vec2<f32>(textureDimensions(direct_intermediate_atlas));
+                var spike_accum = textureSampleLevel(
+                    direct_intermediate_atlas,
+                    intermediate_sampler,
+                    uv,
+                    i32(tile_origin.z),
+                    0.0,
+                ).rgb;
+                if (level == 0u) {
+                    if (spike_l0) {
+                        for (var entry = start; entry < end; entry = entry + 1u) {
+                            spike_accum = spike_accum
+                                + read_delta_texel(entry, spike_rank, tile_texel).rgb * spike_scale(entry, start, spike_cached);
+                        }
+                    }
+                } else if (spike_coarse) {
+                    for (var entry = start; entry < end; entry = entry + 1u) {
+                        var delta = vec3<f32>(0.0);
+                        if (level == 2u) {
+                            var spike_tile = vec3<f32>(0.0);
+                            if (spike_rep_kept) {
+                                spike_tile = read_delta_texel(entry, spike_rep_rank, tile_texel).rgb;
+                            }
+                            delta = spike_tile * f32(spike_rep_kept);
+                        } else {
+                            delta = spike_reconstruct_l1(cell_index, entry, local_probe, tile_texel);
+                        }
+                        spike_accum = spike_accum + delta * spike_scale(entry, start, spike_cached);
+                    }
+                }
+                textureStore(
+                    direct_composed_atlas,
+                    vec2<i32>(tile_origin.xy + tile_texel),
+                    i32(tile_origin.z),
+                    vec4<f32>(
+                        max(spike_accum, vec3<f32>(0.0)),
+                        select(0.0, 1.0, stored_slot.valid),
+                    ),
+                );
+            }
+            {
+                let tile_texel = vec2<u32>(1u, 5u);
+                let atlas_texel = tile_origin.xy + tile_texel;
+                let uv = (vec2<f32>(atlas_texel) + 0.5)
+                    / vec2<f32>(textureDimensions(direct_intermediate_atlas));
+                var spike_accum = textureSampleLevel(
+                    direct_intermediate_atlas,
+                    intermediate_sampler,
+                    uv,
+                    i32(tile_origin.z),
+                    0.0,
+                ).rgb;
+                if (level == 0u) {
+                    if (spike_l0) {
+                        for (var entry = start; entry < end; entry = entry + 1u) {
+                            spike_accum = spike_accum
+                                + read_delta_texel(entry, spike_rank, tile_texel).rgb * spike_scale(entry, start, spike_cached);
+                        }
+                    }
+                } else if (spike_coarse) {
+                    for (var entry = start; entry < end; entry = entry + 1u) {
+                        var delta = vec3<f32>(0.0);
+                        if (level == 2u) {
+                            var spike_tile = vec3<f32>(0.0);
+                            if (spike_rep_kept) {
+                                spike_tile = read_delta_texel(entry, spike_rep_rank, tile_texel).rgb;
+                            }
+                            delta = spike_tile * f32(spike_rep_kept);
+                        } else {
+                            delta = spike_reconstruct_l1(cell_index, entry, local_probe, tile_texel);
+                        }
+                        spike_accum = spike_accum + delta * spike_scale(entry, start, spike_cached);
+                    }
+                }
+                textureStore(
+                    direct_composed_atlas,
+                    vec2<i32>(tile_origin.xy + tile_texel),
+                    i32(tile_origin.z),
+                    vec4<f32>(
+                        max(spike_accum, vec3<f32>(0.0)),
+                        select(0.0, 1.0, stored_slot.valid),
+                    ),
+                );
+            }
+            {
+                let tile_texel = vec2<u32>(2u, 5u);
+                let atlas_texel = tile_origin.xy + tile_texel;
+                let uv = (vec2<f32>(atlas_texel) + 0.5)
+                    / vec2<f32>(textureDimensions(direct_intermediate_atlas));
+                var spike_accum = textureSampleLevel(
+                    direct_intermediate_atlas,
+                    intermediate_sampler,
+                    uv,
+                    i32(tile_origin.z),
+                    0.0,
+                ).rgb;
+                if (level == 0u) {
+                    if (spike_l0) {
+                        for (var entry = start; entry < end; entry = entry + 1u) {
+                            spike_accum = spike_accum
+                                + read_delta_texel(entry, spike_rank, tile_texel).rgb * spike_scale(entry, start, spike_cached);
+                        }
+                    }
+                } else if (spike_coarse) {
+                    for (var entry = start; entry < end; entry = entry + 1u) {
+                        var delta = vec3<f32>(0.0);
+                        if (level == 2u) {
+                            var spike_tile = vec3<f32>(0.0);
+                            if (spike_rep_kept) {
+                                spike_tile = read_delta_texel(entry, spike_rep_rank, tile_texel).rgb;
+                            }
+                            delta = spike_tile * f32(spike_rep_kept);
+                        } else {
+                            delta = spike_reconstruct_l1(cell_index, entry, local_probe, tile_texel);
+                        }
+                        spike_accum = spike_accum + delta * spike_scale(entry, start, spike_cached);
+                    }
+                }
+                textureStore(
+                    direct_composed_atlas,
+                    vec2<i32>(tile_origin.xy + tile_texel),
+                    i32(tile_origin.z),
+                    vec4<f32>(
+                        max(spike_accum, vec3<f32>(0.0)),
+                        select(0.0, 1.0, stored_slot.valid),
+                    ),
+                );
+            }
+            {
+                let tile_texel = vec2<u32>(3u, 5u);
+                let atlas_texel = tile_origin.xy + tile_texel;
+                let uv = (vec2<f32>(atlas_texel) + 0.5)
+                    / vec2<f32>(textureDimensions(direct_intermediate_atlas));
+                var spike_accum = textureSampleLevel(
+                    direct_intermediate_atlas,
+                    intermediate_sampler,
+                    uv,
+                    i32(tile_origin.z),
+                    0.0,
+                ).rgb;
+                if (level == 0u) {
+                    if (spike_l0) {
+                        for (var entry = start; entry < end; entry = entry + 1u) {
+                            spike_accum = spike_accum
+                                + read_delta_texel(entry, spike_rank, tile_texel).rgb * spike_scale(entry, start, spike_cached);
+                        }
+                    }
+                } else if (spike_coarse) {
+                    for (var entry = start; entry < end; entry = entry + 1u) {
+                        var delta = vec3<f32>(0.0);
+                        if (level == 2u) {
+                            var spike_tile = vec3<f32>(0.0);
+                            if (spike_rep_kept) {
+                                spike_tile = read_delta_texel(entry, spike_rep_rank, tile_texel).rgb;
+                            }
+                            delta = spike_tile * f32(spike_rep_kept);
+                        } else {
+                            delta = spike_reconstruct_l1(cell_index, entry, local_probe, tile_texel);
+                        }
+                        spike_accum = spike_accum + delta * spike_scale(entry, start, spike_cached);
+                    }
+                }
+                textureStore(
+                    direct_composed_atlas,
+                    vec2<i32>(tile_origin.xy + tile_texel),
+                    i32(tile_origin.z),
+                    vec4<f32>(
+                        max(spike_accum, vec3<f32>(0.0)),
+                        select(0.0, 1.0, stored_slot.valid),
+                    ),
+                );
+            }
+            {
+                let tile_texel = vec2<u32>(4u, 5u);
+                let atlas_texel = tile_origin.xy + tile_texel;
+                let uv = (vec2<f32>(atlas_texel) + 0.5)
+                    / vec2<f32>(textureDimensions(direct_intermediate_atlas));
+                var spike_accum = textureSampleLevel(
+                    direct_intermediate_atlas,
+                    intermediate_sampler,
+                    uv,
+                    i32(tile_origin.z),
+                    0.0,
+                ).rgb;
+                if (level == 0u) {
+                    if (spike_l0) {
+                        for (var entry = start; entry < end; entry = entry + 1u) {
+                            spike_accum = spike_accum
+                                + read_delta_texel(entry, spike_rank, tile_texel).rgb * spike_scale(entry, start, spike_cached);
+                        }
+                    }
+                } else if (spike_coarse) {
+                    for (var entry = start; entry < end; entry = entry + 1u) {
+                        var delta = vec3<f32>(0.0);
+                        if (level == 2u) {
+                            var spike_tile = vec3<f32>(0.0);
+                            if (spike_rep_kept) {
+                                spike_tile = read_delta_texel(entry, spike_rep_rank, tile_texel).rgb;
+                            }
+                            delta = spike_tile * f32(spike_rep_kept);
+                        } else {
+                            delta = spike_reconstruct_l1(cell_index, entry, local_probe, tile_texel);
+                        }
+                        spike_accum = spike_accum + delta * spike_scale(entry, start, spike_cached);
+                    }
+                }
+                textureStore(
+                    direct_composed_atlas,
+                    vec2<i32>(tile_origin.xy + tile_texel),
+                    i32(tile_origin.z),
+                    vec4<f32>(
+                        max(spike_accum, vec3<f32>(0.0)),
+                        select(0.0, 1.0, stored_slot.valid),
+                    ),
+                );
+            }
+            {
+                let tile_texel = vec2<u32>(5u, 5u);
+                let atlas_texel = tile_origin.xy + tile_texel;
+                let uv = (vec2<f32>(atlas_texel) + 0.5)
+                    / vec2<f32>(textureDimensions(direct_intermediate_atlas));
+                var spike_accum = textureSampleLevel(
+                    direct_intermediate_atlas,
+                    intermediate_sampler,
+                    uv,
+                    i32(tile_origin.z),
+                    0.0,
+                ).rgb;
+                if (level == 0u) {
+                    if (spike_l0) {
+                        for (var entry = start; entry < end; entry = entry + 1u) {
+                            spike_accum = spike_accum
+                                + read_delta_texel(entry, spike_rank, tile_texel).rgb * spike_scale(entry, start, spike_cached);
+                        }
+                    }
+                } else if (spike_coarse) {
+                    for (var entry = start; entry < end; entry = entry + 1u) {
+                        var delta = vec3<f32>(0.0);
+                        if (level == 2u) {
+                            var spike_tile = vec3<f32>(0.0);
+                            if (spike_rep_kept) {
+                                spike_tile = read_delta_texel(entry, spike_rep_rank, tile_texel).rgb;
+                            }
+                            delta = spike_tile * f32(spike_rep_kept);
+                        } else {
+                            delta = spike_reconstruct_l1(cell_index, entry, local_probe, tile_texel);
+                        }
+                        spike_accum = spike_accum + delta * spike_scale(entry, start, spike_cached);
+                    }
+                }
+                textureStore(
+                    direct_composed_atlas,
+                    vec2<i32>(tile_origin.xy + tile_texel),
+                    i32(tile_origin.z),
+                    vec4<f32>(
+                        max(spike_accum, vec3<f32>(0.0)),
+                        select(0.0, 1.0, stored_slot.valid),
+                    ),
+                );
+            }
+        }
+        return;
+    }
+    // Keeping the accumulator private lets one shared kept lattice serve all
+    // 64 output tiles without a second global delta read. The runtime tile
+    // geometry is fixed at 6×6 by PRL validation.
+    var accum: array<vec4<f32>, 36>;
+    for (var texel_index = 0u; texel_index < TILE_TEXEL_COUNT; texel_index = texel_index + 1u) {
+        if (output_is_stored) {
+            let tile_texel = vec2<u32>(
+                texel_index % RUNTIME_TILE_DIMENSION,
+                texel_index / RUNTIME_TILE_DIMENSION,
+            );
+            let atlas_texel = tile_origin.xy + tile_texel;
+            let uv = (vec2<f32>(atlas_texel) + 0.5)
+                / vec2<f32>(textureDimensions(direct_intermediate_atlas));
+            accum[texel_index] = textureSampleLevel(
+                direct_intermediate_atlas,
+                intermediate_sampler,
+                uv,
+                i32(tile_origin.z),
+                0.0,
+            );
+        } else {
+            accum[texel_index] = vec4<f32>(0.0);
+        }
+    }
+
+
+    if (level == 0u) {
+        // Id 45 L0 compacts valid probes; L1 retains valid brick corners in
+        // kept-rank order. Base atlases id 34 and id 35 reserve eight
+        // zero-filled L1 corner slots. Direct compact-payload reads avoid
+        // loading 64 tiles into shared memory.
+        if (output_is_stored && local_probe_is_kept(cell_index, local_probe)) {
+            let probe_rank = within_cell_rank(cell_index, local_probe);
+            for (var entry = start; entry < end; entry = entry + 1u) {
+                let scale = spike_scale(entry, start, spike_cached);
+                for (var texel_index = 0u; texel_index < TILE_TEXEL_COUNT; texel_index = texel_index + 1u) {
+                    let tile_texel = vec2<u32>(
+                        texel_index % RUNTIME_TILE_DIMENSION,
+                        texel_index / RUNTIME_TILE_DIMENSION,
+                    );
+                    let prior = accum[texel_index];
+                    accum[texel_index] = vec4<f32>(
+                        prior.rgb + read_delta_texel(entry, probe_rank, tile_texel).rgb * scale,
+                        prior.a,
+                    );
+                }
+            }
+        }
+    } else {
+        // Coarsened L1/L2 cells load only their kept lattice into workgroup
+        // memory. A load happens once per (brick, CSR entry, tile texel), then
+        // every dropped-valid output probe reconstructs from those values.
+        for (var entry = start; entry < end; entry = entry + 1u) {
+            if (local_probe < MAX_KEPT_TILES) {
+                shared_kept_present[local_probe] = 0u;
+            }
+            workgroupBarrier();
+
+            if (level == 1u && local_probe_is_kept(cell_index, local_probe)) {
+                let slot = l1_shared_slot(local_probe);
+                let probe_rank = within_cell_rank(cell_index, local_probe);
+                shared_kept_present[slot] = 1u;
+                for (var texel_index = 0u; texel_index < TILE_TEXEL_COUNT; texel_index = texel_index + 1u) {
+                    let tile_texel = vec2<u32>(
+                        texel_index % RUNTIME_TILE_DIMENSION,
+                        texel_index / RUNTIME_TILE_DIMENSION,
+                    );
+                    shared_kept_tiles[slot * TILE_TEXEL_COUNT + texel_index] = read_delta_texel(
+                        entry,
+                        probe_rank,
+                        tile_texel,
+                    );
+                }
+            }
+            if (level == 2u) {
+                let representative = l2_representative_local(cell_index);
+                if (local_probe == representative && local_probe_is_kept(cell_index, local_probe)) {
+                    let probe_rank = within_cell_rank(cell_index, local_probe);
+                    shared_kept_present[0] = 1u;
+                    for (var texel_index = 0u; texel_index < TILE_TEXEL_COUNT; texel_index = texel_index + 1u) {
+                        let tile_texel = vec2<u32>(
+                            texel_index % RUNTIME_TILE_DIMENSION,
+                            texel_index / RUNTIME_TILE_DIMENSION,
+                        );
+                        shared_kept_tiles[texel_index] = read_delta_texel(
+                            entry,
+                            probe_rank,
+                            tile_texel,
+                        );
+                    }
+                }
+            }
+            workgroupBarrier();
+
+            if (output_is_stored) {
+                let scale = spike_scale(entry, start, spike_cached);
+                for (var texel_index = 0u; texel_index < TILE_TEXEL_COUNT; texel_index = texel_index + 1u) {
+                    var delta = vec3<f32>(0.0);
+                    if (level == 2u) {
+                        delta = shared_kept_tiles[texel_index].rgb
+                            * f32(shared_kept_present[0]);
+                    } else {
+                        delta = reconstruct_l1_shared_texel(local_probe, texel_index);
+                    }
+                    let prior = accum[texel_index];
+                    accum[texel_index] = vec4<f32>(prior.rgb + delta * scale, prior.a);
+                }
+            }
+            // No invocation may start loading the next entry until every
+            // invocation has consumed this entry's shared lattice.
+            workgroupBarrier();
+        }
+    }
+
+    if (output_is_stored) {
+        for (var texel_index = 0u; texel_index < TILE_TEXEL_COUNT; texel_index = texel_index + 1u) {
+            let tile_texel = vec2<u32>(
+                texel_index % RUNTIME_TILE_DIMENSION,
+                texel_index / RUNTIME_TILE_DIMENSION,
+            );
+            textureStore(
+                direct_composed_atlas,
+                vec2<i32>(tile_origin.xy + tile_texel),
+                i32(tile_origin.z),
+                vec4<f32>(
+                    max(accum[texel_index].rgb, vec3<f32>(0.0)),
+                    select(0.0, 1.0, stored_slot.valid),
+                ),
+            );
+        }
+    }
+}
+
+// Shared Catmull-Rom curve evaluation helpers for WGSL shaders (binding-agnostic).
+// See: context/lib/rendering_pipeline.md §4 "Animated lights"
+
+// Uniform Catmull-Rom (tension 0.5) sampling. Looping descriptors use a
+// closed curve over [0, 1). Finite descriptors carry a negative period;
+// `animation_curve_t` returns an encoded endpoint-clamped position so the
+// final keyframe is reached before CPU-side settlement.
+//
+// Binding-agnostic: the consumer shader declares
+//     @group(X) @binding(Y) var<storage, read> anim_samples: array<f32>;
+// at its chosen (group, binding) before this file is textually
+// concatenated. This helper reads `anim_samples` by lexical name and
+// must not declare the buffer itself.
+//
+// Basis matrix: Wikipedia — Cubic Hermite spline § Catmull-Rom spline.
+
+fn animation_curve_t(period: f32, phase: f32, time: f32) -> f32 {
+    if (period < 0.0) {
+        let open_t = clamp(time / max(-period, 1.0e-6) + phase, 0.0, 1.0);
+        // Closed positions are non-negative. Encode open positions below -1
+        // so existing curve call sites need no extra mode argument.
+        return -1.0 - open_t;
+    }
+    return fract(time / max(period, 1.0e-6) + phase);
+}
+
+fn sample_curve_catmull_rom(samples_offset: u32, count: u32, cycle_t: f32) -> f32 {
+    if (count == 0u) {
+        return 1.0;
+    }
+    if (count == 1u) {
+        return anim_samples[samples_offset];
+    }
+
+    let is_open = cycle_t <= -1.0;
+    let t = select(cycle_t, clamp(-cycle_t - 1.0, 0.0, 1.0), is_open);
+    var scaled = t * f32(count);
+    var i1 = u32(floor(scaled)) % count;
+    var i0 = (i1 + count - 1u) % count;
+    var i2 = (i1 + 1u) % count;
+    var i3 = (i1 + 2u) % count;
+    if (is_open) {
+        let last = count - 1u;
+        scaled = t * f32(last);
+        i1 = min(u32(floor(scaled)), last);
+        i0 = 0u;
+        if (i1 > 0u) {
+            i0 = i1 - 1u;
+        }
+        i2 = min(i1 + 1u, last);
+        i3 = min(i1 + 2u, last);
+    }
+    let f = fract(scaled);
+
+    let p0 = anim_samples[samples_offset + i0];
+    let p1 = anim_samples[samples_offset + i1];
+    let p2 = anim_samples[samples_offset + i2];
+    let p3 = anim_samples[samples_offset + i3];
+
+    let a = -0.5 * p0 + 1.5 * p1 - 1.5 * p2 + 0.5 * p3;
+    let b =        p0 - 2.5 * p1 + 2.0 * p2 - 0.5 * p3;
+    let c = -0.5 * p0              + 0.5 * p2;
+    let d =              p1;
+
+    return ((a * f + b) * f + c) * f + d;
+}
+
+fn sample_color_catmull_rom(
+    samples_offset: u32,
+    count: u32,
+    cycle_t: f32,
+    base_color: vec3<f32>,
+) -> vec3<f32> {
+    if (count == 0u) {
+        return base_color;
+    }
+    if (count == 1u) {
+        return vec3<f32>(
+            anim_samples[samples_offset],
+            anim_samples[samples_offset + 1u],
+            anim_samples[samples_offset + 2u],
+        );
+    }
+
+    let is_open = cycle_t <= -1.0;
+    let t = select(cycle_t, clamp(-cycle_t - 1.0, 0.0, 1.0), is_open);
+    var scaled = t * f32(count);
+    var i1 = u32(floor(scaled)) % count;
+    var i0 = (i1 + count - 1u) % count;
+    var i2 = (i1 + 1u) % count;
+    var i3 = (i1 + 2u) % count;
+    if (is_open) {
+        let last = count - 1u;
+        scaled = t * f32(last);
+        i1 = min(u32(floor(scaled)), last);
+        i0 = 0u;
+        if (i1 > 0u) {
+            i0 = i1 - 1u;
+        }
+        i2 = min(i1 + 1u, last);
+        i3 = min(i1 + 2u, last);
+    }
+    let f = fract(scaled);
+
+    let p0 = vec3<f32>(
+        anim_samples[samples_offset + i0 * 3u + 0u],
+        anim_samples[samples_offset + i0 * 3u + 1u],
+        anim_samples[samples_offset + i0 * 3u + 2u],
+    );
+    let p1 = vec3<f32>(
+        anim_samples[samples_offset + i1 * 3u + 0u],
+        anim_samples[samples_offset + i1 * 3u + 1u],
+        anim_samples[samples_offset + i1 * 3u + 2u],
+    );
+    let p2 = vec3<f32>(
+        anim_samples[samples_offset + i2 * 3u + 0u],
+        anim_samples[samples_offset + i2 * 3u + 1u],
+        anim_samples[samples_offset + i2 * 3u + 2u],
+    );
+    let p3 = vec3<f32>(
+        anim_samples[samples_offset + i3 * 3u + 0u],
+        anim_samples[samples_offset + i3 * 3u + 1u],
+        anim_samples[samples_offset + i3 * 3u + 2u],
+    );
+
+    let a = -0.5 * p0 + 1.5 * p1 - 1.5 * p2 + 0.5 * p3;
+    let b =        p0 - 2.5 * p1 + 2.0 * p2 - 0.5 * p3;
+    let c = -0.5 * p0              + 0.5 * p2;
+    let d =              p1;
+
+    return ((a * f + b) * f + c) * f + d;
+}
+
+// Canonical id-34 load-derived indirection-word decode. This helper declares
+// no resources; sampler and compose consumers supply their own carriers.
+
+const SH_INDIRECTION_LEVEL_MASK: u32 = 0x00000003u;
+const SH_INDIRECTION_VALID_BIT: u32 = 0x00000004u;
+const SH_INDIRECTION_SCALE_MASK: u32 = 0x00000018u;
+const SH_INDIRECTION_SCALE_SHIFT: u32 = 0x00000003u;
+const SH_INDIRECTION_SLOT_SHIFT: u32 = 0x00000005u;
+
+struct ShProbeIndirection {
+    valid: bool,
+    level: u32,
+    scale: u32,
+    slot: u32,
+}
+
+fn decode_sh_probe_indirection(word: u32) -> ShProbeIndirection {
+    return ShProbeIndirection(
+        (word & SH_INDIRECTION_VALID_BIT) != 0u,
+        word & SH_INDIRECTION_LEVEL_MASK,
+        (word & SH_INDIRECTION_SCALE_MASK) >> SH_INDIRECTION_SCALE_SHIFT,
+        word >> SH_INDIRECTION_SLOT_SHIFT,
+    );
+}

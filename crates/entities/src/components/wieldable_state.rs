@@ -8,10 +8,12 @@ use serde::{Deserialize, Serialize};
 /// The machine is hosted on [`WeaponComponent`](super::weapon::WeaponComponent) while
 /// weapons are the only wieldable kind. Equip states join this enum as new variants
 /// when switching owns their behavior.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
 pub enum WieldableState {
     #[default]
     Idle,
+    Charging(postretro_foundation::ActivationCursor),
+    Executing(postretro_foundation::ActivationCursor),
     Reloading,
     ShellLoading,
     Lowering,
@@ -19,9 +21,17 @@ pub enum WieldableState {
 }
 
 impl WieldableState {
+    pub const fn activation_cursor(self) -> Option<postretro_foundation::ActivationCursor> {
+        match self {
+            Self::Charging(cursor) | Self::Executing(cursor) => Some(cursor),
+            _ => None,
+        }
+    }
+
     pub const fn allows_fire(self) -> bool {
         match self {
             Self::Idle => true,
+            Self::Charging(_) | Self::Executing(_) => false,
             Self::Reloading => false,
             Self::ShellLoading => false,
             Self::Lowering => false,
@@ -32,6 +42,7 @@ impl WieldableState {
     pub const fn allows_reload(self) -> bool {
         match self {
             Self::Idle => true,
+            Self::Charging(_) | Self::Executing(_) => false,
             Self::Reloading => false,
             Self::ShellLoading => false,
             Self::Lowering => false,
@@ -42,6 +53,7 @@ impl WieldableState {
     pub const fn is_reload_activity(self) -> bool {
         match self {
             Self::Idle => false,
+            Self::Charging(_) | Self::Executing(_) => false,
             Self::Reloading => true,
             Self::ShellLoading => true,
             Self::Lowering => false,
@@ -52,6 +64,7 @@ impl WieldableState {
     pub const fn is_timed_state(self) -> bool {
         match self {
             Self::Idle => false,
+            Self::Charging(_) | Self::Executing(_) => false,
             Self::Reloading => true,
             Self::ShellLoading => true,
             Self::Lowering => true,

@@ -71,7 +71,7 @@ pub(crate) struct BandRun {
     /// back by a repack.
     pub band_evictions: usize,
     /// Blocks joining `M(c, L)` after the first step, and how many of them
-    /// were already resident. Blocks larger than a pool layer are excluded.
+    /// were already resident; a cell joining brings every block it owns.
     pub entering_blocks: usize,
     pub entering_resident: usize,
     /// Non-resident-to-resident transitions of mandatory blocks: reads a
@@ -174,10 +174,10 @@ pub(crate) fn run_band_walks(
     BandWalks { caps, walks }
 }
 
-/// Per-step target deltas against the model's accepted targets, with the
-/// cell ↔ block mapping: blocks are the cells whose block fits a pool layer.
-struct SimTargets {
-    block_of: Vec<Option<u32>>,
+/// Per-step target deltas against the model's accepted targets. A staged
+/// cell targets every block it owns, at the cell's class and lead.
+struct SimTargets<'a> {
+    blocks: &'a CellBlocks,
     current: Vec<Option<(LightmapBlockClass, u32)>>,
     next: Vec<Option<(LightmapBlockClass, u32)>>,
     targeted: Vec<u32>,
@@ -186,7 +186,7 @@ struct SimTargets {
     remove: Vec<u32>,
 }
 
-impl SimTargets {
+impl SimTargets<'_> {
     /// Stage `M(c, L)` as mandatory, then `band` (if any) at its position
     /// as lead, which keeps its nearest-first order.
     fn stage(&mut self, mandatory: &[u32], band: &[u32]) {
@@ -200,12 +200,11 @@ impl SimTargets {
                     .map(|(lead, &cell)| (cell, LightmapBlockClass::Band, lead as u32)),
             );
         for (cell, class, lead) in classes {
-            let Some(block) = self.block_of[cell as usize] else {
-                continue;
-            };
-            if self.next[block as usize].is_none() {
-                self.next[block as usize] = Some((class, lead));
-                self.next_list.push(block);
+            for block in self.blocks.blocks_of_cell(cell) {
+                if self.next[block as usize].is_none() {
+                    self.next[block as usize] = Some((class, lead));
+                    self.next_list.push(block);
+                }
             }
         }
         self.set.clear();
@@ -239,22 +238,13 @@ pub(crate) fn simulate_band(
     policy: BandPolicy,
 ) -> BandRun {
     let blocks = inputs.blocks;
-    let mut block_of = vec![None; blocks.dims.len()];
-    let mut cell_of = Vec::new();
-    let mut extents = Vec::new();
-    for (cell, dims) in blocks.dims.iter().enumerate() {
-        if let Some(dims) = dims.filter(|dims| dims.fits_pool_layer()) {
-            block_of[cell] = Some(cell_of.len() as u32);
-            cell_of.push(cell as u32);
-            extents.push((dims.width, dims.height));
-        }
-    }
-    let block_count = cell_of.len();
+    let block_count = blocks.dims.len();
+    let extents = blocks.dims.iter().map(|d| (d.width, d.height)).collect();
     let cap_layers = cap.unwrap_or(u32::MAX);
     let mut model = LightmapPoolModel::new(extents, blocks.alignment, POOL_LAYER_EDGE, cap_layers)
         .expect("aligned blocks that fit a pool layer");
     let mut targets = SimTargets {
-        block_of,
+        blocks,
         current: vec![None; block_count],
         next: vec![None; block_count],
         targeted: Vec::new(),
@@ -291,10 +281,7 @@ pub(crate) fn simulate_band(
         } else {
             &[]
         };
-        for block in mandatory
-            .iter()
-            .filter_map(|&c| targets.block_of[c as usize])
-        {
+        for block in blocks.set_blocks(mandatory) {
             if i > 0 && in_mandatory[block as usize] != step - 1 {
                 run.entering_blocks += 1;
                 run.entering_resident += usize::from(model.is_resident(block));
@@ -318,7 +305,7 @@ pub(crate) fn simulate_band(
             ready: &ready,
         });
         for &block in &plan.installed {
-            let bytes = blocks.block_bytes[cell_of[block as usize] as usize];
+            let bytes = blocks.block_bytes[block as usize];
             if in_mandatory[block as usize] == step {
                 run.demand_reads += 1;
             } else {

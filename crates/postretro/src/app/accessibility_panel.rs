@@ -123,8 +123,8 @@ impl App {
     /// Route a focused slider's captured step to its field's step action when
     /// the slider sits in an engine-tier tree and binds a readonly
     /// `accessibility.*` slot. Returns `true` when routed; any other slider
-    /// keeps the ordinary `setState` path, where a readonly slot warns and
-    /// no-ops.
+    /// takes the ordinary queued-step path, where the drain's slot write warns
+    /// and no-ops on a readonly slot.
     pub(crate) fn route_engine_accessibility_slider(
         &mut self,
         slot: &str,

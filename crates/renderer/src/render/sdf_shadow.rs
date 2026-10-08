@@ -248,7 +248,7 @@ impl SdfShadowPass {
         self.tuning.surface_bias = bias.max(0.0);
     }
 
-    /// Resize the half-res target on a surface resize. Rebuilds the bind group
+    /// Resize the half-res target on a scene-extent change. Rebuilds the bind group
     /// because both the depth view and the shadow target view changed.
     pub fn resize(
         &mut self,
@@ -275,7 +275,7 @@ impl SdfShadowPass {
 
     /// Rebuild the views and light buffers the pass depends on after a level
     /// load (SH section + the static-light buffers swap). The depth view is
-    /// unchanged by a level load (it's owned by the renderer's surface state),
+    /// unchanged by a level load (the renderer's scene depth view, rebuilt only when the scene extent changes),
     /// so the caller passes the current one back in.
     pub fn rebuild_for_level(
         &mut self,
@@ -306,7 +306,7 @@ impl SdfShadowPass {
     /// guarding the multiply on the mode flag.
     pub fn dispatch(
         &self,
-        queue: &wgpu::Queue,
+        queue: &crate::render::uploads::UploadQueue,
         encoder: &mut wgpu::CommandEncoder,
         sdf_atlas: &SdfAtlasResources,
         frame: SdfShadowFrameInputs,
@@ -334,7 +334,7 @@ impl SdfShadowPass {
     }
 }
 
-fn compute_half_res(full_w: u32, full_h: u32) -> (u32, u32) {
+pub(super) fn compute_half_res(full_w: u32, full_h: u32) -> (u32, u32) {
     let w = (full_w / HALF_RES_SCALE).max(1);
     let h = (full_h / HALF_RES_SCALE).max(1);
     (w, h)

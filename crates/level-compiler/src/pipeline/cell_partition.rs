@@ -1,4 +1,4 @@
-// Canonical cell partition, resolved once before atlas preparation for block order and id 49.
+// Canonical cell partition, resolved once in atlas preparation, after the face cut, for block order and id 49.
 // See: context/lib/build_pipeline.md §PRL section IDs (ClusterDirectory, Lightmap)
 
 use std::collections::HashSet;
@@ -16,11 +16,11 @@ use crate::streaming_hints::{ResolvedStreamingHints, resolve_streaming_hints};
 
 /// The runtime cells, portals, resolved streaming hints, and canonical
 /// partition the cluster directory is built from. Lightmap blocks are stored
-/// in this partition's cluster order, so it resolves before atlas
-/// preparation; the ClusterDirectory stage consumes it rather than
-/// recomputing. None of its inputs change after the BVH build: later stages
-/// stamp only animated chunk ranges onto BVH leaves, which the partition does
-/// not read.
+/// in this partition's cluster order, so it resolves inside atlas preparation,
+/// after the oversize-face cut and before packing; the ClusterDirectory stage
+/// consumes it rather than recomputing. Its inputs are final once the cut has
+/// rebuilt the leaf face ranges and the BVH: later stages stamp only animated
+/// chunk ranges onto BVH leaves, which the partition does not read.
 pub(super) struct CellPartitionPlan {
     pub(super) portals: PortalsSection,
     pub(super) cells: CellsSection,

@@ -294,7 +294,7 @@ impl LightmapResources {
     pub(crate) fn drain_streaming(
         &mut self,
         device: &wgpu::Device,
-        queue: &wgpu::Queue,
+        queue: &crate::render::uploads::UploadQueue,
         batch: LightmapDrainBatch,
     ) -> Result<(LightmapDrainOutcome, bool), LightmapResidencyDrainError> {
         let stream = self

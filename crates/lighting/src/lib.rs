@@ -47,11 +47,11 @@ pub fn light_space_matrix(light: &MapLight) -> glam::Mat4 {
         glam::Vec3::new(0.0, 1.0, 0.0)
     };
     let target = eye + dir;
-    let view = glam::Mat4::look_at_rh(eye, target, world_up);
+    let view = glam::camera::rh::view::look_at_mat4(eye, target, world_up);
 
     let fov_y = (2.0 * light.cone_angle_outer).max(0.05);
     let far = light.falloff_range.max(0.5);
-    let proj = glam::Mat4::perspective_rh(fov_y, 1.0, SHADOW_NEAR_CLIP, far);
+    let proj = glam::camera::rh::proj::directx::perspective(fov_y, 1.0, SHADOW_NEAR_CLIP, far);
     proj * view
 }
 
@@ -117,8 +117,8 @@ pub fn entity_occluder_eligible(light: &MapLight, promoted_baked: bool) -> bool 
 /// would re-drop lights in empty reachable cells and reintroduce a variant of
 /// the bug below.
 ///
-/// This is the same principle the WORLD occluder cull already uses
-/// (`shadow_cull.rs`): a shadow caster — here the LIGHT — does not need its OWN
+/// This is the same principle shadow world reach already uses
+/// (`rendering_pipeline.md` §7.1 step 6): a shadow caster — here the LIGHT — does not need its OWN
 /// cell to be in the camera PVS; it only needs to be able to reach a receiver
 /// the camera sees.
 ///

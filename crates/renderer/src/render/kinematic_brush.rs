@@ -303,13 +303,12 @@ fn push_or_merge_material_range(
     if index_count == 0 {
         return;
     }
-    if let Some(last) = ranges.last_mut() {
-        if last.material_index == material_index
-            && last.index_start + last.index_count == index_start
-        {
-            last.index_count += index_count;
-            return;
-        }
+    if let Some(last) = ranges.last_mut()
+        && last.material_index == material_index
+        && last.index_start + last.index_count == index_start
+    {
+        last.index_count += index_count;
+        return;
     }
     ranges.push(MaterialRange {
         material_index,
@@ -380,7 +379,7 @@ impl KinematicBrushPass {
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: Some("vs_main"),
-                buffers: &[wgpu::VertexBufferLayout {
+                buffers: &[Some(wgpu::VertexBufferLayout {
                     array_stride: postretro_render_data::geometry::WorldVertex::STRIDE
                         as wgpu::BufferAddress,
                     step_mode: wgpu::VertexStepMode::Vertex,
@@ -406,7 +405,7 @@ impl KinematicBrushPass {
                             format: wgpu::VertexFormat::Uint16x2,
                         },
                     ],
-                }],
+                })],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             },
             primitive: wgpu::PrimitiveState {
@@ -718,7 +717,7 @@ impl KinematicBrushPass {
     pub fn upload_instances(
         &mut self,
         device: &wgpu::Device,
-        queue: &wgpu::Queue,
+        queue: &crate::render::uploads::UploadQueue,
         beauty_instances: &[KinematicMoverInstance],
         shadow_instances: &[KinematicMoverInstance],
     ) {
@@ -784,7 +783,7 @@ impl KinematicBrushPass {
     #[allow(clippy::too_many_arguments)] // Mirrors the fixed group-2 light uniform fields.
     pub fn write_light_params(
         &self,
-        queue: &wgpu::Queue,
+        queue: &crate::render::uploads::UploadQueue,
         light_count: u32,
         dynamic_light_count: u32,
         scripted_light_count: u32,

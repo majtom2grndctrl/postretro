@@ -686,7 +686,7 @@ macro_rules! impl_registerable {
     };
 }
 
-// Arity expansion 0..=6. rquickjs 0.11's `FromParams` covers tuples up to 7
+// Arity expansion 0..=6. rquickjs's `FromParams` covers tuples up to 7
 // elements; one slot is consumed by the `Ctx<'js>` extractor used to throw
 // JS exceptions, leaving 6 user arguments. For wider signatures, pack
 // arguments into a struct.

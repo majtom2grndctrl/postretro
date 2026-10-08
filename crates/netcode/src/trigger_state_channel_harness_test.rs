@@ -148,6 +148,7 @@ fn atmosphere_reactions() -> Vec<NamedReaction> {
             descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                 primitive: "applyDamage".to_string(),
                 target: Some("@activators".to_string()),
+                kind: None,
                 tag: None,
                 on_complete: None,
                 args: serde_json::json!({ "amount": 25 }),
@@ -195,6 +196,7 @@ fn primitive(
         descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
             primitive: primitive.to_string(),
             target: None,
+            kind: None,
             tag: tag.map(str::to_string),
             on_complete: None,
             args,
@@ -227,6 +229,12 @@ fn fog_volume() -> FogVolumeComponent {
 
 fn idle_command() -> SimCommand {
     SimCommand {
+        input_tick: 0,
+        secondary_button: crate::weapon::FireButtonState {
+            pressed: false,
+            active: false,
+        },
+        activation: postretro_foundation::ActivationInput::default(),
         movement: MovementInput {
             wish_dir: Vec2::ZERO,
             jump_pressed: false,
@@ -517,6 +525,8 @@ impl PersistentAtmosphereHarness {
             &[],
             &mut mover_states,
             &[RemotePawnCommand {
+                real_command: true,
+                rejected_activation: None,
                 pawn: self.host_remote_pawn,
                 owner_client_id: CLIENT_ID,
                 weapon: None,

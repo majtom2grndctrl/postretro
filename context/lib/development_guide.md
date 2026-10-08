@@ -46,6 +46,33 @@ Crates form a one-way dependency graph: `foundation` and `entities` at the base,
 
 **Tooling.** The committed `crate-graph.md` is a generated snapshot of the layers and chokepoint ranking, kept fresh by the `crate-graph --check` preflight gate. Generate the full edge diagram on demand with `cargo run -p xtask -- crate-graph --mermaid` (it isn't committed — no dense graph to hand-maintain). Query the graph live with `--rdeps <crate>` for a crate's blast radius (reverse deps), or `--deps <crate>` for what it pulls in. The invariants above (nothing depends on the binary, `foundation` stays a leaf, `entities` depends only on `foundation`) are enforced by the `layering_invariants_hold` test — an upward edge or a widened chokepoint fails `cargo test`.
 
+### Build and run
+
+`xtask run` builds the `scripts-build` sidecar, then runs the engine: `cargo run -p xtask -- run [cargo flags...] -- [engine args...]`. A bare `cargo run -p postretro` assumes the sidecar is already built.
+
+**Standard configuration: default `dev` profile with `dev-tools`.** Builds, runs, and targeted tests share that one warm artifact set; any other profile or feature set compiles its own. `dev` keeps incremental builds, `debug_assert!`, and line-table debug info (file:line backtraces), with workspace crates optimized enough to play-test. It turns off rustc's implicit thin-local LTO: at opt-level ≥ 1 that pass re-optimizes much of a crate after any codegen edit, and it dominated edit rebuilds of the binary.
+
+```bash
+cargo run -p xtask -- run --features dev-tools -- content/dev/maps/<map>.prl
+cargo test -p <crate> <filter>   # add --features dev-tools where the crate has it
+cargo run -p postretro-level-compiler -- <in>.map -o <out>.prl   # compile a level (binary: prl-build)
+```
+
+Other profiles are deliberate exceptions. `--release` (thin LTO, no incremental: an edit rebuild takes a minute or more) is for distribution, perf validation, and preflight's release check. `--profile dev-debug` drops workspace optimization and restores full debug info for stepping through code in a debugger.
+
+Runtime-only environment variables never trigger a rebuild: `RUST_LOG`, `WGPU_BACKEND`, and the `POSTRETRO_*` diagnostics (§6.4). Distribution builds: `cargo run -p xtask -- dist` and `sdk-dist` (`build_pipeline.md` §Distribution packaging).
+
+### Worktree builds
+
+Default: sequential tracks on the main checkout's warm `target/`. A worktree is for genuine parallelism or another commit's build. Each one builds the engine cold; the `rquickjs-sys` QuickJS C dependency dominates.
+
+- **One checkout, one `target/`.** Never point a worktree at another checkout's target dir. Cargo names workspace-crate artifacts relative to the workspace root and judges freshness by mtime. A second checkout's build overwrites same-named artifacts, and the first treats them as fresh — its tests silently run the other commit's code.
+- **Lean and disposable.** Target dir inside the worktree, `CARGO_INCREMENTAL=0` (incremental is ~a quarter of a debug target), only the packages the track needs, one profile. Delete the target with the worktree.
+- **Comparison binaries** (A/B against another commit): build, copy the binary out, delete that target at once.
+- **Disk budget first.** Start a worktree build only if free space stays above 15 GB plus its size: ~8 GB for a release binary, ~25–30 GB for a full debug test build. Otherwise run the track on the main checkout. The budget covers every build in flight.
+- **Cap at 3 concurrent.** Past three simultaneous engine builds, compiles saturate CPU and exhaust disk; a full volume surfaces as linker "No space left on device" or bus errors that fail correct work. Batch the next group after the first merges.
+- **No shared dependency cache.** Stable Cargo cannot share third-party artifacts across workspaces without also sharing workspace crates. `sccache` trades disk for compile time, the wrong trade on a constrained machine. Cargo's cross-workspace cache, nightly-only so far, is the eventual fix.
+
 ## Stack
 
 ### Engine (`postretro`)
@@ -61,14 +88,14 @@ Crates form a one-way dependency graph: `foundation` and `entities` at the base,
 | Logging | log 0.4 + env_logger 0.11 |
 | Scripting (JS/TS) | rquickjs (QuickJS embed) |
 | Scripting (Luau) | mlua (Luau embed) |
-| Collision | parry3d 0.17 (nalgebra-based — convert to glam at collision module boundary; nalgebra types must not cross into engine code) |
+| Collision | parry3d 0.31 (glam-native: its `Vector` is `glam::Vec3` and its rotation is `glam::Quat`, so points pass through unconverted; parry's shape, pose, hit, and error types stay private to the `postretro-physics` crate; subsystem-boundary coordinates and query results use engine-owned types built from `Vec3`) |
 
 ### Renderer (`postretro-renderer`)
 
 | Concern | Crate |
 |---------|-------|
-| GPU | wgpu 29 (Vulkan, Metal, DX12) |
-| Async blocking | pollster 0.4 (wgpu adapter/device init only) |
+| GPU | wgpu 30 (Vulkan, Metal, DX12) |
+| Async blocking | pollster 1 (wgpu adapter/device init only) |
 
 ### Level compiler (`postretro-level-compiler`)
 
@@ -87,6 +114,7 @@ Crates form a one-way dependency graph: `foundation` and `entities` at the base,
 - **Runtime performance is a first-class goal** — structural choices that favor it belong in the initial implementation. See §1.4.
 - Respect **subsystem boundaries**: renderer, audio, input, game logic are distinct modules with explicit contracts.
 - **Deliver the impact defined in specs and tasks.** Specs define what and why; use judgment on how. When the plan doesn't survive contact with the code, adapt — but surface deviations and update the context files. See §1.
+- **Iterate in the default `dev` profile with `dev-tools`** — one warm build cache. See Workspace › Build and run.
 - Do not flatten module structure. See §2.
 - **No `unsafe` blocks.** See §3.5.
 
@@ -108,7 +136,7 @@ Read the spec and task before writing code. They tell you what outcome matters a
 **Don't:**
 - Add capabilities the task didn't ask for ("while I'm here, I'll also add...").
 - Skip work that's clearly within scope and justify it with `// TODO` or version labels.
-- Invent abstractions, helpers, or config options for hypothetical future needs.
+- Invent abstractions, helpers, or config options for hypothetical future needs. Seams for planned, named features are not hypothetical (§1.3).
 
 ### 1.2 Plan deviations
 
@@ -132,25 +160,30 @@ Over-engineering is as costly as under-delivering. Both create surface area that
 
 | | Under-delivering | Over-engineering |
 |---|---|---|
-| **What** | Shipping scope with missing validation, error handling, or tests | Adding scope, abstractions, or infrastructure the task didn't request |
-| **Cost** | Broken states, follow-up work, lost context | Unnecessary complexity, harder reviews, maintenance burden |
-| **Example** | "Map loading works but panics on missing lightmap section" | "Added a generic asset loading framework with plugin hooks" |
+| **What** | Shipping scope with missing validation, error handling, tests, or the work-bounding the design needs to perform | Adding scope, abstractions, or infrastructure the task didn't request |
+| **Cost** | Broken states, follow-up work, lost context, a feature that works but costs too much | Unnecessary complexity, harder reviews, maintenance burden |
+| **Example** | "Map loading works but panics on missing lightmap section" · "SH probes fill the whole bounding box, void included" | "Added a generic asset loading framework with plugin hooks" |
+
+**Scope is not ambition.** The rule polices breadth: features, hooks, config nobody asked for. It never licenses a naive version of what *was* asked. Inside scope, build the right shape: bounded work, baked inputs, netcode that holds at real latency. Simplest means simplest correct, budgeted version. When the destination is clear, build the full shape in strides. Small increments earn their cost only where the path is uncertain.
+
+Targets (pre-RTX, perf, co-op scope) are design inputs: [Architecture Index](./index.md) §1.1. A version that misses them is under-delivery, even when tests pass.
 
 ### 1.4 Follow-up criteria
 
 Adjacent work discovered during implementation gets a follow-up task, not a scope expansion.
 
 - **Robustness gaps** outside the task's scope → file a follow-up with enough context for the next agent.
-- **Speculative optimizations** — no measured bottleneck → file a follow-up.
-- **Abstractions** without multiple concrete consumers → three similar lines beat a premature helper.
+- **Unmeasured micro-optimizations** (instruction tuning, hand-vectorizing, cache tricks) → file a follow-up. Structural levers under **Performance** (bounding, culling, baking) are part of the task.
+- **Abstractions** without multiple concrete consumers → three similar lines beat a premature helper. A seam for a planned, named feature is not speculative; land it with its first consumer.
 
 **Performance.** Runtime performance is a first-class goal, and this engine's costs are specific — design for them while writing the code, not later. Two domains matter: the per-frame hot path (Input → Game logic → Audio → Render → Present) and build/load iteration time.
 
-In the per-frame hot path, three levers carry most of the weight:
+In the per-frame hot path, four levers carry most of the weight:
 
 - **Bound the work before optimizing the unit.** The engine's measured wins come from visibility and culling — portal traversal, cell-indexed draw candidates, BVH cone/frustum culls — and from ranking to a fixed budget, then dropping the overflow. Cap how much runs per frame first.
 - **Bake over compute** (architectural invariant — see [Architecture Index](./index.md) §2). Precompute offline — lightmaps, SH irradiance, portal visibility, BVH — so the runtime stays cheap. Reach for a baked input before a per-frame computation.
 - **Spend GPU budgets deliberately.** VRAM sits on a fixed memory floor; per-stage sampled-texture and binding slots are hard, low ceilings — several pinned by regression tests. Init-time allocations (shadow pools, atlases) and binding counts are up-front budget decisions, not later tuning. Treat a new large allocation or a new sampled binding as drawing down a fixed pool.
+- **Spend work only where it can matter.** Bake and compute where the player can be and see. Probes, lightmap texels, visibility, and nav stay inside the playable hull; the exterior void gets nothing. Cull bake rays and lights by reachability before tracing: no rays through solid geometry or past a light's range. A new bake stage or pass states its domain (which space, which receivers) and why it is no larger.
 
 Inside the hot path the ordinary defaults still hold: avoid per-frame allocations, prefer cache-friendly layouts, keep hot loops free of needless indirection. Design decisions, not speculative tuning.
 
@@ -160,7 +193,7 @@ Inside the hot path the ordinary defaults still hold: avoid per-frame allocation
 
 **Bound the full resource lifetime.** A working-set or disk bound spans the full lifecycle: production, buffering, serialization, cache or container writes, return, and cleanup. Count representations that coexist. Persistence can duplicate the output of an otherwise bounded algorithm.
 
-**Concurrent agents in isolated worktrees: cap at 3.** Each worktree builds the engine from scratch, and that build is heavy — the `rquickjs-sys` QuickJS C dependency dominates. Beyond three simultaneous engine builds, concurrent compiles saturate CPU and exhaust disk; a full volume surfaces as linker "No space left on device" or bus errors that fail otherwise-correct work. Three is the safe ceiling. Need more parallelism? Batch — run the next group after the first merges, not wider.
+**Netcode feel is a budget too.** Co-op clients on home connections must feel smooth: no rubber-banding, no jitter on remote entities, no input lag on the local player. Verify with the dev latency harness at realistic latency, jitter, and loss; loopback alone is unmeasured. Levers: prediction and reconciliation that converge without snapping, snapshot interpolation with an adequate buffer, sending only what changed. Scope stays co-op (index §4).
 
 When per-pass GPU timing (`POSTRETRO_GPU_TIMING=1`) or a profile confirms a real bottleneck, optimize aggressively — but keep the result clean. An optimization that makes the code unmaintainable is not acceptable, even with measurements behind it. Fast *and* clean is the goal; brittleness moves the cost from runtime to maintenance.
 

@@ -94,6 +94,10 @@ impl PreparedCapture {
         // Load synchronously: capture creates no worker thread or event loop.
         let mut world = postretro_level_loader::load_prl(&scene.map)
             .with_context(|| format!("failed to load `{}`", scene.map))?;
+        // Check before renderer construction/setters or the first texture upload.
+        // Capture's geometry adapter and UV normalization preserve these slices.
+        crate::render::validate_level_geometry_ranges(&world.bvh.leaves, world.indices.len())
+            .context("capture level failed the indirect index-range check")?;
         if world.sh_stream_manifest().is_some() {
             // Validate the PRL first, then enforce the sync-proof mode gate
             // (`require_sync_proof_mode`) before GPU initialization can mask

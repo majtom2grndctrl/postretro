@@ -22,6 +22,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     const MAIN: &str = include_str!("../main.rs");
+    const FRAME_LOOP: &str = include_str!("../frame_loop/mod.rs");
     const OPTIONS: &str = "self.update_player_options(frame_dt, options_menu_was_open);";
     const COMMIT: &str = "self.commit_render_extents();";
     const FRONTEND_FN: &str = "fn run_frontend_ui_logic(";
@@ -49,15 +50,13 @@ mod tests {
     // as a resize, and the camera is built from the committed extent.
     #[test]
     fn gameplay_frame_commits_extents_after_option_writes_and_before_the_camera() {
-        let (frontend_start, frontend_end) = frontend_logic_range();
-        let options = MAIN
-            .match_indices(OPTIONS)
-            .map(|(at, _)| at)
-            .find(|at| *at < frontend_start || *at >= frontend_end)
-            .expect("gameplay frame calls update_player_options outside run_frontend_ui_logic");
-        let commit = position(MAIN, COMMIT, options);
-        let eye = position(MAIN, "frame_eye::assemble_frame_eye(", commit);
-        let viewmodel = position(MAIN, "renderer.update_viewmodel_view_projection(", eye);
+        // The gameplay frame is `App::redraw`; the frontend's own option writes
+        // and commit stay in `run_frontend_ui_logic` in main.rs.
+        let redraw = position(FRAME_LOOP, "fn redraw(", 0);
+        let options = position(FRAME_LOOP, OPTIONS, redraw);
+        let commit = position(FRAME_LOOP, COMMIT, options);
+        let eye = position(FRAME_LOOP, "frame_eye::assemble_frame_eye(", commit);
+        let viewmodel = position(FRAME_LOOP, ".update_viewmodel_view_projection(", eye);
 
         assert!(
             options < commit && commit < eye && eye < viewmodel,
@@ -65,14 +64,16 @@ mod tests {
              resize in the same frame rebuild once (P6), and the camera and viewmodel \
              project at the committed scene aspect (P17)"
         );
-        let commits_in_window = MAIN[options..eye].matches("commit_render_extents").count();
+        let commits_in_window = FRAME_LOOP[options..eye]
+            .matches("commit_render_extents")
+            .count();
         assert_eq!(
             commits_in_window, 1,
             "exactly one commit_render_extents between the option writes and the eye (P6)"
         );
         assert!(
-            MAIN[viewmodel..]
-                .trim_start_matches("renderer.update_viewmodel_view_projection(")
+            FRAME_LOOP[viewmodel..]
+                .trim_start_matches(".update_viewmodel_view_projection(")
                 .trim_start()
                 .starts_with("self.camera.aspect()"),
             "the viewmodel projects at the camera's committed scene aspect (P17)"
@@ -147,7 +148,7 @@ mod tests {
         assert!(!arms.contains("commit_extents"), "handlers never commit");
         assert!(!arms.contains("update_aspect"), "handlers never set aspect");
         assert!(
-            !MAIN.contains("renderer.resize("),
+            !MAIN.contains("renderer.resize(") && !FRAME_LOOP.contains("renderer.resize("),
             "nothing rebuilds via renderer.resize"
         );
     }

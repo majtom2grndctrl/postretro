@@ -123,6 +123,13 @@ clusters (the camera's own included). It is cached per camera cell and ranked by
 whole-metre path distance, then wider path aperture, then cluster ID. Without a usable
 id 46 it falls back to a two-hop cluster-adjacency expansion from the camera's cluster.
 The reachability component alone is never a target set; it usually spans the whole map.
+Not built yet (`sh-streaming--reveal-gate-and-warm-horizon`): the warm set is retired. SH
+takes the lightmap's id-51 reach through one level-scope cell-demand stage that owns L:
+Visible, Pinned, owner closure and the clusters of id-51 cells within L are mandatory and
+never refused; band clusters (lead past L) and seam-warm targets are optional, trimmed
+farthest lead first. SH still requests drawn clusters as Visible on every visibility path.
+Level entry waits in a Settling boot state until one settle chokepoint reports every
+streamed resource's set for the presented pose resident (`boot_sequence.md` §9).
 Authored id-49 v2 hints add persistent pinned clusters and their owner closure, plus
 preferred `SeamWarm` targets across marked portals when the near side is visible—even if
 an opaque door blocks traversal. Seam warm-up is best effort: it does not change door

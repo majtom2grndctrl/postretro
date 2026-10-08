@@ -124,6 +124,8 @@ Two rules derive every per-slot effect from the state pair rather than from whic
 - **Any exit from participating clears that slot's state** — pawn, replication, ownership, command, state-slot, and combat — whatever the destination. A demotion clears exactly what a close clears because both are the same edge, and a slot demoted and then closed clears once, not twice.
 - **Any entry to participating registers the slot and spawns its pawn** — first admission and re-promotion alike, so a re-promoted slot needs no special case and no "must re-emit" rider.
 
+**Not built yet: the revealed term** (`ready/sh-streaming--reveal-gate-and-warm-horizon`). The predicate gains one term after content parity: both peers have revealed the host's installed level — finished Settling (`boot_sequence.md` §9). The client declares the revealed level identity on Control; the host records its own reveal and clears it at unload and suspend. A parity-matched slot that has not revealed stays admitted under a revealed holding cause, so the four stages and the entry rule below stand. Parity stays content identity, published at install. The name is "revealed", never "ready", which mods own.
+
 The connection survives; its state does not. A client id is stable within one connection but not across a rejoin — a relaunching peer arrives on a freshly minted id — so player identity keys to a durable seat, never to the connection.
 
 **A held slot is gated in both directions.** It is sent no entity state, and its inbound traffic is drained and discarded. The drain is not an optimization: an undrained reliable channel overflows its memory budget and the transport disconnects the peer — which would break the never-close guarantee through a path that never decided anything.
@@ -186,7 +188,7 @@ Identity is declared, not proven — tamper resistance is a non-goal, and neithe
 
 State that survives a level change, enumerated rather than accreted:
 
-- **The connection** — its id, lifecycle stage, and last parity declaration.
+- **The connection** — its id, lifecycle stage, and last parity declaration. Not built yet: its last revealed declaration, which a host level change does not clear.
 - **The seat** — the host-minted durable player key, its asserted claim when one exists, its carried state, and its level-independent placement-assignment cursor. A seat sits above participation and is never released by a level transition.
 - **The roster** — the host's seat-keyed projection of host-minted seat ids, current connection state, and remaining fresh-seat count. Claims remain host-local for rejoin; neither player ids nor display names cross the roster wire.
 

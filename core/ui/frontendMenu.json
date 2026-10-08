@@ -31,7 +31,12 @@
         "color": "ok",
         "font": "mono",
         "bind": {
-          "slot": "session.hostAddress"
+          "slot": "session.hostAddress",
+          "format": "HOSTING ON {}"
+        },
+        "visibleWhen": {
+          "slot": "session.hosting",
+          "equals": true
         }
       },
       {

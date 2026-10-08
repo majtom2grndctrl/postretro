@@ -124,7 +124,7 @@ pub use host_presentation::{
 };
 // `ResolvedCommand` / `ResolutionSource` are produced by the command queue and consumed
 // via the submodule path only; not re-exported here.
-pub use host_address::{host_address_line, probe_lan_address};
+pub use host_address::{dialable_host_address, probe_lan_address};
 pub(crate) use interpolation::{DemoMover, InterpolationDelayState, RemoteInterpolationBuffer};
 pub use join_seed::{HostJoinSeeds, JoinSeedArrival, ParticipationSeed};
 pub(crate) use lifecycle::{
@@ -385,10 +385,17 @@ pub fn parse_net_config(args: &[String]) -> Result<NetConfig, NetArgError> {
     })
 }
 
+/// A listen port players can be told in advance. Port 0 (an OS-chosen
+/// ephemeral port) is refused: direct connect has no way to discover it.
 fn parse_port(value: &str) -> Result<u16, NetArgError> {
-    value
-        .parse::<u16>()
-        .map_err(|_| NetArgError(format!("invalid --host port: {value}")))
+    match value.parse::<u16>() {
+        Ok(0) => Err(NetArgError(
+            "--host port must be 1-65535; port 0 would pick a random port players cannot know"
+                .into(),
+        )),
+        Ok(port) => Ok(port),
+        Err(_) => Err(NetArgError(format!("invalid --host port: {value}"))),
+    }
 }
 
 fn resolve_switch_outcome(
@@ -7215,6 +7222,14 @@ mod tests {
     fn parse_connect_missing_addr_is_error() {
         assert!(parse_net_config(&argv(&["--connect"])).is_err());
         assert!(parse_net_config(&argv(&["--connect", "not-an-addr"])).is_err());
+    }
+
+    #[test]
+    fn parse_host_refuses_port_zero() {
+        for args in [&["--host", "0"][..], &["--host=0"][..]] {
+            let err = parse_net_config(&argv(args)).unwrap_err();
+            assert!(err.0.contains("port 0"), "{args:?}: {err}");
+        }
     }
 
     #[test]

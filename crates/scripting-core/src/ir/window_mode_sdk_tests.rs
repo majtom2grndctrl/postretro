@@ -77,7 +77,9 @@ fn shipped_frontend_window_controls_compile_and_evaluate() {
     }
     let title = serde_json::to_string(&value["title"]).unwrap();
     assert!(
-        title.contains(r#""slot":"session.hostAddress""#),
-        "title menu binds the listen-host address: {title}"
+        // serde_json sorts object keys.
+        title.contains(r#""bind":{"format":"HOSTING ON {}","slot":"session.hostAddress"}"#)
+            && title.contains(r#""visibleWhen":{"equals":true,"slot":"session.hosting"}"#),
+        "title menu shows the listen-host address only while hosting: {title}"
     );
 }

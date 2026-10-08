@@ -1598,6 +1598,7 @@ export type GameStateRefs = {
   },
   session: {
     hostAddress: ComputedRef<string>,
+    hosting: ComputedRef<boolean>,
     openSeats: ComputedRef<number>,
   },
   ui: {

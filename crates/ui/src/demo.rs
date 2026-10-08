@@ -263,8 +263,8 @@ mod tests {
         };
         assert_eq!(instruction.content, "NO MOD FRONTEND REGISTERED");
 
-        // Empty unless the engine is a listen host, so single-player and
-        // connected clients see no address row.
+        // Shown only on a listen host; the engine publishes the bare address
+        // and the tree supplies the wording.
         let Widget::Text(host_address) = &col.children[2] else {
             panic!("third row is the host address text");
         };
@@ -279,7 +279,21 @@ mod tests {
                 slot: "session.hostAddress".to_string()
             }
         );
-        assert_eq!(bind.format, None);
+        assert_eq!(bind.format.as_deref(), Some("HOSTING ON {}"));
+        let visible_when = host_address
+            .visible_when
+            .as_ref()
+            .expect("host address row hides unless hosting");
+        assert_eq!(
+            visible_when.source,
+            crate::descriptor::BindSource::Slot {
+                slot: "session.hosting".to_string()
+            }
+        );
+        assert_eq!(
+            visible_when.equals,
+            Some(crate::descriptor::PredicateValue::Boolean(true))
+        );
     }
 
     /// The `nav.menu` toggle pushes/pops the registered pause menu through the

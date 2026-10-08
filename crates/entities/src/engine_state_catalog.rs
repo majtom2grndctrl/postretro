@@ -738,14 +738,25 @@ const BUILTIN_ENGINE_STATE: &[EngineStateCatalogEntry<'static>] = &[
         wire_name: "session.hostAddress",
         sdk_path: &["session", "hostAddress"],
         value_type: EngineStateValueType::String,
-        // Empty unless this process is a listen host, so a bound text shows
-        // nothing in single-player or on a connected client.
+        // `ip:port` a player dials to join this listen host; empty unless
+        // `session.hosting`. Data, not copy: content supplies the wording.
         default: EngineStateDefault::String(""),
         range: None,
         persist: false,
         capability: EngineStateCapability::Readonly,
-        // The host's own connect line; clients already know the address they
-        // dialed, so it never replicates.
+        // Clients already know the address they dialed, so it never replicates.
+        network: ReplicationScope::None,
+    },
+    EngineStateCatalogEntry {
+        wire_name: "session.hosting",
+        sdk_path: &["session", "hosting"],
+        value_type: EngineStateValueType::Boolean,
+        // True only on a live listen host; the predicate a host-address row
+        // shows under.
+        default: EngineStateDefault::Boolean(false),
+        range: None,
+        persist: false,
+        capability: EngineStateCapability::Readonly,
         network: ReplicationScope::None,
     },
     EngineStateCatalogEntry {
@@ -1388,6 +1399,7 @@ mod tests {
                 "screen.shake",
                 "screen.vignette",
                 "session.hostAddress",
+                "session.hosting",
                 "session.openSeats",
                 "ui.textEntry",
                 "window.displayModeBitDepth",
@@ -1562,6 +1574,17 @@ mod tests {
         );
         assert_eq!(session_host_address.network, ReplicationScope::None);
         assert!(!session_host_address.persist);
+
+        let session_hosting = entries
+            .iter()
+            .find(|entry| entry.wire_name == "session.hosting")
+            .unwrap();
+        assert_eq!(session_hosting.sdk_path, &["session", "hosting"]);
+        assert_eq!(session_hosting.value_type, EngineStateValueType::Boolean);
+        assert_eq!(session_hosting.default, EngineStateDefault::Boolean(false));
+        assert_eq!(session_hosting.capability, EngineStateCapability::Readonly);
+        assert_eq!(session_hosting.network, ReplicationScope::None);
+        assert!(!session_hosting.persist);
 
         let reload_active = entries
             .iter()

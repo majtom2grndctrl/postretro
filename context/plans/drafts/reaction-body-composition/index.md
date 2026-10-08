@@ -10,7 +10,7 @@ A requested capability, raised by the owner while updating `E16--player-events` 
 When done:
 - Any system reaction is a sequence step.
 - An array body, plain or returned from the `(on) => …` tracer, means a sequence.
-- After a `wait`, a presentation step plays on the same machines it would have played on before the wait.
+- After a `wait`, a machine-local step lands on the same machines it would have landed on before the wait.
 
 ## Decisions
 - **Every system reaction is a legal step.** A step does what the same reaction does as a body, on the machine that runs it. Presentation, state writes, sentiment, UI-stack and game-flow verbs all qualify; a closed subset would be a second list to learn (`scripting.md` §10.4 already treats them as one namespace). A step with no `id`, `kind` or `target` is a system step. Parse rejects one that names a primitive that is not a system reaction, naming the reaction and step, in both runtimes.
@@ -19,13 +19,13 @@ When done:
   - A `setState` step before any `wait` in a trigger-bound reaction binds in-tick, like a `setState` body (`plans/done/E18--trigger-event-fanout`).
   - Every other system step queues at the walk and applies at the frame-end system drain. Authored order holds among system steps; a member or group step earlier in the same walk has already applied.
   - IR-valued `setState` steps bind at install like `setState` bodies (`research.md` §Dispatch today).
-- **A wait changes when a presentation step plays, never where.** Presentation means `playSound`, `rumble`, `flashScreen`, `vignette` and `screenShake`.
-  - From a source the host mirrors (`levelLoad`, crossings over shared state, named gameplay events), a connected client parks the tail too and lands only its presentation steps; the host's copy lands the rest, so the client logs nothing above debug.
-  - From a local-only source (UI presses, crossings over the machine's own owner-private or local slots), the client also lands only its presentation steps. No machine runs the rest, so the client warns once per reaction, naming it and the dropped step, keeping the diagnostic E18 shipped (`plans/done/E18--timed-reaction-steps` O43).
+- **A wait changes when a machine-local step lands, never where.** A machine-local step is a system step whose effect never replicates and is not consequential: presentation (`playSound`, `rumble`, `flashScreen`, `vignette`, `screenShake`), UI-stack verbs (`showDialog`, `openMenu`, `closeDialog`), text edits, and `setState` on a non-replicated slot (`ui.md` §5). One named predicate decides it, the chokepoint E16's presentation routing also consults.
+  - From a source the host mirrors (`levelLoad`, crossings over shared state, named gameplay events), a connected client parks the tail too and lands only its machine-local steps; the host's copy lands the rest, so the client logs nothing above debug.
+  - From a local-only source (UI presses, crossings over the machine's own owner-private or local slots), the client also lands only its machine-local steps. No machine runs the rest, so the client warns once per reaction, naming it and the dropped step, keeping the diagnostic E18 shipped (`plans/done/E18--timed-reaction-steps` O43).
   - A post-wait `fire(r)` on a client dispatches `r` through the same filter, so a shared sting reached through `fire` plays where its inline twin would.
   - From a host-only source (trigger events), the host lands the tail. Its presentation reaches the audience a pre-wait step would have reached, which today is the host.
-  - Every non-presentation step after a wait stays host-only, keeping E18's rule that delayed consequences are host-authoritative and replicated (`plans/done/E18--timed-reaction-steps` Invariants).
-  - This adopts E18's named follow-up, client tails restricted to presentation, and reverses its client-refusal default (owner ruling). Rivals: `research.md` §Where a post-wait presentation step should play.
+  - Every other step after a wait stays host-only, keeping E18's rule that delayed consequences are host-authoritative and replicated (`plans/done/E18--timed-reaction-steps` Invariants).
+  - This adopts E18's named follow-up, client tails restricted to presentation, widened to machine-local steps, and reverses its client-refusal default (owner ruling). Rivals: `research.md` §Where a post-wait presentation step should play.
 - **The fire context reaches system steps before a wait and not after.**
   - Before a wait, a step inherits the fire it runs under. `at: on.emitter` resolves, dispatch inputs bind, and E16's presentation routing applies.
   - After a wait, install drops a reaction whose system step reads `at: on.emitter` (V4a, unchanged) or a `setState` value that reads a dispatch input (V4a, extended).
@@ -43,6 +43,7 @@ When done:
   - Rivals: `research.md` §Array bodies.
 - **Placement.** The work sits in the SDK builders, both descriptor parsers, sequence dispatch and the trigger partition, and the scheduler's client role. Nothing changes on the net wire and `WIRE_VERSION` stays put; post-wait player-event presentation reuses the message kind E16 adds.
 - **Non-goals.**
+  - Waits in UI-fired reactions: `ui-timed-reactions` owns them on the UI clock, with session lifetime and no level required. Until it lands, a UI press's tail stays on this scheduler under the local-only warn-once rule above.
   - Whose screen a trigger-fired effect belongs to: `coop-trigger-screen-effects`. Whatever it decides covers post-wait steps under the rule above.
   - Member light and fog steps after a wait on clients (`research.md` §Doors).
   - Subject tokens after a wait, and a cancel verb: E18's rules stand.
@@ -122,7 +123,9 @@ Luau mirrors it: `Postretro.defineReaction("closet.medkit", function(on) return 
 - [ ] Loopback host plus client, `levelLoad = [wait(500), npcs().update({ aggro: true }), playSound(x), m.start()]`. The client plays `x` once and applies neither other step. The host applies all three. Neither logs above debug about the client tail (research S3).
 - [ ] Loopback, a `player.health` crossing below 25 with `[vignette(…), wait(600), playSound(x)]`. Each machine plays `x` only for its own crossing, and the host sends the client nothing (research S4).
 - [ ] Loopback, a trigger-fired `[wait(300), flashScreen(…)]`. The host presents it and the client does not, matching the same step before the wait.
-- [ ] On a client, a post-wait `setState` or `loadLevel` step does not run, and a post-wait `fire(r)` lands only `r`'s presentation steps. On the host the same steps all run.
+- [ ] On a client, a post-wait `setState` on a replicated slot or a `loadLevel` step does not run, and a post-wait `fire(r)` lands only `r`'s machine-local steps. On the host the same steps all run.
+- [ ] Loopback host plus client, `levelLoad = [wait(3000), showDialog(objective), updateState(ui.textEntry, "")]`: each machine shows the dialog and clears its own text entry, exactly as the same steps before the wait do.
+- [ ] A post-wait `updateState` on a replicated slot lands on the host only; the client sees it by replication, not by landing it.
 - [ ] On a client, a UI press firing `[playSound(click), wait(300), returnToFrontend()]` plays the click, drops the return and warns once naming the reaction and step; a second press warns no further. A crossing over shared state with the same shape warns nothing above debug.
 - [ ] On a client, a crossing firing `[wait(300), fire(sting)]` plays `sting`'s sound exactly as `[wait(300), playSound(…)]` does.
 - [ ] Unloading the level, suspending or hot-reloading on a client drops its parked tails, and nothing lands into the next level.
@@ -148,7 +151,7 @@ Luau mirrors it: `Postretro.defineReaction("closet.medkit", function(on) return 
 - **Dispatch.** `dispatch_sequence` takes the system registry and calls the `dispatch_system_primitive` path for `System` steps, inside the caller's `SystemCommandFireContext`.
 - **Trigger partition.** `bind_sequence_step` binds a `System` `setState` through the same `bind_command` path as `bind_primitive`; other system steps join the residual.
 - **Bindings and validation.** `SystemReactionIrBindings::rebuild` walks sequence steps. Pass A V4a and Pass B V4b read system steps (`reaction_validation.rs`).
-- **Client tails.** `ReactionScheduler` gains a client mode that enrolls only tails containing a presentation step, lands only those steps, and is advanced by the connected-client tick. Rival: forward host tails over E16's Presentation message kind. It is right for one-player audiences and wrong for own-state crossings (research).
+- **Client tails.** `ReactionScheduler` gains a client mode that enrolls only tails containing a machine-local step, lands only those steps, and is advanced by the connected-client tick. Rival: forward host tails over E16's Presentation message kind. It is right for one-player audiences and wrong for own-state crossings (research).
 - **SDK.**
   - System builders return a `SystemReactionStep` type assignable to both a body and a step.
   - `ReactionBody` gains nested-array entries.
@@ -159,7 +162,7 @@ Luau mirrors it: `Postretro.defineReaction("closet.medkit", function(on) return 
 - **Split first.** `reaction_scheduler.rs`, `reaction_validation.rs`, `system_reactions.rs`, `data_script.luau` and `main.rs` are past ~800 lines. Split only the ones extended, behavior-preserving, each in its own commit.
 
 ## Open questions
-- Whether client tails reuse `ReactionScheduler` with a role mode or get a sibling presentation-only scheduler — **delegated**.
+- Whether client tails reuse `ReactionScheduler` with a role mode or get a sibling machine-local-only scheduler — **delegated**.
 
 ## Boundary inventory
 Both runtimes ship every row.
@@ -168,7 +171,7 @@ Both runtimes ship every row.
 | System step | `SequenceTarget::System` (payload-free) | sequence entry `{ primitive, args }`: no `id`, `kind`, `target`, `tag` or `onComplete` | any system builder unspread, typed `SystemReactionStep` | same builders, `UI.playSound(…)` etc. | n/a |
 | Step type | n/a | n/a | `SystemReactionStep` joins `SequenceStep`; system builders return it | Luau step type mirror | n/a |
 | Array body | n/a (lowered by the SDK) | `{ sequence: [...] }`, flattened | `ReactionBody` gains `ReactionEntry[]` with nesting; plain and tracer forms | `defineReaction(name, { … })` table body or tracer return | n/a |
-| Client presentation tail | scheduler client role | n/a (net wire unchanged) | n/a | n/a | n/a |
+| Client machine-local tail | scheduler client role | n/a (net wire unchanged) | n/a | n/a | n/a |
 
 ## Wire format
 Manifest JSON only; the net wire and `WIRE_VERSION` do not change.

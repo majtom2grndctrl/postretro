@@ -12,6 +12,7 @@ mod closet_reveal_surface_tests;
 pub(crate) mod first_launch_hold;
 pub(crate) mod lifecycle;
 pub(crate) mod loading_screen;
+pub(crate) mod presented_pose;
 pub(crate) mod reaction_validation;
 pub(crate) mod render_profile;
 pub(crate) mod session;

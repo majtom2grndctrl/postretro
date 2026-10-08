@@ -975,14 +975,13 @@ impl App {
         }
         // The spawn eye, computed once: the followed local pawn's eye (the
         // point every tick moves the camera to), else the camera placed above.
-        // Both interpolation endpoints hold it, so a frame before the first
-        // tick renders from this eye, the one the spawn preload made
-        // resident, and the first tick blends from it rather than from the
-        // pawn's origin or the previous level's pose.
-        let spawn_eye = self.followed_pawn_eye().unwrap_or(self.camera.position);
-        self.camera.position = spawn_eye;
-        self.frame_timing
-            .hold_state(InterpolableState::new(spawn_eye));
+        // The presented pose is that spawn pose unless the frontend menu is
+        // up. Both interpolation endpoints hold it, so a frame before the
+        // first tick renders from the pose Settling made resident, and the
+        // first tick blends from it rather than from the pawn's origin or the
+        // previous level's pose.
+        self.camera.position = self.followed_pawn_eye().unwrap_or(self.camera.position);
+        self.place_camera_at_presented_pose();
         self.level_timings.record("camera_pose");
 
         // Renderer-side fog: pixel scale + per-cell masks. The fog-volume entities

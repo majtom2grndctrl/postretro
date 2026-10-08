@@ -686,6 +686,34 @@ impl Session {
                 Some(netcode::NetEndpoint::Client { .. })
             ));
         let trigger_auto_close_timers = scripting.auto_close_timers.clone();
+        // A listen host publishes the address players should dial, for the
+        // frontend to show. Written after identity setup, which can still
+        // demote the endpoint to single-player.
+        if let Some(address) = published_host_address(
+            &net_role,
+            matches!(&net_endpoint, Some(netcode::NetEndpoint::Host { .. })),
+            netcode::probe_lan_address,
+        ) {
+            log::info!("[Net] players join with --connect {address}");
+            for (slot, value) in [
+                (
+                    HOST_ADDRESS_SLOT,
+                    postretro_entities::slot_table::SlotValue::String(address.to_string()),
+                ),
+                (
+                    HOSTING_SLOT,
+                    postretro_entities::slot_table::SlotValue::Boolean(true),
+                ),
+            ] {
+                if let Err(err) = postretro_scripting_core::store_bridge::write_store_slot(
+                    &scripting.script_ctx,
+                    slot,
+                    value,
+                ) {
+                    log::warn!("[Net] failed to write `{slot}`: {err}");
+                }
+            }
+        }
         boot_timings.record("net_endpoint_complete");
 
         // Seed every accessibility working copy and `accessibility.*` slot once,
@@ -776,6 +804,26 @@ fn load_player_options(settings_path: Option<&Path>) -> options::PlayerOptions {
     options::boot::BootOptions::load(settings_path.map(Path::to_path_buf))
         .finish()
         .0
+}
+
+const HOST_ADDRESS_SLOT: &str = "session.hostAddress";
+const HOSTING_SLOT: &str = "session.hosting";
+
+/// The address a live listen host publishes, else `None` (both slots keep
+/// their empty/false defaults). A host role whose endpoint failed setup has
+/// degraded to single-player and publishes nothing. `probe_lan` runs only when
+/// hosting.
+fn published_host_address(
+    role: &netcode::NetRole,
+    endpoint_is_host: bool,
+    probe_lan: impl FnOnce() -> Option<std::net::IpAddr>,
+) -> Option<std::net::SocketAddr> {
+    match role {
+        netcode::NetRole::Host { port } if endpoint_is_host => {
+            Some(netcode::dialable_host_address(*port, probe_lan()))
+        }
+        _ => None,
+    }
 }
 
 /// Preserve the local seat/carry ledger when session identity entropy fails.
@@ -1306,6 +1354,29 @@ mod tests {
             std::fs::read_to_string(&path).expect("read malformed settings"),
             malformed
         );
+    }
+
+    #[test]
+    fn host_address_is_published_only_by_a_live_host() {
+        let lan = || Some(std::net::IpAddr::from([10, 0, 0, 7]));
+        assert_eq!(
+            published_host_address(&netcode::NetRole::Host { port: 27015 }, true, lan),
+            Some("10.0.0.7:27015".parse().unwrap())
+        );
+        // A failed bind (or identity setup) left no host endpoint.
+        assert_eq!(
+            published_host_address(&netcode::NetRole::Host { port: 27015 }, false, lan),
+            None
+        );
+        let no_probe = || -> Option<std::net::IpAddr> { panic!("probed outside host role") };
+        assert_eq!(
+            published_host_address(&netcode::NetRole::SinglePlayer, false, no_probe),
+            None
+        );
+        let connect = netcode::NetRole::Connect {
+            addr: "127.0.0.1:27015".parse().unwrap(),
+        };
+        assert_eq!(published_host_address(&connect, false, no_probe), None);
     }
 
     // Regression: session-id entropy failure used to abort engine boot.

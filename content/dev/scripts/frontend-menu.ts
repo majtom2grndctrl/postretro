@@ -251,6 +251,13 @@ export const frontendMenu = defineUiTree({
         Button({ id: "frontendPlay", label: "PLAY", onPress: openPlay }),
         Button({ id: "frontendOptions", label: "OPTIONS", onPress: openOptions }),
         Button({ id: "frontendExit", label: "EXIT", onPress: askExit }),
+        Text({
+          content: "",
+          fontSize: 14,
+          color: COLOR_MUTED,
+          bind: bindState(getGameState().session.hostAddress, { format: "HOSTING ON {}" }),
+          visibleWhen: stateEquals(getGameState().session.hosting, true),
+        }),
       ],
     ),
   ),

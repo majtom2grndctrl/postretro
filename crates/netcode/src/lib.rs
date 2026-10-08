@@ -41,6 +41,7 @@ mod endpoint;
 // headless co-op harness cannot each invent their own sequencing.
 pub mod frame_order;
 mod host;
+mod host_address;
 // Fix B: host-side delay-buffered presentation of connected-client pawns. New logic
 // lives here; `main.rs`/`interpolation.rs`/`endpoint.rs` carry only thin wiring.
 mod host_presentation;
@@ -123,6 +124,7 @@ pub use host_presentation::{
 };
 // `ResolvedCommand` / `ResolutionSource` are produced by the command queue and consumed
 // via the submodule path only; not re-exported here.
+pub use host_address::{dialable_host_address, probe_lan_address};
 pub(crate) use interpolation::{DemoMover, InterpolationDelayState, RemoteInterpolationBuffer};
 pub use join_seed::{HostJoinSeeds, JoinSeedArrival, ParticipationSeed};
 pub(crate) use lifecycle::{
@@ -320,7 +322,9 @@ impl std::fmt::Display for NetArgError {
 /// Recognized flags, scanned independently of the positional PRL-map path (which
 /// the existing `resolve_map_path` handling owns — this parser never consumes it):
 /// - `--host [port]` — listen server; bare `--host` uses [`DEFAULT_HOST_PORT`].
-/// - `--connect <ip:port>` — client; `<ip:port>` is required.
+/// - `--connect <ip:port>` — client; `<ip:port>` is required and must be IPv4.
+///   The host binds IPv4 only, so an IPv6 address could never reach it; it is
+///   refused here with a clear message rather than failing on the first send.
 ///
 /// Absent both flags, the role is [`NetRole::SinglePlayer`]. `--host` and
 /// `--connect` are mutually exclusive — supplying both is an error.
@@ -366,6 +370,11 @@ pub fn parse_net_config(args: &[String]) -> Result<NetConfig, NetArgError> {
             let addr: SocketAddr = value
                 .parse()
                 .map_err(|_| NetArgError(format!("invalid --connect address: {value}")))?;
+            if addr.is_ipv6() {
+                return Err(NetArgError(format!(
+                    "--connect does not support IPv6 addresses yet; use the host's IPv4 address (got {value})"
+                )));
+            }
             role = Some(NetRole::Connect { addr });
             continue;
         }
@@ -376,10 +385,17 @@ pub fn parse_net_config(args: &[String]) -> Result<NetConfig, NetArgError> {
     })
 }
 
+/// A listen port players can be told in advance. Port 0 (an OS-chosen
+/// ephemeral port) is refused: direct connect has no way to discover it.
 fn parse_port(value: &str) -> Result<u16, NetArgError> {
-    value
-        .parse::<u16>()
-        .map_err(|_| NetArgError(format!("invalid --host port: {value}")))
+    match value.parse::<u16>() {
+        Ok(0) => Err(NetArgError(
+            "--host port must be 1-65535; port 0 would pick a random port players cannot know"
+                .into(),
+        )),
+        Ok(port) => Ok(port),
+        Err(_) => Err(NetArgError(format!("invalid --host port: {value}"))),
+    }
 }
 
 fn resolve_switch_outcome(
@@ -7206,6 +7222,29 @@ mod tests {
     fn parse_connect_missing_addr_is_error() {
         assert!(parse_net_config(&argv(&["--connect"])).is_err());
         assert!(parse_net_config(&argv(&["--connect", "not-an-addr"])).is_err());
+    }
+
+    #[test]
+    fn parse_host_refuses_port_zero() {
+        for args in [&["--host", "0"][..], &["--host=0"][..]] {
+            let err = parse_net_config(&argv(args)).unwrap_err();
+            assert!(err.0.contains("port 0"), "{args:?}: {err}");
+        }
+    }
+
+    #[test]
+    fn parse_connect_refuses_ipv6_with_a_clear_message() {
+        for value in [
+            "[::1]:27015",
+            "[2001:db8::1]:27015",
+            "[::ffff:127.0.0.1]:27015",
+        ] {
+            let err = parse_net_config(&argv(&["--connect", value])).unwrap_err();
+            assert!(err.0.contains("IPv6"), "{value}: {err}");
+            assert!(err.0.contains(value), "{value}: {err}");
+        }
+        let inline = parse_net_config(&argv(&["--connect=[::1]:27015"])).unwrap_err();
+        assert!(inline.0.contains("IPv6"));
     }
 
     #[test]

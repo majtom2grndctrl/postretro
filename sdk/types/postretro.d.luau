@@ -1597,6 +1597,8 @@ export type GameStateRefs = {
     vignette: ComputedRef<{number}>,
   },
   session: {
+    hostAddress: ComputedRef<string>,
+    hosting: ComputedRef<boolean>,
     openSeats: ComputedRef<number>,
   },
   ui: {

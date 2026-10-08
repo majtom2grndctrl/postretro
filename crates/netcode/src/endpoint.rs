@@ -483,7 +483,8 @@ impl NetEndpoint {
     /// Construct the endpoint for `role`, or `Ok(None)` for single-player.
     ///
     /// The netcode clock origin is `SystemTime::now()` since the unix epoch
-    /// (`NetServer::new`/`NetClient::new` contract). Client user data is carried
+    /// (`NetServer::new`/`NetClient::new` contract); a client's clock then skips
+    /// its first poll's `dt`, so it trails wall time by the boot stall. Client user data is carried
     /// unchanged into the immutable netcode authentication token. Returns the
     /// transport error for the caller to log and fall back to single-player.
     pub fn from_role(
@@ -636,8 +637,8 @@ impl NetEndpoint {
             NetEndpoint::Client {
                 client, time_sync, ..
             } => {
-                if let Err(err) = client.update(dt) {
-                    log::error!("[Net] client update failed: {err}");
+                // `NetClient::update` reports the failure once, naming the host.
+                if client.update(dt).is_err() {
                     WorldLessPoll::Failed
                 } else {
                     // A world-less frame can never apply snapshots. Drain current-

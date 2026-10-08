@@ -18,8 +18,8 @@ use postretro_scripting_core::reaction_dispatch::{
 /// Segment B of the CPU world install (renderer-free): fog-volume entities,
 /// kinematic movers, classname dispatch, the data script, the
 /// data-archetype sweep (incl. player-pawn spawn), the mesh sweep's CPU half
-/// (one glTF parse per model, hit-zone store build + clip-index resolve), and
-/// the `levelLoad` fire. The sole renderer-coupled step — skinned-model upload +
+/// (one glTF parse per model, hit-zone store build + clip-index resolve), the
+/// kill-progress membership capture, and the `levelLoad` fire. The sole renderer-coupled step — skinned-model upload +
 /// clip-table build — is injected as `upload_mesh_models`, called between the
 /// archetype sweep and the clip-index resolve with the models already parsed
 /// (the hit-zone store consumes the same parses afterwards): the windowed
@@ -140,7 +140,8 @@ pub(crate) fn install_world_cpu(
 
     // Data script runs once at level open. Errors surface as an empty manifest so
     // the level still loads; even levels without one compose against mod-global
-    // reactions/crossings. Composed before progress/crossing subscriber rebuild.
+    // reactions/crossings. Composed before progress/crossing subscriber rebuild;
+    // progress membership itself is captured after the placement sweeps below.
     {
         let mut manifest = if let Some(data_script) = &world.data_script {
             script_runtime.run_data_script(data_script, content_root)
@@ -199,7 +200,14 @@ pub(crate) fn install_world_cpu(
         // applied. A late join then observes the host's persistent state as one real
         // crossing instead of silently arming at the already-replicated value.
         // Network baseline application begins only after world install returns.
-        rebuild_reaction_subscribers(progress_tracker, crossing_detector, script_ctx);
+        // At install this drops the previous level's progress state only; see
+        // `capture_progress_membership` before the `levelLoad` fire.
+        rebuild_reaction_subscribers(
+            progress_tracker,
+            crossing_detector,
+            script_ctx,
+            SubscriberRebuild::LevelInstall,
+        );
         slot_accumulator_bindings.rebuild(script_ctx);
     }
     // Bind after subscriber rebuild: `populate_level` has committed the final
@@ -422,6 +430,20 @@ pub(crate) fn install_world_cpu(
     // player pawns but before `levelLoad` can address their owner association.
     before_level_load(&spawn_points);
 
+    // PROGRESS MEMBERSHIP INSTALL ORDER: a `progress` counts the map-placed
+    // entities carrying its tag at install. Descriptor NPCs materialize in the
+    // archetype sweep above, after the data script composed the reaction set, so
+    // the snapshot runs here — every placement exists, and nothing `levelLoad`
+    // spawns can join. Reads only the entity and data registries; the crossing
+    // detector already initialized above. `progress` is host-authoritative: a
+    // connected client (host-replicated placements suppressed) captures nothing,
+    // stays unsubscribed, and never warns.
+    let progress_already_met = if suppress_ai_enemies {
+        Vec::new()
+    } else {
+        capture_progress_membership(progress_tracker, script_ctx)
+    };
+
     // Fire `levelLoad`. Headless fires it too so data-script reactions and
     // crossings compose identically; runs after the clip resolve so a
     // `setAnimationState` reaction sees concrete clip indices. This fire now
@@ -446,6 +468,18 @@ pub(crate) fn install_world_cpu(
     if !level_load_chained.is_empty() {
         dispatch_deferred_named_events_with_sequences(
             level_load_chained,
+            &script_ctx.data_registry.borrow(),
+            sequence_registry,
+            reaction_registry,
+            system_registry,
+            script_ctx,
+        );
+    }
+    // A threshold already met at capture (an `at` at or below zero) fires once,
+    // after `levelLoad` — the install-time counterpart of a recompose's fire.
+    if !progress_already_met.is_empty() {
+        dispatch_deferred_named_events_with_sequences(
+            progress_already_met,
             &script_ctx.data_registry.borrow(),
             sequence_registry,
             reaction_registry,

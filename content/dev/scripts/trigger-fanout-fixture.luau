@@ -17,10 +17,7 @@ function setupLevel(_ctx: any): LevelManifest
     }),
   }
 
-  for _, trigger in Postretro.world:query({
-    component = "trigger_volume",
-    tag = "fixture_tripwire",
-  }) do
+  for _, trigger in Postretro.getMapEntities("trigger", { tag = "fixture_tripwire" }) do
     table.insert(reactions, Postretro.defineReaction("trigger.fixture.armById." .. trigger.id, {
       sequence = trigger:arm(),
     }))

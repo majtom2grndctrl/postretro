@@ -42,6 +42,9 @@ swc_ecma_transforms_typescript = "55"
 swc_ecma_visit = "29"
 anyhow.workspace = true
 mlua.workspace = true
+# VM-free payload validator shared with the runtime reaction converters, so the
+# light pass reserves only what the runtime installs.
+postretro-foundation.workspace = true
 postretro-level-format = { workspace = true, features = ["serde"] }
 rquickjs.workspace = true
 serde_json.workspace = true

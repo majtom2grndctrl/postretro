@@ -3729,16 +3729,10 @@ impl ApplicationHandler for App {
                 // rendered frame, before replication and render observe state.
                 impact_effects::run_end_of_frame_removal_pass(
                     &mut script_ctx.registry.borrow_mut(),
-                    |_, pending_kill_credit| {
-                        let Some(pending_kill_credit) = pending_kill_credit else {
-                            return;
-                        };
+                    |removal| {
                         let session = self.session.as_mut().expect("running session installed");
-                        session.pending_death_events.extend(
-                            session
-                                .progress_tracker
-                                .on_entity_killed(&pending_kill_credit.tags),
-                        );
+                        let fired = removal.report_to_progress(&mut session.progress_tracker);
+                        session.pending_death_events.extend(fired);
                     },
                 );
 
@@ -10927,6 +10921,7 @@ mod tests {
                 descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                     primitive: "playSound".to_string(),
                     target: None,
+                    kind: None,
                     tag: None,
                     on_complete: None,
                     args: serde_json::json!({ "sound": "door_open", "bus": "sfx" }),
@@ -10985,6 +10980,7 @@ mod tests {
                 descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                     primitive: "playSound".to_string(),
                     target: None,
+                    kind: None,
                     tag: None,
                     on_complete: None,
                     args: serde_json::json!({
@@ -11072,6 +11068,7 @@ mod tests {
                 descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                     primitive: "playSound".to_string(),
                     target: None,
+                    kind: None,
                     tag: None,
                     on_complete: None,
                     args: serde_json::json!({ "sound": "fixtures/door_open", "at": "@emitter" }),
@@ -11218,6 +11215,7 @@ mod tests {
                 descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                     primitive: "playSound".to_string(),
                     target: None,
+                    kind: None,
                     tag: None,
                     on_complete: None,
                     args: serde_json::json!({ "sound": "sfx/brass" }),
@@ -11300,6 +11298,7 @@ mod tests {
             descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                 primitive: "playSound".to_string(),
                 target: None,
+                kind: None,
                 tag: None,
                 on_complete: None,
                 args: serde_json::json!({ "sound": "event_chain", "bus": "sfx" }),
@@ -14201,6 +14200,7 @@ mod tests {
                 SpawnerComponent {
                     archetype_name: "spawner_only".to_string(),
                     count: 1,
+                    spawned_tags: Vec::new(),
                     resolved: true,
                 },
             )

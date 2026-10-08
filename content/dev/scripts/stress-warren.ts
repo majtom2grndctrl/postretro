@@ -16,7 +16,7 @@
 // baked entirely at compile time) and need no script at all — this file only
 // owns the script-driven half of the animated-light mix.
 
-import { defineReaction, rumble, screenShake, world } from "postretro";
+import { defineReaction, rumble, screenShake, getMapEntities } from "postretro";
 
 export function setupLevel(_ctx: unknown) {
   // Player-state addresses are engine-fired. These small reactions make the
@@ -25,10 +25,7 @@ export function setupLevel(_ctx: unknown) {
     defineReaction("slide_started", rumble(0.45, 90, 0.15)),
     defineReaction("slide_ended", screenShake(1.5, 110)),
   ];
-  const lights = world.query({
-    component: "light",
-    tag: "warren_script_pulse",
-  });
+  const lights = getMapEntities("light", { tag: "warren_script_pulse" });
   if (lights.length === 0) {
     return { reactions: movementReactions };
   }

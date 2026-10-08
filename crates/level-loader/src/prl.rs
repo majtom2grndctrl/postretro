@@ -404,7 +404,7 @@ pub struct MapLight {
     /// table.
     pub animated_slot: Option<u32>,
     /// From LightTags section (ID 26). Space-delimited on wire; split here.
-    /// `world.query({ tag: "t" })` matches when any tag equals `"t"`.
+    /// A `{ tag: "t" }` script filter matches when any tag equals `"t"`.
     pub tags: Vec<String>,
     /// Runtime cell id for portal-graph reachability and chunk light lists.
     /// `u32::MAX` (`ALPHA_LIGHT_LEAF_UNASSIGNED` on the legacy wire) means the
@@ -718,7 +718,7 @@ pub struct LevelWorld {
     /// Downscale factor (1=full-res, 8=coarsest). Defaults to 4 when absent.
     #[cfg(feature = "load-prl")]
     pub fog_pixel_scale: u32,
-    /// Seeds `App::current_gravity` so `world.getGravity()` sees the authored value before scripts run.
+    /// Seeds `App::current_gravity` so `getGravity()` sees the authored value before scripts run.
     #[cfg(feature = "load-prl")]
     pub initial_gravity: f32,
     /// `masks[C]` has bit `i` set when fog volume `i` overlaps cell `C`.

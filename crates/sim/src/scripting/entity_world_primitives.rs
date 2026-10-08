@@ -1,8 +1,10 @@
 // Entity/world scripting primitive handlers and registration.
 // See: context/lib/scripting.md
 
+use postretro_entities::components::spawner::SpawnerComponent;
+use postretro_entities::provenance::{DescriptorProvenance, DescriptorSpawnPath};
 use postretro_entities::{
-    ComponentKind, ComponentValue, EntityId, ScriptCtx, ScriptError, Transform,
+    ComponentKind, ComponentValue, EntityId, EntityRegistry, ScriptCtx, ScriptError, Transform,
 };
 use postretro_lighting::script_primitives as light;
 use postretro_scripting_core::primitive_adapters::{
@@ -68,6 +70,9 @@ enum QueryFilter {
     TriggerVolume {
         tag: Option<String>,
     },
+    Spawner {
+        tag: Option<String>,
+    },
     /// Always returns an empty array. Particles and sprite-visuals are
     /// engine-managed; scripts have no business iterating individual ones.
     AlwaysEmpty,
@@ -83,30 +88,32 @@ fn parse_query_filter(component: &str, tag: Option<String>) -> Result<QueryFilte
         "fog_volume" => Ok(QueryFilter::FogVolume { tag }),
         "kinematic_mover" => Ok(QueryFilter::KinematicMover { tag }),
         "trigger_volume" => Ok(QueryFilter::TriggerVolume { tag }),
+        "spawner" => Ok(QueryFilter::Spawner { tag }),
         "particle" | "sprite_visual" => Ok(QueryFilter::AlwaysEmpty),
         other => Err(ScriptError::InvalidArgument {
             reason: format!(
                 "worldQuery: unknown component `{other}`; supported: \
-                 \"light\" | \"transform\" | \"emitter\" | \"fog_volume\" | \"kinematic_mover\" | \"trigger_volume\" | \"particle\" | \"sprite_visual\""
+                 \"light\" | \"transform\" | \"emitter\" | \"fog_volume\" | \"kinematic_mover\" | \"trigger_volume\" | \"spawner\" | \"particle\" | \"sprite_visual\""
             ),
         }),
     }
 }
 
-const WORLD_QUERY_DOC: &str = "Return an array of raw entity snapshots matching the filter. Available in definition and data contexts. \
-     Filter shape: { component: \"light\" | \"transform\" | \"emitter\" | \"fog_volume\" | \"kinematic_mover\" | \"trigger_volume\" | \"particle\" | \"sprite_visual\", tag?: string }. \
+const WORLD_QUERY_DOC: &str = "Return an array of raw entity snapshots matching the filter. Raises outside a level's data script (module evaluation or `setupLevel`). \
+     Returns map-placed instances only; an entity a runtime spawn carries never appears. \
+     Filter shape: { component: \"light\" | \"transform\" | \"emitter\" | \"fog_volume\" | \"kinematic_mover\" | \"trigger_volume\" | \"spawner\" | \"particle\" | \"sprite_visual\", tag?: string }. \
      `\"particle\"` and `\"sprite_visual\"` always return `[]` (engine-managed; scripts never iterate individual particles). \
      Unknown component values raise InvalidArgument. \
-     The `world.ts` vocabulary module wraps these snapshots as `world.query` handles.";
+     The SDK's `getMapEntities` (`map_entities.ts`) lowers to it and wraps each snapshot in its kind's member handle; the raw primitive is absent from author-facing typedefs.";
 
 const WORLD_GET_GRAVITY_DOC: &str = "Return the current world gravity in m/s² (negative = downward; positive = upward). \
      Seeded from the worldspawn `initialGravity` KVP at level load and persists until the next level load or a `worldSetGravity` call. \
-     The `world.ts` vocabulary module wraps this as `world.getGravity`.";
+     The SDK wraps this as `getGravity`.";
 
 const WORLD_SET_GRAVITY_DOC: &str = "Set the world gravity in m/s² (negative = downward; positive = upward). \
      NaN and non-finite values are silently ignored (a warning is logged) so a misbehaving script cannot wedge particle physics. \
      Effect is immediate and persists until the next level load or another `worldSetGravity` call. \
-     The `world.ts` vocabulary module wraps this as `world.setGravity`.";
+     The SDK wraps this as `setGravity`.";
 
 /// Collect transform handles as JSON. Every live entity carries `Transform`,
 /// so this is effectively an entity query filtered only by tag.
@@ -115,6 +122,9 @@ fn collect_transform_handles_json(ctx: &ScriptCtx, tag: Option<&str>) -> serde_j
     let reg = ctx.registry.borrow();
     let mut arr: Vec<Value> = Vec::new();
     for (id, value) in reg.query_by_component_and_tag(ComponentKind::Transform, tag) {
+        if !is_map_placed(&reg, id) {
+            continue;
+        }
         let ComponentValue::Transform(t) = value else {
             continue;
         };
@@ -143,6 +153,9 @@ fn collect_emitter_handles_json(ctx: &ScriptCtx, tag: Option<&str>) -> serde_jso
     let reg = ctx.registry.borrow();
     let mut arr: Vec<Value> = Vec::new();
     for (id, value) in reg.query_by_component_and_tag(ComponentKind::BillboardEmitter, tag) {
+        if !is_map_placed(&reg, id) {
+            continue;
+        }
         let ComponentValue::BillboardEmitter(e) = value else {
             continue;
         };
@@ -179,6 +192,9 @@ fn collect_fog_volume_handles_json(ctx: &ScriptCtx, tag: Option<&str>) -> serde_
     let reg = ctx.registry.borrow();
     let mut arr: Vec<Value> = Vec::new();
     for (id, value) in reg.query_by_component_and_tag(ComponentKind::FogVolume, tag) {
+        if !is_map_placed(&reg, id) {
+            continue;
+        }
         let ComponentValue::FogVolume(f) = value else {
             continue;
         };
@@ -230,17 +246,24 @@ fn collect_fog_volume_handles_json(ctx: &ScriptCtx, tag: Option<&str>) -> serde_
     Value::Array(arr)
 }
 
-/// Collect kinematic-mover handles as JSON. Movers are queryable for their
-/// position and tags, while their deterministic phase remains engine-owned.
-fn collect_kinematic_mover_handles_json(ctx: &ScriptCtx, tag: Option<&str>) -> serde_json::Value {
+/// Collect identity-only member snapshots (`id`, `position`, `tags`) for a map
+/// kind whose runtime phase stays engine-owned: kinematic movers (deterministic
+/// phase), trigger volumes (arming and activation phase) and spawners (fire-time
+/// materialization). Position reads the entity's Transform. A spawner snapshot
+/// also carries `spawnedTags`, the tags each NPC it spawns carries.
+fn collect_identity_snapshots_json(
+    ctx: &ScriptCtx,
+    kind: ComponentKind,
+    tag: Option<&str>,
+) -> serde_json::Value {
     use serde_json::{Map, Value};
 
     let reg = ctx.registry.borrow();
     let mut arr = Vec::new();
-    for (id, value) in reg.query_by_component_and_tag(ComponentKind::KinematicMover, tag) {
-        let ComponentValue::KinematicMover(_) = value else {
+    for (id, _) in reg.query_by_component_and_tag(kind, tag) {
+        if !is_map_placed(&reg, id) {
             continue;
-        };
+        }
         let tags = reg.get_tags(id).unwrap_or(&[]).to_vec();
         let position = match reg.get_component::<Transform>(id) {
             Ok(t) => {
@@ -259,47 +282,55 @@ fn collect_kinematic_mover_handles_json(ctx: &ScriptCtx, tag: Option<&str>) -> s
             "tags".to_string(),
             Value::Array(tags.into_iter().map(Value::String).collect()),
         );
+        if kind == ComponentKind::Spawner {
+            let spawned_tags = reg
+                .get_component::<SpawnerComponent>(id)
+                .map(|spawner| spawner.spawned_tags.clone())
+                .unwrap_or_default();
+            obj.insert(
+                "spawnedTags".to_string(),
+                Value::Array(spawned_tags.into_iter().map(Value::String).collect()),
+            );
+        }
         arr.push(Value::Object(obj));
     }
     Value::Array(arr)
 }
 
-/// Collect trigger-volume handles as JSON. Triggers are queryable for their
-/// placement identity only; arming and activation phase remain engine-owned.
-fn collect_trigger_volume_handles_json(ctx: &ScriptCtx, tag: Option<&str>) -> serde_json::Value {
-    use serde_json::{Map, Value};
+/// `worldQuery` returns map-placed instances only: map placement, or no
+/// descriptor provenance at all (built-in map kinds such as trigger volumes,
+/// spawners and FGD lights carry none). A light or emitter carried by a
+/// runtime-spawned NPC — or by a player pawn — never appears, so a member set
+/// is fixed at install.
+fn is_map_placed(reg: &EntityRegistry, id: EntityId) -> bool {
+    reg.get_component::<DescriptorProvenance>(id)
+        .map_or(true, |provenance| {
+            provenance.spawn_path == DescriptorSpawnPath::MapPlacement
+        })
+}
 
-    let reg = ctx.registry.borrow();
-    let mut arr = Vec::new();
-    for (id, value) in reg.query_by_component_and_tag(ComponentKind::TriggerVolume, tag) {
-        let ComponentValue::TriggerVolume(_) = value else {
-            continue;
-        };
-        let tags = reg.get_tags(id).unwrap_or(&[]).to_vec();
-        let position = match reg.get_component::<Transform>(id) {
-            Ok(t) => {
-                let mut p = Map::with_capacity(3);
-                p.insert("x".to_string(), Value::from(t.position.x as f64));
-                p.insert("y".to_string(), Value::from(t.position.y as f64));
-                p.insert("z".to_string(), Value::from(t.position.z as f64));
-                Value::Object(p)
-            }
-            Err(_) => Value::Null,
-        };
-        let mut obj = Map::with_capacity(3);
-        obj.insert("id".to_string(), Value::from(id.to_raw()));
-        obj.insert("position".to_string(), position);
-        obj.insert(
-            "tags".to_string(),
-            Value::Array(tags.into_iter().map(Value::String).collect()),
-        );
-        arr.push(Value::Object(obj));
+/// Map members exist only once a level is installed, so the map-member query
+/// raises outside a level's data script (module evaluation or `setupLevel`) —
+/// in a mod start script, mod init, or the definition context — naming the
+/// author-facing call. The message names `getMapEntities` (the SDK spelling)
+/// and the raw `worldQuery` primitive.
+/// See: context/lib/scripting.md §12 (Entity addressing).
+fn require_level_data_context() -> Result<(), ScriptError> {
+    if postretro_scripting_core::level_data_context::in_level_data_context() {
+        return Ok(());
     }
-    Value::Array(arr)
+    Err(ScriptError::InvalidArgument {
+        reason: "getMapEntities (worldQuery) is available only during a level data script's \
+                 module evaluation or `setupLevel`; no level's map entities exist in a mod \
+                 start script or mod init"
+            .to_string(),
+    })
 }
 
 /// Register the world-domain primitives: `worldQuery`, `worldGetGravity`, and
-/// `worldSetGravity`. All three install in both definition and data contexts.
+/// `worldSetGravity`. All three install in both definition and data contexts;
+/// `worldQuery` itself raises outside a level data context
+/// (`require_level_data_context`).
 pub(crate) fn register_world_primitives(registry: &mut PrimitiveRegistry, ctx: ScriptCtx) {
     register_world_query(registry, ctx.clone());
     register_world_gravity(registry, ctx);
@@ -311,10 +342,15 @@ fn register_world_query(registry: &mut PrimitiveRegistry, ctx: ScriptCtx) {
         .register("worldQuery", {
             let ctx = ctx.clone();
             move |filter: WorldQueryFilterInput| -> Result<JsonValue, ScriptError> {
+                require_level_data_context()?;
                 let filter = parse_query_filter(&filter.component, filter.tag)?;
                 match filter {
                     QueryFilter::Light { tag } => {
-                        let handles = light::collect_light_handles(&ctx, tag.as_deref());
+                        let mut handles = light::collect_light_handles(&ctx, tag.as_deref());
+                        {
+                            let reg = ctx.registry.borrow();
+                            handles.retain(|handle| is_map_placed(&reg, handle.id()));
+                        }
                         Ok(JsonValue(light::handles_to_json(handles)))
                     }
                     QueryFilter::Transform { tag } => Ok(JsonValue(
@@ -327,12 +363,25 @@ fn register_world_query(registry: &mut PrimitiveRegistry, ctx: ScriptCtx) {
                     QueryFilter::FogVolume { tag } => Ok(JsonValue(
                         collect_fog_volume_handles_json(&ctx, tag.as_deref()),
                     )),
-                    QueryFilter::KinematicMover { tag } => Ok(JsonValue(
-                        collect_kinematic_mover_handles_json(&ctx, tag.as_deref()),
-                    )),
-                    QueryFilter::TriggerVolume { tag } => Ok(JsonValue(
-                        collect_trigger_volume_handles_json(&ctx, tag.as_deref()),
-                    )),
+                    QueryFilter::KinematicMover { tag } => {
+                        Ok(JsonValue(collect_identity_snapshots_json(
+                            &ctx,
+                            ComponentKind::KinematicMover,
+                            tag.as_deref(),
+                        )))
+                    }
+                    QueryFilter::TriggerVolume { tag } => {
+                        Ok(JsonValue(collect_identity_snapshots_json(
+                            &ctx,
+                            ComponentKind::TriggerVolume,
+                            tag.as_deref(),
+                        )))
+                    }
+                    QueryFilter::Spawner { tag } => Ok(JsonValue(collect_identity_snapshots_json(
+                        &ctx,
+                        ComponentKind::Spawner,
+                        tag.as_deref(),
+                    ))),
                     QueryFilter::AlwaysEmpty => Ok(JsonValue(serde_json::Value::Array(Vec::new()))),
                 }
             }
@@ -359,7 +408,7 @@ fn register_world_gravity(registry: &mut PrimitiveRegistry, ctx: ScriptCtx) {
         .register("worldSetGravity", {
             move |value: f32| -> Result<(), ScriptError> {
                 if !value.is_finite() {
-                    log::warn!("[Scripting] world.setGravity: rejected non-finite value");
+                    log::warn!("[Scripting] setGravity: rejected non-finite value");
                     return Ok(());
                 }
                 ctx.gravity.set(value);
@@ -380,9 +429,10 @@ mod tests {
     use postretro_entities::{
         KinematicMoverComponent, KinematicMoverMode, MoverCommand, NamedReaction,
         PrimitiveDescriptor, ReactionDescriptor, SequenceStep, TriggerActivation, TriggerFireMode,
-        TriggerVolumeComponent,
+        TriggerVolumeComponent, VolumeTriggerEventDescriptor,
     };
     use postretro_level_format::data_script::DataScriptSection;
+    use postretro_scripting_core::level_data_context::LevelDataContext;
     use postretro_scripting_core::primitives_registry::PrimitiveRegistry;
     use postretro_scripting_core::runtime::{ScriptRuntime, ScriptRuntimeConfig};
     use serde_json::json;
@@ -520,6 +570,7 @@ mod tests {
             descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                 primitive: primitive.to_string(),
                 target: None,
+                kind: None,
                 tag: Some("fixture_tripwire".to_string()),
                 on_complete: None,
                 args: json!({}),
@@ -544,6 +595,7 @@ mod tests {
 
     #[test]
     fn world_query_reachable_from_quickjs_returns_handle_array() {
+        let _level = LevelDataContext::enter();
         let (ctx, id) = test_ctx_with_light(true, Some("foo"));
         let r = registry_for(ctx);
         let rt = rquickjs::Runtime::new().unwrap();
@@ -570,6 +622,7 @@ mod tests {
 
     #[test]
     fn world_query_reachable_from_luau_returns_handle_table() {
+        let _level = LevelDataContext::enter();
         let (ctx, _id) = test_ctx_with_light(true, None);
         let r = registry_for(ctx);
         let lua = mlua::Lua::new();
@@ -588,6 +641,7 @@ mod tests {
 
     #[test]
     fn world_query_light_component_returns_light_handles() {
+        let _level = LevelDataContext::enter();
         let (ctx, id) = test_ctx_with_light(true, Some("hallway_wave"));
         let r = registry_for(ctx);
         let raw = id.to_raw();
@@ -640,6 +694,7 @@ mod tests {
 
     #[test]
     fn world_query_kinematic_mover_returns_tagged_mover_snapshots() {
+        let _level = LevelDataContext::enter();
         let (ctx, _) = test_ctx_with_light(true, Some("not_a_mover"));
         let id = add_mover(&ctx, Some("bridge-lift"));
         let r = registry_for(ctx);
@@ -683,6 +738,7 @@ mod tests {
 
     #[test]
     fn world_query_trigger_volume_returns_identity_snapshot_without_runtime_state() {
+        let _level = LevelDataContext::enter();
         let (ctx, _) = test_ctx_with_light(true, Some("not_a_trigger"));
         let id = add_trigger(&ctx, Some("tripwire"));
         let r = registry_for(ctx);
@@ -725,7 +781,8 @@ mod tests {
     }
 
     #[test]
-    fn world_query_trigger_volume_sdk_handles_build_arm_and_disarm_steps_in_both_runtimes() {
+    fn trigger_members_build_arm_and_disarm_steps_in_both_runtimes() {
+        let _level = LevelDataContext::enter();
         let (ctx, _) = test_ctx_with_light(true, Some("not_a_trigger"));
         let id = add_trigger(&ctx, Some("tripwire"));
         let r = registry_for(ctx);
@@ -739,7 +796,7 @@ mod tests {
             let json: String = qjs
                 .eval(
                     r#"
-                    const h = world.query({ component: "trigger_volume", tag: "tripwire" })[0];
+                    const h = getMapEntities("trigger", { tag: "tripwire" })[0];
                     JSON.stringify({
                       id: h.id,
                       tags: h.tags,
@@ -770,7 +827,7 @@ mod tests {
         ) = lua
             .load(
                 r#"
-                local h = world:query({ component = "trigger_volume", tag = "tripwire" })[1]
+                local h = getMapEntities("trigger", { tag = "tripwire" })[1]
                 return h.id, h:arm()[1].primitive, h:disarm()[1].primitive,
                     h.armed ~= nil, wrapTriggerVolumeEntity == nil
                 "#,
@@ -828,9 +885,98 @@ mod tests {
         );
     }
 
+    // Map members exist only inside a level, so the map-member query
+    // (`getMapEntities`, lowered to the raw `worldQuery` primitive) raises
+    // naming the call in a mod start script, and the same call succeeds in
+    // `setupLevel` — in both runtimes.
+    #[test]
+    fn get_map_entities_raises_in_a_mod_start_script_and_succeeds_in_setup_level() {
+        let ctx = ScriptCtx::new();
+        let plate = add_trigger(&ctx, Some("plate"));
+        let primitives = registry_for(ctx.clone());
+
+        for (file, source) in [
+            (
+                "start-script.js",
+                r#"worldQuery({ component: "trigger_volume", tag: "plate" });
+                   globalThis.__postretroModManifest = { name: "m", id: "m", version: "1" };"#,
+            ),
+            (
+                "start-script.luau",
+                r#"worldQuery({ component = "trigger_volume", tag = "plate" })
+                   return { name = "m", id = "m", version = "1" }"#,
+            ),
+        ] {
+            let mod_root = tempfile::tempdir().expect("mod root");
+            std::fs::write(mod_root.path().join(file), source).expect("start script writes");
+            let mut runtime =
+                ScriptRuntime::new(&primitives, &ScriptRuntimeConfig::default(), &ctx)
+                    .expect("runtime constructs");
+            let error = runtime
+                .run_mod_init(mod_root.path())
+                .expect_err("a start script has no level to query");
+            assert!(
+                error.to_string().contains("getMapEntities"),
+                "{file}: the error names the call: {error}"
+            );
+        }
+
+        let runtime = ScriptRuntime::new(&primitives, &ScriptRuntimeConfig::default(), &ctx)
+            .expect("runtime constructs");
+        let level_root = tempfile::tempdir().expect("level root");
+        for (file, source) in [
+            (
+                "level.js",
+                r#"function setupLevel() {
+                       const plates = worldQuery({ component: "trigger_volume", tag: "plate" });
+                       return { reactions: [{ name: "seen", sequence: plates.map(
+                           (t) => ({ id: t.id, primitive: "armTrigger", args: {} })) }] };
+                   }"#,
+            ),
+            (
+                "level.luau",
+                r#"function setupLevel()
+                       local plates = worldQuery({ component = "trigger_volume", tag = "plate" })
+                       return { reactions = { { name = "seen", sequence = {
+                           { id = plates[1].id, primitive = "armTrigger", args = {} } } } } }
+                   end"#,
+            ),
+        ] {
+            let path = level_root.path().join(file);
+            let section = DataScriptSection {
+                compiled_bytes: source.as_bytes().to_vec(),
+                source_path: path.to_string_lossy().into_owned(),
+            };
+            let manifest = runtime.run_data_script(&section, level_root.path());
+            assert_eq!(
+                manifest.reactions,
+                vec![NamedReaction {
+                    name: "seen".into(),
+                    descriptor: ReactionDescriptor::Sequence(vec![SequenceStep {
+                        id: plate.into(),
+                        primitive: "armTrigger".into(),
+                        args: json!({}),
+                    }]),
+                }],
+                "{file}: setupLevel queries the installed trigger member"
+            );
+        }
+        assert!(
+            !postretro_scripting_core::level_data_context::in_level_data_context(),
+            "the data context ends with the data script"
+        );
+    }
+
+    // The presser fixture binds each `fixture_presser` volume through its own
+    // trigger member's `on`: one volume-keyed entry per volume, never a
+    // tag-keyed rule. Its reactions address the fire's subjects through the
+    // `on.activators` / `on.trigger` tokens.
     #[test]
     fn trigger_event_presser_fixtures_produce_identical_wire_in_both_runtimes() {
         let ctx = ScriptCtx::new();
+        let first_plate = add_trigger(&ctx, Some("fixture_presser"));
+        let second_plate = add_trigger(&ctx, Some("fixture_presser"));
+        add_trigger(&ctx, Some("unrelated_plate"));
         let primitives = registry_for(ctx.clone());
         let runtime = ScriptRuntime::new(&primitives, &ScriptRuntimeConfig::default(), &ctx)
             .expect("fixture runtime constructs");
@@ -855,17 +1001,59 @@ mod tests {
             ts, luau,
             "TS and Luau must emit byte-equivalent descriptor data"
         );
-        assert_eq!(ts.trigger_events.len(), 1);
-        assert_eq!(ts.trigger_events[0].tag, "fixture_presser");
-        assert_eq!(ts.trigger_events[0].event, "enter");
+        let fire = vec![
+            "fixture.presser.damage".to_string(),
+            "fixture.presser.disarm".to_string(),
+        ];
         assert_eq!(
-            ts.trigger_events[0].fire,
-            ["fixture.presser.damage", "fixture.presser.disarm"]
+            ts.trigger_events,
+            vec![
+                VolumeTriggerEventDescriptor {
+                    trigger: first_plate,
+                    event: "enter".to_string(),
+                    fire: fire.clone(),
+                },
+                VolumeTriggerEventDescriptor {
+                    trigger: second_plate,
+                    event: "enter".to_string(),
+                    fire,
+                },
+            ],
+            "each presser volume binds through its own member, keyed by volume"
+        );
+        assert_eq!(
+            ts.reactions,
+            vec![
+                NamedReaction {
+                    name: "fixture.presser.damage".into(),
+                    descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
+                        primitive: "applyDamage".into(),
+                        target: Some("@activators".into()),
+                        kind: None,
+                        tag: None,
+                        on_complete: None,
+                        args: json!({ "amount": 25 }),
+                    }),
+                },
+                NamedReaction {
+                    name: "fixture.presser.disarm".into(),
+                    descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
+                        primitive: "disarmTrigger".into(),
+                        target: Some("@trigger".into()),
+                        kind: None,
+                        tag: None,
+                        on_complete: None,
+                        args: json!({}),
+                    }),
+                },
+            ],
+            "`on.activators.damage` and `on.trigger.disarm` lower to subject-token bodies"
         );
     }
 
     #[test]
     fn world_query_handle_component_exposes_camel_case_keys() {
+        let _level = LevelDataContext::enter();
         // Regression: if `LightComponent`'s serde shape ever reverts to snake_case,
         // scripts silently see `undefined`/`nil` for `lightType`, `falloffModel`, etc.
         let (ctx, id) = test_ctx_with_light(true, Some("alpha"));
@@ -935,6 +1123,7 @@ mod tests {
 
     #[test]
     fn world_query_unknown_component_errors() {
+        let _level = LevelDataContext::enter();
         let (ctx, _id) = test_ctx_with_light(true, None);
         let r = registry_for(ctx);
 
@@ -976,6 +1165,7 @@ mod tests {
 
     #[test]
     fn world_query_tag_filter_excludes_unmatched() {
+        let _level = LevelDataContext::enter();
         let (ctx, first) = test_ctx_with_light(true, Some("alpha"));
         let second;
         {
@@ -1044,6 +1234,7 @@ mod tests {
 
     #[test]
     fn world_query_returns_both_tags_for_multi_tagged_entity() {
+        let _level = LevelDataContext::enter();
         // Regression: after `Option<String>` -> `Vec<String>` migration, a query
         // matching one tag must still surface all tags on the JS-facing handle.
         let (ctx, id) = test_ctx_with_light(true, None);
@@ -1223,5 +1414,399 @@ mod tests {
         let _: () = lua.load("worldSetGravity(-math.huge)").eval().unwrap();
         let _: () = lua.load("worldSetGravity(0/0)").eval().unwrap();
         assert!((ctx.gravity.get() - -2.0).abs() < 1e-6);
+    }
+
+    fn emitter_component()
+    -> postretro_entities::components::billboard_emitter::BillboardEmitterComponent {
+        postretro_entities::components::billboard_emitter::BillboardEmitterComponent {
+            rate: 6.0,
+            burst: None,
+            spread: 0.4,
+            lifetime: 3.0,
+            velocity: [0.0, 0.8, 0.0],
+            buoyancy: 0.2,
+            drag: 0.8,
+            size_over_lifetime: [0.3, 1.5].into(),
+            opacity_over_lifetime: [0.0, 0.8, 0.6, 0.0].into(),
+            color: [1.0, 1.0, 1.0],
+            sprite: "smoke".to_string(),
+            spin_rate: 0.0,
+            spin_animation: None,
+        }
+    }
+
+    /// Runs `worldQuery({ component, tag })` in QuickJS and returns the ids.
+    fn queried_ids(r: &PrimitiveRegistry, component: &str, tag: Option<&str>) -> Vec<u32> {
+        let rt = rquickjs::Runtime::new().unwrap();
+        let jsctx = rquickjs::Context::full(&rt).unwrap();
+        jsctx.with(|qjs| {
+            install_all(r, &qjs);
+            let tag = tag.map_or("null".to_string(), |tag| format!("{tag:?}"));
+            let got: String = qjs
+                .eval(format!(
+                    "JSON.stringify(worldQuery({{ component: {component:?}, tag: {tag} }}).map(h => h.id))"
+                ))
+                .unwrap();
+            serde_json::from_str(&got).unwrap()
+        })
+    }
+
+    // A light or emitter a spawned NPC carries never appears, even when the
+    // NPC carries the queried tag through its spawner's `spawned_tags`. Map-placed instances (no
+    // provenance) still do.
+    #[test]
+    fn world_query_light_and_emitter_exclude_ones_carried_by_a_spawned_npc() {
+        let _level = LevelDataContext::enter();
+        const TAG: &str = "lamp";
+        let (ctx, map_light) = test_ctx_with_light(false, Some(TAG));
+        let (map_emitter, spawner) = {
+            let mut reg = ctx.registry.borrow_mut();
+            let emitter = reg
+                .try_spawn(Transform::default(), &[TAG.to_string()])
+                .unwrap();
+            reg.set_component(emitter, emitter_component()).unwrap();
+            let spawner = reg
+                .try_spawn(Transform::default(), &[TAG.to_string()])
+                .unwrap();
+            reg.set_component(
+                spawner,
+                postretro_entities::components::spawner::SpawnerComponent {
+                    archetype_name: "cultist".to_string(),
+                    count: 2,
+                    spawned_tags: vec![TAG.to_string()],
+                    resolved: true,
+                },
+            )
+            .unwrap();
+            (emitter, spawner)
+        };
+        let mut descriptor =
+            crate::scripting::builtins::data_archetype_test_fixtures::behavior_enemy_descriptor(
+                "cultist",
+            );
+        descriptor.light = Some(
+            postretro_scripting_core::data_descriptors::LightDescriptor {
+                color: [1.0, 0.5, 0.25],
+                intensity: 3.0,
+                range: 12.0,
+                is_dynamic: true,
+            },
+        );
+        descriptor.emitter = Some(emitter_component());
+        let spawn_context = crate::spawner::SpawnContext::default();
+        spawn_context.replace_level_data(
+            [("cultist".to_string(), descriptor)].into_iter().collect(),
+            None,
+        );
+        crate::spawner::spawn_from_spawner_member(
+            &mut ctx.registry.borrow_mut(),
+            spawner,
+            &spawn_context,
+        );
+        {
+            // Precondition: the spawned NPCs carry a light, an emitter and the tag.
+            let reg = ctx.registry.borrow();
+            let carried_lights = reg
+                .query_by_component_and_tag(ComponentKind::Light, Some(TAG))
+                .count();
+            let carried_emitters = reg
+                .query_by_component_and_tag(ComponentKind::BillboardEmitter, Some(TAG))
+                .count();
+            assert_eq!(carried_lights, 3, "the map light plus two spawned carriers");
+            assert_eq!(
+                carried_emitters, 3,
+                "the map emitter plus two spawned carriers"
+            );
+        }
+
+        let r = registry_for(ctx);
+        for tag in [Some(TAG), None] {
+            assert_eq!(queried_ids(&r, "light", tag), vec![map_light.to_raw()]);
+            assert_eq!(queried_ids(&r, "emitter", tag), vec![map_emitter.to_raw()]);
+        }
+    }
+
+    // Spawner is a map query kind with the identity snapshot shape movers and
+    // triggers use (id, position, tags), plus the `spawnedTags` its spawns carry.
+    #[test]
+    fn world_query_spawner_returns_identity_snapshots_in_both_runtimes() {
+        let _level = LevelDataContext::enter();
+        let ctx = ScriptCtx::new();
+        let spawner = {
+            let mut reg = ctx.registry.borrow_mut();
+            let id = reg
+                .try_spawn(
+                    Transform {
+                        position: Vec3::new(1.0, 2.0, 3.0),
+                        ..Transform::default()
+                    },
+                    &["closet".to_string()],
+                )
+                .unwrap();
+            reg.set_component(
+                id,
+                postretro_entities::components::spawner::SpawnerComponent {
+                    archetype_name: "cultist".to_string(),
+                    count: 2,
+                    spawned_tags: vec!["wave_1".to_string(), "wave_2".to_string()],
+                    resolved: true,
+                },
+            )
+            .unwrap();
+            // A tagged non-spawner never answers a spawner query.
+            reg.try_spawn(Transform::default(), &["closet".to_string()])
+                .unwrap();
+            id
+        };
+        let r = registry_for(ctx);
+        let expected = json!([{
+            "id": spawner.to_raw(),
+            "position": { "x": 1, "y": 2, "z": 3 },
+            "tags": ["closet"],
+            "spawnedTags": ["wave_1", "wave_2"],
+        }]);
+
+        let rt = rquickjs::Runtime::new().unwrap();
+        let jsctx = rquickjs::Context::full(&rt).unwrap();
+        jsctx.with(|qjs| {
+            install_all(&r, &qjs);
+            let got: String = qjs
+                .eval(r#"JSON.stringify(worldQuery({ component: "spawner", tag: "closet" }))"#)
+                .unwrap();
+            let got: serde_json::Value = serde_json::from_str(&got).unwrap();
+            assert_eq!(got, expected);
+            let none: String = qjs
+                .eval(r#"JSON.stringify(worldQuery({ component: "spawner", tag: "absent" }))"#)
+                .unwrap();
+            assert_eq!(none, "[]");
+        });
+
+        let lua = mlua::Lua::new();
+        install_all_lua(&r, &lua);
+        let (count, id, z, spawned): (i64, u32, f64, String) = lua
+            .load(
+                r#"
+                local hs = worldQuery({ component = "spawner" })
+                return #hs, hs[1].id, hs[1].position.z, table.concat(hs[1].spawnedTags, " ")
+            "#,
+            )
+            .eval()
+            .unwrap();
+        assert_eq!(
+            (count, id, z, spawned.as_str()),
+            (1, spawner.to_raw(), 3.0, "wave_1 wave_2")
+        );
+    }
+
+    /// One map holding a member of every kind that carries verbs, tagged `m`,
+    /// plus a spawner with `spawnedTags`.
+    fn member_ctx() -> (ScriptCtx, EntityId, EntityId, EntityId, EntityId) {
+        let (ctx, light) = test_ctx_with_light(false, Some("m"));
+        let mover = add_mover(&ctx, Some("m"));
+        let trigger = add_trigger(&ctx, Some("m"));
+        let spawner = {
+            let mut reg = ctx.registry.borrow_mut();
+            let id = reg
+                .try_spawn(Transform::default(), &["m".to_string()])
+                .unwrap();
+            reg.set_component(
+                id,
+                postretro_entities::components::spawner::SpawnerComponent {
+                    archetype_name: "cultist".to_string(),
+                    count: 2,
+                    spawned_tags: vec!["closet".to_string()],
+                    resolved: true,
+                },
+            )
+            .unwrap();
+            id
+        };
+        (ctx, light, mover, trigger, spawner)
+    }
+
+    // Each map kind's member carries exactly its kind's verbs, baking the
+    // member's id into the step; TS and Luau (colon calls) agree byte for byte.
+    #[test]
+    fn get_map_entities_wraps_each_kind_in_its_member_handle_in_both_runtimes() {
+        use mlua::LuaSerdeExt as _;
+        let _level = LevelDataContext::enter();
+        let (ctx, light, mover, trigger, spawner) = member_ctx();
+        let r = registry_for(ctx);
+
+        let rt = rquickjs::Runtime::new().unwrap();
+        let jsctx = rquickjs::Context::full(&rt).unwrap();
+        let ts: serde_json::Value = jsctx.with(|qjs| {
+            install_all(&r, &qjs);
+            postretro_scripting_core::quickjs::evaluate_prelude(&qjs).unwrap();
+            let json: String = qjs
+                .eval(
+                    r#"
+                    const m = getMapEntities("mover", { tag: "m" })[0];
+                    const t = getMapEntities("trigger", { tag: "m" })[0];
+                    const s = getMapEntities("spawner", { tag: "m" })[0];
+                    const l = getMapEntities("light", { tag: "m" })[0];
+                    JSON.stringify({
+                      start: m.start(),
+                      arm: t.arm(),
+                      on: t.on("enter", ["closet.reveal"]),
+                      fire: s.fire(),
+                      spawnedTags: s.spawnedTags,
+                      pulseId: l.pulse({ min: 0, max: 1, periodMs: 400 })[0].id,
+                      lightHasStart: typeof l.start,
+                      spawnerHasArm: typeof s.arm,
+                    })
+                    "#,
+                )
+                .unwrap();
+            serde_json::from_str(&json).unwrap()
+        });
+
+        let lua = mlua::Lua::new();
+        install_all_lua(&r, &lua);
+        postretro_scripting_core::luau_prelude::evaluate_prelude(&lua, None).unwrap();
+        let value: mlua::Value = lua
+            .load(
+                r#"
+                local m = getMapEntities("mover", { tag = "m" })[1]
+                local t = getMapEntities("trigger", { tag = "m" })[1]
+                local s = getMapEntities("spawner", { tag = "m" })[1]
+                local l = getMapEntities("light", { tag = "m" })[1]
+                return {
+                  start = m:start(),
+                  arm = t:arm(),
+                  on = t:on("enter", { "closet.reveal" }),
+                  fire = s:fire(),
+                  spawnedTags = s.spawnedTags,
+                  pulseId = l:pulse({ min = 0, max = 1, periodMs = 400 })[1].id,
+                  lightHasStart = type(l.start),
+                  spawnerHasArm = type(s.arm),
+                }
+                "#,
+            )
+            .eval()
+            .unwrap();
+        let mut luau: serde_json::Value = lua.from_value(value).unwrap();
+        // JS `typeof` spells an absent field "undefined"; Luau `type` spells it "nil".
+        for field in ["lightHasStart", "spawnerHasArm"] {
+            assert_eq!(luau[field], "nil", "{field}");
+            luau[field] = json!("undefined");
+        }
+
+        assert_eq!(ts, luau, "TS and Luau member handles diverged");
+        assert_eq!(
+            ts,
+            json!({
+                "start": [{ "id": mover.to_raw(), "primitive": "moverStart", "args": {} }],
+                "arm": [{ "id": trigger.to_raw(), "primitive": "armTrigger", "args": {} }],
+                "on": { "trigger": trigger.to_raw(), "event": "enter", "fire": ["closet.reveal"] },
+                "fire": [{ "id": spawner.to_raw(), "primitive": "spawnFromSpawner" }],
+                "spawnedTags": ["closet"],
+                "pulseId": light.to_raw(),
+                "lightHasStart": "undefined",
+                "spawnerHasArm": "undefined",
+            })
+        );
+    }
+
+    // A member query with no match returns an empty array in both runtimes.
+    #[test]
+    fn get_map_entities_returns_an_empty_array_on_no_match_in_both_runtimes() {
+        let _level = LevelDataContext::enter();
+        let (ctx, ..) = member_ctx();
+        let r = registry_for(ctx);
+
+        let rt = rquickjs::Runtime::new().unwrap();
+        let jsctx = rquickjs::Context::full(&rt).unwrap();
+        jsctx.with(|qjs| {
+            install_all(&r, &qjs);
+            postretro_scripting_core::quickjs::evaluate_prelude(&qjs).unwrap();
+            let got: String = qjs
+                .eval(
+                    r#"JSON.stringify(["mover", "trigger", "light", "fog", "emitter", "spawner"]
+                        .map((kind) => getMapEntities(kind, { tag: "absent" })))"#,
+                )
+                .unwrap();
+            assert_eq!(got, "[[],[],[],[],[],[]]");
+        });
+
+        let lua = mlua::Lua::new();
+        install_all_lua(&r, &lua);
+        postretro_scripting_core::luau_prelude::evaluate_prelude(&lua, None).unwrap();
+        let empties: i64 = lua
+            .load(
+                r#"
+                local empties = 0
+                for _, kind in { "mover", "trigger", "light", "fog", "emitter", "spawner" } do
+                  local members = getMapEntities(kind, { tag = "absent" })
+                  if type(members) == "table" and #members == 0 and next(members) == nil then
+                    empties += 1
+                  end
+                end
+                return empties
+                "#,
+            )
+            .eval()
+            .unwrap();
+        assert_eq!(empties, 6);
+    }
+
+    // The SDK's `getGravity` / `setGravity` behave as `world.getGravity` /
+    // `world.setGravity` did, in both runtimes: a read sees the seeded value, a
+    // finite write lands, and a non-finite write warns and leaves gravity as it
+    // was.
+    #[test]
+    fn sdk_gravity_reads_writes_and_warns_on_non_finite_in_both_runtimes() {
+        let (r, ctx) = registry_with_gravity();
+
+        ctx.gravity.set(-7.5);
+        let rt = rquickjs::Runtime::new().unwrap();
+        let jsctx = rquickjs::Context::full(&rt).unwrap();
+        let records = crate::scripting::reactions::log_capture::capture(|| {
+            jsctx.with(|qjs| {
+                install_all(&r, &qjs);
+                postretro_scripting_core::quickjs::evaluate_prelude(&qjs).unwrap();
+                let got: f64 = qjs.eval("getGravity()").unwrap();
+                assert!((got - -7.5).abs() < 1e-5, "TS read got {got}");
+                let _: () = qjs.eval("setGravity(3.5)").unwrap();
+                let _: () = qjs.eval("setGravity(NaN)").unwrap();
+                let _: () = qjs.eval("setGravity(Infinity)").unwrap();
+            });
+        });
+        assert!(
+            (ctx.gravity.get() - 3.5).abs() < 1e-5,
+            "TS non-finite writes are no-ops"
+        );
+        let warnings = records
+            .iter()
+            .filter(|(level, message)| {
+                *level == log::Level::Warn
+                    && message.contains("setGravity: rejected non-finite value")
+            })
+            .count();
+        assert_eq!(warnings, 2, "each TS non-finite write warns: {records:?}");
+
+        ctx.gravity.set(-12.0);
+        let lua = mlua::Lua::new();
+        install_all_lua(&r, &lua);
+        postretro_scripting_core::luau_prelude::evaluate_prelude(&lua, None).unwrap();
+        let records = crate::scripting::reactions::log_capture::capture(|| {
+            let got: f64 = lua.load("return getGravity()").eval().unwrap();
+            assert!((got - -12.0).abs() < 1e-5, "Luau read got {got}");
+            let _: () = lua.load("setGravity(-5.0)").exec().unwrap();
+            let _: () = lua.load("setGravity(0/0)").exec().unwrap();
+            let _: () = lua.load("setGravity(math.huge)").exec().unwrap();
+        });
+        assert!(
+            (ctx.gravity.get() - -5.0).abs() < 1e-6,
+            "Luau non-finite writes are no-ops"
+        );
+        let warnings = records
+            .iter()
+            .filter(|(level, message)| {
+                *level == log::Level::Warn
+                    && message.contains("setGravity: rejected non-finite value")
+            })
+            .count();
+        assert_eq!(warnings, 2, "each Luau non-finite write warns: {records:?}");
     }
 }

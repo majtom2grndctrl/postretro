@@ -42,6 +42,11 @@ fn warned_once(key: &str) -> bool {
     set.insert(key.to_string())
 }
 
+/// Whether a Rust type name (possibly fully qualified) is `Option<T>`.
+pub(super) fn is_option_type(ty_name: &str) -> bool {
+    strip_generic(&short_name(ty_name), "Option").is_some()
+}
+
 /// Map a Rust type name (possibly fully qualified) to its TypeScript spelling.
 ///
 /// Unknown types fall through as their short name and produce a one-time

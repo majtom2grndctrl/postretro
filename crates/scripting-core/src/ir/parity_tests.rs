@@ -469,16 +469,24 @@ fn faction_sentiment_reaction_builders_match_across_authoring_runtimes() {
 }
 
 #[test]
-fn enemy_group_update_descriptors_match_across_authoring_runtimes() {
+fn npc_group_descriptors_match_across_authoring_runtimes() {
     // This fixture intentionally uses the public root module/bare-global
-    // surfaces. In particular, the Luau spelling proves `enemies` is present
+    // surfaces. In particular, the Luau spelling proves `npcs` is present
     // in DATA_SCRIPT_FIELDS and therefore lifted from data_script.luau.
     const TYPESCRIPT_FIXTURE: &str = r#"
-        import { enemies } from "postretro";
-        JSON.stringify(enemies({ tag: "closet_a" }).update({ aggro: true }));
+        import { npcs } from "postretro";
+        JSON.stringify({
+          update: npcs({ tag: "closet_a" }).update({ aggro: true }),
+          damage: npcs({ tag: "closet_a" }).damage(5),
+          everyNpc: npcs().damage(1),
+        });
     "#;
     const LUAU_FIXTURE: &str = r#"
-        return enemies({ tag = "closet_a" }):update({ aggro = true })
+        return {
+          update = npcs({ tag = "closet_a" }):update({ aggro = true }),
+          damage = npcs({ tag = "closet_a" }):damage(5),
+          everyNpc = npcs():damage(1),
+        }
     "#;
 
     let typescript = quickjs_fixture_value(TYPESCRIPT_FIXTURE);
@@ -486,46 +494,30 @@ fn enemy_group_update_descriptors_match_across_authoring_runtimes() {
     assert_eq!(
         serde_json::to_vec(&typescript).expect("serialize TypeScript descriptor"),
         serde_json::to_vec(&luau).expect("serialize Luau descriptor"),
-        "TS and Luau enemy-group descriptors diverged"
+        "TS and Luau NPC-group descriptors diverged"
     );
     assert_eq!(
         typescript,
         serde_json::json!({
-            "primitive": "updateEnemyState",
-            "tag": "closet_a",
-            "args": { "aggro": true },
+            "update": {
+                "primitive": "updateNpcState",
+                "kind": "npc",
+                "tag": "closet_a",
+                "args": { "aggro": true },
+            },
+            "damage": {
+                "primitive": "applyDamage",
+                "kind": "npc",
+                "tag": "closet_a",
+                "args": { "amount": 5 },
+            },
+            "everyNpc": {
+                "primitive": "applyDamage",
+                "kind": "npc",
+                "args": { "amount": 1 },
+            },
         }),
-        "enemy-group handle must be sugar for the raw primitive descriptor"
-    );
-}
-
-#[test]
-fn spawner_fire_descriptors_match_across_authoring_runtimes() {
-    // This fixture uses the public root module/bare-global surfaces. The
-    // Luau spelling proves `spawner` is lifted from data_script.luau and the
-    // byte comparison pins the exact no-args descriptor contract.
-    const TYPESCRIPT_FIXTURE: &str = r#"
-        import { spawner } from "postretro";
-        JSON.stringify(spawner({ tag: "closet_a" }).fire());
-    "#;
-    const LUAU_FIXTURE: &str = r#"
-        return spawner({ tag = "closet_a" }):fire()
-    "#;
-
-    let typescript = quickjs_fixture_value(TYPESCRIPT_FIXTURE);
-    let luau = luau_fixture_value(LUAU_FIXTURE);
-    assert_eq!(
-        serde_json::to_vec(&typescript).expect("serialize TypeScript descriptor"),
-        serde_json::to_vec(&luau).expect("serialize Luau descriptor"),
-        "TS and Luau spawner descriptors diverged"
-    );
-    assert_eq!(
-        typescript,
-        serde_json::json!({
-            "primitive": "spawnFromSpawner",
-            "tag": "closet_a",
-        }),
-        "spawner handle must be sugar for the raw primitive descriptor"
+        "an NPC group verb emits one kind-bearing descriptor; a tagless group omits `tag`"
     );
 }
 
@@ -588,14 +580,15 @@ fn wait_and_fire_step_builders_match_across_authoring_runtimes() {
 #[test]
 fn resource_reaction_builders_match_across_root_sdk_surfaces() {
     const TYPESCRIPT_FIXTURE: &str = r#"
-        import { addSlot, defineStore, grantAmmo, grantHealth } from "postretro";
+        import { defineStore, players } from "postretro";
         const currency = defineStore("currency", {
           xp: { type: "number", default: 0, perOwner: true },
         });
         JSON.stringify({
-          health: grantHealth("players", 12.5),
-          ammo: grantAmmo("players", "bullets.light", 8),
-          slot: addSlot("players", currency.xp, 3),
+          health: players().grantHealth(12.5),
+          ammo: players().grantAmmo("bullets.light", 8),
+          slot: players().addSlot(currency.xp, 3),
+          damage: players().damage(35),
         });
     "#;
     const LUAU_FIXTURE: &str = r#"
@@ -605,14 +598,16 @@ fn resource_reaction_builders_match_across_root_sdk_surfaces() {
         })
         return {
           module = {
-            health = Postretro.grantHealth("players", 12.5),
-            ammo = Postretro.grantAmmo("players", "bullets.light", 8),
-            slot = Postretro.addSlot("players", currency.xp, 3),
+            health = Postretro.players():grantHealth(12.5),
+            ammo = Postretro.players():grantAmmo("bullets.light", 8),
+            slot = Postretro.players():addSlot(currency.xp, 3),
+            damage = Postretro.players():damage(35),
           },
           globals = {
-            health = grantHealth("players", 12.5),
-            ammo = grantAmmo("players", "bullets.light", 8),
-            slot = addSlot("players", currency.xp, 3),
+            health = players():grantHealth(12.5),
+            ammo = players():grantAmmo("bullets.light", 8),
+            slot = players():addSlot(currency.xp, 3),
+            damage = players():damage(35),
           },
         }
     "#;
@@ -632,20 +627,26 @@ fn resource_reaction_builders_match_across_root_sdk_surfaces() {
         serde_json::json!({
             "health": {
                 "primitive": "grantHealth",
-                "tag": "players",
+                "kind": "player",
                 "args": { "amount": 12.5 },
             },
             "ammo": {
                 "primitive": "grantAmmo",
-                "tag": "players",
+                "kind": "player",
                 "args": { "type": "bullets.light", "amount": 8 },
             },
             "slot": {
                 "primitive": "addSlot",
-                "tag": "players",
+                "kind": "player",
                 "args": { "slot": "currency.xp", "delta": 3 },
             },
-        })
+            "damage": {
+                "primitive": "applyDamage",
+                "kind": "player",
+                "args": { "amount": 35 },
+            },
+        }),
+        "`players()` verbs emit kind-bearing group descriptors, never a tag"
     );
 }
 
@@ -1956,3 +1957,9 @@ fn authored_name_validation_diagnostics_match_across_runtimes() {
 
 #[path = "window_mode_sdk_tests.rs"]
 mod window_mode_sdk;
+
+#[path = "addressing_sdk_tests.rs"]
+mod addressing_sdk;
+
+#[path = "member_builder_sdk_tests.rs"]
+mod member_builder_sdk;

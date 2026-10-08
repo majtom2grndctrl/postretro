@@ -1080,8 +1080,6 @@ fn lua_entity_descriptor_with_inventory_and_weapon_component_deserializes() {
 
 #[test]
 fn luau_loadout_builder_rejects_invalid_descriptor_references() {
-    const DATA_SCRIPT_LUAU: &str = include_str!("../../../../../sdk/lib/data_script.luau");
-
     let lua = mlua::Lua::new();
     let expressions: mlua::Table = lua
         .load(include_str!(
@@ -1092,11 +1090,8 @@ fn luau_loadout_builder_rejects_invalid_descriptor_references() {
     lua.globals()
         .set("__postretroExpressionRefs", expressions)
         .unwrap();
-    let sdk: mlua::Table = lua
-        .load(DATA_SCRIPT_LUAU)
-        .set_name("data_script.luau")
-        .eval()
-        .expect("data-script SDK evaluates");
+    let sdk: mlua::Table =
+        crate::luau_prelude::evaluate_data_script_sdk(&lua).expect("data-script SDK evaluates");
     lua.globals()
         .set("Postretro", sdk)
         .expect("SDK installs for test");

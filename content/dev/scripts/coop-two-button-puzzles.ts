@@ -13,7 +13,7 @@
 //   - `setState` (updateState) writing a store slot in-tick
 //   - `onStateCrossing` watching ONE number slot for an above/below edge
 
-import { world, defineReaction, defineStore } from "postretro";
+import { getMapEntities, defineReaction, defineStore } from "postretro";
 import type { NamedReactionDescriptor } from "postretro";
 import { onStateCrossing, updateState } from "postretro/ui";
 
@@ -31,10 +31,10 @@ export function setupLevel() {
   // --- Query the payoff entities per puzzle. --------------------------------
   // These return typed handles: movers expose start()/stop()/reverse(); lights
   // expose fade()/pulse()/… — each emitting a SequenceStep[].
-  const northDoor = world.query({ component: "kinematic_mover", tag: "north-door" });
-  const northLight = world.query({ component: "light", tag: "north-beacon" });
-  const southDoor = world.query({ component: "kinematic_mover", tag: "south-door" });
-  const southLight = world.query({ component: "light", tag: "south-beacon" });
+  const northDoor = getMapEntities("mover", { tag: "north-door" });
+  const northLight = getMapEntities("light", { tag: "north-beacon" });
+  const southDoor = getMapEntities("mover", { tag: "south-door" });
+  const southLight = getMapEntities("light", { tag: "south-beacon" });
 
   // --- Payoff reaction: light-once THEN door-open. --------------------------
   // A single `sequence` body can splice a light step and a mover step because

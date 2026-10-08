@@ -4718,6 +4718,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "mlua",
+ "postretro-foundation",
  "postretro-level-format",
  "rquickjs",
  "serde_json",

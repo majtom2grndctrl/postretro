@@ -26,13 +26,13 @@
 import {
   type NamedReactionDescriptor,
   defineReaction,
-  world,
+  getMapEntities,
 } from "postretro";
 
 export function setupLevel(_ctx: unknown) {
   const reactions: NamedReactionDescriptor[] = [];
 
-  const fogs = world.query({ component: "fog_volume", tag: "pulse_fog" });
+  const fogs = getMapEntities("fog", { tag: "pulse_fog" });
   if (fogs.length > 0) {
     // Tag-targeted Primitive: one descriptor, batch-applied to every
     // `pulse_fog` volume. No SDK helper — `defineReaction` with the

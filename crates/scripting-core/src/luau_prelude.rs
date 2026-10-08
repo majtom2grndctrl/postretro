@@ -6,17 +6,47 @@ use mlua::{Lua, LuaSerdeExt as _, Table};
 use super::error::ScriptError;
 use super::luau_virtual_modules::LuauVirtualModuleRegistry;
 
-/// SDK library prelude — `world.luau` returns the `world` table; we promote
-/// it to global `world`. Embedded at compile time; SDK changes require an
-/// engine rebuild.
-const WORLD_LUAU_SRC: &str = include_str!("../../../sdk/lib/world.luau");
+/// Member-handle wrapper modules, evaluated in this order before
+/// `map_entities.luau`. Each returns a table whose wrapper function is installed
+/// as a temporary global of the same name for `map_entities.luau` to capture as
+/// an upvalue, then nil'd out before author code runs. Their verbs live on the
+/// handles; none is promoted to a bare global.
+/// `(wrapper global, source, sdk/lib-relative path)`.
+const MEMBER_WRAPPER_SOURCES: &[(&str, &str, &str)] = &[
+    (
+        "wrapLightEntity",
+        include_str!("../../../sdk/lib/entities/lights.luau"),
+        "entities/lights.luau",
+    ),
+    (
+        "wrapFogVolumeEntity",
+        include_str!("../../../sdk/lib/entities/fog_volumes.luau"),
+        "entities/fog_volumes.luau",
+    ),
+    (
+        "wrapMoverEntity",
+        include_str!("../../../sdk/lib/entities/movers.luau"),
+        "entities/movers.luau",
+    ),
+    (
+        "wrapTriggerVolumeEntity",
+        include_str!("../../../sdk/lib/entities/triggers.luau"),
+        "entities/triggers.luau",
+    ),
+    (
+        "wrapSpawnerEntity",
+        include_str!("../../../sdk/lib/entities/spawners.luau"),
+        "entities/spawners.luau",
+    ),
+];
 
-/// SDK library prelude — `entities/lights.luau` returns a table whose only
-/// promoted field is `wrapLightEntity`, installed as a temporary global for
-/// `world.luau` to capture and then nil'd out before the sandbox freezes.
-/// Capability methods (`pulse`, `fade`, `flicker`, `colorShift`, `sweep`)
-/// live on the handle returned from `wrapLightEntity`; no bare globals.
-const LIGHTS_LUAU_SRC: &str = include_str!("../../../sdk/lib/entities/lights.luau");
+/// SDK library prelude — `map_entities.luau` returns `getMapEntities`, which
+/// captures the member wrappers above. Embedded at compile time; SDK changes
+/// require an engine rebuild.
+const MAP_ENTITIES_LUAU_SRC: &str = include_str!("../../../sdk/lib/map_entities.luau");
+
+/// SDK library prelude — `gravity.luau` returns `getGravity` / `setGravity`.
+const GRAVITY_LUAU_SRC: &str = include_str!("../../../sdk/lib/gravity.luau");
 
 /// SDK library prelude — `util/keyframes.luau` returns a table whose fields
 /// (`timeline`, `sequence`) are destructured into globals.
@@ -25,29 +55,6 @@ const KEYFRAMES_LUAU_SRC: &str = include_str!("../../../sdk/lib/util/keyframes.l
 /// SDK library prelude — `entities/emitters.luau` returns a table whose fields
 /// are destructured into globals so authors can call them by bare name.
 const EMITTERS_LUAU_SRC: &str = include_str!("../../../sdk/lib/entities/emitters.luau");
-
-/// SDK library prelude — `entities/fog_volumes.luau` returns a table whose
-/// only promoted field is `wrapFogVolumeEntity`, installed as a temporary
-/// global for `world.luau` to capture and then nil'd out before the sandbox
-/// freezes. Capability methods (`pulse`, `fade`, `flicker`,
-/// `pulseSaturation`, `fadeSaturation`) live on the handle returned from
-/// `wrapFogVolumeEntity`; no bare globals.
-pub(super) const FOG_VOLUMES_LUAU_SRC: &str =
-    include_str!("../../../sdk/lib/entities/fog_volumes.luau");
-
-/// SDK library prelude — `entities/movers.luau` returns a table whose only
-/// promoted field is `wrapMoverEntity`, installed as a temporary global for
-/// `world.luau` to capture and then nil'd out before the sandbox freezes.
-/// Command builders (`start`, `stop`, `reverse`, `goToPathNode`) live on the
-/// handle returned from `wrapMoverEntity`; no bare globals.
-const MOVERS_LUAU_SRC: &str = include_str!("../../../sdk/lib/entities/movers.luau");
-
-/// SDK library prelude — `entities/triggers.luau` returns a table whose only
-/// promoted field is `wrapTriggerVolumeEntity`, installed as a temporary global
-/// for `world.luau` to capture and then nil'd out before the sandbox freezes.
-/// Command builders (`arm`, `disarm`) live on the returned handle; no bare
-/// globals are exposed.
-const TRIGGERS_LUAU_SRC: &str = include_str!("../../../sdk/lib/entities/triggers.luau");
 
 /// SDK library prelude — `data_script.luau` returns a table of public
 /// descriptor builders that are destructured into globals so data-script authors
@@ -59,18 +66,18 @@ const DATA_SCRIPT_LUAU_SRC: &str = include_str!("../../../sdk/lib/data_script.lu
 /// Part chunks of `data_script.luau`, evaluated in this order before it. Each
 /// returns a table whose `builders` the main module merges into its own; the
 /// temporary [`DATA_SCRIPT_PARTS_GLOBAL`] bridge carries them (and the shared
-/// dispatch-param tokens) across chunks and is cleared once the main module
-/// returns. `(bridge key, source, sdk/lib-relative path)`.
+/// subject tokens and dispatch params) across chunks and is cleared once the
+/// main module returns. `(bridge key, source, sdk/lib-relative path)`.
 const DATA_SCRIPT_PART_SOURCES: &[(&str, &str, &str)] = &[
-    (
-        "reactions",
-        include_str!("../../../sdk/lib/data_script/reactions.luau"),
-        "data_script/reactions.luau",
-    ),
     (
         "commands",
         include_str!("../../../sdk/lib/data_script/commands.luau"),
         "data_script/commands.luau",
+    ),
+    (
+        "reactions",
+        include_str!("../../../sdk/lib/data_script/reactions.luau"),
+        "data_script/reactions.luau",
     ),
     (
         "triggerEvents",
@@ -92,7 +99,7 @@ const ACTIVATION_LUAU_SRC: &str = include_str!("../../../sdk/lib/activation.luau
 const ARRAY_METATABLE_GLOBAL: &str = "__postretroArrayMetatable";
 
 /// SDK library prelude — `runtime.luau` returns the runtime-value builder table,
-/// promoted whole to global `runtime` (mirroring `world`). Pure data assembly: a
+/// promoted whole to global `runtime`. Pure data assembly: a
 /// builder assembles a `RuntimeValue` table and never calls back into Rust.
 const RUNTIME_LUAU_SRC: &str = include_str!("../../../sdk/lib/runtime.luau");
 
@@ -139,12 +146,11 @@ const UI_THEME_LUAU_SRC: &str = include_str!("../../../sdk/lib/ui/theme.luau");
 /// engine-state reference tree bridge and returns `getGameState`.
 const GAME_STATE_LUAU_SRC: &str = include_str!("../../../sdk/lib/game_state.luau");
 
-/// Lights SDK fields lifted to globals after evaluating
-/// `entities/lights.luau`. Empty: the public vocabulary lives on the handle
-/// returned from `wrapLightEntity`, which is itself installed as a
-/// temporary bridge (not a bare global) before `world.luau` evaluates and
-/// nil'd out afterward.
-const LIGHTS_LUAU_FIELDS: &[&str] = &[];
+/// Map-member SDK fields lifted to globals after evaluating `map_entities.luau`.
+const MAP_ENTITIES_FIELDS: &[&str] = &["getMapEntities"];
+
+/// Gravity SDK fields lifted to globals after evaluating `gravity.luau`.
+const GRAVITY_FIELDS: &[&str] = &["getGravity", "setGravity"];
 
 /// Keyframe-utility SDK fields lifted to globals after evaluating
 /// `util/keyframes.luau`.
@@ -154,33 +160,16 @@ const KEYFRAMES_LUAU_FIELDS: &[&str] = &["timeline", "sequence"];
 /// `entities/emitters.luau`.
 const EMITTERS_LUAU_FIELDS: &[&str] = &["emitter", "smokeEmitter", "sparkEmitter", "dustEmitter"];
 
-/// Fog-volume SDK fields lifted to globals after evaluating
-/// `entities/fog_volumes.luau`. Empty: the public vocabulary lives on the
-/// handle returned from `wrapFogVolumeEntity`, which is itself installed
-/// as a temporary bridge (not a bare global) before `world.luau`
-/// evaluates and nil'd out afterward.
-const FOG_VOLUMES_LUAU_FIELDS: &[&str] = &[];
-
-/// Mover capability methods live on handles, not bare globals.
-const MOVERS_LUAU_FIELDS: &[&str] = &[];
-
-/// Trigger capability methods live on handles, not bare globals.
-const TRIGGERS_LUAU_FIELDS: &[&str] = &[];
-
 /// Data-script SDK fields lifted to globals after evaluating
 /// `data_script.luau`.
+/// No lifted name may shadow a Luau builtin
+/// (`lifted_globals_never_shadow_a_luau_builtin`).
 const DATA_SCRIPT_FIELDS: &[&str] = &[
     "defineReaction",
     "defineImpactEvent",
-    "onTriggerEvent",
-    "damage",
-    "grantHealth",
-    "grantAmmo",
-    "addSlot",
-    "enemies",
-    "spawner",
-    "armTrigger",
-    "disarmTrigger",
+    "defineTriggerEvent",
+    "npcs",
+    "players",
     "wait",
     "fire",
     "scopeReactions",
@@ -347,23 +336,19 @@ pub const POSTRETRO_UI_MODULE_EXPORTS: &[&str] = &[
 
 /// Authoritative runtime export names for `require("postretro")`.
 pub const POSTRETRO_ROOT_MODULE_EXPORTS: &[&str] = &[
-    "world",
     "runtime",
     "activation",
+    "getMapEntities",
+    "getGravity",
+    "setGravity",
     "getGameState",
     "timeline",
     "sequence",
     "defineReaction",
     "defineImpactEvent",
-    "onTriggerEvent",
-    "damage",
-    "grantHealth",
-    "grantAmmo",
-    "addSlot",
-    "enemies",
-    "spawner",
-    "armTrigger",
-    "disarmTrigger",
+    "defineTriggerEvent",
+    "npcs",
+    "players",
     "wait",
     "fire",
     "scopeReactions",
@@ -392,9 +377,9 @@ pub const POSTRETRO_ROOT_MODULE_EXPORTS: &[&str] = &[
 /// Evaluate the Luau SDK prelude in `lua` and promote the return values to
 /// globals. Must be called after primitives are installed and before
 /// `sandbox(true)` (which freezes `_G`). The primitive dependency applies
-/// to the light, fog-volume, and world-query SDK modules — they reference
-/// primitives like `worldQuery` and `setLightAnimation`. The mover wrapper
-/// is also embedded before `world.luau` captures it.
+/// to the member and gravity SDK modules — they call primitives like
+/// `worldQuery` and `worldGetGravity`. The member wrappers evaluate before
+/// `map_entities.luau` captures them.
 /// `data_script.luau` is also evaluated as a prelude step but has no
 /// primitive dependencies; its exported builders are pure data assembly.
 /// The prelude source uses type annotations declared in postretro.d.luau (luau-lsp only); the runtime evaluates the .luau source without loading the declaration file.
@@ -430,192 +415,35 @@ pub fn evaluate_prelude(
             })?;
     }
 
-    // Step 1: evaluate `entities/lights.luau`. The only exported field is
-    // the `wrapLightEntity` bridge — capability methods (`pulse`, `fade`,
-    // `flicker`, `colorShift`, `sweep`) live on the handle it produces,
-    // not as bare globals. `wrapLightEntity` itself is installed below as
-    // a temporary global so `world.luau` can capture it as an upvalue,
-    // then nil'd out in step 4.
-    let lights_sdk: Table = lua
-        .load(LIGHTS_LUAU_SRC)
-        .set_name("postretro/sdk/entities/lights.luau")
-        .eval()
-        .map_err(|e| ScriptError::ScriptThrew {
-            msg: format!("failed to evaluate SDK prelude `entities/lights.luau`: {e}"),
-            source_name: "sdk/lib/entities/lights.luau".to_string(),
-        })?;
-    let wrap_light_entity: mlua::Value =
-        lights_sdk
-            .get("wrapLightEntity")
+    // Step 1: evaluate the member-handle wrappers and install each wrapper as
+    // a temporary global for `map_entities.luau` to capture as an upvalue.
+    for (wrapper, source, path) in MEMBER_WRAPPER_SOURCES {
+        let module = eval_sdk_table(lua, source, path)?;
+        let wrap: mlua::Value = module
+            .get(*wrapper)
             .map_err(|e| ScriptError::InvalidArgument {
-                reason: format!("entities/lights.luau missing `wrapLightEntity`: {e}"),
+                reason: format!("{path} missing `{wrapper}`: {e}"),
             })?;
-    globals
-        .set("wrapLightEntity", wrap_light_entity)
-        .map_err(|e| ScriptError::InvalidArgument {
-            reason: format!("failed to install temporary global `wrapLightEntity`: {e}"),
-        })?;
-
-    // Step 2: install the public lights fields as globals.
-    // `LIGHTS_LUAU_FIELDS` is empty in the capability-handle world; the
-    // loop is retained so adding a future bare global is a one-line
-    // change in the slice declaration.
-    for field in LIGHTS_LUAU_FIELDS {
-        let value: mlua::Value =
-            lights_sdk
-                .get(*field)
-                .map_err(|e| ScriptError::InvalidArgument {
-                    reason: format!("entities/lights.luau missing `{field}`: {e}"),
-                })?;
-        globals
-            .set(*field, value)
-            .map_err(|e| ScriptError::InvalidArgument {
-                reason: format!("failed to install global `{field}`: {e}"),
-            })?;
+        set_global(&globals, wrapper, wrap)?;
     }
 
-    // Step 2b: evaluate `entities/fog_volumes.luau`. Mirrors lights.luau:
-    // the only exported field is `wrapFogVolumeEntity`. Capability
-    // methods (`pulse`, `fade`, `flicker`, `pulseSaturation`,
-    // `fadeSaturation`) live on the handle, not as bare globals.
-    let fog_volumes_sdk: Table = lua
-        .load(FOG_VOLUMES_LUAU_SRC)
-        .set_name("postretro/sdk/entities/fog_volumes.luau")
-        .eval()
-        .map_err(|e| ScriptError::ScriptThrew {
-            msg: format!("failed to evaluate SDK prelude `entities/fog_volumes.luau`: {e}"),
-            source_name: "sdk/lib/entities/fog_volumes.luau".to_string(),
-        })?;
-    let wrap_fog_volume_entity: mlua::Value =
-        fog_volumes_sdk
-            .get("wrapFogVolumeEntity")
-            .map_err(|e| ScriptError::InvalidArgument {
-                reason: format!("entities/fog_volumes.luau missing `wrapFogVolumeEntity`: {e}"),
-            })?;
-    globals
-        .set("wrapFogVolumeEntity", wrap_fog_volume_entity)
-        .map_err(|e| ScriptError::InvalidArgument {
-            reason: format!("failed to install temporary global `wrapFogVolumeEntity`: {e}"),
-        })?;
-    for field in FOG_VOLUMES_LUAU_FIELDS {
-        let value: mlua::Value =
-            fog_volumes_sdk
-                .get(*field)
-                .map_err(|e| ScriptError::InvalidArgument {
-                    reason: format!("entities/fog_volumes.luau missing `{field}`: {e}"),
-                })?;
-        globals
-            .set(*field, value)
-            .map_err(|e| ScriptError::InvalidArgument {
-                reason: format!("failed to install global `{field}`: {e}"),
-            })?;
+    // Step 2: evaluate `map_entities.luau`, lift `getMapEntities`, then nil out
+    // the wrapper bridges so author scripts never see them once
+    // `sandbox(true)` freezes `_G`. The captured upvalues keep working.
+    let map_entities_sdk = eval_sdk_table(lua, MAP_ENTITIES_LUAU_SRC, "map_entities.luau")?;
+    lift_fields(
+        &globals,
+        &map_entities_sdk,
+        MAP_ENTITIES_FIELDS,
+        "map_entities.luau",
+    )?;
+    for (wrapper, _, _) in MEMBER_WRAPPER_SOURCES {
+        set_global(&globals, wrapper, mlua::Value::Nil)?;
     }
 
-    let movers_sdk: Table = lua
-        .load(MOVERS_LUAU_SRC)
-        .set_name("postretro/sdk/entities/movers.luau")
-        .eval()
-        .map_err(|e| ScriptError::ScriptThrew {
-            msg: format!("failed to evaluate SDK prelude `entities/movers.luau`: {e}"),
-            source_name: "sdk/lib/entities/movers.luau".to_string(),
-        })?;
-    let wrap_mover_entity: mlua::Value =
-        movers_sdk
-            .get("wrapMoverEntity")
-            .map_err(|e| ScriptError::InvalidArgument {
-                reason: format!("entities/movers.luau missing `wrapMoverEntity`: {e}"),
-            })?;
-    globals
-        .set("wrapMoverEntity", wrap_mover_entity)
-        .map_err(|e| ScriptError::InvalidArgument {
-            reason: format!("failed to install temporary global `wrapMoverEntity`: {e}"),
-        })?;
-    for field in MOVERS_LUAU_FIELDS {
-        let value: mlua::Value =
-            movers_sdk
-                .get(*field)
-                .map_err(|e| ScriptError::InvalidArgument {
-                    reason: format!("entities/movers.luau missing `{field}`: {e}"),
-                })?;
-        globals
-            .set(*field, value)
-            .map_err(|e| ScriptError::InvalidArgument {
-                reason: format!("failed to install global `{field}`: {e}"),
-            })?;
-    }
-
-    let triggers_sdk: Table = lua
-        .load(TRIGGERS_LUAU_SRC)
-        .set_name("postretro/sdk/entities/triggers.luau")
-        .eval()
-        .map_err(|e| ScriptError::ScriptThrew {
-            msg: format!("failed to evaluate SDK prelude `entities/triggers.luau`: {e}"),
-            source_name: "sdk/lib/entities/triggers.luau".to_string(),
-        })?;
-    let wrap_trigger_volume_entity: mlua::Value = triggers_sdk
-        .get("wrapTriggerVolumeEntity")
-        .map_err(|e| ScriptError::InvalidArgument {
-            reason: format!("entities/triggers.luau missing `wrapTriggerVolumeEntity`: {e}"),
-        })?;
-    globals
-        .set("wrapTriggerVolumeEntity", wrap_trigger_volume_entity)
-        .map_err(|e| ScriptError::InvalidArgument {
-            reason: format!("failed to install temporary global `wrapTriggerVolumeEntity`: {e}"),
-        })?;
-    for field in TRIGGERS_LUAU_FIELDS {
-        let value: mlua::Value =
-            triggers_sdk
-                .get(*field)
-                .map_err(|e| ScriptError::InvalidArgument {
-                    reason: format!("entities/triggers.luau missing `{field}`: {e}"),
-                })?;
-        globals
-            .set(*field, value)
-            .map_err(|e| ScriptError::InvalidArgument {
-                reason: format!("failed to install global `{field}`: {e}"),
-            })?;
-    }
-
-    // Step 3: evaluate `world.luau`. Its `query` closure captures the light,
-    // fog-volume, mover, and trigger wrappers as upvalues at evaluation time,
-    // so step 4's nil-out does not break the closure.
-    let world: mlua::Value = lua
-        .load(WORLD_LUAU_SRC)
-        .set_name("postretro/sdk/world.luau")
-        .eval()
-        .map_err(|e| ScriptError::ScriptThrew {
-            msg: format!("failed to evaluate SDK prelude `world.luau`: {e}"),
-            source_name: "sdk/lib/world.luau".to_string(),
-        })?;
-    globals
-        .set("world", world.clone())
-        .map_err(|e| ScriptError::InvalidArgument {
-            reason: format!("failed to install global `world`: {e}"),
-        })?;
-
-    // Step 4: nil out the temporary light, fog-volume, mover, and trigger wrapper
-    // bridges so author scripts never see them as bare globals once
-    // `sandbox(true)` freezes `_G`.
-    globals
-        .set("wrapLightEntity", mlua::Value::Nil)
-        .map_err(|e| ScriptError::InvalidArgument {
-            reason: format!("failed to clear temporary global `wrapLightEntity`: {e}"),
-        })?;
-    globals
-        .set("wrapFogVolumeEntity", mlua::Value::Nil)
-        .map_err(|e| ScriptError::InvalidArgument {
-            reason: format!("failed to clear temporary global `wrapFogVolumeEntity`: {e}"),
-        })?;
-    globals
-        .set("wrapMoverEntity", mlua::Value::Nil)
-        .map_err(|e| ScriptError::InvalidArgument {
-            reason: format!("failed to clear temporary global `wrapMoverEntity`: {e}"),
-        })?;
-    globals
-        .set("wrapTriggerVolumeEntity", mlua::Value::Nil)
-        .map_err(|e| ScriptError::InvalidArgument {
-            reason: format!("failed to clear temporary global `wrapTriggerVolumeEntity`: {e}"),
-        })?;
+    // Step 3: evaluate `gravity.luau` and lift `getGravity` / `setGravity`.
+    let gravity_sdk = eval_sdk_table(lua, GRAVITY_LUAU_SRC, "gravity.luau")?;
+    lift_fields(&globals, &gravity_sdk, GRAVITY_FIELDS, "gravity.luau")?;
 
     // Step 5: evaluate `util/keyframes.luau` and lift its fields to globals.
     let keyframes_sdk: Table = lua
@@ -859,7 +687,8 @@ pub fn evaluate_prelude(
             lua,
             virtual_modules,
             LuauSdkExportInventory {
-                world,
+                map_entities_sdk,
+                gravity_sdk,
                 runtime,
                 activation,
                 game_state_sdk,
@@ -882,7 +711,8 @@ pub fn evaluate_prelude(
 }
 
 struct LuauSdkExportInventory {
-    world: mlua::Value,
+    map_entities_sdk: Table,
+    gravity_sdk: Table,
     runtime: mlua::Value,
     activation: mlua::Value,
     game_state_sdk: Table,
@@ -970,11 +800,18 @@ fn populate_virtual_modules(
         .map_err(|e| ScriptError::InvalidArgument {
             reason: format!("failed to allocate `postretro` virtual module inventory: {e}"),
         })?;
-    root_module
-        .set("world", inventory.world)
-        .map_err(|e| ScriptError::InvalidArgument {
-            reason: format!("failed to set `postretro.world` virtual module export: {e}"),
-        })?;
+    copy_fields_to_table(
+        &root_module,
+        &inventory.map_entities_sdk,
+        MAP_ENTITIES_FIELDS,
+        "map_entities.luau",
+    )?;
+    copy_fields_to_table(
+        &root_module,
+        &inventory.gravity_sdk,
+        GRAVITY_FIELDS,
+        "gravity.luau",
+    )?;
     root_module
         .set("runtime", inventory.runtime)
         .map_err(|e| ScriptError::InvalidArgument {
@@ -1076,6 +913,43 @@ pub(crate) fn evaluate_data_script_sdk(lua: &Lua) -> Result<Table, ScriptError> 
     Ok(data_sdk)
 }
 
+/// Evaluate one SDK library chunk that returns a table.
+fn eval_sdk_table(lua: &Lua, source: &str, path: &str) -> Result<Table, ScriptError> {
+    lua.load(source)
+        .set_name(format!("postretro/sdk/{path}"))
+        .eval()
+        .map_err(|e| ScriptError::ScriptThrew {
+            msg: format!("failed to evaluate SDK prelude `{path}`: {e}"),
+            source_name: format!("sdk/lib/{path}"),
+        })
+}
+
+fn set_global(globals: &Table, name: &str, value: mlua::Value) -> Result<(), ScriptError> {
+    globals
+        .set(name, value)
+        .map_err(|e| ScriptError::InvalidArgument {
+            reason: format!("failed to set global `{name}`: {e}"),
+        })
+}
+
+/// Promote `fields` of an evaluated SDK table to bare globals.
+fn lift_fields(
+    globals: &Table,
+    source: &Table,
+    fields: &[&str],
+    source_name: &str,
+) -> Result<(), ScriptError> {
+    for field in fields {
+        let value: mlua::Value = source
+            .get(*field)
+            .map_err(|e| ScriptError::InvalidArgument {
+                reason: format!("{source_name} missing `{field}`: {e}"),
+            })?;
+        set_global(globals, field, value)?;
+    }
+    Ok(())
+}
+
 fn copy_fields_to_table(
     target: &Table,
     source: &Table,
@@ -1163,10 +1037,36 @@ mod tests {
         );
     }
 
+    // A lifted bare global that shadowed a Luau builtin (`select`, `type`, ...)
+    // would silently break author code and the SDK chunks that call it.
+    #[test]
+    fn lifted_globals_never_shadow_a_luau_builtin() {
+        let lua = Lua::new();
+        let builtins = lua.globals();
+        let lifted = ["runtime", "activation"]
+            .into_iter()
+            .chain(MAP_ENTITIES_FIELDS.iter().copied())
+            .chain(GRAVITY_FIELDS.iter().copied())
+            .chain(GAME_STATE_FIELDS.iter().copied())
+            .chain(BRAIN_LUAU_FIELDS.iter().copied())
+            .chain(KEYFRAMES_LUAU_FIELDS.iter().copied())
+            .chain(DATA_SCRIPT_FIELDS.iter().copied())
+            .chain(EMITTERS_LUAU_FIELDS.iter().copied());
+        for name in lifted {
+            let existing: mlua::Value = builtins.get(name).expect("global lookup");
+            assert!(
+                existing.is_nil(),
+                "lifted SDK global `{name}` shadows a Luau builtin"
+            );
+        }
+    }
+
     #[test]
     fn root_module_export_inventory_matches_composed_runtime_fields() {
-        let expected = ["world", "runtime", "activation"]
+        let expected = ["runtime", "activation"]
             .into_iter()
+            .chain(MAP_ENTITIES_FIELDS.iter().copied())
+            .chain(GRAVITY_FIELDS.iter().copied())
             .chain(GAME_STATE_FIELDS.iter().copied())
             .chain(BRAIN_LUAU_FIELDS.iter().copied())
             .chain(KEYFRAMES_LUAU_FIELDS.iter().copied())

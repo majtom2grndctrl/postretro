@@ -536,7 +536,7 @@ impl App {
             );
         }
         // Segment A of the CPU world install: seed gravity from the level's
-        // authored value (before the data script runs, so a `world.getGravity()`
+        // authored value (before the data script runs, so a `getGravity()`
         // in `setupLevel` / `levelLoad` reactions sees it) and build the runtime
         // navigation graph. Renderer-free; the nav build reads the un-normalized
         // navmesh section, which the renderer UV pass below does not touch. The

@@ -1192,56 +1192,6 @@ fn malformed_reactions_do_not_discard_valid_manifest_siblings_in_either_vm() {
 }
 
 #[test]
-fn luau_trigger_target_tokens_preserve_wrong_builder_tokens_for_validation() {
-    let lua = mlua::Lua::new();
-    let expressions: mlua::Table = lua
-        .load(include_str!(
-            "../../../../../sdk/lib/util/expression_refs.luau"
-        ))
-        .eval()
-        .unwrap();
-    lua.globals()
-        .set("__postretroExpressionRefs", expressions)
-        .unwrap();
-    let sdk: mlua::Table =
-        crate::luau_prelude::evaluate_data_script_sdk(&lua).expect("data-script SDK must load");
-    lua.globals().set("Postretro", sdk).unwrap();
-    let value: LuaValue = lua
-        .load(
-            r#"
-            return { reactions = {
-                Postretro.defineReaction("wrongDamage", function(on)
-                    return Postretro.damage(on.trigger, 5)
-                end),
-                Postretro.defineReaction("rightDamage", function(on)
-                    return Postretro.damage(on.activators, 5)
-                end),
-                Postretro.defineReaction("wrongArm", function(on)
-                    return { sequence = Postretro.armTrigger(on.activators) }
-                end),
-            } }
-            "#,
-        )
-        .eval()
-        .expect("Luau SDK must build descriptors");
-
-    let manifest = LevelManifest::from_lua_value(value).expect("malformed siblings degrade");
-    assert_eq!(
-        manifest
-            .reactions
-            .iter()
-            .map(|reaction| reaction.name.as_str())
-            .collect::<Vec<_>>(),
-        ["rightDamage"],
-        "wrong opaque target tokens must reach the descriptor validator instead of lowering as valid targets"
-    );
-    let ReactionDescriptor::Primitive(primitive) = &manifest.reactions[0].descriptor else {
-        panic!("remaining descriptor must be the valid damage reaction");
-    };
-    assert_eq!(primitive.target.as_deref(), Some("@activators"));
-}
-
-#[test]
 fn grant_reactions_accept_tag_and_activator_forms_identically_in_both_vms() {
     let js = eval_js(
         r#"({ reactions: [

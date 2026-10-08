@@ -123,10 +123,15 @@ export type PostretroUiModule = {
 }
 
 export type PostretroModule = {
-  world: World,
   runtime: Runtime,
   --- Pure bounded weapon-action data builders with read-only normalized charge.
   activation: Activation,
+  --- Map-placed members of one kind (`mover`, `trigger`, `light`, `fog`, `emitter`, `spawner`), as handles. Callable only in `setupLevel`.
+  getMapEntities: typeof(getMapEntities),
+  --- Current world gravity in m/s².
+  getGravity: typeof(getGravity),
+  --- Set world gravity in m/s²; non-finite values are ignored with a warning.
+  setGravity: typeof(setGravity),
   getGameState: typeof(getGameState),
   timeline: typeof(timeline),
   sequence: typeof(sequence),
@@ -134,17 +139,14 @@ export type PostretroModule = {
   defineReaction: typeof(defineReaction),
   --- Define a pure impact-policy descriptor. Register it only through `events`.
   defineImpactEvent: typeof(defineImpactEvent),
-  damage: typeof(damage),
-  grantHealth: typeof(grantHealth),
-  grantAmmo: typeof(grantAmmo),
-  addSlot: typeof(addSlot),
-  enemies: typeof(enemies),
-  spawner: typeof(spawner),
-  armTrigger: typeof(armTrigger),
-  disarmTrigger: typeof(disarmTrigger),
+  --- Address NPCs, optionally by tag. An opaque group resolved when each command takes effect.
+  npcs: typeof(npcs),
+  --- Address every seat-bound player pawn. An opaque group resolved when each command takes effect.
+  players: typeof(players),
   wait: typeof(wait),
   fire: typeof(fire),
-  onTriggerEvent: typeof(onTriggerEvent),
+  --- Declare a mod-global, tag-keyed trigger event for `ModManifest.triggerEvents`.
+  defineTriggerEvent: typeof(defineTriggerEvent),
   --- Stamp a shared map-tag scope onto a reaction list.
   scopeReactions: typeof(scopeReactions),
   --- Pure identity builder for entity type descriptors returned from `ModManifest.entities`.

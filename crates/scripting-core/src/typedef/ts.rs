@@ -200,16 +200,15 @@ pub fn emit_ts_game_state_refs(out: &mut String) {
     out.push_str("  export function getGameState(): GameStateRefs;\n\n");
 }
 
-// Static type declarations for the SDK library globals (`world`, `timeline`,
-// `sequence`) and the capability-method handle interfaces installed by the
+// Static type declarations for the SDK library globals (`getMapEntities`,
+// `npcs`, `timeline`, ...) and the member handle interfaces installed by the
 // prelude. The block is appended verbatim inside
-// `declare module "postretro" { ... }` so authors can `import { world }
-// from "postretro"`. See: context/lib/scripting.md §7.
+// `declare module "postretro" { ... }` so authors can
+// `import { getMapEntities } from "postretro"`. See: context/lib/scripting.md §7.
 // Source of truth for this static block:
-//   sdk/lib/world.ts
-//   sdk/lib/entities/lights.ts
-//   sdk/lib/entities/emitters.ts
-//   sdk/lib/entities/fog_volumes.ts
+//   sdk/lib/map_entities.ts
+//   sdk/lib/gravity.ts
+//   sdk/lib/entities/{lights,emitters,fog_volumes,movers,triggers,spawners}.ts
 //   sdk/lib/util/keyframes.ts
 //   sdk/lib/data_script.ts  (re-exported via index.ts)
 //   sdk/lib/data_script/{reactions,commands,trigger_events}.ts  (re-exported via data_script.ts)

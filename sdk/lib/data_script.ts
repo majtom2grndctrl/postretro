@@ -9,21 +9,27 @@ import { numberNode, boolNode, numberRef, boolRef } from "./util/expression_refs
 import type { NumberValue, BoolValue, NumberRef, BoolRef, RuntimeExpressionRefs } from "./util/expression_refs";
 export type { NumberValue, BoolValue, NumberRef, BoolRef, RuntimeExpressionRefs } from "./util/expression_refs";
 import { DISPATCH_PARAMS } from "./data_script/reactions";
-import type { TriggerEventDescriptor, TriggerPoolDescriptor } from "./data_script/trigger_events";
+import type { ActivatorsTarget, GroupCommand, TriggerTarget } from "./data_script/commands";
+import type { VolumeTriggerEventDescriptor, TriggerPoolDescriptor } from "./data_script/trigger_events";
 export { defineReaction, scopeReactions, wait, fire } from "./data_script/reactions";
-export {
-  damage,
-  grantHealth,
-  grantAmmo,
-  addSlot,
-  armTrigger,
-  disarmTrigger,
+export { npcs, players } from "./data_script/commands";
+export type {
+  ActivatorsTarget,
+  GroupCommand,
+  GroupKind,
+  NpcGroup,
+  NpcGroupFilter,
+  NpcStateUpdateArgs,
+  PlayerGroup,
+  TriggerTarget,
 } from "./data_script/commands";
-export { onTriggerEvent, defineTriggerPool } from "./data_script/trigger_events";
+export { defineTriggerEvent, defineTriggerPool } from "./data_script/trigger_events";
 export type {
   TriggerEventDescriptor,
-  TriggerEventOptions,
+  TriggerEventReaction,
+  TriggerEventRule,
   TriggerPoolDescriptor,
+  VolumeTriggerEventDescriptor,
 } from "./data_script/trigger_events";
 
 /** Dispatch values published by a state-crossing fire. */
@@ -35,14 +41,6 @@ export type CrossingParams = Readonly<{
 export type TickParams = Readonly<{
   dt: import("postretro").RuntimeRead;
 }>;
-
-declare const activatorsTargetBrand: unique symbol;
-declare const triggerTargetBrand: unique symbol;
-
-/** Opaque target for the pawns that caused the current trigger edge. */
-export type ActivatorsTarget = Readonly<{ readonly [activatorsTargetBrand]: true }>;
-/** Opaque target for the trigger volume that fired the current edge. */
-export type TriggerTarget = Readonly<{ readonly [triggerTargetBrand]: true }>;
 
 declare const emitterTargetBrand: unique symbol;
 
@@ -66,9 +64,10 @@ export type ProgressReactionDescriptor = {
   progress: { tag: string; at: number; fire: string };
 };
 
-/** Invokes a named Rust primitive. A non-empty `tag` targets matching entities; tag-targeted primitives include emitter/fog/mover commands, `applyDamage`, `grantHealth`, `grantAmmo`, `addSlot`, `setAnimationState`, `updateNpcState`, `armTrigger`, and `disarmTrigger`. In a trigger-event reaction, `applyDamage`, `grantHealth`, `grantAmmo`, and `addSlot` may instead carry `target: "@activators"`. True system reactions carry neither `tag` nor `target` and enqueue typed engine commands such as `playSound`, `rumble`, `flashScreen`, and the UI-stack reactions. `args` carries the primitive's typed payload. */
+/** Invokes a named Rust primitive. A group command (`npcs(...)`, `players()`) carries `kind` and an optional `tag` filter; a subject-token command (`on.activators`) carries `target: "@activators"`. A raw descriptor with only a non-empty `tag` resolves over every entity carrying it (fog, emitter and animation primitives have no typed builder). True system reactions carry neither and enqueue typed engine commands such as `playSound`, `rumble`, `flashScreen`, and the UI-stack reactions. `args` carries the primitive's typed payload. */
 export type PrimitiveReactionDescriptor = {
   primitive: string;
+  kind?: "npc" | "player";
   tag?: string;
   target?: "@activators";
   args?: Record<string, unknown>;
@@ -76,8 +75,8 @@ export type PrimitiveReactionDescriptor = {
 };
 
 /**
- * One step in a `sequence` reaction body. Sequence steps target a single `EntityId`;
- * tag-targeted primitives belong on the `Primitive` reaction path, not on `sequence`.
+ * One step in a `sequence` reaction body. A member step targets a single
+ * `EntityId`; a group command (`GroupCommand`) resolves its group when it runs.
  */
 export type SetLightAnimationStep = {
   id: import("postretro").EntityId;
@@ -103,6 +102,7 @@ export type MoverSetSpinRateStep = import("postretro").MoverSetSpinRateStep;
 export type MoverSetBlockPolicyStep = import("postretro").MoverSetBlockPolicyStep;
 export type ArmTriggerStep = import("postretro").ArmTriggerStep;
 export type DisarmTriggerStep = import("postretro").DisarmTriggerStep;
+export type SpawnFromSpawnerStep = import("postretro").SpawnFromSpawnerStep;
 export type WaitStep = import("postretro").WaitStep;
 export type FireStep = import("postretro").FireStep;
 
@@ -125,10 +125,12 @@ export type SequenceStep =
   | MoverSetBlockPolicyStep
   | ArmTriggerStep
   | DisarmTriggerStep
+  | SpawnFromSpawnerStep
+  | GroupCommand
   | WaitStep
   | FireStep;
 
-/** Ordered entity-targeted primitive and control steps. Entity steps begin in
+/** Ordered member, group and control steps. Steps begin in
  * array order; `fire` queues a named dispatch, while `wait` stops the current
  * drain and resumes the remaining tail after its delay. */
 export type SequenceReactionDescriptor = {
@@ -155,7 +157,8 @@ export type LevelManifest = {
   events?: readonly ImpactEvent[];
   /** State-crossing watchers (HUD dynamics). See `onStateCrossing`. */
   crossings?: import("./ui/reactions").CrossingDescriptor[];
-  triggerEvents?: TriggerEventDescriptor[];
+  /** Level trigger events, keyed by volume: build each with a trigger member's `on`. */
+  triggerEvents?: VolumeTriggerEventDescriptor[];
   triggerPools?: TriggerPoolDescriptor[];
   /** Per-level UI trees (name + `AnchoredTree` + optional `alwaysOn` / `hideBelow`). Optional; same
    * shape as `ModManifest.uiTrees` but level-scoped (cleared on unload).

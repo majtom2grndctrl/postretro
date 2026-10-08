@@ -1,8 +1,9 @@
 
 -- ---------------------------------------------------------------------------
 -- SDK library — embedded into every Luau context via `include_str!` and
--- evaluated during state construction. `world.luau`'s return value becomes
--- global `world`; `util/keyframes.luau` supplies `timeline` and `sequence`.
+-- evaluated during state construction. `map_entities.luau` supplies
+-- `getMapEntities`, `gravity.luau` supplies `getGravity` / `setGravity`, and
+-- `util/keyframes.luau` supplies `timeline` and `sequence`.
 -- Animation curve construction lives on entity handles
 -- (`LightEntityHandle`, `FogVolumeHandle`) as capability methods, not as
 -- bare globals.
@@ -22,7 +23,7 @@ export type AnimatableVec3<Channel> = {
   cycle: (self: any, opts: { values: {Vec3}, periodMs: number }) -> {SequenceStep},
 }
 
---- Typed light handle returned by `world:query({ component = "light" })`.
+--- Light member returned by `getMapEntities("light")`.
 --- Composes the brightness scalar capability with vec3 channels declared
 --- directly (Luau lacks TS-style multiple-interface extension; secondary
 --- channels are inlined).
@@ -40,16 +41,7 @@ export type LightEntityHandle = {
   sweep: (self: LightEntityHandle, opts: { values: {Vec3}, periodMs: number }) -> {SetLightAnimationStep},
 }
 
---- Generic entity handle returned by `world:query` when the component is
---- not "light", "emitter", "fog_volume", "kinematic_mover", or
---- "trigger_volume". Carries only id, position, and tags.
-export type EntityHandle = {
-  id: EntityId,
-  position: Vec3,
-  tags: {string},
-}
-
---- Typed fog-volume handle returned by `world:query({ component = "fog_volume" })`.
+--- Fog member returned by `getMapEntities("fog")`.
 --- Composes the density scalar capability with secondary saturation
 --- methods declared directly.
 export type FogVolumeHandle = {
@@ -65,7 +57,7 @@ export type FogVolumeHandle = {
   fadeSaturation: (self: FogVolumeHandle, opts: { from: number, to: number, periodMs: number }) -> {SetFogAnimationStep},
 }
 
---- Typed mover handle returned by `world:query({ component = "kinematic_mover" })`.
+--- Mover member returned by `getMapEntities("mover")`.
 --- Raw mover phase is engine-managed; methods return closed command steps.
 export type MoverEntityHandle = {
   id: EntityId,
@@ -82,48 +74,73 @@ export type MoverEntityHandle = {
   setBlockPolicy: (self: MoverEntityHandle, policy: "displace" | "reverse" | "stop" | "crush") -> {MoverSetBlockPolicyStep},
 }
 
---- Typed trigger handle returned by `world:query({ component = "trigger_volume" })`.
+--- Trigger member returned by `getMapEntities("trigger")`.
 --- Arming state remains engine-owned; methods return closed command steps.
---- Switch entities also emit a `trigger_volume` component and are
---- indistinguishable from authored trigger volumes here; separate them with
---- a tag convention.
+--- Switch entities also emit a trigger volume and are indistinguishable from
+--- authored trigger volumes here; separate them with a tag convention.
 export type TriggerVolumeHandle = {
   id: EntityId,
   position: Vec3,
   tags: {string},
   arm: (self: TriggerVolumeHandle) -> {ArmTriggerStep},
   disarm: (self: TriggerVolumeHandle) -> {DisarmTriggerStep},
+  --- Fire `fire` on this volume's `event` edge, and on no sibling volume
+  --- sharing its tag. Return the entry from `setupLevel`'s `triggerEvents`.
+  on: (self: TriggerVolumeHandle, event: "enter" | "exit", fire: {Reaction<any> | string}) -> VolumeTriggerEventDescriptor,
 }
 
---- `world` vocabulary global. Wraps `worldQuery` with a typed handle.
---- `"light"` returns `LightEntityHandle` values (with capability methods);
---- `"emitter"` returns `EmitterEntity` values carrying the full
---- `BillboardEmitterComponent` snapshot under `component`; `"fog_volume"`
---- returns `FogVolumeHandle` values; `"kinematic_mover"` returns
---- `MoverEntityHandle`; `"trigger_volume"` returns `TriggerVolumeHandle`;
---- other components fall back to the bare `EntityHandle` shape.
-export type World = {
-  query: ((self: World, filter: { component: "light", tag: string? }) -> {LightEntityHandle})
-       & ((self: World, filter: { component: "emitter", tag: string? }) -> {EmitterEntity})
-       & ((self: World, filter: { component: "fog_volume", tag: string? }) -> {FogVolumeHandle})
-       & ((self: World, filter: { component: "kinematic_mover", tag: string? }) -> {MoverEntityHandle})
-       & ((self: World, filter: { component: "trigger_volume", tag: string? }) -> {TriggerVolumeHandle})
-       & ((self: World, filter: WorldQueryFilter) -> {EntityHandle}),
-  --- Current world gravity in m/s² (negative = downward; positive = upward).
-  --- Seeded from the worldspawn `initialGravity` KVP at level load and
-  --- persists until the next level load or `setGravity` call.
-  getGravity: (self: World) -> number,
-  --- Set world gravity in m/s² (negative = downward; positive = upward).
-  --- NaN and non-finite values are silently ignored with a warning logged.
-  --- Effect is immediate and persists until the next level load or another
-  --- `setGravity` call.
-  setGravity: (self: World, value: number) -> (),
+--- Snapshot of a map-placed spawner: id, position, its own tags, and
+--- `spawnedTags`, the tags each NPC it spawns carries. Its own tags never
+--- pass to its spawns.
+export type SpawnerEntity = {
+  id: EntityId,
+  position: Vec3,
+  tags: {string},
+  spawnedTags: {string},
 }
+
+--- Spawner member returned by `getMapEntities("spawner")`.
+export type SpawnerEntityHandle = {
+  id: EntityId,
+  position: Vec3,
+  tags: {string},
+  spawnedTags: {string},
+  --- Spawn one batch from this spawner, and from no sibling sharing its tag.
+  fire: (self: SpawnerEntityHandle) -> {SpawnFromSpawnerStep},
+}
+
+--- Map-placed kinds `getMapEntities` accepts. NPCs and players are groups
+--- (`npcs`, `players`), not members.
+export type MapEntityKind = "mover" | "trigger" | "light" | "fog" | "emitter" | "spawner"
+
+--- Narrows a member query to instances carrying `tag`.
+export type MapEntityFilter = { tag: string? }
+
+--- Return the map-placed members of `kind`, optionally only those carrying
+--- `filter.tag`, in authored map order. Membership is fixed at install: an
+--- instance a runtime spawn carries never appears. Returns an empty array on
+--- no match. An unknown kind raises naming the call. Callable only inside a
+--- level's `setupLevel`; elsewhere it raises. `"emitter"` yields the snapshot
+--- only, with no verbs.
+declare getMapEntities: ((kind: "mover", filter: MapEntityFilter?) -> {MoverEntityHandle})
+  & ((kind: "trigger", filter: MapEntityFilter?) -> {TriggerVolumeHandle})
+  & ((kind: "light", filter: MapEntityFilter?) -> {LightEntityHandle})
+  & ((kind: "fog", filter: MapEntityFilter?) -> {FogVolumeHandle})
+  & ((kind: "emitter", filter: MapEntityFilter?) -> {EmitterEntity})
+  & ((kind: "spawner", filter: MapEntityFilter?) -> {SpawnerEntityHandle})
+
+--- Current world gravity in m/s² (negative = downward; positive = upward).
+--- Seeded from the worldspawn `initialGravity` KVP at level load and
+--- persists until the next level load or `setGravity` call.
+declare function getGravity(): number
+
+--- Set world gravity in m/s² (negative = downward; positive = upward).
+--- NaN and non-finite values are ignored with a warning. Effect is immediate
+--- and persists until the next level load or another `setGravity` call.
+declare function setGravity(value: number): ()
 
 --- Per-channel keyframe accepted by `timeline` / `sequence`.
 export type Keyframe = {number}
-
-declare world: World
 
 --- Validate `{absolute_ms, ...value}` keyframes; pass-through on success.
 declare function timeline(keyframes: {Keyframe}): {Keyframe}
@@ -239,30 +256,31 @@ export type ProgressReactionDescriptor = {
   progress: { tag: string, at: number, fire: string },
 }
 
---- Primitive reaction body: invokes the named Rust primitive. A non-empty
---- `tag` targets matching entities. Tag-targeted primitives include
---- emitter/fog/mover commands, `applyDamage`, `grantHealth`, `grantAmmo`, `addSlot`,
---- `setAnimationState`, `updateNpcState`, `spawnFromSpawner`, `armTrigger`,
---- and `disarmTrigger`. In a trigger-event reaction, `applyDamage`,
---- `grantHealth`, `grantAmmo`, and `addSlot` may instead target `@activators`. True system
---- reactions carry neither `tag` nor `target` and enqueue typed engine commands
---- such as `playSound`, `rumble`, `flashScreen`, and the UI-stack reactions.
---- `args` carries the primitive's typed payload (e.g. `{ rate = 0 }`
+--- Primitive reaction body: invokes the named Rust primitive. A group command
+--- (`npcs(...)`, `players()`) carries `kind` and an optional `tag` filter; a
+--- subject-token command (`on.activators`) carries `target = "@activators"`. A
+--- raw descriptor with only a non-empty `tag` resolves over every entity
+--- carrying it — the form for fog, emitter and animation primitives
+--- (`setFogScatter`, `setEmitterRate`, `setAnimationState`), which have no
+--- typed builder. True system reactions carry neither and enqueue typed engine
+--- commands such as `playSound`, `rumble`, `flashScreen`, and the UI-stack
+--- reactions. `args` carries the primitive's typed payload (e.g. `{ rate = 0 }`
 --- for `setEmitterRate`, `{ sound = "alarm" }` for `playSound`).
 export type PrimitiveReactionDescriptor = {
   primitive: string,
+  kind: GroupKind?,
   tag: string?,
   target: "@activators"?,
   args: { [string]: any }?,
   onComplete: string?,
 }
 
---- Tag-targeted trigger primitive `armTrigger` takes no payload; its target
---- comes from `PrimitiveReactionDescriptor.tag`.
+--- Trigger primitive `armTrigger` takes no payload; its target is the step's
+--- id (a trigger member or `@trigger`), or a raw descriptor's `tag`.
 export type ArmTriggerArgs = {}
 
---- Tag-targeted trigger primitive `disarmTrigger` takes no payload; its target
---- comes from `PrimitiveReactionDescriptor.tag`.
+--- Trigger primitive `disarmTrigger` takes no payload; its target is the
+--- step's id (a trigger member or `@trigger`), or a raw descriptor's `tag`.
 export type DisarmTriggerArgs = {}
 
 --- One step in a `sequence` reaction body: invokes the named sequenced
@@ -372,6 +390,12 @@ export type DisarmTriggerStep = {
   args: DisarmTriggerArgs,
 }
 
+--- Sequence step that spawns one batch from one spawner member (`s:fire()`).
+export type SpawnFromSpawnerStep = {
+  id: EntityId,
+  primitive: "spawnFromSpawner",
+}
+
 --- Control-step payload for `WaitStep`. `interruptible` defaults to `false`
 --- when omitted by the author.
 export type WaitArgs = { durationMs: number, interruptible: boolean }
@@ -396,10 +420,10 @@ export type FireStep = {
 
 --- Union of every supported sequence step shape. New sequenced primitives
 --- extend this union.
-export type SequenceStep = SetLightAnimationStep | SetFogDensityStep | SetFogGlowStep | SetFogEdgeSoftnessStep | SetFogFalloffStep | SetFogParamsStep | SetFogAnimationStep | MoverStartStep | MoverStopStep | MoverReverseStep | MoverGoToPathNodeStep | MoverSetSpinRateStep | MoverSetBlockPolicyStep | ArmTriggerStep | DisarmTriggerStep | WaitStep | FireStep
+export type SequenceStep = SetLightAnimationStep | SetFogDensityStep | SetFogGlowStep | SetFogEdgeSoftnessStep | SetFogFalloffStep | SetFogParamsStep | SetFogAnimationStep | MoverStartStep | MoverStopStep | MoverReverseStep | MoverGoToPathNodeStep | MoverSetSpinRateStep | MoverSetBlockPolicyStep | ArmTriggerStep | DisarmTriggerStep | SpawnFromSpawnerStep | GroupCommand | WaitStep | FireStep
 
---- Sequence reaction body: ordered entity-targeted primitive and control
---- steps. Entity steps begin in array order; `fire` queues a named dispatch,
+--- Sequence reaction body: ordered member, group and control steps. Steps
+--- begin in array order; `fire` queues a named dispatch,
 --- while `wait` stops the current drain and resumes the remaining tail later.
 export type SequenceReactionDescriptor = {
   sequence: {SequenceStep},
@@ -409,13 +433,31 @@ export type SequenceReactionDescriptor = {
 --- into the descriptor at the top level so the Rust deserializer reads
 --- both fields from one flat table.
 export type ProgressNamedReactionDescriptor = { name: string, levels: {string}?, progress: { tag: string, at: number, fire: string } }
-export type PrimitiveNamedReactionDescriptor = { name: string, levels: {string}?, primitive: string, tag: string?, target: "@activators"?, args: { [string]: any }?, onComplete: string? }
+export type PrimitiveNamedReactionDescriptor = { name: string, levels: {string}?, primitive: string, kind: GroupKind?, tag: string?, target: "@activators"?, args: { [string]: any }?, onComplete: string? }
 export type SequenceNamedReactionDescriptor = { name: string, levels: {string}?, sequence: {SequenceStep} }
 export type NamedReactionDescriptor = ProgressNamedReactionDescriptor | PrimitiveNamedReactionDescriptor | SequenceNamedReactionDescriptor
 export type CrossingParams = { rising: RuntimeRead }
 export type TickParams = { dt: RuntimeRead }
-export type ActivatorsTarget = { __triggerActivatorsTarget: true }
-export type TriggerTarget = { __firedTriggerTarget: true }
+--- The pawns that caused the current trigger edge (`on.activators`). Legal
+--- only before any `wait`. Call its verbs with `:`.
+export type ActivatorsTarget = {
+  --- Damage this fire's activators by a finite, non-negative amount.
+  damage: (self: ActivatorsTarget, amount: number) -> PrimitiveReactionDescriptor,
+  --- Add health to this fire's activators.
+  grantHealth: (self: ActivatorsTarget, amount: number) -> PrimitiveReactionDescriptor,
+  --- Add `amount` to this fire's activators' named ammo-reserve pool.
+  grantAmmo: (self: ActivatorsTarget, type: string, amount: number) -> PrimitiveReactionDescriptor,
+  --- Add `delta` to this fire's activators' value of a per-owner numeric slot.
+  addSlot: (self: ActivatorsTarget, slot: StateRef<number>, delta: number) -> PrimitiveReactionDescriptor,
+}
+--- The trigger volume that fired the current edge (`on.trigger`). Legal only
+--- before any `wait`. Call its verbs with `:`.
+export type TriggerTarget = {
+  --- Arm the volume that fired and clear its once/rearm state.
+  arm: (self: TriggerTarget) -> {SequenceStep},
+  --- Disarm the volume that fired.
+  disarm: (self: TriggerTarget) -> {SequenceStep},
+}
 export type TriggerEventParams = { activators: ActivatorsTarget, trigger: TriggerTarget, occupancy: RuntimeRead }
 --- Opaque anchor for where the current named gameplay event happened. Legal
 --- only as `playSound`'s `at`.
@@ -639,7 +681,10 @@ export type LevelManifest = {
   reactions: {NamedReactionDescriptor},
   events: {ImpactEvent}?,
   crossings: {CrossingDescriptor}?,
-  triggerEvents: {TriggerEventDescriptor}?,
+  --- Level trigger events, keyed by volume: build each with a trigger
+  --- member's `on`. A tag-keyed entry belongs in `ModManifest.triggerEvents`
+  --- (`defineTriggerEvent`) and is rejected here.
+  triggerEvents: {VolumeTriggerEventDescriptor}?,
   triggerPools: {TriggerPoolDescriptor}?,
   --- Per-level UI trees (name + `AnchoredTree` + optional `alwaysOn` / `hideBelow`). Optional; same shape
   --- as `ModManifest.uiTrees` but level-scoped (cleared on unload). Malformed
@@ -670,34 +715,62 @@ declare defineReaction: (
 --- through a manifest's `events` child.
 declare function defineImpactEvent(id: string, filter: ImpactEventFilter, build: (Impact) -> {EffectOrGroup}): ImpactEvent
 
+--- Mod-global trigger event: a standing rule keyed by tag, accepted only in
+--- `ModManifest.triggerEvents`. Build it with `defineTriggerEvent`.
 export type TriggerEventDescriptor = { tag: string, event: "enter" | "exit", fire: {string}, levels: {string}? }
+--- Level trigger event: one volume's edge, keyed by the member's id. Build it
+--- with a trigger member's `on`; accepted only in `setupLevel`'s `triggerEvents`.
+export type VolumeTriggerEventDescriptor = { trigger: EntityId, event: "enter" | "exit", fire: {string} }
 --- A seeded trap-pool declaration; exactly one arming form is required.
 export type TriggerPoolDescriptor = { tag: string, arm: number?, armPercentage: number?, levels: {string}? }
-export type TriggerEventOptions = { levels: {string}? }
-declare function onTriggerEvent(filter: { tag: string }, event: "enter" | "exit", fire: {Reaction<any> | string}, options: TriggerEventOptions?): TriggerEventDescriptor
-declare function damage(target: ActivatorsTarget | string, amount: number): PrimitiveReactionDescriptor
-declare function grantHealth(target: ActivatorsTarget | string, amount: number): PrimitiveReactionDescriptor
-declare function grantAmmo(target: ActivatorsTarget | string, type: string, amount: number): PrimitiveReactionDescriptor
---- Add a delta to one per-owner numeric slot for each selected player pawn.
-declare function addSlot(target: ActivatorsTarget | string, slot: StateRef<number>, delta: number): PrimitiveReactionDescriptor
---- Select a live enemy group by tag. Its tag resolves at reaction fire time.
-export type EnemyGroupFilter = { tag: string? }
---- Typed, additive partial for consequential enemy-state updates.
-export type EnemyStateUpdateArgs = { aggro: boolean? }
---- Fire-time-tag enemy handle. `update` emits one primitive descriptor.
-export type EnemyGroup = {
-  update: (self: EnemyGroup, fields: EnemyStateUpdateArgs) -> PrimitiveReactionDescriptor,
+--- Authored form of `defineTriggerEvent`: `fire` takes reaction handles or names.
+export type TriggerEventRule = { tag: string, event: "enter" | "exit", fire: {Reaction<any> | string}, levels: {string}? }
+--- Declare a mod-global trigger event: every volume carrying `tag` fires
+--- `fire` on `event`, in each level the `levels` selector matches (every level
+--- when omitted). Return it from `ModManifest.triggerEvents`; a level binds its
+--- own volumes with a trigger member's `on`.
+declare function defineTriggerEvent(rule: TriggerEventRule): TriggerEventDescriptor
+
+--- Kinds a group command addresses.
+export type GroupKind = "npc" | "player"
+--- One group command: a primitive descriptor carrying `kind` (and an optional
+--- `tag` filter) instead of a target. Legal both as a reaction body and
+--- directly as a sequence entry; the group resolves when the command takes
+--- effect, so NPCs spawned or players joined before then are included.
+export type GroupCommand = { primitive: string, kind: GroupKind, tag: string?, args: { [string]: any } }
+--- Selects the NPCs a group command reaches. Omit `tag` for every NPC.
+export type NpcGroupFilter = { tag: string? }
+--- Typed, additive partial for NPC state updates.
+export type NpcStateUpdateArgs = { aggro: boolean? }
+--- Brain-driven characters that are not players, whatever their faction
+--- sentiment. Opaque: no members, no length; `#group`, `group[1]` and any
+--- name but a verb raise. Commands run on the host and in single player only.
+export type NpcGroup = {
+  --- Apply a typed partial to each NPC's state.
+  update: (self: NpcGroup, fields: NpcStateUpdateArgs) -> GroupCommand,
+  --- Damage each NPC by a finite, non-negative amount.
+  damage: (self: NpcGroup, amount: number) -> GroupCommand,
 }
-declare function enemies(filter: EnemyGroupFilter): EnemyGroup
---- Selects a live spawner group by tag. Its tag resolves at reaction fire time.
-export type SpawnerFilter = { tag: string }
---- Fire-time-tag spawner handle. `fire` emits one primitive descriptor.
-export type SpawnerHandle = {
-  fire: (self: SpawnerHandle) -> PrimitiveReactionDescriptor,
+--- Every player pawn bound to a seat; a seat in a disconnect hold is skipped,
+--- and single player reaches the local pawn. Opaque: no members, no length;
+--- `#group`, `group[1]` and any name but a verb raise. Commands run on the
+--- host and in single player only.
+export type PlayerGroup = {
+  --- Damage each player by a finite, non-negative amount.
+  damage: (self: PlayerGroup, amount: number) -> GroupCommand,
+  --- Add health to each player.
+  grantHealth: (self: PlayerGroup, amount: number) -> GroupCommand,
+  --- Add `amount` to each player's named ammo-reserve pool.
+  grantAmmo: (self: PlayerGroup, type: string, amount: number) -> GroupCommand,
+  --- Add `delta` to each player's value of a per-owner numeric slot.
+  addSlot: (self: PlayerGroup, slot: StateRef<number>, delta: number) -> GroupCommand,
 }
-declare function spawner(filter: SpawnerFilter): SpawnerHandle
-declare function armTrigger(target: TriggerTarget): {SequenceStep}
-declare function disarmTrigger(target: TriggerTarget): {SequenceStep}
+--- Address NPCs, optionally narrowed to those carrying `tag`. Resolved when
+--- each command takes effect, sequence steps included.
+declare function npcs(filter: NpcGroupFilter?): NpcGroup
+--- Address every seat-bound player pawn. Resolved when each command takes
+--- effect, sequence steps included.
+declare function players(): PlayerGroup
 --- Enroll the rest of this sequence body with the host scheduler and stop;
 --- the remaining steps resume after `durationMs` (rounded up to whole
 --- authoritative ticks). `interruptible` (default `false`) lets the
@@ -705,7 +778,7 @@ declare function disarmTrigger(target: TriggerTarget): {SequenceStep}
 --- parked.
 declare function wait(durationMs: number, opts: { interruptible: boolean? }?): {SequenceStep}
 --- Dispatch a named reaction by handle or name from inside a sequence body,
---- resolved exactly as `onTriggerEvent` resolves its `fire` entries. Luau
+--- resolved exactly as a trigger member's `on` resolves its `fire` entries. Luau
 --- has no phantom-typed scope gate; a scoped reaction fired this way is
 --- rejected at install (V4b), not at author time.
 declare function fire(reaction: Reaction<any> | string): {SequenceStep}
@@ -908,7 +981,7 @@ declare function clearText(ref: Ref<string>): PrimitiveReactionDescriptor
 
 -- ---------------------------------------------------------------------------
 -- State-store declarations. `defineStore` is special-cased in the typedef
--- generator (mirroring `worldQuery`): per-slot value types live only in the
+-- generator: per-slot value types live only in the
 -- runtime `schema` argument, absent at typedef emission. Luau cannot map schema
 -- keys through conditional types, so the returned `state` map preserves readable
 -- vs writable capability as a union instead of treating every slot as writable.

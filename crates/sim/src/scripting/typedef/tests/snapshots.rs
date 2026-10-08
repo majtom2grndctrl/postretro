@@ -51,7 +51,12 @@ fn sdk_lib_block_is_present_in_full_outputs() {
     let ts = generate_typescript(&r);
     let luau = generate_luau(&r);
     for name in [
-        "world",
+        "getMapEntities",
+        "getGravity",
+        "setGravity",
+        "npcs",
+        "players",
+        "defineTriggerEvent",
         "timeline",
         "sequence",
         "AnimatableScalar",
@@ -59,7 +64,9 @@ fn sdk_lib_block_is_present_in_full_outputs() {
         "LightEntityHandle",
         "FogVolumeHandle",
         "TriggerVolumeHandle",
-        "SpawnerHandle",
+        "SpawnerEntityHandle",
+        "NpcGroup",
+        "PlayerGroup",
     ] {
         assert!(ts.contains(name), "ts missing sdk-lib symbol {name}");
         assert!(luau.contains(name), "luau missing sdk-lib symbol {name}");

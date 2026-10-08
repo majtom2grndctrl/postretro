@@ -4,6 +4,9 @@
 
 use std::path::{Path, PathBuf};
 
+use postretro_entities::{
+    EntityId, MoverCommand, Transform, TriggerActivation, TriggerFireMode, TriggerVolumeComponent,
+};
 use postretro_level_format::data_script::DataScriptSection;
 use postretro_scripting_core::data_descriptors::RegisteredUiTree;
 use postretro_ui::demo::{ACCESSIBILITY_PANEL_NAME, build_accessibility_panel_descriptor};
@@ -206,13 +209,64 @@ fn the_strobe_fixture_evaluates() {
         runtime.run_data_script(&section, path.parent().unwrap())
     };
 
+    // One volume per pad, so each pad binds through its own trigger member.
+    let pad_tags = [
+        "strobe_white",
+        "strobe_red",
+        "strobe_small_panel",
+        "strobe_large_panel",
+        "strobe_light_square",
+        "strobe_light_sine",
+    ];
+    let pad_volumes: Vec<EntityId> = {
+        let ctx = &app.session.as_ref().unwrap().scripting.script_ctx;
+        let mut registry = ctx.registry.borrow_mut();
+        pad_tags
+            .iter()
+            .map(|tag| {
+                let id = registry.spawn(Transform::default());
+                registry
+                    .set_component(
+                        id,
+                        TriggerVolumeComponent::new(
+                            TriggerActivation::Touch,
+                            String::new(),
+                            String::new(),
+                            String::new(),
+                            MoverCommand::Start,
+                            TriggerFireMode::Multiple,
+                            0.0,
+                            true,
+                        ),
+                    )
+                    .unwrap();
+                registry.set_tags(id, vec![tag.to_string()]).unwrap();
+                id
+            })
+            .collect()
+    };
+
     let strobe = run("a11y-strobe-test.ts");
-    // The fixture still returns the retired level tag-keyed trigger events
-    // (`onTriggerEvent`), which a level script now rejects. sdk-addressing-model
-    // Task 8 migrates the six pads to trigger members' `t.on` and restores the
-    // per-pad assertions here.
-    assert!(strobe.trigger_events.is_empty());
-    assert!(!strobe.reactions.is_empty());
+    let bound: Vec<EntityId> = strobe.trigger_events.iter().map(|t| t.trigger).collect();
+    assert_eq!(
+        bound, pad_volumes,
+        "each pad binds its own volume, in pad order"
+    );
+    for (event, tag) in strobe.trigger_events.iter().zip(pad_tags) {
+        assert_eq!(event.event, "enter");
+        assert_eq!(
+            event.fire,
+            [format!("a11y.strobe.{tag}")],
+            "pad `{tag}` fires its own declared reaction"
+        );
+        assert!(
+            strobe
+                .reactions
+                .iter()
+                .any(|r| event.fire.contains(&r.name)),
+            "pad `{tag}` fires a declared reaction"
+        );
+    }
     let trees: Vec<&str> = strobe.ui_trees.iter().map(|t| t.name.as_str()).collect();
     assert_eq!(trees, ["a11y.strobe.smallPanel", "a11y.strobe.largePanel"]);
 }

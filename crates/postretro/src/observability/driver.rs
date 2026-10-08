@@ -226,7 +226,7 @@ fn run_headless_inner(
         // (aim carries no neutral — it persists until overridden).
         let active = active_command_at(&runspec.commands, tick);
         let effective_aim = effective_aim_at(&runspec.commands, tick);
-        // Re-read every tick (a `Cell<f32>`, cheap) so a mid-run `world.setGravity`
+        // Re-read every tick (a `Cell<f32>`, cheap) so a mid-run `setGravity`
         // reaction is observed the same tick as the windowed loop (`main.rs`),
         // rather than only at level-load time.
         let gravity = script_ctx.gravity.get();

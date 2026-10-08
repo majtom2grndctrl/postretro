@@ -31,7 +31,7 @@
 // good, and no later fade could recover it. That settle rule is tier-agnostic --
 // it applies to this dynamic light exactly as it would to a baked one.
 
-import { defineReaction, world } from "postretro";
+import { defineReaction, getMapEntities } from "postretro";
 
 export function setupLevel() {
   // The indicator is a `light_dynamic`. Dynamic-tier lights bake into nothing,
@@ -47,10 +47,7 @@ export function setupLevel() {
   // The light-membership pass evaluates `setupLevel` during prl-build, so a
   // mistyped tag fails the build at authoring time instead of on a tester's
   // machine. In a fixture built to make failure visible, that is the point.
-  const indicators = world.query({
-    component: "light",
-    tag: "switch_demo_console_light",
-  });
+  const indicators = getMapEntities("light", { tag: "switch_demo_console_light" });
   if (indicators.length === 0) {
     throw new Error(
       "switch-demo: no light tagged `switch_demo_console_light` -- check `_tags` on the light_dynamic entity in switch-demo.map",
@@ -63,10 +60,7 @@ export function setupLevel() {
   // prl-build. A throw here would fail the build on a correct map. Spreading an
   // empty result is what leaves the compile-time reaction light-steps-only,
   // which is exactly the subset that pass consumes.
-  const door = world.query({
-    component: "kinematic_mover",
-    tag: "switch_demo_door",
-  });
+  const door = getMapEntities("mover", { tag: "switch_demo_door" });
 
   // Dark on spawn, and the off-state does belong in `levelLoad` -- but not for
   // the reason it looks like. `startActive` is read unconditionally at runtime:

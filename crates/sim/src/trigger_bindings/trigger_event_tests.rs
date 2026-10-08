@@ -334,7 +334,7 @@ fn level_member_enter_fires_for_its_volume_only_not_a_sibling_with_the_same_tag(
 
 // T1: a mod-global `defineTriggerEvent` binds every volume carrying its tag in
 // a level its `levels` selector matches, and fires on each as the retired
-// level `onTriggerEvent` did. An untagged volume stays unbound.
+// level tag-keyed trigger event did. An untagged volume stays unbound.
 #[test]
 fn mod_global_trigger_event_binds_every_tagged_volume_in_a_matching_level() {
     let mut world = World::new();

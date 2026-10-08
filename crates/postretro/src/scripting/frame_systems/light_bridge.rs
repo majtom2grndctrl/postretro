@@ -730,7 +730,7 @@ impl LightBridge {
             }
         }
 
-        // Commit settled components so a subsequent `world.query` observes
+        // Commit settled components so a subsequent `getMapEntities` observes
         // post-animation static state.
         for (map_idx, id, settled_component, had_radius_animation) in settled {
             // Stale-id error means the entity was despawned between read and write; ignore.
@@ -3475,7 +3475,7 @@ mod tests {
 
     // Regression: the scripting bridge was populated from the renderer's
     // dynamic-only list, so a script-reserved baked light was absent from
-    // world.query and could never install its compose descriptor.
+    // getMapEntities and could never install its compose descriptor.
     #[test]
     fn full_authored_order_exposes_static_light_without_entering_direct_buffer() {
         let mut scripted_static = sample_point_light();

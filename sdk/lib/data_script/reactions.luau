@@ -2,18 +2,20 @@
 -- Reaction and sequence builders: `defineReaction`, the shared author-time
 -- dispatch params and their opaque target tokens, `wait`/`fire` control steps,
 -- and map-tag scoping.
--- Part chunk of `data_script.luau`: evaluated before it, published through the
--- temporary `__postretroDataScriptParts` bridge, and merged into its returned
--- builder table. Type names refer to the declarations in `data_script.luau`.
+-- Part chunk of `data_script.luau`: evaluated after `data_script/commands.luau`
+-- (whose subject tokens it publishes as dispatch params) and before
+-- `data_script.luau`, through the temporary `__postretroDataScriptParts`
+-- bridge, and merged into its returned builder table. Type names refer to the
+-- declarations in `data_script.luau`.
 -- See: context/lib/scripting.md §7 (SDK library globals), §12
 
 local ReactionsSdk = {}
 
--- Opaque target tokens are distinct frozen tables. Builders compare identity
--- to lower the matching token and leave a mismatched sentinel visible for Rust
--- validation. The empty tables never enter returned descriptors.
-local ACTIVATORS_TARGET = table.freeze({})
-local TRIGGER_TARGET = table.freeze({})
+-- The subject tokens carry their own verbs (`data_script/commands.luau`); they
+-- never enter returned descriptors themselves.
+local commands = __postretroDataScriptParts.commands
+local ACTIVATORS_TARGET = commands.ACTIVATORS_TARGET
+local TRIGGER_TARGET = commands.TRIGGER_TARGET
 -- The emitter token carries its own wire spelling, so `playSound` (a separate
 -- prelude chunk) lowers it without seeing this chunk's private tokens.
 local EMITTER_TARGET = table.freeze({ __wire = "@emitter" })
@@ -41,7 +43,7 @@ function ReactionsSdk.wait(durationMs: number, opts: { interruptible: boolean? }
 end
 
 --- Dispatch a named reaction by handle or name from inside a sequence body.
---- Resolves exactly as `onTriggerEvent` resolves its `fire` entries. Luau has
+--- Resolves exactly as a trigger member's `on` resolves its `fire` entries. Luau has
 --- no phantom-typed scope gate; a scoped reaction fired this way is rejected
 --- at install (V4b), not at author time.
 function ReactionsSdk.fire(reaction: Reaction<any> | string): {SequenceStep}
@@ -135,6 +137,9 @@ function ReactionsSdk.defineReaction(
   if d.primitive ~= nil then
     out.primitive = d.primitive
   end
+  if d.kind ~= nil then
+    out.kind = d.kind
+  end
   if d.tag ~= nil then
     out.tag = d.tag
   end
@@ -165,6 +170,9 @@ function ReactionsSdk.scopeReactions<S>(tags: {string}, list: {Reaction<S>}): {R
     if reaction.primitive ~= nil then
       scoped.primitive = reaction.primitive
     end
+    if reaction.kind ~= nil then
+      scoped.kind = reaction.kind
+    end
     if reaction.tag ~= nil then
       scoped.tag = reaction.tag
     end
@@ -187,7 +195,5 @@ end
 
 return {
   builders = ReactionsSdk,
-  ACTIVATORS_TARGET = ACTIVATORS_TARGET,
-  TRIGGER_TARGET = TRIGGER_TARGET,
   DISPATCH_PARAMS = DISPATCH_PARAMS,
 }

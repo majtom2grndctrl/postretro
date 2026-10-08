@@ -18,11 +18,11 @@
 import {
   type NamedReactionDescriptor,
   type SequenceStep,
+  type VolumeTriggerEventDescriptor,
   defineReaction,
   fire,
-  onTriggerEvent,
   wait,
-  world,
+  getMapEntities,
 } from "postretro";
 import {
   Tree,
@@ -47,7 +47,7 @@ function strobe(hz: number, on: string, off: string): SequenceStep[] {
   return steps;
 }
 
-/** One pad's reaction and trigger event, keyed by the pad's tag. */
+/** One pad's reaction, bound to the pad volumes carrying `tag`. */
 function pad(
   tag: string,
   steps: SequenceStep[],
@@ -74,7 +74,7 @@ function strobePanel(name: string, width: number, height: number, lit: typeof a1
 
 /** One sampled period of a light's brightness. */
 function lightStrobe(tag: string, periodMs: number, brightness: number[]): SequenceStep[] {
-  return world.query({ component: "light", tag }).map((light) => ({
+  return getMapEntities("light", { tag }).map((light) => ({
     id: light.id,
     primitive: "setLightAnimation" as const,
     args: {
@@ -91,7 +91,7 @@ function lightStrobe(tag: string, periodMs: number, brightness: number[]): Seque
 
 export function setupLevel(_ctx: unknown): {
   reactions: NamedReactionDescriptor[];
-  triggerEvents: ReturnType<typeof onTriggerEvent>[];
+  triggerEvents: VolumeTriggerEventDescriptor[];
   uiTrees: UiTreeRegistration[];
 } {
   const toggles: NamedReactionDescriptor[] = [
@@ -120,7 +120,9 @@ export function setupLevel(_ctx: unknown): {
 
   return {
     reactions: [...toggles, ...pads.map((p) => p.reaction)],
-    triggerEvents: pads.map((p) => onTriggerEvent({ tag: p.tag }, "enter", [p.reaction])),
+    triggerEvents: pads.flatMap((p) =>
+      getMapEntities("trigger", { tag: p.tag }).map((volume) => volume.on("enter", [p.reaction])),
+    ),
     uiTrees: [
       strobePanel("a11y.strobe.smallPanel", 200, 200, a11yStrobeStore.smallPanel),
       strobePanel("a11y.strobe.largePanel", 480, 400, a11yStrobeStore.largePanel),

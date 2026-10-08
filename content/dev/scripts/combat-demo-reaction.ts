@@ -14,39 +14,40 @@
 //      progress tracker. When `killed / total >= at` (here 0.5 — half the
 //      dummies), it fires the named event `dummiesCleared` exactly once.
 //
-//   2. An `applyDamage` reaction NAMED `dummiesCleared`, targeting the `player`
-//      tag. When the progress reaction fires `dummiesCleared`, the event is
-//      dispatched through the death-event drain (`fire_named_event_with_sequences`),
-//      which is the ONLY drain that invokes primitive handlers. The handler
-//      routes `amount: 35` through the `apply_damage` chokepoint on every
-//      `player`-tagged entity, so the player's HP drops and the readonly
-//      `player.health` HUD slot follows.
+//   2. A `players().damage(35)` reaction NAMED `dummiesCleared`. When the
+//      progress reaction fires `dummiesCleared`, the event is dispatched through
+//      the death-event drain (`fire_named_event_with_sequences`), which is the
+//      ONLY drain that invokes primitive handlers. The handler routes
+//      `amount: 35` through the `apply_damage` chokepoint on every seat-bound
+//      player, so the player's HP drops and the readonly `player.health` HUD
+//      slot follows.
 //
 //   3. `ammoPickup` grants the trigger's activators 24 `shells.buck` ammo on
-//      the `ammo_pickup` volume's enter edge. This is reference content only:
+//      the enter edge of each `ammo_pickup` trigger member. This is reference content only:
 //      the engine has no concept of a reward, so a mod replaces the policy.
 //
 // Why this chain and not a simpler one:
-//   - `levelLoad` fires before the first rendered frame, so an `applyDamage`
+//   - `levelLoad` fires before the first rendered frame, so damage
 //     hung off `levelLoad` would drop HP invisibly (and there is nothing dead
 //     yet). The damage must be *gameplay-driven* — hence the `progress` trigger.
 //   - The plain `fire_named_event` drains (movement / weapon event names) never
 //     invoke primitive handlers. Only a `progress` `fire` (which routes through
 //     the death-event drain) can drive a visible HUD drop. So the event name the
-//     progress reaction fires MUST match the name on the `applyDamage` reaction.
+//     progress reaction fires MUST match the name on the damage reaction.
 //
 // Tag discipline: the `dummy` tag is EXCLUSIVE to the target dummies — the
 // progress denominator counts ALL entities carrying the tag, so the player (and
-// anything else) must NOT share it. The player carries its own `player` tag.
+// anything else) must NOT share it.
 //
 // See content/dev/maps/combat-demo.README.md for the full end-to-end walkthrough.
 
 import {
   type NamedReactionDescriptor,
-  type TriggerEventDescriptor,
+  type TriggerEventParams,
+  type VolumeTriggerEventDescriptor,
   defineReaction,
-  grantAmmo,
-  onTriggerEvent,
+  getMapEntities,
+  players,
 } from "postretro";
 
 // Half the dummies must die before the player takes the retaliation hit.
@@ -61,7 +62,7 @@ const AMMO_PICKUP_REACTION = "combat.ammoPickup";
 
 export function setupLevel(_ctx: unknown): {
   reactions: NamedReactionDescriptor[];
-  triggerEvents: TriggerEventDescriptor[];
+  triggerEvents: VolumeTriggerEventDescriptor[];
 } {
   const reactions: NamedReactionDescriptor[] = [];
 
@@ -73,26 +74,22 @@ export function setupLevel(_ctx: unknown): {
     }),
   );
 
-  // (b) applyDamage reaction NAMED `dummiesCleared`, targeting the player tag.
+  // (b) Damage reaction NAMED `dummiesCleared`, addressed to every player.
   //     Fired by the progress threshold above through the death-event drain.
   reactions.push(
-    defineReaction(RETALIATION_EVENT, {
-      primitive: "applyDamage",
-      tag: "player",
-      args: { amount: RETALIATION_DAMAGE },
-    }),
+    defineReaction(RETALIATION_EVENT, players().damage(RETALIATION_DAMAGE)),
   );
 
   // The volume is a repeating dispenser in v1: it deliberately does not
   // disarm after paying the current activators.
-  const ammoPickup = defineReaction(AMMO_PICKUP_REACTION, (on) =>
-    grantAmmo(on.activators, "shells.buck", 24),
+  const ammoPickup = defineReaction(AMMO_PICKUP_REACTION, (on: TriggerEventParams) =>
+    on.activators.grantAmmo("shells.buck", 24),
   );
   reactions.push(ammoPickup);
 
-  const triggerEvents: TriggerEventDescriptor[] = [
-    onTriggerEvent({ tag: "ammo_pickup" }, "enter", [ammoPickup]),
-  ];
+  const triggerEvents = getMapEntities("trigger", { tag: "ammo_pickup" }).map((pickup) =>
+    pickup.on("enter", [ammoPickup]),
+  );
 
   return { reactions, triggerEvents };
 }

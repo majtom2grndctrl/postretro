@@ -1487,7 +1487,7 @@ mod tests {
 
     #[test]
     fn script_bound_edge_dispatches_enter_and_exit_with_no_kvp_event_name() {
-        // AC 6: a volume bound only through the script path (onTriggerEvent)
+        // AC 6: a volume bound only through the script path (a trigger member's `on`)
         // carries no on_fire/on_exit KVP, yet the widened enter/exit dispatch
         // gates must still fire because `bound_edges` holds its (volume, edge).
         // The existing tests either name their events or pass an empty
@@ -1571,7 +1571,7 @@ mod tests {
 
     #[test]
     fn closet_reveal_enter_edge_dispatches_door_and_enemy_release_reactions() {
-        // E18-C containment is authored as an onTriggerEvent fan-out. One
+        // E18-C containment is authored as a trigger-event fan-out. One
         // script-bound enter edge must dispatch both named reaction bodies;
         // neither is nested in the other as a sequence step.
         let mut registry = EntityRegistry::new();

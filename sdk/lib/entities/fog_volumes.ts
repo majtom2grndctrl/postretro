@@ -13,7 +13,7 @@ import type { AnimatableScalar } from "../animation";
 import type { SequenceStep } from "../data_script";
 
 /**
- * Typed handle returned by `world.query({ component: "fog_volume" })`.
+ * Fog member returned by `getMapEntities("fog")`.
  * Carries the snapshot fields plus capability methods that emit
  * `setFogAnimation` step arrays.
  *

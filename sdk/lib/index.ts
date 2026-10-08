@@ -10,8 +10,9 @@
 // When adding public root exports here, also update TS_SDK_LIB_BLOCK and
 // LUAU_SDK_LIB_BLOCK in crates/scripting-core/src/typedef/.
 
-export type { EntityForComponent, World } from "./world";
-export { world } from "./world";
+export type { MapEntityFilter, MapEntityForKind, MapEntityKind } from "./map_entities";
+export { getMapEntities } from "./map_entities";
+export { getGravity, setGravity } from "./gravity";
 
 export { runtime } from "./runtime";
 
@@ -33,15 +34,7 @@ export type { MoverEntityHandle } from "./entities/movers";
 
 export type { TriggerVolumeHandle } from "./entities/triggers";
 
-export type {
-  EnemyGroup,
-  EnemyGroupFilter,
-  EnemyStateUpdateArgs,
-} from "./entities/enemies";
-export { enemies } from "./entities/enemies";
-
-export type { SpawnerFilter, SpawnerHandle } from "./entities/spawners";
-export { spawner } from "./entities/spawners";
+export type { SpawnerEntityHandle } from "./entities/spawners";
 
 export type { Keyframe } from "./util/keyframes";
 export { timeline, sequence } from "./util/keyframes";
@@ -67,6 +60,7 @@ export type {
   MoverSetSpinRateStep,
   ArmTriggerStep,
   DisarmTriggerStep,
+  SpawnFromSpawnerStep,
   WaitStep,
   FireStep,
   CrossingParams,
@@ -75,10 +69,18 @@ export type {
   EmitterParams,
   EmitterTarget,
   TriggerEventDescriptor,
-  TriggerEventOptions,
+  TriggerEventReaction,
+  TriggerEventRule,
   TriggerPoolDescriptor,
+  VolumeTriggerEventDescriptor,
   ActivatorsTarget,
   TriggerTarget,
+  GroupCommand,
+  GroupKind,
+  NpcGroup,
+  NpcGroupFilter,
+  NpcStateUpdateArgs,
+  PlayerGroup,
   Reaction,
   NumberValue,
   BoolValue,
@@ -116,15 +118,11 @@ export {
   set,
   update,
   when,
-  damage,
-  grantHealth,
-  grantAmmo,
-  addSlot,
-  armTrigger,
-  disarmTrigger,
+  npcs,
+  players,
   wait,
   fire,
-  onTriggerEvent,
+  defineTriggerEvent,
 } from "./data_script";
 
 export type {

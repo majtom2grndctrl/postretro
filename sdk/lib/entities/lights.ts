@@ -12,7 +12,7 @@ import type { AnimatableScalar } from "../animation";
 import type { SequenceStep } from "../data_script";
 
 /**
- * Typed handle returned by `world.query` for a light entity. Composes
+ * Light member returned by `getMapEntities("light")`. Composes
  * the generated `LightEntity` snapshot with capability methods that emit
  * `setLightAnimation` step arrays. Authors call methods on the handle
  * rather than passing `light.id` into free functions.

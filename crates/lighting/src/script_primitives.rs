@@ -11,7 +11,7 @@ use postretro_foundation::Vec3Lit;
 use postretro_scripting_core::primitives_registry::{ContextScope, PrimitiveRegistry};
 use postretro_scripting_core::sequence::{SequenceError, SequencedPrimitiveRegistry};
 
-/// A single entity-handle snapshot produced by `world.query`. Carries the
+/// A single entity-handle snapshot produced by `worldQuery`. Carries the
 /// `EntityId` plus a read-only copy of the live component data at query time.
 #[derive(Debug, Clone)]
 pub struct LightQueryHandle {
@@ -300,7 +300,7 @@ pub fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .finish();
     registry
         .register_enum("WorldQueryComponent")
-        .doc("Component-name literals accepted by `worldQuery` and the `world.query` SDK wrapper. New queryable component types extend this union.")
+        .doc("Engine component-name literals accepted by the raw `worldQuery` primitive that `getMapEntities` lowers to. New queryable component types extend this union.")
         .variant("light", "")
         .variant("transform", "")
         .variant("emitter", "")
@@ -326,14 +326,18 @@ pub fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .finish();
     registry
         .register_type("Entity")
-        .doc("Generic entity handle returned by `world.query` when the component type is not known at compile time.")
+        .doc("Generic entity snapshot: id, position and tags.")
         .field("id", "EntityId", "")
         .field("position", "Vec3", "Entity position at query time.")
-        .field("tags", "Vec<String>", "The entity's tags at query time. Empty array if untagged.")
+        .field(
+            "tags",
+            "Vec<String>",
+            "The entity's tags at query time. Empty array if untagged.",
+        )
         .finish();
     registry
         .register_type("EmitterEntity")
-        .doc("Entity handle returned by `world.query` when filtering for billboard emitter entities.")
+        .doc("Emitter member returned by `getMapEntities(\"emitter\")`: a snapshot only, with no verbs.")
         .field("id", "EntityId", "")
         .field("position", "Vec3", "Emitter position at query time (from the entity's Transform).")
         .field(
@@ -349,7 +353,7 @@ pub fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .finish();
     registry
         .register_type("LightEntity")
-        .doc("Entity handle returned by `world.query` when filtering for light entities.")
+        .doc("Light snapshot that `getMapEntities(\"light\")` wraps into a `LightEntityHandle`.")
         .field("id", "EntityId", "")
         .field("position", "Vec3", "Light origin at query time.")
         .field(
@@ -370,7 +374,7 @@ pub fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .finish();
     registry
         .register_type("MoverEntity")
-        .doc("Raw mover snapshot returned by `worldQuery` when filtering for kinematic movers. The SDK world-query wrapper exposes closed command-reaction builders; raw mover components remain engine-managed.")
+        .doc("Mover snapshot that `getMapEntities(\"mover\")` wraps into a `MoverEntityHandle` with closed command builders; raw mover components remain engine-managed.")
         .field("id", "EntityId", "")
         .field("position", "Vec3", "Mover position at query time (from the entity's Transform).")
         .field(
@@ -381,7 +385,7 @@ pub fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .finish();
     registry
         .register_type("TriggerVolumeEntity")
-        .doc("Raw trigger snapshot returned by `worldQuery` when filtering for trigger volumes. Arming and activation phase remain engine-managed; the SDK wrapper exposes only arm/disarm command builders.")
+        .doc("Trigger snapshot that `getMapEntities(\"trigger\")` wraps into a `TriggerVolumeHandle` (`arm`, `disarm`, `on`). Arming and activation phase remain engine-managed.")
         .field("id", "EntityId", "")
         .field("position", "Vec3", "Trigger position at query time (from the entity's Transform).")
         .field(

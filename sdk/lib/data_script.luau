@@ -63,23 +63,58 @@ export type ProgressReactionDescriptor = {
   progress: { tag: string, at: number, fire: string },
 }
 
---- Primitive reaction body: invokes the named Rust primitive. A non-empty
---- `tag` targets matching entities. Tag-targeted primitives include
---- emitter/fog/mover commands, `applyDamage`, `grantHealth`, `grantAmmo`, `addSlot`,
---- `setAnimationState`, `updateNpcState`, `spawnFromSpawner`, `armTrigger`,
---- and `disarmTrigger`. In a trigger-event reaction, `applyDamage`,
---- `grantHealth`, `grantAmmo`, and `addSlot` may instead target `@activators`. True system
---- reactions carry neither `tag` nor `target` and enqueue typed engine commands
---- such as `playSound`, `rumble`, `flashScreen`, and the UI-stack reactions.
---- `args`
+--- Primitive reaction body: invokes the named Rust primitive. A group command
+--- (`npcs(...)`, `players()`) carries `kind` and an optional `tag` filter; a
+--- subject-token command (`on.activators`) carries `target = "@activators"`. A
+--- raw descriptor with only a non-empty `tag` resolves over every entity
+--- carrying it (fog, emitter and animation primitives have no typed builder).
+--- True system reactions carry neither and enqueue typed engine commands such
+--- as `playSound`, `rumble`, `flashScreen`, and the UI-stack reactions. `args`
 --- carries the primitive's typed payload (e.g. `{ rate = 0 }` for
 --- `setEmitterRate`).
 export type PrimitiveReactionDescriptor = {
   primitive: string,
+  kind: GroupKind?,
   tag: string?,
   target: "@activators"?,
   args: { [string]: any }?,
   onComplete: string?,
+}
+
+--- Kinds a group command addresses.
+export type GroupKind = "npc" | "player"
+
+--- One group command: a primitive descriptor carrying `kind` (and an optional
+--- `tag` filter) instead of a target. Legal both as a reaction body and
+--- directly as a sequence entry; the group resolves when the command takes
+--- effect.
+export type GroupCommand = {
+  primitive: string,
+  kind: GroupKind,
+  tag: string?,
+  args: { [string]: any },
+}
+
+--- Selects the NPCs a group command reaches. Omit `tag` for every NPC.
+export type NpcGroupFilter = { tag: string? }
+
+--- Typed, additive partial for NPC state updates.
+export type NpcStateUpdateArgs = { aggro: boolean? }
+
+--- Brain-driven characters that are not players. Opaque: no members, no
+--- length; indexing anything but a verb raises.
+export type NpcGroup = {
+  update: (self: NpcGroup, fields: NpcStateUpdateArgs) -> GroupCommand,
+  damage: (self: NpcGroup, amount: number) -> GroupCommand,
+}
+
+--- Every seat-bound player pawn. Opaque: no members, no length; indexing
+--- anything but a verb raises.
+export type PlayerGroup = {
+  damage: (self: PlayerGroup, amount: number) -> GroupCommand,
+  grantHealth: (self: PlayerGroup, amount: number) -> GroupCommand,
+  grantAmmo: (self: PlayerGroup, type: string, amount: number) -> GroupCommand,
+  addSlot: (self: PlayerGroup, slot: StateRef<number>, delta: number) -> GroupCommand,
 }
 
 --- Tween shape used by the billboard-emitter reaction primitive
@@ -182,6 +217,12 @@ export type DisarmTriggerStep = {
   args: {},
 }
 
+--- Member step: spawn one batch from one spawner (`s:fire()`).
+export type SpawnFromSpawnerStep = {
+  id: number,
+  primitive: "spawnFromSpawner",
+}
+
 export type WaitArgs = { durationMs: number, interruptible: boolean }
 export type FireArgs = { event: string }
 
@@ -203,10 +244,10 @@ export type FireStep = {
 
 -- `SetFogAnimationStep` is declared in `postretro.d.luau` (the SDK lib
 -- block generated from the primitive registry) and is not redeclared here.
---- Ordered entity-targeted primitive and control steps. Entity steps begin in
---- array order; `fire` queues a named dispatch, while `wait` stops the current
---- drain and resumes the remaining tail after its delay.
-export type SequenceStep = SetLightAnimationStep | SetFogDensityStep | SetFogScatterStep | SetFogEdgeSoftnessStep | SetFogFalloffStep | SetFogParamsStep | SetFogAnimationStep | MoverStartStep | MoverStopStep | MoverReverseStep | MoverGoToPathNodeStep | MoverSetSpinRateStep | MoverSetBlockPolicyStep | ArmTriggerStep | DisarmTriggerStep | WaitStep | FireStep
+--- Ordered member, group and control steps. Steps begin in array order;
+--- `fire` queues a named dispatch, while `wait` stops the current drain and
+--- resumes the remaining tail after its delay.
+export type SequenceStep = SetLightAnimationStep | SetFogDensityStep | SetFogScatterStep | SetFogEdgeSoftnessStep | SetFogFalloffStep | SetFogParamsStep | SetFogAnimationStep | MoverStartStep | MoverStopStep | MoverReverseStep | MoverGoToPathNodeStep | MoverSetSpinRateStep | MoverSetBlockPolicyStep | ArmTriggerStep | DisarmTriggerStep | SpawnFromSpawnerStep | GroupCommand | WaitStep | FireStep
 
 --- Descriptor produced by `defineReaction`. The `name` field is merged
 --- into the descriptor at the top level so the Rust deserializer can read
@@ -218,18 +259,29 @@ export type NamedReactionDescriptor = {
   progress: { tag: string, at: number, fire: string }?,
   -- primitive shape
   primitive: string?,
+  kind: GroupKind?,
   tag: string?,
   target: "@activators"?,
   args: { [string]: any }?,
   onComplete: string?,
-  -- sequence shape: entity-targeted primitives plus wait/fire control steps
+  -- sequence shape: member, group and wait/fire control steps
   sequence: {SequenceStep}?,
 }
 
 export type CrossingParams = { rising: RuntimeRead }
 export type TickParams = { dt: RuntimeRead }
-export type ActivatorsTarget = { __triggerActivatorsTarget: true }
-export type TriggerTarget = { __firedTriggerTarget: true }
+--- The pawns that caused the current trigger edge. Legal only before any `wait`.
+export type ActivatorsTarget = {
+  damage: (self: ActivatorsTarget, amount: number) -> PrimitiveReactionDescriptor,
+  grantHealth: (self: ActivatorsTarget, amount: number) -> PrimitiveReactionDescriptor,
+  grantAmmo: (self: ActivatorsTarget, type: string, amount: number) -> PrimitiveReactionDescriptor,
+  addSlot: (self: ActivatorsTarget, slot: StateRef<number>, delta: number) -> PrimitiveReactionDescriptor,
+}
+--- The trigger volume that fired the current edge. Legal only before any `wait`.
+export type TriggerTarget = {
+  arm: (self: TriggerTarget) -> {SequenceStep},
+  disarm: (self: TriggerTarget) -> {SequenceStep},
+}
 export type TriggerEventParams = {
   activators: ActivatorsTarget,
   trigger: TriggerTarget,
@@ -355,7 +407,8 @@ export type LevelManifest = {
   -- in postretro.d.luau (the generated SDK-lib type block). See
   -- `onStateCrossing`.
   crossings: {CrossingDescriptor}?,
-  triggerEvents: {TriggerEventDescriptor}?,
+  -- Level trigger events, keyed by volume: build each with a trigger member's `on`.
+  triggerEvents: {VolumeTriggerEventDescriptor}?,
   triggerPools: {TriggerPoolDescriptor}?,
   -- Per-level UI trees (name + `AnchoredTree` + optional `alwaysOn` / `hideBelow`). Optional; same shape
   -- as `ModManifest.uiTrees` but level-scoped (cleared on unload). Malformed
@@ -886,7 +939,7 @@ end
 -- Merge the part chunks' public builders. Field names are disjoint from the
 -- builders declared above; `data_script_export_inventory_matches_returned_sdk_fields`
 -- pins the merged set.
-for _, part in ipairs({ dataScriptParts.reactions, dataScriptParts.commands, dataScriptParts.triggerEvents }) do
+for _, part in ipairs({ dataScriptParts.commands, dataScriptParts.reactions, dataScriptParts.triggerEvents }) do
   for name, builder in pairs(part.builders) do
     DataScriptSdk[name] = builder
   end

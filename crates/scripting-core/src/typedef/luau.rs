@@ -197,18 +197,17 @@ pub fn emit_luau_game_state_refs(out: &mut String) {
 }
 
 // Static type declarations for the Luau SDK library globals installed by
-// the embedded `world.luau`, `entities/lights.luau`, `entities/emitters.luau`,
-// `entities/fog_volumes.luau`, and `util/keyframes.luau` preludes. Appended to the generated
+// the embedded `map_entities.luau`, `gravity.luau`, `entities/*.luau`, and
+// `util/keyframes.luau` preludes. Appended to the generated
 // `postretro.d.luau` so `luau-lsp` resolves the symbols without an explicit
 // `require`. See: context/lib/scripting.md §7.
 // Source of truth for this static block:
-//   sdk/lib/world.luau
-//   sdk/lib/entities/lights.luau
-//   sdk/lib/entities/emitters.luau
-//   sdk/lib/entities/fog_volumes.luau
+//   sdk/lib/map_entities.luau
+//   sdk/lib/gravity.luau
+//   sdk/lib/entities/{lights,emitters,fog_volumes,movers,triggers,spawners}.luau
 //   sdk/lib/util/keyframes.luau
 //   sdk/lib/data_script.luau  (embedded directly via include_str! in luau.rs)
-//   sdk/lib/data_script/{reactions,commands,trigger_events}.luau  (part chunks merged into data_script.luau)
+//   sdk/lib/data_script/{commands,reactions,trigger_events}.luau  (part chunks merged into data_script.luau)
 //   sdk/lib/ui/{text,widgets,layout,tree,state}.luau
 // Drift between this block and those files causes IDE types that don't match
 // runtime behavior. Update this block whenever an SDK lib signature changes.

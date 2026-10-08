@@ -4,7 +4,6 @@
 // See: context/lib/scripting.md §12 (Reaction Dispatch Model)
 
 import type {
-  ActivatorsTarget,
   CrossingParams,
   EmitterParams,
   EmitterTarget,
@@ -12,16 +11,14 @@ import type {
   ReactionBody,
   SequenceStep,
   TriggerEventParams,
-  TriggerTarget,
 } from "../data_script";
+import { ACTIVATORS_TARGET, TRIGGER_TARGET } from "./commands";
 
 type ReactionTracer<S> = (params: S) => ReactionBody;
 
-// This is deliberately one plain merged object rather than a Proxy. Sibling
-// dispatch specs add opaque, non-IR leaves (activators, trigger) alongside
-// these input nodes.
-export const ACTIVATORS_TARGET = Object.freeze({}) as ActivatorsTarget;
-export const TRIGGER_TARGET = Object.freeze({}) as TriggerTarget;
+// This is deliberately one plain merged object rather than a Proxy. The
+// subject tokens (activators, trigger) sit beside these input nodes and carry
+// their own verbs (`./commands`).
 // The emitter token carries its own wire spelling, so `playSound` (in the UI
 // reaction module) lowers it without importing this module's private tokens.
 const EMITTER_TARGET = Object.freeze({ __wire: "@emitter" }) as unknown as EmitterTarget;
@@ -52,7 +49,7 @@ export function wait(durationMs: number, opts?: { interruptible?: boolean }): Se
 /**
  * Dispatch a named reaction by handle or name from inside a sequence body.
  * `reaction` accepts a `Reaction<{}>` handle or a bare name string, resolved
- * exactly as `onTriggerEvent` resolves its `fire` entries. Typing the
+ * exactly as a trigger member's `on` resolves its `fire` entries. Typing the
  * parameter `Reaction<{}>` rather than `Reaction<S>` makes firing a scoped
  * reaction a compile-time error: a `fire` step dispatches on the app drain
  * with no fire-time dispatch context.

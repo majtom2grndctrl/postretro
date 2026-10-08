@@ -227,7 +227,7 @@ pub(crate) fn register_sdk_type(registry: &mut PrimitiveRegistry) {
         .field(
             "triggerEvents?",
             "Vec<TriggerEventDescriptor>",
-            "Trigger-volume enter/exit observers. Optional; compose by level tags.",
+            "Mod-global trigger events, each a standing rule keyed by tag: build each with `defineTriggerEvent({ tag, event, fire, levels? })`. Optional; `levels` selects the map tags it binds in. A volume-keyed entry (a trigger member's `on`) belongs in `setupLevel` and is rejected here.",
         )
         .field(
             "triggerPools?",

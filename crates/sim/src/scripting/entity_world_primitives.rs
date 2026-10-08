@@ -104,16 +104,16 @@ const WORLD_QUERY_DOC: &str = "Return an array of raw entity snapshots matching 
      Filter shape: { component: \"light\" | \"transform\" | \"emitter\" | \"fog_volume\" | \"kinematic_mover\" | \"trigger_volume\" | \"spawner\" | \"particle\" | \"sprite_visual\", tag?: string }. \
      `\"particle\"` and `\"sprite_visual\"` always return `[]` (engine-managed; scripts never iterate individual particles). \
      Unknown component values raise InvalidArgument. \
-     The `world.ts` vocabulary module wraps these snapshots as `world.query` handles.";
+     The SDK's `getMapEntities` (`map_entities.ts`) lowers to it and wraps each snapshot in its kind's member handle; the raw primitive is absent from author-facing typedefs.";
 
 const WORLD_GET_GRAVITY_DOC: &str = "Return the current world gravity in m/s² (negative = downward; positive = upward). \
      Seeded from the worldspawn `initialGravity` KVP at level load and persists until the next level load or a `worldSetGravity` call. \
-     The `world.ts` vocabulary module wraps this as `world.getGravity`.";
+     The SDK wraps this as `getGravity`.";
 
 const WORLD_SET_GRAVITY_DOC: &str = "Set the world gravity in m/s² (negative = downward; positive = upward). \
      NaN and non-finite values are silently ignored (a warning is logged) so a misbehaving script cannot wedge particle physics. \
      Effect is immediate and persists until the next level load or another `worldSetGravity` call. \
-     The `world.ts` vocabulary module wraps this as `world.setGravity`.";
+     The SDK wraps this as `setGravity`.";
 
 /// Collect transform handles as JSON. Every live entity carries `Transform`,
 /// so this is effectively an entity query filtered only by tag.
@@ -404,7 +404,7 @@ fn register_world_gravity(registry: &mut PrimitiveRegistry, ctx: ScriptCtx) {
         .register("worldSetGravity", {
             move |value: f32| -> Result<(), ScriptError> {
                 if !value.is_finite() {
-                    log::warn!("[Scripting] world.setGravity: rejected non-finite value");
+                    log::warn!("[Scripting] setGravity: rejected non-finite value");
                     return Ok(());
                 }
                 ctx.gravity.set(value);
@@ -424,8 +424,8 @@ mod tests {
     use postretro_entities::components::light::{FalloffKind, LightComponent, LightKind};
     use postretro_entities::{
         KinematicMoverComponent, KinematicMoverMode, MoverCommand, NamedReaction,
-        PrimitiveDescriptor, ReactionDescriptor, SequenceStep, TriggerActivation, TriggerFireMode,
-        TriggerVolumeComponent,
+        PrimitiveDescriptor, ReactionDescriptor, SequenceStep, SequenceTarget, TriggerActivation,
+        TriggerFireMode, TriggerVolumeComponent, VolumeTriggerEventDescriptor,
     };
     use postretro_level_format::data_script::DataScriptSection;
     use postretro_scripting_core::level_data_context::LevelDataContext;
@@ -777,7 +777,7 @@ mod tests {
     }
 
     #[test]
-    fn world_query_trigger_volume_sdk_handles_build_arm_and_disarm_steps_in_both_runtimes() {
+    fn trigger_members_build_arm_and_disarm_steps_in_both_runtimes() {
         let _level = LevelDataContext::enter();
         let (ctx, _) = test_ctx_with_light(true, Some("not_a_trigger"));
         let id = add_trigger(&ctx, Some("tripwire"));
@@ -792,7 +792,7 @@ mod tests {
             let json: String = qjs
                 .eval(
                     r#"
-                    const h = world.query({ component: "trigger_volume", tag: "tripwire" })[0];
+                    const h = getMapEntities("trigger", { tag: "tripwire" })[0];
                     JSON.stringify({
                       id: h.id,
                       tags: h.tags,
@@ -823,7 +823,7 @@ mod tests {
         ) = lua
             .load(
                 r#"
-                local h = world:query({ component = "trigger_volume", tag = "tripwire" })[1]
+                local h = getMapEntities("trigger", { tag = "tripwire" })[1]
                 return h.id, h:arm()[1].primitive, h:disarm()[1].primitive,
                     h.armed ~= nil, wrapTriggerVolumeEntity == nil
                 "#,
@@ -963,9 +963,16 @@ mod tests {
         );
     }
 
+    // The presser fixture binds each `fixture_presser` volume through its own
+    // trigger member's `on`: one volume-keyed entry per volume, never a
+    // tag-keyed rule. Its reactions address the fire's subjects through the
+    // `on.activators` / `on.trigger` tokens.
     #[test]
     fn trigger_event_presser_fixtures_produce_identical_wire_in_both_runtimes() {
         let ctx = ScriptCtx::new();
+        let first_plate = add_trigger(&ctx, Some("fixture_presser"));
+        let second_plate = add_trigger(&ctx, Some("fixture_presser"));
+        add_trigger(&ctx, Some("unrelated_plate"));
         let primitives = registry_for(ctx.clone());
         let runtime = ScriptRuntime::new(&primitives, &ScriptRuntimeConfig::default(), &ctx)
             .expect("fixture runtime constructs");
@@ -990,12 +997,51 @@ mod tests {
             ts, luau,
             "TS and Luau must emit byte-equivalent descriptor data"
         );
-        assert_eq!(ts.reactions.len(), 2);
-        // The fixture still returns the retired level tag-keyed form
-        // (`onTriggerEvent`), which a level script now rejects in both
-        // runtimes. sdk-addressing-model Task 8 migrates it to a trigger
-        // member's `t.on` and restores the per-volume `fire` assertions.
-        assert!(ts.trigger_events.is_empty());
+        let fire = vec![
+            "fixture.presser.damage".to_string(),
+            "fixture.presser.disarm".to_string(),
+        ];
+        assert_eq!(
+            ts.trigger_events,
+            vec![
+                VolumeTriggerEventDescriptor {
+                    trigger: first_plate,
+                    event: "enter".to_string(),
+                    fire: fire.clone(),
+                },
+                VolumeTriggerEventDescriptor {
+                    trigger: second_plate,
+                    event: "enter".to_string(),
+                    fire,
+                },
+            ],
+            "each presser volume binds through its own member, keyed by volume"
+        );
+        assert_eq!(
+            ts.reactions,
+            vec![
+                NamedReaction {
+                    name: "fixture.presser.damage".into(),
+                    descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
+                        primitive: "applyDamage".into(),
+                        target: Some("@activators".into()),
+                        kind: None,
+                        tag: None,
+                        on_complete: None,
+                        args: json!({ "amount": 25 }),
+                    }),
+                },
+                NamedReaction {
+                    name: "fixture.presser.disarm".into(),
+                    descriptor: ReactionDescriptor::Sequence(vec![SequenceStep {
+                        id: SequenceTarget::FiredTrigger,
+                        primitive: "disarmTrigger".into(),
+                        args: json!({}),
+                    }]),
+                },
+            ],
+            "`on.activators.damage` and `on.trigger.disarm` lower to the sentinel wire"
+        );
     }
 
     #[test]
@@ -1543,5 +1589,217 @@ mod tests {
             (count, id, z, spawned.as_str()),
             (1, spawner.to_raw(), 3.0, "wave_1 wave_2")
         );
+    }
+
+    /// One map holding a member of every kind that carries verbs, tagged `m`,
+    /// plus a spawner with `spawnedTags`.
+    fn member_ctx() -> (ScriptCtx, EntityId, EntityId, EntityId, EntityId) {
+        let (ctx, light) = test_ctx_with_light(false, Some("m"));
+        let mover = add_mover(&ctx, Some("m"));
+        let trigger = add_trigger(&ctx, Some("m"));
+        let spawner = {
+            let mut reg = ctx.registry.borrow_mut();
+            let id = reg
+                .try_spawn(Transform::default(), &["m".to_string()])
+                .unwrap();
+            reg.set_component(
+                id,
+                postretro_entities::components::spawner::SpawnerComponent {
+                    archetype_name: "cultist".to_string(),
+                    count: 2,
+                    spawned_tags: vec!["closet".to_string()],
+                    resolved: true,
+                },
+            )
+            .unwrap();
+            id
+        };
+        (ctx, light, mover, trigger, spawner)
+    }
+
+    // Each map kind's member carries exactly its kind's verbs, baking the
+    // member's id into the step; TS and Luau (colon calls) agree byte for byte.
+    #[test]
+    fn get_map_entities_wraps_each_kind_in_its_member_handle_in_both_runtimes() {
+        use mlua::LuaSerdeExt as _;
+        let _level = LevelDataContext::enter();
+        let (ctx, light, mover, trigger, spawner) = member_ctx();
+        let r = registry_for(ctx);
+
+        let rt = rquickjs::Runtime::new().unwrap();
+        let jsctx = rquickjs::Context::full(&rt).unwrap();
+        let ts: serde_json::Value = jsctx.with(|qjs| {
+            install_all(&r, &qjs);
+            postretro_scripting_core::quickjs::evaluate_prelude(&qjs).unwrap();
+            let json: String = qjs
+                .eval(
+                    r#"
+                    const m = getMapEntities("mover", { tag: "m" })[0];
+                    const t = getMapEntities("trigger", { tag: "m" })[0];
+                    const s = getMapEntities("spawner", { tag: "m" })[0];
+                    const l = getMapEntities("light", { tag: "m" })[0];
+                    JSON.stringify({
+                      start: m.start(),
+                      arm: t.arm(),
+                      on: t.on("enter", ["closet.reveal"]),
+                      fire: s.fire(),
+                      spawnedTags: s.spawnedTags,
+                      pulseId: l.pulse({ min: 0, max: 1, periodMs: 400 })[0].id,
+                      lightHasStart: typeof l.start,
+                      spawnerHasArm: typeof s.arm,
+                    })
+                    "#,
+                )
+                .unwrap();
+            serde_json::from_str(&json).unwrap()
+        });
+
+        let lua = mlua::Lua::new();
+        install_all_lua(&r, &lua);
+        postretro_scripting_core::luau_prelude::evaluate_prelude(&lua, None).unwrap();
+        let value: mlua::Value = lua
+            .load(
+                r#"
+                local m = getMapEntities("mover", { tag = "m" })[1]
+                local t = getMapEntities("trigger", { tag = "m" })[1]
+                local s = getMapEntities("spawner", { tag = "m" })[1]
+                local l = getMapEntities("light", { tag = "m" })[1]
+                return {
+                  start = m:start(),
+                  arm = t:arm(),
+                  on = t:on("enter", { "closet.reveal" }),
+                  fire = s:fire(),
+                  spawnedTags = s.spawnedTags,
+                  pulseId = l:pulse({ min = 0, max = 1, periodMs = 400 })[1].id,
+                  lightHasStart = type(l.start),
+                  spawnerHasArm = type(s.arm),
+                }
+                "#,
+            )
+            .eval()
+            .unwrap();
+        let mut luau: serde_json::Value = lua.from_value(value).unwrap();
+        // JS `typeof` spells an absent field "undefined"; Luau `type` spells it "nil".
+        for field in ["lightHasStart", "spawnerHasArm"] {
+            assert_eq!(luau[field], "nil", "{field}");
+            luau[field] = json!("undefined");
+        }
+
+        assert_eq!(ts, luau, "TS and Luau member handles diverged");
+        assert_eq!(
+            ts,
+            json!({
+                "start": [{ "id": mover.to_raw(), "primitive": "moverStart", "args": {} }],
+                "arm": [{ "id": trigger.to_raw(), "primitive": "armTrigger", "args": {} }],
+                "on": { "trigger": trigger.to_raw(), "event": "enter", "fire": ["closet.reveal"] },
+                "fire": [{ "id": spawner.to_raw(), "primitive": "spawnFromSpawner" }],
+                "spawnedTags": ["closet"],
+                "pulseId": light.to_raw(),
+                "lightHasStart": "undefined",
+                "spawnerHasArm": "undefined",
+            })
+        );
+    }
+
+    // M3: a member query with no match returns an empty array in both runtimes.
+    #[test]
+    fn get_map_entities_returns_an_empty_array_on_no_match_in_both_runtimes() {
+        let _level = LevelDataContext::enter();
+        let (ctx, ..) = member_ctx();
+        let r = registry_for(ctx);
+
+        let rt = rquickjs::Runtime::new().unwrap();
+        let jsctx = rquickjs::Context::full(&rt).unwrap();
+        jsctx.with(|qjs| {
+            install_all(&r, &qjs);
+            postretro_scripting_core::quickjs::evaluate_prelude(&qjs).unwrap();
+            let got: String = qjs
+                .eval(
+                    r#"JSON.stringify(["mover", "trigger", "light", "fog", "emitter", "spawner"]
+                        .map((kind) => getMapEntities(kind, { tag: "absent" })))"#,
+                )
+                .unwrap();
+            assert_eq!(got, "[[],[],[],[],[],[]]");
+        });
+
+        let lua = mlua::Lua::new();
+        install_all_lua(&r, &lua);
+        postretro_scripting_core::luau_prelude::evaluate_prelude(&lua, None).unwrap();
+        let empties: i64 = lua
+            .load(
+                r#"
+                local empties = 0
+                for _, kind in { "mover", "trigger", "light", "fog", "emitter", "spawner" } do
+                  local members = getMapEntities(kind, { tag = "absent" })
+                  if type(members) == "table" and #members == 0 and next(members) == nil then
+                    empties += 1
+                  end
+                end
+                return empties
+                "#,
+            )
+            .eval()
+            .unwrap();
+        assert_eq!(empties, 6);
+    }
+
+    // T9: the SDK's `getGravity` / `setGravity` behave as `world.getGravity` /
+    // `world.setGravity` did, in both runtimes: a read sees the seeded value, a
+    // finite write lands, and a non-finite write warns and leaves gravity as it
+    // was.
+    #[test]
+    fn sdk_gravity_reads_writes_and_warns_on_non_finite_in_both_runtimes() {
+        let (r, ctx) = registry_with_gravity();
+
+        ctx.gravity.set(-7.5);
+        let rt = rquickjs::Runtime::new().unwrap();
+        let jsctx = rquickjs::Context::full(&rt).unwrap();
+        let records = crate::scripting::reactions::log_capture::capture(|| {
+            jsctx.with(|qjs| {
+                install_all(&r, &qjs);
+                postretro_scripting_core::quickjs::evaluate_prelude(&qjs).unwrap();
+                let got: f64 = qjs.eval("getGravity()").unwrap();
+                assert!((got - -7.5).abs() < 1e-5, "TS read got {got}");
+                let _: () = qjs.eval("setGravity(3.5)").unwrap();
+                let _: () = qjs.eval("setGravity(NaN)").unwrap();
+                let _: () = qjs.eval("setGravity(Infinity)").unwrap();
+            });
+        });
+        assert!(
+            (ctx.gravity.get() - 3.5).abs() < 1e-5,
+            "TS non-finite writes are no-ops"
+        );
+        let warnings = records
+            .iter()
+            .filter(|(level, message)| {
+                *level == log::Level::Warn
+                    && message.contains("setGravity: rejected non-finite value")
+            })
+            .count();
+        assert_eq!(warnings, 2, "each TS non-finite write warns: {records:?}");
+
+        ctx.gravity.set(-12.0);
+        let lua = mlua::Lua::new();
+        install_all_lua(&r, &lua);
+        postretro_scripting_core::luau_prelude::evaluate_prelude(&lua, None).unwrap();
+        let records = crate::scripting::reactions::log_capture::capture(|| {
+            let got: f64 = lua.load("return getGravity()").eval().unwrap();
+            assert!((got - -12.0).abs() < 1e-5, "Luau read got {got}");
+            let _: () = lua.load("setGravity(-5.0)").exec().unwrap();
+            let _: () = lua.load("setGravity(0/0)").exec().unwrap();
+            let _: () = lua.load("setGravity(math.huge)").exec().unwrap();
+        });
+        assert!(
+            (ctx.gravity.get() - -5.0).abs() < 1e-6,
+            "Luau non-finite writes are no-ops"
+        );
+        let warnings = records
+            .iter()
+            .filter(|(level, message)| {
+                *level == log::Level::Warn
+                    && message.contains("setGravity: rejected non-finite value")
+            })
+            .count();
+        assert_eq!(warnings, 2, "each Luau non-finite write warns: {records:?}");
     }
 }

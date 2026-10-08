@@ -1,24 +1,22 @@
-// Spawner vocabulary: fire-time tag-targeted consequence descriptors.
-// A spawner's archetype and count are authored on the map entity; firing only
-// addresses the live spawner group when the reaction dispatches.
+// Spawner member handle. A spawner's archetype and count are authored on its
+// map entity; `fire()` spawns one batch from this spawner only, when its step
+// runs.
 
-import type { PrimitiveReactionDescriptor } from "../data_script";
+import type { EntityId, SpawnerEntity } from "postretro";
+import type { SequenceStep } from "../data_script";
 
-/** Selects the live spawner group addressed when a reaction fires. */
-export type SpawnerFilter = {
-  tag: string;
-};
-
-/** Fire-time-tag spawner handle. Methods emit one primitive reaction descriptor. */
-export interface SpawnerHandle {
-  fire(): PrimitiveReactionDescriptor;
+/** Spawner member returned by `getMapEntities("spawner")`. */
+export interface SpawnerEntityHandle extends SpawnerEntity {
+  /** Spawn one batch from this spawner, and from no sibling sharing its tag. */
+  fire(): SequenceStep[];
 }
 
-/** Select a live spawner group by tag and fire each matching spawner. */
-export function spawner(filter: SpawnerFilter): SpawnerHandle {
+export function wrapSpawnerEntity(snapshot: SpawnerEntity): SpawnerEntityHandle {
+  const id: EntityId = snapshot.id;
   return {
-    fire() {
-      return { primitive: "spawnFromSpawner", tag: filter.tag };
+    ...snapshot,
+    fire(): SequenceStep[] {
+      return [{ id, primitive: "spawnFromSpawner" }];
     },
   };
 }

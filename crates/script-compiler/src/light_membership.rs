@@ -29,11 +29,38 @@ const SDK_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../sdk/lib");
 // Luau modules are intentionally embedded here rather than borrowed from
 // scripting-core. The dependency direction is scripting-core -> script-compiler,
 // so reusing that runtime module would form a cycle.
-const WORLD_LUAU: &str = include_str!("../../../sdk/lib/world.luau");
-const LIGHTS_LUAU: &str = include_str!("../../../sdk/lib/entities/lights.luau");
-const FOG_VOLUMES_LUAU: &str = include_str!("../../../sdk/lib/entities/fog_volumes.luau");
-const MOVERS_LUAU: &str = include_str!("../../../sdk/lib/entities/movers.luau");
-const TRIGGERS_LUAU: &str = include_str!("../../../sdk/lib/entities/triggers.luau");
+/// Member-handle wrappers, evaluated in this order and installed as temporary
+/// globals for `map_entities.luau` to capture, mirroring scripting-core's
+/// `MEMBER_WRAPPER_SOURCES`. `(wrapper global, source, path)`.
+const MEMBER_WRAPPER_LUAU: &[(&str, &str, &str)] = &[
+    (
+        "wrapLightEntity",
+        include_str!("../../../sdk/lib/entities/lights.luau"),
+        "sdk/lib/entities/lights.luau",
+    ),
+    (
+        "wrapFogVolumeEntity",
+        include_str!("../../../sdk/lib/entities/fog_volumes.luau"),
+        "sdk/lib/entities/fog_volumes.luau",
+    ),
+    (
+        "wrapMoverEntity",
+        include_str!("../../../sdk/lib/entities/movers.luau"),
+        "sdk/lib/entities/movers.luau",
+    ),
+    (
+        "wrapTriggerVolumeEntity",
+        include_str!("../../../sdk/lib/entities/triggers.luau"),
+        "sdk/lib/entities/triggers.luau",
+    ),
+    (
+        "wrapSpawnerEntity",
+        include_str!("../../../sdk/lib/entities/spawners.luau"),
+        "sdk/lib/entities/spawners.luau",
+    ),
+];
+const MAP_ENTITIES_LUAU: &str = include_str!("../../../sdk/lib/map_entities.luau");
+const GRAVITY_LUAU: &str = include_str!("../../../sdk/lib/gravity.luau");
 const KEYFRAMES_LUAU: &str = include_str!("../../../sdk/lib/util/keyframes.luau");
 const EMITTERS_LUAU: &str = include_str!("../../../sdk/lib/entities/emitters.luau");
 const EXPRESSION_REFS_LUAU: &str = include_str!("../../../sdk/lib/util/expression_refs.luau");
@@ -44,14 +71,14 @@ const DATA_SCRIPT_LUAU: &str = include_str!("../../../sdk/lib/data_script.luau")
 /// mirroring scripting-core's `evaluate_data_script_sdk`.
 const DATA_SCRIPT_PART_LUAU: &[(&str, &str, &str)] = &[
     (
-        "reactions",
-        include_str!("../../../sdk/lib/data_script/reactions.luau"),
-        "sdk/lib/data_script/reactions.luau",
-    ),
-    (
         "commands",
         include_str!("../../../sdk/lib/data_script/commands.luau"),
         "sdk/lib/data_script/commands.luau",
+    ),
+    (
+        "reactions",
+        include_str!("../../../sdk/lib/data_script/reactions.luau"),
+        "sdk/lib/data_script/reactions.luau",
     ),
     (
         "triggerEvents",
@@ -422,48 +449,29 @@ fn install_lua_primitives(
     Ok(())
 }
 
+const MAP_ENTITIES_FIELDS: &[&str] = &["getMapEntities"];
+const GRAVITY_FIELDS: &[&str] = &["getGravity", "setGravity"];
+
 /// Ordered Luau SDK construction. The wrapper bridges are visible only long
-/// enough for `world.luau` to capture them, exactly like the runtime prelude.
+/// enough for `map_entities.luau` to capture them, exactly like the runtime
+/// prelude.
 fn install_lua_prelude(lua: &Lua, mod_root: &Path) -> mlua::Result<()> {
     let globals = lua.globals();
 
     let game_state = eval_lua_table(lua, GAME_STATE_LUAU, "sdk/lib/game_state.luau")?;
     copy_lua_fields(&globals, &game_state, &["getGameState"])?;
 
-    let lights = eval_lua_table(lua, LIGHTS_LUAU, "sdk/lib/entities/lights.luau")?;
-    globals.set(
-        "wrapLightEntity",
-        lights.get::<LuaValue>("wrapLightEntity")?,
-    )?;
-
-    let fog = eval_lua_table(lua, FOG_VOLUMES_LUAU, "sdk/lib/entities/fog_volumes.luau")?;
-    globals.set(
-        "wrapFogVolumeEntity",
-        fog.get::<LuaValue>("wrapFogVolumeEntity")?,
-    )?;
-
-    let movers = eval_lua_table(lua, MOVERS_LUAU, "sdk/lib/entities/movers.luau")?;
-    globals.set(
-        "wrapMoverEntity",
-        movers.get::<LuaValue>("wrapMoverEntity")?,
-    )?;
-
-    let triggers = eval_lua_table(lua, TRIGGERS_LUAU, "sdk/lib/entities/triggers.luau")?;
-    globals.set(
-        "wrapTriggerVolumeEntity",
-        triggers.get::<LuaValue>("wrapTriggerVolumeEntity")?,
-    )?;
-
-    let world: LuaValue = lua.load(WORLD_LUAU).set_name("sdk/lib/world.luau").eval()?;
-    globals.set("world", world.clone())?;
-    for name in [
-        "wrapLightEntity",
-        "wrapFogVolumeEntity",
-        "wrapMoverEntity",
-        "wrapTriggerVolumeEntity",
-    ] {
-        globals.set(name, LuaValue::Nil)?;
+    for (wrapper, source, name) in MEMBER_WRAPPER_LUAU {
+        let module = eval_lua_table(lua, source, name)?;
+        globals.set(*wrapper, module.get::<LuaValue>(*wrapper)?)?;
     }
+    let map_entities = eval_lua_table(lua, MAP_ENTITIES_LUAU, "sdk/lib/map_entities.luau")?;
+    copy_lua_fields(&globals, &map_entities, MAP_ENTITIES_FIELDS)?;
+    for (wrapper, _, _) in MEMBER_WRAPPER_LUAU {
+        globals.set(*wrapper, LuaValue::Nil)?;
+    }
+    let gravity = eval_lua_table(lua, GRAVITY_LUAU, "sdk/lib/gravity.luau")?;
+    copy_lua_fields(&globals, &gravity, GRAVITY_FIELDS)?;
 
     let keyframes = eval_lua_table(lua, KEYFRAMES_LUAU, "sdk/lib/util/keyframes.luau")?;
     copy_lua_fields(&globals, &keyframes, &["timeline", "sequence"])?;
@@ -493,13 +501,9 @@ fn install_lua_prelude(lua: &Lua, mod_root: &Path) -> mlua::Result<()> {
     globals.set("__postretroExpressionRefs", LuaValue::Nil)?;
     const DATA_FIELDS: &[&str] = &[
         "defineReaction",
-        "onTriggerEvent",
-        "damage",
-        "addSlot",
-        "enemies",
-        "spawner",
-        "armTrigger",
-        "disarmTrigger",
+        "defineTriggerEvent",
+        "npcs",
+        "players",
         "wait",
         "fire",
         "scopeReactions",
@@ -539,7 +543,8 @@ fn install_lua_prelude(lua: &Lua, mod_root: &Path) -> mlua::Result<()> {
     copy_lua_fields(&globals, &brain, &["brain", "candidate", "state"])?;
 
     let root = lua.create_table()?;
-    root.set("world", world)?;
+    copy_lua_fields(&root, &map_entities, MAP_ENTITIES_FIELDS)?;
+    copy_lua_fields(&root, &gravity, GRAVITY_FIELDS)?;
     root.set("runtime", runtime)?;
     copy_lua_fields(&root, &game_state, &["getGameState"])?;
     copy_lua_fields(&root, &brain, &["brain", "candidate", "state"])?;
@@ -1209,8 +1214,8 @@ mod tests {
     fn quickjs_collects_static_and_dynamic_membership_from_light_handles() {
         let source = r#"
             function setupLevel() {
-              const staticLights = world.query({ component: "light", tag: "wave" });
-              const dynamicLights = world.query({ component: "light", tag: "dynamic" });
+              const staticLights = getMapEntities("light", { tag: "wave" });
+              const dynamicLights = getMapEntities("light", { tag: "dynamic" });
               return { reactions: [
                 defineReaction("levelLoad", { sequence: [
                   ...staticLights[0].pulse({ min: 0.2, max: 1.0, periodMs: 1000 }),
@@ -1238,7 +1243,7 @@ mod tests {
     fn level_load_start_active_filters_non_load_reactions_and_marks_conflicts() {
         let source = r#"
             function setupLevel() {
-              const light = world.query({ component: "light", tag: "wave" })[0];
+              const light = getMapEntities("light", { tag: "wave" })[0];
               return { reactions: [
                 defineReaction("trigger", { sequence: [{ id: light.id, primitive: "setLightAnimation", args: { startActive: false } }] }),
                 defineReaction("levelLoad", { sequence: [{ id: light.id, primitive: "setLightAnimation", args: { startActive: false } }] }),
@@ -1263,7 +1268,7 @@ mod tests {
         let source = r#"
             function setupLevel() {
               const pick = Math.random() < 1 && Date.now() === 0;
-              const light = world.query({ component: "light", tag: pick ? "wave" : "dynamic" })[0];
+              const light = getMapEntities("light", { tag: pick ? "wave" : "dynamic" })[0];
               return { reactions: [defineReaction("levelLoad", { sequence: light.pulse({ min: 0, max: 1, periodMs: 1 }) })] };
             }
         "#;
@@ -1302,7 +1307,7 @@ mod tests {
                 && explicit.getTime() === 1234
                 && Date.now() === 0
                 && Date.UTC(1970, 0, 1) === 0;
-              const light = world.query({ component: "light", tag: compatible ? "wave" : "dynamic" })[0];
+              const light = getMapEntities("light", { tag: compatible ? "wave" : "dynamic" })[0];
               return { reactions: [defineReaction("levelLoad", { sequence: light.pulse({ min: 0, max: 1, periodMs: 1 }) })] };
             }
         "#;
@@ -1326,14 +1331,14 @@ mod tests {
 
         let quickjs = r#"
             function setupLevel() {
-              const light = world.query({ component: "light", tag: "wave" })[0];
+              const light = getMapEntities("light", { tag: "wave" })[0];
               if (Object.hasOwn(light.component, "animatedSlot")) throw new Error("leaked animatedSlot");
               return { reactions: [defineReaction("levelLoad", { sequence: light.pulse({ min: 0, max: 1, periodMs: 1 }) })] };
             }
         "#;
         let luau = r#"
             function setupLevel(_)
-              local light = world:query({ component = "light", tag = "wave" })[1]
+              local light = getMapEntities("light", { tag = "wave" })[1]
               if light.component.animatedSlot ~= nil then error("leaked animatedSlot") end
               return { reactions = {
                 defineReaction("levelLoad", { sequence = light:pulse({ min = 0, max = 1, periodMs = 1 }) }),
@@ -1380,7 +1385,7 @@ mod tests {
               fireTick();
               const state = getGameState();
               if (!state.player.health.slot) throw new Error("missing state bridge");
-              const light = world.query({ component: "light", tag: "wave" })[0];
+              const light = getMapEntities("light", { tag: "wave" })[0];
               return { reactions: [defineReaction("levelLoad", { sequence: light.flicker({ min: 0, max: 1, rate: 4 }) })] };
             }
         "#;
@@ -1395,13 +1400,13 @@ mod tests {
     }
 
     #[test]
-    fn unavailable_world_queries_degrade_and_inventory_branch_sensitive_use() {
+    fn unavailable_member_kinds_degrade_and_inventory_branch_sensitive_use() {
         let source = r#"
             function setupLevel() {
-              const transforms = world.query({ component: "transform" });
-              world.query({ component: "particle" });
-              const light = world.query({ component: "light", tag: "wave" })[0];
-              return { reactions: transforms.length === 0 ? [] : [
+              const movers = getMapEntities("mover");
+              getMapEntities("spawner");
+              const light = getMapEntities("light", { tag: "wave" })[0];
+              return { reactions: movers.length === 0 ? [] : [
                 defineReaction("levelLoad", { sequence: light.pulse({ min: 0, max: 1, periodMs: 1 }) }),
               ] };
             }
@@ -1416,35 +1421,35 @@ mod tests {
         assert!(manifest.lights.is_empty());
         assert_eq!(
             manifest.stubbed_primitives,
-            vec!["worldQuery:particle", "worldQuery:transform"]
+            vec!["worldQuery:kinematic_mover", "worldQuery:spawner"]
         );
     }
 
     #[test]
-    fn unknown_world_query_component_matches_runtime_error_contract() {
+    fn unknown_map_kind_raises_naming_the_call_in_both_runtimes() {
         let quickjs = emit_light_membership_manifest(
-            "function setupLevel() { world.query({ component: 'decal' }); return {}; }",
+            "function setupLevel() { getMapEntities('decal'); return {}; }",
             Path::new("fixture.ts"),
             Path::new("."),
             &table(),
         )
-        .expect_err("unknown QuickJS component must throw")
+        .expect_err("unknown QuickJS kind must throw")
         .to_string();
         assert!(
-            quickjs.contains("invalid argument") && quickjs.contains("decal"),
+            quickjs.contains("getMapEntities") && quickjs.contains("decal"),
             "{quickjs}"
         );
 
         let luau = emit_light_membership_manifest(
-            "function setupLevel(_) world:query({ component = 'decal' }); return {} end",
+            "function setupLevel(_) getMapEntities('decal'); return {} end",
             Path::new("fixture.luau"),
             Path::new("."),
             &table(),
         )
-        .expect_err("unknown Luau component must throw")
+        .expect_err("unknown Luau kind must throw")
         .to_string();
         assert!(
-            luau.contains("invalid argument") && luau.contains("decal"),
+            luau.contains("getMapEntities") && luau.contains("decal"),
             "{luau}"
         );
     }
@@ -1467,8 +1472,8 @@ mod tests {
         // manifest drain warns about and skips.
         let quickjs = r#"
             function setupLevel() {
-              const good = world.query({ component: "light", tag: "wave" })[0];
-              const discarded = world.query({ component: "light", tag: "dynamic" })[0];
+              const good = getMapEntities("light", { tag: "wave" })[0];
+              const discarded = getMapEntities("light", { tag: "dynamic" })[0];
               return { reactions: [
                 null,
                 { name: "bad-sequence", sequence: "not-an-array" },
@@ -1484,8 +1489,8 @@ mod tests {
         "#;
         let luau = r#"
             function setupLevel(_)
-              local good = world:query({ component = "light", tag = "wave" })[1]
-              local discarded = world:query({ component = "light", tag = "dynamic" })[1]
+              local good = getMapEntities("light", { tag = "wave" })[1]
+              local discarded = getMapEntities("light", { tag = "dynamic" })[1]
               return { reactions = {
                 false,
                 { name = "bad-sequence", sequence = "not-an-array" },
@@ -1529,7 +1534,7 @@ mod tests {
     fn wait_and_fire_mixed_sequence_still_reserves_light_membership_in_both_hosts() {
         let quickjs = r#"
             function setupLevel() {
-              const light = world.query({ component: "light", tag: "wave" })[0];
+              const light = getMapEntities("light", { tag: "wave" })[0];
               return { reactions: [
                 { name: "levelLoad", sequence: [
                   { id: "@wait", primitive: "wait", args: { durationMs: 800, interruptible: true } },
@@ -1541,7 +1546,7 @@ mod tests {
         "#;
         let luau = r#"
             function setupLevel(_)
-              local light = world:query({ component = "light", tag = "wave" })[1]
+              local light = getMapEntities("light", { tag = "wave" })[1]
               return { reactions = {
                 { name = "levelLoad", sequence = {
                   { id = "@wait", primitive = "wait", args = { durationMs = 800, interruptible = true } },
@@ -1592,7 +1597,7 @@ mod tests {
             format!(
                 r#"
                 function setupLevel() {{
-                  const light = world.query({{ component: "light", tag: "wave" }})[0];
+                  const light = getMapEntities("light", {{ tag: "wave" }})[0];
                   return {{ reactions: [
                     {{ name: "levelLoad", sequence: [
                       {{ id: light.id, primitive: "setLightAnimation", args: {{ startActive: false }} }},
@@ -1607,7 +1612,7 @@ mod tests {
             format!(
                 r#"
                 function setupLevel(_)
-                  local light = world:query({{ component = "light", tag = "wave" }})[1]
+                  local light = getMapEntities("light", {{ tag = "wave" }})[1]
                   return {{ reactions = {{
                     {{ name = "levelLoad", sequence = {{
                       {{ id = light.id, primitive = "setLightAnimation", args = {{ startActive = false }} }},
@@ -1676,7 +1681,7 @@ mod tests {
               local one = math.random(1)
               local exact = math.random(2, 2)
               local tag = unit >= 0 and unit < 1 and one == 1 and exact == 2 and "wave" or "dynamic"
-              local light = world:query({ component = "light", tag = tag })[1]
+              local light = getMapEntities("light", { tag = tag })[1]
               return { reactions = {
                 defineReaction("levelLoad", { sequence = light:pulse({ min = 0, max = 1, periodMs = 1 }) }),
               } }
@@ -1713,7 +1718,7 @@ mod tests {
             r#"
                 local Postretro = require("postretro")
                 return function()
-                  local light = Postretro.world:query({ component = "light", tag = "wave" })[1]
+                  local light = Postretro.getMapEntities("light", { tag = "wave" })[1]
                   return Postretro.defineReaction("levelLoad", {
                     sequence = light:pulse({ min = 0, max = 1, periodMs = 1 }),
                   })
@@ -1749,7 +1754,7 @@ mod tests {
             local fluent = activation.shot({ scale = { damage = activation.charge:times(5):plus(1) } })
             assert(fluent.scale.damage.op == "add" and fluent.scale.damage.a.op == "mul")
             function setupLevel(_)
-              local light = world:query({ component = "light", tag = "wave" })[1]
+              local light = getMapEntities("light", { tag = "wave" })[1]
               return { reactions = {
                 defineReaction("levelLoad", { sequence = light:pulse({ min = 0, max = 1, periodMs = 1 }) })
               } }
@@ -1773,7 +1778,7 @@ mod tests {
             local Postretro = require("postretro")
             local Ui = require("postretro/ui")
             local rootMutationOk = pcall(function()
-              Postretro.world.query = function() return {} end
+              Postretro.runtime.add = function() return {} end
             end)
             local uiMutationOk = pcall(function()
               Ui.ui.createLocalState = function() return {} end
@@ -1782,7 +1787,7 @@ mod tests {
               if rootMutationOk or uiMutationOk then
                 error("nested SDK module table was writable")
               end
-              local light = Postretro.world:query({ component = "light", tag = "wave" })[1]
+              local light = Postretro.getMapEntities("light", { tag = "wave" })[1]
               return { reactions = {
                 Postretro.defineReaction("levelLoad", { sequence = light:pulse({ min = 0, max = 1, periodMs = 1 }) }),
               } }
@@ -1806,7 +1811,7 @@ mod tests {
             local Ui = require("postretro/ui")
             local value = Ui.fact.number("damage", { format = "{}" })
             function setupLevel(_)
-              local light = Postretro.world:query({ component = "light", tag = "wave" })[1]
+              local light = Postretro.getMapEntities("light", { tag = "wave" })[1]
               return { reactions = {
                 Postretro.defineReaction("levelLoad", { sequence = light:pulse({ min = 0, max = 1, periodMs = 1 }) }),
               } }
@@ -1843,7 +1848,7 @@ mod tests {
               if type(openAction) ~= "string" or type(fieldAction) ~= "string" then
                 error("postretro/ui accessibility action exports missing")
               end
-              local light = Postretro.world:query({ component = "light", tag = "wave" })[1]
+              local light = Postretro.getMapEntities("light", { tag = "wave" })[1]
               return { reactions = {
                 Postretro.defineReaction("levelLoad", { sequence = light:pulse({ min = 0, max = 1, periodMs = 1 }) }),
               } }
@@ -1863,14 +1868,14 @@ mod tests {
     fn luau_and_typescript_derive_identical_membership() {
         let ts = r#"
             function setupLevel() {
-              const light = world.query({ component: "light", tag: "wave" })[0];
+              const light = getMapEntities("light", { tag: "wave" })[0];
               return { reactions: [defineReaction("levelLoad", { sequence: light.colorShift({ values: [{x: 1, y: 0, z: 0}], periodMs: 1000 }) })] };
             }
         "#;
         let luau = r#"
             local Postretro = require("postretro")
             function setupLevel(_ctx)
-              local light = Postretro.world:query({ component = "light", tag = "wave" })[1]
+              local light = Postretro.getMapEntities("light", { tag = "wave" })[1]
               return { reactions = {
                 Postretro.defineReaction("levelLoad", { sequence = light:colorShift({ values = {{x = 1, y = 0, z = 0}}, periodMs = 1000 }) }),
               } }

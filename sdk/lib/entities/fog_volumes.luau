@@ -1,6 +1,6 @@
 --!strict
 -- Fog volume entity vocabulary: the `FogVolumeHandle` returned by
--- `world:query({ component = "fog_volume" })`. The handle composes the
+-- `getMapEntities("fog")`. The handle composes the
 -- generated `FogVolumeEntity` snapshot with capability methods
 -- (`pulse`, `fade`, `flicker`, `pulseSaturation`, `fadeSaturation`)
 -- that return `{SetFogAnimationStep}` arrays suitable for splicing into
@@ -8,8 +8,8 @@
 --
 -- `wrapFogVolumeEntity` is included in the returned table; the Luau
 -- prelude evaluator (`luau.rs`) extracts it and installs it as a
--- temporary global before `world.luau` evaluates. It is nil'd out by
--- the prelude after `world.luau` has been evaluated. No other fields
+-- temporary global before `map_entities.luau` evaluates. It is nil'd out
+-- by the prelude after `map_entities.luau` has been evaluated. No other fields
 -- from this module are promoted to bare globals — the old free
 -- constructors (`fogPulse`, `fogFade`) are now handle methods.
 --
@@ -22,7 +22,7 @@
 -- `SetFogAnimationStep`, and `Vec3` are provided ambiently by the
 -- generated `sdk/types/postretro.d.luau` definitions file.
 
---- Typed handle returned by `world:query` for a fog-volume entity.
+--- Fog member returned by `getMapEntities("fog")`.
 --- Carries the query-time snapshot fields plus capability methods called
 --- with `:` (e.g. `fog:pulse({ min = 0.2, max = 1.0, periodMs = 1500 })`).
 export type FogVolumeHandle = {

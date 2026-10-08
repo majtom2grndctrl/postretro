@@ -244,7 +244,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .finish();
     registry
         .register_type("FogVolumeEntity")
-        .doc("Entity handle returned by `world.query` when filtering for fog-volume entities.")
+        .doc("Fog-volume snapshot that `getMapEntities(\"fog\")` wraps into a `FogVolumeHandle`.")
         .field("id", "EntityId", "")
         .field(
             "position",

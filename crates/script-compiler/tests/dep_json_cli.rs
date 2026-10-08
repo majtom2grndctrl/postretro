@@ -335,9 +335,9 @@ fn manifest_flags_emit_resolved_typescript_membership() {
     fs::write(
         &entry,
         r#"
-        import { defineReaction, world } from "postretro";
+        import { defineReaction, getMapEntities } from "postretro";
         export function setupLevel() {
-          const light = world.query({ component: "light", tag: "arena" })[0];
+          const light = getMapEntities("light", { tag: "arena" })[0];
           return { reactions: [
             defineReaction("levelLoad", { sequence: light.pulse({ min: 0.2, max: 1.0, periodMs: 500 }) }),
           ] };

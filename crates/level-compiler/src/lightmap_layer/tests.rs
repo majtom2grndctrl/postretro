@@ -732,7 +732,7 @@ fn sparse_writer_uses_adjacent_values_around_coverage_epsilon() {
 
 #[test]
 fn sparse_cache_epochs_are_pinned() {
-    assert_eq!(LAYER_FORMAT_VERSION, 8);
+    assert_eq!(LAYER_FORMAT_VERSION, 9);
     assert_eq!(LIGHTMAP_SECTION_VERSION, 4);
 }
 

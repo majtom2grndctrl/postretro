@@ -1,6 +1,7 @@
 // Frozen monolithic lightmap oracle used by byte-identity tests.
 // See: context/lib/build_pipeline.md §Build Cache
 
+use std::cell::Cell;
 use std::sync::Mutex;
 
 use bvh::bvh::Bvh;
@@ -16,7 +17,8 @@ use crate::geometry::GeometryResult;
 use crate::map_data::MapLight;
 
 use super::{
-    Chart, CompositedAtlas, light_texel_contribution, scatter_chart_into_atlas, segment_clear,
+    Chart, CompositedAtlas, light_texel_contribution, scatter_chart_into_atlas,
+    segment_clear_remembering,
 };
 
 /// Bake the full static-light atlas and dilate — the independent monolithic
@@ -111,6 +113,11 @@ pub(super) fn bake_face_chart(
     }
     let padding = CHART_PADDING_TEXELS as i32;
     let (interior_w, interior_h) = crate::chart_raster::chart_interior_dims(chart);
+    // One occluder cache per light, walked in texel order: each light sees the
+    // ray sequence its `(light, chart)` layer bake traces, so the cache answers
+    // match and the composite stays bit-for-bit.
+    let last_occluders: Vec<Cell<Option<usize>>> =
+        static_lights.iter().map(|_| Cell::new(None)).collect();
 
     for ty in 0..interior_h {
         for tx in 0..interior_w {
@@ -123,14 +130,23 @@ pub(super) fn bake_face_chart(
 
             let mut irr = Vec3::ZERO;
             let mut weighted_dir = Vec3::ZERO;
-            for light in static_lights {
+            for (light, last_occluder) in static_lights.iter().zip(&last_occluders) {
                 let (irr_contrib, dir_contrib) = light_texel_contribution(
                     light,
                     world_p,
                     surface_normal,
                     seed,
                     area_sample_count,
-                    |from, to| segment_clear(bvh, primitives, geometry, from, to),
+                    |from, to| {
+                        segment_clear_remembering(
+                            bvh,
+                            primitives,
+                            geometry,
+                            from,
+                            to,
+                            last_occluder,
+                        )
+                    },
                 );
                 irr += irr_contrib;
                 weighted_dir += dir_contrib;

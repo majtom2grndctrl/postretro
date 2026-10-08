@@ -2,6 +2,8 @@
 // byte-identical pre-BC6H atlas.
 // See: context/lib/build_pipeline.md (Lightmap id 22)
 
+use std::cell::Cell;
+
 use glam::Vec3;
 use rayon::prelude::*;
 
@@ -16,7 +18,7 @@ use crate::geometry::GeometryResult;
 use crate::lightmap_bake::light_texel_is_covered;
 use crate::lightmap_bake::{
     BlockLayout, Chart, CompositedAtlas, SoftProbes, light_contribution_and_direction,
-    light_texel_contribution_and_visibility_with, segment_clear,
+    light_texel_contribution_and_visibility_with, segment_clear_remembering,
 };
 #[cfg(test)]
 use crate::map_data::LightType;
@@ -41,7 +43,11 @@ pub use cache_keys::{
 ///
 /// v8: soft-visibility seeds key on the chart's frame and texel
 /// (`chart_raster::chart_texel_seed`), not bake-layer coordinates.
-pub const LAYER_FORMAT_VERSION: u32 = 8;
+///
+/// v9: shadow rays test the chart walk's last occluding triangle first, which
+/// also catches a hit the box test misses by rounding where the triangle meets
+/// its box's boundary.
+pub const LAYER_FORMAT_VERSION: u32 = 9;
 
 /// Bump when the composite/dilate/`encode_section` pipeline or
 /// `LightmapSection::to_bytes` serialization changes. Folded into the
@@ -494,6 +500,9 @@ pub(crate) fn bake_light_layer_chart_controlled(
     };
     let mut texels = Vec::with_capacity(capacity);
     let probes = SoftProbes::new(light, area_sample_count);
+    // One chart's texels are walked in order on one thread, so the occluder
+    // cache stays local to this `(light, chart)` unit.
+    let last_occluder = Cell::new(None);
     for_each_light_layer_chart_texel_controlled(atlas, face_idx, control, |sample| {
         if let Some(texel) = bake_sparse_layer_texel(
             sample.idx,
@@ -502,7 +511,9 @@ pub(crate) fn bake_light_layer_chart_controlled(
             sample.surface_normal,
             sample.seed,
             &probes,
-            |from, to| segment_clear(bvh, primitives, geometry, from, to),
+            |from, to| {
+                segment_clear_remembering(bvh, primitives, geometry, from, to, &last_occluder)
+            },
         ) {
             texels.push(texel);
         }

@@ -50,7 +50,7 @@ Crates form a one-way dependency graph: `foundation` and `entities` at the base,
 
 `xtask run` builds the `scripts-build` sidecar, then runs the engine: `cargo run -p xtask -- run [cargo flags...] -- [engine args...]`. A bare `cargo run -p postretro` assumes the sidecar is already built.
 
-**Standard configuration: default `dev` profile with `dev-tools`.** Builds, runs, and targeted tests share that one warm artifact set; any other profile or feature set compiles its own. `dev` keeps incremental builds, `debug_assert!`, and symbols, with workspace crates optimized enough to play-test.
+**Standard configuration: default `dev` profile with `dev-tools`.** Builds, runs, and targeted tests share that one warm artifact set; any other profile or feature set compiles its own. `dev` keeps incremental builds, `debug_assert!`, and line-table debug info (file:line backtraces), with workspace crates optimized enough to play-test. It turns off rustc's implicit thin-local LTO: at opt-level ≥ 1 that pass re-optimizes much of a crate after any codegen edit, and it dominated edit rebuilds of the binary.
 
 ```bash
 cargo run -p xtask -- run --features dev-tools -- content/dev/maps/<map>.prl
@@ -58,7 +58,7 @@ cargo test -p <crate> <filter>   # add --features dev-tools where the crate has 
 cargo run -p postretro-level-compiler -- <in>.map -o <out>.prl   # compile a level (binary: prl-build)
 ```
 
-Other profiles are deliberate exceptions. `--release` (thin LTO, no incremental: an edit rebuild takes a minute or more) is for distribution, perf validation, and preflight's release check. `--profile dev-debug` drops workspace optimization for stepping through code in a debugger.
+Other profiles are deliberate exceptions. `--release` (thin LTO, no incremental: an edit rebuild takes a minute or more) is for distribution, perf validation, and preflight's release check. `--profile dev-debug` drops workspace optimization and restores full debug info for stepping through code in a debugger.
 
 Runtime-only environment variables never trigger a rebuild: `RUST_LOG`, `WGPU_BACKEND`, and the `POSTRETRO_*` diagnostics (§6.4). Distribution builds: `cargo run -p xtask -- dist` and `sdk-dist` (`build_pipeline.md` §Distribution packaging).
 

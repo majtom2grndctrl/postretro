@@ -1,7 +1,7 @@
 // TypeScript trigger-control authoring fixture.
 // See: context/lib/scripting.md §10.7
 
-import { type NamedReactionDescriptor, defineReaction, world } from "postretro";
+import { type NamedReactionDescriptor, defineReaction, getMapEntities } from "postretro";
 
 export function setupLevel(_ctx: unknown): { reactions: NamedReactionDescriptor[] } {
   const reactions: NamedReactionDescriptor[] = [
@@ -17,10 +17,7 @@ export function setupLevel(_ctx: unknown): { reactions: NamedReactionDescriptor[
     }),
   ];
 
-  for (const trigger of world.query({
-    component: "trigger_volume",
-    tag: "fixture_tripwire",
-  })) {
+  for (const trigger of getMapEntities("trigger", { tag: "fixture_tripwire" })) {
     reactions.push(
       defineReaction(`trigger.fixture.armById.${trigger.id}`, {
         sequence: trigger.arm(),

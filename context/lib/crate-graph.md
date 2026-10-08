@@ -26,9 +26,9 @@ Crates ranked by how many workspace crates depend on them directly —
 the compile chokepoints. Changing a public type in a high-ranked crate
 recompiles every dependent.
 
+- **foundation** — 12 dependents (postretro, ai, combat-model, entities, lighting, model, netcode, physics, renderer, script-compiler, scripting-core, sim)
 - **level-format** — 12 dependents (postretro, level-compiler, level-loader, lighting, model, physics, render-cpu, renderer, script-compiler, scripting-core, sim, tool)
 - **entities** — 11 dependents (postretro, ai, combat-model, lighting, netcode, physics, render-cpu, renderer, scripting-core, sim, ui)
-- **foundation** — 11 dependents (postretro, ai, combat-model, entities, lighting, model, netcode, physics, renderer, scripting-core, sim)
 - **level-loader** — 8 dependents (postretro, level-compiler, lighting, physics, render-cpu, renderer, sim, visibility)
 - **render-data** — 7 dependents (postretro, level-loader, lighting, model, render-cpu, renderer, sim)
 - **model** — 6 dependents (postretro, netcode, render-cpu, renderer, sim, tool)

@@ -20,11 +20,21 @@ pub mod common;
 pub mod luau;
 pub mod ts;
 
+/// Types that exist only to describe a hidden primitive's arguments. `worldQuery`
+/// is not author-facing (see below), so its filter types stay out of the typedefs.
+fn is_hidden_type(name: &str) -> bool {
+    matches!(name, "WorldQueryComponent" | "WorldQueryFilter")
+}
+
 pub fn generate_typescript(registry: &PrimitiveRegistry) -> String {
     let mut out = String::new();
     out.push_str(TS_HEADER);
     out.push_str("declare module \"postretro\" {\n");
-    for (i, ty) in registry.iter_types().enumerate() {
+    for (i, ty) in registry
+        .iter_types()
+        .filter(|ty| !is_hidden_type(ty.name))
+        .enumerate()
+    {
         if i > 0 {
             out.push('\n');
         }
@@ -32,7 +42,7 @@ pub fn generate_typescript(registry: &PrimitiveRegistry) -> String {
     }
 
     for p in visible_primitives(registry) {
-        // `defineStore` is special-cased like `worldQuery`: the registry return
+        // `defineStore` is special-cased: the registry return
         // type is a uniform reference map and cannot express each
         // slot's declared value type, which lives only in the runtime `schema`
         // argument (absent at typedef emission). The static SDK lib block
@@ -43,22 +53,15 @@ pub fn generate_typescript(registry: &PrimitiveRegistry) -> String {
         if p.name == "defineStore" {
             continue;
         }
+        // `worldQuery` stays out of the author-facing typedefs: its kindless
+        // component spelling is what `getMapEntities` replaces. The SDK lib
+        // (`sdk/lib/map_entities.{ts,luau}`) declares it privately.
+        if p.name == "worldQuery" {
+            continue;
+        }
         out.push('\n');
         if !p.doc.is_empty() {
             writeln!(&mut out, "  /** {} */", p.doc).unwrap();
-        }
-        // `worldQuery` is special-cased: the generic `JsonValue → ReadonlyArray<Entity>`
-        // mapping undertypes the kind-specific snapshot fields. Its raw
-        // results deliberately remain distinct from the richer `world.query`
-        // SDK handles, which add capability and command-builder methods.
-        // The SDK wrapper lives in `sdk/lib/world.ts` / `world.luau`.
-        if p.name == "worldQuery" {
-            writeln!(
-                &mut out,
-                "  export function worldQuery<T extends WorldQueryComponent>(filter: {{ component: T; tag?: string | null }}): ReadonlyArray<RawEntityForComponent<T>>;",
-            )
-            .unwrap();
-            continue;
         }
         let params = p
             .signature
@@ -96,7 +99,11 @@ pub fn generate_typescript(registry: &PrimitiveRegistry) -> String {
 pub fn generate_luau(registry: &PrimitiveRegistry) -> String {
     let mut out = String::new();
     out.push_str(LUAU_HEADER);
-    for (i, ty) in registry.iter_types().enumerate() {
+    for (i, ty) in registry
+        .iter_types()
+        .filter(|ty| !is_hidden_type(ty.name))
+        .enumerate()
+    {
         if i > 0 {
             out.push('\n');
         }
@@ -104,7 +111,7 @@ pub fn generate_luau(registry: &PrimitiveRegistry) -> String {
     }
 
     for p in visible_primitives(registry) {
-        // `defineStore` is special-cased like `worldQuery`: per-slot value types
+        // `defineStore` is special-cased: per-slot value types
         // live only in the runtime `schema` argument (absent at emission), so a
         // hand-written generic `defineStore<S>` in the static SDK lib block
         // supplies the typed handle map. Skip registry-driven emission (its doc
@@ -112,27 +119,15 @@ pub fn generate_luau(registry: &PrimitiveRegistry) -> String {
         if p.name == "defineStore" {
             continue;
         }
+        // `worldQuery` stays out of the author-facing typedefs: its kindless
+        // component spelling is what `getMapEntities` replaces. The SDK lib
+        // (`sdk/lib/map_entities.{ts,luau}`) declares it privately.
+        if p.name == "worldQuery" {
+            continue;
+        }
         out.push('\n');
         if !p.doc.is_empty() {
             writeln!(&mut out, "--- {}", p.doc).unwrap();
-        }
-        // `worldQuery` is special-cased: its bare primitive returns
-        // component-specific snapshots. `world:query` wraps the light, fog,
-        // mover, and trigger snapshots into richer SDK handles, so its overload set is
-        // intentionally different.
-        if p.name == "worldQuery" {
-            writeln!(
-                &mut out,
-                "declare worldQuery: \
-                 ((filter: {{ component: \"light\", tag: string? }}) -> {{LightEntity}}) \
-                 & ((filter: {{ component: \"emitter\", tag: string? }}) -> {{EmitterEntity}}) \
-                 & ((filter: {{ component: \"fog_volume\", tag: string? }}) -> {{FogVolumeEntity}}) \
-                 & ((filter: {{ component: \"kinematic_mover\", tag: string? }}) -> {{MoverEntity}}) \
-                 & ((filter: {{ component: \"trigger_volume\", tag: string? }}) -> {{TriggerVolumeEntity}}) \
-                 & ((filter: WorldQueryFilter) -> {{Entity}})",
-            )
-            .unwrap();
-            continue;
         }
         let params = p
             .signature

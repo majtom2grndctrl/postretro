@@ -11,7 +11,9 @@ use postretro_entities::{
     DeferredEffectKind, EntityId, EntityRegistry, MAX_PENDING_EFFECTS_PER_ENTITY, PendingEffect,
 };
 
-use crate::scripting_systems::health::ContributorLedgerSnapshot;
+use postretro_scripting_core::reaction_dispatch::ProgressTracker;
+
+use crate::scripting_systems::health::{ContributorLedgerSnapshot, is_depleted};
 
 /// Postretro-side kill-report facts handed out by the deferred-removal seam.
 ///
@@ -323,27 +325,61 @@ fn tick_deferred_effects_inner(registry: &mut EntityRegistry, tick_dt: f32) {
     registry.replace_active_deferred_effects(active);
 }
 
+/// One successful frame-end removal, read before `despawn` dropped the
+/// entity's components.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FrameEndRemoval {
+    pub entity: EntityId,
+    /// Non-player credit the death sweep latched while the entity was down.
+    pub kill_credit: Option<KillReportCredit>,
+    /// Health was depleted (zero or non-finite) at removal. A drain that runs
+    /// after the fixed tick can zero health and despawn in one pass, before any
+    /// sweep latches credit, so depletion without credit is still a kill.
+    pub depleted: bool,
+}
+
+impl FrameEndRemoval {
+    /// Whether this removal is a death rather than a despawn above zero HP.
+    pub fn is_kill(&self) -> bool {
+        self.kill_credit.is_some() || self.depleted
+    }
+
+    /// Route this removal into kill `progress`: a death counts as a kill; a
+    /// despawn above zero HP only leaves every set the entity was in. Returns
+    /// the event names to fire. Every frame-end removal site reports through
+    /// here so the main loop and the headless driver classify identically.
+    pub fn report_to_progress(&self, tracker: &mut ProgressTracker) -> Vec<String> {
+        if self.is_kill() {
+            tracker.on_entity_killed(self.entity)
+        } else {
+            tracker.on_entity_removed(self.entity)
+        }
+    }
+}
+
 /// Reap all terminally marked entities exactly once at the app's frame-end
-/// stage. The callback observes successful removals only and receives the
-/// non-player credit snapshot captured before `despawn` drops the component.
-/// A missing snapshot means this was an above-zero despawn and must not report
-/// a kill.
+/// stage. The callback observes successful removals only, each carrying the
+/// non-player credit snapshot and depletion state captured before `despawn`
+/// drops the components.
 pub fn run_end_of_frame_removal_pass(
     registry: &mut EntityRegistry,
-    mut on_removed: impl FnMut(EntityId, Option<KillReportCredit>),
+    mut on_removed: impl FnMut(FrameEndRemoval),
 ) {
     for target in registry.take_end_of_frame_removals() {
-        let pending_kill_credit = registry
-            .get_component::<HealthComponent>(target)
-            .ok()
-            .and_then(|health| {
-                health
-                    .pending_kill_credit
-                    .as_ref()
-                    .map(KillReportCredit::from)
-            });
+        let health = registry.get_component::<HealthComponent>(target).ok();
+        let kill_credit = health.and_then(|health| {
+            health
+                .pending_kill_credit
+                .as_ref()
+                .map(KillReportCredit::from)
+        });
+        let depleted = health.is_some_and(is_depleted);
         if registry.despawn(target).is_ok() {
-            on_removed(target, pending_kill_credit);
+            on_removed(FrameEndRemoval {
+                entity: target,
+                kill_credit,
+                depleted,
+            });
         }
     }
 }
@@ -527,9 +563,39 @@ mod tests {
         );
 
         let mut removed = Vec::new();
-        run_end_of_frame_removal_pass(&mut registry, |id, credit| removed.push((id, credit)));
+        run_end_of_frame_removal_pass(&mut registry, |removal| {
+            removed.push((removal.entity, removal.kill_credit))
+        });
         assert_eq!(removed, vec![(target, None)]);
         assert!(!registry.exists(target));
+    }
+
+    // Regression: a drain after the fixed tick zeroed health and despawned in
+    // one pass, before any death sweep latched credit, and the removal read as
+    // a despawn above zero HP.
+    #[test]
+    fn drain_zeroed_despawn_reports_a_kill_without_latched_credit() {
+        let mut registry = EntityRegistry::new();
+        let zeroed = health_target(&mut registry, 100.0);
+        let living = health_target(&mut registry, 100.0);
+
+        set_health(&mut registry, zeroed, 0.0, None);
+        despawn(&mut registry, zeroed, None);
+        despawn(&mut registry, living, None);
+        let mut removals = Vec::new();
+        run_end_of_frame_removal_pass(&mut registry, |removal| removals.push(removal));
+
+        let zeroed = removals
+            .iter()
+            .find(|removal| removal.entity == zeroed)
+            .expect("zeroed target removed");
+        assert!(zeroed.kill_credit.is_none(), "no sweep latched credit");
+        assert!(zeroed.is_kill(), "a removal at zero HP is a kill");
+        let living = removals
+            .iter()
+            .find(|removal| removal.entity == living)
+            .expect("living target removed");
+        assert!(!living.is_kill(), "a removal above zero HP is not a kill");
     }
 
     #[test]
@@ -540,7 +606,9 @@ mod tests {
 
         despawn(&mut registry, target, None);
         let mut reports = Vec::new();
-        run_end_of_frame_removal_pass(&mut registry, |id, credit| reports.push((id, credit)));
+        run_end_of_frame_removal_pass(&mut registry, |removal| {
+            reports.push((removal.entity, removal.kill_credit))
+        });
 
         assert_eq!(reports.len(), 1);
         assert_eq!(reports[0].0, target);
@@ -552,7 +620,9 @@ mod tests {
         );
         assert!(!registry.exists(target));
 
-        run_end_of_frame_removal_pass(&mut registry, |id, credit| reports.push((id, credit)));
+        run_end_of_frame_removal_pass(&mut registry, |removal| {
+            reports.push((removal.entity, removal.kill_credit))
+        });
         assert_eq!(
             reports.len(),
             1,
@@ -569,7 +639,9 @@ mod tests {
         despawn(&mut registry, target, Some(10.0));
         tick_deferred_effects(&mut registry, 0.005);
         let mut reports = Vec::new();
-        run_end_of_frame_removal_pass(&mut registry, |id, credit| reports.push((id, credit)));
+        run_end_of_frame_removal_pass(&mut registry, |removal| {
+            reports.push((removal.entity, removal.kill_credit))
+        });
         assert!(registry.exists(target));
         assert!(
             reports.is_empty(),
@@ -577,7 +649,9 @@ mod tests {
         );
 
         tick_deferred_effects(&mut registry, 0.005);
-        run_end_of_frame_removal_pass(&mut registry, |id, credit| reports.push((id, credit)));
+        run_end_of_frame_removal_pass(&mut registry, |removal| {
+            reports.push((removal.entity, removal.kill_credit))
+        });
         assert_eq!(reports.len(), 1);
         assert_eq!(
             reports[0].1.as_ref().unwrap().tags,
@@ -601,7 +675,9 @@ mod tests {
         latch_nonplayer_kill_credit(&mut registry, target, &["second-down"], "weapon.second");
         despawn(&mut registry, target, None);
         let mut reports = Vec::new();
-        run_end_of_frame_removal_pass(&mut registry, |id, credit| reports.push((id, credit)));
+        run_end_of_frame_removal_pass(&mut registry, |removal| {
+            reports.push((removal.entity, removal.kill_credit))
+        });
 
         assert_eq!(reports.len(), 1);
         assert_eq!(
@@ -668,7 +744,7 @@ mod tests {
                 .inert
         );
 
-        run_end_of_frame_removal_pass(&mut registry, |_, _| {});
+        run_end_of_frame_removal_pass(&mut registry, |_| {});
         assert!(!registry.exists(target));
     }
 

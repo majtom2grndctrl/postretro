@@ -335,9 +335,9 @@ fn manifest_flags_emit_resolved_typescript_membership() {
     fs::write(
         &entry,
         r#"
-        import { defineReaction, world } from "postretro";
+        import { defineReaction, getMapEntities } from "postretro";
         export function setupLevel() {
-          const light = world.query({ component: "light", tag: "arena" })[0];
+          const light = getMapEntities("light", { tag: "arena" })[0];
           return { reactions: [
             defineReaction("levelLoad", { sequence: light.pulse({ min: 0.2, max: 1.0, periodMs: 500 }) }),
           ] };
@@ -371,6 +371,86 @@ fn manifest_flags_emit_resolved_typescript_membership() {
     assert_eq!(sidecar.lights[0].index, 4);
     assert_eq!(sidecar.lights[0].start_active, Some(true));
     assert!(sidecar.stubbed_primitives.is_empty());
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+// A level script that indexes trigger and spawner members evaluates through
+// the CLI when the light-table file carries `mapMembers`, and its light
+// records match the light-only script's exactly.
+#[test]
+fn manifest_flags_answer_member_queries_from_the_map_member_table() {
+    let dir = unique_tempdir("manifest-cli-members");
+    let table = dir.join("lights.json");
+    write_light_table(&table);
+    let mut document: serde_json::Value =
+        serde_json::from_slice(&fs::read(&table).expect("read light table")).expect("parse");
+    document["mapMembers"] = serde_json::json!([
+        { "kind": "trigger_volume", "tags": ["plate"], "position": [1, 2, 3] },
+        { "kind": "spawner", "tags": ["closet"], "position": [4, 5, 6], "spawnedTags": ["wave_1"] },
+    ]);
+    fs::write(&table, serde_json::to_vec(&document).unwrap()).expect("write member table");
+
+    let run = |name: &str, source: &str| -> LightMembershipManifest {
+        let entry = dir.join(format!("{name}.ts"));
+        let output = dir.join(format!("{name}.js"));
+        let manifest = dir.join(format!("{name}.membership.json"));
+        fs::write(&entry, source).expect("write source");
+        let result = Command::new(env!("CARGO_BIN_EXE_scripts-build"))
+            .arg("--in")
+            .arg(&entry)
+            .arg("--out")
+            .arg(&output)
+            .arg("--light-table")
+            .arg(&table)
+            .arg("--manifest-out")
+            .arg(&manifest)
+            .output()
+            .expect("run scripts-build manifest mode");
+        assert!(
+            result.status.success(),
+            "scripts-build failed for {name}: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        serde_json::from_slice(&fs::read(&manifest).expect("read manifest"))
+            .expect("parse manifest")
+    };
+
+    let baseline = run(
+        "lights",
+        r#"
+        import { defineReaction, getMapEntities } from "postretro";
+        export function setupLevel() {
+          const light = getMapEntities("light", { tag: "arena" })[0];
+          return { reactions: [
+            defineReaction("levelLoad", { sequence: light.pulse({ min: 0.2, max: 1.0, periodMs: 500 }) }),
+          ] };
+        }
+        "#,
+    );
+    let members = run(
+        "members",
+        r#"
+        import { defineReaction, getMapEntities } from "postretro";
+        export function setupLevel() {
+          const light = getMapEntities("light", { tag: "arena" })[0];
+          const bind = getMapEntities("trigger", { tag: "plate" })[0].on("enter", ["levelLoad"]);
+          const [closet] = getMapEntities("spawner", { tag: "closet" });
+          return {
+            reactions: [
+              defineReaction("levelLoad", { sequence: [
+                ...light.pulse({ min: 0.2, max: 1.0, periodMs: 500 }),
+                ...closet.fire(),
+              ] }),
+            ],
+            triggerEvents: [bind],
+          };
+        }
+        "#,
+    );
+    assert_eq!(baseline.lights.len(), 1);
+    assert_eq!(members.lights, baseline.lights);
+    assert!(members.stubbed_primitives.is_empty());
 
     let _ = fs::remove_dir_all(&dir);
 }

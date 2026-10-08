@@ -1041,6 +1041,7 @@ fn host_armed_trap_pool_spawn_reaches_client() {
             SpawnerComponent {
                 archetype_name: ENEMY_CLASS.to_string(),
                 count: 1,
+                spawned_tags: Vec::new(),
                 resolved: true,
             },
         )
@@ -1062,6 +1063,7 @@ fn host_armed_trap_pool_spawn_reaches_client() {
                 descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                     primitive: "spawnFromSpawner".to_string(),
                     target: None,
+                    kind: None,
                     tag: Some("trap-spawner".to_string()),
                     args: serde_json::json!({}),
                     on_complete: None,

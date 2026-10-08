@@ -716,7 +716,7 @@ evaluated by the engine, with no code of yours running at tick time.
 
 ### The `runtime.*` builders
 
-`runtime` is a prelude global (like `world`). Each builder returns a plain
+`runtime` is a prelude global (like `getMapEntities`). Each builder returns a plain
 `RuntimeValue` node; nest them to compose an expression. The leaves are
 `runtime.read(name)` (a live input, bound by name) and `runtime.constant(value)` (a
 fixed literal).
@@ -1522,29 +1522,189 @@ an impact policy, and the behavior block carries no despawn field.
 
 ## setupLevel
 
-Per-level data scripts export a `setupLevel(ctx)` function to register reactions and other level-scoped state. The engine calls it when the level starts; its effects apply only to that level.
+Per-level data scripts export a `setupLevel(ctx)` function to register reactions and other level-scoped state. The engine calls it when the level starts; its effects apply only to that level. It returns a manifest:
+
+| Key | Holds |
+|-----|-------|
+| `reactions` | Reactions built with `defineReaction`. |
+| `events` | Level-local impact policies. |
+| `crossings` | State-crossing watchers (`onStateCrossing`). |
+| `triggerEvents` | Trigger-volume edges bound with a trigger member's `on` (see [Trigger events](#trigger-events)). |
+| `triggerPools` | Trigger pools (`defineTriggerPool`). |
+
+```typescript
+import { defineReaction, getMapEntities, npcs, players, fire, wait } from "postretro";
+import type { TriggerEventParams } from "postretro";
+
+const resupply = defineReaction("closet.resupply", players().grantAmmo("shells.buck", 8));
+const patchUp = defineReaction((on: TriggerEventParams) => on.activators.grantHealth(25));
+
+export function setupLevel() {
+  const doors = getMapEntities("mover", { tag: "closet_door" });       // members
+  const closets = getMapEntities("spawner", { tag: "closet_spawner" });
+  const closet = npcs({ tag: "closet" });                                 // group
+
+  const reveal = defineReaction("closet.timedReveal", {
+    sequence: [
+      ...wait(800, { interruptible: true }),
+      ...doors.flatMap((m) => m.start()),
+      ...closets.flatMap((s) => s.fire()),
+      closet.update({ aggro: true }), // whoever exists when this step runs
+      closet.damage(5),
+      ...fire(resupply),
+    ],
+  });
+
+  return {
+    reactions: [reveal, patchUp, resupply],
+    triggerEvents: getMapEntities("trigger", { tag: "closet_reveal_plate" })
+      .flatMap((t) => [t.on("enter", [reveal]), t.on("exit", [patchUp])]),
+  };
+}
+```
+
+```lua
+local Postretro = require("postretro")
+
+local resupply = Postretro.defineReaction("closet.resupply",
+  Postretro.players():grantAmmo("shells.buck", 8))
+local patchUp = Postretro.defineReaction(function(on)
+  return on.activators:grantHealth(25)
+end)
+
+function setupLevel(_ctx)
+  local closet = Postretro.npcs({ tag = "closet" })
+  local steps = {}
+  for _, step in Postretro.wait(800, { interruptible = true }) do table.insert(steps, step) end
+  for _, door in Postretro.getMapEntities("mover", { tag = "closet_door" }) do
+    for _, step in door:start() do table.insert(steps, step) end
+  end
+  for _, spawner in Postretro.getMapEntities("spawner", { tag = "closet_spawner" }) do
+    for _, step in spawner:fire() do table.insert(steps, step) end
+  end
+  table.insert(steps, closet:update({ aggro = true }))
+  table.insert(steps, closet:damage(5))
+  for _, step in Postretro.fire(resupply) do table.insert(steps, step) end
+  local reveal = Postretro.defineReaction("closet.timedReveal", { sequence = steps })
+
+  local triggerEvents = {}
+  for _, t in Postretro.getMapEntities("trigger", { tag = "closet_reveal_plate" }) do
+    table.insert(triggerEvents, t:on("enter", { reveal }))
+    table.insert(triggerEvents, t:on("exit", { patchUp }))
+  end
+  return { reactions = { reveal, patchUp, resupply }, triggerEvents = triggerEvents }
+end
+```
 
 ---
 
-## world.query
+## Addressing entities
 
-`world.query(filter)` returns an array of entity handles matching a filter. The concrete handle type depends on the `component` you query — `"light"` returns `LightEntity[]`, `"fog_volume"` returns `FogVolumeHandle[]`, and `"trigger_volume"` returns `TriggerVolumeHandle[]`. Querying an unknown component name throws `InvalidArgument`.
+A script reaches an entity in one of three ways, chosen by whether the set can change while the level runs:
+
+- **Map members** — entities placed in the map: movers, triggers, lights, fog volumes, emitters, spawners. The set is fixed when the level loads, so `getMapEntities` hands you an array to inspect, sort and address one by one.
+- **Groups** — NPCs and players, which come and go. `npcs()` and `players()` are opaque handles the engine resolves each time a command takes effect, so an NPC a spawner releases mid-level is included.
+- **Subject tokens** — the entity a trigger fire is about: `on.activators` and `on.trigger`, inside a trigger-event reaction.
+
+Every command is a method on its target. In TypeScript call it as `target.verb(…)`; in Luau, `target:verb(…)`. Each target carries only the verbs its kind supports — calling a verb a target lacks is a type error in TypeScript and an error in Luau.
+
+| Target | Get it with | Verbs |
+|--------|-------------|-------|
+| mover member | `getMapEntities("mover")` | `start`, `stop`, `reverse`, `goToPathNode`, `setSpinRate`, `setBlockPolicy` |
+| light member | `getMapEntities("light")` | `pulse`, `fade`, `flicker`, `colorShift`, `sweep` |
+| fog member | `getMapEntities("fog")` | `pulse`, `fade`, `flicker`, `pulseSaturation`, `fadeSaturation` |
+| trigger member | `getMapEntities("trigger")` | `arm`, `disarm`, `on` |
+| spawner member | `getMapEntities("spawner")` | `fire` |
+| emitter member | `getMapEntities("emitter")` | none — snapshot fields only |
+| NPC group | `npcs({ tag? })` | `update`, `damage` |
+| player group | `players()` | `damage`, `grantHealth`, `grantAmmo`, `addSlot` |
+| `on.activators` | trigger-event reaction param | `damage`, `grantHealth`, `grantAmmo`, `addSlot` |
+| `on.trigger` | trigger-event reaction param | `arm`, `disarm` |
+
+### getMapEntities
+
+`getMapEntities(kind, filter?)` returns the map-placed members of one kind, in map order. `filter.tag` keeps only members whose `_tags` include that tag exactly. No match returns `[]`.
 
 ```typescript
-world.query({ component: "light" })            // all lights → LightEntity[]
-world.query({ component: "light", tag: "foo" }) // only lights tagged "foo"
+getMapEntities("light");                        // every map light → LightEntityHandle[]
+getMapEntities("light", { tag: "hallway_wave" }); // only lights tagged "hallway_wave"
 ```
 
-Providing a `tag` narrows the result to entities whose tag matches exactly.
+```lua
+Postretro.getMapEntities("light", { tag = "hallway_wave" })
+```
 
-### LightEntity
+| Kind | Member | Snapshot fields |
+|------|--------|-----------------|
+| `"mover"` | `MoverEntityHandle` | `id`, `position`, `tags` |
+| `"trigger"` | `TriggerVolumeHandle` | `id`, `position`, `tags` |
+| `"light"` | `LightEntityHandle` | `id`, `position`, `isDynamic`, `tags`, `component` |
+| `"fog"` | `FogVolumeHandle` | `id`, `position`, `tags`, `component` |
+| `"emitter"` | `EmitterEntity` | `id`, `position`, `tags`, `component` |
+| `"spawner"` | `SpawnerEntityHandle` | `id`, `position`, `tags`, `spawnedTags` |
 
-Returned when `component` is `"light"`. All fields are a snapshot at query time. Handle methods build `setLightAnimation` sequence steps for reactions; they do not mutate the entity during setup.
+- Fields are a snapshot taken when the query runs. Member methods build reaction steps; they never change the entity during setup.
+- Only map-placed entities appear. A light or emitter carried by a spawned NPC, or by a player, never does.
+- Call it in a level's data script, during module evaluation or in `setupLevel`. In a mod start script it raises an error naming the call, because no level exists yet.
+- An unknown kind is an error. NPCs and players are not members; use `npcs()` and `players()`.
+- Member methods return step arrays: spread them into a `sequence` (`...door.start()`), or use one as a whole `sequence`.
+
+### npcs and players
+
+```typescript
+npcs();                       // every NPC
+npcs({ tag: "closet" });      // NPCs carrying "closet"
+players();                    // every player
+```
+
+- `npcs()` reaches brain-driven characters that are not players, friendly or hostile alike. `update(fields)` applies a partial update to each NPC's state; its one field is `aggro: boolean`, and spawned NPCs arrive with it set. `damage(amount)` damages each NPC.
+- `players()` reaches every player bound to a seat. A player whose connection is in a disconnect hold is skipped until they reclaim their seat. In single player it reaches you.
+- A group has no members and no length. `npcs().length` and `npcs().map(…)` are type errors in TypeScript; `#g`, `g[1]` and `g.length` raise in Luau.
+- Each verb returns one descriptor. Use it as a reaction body, or put it — unspread — in a `sequence`, before or after a `wait`. It resolves when its step runs, so `[...wait(800), npcs().damage(5)]` damages the NPCs alive when the wait ends. A group with no matches does nothing.
+- Groups resolve in the same order on every run with the same inputs.
+- **Host only.** Group commands apply on the host and in single player. On a connected client they do nothing and log nothing above debug, because every machine runs the same reactions and the host's results replicate. Member steps in the same reaction still run on the client.
+- **A `wait` tail runs once per activating player.** Each player's fire parks its own instance of the reaction, so on a volume that is not `once`, a group command after a `wait` runs once for every player who fired the trigger.
+
+### Subject tokens
+
+A trigger-event reaction receives `on.activators` (the players that caused the edge) and `on.trigger` (the volume that fired):
+
+```typescript
+const heal = defineReaction((on: TriggerEventParams) => on.activators.grantHealth(25));
+const oneShot = defineReaction((on: TriggerEventParams) => ({
+  sequence: [on.activators.damage(10), on.trigger.disarm()],
+}));
+```
+
+```lua
+local heal = Postretro.defineReaction(function(on) return on.activators:grantHealth(25) end)
+```
+
+Each verb returns one descriptor, usable as a reaction body or, unspread, as a sequence entry. Tokens are legal only before any `wait` — the fire that supplied them is gone once the reaction resumes — so a reaction that uses a token after a `wait` is rejected when the level installs, with an error naming it. Use `players()` after a `wait` instead.
+
+### Spawner members and `spawned_tags`
+
+An `entity_spawner` names an archetype and a count in TrenchBroom. Its member's `fire()` spawns one batch from that spawner only, never from another spawner sharing its tag. Two `fire()` steps spawn two batches.
+
+The spawner's own `_tags` address the spawner. To make its NPCs reachable by tag, list the tags they should carry in its `spawned_tags` key (space-delimited). `npcs({ tag })` then reaches those NPCs beside any map-placed NPCs with the same tag. The spawner's own `_tags` never pass to its spawns. The member's `spawnedTags` field reports the list.
+
+```typescript
+const closets = getMapEntities("spawner", { tag: "closet_spawner" }); // spawned_tags "closet"
+const sequence = [...closets.flatMap((s) => s.fire()), npcs({ tag: "closet" }).update({ aggro: true })];
+```
+
+The NPC step reaches the NPCs those spawners just released.
+
+A `progress` reaction counts kills among the map-placed entities carrying its tag when the level loads, including NPCs placed on the map. NPCs a spawner releases later with that tag neither raise its total nor count toward it. Each `progress` fires at most once per level for its tag and `fire` event: two thresholds naming the same event on the same tag fire it once. An entity despawned without being killed drops out of the total, so despawning the last unkilled member can itself fire the `progress`. A `progress` whose tag no map-placed entity carries logs a warning, since it can never fire.
+
+### LightEntityHandle
+
+Returned by `getMapEntities("light")`.
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `id` | `EntityId` | Stable entity id. Pass to `setLightAnimation` and other primitives. |
-| `transform.position` | `{ x, y, z }` | Light origin in world space at query time. |
+| `id` | `EntityId` | Stable entity id. Pass to `setLightAnimation` steps. |
+| `position` | `{ x, y, z }` | Light origin in world space at query time. |
 | `isDynamic` | `boolean` | Whether the light is runtime-dynamic. Dynamic lights participate in the per-fragment GPU light loop and the shadow-slot scheduler. This is not a color-animation eligibility flag. |
 | `tags` | `string[]` | The entity's tags at query time. Empty array if untagged. |
 | `component` | `LightComponent` | Full component snapshot at query time. See [LightComponent](#lightcomponent) below. |
@@ -1556,12 +1716,8 @@ Tag the hallway lights `"hallway_wave"` in TrenchBroom. The data script queries 
 **TypeScript**
 
 ```typescript
-import { defineReaction, world } from "postretro";
+import { defineReaction, getMapEntities } from "postretro";
 import type { LightAnimation } from "postretro";
-
-const lights = world
-  .query({ component: "light", tag: "hallway_wave" })
-  .sort((a, b) => a.transform.position.x - b.transform.position.x);
 
 const pulse: LightAnimation = {
   periodMs: 10000,
@@ -1573,23 +1729,25 @@ const pulse: LightAnimation = {
   ],
 };
 
-const wave = defineReaction("levelLoad", {
-  sequence: lights.map((light, i) => ({
-    id: light.id,
-    primitive: "setLightAnimation" as const,
-    args: { ...pulse, phase: i / lights.length },
-  })),
-});
+export function setupLevel() {
+  const lights = getMapEntities("light", { tag: "hallway_wave" })
+    .sort((a, b) => a.position.x - b.position.x);
+
+  const wave = defineReaction("levelLoad", {
+    sequence: lights.map((light, i) => ({
+      id: light.id,
+      primitive: "setLightAnimation" as const,
+      args: { ...pulse, phase: i / lights.length },
+    })),
+  });
+  return { reactions: [wave] };
+}
 ```
 
 **Luau**
 
 ```lua
--- `world` is a bare global installed by the engine prelude — no require needed.
-local lights = world:query({ component = "light", tag = "hallway_wave" })
-table.sort(lights, function(a, b)
-  return a.transform.position.x < b.transform.position.x
-end)
+local Postretro = require("postretro")
 
 local pulse = {
   periodMs = 10000,
@@ -1601,15 +1759,22 @@ local pulse = {
   },
 }
 
-local steps = {}
-for i, light in ipairs(lights) do
-  steps[i] = { id = light.id, primitive = "setLightAnimation", args = {
-    periodMs = pulse.periodMs,
-    brightness = pulse.brightness,
-    phase = (i - 1) / #lights,
-  } }
+function setupLevel(_ctx)
+  local lights = Postretro.getMapEntities("light", { tag = "hallway_wave" })
+  table.sort(lights, function(a, b)
+    return a.position.x < b.position.x
+  end)
+
+  local steps = {}
+  for i, light in ipairs(lights) do
+    steps[i] = { id = light.id, primitive = "setLightAnimation", args = {
+      periodMs = pulse.periodMs,
+      brightness = pulse.brightness,
+      phase = (i - 1) / #lights,
+    } }
+  end
+  return { reactions = { Postretro.defineReaction("levelLoad", { sequence = steps }) } }
 end
-local wave = defineReaction("levelLoad", { sequence = steps })
 ```
 
 ### Baked-light membership
@@ -1628,10 +1793,11 @@ remain runtime-only, and no animation curves are baked.
 
 ### TriggerVolumeHandle
 
-Returned when `component` is `"trigger_volume"`. The snapshot exposes only
+Returned by `getMapEntities("trigger")`. The snapshot exposes only
 `id`, `position`, and `tags`; arming state and activation phase remain
-engine-owned. The handle adds command builders for the live entity.
-Switch entities also emit a `trigger_volume` component and are
+engine-owned. The handle adds command builders for the live entity and the
+volume's own event source.
+Switch entities also carry a trigger component and are
 indistinguishable from authored trigger volumes here; separate them with a
 tag convention.
 
@@ -1647,12 +1813,15 @@ at default reach. Don't use `trigger.position` to place switch-attached
 effects; anchor those to the switch's own geometry instead.
 
 ```typescript
-trigger.arm();    // [{ id: trigger.id, primitive: "armTrigger", args: {} }]
-trigger.disarm(); // [{ id: trigger.id, primitive: "disarmTrigger", args: {} }]
+trigger.arm();                   // [{ id: trigger.id, primitive: "armTrigger", args: {} }]
+trigger.disarm();                // [{ id: trigger.id, primitive: "disarmTrigger", args: {} }]
+trigger.on("enter", [reaction]); // { trigger: trigger.id, event: "enter", fire: [...] }
 ```
 
-Use either returned array as a named reaction's `sequence`. In Luau, call the
-same methods with `trigger:arm()` and `trigger:disarm()`:
+Spread `arm()` or `disarm()` into a reaction's `sequence`. Return `on(…)`
+entries from `setupLevel`'s `triggerEvents` (see [Trigger events](#trigger-events)).
+In Luau, call the same methods with `trigger:arm()`, `trigger:disarm()` and
+`trigger:on("enter", { reaction })`:
 
 ```lua
 trigger:arm()    -- { { id = trigger.id, primitive = "armTrigger", args = {} } }
@@ -1661,7 +1830,57 @@ trigger:disarm() -- { { id = trigger.id, primitive = "disarmTrigger", args = {} 
 
 ---
 
-## world.getGravity / world.setGravity
+## Trigger events
+
+A trigger event runs reactions when a player enters or leaves a trigger volume.
+Its reactions receive `TriggerEventParams`: the `on.activators` and
+`on.trigger` [subject tokens](#subject-tokens) and the numeric `on.occupancy`,
+the occupant count at that edge. There are two ways to declare one.
+
+**In a level:** a trigger member's `on`, returned from `setupLevel`'s
+`triggerEvents`. It binds that one volume, and no other volume sharing its tag.
+
+```typescript
+triggerEvents: getMapEntities("trigger", { tag: "reveal_plate" }).map((t) => t.on("enter", [reveal])),
+```
+
+**In the mod manifest:** `defineTriggerEvent({ tag, event, fire, levels? })`,
+returned from `ModManifest.triggerEvents`. No level exists when the mod loads,
+so the rule is keyed by tag: it binds every volume carrying `tag` in each
+level whose catalog tags match `levels` (every level when omitted).
+
+```typescript
+import { defineMod, defineReaction, defineTriggerEvent, players } from "postretro";
+
+const storyBeat = defineReaction("story.beat", players().grantHealth(10));
+
+export default defineMod({
+  name: "My Mod", id: "my-mod", version: "1.0.0",
+  reactions: [storyBeat],
+  triggerEvents: [defineTriggerEvent({ tag: "story_plate", event: "enter", fire: [storyBeat] })],
+});
+```
+
+```lua
+Postretro.defineTriggerEvent({ tag = "story_plate", event = "enter", fire = { storyBeat } })
+```
+
+- Each form is accepted only where it belongs. A tag-keyed entry returned from
+  `setupLevel`, or a volume-keyed one in `ModManifest`, is skipped at load with
+  a warning naming the level script or the manifest; the valid entries beside
+  it still install.
+- On one edge, work runs in this order: the brush's own `on_fire` / `on_exit`
+  reactions, then mod-manifest trigger events, then level trigger events —
+  each in the order you wrote them.
+- A reaction reached through two trigger events on the same volume and edge
+  runs once, with a warning naming both. Running it twice would double its
+  effects and restart any `wait` in it.
+- An interruptible `wait` in a reaction bound with `t.on("enter", …)` is
+  cancelled when a player leaves that volume; no exit registration is needed.
+
+---
+
+## getGravity / setGravity
 
 Read and write the world gravity at runtime. The starting value is set per-map via the `initialGravity` worldspawn KVP in TrenchBroom.
 
@@ -1669,23 +1888,23 @@ Read and write the world gravity at runtime. The starting value is set per-map v
 
 ```typescript
 // TypeScript
-import { world } from "postretro";
+import { getGravity, setGravity } from "postretro";
 
-const g = world.getGravity();   // → -9.81 at level load (from initialGravity KVP)
-world.setGravity(-4.9);         // half gravity — effect is immediate
+const g = getGravity();   // → -9.81 at level load (from initialGravity KVP)
+setGravity(-4.9);         // half gravity — effect is immediate
 ```
 
 ```lua
 -- Luau
-local g = world:getGravity()   -- → -9.81 at level load
-world:setGravity(-4.9)
+local g = Postretro.getGravity()   -- → -9.81 at level load
+Postretro.setGravity(-4.9)
 ```
 
 `setGravity` rejects `NaN` and non-finite values silently (a warning is logged) so a misbehaving script cannot break particle physics. The value persists until the next level load or another `setGravity` call.
 
 **TrenchBroom KVP:** optionally set `initialGravity` (float, m/s²) on the `worldspawn` entity. When absent, prl-build uses standard Earth gravity (`-9.81`). Supplied malformed or non-finite values are compile errors. Example: `"initialGravity" "-9.81"`.
 
-**Particle effect:** `world.setGravity` directly affects particle buoyancy. Particles with `buoyancy < 0` (heavier-than-air) fall faster under stronger gravity; particles with `buoyancy > 0` (lighter-than-air) float less.
+**Particle effect:** `setGravity` directly affects particle buoyancy. Particles with `buoyancy < 0` (heavier-than-air) fall faster under stronger gravity; particles with `buoyancy > 0` (lighter-than-air) float less.
 
 ---
 
@@ -1850,7 +2069,7 @@ local kf = sequence({
 
 ## LightEntity handle methods
 
-Methods on the handle returned by `world.query`. In TypeScript, called as `light.method()`; in Luau, called as `light:method()`.
+Methods on the handle returned by `getMapEntities("light")`. In TypeScript, called as `light.method()`; in Luau, called as `light:method()`.
 
 ### Raw install and clear steps
 
@@ -1866,7 +2085,7 @@ const clear = defineReaction("clearLight", {
 
 ## FogVolumeComponent
 
-Returned in `FogVolumeHandle.component` from `world.query({ component: "fog_volume" })`. All fields are read-only on the snapshot; mutate the live entity by registering a sequenced reaction whose steps invoke the fog reaction primitives below.
+Returned in `FogVolumeHandle.component` from `getMapEntities("fog")`. All fields are read-only on the snapshot; mutate the live entity by registering a sequenced reaction whose steps invoke the fog reaction primitives below.
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -1882,9 +2101,15 @@ Returned in `FogVolumeHandle.component` from `world.query({ component: "fog_volu
 ## Reaction primitives
 
 Reaction primitives run from named reactions built with `defineReaction` and
-returned by `setupLevel`. Each `sequence` step carries `{ id, primitive, args }`.
-The scripting VM is not live at runtime — primitives execute entirely in Rust
-against the entity registry.
+returned by `setupLevel`. You normally build them through a target's methods
+(see [Addressing entities](#addressing-entities)); this section documents what
+each primitive does. A member step carries `{ id, primitive, args }`; a group
+command carries `{ primitive, kind, tag?, args }`. The scripting VM is not live
+at runtime — primitives execute entirely in Rust against the entity registry.
+
+A hand-written descriptor may still name a `tag` and no `kind`. It reaches every
+entity carrying that tag, of any kind, each time the reaction fires. The fog
+primitives below have no typed builder yet, so they are written this way.
 
 The fog reaction primitives are tag-targeted: when the surrounding reaction's `tag` filter resolves to a list of fog-bearing entities, every match receives the update. Entities matched by tag but lacking a `FogVolumeComponent` are skipped with `log::warn!` (typo guard). Empty target sets are a debug-log no-op.
 
@@ -1940,18 +2165,16 @@ Use `setFogParams` when an author wants to change two or more fields atomically 
 ### `applyDamage`
 
 ```typescript
-defineReaction("dummiesCleared", {
-  primitive: "applyDamage",
-  tag: "player",
-  args: { amount: 35 },
-});
+const trap = defineReaction("trap.sprung", npcs({ tag: "pit_dwellers" }).damage(35));
+const shock = defineReaction((on: TriggerEventParams) => on.activators.damage(10));
+const purge = defineReaction("purge", players().damage(20));
 ```
 
-Routes a fixed `amount` of damage through the engine's damage chokepoint for
-every entity that matches the reaction's `tag` and carries a health component.
-Tag-targeted like the fog primitives: the `tag` resolves to a list of entities
-and each match takes the hit. This is the only non-weapon damage producer — use
-it to script scene damage (a trap, a collapsing floor, a retaliation strike).
+`damage(amount)` on an NPC group, the player group or `on.activators` routes a
+fixed `amount` of damage through the engine's damage chokepoint for every
+resolved target that carries a health component. This is the only non-weapon
+damage producer — use it to script scene damage (a trap, a collapsing floor, a
+retaliation strike).
 
 `amount` must be **finite and `>= 0`** (the chokepoint only ever reduces HP;
 healing is out of scope). The handler never despawns. Reaching zero HP does not
@@ -1960,40 +2183,42 @@ player death or non-player kill credit. Authors must arrange an explicit
 lifecycle action, such as `despawn` in an applicable impact policy, or another
 reaction or game-flow action appropriate to the damage source.
 
-Name the reaction (the first `defineReaction` argument) to match its event. A
-`progress` reaction can fire it, or a `trigger_volume` can name it through
-`on_fire` or `on_exit`. When a trigger fires, its top-level consequential steps
-— including `applyDamage` — run in that fixed tick. Presentation, system, and
-lifecycle steps drain app-side afterward. Work reached through `onComplete` is
-retained as a deferred residual and drains through that app-side path on the same
-fire. A `progress` reaction behaves differently: naming one from a trigger does
-**not** fire its target — progress is tracked independently, and its target fires
-only when the kill threshold is reached, however many ticks later that is. The
-canonical progress use is a threshold that fires an event of the same name — see
+A `progress` reaction can fire a damage reaction by name, or a `trigger_volume`
+can name it through `on_fire` or `on_exit`. When a trigger fires, its top-level
+consequential steps — including `applyDamage` — run in that fixed tick.
+Presentation, system, and lifecycle steps drain app-side afterward. Work reached
+through `onComplete` is retained as a deferred residual and drains through that
+app-side path on the same fire. A `progress` reaction behaves differently:
+naming one from a trigger does **not** fire its target — progress is tracked
+independently, and its target fires only when the kill threshold is reached,
+however many ticks later that is. The canonical progress use is a threshold that
+fires an event of the same name — see
 [the combat-demo walkthrough](../content/dev/maps/combat-demo.README.md).
 
 ### `grantHealth` and `grantAmmo`
 
 ```typescript
-import { defineReaction, grantAmmo } from "postretro";
+import { defineReaction, players } from "postretro";
+import type { TriggerEventParams } from "postretro";
 
-const ammoPickup = defineReaction((on) =>
-  grantAmmo(on.activators, "bullets.light", 24),
+const ammoPickup = defineReaction((on: TriggerEventParams) =>
+  on.activators.grantAmmo("bullets.light", 24),
 );
 
-const healStation = defineReaction("healStation", {
-  primitive: "grantHealth",
-  tag: "player",
-  args: { amount: 25 },
-});
+const healStation = defineReaction("healStation", players().grantHealth(25));
 ```
 
-`grantHealth(target, amount)` adds health through the engine's shared resource
-grant chokepoint. `grantAmmo(target, type, amount)` credits the named ammo
-reserve pool through that same chokepoint. Each target is either a tag string
-or the `on.activators` token supplied to a trigger-event reaction. The tag form
-fans out across every current match; the activator form credits the one player
-whose trigger edge fired.
+```lua
+local ammoPickup = Postretro.defineReaction(function(on)
+  return on.activators:grantAmmo("bullets.light", 24)
+end)
+local healStation = Postretro.defineReaction("healStation", Postretro.players():grantHealth(25))
+```
+
+`grantHealth(amount)` adds health through the engine's shared resource grant
+chokepoint. `grantAmmo(type, amount)` credits the named ammo reserve pool
+through that same chokepoint. On `players()` they credit every player once; on
+`on.activators` they credit only the players whose trigger edge fired.
 
 Amounts are finite `f32`-representable numbers declared at load. A negative
 amount is a warn-and-no-op at the chokepoint, never a subtraction path.
@@ -2007,24 +2232,23 @@ source-addressed impact grants run only for in-tick weapon and AI impacts in v1.
 ### `addSlot`
 
 ```typescript
-import { addSlot, defineReaction } from "postretro";
+import { defineReaction } from "postretro";
+import type { TriggerEventParams } from "postretro";
 
 // progression.xp is a writable numeric `perOwner: true` slot.
-const objectiveAward = defineReaction((on) =>
-  addSlot(on.activators, progression.xp, 100),
+const objectiveAward = defineReaction((on: TriggerEventParams) =>
+  on.activators.addSlot(progression.xp, 100),
 );
 ```
 
-`addSlot(target, slot, delta)` adds a finite `delta` to each selected player's
-current slot value on the host. `target` is either a tag string, which selects
-matching entities, or `on.activators` in a trigger-event reaction. The slot
-must be a writable numeric `perOwner: true` slot; global, readonly, and
-non-numeric slots are rejected.
+`addSlot(slot, delta)` on `players()` or `on.activators` adds a finite `delta`
+to each selected player's current slot value on the host. The slot must be a
+writable numeric `perOwner: true` slot; global, readonly, and non-numeric slots
+are rejected.
 
 The addition is per selected owner, so repeated or overlapping awards compose
 additively (subject to the slot's normal range validation). A target set with no
-matches is a no-op. A matched entity without a player seat is skipped with a
-warning; other selected players still receive their additions.
+matches is a no-op.
 
 ### Impact policies
 
@@ -2063,25 +2287,18 @@ The type definitions for this area carry committed `@ts-expect-error` cases, so 
 
 ### `armTrigger` and `disarmTrigger`
 
-These tag-targeted primitives take no arguments. The reaction's `tag` selects
-all matching trigger volumes; matching entities without trigger state are
-skipped. Empty target sets are silent no-ops.
-
 ```typescript
-defineReaction("unlockPads", {
-  primitive: "armTrigger",
-  tag: "security_pad",
-  args: {},
-});
-
-defineReaction("lockPads", {
-  primitive: "disarmTrigger",
-  tag: "security_pad",
-  args: {},
-});
+const pads = getMapEntities("trigger", { tag: "security_pad" });
+const unlockPads = defineReaction("unlockPads", { sequence: pads.flatMap((t) => t.arm()) });
+const lockPads = defineReaction("lockPads", { sequence: pads.flatMap((t) => t.disarm()) });
+const lockBehind = defineReaction((on: TriggerEventParams) => on.trigger.disarm());
 ```
 
-`armTrigger` fully re-arms every target: it enables firing, clears a `once`
+A trigger member's `arm()` / `disarm()` target that volume; `on.trigger.arm()` /
+`on.trigger.disarm()` target the volume whose edge fired. Matching entities
+without trigger state are skipped.
+
+`armTrigger` fully re-arms its target: it enables firing, clears a `once`
 latch, and cancels any running re-arm timer so the next valid enter can fire
 immediately. `disarmTrigger` blocks future enter activations but does not cancel
 an exit already paired with an earlier enter.
@@ -2216,10 +2433,16 @@ export function setupLevel(): LevelManifest {
 | Fog reaction primitive targets an entity lacking `FogVolumeComponent` | Skipped with `log::warn!` (tag-typo guard). |
 | `applyDamage` `amount` is negative or non-finite | The whole dispatch is a `log::warn!` no-op — no target takes damage (healing is out of scope). |
 | `applyDamage` targets an entity lacking a health component | Skipped with `log::warn!` (tag-typo guard); other matched targets still take damage. |
-| `grantHealth` / `grantAmmo` names no non-empty tag or `@activators` target | Rejected with the whole setup manifest while its descriptors load. |
-| `grantHealth` / `grantAmmo` amount is not a finite `f32`-representable JSON number | Rejected with the whole setup manifest while its descriptors load. |
-| `grantAmmo` pool key is malformed | Rejected while the setup descriptor loads using the weapon-resource identifier grammar. |
+| A `grantHealth` / `grantAmmo` / `addSlot` reaction body names not exactly one recipient: a group `kind` (with or without a tag), a non-empty tag, or the `@activators` target | Rejected with its whole manifest while its descriptors load: the setup manifest in a level script, the mod manifest in a mod-global reaction. |
+| `grantHealth` / `grantAmmo` amount, or `addSlot` delta, is not a finite `f32`-representable JSON number | Rejected while its descriptor loads (see below). |
+| `grantAmmo` pool key is malformed | Rejected while its descriptor loads, using the weapon-resource identifier grammar (see below). |
 | A grant recipient lacks the required component | The chokepoint emits one `log::warn!` and skips that recipient; sibling targets still receive their grants. |
+
+The amount and pool-key rules apply to the command whether it is a reaction body or a sequence step, for group and subject-token commands alike. What a failure rejects depends on where the command sits:
+
+- A bad `grantHealth`, `grantAmmo` or `addSlot` **reaction body** rejects its whole manifest: the setup manifest in a level script, the mod manifest in a mod-global reaction.
+- A bad **sequence step** in a level script skips that one reaction, with a warning naming it; the level's other reactions install.
+- In a **mod-global** reaction, any failing step rejects the whole mod manifest.
 
 ---
 

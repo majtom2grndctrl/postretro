@@ -1,7 +1,7 @@
-//! `updateEnemyState` reaction primitive: mutate consequential, authored enemy
+//! `updateNpcState` reaction primitive: mutate consequential, authored NPC
 //! state on Brain-bearing entities. Tag lookup belongs to the caller: named
 //! reactions arrive with Transform-resolved targets, while trigger commands
-//! resolve the live Brain-tag set at fire time.
+//! resolve the live Brain-tag set or `npcs` group at fire time.
 
 use serde::{Deserialize, Serialize};
 
@@ -9,20 +9,20 @@ use postretro_entities::components::brain::BrainComponent;
 use postretro_entities::{EntityId, EntityRegistry};
 use postretro_scripting_core::reaction_registry::{ReactionError, ReactionPrimitiveRegistry};
 
-/// Typed, additive partial for consequential enemy-state updates.
+/// Typed, additive partial for consequential NPC-state updates.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct UpdateEnemyStateArgs {
+pub(crate) struct UpdateNpcStateArgs {
     pub(crate) aggro: Option<bool>,
 }
 
 /// Apply one partial to one Brain. Callers must select Brain-bearing targets;
 /// the defensive missing-component check keeps the shared helper safe if a
 /// target disappears between selection and application.
-pub(crate) fn apply_update_enemy_state_to_brain(
+pub(crate) fn apply_update_npc_state_to_brain(
     registry: &mut EntityRegistry,
     entity: EntityId,
-    args: &UpdateEnemyStateArgs,
+    args: &UpdateNpcStateArgs,
 ) {
     let Ok(mut brain) = registry.get_component::<BrainComponent>(entity).cloned() else {
         return;
@@ -39,11 +39,11 @@ pub(crate) fn apply_update_enemy_state_to_brain(
 
 /// Register the app-drain arm. Its targets were already resolved through the
 /// ordinary Transform query, so retain only Brain-bearing entities here.
-pub(crate) fn register_enemy_state_reaction_primitives(registry: &mut ReactionPrimitiveRegistry) {
-    registry.register("updateEnemyState", |registry, targets, args| {
-        let args: UpdateEnemyStateArgs = serde_json::from_value(args.clone()).map_err(|error| {
+pub(crate) fn register_npc_state_reaction_primitives(registry: &mut ReactionPrimitiveRegistry) {
+    registry.register("updateNpcState", |registry, targets, args| {
+        let args: UpdateNpcStateArgs = serde_json::from_value(args.clone()).map_err(|error| {
             ReactionError::InvalidArgument {
-                reason: format!("updateEnemyState: failed to deserialize args: {error}"),
+                reason: format!("updateNpcState: failed to deserialize args: {error}"),
             }
         })?;
 
@@ -53,11 +53,11 @@ pub(crate) fn register_enemy_state_reaction_primitives(registry: &mut ReactionPr
             .filter(|&entity| registry.get_component::<BrainComponent>(entity).is_ok())
             .collect();
         if brain_targets.is_empty() {
-            log::debug!("[Scripting] updateEnemyState: empty Brain target set, no-op");
+            log::debug!("[Scripting] updateNpcState: empty Brain target set, no-op");
             return Ok(());
         }
         for entity in brain_targets {
-            apply_update_enemy_state_to_brain(registry, entity, &args);
+            apply_update_npc_state_to_brain(registry, entity, &args);
         }
         Ok(())
     });
@@ -70,7 +70,7 @@ mod tests {
 
     #[test]
     fn rejects_unknown_argument_keys() {
-        let error = serde_json::from_value::<UpdateEnemyStateArgs>(serde_json::json!({
+        let error = serde_json::from_value::<UpdateNpcStateArgs>(serde_json::json!({
             "aggression": true
         }))
         .unwrap_err();
@@ -78,10 +78,10 @@ mod tests {
     }
 
     #[test]
-    fn registrar_exposes_enemy_state_primitive() {
+    fn registrar_exposes_npc_state_primitive() {
         let mut reactions = ReactionPrimitiveRegistry::new();
-        register_enemy_state_reaction_primitives(&mut reactions);
-        assert!(reactions.contains("updateEnemyState"));
+        register_npc_state_reaction_primitives(&mut reactions);
+        assert!(reactions.contains("updateNpcState"));
     }
 
     #[test]
@@ -119,21 +119,16 @@ mod tests {
             )
             .unwrap();
         let mut reactions = ReactionPrimitiveRegistry::new();
-        register_enemy_state_reaction_primitives(&mut reactions);
+        register_npc_state_reaction_primitives(&mut reactions);
         let args = serde_json::json!({ "aggro": false });
         assert!(
             reactions
-                .dispatch(
-                    "updateEnemyState",
-                    &mut registry,
-                    &[non_brain, brain],
-                    &args,
-                )
+                .dispatch("updateNpcState", &mut registry, &[non_brain, brain], &args,)
                 .unwrap()
         );
         assert!(
             reactions
-                .dispatch("updateEnemyState", &mut registry, &[brain], &args)
+                .dispatch("updateNpcState", &mut registry, &[brain], &args)
                 .unwrap()
         );
 

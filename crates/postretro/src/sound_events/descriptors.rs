@@ -886,6 +886,7 @@ mod tests {
                 descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                     primitive: "playSound".to_string(),
                     target: None,
+                    kind: None,
                     tag: None,
                     on_complete: None,
                     args: serde_json::json!({ "sound": "sfx/missing_hit" }),

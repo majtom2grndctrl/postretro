@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::data_descriptors::{
     CrossingDescriptor, EntityTypeDescriptor, NamedReaction, TriggerEventDescriptor,
-    TriggerPoolDescriptor,
+    TriggerPoolDescriptor, VolumeTriggerEventDescriptor,
 };
 use postretro_foundation::{ModMapEntry, WeaponPlacementDescriptor};
 
@@ -706,6 +706,9 @@ pub struct DataRegistry {
     /// dynamics). Per-level — cleared on unload with `reactions`. The crossing
     /// detector reads these to know which slots to watch.
     pub crossings: Vec<CrossingDescriptor>,
+    /// Active mod-global, tag-keyed trigger events: the `global_trigger_events`
+    /// whose `levels` selector matches the loaded level, identical duplicates
+    /// collapsed. Level member events are [`Self::volume_trigger_events`].
     pub trigger_events: Vec<TriggerEventDescriptor>,
     trigger_pools: Vec<TriggerPoolDescriptor>,
     /// Engine-global reaction definitions from `ModManifest.reactions`.
@@ -723,7 +726,10 @@ pub struct DataRegistry {
     /// Level-local crossing definitions from `setupLevel()`. Retained for the
     /// same staged-reload recomposition path as [`Self::level_reactions`].
     level_crossings: Vec<CrossingDescriptor>,
-    level_trigger_events: Vec<TriggerEventDescriptor>,
+    /// Level member trigger events (`t.on`) from `setupLevel()`, keyed by
+    /// volume. Never filtered by `levels` — they belong to the level that
+    /// declared them — so the retained list is also the active one.
+    level_trigger_events: Vec<VolumeTriggerEventDescriptor>,
     level_trigger_pools: Vec<TriggerPoolDescriptor>,
     /// Entity-type descriptors. Engine-global — survive level unload.
     /// Populated by the boot caller after `run_mod_init`: it drains the
@@ -774,7 +780,7 @@ impl DataRegistry {
         &mut self,
         reactions: Vec<NamedReaction>,
         crossings: Vec<CrossingDescriptor>,
-        trigger_events: Vec<TriggerEventDescriptor>,
+        trigger_events: Vec<VolumeTriggerEventDescriptor>,
         trigger_pools: Vec<TriggerPoolDescriptor>,
         tags: &[String],
     ) {
@@ -822,18 +828,16 @@ impl DataRegistry {
             .collect();
         crossings.extend(self.level_crossings.iter().cloned());
 
+        // Level member events (`level_trigger_events`) need no composition:
+        // they are keyed by volume and always apply to their own level. The
+        // install-time resolver merges both forms and dedupes resolved
+        // bindings (`sim::trigger_bindings::manifest_events`).
         let mut trigger_events: Vec<TriggerEventDescriptor> = self
             .global_trigger_events
             .iter()
             .filter(|descriptor| Self::levels_match(&descriptor.levels, tags))
             .cloned()
             .collect();
-        trigger_events.extend(
-            self.level_trigger_events
-                .iter()
-                .filter(|descriptor| Self::levels_match(&descriptor.levels, tags))
-                .cloned(),
-        );
         let mut seen = Vec::new();
         trigger_events.retain(|descriptor| {
             if seen.contains(descriptor) {
@@ -1027,6 +1031,12 @@ impl DataRegistry {
         self.global_trigger_pools = pools;
     }
 
+    /// Level member trigger events (`t.on`), in authored order. They bind after
+    /// the active mod-global [`Self::trigger_events`] on a shared edge.
+    pub fn volume_trigger_events(&self) -> &[VolumeTriggerEventDescriptor] {
+        &self.level_trigger_events
+    }
+
     /// Active pools for the installed level, ordered as matching mod globals
     /// followed by level locals after same-tag overrides are applied.
     pub fn trigger_pools(&self) -> &[TriggerPoolDescriptor] {
@@ -1087,6 +1097,7 @@ mod tests {
             descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                 primitive: "moveGeometry".to_string(),
                 target: None,
+                kind: None,
                 tag: Some("reactorChambers".to_string()),
                 on_complete: None,
                 args: serde_json::Value::Object(Default::default()),
@@ -1157,6 +1168,7 @@ mod tests {
                 descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                     primitive: "moveGeometry".to_string(),
                     target: None,
+                    kind: None,
                     tag: Some("reactorChambers".to_string()),
                     on_complete: on_complete.map(str::to_string),
                     args: serde_json::Value::Object(Default::default()),
@@ -1239,7 +1251,13 @@ mod tests {
         assert!(!registry.is_empty());
 
         let mut registry = DataRegistry::new();
-        registry.level_trigger_events.push(trigger_event);
+        registry
+            .level_trigger_events
+            .push(VolumeTriggerEventDescriptor {
+                trigger: crate::registry::EntityId::from_raw(65536),
+                event: trigger_event.event,
+                fire: trigger_event.fire,
+            });
         assert!(!registry.is_empty());
 
         let mut registry = DataRegistry::new();
@@ -1401,6 +1419,7 @@ mod tests {
                 descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                     primitive: "activateGroup".to_string(),
                     target: None,
+                    kind: None,
                     tag: Some("local".to_string()),
                     on_complete: None,
                     args: serde_json::Value::Object(Default::default()),

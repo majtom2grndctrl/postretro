@@ -179,7 +179,7 @@
 "origin" "224 -56 16"
 "angles" "0 180 0"
 "enabled_on_spawn" "false"
-"_tags" "enemy closet_enemies"
+"_tags" "enemy closet"
 }
 // entity 7
 {
@@ -187,7 +187,7 @@
 "origin" "256 8 16"
 "angles" "0 180 0"
 "enabled_on_spawn" "false"
-"_tags" "enemy closet_enemies"
+"_tags" "enemy closet"
 }
 // entity 8
 {
@@ -206,4 +206,18 @@
 "_falloff_range" "8"
 "light" "010"
 "angles" "0 0 0"
+}
+// entity 10
+// Closet spawner: the reveal fires this member after the wait. Its own tag
+// addresses it; spawned_tags makes each NPC it releases join the closet
+// residents, so one npcs group step reaches both. count NPCs fan out along
+// the spawner local +X axis, which this yaw points back toward the doorway.
+{
+"classname" "entity_spawner"
+"origin" "224 -16 16"
+"angles" "0 180 0"
+"archetype" "reference_enemy"
+"count" "2"
+"_tags" "closet_spawner"
+"spawned_tags" "closet"
 }

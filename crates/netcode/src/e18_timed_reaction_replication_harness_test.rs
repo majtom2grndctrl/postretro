@@ -145,6 +145,7 @@ fn primitive(
         descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
             primitive: primitive.to_string(),
             target: None,
+            kind: None,
             tag: tag.map(str::to_string),
             on_complete: None,
             args,

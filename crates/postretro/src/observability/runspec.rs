@@ -276,14 +276,14 @@ pub(crate) fn parse_runspec(json: &str) -> Result<RunSpec, RunSpecError> {
 fn validate_commands(commands: &[CommandEntry]) -> Result<(), RunSpecError> {
     let mut previous_tick: Option<u32> = None;
     for (index, entry) in commands.iter().enumerate() {
-        if let Some(previous) = previous_tick {
-            if entry.tick <= previous {
-                return Err(RunSpecError::UnorderedCommandTick {
-                    index,
-                    tick: entry.tick,
-                    previous,
-                });
-            }
+        if let Some(previous) = previous_tick
+            && entry.tick <= previous
+        {
+            return Err(RunSpecError::UnorderedCommandTick {
+                index,
+                tick: entry.tick,
+                previous,
+            });
         }
         previous_tick = Some(entry.tick);
 
@@ -297,10 +297,10 @@ fn validate_commands(commands: &[CommandEntry]) -> Result<(), RunSpecError> {
             return Err(RunSpecError::WishDirOutOfRange { index, x, y });
         }
 
-        if let Some(aim) = &entry.aim {
-            if aim.origin.iter().any(|c| !c.is_finite()) {
-                return Err(RunSpecError::NonFiniteAimOrigin { index });
-            }
+        if let Some(aim) = &entry.aim
+            && aim.origin.iter().any(|c| !c.is_finite())
+        {
+            return Err(RunSpecError::NonFiniteAimOrigin { index });
         }
     }
     Ok(())

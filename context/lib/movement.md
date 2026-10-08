@@ -27,7 +27,7 @@ Authors tune and compose movement through descriptor data — never per-tick imp
 
 States live natively in Rust. Authors tune enabled native states through descriptor data. They do **not** write per-tick movement callbacks.
 
-**Why.** Movement runs every tick in the fixed game-logic step (`entity_model.md` §5, update order 1, before camera follow). Driving state logic through QuickJS/Luau per tick would add FFI cost and determinism risk on the hottest path. It also holds the standing invariant that movement is engine-internal — scripts cannot read or write the movement component through `worldQuery` (`entity_model.md` §7b).
+**Why.** Movement runs every tick in the fixed game-logic step (`entity_model.md` §5, update order 1, before camera follow). Driving state logic through QuickJS/Luau per tick would add FFI cost and determinism risk on the hottest path. It also holds the standing invariant that movement is engine-internal — no script surface reads or writes the movement component (`entity_model.md` §7b).
 
 ### The shape of the surface
 

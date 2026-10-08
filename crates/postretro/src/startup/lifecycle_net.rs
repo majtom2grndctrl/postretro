@@ -152,6 +152,7 @@ impl App {
     /// | progress tracker, death-event carryover, world presentation intake/pool/fact tracking, active wieldable, client weapon prediction state, camera pose | |
     /// | streaming sessions (SH and lightmap), the level's read issuer and workers | |
     pub(crate) fn unload_level(&mut self) {
+        let unload_started = std::time::Instant::now();
         self.cpu_timer.level_changed();
         self.clear_net_level_parity();
         // `net_endpoint` and `audio` are session-owned; reset/release them through
@@ -234,6 +235,12 @@ impl App {
         self.script_time = 0.0;
         self.anim_time = 0.0;
         self.boot_state = BootState::Frontend;
+        // Unload runs before `begin_level_load` resets `level_timings`, so
+        // line C never carries it; this line is its only record.
+        log::info!(
+            "[Startup] unload_level={:.1}ms",
+            unload_started.elapsed().as_secs_f64() * 1000.0
+        );
     }
 
     /// Forget the installed level on a still-live endpoint. Both unload and

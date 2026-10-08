@@ -23,7 +23,7 @@ A requested capability, raised by the owner while drafting `E16--player-events`.
   - `players()` covers every player pawn bound to a seat: it skips a pawn whose seat is in a disconnect hold, and in single player it reaches the local pawn. This matches `E16--player-events`, where a held player is unobserved.
   - A group resolves on the machine draining the command, against its own registry, in an order that is the same for the same inputs.
   - This keeps `plans/done/E18--enemy-group-handle`'s fire-time model and renames it: `enemies` becomes `npcs`, and `updateEnemyState` becomes `updateNpcState`, wire included. Hostility belongs in a future filter, not a kind name.
-- **A spawned NPC carries its spawner placement's tags, as if placed there.** A closet's output is then reachable by the same `npcs({ tag })` as its map-placed residents. `progress` counts kills only among the entities carrying its tag at install, which keeps its existing meaning: total captured at load, later spawns neither raise it nor count. This reverses the untagged runtime spawns of `plans/done/E18--spawner-and-closet-containment`, whose reason was protecting `progress` totals; membership now does that.
+- **A spawned NPC carries the tags its spawner names in `spawned_tags`; a spawner's own `_tags` never pass to its spawns.** A closet's output is then reachable by the same `npcs({ tag })` as its map-placed residents, while the spawner keeps its own addressing tag. Keeping the two apart means a `progress` over the NPCs' tag never counts the spawner, which cannot die. `progress` counts kills only among the entities carrying its tag at install, which keeps its existing meaning: total captured at load, later spawns neither raise it nor count. This reverses the untagged runtime spawns of `plans/done/E18--spawner-and-closet-containment`, whose reason was protecting `progress` totals; membership now does that. (Owner amendment, 2026-10-07: replaced spawner-tag inheritance with `spawned_tags`.)
 - **Every SDK command is a method on its target, following `impact.source.grantAmmo(…)`.** The free target-taking verbs `damage`, `grantHealth`, `grantAmmo`, `addSlot`, `armTrigger` and `disarmTrigger` retire, along with plain tag-string targets, with no shims. Reference content migrates where its hand-written target now has a verb: `applyDamage` on players. Fixtures that exercise the raw wire path stay raw, such as trigger-fanout-fixture's tag arming. Each target exposes exactly the verbs its kind supports (Boundary inventory). `players()` takes over the multi-player grant that `plans/done/E16--resource-grant-chokepoint` made tag-only.
 - **A group command is a legal sequence entry, resolved when its step runs.** This reverses `plans/done/E18--timed-reaction-steps`' rule that id-keyed and tag-keyed steps cannot share a step list. A subject-token command is legal only before any `wait`. After one, E18's install check still drops the reaction, because the fire context does not survive the wait. Steps after a `wait` run on the host only, including member steps over map kinds, so a client never sees them.
 - **Trigger events.**
@@ -57,7 +57,7 @@ const resupply = defineReaction("closet.resupply", players().grantAmmo("shells.b
 
 export function setupLevel() {
   const door = getMapEntities("mover", { tag: "closet_door" });              // members, fixed at install
-  const closets = getMapEntities("spawner", { tag: "closet" });
+  const closets = getMapEntities("spawner", { tag: "closet_spawner" });    // spawned_tags "closet"
   const plate = getMapEntities("trigger", { tag: "closet_reveal_plate" });
   const alarmLights = getMapEntities("light", { tag: "closet_alarm" })
     .sort((a, b) => a.position.x - b.position.x);                            // inspect in JS
@@ -110,7 +110,7 @@ Luau mirrors it with colon calls: `Postretro.getMapEntities("mover", { tag = "cl
 - [ ] During a disconnect hold, `players()` skips that player's pawn for every verb, and reaches it again after reclaim. In single player, `players()` reaches the local pawn.
 
 **Spawned NPCs**
-- [ ] An NPC spawned by a spawner tagged `x` carries `x`, and `npcs({ tag: "x" })` reaches it. A spawner with no tags spawns untagged NPCs.
+- [ ] An NPC spawned by a spawner whose `spawned_tags` include `x` carries `x`, and `npcs({ tag: "x" })` reaches it. A spawner tagged `x` with no `spawned_tags` spawns untagged NPCs.
 - [ ] A `progress` keyed by `x`, with N entities tagged `x` at install, fires at its threshold over those N only. Kills of NPCs spawned later carrying `x` neither count nor raise the total.
 - [ ] Each of these fails to compile in TS and raises an error naming the call in Luau: `.length` or `.map` on a group, `damage("boss", 10)`, and a verb the kind lacks, such as `npcs().fire()`. In Luau, `#group`, `group[1]` and `group.length` raise an error naming the call; none returns 0 or nil.
 
@@ -141,7 +141,7 @@ Luau mirrors it with colon calls: `Postretro.getMapEntities("mover", { tag = "cl
 - [ ] Grep and diff gate: `WIRE_VERSION` is unchanged, and `NetworkId` appears in no scripting crate, no `sdk/` file and no generated typedef.
 
 **Surface**
-- [ ] The Scripting surface example runs as a `content/dev` script replacing closet-reveal. It runs on a map whose closet NPCs and closet spawner carry `closet`. After the wait lands:
+- [ ] The Scripting surface example runs as a `content/dev` script replacing closet-reveal. It runs on a map whose closet NPCs carry `closet` and whose closet spawner names `closet` in `spawned_tags`, its own tag differing. After the wait lands:
   - the map-placed closet NPCs and the NPCs the spawner released are aggroed and damaged;
   - the spawner has spawned its count;
   - every player has received the ammo.
@@ -172,7 +172,7 @@ Luau mirrors it with colon calls: `Postretro.getMapEntities("mover", { tag = "cl
 - **Spawner member.**
   - `fire()` becomes a sequenced id step that calls `spawn_from_spawner_targets` with the one id. `SpawnContext` gating is unchanged.
   - Today an id-targeted spawn in a trigger's tick warns and skips (`trigger_commands.rs`), so the bound path needs an id arm.
-  - The spawn path in `spawner.rs` already builds a synthetic map entity per NPC with empty tags; it copies the spawner's tags instead.
+  - The spawn path in `spawner.rs` already builds a synthetic map entity per NPC with empty tags; it copies the spawner's `spawned_tags` instead.
   - `spawner` needs a `worldQuery` arm and snapshot shape (`entity_world_primitives.rs`, `WORLD_QUERY_COMPONENTS` in `light_membership.rs`).
 - **Progress.** The progress tracker captures the id set carrying its tag at install, and counts kills by membership in that set rather than by tag.
 - **Raising outside a level.** Primitive scope is advisory today (`scripting.md` §3), so `getMapEntities` needs its own data-context check.
@@ -199,6 +199,7 @@ Luau mirrors it with colon calls: `Postretro.getMapEntities("mover", { tag = "cl
 | Map kinds | component kinds | n/a | `mover`, `trigger`, `light`, `fog`, `emitter`, `spawner` | same | n/a |
 | Groups | tag target with kind, on primitive descriptors and as a sequence target | `kind: "npc" \| "player"`, `tag?` | `npcs({ tag? })`, `players()` | `Postretro.npcs(…)`, `Postretro.players()` | n/a |
 | NPC state primitive | `updateNpcState` handler | `"updateNpcState"` (was `"updateEnemyState"`) | `npcs(…).update(fields)` | `:update(fields)` | n/a |
+| Spawned-NPC tags | spawner placement field copied onto each spawn | n/a | spawner snapshot field | same | `spawned_tags` (space-delimited) on `entity_spawner` |
 | Spawner member fire | sequenced spawner step | `{ id, primitive: "spawnFromSpawner" }` | `s.fire()` | `s:fire()` | n/a |
 | Trigger events | trigger-event descriptor, keyed by volume or tag | `triggerEvents[]`: `{ trigger, event, fire }` in a level; `{ tag, event, fire, levels? }` in the mod | `t.on(event, fire)`; `defineTriggerEvent({ tag, event, fire, levels? })` | `t:on(…)`; `Postretro.defineTriggerEvent({ … })` | n/a |
 | Gravity | existing primitives | n/a | `getGravity()`, `setGravity(v)` | same | n/a |

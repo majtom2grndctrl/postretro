@@ -1,6 +1,6 @@
 --!strict
 -- Light entity vocabulary: the `LightEntityHandle` returned by
--- `world:query({ component = "light" })`. The handle composes the
+-- `getMapEntities("light")`. The handle composes the
 -- generated `LightEntity` snapshot with capability methods (`pulse`,
 -- `fade`, `flicker`, `colorShift`, `sweep`) that return
 -- `{SetLightAnimationStep}` arrays suitable for splicing into a
@@ -8,8 +8,8 @@
 --
 -- `wrapLightEntity` is included in the returned table; the Luau prelude
 -- evaluator (`luau.rs`) extracts it and installs it as a temporary
--- global before `world.luau` evaluates. It is nil'd out by the prelude
--- after `world.luau` has been evaluated. No other fields from this
+-- global before `map_entities.luau` evaluates. It is nil'd out by the
+-- prelude after `map_entities.luau` has been evaluated. No other fields from this
 -- module are promoted to bare globals — the old free constructors
 -- (`flicker`, `pulse`, `colorShift`, `sweep`) are now handle methods.
 --
@@ -19,7 +19,7 @@
 -- shape), `Vec3`, and `SetLightAnimationStep` are provided ambiently by
 -- the generated `sdk/types/postretro.d.luau` definitions file.
 
---- Typed handle returned by `world:query` for a light entity. Carries
+--- Light member returned by `getMapEntities("light")`. Carries
 --- the query-time snapshot fields plus capability methods called with
 --- `:` (e.g. `light:pulse({ min = 0.2, max = 1.0, periodMs = 1500 })`).
 export type LightEntityHandle = {

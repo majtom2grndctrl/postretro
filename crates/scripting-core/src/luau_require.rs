@@ -405,7 +405,7 @@ mod tests {
                   UI.ui.createLocalState = nil
                 end)
                 local rootNestedWriteOk = pcall(function()
-                  root.world.extra = true
+                  root.runtime.extra = true
                 end)
 
                 return
@@ -425,22 +425,18 @@ mod tests {
             &root,
             &[
                 "activation",
-                "world",
                 "runtime",
+                "getMapEntities",
+                "getGravity",
+                "setGravity",
                 "getGameState",
                 "timeline",
                 "sequence",
                 "defineReaction",
                 "defineImpactEvent",
-                "onTriggerEvent",
-                "damage",
-                "grantHealth",
-                "grantAmmo",
-                "addSlot",
-                "enemies",
-                "spawner",
-                "armTrigger",
-                "disarmTrigger",
+                "defineTriggerEvent",
+                "npcs",
+                "players",
                 "wait",
                 "fire",
                 "scopeReactions",

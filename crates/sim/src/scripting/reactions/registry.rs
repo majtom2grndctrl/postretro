@@ -9,8 +9,8 @@ pub fn register_emitter_reaction_primitives(registry: &mut ReactionPrimitiveRegi
     crate::health::reactions::register_health_reaction_primitives(registry);
 }
 
-pub fn register_enemy_state_reaction_primitives(registry: &mut ReactionPrimitiveRegistry) {
-    crate::scripting::reactions::enemy_state::register_enemy_state_reaction_primitives(registry);
+pub fn register_npc_state_reaction_primitives(registry: &mut ReactionPrimitiveRegistry) {
+    crate::scripting::reactions::npc_state::register_npc_state_reaction_primitives(registry);
 }
 
 pub fn register_grant_reactions(registry: &mut ReactionPrimitiveRegistry) {
@@ -22,6 +22,7 @@ pub use crate::fx::fog_reactions::{
 };
 
 pub use crate::mover_commands::register_sequenced_mover_primitives;
+pub use crate::spawner::register_sequenced_spawner_primitives;
 pub use crate::trigger_system::register_sequenced_trigger_primitives;
 
 pub fn register_spawner_reaction_primitives(
@@ -90,10 +91,10 @@ mod tests {
     }
 
     #[test]
-    fn enemy_state_registrar_exposes_update_enemy_state() {
+    fn npc_state_registrar_exposes_update_npc_state() {
         let mut r = ReactionPrimitiveRegistry::new();
-        register_enemy_state_reaction_primitives(&mut r);
-        assert!(r.contains("updateEnemyState"));
+        register_npc_state_reaction_primitives(&mut r);
+        assert!(r.contains("updateNpcState"));
     }
 
     #[test]

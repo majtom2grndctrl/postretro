@@ -7,6 +7,8 @@ use std::time::{Duration, Instant};
 
 pub(crate) mod app_dirs;
 pub(crate) mod audio_profile;
+#[cfg(test)]
+mod closet_reveal_surface_tests;
 pub(crate) mod first_launch_hold;
 pub(crate) mod lifecycle;
 pub(crate) mod loading_screen;
@@ -227,10 +229,18 @@ pub(crate) fn boot_allows_reload_drain(logo_frame_shown: bool) -> bool {
 }
 
 /// Named stage timings for the three startup log lines (engine boot, mod init, level load).
-/// The main thread splices worker-thread entries between `worker_dispatch` and
-/// `worker_delivered` after delivery to preserve chronological order.
+///
+/// `entries` are disjoint, consecutive stages: each is the time since the
+/// previous mark, so they add up to the elapsed total. A stage measured on
+/// another thread that ran *inside* one of those intervals (the level worker's
+/// `prl_parse` inside `worker_delivered`) is attached to the enclosing stage
+/// with [`record_containing`](Self::record_containing) instead of being
+/// recorded as an entry of its own. The summary prints it in parentheses after
+/// that stage, so a reader summing the top-level numbers never counts it twice.
 pub(crate) struct StartupTimings {
     pub(crate) entries: Vec<(&'static str, Duration)>,
+    /// `(index into entries, stages measured inside that entry)`.
+    contained: Vec<(usize, Vec<(&'static str, Duration)>)>,
     last: Instant,
 }
 
@@ -238,6 +248,7 @@ impl StartupTimings {
     pub(crate) fn new() -> Self {
         Self {
             entries: Vec::new(),
+            contained: Vec::new(),
             last: Instant::now(),
         }
     }
@@ -249,16 +260,38 @@ impl StartupTimings {
         self.last = now;
     }
 
+    /// [`record`](Self::record) `stage`, and attach `inside` (stages measured
+    /// elsewhere during the same interval, already in chronological order) to
+    /// it. They are shown with the stage, not added to the entries.
+    pub(crate) fn record_containing(
+        &mut self,
+        stage: &'static str,
+        inside: Vec<(&'static str, Duration)>,
+    ) {
+        self.record(stage);
+        if !inside.is_empty() {
+            self.contained.push((self.entries.len() - 1, inside));
+        }
+    }
+
     pub(crate) fn summary(&self) -> String {
+        let ms = |dur: &Duration| dur.as_secs_f64() * 1000.0;
         let mut parts = String::new();
-        let mut first = true;
-        for (stage, dur) in &self.entries {
-            if !first {
+        for (index, (stage, dur)) in self.entries.iter().enumerate() {
+            if index > 0 {
                 parts.push_str(", ");
             }
-            first = false;
-            let ms = dur.as_secs_f64() * 1000.0;
-            let _ = write!(&mut parts, "{stage}={ms:.1}ms"); // write! to String is infallible
+            let _ = write!(&mut parts, "{stage}={:.1}ms", ms(dur)); // write! to String is infallible
+            if let Some((_, inside)) = self.contained.iter().find(|(at, _)| *at == index) {
+                parts.push_str(" (incl. ");
+                for (n, (inner, inner_dur)) in inside.iter().enumerate() {
+                    if n > 0 {
+                        parts.push_str(", ");
+                    }
+                    let _ = write!(&mut parts, "{inner}={:.1}ms", ms(inner_dur));
+                }
+                parts.push(')');
+            }
         }
         if parts.is_empty() {
             String::from("[Startup]")
@@ -534,10 +567,15 @@ mod tests {
     }
 
     #[test]
-    fn worker_entries_splice_preserves_chronological_order() {
+    fn contained_worker_stages_print_after_their_stage_in_order() {
         let mut t = StartupTimings::new();
         t.record("worker_dispatch");
-        t.record("worker_delivered");
+        let worker_entries: Vec<(&'static str, Duration)> = vec![
+            ("prl_parse", Duration::from_millis(10)),
+            ("texture_decode", Duration::from_millis(20)),
+            ("uv_normalize", Duration::from_millis(5)),
+        ];
+        t.record_containing("worker_delivered", worker_entries);
 
         let delivered_idx = t
             .entries
@@ -546,27 +584,56 @@ mod tests {
             .expect("worker_delivered must be present");
         assert_eq!(delivered_idx, 1);
 
-        let worker_entries: Vec<(&'static str, Duration)> = vec![
-            ("prl_parse", Duration::from_millis(10)),
-            ("texture_decode", Duration::from_millis(20)),
-            ("uv_normalize", Duration::from_millis(5)),
-        ];
-        for (i, entry) in worker_entries.into_iter().enumerate() {
-            t.entries.insert(delivered_idx + i, entry);
-        }
+        let summary = t.summary();
+        let positions: Vec<usize> = [
+            "worker_dispatch=",
+            "worker_delivered=",
+            "prl_parse=10.0ms",
+            "texture_decode=20.0ms",
+            "uv_normalize=5.0ms",
+        ]
+        .iter()
+        .map(|name| {
+            summary
+                .find(name)
+                .unwrap_or_else(|| panic!("{name} missing from {summary}"))
+        })
+        .collect();
+        assert!(
+            positions.windows(2).all(|pair| pair[0] < pair[1]),
+            "dispatch, then delivered, then the worker stages it contains, in order: {summary}"
+        );
+    }
+
+    #[test]
+    fn contained_stages_are_shown_with_their_stage_and_never_enter_the_entries() {
+        let mut t = StartupTimings::new();
+        t.record("worker_dispatch");
+        t.record_containing(
+            "worker_delivered",
+            vec![("prl_parse", Duration::from_millis(10))],
+        );
+        t.record("install_deferral");
 
         let names: Vec<&str> = t.entries.iter().map(|(s, _)| *s).collect();
         assert_eq!(
             names,
-            &[
-                "worker_dispatch",
-                "prl_parse",
-                "texture_decode",
-                "uv_normalize",
-                "worker_delivered",
-            ],
-            "splice must produce chronological order"
+            ["worker_dispatch", "worker_delivered", "install_deferral"],
+            "the contained stage is not a second entry, so entries sum to the elapsed total",
         );
+        let summary = t.summary();
+        assert!(
+            summary.contains("worker_delivered=")
+                && summary.contains(" (incl. prl_parse=10.0ms), install_deferral="),
+            "both numbers stay in the line, the contained one inside its stage: {summary}"
+        );
+    }
+
+    #[test]
+    fn record_containing_with_nothing_inside_prints_like_record() {
+        let mut t = StartupTimings::new();
+        t.record_containing("worker_delivered", Vec::new());
+        assert!(!t.summary().contains("incl."), "{}", t.summary());
     }
 
     // --- Boot-phase classifier (suspend/resume contract) ---

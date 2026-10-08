@@ -51,7 +51,12 @@ fn sdk_lib_block_is_present_in_full_outputs() {
     let ts = generate_typescript(&r);
     let luau = generate_luau(&r);
     for name in [
-        "world",
+        "getMapEntities",
+        "getGravity",
+        "setGravity",
+        "npcs",
+        "players",
+        "defineTriggerEvent",
         "timeline",
         "sequence",
         "AnimatableScalar",
@@ -59,7 +64,9 @@ fn sdk_lib_block_is_present_in_full_outputs() {
         "LightEntityHandle",
         "FogVolumeHandle",
         "TriggerVolumeHandle",
-        "SpawnerHandle",
+        "SpawnerEntityHandle",
+        "NpcGroup",
+        "PlayerGroup",
     ] {
         assert!(ts.contains(name), "ts missing sdk-lib symbol {name}");
         assert!(luau.contains(name), "luau missing sdk-lib symbol {name}");
@@ -83,13 +90,26 @@ fn day_one_primitives_all_appear_in_both_outputs() {
     register_all(&mut r, ScriptCtx::new());
     let ts = generate_typescript(&r);
     let luau = generate_luau(&r);
-    for name in ["entityExists", "worldQuery"] {
-        assert!(ts.contains(name), "ts missing primitive {name}:\n{ts}");
-        assert!(
-            luau.contains(name),
-            "luau missing primitive {name}:\n{luau}"
-        );
-    }
+    // `worldQuery` is hidden from the typedefs (not author-facing), so only
+    // `entityExists` is checked here.
+    assert!(
+        ts.contains("entityExists"),
+        "ts missing primitive entityExists:\n{ts}"
+    );
+    assert!(
+        luau.contains("entityExists"),
+        "luau missing primitive entityExists:\n{luau}"
+    );
+    // `worldQuery` is hidden from author typedefs; `getMapEntities` is the
+    // author-facing spelling.
+    assert!(
+        !ts.contains("worldQuery"),
+        "ts must not expose the hidden `worldQuery` primitive:\n{ts}"
+    );
+    assert!(
+        !luau.contains("worldQuery"),
+        "luau must not expose the hidden `worldQuery` primitive:\n{luau}"
+    );
     // `registerEntity` was removed in favor of `ModManifest.entities`
     // return field; it must not appear as a primitive declaration.
     for line in ts.lines() {

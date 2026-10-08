@@ -389,11 +389,6 @@ fn build_slider(
         .expect("taffy slider composition creation must succeed")
 }
 
-/// Build a passive horizontal `bar` leaf. Carries an explicit
-/// style size (a bar has no content to measure) and a `NodeContext::Bar` draw
-/// payload. Its `fill`/`background` color tokens resolve against the theme at
-/// build time; `style_ranges`' band colors pre-resolve too (theme-free draw walk),
-/// gated on the bind precondition like text/panel styleRanges.
 /// Pin each authored image axis so layout treats it as definite, like a bar's
 /// size. An unpinned axis stays auto and comes from the measure seam.
 fn image_style(width: Option<f32>, height: Option<f32>) -> Style {
@@ -406,6 +401,11 @@ fn image_style(width: Option<f32>, height: Option<f32>) -> Style {
     }
 }
 
+/// Build a passive horizontal `bar` leaf. Carries an explicit
+/// style size (a bar has no content to measure) and a `NodeContext::Bar` draw
+/// payload. Its `fill`/`background` color tokens resolve against the theme at
+/// build time; `style_ranges`' band colors pre-resolve too (theme-free draw walk),
+/// gated on the bind precondition like text/panel styleRanges.
 fn build_bar(
     taffy: &mut TaffyTree<NodeContext>,
     bar: &super::super::descriptor::BarWidget,

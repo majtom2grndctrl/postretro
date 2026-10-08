@@ -360,10 +360,19 @@ fn gameplay_ui_records_into_its_layer_before_the_sole_swapchain_resolve() {
 // AC: capture entries pin divisor 1 before recording any scene pass.
 #[test]
 fn capture_entries_commit_native_extents_before_recording() {
-    let capture = include_str!("renderer_capture.rs");
-    for entry in [
-        "pub fn capture_measurement_frame_indirect(",
-        "pub fn capture_frame_indirect(",
+    for (capture, entry) in [
+        (
+            include_str!("renderer_capture.rs"),
+            "pub fn capture_measurement_frame_indirect(",
+        ),
+        (
+            include_str!("renderer_capture.rs"),
+            "pub fn capture_frame_indirect(",
+        ),
+        (
+            include_str!("renderer_world_less_capture.rs"),
+            "pub fn capture_world_less_frame(",
+        ),
     ] {
         let start = capture.find(entry).expect("capture entry");
         let pin = start

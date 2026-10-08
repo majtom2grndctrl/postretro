@@ -137,19 +137,18 @@ impl App {
         let images = &mut session.mod_ui_images;
         if !images.engine_loaded {
             images.engine_loaded = true;
-            match crate::render::splash::load_splash(
+            let registered = crate::render::splash::load_splash(
                 &crate::startup::SplashSource::Base,
                 &self.core_root,
-            ) {
-                Ok(logo) => renderer.register_ui_image(
-                    SPLASH_LOGO_IMAGE,
-                    logo.data,
-                    logo.width,
-                    logo.height,
-                ),
-                Err(err) => log::warn!(
-                    "[UI] engine image `{SPLASH_LOGO_IMAGE}` did not load ({err:#}); trees drawing it show nothing there"
-                ),
+            )
+            .map_err(|err| format!("{err:#}"))
+            .and_then(|logo| {
+                renderer.register_ui_image(SPLASH_LOGO_IMAGE, logo.data, logo.width, logo.height)
+            });
+            if let Err(err) = registered {
+                log::warn!(
+                    "[UI] engine image `{SPLASH_LOGO_IMAGE}` did not load ({err}); trees drawing it show nothing there"
+                );
             }
         }
         let reload_generation = session
@@ -161,8 +160,15 @@ impl App {
         }
         let mut keys = HashSet::new();
         for image in decode_mod_ui_images(&self.content_root, &images.committed) {
-            renderer.register_ui_image(&image.key, image.rgba, image.width, image.height);
-            keys.insert(image.key);
+            match renderer.register_ui_image(&image.key, image.rgba, image.width, image.height) {
+                Ok(()) => {
+                    keys.insert(image.key);
+                }
+                Err(err) => log::warn!(
+                    "[UI] uiImages.{} did not load ({err}); skipping it",
+                    image.key
+                ),
+            }
         }
         if !images.committed.is_empty() {
             log::info!(

@@ -70,11 +70,22 @@ fn entry(name: &str, loading_tree: &[&str]) -> LevelLoadEntry {
     }
 }
 
+/// A delivered payload carrying a minimal one-cell level.
 fn payload() -> LevelPayload {
     LevelPayload {
-        level: None,
+        level: Some(crate::runtime_movers::tests::single_cell_world(
+            Default::default(),
+        )),
         prm_cache_root: PathBuf::from("baked/materials"),
         timings: Vec::new(),
+    }
+}
+
+/// What the worker delivers when the map file is missing: no level.
+fn level_less_payload() -> LevelPayload {
+    LevelPayload {
+        level: None,
+        ..payload()
     }
 }
 
@@ -327,6 +338,107 @@ fn a_delivered_payload_installs_one_frame_after_delivery() {
 }
 
 #[test]
+fn a_level_less_payload_goes_to_the_failure_path_without_a_held_frame() {
+    let mut app = test_app();
+    register(&mut app, LOADING_SCREEN_NAME, ScopeTier::Engine);
+    app.begin_loading_screen(&entry("Entryway", &[]));
+    app.boot_state = BootState::Loading;
+    let (tx, rx) = mpsc::channel();
+    app.level_rx = Some(rx);
+    tx.send(Ok(level_less_payload())).unwrap();
+
+    assert!(matches!(app.next_loading_step(), LoadingStep::Install(_)));
+    assert!(!app.has_deferred_level_payload());
+    assert_eq!(
+        slot(&app, PROGRESS_SLOT),
+        SlotValue::Number(0.0),
+        "the bar never shows the parse share for a load that failed"
+    );
+}
+
+#[test]
+fn level_tier_trees_are_never_loading_candidates() {
+    let mut app = test_app();
+    register(&mut app, LOADING_SCREEN_NAME, ScopeTier::Engine);
+    register(&mut app, "levelLoading", ScopeTier::Level);
+    app.commit_loading_manifest(
+        Default::default(),
+        ModLoading {
+            tree: names(&["levelLoading"]),
+        },
+    );
+    app.begin_loading_screen(&entry("Entryway", &["levelLoading"]));
+    assert_eq!(active_tree(&app).as_deref(), Some(LOADING_SCREEN_NAME));
+}
+
+#[test]
+fn staged_loading_fields_commit_only_with_a_committed_generation() {
+    use postretro_scripting_core::runtime::StagedManifestCommitOutcome;
+    use postretro_scripting_core::staged_manifest::{
+        StagedManifestBuildResult, StagedManifestBuildStatus,
+    };
+    let result = |status| StagedManifestBuildResult {
+        generation: 2,
+        mod_root: PathBuf::from("content/dev"),
+        status,
+        diagnostics: Vec::new(),
+    };
+    let committed = StagedManifestCommitOutcome::Committed {
+        generation: 2,
+        descriptor_count: 0,
+        applied_actions: 0,
+        dropped_missing_targets: 0,
+        changed_movement_entities: Vec::new(),
+    };
+    let mod_pool = |app: &App| {
+        app.session
+            .as_ref()
+            .unwrap()
+            .loading_screen
+            .mod_pool
+            .clone()
+    };
+    let mut app = test_app();
+    register(&mut app, LOADING_SCREEN_NAME, ScopeTier::Engine);
+    app.commit_loading_manifest(
+        Default::default(),
+        ModLoading {
+            tree: names(&["committed"]),
+        },
+    );
+    app.begin_loading_screen(&entry("Entryway", &[]));
+
+    // A failed or stale generation leaves the committed pool alone.
+    let manifest = dev_manifest();
+    let built = result(StagedManifestBuildStatus::Built(Box::new(manifest.clone())));
+    app.commit_staged_loading_manifest(
+        &built,
+        &StagedManifestCommitOutcome::FailedBuild { generation: 2 },
+    );
+    app.commit_staged_loading_manifest(
+        &built,
+        &StagedManifestCommitOutcome::DiscardedStale {
+            generation: 2,
+            latest_requested: Some(3),
+        },
+    );
+    app.commit_staged_loading_manifest(&result(StagedManifestBuildStatus::Failed), &committed);
+    assert_eq!(mod_pool(&app), names(&["committed"]));
+
+    // A committed generation replaces it; the load already showing keeps its tree.
+    app.commit_staged_loading_manifest(&built, &committed);
+    assert_eq!(mod_pool(&app), manifest.loading.tree);
+    assert_eq!(active_tree(&app).as_deref(), Some(LOADING_SCREEN_NAME));
+
+    // A committed generation without a start script clears it.
+    app.commit_staged_loading_manifest(
+        &result(StagedManifestBuildStatus::NoStartScript),
+        &committed,
+    );
+    assert!(mod_pool(&app).is_empty());
+}
+
+#[test]
 fn without_a_loading_screen_a_delivered_payload_installs_at_once() {
     let mut app = test_app();
     app.boot_state = BootState::Loading;
@@ -471,18 +583,33 @@ fn loading_frames_render_the_tree_over_the_splash_background() {
         &workspace_core_root(),
     )
     .expect("the splash logo decodes");
-    renderer.register_ui_image(
-        crate::app::ui_images::SPLASH_LOGO_IMAGE,
-        logo.data,
-        logo.width,
-        logo.height,
+    renderer
+        .register_ui_image(
+            crate::app::ui_images::SPLASH_LOGO_IMAGE,
+            logo.data,
+            logo.width,
+            logo.height,
+        )
+        .expect("the splash logo fits a texture");
+    // Art the device cannot hold is refused, never a validation failure.
+    assert!(
+        renderer
+            .register_ui_image("zero", Vec::new(), 0, 4)
+            .is_err()
+    );
+    assert!(
+        renderer
+            .register_ui_image("oversized", Vec::new(), 1, u32::MAX)
+            .is_err()
     );
     let manifest = dev_manifest();
     for image in crate::app::ui_images::decode_mod_ui_images(
         &workspace_root().join("content/dev"),
         &manifest.ui_images,
     ) {
-        renderer.register_ui_image(&image.key, image.rgba, image.width, image.height);
+        renderer
+            .register_ui_image(&image.key, image.rgba, image.width, image.height)
+            .expect("every dev image fits a texture");
     }
     let dev_tree = manifest
         .maps

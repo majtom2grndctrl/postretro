@@ -642,10 +642,10 @@ Windows and rates run on **presented-frame time** — not frame count, and not U
 
 Nothing else is limited today: world lights and light animation, UI panels, emissives, flipbooks, camera cuts, and load loops through the boot splash reach the player unlimited. A source-level floor for them is planned, not built. A GPU frame limiter over the composited frame was built and withdrawn: its per-cell means could not tell light added to a region from light moved through it, so ordinary camera motion read as flashes.
 
-**World-less capture.** `capture_world_less_frame` reads back a frame with no level through the real UI-layer and resolve passes, which the scene capture below does not include; loading-screen tests render through it.
+**World-less capture.** A third capture entry reads back a frame with no level through the real UI-layer and resolve passes, which the scene capture below omits — what a player sees on a Frontend or Loading frame.
 
 **Frame capture.** Headless capture renders at its requested resolution,
-divisor 1 whatever render resolution was recorded (both capture entries pin it
+divisor 1 whatever render resolution was recorded (every capture entry pins it
 first; capture is offscreen-only), so captures stay comparable
 across machines. It runs the same soft-knee tonemap into a capture-only
 `Rgba8UnormSrgb` target after the bloom composite, then reads it back. PNG bytes therefore stay deterministic RGBA8 while capture

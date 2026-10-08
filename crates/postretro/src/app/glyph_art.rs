@@ -142,8 +142,12 @@ impl App {
         let mut keys = HashSet::new();
         for dir in &dirs {
             for (key, rgba, width, height) in read_glyph_dir(&self.content_root, dir) {
-                renderer.register_ui_image(&key, rgba, width, height);
-                keys.insert(key);
+                match renderer.register_ui_image(&key, rgba, width, height) {
+                    Ok(()) => {
+                        keys.insert(key);
+                    }
+                    Err(err) => log::warn!("[UI] glyph art `{key}` did not load ({err})"),
+                }
             }
         }
         if !dirs.is_empty() {

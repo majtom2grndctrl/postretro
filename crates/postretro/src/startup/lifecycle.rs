@@ -344,17 +344,27 @@ impl App {
     }
 
     /// Decide one Loading frame. A delivered payload is held for one painted
-    /// frame (the bar at its parse share), then installs on the next.
+    /// frame (the bar at its parse share), then installs on the next. A
+    /// payload without a level has nothing to install, so it goes straight to
+    /// the failure path without a held frame.
     pub(super) fn next_loading_step(&mut self) -> LoadingStep {
         if let Some(payload) = self.take_deferred_level_payload() {
+            // The held frame is its own stage, neither worker nor install time.
+            self.level_timings.record("install_deferral");
             return LoadingStep::Install(Box::new(payload));
         }
         match self.poll_loading_level_worker() {
             LoadingPoll::Ready(outcome) => match *outcome {
-                Ok(payload) => match self.defer_level_payload(payload) {
-                    Some(payload) => LoadingStep::Install(Box::new(payload)),
-                    None => LoadingStep::Paint,
-                },
+                Ok(mut payload) => {
+                    self.record_worker_delivery(&mut payload);
+                    if payload.level.is_none() {
+                        return LoadingStep::Install(Box::new(payload));
+                    }
+                    match self.defer_level_payload(payload) {
+                        Some(payload) => LoadingStep::Install(Box::new(payload)),
+                        None => LoadingStep::Paint,
+                    }
+                }
                 Err(err) => LoadingStep::Fail(format!("worker failed: {err:#}")),
             },
             LoadingPoll::Disconnected => {
@@ -386,11 +396,8 @@ impl App {
         }
     }
 
-    fn finish_level_payload(
-        &mut self,
-        mut payload: crate::startup::worker::LevelPayload,
-        event_loop: &ActiveEventLoop,
-    ) -> bool {
+    /// Mark the worker's delivery in the level timings, on the frame it lands.
+    fn record_worker_delivery(&mut self, payload: &mut crate::startup::worker::LevelPayload) {
         self.level_timings.record("worker_delivered");
         // Splice worker-thread entries between dispatch and delivered so the
         // summary reads chronologically.
@@ -398,7 +405,13 @@ impl App {
         for (i, entry) in payload.timings.drain(..).enumerate() {
             self.level_timings.entries.insert(delivered_idx + i, entry);
         }
+    }
 
+    fn finish_level_payload(
+        &mut self,
+        payload: crate::startup::worker::LevelPayload,
+        event_loop: &ActiveEventLoop,
+    ) -> bool {
         match payload.level {
             Some(world) => {
                 if let Err(err) = self.install_level_payload(world, payload.prm_cache_root) {

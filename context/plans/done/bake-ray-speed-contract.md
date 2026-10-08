@@ -60,3 +60,27 @@ Baseline: `prl-build` and `scripts-build` built in release from `main` at 61254d
 ## Open
 
 - By-eye check of step 2's 23 changed warren-mini texels in the engine needs a GPU this container lacks; it goes to the owner as manual proof.
+
+## Results (2026-10-08, at 99ef79f)
+
+Landed: steps 1 and 2. Reverted after measurement: steps 3 and 4.
+
+Warren-mini, cold `--release`, one host, two alternated runs each:
+
+| Stage | `main` (61254d8) | 99ef79f |
+|---|---|---|
+| Lightmap Bake | 175.6 / 174.5 s | 80.2 / 81.2 s |
+| SH Bake | 189.0 / 185.8 s | 137.1 / 135.7 s |
+| Delta SH Bake | 19.7 / 19.4 s | 14.2 / 14.4 s |
+| Total | 425.2 / 422.5 s | 270.8 / 272.5 s |
+
+| Row | Result |
+|---|---|
+| A1, A2 (step 1) | pass: 11/11 fixtures and warren-mini identical to `main` |
+| A2b (step 2) | pass: one fixture ray differs, and brute force agrees with the cache; warren-mini differs only in ids 22 (20 bytes) and 42 (26 bytes), sizes identical; 23 of 94,796,560 texels changed, max 0.0945 linear irradiance (`reseed_baseline_tests.rs` harness) |
+| A3 | pass: property test, 20,000 cases, including signed-zero directions |
+| A5 | pass: parity tests, plus a test pinning a known leaking ray |
+| A6 | steps 1 and 2 pass; steps 3 and 4 fell within noise or regressed, so they were reverted |
+| A9 | pass: fmt, clippy `-D warnings`, `cargo test` (9,738 passed, 0 failed), `cargo check --release`, crate-graph |
+| Composite gate | `lightmap_composite_equals_monolithic_on_fixtures` passes, and also passes on `shadowmask-groups-capture` |
+

@@ -1139,9 +1139,10 @@ pub(super) struct FullRenderer {
     /// index still warns once.
     pub(super) candidate_cull_oor_logged: bool,
     /// Camera-cull diagnostics for the current Spatial tab frame (candidate vs
-    /// tree-walk path, candidate/total/submitted leaves). Refreshed before the
-    /// debug UI reads it, then recomputed during pass recording. Diagnostic only
-    /// — never gates behavior.
+    /// tree-walk path, candidate/total/submitted leaves). With `dev-tools`,
+    /// refreshed before the debug UI reads it, then recomputed during pass
+    /// recording; without it, stays at its default. Diagnostic only — never
+    /// gates behavior.
     #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
     pub(super) camera_cull_diagnostics: CameraCullDiagnostics,
     /// Last CPU-side visibility/locator snapshot published by the app after

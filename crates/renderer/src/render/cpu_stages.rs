@@ -23,8 +23,9 @@ pub enum RenderStage {
     ShComposePrep,
     /// Candidate gather and BVH cull dispatch, diagnostics included.
     Cull,
-    /// CPU leaf walks that only feed cull diagnostics (submitted-leaf counts,
-    /// the dev-tools tree-walk estimate), not the GPU cull itself.
+    /// CPU leaf walks that only feed the dev-tools cull diagnostics
+    /// (submitted-leaf counts, tree-walk estimate), not the GPU cull itself.
+    /// Absent without `dev-tools`.
     CullDiagnostics,
     AnimatedLightmapCompose,
     /// Indirect SH compose dispatch.

@@ -9,6 +9,7 @@ use super::*;
 /// `planes` come from `extract_frustum_planes_for_gpu` — the exact CPU source
 /// the GPU uniform is serialized from — so the CPU diagnostics submitted count
 /// matches what the GPU writes.
+#[cfg(feature = "dev-tools")]
 fn leaf_passes_frustum(
     leaf: &postretro_render_data::geometry::BvhLeaf,
     planes: &[[f32; 4]; 6],
@@ -43,6 +44,7 @@ fn leaf_passes_frustum(
 /// CPU-derived submitted-leaf count for the tree walk: drawable leaves whose
 /// cell is visible and whose AABB passes the frustum, over the whole leaf
 /// array. Mirrors `bvh_cull.wgsl::cull_main`'s submit branch. Diagnostic only.
+#[cfg(feature = "dev-tools")]
 fn count_submitted_tree_walk(
     leaves: &[postretro_render_data::geometry::BvhLeaf],
     visible: &VisibleCells,
@@ -71,6 +73,7 @@ fn count_submitted_tree_walk(
 /// leaves whose AABB passes the frustum. Candidate gather already applies the
 /// visible-cell constraint, so this only mirrors the shader's frustum submit
 /// branch. Diagnostic only.
+#[cfg(feature = "dev-tools")]
 fn count_submitted_candidates(
     leaves: &[postretro_render_data::geometry::BvhLeaf],
     candidate_leaves: &[u32],
@@ -382,9 +385,8 @@ impl Renderer {
             // indexes fail at load time. Gathered into the pipeline's reused
             // scratch (no per-frame allocation): `cell_draw_index` borrowed
             // immutably and `candidate_cull` mutably — disjoint fields. The
-            // returned flag only signals readiness; the gathered leaves live in
-            // the pipeline (`candidate.candidates()`), read after this borrow
-            // ends in the dispatch match below.
+            // returned flag only signals readiness; the gathered leaves stay in
+            // the pipeline's scratch for the dispatch match below.
             let candidates_ready: bool = match (
                 full.cell_draw_index.as_ref(),
                 full.candidate_cull.as_mut(),
@@ -431,23 +433,28 @@ impl Renderer {
                 full.candidate_cull.as_mut(),
             ) {
                 (true, Some(cull), Some(candidate)) => {
-                    // CPU-derived Spatial diagnostics: candidate count vs total
-                    // BVH leaves, and submitted = candidates passing the frustum
+                    // CPU-derived Spatial diagnostics (dev-tools only, like the
+                    // tab that shows them): candidate count vs total BVH
+                    // leaves, and submitted = candidates passing the frustum
                     // predicate. The gathered leaves live in the pipeline scratch
                     // (`candidate.candidates()`); read immutably here before the
                     // mutable `dispatch` borrow below.
-                    let candidates = candidate.candidates();
-                    let diagnostics_scope = cpu.scope(RenderStage::CullDiagnostics);
-                    let submitted_leaves =
-                        count_submitted_candidates(&full.bvh_leaves, candidates, &view_proj);
-                    drop(diagnostics_scope);
-                    full.camera_cull_diagnostics = CameraCullDiagnostics {
-                        path: CameraCullPath::Candidate {
-                            candidate_leaves: candidates.len() as u32,
-                        },
-                        total_leaves: cull.total_leaves(),
-                        submitted_leaves,
-                    };
+                    #[cfg(feature = "dev-tools")]
+                    {
+                        let candidates = candidate.candidates();
+                        let _diagnostics_scope = cpu.scope(RenderStage::CullDiagnostics);
+                        full.camera_cull_diagnostics = CameraCullDiagnostics {
+                            path: CameraCullPath::Candidate {
+                                candidate_leaves: candidates.len() as u32,
+                            },
+                            total_leaves: cull.total_leaves(),
+                            submitted_leaves: count_submitted_candidates(
+                                &full.bvh_leaves,
+                                candidates,
+                                &view_proj,
+                            ),
+                        };
+                    }
                     candidate.dispatch(
                         device,
                         queue,
@@ -466,8 +473,9 @@ impl Renderer {
                     if let Some(cull) = &mut full.compute_cull {
                         cull.dispatch(device, queue, encoder, visible, &view_proj, cull_ts);
                     }
-                    // Tree-walk diagnostics: submitted = drawable, visible-cell,
-                    // frustum-passing leaves over the WHOLE leaf array.
+                    // Tree-walk diagnostics (dev-tools only): submitted = drawable,
+                    // visible-cell, frustum-passing leaves over the WHOLE leaf array.
+                    #[cfg(feature = "dev-tools")]
                     if let Some(cull) = full.compute_cull.as_ref() {
                         let _diagnostics_scope = cpu.scope(RenderStage::CullDiagnostics);
                         full.camera_cull_diagnostics = CameraCullDiagnostics {

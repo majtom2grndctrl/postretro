@@ -15,16 +15,15 @@ struct TagMembership {
     killed: u32,
 }
 
-/// Identity of a subscription's fired latch. Keyed by `(tag, fire)` rather than
-/// by threshold, so editing `at` across a hot reload never re-arms a
-/// subscription that already fired. `ordinal` counts earlier subscriptions with
-/// the same `(tag, fire)` in data-registry order, so two thresholds firing one
-/// event on one tag still latch independently.
+/// Identity of a subscription's fired latch: the `(tag, fire)` pair, never the
+/// threshold or the subscription's position. A `progress` fires at most once per
+/// level per pair, so editing `at`, reordering the composed set (mod-global
+/// reactions compose before level ones), or dropping and re-adding a
+/// subscription never re-fires it — and two thresholds naming one pair fire once.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct Latch {
     tag: String,
     fire: String,
-    ordinal: u32,
 }
 
 /// Threshold compare: `killed/total >= at` (`at: 1.0` means "all dead").
@@ -38,17 +37,22 @@ struct ProgressState {
 ///
 /// Membership rule: a tag's members are the map-placed entities carrying it at
 /// level install — never the live registry. Install snapshots every tag on every
-/// map-placed entity, so a tag a recompose subscribes for the first time (or
-/// drops and later re-adds) resolves against that same install-time set, and an
-/// NPC a spawner releases later — which carries its spawner's `spawned_tags` —
-/// never joins any tag's set. Every credited kill of an install-time entity is
-/// recorded whether or not a subscription watched it then, so a late-subscribed
-/// tag counts members already dead as already killed.
+/// map-placed entity once every map placement has materialized (after the
+/// data-archetype and spawner sweeps, before `levelLoad`), so a tag a recompose
+/// subscribes for the first time (or drops and later re-adds) resolves against
+/// that same install-time set, and an NPC a spawner releases later — which
+/// carries its spawner's `spawned_tags` — never joins any tag's set. Every
+/// credited kill of an install-time entity is recorded whether or not a
+/// subscription watched it then, so a late-subscribed tag counts members already
+/// dead as already killed. A member removed without kill credit (a script
+/// despawn above zero HP) leaves every set it was in.
 ///
-/// An entity carrying several subscribed tags counts toward each independently.
+/// An entity carrying several subscribed tags counts toward each independently;
+/// a tag repeated on one entity counts once.
 pub struct ProgressTracker {
-    /// Map-placed entities with at least one tag at install → those tags. Ids
-    /// are generation-checked: a later spawn reusing a freed slot is not here.
+    /// Map-placed entities with at least one tag at install → their distinct
+    /// tags. Ids are generation-checked: a later spawn reusing a freed slot is
+    /// not here.
     install_tags: HashMap<EntityId, Vec<String>>,
     /// Install-time entities whose kill has been credited this level. A repeated
     /// report for one entity never counts twice.
@@ -57,9 +61,13 @@ pub struct ProgressTracker {
     memberships: HashMap<String, TagMembership>,
     /// Data-registry order, so one kill fires its targets in a fixed order.
     subscriptions: Vec<ProgressState>,
-    /// Every subscription that fired this level. One-shot: survives recompose,
-    /// including a subscription dropped and later re-added.
+    /// Every `(tag, fire)` pair that fired this level. One-shot: survives
+    /// recompose, including a subscription dropped and later re-added.
     fired: HashSet<Latch>,
+    /// Whether this level's install captured membership. A recompose before (or
+    /// without) that capture subscribes nothing: a connected client never
+    /// captures, since `progress` is host-authoritative.
+    captured: bool,
 }
 
 impl ProgressTracker {
@@ -70,25 +78,40 @@ impl ProgressTracker {
             memberships: HashMap::new(),
             subscriptions: Vec::new(),
             fired: HashSet::new(),
+            captured: false,
         }
     }
 
-    /// Level install: drop any previous level's state, snapshot the install-time
-    /// tag index from `entity_registry`, and subscribe. Warns once per subscribed
-    /// tag that captures no members, since such a `progress` can never fire.
-    pub fn initialize(&mut self, data_registry: &DataRegistry, entity_registry: &EntityRegistry) {
+    /// Level install, once every map placement exists: drop any previous level's
+    /// state, snapshot the install-time tag index from `entity_registry`, and
+    /// subscribe. Warns once per subscribed tag that captures no members, since
+    /// such a `progress` can never fire, and once per subscription whose `at` is
+    /// non-finite or outside `(0, 1]`. Returns event names whose threshold the
+    /// set already meets (an `at` at or below zero), latched exactly as a
+    /// recompose would; the caller dispatches them like kill-driven fires.
+    pub fn initialize(
+        &mut self,
+        data_registry: &DataRegistry,
+        entity_registry: &EntityRegistry,
+    ) -> Vec<String> {
         self.clear();
         self.install_tags = snapshot_install_tags(entity_registry);
+        self.captured = true;
+        warn_out_of_range_thresholds(data_registry);
         self.subscribe(data_registry);
+        self.evaluate()
     }
 
     /// Recompose (mod hot reload): rebuild subscriptions from the recomposed
     /// reaction set against the install-time membership and kill record — the
     /// live registry is never read, so entities spawned since install never join.
     /// Fired latches survive. Returns event names whose threshold the recomposed
-    /// set already meets (e.g. a lowered `at`), each firing at most once per
-    /// level; the caller dispatches them like kill-driven fires.
+    /// set already meets (e.g. a lowered `at`), each `(tag, fire)` pair firing at
+    /// most once per level; the caller dispatches them like kill-driven fires.
     pub fn recompose(&mut self, data_registry: &DataRegistry) -> Vec<String> {
+        if !self.captured {
+            return Vec::new();
+        }
         let subscribed: HashSet<&str> = data_registry
             .reactions
             .iter()
@@ -107,18 +130,9 @@ impl ProgressTracker {
 
     fn subscribe(&mut self, data_registry: &DataRegistry) {
         self.subscriptions.clear();
-        let mut ordinals: HashMap<(&str, &str), u32> = HashMap::new();
         for named in &data_registry.reactions {
             let ReactionDescriptor::Progress(p) = &named.descriptor else {
                 continue;
-            };
-            let ordinal = {
-                let next = ordinals
-                    .entry((p.tag.as_str(), p.fire.as_str()))
-                    .or_insert(0);
-                let ordinal = *next;
-                *next += 1;
-                ordinal
             };
             if !self.memberships.contains_key(&p.tag) {
                 let membership = self.membership_for(&p.tag);
@@ -136,7 +150,6 @@ impl ProgressTracker {
                 latch: Latch {
                     tag: p.tag.clone(),
                     fire: p.fire.clone(),
-                    ordinal,
                 },
                 at: p.at,
             });
@@ -176,6 +189,25 @@ impl ProgressTracker {
         self.evaluate()
     }
 
+    /// `entity` left the world without kill credit (a despawn above zero HP).
+    /// An install-time member drops out of every set it was in, so the rest can
+    /// still meet `at: 1.0`; the threshold is re-evaluated against the smaller
+    /// total. Returns event names to fire, like [`Self::on_entity_killed`].
+    pub fn on_entity_removed(&mut self, entity: EntityId) -> Vec<String> {
+        if self.killed.contains(&entity) {
+            return Vec::new();
+        }
+        let Some(tags) = self.install_tags.remove(&entity) else {
+            return Vec::new();
+        };
+        for tag in &tags {
+            if let Some(membership) = self.memberships.get_mut(tag) {
+                membership.total = membership.total.saturating_sub(1);
+            }
+        }
+        self.evaluate()
+    }
+
     /// Fire every unlatched subscription whose threshold is met, latching it.
     fn evaluate(&mut self) -> Vec<String> {
         let mut to_fire = Vec::new();
@@ -204,6 +236,7 @@ impl ProgressTracker {
         self.memberships.clear();
         self.subscriptions.clear();
         self.fired.clear();
+        self.captured = false;
     }
 
     #[cfg(test)]
@@ -221,7 +254,32 @@ impl Default for ProgressTracker {
     }
 }
 
-/// Every tag on every map-placed entity in `entity_registry`, by entity.
+/// An `at` at or below zero fires as soon as membership is captured; one above
+/// one, or non-finite, never fires. Neither is rejected at parse time, so the
+/// install says so once per subscription.
+fn warn_out_of_range_thresholds(data_registry: &DataRegistry) {
+    for named in &data_registry.reactions {
+        let ReactionDescriptor::Progress(p) = &named.descriptor else {
+            continue;
+        };
+        if p.at.is_finite() && p.at > 0.0 && p.at <= 1.0 {
+            continue;
+        }
+        let consequence = if p.at.is_finite() && p.at <= 0.0 {
+            "it fires as soon as the level loads"
+        } else {
+            "it can never fire"
+        };
+        log::warn!(
+            "[Scripting] progress on tag `{}` firing `{}` has `at` {} outside (0, 1]: {consequence}",
+            p.tag,
+            p.fire,
+            p.at
+        );
+    }
+}
+
+/// Every distinct tag on every map-placed entity in `entity_registry`, by entity.
 fn snapshot_install_tags(entity_registry: &EntityRegistry) -> HashMap<EntityId, Vec<String>> {
     use crate::registry::ComponentKind;
 
@@ -232,7 +290,15 @@ fn snapshot_install_tags(entity_registry: &EntityRegistry) -> HashMap<EntityId, 
         .filter(|(id, _)| is_map_placed(entity_registry, *id))
         .filter_map(|(id, _)| {
             let tags = entity_registry.get_tags(id).ok()?;
-            (!tags.is_empty()).then(|| (id, tags.to_vec()))
+            // `_tags "wave1 wave1"` names one membership, not two: a duplicate
+            // would credit one kill twice.
+            let mut distinct: Vec<String> = Vec::with_capacity(tags.len());
+            for tag in tags {
+                if !distinct.contains(tag) {
+                    distinct.push(tag.clone());
+                }
+            }
+            (!distinct.is_empty()).then_some((id, distinct))
         })
         .collect()
 }

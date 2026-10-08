@@ -85,7 +85,7 @@ declare module "postretro" {
     /** How many particles start each second. Must be a finite number ≥ 0; use 0 to stop the steady stream. A `burst` is separate. */
     rate: number;
     /** Optional one-time particle count. The engine emits it once when this component is materialized, then clears it; null means no one-off puff. */
-    burst: number | null;
+    burst?: number | null;
     /** How widely directions vary around `velocity`, in radians. Must be finite and ≥ 0; 0 keeps the exact direction. */
     spread: number;
     /** How long every particle remains alive, in seconds. Must be finite and greater than 0; 0.5 means half a second. */
@@ -107,7 +107,7 @@ declare module "postretro" {
     /** Billboard rotation speed in radians per second. 0 does not rotate; positive and negative values turn opposite ways. */
     spin_rate: number;
     /** Optional change to `spin_rate` over time. null keeps the chosen spin rate constant. */
-    spin_animation: SpinAnimation | null;
+    spin_animation?: SpinAnimation | null;
   };
 
   /** A timed change to a billboard emitter's rotation speed. The engine samples the supplied curve evenly during the duration. */
@@ -135,7 +135,7 @@ declare module "postretro" {
     /** Normalized-lifetime opacity curve, sampled evenly from spawn to death. */
     opacity_curve: ReadonlyArray<number>;
     /** Back-reference to the parent emitter entity, consulted only for spin-rate lookup each tick. null once the emitter has despawned (orphaned particle). */
-    emitter: EntityId | null;
+    emitter?: EntityId | null;
   };
 
   /** Per-frame visual state of a sprite as a `sprite_visual` component. Authored by the particle simulation each tick and consumed by the billboard render integration. */
@@ -157,17 +157,17 @@ declare module "postretro" {
     /** Total period of the loop, in milliseconds. */
     periodMs: number;
     /** Starting phase in [0.0, 1.0). Values outside this range are normalized via rem_euclid. */
-    phase: number | null;
+    phase?: number | null;
     /** Total full periods to play; null loops forever. */
-    playCount: number | null;
+    playCount?: number | null;
     /** Per-sample density curve. null leaves the static density unchanged. */
-    density: ReadonlyArray<number> | null;
+    density?: ReadonlyArray<number> | null;
     /** Per-sample saturation curve. null leaves the static saturation unchanged. */
-    saturation: ReadonlyArray<number> | null;
+    saturation?: ReadonlyArray<number> | null;
     /** Per-sample animation curve for the `min_brightness` channel (scatter brightness floor). null leaves the static min_brightness unchanged. Each sample clamped to `[0, +∞)`; empty curve is rejected. */
-    minBrightness: ReadonlyArray<number> | null;
+    minBrightness?: ReadonlyArray<number> | null;
     /** Per-sample animation curve for the `light_range` channel (scales how far lights reach inside this fog). null leaves the static light_range unchanged. Each sample must be strictly positive and finite; non-positive or non-finite samples clamp to `0.001`; empty curve is rejected. */
-    lightRange: ReadonlyArray<number> | null;
+    lightRange?: ReadonlyArray<number> | null;
   };
 
   /** Script-facing fog-volume component shape. Carried by `FogVolume` ECS entities; the AABB is baked at level load and lives in the FogVolumeBridge side-table — it is not exposed here because it is not runtime-settable. */
@@ -189,7 +189,7 @@ declare module "postretro" {
     /** Scales how far lights reach inside this fog. 1.0 = same range as open air, 2.0 = double range, 0.5 = half range. Strictly positive; clamps to 0.001. Default 1.0. */
     lightRange: number;
     /** Optional animation carrying any combination of density, saturation, minBrightness, and lightRange curves. null holds the static state. */
-    animation: FogAnimation | null;
+    animation?: FogAnimation | null;
   };
 
   /** Fog-volume snapshot that `getMapEntities("fog")` wraps into a `FogVolumeHandle`. */
@@ -1270,20 +1270,20 @@ declare module "postretro" {
     /** Total period of the loop, in milliseconds. */
     periodMs: number;
     /** Starting phase in [0.0, 1.0). Values outside this range are normalized via rem_euclid. */
-    phase: number | null;
+    phase?: number | null;
     /** Total full periods to play; null loops forever. */
-    playCount: number | null;
+    playCount?: number | null;
     /** Whether the animation starts in the active state. null defaults to true; false mirrors the FGD `_start_inactive` flag. */
-    startActive: boolean | null;
+    startActive?: boolean | null;
     /** Per-sample brightness curve. */
-    brightness: ReadonlyArray<number> | null;
+    brightness?: ReadonlyArray<number> | null;
     /** Per-sample color curve. Accepted on dynamic and authored static lights; baked indirect stays at the authored color. */
-    color: ReadonlyArray<Vec3> | null;
+    color?: ReadonlyArray<Vec3> | null;
     /** Per-sample direction curve. Non-unit samples are silently normalized. */
-    direction: ReadonlyArray<Vec3> | null;
+    direction?: ReadonlyArray<Vec3> | null;
   };
 
-  export type LightComponent = { origin: Vec3; lightType: LightKind; intensity: number; color: Vec3; falloffModel: FalloffKind; falloffRange: number; coneAngleInner: number | null; coneAngleOuter: number | null; coneDirection: Vec3 | null; isDynamic: boolean; animation: LightAnimation | null };
+  export type LightComponent = { origin: Vec3; lightType: LightKind; intensity: number; color: Vec3; falloffModel: FalloffKind; falloffRange: number; coneAngleInner?: number | null; coneAngleOuter?: number | null; coneDirection?: Vec3 | null; isDynamic: boolean; animation?: LightAnimation | null };
 
   /** Generic entity snapshot: id, position and tags. */
   export type Entity = {
@@ -1572,12 +1572,12 @@ declare module "postretro" {
     onComplete?: string;
   };
 
-  /** Trigger primitive `armTrigger` takes no payload; its target is a trigger member's id (a member handle's `arm()` / `disarm()`), a subject-token command (`on.trigger.arm()` carries `target: "@trigger"`), or a raw descriptor's `tag`. */
+  /** Trigger primitive `armTrigger` takes no payload; its target is a trigger member's id (a member handle's `arm()`), a subject-token command (`on.trigger.arm()` carries `target: "@trigger"`), or a raw descriptor's `tag`. */
   export interface ArmTriggerArgs {
     readonly [key: string]: never;
   }
 
-  /** Trigger primitive `disarmTrigger` takes no payload; its target is a trigger member's id (a member handle's `arm()` / `disarm()`), a subject-token command (`on.trigger.arm()` carries `target: "@trigger"`), or a raw descriptor's `tag`. */
+  /** Trigger primitive `disarmTrigger` takes no payload; its target is a trigger member's id (a member handle's `disarm()`), a subject-token command (`on.trigger.disarm()` carries `target: "@trigger"`), or a raw descriptor's `tag`. */
   export interface DisarmTriggerArgs {
     readonly [key: string]: never;
   }

@@ -264,8 +264,9 @@ export type ProgressReactionDescriptor = {
 --- emitter and animation primitives (`setFogScatter`, `setEmitterRate`,
 --- `setAnimationState`), which have no typed builder. True system reactions
 --- carry neither and enqueue typed engine commands such as `playSound`,
---- `rumble`, `flashScreen`, and the UI-stack reactions. `args` carries the primitive's typed payload (e.g. `{ rate = 0 }`
---- for `setEmitterRate`, `{ sound = "alarm" }` for `playSound`).
+--- `rumble`, `flashScreen`, and the UI-stack reactions. `args` carries the
+--- primitive's typed payload (e.g. `{ rate = 0 }` for `setEmitterRate`,
+--- `{ sound = "alarm" }` for `playSound`).
 export type PrimitiveReactionDescriptor = {
   primitive: string,
   kind: GroupKind?,
@@ -276,13 +277,15 @@ export type PrimitiveReactionDescriptor = {
 }
 
 --- Trigger primitive `armTrigger` takes no payload; its target is a trigger
---- member's id (a member handle's `arm()`), a subject-token command
---- (`on.trigger.arm()` carries `target = "@trigger"`), or a raw descriptor's `tag`.
+--- member's id (a member handle's `:arm()`), a subject-token command
+--- (`on.trigger:arm()` carries `target = "@trigger"`), or a raw descriptor's
+--- `tag`.
 export type ArmTriggerArgs = {}
 
---- Trigger primitive `disarmTrigger` takes no payload; its target is a trigger
---- member's id (a member handle's `disarm()`), a subject-token command
---- (`on.trigger.disarm()` carries `target = "@trigger"`), or a raw descriptor's `tag`.
+--- Trigger primitive `disarmTrigger` takes no payload; its target is a
+--- trigger member's id (a member handle's `:disarm()`), a subject-token command
+--- (`on.trigger:disarm()` carries `target = "@trigger"`), or a raw
+--- descriptor's `tag`.
 export type DisarmTriggerArgs = {}
 
 --- One step in a `sequence` reaction body: invokes the named sequenced

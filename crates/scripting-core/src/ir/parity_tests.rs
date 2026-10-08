@@ -1903,3 +1903,6 @@ mod window_mode_sdk;
 
 #[path = "addressing_sdk_tests.rs"]
 mod addressing_sdk;
+
+#[path = "member_builder_sdk_tests.rs"]
+mod member_builder_sdk;

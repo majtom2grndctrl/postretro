@@ -421,9 +421,10 @@ fn progress_lowered_threshold_already_met_fires_once_on_recompose() {
     assert!(tracker.on_entity_killed(members[3]).is_empty());
 }
 
-// Two thresholds firing one event on one tag latch independently.
+// A `progress` fires at most once per level per `(tag, fire)` pair: two
+// thresholds naming one event on one tag share that one fire.
 #[test]
-fn progress_same_tag_and_fire_at_two_thresholds_fires_twice() {
+fn progress_same_tag_and_fire_at_two_thresholds_fires_once() {
     let data = progress_data(vec![
         progress_reaction("half", "wave1", 0.5, "beep"),
         progress_reaction("all", "wave1", 1.0, "beep"),
@@ -433,10 +434,156 @@ fn progress_same_tag_and_fire_at_two_thresholds_fires_twice() {
     let second = spawn_with_tags(&mut entities, &["wave1"]);
 
     let mut tracker = ProgressTracker::new();
-    tracker.initialize(&data, &entities);
+    assert!(tracker.initialize(&data, &entities).is_empty());
     assert_eq!(tracker.on_entity_killed(first), vec!["beep".to_string()]);
     assert!(tracker.recompose(&data).is_empty());
-    assert_eq!(tracker.on_entity_killed(second), vec!["beep".to_string()]);
+    assert!(
+        tracker.on_entity_killed(second).is_empty(),
+        "the `(wave1, beep)` pair already fired this level"
+    );
+}
+
+// The latch is the `(tag, fire)` pair, not a position: a recompose that composes
+// the same subscriptions in another order (mod-global before level) neither
+// re-fires the pair nor loses another pair's pending fire.
+#[test]
+fn progress_recompose_reordering_subscriptions_neither_refires_nor_drops_a_fire() {
+    let installed = progress_data(vec![
+        progress_reaction("all", "wave1", 1.0, "beep"),
+        progress_reaction("half", "wave1", 0.5, "beep"),
+        progress_reaction("cleared", "wave1", 1.0, "powerOn"),
+    ]);
+    let reordered = progress_data(vec![
+        progress_reaction("cleared", "wave1", 1.0, "powerOn"),
+        progress_reaction("half", "wave1", 0.5, "beep"),
+        progress_reaction("all", "wave1", 1.0, "beep"),
+    ]);
+    let mut entities = EntityRegistry::new();
+    let first = spawn_with_tags(&mut entities, &["wave1"]);
+    let second = spawn_with_tags(&mut entities, &["wave1"]);
+
+    let mut tracker = ProgressTracker::new();
+    assert!(tracker.initialize(&installed, &entities).is_empty());
+    assert_eq!(tracker.on_entity_killed(first), vec!["beep".to_string()]);
+
+    assert!(
+        tracker.recompose(&reordered).is_empty(),
+        "the already-met `half` moved position but its pair already fired"
+    );
+    assert_eq!(
+        tracker.on_entity_killed(second),
+        vec!["powerOn".to_string()],
+        "the unfired pair still fires once, and `beep` stays latched"
+    );
+}
+
+// `_tags "wave1 wave1"` is one membership: its kill counts once.
+#[test]
+fn progress_duplicated_tag_on_one_entity_counts_its_kill_once() {
+    let data = progress_data(vec![progress_reaction("done", "wave1", 1.0, "powerOn")]);
+    let mut entities = EntityRegistry::new();
+    let doubled = spawn_with_tags(&mut entities, &["wave1", "wave1"]);
+    let other = spawn_with_tags(&mut entities, &["wave1"]);
+
+    let mut tracker = ProgressTracker::new();
+    assert!(tracker.initialize(&data, &entities).is_empty());
+    assert!(
+        tracker.on_entity_killed(doubled).is_empty(),
+        "one of two members dead is below `at: 1.0`"
+    );
+    assert_eq!(tracker.on_entity_killed(other), vec!["powerOn".to_string()]);
+}
+
+// Install and recompose agree on an out-of-range `at`: one at or below zero
+// fires as soon as membership exists, one above one or non-finite never fires,
+// and install warns once for each.
+#[test]
+fn progress_out_of_range_at_behaves_alike_at_install_and_recompose_and_warns_at_install() {
+    let data = progress_data(vec![
+        progress_reaction("eager", "wave1", 0.0, "early"),
+        progress_reaction("never", "wave1", 1.5, "late"),
+        progress_reaction("broken", "wave1", f32::NAN, "nan"),
+    ]);
+    let mut entities = EntityRegistry::new();
+    let first = spawn_with_tags(&mut entities, &["wave1"]);
+
+    let logs = LogCapture::start();
+    let mut tracker = ProgressTracker::new();
+    assert_eq!(
+        tracker.initialize(&data, &entities),
+        vec!["early".to_string()],
+        "install fires an already-met threshold, as a recompose does"
+    );
+    logs.assert_logged_once(Level::Warn, "firing `early` has `at` 0 outside (0, 1]");
+    logs.assert_logged_once(Level::Warn, "firing `late` has `at` 1.5 outside (0, 1]");
+    logs.assert_logged_once(Level::Warn, "firing `nan` has `at` NaN outside (0, 1]");
+
+    assert!(tracker.recompose(&data).is_empty());
+    assert!(
+        tracker.on_entity_killed(first).is_empty(),
+        "`at` above one or NaN never fires, even with every member dead"
+    );
+    logs.assert_logged_once(Level::Warn, "firing `late` has `at` 1.5 outside (0, 1]");
+}
+
+// A member despawned above zero HP carries no kill credit. It leaves the set,
+// so `at: 1.0` stays reachable over the members that remain.
+#[test]
+fn progress_uncredited_removal_drops_the_member_from_the_total() {
+    let data = progress_data(vec![progress_reaction("done", "wave1", 1.0, "powerOn")]);
+    let mut entities = EntityRegistry::new();
+    let killed = spawn_with_tags(&mut entities, &["wave1"]);
+    let despawned = spawn_with_tags(&mut entities, &["wave1"]);
+    let last = spawn_with_tags(&mut entities, &["wave1"]);
+    let outsider = spawn_runtime_npc(&mut entities, &["wave1"]);
+
+    let mut tracker = ProgressTracker::new();
+    assert!(tracker.initialize(&data, &entities).is_empty());
+    assert!(tracker.on_entity_killed(killed).is_empty());
+    assert!(tracker.on_entity_removed(outsider).is_empty());
+    assert!(
+        tracker.on_entity_removed(killed).is_empty(),
+        "removing an already-credited member changes nothing"
+    );
+    assert!(
+        tracker.on_entity_removed(despawned).is_empty(),
+        "one of the two remaining members is dead"
+    );
+    assert_eq!(
+        tracker.on_entity_killed(last),
+        vec!["powerOn".to_string()],
+        "the total shrank to two, both now dead"
+    );
+}
+
+// The removal can itself meet the threshold.
+#[test]
+fn progress_uncredited_removal_of_the_last_living_member_fires() {
+    let data = progress_data(vec![progress_reaction("done", "wave1", 1.0, "powerOn")]);
+    let mut entities = EntityRegistry::new();
+    let killed = spawn_with_tags(&mut entities, &["wave1"]);
+    let despawned = spawn_with_tags(&mut entities, &["wave1"]);
+
+    let mut tracker = ProgressTracker::new();
+    assert!(tracker.initialize(&data, &entities).is_empty());
+    assert!(tracker.on_entity_killed(killed).is_empty());
+    assert_eq!(
+        tracker.on_entity_removed(despawned),
+        vec!["powerOn".to_string()]
+    );
+}
+
+// A recompose with no install capture behind it (a connected client, which
+// never captures) subscribes nothing and never warns.
+#[test]
+fn progress_recompose_without_an_install_capture_subscribes_nothing() {
+    let data = progress_data(vec![progress_reaction("done", "wave1", 0.0, "powerOn")]);
+
+    let logs = LogCapture::start();
+    let mut tracker = ProgressTracker::new();
+    assert!(tracker.recompose(&data).is_empty());
+    assert_eq!(tracker.subscription_count("wave1"), 0);
+    logs.assert_not_logged(Level::Warn, "[Scripting] progress on tag `wave1`");
 }
 
 #[test]

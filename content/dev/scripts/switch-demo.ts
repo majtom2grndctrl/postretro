@@ -54,12 +54,13 @@ export function setupLevel() {
     );
   }
 
-  // Deliberately NOT thrown, unlike the light above. Mover ids resolve only at
-  // level install; the compile-time light-membership pass carries a light table
-  // and nothing else, so every non-light query legitimately returns [] during
-  // prl-build. A throw here would fail the build on a correct map. Spreading an
-  // empty result is what leaves the compile-time reaction light-steps-only,
-  // which is exactly the subset that pass consumes.
+  // Not thrown, unlike the light above. This query is not empty during
+  // prl-build: the light-membership pass also carries the map's member table
+  // (movers, trigger volumes, spawners), so it resolves the same door runtime
+  // does, and the compile-time `onPress` sequence carries its `moverStart`
+  // steps beside the light steps. That pass reads only the light steps and
+  // ignores the rest. A throw here would therefore catch a mistyped door tag
+  // at build time just as the light's does; this fixture does not add one.
   const door = getMapEntities("mover", { tag: "switch_demo_door" });
 
   // Dark on spawn, and the off-state does belong in `levelLoad` -- but not for

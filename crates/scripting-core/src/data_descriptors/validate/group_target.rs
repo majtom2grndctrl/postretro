@@ -55,9 +55,9 @@ pub fn validate_authored_group_kind(
     Ok(Some(kind))
 }
 
-/// A group carries only verbs that act on a pawn. `spawnFromSpawner` acts on a
-/// spawner, addressed by `tag` or member id, so a `kind` beside it is rejected
-/// rather than silently dropped.
+/// Reject `spawnFromSpawner` beside a group `kind`: it acts on a spawner,
+/// addressed by `tag` or member id, so the `kind` would be silently dropped.
+/// Every other primitive passes; the handler decides what a group applies to.
 pub fn validate_group_kind_primitive(
     reaction: &str,
     site: &str,

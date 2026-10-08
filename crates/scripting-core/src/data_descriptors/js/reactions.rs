@@ -222,10 +222,10 @@ pub fn sequence_steps_from_js<'js>(
             !matches!(authored_kind, AuthoredText::Absent),
             !matches!(authored_text_js(&obj, "tag")?, AuthoredText::Absent),
         )
-        .map_err(|reason| DescriptorError::InvalidSequenceShape { reason })?;
+        .map_err(|reason| DescriptorError::InvalidSequenceStep { reason })?;
         let kind =
             validate_authored_group_kind(reaction, &site, authored_kind, has_id, token.is_some())
-                .map_err(|reason| DescriptorError::InvalidSequenceShape { reason })?;
+                .map_err(|reason| DescriptorError::InvalidSequenceStep { reason })?;
         let id = if let Some(kind) = kind {
             SequenceTarget::Group(GroupTarget {
                 kind,
@@ -240,7 +240,7 @@ pub fn sequence_steps_from_js<'js>(
                 "@wait" => SequenceTarget::Wait,
                 "@fire" => SequenceTarget::Fire,
                 spelling => {
-                    return Err(DescriptorError::InvalidSequenceShape {
+                    return Err(DescriptorError::InvalidSequenceStep {
                         reason: format!("step {i} has illegal sentinel `{spelling}`"),
                     });
                 }
@@ -253,11 +253,11 @@ pub fn sequence_steps_from_js<'js>(
         validate_control_step_pair(i, &id, &primitive)?;
         if let Some(token) = SubjectToken::of_sequence_target(&id) {
             validate_subject_token_primitive(reaction, &site, token, &primitive)
-                .map_err(|reason| DescriptorError::InvalidSequenceShape { reason })?;
+                .map_err(|reason| DescriptorError::InvalidSequenceStep { reason })?;
         }
         if matches!(id, SequenceTarget::Group(_)) {
             validate_group_kind_primitive(reaction, &site, &primitive)
-                .map_err(|reason| DescriptorError::InvalidSequenceShape { reason })?;
+                .map_err(|reason| DescriptorError::InvalidSequenceStep { reason })?;
         }
         let args = if obj.contains_key("args").map_err(js_err)? {
             let raw: JsValue = obj.get("args").map_err(js_err)?;
@@ -266,9 +266,11 @@ pub fn sequence_steps_from_js<'js>(
             serde_json::Value::Null
         };
         // A step's grant payload is the body's payload; the same load-time
-        // check guards the grant handlers. A failure skips the reaction.
+        // check guards the grant handlers. A failure skips the reaction in a
+        // level script's drain and rejects the mod manifest in a mod-global
+        // drain.
         validate_consequential_args(reaction, &site, &primitive, &args)
-            .map_err(|reason| DescriptorError::InvalidSequenceShape { reason })?;
+            .map_err(|reason| DescriptorError::InvalidSequenceStep { reason })?;
         out.push(SequenceStep {
             id,
             primitive,
@@ -303,7 +305,7 @@ fn validate_control_step_pair(
         _ => None,
     };
     match mismatch {
-        Some(reason) => Err(DescriptorError::InvalidSequenceShape { reason }),
+        Some(reason) => Err(DescriptorError::InvalidSequenceStep { reason }),
         None => Ok(()),
     }
 }

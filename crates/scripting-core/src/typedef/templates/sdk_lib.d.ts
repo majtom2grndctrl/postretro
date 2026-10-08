@@ -131,12 +131,12 @@
     onComplete?: string;
   };
 
-  /** Trigger primitive `armTrigger` takes no payload; its target is a trigger member's id (a member handle's `arm()` / `disarm()`), a subject-token command (`on.trigger.arm()` carries `target: "@trigger"`), or a raw descriptor's `tag`. */
+  /** Trigger primitive `armTrigger` takes no payload; its target is a trigger member's id (a member handle's `arm()`), a subject-token command (`on.trigger.arm()` carries `target: "@trigger"`), or a raw descriptor's `tag`. */
   export interface ArmTriggerArgs {
     readonly [key: string]: never;
   }
 
-  /** Trigger primitive `disarmTrigger` takes no payload; its target is a trigger member's id (a member handle's `arm()` / `disarm()`), a subject-token command (`on.trigger.arm()` carries `target: "@trigger"`), or a raw descriptor's `tag`. */
+  /** Trigger primitive `disarmTrigger` takes no payload; its target is a trigger member's id (a member handle's `disarm()`), a subject-token command (`on.trigger.disarm()` carries `target: "@trigger"`), or a raw descriptor's `tag`. */
   export interface DisarmTriggerArgs {
     readonly [key: string]: never;
   }

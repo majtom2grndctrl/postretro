@@ -37,13 +37,8 @@ const FLICKER_PATTERN: ReadonlyArray<number> = [
 ];
 
 // Luau tables cannot hold `nil`, so the Luau twin's wire omits every unset
-// field. Omitting them here too keeps both twins' wire byte-identical; the
-// engine reads an absent field as unset.
-function lightAnimation(
-  fields: Partial<LightAnimation> & { periodMs: number },
-): LightAnimation {
-  return fields as LightAnimation;
-}
+// field. The builders below omit them too, keeping both twins' wire
+// byte-identical; the engine reads an absent field as unset.
 
 function buildPulse(min: number, max: number, periodMs: number): LightAnimation {
   const SAMPLES = 16;
@@ -56,10 +51,10 @@ function buildPulse(min: number, max: number, periodMs: number): LightAnimation 
     const theta = (i / SAMPLES) * Math.PI * 2;
     brightness[i] = mid + amp * Math.sin(theta);
   }
-  return lightAnimation({
+  return {
     periodMs,
     brightness,
-  });
+  };
 }
 
 function buildFade(from: number, to: number, periodMs: number): LightAnimation {
@@ -69,11 +64,11 @@ function buildFade(from: number, to: number, periodMs: number): LightAnimation {
     const t = i / (SAMPLES - 1);
     brightness[i] = from + (to - from) * t;
   }
-  return lightAnimation({
+  return {
     periodMs,
     playCount: 1,
     brightness,
-  });
+  };
 }
 
 function buildFlicker(min: number, max: number, rate: number): LightAnimation {
@@ -81,18 +76,18 @@ function buildFlicker(min: number, max: number, rate: number): LightAnimation {
   const hi = Math.max(min, max);
   const span = hi - lo;
   const brightness = FLICKER_PATTERN.map((t) => lo + t * span);
-  return lightAnimation({
+  return {
     periodMs: 1000 / rate,
     brightness,
-  });
+  };
 }
 
 function buildColorShift(values: Vec3[], periodMs: number): LightAnimation {
   const color: Vec3[] = values.map((v) => ({ x: v.x, y: v.y, z: v.z }));
-  return lightAnimation({
+  return {
     periodMs,
     color,
-  });
+  };
 }
 
 function buildSweep(values: Vec3[], periodMs: number): LightAnimation {
@@ -106,10 +101,10 @@ function buildSweep(values: Vec3[], periodMs: number): LightAnimation {
     }
     return { x, y, z };
   });
-  return lightAnimation({
+  return {
     periodMs,
     direction,
-  });
+  };
 }
 
 export function wrapLightEntity(snapshot: GeneratedLightEntity): LightEntityHandle {

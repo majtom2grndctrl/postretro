@@ -555,8 +555,8 @@ pub fn evaluate_prelude(
         })?;
 
     // Step 6b: evaluate `ui/reactions.luau` for the `postretro/ui` virtual
-    // module. Do not lift its fields to globals: Task 1 of the UI SDK split
-    // removes author-visible Luau UI bare globals.
+    // module. Do not lift its fields to globals: the UI SDK exposes no
+    // author-visible Luau UI bare globals.
     let ui_reactions_sdk: Table = lua
         .load(UI_REACTIONS_LUAU_SRC)
         .set_name("postretro/sdk/ui/reactions.luau")
@@ -586,10 +586,9 @@ pub fn evaluate_prelude(
             reason: format!("failed to install temporary theme-token validator: {e}"),
         })?;
 
-    // Step 6c–6f: evaluate the M13 G1a UI factory modules for the
-    // `postretro/ui` virtual module. Widget/layout modules capture the
-    // temporary theme-token validator as an upvalue so token records cannot be
-    // forged structurally by author code.
+    // Evaluate the UI factory modules for the `postretro/ui` virtual module.
+    // Widget/layout modules capture the temporary theme-token validator as an
+    // upvalue so token records cannot be forged structurally by author code.
     let ui_widgets_sdk: Table = lua
         .load(UI_WIDGETS_LUAU_SRC)
         .set_name("postretro/sdk/ui/widgets.luau")

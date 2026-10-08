@@ -683,8 +683,8 @@ mod tests {
         assert!(json["mapMembers"][0].get("spawnedTags").is_none());
     }
 
-    // A map with no movers, triggers or spawners sends the same light-table
-    // bytes as before the member table existed.
+    // A map with no movers, triggers or spawners omits `mapMembers`; the
+    // version declares that absence an authoritative empty member table.
     #[test]
     fn map_without_members_sends_a_lights_only_light_table() {
         let map = parse_inline_map("no-members", &worldspawn());
@@ -699,7 +699,24 @@ mod tests {
             .with_map_members(members);
         assert_eq!(
             serde_json::to_vec(&table).expect("table serializes"),
-            br#"{"version":1,"lights":[]}"#
+            br#"{"version":2,"lights":[]}"#
+        );
+    }
+
+    // The compiler cannot depend on the runtime crate, so it re-declares the
+    // spawner classname and tag key. Read the runtime source to catch drift.
+    #[test]
+    fn spawner_constants_match_runtime_handler_source() {
+        let runtime = include_str!("../../sim/src/scripting/builtins/entity_spawner.rs");
+        let classname = format!("pub const CLASSNAME: &str = \"{ENTITY_SPAWNER_CLASSNAME}\";");
+        let tags_read = format!(".get(\"{SPAWNED_TAGS_KEY}\")");
+        assert!(
+            runtime.contains(&classname),
+            "runtime entity_spawner no longer defines `{classname}`"
+        );
+        assert!(
+            runtime.contains(&tags_read),
+            "runtime entity_spawner no longer reads `{tags_read}`"
         );
     }
 }

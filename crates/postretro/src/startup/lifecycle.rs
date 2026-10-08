@@ -5,6 +5,9 @@
 mod lifecycle_boot_state;
 #[path = "lifecycle_net.rs"]
 mod lifecycle_net;
+#[cfg(test)]
+#[path = "lifecycle_progress_install_tests.rs"]
+mod lifecycle_progress_install_tests;
 #[path = "lifecycle_spawn_residency.rs"]
 mod lifecycle_spawn_residency;
 #[path = "lifecycle_sprite_collections.rs"]
@@ -1035,7 +1038,8 @@ pub(crate) fn install_world_gravity_and_nav(
 
 /// Which lifecycle moment rebuilds the subscribers. A `progress` counts kills
 /// among the entities carrying its tag at level install, so only an install
-/// captures that membership; a recompose keeps it.
+/// captures that membership ([`capture_progress_membership`]); a recompose keeps
+/// it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SubscriberRebuild {
     LevelInstall,
@@ -1043,8 +1047,9 @@ enum SubscriberRebuild {
 }
 
 /// Rebuild the level's reaction subscribers from the current data registry and
-/// slot table. The kill-progress tracker's membership is captured once, at level
-/// install, from the map-placed entities then in the entity registry; a
+/// slot table. At level install this only drops the previous level's
+/// kill-progress state: membership is captured later, by
+/// [`capture_progress_membership`], once the map placements it counts exist. A
 /// recompose keeps that membership, its kill record and its fired latches, and
 /// only re-reads the subscriptions. The state-crossing detector reinitializes on
 /// both. Returns progress events a recompose's subscriptions already meet (a
@@ -1113,10 +1118,7 @@ fn rebuild_reaction_subscribers(
     }
     let progress_events = match rebuild {
         SubscriberRebuild::LevelInstall => {
-            progress_tracker.initialize(
-                &script_ctx.data_registry.borrow(),
-                &script_ctx.registry.borrow(),
-            );
+            progress_tracker.clear();
             Vec::new()
         }
         SubscriberRebuild::Recompose => {
@@ -1130,6 +1132,23 @@ fn rebuild_reaction_subscribers(
         script_ctx,
     );
     progress_events
+}
+
+/// Level install: capture kill-progress membership and subscribe the composed
+/// `progress` set. Runs after every map placement has materialized — the
+/// data-archetype sweep (descriptor NPCs, player pawns) and the spawner
+/// resolve — and before `levelLoad`, so a `progress` over a map-placed NPC tag
+/// counts those NPCs while anything `levelLoad` or a later tick spawns stays
+/// out. Returns events whose threshold the set already meets (an `at` at or
+/// below zero); the caller dispatches them after `levelLoad`.
+fn capture_progress_membership(
+    progress_tracker: &mut postretro_scripting_core::reaction_dispatch::ProgressTracker,
+    script_ctx: &postretro_entities::ScriptCtx,
+) -> Vec<String> {
+    progress_tracker.initialize(
+        &script_ctx.data_registry.borrow(),
+        &script_ctx.registry.borrow(),
+    )
 }
 
 fn reaction_uses_trigger_sentinel(
@@ -1752,7 +1771,7 @@ pub(crate) mod tests {
     /// The scripting core lives on `Session`; this keeps the many test reads of
     /// the shared registries one short call away without a borrow fight against
     /// the non-`Clone` session subsystems.
-    fn script_ctx(app: &App) -> ScriptCtx {
+    pub(super) fn script_ctx(app: &App) -> ScriptCtx {
         app.session
             .as_ref()
             .expect("test app session installed")
@@ -1779,7 +1798,7 @@ pub(crate) mod tests {
             .collect()
     }
 
-    fn descriptor(name: &str) -> EntityTypeDescriptor {
+    pub(super) fn descriptor(name: &str) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
             faction: None,
             tolerance: None,
@@ -2017,7 +2036,10 @@ pub(crate) mod tests {
         }
     }
 
-    fn level_world(_name: &str, triangle_count: usize) -> postretro_level_loader::LevelWorld {
+    pub(super) fn level_world(
+        _name: &str,
+        triangle_count: usize,
+    ) -> postretro_level_loader::LevelWorld {
         let mut vertices = vec![
             vertex([0.0, 0.0, 0.0]),
             vertex([1.0, 0.0, 0.0]),
@@ -3859,15 +3881,25 @@ pub(crate) mod tests {
             .borrow_mut()
             .insert("test.health".to_string(), number_slot(75.0))
             .expect("test slot should be vacant");
-        // Level install snapshots progress membership from the map-placed
-        // entities; a recompose keeps that membership and only re-subscribes.
+        // Level install, in production order: the subscriber rebuild, then the
+        // progress membership capture once the map placements exist. A
+        // recompose keeps that membership and only re-subscribes.
         {
             let ctx = script_ctx(&app);
-            app.session
-                .as_mut()
-                .expect("test app session installed")
-                .progress_tracker
-                .initialize(&ctx.data_registry.borrow(), &ctx.registry.borrow());
+            ctx.data_registry
+                .borrow_mut()
+                .recompose_active_sets(&app.active_level_tags);
+            let session = app.session.as_mut().expect("test app session installed");
+            rebuild_reaction_subscribers(
+                &mut session.progress_tracker,
+                &mut session.crossing_detector,
+                &ctx,
+                SubscriberRebuild::LevelInstall,
+            );
+            assert!(
+                capture_progress_membership(&mut session.progress_tracker, &ctx).is_empty(),
+                "one living member is below `at: 1.0`"
+            );
         }
 
         if app.has_installed_level() {
@@ -3877,6 +3909,14 @@ pub(crate) mod tests {
                 .recompose_active_sets(&app.active_level_tags);
             app.rebuild_active_reaction_subscribers();
         }
+        assert!(
+            app.session
+                .as_ref()
+                .expect("test app session installed")
+                .pending_death_events
+                .is_empty(),
+            "a recompose over an unmet threshold queues no progress fire"
+        );
 
         assert_eq!(
             app.session

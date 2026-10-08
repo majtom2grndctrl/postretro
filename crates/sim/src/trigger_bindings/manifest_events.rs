@@ -164,7 +164,8 @@ pub fn resolve_manifest_trigger_events(
 }
 
 /// Keep the first binding of each `(volume, edge, reaction)`; a later source
-/// resolving to the same triple is dropped with one warning naming both (or the one source, when both match).
+/// resolving to the same triple is dropped with one warning naming both (or
+/// the one source, when both match).
 fn dedupe_resolved(resolved: Vec<ResolvedTriggerEvent>, report: bool) -> Vec<ResolvedTriggerEvent> {
     let mut first_source: HashMap<(EntityId, TriggerEventEdge, String), TriggerEventSource> =
         HashMap::with_capacity(resolved.len());

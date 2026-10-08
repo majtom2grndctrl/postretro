@@ -100,6 +100,16 @@ fn day_one_primitives_all_appear_in_both_outputs() {
         luau.contains("entityExists"),
         "luau missing primitive entityExists:\n{luau}"
     );
+    // `worldQuery` is hidden from author typedefs; `getMapEntities` is the
+    // author-facing spelling.
+    assert!(
+        !ts.contains("worldQuery"),
+        "ts must not expose the hidden `worldQuery` primitive:\n{ts}"
+    );
+    assert!(
+        !luau.contains("worldQuery"),
+        "luau must not expose the hidden `worldQuery` primitive:\n{luau}"
+    );
     // `registerEntity` was removed in favor of `ModManifest.entities`
     // return field; it must not appear as a primitive declaration.
     for line in ts.lines() {

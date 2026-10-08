@@ -4,7 +4,9 @@
 //! shared JSON records live beside the PRL format. See
 //! `context/lib/build_pipeline.md`.
 
-/// The only supported light-membership sidecar contract version.
+/// The only supported light-membership manifest contract version
+/// (`scripts-build` → `prl-build`). The light table versions separately; see
+/// [`LightTable::VERSION`].
 pub const LIGHT_MEMBERSHIP_MANIFEST_VERSION: u32 = 1;
 
 /// Runtime-present map data supplied to `scripts-build` while evaluating a
@@ -18,8 +20,9 @@ pub const LIGHT_MEMBERSHIP_MANIFEST_VERSION: u32 = 1;
 pub struct LightTable {
     pub version: u32,
     pub lights: Vec<LightTableLight>,
-    /// Omitted from the wire when empty, so a map with no such members
-    /// serializes exactly as a lights-only table.
+    /// Omitted from the wire when empty. Only `version` tells an authoritative
+    /// empty (current version) from a lights-only table that never carried the
+    /// key; see [`LightTable::members_supplied`].
     #[cfg_attr(
         feature = "serde",
         serde(default, skip_serializing_if = "Vec::is_empty")
@@ -28,7 +31,15 @@ pub struct LightTable {
 }
 
 impl LightTable {
-    pub const VERSION: u32 = LIGHT_MEMBERSHIP_MANIFEST_VERSION;
+    /// The version this producer writes. Version 2 declares the member table
+    /// supplied: an absent `mapMembers` key means the map has no movers,
+    /// trigger volumes or spawners, and build-side member queries answer `[]`
+    /// authoritatively.
+    pub const VERSION: u32 = 2;
+
+    /// A lights-only table from a producer that predates `mapMembers`. Its
+    /// member table is unknown, not empty.
+    pub const LIGHTS_ONLY_VERSION: u32 = 1;
 
     pub fn new(lights: Vec<LightTableLight>) -> Self {
         Self {
@@ -43,8 +54,10 @@ impl LightTable {
         self
     }
 
+    /// Accepts both [`Self::LIGHTS_ONLY_VERSION`] and [`Self::VERSION`]; callers
+    /// distinguish them with [`Self::members_supplied`].
     pub fn validate_version(&self) -> std::result::Result<(), LightMembershipVersionError> {
-        if self.version == Self::VERSION {
+        if (Self::LIGHTS_ONLY_VERSION..=Self::VERSION).contains(&self.version) {
             Ok(())
         } else {
             Err(LightMembershipVersionError {
@@ -52,6 +65,12 @@ impl LightTable {
                 expected: Self::VERSION,
             })
         }
+    }
+
+    /// Whether `map_members` is authoritative: true from [`Self::VERSION`] on,
+    /// where an empty member list means the map has none.
+    pub fn members_supplied(&self) -> bool {
+        self.version >= Self::VERSION
     }
 }
 
@@ -208,8 +227,8 @@ pub struct LightMembershipRecord {
     pub start_active_conflict: bool,
 }
 
-/// A stale or future sidecar was supplied to a compiler that only understands
-/// the v1 contract.
+/// A stale or future sidecar was supplied to a compiler that does not
+/// understand its version.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LightMembershipVersionError {
     pub found: u32,
@@ -264,7 +283,7 @@ mod tests {
     }
 
     #[test]
-    fn light_membership_wire_structs_round_trip_with_v1_camel_case_fields() {
+    fn light_membership_wire_structs_round_trip_with_camel_case_fields() {
         let table = LightTable::new(vec![light()]);
         let manifest = LightMembershipManifest::new(
             vec![LightMembershipRecord {
@@ -277,7 +296,7 @@ mod tests {
         );
 
         let table_json = serde_json::to_value(&table).expect("table serializes");
-        assert_eq!(table_json["version"], 1);
+        assert_eq!(table_json["version"], LightTable::VERSION);
         assert_eq!(table_json["lights"][0]["isDynamic"], false);
         assert_eq!(table_json["lights"][0]["component"]["lightType"], "Point");
         assert_eq!(table_json["lights"][0]["component"]["animatedSlot"], 3);
@@ -291,6 +310,7 @@ mod tests {
         );
 
         let manifest_json = serde_json::to_value(&manifest).expect("manifest serializes");
+        assert_eq!(manifest_json["version"], LIGHT_MEMBERSHIP_MANIFEST_VERSION);
         assert_eq!(manifest_json["lights"][0]["startActive"], true);
         assert_eq!(manifest_json["lights"][0]["startActiveConflict"], false);
         assert_eq!(manifest_json["stubbedPrimitives"][0], "fireTick");
@@ -353,15 +373,34 @@ mod tests {
     }
 
     #[test]
-    fn version_validation_rejects_stale_sidecars() {
-        let mut table = LightTable::new(Vec::new());
-        table.version = 0;
-        assert_eq!(
-            table.validate_version(),
-            Err(LightMembershipVersionError {
-                found: 0,
-                expected: LIGHT_MEMBERSHIP_MANIFEST_VERSION,
-            })
-        );
+    fn version_validation_rejects_stale_and_future_sidecars() {
+        for version in [0, LightTable::VERSION + 1] {
+            let mut table = LightTable::new(Vec::new());
+            table.version = version;
+            assert_eq!(
+                table.validate_version(),
+                Err(LightMembershipVersionError {
+                    found: version,
+                    expected: LightTable::VERSION,
+                })
+            );
+        }
+    }
+
+    // A v2 table supplies its member table, so an absent `mapMembers` key is an
+    // authoritative empty; a v1 table predates the key, so its absence says
+    // nothing about the map's members.
+    #[test]
+    fn version_distinguishes_supplied_members_from_lights_only_tables() {
+        let current: LightTable =
+            serde_json::from_str(r#"{"version":2,"lights":[]}"#).expect("v2 table parses");
+        assert_eq!(current.validate_version(), Ok(()));
+        assert!(current.members_supplied());
+        assert!(current.map_members.is_empty());
+
+        let lights_only: LightTable =
+            serde_json::from_str(r#"{"version":1,"lights":[]}"#).expect("v1 table parses");
+        assert_eq!(lights_only.validate_version(), Ok(()));
+        assert!(!lights_only.members_supplied());
     }
 }

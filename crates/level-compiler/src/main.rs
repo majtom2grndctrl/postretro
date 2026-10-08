@@ -1203,6 +1203,9 @@ fn compiler_freshness_roots() -> Vec<PathBuf> {
         // derivation. An SDK edit must invalidate the production sidecar even
         // when the Rust crate itself is unchanged.
         workspace_root.join("sdk/lib"),
+        // The `LightTable` / `MapMember` sidecar contract scripts-build reads
+        // lives here; a wire or version change must rebuild the sidecar.
+        workspace_root.join("crates/level-format/src"),
     ]
 }
 
@@ -1654,6 +1657,10 @@ mod tests {
         assert!(
             roots.contains(&workspace.join("sdk/lib")),
             "SDK sources embedded by scripts-build must participate in production freshness"
+        );
+        assert!(
+            roots.contains(&workspace.join("crates/level-format/src")),
+            "the light-table sidecar contract must participate in production freshness"
         );
     }
 

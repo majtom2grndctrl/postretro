@@ -1833,7 +1833,7 @@ fn sequence_step_grant_payloads_are_validated_like_bodies_in_both_vms() {
     assert_eq!(js.reactions[0].name, "ok");
     assert_identical_warning_per_runtime(
         &capture,
-        "reactions[0] is malformed and was skipped: 'sequence' field must be an array of step objects: reaction `badAmmo` sequence step 0",
+        "reactions[0] is malformed and was skipped: invalid sequence step: reaction `badAmmo` sequence step 0",
     );
 }
 

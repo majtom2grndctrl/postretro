@@ -4,14 +4,7 @@
 //! scripting VMs. `prl-build` passes a resolved light table in and consumes a
 //! resolved sidecar out; it never links a VM or reinterprets script data.
 //!
-//! Member queries: `getMapEntities("light")` answers from the light table.
-//! Movers, trigger volumes and spawners answer identity snapshots
-//! (`id`, `position`, `tags`, plus `spawnedTags` for a spawner) from the
-//! light table's `map_members`, so a script that indexes such a member
-//! evaluates at build time as it does at runtime. Their build ids live at or
-//! above [`MAP_MEMBER_ID_BASE`], disjoint from every map-light index, so they
-//! never name a light. Every other non-light kind degrades to an empty query
-//! and appears in the stub inventory.
+//! See: context/lib/scripting.md §2 (compile-time light membership)
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
@@ -21,6 +14,7 @@ use std::rc::Rc;
 use anyhow::{Context as _, Result, anyhow, bail};
 use mlua::chunk::Compiler as LuaCompiler;
 use mlua::{Function as LuaFunction, Lua, Table as LuaTable, Value as LuaValue};
+use postretro_foundation::data_descriptors::validate::consequential::validate_consequential_args;
 use postretro_level_format::light_membership::{
     LightAnimationSnapshot, LightComponentSnapshot, LightMembershipManifest, LightMembershipRecord,
     LightTable, LightTableLight, MapMember, MapMemberKind,
@@ -108,16 +102,20 @@ const UI_THEME_LUAU: &str = include_str!("../../../sdk/lib/ui/theme.luau");
 
 const MAX_VIRTUAL_MODULE_COPY_DEPTH: usize = 32;
 
-/// First build-side id of a non-light map member. Map-light ids are their raw
-/// `MapData::lights` indexes, so the two ranges never meet and a member id
-/// cannot resolve to a light (or change which light a step names).
+/// First build-side id of a non-light map member (mover, trigger volume,
+/// spawner). Map-light ids are their raw `MapData::lights` indexes, so the two
+/// ranges never meet: a member id cannot resolve to a light, or change which
+/// light a step names. Members answer identity snapshots (`id`, `position`,
+/// `tags`, plus `spawnedTags` on a spawner) so a script that indexes one
+/// evaluates at build time as it does at runtime.
 pub const MAP_MEMBER_ID_BASE: u32 = 0x8000_0000;
 
 /// Evaluate a compiled data script against `light_table` and derive the
 /// map-light membership sidecar. The script path selects QuickJS for `.ts` /
 /// `.js` input and Luau for `.luau` input; callers pass the already compiled
 /// bytes represented as UTF-8 source. Mover, trigger and spawner queries
-/// answer from `light_table.map_members`; light records do not depend on it.
+/// answer from `light_table.map_members` when the table supplies them (a
+/// lights-only table stubs them); light records do not depend on it.
 pub fn emit_light_membership_manifest(
     compiled_source: &str,
     script_path: &Path,
@@ -157,6 +155,13 @@ fn validate_light_table(light_table: &LightTable) -> Result<()> {
             );
         }
     }
+    if !light_table.members_supplied() && !light_table.map_members.is_empty() {
+        bail!(
+            "light table version {} predates `mapMembers` but carries {} of them; a lights-only producer supplies no member table",
+            light_table.version,
+            light_table.map_members.len()
+        );
+    }
     for (index, member) in light_table.map_members.iter().enumerate() {
         if member.kind != MapMemberKind::Spawner && !member.spawned_tags.is_empty() {
             bail!(
@@ -176,6 +181,9 @@ fn validate_light_table(light_table: &LightTable) -> Result<()> {
 struct BuildWorld {
     lights: Vec<LightTableLight>,
     members: Vec<(u32, MapMember)>,
+    /// False for a lights-only table: its member kinds are unknown, not empty,
+    /// so their queries degrade to stubs.
+    members_supplied: bool,
 }
 
 impl BuildWorld {
@@ -197,6 +205,7 @@ impl BuildWorld {
         Ok(Self {
             lights: light_table.lights.clone(),
             members,
+            members_supplied: light_table.members_supplied(),
         })
     }
 }
@@ -875,7 +884,9 @@ fn query_world_json(
                 .collect(),
         )),
         component if WORLD_QUERY_COMPONENTS.contains(&component) => {
-            if let Some(kind) = MapMemberKind::from_component(component) {
+            if let Some(kind) = MapMemberKind::from_component(component)
+                && world.members_supplied
+            {
                 return Ok(JsonValue::Array(
                     world
                         .members
@@ -885,9 +896,9 @@ fn query_world_json(
                         .collect(),
                 ));
             }
-            // A kind the build has no table for degrades to an empty query,
-            // and the inventory makes any branch-sensitive under-derivation
-            // visible.
+            // A kind the build has no table for (every member kind, under a
+            // lights-only table) degrades to an empty query, and the inventory
+            // makes any branch-sensitive under-derivation visible.
             stubs.borrow_mut().insert(format!("worldQuery:{component}"));
             Ok(JsonValue::Array(Vec::new()))
         }
@@ -1024,9 +1035,15 @@ fn collect_membership(
                 continue;
             };
             let light = lights_by_id.get(&id).ok_or_else(|| {
-                anyhow!(
-                    "setLightAnimation targets unknown light handle id {id}; the supplied light table has no matching map-light index"
-                )
+                if id >= MAP_MEMBER_ID_BASE {
+                    anyhow!(
+                        "setLightAnimation targets id {id}, which names a map member (mover, trigger volume or spawner), not a light; animate a member from getMapEntities(\"light\")"
+                    )
+                } else {
+                    anyhow!(
+                        "setLightAnimation targets unknown light handle id {id}; the supplied light table has no matching map-light index"
+                    )
+                }
             })?;
             let record = records
                 .entry(light.index)
@@ -1068,6 +1085,14 @@ fn runtime_sequence_step_shape_is_valid(step: &JsonValue) -> bool {
     if primitive.is_empty() {
         return false;
     }
+    // A grant or `addSlot` payload the runtime rejects drops the reaction, so
+    // it must reserve nothing. Same check as the runtime converters; the
+    // diagnostic is discarded here.
+    let absent_args = JsonValue::Null;
+    let args = step.get("args").unwrap_or(&absent_args);
+    if validate_consequential_args("", "", primitive, args).is_err() {
+        return false;
+    }
     // `wait` and `fire` pair only with their own sentinels, in both directions
     // (runtime `validate_control_step_pair`): a token-, group- or
     // entity-targeted control primitive, or a sentinel carrying another
@@ -1076,8 +1101,8 @@ fn runtime_sequence_step_shape_is_valid(step: &JsonValue) -> bool {
 
     // A subject-token entry `{ primitive, target, args }` (`on.activators`,
     // `on.trigger` verbs) addresses the fire's subjects: a legal step that
-    // reserves no light slot, so it must not make the caller skip the sequence
-    // (A12). Mirror the runtime parser's rejections — an unknown sentinel, a
+    // reserves no light slot, so it must not make the caller skip the sequence.
+    // Mirror the runtime parser's rejections — an unknown sentinel, a
     // `target` beside `id`, `kind` or `tag`, a verb the token lacks, a control
     // primitive.
     match step.get("target") {
@@ -1095,7 +1120,7 @@ fn runtime_sequence_step_shape_is_valid(step: &JsonValue) -> bool {
 
     // A group entry `{ primitive, kind, tag?, args }` addresses NPCs or
     // players resolved at runtime: it is a legal step that reserves no light
-    // slot, so it must not make the caller skip the sequence (A12). Mirror the
+    // slot, so it must not make the caller skip the sequence. Mirror the
     // runtime parser's rejections — an unknown kind, an `id` beside `kind`, a
     // non-string tag, a control primitive, and `spawnFromSpawner` (a spawner
     // is a map member, never a group).
@@ -1727,7 +1752,7 @@ mod tests {
         assert!(!quickjs_manifest.lights[0].is_dynamic);
     }
 
-    // A12 / M7: a group step beside a light member step reserves exactly the
+    // A group step beside a light member step reserves exactly the
     // membership the light step reserves alone, in both hosts — before and
     // after a `wait`, whether authored through the SDK groups
     // (`npcs({ tag }).update(...)`, `closet:update(...)`) or as raw entries. A
@@ -1838,7 +1863,131 @@ mod tests {
         );
     }
 
-    // A12 for subject tokens: an `on.activators` / `on.trigger` entry beside a
+    // A grant payload the runtime rejects drops its reaction at load, so the
+    // light step beside it must reserve nothing; a valid payload in the same
+    // position leaves the light step's reservation intact.
+    #[test]
+    fn rejected_grant_payload_reserves_no_light_in_both_hosts() {
+        let quickjs = |ammo_type: &str| {
+            format!(
+                r#"
+                function setupLevel() {{
+                  const light = getMapEntities("light", {{ tag: "wave" }})[0];
+                  return {{ reactions: [
+                    defineReaction("levelLoad", {{ sequence: [
+                      ...light.pulse({{ min: 0.2, max: 1.0, periodMs: 1000 }}),
+                      players().grantAmmo("{ammo_type}", 1),
+                    ] }}),
+                  ] }};
+                }}
+            "#
+            )
+        };
+        let luau = |ammo_type: &str| {
+            format!(
+                r#"
+                function setupLevel(_)
+                  local light = getMapEntities("light", {{ tag = "wave" }})[1]
+                  local steps = light:pulse({{ min = 0.2, max = 1.0, periodMs = 1000 }})
+                  table.insert(steps, players():grantAmmo("{ammo_type}", 1))
+                  return {{ reactions = {{ defineReaction("levelLoad", {{ sequence = steps }}) }} }}
+                end
+            "#
+            )
+        };
+        let evaluate = |source: String, path: &str| {
+            emit_light_membership_manifest(&source, Path::new(path), Path::new("."), &table())
+                .expect("fixture evaluates")
+                .lights
+        };
+
+        let valid_js = evaluate(quickjs("shells"), "fixture.ts");
+        assert_eq!(valid_js.len(), 1, "a valid grant keeps the light reserved");
+        assert_eq!(valid_js, evaluate(luau("shells"), "fixture.luau"));
+
+        let rejected_js = evaluate(quickjs("bad key!"), "fixture.ts");
+        let rejected_luau = evaluate(luau("bad key!"), "fixture.luau");
+        assert!(
+            rejected_js.is_empty() && rejected_luau.is_empty(),
+            "a grant payload runtime rejects keeps the pass skipping its reaction"
+        );
+    }
+
+    // A lights-only table predates `mapMembers`: its member kinds are unknown,
+    // not empty, so their queries answer `[]` and enter the stub inventory,
+    // where a current table with no members answers them authoritatively.
+    #[test]
+    fn lights_only_table_stubs_member_kind_queries() {
+        let source = r#"
+            function setupLevel() {
+              getMapEntities("mover");
+              getMapEntities("trigger");
+              getMapEntities("spawner");
+              const light = getMapEntities("light", { tag: "wave" })[0];
+              return { reactions: [
+                defineReaction("levelLoad", { sequence: light.pulse({ min: 0, max: 1, periodMs: 1 }) }),
+              ] };
+            }
+        "#;
+        let evaluate = |light_table: &LightTable| {
+            emit_light_membership_manifest(
+                source,
+                Path::new("fixture.ts"),
+                Path::new("."),
+                light_table,
+            )
+        };
+        let mut legacy = table();
+        legacy.version = LightTable::LIGHTS_ONLY_VERSION;
+
+        let legacy_manifest = evaluate(&legacy).expect("a lights-only table evaluates");
+        assert_eq!(legacy_manifest.lights.len(), 1);
+        assert_eq!(
+            legacy_manifest.stubbed_primitives,
+            vec![
+                "worldQuery:kinematic_mover",
+                "worldQuery:spawner",
+                "worldQuery:trigger_volume",
+            ]
+        );
+
+        let current = evaluate(&table()).expect("a current table evaluates");
+        assert_eq!(current.lights, legacy_manifest.lights);
+        assert!(current.stubbed_primitives.is_empty());
+
+        // A lights-only producer never writes members; a table claiming both
+        // is malformed.
+        let mut inconsistent = table().with_map_members(members());
+        inconsistent.version = LightTable::LIGHTS_ONLY_VERSION;
+        assert!(evaluate(&inconsistent).is_err());
+    }
+
+    // A raw `setLightAnimation` aimed at a member id still fails the build,
+    // and says the id names a member rather than an unknown light.
+    #[test]
+    fn set_light_animation_on_a_member_id_names_the_member_range() {
+        let source = r#"
+            function setupLevel() {
+              const lift = getMapEntities("mover", { tag: "lift" })[0];
+              return { reactions: [
+                { name: "levelLoad", sequence: [{ id: lift.id, primitive: "setLightAnimation", args: {} }] },
+              ] };
+            }
+        "#;
+        let error = emit_light_membership_manifest(
+            source,
+            Path::new("fixture.ts"),
+            Path::new("."),
+            &table().with_map_members(members()),
+        )
+        .expect_err("a member id never names a light");
+        assert!(
+            format!("{error:#}").contains("names a map member"),
+            "unexpected diagnostic: {error:#}"
+        );
+    }
+
+    // An `on.activators` / `on.trigger` entry beside a
     // light member step reserves exactly the light step's membership, in both
     // hosts, whether authored through the SDK verbs or as raw entries. An
     // entry runtime rejects (`target` beside `id`, or a verb its token lacks)

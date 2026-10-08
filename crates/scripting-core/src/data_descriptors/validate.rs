@@ -1,5 +1,5 @@
 // Data-context descriptors: validator barrel.
-// See: context/lib/scripting.md §12 (Crate Architecture)
+// See: context/lib/scripting.md §13 (Crate Architecture)
 
 mod consequential;
 mod foundation;

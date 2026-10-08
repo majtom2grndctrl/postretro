@@ -1346,8 +1346,8 @@ mod tests {
         assert_eq!(landings.get(), 1, "an uncancelled tail lands once");
     }
 
-    // `once` half: the same member-bound interruptible wait
-    // on a `once` volume is dropped by V2 — a cancel would spend the latch.
+    // On a `once` volume, a member-bound interruptible wait is dropped by V2,
+    // because a cancel would spend the latch.
     #[test]
     fn member_enter_on_a_once_volume_drops_the_interruptible_wait() {
         let ctx = ScriptCtx::new();
@@ -1761,7 +1761,7 @@ mod tests {
             .reactions
     }
 
-    // SDK-authored, through the real `setupLevel` order — id-step
+    // Runs SDK-authored reactions through the real `setupLevel` order: id-step
     // primitive validation, then Pass A. A subject-token entry after a `wait`
     // drops its reaction with an error naming it (V4a), never as an unnamed
     // unknown primitive; the same entry before the `wait` installs, and a

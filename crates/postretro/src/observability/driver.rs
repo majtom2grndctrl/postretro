@@ -381,12 +381,15 @@ fn run_headless_frame_end_removals(
 ) {
     crate::impact_effects::run_end_of_frame_removal_pass(
         &mut registry.borrow_mut(),
-        |killed, pending_kill_credit| {
-            // An above-zero despawn carries no credit and reports no kill.
-            if pending_kill_credit.is_none() {
-                return;
-            }
-            next_tick_death_events.extend(progress_tracker.on_entity_killed(killed));
+        |removed, pending_kill_credit| {
+            // An above-zero despawn carries no credit and reports no kill; it
+            // only leaves any `progress` set it was in.
+            let fired = if pending_kill_credit.is_some() {
+                progress_tracker.on_entity_killed(removed)
+            } else {
+                progress_tracker.on_entity_removed(removed)
+            };
+            next_tick_death_events.extend(fired);
         },
     );
 }
@@ -754,6 +757,66 @@ mod tests {
         assert_eq!(
             death_events_for_next_tick,
             vec!["wave_complete".to_string()]
+        );
+    }
+
+    // A member despawned above zero HP reports no kill but leaves the set, so
+    // the remaining member's kill completes `at: 1.0`.
+    #[test]
+    fn headless_uncredited_removal_drops_the_member_from_kill_progress() {
+        let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let health = |current: f32| {
+            let mut health = HealthComponent::from_descriptor(&HealthDescriptor {
+                max: 10.0,
+                hitbox: None,
+                zone_multipliers: Default::default(),
+            });
+            health.current = current;
+            health
+        };
+        let despawned = registry.borrow_mut().spawn(Transform::default());
+        let killed = registry.borrow_mut().spawn(Transform::default());
+        for (id, current) in [(despawned, 10.0), (killed, 0.0)] {
+            let mut registry = registry.borrow_mut();
+            registry.set_tags(id, vec!["wave".to_string()]).unwrap();
+            registry.set_component(id, health(current)).unwrap();
+        }
+
+        let mut data = DataRegistry::new();
+        data.populate_level(
+            vec![NamedReaction {
+                name: "wave_done".to_string(),
+                descriptor: ReactionDescriptor::Progress(ProgressDescriptor {
+                    tag: "wave".to_string(),
+                    at: 1.0,
+                    fire: "wave_complete".to_string(),
+                }),
+            }],
+            Vec::new(),
+            &[],
+        );
+        let mut progress_tracker = ProgressTracker::new();
+        assert!(
+            progress_tracker
+                .initialize(&data, &registry.borrow())
+                .is_empty()
+        );
+
+        postretro_sim::scripting_systems::health::sweep_deaths_for_test(&mut registry.borrow_mut());
+        crate::impact_effects::despawn(&mut registry.borrow_mut(), despawned, None);
+        crate::impact_effects::despawn(&mut registry.borrow_mut(), killed, None);
+
+        let mut next_tick_death_events = Vec::new();
+        run_headless_frame_end_removals(
+            &registry,
+            &mut progress_tracker,
+            &mut next_tick_death_events,
+        );
+        assert!(!registry.borrow().exists(despawned));
+        assert_eq!(
+            next_tick_death_events,
+            vec!["wave_complete".to_string()],
+            "one kill over the one member left fires once"
         );
     }
 }

@@ -310,24 +310,27 @@ fn is_map_placed(reg: &EntityRegistry, id: EntityId) -> bool {
 }
 
 /// Map members exist only once a level is installed, so the map-member query
-/// raises outside a level's data script — in a mod start script, mod init, or
-/// the definition context — naming the author-facing call. The message names
-/// `getMapEntities` (the SDK spelling) and the raw `worldQuery` primitive.
+/// raises outside a level's data script (module evaluation or `setupLevel`) —
+/// in a mod start script, mod init, or the definition context — naming the
+/// author-facing call. The message names `getMapEntities` (the SDK spelling)
+/// and the raw `worldQuery` primitive.
 /// See: context/lib/scripting.md §12 (Entity addressing).
 fn require_level_data_context() -> Result<(), ScriptError> {
     if postretro_scripting_core::level_data_context::in_level_data_context() {
         return Ok(());
     }
     Err(ScriptError::InvalidArgument {
-        reason: "getMapEntities (worldQuery) is available only inside a level's data script \
-                 (`setupLevel`); no level's map entities exist in a mod start script or mod init"
+        reason: "getMapEntities (worldQuery) is available only during a level data script's \
+                 module evaluation or `setupLevel`; no level's map entities exist in a mod \
+                 start script or mod init"
             .to_string(),
     })
 }
 
 /// Register the world-domain primitives: `worldQuery`, `worldGetGravity`, and
-/// `worldSetGravity`. All three install in both definition and data contexts; `worldQuery`
-/// itself raises outside a level data context (`require_level_data_context`).
+/// `worldSetGravity`. All three install in both definition and data contexts;
+/// `worldQuery` itself raises outside a level data context
+/// (`require_level_data_context`).
 pub(crate) fn register_world_primitives(registry: &mut PrimitiveRegistry, ctx: ScriptCtx) {
     register_world_query(registry, ctx.clone());
     register_world_gravity(registry, ctx);

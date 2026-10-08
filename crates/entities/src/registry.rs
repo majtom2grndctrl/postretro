@@ -1315,6 +1315,21 @@ impl EntityRegistry {
         for id in live_ids {
             let _ = self.despawn(id);
         }
+        // Every non-retired slot is free now. Rebuild the free list so `pop()`
+        // yields the lowest index first: the next level then allocates slots in
+        // ascending order, and slot-order queries (`worldQuery`, group
+        // resolution) answer in spawn order, as they did on the first load.
+        // Only reuse order changes; each slot keeps the generation `despawn`
+        // bumped, and retired slots stay out of circulation.
+        self.free_list.clear();
+        self.free_list.extend(
+            self.slots
+                .iter()
+                .enumerate()
+                .rev()
+                .filter(|(_, slot)| !slot.retired)
+                .map(|(idx, _)| idx as u16),
+        );
         self.impact_dispatches.clear();
         self.presentation_spawns.clear();
         self.world_point_presentation_spawns.clear();
@@ -1802,6 +1817,43 @@ mod tests {
         registry.clear_for_level_unload();
 
         assert!(registry.take_presentation_spawns().is_empty());
+    }
+
+    // Regression: unload despawned ascending onto a LIFO free list, so the next
+    // level allocated descending slots and slot-order queries answered in
+    // reverse spawn order.
+    #[test]
+    fn level_unload_reallocates_slots_in_ascending_order_with_bumped_generations() {
+        let mut registry = EntityRegistry::new();
+        let first: Vec<EntityId> = (0..4)
+            .map(|_| {
+                registry
+                    .try_spawn(Transform::default(), &["member".to_string()])
+                    .expect("capacity available")
+            })
+            .collect();
+
+        registry.clear_for_level_unload();
+
+        let second: Vec<EntityId> = (0..4)
+            .map(|_| {
+                registry
+                    .try_spawn(Transform::default(), &["member".to_string()])
+                    .expect("capacity available")
+            })
+            .collect();
+
+        let indices: Vec<u16> = second.iter().map(|id| id.index()).collect();
+        assert_eq!(indices, vec![0, 1, 2, 3]);
+        for (old, new) in first.iter().zip(&second) {
+            assert_eq!(new.generation(), old.generation() + 1);
+            assert!(!registry.exists(*old), "stale id must not revive");
+        }
+        let queried: Vec<EntityId> = registry
+            .query_by_component_and_tag(ComponentKind::Transform, Some("member"))
+            .map(|(id, _)| id)
+            .collect();
+        assert_eq!(queried, second, "query order matches spawn order");
     }
 
     #[test]

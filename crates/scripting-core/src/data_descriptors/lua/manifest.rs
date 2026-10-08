@@ -355,8 +355,9 @@ pub fn drain_impact_events_lua(
         return Ok(Vec::new());
     }
     let mut out = Vec::with_capacity(len);
-    for i in 1..=(len as i64) {
-        let value: LuaValue = match arr.get(i) {
+    for i in 0..len {
+        // Lua arrays are 1-based; the log index stays 0-based like JS.
+        let value: LuaValue = match arr.get(i as i64 + 1) {
             Ok(value) => value,
             Err(error) => {
                 log::warn!(
@@ -458,7 +459,9 @@ pub fn drain_trigger_pools_lua(
     let entries = trigger_pool_entries_lua(&arr, scope)?;
     let mut out = Vec::with_capacity(entries.len());
     let mut seen_tags = BTreeSet::new();
-    for (i, value) in entries {
+    for (slot, value) in entries {
+        // Lua arrays are 1-based; the log index stays 0-based like JS.
+        let i = slot - 1;
         match trigger_pool_from_lua(value) {
             Ok(descriptor) if seen_tags.insert(descriptor.tag.clone()) => out.push(descriptor),
             Ok(descriptor) => log::warn!(
@@ -621,8 +624,9 @@ pub fn drain_ui_trees_lua(
     };
     let len = dense_lua_prefix_len(&arr, "uiTrees", scope)?;
     let mut out = Vec::with_capacity(len);
-    for i in 1..=(len as i64) {
-        let item: LuaValue = arr.get(i).map_err(lua_err)?;
+    for i in 0..len {
+        // Lua arrays are 1-based; the log index stays 0-based like JS.
+        let item: LuaValue = arr.get(i as i64 + 1).map_err(lua_err)?;
         match registered_ui_tree_from_lua(item) {
             Ok(tree) => out.push(tree),
             Err(e) => {
@@ -646,8 +650,9 @@ pub fn drain_presentation_templates_lua(
     let len = dense_lua_prefix_len(&arr, "presentationTemplates", scope)?;
     let mut seen_ids = BTreeSet::new();
     let mut out = Vec::with_capacity(len);
-    for i in 1..=(len as i64) {
-        let value: LuaValue = arr.get(i).map_err(lua_err)?;
+    for i in 0..len {
+        // Lua arrays are 1-based; the log index stays 0-based like JS.
+        let value: LuaValue = arr.get(i as i64 + 1).map_err(lua_err)?;
         match presentation_template_from_lua(value) {
             Ok(template) if !seen_ids.insert(template.id.clone()) => log::warn!(
                 "[Scripting] {scope}: `presentationTemplates[{i}]` duplicates `{}` and was skipped",
@@ -876,10 +881,11 @@ pub fn drain_maps_lua(table: &Table, scope: &str) -> Result<Vec<ModMapEntry>, De
     let len = dense_lua_prefix_len(&arr, "maps", scope)?;
     let mut out = Vec::with_capacity(len);
     let mut seen_ids = BTreeSet::new();
-    for i in 1..=(len as i64) {
-        let item: LuaValue = arr.get(i).map_err(lua_err)?;
+    for i in 0..len {
+        // Lua arrays are 1-based; the log index stays 0-based like JS.
+        let item: LuaValue = arr.get(i as i64 + 1).map_err(lua_err)?;
         match mod_map_entry_from_lua(item) {
-            Ok(entry) => push_valid_map_entry(entry, &mut seen_ids, &mut out, scope, i as usize),
+            Ok(entry) => push_valid_map_entry(entry, &mut seen_ids, &mut out, scope, i),
             Err(e) => {
                 log::warn!("[Scripting] {scope}: `maps[{i}]` is malformed and was skipped: {e}")
             }
@@ -961,8 +967,9 @@ pub fn drain_faction_sentiments_lua(
     };
     let length = validate_dense_lua_array(&array, "`sentiment` field")?;
     let mut entries = Vec::with_capacity(length);
-    for index in 1..=(length as i64) {
-        let value: LuaValue = array.get(index).map_err(lua_err)?;
+    for index in 0..length {
+        // Lua arrays are 1-based; the diagnostic index stays 0-based like JS.
+        let value: LuaValue = array.get(index as i64 + 1).map_err(lua_err)?;
         let entry = lua_table(value, "sentiment entry")?;
         let sentiment = get_required_f32_lua(&entry, "sentiment")?;
         let tolerance = get_required_f32_lua(&entry, "tolerance")?;

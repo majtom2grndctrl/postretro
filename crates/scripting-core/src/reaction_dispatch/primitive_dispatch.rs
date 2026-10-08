@@ -19,8 +19,8 @@ use super::group_dispatch::dispatch_group;
 ///   entity-targeted `ReactionPrimitiveRegistry`; host/single-player only
 ///   (`group_dispatch.rs`).
 /// - A `Some(tag)` resolves tagged entities and runs the same registry.
-/// - A `None` tag is a system reaction (M13 HUD dynamics), dispatched against
-///   the `SystemReactionRegistry`, which enqueues a typed command onto
+/// - A `None` tag is a system reaction, dispatched against the
+///   `SystemReactionRegistry`, which enqueues a typed command onto
 ///   `ScriptCtx::system_commands` for the app's per-frame drain.
 ///
 /// All arms share the one named-event vocabulary.
@@ -59,8 +59,8 @@ pub(super) fn dispatch_primitive(
     };
 
     // Raw tag scans walk the Transform column: every spawned entity carries a
-    // Transform, so it enumerates all of them. Empty target sets are passed through; handlers
-    // decide whether to warn.
+    // Transform, so it enumerates all of them. Empty target sets are passed
+    // through; handlers decide whether to warn.
     let targets: Vec<EntityId> = {
         let reg = script_ctx.registry.borrow();
         reg.query_by_component_and_tag(ComponentKind::Transform, Some(tag))

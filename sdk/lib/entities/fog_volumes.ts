@@ -86,9 +86,7 @@ function fogAnimation(
   playCount: number | undefined,
   channel: { density: number[] } | { saturation: number[] },
 ): FogAnimation {
-  const fields =
-    playCount === undefined ? { periodMs, ...channel } : { periodMs, playCount, ...channel };
-  return fields as Partial<FogAnimation> as FogAnimation;
+  return playCount === undefined ? { periodMs, ...channel } : { periodMs, playCount, ...channel };
 }
 
 function densityAnim(periodMs: number, density: number[], playCount?: number): FogAnimation {

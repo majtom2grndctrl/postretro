@@ -661,6 +661,8 @@ mod tests {
     fn presentation_image_uses_renderer_size_and_anchor_translation() {
         let root = Widget::Image(ImageWidget {
             asset: "presentation/icon".to_string(),
+            width: None,
+            height: None,
             id: None,
             focus_neighbors: Default::default(),
             label: None,
@@ -689,6 +691,37 @@ mod tests {
             anchored.images[0].1.instances[0].rect,
             [320.0, 180.0, 16.0, 8.0],
         );
+    }
+
+    #[test]
+    fn presentation_image_honors_an_authored_width_with_source_aspect() {
+        let root = Widget::Image(ImageWidget {
+            asset: "presentation/icon".to_string(),
+            width: Some(32.0),
+            height: None,
+            id: None,
+            focus_neighbors: Default::default(),
+            label: None,
+            decorative: true,
+            visible_when: None,
+            role: None,
+        });
+        let mut layout = PresentationTemplateLayout::from_widget(&root, &UiTheme::engine_default());
+        let mut image_sizes = ImageSizes::new();
+        image_sizes.insert("presentation/icon".to_string(), [16.0, 8.0]);
+        let mut font_system = crate::text::build_font_system();
+        let relative = layout.build_draw_data(
+            [1280, 720],
+            &mut font_system,
+            &image_sizes,
+            1,
+            &CellValues::new(),
+            0.0,
+        );
+
+        assert_eq!(relative.images.len(), 1);
+        let rect = relative.images[0].1.instances[0].rect;
+        assert_rect_approx(rect, [rect[0], rect[1], 32.0, 16.0]);
     }
 
     #[test]

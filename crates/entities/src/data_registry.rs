@@ -1128,6 +1128,7 @@ mod tests {
             path: format!("maps/{id}.prl"),
             name: id.to_string(),
             tags: vec!["campaign".to_string()],
+            loading_tree: Vec::new(),
         }
     }
 

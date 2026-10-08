@@ -115,6 +115,8 @@ fn staged_manifest_result(
             presentation_overlays: Vec::new(),
             theme,
             frontend: None,
+            ui_images: Default::default(),
+            loading: Default::default(),
             store_declarations: Default::default(),
             dependency_paths: Vec::new(),
         })),

@@ -20,7 +20,7 @@ pub use super::registry::EntityId;
 pub use super::runtime::{
     Frontend, MenuCamera, ModAttenuation, ModAttenuationCurve, ModAudioProfile, ModBloomProfile,
     ModBloomResolution, ModInputBinding, ModInputBlock, ModInputCommand, ModInputGlyphs,
-    ModMapEntry, ModMoverDefaults, ModRenderProfile,
+    ModLoading, ModMapEntry, ModMoverDefaults, ModRenderProfile,
 };
 pub use crate::ir::IrType;
 pub use crate::ui::descriptor::{
@@ -49,6 +49,7 @@ pub use super::conv;
 mod audio_profile;
 mod error;
 mod input_block;
+mod loading_manifest;
 mod movement_sounds;
 mod runtime_manifest;
 mod trigger_events;
@@ -58,6 +59,7 @@ mod vm_adapters;
 mod js {
     pub mod entity;
     pub mod input_block;
+    pub mod loading_manifest;
     pub mod manifest;
     pub mod movement;
     pub mod movement_view_feel;
@@ -72,6 +74,7 @@ mod js {
 mod lua {
     pub mod entity;
     pub mod input_block;
+    pub mod loading_manifest;
     pub mod manifest;
     pub mod maps;
     pub mod movement;
@@ -107,6 +110,7 @@ pub use postretro_foundation::data_descriptors::types::{
 
 pub use js::entity::*;
 pub use js::input_block::*;
+pub use js::loading_manifest::*;
 pub use js::manifest::*;
 pub use js::movement::*;
 pub use js::movement_view_feel::*;
@@ -118,6 +122,7 @@ pub use js::ui_widgets::*;
 
 pub use lua::entity::*;
 pub use lua::input_block::*;
+pub use lua::loading_manifest::*;
 pub use lua::manifest::*;
 pub use lua::maps::*;
 pub use lua::movement::*;

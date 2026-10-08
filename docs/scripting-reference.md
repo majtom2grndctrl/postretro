@@ -3383,6 +3383,124 @@ logged and skipped (the rest register), and a structurally broken `theme` /
 `fonts` field surfaces a named load-time diagnostic the engine logs before
 continuing — a bad UI registration never aborts boot or level load.
 
+### UI images (`uiImages`)
+
+`uiImages` maps an image name to a PNG inside your mod. Each entry loads into
+the engine's UI image registry under its name, so any tree — HUD, menu, or
+loading screen — draws it with `Image({ asset: name })`:
+
+```typescript
+export default defineMod({
+  // ...
+  uiImages: {
+    "loading/skyline": "ui/loading/skyline.png", // name → path under the mod root
+    "hud/portrait": "ui/portrait.png",
+  },
+});
+```
+
+- Paths are relative to the mod root and may not leave it: an absolute path or
+  one containing `..` is skipped with a warning.
+- Names beginning `engine/` belong to the engine and are skipped with a warning.
+  The engine's own images live there — `engine/splashLogo` is the boot splash
+  logo, which your trees may draw too.
+- A missing file or a PNG that does not decode is skipped with a warning naming
+  the entry. The rest still load; a bad image never stops the game.
+- Images load at mod init and again whenever a hot reload commits. An image
+  whose name matches a glyph image (`input.glyphs`) is drawn as the glyph, with a
+  warning.
+
+In Luau the field is the same table: `uiImages = { ["loading/skyline"] = "ui/loading/skyline.png" }`.
+
+### Image size
+
+An `Image` draws at its PNG's natural size unless you give it one, in pixels of
+the 1280×720 layout canvas:
+
+```typescript
+Image({ asset: "loading/skyline", width: 640, decorative: true });         // height follows the art
+Image({ asset: "hud/portrait", width: 64, height: 64, label: "Portrait" }); // exactly 64×64
+```
+
+Give `width` alone or `height` alone and the other follows the image's aspect
+ratio; give both for an exact box. Sizes must be positive numbers.
+
+### Loading screens
+
+While a level loads, the engine shows a UI tree: the load's level name, a
+progress bar, whatever art you like. A loading screen is an ordinary tree you
+register in `uiTrees`; the manifest says which ones to show.
+
+```typescript
+import { Bar, Image, Text, Tree, VStack, bindState, defineUiTree, getGameState } from "postretro/ui";
+
+const { loading } = getGameState();
+
+export const loadingSkyline = defineUiTree({
+  name: "loadingSkyline",
+  tree: Tree(
+    { anchor: "center", offset: [0, 0] },
+    VStack({ gap: 16, align: "center" }, [
+      Image({ asset: "loading/skyline", width: 640, decorative: true }),
+      Text({ content: "", fontSize: 28, bind: loading.levelName }),
+      Bar({
+        bind: bindState(loading.progress, { tween: { durationMs: 200, easing: "easeOut" } }),
+        max: 1,
+        fill: [0.1, 0.8, 0.9, 1],
+        background: [0.04, 0.05, 0.07, 1],
+        width: 640,
+        height: 8,
+      }),
+    ]),
+  ),
+});
+
+export default defineMod({
+  // ...
+  uiTrees: [loadingSkyline, loadingAlley],
+  loading: { tree: ["loadingSkyline", "loadingAlley"] }, // mod-wide pool
+  maps: [
+    { id: "e1m1", path: "maps/e1m1.prl", name: "Entryway", loadingTree: "loadingEntry" },
+  ],
+});
+```
+
+**Which tree shows.** Each load picks once, when it begins:
+
+1. the map's catalog entry `loadingTree`, if it names any registered tree;
+2. otherwise the mod-wide `loading.tree`;
+3. otherwise the tree registered as `loadingScreen` — the engine's fallback (the
+   PostRetro logo over a bar), or your own tree if you register one under that
+   name.
+
+`tree` and `loadingTree` take one tree name or an array. With an array, each load
+picks one of its registered names at random. Names that are not registered are
+skipped with a one-time warning. A level loaded by path rather than by catalog id
+(a map given on the command line, for example) has no catalog entry and starts at
+the mod-wide pool. A level's own `setupLevel` trees are never loading screens.
+
+**The two loading values.** `getGameState().loading` holds two readonly values
+for loading screens to bind:
+
+- `loading.levelName` — the loading level's catalog `name`, or the map file's
+  name for a load by path. Empty when nothing is loading.
+- `loading.progress` — `0` to `1`. It rises as the level file is read and never
+  goes backward; the bar reaches `0.85` when the file is read, and the level
+  appears straight after. `0` when nothing is loading.
+
+Both are local to each player's machine: they are never saved or sent over the
+network.
+
+**What a loading screen can do.** A loading screen is display-only: it draws
+every frame of the load, and its tweens and fades run, but it never takes input
+— a button on it cannot be pressed. No HUD or menu draws with it. The screen
+clears to the boot splash's background color, so keep your art's edges on that
+color, `[28, 33, 39]` in 8-bit sRGB, if you want a seamless hand-off from the
+splash.
+
+In Luau, the same manifest fields are `loading = { tree = { "loadingSkyline", "loadingAlley" } }`
+and `loadingTree = "loadingEntry"` on a map entry.
+
 ## Reactive UI (selection, visibility, a11y)
 
 The reactive-UI layer makes **selection-driven** widgets — tabs, segmented

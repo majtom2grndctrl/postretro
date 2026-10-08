@@ -300,6 +300,57 @@ fn bar_bridge_accepts_sizing_and_exit_fade_and_rejects_invalid_authored_shapes()
 }
 
 #[test]
+fn image_bridge_accepts_sizing_and_rejects_non_positive_or_non_finite_sizes() {
+    let tree = eval_js(
+        r#"({ anchor:"center", offset:[0,0], root:{kind:"image",asset:"ui/logo",decorative:true,width:256} })"#,
+        |ctx, value| anchored_tree_from_js_value(ctx, value).unwrap(),
+    );
+    let Widget::Image(image) = tree.root else {
+        panic!("root must be an image");
+    };
+    assert_eq!((image.width, image.height), (Some(256.0), None));
+
+    let tree = eval_lua(
+        r#"return { anchor = "center", offset = {0, 0}, root = { kind = "image", asset = "ui/logo", decorative = true, width = 64, height = 32 } }"#,
+        |value| anchored_tree_from_lua_value(value).expect("sized Luau image must convert"),
+    );
+    let Widget::Image(image) = tree.root else {
+        panic!("root must be an image");
+    };
+    assert_eq!((image.width, image.height), (Some(64.0), Some(32.0)));
+
+    for size in ["width:0", "height:-4", "width:NaN", "height:Infinity"] {
+        let source = format!(
+            r#"({{ anchor:"center", offset:[0,0], root:{{kind:"image",asset:"ui/logo",decorative:true,{size}}} }})"#
+        );
+        let error = eval_js(&source, |ctx, value| {
+            anchored_tree_from_js_value(ctx, value).unwrap_err()
+        });
+        assert!(
+            matches!(error, DescriptorError::InvalidShape { ref reason } if reason.contains("image.")),
+            "{size} must be rejected, got {error:?}"
+        );
+    }
+    for size in [
+        "width = 0",
+        "height = -4",
+        "width = 0/0",
+        "height = math.huge",
+    ] {
+        let source = format!(
+            r#"return {{ anchor = "center", offset = {{0, 0}}, root = {{ kind = "image", asset = "ui/logo", decorative = true, {size} }} }}"#
+        );
+        let error = eval_lua(&source, |value| {
+            anchored_tree_from_lua_value(value).unwrap_err()
+        });
+        assert!(
+            matches!(error, DescriptorError::InvalidShape { ref reason } if reason.contains("image.")),
+            "{size} must be rejected, got {error:?}"
+        );
+    }
+}
+
+#[test]
 fn ring_bridge_parses_mixed_scalars_and_rejects_invalid_contracts_in_both_runtimes() {
     let valid_js = r#"({
         anchor: "center", offset: [0, 0],

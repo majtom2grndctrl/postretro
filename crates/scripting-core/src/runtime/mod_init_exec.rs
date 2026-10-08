@@ -14,13 +14,14 @@ use crate::data_descriptors::{
     drain_factions_lua, drain_fonts_js, drain_fonts_lua, drain_frontend_js, drain_frontend_lua,
     drain_global_crossings_js, drain_global_crossings_lua, drain_global_reactions_js,
     drain_global_reactions_lua, drain_impact_events_js, drain_impact_events_lua,
-    drain_input_block_js, drain_input_block_lua, drain_maps_js, drain_maps_lua,
-    drain_mod_trigger_events_js, drain_mod_trigger_events_lua, drain_mover_defaults_js,
-    drain_mover_defaults_lua, drain_presentation_overlays_js, drain_presentation_overlays_lua,
-    drain_presentation_templates_js, drain_presentation_templates_lua, drain_render_profile_js,
-    drain_render_profile_lua, drain_switching_js, drain_switching_lua, drain_theme_js,
-    drain_theme_lua, drain_trigger_pools_js, drain_trigger_pools_lua, drain_ui_trees_js,
-    drain_ui_trees_lua, entity_descriptor_from_js, entity_descriptor_from_lua,
+    drain_input_block_js, drain_input_block_lua, drain_loading_js, drain_loading_lua,
+    drain_maps_js, drain_maps_lua, drain_mod_trigger_events_js, drain_mod_trigger_events_lua,
+    drain_mover_defaults_js, drain_mover_defaults_lua, drain_presentation_overlays_js,
+    drain_presentation_overlays_lua, drain_presentation_templates_js,
+    drain_presentation_templates_lua, drain_render_profile_js, drain_render_profile_lua,
+    drain_switching_js, drain_switching_lua, drain_theme_js, drain_theme_lua,
+    drain_trigger_pools_js, drain_trigger_pools_lua, drain_ui_images_js, drain_ui_images_lua,
+    drain_ui_trees_js, drain_ui_trees_lua, entity_descriptor_from_js, entity_descriptor_from_lua,
     entity_faction_name_from_js, entity_faction_name_from_lua,
 };
 use crate::error::ScriptError;
@@ -435,6 +436,24 @@ pub(super) fn run_mod_init_quickjs(
                 return;
             }
         };
+        let ui_images = match drain_ui_images_js(&obj, "default mod manifest export") {
+            Ok(images) => images,
+            Err(e) => {
+                out = Err(ScriptError::InvalidArgument {
+                    reason: format!("mod-init: `{source_path}` default mod manifest export `uiImages` invalid: {e}"),
+                });
+                return;
+            }
+        };
+        let loading = match drain_loading_js(&obj, "default mod manifest export") {
+            Ok(loading) => loading,
+            Err(e) => {
+                out = Err(ScriptError::InvalidArgument {
+                    reason: format!("mod-init: `{source_path}` default mod manifest export `loading` invalid: {e}"),
+                });
+                return;
+            }
+        };
         let fonts = match drain_fonts_js(&obj, "default mod manifest export") {
             Ok(f) => f,
             Err(e) => {
@@ -526,6 +545,8 @@ pub(super) fn run_mod_init_quickjs(
             presentation_overlays,
             theme,
             frontend,
+            ui_images,
+            loading,
             fonts,
             maps,
             reactions,
@@ -793,6 +814,20 @@ pub(super) fn run_mod_init_luau(
             ),
         }
     })?;
+    let ui_images = drain_ui_images_lua(&table, "returned mod manifest").map_err(|e| {
+        ScriptError::InvalidArgument {
+            reason: format!(
+                "mod-init: `{source_path}` returned mod manifest `uiImages` invalid: {e}"
+            ),
+        }
+    })?;
+    let loading = drain_loading_lua(&table, "returned mod manifest").map_err(|e| {
+        ScriptError::InvalidArgument {
+            reason: format!(
+                "mod-init: `{source_path}` returned mod manifest `loading` invalid: {e}"
+            ),
+        }
+    })?;
     let fonts = drain_fonts_lua(&table, "returned mod manifest").map_err(|e| {
         ScriptError::InvalidArgument {
             reason: format!("mod-init: `{source_path}` returned mod manifest `fonts` invalid: {e}"),
@@ -862,6 +897,8 @@ pub(super) fn run_mod_init_luau(
         presentation_overlays,
         theme,
         frontend,
+        ui_images,
+        loading,
         fonts,
         maps,
         reactions,
@@ -949,6 +986,32 @@ mod tests {
             assert_eq!(js, expected);
             assert_eq!(luau, expected);
         }
+    }
+
+    #[test]
+    fn mod_init_ui_images_and_loading_match_in_both_runtimes() {
+        let registry = PrimitiveRegistry::new();
+        let quickjs = QuickJsSubsystem::new(&registry, &crate::quickjs::QuickJsConfig::default())
+            .expect("QuickJS subsystem should initialize");
+        let js = run_mod_init_quickjs(
+            &quickjs,
+            "globalThis.__postretroModManifest = { name: 'Load', id: 'load', version: '1',              uiImages: { logo: 'ui/logo.png', 'engine/x': 'ui/x.png', bad: 4 },              loading: { tree: 'modLoading' } };",
+            "load.js",
+        )
+        .expect("malformed optional image entries must not reject the manifest");
+        let luau = run_mod_init_luau(
+            &[],
+            "return { name = 'Load', id = 'load', version = '1',              uiImages = { logo = 'ui/logo.png', ['engine/x'] = 'ui/x.png', bad = 4 },              loading = { tree = 'modLoading' } }",
+            "load.luau",
+            Path::new("."),
+        )
+        .expect("malformed optional image entries must not reject the manifest");
+        let expected_images =
+            std::collections::BTreeMap::from([("logo".to_string(), "ui/logo.png".to_string())]);
+        assert_eq!(js.ui_images, expected_images);
+        assert_eq!(luau.ui_images, expected_images);
+        assert_eq!(js.loading.tree, vec!["modLoading".to_string()]);
+        assert_eq!(luau.loading, js.loading);
     }
 
     #[test]

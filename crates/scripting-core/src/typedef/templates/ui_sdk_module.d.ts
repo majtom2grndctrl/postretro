@@ -168,8 +168,8 @@ declare module "postretro/ui" {
   /** Build a solid panel widget descriptor. Pure; no engine side effect. */
   export function Panel(props: PanelProps): WidgetDescriptor;
   /** Props for `Image`. `asset` is a UI texture key. Exactly one accessible-name path is required: `label` for meaningful images or `decorative: true` for ignored imagery. */
-  export type ImageProps = { asset: string; id?: string; focusNeighbors?: FocusNeighborsProp; visibleWhen?: Predicate; role?: WidgetRole } & ({ label: string; decorative?: never } | { decorative: true; label?: never });
-  /** Build an image widget descriptor sized from the texture asset's natural dimensions. */
+  export type ImageProps = { asset: string; width?: number; height?: number; id?: string; focusNeighbors?: FocusNeighborsProp; visibleWhen?: Predicate; role?: WidgetRole } & ({ label: string; decorative?: never } | { decorative: true; label?: never });
+  /** Build an image widget descriptor. Without `width` / `height` (logical-reference px) it takes the texture asset's natural size; one keeps the source aspect; both give an exact box. */
   export function Image(props: ImageProps): WidgetDescriptor;
   /** Props for `Spacer`. `flexGrow` is a finite proportional share of leftover space; defaults to 1. */
   export type SpacerProps = { flexGrow?: number; id?: string; visibleWhen?: Predicate; role?: WidgetRole };

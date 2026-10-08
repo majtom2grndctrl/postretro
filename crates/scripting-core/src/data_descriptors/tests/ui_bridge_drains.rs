@@ -383,6 +383,39 @@ fn luau_bridge_preserves_slider_value_display_mapping() {
 }
 
 #[test]
+fn luau_image_factory_carries_sizes_and_rejects_non_positive_ones() {
+    const WIDGETS_SRC: &str = include_str!("../../../../../sdk/lib/ui/widgets.luau");
+    let lua = mlua::Lua::new();
+    install_ui_theme_token_validator(&lua);
+    let widgets: mlua::Table = lua.load(WIDGETS_SRC).eval().expect("widgets module");
+    lua.globals().set("W", widgets).unwrap();
+    let value: mlua::Value = lua
+        .load(
+            r#"return {
+                anchor = "center", offset = {0, 0},
+                root = W.Image({ asset = "loading/skyline", width = 256, decorative = true }),
+            }"#,
+        )
+        .eval()
+        .expect("valid sized image tree");
+    let tree = anchored_tree_from_lua_value(value).expect("bridge must convert");
+    assert_eq!(
+        serde_json::to_string(&tree.root).unwrap(),
+        r#"{"kind":"image","asset":"loading/skyline","width":256.0,"decorative":true}"#
+    );
+
+    let error = lua
+        .load(r#"return W.Image({ asset = "loading/skyline", height = 0, decorative = true })"#)
+        .eval::<mlua::Value>()
+        .expect_err("a zero height must be rejected by the factory");
+    assert!(
+        error
+            .to_string()
+            .contains("Image: `height` must be greater than zero")
+    );
+}
+
+#[test]
 fn js_bridge_malformed_tree_surfaces_named_error_not_panic() {
     // Unknown widget kind → InvalidShape (a named DescriptorError), no panic.
     let bad_kind = r#"({ anchor: "center", offset: [0.0, 0.0], root: { kind: "carousel" } })"#;

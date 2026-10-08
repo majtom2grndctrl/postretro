@@ -7,6 +7,7 @@
 mod accessibility;
 mod envelope;
 mod focus;
+mod image;
 mod values;
 mod widgets;
 
@@ -18,15 +19,16 @@ pub use accessibility::Role;
 pub use accessibility::implicit_role;
 pub use envelope::{AnchoredTree, CaptureMode};
 pub use focus::{FocusKind, FocusNeighbors, FocusPolicy, RepeatPolicy};
+pub use image::ImageWidget;
 pub use values::{
     Align, BindSource, Border, BoundScalar, CellInit, ColorValue, Easing, LocalState, Predicate,
     PredicateValue, ScalarValue, SpacingValue, TextTween,
 };
 pub use widgets::{
     AnnounceWidget, BarExitFade, BarMax, BarMaxStateRef, BarWidget, ButtonWidget, ContainerWidget,
-    GlyphWidget, GridWidget, ImageWidget, PanelBind, PanelTween, PanelWidget, Priority,
-    RingRadiusRange, RingWidget, ScrollProps, SliderBind, SliderValueDisplay, SliderWidget,
-    SpacerWidget, TextBind, TextWidget, ValueTextCase, Widget, warn_hstack_scroll_ignored,
+    GlyphWidget, GridWidget, PanelBind, PanelTween, PanelWidget, Priority, RingRadiusRange,
+    RingWidget, ScrollProps, SliderBind, SliderValueDisplay, SliderWidget, SpacerWidget, TextBind,
+    TextWidget, ValueTextCase, Widget, warn_hstack_scroll_ignored,
 };
 pub(crate) use widgets::{validate_scroll_max_height, validate_stack_width};
 
@@ -1149,6 +1151,38 @@ mod tests {
         let deco = r#"{"kind":"image","asset":"ui/logo","decorative":true}"#;
         let w: Widget = serde_json::from_str(deco).expect("deserialize");
         assert_eq!(serde_json::to_string(&w).unwrap(), deco);
+    }
+
+    #[test]
+    fn unsized_image_round_trips_byte_identically_without_size_keys() {
+        // A pre-sizing image descriptor must serialize exactly as before.
+        for json in [
+            r#"{"kind":"image","asset":"ui/logo"}"#,
+            r#"{"kind":"image","asset":"ui/portrait","id":"hero","label":"Hero portrait","visibleWhen":{"slot":"hud.visible"}}"#,
+        ] {
+            let widget: Widget = serde_json::from_str(json).expect("deserialize");
+            let reserialized = serde_json::to_string(&widget).unwrap();
+            assert_eq!(reserialized, json);
+            assert!(!reserialized.contains("width") && !reserialized.contains("height"));
+        }
+    }
+
+    #[test]
+    fn sized_image_round_trips_and_raw_descriptors_reject_invalid_sizes() {
+        let sized =
+            r#"{"kind":"image","asset":"engine/splashLogo","width":256.0,"decorative":true}"#;
+        let widget: Widget = serde_json::from_str(sized).expect("deserialize");
+        assert_eq!(serde_json::to_string(&widget).unwrap(), sized);
+
+        for json in [
+            r#"{"kind":"image","asset":"ui/logo","width":0.0}"#,
+            r#"{"kind":"image","asset":"ui/logo","height":-1.0}"#,
+        ] {
+            assert!(
+                serde_json::from_str::<Widget>(json).is_err(),
+                "invalid raw image size must fail serde validation: {json}"
+            );
+        }
     }
 
     #[test]

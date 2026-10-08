@@ -1092,6 +1092,8 @@ declare module "postretro" {
     name: string;
     /** Authoritative classification tags for filtering plus `levels` selection on mod-global reactions, impact events, crossings, trigger events, and trigger pools. Optional; missing/null normalizes to empty. */
     tags?: ReadonlyArray<string>;
+    /** Loading-screen tree for this map: one UI tree registry name or an array to pick from at random. Optional; overrides `ModManifest.loading.tree` for loads of this map. Unregistered names are skipped; a malformed value warns and is treated as absent, as is an empty array. */
+    loadingTree?: string | ReadonlyArray<string>;
   };
 
   /** Static camera pose used while a mod frontend menu is presented. All fields are required when `ModManifest.frontend` is present. */
@@ -1112,6 +1114,12 @@ declare module "postretro" {
     backgroundLevel?: string;
     /** Static menu camera pose. Required. */
     camera: MenuCamera;
+  };
+
+  /** Mod-wide loading-screen declaration supplied via `ModManifest.loading`. The engine shows the chosen tree on every level-load frame; bind a `Bar` to `loading.progress` for a progress bar. */
+  export type ModLoading = {
+    /** Loading-screen tree: one UI tree registry name or an array; each load picks one registered name uniformly at random. A map's `loadingTree` overrides it. Unregistered names are skipped; with none left the engine `loadingScreen` tree shows. A malformed value warns and is treated as absent, as is an empty array. */
+    tree: string | ReadonlyArray<string>;
   };
 
   /** Theme token maps supplied via `ModManifest.theme`. Three category-scoped maps: colors (linear-RGBA), fonts (registered family name), spacing (logical px). Each is optional; overrides merge per-token into the engine default. */
@@ -1397,6 +1405,10 @@ declare module "postretro" {
     theme?: ThemeTokens;
     /** Font assets: family name → TTF asset path. Optional; changing custom font assets requires an engine restart. */
     fonts?: { readonly [token: string]: string };
+    /** UI images: image name → PNG path relative to the mod root. Optional. Each loads into the UI image registry under its name at mod init and after a hot reload, so any tree can show it with `Image({ asset: name })`. Names beginning `engine/` are reserved. A reserved name, a non-string value, a path that leaves the mod, a missing file, or an undecodable PNG warns and skips that entry. */
+    uiImages?: { readonly [name: string]: string };
+    /** Mod-wide loading screen. Optional; omission shows the engine fallback loading screen. */
+    loading?: ModLoading;
     /** Pre-load-discoverable map catalog. Optional; use catalog ids with `loadLevel(id)` and `frontend.backgroundLevel`. */
     maps?: ReadonlyArray<ModMapEntry>;
     /** Mod-defined frontend menu declaration. Optional; omission clears the mod frontend and presents the engine fallback menu. */
@@ -1528,6 +1540,10 @@ declare module "postretro" {
     };
     readonly input: {
       readonly mode: ComputedRef<"pointer" | "focus">;
+    };
+    readonly loading: {
+      readonly levelName: ComputedRef<string>;
+      readonly progress: ComputedRef<number>;
     };
     readonly options: {
       readonly crouchMode: Ref<"hold" | "toggle">;
@@ -2742,8 +2758,8 @@ declare module "postretro/ui" {
   /** Build a solid panel widget descriptor. Pure; no engine side effect. */
   export function Panel(props: PanelProps): WidgetDescriptor;
   /** Props for `Image`. `asset` is a UI texture key. Exactly one accessible-name path is required: `label` for meaningful images or `decorative: true` for ignored imagery. */
-  export type ImageProps = { asset: string; id?: string; focusNeighbors?: FocusNeighborsProp; visibleWhen?: Predicate; role?: WidgetRole } & ({ label: string; decorative?: never } | { decorative: true; label?: never });
-  /** Build an image widget descriptor sized from the texture asset's natural dimensions. */
+  export type ImageProps = { asset: string; width?: number; height?: number; id?: string; focusNeighbors?: FocusNeighborsProp; visibleWhen?: Predicate; role?: WidgetRole } & ({ label: string; decorative?: never } | { decorative: true; label?: never });
+  /** Build an image widget descriptor. Without `width` / `height` (logical-reference px) it takes the texture asset's natural size; one keeps the source aspect; both give an exact box. */
   export function Image(props: ImageProps): WidgetDescriptor;
   /** Props for `Spacer`. `flexGrow` is a finite proportional share of leftover space; defaults to 1. */
   export type SpacerProps = { flexGrow?: number; id?: string; visibleWhen?: Predicate; role?: WidgetRole };

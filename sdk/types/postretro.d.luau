@@ -1091,6 +1091,8 @@ export type ModMapEntry = {
   name: string,
   --- Authoritative classification tags for filtering plus `levels` selection on mod-global reactions, impact events, crossings, trigger events, and trigger pools. Optional; missing/null normalizes to empty.
   tags: {string}?,
+  --- Loading-screen tree for this map: one UI tree registry name or an array to pick from at random. Optional; overrides `ModManifest.loading.tree` for loads of this map. Unregistered names are skipped; a malformed value warns and is treated as absent, as is an empty array.
+  loadingTree: string | {string}?,
 }
 
 --- Static camera pose used while a mod frontend menu is presented. All fields are required when `ModManifest.frontend` is present.
@@ -1111,6 +1113,12 @@ export type Frontend = {
   backgroundLevel: string?,
   --- Static menu camera pose. Required.
   camera: MenuCamera,
+}
+
+--- Mod-wide loading-screen declaration supplied via `ModManifest.loading`. The engine shows the chosen tree on every level-load frame; bind a `Bar` to `loading.progress` for a progress bar.
+export type ModLoading = {
+  --- Loading-screen tree: one UI tree registry name or an array; each load picks one registered name uniformly at random. A map's `loadingTree` overrides it. Unregistered names are skipped; with none left the engine `loadingScreen` tree shows. A malformed value warns and is treated as absent, as is an empty array.
+  tree: string | {string},
 }
 
 --- Theme token maps supplied via `ModManifest.theme`. Three category-scoped maps: colors (linear-RGBA), fonts (registered family name), spacing (logical px). Each is optional; overrides merge per-token into the engine default.
@@ -1396,6 +1404,10 @@ export type ModManifest = {
   theme: ThemeTokens?,
   --- Font assets: family name → TTF asset path. Optional; changing custom font assets requires an engine restart.
   fonts: { [string]: string }?,
+  --- UI images: image name → PNG path relative to the mod root. Optional. Each loads into the UI image registry under its name at mod init and after a hot reload, so any tree can show it with `Image({ asset: name })`. Names beginning `engine/` are reserved. A reserved name, a non-string value, a path that leaves the mod, a missing file, or an undecodable PNG warns and skips that entry.
+  uiImages: { [string]: string }?,
+  --- Mod-wide loading screen. Optional; omission shows the engine fallback loading screen.
+  loading: ModLoading?,
   --- Pre-load-discoverable map catalog. Optional; use catalog ids with `loadLevel(id)` and `frontend.backgroundLevel`.
   maps: {ModMapEntry}?,
   --- Mod-defined frontend menu declaration. Optional; omission clears the mod frontend and presents the engine fallback menu.
@@ -1527,6 +1539,10 @@ export type GameStateRefs = {
   },
   input: {
     mode: ComputedRef<"pointer" | "focus">,
+  },
+  loading: {
+    levelName: ComputedRef<string>,
+    progress: ComputedRef<number>,
   },
   options: {
     crouchMode: Ref<"hold" | "toggle">,
@@ -2508,6 +2524,8 @@ export type ModManifestInput = {
   presentationOverlays: PresentationOverlay?,
   theme: ThemeTokens?,
   fonts: { [string]: string }?,
+  uiImages: { [string]: string }?,
+  loading: ModLoading?,
   maps: {ModMapEntry}?,
   frontend: Frontend?,
   reactions: {NamedReactionDescriptor}?,
@@ -2695,7 +2713,7 @@ export type TextProps = { content: LocalizedText, fontSize: number?, color: Widg
 export type PanelProps = { fill: WidgetColor, border: BorderProp?, bind: PanelBindProp?, styleRanges: StyleRangesProp?, id: string?, focusNeighbors: FocusNeighborsProp?, visibleWhen: Predicate?, role: WidgetRole? }
 
 --- Props for `Image`. No bind. Name-XOR-decorative (M13 G2): exactly one of `label` or `decorative = true` (the union narrows it; neither/both errors).
-export type ImageProps = { asset: string, id: string?, focusNeighbors: FocusNeighborsProp?, visibleWhen: Predicate?, role: WidgetRole? } & ({ label: string } | { decorative: true })
+export type ImageProps = { asset: string, width: number?, height: number?, id: string?, focusNeighbors: FocusNeighborsProp?, visibleWhen: Predicate?, role: WidgetRole? } & ({ label: string } | { decorative: true })
 
 --- Props for `Spacer`. `flexGrow` defaults to 1. No bind.
 export type SpacerProps = { flexGrow: number?, id: string?, visibleWhen: Predicate?, role: WidgetRole? }

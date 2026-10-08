@@ -6,7 +6,8 @@
 use std::cell::RefCell;
 
 use taffy::prelude::{
-    AlignItems, Display, FlexDirection, NodeId, Size, Style, TaffyTree, evenly_sized_tracks, length,
+    AlignItems, Display, FlexDirection, NodeId, Size, Style, TaffyTree, auto, evenly_sized_tracks,
+    length,
 };
 use taffy::style::Overflow;
 
@@ -152,11 +153,18 @@ pub fn build_node(
                 )
                 .expect("taffy leaf creation must succeed")
         }
-        Widget::Image(ImageWidget { asset, .. }) => taffy
+        Widget::Image(ImageWidget {
+            asset,
+            width,
+            height,
+            ..
+        }) => taffy
             .new_leaf_with_context(
-                Style::default(),
+                image_style(*width, *height),
                 NodeContext::Image {
                     asset: asset.clone(),
+                    width: *width,
+                    height: *height,
                 },
             )
             .expect("taffy leaf creation must succeed"),
@@ -379,6 +387,18 @@ fn build_slider(
             &[track, value],
         )
         .expect("taffy slider composition creation must succeed")
+}
+
+/// Pin each authored image axis so layout treats it as definite, like a bar's
+/// size. An unpinned axis stays auto and comes from the measure seam.
+fn image_style(width: Option<f32>, height: Option<f32>) -> Style {
+    Style {
+        size: Size {
+            width: width.map_or_else(auto, length),
+            height: height.map_or_else(auto, length),
+        },
+        ..Default::default()
+    }
 }
 
 /// Build a passive horizontal `bar` leaf. Carries an explicit

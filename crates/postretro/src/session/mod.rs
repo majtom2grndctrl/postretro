@@ -78,6 +78,12 @@ pub(crate) struct Session {
     /// The mod's glyph art the renderer holds.
     pub(crate) glyph_art: crate::app::glyph_art::GlyphArtState,
 
+    /// The mod's `uiImages` and the engine's images the renderer holds.
+    pub(crate) mod_ui_images: crate::app::ui_images::ModUiImages,
+
+    /// The committed mod loading pool and the load the screen is showing.
+    pub(crate) loading_screen: crate::startup::loading_screen::LoadingScreenState,
+
     /// The device family glyphs follow, settled once per frame.
     pub(crate) device_family: input::DeviceFamilyTracker,
 
@@ -598,6 +604,15 @@ impl Session {
                 "controlsPanel.json",
                 false,
             );
+            // The fallback loading screen; a mod tree of the same name, or a
+            // mod or catalog loading pool, replaces it.
+            postretro_ui::tree_asset::register_tree_from_disk(
+                registry,
+                core_root,
+                crate::startup::loading_screen::LOADING_SCREEN_NAME,
+                "loadingScreen.json",
+                false,
+            );
         }
 
         // 4. Net endpoint (M15 Phase 1, default single-player). A malformed flag
@@ -692,6 +707,8 @@ impl Session {
             input_system,
             bindings,
             glyph_art: Default::default(),
+            mod_ui_images: Default::default(),
+            loading_screen: Default::default(),
             device_family: Default::default(),
             controls: Default::default(),
             pending_slider_steps: Vec::new(),

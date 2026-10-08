@@ -1056,6 +1056,63 @@ fn ring_factories_share_literal_and_bound_validation_contract() {
 }
 
 #[test]
+fn image_factories_share_sizing_and_validation_contract() {
+    const TYPESCRIPT_FIXTURE: &str = r#"
+        import { Image } from "postretro/ui";
+        const rejects = (build: () => unknown) => {
+          try { build(); return false; } catch (_) { return true; }
+        };
+        const valid = [
+          Image({ asset: "art/logo", decorative: true }),
+          Image({ asset: "art/logo", width: 256, decorative: true }),
+          Image({ asset: "art/logo", width: 64, height: 32, label: "Logo" }),
+        ];
+        const invalid = [
+          () => Image({ asset: "art/logo", width: 0, decorative: true }),
+          () => Image({ asset: "art/logo", height: -1, decorative: true }),
+          () => Image({ asset: "art/logo", width: Infinity, decorative: true }),
+          () => Image({ asset: "art/logo", height: "32" as any, decorative: true }),
+        ].map(rejects);
+        JSON.stringify({ valid, invalid });
+    "#;
+    const LUAU_FIXTURE: &str = r#"
+        local UI = require("postretro/ui")
+        local function rejects(build)
+          local ok = pcall(build)
+          return not ok
+        end
+        local valid = {
+          UI.Image({ asset = "art/logo", decorative = true }),
+          UI.Image({ asset = "art/logo", width = 256, decorative = true }),
+          UI.Image({ asset = "art/logo", width = 64, height = 32, label = "Logo" }),
+        }
+        local invalid = {
+          rejects(function() UI.Image({ asset = "art/logo", width = 0, decorative = true }) end),
+          rejects(function() UI.Image({ asset = "art/logo", height = -1, decorative = true }) end),
+          rejects(function() UI.Image({ asset = "art/logo", width = math.huge, decorative = true }) end),
+          rejects(function() UI.Image({ asset = "art/logo", height = "32", decorative = true }) end),
+        }
+        return { valid = valid, invalid = invalid }
+    "#;
+
+    let typescript = quickjs_fixture_value(TYPESCRIPT_FIXTURE);
+    let luau = luau_fixture_value(LUAU_FIXTURE);
+    assert_eq!(typescript, luau);
+    assert_eq!(
+        typescript["valid"],
+        serde_json::json!([
+            { "kind": "image", "asset": "art/logo", "decorative": true },
+            { "kind": "image", "asset": "art/logo", "width": 256, "decorative": true },
+            { "kind": "image", "asset": "art/logo", "width": 64, "height": 32, "label": "Logo" },
+        ])
+    );
+    assert_eq!(
+        typescript["invalid"],
+        serde_json::json!([true, true, true, true])
+    );
+}
+
+#[test]
 fn impact_policy_sdk_lowering_matches_across_authoring_runtimes() {
     // Exercise the shipped root SDK rather than raw runtime builders. The
     // assertion pins every cross-task leaf/token spelling and proves the

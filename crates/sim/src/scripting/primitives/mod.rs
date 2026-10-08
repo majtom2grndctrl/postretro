@@ -978,6 +978,11 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
             "Vec<String>",
             "Authoritative classification tags for filtering plus `levels` selection on mod-global reactions, impact events, crossings, trigger events, and trigger pools. Optional; missing/null normalizes to empty.",
         )
+        .field(
+            "loadingTree?",
+            "LoadingTreePool",
+            "Loading-screen tree for this map: one UI tree registry name or an array to pick from at random. Optional; overrides `ModManifest.loading.tree` for loads of this map. Unregistered names are skipped; a malformed value warns and is treated as absent, as is an empty array.",
+        )
         .finish();
     registry
         .register_type("MenuCamera")
@@ -1004,6 +1009,15 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
             "Map catalog id to load behind the frontend menu. Optional; omit for no backdrop level.",
         )
         .field("camera", "MenuCamera", "Static menu camera pose. Required.")
+        .finish();
+    registry
+        .register_type("ModLoading")
+        .doc("Mod-wide loading-screen declaration supplied via `ModManifest.loading`. The engine shows the chosen tree on every level-load frame; bind a `Bar` to `loading.progress` for a progress bar.")
+        .field(
+            "tree",
+            "LoadingTreePool",
+            "Loading-screen tree: one UI tree registry name or an array; each load picks one registered name uniformly at random. A map's `loadingTree` overrides it. Unregistered names are skipped; with none left the engine `loadingScreen` tree shows. A malformed value warns and is treated as absent, as is an empty array.",
+        )
         .finish();
     registry
         .register_type("ThemeTokens")

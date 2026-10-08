@@ -363,6 +363,8 @@ pub(crate) mod tests {
             presentation_overlays: Vec::new(),
             theme: ModThemeTokens::default(),
             frontend: None,
+            ui_images: Default::default(),
+            loading: Default::default(),
             fonts: ModFontAssets::default(),
             maps: Vec::new(),
             reactions: Vec::new(),

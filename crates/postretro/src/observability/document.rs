@@ -184,9 +184,10 @@ pub(crate) fn apply_dump(
         for (id, value) in registry.query_by_component_and_tag(kind, tag) {
             let raw = id.to_raw();
             if let Some(allow) = &id_allow
-                && !allow.contains(&raw) {
-                    continue;
-                }
+                && !allow.contains(&raw)
+            {
+                continue;
+            }
             let tags = registry
                 .get_tags(id)
                 .map(|t| t.to_vec())

@@ -12,6 +12,7 @@ mod g2_fields;
 mod health;
 mod input_block;
 mod knockback;
+mod loading_manifest;
 mod maps;
 mod mesh;
 mod movement_core;

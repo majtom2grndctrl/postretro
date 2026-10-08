@@ -216,7 +216,7 @@ fn collect_node(
                 border.as_ref(),
             ));
         }
-        Some(NodeContext::Image { asset }) => {
+        Some(NodeContext::Image { asset, .. }) => {
             // White-tinted image quad grouped by its `asset` key so the
             // renderer can bind the matching texture for that group. UV/full-
             // texture defaults apply. Quads for the same key concatenate into

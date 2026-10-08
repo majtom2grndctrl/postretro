@@ -1064,6 +1064,8 @@ export type ModManifestInput = {
   presentationOverlays: PresentationOverlay?,
   theme: ThemeTokens?,
   fonts: { [string]: string }?,
+  uiImages: { [string]: string }?,
+  loading: ModLoading?,
   maps: {ModMapEntry}?,
   frontend: Frontend?,
   reactions: {NamedReactionDescriptor}?,
@@ -1257,8 +1259,8 @@ export type PanelProps = { fill: WidgetColor, border: BorderProp?, bind: PanelBi
 declare function Panel(props: PanelProps): WidgetDescriptor
 
 --- Props for `Image`. No bind. Name-XOR-decorative (M13 G2): exactly one of `label` or `decorative = true` (the union narrows it; neither/both errors).
-export type ImageProps = { asset: string, id: string?, focusNeighbors: FocusNeighborsProp?, visibleWhen: Predicate?, role: WidgetRole? } & ({ label: string } | { decorative: true })
---- An `image` leaf referencing a texture asset by key; sizes from the asset's natural dimensions. Exactly one of `label` / `decorative = true` is required.
+export type ImageProps = { asset: string, width: number?, height: number?, id: string?, focusNeighbors: FocusNeighborsProp?, visibleWhen: Predicate?, role: WidgetRole? } & ({ label: string } | { decorative: true })
+--- An `image` leaf referencing a texture asset by key. Without `width` / `height` (logical-reference px) it takes the asset's natural size; one keeps the source aspect; both give an exact box. Exactly one of `label` / `decorative = true` is required.
 declare function Image(props: ImageProps): WidgetDescriptor
 
 --- Props for `Spacer`. `flexGrow` defaults to 1. No bind.

@@ -277,13 +277,14 @@ fn validate_commands(commands: &[CommandEntry]) -> Result<(), RunSpecError> {
     let mut previous_tick: Option<u32> = None;
     for (index, entry) in commands.iter().enumerate() {
         if let Some(previous) = previous_tick
-            && entry.tick <= previous {
-                return Err(RunSpecError::UnorderedCommandTick {
-                    index,
-                    tick: entry.tick,
-                    previous,
-                });
-            }
+            && entry.tick <= previous
+        {
+            return Err(RunSpecError::UnorderedCommandTick {
+                index,
+                tick: entry.tick,
+                previous,
+            });
+        }
         previous_tick = Some(entry.tick);
 
         let [x, y] = entry.movement.wish_dir;
@@ -297,9 +298,10 @@ fn validate_commands(commands: &[CommandEntry]) -> Result<(), RunSpecError> {
         }
 
         if let Some(aim) = &entry.aim
-            && aim.origin.iter().any(|c| !c.is_finite()) {
-                return Err(RunSpecError::NonFiniteAimOrigin { index });
-            }
+            && aim.origin.iter().any(|c| !c.is_finite())
+        {
+            return Err(RunSpecError::NonFiniteAimOrigin { index });
+        }
     }
     Ok(())
 }

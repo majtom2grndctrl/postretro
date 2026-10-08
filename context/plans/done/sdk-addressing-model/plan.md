@@ -1,7 +1,7 @@
 # sdk-addressing-model — plan of record
 
 mode: compact
-status: active
+status: landed
 read at: c855e3e18
 
 ## Corrections
@@ -77,7 +77,7 @@ Baseline commit: c855e3e18 (`main` after the claim). Before-data is captured fro
 | W2 `WIRE_VERSION` unchanged; no `NetworkId` in scripting crates / `sdk/` / typedefs | grep gate script | achievable as stated | pass — xtask `surface_gates` (U2 retired spellings, W2 `NetworkId`) green; `wire_version_matches_main` (ignored gate) run: pass, `WIRE_VERSION` 25 both sides |
 | U1 Scripting surface example replaces closet-reveal; after wait: NPCs (placed+spawned) aggroed+damaged, spawner count, players ammo; TS/Luau byte-identical | integration test driving the compiled manifest + twin diff | achievable as stated | pass — `closet_reveal_surface_example_rouses_placed_and_spawned_npcs_and_resupplies_every_player`; twins byte-identical on raw wire (`closet_reveal_twins_emit_byte_identical_wire_data`) |
 | U2 regression grep gate over `content/ sdk/ docs/ context/lib/`; no hand-written player `applyDamage` | grep gate script | achievable as stated | pass — xtask `surface_gates` (U2 retired spellings, W2 `NetworkId`) green; `wire_version_matches_main` (ignored gate) run: pass, `WIRE_VERSION` 25 both sides |
-| Manual: host+client playtest of closet-reveal and coop-two-button-puzzles | owner, in-engine | manual | outstanding — owner host+client playtest of closet-reveal and coop-two-button-puzzles |
+| Manual: host+client playtest of closet-reveal and coop-two-button-puzzles | owner, in-engine | manual | pass — owner host+client playtest 2026-10-08: closet-reveal and coop-two-button-puzzles behave as before. A netcode regression seen during the playtest also reproduces on `main`, so it is not from this branch. |
 
 ## Tasks
 

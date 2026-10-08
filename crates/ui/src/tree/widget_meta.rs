@@ -76,20 +76,52 @@ fn measure_node(
                 height: known_dimensions.height.unwrap_or(height),
             }
         }
-        Some(NodeContext::Image { asset }) => {
+        Some(NodeContext::Image {
+            asset,
+            width,
+            height,
+        }) => {
             // Natural reference size keyed by asset. An unregistered key collapses
             // the image to zero (it simply does not contribute size/draw) — the
             // renderer pre-registers every key it references.
-            let [w, h] = image_sizes.get(asset).copied().unwrap_or([0.0, 0.0]);
-            Size {
-                width: known_dimensions.width.unwrap_or(w),
-                height: known_dimensions.height.unwrap_or(h),
+            let natural = image_sizes.get(asset).copied().unwrap_or([0.0, 0.0]);
+            if width.is_none() && height.is_none() {
+                return Size {
+                    width: known_dimensions.width.unwrap_or(natural[0]),
+                    height: known_dimensions.height.unwrap_or(natural[1]),
+                };
             }
+            // A sized image's style pins its authored axes, so taffy usually
+            // already knows them; prefer the resolved size so a shrunk axis
+            // still drives the aspect of the other.
+            let [width, height] = authored_image_size(
+                natural,
+                known_dimensions.width.or(*width),
+                known_dimensions.height.or(*height),
+            );
+            Size { width, height }
         }
         _ => Size {
             width: known_dimensions.width.unwrap_or(0.0),
             height: known_dimensions.height.unwrap_or(0.0),
         },
+    }
+}
+
+/// Lay out an image with at least one pinned axis: both pinned give that exact
+/// box; one pinned derives the other from the `natural` aspect (zero when the
+/// asset's size is unknown).
+fn authored_image_size(natural: [f32; 2], width: Option<f32>, height: Option<f32>) -> [f32; 2] {
+    let [natural_width, natural_height] = natural;
+    match (width, height) {
+        (Some(width), Some(height)) => [width, height],
+        (Some(width), None) if natural_width > 0.0 => {
+            [width, width * natural_height / natural_width]
+        }
+        (None, Some(height)) if natural_height > 0.0 => {
+            [height * natural_width / natural_height, height]
+        }
+        (width, height) => [width.unwrap_or(0.0), height.unwrap_or(0.0)],
     }
 }
 

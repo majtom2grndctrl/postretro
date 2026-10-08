@@ -73,6 +73,7 @@ mod sdf_light_select_test;
 mod shadowmask_sample_test;
 
 // --- Extracted submodules (module root is slim; impls split by concern) ---
+mod geometry_install_marks;
 mod geometry_ranges;
 #[cfg(all(test, debug_assertions))]
 mod geometry_ranges_gpu_test;
@@ -136,7 +137,8 @@ use crate::compute_cull::ComputeCullPipeline;
 use crate::lighting::lightmap::LightmapResources;
 use crate::lighting::spot_shadow::SpotShadowPool;
 use crate::render::loaded_texture::{
-    LoadedTexture, load_model_diffuse_texture, load_textures, placeholder_loaded_texture,
+    LoadedTexture, TextureLoadTiming, load_model_diffuse_texture, load_textures,
+    placeholder_loaded_texture,
 };
 use postretro_level_format::alpha_lights::ALPHA_LIGHT_LEAF_UNASSIGNED;
 use postretro_level_format::texture_cache_keys::TextureCacheKeysSection;

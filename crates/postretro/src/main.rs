@@ -1069,7 +1069,7 @@ pub(crate) struct App {
     mod_timings: StartupTimings,
 
     /// Per-stage durations for log line C — level load. Worker-thread stages
-    /// are merged in between `worker_dispatch` and `worker_delivered`; see
+    /// are attached to `worker_delivered`, which contains them; see the
     /// `StartupTimings` doc comment.
     level_timings: StartupTimings,
 

@@ -56,6 +56,12 @@ Track 2:
 - `cargo run -p postretro-tool -- run --install-root . maps/campaign-test.prl` (or the dev equivalent) shows the mod loading screen with a moving bar; a frame capture of a Loading frame is produced and inspected.
 - `cargo test -p xtask layering_invariants_hold` passes.
 
+## Amendments after Track 1
+
+- Pools are a normalized `Vec<String>` (empty = absent), deduplicated in authored order: `ModLoading { tree }` on `ModManifestResult.loading` / `StagedManifest.loading` (not an `Option`), and `ModMapEntry.loading_tree`. Commit `loading` wherever `frontend` is committed today.
+- `ui_images` is a `BTreeMap<String, String>` on both result types. Path shape (relative, no `..`) is validated at parse; file existence and PNG decode are load-time checks.
+- SDK manifest types register in `crates/sim`; regenerate with `cargo run -p postretro-sim --bin gen-script-types`; freshness test `committed_sdk_types_match_current_registry`.
+
 ## Open questions
 
 None at dispatch.

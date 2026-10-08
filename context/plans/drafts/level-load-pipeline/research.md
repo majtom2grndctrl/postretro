@@ -2,7 +2,7 @@
 
 > **Read this when:** drafting the level-loading pipeline spec with the owner. This is its research section: the facts the design is made from. It chooses nothing.
 > **Key facts:** the main thread is idle for the whole parse and then does ~0.7–1.0 s of install in one redraw that also renders the first level frame. About a third of that install is level-invariant, a third could run on any thread, and a third needs the GPU device. Only ~5–20 ms needs the script VM.
-> **Related:** `context/lib/boot_sequence.md` §1–§4 · `context/plans/in-progress/level-load-perf-contract.md` · `level-load-perf-findings.md` · `context/lib/networking.md` §Admission and content parity · `context/lib/rendering_pipeline.md` §12
+> **Related:** `context/lib/boot_sequence.md` §1–§4 · `context/plans/done/level-load-perf/contract.md` · `context/plans/done/level-load-perf/findings.md` · `context/lib/networking.md` §Admission and content parity · `context/lib/rendering_pipeline.md` §12
 
 ---
 

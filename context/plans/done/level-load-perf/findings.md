@@ -1,8 +1,8 @@
 # Level Load Performance — Findings
 
-> **Read this when:** choosing which level-load optimizations to build. Companion to `level-load-perf-contract.md`, whose decisions and invariants bind this file.
+> **Read this when:** choosing which level-load optimizations to build. Companion to `contract.md` (beside this file), whose decisions and invariants bind this file.
 > **Key result:** on the large lit map, SH-streaming data structures cost about 1.2 s of main-thread freeze and 1.3 s of worker time per load. On the typical map, level-invariant GPU pipelines, the model sweep and texture copies dominate. Collision is negligible.
-> **Status:** investigation only. No shipped behavior changed. Scratch instrumentation is described in §Method and was reverted.
+> **Status:** investigation record. Candidates 1, 2 and the single-parse half of 4 were built afterwards; `contract.md` beside this file records each outcome. The remaining candidates feed the pipeline spec (`context/plans/drafts/level-load-pipeline/`). Scratch instrumentation is described in §Method and was reverted.
 
 ---
 

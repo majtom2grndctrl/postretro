@@ -20,7 +20,7 @@ Find where level-load time goes and rank what is worth optimizing. This phase me
 
 ## Deliverable
 
-`context/plans/in-progress/level-load-perf-findings.md`: a stage-by-stage cost table per map, then candidate optimizations ranked by expected savings. Each candidate gives its evidence, the crates it touches, the risk, whether it crosses a contract (format, cache key, install order, thread split), and how its gain would be proven.
+`context/plans/done/level-load-perf/findings.md`: a stage-by-stage cost table per map, then candidate optimizations ranked by expected savings. Each candidate gives its evidence, the crates it touches, the risk, whether it crosses a contract (format, cache key, install order, thread split), and how its gain would be proven.
 
 ## Open questions
 
@@ -30,7 +30,7 @@ Find where level-load time goes and rank what is worth optimizing. This phase me
 
 # Build phase
 
-The investigation landed in `level-load-perf-findings.md`. The owner chose to build the CPU-only candidates here and carry the GPU-dependent ones to a Mac research brief. Every track reads the findings' section for its candidate.
+The investigation landed in `findings.md` (beside this file). The owner chose to build the CPU-only candidates here and carry the GPU-dependent ones to a Mac research brief. Every track reads the findings' section for its candidate.
 
 ## Decisions
 

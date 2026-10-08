@@ -43,9 +43,9 @@ const SPLASH_CLEAR_COLOR: wgpu::Color = wgpu::Color {
     a: 1.0,
 };
 
-/// Fraction of the window width the logo spans. The logo keeps its source
-/// aspect ratio and is centered.
-const LOGO_WIDTH_FRACTION: f32 = 0.2;
+/// Fraction of the window width the logo spans: the minor golden section,
+/// `1 - 1/φ`. The logo keeps its source aspect ratio and is centered.
+const LOGO_WIDTH_FRACTION: f32 = 0.381_966;
 
 /// Cap on the logo's height as a fraction of the window height, so a tall logo
 /// on a short window still sits inside a margin. The committed wide banner
@@ -362,7 +362,7 @@ mod tests {
         // Width capped at the fraction of the window width.
         assert!(
             (w - 1280.0 * LOGO_WIDTH_FRACTION).abs() < EPS,
-            "wide logo spans a fifth of the window width, got w={w}",
+            "wide logo spans the golden-section width, got w={w}",
         );
         // Height derives from the source aspect — no stretch.
         let src_aspect = 2028.0 / 582.0;

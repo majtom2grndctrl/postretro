@@ -8,6 +8,7 @@ use serde::{Deserialize, Deserializer, Serialize, de::Error as _};
 use super::super::style_ranges::StyleRanges;
 use super::accessibility::Role;
 use super::focus::{FocusNeighbors, FocusPolicy, RepeatPolicy};
+use super::image::ImageWidget;
 use super::values::{
     Align, BindSource, Border, ColorValue, Easing, LocalState, Predicate, ScalarValue,
     SpacingValue, TextTween,
@@ -225,43 +226,6 @@ pub struct PanelTween {
     pub from: Option<[f32; 4]>,
 }
 
-/// Leaf image referencing a texture asset by key. The image has no wire-level
-/// size: it sizes from the asset's NATURAL pixel dimensions (content-driven, the
-/// same category as text measurement). The renderer threads each asset's natural
-/// reference size into the measure seam (see `tree::UiTree::build_draw_data`), so
-/// the on-screen image is always shaped to the real asset and never stretched.
-///
-/// Accessible name (M13 G2): an image is name-XOR-decorative — exactly one of
-/// `label` or `decorative: true` is required (the bridge enforces it).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ImageWidget {
-    pub asset: String,
-    /// Authored stable id (M13 Goal F, Task 3). See `TextWidget::id`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub id: Option<String>,
-    /// Directional focus-neighbor overrides (M13 Goal F, Task 3). See
-    /// `TextWidget::focus_neighbors`.
-    #[serde(default, skip_serializing_if = "FocusNeighbors::is_empty")]
-    pub focus_neighbors: FocusNeighbors,
-    /// Accessible name (M13 G2). A named image announces `label`; a decorative one
-    /// is hidden from a11y. Name-XOR-decorative is a bridge precondition, not a
-    /// serde constraint. Skip-serialized when absent.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub label: Option<String>,
-    /// Marks the image purely decorative (M13 G2) — hidden from a11y, no name
-    /// required. Skip-serialized when `false` so a pre-G2 image round-trips
-    /// byte-identically.
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub decorative: bool,
-    /// Optional reactive visibility predicate (M13 G2). See `TextWidget::visible_when`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub visible_when: Option<Predicate>,
-    /// Optional a11y role override (M13 G2). See `TextWidget::role`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub role: Option<Role>,
-}
-
 /// Stack container (`vstack`/`hstack`). Lays its `children` out along one axis
 /// with `gap` between them, `padding` inside its bounds, and cross-axis
 /// `align`. `children` carries no `skip_serializing_if`: an empty container
@@ -414,7 +378,7 @@ pub struct GridWidget {
 /// `skip_serializing_if` predicate for boolean flags that default to `false`
 /// (`decorative`, `disabled`): omit when `false` so a
 /// pre-feature widget round-trips byte-identically.
-fn is_false(b: &bool) -> bool {
+pub(super) fn is_false(b: &bool) -> bool {
     !*b
 }
 

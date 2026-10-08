@@ -132,6 +132,8 @@ fn composite_fixture() -> AnchoredTree {
                     children: vec![
                         Widget::Image(ImageWidget {
                             asset: "ui/icon_a".into(),
+                            width: None,
+                            height: None,
                             id: None,
                             focus_neighbors: Default::default(),
                             label: None,
@@ -141,6 +143,8 @@ fn composite_fixture() -> AnchoredTree {
                         }),
                         Widget::Image(ImageWidget {
                             asset: "ui/icon_b".into(),
+                            width: None,
+                            height: None,
                             id: None,
                             focus_neighbors: Default::default(),
                             label: None,

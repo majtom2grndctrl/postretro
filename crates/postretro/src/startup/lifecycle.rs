@@ -1922,6 +1922,7 @@ pub(crate) mod tests {
             path: path.to_string(),
             name: name.to_string(),
             tags: tags.iter().map(|tag| tag.to_string()).collect(),
+            loading_tree: Vec::new(),
         }
     }
 
@@ -2611,6 +2612,7 @@ pub(crate) mod tests {
                 path: "maps/e1m1.prl".to_string(),
                 name: "Entryway".to_string(),
                 tags: vec!["campaign".to_string()],
+                loading_tree: Vec::new(),
             }]);
         let data_before = {
             let ctx = script_ctx(&app);
@@ -3305,6 +3307,8 @@ pub(crate) mod tests {
                         pitch: -0.5,
                     },
                 }),
+                ui_images: Default::default(),
+                loading: Default::default(),
                 store_declarations: Default::default(),
                 dependency_paths: Vec::new(),
             })),

@@ -121,15 +121,21 @@ pub fn image_widget_from_js<'js>(obj: &Object<'js>) -> Result<ImageWidget, Descr
     let label = get_optional_string_js(obj, "label")?;
     let decorative = get_optional_bool_js(obj, "decorative")?.unwrap_or(false);
     validate_image_name(label.is_some(), decorative)?;
-    Ok(ImageWidget {
+    let image = ImageWidget {
         asset: get_required_string_js(obj, "asset")?,
+        width: get_optional_f32_js(obj, "width")?,
+        height: get_optional_f32_js(obj, "height")?,
         id: get_optional_string_js(obj, "id")?,
         focus_neighbors: focus_neighbors_from_js(obj)?,
         label,
         decorative,
         visible_when: predicate_opt_from_js(obj, "visibleWhen")?,
         role: role_opt_from_js(obj)?,
-    })
+    };
+    image
+        .validate()
+        .map_err(|reason| DescriptorError::InvalidShape { reason })?;
+    Ok(image)
 }
 
 /// Read a `vstack` (`vertical`) or `hstack` container. An `hstack` never

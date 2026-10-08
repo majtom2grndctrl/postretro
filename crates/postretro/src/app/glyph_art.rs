@@ -165,6 +165,8 @@ fn resolved_widget(
     match view {
         Some(GlyphView::Art(asset)) => Widget::Image(ImageWidget {
             asset,
+            width: None,
+            height: None,
             id: glyph.id.clone(),
             focus_neighbors: Default::default(),
             label: None,

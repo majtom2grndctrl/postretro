@@ -77,6 +77,7 @@ mod tests {
             path: format!("maps/{id}.prl"),
             name: id.to_string(),
             tags: Vec::new(),
+            loading_tree: Vec::new(),
         }
     }
 

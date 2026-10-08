@@ -13678,6 +13678,8 @@ mod tests {
                             pitch: -0.5,
                         },
                     }),
+                    ui_images: Default::default(),
+                    loading: Default::default(),
                     store_declarations: Default::default(),
                     dependency_paths: Vec::new(),
                 },

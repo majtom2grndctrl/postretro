@@ -108,15 +108,21 @@ pub fn image_widget_from_lua(table: &Table) -> Result<ImageWidget, DescriptorErr
     let label = get_optional_string_lua(table, "label")?;
     let decorative = get_optional_bool_lua(table, "decorative")?.unwrap_or(false);
     validate_image_name(label.is_some(), decorative)?;
-    Ok(ImageWidget {
+    let image = ImageWidget {
         asset: get_required_string_lua(table, "asset")?,
+        width: get_optional_f32_lua(table, "width")?,
+        height: get_optional_f32_lua(table, "height")?,
         id: get_optional_string_lua(table, "id")?,
         focus_neighbors: focus_neighbors_from_lua(table)?,
         label,
         decorative,
         visible_when: predicate_opt_from_lua(table, "visibleWhen")?,
         role: role_opt_from_lua(table)?,
-    })
+    };
+    image
+        .validate()
+        .map_err(|reason| DescriptorError::InvalidShape { reason })?;
+    Ok(image)
 }
 
 /// Lua twin of [`container_widget_from_js`]: an `hstack` drops an authored

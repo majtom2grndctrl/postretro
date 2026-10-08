@@ -1,7 +1,8 @@
 // VM-agnostic resolution of the manifest's optional `input` block, shared by
 // the QuickJS and Luau drains so both runtimes degrade and warn identically.
 // The drains only classify raw VM values into `AuthoredValue`; every shape rule
-// and warning lives here. Engine vocabulary is validated by the engine.
+// and warning lives here. Engine vocabulary is validated by the engine. The
+// loading-screen manifest drains reuse the same `AuthoredValue` classifiers.
 // See: context/lib/scripting.md §1 · context/lib/input.md §2
 
 use super::{ModInputBinding, ModInputBlock, ModInputCommand, ModInputGlyphs};
@@ -33,7 +34,7 @@ pub(crate) enum AuthoredValue {
 
 impl AuthoredValue {
     /// Entries of an object-shaped value, or `None` when it is not one.
-    fn into_entries(self) -> Option<Vec<(String, AuthoredValue)>> {
+    pub(crate) fn into_entries(self) -> Option<Vec<(String, AuthoredValue)>> {
         match self {
             Self::Object(entries) => Some(entries),
             Self::EmptyTable => Some(Vec::new()),
@@ -42,7 +43,7 @@ impl AuthoredValue {
     }
 
     /// Items of an array-shaped value, or `None` when it is not one.
-    fn into_items(self) -> Option<Vec<AuthoredValue>> {
+    pub(crate) fn into_items(self) -> Option<Vec<AuthoredValue>> {
         match self {
             Self::Array(items) => Some(items),
             Self::EmptyTable => Some(Vec::new()),

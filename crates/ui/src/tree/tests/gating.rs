@@ -198,6 +198,8 @@ fn image_size_generation_change_remeasures_cached_missing_image() {
     // no input generation to force the image leaf to re-measure.
     let tree = anchored(Widget::Image(ImageWidget {
         asset: "ui/icon".to_string(),
+        width: None,
+        height: None,
         id: None,
         focus_neighbors: Default::default(),
         label: None,

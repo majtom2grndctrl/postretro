@@ -56,3 +56,19 @@ The investigation landed in `level-load-perf-findings.md`. The owner chose to bu
 | A — dense-node arrays (candidate 1) | `crates/renderer/src/render/sh_streaming/`, `crates/postretro/src/sh_streaming/`; the `geometry_upload` split marks and the unload mark | Equivalence tests green with counts reported; stress-warren-lit `geometry_upload` + `streaming_preload` fall ≥ 0.8 s combined (release, n ≥ 4 first loads, n ≥ 8 changes) |
 | B — cluster-directory validation (candidate 2) | `crates/level-format/src/cluster_directory*` | Old-vs-new equivalence test over fixtures and randomized directories; every existing malformed-section test green; stress-warren-lit `prl_parse` falls by ≥ 1.0 s (release, n ≥ 5) |
 | C — single glTF parse + install marks (candidate 4, first half) | model sweep in `crates/postretro/src/startup/`, hit-zone store in `postretro-sim`, `postretro-model` as needed; the model, texture, sprite/fog/host marks; line C stops double-counting the parse | Hit-zone mark ≈ 0 on both maps; hit-zone and clip tables equal before/after on every model the dev mod loads |
+
+## Track A outcome
+
+Built: `NodeMap` (renderer) and `DenseNodeOwners` (`postretro`) replace the per-probe `BTreeMap<StoredNode, _>` and `BTreeMap<DenseNode, u32>`. Each is a flat array over the affinity-brick grid plus an ordered overflow map, so any key answers as the tree did. The old derivations stay in tests as oracles; an uncommitted check also held both crates to the oracles on the baked `campaign-test` and `stress-warren-lit`. Marks added: `[Renderer] Geometry install timing:` (phases of `geometry_upload`) and `[Startup] unload_level=`.
+
+Measured, release, interleaved A/B on one machine, medians, stress-warren-lit, n = 4 first loads and 8 changes (ms):
+
+| Stage | First load before → after | Level change before → after |
+|---|---|---|
+| `geometry_upload` | 612 → 361 | 601 → 320 |
+| `streaming_preload` | 570 → 364 | 451 → 248 |
+| Combined | 1182 → 735 (−447) | 1070 → 561 (−509) |
+
+campaign-test moves by under 25 ms either way.
+
+**The −0.8 s target was not reached.** On this machine the two tree maps cost about 0.55 s per load in total (perf: 0.43 s renderer, 0.27 s planner, each inflated by sampling), not the 1.0–1.1 s the investigation's numbers implied; the investigation's `geometry_upload` baseline was 926 ms against 612 ms here. What remains of the code Track A owns is per-probe array work over 2.7 M probes (about 130 ms renderer, 50 ms planner). It cannot fall further without sharing one product across the renderer boundary or moving the build to the worker, both of which this phase excludes. The rest of `geometry_upload` is compute-pipeline creation (candidate 3) and `sparse_compose_capacity` (about 60 ms, not node-keyed).

@@ -6397,9 +6397,8 @@ impl App {
                 .and_then(|session| session.net_endpoint.as_mut());
             match endpoint {
                 Some(netcode::NetEndpoint::Client { client, .. }) => {
-                    if let Err(err) = client.update(dt) {
-                        log::error!("[Net] client update failed: {err}");
-                    }
+                    // `NetClient::update` reports the failure once, naming the host.
+                    let _ = client.update(dt);
                     client.drain_control()
                 }
                 _ => Vec::new(),

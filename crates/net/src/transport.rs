@@ -2,7 +2,7 @@
 // See: context/lib/networking.md
 
 use std::collections::{BTreeMap, HashMap};
-use std::net::{SocketAddr, UdpSocket};
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket};
 use std::time::Duration;
 
 use renet::{
@@ -10,8 +10,8 @@ use renet::{
     SendType, ServerEvent,
 };
 use renet_netcode::{
-    ClientAuthentication, NetcodeClientTransport, NetcodeServerTransport, NetcodeTransportError,
-    ServerAuthentication, ServerConfig,
+    ClientAuthentication, NetcodeClientTransport, NetcodeDisconnectReason, NetcodeServerTransport,
+    NetcodeTransportError, ServerAuthentication, ServerConfig,
 };
 
 use crate::slots::{CloseCause, SlotEvent, SlotState, SlotTable};
@@ -850,10 +850,31 @@ fn parity_cause(
     None
 }
 
+/// Connect attempts before a client that has never reached its host gives up.
+/// netcode times each attempt out after 15 s without a reply, so this covers a
+/// host started up to about a minute after the client. A main-thread stall past
+/// 15 s while still connecting spends an attempt too. Only unanswered attempts
+/// retry: a denial (full host) or an expired token ends the connect.
+pub const CONNECT_ATTEMPTS: u32 = 4;
+
 /// Synchronous client transport. It declares values but never compares them.
 pub struct NetClient {
     client: RenetClient,
     transport: NetcodeClientTransport,
+    server_addr: SocketAddr,
+    /// Attempt N connects as `base_client_id + (N - 1)`.
+    base_client_id: u64,
+    user_data: Option<[u8; NETCODE_USER_DATA_BYTES]>,
+    /// netcode clock: construction time plus every counted `update` step.
+    clock: Duration,
+    /// The first `update` carries everything since construction — on a
+    /// `--connect` boot, renderer init and mod init on the main thread — so it
+    /// does not count against the connect timeout.
+    polled: bool,
+    connect_attempt: u32,
+    ever_connected: bool,
+    failure_reported: bool,
+    transient_error_logged: bool,
     admission_sent: bool,
     parity_sent: bool,
     join_seed_sent: bool,
@@ -866,6 +887,26 @@ pub struct NetClient {
     legacy_kinematic_static_fingerprint: Option<[u8; 32]>,
 }
 
+fn client_transport(
+    socket: UdpSocket,
+    server_addr: SocketAddr,
+    client_id: u64,
+    current_time: Duration,
+    user_data: Option<[u8; NETCODE_USER_DATA_BYTES]>,
+) -> Result<NetcodeClientTransport, NetcodeTransportError> {
+    NetcodeClientTransport::new(
+        current_time,
+        ClientAuthentication::Unsecure {
+            client_id,
+            protocol_id: transport_protocol_id(),
+            server_addr,
+            user_data,
+        },
+        socket,
+    )
+    .map_err(Into::into)
+}
+
 impl NetClient {
     pub fn new(
         socket: UdpSocket,
@@ -876,19 +917,19 @@ impl NetClient {
         user_data: Option<[u8; NETCODE_USER_DATA_BYTES]>,
     ) -> Result<Self, NetcodeTransportError> {
         let client = RenetClient::new(connection_config());
-        let transport = NetcodeClientTransport::new(
-            current_time,
-            ClientAuthentication::Unsecure {
-                client_id,
-                protocol_id: transport_protocol_id(),
-                server_addr,
-                user_data,
-            },
-            socket,
-        )?;
+        let transport = client_transport(socket, server_addr, client_id, current_time, user_data)?;
         Ok(Self {
             client,
             transport,
+            server_addr,
+            base_client_id: client_id,
+            user_data,
+            clock: current_time,
+            polled: false,
+            connect_attempt: 1,
+            ever_connected: false,
+            failure_reported: false,
+            transient_error_logged: false,
             admission_sent: false,
             parity_sent: false,
             join_seed_sent: false,
@@ -980,12 +1021,129 @@ impl NetClient {
         }
     }
 
+    /// Advance the connection. The connect clock starts at the first poll, not
+    /// at construction. A connect attempt the host never answered is retried
+    /// with a fresh socket and token, up to [`CONNECT_ATTEMPTS`]. Once the
+    /// connection has ended, every call returns the ending error; this
+    /// transport logs that ending once, naming the host (renetcode separately
+    /// logs each attempt's timeout). A frame error that leaves the connection
+    /// open is returned and warned about once per streak of failing frames.
     pub fn update(&mut self, dt: Duration) -> Result<(), NetcodeTransportError> {
+        let dt = if self.polled { dt } else { Duration::ZERO };
+        self.polled = true;
+        self.clock += dt;
         self.client.update(dt);
-        self.transport.update(dt, &mut self.client)?;
-        self.queue_control_messages();
-        self.transport.send_packets(&mut self.client)?;
-        Ok(())
+        let result = self.update_transport(dt).and_then(|()| {
+            self.queue_control_messages();
+            self.transport.send_packets(&mut self.client)
+        });
+        if self.client.is_connected() {
+            self.ever_connected = true;
+        }
+        let Err(err) = result else {
+            self.transient_error_logged = false;
+            return Ok(());
+        };
+        if self.retry_unanswered_connect() {
+            return Ok(());
+        }
+        if self.transport.disconnect_reason().is_none() {
+            if !self.transient_error_logged {
+                self.transient_error_logged = true;
+                log::warn!(
+                    "[Net] transport error talking to host {}: {err}",
+                    self.server_addr
+                );
+            }
+        } else if !self.failure_reported {
+            self.failure_reported = true;
+            if self.ever_connected {
+                log::error!("[Net] lost connection to host {}: {err}", self.server_addr);
+            } else {
+                log::error!(
+                    "[Net] could not connect to host {} after {} attempt(s): {err}",
+                    self.server_addr,
+                    self.connect_attempt
+                );
+            }
+        }
+        Err(err)
+    }
+
+    /// Receive and advance netcode, skipping ICMP port-unreachable reports.
+    /// Windows surfaces one as a `ConnectionReset` from `recv_from` after a send
+    /// to a port nothing listens on — a host not up yet, or a mistyped port —
+    /// and renet_netcode's client returns it before advancing its clock, so the
+    /// connect timeout would stall and the reset would read as a failure.
+    /// renet_netcode's server transport already skips these; netcode's timeout
+    /// governs here.
+    fn update_transport(&mut self, dt: Duration) -> Result<(), NetcodeTransportError> {
+        const MAX_SKIPPED_RESETS: usize = 16;
+        let mut skipped = 0;
+        loop {
+            match self.transport.update(dt, &mut self.client) {
+                Err(NetcodeTransportError::IO(err))
+                    if err.kind() == std::io::ErrorKind::ConnectionReset
+                        && skipped < MAX_SKIPPED_RESETS =>
+                {
+                    skipped += 1;
+                }
+                result => return result,
+            }
+        }
+    }
+
+    /// Replace a transport whose connect request or response went unanswered,
+    /// returning whether a new attempt started. Never applies once connected:
+    /// a dropped session is not silently rejoined.
+    fn retry_unanswered_connect(&mut self) -> bool {
+        let unanswered = matches!(
+            self.transport.disconnect_reason(),
+            Some(
+                NetcodeDisconnectReason::ConnectionRequestTimedOut
+                    | NetcodeDisconnectReason::ConnectionResponseTimedOut
+            )
+        );
+        if !unanswered || self.ever_connected || self.connect_attempt >= CONNECT_ATTEMPTS {
+            return false;
+        }
+        let bind_addr: SocketAddr = match self.server_addr {
+            SocketAddr::V4(_) => (Ipv4Addr::UNSPECIFIED, 0).into(),
+            SocketAddr::V6(_) => (Ipv6Addr::UNSPECIFIED, 0).into(),
+        };
+        // A fresh id: a host that saw the timed-out response may still hold the
+        // old one as connected and would deny it.
+        let client_id = self
+            .base_client_id
+            .wrapping_add(u64::from(self.connect_attempt));
+        let transport = UdpSocket::bind(bind_addr)
+            .map_err(NetcodeTransportError::IO)
+            .and_then(|socket| {
+                client_transport(
+                    socket,
+                    self.server_addr,
+                    client_id,
+                    self.clock,
+                    self.user_data,
+                )
+            });
+        match transport {
+            Ok(transport) => {
+                self.connect_attempt += 1;
+                log::warn!(
+                    "[Net] no answer from host {}; retrying (attempt {} of {CONNECT_ATTEMPTS})",
+                    self.server_addr,
+                    self.connect_attempt
+                );
+                self.transport = transport;
+                self.client = RenetClient::new(connection_config());
+                true
+            }
+            Err(err) => {
+                log::error!("[Net] could not rebuild the client transport: {err}");
+                false
+            }
+        }
     }
 
     #[must_use]
@@ -1211,6 +1369,102 @@ mod tests {
     use proptest::prelude::*;
 
     const RELAY_CLIENT_ID: ClientId = 41;
+
+    fn loopback_server() -> (NetServer, SocketAddr) {
+        let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind server socket");
+        let addr = socket.local_addr().expect("server local address");
+        let server = NetServer::new(socket, addr, 8, Duration::from_secs(1), None)
+            .expect("construct server");
+        (server, addr)
+    }
+
+    fn loopback_client(server_addr: SocketAddr) -> NetClient {
+        let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind client socket");
+        NetClient::new(socket, server_addr, 7, Duration::from_secs(1), None, None)
+            .expect("construct client")
+    }
+
+    fn pump_until_connected(client: &mut NetClient, server: &mut NetServer) -> bool {
+        let step = Duration::from_millis(16);
+        for _ in 0..200 {
+            client.update(step).expect("client update while connecting");
+            let _ = server.update(step).expect("server update");
+            if client.is_connected() {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        false
+    }
+
+    /// Regression: a `--connect` boot blocks the main thread between endpoint
+    /// construction and the first poll (renderer and mod init), and that whole
+    /// gap arrived as the first `dt`, timing the connect out before a single
+    /// request was sent. The first poll now starts the connect clock.
+    #[test]
+    fn a_stall_before_the_first_poll_does_not_time_out_the_connect() {
+        let (mut server, server_addr) = loopback_server();
+        let mut client = loopback_client(server_addr);
+
+        client
+            .update(Duration::from_secs(21))
+            .expect("the first poll's stall is not counted");
+        assert!(pump_until_connected(&mut client, &mut server));
+        assert_eq!(client.connect_attempt, 1, "connected without a retry");
+    }
+
+    /// A host that starts after the client: the unanswered attempt is retried
+    /// without surfacing an error, and the retry connects.
+    #[test]
+    fn a_host_that_starts_after_the_first_attempt_times_out_is_reached_by_a_retry() {
+        let capture = postretro_test_log_capture::LogCapture::start();
+        let reserved = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("reserve a port");
+        let server_addr = reserved.local_addr().expect("reserved address");
+        drop(reserved);
+        let mut client = loopback_client(server_addr);
+
+        client
+            .update(Duration::ZERO)
+            .expect("first poll sends a request");
+        client
+            .update(Duration::from_secs(16))
+            .expect("the timed-out attempt is retried, not reported");
+        assert_eq!(client.connect_attempt, 2);
+
+        let socket = UdpSocket::bind(server_addr).expect("host binds the reserved port");
+        let mut server = NetServer::new(socket, server_addr, 8, Duration::from_secs(1), None)
+            .expect("construct server");
+        assert!(pump_until_connected(&mut client, &mut server));
+        capture.assert_not_logged(log::Level::Error, "could not connect");
+    }
+
+    #[test]
+    fn an_unanswered_client_reports_one_failure_after_the_attempt_budget() {
+        let capture = postretro_test_log_capture::LogCapture::start();
+        // Bound but never read: requests land and nothing answers.
+        let silent_socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind silent socket");
+        let silent = silent_socket.local_addr().expect("silent address");
+        let mut client = loopback_client(silent);
+
+        let results: Vec<bool> = (0..(CONNECT_ATTEMPTS * 4))
+            .map(|_| client.update(Duration::from_secs(16)).is_err())
+            .collect();
+        let first_err = results
+            .iter()
+            .position(|&err| err)
+            .expect("eventually fails");
+        assert!(
+            results[first_err..].iter().all(|&err| err),
+            "failure is terminal"
+        );
+        assert_eq!(client.connect_attempt, CONNECT_ATTEMPTS);
+        assert!(!client.is_connected());
+        capture.assert_logged_once(
+            log::Level::Error,
+            &format!("could not connect to host {silent} after {CONNECT_ATTEMPTS} attempt(s)"),
+        );
+        drop(silent_socket);
+    }
 
     fn relay_pair() -> (NetServer, NetClient) {
         let server_socket =

@@ -548,7 +548,7 @@ const DATA_SCRIPT_FIELDS: &[&str] = &[
 /// `ui/widgets.luau` constructors exported through `require("postretro/ui")`.
 /// Mirrors scripting-core's `UI_WIDGETS_FIELDS`.
 const UI_WIDGETS_FIELDS: &[&str] = &[
-    "Text", "Panel", "Image", "Spacer", "Button", "Slider", "Bar", "Ring", "Announce",
+    "Text", "Panel", "Image", "Spacer", "Glyph", "Button", "Slider", "Bar", "Ring", "Announce",
 ];
 
 /// Ordered Luau SDK construction. The wrapper bridges are visible only long
@@ -690,6 +690,7 @@ fn install_lua_prelude(lua: &Lua, mod_root: &Path) -> mlua::Result<()> {
             "EXIT_TO_DESKTOP_ACTION",
             "QUIT_TO_MENU_ACTION",
             "OPEN_ACCESSIBILITY_ACTION",
+            "OPEN_CONTROLS_ACTION",
             "accessibilityAction",
             "displayModeAction",
             "loadLevel",

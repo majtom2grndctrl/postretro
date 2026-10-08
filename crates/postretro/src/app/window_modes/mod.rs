@@ -316,6 +316,7 @@ mod boot_tests {
         // A deferred exclusive mode lands only once the renderer owns a surface.
         assert!(create < apply && apply < renderer && renderer < finish && finish < redraw);
         assert!(!main.contains(".with_fullscreen("));
+        assert!(!include_str!("../../frame_loop/mod.rs").contains(".with_fullscreen("));
         let startup = include_str!("../../startup/session.rs");
         assert!(
             startup.find("BootOptions::load(").unwrap()

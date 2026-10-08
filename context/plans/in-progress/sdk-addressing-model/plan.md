@@ -16,7 +16,7 @@ read at: c855e3e18
 - Spawned NPCs arrive with aggro armed (`spawner.rs`, `enabled_on_spawn=true`), so Q2/A4 tests observe the group step with `update({ aggro: false })`; a control spawn confirms the default.
 - M8 predicate ("map placement or no provenance") applies to every `worldQuery` kind, so `transform` queries also drop runtime spawns and player pawns. Baselines unchanged.
 - `progress` recompose now keeps each tag's install-time set, kill tally and fired latch (it used to reset and recount, which would have pulled in tagged spawns).
-- OPEN (owner): `progress` membership is every Transform entity carrying the tag at install, spawners included. A spawner never dies, so tagging a closet spawner and its residents `closet` (now natural with S1) makes `progress({ tag: "closet", at: 1 })` unreachable.
+- Owner amendment (2026-10-07), resolving Task 5's `progress` trap: spawner-tag inheritance is replaced by an `entity_spawner` FGD key `spawned_tags`; the spawner's own `_tags` never pass to spawns. Brief Decision, S1, U1, example and Boundary inventory amended. `progress` membership is unchanged (every entity carrying the tag at install). Task 5b swaps the implementation.
 - Client role check reuses the `owner_slot_writes_enabled` flag unchanged, decided in one predicate `group_resolution::group_commands_apply_here`; it now gates group commands as well as owner-slot writes.
 
 ## Delegated answers
@@ -43,7 +43,7 @@ Baseline commit: c855e3e18 (`main` after the claim). Before-data is captured fro
 | G3 `players().grantHealth` credits each pawn once; `on.activators` only activators | sim test | achievable as stated |
 | G4 deterministic match order incl. slot reuse | registry/dispatch test | achievable as stated |
 | G5 disconnect hold skips pawn for every verb; reclaim restores; SP reaches local pawn | dispatch tests | achievable as stated |
-| S1 spawned NPC carries spawner tags; untagged spawner → untagged | `spawner.rs` test | achievable as stated |
+| S1 spawned NPC carries `spawned_tags`; spawner tagged `x` without `spawned_tags` → untagged | `spawner.rs` test | achievable as stated |
 | S2 `progress` counts install-time members only | progress tracker test | achievable as stated |
 | S3 group misuse fails TS compile / raises in Luau (`.length`, `.map`, `damage("boss",10)`, `npcs().fire()`, `#g`, `g[1]`, `g.length`) | sdk type-test + Luau runtime test | achievable as stated |
 | Q1 wait then NPC/player group step tracks membership changes; zero match debug no-op (A6) | scheduler/dispatch tests | achievable as stated |
@@ -77,7 +77,8 @@ Baseline commit: c855e3e18 (`main` after the claim). Before-data is captured fro
 | 3 | First slice: wire `kind` on primitive descriptor + sequence entry (JS+Luau parse, rejections), `SequenceTarget` group arm, kind resolution (npc = Brain minus seat-bound, player = seat-bound), client role check, `updateEnemyState`→`updateNpcState`, light pass/`collect_membership` skip; test NPC spawned during wait | worker | 2 | done — `GroupKind`/`GroupTarget` (entities), `group_resolution::resolve_group`, `reaction_dispatch/group_dispatch.rs`; W1 G1(named/wait) G3(players) G4 G5 Q1 Q3 Q4 R1 R2 M7 pass; scripting-core 754, sim 1258, script-compiler 38, postretro reaction_validation 30; baselines identical. Trigger-tick group binding currently warns-and-skips (Task 4) |
 | 4 | Trigger tick path: group `BoundTarget` (kind, optional tag), `bind_sequence_step`/partition group arm; A1, A2, A4-tick, Q5, R1/R2 in tick | worker | 3 | done — `BoundTarget::Group`, shared role predicate; G1(tick) G2 G3(activators) Q5 A4(tick half) R1/R2(gate) pass in `trigger_bindings::group_tick_tests`; sim 1264, scripting-core 756; baselines identical |
 | 5 | Spawner member: `spawner` query kind + snapshot, sequenced/bound id `spawnFromSpawner`, spawned NPCs inherit tags, `progress` install-time membership (M5, S1, S2, A3–A5) | worker | 4 | done — `worldQuery` `spawner` arm `{id, position, tags}`, `is_map_placed` on every kind, `Spawn{Entity}` bound arm + sequenced `spawnFromSpawner`, tag inheritance, `ProgressTracker` id membership; M5 M8 S1 S2 Q2 pass; sim 1276, postretro bin 1184, netcode 524, ai 241; baselines identical |
+| 5b | Replace spawner-tag inheritance with `spawned_tags` (FGD key, parse, spawn path, spawner snapshot field, S1 tests) | worker | 5, 6 | |
 | 6 | Trigger events: volume-keyed level form, manifest-only `defineTriggerEvent`, rejections, resolved-binding dedupe, A8–A10 ordering/validation/hot reload; `getMapEntities` data-context raise | worker | 4 | |
-| 7 | SDK surface TS+Luau: `getMapEntities`, `npcs`/`players` groups, methods on targets and tokens, gravity, `t.on`, `defineTriggerEvent`; retire free verbs/`world`/`enemies`/`spawner`/`onTriggerEvent`; typedef templates, prelude, generated typedefs, type-tests, parity tests | worker | 5, 6 | |
+| 7 | SDK surface TS+Luau: `getMapEntities`, `npcs`/`players` groups, methods on targets and tokens, gravity, `t.on`, `defineTriggerEvent`; retire free verbs/`world`/`enemies`/`spawner`/`onTriggerEvent`; typedef templates, prelude, generated typedefs, type-tests, parity tests | worker | 5b, 6 | |
 | 8 | Consumers: content, generated maps, `gen_stress_map.py`, docs, context/lib; closet-reveal surface example + Luau twin + map tags; U1 integration test; grep gates (W2, U2); baseline diffs (M1, M2) | worker | 7 | |
 | 9 | Preflight, review panel, fix loop, full gate | integrating executor | 8 | |

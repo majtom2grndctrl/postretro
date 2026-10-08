@@ -544,7 +544,7 @@ Per-entity state fields are the composition seam between adopters: an impact pol
   - Group commands run on host and single player only, through an explicit role check. On a connected client they apply nothing and log nothing above debug, because every machine runs the same reactions.
 - **Subject tokens.** The entity a fire is about: `on.activators`, `on.trigger`. Legal only before any `wait`, because the fire context does not survive it.
 
-Every SDK command is a method on its target. Raw tag-keyed primitive descriptors stay valid wire data: each fire resolves them over every tagged entity, and the SDK emits none. A spawned NPC carries its spawner placement's tags, as if placed there. A tag-keyed `progress` counts only entities that carried its tag at install, so later spawns neither raise its total nor count toward it.
+Every SDK command is a method on its target. Raw tag-keyed primitive descriptors stay valid wire data: each fire resolves them over every tagged entity, and the SDK emits none. A spawned NPC carries the tags its spawner names in `spawned_tags`; the spawner's own tags never pass to its spawns. A tag-keyed `progress` counts only entities that carried its tag at install, so later spawns neither raise its total nor count toward it.
 
 **Per-member sources are methods** (decided, not yet built). A source that fires once per member or group member is spelled `.on(…)` on its target and publishes a subject token named for its kind.
 - In a level, a trigger member receives `t.on("enter" | "exit", fire)`, keyed by that volume.

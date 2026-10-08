@@ -72,17 +72,25 @@ export function setupLevel() {
 ### Automated
 **Per-player firing**
 - [ ] Two players on the host: the guarded XP milestone fires once for the player who crosses, and `on.player.addSlot(…)` credits only that player. The other player crossing later fires once more, for them.
-- [ ] Two players crossing on the same tick fire twice, once per player, in the same order on every run.
+- [ ] Two players crossing on the same tick fire twice, once per player, in the player group's resolution order — the order a `players()` command reaches them — and in the same order on every run (pin P1).
 - [ ] `becomes` fires on false→true only, `ceases` on true→false only; `changes` fires on both with `on.rising` true then false.
 - [ ] A condition over a store slot written by an in-tick trigger fires on that tick; over a slot written by a frame-end reaction drain, on the next.
 - [ ] A non-Bool condition is rejected at install, naming the event; a Bool one beside it installs.
+- [ ] A condition over a player's health sees every hit that lands on its tick on that tick — a remote client's authorized hit as well as a host hit — and sees a global accumulated slot's advance on the tick the row's pin states (pins P4, P5).
+- [ ] In a frame that runs two ticks, a condition true on the first and false on the second fires `becomes` and then `ceases`, both drained that frame in tick order; a value that crosses and returns within one tick fires nothing (pin P3).
+- [ ] A trigger fire and a player-event fire on one tick both drain in that tick's frame, each in its own authored order, in the inter-source order the plan of record pins; a test fails if the two batches swap (pin P11).
+- [ ] With no player pawn bound, a player event fires nothing and logs nothing above debug (pin P15).
+- [ ] A mod-global player event scoped by `levels` fires only in matching levels; a level's own player events fire only in that level.
+- [ ] A `players().on` descriptor that is built but not returned under `playerEvents` registers nothing and fires nothing.
 
 **First sight**
 - [ ] A player for whom the condition holds at level install fires `becomes` on the first tick; one for whom it is false does not fire `ceases`.
-- [ ] A remote player joining while the condition holds fires `becomes` on their first observed tick.
+- [ ] A remote player joining while the condition holds fires `becomes` on their first observed tick; one joining while it is false fires nothing.
 - [ ] A disconnect hold fires nothing. Reclaiming within the hold while the condition holds fires `becomes` again; reclaiming while it is false fires nothing.
-- [ ] After seat release no edge memory remains for that player.
+- [ ] After seat release no edge memory remains for that player: edge memory holds one entry per live player per event, and a player admitted on a new seat before the next tick fires `becomes` once if their condition holds (pin P8).
 - [ ] A guarded milestone does not re-fire across a level transition or a reclaim; the same milestone without its guard re-fires at each.
+- [ ] A remote player whose pawn is bound but who has sent no input yet is observed: a condition holding for them fires `becomes` on the first tick after binding, not at their first input (pin P7).
+- [ ] A player at zero health stays observed: a condition over their health fires `becomes` once at death and no first-sight fire follows; damage a fire applies after the tick's death sweep reports the death on the next tick, once (pins P19, P20).
 
 **Reads and targets**
 - [ ] On the host, with two players at different health, a condition over `player.health` fires for exactly the player whose own health crossed, and `read(player.health.byPlayer(on.player))` in the fired reaction yields that player's value, not the host's.
@@ -93,6 +101,7 @@ export function setupLevel() {
 - [ ] `byPlayer(impact.source)` on an engine player slot in an impact policy reads the source player's value.
 - [ ] A reaction using `on.player` as a target or a `byPlayer` owner, subscribed to `levelLoad`, a crossing or a trigger event, is rejected at install, naming the reaction and the source; the same reaction under `players().on` installs.
 - [ ] `on.player` resolving to a player whose pawn despawned before the drain warn-skips the command and leaves sibling commands applying.
+- [ ] A `byPlayer(on.player)` engine-slot read in a fired reaction yields the value the row's pin states (fire tick or drain); when that player's pawn is gone before the drain, the reaction warn-skips rather than reading a default, and its presentation still reaches the player (pins P12, P17).
 - [ ] A reaction with an `on.player` step after a `wait` is dropped at install with an error naming it; the same step before the `wait` installs and lands on the event's player.
 
 **Roles**
@@ -100,17 +109,24 @@ export function setupLevel() {
 - [ ] `onStateCrossing` on a mod per-owner slot is still rejected at bind on every role, naming the slot (regression guard); a local crossing on `player.health` still fires on each machine for its own player.
 
 **Presentation**
-- [ ] Loopback harness, host plus two clients: a `flashScreen` from an event for client A arrives on A only — not the host, not client B. The host's own player's event presents on the host only.
+- [ ] Loopback harness, host plus two clients: a `flashScreen` from an event for client A starts A's screen flash through A's frame drain — not the host's, not client B's. The host's own player's event presents on the host only; in single player it presents locally.
 - [ ] Each presentation command round-trips the new message kind with identical fields; a dropped message presents nothing and breaks nothing.
+- [ ] The existing presentation payloads encode to the same bytes as before the new kind; a peer on the previous wire version is refused at the version gate before any decode; the wire version is exactly one above main's (pin P14).
+- [ ] A forwarded presentation command carrying a non-finite number is dropped at client intake with a warning and presents nothing; finite commands beside it still present.
+- [ ] A forwarded presentation command reaching a client while it is held, demoted or between levels presents nothing; a fire on the last tick before a level transition lands none of its commands in the next level (pins P9, P13).
+- [ ] In co-op, a trigger event's `flashScreen` and `playSound` still present on the host only, unchanged, while the same reactions in a `players().on` fire list present on the event's player.
 - [ ] A forwarded `flashScreen` passes through the receiving machine's flash limiter and reduce-motion scaling.
 - [ ] `playSound` with `at: on.emitter` in a `players().on` reaction warn-skips; without `at` it plays.
 - [ ] A `showDialog` reaction, or an `updateState` on a non-replicated slot, in a `players().on` fire list is dropped at install with an error naming it; an `updateState` on a shared slot in the same fire list installs and lands on the host.
+- [ ] One classification, exhaustive over every system reaction kind, sorts each as forwardable presentation, machine-local, or host consequence; a new kind fails to build until classified. A `players().on` fire list holding any machine-local kind is dropped at install, naming it.
 - [ ] A fire list holding a consequence and two presentation reactions runs all three, each dispatch path in listed order (`scripting.md` §12 trigger ordering): the credit applies on the event's tick, and the sound and flash present on the event's player only.
-- [ ] A `players().on` reaction whose `fire` step reaches a presentation reaction is dropped at install with an error naming both, before and after a `wait`; the same presentation reaction listed directly in the event's fire list installs and presents on the event's player only.
+- [ ] A `players().on` reaction whose `fire` step reaches a presentation reaction, directly or through further `fire` steps, is dropped at install with an error naming both, before and after a `wait`; the same presentation reaction listed directly in the event's fire list installs and presents on the event's player only.
 - [ ] A `players().on` reaction whose `fire` step reaches a reaction with no presentation and no plain per-player read installs and runs.
 
 **Surface**
 - [ ] The Scripting surface example runs as a `content/dev` script, and its TypeScript and Luau twins produce byte-identical wire data.
+- [ ] Grep gate: no seat identifier appears in the generated SDK typedefs or either runtime's scripting surface, and the player state tree exposes no methods.
+- [ ] networking.md §Presentation events vs. replicated state and §Channel model describe the player-addressed presentation command alongside damage numbers. They no longer call the presentation layer world-anchored only, and they give the damage bearing's slot placement as a continuous fact a HUD binds.
 
 ### Manual
 - [ ] Two-client co-op playtest: the level-up sound and flash and the scald sound appear only on the affected player's machine; the low-health vignette (a local crossing) appears on the bleeding player's machine with no perceptible delay after the hit.

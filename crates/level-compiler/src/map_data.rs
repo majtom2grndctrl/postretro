@@ -419,7 +419,7 @@ pub struct MapLight {
     /// Author-supplied script tags (FGD `_tags`, space-delimited). Carried
     /// through the PRL `LightTags` section so the runtime can register each
     /// light with the scripting entity registry. An entity matches
-    /// `world.query({ component: "light", tag: "t" })` when any of its tags
+    /// `getMapEntities("light", { tag: "t" })` when any of its tags
     /// equals `"t"`. Empty means untagged.
     pub tags: Vec<String>,
 

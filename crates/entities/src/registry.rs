@@ -122,8 +122,9 @@ pub enum ComponentKind {
     /// `PlayerMovement`/`Agent` — never reachable through `worldQuery`). See
     /// `components::brain`.
     Brain = 12,
-    /// Deterministic linear mover. Scripts query mover handles through
-    /// `world.query`; raw phase remains engine-owned and non-attachable.
+    /// Deterministic linear mover. Scripts address movers as
+    /// `getMapEntities("mover")` member handles; raw phase remains
+    /// engine-owned and non-attachable.
     KinematicMover = 13,
     /// Engine-owned trigger configuration and mutable arming state.
     TriggerVolume = 14,
@@ -323,7 +324,7 @@ pub struct FogVolumeComponent {
 impl FogVolumeComponent {
     /// Script-facing field list, paired with the camelCase keys the FFI
     /// boundary uses. Centralized so adding a runtime-tweakable field updates
-    /// every read/write site (`into_js`, `into_lua`, `world.query` JSON shape)
+    /// every read/write site (`into_js`, `into_lua`, `worldQuery` JSON shape)
     /// in one place. The wire-shared struct keeps snake_case Rust idents; the
     /// camelCase mapping lives only here.
     pub fn camel_fields(&self) -> [(&'static str, f32); 7] {
@@ -722,7 +723,7 @@ pub struct EntityRegistry {
     light_membership_generation: u64,
     /// Parallel column of per-entity tag lists. Space-delimited in the PRL
     /// wire format; stored here as pre-split `Vec<String>` per slot. An entity
-    /// matches `world.query({ tag: "t" })` when any of its tags equals `"t"`.
+    /// matches a `{ tag: "t" }` filter when any of its tags equals `"t"`.
     /// Empty vec means untagged. Column is resized in lockstep with `components`.
     tags: Vec<Vec<String>>,
     /// Per-entity key/value bag carried over from the FGD `.map` entity that
@@ -893,7 +894,7 @@ impl EntityRegistry {
     }
 
     /// Attach (or overwrite) the tag list on an entity. An empty vec clears
-    /// all tags. `world.query` checks membership: an entity matches filter
+    /// all tags. Tag filters check membership: an entity matches filter
     /// tag `"t"` when any of its tags equals `"t"`.
     pub fn set_tags(&mut self, id: EntityId, tags: Vec<String>) -> Result<(), RegistryError> {
         let index = self.validate(id)?;
@@ -911,7 +912,8 @@ impl EntityRegistry {
     /// When `tag_filter` is `None`, every entity with the component matches.
     ///
     /// Yields `(EntityId, &ComponentValue)` pairs in slot-index order. Used by
-    /// the `world.query` primitive.
+    /// the `worldQuery` primitive behind `getMapEntities` and by group
+    /// resolution (`npcs`, `players`), which relies on that order.
     pub fn query_by_component_and_tag<'a>(
         &'a self,
         kind: ComponentKind,

@@ -17,8 +17,8 @@
     fog_pixel_scale(integer) : "Fog low-resolution downscale factor (1=full-res, 8=coarsest)" : 4
     // Starting gravity in m/s². Negative = downward (Earth = -9.81), positive
     // = upward acceleration. Absent uses standard Earth gravity. May be changed
-    // at runtime via world.setGravity().
-    initialGravity(float) : "Starting gravity (m/s²; default −9.81/Earth); negative = downward, positive = upward. May be changed at runtime via world.setGravity()." : -9.81
+    // at runtime via setGravity().
+    initialGravity(float) : "Starting gravity (m/s²; default −9.81/Earth); negative = downward, positive = upward. May be changed at runtime via setGravity()." : -9.81
     // Per-map lightmap density opt-in (meters per texel). Smaller = finer
     // shadows but larger atlas. Default 0.04 m/texel; only fidelity-critical
     // maps need to author this. Non-finite / <= 0 values are warned and the
@@ -175,7 +175,7 @@
     ]
     // Whitespace-delimited script tags. Each non-whitespace token is one,
     // case-sensitive tag; do not use commas or spaces inside a tag. A light
-    // matches `world.query({ component: "light", tag: "t" })` when any token
+    // matches `getMapEntities("light", { tag: "t" })` when any token
     // exactly equals `"t"`. Map data scripts use these queries during baking
     // too, so a tagged static light reached by setLightAnimation gets an
     // animated-bake reservation automatically. Leave blank for no tags.
@@ -263,7 +263,7 @@
         1 : "On (default)"
     ]
     // Space-delimited list of script tags. An entity matches
-    // `world.query({ component: "light", tag: "t" })` when any tag equals
+    // `getMapEntities("light", { tag: "t" })` when any tag equals
     // `"t"`. Leave blank for no tags. Example: "arena warm"
     _tags(string) : "Script tags" : ""
 ]

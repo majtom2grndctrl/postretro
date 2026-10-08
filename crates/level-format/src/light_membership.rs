@@ -40,7 +40,7 @@ impl LightTable {
     }
 }
 
-/// One light available to data-script `world.query({ component: "light" })`.
+/// One light available to data-script `getMapEntities("light")`.
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 #[derive(Clone, Debug, PartialEq)]

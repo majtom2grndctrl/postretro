@@ -8,23 +8,23 @@ A requested capability, raised by the owner and by E24's direction review. In co
 ## Decisions
 - **A host-only sibling source, not a crossing mode.** `players().on` registers and evaluates on host and single player only, never on a connected client — the trigger-event model (`plans/done/E18--trigger-event-params`). `onStateCrossing` keeps its meaning: every machine, its own view (`scripting.md` §10.4).
 - **Spelled `players().on(edge, fire, options?)`** on the `players()` group, per `plans/done/sdk-addressing-model`'s `.on`-on-target rule (`t.on` precedent). It returns a pure descriptor effective only under `playerEvents`, iterates the group's player set, and takes no filter in v1. `getGameState().player` stays a tree of state refs and gains no methods.
-- **Composition follows trigger bindings** (`scripting.md` §12). `playerEvents` on `ModManifest` and on `setupLevel`'s manifest compose as matching mod-global entries, then the level's, each in authored order; `options.levels` scopes a `ModManifest` entry as crossings' `levels` does, and a level's own entries apply to that level. Two entries resolving to the same condition, edge and reaction bind once, with one warning naming both.
+- **Composition follows trigger bindings** (`scripting.md` §12). `playerEvents` on `ModManifest` and on `setupLevel`'s manifest compose as matching mod-global entries, then the level's, each in authored order; `options.levels` scopes a `ModManifest` entry as crossings' `levels` does, and a level entry carrying `levels` is rejected with a warning naming the level script while its siblings install, as a misplaced trigger form is. Two entries resolving to the same condition, edge and reaction bind once, with one warning naming both; conditions match by structural equality, so `a.and(b)` and `b.and(a)` are distinct.
 - **Evaluated once per authoritative tick, after the tick settles, as a snapshot.** Evaluation follows the death sweep, so a condition sees this tick's damage and ammo; it is frame-rate independent and inside the determinism gate. Every (event, player) condition reads the settled tick before any fire applies, so outcomes do not depend on player or event order; a fire's writes, like a frame-end drain's, are seen next tick.
 - **Condition plus edge word.** The condition is a Bool expression in the fluent algebra (`read(ref)`, `.ge`, `.and`, …); a non-Bool condition is rejected at install, naming the event. `becomes(cond)` fires false→true and `ceases(cond)` true→false. There is no threshold form; a threshold is `read(x).ge(t)`.
 - **Inside the condition, a plain read of a per-player slot means the player being evaluated** — engine per-player slots and mod per-owner slots alike; global slots read as everywhere. The binding is lexical: the condition belongs to the source. A reaction is sourceless (`scripting.md` §12), so a plain per-player read in a reaction this source fires is an implicit owner, the wrong-owner bug `plans/done/E16--per-player-currency` forbids; install rejects it, naming the slot and pointing to `byPlayer(on.player)`.
 - **First sight: an unobserved player counts as false.**
   - A player is unobserved at level install, without a pawn, during a disconnect hold, and while their pawn has no value for a slot the condition reads (no active weapon). Becoming unobserved fires nothing; at first observation `becomes` fires if the condition holds, and `ceases` never does.
-  - Seat release drops the player's edge memory. A recompose keeps it for an event whose descriptor is unchanged, keyed by content, not position; a new or edited event starts every player unobserved.
+  - Seat release drops the player's edge memory. A recompose keeps it for every (condition, edge) that survives, keyed by content, not position, so editing a fire list re-fires nothing; a new or changed condition starts every player unobserved.
   - No initial-state option: milestones use the guard idiom (`research.md` §Milestones). This diverges from crossings' arm-only rule, which drops a player who joins already underwater.
 - **`on.player` is the event's player, as command target and read owner.** It is a subject token like `on.activators`, carrying its verbs (`scripting.md` §12), resolving to that player's pawn or seat, and legal only before any `wait`. `ref.byPlayer(on.player)` reads that player's value in the fired reaction; `Seat` never reaches the authoring surface (E16). Both are legal only in reactions this source fires; under any other source, install rejects that subscription, naming the reaction and the source (E18 sentinel rule).
-- **Install rejections cost one subscription, not the reaction.** A reaction this brief rejects for one source loses only that subscription, with an error naming the reaction and the source, and still runs under every source it is valid for — the crossing sentinel precedent, not V4a's reaction-wide drop.
+- **Install rejections cost one subscription, not the reaction.** When any reaction at an address in a player event's fire list breaks this brief's rules, the event drops that address, with an error naming the address, the reaction and the rule; the address still runs under every other source. A mixed address is dropped whole, because this source has no runtime skip for a misrouted effect. E18 V4a's reaction-wide drop still governs what a `wait` loses.
 - **`updateState` accepts fluent values** — any `read(…)` expression, `byPlayer(on.player)` reads included — in TypeScript and Luau. It is the consumer of in-reaction per-player reads.
 - **Owner-private engine player slots become per-player.** The engine-state catalog marks them, and each has one host-side lookup from pawn to value that reads the pawn's components. Owner-private replication, condition reads and `byPlayer` reads all share that lookup, so no stored per-player copy can drift. Outside this source a plain read keeps meaning the local player — HUD binds, `bindState`, local crossings, impact-policy ambient reads — and `byPlayer` on these refs takes `on.player` or `impact.source`.
 - **Crossings are unchanged.** `onStateCrossing` on a mod per-owner slot stays rejected at bind (`plans/done/E16--per-player-currency` Decisions): accepting it would silently watch only the host's player and would fix crossing semantics ahead of the deferred redesign.
 - **Own-state presentation stays client-local; `players().on` presentation is for host decisions.** An effect reflecting a player's own replicated state — a low-health vignette, an ammo warning, a swim splash — is a local `onStateCrossing` on that player's machine, with no host round trip and no loss (as `coop-trigger-screen-effects` and `movement--state-transition-feel` treat own-state feedback). `players().on` carries presentation that follows a host decision: a level-up fanfare, a scald on overheat.
 - **Presentation plays on the target player's own machine.** Each fire carries an internal target player, distinct from `on.player`, that routes only the presentation reactions (`playSound`, `rumble`, `flashScreen`, `vignette`, `screenShake`) in its fire list: local for the host's or single player's own player, else a new unreliable Presentation-channel message to that client alone (`networking.md` §Presentation events vs. replicated state). The receiving machine's accommodations (E23 flash limiter, reduce motion) apply.
 - **A machine-local effect this source cannot forward is rejected.** A UI-stack verb (`showDialog`, `openMenu`, `closeDialog`), a text edit or a `setState` on a non-replicated slot in a reaction this source fires would land on the host's screen, not the event's player's, so install rejects it, naming the reaction. Widening forwarding later lifts the rejection without breaking content.
-- **Context-free routes keep E18's contract** (`plans/done/E18--timed-reaction-steps` V4b). A `fire` step and a primitive's completion follow-up (`onComplete`) dispatch with no context. A `players().on` reaction from which either route, at any depth, reaches presentation, a machine-local effect or a plain per-player read is rejected at install, naming both reactions.
+- **Context-free routes are checked at install.** A `fire` step and a primitive's completion follow-up (`onComplete`) dispatch with no context. This extends E18's V4b to `onComplete`, which E18 warn-skips at runtime (`plans/done/E18--timed-reaction-steps`). A `players().on` reaction from which either route, at any depth, reaches presentation, a machine-local effect or a plain per-player read is rejected at install, naming both reactions.
 - **No emitter.** This source publishes no `emitter`; `playSound(…, { at: on.emitter })` in its reaction warn-skips as for other emitterless sources (`scripting.md` §12), and its sounds play unpositioned on the player's machine.
 - **Non-goals.**
   - Whose screen a *trigger*-fired effect belongs to: `coop-trigger-screen-effects` owns that policy and reuses this delivery path.
@@ -38,10 +38,9 @@ A requested capability, raised by the owner and by E24's direction review. In co
 
 ### Scripting surface
 ```ts
-// progress.ts — a store module
+// leveling.ts — a store module; XP is the dev mod's per-owner `progression.xp`, credited per kill
 import { defineStore } from "postretro";
-export const progress = defineStore("progress", {
-  xp:    { type: "number", default: 0, perOwner: true, network: "ownerPrivate" },
+export const leveling = defineStore("leveling", {
   level: { type: "number", default: 1, perOwner: true, network: "ownerPrivate" },
   lastLevelUpXp: { type: "number", default: 0, network: "shared" },
 });
@@ -50,15 +49,16 @@ export const progress = defineStore("progress", {
 import { players, becomes, ceases, read, defineReaction, getGameState } from "postretro";
 import type { PlayerEventParams } from "postretro";
 import { playSound, flashScreen, vignette, updateState, onStateCrossing } from "postretro/ui";
-import { progress } from "./progress";
+import { progression } from "./combat-lifecycle";
+import { leveling } from "./leveling";
 const player = getGameState().player;
 
 // One effect per reaction; a source's fire list runs several.
-const levelUp = defineReaction("progress.levelUp", (on: PlayerEventParams) => on.player.addSlot(progress.level, 1));
-const recordLevelUp = defineReaction("progress.recordLevelUp", (on: PlayerEventParams) =>
-  updateState(progress.lastLevelUpXp, read(progress.xp.byPlayer(on.player))));
-const fanfare = defineReaction("progress.fanfare", playSound("level_up"));   // on that player's machine
-const goldFlash = defineReaction("progress.goldFlash", flashScreen([1, 0.9, 0.3, 0.4], 300));
+const levelUp = defineReaction("leveling.levelUp", (on: PlayerEventParams) => on.player.addSlot(leveling.level, 1));
+const recordLevelUp = defineReaction("leveling.recordLevelUp", (on: PlayerEventParams) =>
+  updateState(leveling.lastLevelUpXp, read(progression.xp.byPlayer(on.player))));
+const fanfare = defineReaction("leveling.fanfare", playSound("level_up"));   // on that player's machine
+const goldFlash = defineReaction("leveling.goldFlash", flashScreen([1, 0.9, 0.3, 0.4], 300));
 const scald = defineReaction("heat.scald", (on: PlayerEventParams) => on.player.damage(5));
 const scaldHiss = defineReaction("heat.scaldHiss", playSound("scald"));
 const cooled = defineReaction("heat.cooled", playSound("vent_hiss"));
@@ -68,7 +68,7 @@ export function setupLevel() {
   return {
     reactions: [levelUp, recordLevelUp, fanfare, goldFlash, scald, scaldHiss, cooled, bleeding],
     playerEvents: [   // host decisions: run on the host, once per player
-      players().on(becomes(read(progress.xp).ge(100).and(read(progress.level).lt(2))),
+      players().on(becomes(read(progression.xp).ge(100).and(read(leveling.level).lt(2))),
         [levelUp, recordLevelUp, fanfare, goldFlash]),
       players().on(becomes(read(player.overheated)), [scald, scaldHiss]),  // overheating burns the wielder
       players().on(ceases(read(player.overheated)), [cooled]),
@@ -79,7 +79,7 @@ export function setupLevel() {
   };
 }
 ```
-The start script registers `progress` in `defineMod({ stores })`, as `content/dev/start-script.ts` registers `closetStore`. `PlayerEventParams` carries `player`. Luau mirrors it with colon calls — `Postretro.players():on(…)`, `on.player:damage(5)` — and spells `.and` as `["and"]`.
+The start script registers `leveling` in `defineMod({ stores })`, as `content/dev/start-script.ts` registers `closetStore`; the Luau twin re-declares the store inline, as the Luau closet twin does. `PlayerEventParams` carries `player`. Luau mirrors it with colon calls — `Postretro.players():on(…)`, `on.player:damage(5)` — and spells `.and` as `["and"]`.
 
 ## Acceptance
 ### Automated
@@ -106,7 +106,9 @@ The start script registers `progress` in `defineMod({ stores })`, as `content/de
 - [ ] A guarded milestone does not re-fire across a level transition or a reclaim; the same milestone without its guard re-fires at each.
 - [ ] A remote player whose pawn is bound but who has sent no input yet is observed: a condition holding for them fires `becomes` on the first tick after binding, not at their first input (pin P7).
 - [ ] A player at zero health stays observed: a condition over their health fires `becomes` once at death and no first-sight fire follows; damage a fire applies after the tick's death sweep reports the death on the next tick, once (pins P19, P20).
-- [ ] A hot reload that leaves a player event unchanged fires nothing for players whose condition already held; an edited event starts every player unobserved (pin P10).
+- [ ] A hot reload that keeps an event's condition and edge fires nothing for players whose condition already held, even when its fire list changed; a changed condition starts every player unobserved (pin P10).
+- [ ] A player event whose fire list names an address where one reaction plays a sound and another holds a plain per-player read drops that whole address from the event at install, naming the address, reaction and rule; the same address still fires under a crossing.
+- [ ] A level script returning a `players().on` entry with `levels` gets a warning naming the script and that entry does not install; its sibling entries do.
 - [ ] A player whose pawn has no value for a slot the condition reads (no active weapon) is unobserved for that event: losing the value fires nothing, and regaining it while the condition holds fires `becomes` once (pin P18).
 
 **Reads and targets**
@@ -120,7 +122,7 @@ The start script registers `progress` in `defineMod({ stores })`, as `content/de
 - [ ] A reaction using `on.player` as a target or a `byPlayer` owner, subscribed to `levelLoad`, a crossing or a trigger event, is rejected for that source at install, naming the reaction and the source; the same reaction under `players().on` installs.
 - [ ] `on.player` resolving to a player whose pawn despawned before the drain warn-skips the command and leaves sibling commands applying.
 - [ ] A `byPlayer(on.player)` engine-slot read in a fired reaction yields the value the row's pin states (fire tick or drain); when that player's pawn is gone before the drain, the reaction warn-skips rather than reading a default, and its presentation still reaches the player (pins P12, P17).
-- [ ] A reaction with an `on.player` step after a `wait` is rejected from the player event at install with an error naming it; the same step before the `wait` installs and lands on the event's player.
+- [ ] A reaction with an `on.player` step after a `wait` is dropped at install, reaction-wide, with an error naming it (E18 V4a); the same step before the `wait` installs and lands on the event's player.
 
 **Roles**
 - [ ] A connected client neither registers nor evaluates `players().on`, and fires nothing from it.
@@ -158,7 +160,7 @@ The start script registers `progress` in `defineMod({ stores })`, as `content/de
 - Rejections: strip the subscription as the crossing sentinel rule does (`startup/lifecycle.rs`), not by emptying the body as V4a does (`reaction_validation.rs`). The `fire` walk extends to `onComplete` addresses. One predicate classifies machine-local effects; `reaction-body-composition` needs the same one, so whichever lands first builds it. On recompose, where the crossing detector reinitializes, player-event edge memory carries over keyed by descriptor content.
 - `updateState`: lower a fluent value to IR as impact builders do (`sdk/lib/util/expression_refs.ts`), in `sdk/lib/ui/reactions.ts` and `reactions.luau`; the `@player` owner binds through `DispatchScope`, where `RuntimeValue` binds through `StoreScope` today.
 - Presentation: a new `ServerPresentationPayload` variant, sent with `NetServer::send_presentation`; client intake beside `ingest_client_presentation_messages` pushes onto the client's system command queue. Confirm that queue drains on the connected-client frame path.
-- SDK: `read()` widens to engine per-player refs; `byPlayer` is generated for them (non-enumerable, per `scripting-state-convergence`); `@player` joins the `@activators` parsers in both runtimes; `defineReaction` gains a `PlayerEventParams` tracer overload.
+- SDK: `read()` widens to engine per-player refs; `byPlayer` is generated for them (non-enumerable, per `scripting-state-convergence`); `@player` joins the `@activators` parsers in both runtimes; `defineReaction` gains named and unnamed `PlayerEventParams` tracer overloads; store-ref `byPlayer` accepts `on.player`, which today lowers to `@invalid` for any owner but `impact.source`.
 - Docs: `scripting.md` teaches the own-state vs host-decision split and that the event player's presentation goes in the fire list, not behind `fire`; `reaction-body-composition`'s inline system steps will route without `fire`.
 - First slice: one engine slot (`player.health`) through the lookup, a `becomes` condition on two loopback players, a `on.player.damage(…)` landing on the right pawn. This falsifies the scope routing and the lookup placement, the riskiest pieces.
 - Split first, behavior-preserving: `main.rs`, `netcode/src/state_slots.rs`, `reaction_dispatch.rs`, `system_reactions.rs`, `scopes.rs`, `engine_state_catalog.rs`, `state_crossings.rs`, `data_script.ts` are all past ~800 lines; split only the ones this work extends.

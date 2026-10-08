@@ -117,7 +117,7 @@ Test names are planned, not yet written. "Engine-free" means a pure function, co
 | **R8** re-read counter increments on a re-read after eviction, not on first read | `reread_counter_counts_only_post_eviction_reads` | achievable as stated |
 | **R9** each visible SH miss in exactly one bucket, each bucket reached; Settling adds nothing; timed-out reveal counts once (P9) | `visible_miss_lands_in_exactly_one_bucket` (one fixture per bucket) + `settling_records_no_visible_miss` | achievable as stated |
 | **R10** Line C's `first_level_frame` on the reveal frame; Settling hold its own mark | `line_c_marks_settle_hold_and_reveal_frame` (source-order and timing-name test) | achievable as stated |
-| **M1** SH mandatory bytes per camera cell at default L on hallway-inspection and campaign-test, beside lightmap; worst and p95; stop if over the threshold | owner-visible report from `#[ignore]` harness (task 1) | manual |
+| **M1** SH mandatory bytes per camera cell at default L on hallway-inspection and campaign-test, beside lightmap; worst and p95; stop if over the threshold | owner-visible report from `#[ignore]` harness (task 1) | manual; measured 2026-10-08, gate passes (§Measurement) |
 | **M2** visual: no ambient-floor SH or SH-only lightmap in the first view, four entry routes, two maps | owner, in-engine | manual |
 | **M3** resource run on largest stress map, before/after, pinned fixture and route | owner, in-engine (executor prepares the route and counters) | manual |
 | **M4** route's in-play SH misses fall vs baseline; resident SH past budget is mandatory only | owner, from M3 data | manual |
@@ -127,7 +127,7 @@ Test names are planned, not yet written. "Engine-free" means a pure function, co
 
 | # | Task | Owner | Depends on | Status |
 |---|---|---|---|---|
-| 1 | **Measure the reach first (riskiest premise).** An `#[ignore]` harness beside the lightmap walk measurement: for every camera cell at default L, SH mandatory bytes = clusters of Visible (lead-0 entries) ∪ pinned ∪ owner closure ∪ id-51 entries with lead ≤ L, priced from the id-50 index, plus fixed metadata. Report lightmap mandatory bytes beside it, worst cell and p95, on `stress-warren-hallway-inspection` and `campaign-test`. First confirm both PRLs carry ids 49–51; if not, the owner rebakes (long bake). Stop for the owner if the worst cell exceeds the 256 MiB floor. | integrating executor | — | |
+| 1 | **Measure the reach first (riskiest premise).** An `#[ignore]` harness beside the lightmap walk measurement: for every camera cell at default L, SH mandatory bytes = clusters of Visible (lead-0 entries) ∪ pinned ∪ owner closure ∪ id-51 entries with lead ≤ L, priced from the id-50 index, plus fixed metadata. Report lightmap mandatory bytes beside it, worst cell and p95, on `stress-warren-hallway-inspection` and `campaign-test`. First confirm both PRLs carry ids 49–51; if not, the owner rebakes (long bake). Stop for the owner if the worst cell exceeds the 256 MiB floor. | integrating executor | — | done: gate passes, see §Measurement (task 1) |
 | 2 | **Split streaming from the Running frame.** One call, from a given pose: visibility → `prepare_streaming_drains` → lightmap drain → SH drain, compose and submit with no world present. The renderer gains a submit-only path beside `submit_frame_without_readback`. `present_world_less_frame` gains a variant that does not clear level streaming. Running calls the same seam, so behavior is unchanged. | integrating executor | — | |
 | 3 | **Presented-pose chokepoint.** One resolver for position, yaw and pitch: the menu pose whenever the frontend menu is present, else the first `player_spawn` pose. Install, the streaming step and the first Running frame read it. Replaces `spawn_eye_position`. | integrating executor | — | |
 | 4 | **Settle chokepoint and predicates.** SH: a class-filtered predicate (Visible, Pinned, owner closure, lead tier). Lightmap: mandatory plus drawn blocks, with drawn blocks requested on any visibility path while settling. Each answers "not yet asked" until demand updates from the settle pose (P1); a non-streaming resource answers settled. Capture's SH preload switches to the SH answer (S8). | integrating executor | 2 | |
@@ -140,6 +140,21 @@ Test names are planned, not yet written. "Engine-free" means a pure function, co
 | 11 | **Measurement prep for owner runs.** Rebuild stale stress PRLs if needed. Pin the route, machine, cache mode and baseline (`main` at `4677eda27`). Hand the owner M2–M5 checklists with the counters to record. | integrating executor | 8, 10 | |
 
 Hot paths touched: the Running frame's streaming call (task 2: same work, new seam, no per-frame allocation), SH targeting (task 7: the warm walk is replaced by a cached per-camera-cell id-51 lookup recomputed only on cell or L change, as lightmap does today), and diagnostics counters (task 8: fixed counters, no allocation).
+
+## Measurement (task 1)
+
+Harness: `sh_streaming/reach_measurement.rs`, test `sh_reach_mandatory_bytes_from_prl` (`#[ignore]`; run instructions are in its header). Fixed bytes come from `--capture` measurement reports at each map's spawn (`renderer_accounted_sh.streaming`), on a dev build with the `capture` feature and `POSTRETRO_SH_STREAMING=sync-proof`. Both PRLs carry ids 49–51, so no rebake was needed.
+
+**What the floor covers.** The controller compares logical occupancy, meaning each cluster's `requested_resident_bytes`, against `nominal_cluster_bytes` = 256 MiB − fixed metadata − whole-resident scatter. Physical pool capacity is a separate ledger. It includes the compose pools, sits above the floor by design, and is not what the gate tests. M4's "past budget" therefore reads logical occupancy against the nominal cluster budget.
+
+| Map | Camera cells | Whole-map SH | Fixed + scatter | SH mandatory at L = 16 m: median / p95 / worst | Worst + fixed + scatter | Lightmap mandatory at L = 16 m: median / p95 / max |
+|---|---|---|---|---|---|---|
+| `stress-warren-hallway-inspection` | 2,082 | 193.8 MiB (3,385 clusters) | 36.4 + 39.3 MiB | 49.4 / 106.0 / 125.1 MiB (worst: cell 4572, 93 clusters) | **200.8 MiB** of 256 | 45.3 / 84.7 / 136.5 MiB |
+| `campaign-test` | 198 | 15.6 MiB (181 clusters) | 3.3 + 3.4 MiB | 10.2 / 11.5 / 11.5 MiB | **18.2 MiB** of 256 | 63.1 / 110.6 / 110.6 MiB |
+
+Neither map pins a cluster. At L = 32 m the hallway's worst cell is 148.0 MiB (223.7 MiB with fixed bytes), still under the floor. Hallway's nominal cluster budget is 180.3 MiB, so no cell's mandatory set overshoots it at L = 16 m. Physical pool capacity at the hallway spawn is 720.4 MiB, which matches the owner sample.
+
+**Verdict:** the gate passes, so the id-51 reach is built for play as decided, not the entry-only fallback.
 
 ## Owner notes
 - 2026-10-08: approved. Owner sample at the hallway spawn, today's code: lightmap mandatory 58 blocks / 36.7 MiB, pool 15 layers / 224 MiB; SH 70 targets (8 warm) all Sampleable, logical occupancy 80.2 MiB, pool capacity 720.4 MiB. Task 1 confirms which SH bytes the 256 MiB floor covers before applying the go/no-go threshold.

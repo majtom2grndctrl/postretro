@@ -347,6 +347,7 @@ pub(crate) mod tests {
             name: "Digest fixture".to_string(),
             id: "com.postretro.digest-fixture".to_string(),
             version: "1.0.0".to_string(),
+            input: None,
             render: ModRenderProfile::default(),
             movers: Default::default(),
             audio: Default::default(),

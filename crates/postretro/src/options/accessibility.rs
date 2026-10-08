@@ -19,7 +19,12 @@ pub(crate) mod keys {
     pub(crate) const MUSIC_VOLUME: &str = "accessibility.music_volume";
     pub(crate) const UI_VOLUME: &str = "accessibility.ui_volume";
     pub(crate) const MONO_AUDIO: &str = "accessibility.mono_audio";
+    pub(crate) const HOLD_TIMING_SCALE: &str = "accessibility.hold_timing_scale";
 }
+
+/// `hold_timing_scale` is the group's first field outside `[0, 1]`: a motor
+/// accommodation lengthens tap and hold thresholds and never shortens them.
+pub(crate) const HOLD_TIMING_SCALE_RANGE: (f32, f32) = (1.0, 3.0);
 
 const DEFAULT_SCALE: f32 = 1.0;
 const DEFAULT_VOLUME: f32 = 1.0;
@@ -45,6 +50,8 @@ pub struct AccessibilityOptions {
     pub ui_volume: f32,
     /// Fold left and right together after spatialization.
     pub mono_audio: bool,
+    /// Multiplier on every tap and hold threshold, `[1, 3]`.
+    pub hold_timing_scale: f32,
 }
 
 impl Default for AccessibilityOptions {
@@ -58,6 +65,7 @@ impl Default for AccessibilityOptions {
             music_volume: DEFAULT_VOLUME,
             ui_volume: DEFAULT_VOLUME,
             mono_audio: false,
+            hold_timing_scale: 1.0,
         }
     }
 }
@@ -72,6 +80,7 @@ impl AccessibilityOptions {
         let sfx_volume = field("sfx_volume").unwrap_or(defaults.sfx_volume);
         let music_volume = field("music_volume").unwrap_or(defaults.music_volume);
         let ui_volume = field("ui_volume").unwrap_or(defaults.ui_volume);
+        let hold_timing_scale = field("hold_timing_scale").unwrap_or(defaults.hold_timing_scale);
         Self {
             reduce_motion: reader.read_in(GROUP, "reduce_motion"),
             screen_shake_scale,
@@ -85,6 +94,7 @@ impl AccessibilityOptions {
             mono_audio: reader
                 .read_in(GROUP, "mono_audio")
                 .unwrap_or(defaults.mono_audio),
+            hold_timing_scale,
         }
     }
 
@@ -97,11 +107,18 @@ impl AccessibilityOptions {
         writer.put_f32_in(GROUP, "music_volume", Some(&self.music_volume));
         writer.put_f32_in(GROUP, "ui_volume", Some(&self.ui_volume));
         writer.put_in(GROUP, "mono_audio", Some(&self.mono_audio));
+        writer.put_f32_in(GROUP, "hold_timing_scale", Some(&self.hold_timing_scale));
     }
 
-    /// Clamp scales and volumes into `[0, 1]`; a non-finite value takes its
-    /// default.
+    /// Clamp scales and volumes into `[0, 1]` and the hold timing scale into
+    /// its own range; a non-finite value takes its default.
     pub(super) fn sanitize(&mut self) {
+        let (min, max) = HOLD_TIMING_SCALE_RANGE;
+        self.hold_timing_scale = if self.hold_timing_scale.is_finite() {
+            self.hold_timing_scale.clamp(min, max)
+        } else {
+            1.0
+        };
         for (value, default) in [
             (&mut self.screen_shake_scale, DEFAULT_SCALE),
             (&mut self.master_volume, DEFAULT_VOLUME),

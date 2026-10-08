@@ -28,12 +28,12 @@ fn focus_vstack(children: Vec<Widget>) -> Widget {
         padding: SpacingValue::Literal(0.0),
         align: Align::Start,
         width: None,
+        scroll: None,
         fill: None,
         border: None,
         id: None,
         focus_neighbors: crate::descriptor::FocusNeighbors::default(),
         focus: Some(FocusPolicy::Shorthand(FocusKind::Linear)),
-        restore_on_return: false,
         local_state: None,
         visible_when: None,
         role: None,
@@ -67,6 +67,7 @@ fn visible_when_false_hides_subtree_from_draw_and_focus() {
         text_entry_target: None,
         accessible_name: None,
         role: None,
+        restore_on_return: None,
     };
     let mut ui = UiTree::from_descriptor(&tree, &theme());
     let mut fs = font_system();
@@ -117,6 +118,7 @@ fn visible_when_true_restores_draw_and_focus() {
         text_entry_target: None,
         accessible_name: None,
         role: None,
+        restore_on_return: None,
     };
     let mut ui = UiTree::from_descriptor(&tree, &theme());
     let mut fs = font_system();
@@ -161,6 +163,7 @@ fn visible_when_resolved_change_marks_dirty_and_reexports() {
         text_entry_target: None,
         accessible_name: None,
         role: None,
+        restore_on_return: None,
     };
     let mut ui = UiTree::from_descriptor(&tree, &theme());
     let mut fs = font_system();
@@ -236,10 +239,10 @@ fn grid_container_visible_when_true_restores_display_grid_not_flex() {
         padding: SpacingValue::Literal(0.0),
         align: Align::Start,
         cols: 2,
+        scroll: None,
         id: None,
         focus_neighbors: Default::default(),
         focus: None,
-        restore_on_return: false,
         visible_when: Some(pred("grid.show", None)),
         role: None,
         children: vec![cell(), cell(), cell(), cell()],
@@ -253,6 +256,7 @@ fn grid_container_visible_when_true_restores_display_grid_not_flex() {
         text_entry_target: None,
         accessible_name: None,
         role: None,
+        restore_on_return: None,
     };
     let mut ui = UiTree::from_descriptor(&tree, &theme());
     let mut fs = font_system();
@@ -308,12 +312,12 @@ fn visible_when_local_cell_hides_and_shows_node() {
             padding: SpacingValue::Literal(0.0),
             align: Align::Start,
             width: None,
+            scroll: None,
             fill: None,
             border: None,
             id: None,
             focus_neighbors: Default::default(),
             focus: None,
-            restore_on_return: false,
             local_state: Some(LocalState {
                 scope: "hud".to_string(),
                 cells: Default::default(),
@@ -347,6 +351,7 @@ fn visible_when_local_cell_hides_and_shows_node() {
         text_entry_target: None,
         accessible_name: None,
         role: None,
+        restore_on_return: None,
     };
 
     let mut ui = UiTree::from_descriptor(&scoped_tree, &theme());

@@ -148,6 +148,13 @@ function UiTreeSdk.Tree(props: any, root: any): WidgetDescriptor
     end
     out.role = props.role
   end
+  if props.restoreOnReturn ~= nil then
+    if type(props.restoreOnReturn) ~= "boolean" then
+      error("Tree: `restoreOnReturn` must be a boolean")
+    end
+    -- An explicit value is kept either way: `false` opts the tree out.
+    out.restoreOnReturn = props.restoreOnReturn
+  end
   return out
 end
 

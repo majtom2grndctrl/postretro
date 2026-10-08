@@ -195,7 +195,7 @@ Limiter write verdicts (AC 7):
 
 **Key acceptance.** AC 19–25; AC 2, 3a–3c, and 10 for any `accessibility` group fields it adds; AC 13's replication clause for its own fields; AC 33 if U3 lands after U4.
 
-**Brief.** `context/plans/ready/E23--gamepad-input/`.
+**Brief.** `context/plans/done/E23--gamepad-input/`.
 
 **Brief form.** Resumable brief (`/draft-brief`): the brief's plan review sequences menu conventions (restore-on-return, engine repeat, slider acceleration, nested groups, tabs, scroll container, confirmation dialogs, glyphs, on-screen-keyboard shortcuts; AC 19, 20, 23, 24, 25) and input remapping (author binding layer, binding table, per-game persisted bindings, activators, raw capture, conflict detection, guards, gamepad look options, hold/toggle; AC 21, 22) as checkpointed stages.
 

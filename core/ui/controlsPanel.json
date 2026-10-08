@@ -1,0 +1,81 @@
+{
+  "anchor": "center",
+  "offset": [
+    0.0,
+    0.0
+  ],
+  "captureMode": "capture",
+  "initialFocus": "ctl_back",
+  "accessibleName": "Controls",
+  "role": "group",
+  "root": {
+    "kind": "vstack",
+    "gap": "m",
+    "padding": "l",
+    "align": "start",
+    "fill": "panel.default",
+    "focus": {
+      "policy": "linear"
+    },
+    "children": [
+      {
+        "kind": "text",
+        "content": "CONTROLS",
+        "fontSize": 24,
+        "color": "ok",
+        "font": "mono"
+      },
+      {
+        "kind": "text",
+        "id": "controlsDevice",
+        "content": "KEYBOARD AND MOUSE",
+        "fontSize": 14,
+        "color": "ok",
+        "font": "mono"
+      },
+      {
+        "kind": "grid",
+        "id": "controlsRows",
+        "gap": "m",
+        "padding": 0.0,
+        "align": "center",
+        "cols": 4,
+        "focus": {
+          "policy": "spatial"
+        },
+        "scroll": {
+          "maxHeight": 420.0
+        },
+        "children": []
+      },
+      {
+        "kind": "text",
+        "id": "controlsDisplacedNote",
+        "content": "! ANOTHER BINDING TOOK AN INPUT FROM THIS COMMAND",
+        "fontSize": 14,
+        "color": "ok",
+        "font": "mono"
+      },
+      {
+        "kind": "hstack",
+        "gap": "l",
+        "padding": 0.0,
+        "align": "start",
+        "children": [
+          {
+            "kind": "button",
+            "id": "ctl_resetAll",
+            "label": "RESET ALL",
+            "onPress": "ui.controls.resetAll"
+          },
+          {
+            "kind": "button",
+            "id": "ctl_back",
+            "label": "BACK",
+            "onPress": "ui.closeDialog"
+          }
+        ]
+      }
+    ]
+  }
+}

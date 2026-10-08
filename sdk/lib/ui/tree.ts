@@ -43,7 +43,9 @@ export type WidgetCaptureMode = "capture" | "passthrough";
  * `"passthrough"` (omitted from the wire form). `initialFocus` names the node
  * focus starts on when this tree tops the modal stack; `textEntryTarget` is the
  * writable String slot this tree's text entry edits. Both optional and omitted
- * when absent. Mirrors `descriptor.rs` `AnchoredTree`.
+ * when absent. `restoreOnReturn` is on unless the tree sets it `false`: a pop
+ * that reveals the tree returns focus to the control it left, while a fresh
+ * push always lands on `initialFocus`. Mirrors `descriptor.rs` `AnchoredTree`.
  */
 export type TreeProps = {
   anchor: WidgetAnchor;
@@ -53,6 +55,7 @@ export type TreeProps = {
   textEntryTarget?: Ref<string>;
   accessibleName?: string;
   role?: WidgetRole;
+  restoreOnReturn?: boolean;
 };
 
 /**
@@ -69,6 +72,7 @@ export type AnchoredTreeDescriptor = {
   textEntryTarget?: string;
   accessibleName?: string;
   role?: WidgetRole;
+  restoreOnReturn?: boolean;
 };
 
 /** A UI-tree registration entry returned through `ModManifest.uiTrees` or
@@ -197,6 +201,13 @@ export function Tree(props: TreeProps, root: WidgetDescriptor): AnchoredTreeDesc
       );
     }
     out.role = props.role;
+  }
+  if (props.restoreOnReturn !== undefined) {
+    if (typeof props.restoreOnReturn !== "boolean") {
+      throw new Error("Tree: `restoreOnReturn` must be a boolean");
+    }
+    // An explicit value is kept either way: `false` opts the tree out.
+    out.restoreOnReturn = props.restoreOnReturn;
   }
   return out;
 }

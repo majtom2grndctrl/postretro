@@ -344,17 +344,24 @@ export const QUIT_TO_MENU_ACTION = "ui.quitToMenu";
  */
 export const OPEN_ACCESSIBILITY_ACTION = "ui.openAccessibility";
 
+/**
+ * Reserved button `onPress` action that opens the engine controls panel,
+ * built from the mod's commands; players rebind there.
+ */
+export const OPEN_CONTROLS_ACTION = "ui.openControls";
+
 /** Accessibility toggles a menu button may cycle. */
 export type AccessibilityToggleField = "reduceMotion" | "flashLimiter" | "monoAudio";
 
-/** Accessibility numeric fields a mod menu button may step, each within [0, 1]. */
+/** Accessibility numeric fields a mod menu button may step, each within its range ([0, 1], or [1, 3] for `holdTimingScale`). */
 export type AccessibilityNumericField =
   | "screenShakeScale"
   | "viewFeelScale"
   | "masterVolume"
   | "sfxVolume"
   | "musicVolume"
-  | "uiVolume";
+  | "uiVolume"
+  | "holdTimingScale";
 
 /**
  * The reserved `onPress` action for one accessibility field:

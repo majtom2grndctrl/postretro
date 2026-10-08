@@ -18,6 +18,7 @@ declare module "postretro/ui" {
     CrossingDescriptor,
     NumberValue,
     RuntimeValue,
+    CommandId,
   } from "postretro";
 
   /** Linear RGBA color token value. Components are in display-linear 0-1 space; alpha is the fourth element. */
@@ -174,6 +175,10 @@ declare module "postretro/ui" {
   export type SpacerProps = { flexGrow?: number; id?: string; visibleWhen?: Predicate; role?: WidgetRole };
   /** Build a spacer widget descriptor. */
   export function Spacer(props?: SpacerProps): WidgetDescriptor;
+  /** Props for `Glyph`. `command` is a command ID. */
+  export type GlyphProps = { command: CommandId; id?: string; visibleWhen?: Predicate };
+  /** The glyph for a command on the player's current device: the mod's art for the input bound to it, else that input's label, else nothing when it is unbound there or irrelevant. Follows rebinding and the confirm/cancel swap. */
+  export function Glyph(props: GlyphProps): WidgetDescriptor;
   /** One `Button.valueText` case: `text` shows while every predicate in `when` holds. An absent or empty `when` always holds. */
   export type ValueTextCase = { when?: Predicate[]; text: LocalizedText };
   /** Props for `Button`. `id` is required for focus/activation. `onPress` accepts a `defineReaction` handle, bare reaction name, or reserved `ui.*` action. Exactly one of `label` or `labelledBy` is required. `valueText` makes the visible text follow state: the first case whose predicates all hold, else `label`. */
@@ -204,10 +209,12 @@ declare module "postretro/ui" {
 
   export type FocusKind = "linear" | "spatial";
   export type FocusPolicyProp = FocusKind | { policy: FocusKind; wrap?: boolean; repeat?: RepeatPolicyProp };
+  /** A vertical scroll viewport for `VStack`/`Grid`: sizes to content up to `maxHeight`, then clips and scrolls. Ignored with a diagnostic on `HStack`. */
+  export type ScrollProp = { maxHeight: number };
   /** Props for `VStack`/`HStack`. `gap`/`padding` default to 0, `align` defaults to `"start"`, `width` fixes the stack width in logical-reference pixels, and optional `localState` declares presentation-only cells scoped to this container. */
-  export type StackProps = { gap?: WidgetSpacing; padding?: WidgetSpacing; align?: WidgetAlign; width?: number; id?: string; focusNeighbors?: FocusNeighborsProp; focus?: FocusPolicyProp; restoreOnReturn?: boolean; fill?: WidgetColor; border?: BorderProp; localState?: { scope: string; cells: Record<string, CellInit> }; visibleWhen?: Predicate; role?: WidgetRole };
+  export type StackProps = { gap?: WidgetSpacing; padding?: WidgetSpacing; align?: WidgetAlign; width?: number; scroll?: ScrollProp; id?: string; focusNeighbors?: FocusNeighborsProp; focus?: FocusPolicyProp; fill?: WidgetColor; border?: BorderProp; localState?: { scope: string; cells: Record<string, CellInit> }; visibleWhen?: Predicate; role?: WidgetRole };
   /** Props for `Grid`. `cols` is required and must be an integer >= 1; children flow row-major. */
-  export type GridProps = { gap?: WidgetSpacing; padding?: WidgetSpacing; align?: WidgetAlign; id?: string; focusNeighbors?: FocusNeighborsProp; focus?: FocusPolicyProp; restoreOnReturn?: boolean; cols: number; visibleWhen?: Predicate; role?: WidgetRole };
+  export type GridProps = { gap?: WidgetSpacing; padding?: WidgetSpacing; align?: WidgetAlign; id?: string; focusNeighbors?: FocusNeighborsProp; focus?: FocusPolicyProp; cols: number; scroll?: ScrollProp; visibleWhen?: Predicate; role?: WidgetRole };
   /** Build a vertical stack descriptor. `children` is positional, not a prop. */
   export function VStack(props?: StackProps, children?: WidgetDescriptor[]): WidgetDescriptor;
   /** Build a horizontal stack descriptor. `children` is positional, not a prop. */
@@ -217,9 +224,9 @@ declare module "postretro/ui" {
 
   export type WidgetAnchor = "topLeft" | "top" | "topRight" | "left" | "center" | "right" | "bottomLeft" | "bottom" | "bottomRight";
   export type WidgetCaptureMode = "capture" | "passthrough";
-  /** Props for `Tree`. `anchor` and `offset` place the root in 1280x720 logical UI space. `captureMode` defaults to `"passthrough"`; `initialFocus` names a widget id; `textEntryTarget` is a writable string state ref. */
-  export type TreeProps = { anchor: WidgetAnchor; offset: [number, number]; captureMode?: WidgetCaptureMode; initialFocus?: string; textEntryTarget?: Ref<string>; accessibleName?: string; role?: WidgetRole };
-  export type AnchoredTreeDescriptor = { anchor: WidgetAnchor; offset: [number, number]; root: WidgetDescriptor; captureMode?: WidgetCaptureMode; initialFocus?: string; textEntryTarget?: string; accessibleName?: string; role?: WidgetRole };
+  /** Props for `Tree`. `anchor` and `offset` place the root in 1280x720 logical UI space. `captureMode` defaults to `"passthrough"`; `initialFocus` names a widget id; `textEntryTarget` is a writable string state ref; `restoreOnReturn` (on by default) returns focus to the control it left when a tree pushed above closes, and `false` lands on `initialFocus` instead. */
+  export type TreeProps = { anchor: WidgetAnchor; offset: [number, number]; captureMode?: WidgetCaptureMode; initialFocus?: string; textEntryTarget?: Ref<string>; accessibleName?: string; role?: WidgetRole; restoreOnReturn?: boolean };
+  export type AnchoredTreeDescriptor = { anchor: WidgetAnchor; offset: [number, number]; root: WidgetDescriptor; captureMode?: WidgetCaptureMode; initialFocus?: string; textEntryTarget?: string; accessibleName?: string; role?: WidgetRole; restoreOnReturn?: boolean };
   /** Wrap a root widget in an anchored tree placement envelope. Pure; registration happens through `defineUiTree` and manifest data. */
   export function Tree(props: TreeProps, root: WidgetDescriptor): AnchoredTreeDescriptor;
   /** Props accepted by `defineUiTree`. `name` is the registry key; `tree` is from `Tree`; `alwaysOn` renders as a base layer such as HUD; `hideBelow` visually occludes retained lower pushed trees. */
@@ -272,10 +279,12 @@ declare module "postretro/ui" {
   export const QUIT_TO_MENU_ACTION: "ui.quitToMenu";
   /** Reserved `Button.onPress` action that opens the engine accessibility panel. */
   export const OPEN_ACCESSIBILITY_ACTION: "ui.openAccessibility";
+  /** Reserved `Button.onPress` action that opens the engine controls panel. */
+  export const OPEN_CONTROLS_ACTION: "ui.openControls";
   /** Accessibility toggles a menu button may cycle. */
   export type AccessibilityToggleField = "reduceMotion" | "flashLimiter" | "monoAudio";
-  /** Accessibility numeric fields a mod menu button may step, each within [0, 1]. */
-  export type AccessibilityNumericField = "screenShakeScale" | "viewFeelScale" | "masterVolume" | "sfxVolume" | "musicVolume" | "uiVolume";
+  /** Accessibility numeric fields a mod menu button may step, each within its range ([0, 1], or [1, 3] for `holdTimingScale`). */
+  export type AccessibilityNumericField = "screenShakeScale" | "viewFeelScale" | "masterVolume" | "sfxVolume" | "musicVolume" | "uiVolume" | "holdTimingScale";
   /** Reserved operations for the engine display-mode picker and confirmation. */
   export type DisplayModeOperation = "next" | "previous" | "apply" | "keep" | "revert";
   /**

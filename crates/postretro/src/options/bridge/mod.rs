@@ -5,6 +5,7 @@ mod accessibility;
 #[cfg(test)]
 mod accessibility_tests;
 mod save_schedule;
+mod top_level;
 
 use std::io;
 use std::path::Path;
@@ -12,34 +13,17 @@ use std::path::Path;
 use postretro_entities::slot_table::{SlotTable, SlotValue};
 
 use super::resolved::{OsPreferences, ResolvedAccessibility};
-use super::{
-    CrouchMode, FogQuality, PlayerOptions, RenderResolution, ShadowQuality, SurfaceDepthQuality,
-    keys,
-};
+use super::{FogQuality, PlayerOptions, RenderResolution, SurfaceDepthQuality};
 use crate::input::InputSystem;
 use accessibility::AccessibilitySync;
 use save_schedule::SaveSchedule;
-
-pub(crate) const MOUSE_SENSITIVITY_SLOT: &str = "options.mouseSensitivity";
-pub(crate) const INVERT_Y_SLOT: &str = "options.invertY";
-pub(crate) const VIEW_FEEL_SCALE_SLOT: &str = "options.viewFeelScale";
-pub(crate) const CROUCH_MODE_SLOT: &str = "options.crouchMode";
-pub(crate) const SHADOW_QUALITY_SLOT: &str = "options.shadowQuality";
-pub(crate) const FOG_QUALITY_SLOT: &str = "options.fogQuality";
-pub(crate) const SURFACE_DEPTH_QUALITY_SLOT: &str = "options.surfaceDepthQuality";
-pub(crate) const RENDER_RESOLUTION_SLOT: &str = "options.renderResolution";
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-struct ObservedGenerations {
-    mouse_sensitivity: u64,
-    invert_y: u64,
-    crouch_mode: u64,
-    shadow_quality: u64,
-    fog_quality: u64,
-    surface_depth_quality: u64,
-    render_resolution: u64,
-    window_mode: u64,
-}
+use top_level::TopLevelSync;
+pub(crate) use top_level::VIEW_FEEL_SCALE_SLOT;
+#[cfg(test)]
+use top_level::{
+    CROUCH_MODE_SLOT, FOG_QUALITY_SLOT, INVERT_Y_SLOT, MOUSE_SENSITIVITY_SLOT,
+    RENDER_RESOLUTION_SLOT, SHADOW_QUALITY_SLOT, SURFACE_DEPTH_QUALITY_SLOT,
+};
 
 /// Live subsystem effects produced by accepted option-slot changes.
 ///
@@ -55,6 +39,9 @@ pub(crate) struct OptionsApplyEffects {
     pub(crate) surface_depth_quality: Option<SurfaceDepthQuality>,
     pub(crate) render_resolution: Option<RenderResolution>,
     pub(crate) window_mode: Option<super::WindowMode>,
+    /// The confirm/cancel swap, when the player changed it: the binding table
+    /// rebuilds with it.
+    pub(crate) swap_confirm_cancel: Option<bool>,
     /// The resolved accessibility preferences, when they changed this frame.
     pub(crate) accessibility: Option<ResolvedAccessibility>,
 }
@@ -62,7 +49,7 @@ pub(crate) struct OptionsApplyEffects {
 /// Deterministic, session-lifetime synchronization state for `options.*`.
 #[derive(Default)]
 pub(crate) struct OptionsBridge {
-    observed: ObservedGenerations,
+    top_level: TopLevelSync,
     accessibility: AccessibilitySync,
     /// Latest OS accessibility readings; unset fields follow them.
     os: OsPreferences,
@@ -71,11 +58,7 @@ pub(crate) struct OptionsBridge {
 
 impl OptionsBridge {
     pub(crate) fn reseed_window_mode(&mut self, table: &mut SlotTable, mode: super::WindowMode) {
-        self.observed.window_mode = seed_slot(
-            table,
-            "options.windowMode",
-            SlotValue::Enum(mode.slot_value().into()),
-        );
+        self.top_level.reseed_window_mode(table, mode);
     }
 
     pub(crate) fn new() -> Self {
@@ -86,39 +69,7 @@ impl OptionsBridge {
     /// The observed generations advance with these engine writes so reopening a
     /// menu never feeds the seed back through apply/save as a user change.
     pub(crate) fn seed_on_open(&mut self, table: &mut SlotTable, options: &PlayerOptions) {
-        self.observed.mouse_sensitivity = seed_slot(
-            table,
-            MOUSE_SENSITIVITY_SLOT,
-            SlotValue::Number(options.mouse_sensitivity),
-        );
-        self.observed.invert_y =
-            seed_slot(table, INVERT_Y_SLOT, SlotValue::Boolean(options.invert_y));
-        self.observed.crouch_mode = seed_slot(
-            table,
-            CROUCH_MODE_SLOT,
-            SlotValue::Enum(options.crouch_mode.slot_value().to_string()),
-        );
-        self.observed.shadow_quality = seed_slot(
-            table,
-            SHADOW_QUALITY_SLOT,
-            SlotValue::Enum(options.shadow_quality.slot_value().to_string()),
-        );
-        self.observed.fog_quality = seed_slot(
-            table,
-            FOG_QUALITY_SLOT,
-            SlotValue::Enum(options.fog_quality.slot_value().to_string()),
-        );
-        self.observed.surface_depth_quality = seed_slot(
-            table,
-            SURFACE_DEPTH_QUALITY_SLOT,
-            SlotValue::Enum(options.surface_depth_quality.slot_value().to_string()),
-        );
-        self.observed.render_resolution = seed_slot(
-            table,
-            RENDER_RESOLUTION_SLOT,
-            SlotValue::Enum(options.render_resolution.slot_value().to_string()),
-        );
-        self.reseed_window_mode(table, options.window_mode);
+        self.top_level.seed(table, options);
         self.accessibility.seed_all(table, options, &self.os);
     }
 
@@ -201,7 +152,7 @@ impl OptionsBridge {
         F: FnMut(&PlayerOptions, &Path) -> io::Result<()>,
     {
         let mut effects = OptionsApplyEffects::default();
-        let mut changed = self.observe_changes(table, options, input, &mut effects);
+        let mut changed = self.top_level.observe(table, options, input, &mut effects);
         changed |= self.accessibility.observe(table, options);
         // Projection and engine-write reseeds run every frame, but write only
         // what changed.
@@ -217,126 +168,6 @@ impl OptionsBridge {
         effects
     }
 
-    fn observe_changes(
-        &mut self,
-        table: &SlotTable,
-        options: &mut PlayerOptions,
-        input: &mut InputSystem,
-        effects: &mut OptionsApplyEffects,
-    ) -> bool {
-        let mut changed = false;
-        if let Some((generation, SlotValue::Enum(value))) =
-            changed_value(table, "options.windowMode", &mut self.observed.window_mode)
-        {
-            effects.window_mode = super::WindowMode::from_slot_value(value);
-            self.observed.window_mode = generation;
-        }
-
-        if let Some((generation, SlotValue::Number(value))) = changed_value(
-            table,
-            MOUSE_SENSITIVITY_SLOT,
-            &mut self.observed.mouse_sensitivity,
-        ) {
-            options.mark_written(keys::MOUSE_SENSITIVITY);
-            if options.mouse_sensitivity != *value {
-                options.mouse_sensitivity = *value;
-                input.set_mouse_sensitivity(*value);
-                effects.mouse_sensitivity = Some(*value);
-                changed = true;
-            }
-            self.observed.mouse_sensitivity = generation;
-        }
-
-        if let Some((generation, SlotValue::Boolean(value))) =
-            changed_value(table, INVERT_Y_SLOT, &mut self.observed.invert_y)
-        {
-            options.mark_written(keys::INVERT_Y);
-            if options.invert_y != *value {
-                options.invert_y = *value;
-                input.set_invert_y(*value);
-                effects.invert_y = Some(*value);
-                changed = true;
-            }
-            self.observed.invert_y = generation;
-        }
-
-        if let Some((generation, SlotValue::Enum(value))) =
-            changed_value(table, CROUCH_MODE_SLOT, &mut self.observed.crouch_mode)
-        {
-            if let Some(mode) = CrouchMode::from_slot_value(value) {
-                options.mark_written(keys::CROUCH_MODE);
-                if options.crouch_mode != mode {
-                    options.crouch_mode = mode;
-                    changed = true;
-                }
-            }
-            self.observed.crouch_mode = generation;
-        }
-
-        if let Some((generation, SlotValue::Enum(value))) = changed_value(
-            table,
-            SHADOW_QUALITY_SLOT,
-            &mut self.observed.shadow_quality,
-        ) {
-            if let Some(quality) = ShadowQuality::from_slot_value(value) {
-                options.mark_written(keys::SHADOW_QUALITY);
-                if options.shadow_quality != quality {
-                    options.shadow_quality = quality;
-                    changed = true;
-                }
-            }
-            self.observed.shadow_quality = generation;
-        }
-
-        if let Some((generation, SlotValue::Enum(value))) =
-            changed_value(table, FOG_QUALITY_SLOT, &mut self.observed.fog_quality)
-        {
-            if let Some(quality) = FogQuality::from_slot_value(value) {
-                options.mark_written(keys::FOG_QUALITY);
-                if options.fog_quality != quality {
-                    options.fog_quality = quality;
-                    effects.fog_quality = Some(quality);
-                    changed = true;
-                }
-            }
-            self.observed.fog_quality = generation;
-        }
-
-        if let Some((generation, SlotValue::Enum(value))) = changed_value(
-            table,
-            SURFACE_DEPTH_QUALITY_SLOT,
-            &mut self.observed.surface_depth_quality,
-        ) {
-            if let Some(quality) = SurfaceDepthQuality::from_slot_value(value) {
-                options.mark_written(keys::SURFACE_DEPTH_QUALITY);
-                if options.surface_depth_quality != quality {
-                    options.surface_depth_quality = quality;
-                    effects.surface_depth_quality = Some(quality);
-                    changed = true;
-                }
-            }
-            self.observed.surface_depth_quality = generation;
-        }
-
-        if let Some((generation, SlotValue::Enum(value))) = changed_value(
-            table,
-            RENDER_RESOLUTION_SLOT,
-            &mut self.observed.render_resolution,
-        ) {
-            if let Some(resolution) = RenderResolution::from_slot_value(value) {
-                options.mark_written(keys::RENDER_RESOLUTION);
-                if options.render_resolution != resolution {
-                    options.render_resolution = resolution;
-                    effects.render_resolution = Some(resolution);
-                    changed = true;
-                }
-            }
-            self.observed.render_resolution = generation;
-        }
-
-        changed
-    }
-
     fn flush_with_save<F>(
         &mut self,
         options: &PlayerOptions,
@@ -349,7 +180,7 @@ impl OptionsBridge {
     }
 }
 
-fn seed_slot(table: &mut SlotTable, name: &str, value: SlotValue) -> u64 {
+pub(super) fn seed_slot(table: &mut SlotTable, name: &str, value: SlotValue) -> u64 {
     let slot = table
         .get_mut(name)
         .expect("built-in options slot must exist in the engine-state catalog");
@@ -357,7 +188,7 @@ fn seed_slot(table: &mut SlotTable, name: &str, value: SlotValue) -> u64 {
     slot.write_generation()
 }
 
-fn changed_value<'a>(
+pub(super) fn changed_value<'a>(
     table: &'a SlotTable,
     name: &str,
     observed_generation: &mut u64,
@@ -376,538 +207,4 @@ fn changed_value<'a>(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use postretro_entities::ScriptCtx;
-    use postretro_scripting_core::store_bridge::write_state_slot_json;
-    use serde_json::json;
-    use tempfile::tempdir;
-
-    const EPSILON: f32 = 1e-6;
-
-    fn input() -> InputSystem {
-        InputSystem::new(crate::input::default_bindings())
-    }
-
-    fn write(ctx: &ScriptCtx, slot: &str, value: serde_json::Value) {
-        write_state_slot_json(ctx, slot, &value).expect("option-slot write");
-    }
-
-    #[test]
-    fn opening_options_seeds_every_slot_from_player_options() {
-        let mut table = SlotTable::new();
-        let options = PlayerOptions {
-            mouse_sensitivity: 0.004,
-            invert_y: true,
-            view_feel_scale: 0.25,
-            crouch_mode: CrouchMode::Toggle,
-            shadow_quality: ShadowQuality::Low,
-            fog_quality: FogQuality::High,
-            surface_depth_quality: SurfaceDepthQuality::Off,
-            render_resolution: RenderResolution::Quarter,
-            ..PlayerOptions::default()
-        };
-        let mut bridge = OptionsBridge::new();
-
-        bridge.seed_on_open(&mut table, &options);
-
-        assert_eq!(
-            table.get(MOUSE_SENSITIVITY_SLOT).unwrap().value,
-            Some(SlotValue::Number(0.004))
-        );
-        assert_eq!(
-            table.get(INVERT_Y_SLOT).unwrap().value,
-            Some(SlotValue::Boolean(true))
-        );
-        assert_eq!(
-            table.get(VIEW_FEEL_SCALE_SLOT).unwrap().value,
-            Some(SlotValue::Number(0.25))
-        );
-        assert_eq!(
-            table.get(CROUCH_MODE_SLOT).unwrap().value,
-            Some(SlotValue::Enum("toggle".into()))
-        );
-        assert_eq!(
-            table.get(SHADOW_QUALITY_SLOT).unwrap().value,
-            Some(SlotValue::Enum("low".into()))
-        );
-        assert_eq!(
-            table.get(FOG_QUALITY_SLOT).unwrap().value,
-            Some(SlotValue::Enum("high".into()))
-        );
-        assert_eq!(
-            table.get(SURFACE_DEPTH_QUALITY_SLOT).unwrap().value,
-            Some(SlotValue::Enum("off".into()))
-        );
-        assert_eq!(
-            table.get(RENDER_RESOLUTION_SLOT).unwrap().value,
-            Some(SlotValue::Enum("quarter".into()))
-        );
-    }
-
-    #[test]
-    fn engine_option_slot_defaults_match_player_options() {
-        let table = SlotTable::new();
-        let options = PlayerOptions::default();
-
-        assert_eq!(
-            table.get(MOUSE_SENSITIVITY_SLOT).unwrap().value,
-            Some(SlotValue::Number(options.mouse_sensitivity))
-        );
-        assert_eq!(
-            table.get(INVERT_Y_SLOT).unwrap().value,
-            Some(SlotValue::Boolean(options.invert_y))
-        );
-        assert_eq!(
-            table.get(VIEW_FEEL_SCALE_SLOT).unwrap().value,
-            Some(SlotValue::Number(options.view_feel_scale))
-        );
-        assert_eq!(
-            table.get(CROUCH_MODE_SLOT).unwrap().value,
-            Some(SlotValue::Enum(options.crouch_mode.slot_value().into()))
-        );
-        assert_eq!(
-            table.get(SHADOW_QUALITY_SLOT).unwrap().value,
-            Some(SlotValue::Enum(options.shadow_quality.slot_value().into()))
-        );
-        assert_eq!(
-            table.get(FOG_QUALITY_SLOT).unwrap().value,
-            Some(SlotValue::Enum(options.fog_quality.slot_value().into()))
-        );
-        assert_eq!(
-            table.get(SURFACE_DEPTH_QUALITY_SLOT).unwrap().value,
-            Some(SlotValue::Enum(
-                options.surface_depth_quality.slot_value().into()
-            )),
-            "the slot default must agree with PlayerOptions' default (High)",
-        );
-        assert_eq!(
-            table.get(RENDER_RESOLUTION_SLOT).unwrap().value,
-            Some(SlotValue::Enum(
-                options.render_resolution.slot_value().into()
-            )),
-            "the slot default must agree with PlayerOptions' default (Auto)",
-        );
-    }
-
-    #[test]
-    fn write_state_slot_json_validates_every_option_slot() {
-        let ctx = ScriptCtx::new();
-
-        write(&ctx, MOUSE_SENSITIVITY_SLOT, json!(0.0));
-        write(&ctx, INVERT_Y_SLOT, json!(true));
-        write(&ctx, VIEW_FEEL_SCALE_SLOT, json!(2.0));
-        write(&ctx, CROUCH_MODE_SLOT, json!("toggle"));
-        write(&ctx, SHADOW_QUALITY_SLOT, json!("low"));
-        write(&ctx, FOG_QUALITY_SLOT, json!("high"));
-        write(&ctx, SURFACE_DEPTH_QUALITY_SLOT, json!("off"));
-        write(&ctx, RENDER_RESOLUTION_SLOT, json!("third"));
-
-        let table = ctx.slot_table.borrow();
-        assert!(
-            matches!(table.get(MOUSE_SENSITIVITY_SLOT).unwrap().value.as_ref(), Some(SlotValue::Number(value)) if *value > 0.0)
-        );
-        assert_eq!(
-            table.get(INVERT_Y_SLOT).unwrap().value,
-            Some(SlotValue::Boolean(true))
-        );
-        assert_eq!(
-            table.get(VIEW_FEEL_SCALE_SLOT).unwrap().value,
-            Some(SlotValue::Number(1.0))
-        );
-        assert_eq!(
-            table.get(CROUCH_MODE_SLOT).unwrap().value,
-            Some(SlotValue::Enum("toggle".into()))
-        );
-        assert_eq!(
-            table.get(SHADOW_QUALITY_SLOT).unwrap().value,
-            Some(SlotValue::Enum("low".into()))
-        );
-        assert_eq!(
-            table.get(FOG_QUALITY_SLOT).unwrap().value,
-            Some(SlotValue::Enum("high".into()))
-        );
-        assert_eq!(
-            table.get(SURFACE_DEPTH_QUALITY_SLOT).unwrap().value,
-            Some(SlotValue::Enum("off".into()))
-        );
-        assert_eq!(
-            table.get(RENDER_RESOLUTION_SLOT).unwrap().value,
-            Some(SlotValue::Enum("third".into()))
-        );
-        drop(table);
-
-        assert!(write_state_slot_json(&ctx, CROUCH_MODE_SLOT, &json!("invalid")).is_err());
-        assert!(write_state_slot_json(&ctx, SHADOW_QUALITY_SLOT, &json!("ultra")).is_err());
-        assert!(write_state_slot_json(&ctx, FOG_QUALITY_SLOT, &json!("ultra")).is_err());
-        // The slot vocabulary is strictly off/on. The retired `low`/`high`
-        // names are accepted only when reading a persisted TOML file (serde
-        // aliases on `SurfaceDepthQuality::On`), never through the slot layer
-        // — so both must still be rejected here, alongside a genuinely bogus
-        // value.
-        assert!(write_state_slot_json(&ctx, SURFACE_DEPTH_QUALITY_SLOT, &json!("high")).is_err());
-        assert!(write_state_slot_json(&ctx, SURFACE_DEPTH_QUALITY_SLOT, &json!("low")).is_err());
-        assert!(write_state_slot_json(&ctx, SURFACE_DEPTH_QUALITY_SLOT, &json!("medium")).is_err());
-        assert!(write_state_slot_json(&ctx, RENDER_RESOLUTION_SLOT, &json!("eighth")).is_err());
-        assert!(write_state_slot_json(&ctx, RENDER_RESOLUTION_SLOT, &json!(2)).is_err());
-        assert!(write_state_slot_json(&ctx, INVERT_Y_SLOT, &json!(1)).is_err());
-        assert!(write_state_slot_json(&ctx, VIEW_FEEL_SCALE_SLOT, &json!(true)).is_err());
-        assert!(write_state_slot_json(&ctx, "options.unknown", &json!(true)).is_err());
-    }
-
-    #[test]
-    fn one_slot_change_updates_only_matching_field_and_applies_input() {
-        let ctx = ScriptCtx::new();
-        let before = PlayerOptions::default();
-        let mut options = before.clone();
-        let mut input = input();
-        let mut bridge = OptionsBridge::new();
-        bridge.seed_on_open(&mut ctx.slot_table.borrow_mut(), &options);
-
-        write(&ctx, MOUSE_SENSITIVITY_SLOT, json!(0.006));
-        let effects = bridge.update(
-            0.0,
-            &mut ctx.slot_table.borrow_mut(),
-            &mut options,
-            &mut input,
-            None,
-        );
-
-        assert!((options.mouse_sensitivity - 0.006).abs() < EPSILON);
-        assert_eq!(options.invert_y, before.invert_y);
-        assert!((options.view_feel_scale - before.view_feel_scale).abs() < EPSILON);
-        assert_eq!(options.crouch_mode, before.crouch_mode);
-        assert_eq!(options.shadow_quality, before.shadow_quality);
-        assert_eq!(options.fog_quality, before.fog_quality);
-        assert!((input.mouse_sensitivity() - 0.006).abs() < EPSILON);
-        assert_eq!(effects.mouse_sensitivity, Some(0.006));
-        assert_eq!(effects.invert_y, None);
-        assert_eq!(effects.fog_quality, None);
-        assert_eq!(options.surface_depth_quality, before.surface_depth_quality);
-        assert_eq!(effects.surface_depth_quality, None);
-        assert_eq!(options.render_resolution, before.render_resolution);
-        assert_eq!(effects.render_resolution, None);
-    }
-
-    #[test]
-    fn every_remaining_option_slot_updates_its_matching_field() {
-        let ctx = ScriptCtx::new();
-        let mut options = PlayerOptions::default();
-        let mut input = input();
-        let mut bridge = OptionsBridge::new();
-        bridge.seed_on_open(&mut ctx.slot_table.borrow_mut(), &options);
-
-        write(&ctx, INVERT_Y_SLOT, json!(true));
-        let effects = bridge.update(
-            0.0,
-            &mut ctx.slot_table.borrow_mut(),
-            &mut options,
-            &mut input,
-            None,
-        );
-        assert!(options.invert_y);
-        assert!(input.invert_y());
-        assert_eq!(effects.invert_y, Some(true));
-        assert_eq!(options.view_feel_scale, 1.0);
-        assert_eq!(options.crouch_mode, CrouchMode::Hold);
-        assert_eq!(options.shadow_quality, ShadowQuality::High);
-        assert_eq!(options.fog_quality, FogQuality::Medium);
-
-        write(&ctx, VIEW_FEEL_SCALE_SLOT, json!(0.4));
-        bridge.update(
-            0.0,
-            &mut ctx.slot_table.borrow_mut(),
-            &mut options,
-            &mut input,
-            None,
-        );
-        assert!((options.view_feel_scale - 0.4).abs() < EPSILON);
-        assert_eq!(options.crouch_mode, CrouchMode::Hold);
-        assert_eq!(options.shadow_quality, ShadowQuality::High);
-        assert_eq!(options.fog_quality, FogQuality::Medium);
-
-        write(&ctx, CROUCH_MODE_SLOT, json!("toggle"));
-        bridge.update(
-            0.0,
-            &mut ctx.slot_table.borrow_mut(),
-            &mut options,
-            &mut input,
-            None,
-        );
-        assert_eq!(options.crouch_mode, CrouchMode::Toggle);
-        assert_eq!(options.shadow_quality, ShadowQuality::High);
-        assert_eq!(options.fog_quality, FogQuality::Medium);
-
-        write(&ctx, SHADOW_QUALITY_SLOT, json!("low"));
-        let effects = bridge.update(
-            0.0,
-            &mut ctx.slot_table.borrow_mut(),
-            &mut options,
-            &mut input,
-            None,
-        );
-        assert_eq!(options.shadow_quality, ShadowQuality::Low);
-        assert_eq!(options.fog_quality, FogQuality::Medium);
-        assert_eq!(effects.fog_quality, None, "shadow has no live effect");
-
-        write(&ctx, FOG_QUALITY_SLOT, json!("high"));
-        let effects = bridge.update(
-            0.0,
-            &mut ctx.slot_table.borrow_mut(),
-            &mut options,
-            &mut input,
-            None,
-        );
-        assert_eq!(options.fog_quality, FogQuality::High);
-        assert_eq!(effects.fog_quality, Some(FogQuality::High));
-        assert_eq!(options.shadow_quality, ShadowQuality::Low);
-        assert_eq!(
-            options.surface_depth_quality,
-            SurfaceDepthQuality::On,
-            "untouched slots keep their value",
-        );
-
-        write(&ctx, SURFACE_DEPTH_QUALITY_SLOT, json!("off"));
-        let effects = bridge.update(
-            0.0,
-            &mut ctx.slot_table.borrow_mut(),
-            &mut options,
-            &mut input,
-            None,
-        );
-        assert_eq!(options.surface_depth_quality, SurfaceDepthQuality::Off);
-        assert_eq!(
-            effects.surface_depth_quality,
-            Some(SurfaceDepthQuality::Off),
-            "the state must be reported so the app can apply it live",
-        );
-        assert_eq!(effects.fog_quality, None);
-        assert_eq!(options.fog_quality, FogQuality::High);
-
-        // Turning it back on reports too: the live path is two-way.
-        write(&ctx, SURFACE_DEPTH_QUALITY_SLOT, json!("on"));
-        let effects = bridge.update(
-            0.0,
-            &mut ctx.slot_table.borrow_mut(),
-            &mut options,
-            &mut input,
-            None,
-        );
-        assert_eq!(options.surface_depth_quality, SurfaceDepthQuality::On);
-        assert_eq!(effects.surface_depth_quality, Some(SurfaceDepthQuality::On));
-        assert_eq!(effects.render_resolution, None);
-        assert_eq!(options.render_resolution, RenderResolution::Auto);
-
-        write(&ctx, RENDER_RESOLUTION_SLOT, json!("half"));
-        let effects = bridge.update(
-            0.0,
-            &mut ctx.slot_table.borrow_mut(),
-            &mut options,
-            &mut input,
-            None,
-        );
-        assert_eq!(options.render_resolution, RenderResolution::Half);
-        assert_eq!(
-            effects.render_resolution,
-            Some(RenderResolution::Half),
-            "the value must be reported so the app can apply it live",
-        );
-        assert_eq!(effects.surface_depth_quality, None);
-        assert_eq!(options.surface_depth_quality, SurfaceDepthQuality::On);
-
-        // Rewriting the value it already holds marks the field written but
-        // reports no live effect.
-        write(&ctx, RENDER_RESOLUTION_SLOT, json!("half"));
-        let effects = bridge.update(
-            0.0,
-            &mut ctx.slot_table.borrow_mut(),
-            &mut options,
-            &mut input,
-            None,
-        );
-        assert_eq!(effects.render_resolution, None);
-    }
-
-    #[test]
-    fn slider_changes_debounce_to_one_last_value_save() {
-        let ctx = ScriptCtx::new();
-        let path = Path::new("settings.toml");
-        let mut options = PlayerOptions::default();
-        let mut input = input();
-        let mut bridge = OptionsBridge::new();
-        bridge.seed_on_open(&mut ctx.slot_table.borrow_mut(), &options);
-        let mut saved = Vec::new();
-
-        for value in [0.003, 0.004, 0.005] {
-            write(&ctx, MOUSE_SENSITIVITY_SLOT, json!(value));
-            bridge.update_with_save(
-                0.016,
-                &mut ctx.slot_table.borrow_mut(),
-                &mut options,
-                &mut input,
-                Some(path),
-                |options, _| {
-                    saved.push(options.mouse_sensitivity);
-                    Ok(())
-                },
-            );
-        }
-        bridge.update_with_save(
-            0.249,
-            &mut ctx.slot_table.borrow_mut(),
-            &mut options,
-            &mut input,
-            Some(path),
-            |options, _| {
-                saved.push(options.mouse_sensitivity);
-                Ok(())
-            },
-        );
-        assert!(saved.is_empty());
-        bridge.update_with_save(
-            0.002,
-            &mut ctx.slot_table.borrow_mut(),
-            &mut options,
-            &mut input,
-            Some(path),
-            |options, _| {
-                saved.push(options.mouse_sensitivity);
-                Ok(())
-            },
-        );
-
-        assert_eq!(saved, vec![0.005]);
-    }
-
-    #[test]
-    fn closing_and_exiting_flush_pending_saves() {
-        let ctx = ScriptCtx::new();
-        let path = Path::new("settings.toml");
-        let mut options = PlayerOptions::default();
-        let mut input = input();
-        let mut bridge = OptionsBridge::new();
-        bridge.seed_on_open(&mut ctx.slot_table.borrow_mut(), &options);
-        write(&ctx, INVERT_Y_SLOT, json!(true));
-        bridge.update_with_save(
-            0.0,
-            &mut ctx.slot_table.borrow_mut(),
-            &mut options,
-            &mut input,
-            Some(path),
-            |_, _| Ok(()),
-        );
-
-        let mut close_saves = 0;
-        bridge.flush_with_save(&options, Some(path), |_, _| {
-            close_saves += 1;
-            Ok(())
-        });
-        assert_eq!(close_saves, 1);
-
-        write(&ctx, INVERT_Y_SLOT, json!(false));
-        bridge.update_with_save(
-            0.0,
-            &mut ctx.slot_table.borrow_mut(),
-            &mut options,
-            &mut input,
-            Some(path),
-            |_, _| Ok(()),
-        );
-        let mut exit_saves = 0;
-        bridge.flush_with_save(&options, Some(path), |_, _| {
-            exit_saves += 1;
-            Ok(())
-        });
-        assert_eq!(exit_saves, 1);
-    }
-
-    #[test]
-    fn reopening_options_seeds_unsaved_in_memory_value() {
-        let ctx = ScriptCtx::new();
-        let mut options = PlayerOptions::default();
-        let mut input = input();
-        let mut bridge = OptionsBridge::new();
-        bridge.seed_on_open(&mut ctx.slot_table.borrow_mut(), &options);
-        write(&ctx, FOG_QUALITY_SLOT, json!("high"));
-        bridge.update(
-            0.0,
-            &mut ctx.slot_table.borrow_mut(),
-            &mut options,
-            &mut input,
-            None,
-        );
-
-        ctx.slot_table
-            .borrow_mut()
-            .get_mut(FOG_QUALITY_SLOT)
-            .unwrap()
-            .write_value(Some(SlotValue::Enum("low".into())));
-        bridge.seed_on_open(&mut ctx.slot_table.borrow_mut(), &options);
-
-        assert_eq!(options.fog_quality, FogQuality::High);
-        assert_eq!(
-            ctx.slot_table.borrow().get(FOG_QUALITY_SLOT).unwrap().value,
-            Some(SlotValue::Enum("high".into()))
-        );
-    }
-
-    #[test]
-    fn failed_save_keeps_applied_value_and_later_change_retries() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("settings.toml");
-        std::fs::write(&path, "original settings").unwrap();
-        let ctx = ScriptCtx::new();
-        let mut options = PlayerOptions::default();
-        let mut input = input();
-        let mut bridge = OptionsBridge::new();
-        bridge.seed_on_open(&mut ctx.slot_table.borrow_mut(), &options);
-
-        write(&ctx, INVERT_Y_SLOT, json!(true));
-        bridge.update_with_save(
-            0.0,
-            &mut ctx.slot_table.borrow_mut(),
-            &mut options,
-            &mut input,
-            Some(&path),
-            |_, _| Ok(()),
-        );
-        let mut failed_attempts = 0;
-        bridge.update_with_save(
-            0.251,
-            &mut ctx.slot_table.borrow_mut(),
-            &mut options,
-            &mut input,
-            Some(&path),
-            |_, _| {
-                failed_attempts += 1;
-                Err(io::Error::other("injected failure"))
-            },
-        );
-        assert_eq!(failed_attempts, 1);
-        assert!(options.invert_y);
-        assert!(input.invert_y());
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "original settings");
-
-        write(&ctx, VIEW_FEEL_SCALE_SLOT, json!(0.5));
-        bridge.update_with_save(
-            0.0,
-            &mut ctx.slot_table.borrow_mut(),
-            &mut options,
-            &mut input,
-            Some(&path),
-            |_, _| Ok(()),
-        );
-        bridge.update_with_save(
-            0.251,
-            &mut ctx.slot_table.borrow_mut(),
-            &mut options,
-            &mut input,
-            Some(&path),
-            PlayerOptions::save,
-        );
-
-        let reloaded = PlayerOptions::load(&path);
-        assert!(reloaded.invert_y);
-        assert!((reloaded.view_feel_scale - 0.5).abs() < EPSILON);
-    }
-}
+mod tests;

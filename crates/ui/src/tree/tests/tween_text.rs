@@ -24,6 +24,7 @@ fn text_tween_first_resolve_with_from_starts_at_from_and_reaches_target_at_durat
         text_entry_target: None,
         accessible_name: None,
         role: None,
+        restore_on_return: None,
     };
     let mut ui = UiTree::from_descriptor(&tree, &theme());
     let mut fs = font_system();
@@ -79,6 +80,7 @@ fn text_tween_without_from_renders_target_immediately_on_first_resolve() {
         text_entry_target: None,
         accessible_name: None,
         role: None,
+        restore_on_return: None,
     };
     let mut ui = UiTree::from_descriptor(&tree, &theme());
     let mut fs = font_system();
@@ -116,6 +118,7 @@ fn text_tween_retarget_mid_flight_restarts_from_current_display() {
         text_entry_target: None,
         accessible_name: None,
         role: None,
+        restore_on_return: None,
     };
     let mut ui = UiTree::from_descriptor(&tree, &theme());
     let mut fs = font_system();
@@ -210,6 +213,7 @@ fn text_tween_ease_out_advances_monotonically_toward_target() {
         text_entry_target: None,
         accessible_name: None,
         role: None,
+        restore_on_return: None,
     };
     let mut ui = UiTree::from_descriptor(&tree, &theme());
     let mut fs = font_system();
@@ -254,6 +258,7 @@ fn text_tween_settles_at_exact_target_past_duration() {
         text_entry_target: None,
         accessible_name: None,
         role: None,
+        restore_on_return: None,
     };
     let mut ui = UiTree::from_descriptor(&tree, &theme());
     let mut fs = font_system();
@@ -289,6 +294,7 @@ fn text_tween_in_flight_relayouts_each_advancing_frame() {
         text_entry_target: None,
         accessible_name: None,
         role: None,
+        restore_on_return: None,
     };
     let mut ui = UiTree::from_descriptor(&tree, &theme());
     let mut fs = font_system();
@@ -345,6 +351,7 @@ fn text_tween_settled_frame_skips_rebuild_and_recompute() {
         text_entry_target: None,
         accessible_name: None,
         role: None,
+        restore_on_return: None,
     };
     let mut ui = UiTree::from_descriptor(&tree, &theme());
     let mut fs = font_system();
@@ -397,6 +404,7 @@ fn text_tween_on_string_slot_snaps_through_unchanged_path() {
         text_entry_target: None,
         accessible_name: None,
         role: None,
+        restore_on_return: None,
     };
     let mut ui = UiTree::from_descriptor(&tree, &theme());
     let mut fs = font_system();
@@ -434,6 +442,7 @@ fn text_tween_recovers_from_a_non_numeric_slot_with_a_fresh_segment() {
         text_entry_target: None,
         accessible_name: None,
         role: None,
+        restore_on_return: None,
     };
     let mut ui = UiTree::from_descriptor(&tree, &theme());
     let mut fs = font_system();
@@ -512,6 +521,7 @@ fn text_tween_fresh_path_resolves_target_directly_no_cross_frame_state() {
         text_entry_target: None,
         accessible_name: None,
         role: None,
+        restore_on_return: None,
     };
     let mut ui = UiTree::from_descriptor(&tree, &theme());
     let mut fs = font_system();
@@ -547,6 +557,7 @@ fn untweened_bound_text_unaffected_by_time() {
         text_entry_target: None,
         accessible_name: None,
         role: None,
+        restore_on_return: None,
     };
     let mut ui = UiTree::from_descriptor(&tree, &theme());
     let mut fs = font_system();
@@ -586,6 +597,7 @@ fn reduce_motion_snaps_starting_and_running_tweens_to_their_target() {
         text_entry_target: None,
         accessible_name: None,
         role: None,
+        restore_on_return: None,
     };
     let build = |ui: &mut UiTree, fs: &mut _, value: f32, clock: TweenClock| {
         let slots = number_slots("player.health", value);
@@ -597,6 +609,7 @@ fn reduce_motion_snaps_starting_and_running_tweens_to_their_target() {
             &slots,
             &no_cells(),
             clock,
+            crate::tree::ScrollInput::default(),
         );
         text_value(&draw)
     };

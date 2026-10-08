@@ -59,6 +59,18 @@ impl Renderer {
         );
         layer_draws.push(presentation_draw);
         for (layer, entry) in full.ui_snapshot.trees.iter().enumerate() {
+            let is_top = layer + 1 == stack_len;
+            // Only the top tree scrolls: its focused stop scrolls into view and
+            // the captured wheel scrolls the container under the cursor. Lower
+            // layers hold their offsets.
+            let scroll_input = if is_top {
+                ui::tree::ScrollInput {
+                    focused_id: full.ui_snapshot.focused_id.as_deref(),
+                    wheel: full.ui_snapshot.wheel,
+                }
+            } else {
+                ui::tree::ScrollInput::default()
+            };
             // Image widgets measure from the renderer-owned image registry. A
             // missing key still collapses, but the registry now warns once when
             // the draw path tries to bind it instead of failing silently.
@@ -81,6 +93,7 @@ impl Renderer {
                     now: full.ui_snapshot.time_seconds,
                     snap: full.ui_snapshot.reduce_motion,
                 },
+                scroll_input,
             );
             // Focus ring: only the TOP layer takes focus, so
             // draw the engine ring around the focused node's rect on it. The
@@ -88,7 +101,6 @@ impl Renderer {
             // it may trail a focus change by one frame). The ring is a `focus.ring`
             // bordered frame inset by the `xs` spacing token; appended through
             // the layer's paint stream so it composites over the focused content.
-            let is_top = layer + 1 == stack_len;
             if is_top && let Some(focused) = full.ui_snapshot.focused_id.as_deref() {
                 let focus_rects = full.ui.export_top_focus_rects(
                     ui_viewport,
@@ -102,7 +114,20 @@ impl Renderer {
                         .ui_theme
                         .color("focus.ring")
                         .unwrap_or([1.0, 0.0, 1.0, 1.0]);
-                    ui::push_focus_ring(&mut draw, fr.rect, inset, ring_color);
+                    // A stop inside a scroll viewport rings within the
+                    // viewport grown by the ring's reach along each edge the
+                    // stop reaches, so a stop scrolled flush with an edge (or
+                    // a full-width row) keeps every bar; a stop scrolled out
+                    // of view draws no ring.
+                    let ring_clip = match fr.clip {
+                        None => Some(None),
+                        Some(clip) => ui::focus_ring_clip(fr.rect, clip, inset).map(Some),
+                    };
+                    if let Some(ring_clip) = ring_clip {
+                        draw.set_clip(ring_clip);
+                        ui::push_focus_ring(&mut draw, fr.rect, inset, ring_color);
+                        draw.set_clip(None);
+                    }
                 }
             }
             layer_draws.push(draw);

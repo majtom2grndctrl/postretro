@@ -262,6 +262,31 @@ pub struct UiReadSnapshot {
     /// focused; the ring may trail a focus change by one frame (the same N->N+1
     /// latency every UI event carries).
     pub focused_id: Option<String>,
+    /// This frame's pointer wheel, recorded by the App only while a capturing
+    /// tree consumed it. The top tree scrolls the scroll container under the
+    /// cursor. `None` (the default) on a frame with no captured wheel input.
+    pub wheel: Option<UiWheelScroll>,
+}
+
+/// One frame's accumulated pointer wheel for the top UI tree.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct UiWheelScroll {
+    /// Cursor position in device pixels (the focus rect list's space).
+    pub position: [f32; 2],
+    /// Line-wheel notches; positive is wheel up (toward the content's top).
+    pub lines: f32,
+    /// Precise (touchpad) scroll in device pixels; positive is toward the top.
+    pub pixels: f32,
+}
+
+impl UiWheelScroll {
+    /// Fold one more wheel event into this frame's total; the latest cursor
+    /// position wins.
+    pub fn accumulate(&mut self, position: [f32; 2], lines: f32, pixels: f32) {
+        self.position = position;
+        self.lines += lines;
+        self.pixels += pixels;
+    }
 }
 
 impl UiReadSnapshot {
@@ -284,6 +309,7 @@ impl UiReadSnapshot {
             time_seconds,
             reduce_motion: false,
             focused_id,
+            wheel: None,
         }
     }
 }

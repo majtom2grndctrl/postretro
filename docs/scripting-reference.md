@@ -2550,6 +2550,144 @@ input cursor's selection and is initially the empty string until the input
 producer supplies it. They are readonly from scripts and are published locally
 on every role rather than replicated from the host.
 
+## Input commands and the `input` block
+
+Players act through a closed set of engine **commands**, each with a stable
+ID: `move_forward`, `jump`, `dash`, `shoot`, `nav_confirm`, `nav_cancel`,
+`nav_menu`, and the rest (the `CommandId` type lists all of them). Mods cannot
+add commands. Every command has engine default bindings for keyboard and mouse
+and for gamepad, and the player can rebind any of them in the engine's
+controls panel (see *The controls panel* below).
+
+A mod adjusts commands through the optional `input` block of its manifest:
+
+```typescript
+export default defineMod({
+  id: "acme.neon",
+  input: {
+    commands: {
+      dash: {
+        label: "Dash", category: "Movement", order: 30,
+        keyboardMouse: [{ input: "ShiftLeft", activator: "tap", threshold: 0.2 }],
+        gamepad: [{ input: "left_stick_press" }],          // activator defaults to "press"
+      },
+      sprint: { keyboardMouse: [{ input: "ShiftLeft", activator: "hold" }], gamepad: [] },
+      alt_fire: { show: false },                              // force-hide a derived-relevant command
+    },
+    glyphs: { keyboardMouse: "ui/glyphs/kbm", xbox: "ui/glyphs/xbox",
+              playstation: "ui/glyphs/ps", nintendo: "ui/glyphs/nx" },  // asset = <dir>/<input>
+  },
+  // ...
+});
+```
+
+```lua
+return defineMod({
+  id = "acme.neon",
+  input = {
+    commands = {
+      dash = {
+        label = "Dash", category = "Movement", order = 30,
+        keyboardMouse = { { input = "ShiftLeft", activator = "tap", threshold = 0.2 } },
+        gamepad = { { input = "left_stick_press" } },
+      },
+      sprint = { keyboardMouse = { { input = "ShiftLeft", activator = "hold" } }, gamepad = {} },
+      alt_fire = { show = false },
+    },
+    glyphs = { keyboardMouse = "ui/glyphs/kbm", xbox = "ui/glyphs/xbox",
+               playstation = "ui/glyphs/ps", nintendo = "ui/glyphs/nx" },
+  },
+})
+```
+
+The `commands` field is itself optional. In TypeScript its keys are typed
+`CommandId`, so a misspelled command is a compile error. Luau types the keys as
+plain strings, so Luau checks command IDs at load, not at type-check.
+
+**Per command**, every field is optional:
+
+- `label`, `category`, `order` — how the controls panel lists the command.
+  Rows group by category and sort by `order`, then by the order the block
+  names them (a Luau block has no key order, so it orders by command ID).
+  Without a label the panel shows the command ID in words.
+- `keyboardMouse`, `gamepad` — the default bindings for that device class. A
+  list replaces the engine default; an empty list leaves the command unbound
+  there; leaving the field out keeps the engine default.
+- `show` — `true` lists and binds the command, `false` hides and unbinds it,
+  overriding what the engine derives from the mod's data. The engine ignores
+  `show` (with a warning) on every UI command and on the dev-only `move_up`
+  and `move_down`.
+
+**Inputs** are named as strings:
+
+- Keys use W3C `KeyboardEvent.code` names: `KeyW`, `Digit1`, `ShiftLeft`,
+  `Space`, `ArrowUp`, `Escape`.
+- Mouse inputs: `mouse_left`, `mouse_right`, `mouse_middle`, `mouse_back`,
+  `mouse_forward`, `wheel_up`, `wheel_down`, and the axes `mouse_x`, `mouse_y`.
+- Gamepad inputs name positions, not letters: `south`, `east`, `west`, `north`,
+  `left_shoulder`, `right_shoulder`, `left_trigger`, `right_trigger`,
+  `select`, `start`, `left_stick_press`, `right_stick_press`, `dpad_up` …
+  `dpad_right`, stick halves `left_stick_up` … `right_stick_right`, and the
+  whole axes `left_stick_x` … `right_stick_y`.
+
+Whole axes bind only to analog commands (`look_x`, `look_y`); every other
+command takes keys, buttons and stick halves. A stick half on a movement
+command carries how far the stick is pushed.
+
+**Activators** say when a binding fires: `press` (the default), `release`,
+`tap` (released within `threshold` seconds), or `hold` (still down after
+`threshold`). `threshold` defaults to 0.2 s, is clamped to 0.05–5 s, and
+scales with the player's HOLD TIMING accessibility setting. One key may carry a tap and a hold for two
+commands, as Shift does above; the engine resolves which fired. `shoot`,
+`alt_fire` and analog commands accept only `press`; `sprint`, `crouch`, and
+the movement commands (`move_forward`, `move_back`, `move_left`,
+`move_right`) accept `press` and `hold`. A movement `hold` moves only once
+its threshold passes.
+
+**Relevance.** A command the mod's data never uses — `dash` with no movement
+descriptor carrying dash, `reload` with no magazine weapon — is unbound,
+missing from the controls panel, never part of a conflict, and draws no glyph.
+`show` overrides that.
+
+**Validation.** Each command and device class is checked on its own. A
+command ID written twice follows the language: the last one wins, as in any
+object or table. A binding that is not an object
+with an `input` string, an unknown command ID, an unknown input name, an
+activator the command refuses, a `threshold` that is not a positive finite
+number, an activator other than `press` on a wheel notch, a `tap` whose
+`threshold` runs past a `hold`'s on the same input (any command's),
+two of the block's bindings that conflict, or defaults that would leave
+`nav_confirm`, `nav_cancel` or `nav_menu` unbound are each reported at load.
+In every case but a conflict, that command's class falls back to the engine
+default. For a conflict, the later entry in block order (in Luau, command-ID
+order) is unbound on that input and the earlier one keeps it. A binding that
+takes the default input `nav_confirm`, `nav_cancel` or `nav_menu` needs is
+unbound on that input too: `use` on `start` would leave the pause menu with no
+gamepad button, so `use` loses `start` and the menu keeps it. This holds with
+the player's confirm/cancel swap off and on: with it on, `nav_cancel`'s gamepad
+bindings drive confirm, which conflicts with `nav_menu`, so `nav_cancel` on
+`start` is unbound there too. Conflicts are checked per context: `south` on both `jump` and `nav_confirm` is fine, since
+one acts in play and the other in menus. `nav_menu` opens the pause menu from
+play, so it conflicts with gameplay commands too; on one input with
+`nav_cancel` it does not.
+
+**Glyph art** is optional. For each device family, `glyphs` names a directory
+under the mod root holding one PNG per input name: `ui/glyphs/xbox/south.png`,
+`ui/glyphs/kbm/KeyW.png`. See the `glyph` widget below.
+
+**Player bindings** are saved per game, under the mod's `id`, and only where
+the player changed something. A player binding wins over a later change to the
+mod's defaults; the controls panel flags a command whose new default lost that
+way. The one exception is the guard: if saved bindings would leave
+`nav_confirm`, `nav_cancel` or `nav_menu` unbound on a device, that command
+gets its default back and the player binding holding it is flagged instead.
+
+The player's options also include gamepad look speed and dead zone, gamepad
+invert Y, hold or toggle sprint, and a confirm/cancel swap for pads with
+confirm on the right. Mods read them as `options.gamepadLookSensitivity`,
+`options.gamepadLookDeadZone`, `options.gamepadInvertY`, `options.sprintMode`
+and `options.swapConfirmCancel`, and may offer them in their own menus.
+
 ## Operable UI
 
 The UI is operable: a closed nav-intent vocabulary, focusable
@@ -2559,28 +2697,31 @@ same widget reacts to a gamepad confirm, an Enter key, or a mouse click.
 
 ### Nav intents
 
-Navigation reads a **fixed** input vocabulary (not the remappable action table).
-Each intent has a stable `nav.*` wire name UI authors reference in `capturesNav`
-and focus policy. The `NavIntent` type (template-literal in TS, string union in
-Luau) constrains those strings so a typo is a compile error.
+Navigation reads the player's bindings for the UI commands, so a player who
+rebinds `nav_down` to the right stick navigates menus with it. Each intent has a
+stable `nav.*` wire name UI authors reference in `capturesNav` and focus
+policy. The `NavIntent` type (template-literal in TS, string union in Luau)
+constrains those strings so a typo is a compile error. Default bindings:
 
 | Intent | Wire name | Keyboard | Gamepad |
 |--------|-----------|----------|---------|
-| Up / Down / Left / Right | `nav.up` … `nav.right` | Arrow keys | D-pad / left stick edge |
-| Next / Prev | `nav.next` / `nav.prev` | Tab | Right / Left shoulder |
-| Confirm | `nav.confirm` | Enter | A / South |
-| Cancel | `nav.cancel` | Escape *(inside a capturing tree)* | B / East |
+| Up / Down / Left / Right | `nav.up` … `nav.right` | Arrow keys | D-pad, left stick |
+| Next / Prev | `nav.next` / `nav.prev` | Tab / — | — |
+| Tab next / prev | `nav.tabNext` / `nav.tabPrev` | E / Q | Right / left shoulder |
+| Confirm | `nav.confirm` | Enter | South (A / Cross) |
+| Cancel | `nav.cancel` | Escape *(inside a capturing tree)* | East (B / Circle) |
 | Menu | `nav.menu` | Escape *(from gameplay)* | Start |
 | Options | `nav.options` | — | Select / Back |
 
 Escape is context-sensitive: from gameplay it is `nav.menu` (opens a menu); inside
-a capturing UI tree it is `nav.cancel` (backs out). The left stick produces one
-directional intent per push past the dead zone (a flick to the opposite direction
+a capturing UI tree it is `nav.cancel` (backs out). A stick produces one
+directional intent per push past its dead zone (a flick to the opposite direction
 re-fires); holding a direction repeats on a delay→interval timer, not per frame.
+In a tree with no tablist, the tab intents step Next and Prev.
 
 #### The `NavIntent` type
 
-The nav vocabulary is **closed** — those eleven `nav.*` wire names and no others.
+The nav vocabulary is **closed** — those twelve `nav.*` wire names and no others.
 Wherever an author names a nav intent (a `slider`'s `capturesNav`, a
 `focusNeighbors` direction key), the value is typed `NavIntent` so a misspelled
 wire name is a compile error rather than a silently-ignored field at load.
@@ -2595,6 +2736,7 @@ type NavDirection = "up" | "down" | "left" | "right";
 type NavIntent =
   | `nav.${NavDirection}`
   | "nav.next" | "nav.prev"
+  | "nav.tabNext" | "nav.tabPrev"
   | "nav.confirm" | "nav.cancel" | "nav.menu" | "nav.options";
 ```
 
@@ -2604,6 +2746,7 @@ type NavIntent =
 type NavIntent =
   "nav.up" | "nav.down" | "nav.left" | "nav.right"
   | "nav.next" | "nav.prev"
+  | "nav.tabNext" | "nav.tabPrev"
   | "nav.confirm" | "nav.cancel" | "nav.menu" | "nav.options"
 ```
 
@@ -2621,10 +2764,44 @@ Focusable widgets (`button`, `slider`) form a focus ring the player moves with
 directional nav. Directional nav resolves geometrically against the laid-out
 rects; authored `focusNeighbors` (a `{ "nav.up": "<id>", … }` map) override the
 geometric pick per direction. A tree's `initialFocus` names the node focus starts
-on when the tree becomes the top of the modal stack; `restoreOnReturn` on a
-container restores its last-focused child when focus returns to it. Held
-directional nav repeats on a delay-then-interval timer (the engine's hold-to-
-repeat clock), so a held stick or arrow steps focus/value steadily.
+on when the tree becomes the top of the modal stack. When a tree pushed above
+closes, focus returns to the control it left; set `restoreOnReturn: false` on the
+`Tree` to land on `initialFocus` instead. A fresh push always lands on
+`initialFocus`, so a reopened confirmation starts on its safe choice. Held
+directional nav repeats on a delay-then-interval timer (400 ms, then every
+100 ms, unless a container's `focus` policy authors its own `repeat`), so a held
+stick or arrow steps focus steadily, and a held slider steps its value and
+speeds up the longer it is held.
+
+**Nested groups.** A container with a `focus` policy inside another one is a
+nested group. A direction its own group cannot answer continues in the
+enclosing group, where the nested group counts as one candidate by its bounds;
+entering it lands on the member last focused there, else its first. A
+`linear` group answers only its own axis (a `VStack` steps up and down, an
+`HStack` left and right), except the outermost group, which answers both so a
+menu with no enclosing group steps on either axis. Next and Prev stay within the group, and
+`focusNeighbors` still overrides everything.
+
+**Tabs.** Give a container `role: "tablist"` and its buttons `role: "tab"` with
+a `selected` predicate. The bumpers (`nav.tabNext` / `nav.tabPrev`) activate
+the adjacent tab, wrapping, and move focus to it, from anywhere in the tree.
+Make the strip its own wrapping linear group so Right on the last tab wraps
+and Down enters the panel below:
+
+```typescript
+HStack({ role: "tablist", focus: { policy: "linear", wrap: true } }, tabButtons);
+```
+
+**Scrolling.** `scroll: { maxHeight }` on a `VStack` or `Grid` sizes the
+container to its content up to `maxHeight`, then clips and scrolls vertically.
+Focus moving outside the viewport scrolls it into view by the least distance,
+and the pointer wheel scrolls the container under the cursor. `scroll` opens
+no focus group: its children belong to the enclosing group unless the
+container also declares `focus`. On an `HStack` it is reported and ignored.
+
+```typescript
+VStack({ scroll: { maxHeight: 320 }, focus: { policy: "linear" } }, levelButtons);
+```
 
 ### Interactive widgets
 
@@ -2655,6 +2832,19 @@ repeat clock), so a held stick or arrow steps focus/value steadily.
   **UI-computed-bindings (Behavior IR)** spec; spread also needs a gameplay
   producer that does not exist yet. Until then, any bound source must already
   provide the desired px or degree value.
+
+- **`glyph`** — `{ kind: "glyph", command, id?, visibleWhen? }`, built with
+  `Glyph({ command })`. Passive. Draws the glyph for a command on the device
+  the player last used: the mod's art for the input bound to it (see *Glyph
+  art* above), else that input's label (`east` draws "EAST", `KeyW` draws
+  "W"), and nothing when the command is unbound
+  on that device or irrelevant. It follows the player's rebinding and the
+  confirm/cancel swap with no extra authoring. A pad with Sony's vendor id
+  draws `playstation` art, Nintendo's draws `nintendo`, any other `xbox`.
+
+  ```typescript
+  HStack({ gap: 8 }, [Glyph({ command: "nav_confirm" }), Text({ content: "SELECT" })]);
+  ```
 
 ### `updateState`
 
@@ -2758,6 +2948,14 @@ mod registers (the `appendText` / `backspaceText` reactions above), except the
 `done` key, whose reserved `onPress` (`ui.commitTextEntry`) the engine intercepts
 to reach the shared commit seam.
 
+**Gamepad shortcuts.** While a text-entry tree is on top, `text_backspace`
+(West), `text_space` (North) and `text_commit` (Start) press the keyboard's
+`key_backspace`, `key_space` and `key_done` keys without moving focus, so
+they do whatever those keys author. A held backspace shortcut repeats as the
+held key does. A reskinned keyboard keeps those three key ids. On a keyboard,
+keys type their characters while text entry is open, even keys bound to nav
+commands.
+
 > **Keyboard asset is layout-only.** `core/ui/keyboard.json` ships the key grid but no reactions — it is inert until a mod declares the matching named `appendText` / `backspaceText` reactions each key's `onPress` references (see `content/dev/scripts/arena-lights.ts` for the registration loop). It lives under `core/` rather than in a content tree because it belongs to the engine: mounting a game never replaces it.
 
 ### Pause menu
@@ -2837,9 +3035,10 @@ export default defineMod({
 Pointer click, keyboard confirm, and gamepad confirm all activate the
 focused/targeted button through the same engine path.
 
-Pause-menu input policy is fixed: Escape from gameplay or gamepad Start opens
-`pauseMenu` only when no other modal is active; the same inputs close it when it
-is active. Escape or gamepad B inside the menu cancel it. Those inputs are ignored
+Pause-menu input policy is fixed: `nav_menu` (Escape from gameplay or gamepad
+Start by default) opens `pauseMenu` only when no other modal is active; the
+same inputs close it when it is active. `nav_cancel` inside the menu cancels
+it. Those inputs are ignored
 for pause-menu toggling while another modal is active.
 
 The pause menu captures input, releases the cursor, and suppresses player
@@ -2848,6 +3047,31 @@ and UI animation continue. Hot reload replaces the mod UI-tree tier only after a
 successful current staged result. Failed or stale results preserve the current
 tree/theme, and an already-open pause menu keeps its cloned descriptor until it
 closes.
+
+### Confirmation dialogs
+
+Confirm a destructive choice with a small dialog tree whose `initialFocus` is
+the safe choice, opened with `openMenu` or `showDialog`. A fresh push always
+lands on `initialFocus`, so a player who presses confirm twice lands the
+second press on CANCEL and nothing happens:
+
+```typescript
+const exitConfirm = defineUiTree({
+  name: "exitConfirm",
+  tree: Tree(
+    { anchor: "center", offset: [0, 0], captureMode: "capture", initialFocus: "exitCancel" },
+    VStack({ gap: 14, padding: 20, focus: { policy: "linear" } }, [
+      Text({ content: "EXIT TO DESKTOP?" }),
+      HStack({ gap: 12 }, [
+        Button({ id: "exitCancel", label: "CANCEL", onPress: CLOSE_DIALOG_ACTION }),
+        Button({ id: "exitConfirm", label: "EXIT", onPress: EXIT_TO_DESKTOP_ACTION }),
+      ]),
+    ]),
+  ),
+});
+const askExit = defineReaction("askExit", openMenu("exitConfirm"));
+// The menu's EXIT button: Button({ id: "exit", label: "EXIT", onPress: askExit })
+```
 
 ### The readonly `input.mode` slot
 
@@ -2891,6 +3115,7 @@ resolved value, live during play whether or not a menu is open:
 | `accessibility.flashLimiter` | boolean | Photosensitivity flash limiter. Limits `screen.flash` and `screen.vignette`. |
 | `accessibility.masterVolume`, `sfxVolume`, `musicVolume`, `uiVolume` | number, 0–1 | Volumes. |
 | `accessibility.monoAudio` | boolean | Mono audio. |
+| `accessibility.holdTimingScale` | number, 1–3 | Multiplier on tap and hold thresholds. Lengthens them, never shortens. |
 
 Scripts cannot write these slots; a `setState` on one warns and changes nothing.
 The engine already applies each preference to what it presents: reduce motion
@@ -2943,6 +3168,46 @@ Text({ content: "FOLLOWING SYSTEM", visibleWhen: stateEquals(accessibility.reduc
 Preferences are the local player's: in co-op each machine applies its own, and
 none of these slots replicate.
 
+### The controls panel
+
+The engine ships the controls panel, where players rebind commands. It opens
+from any button whose `onPress` is `OPEN_CONTROLS_ACTION` (`"ui.openControls"`):
+
+```typescript
+Button({ id: "controls", label: "CONTROLS", onPress: OPEN_CONTROLS_ACTION });
+```
+
+The panel lists every relevant command by the `input` block's categories,
+order and labels, one row per command: its label, its binding slots, and
+RESET. The slots are those of the device the player used last, keyboard and
+mouse or gamepad, and they switch as soon as the player uses the other one; a
+caption under the title names the device shown. Each row has at least two
+slots, more when a command has more defaults on that device, and each binding
+shows its activator. Players cannot change
+activators: a default input keeps its own activator wherever it sits, an
+input that replaces one of the mod's defaults takes that default's activator,
+any other input fires on press, and a wheel notch always fires on press. RESET
+returns the command's keyboard-and-mouse and gamepad bindings to the mod's
+defaults, and RESET ALL does so for every command.
+
+Choosing a slot opens a prompt that captures the next key, button, stick
+push, or mouse movement (for look), Escape and Start included. It has no time
+limit. Pressing the slot's current input again keeps it. A press on the other
+device cancels (any key on a gamepad slot, a gamepad button on a keyboard
+slot), as do unplugging the gamepad during a gamepad capture and switching
+away from the game. An input the settings file has no name for, such as an
+extra mouse button or a media key, is ignored and the prompt keeps waiting. If the input already drives another command in the same
+context, the player chooses to replace it there or keep the current bindings.
+A change that would leave `nav_confirm`, `nav_cancel` or `nav_menu` with no
+binding on a device is refused, RESET included. RESET removes only the
+command's own bindings: a default another of the player's bindings holds stays
+with that binding, and the command stays flagged. With the confirm/cancel swap on, the prompt
+binds the button to the command the row shows.
+
+The panel's names (`controlsPanel`, `controlsCapture`, `controlsDialog`) are
+reserved like the accessibility panel's: a mod or level tree registered under
+one is rejected at load. It uses the mod's theme.
+
 ## Authoring UI with the SDK
 
 Scripts build UI as **descriptor trees** using SDK factory functions, register
@@ -2978,12 +3243,15 @@ const hud = Tree(
 ```
 
 - **Containers:** `VStack` / `HStack` / `Grid` — `(props, children)`.
-- **Leaves:** `Text`, `Panel`, `Image`, `Spacer`, `Bar`, `Ring`, and non-visual
-  `Announce`; interactive `Button` / `Slider` (see *Operable UI* above) — `(props)`.
-- **Envelope:** `Tree({ anchor, offset, captureMode?, initialFocus?, textEntryTarget? }, root)`
+- **Leaves:** `Text`, `Panel`, `Image`, `Spacer`, `Bar`, `Ring`, `Glyph`, and
+  non-visual `Announce`; interactive `Button` / `Slider` (see *Operable UI*
+  above) — `(props)`.
+- **Envelope:** `Tree({ anchor, offset, captureMode?, initialFocus?, textEntryTarget?, restoreOnReturn? }, root)`
   places the whole tree once on the 1280×720 logical canvas. `captureMode`
   defaults to `"passthrough"` (a HUD never captures input); `"capture"` routes
   UI input to the tree, suppresses player controls, and freezes lower UI trees.
+  `restoreOnReturn` defaults to `true`: when a tree pushed above closes, focus
+  returns to the control it left (see *Focus and repeat props*).
 
 Color props accept a color token from `getDesignTokens(theme)` or an inline
 literal `[r, g, b, a]`. Spacing props accept a spacing token or a number. Font

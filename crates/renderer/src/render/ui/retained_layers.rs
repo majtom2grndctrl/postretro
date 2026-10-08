@@ -95,6 +95,9 @@ impl UiPass {
     ///
     /// `entry` also names the layer's owner (registry name and tier), which the
     /// focus export carries: the owner is recorded with the layout it names.
+    ///
+    /// `scroll_input` carries the focused id and pointer wheel to the TOP layer's
+    /// scroll containers; lower layers pass the default and hold their offsets.
     // Wide by necessity: layer + viewport + image sizes + slot values + theme +
     // theme generation + frame time are all distinct retained-build inputs;
     // bundling them into a struct would only obscure the per-frame call site.
@@ -112,6 +115,7 @@ impl UiPass {
         theme: &theme::UiTheme,
         theme_generation: u64,
         clock: tree::TweenClock,
+        scroll_input: tree::ScrollInput<'_>,
     ) -> tree::UiDrawData {
         debug_assert!(
             layer <= self.gameplay_trees.len(),
@@ -131,10 +135,20 @@ impl UiPass {
             None => true,
         };
         if needs_build {
+            let mut fresh = tree::UiTree::from_descriptor(tree, theme);
+            // The same tree rebuilt in place (a rebound control, a glyph that
+            // followed the device family, a theme swap) keeps its scroll
+            // positions; a different tree in this slot starts at the top.
+            if let Some(previous) = self.gameplay_trees.get(layer)
+                && previous.owner.name == entry.name
+                && previous.owner.tier == entry.tier
+            {
+                fresh.carry_scroll_from(&previous.tree);
+            }
             let rebuilt = RetainedGameplayTree {
                 descriptor: tree.clone(),
                 theme_generation,
-                tree: tree::UiTree::from_descriptor(tree, theme),
+                tree: fresh,
                 owner: tree::FocusRectOwner {
                     name: entry.name.clone(),
                     tier: entry.tier,
@@ -167,6 +181,7 @@ impl UiPass {
                 slot_values,
                 cell_values,
                 clock,
+                scroll_input,
             )
     }
 
@@ -347,6 +362,7 @@ mod tests {
             text_entry_target: None,
             accessible_name: None,
             role: None,
+            restore_on_return: None,
         };
         postretro_ui::UiTreeEntry {
             name: name.into(),
@@ -395,6 +411,7 @@ mod tests {
                 &theme,
                 0,
                 tree::TweenClock::easing(0.0),
+                tree::ScrollInput::default(),
             );
         };
 

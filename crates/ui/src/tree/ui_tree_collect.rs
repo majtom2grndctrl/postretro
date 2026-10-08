@@ -8,7 +8,6 @@ use std::sync::OnceLock;
 
 use taffy::prelude::NodeId;
 
-use super::super::layout::{REFERENCE_HEIGHT, REFERENCE_WIDTH};
 use super::super::style_ranges::evaluate;
 use super::super::theme::UiTheme;
 use super::super::{UiInstance, UiRingInstance, UiText};
@@ -17,12 +16,12 @@ use postretro_entities::SlotValue;
 use super::CellValues;
 use super::bindings::{DrawWalkCtx, bound_scalar_value};
 use super::draw::{
-    UiDrawData, anchor_fractions, bar_max_value, bar_slot_value, canvas_origin,
-    linear_rgba_to_srgb_u8, project_quad, project_rect, resolve_panel_fill, resolve_text,
-    style_text_value, style_value,
+    UiDrawData, bar_max_value, bar_slot_value, intersect_rects, linear_rgba_to_srgb_u8,
+    project_quad, project_rect, resolve_panel_fill, resolve_text, style_text_value, style_value,
 };
 use super::node_context::{NodeContext, RingScalar, VisibilityState};
 use super::predicate::resolve_predicate;
+use super::scroll::{ScrollState, scroll_offset};
 use super::ui_tree::UiTree;
 
 impl UiTree {
@@ -45,28 +44,18 @@ impl UiTree {
         // anchor is both the canvas reference point and the root's pivot). This
         // mirrors `layout::project_element`'s pivot math, but applied ONCE to the
         // whole tree, with taffy-relative child positions added underneath.
-        let root_size = self.taffy.layout(self.root).expect("root has layout").size;
-        let (afx, afy) = anchor_fractions(self.anchor);
-        let anchor_x = REFERENCE_WIDTH * afx + self.offset[0];
-        let anchor_y = REFERENCE_HEIGHT * afy + self.offset[1];
-        let root_origin = [
-            anchor_x - root_size.width * afx,
-            anchor_y - root_size.height * afy,
-        ];
-
-        let scale = super::super::layout::device_scale(device_size);
-        let canvas_origin = canvas_origin(device_size, scale);
-
+        let placement = self.placement(device_size);
         collect_draw_data_from_layout(
             &self.taffy,
             self.root,
-            root_origin,
-            scale,
-            canvas_origin,
+            placement.root_origin,
+            placement.scale,
+            placement.canvas_origin,
             slot_values,
             cell_values,
             time_seconds,
             &self.visibility,
+            &self.scroll.states,
         )
     }
 }
@@ -87,6 +76,7 @@ pub(super) fn collect_draw_data_from_layout(
     cell_values: &CellValues,
     time_seconds: f64,
     visibility: &HashMap<NodeId, VisibilityState>,
+    scroll: &[ScrollState],
 ) -> UiDrawData {
     let mut data = UiDrawData::default();
     collect_draw_data_from_layout_into(
@@ -99,6 +89,7 @@ pub(super) fn collect_draw_data_from_layout(
         cell_values,
         time_seconds,
         visibility,
+        scroll,
         &mut data,
     );
     data
@@ -118,6 +109,7 @@ pub(super) fn collect_draw_data_from_layout_into(
     cell_values: &CellValues,
     time_seconds: f64,
     visibility: &HashMap<NodeId, VisibilityState>,
+    scroll: &[ScrollState],
     data: &mut UiDrawData,
 ) {
     // Style-range colors are literal by this point. Keep the evaluator's inert
@@ -131,6 +123,7 @@ pub(super) fn collect_draw_data_from_layout_into(
         cell_values,
         time_seconds,
         inert_theme,
+        scroll,
     };
     data.clear_preserving_capacity();
     collect_node(taffy, root, root_origin, &walk, visibility, data);
@@ -159,6 +152,7 @@ fn collect_node(
         cell_values,
         time_seconds,
         inert_theme,
+        scroll,
     } = *walk;
     let layout = taffy.layout(node).expect("node has computed layout");
     let context = taffy.get_node_context(node);
@@ -512,14 +506,30 @@ fn collect_node(
     }
 
     // Recurse into children: each child's reference origin is this node's
-    // reference origin plus the child's taffy-relative location.
+    // reference origin plus the child's taffy-relative location. A scroll
+    // container shifts its children up by its offset and clips them to its
+    // viewport (within any enclosing viewport); its own backdrop, drawn
+    // above, stays under the enclosing clip only.
+    let scroll_offset = scroll_offset(scroll, node);
+    let enclosing_clip = data.clip();
+    if scroll_offset.is_some() {
+        let viewport = project_rect(ref_origin, layout, scale, canvas_origin);
+        data.set_clip(Some(match enclosing_clip {
+            Some(clip) => intersect_rects(clip, viewport),
+            None => viewport,
+        }));
+    }
+    let dy = scroll_offset.unwrap_or(0.0);
     for child in taffy.children(node).expect("node children resolve") {
         let child_layout = taffy.layout(child).expect("child has layout");
         let child_origin = [
             ref_origin[0] + child_layout.location.x,
-            ref_origin[1] + child_layout.location.y,
+            ref_origin[1] + child_layout.location.y - dy,
         ];
         collect_node(taffy, child, child_origin, walk, visibility, data);
+    }
+    if scroll_offset.is_some() {
+        data.set_clip(enclosing_clip);
     }
 }
 

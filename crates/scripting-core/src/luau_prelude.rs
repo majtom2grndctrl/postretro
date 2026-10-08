@@ -199,7 +199,8 @@ const DATA_SCRIPT_FIELDS: &[&str] = &[
 /// the text-entry helpers (`openTextEntry` wraps `showDialog` for the engine
 /// keyboard; `KEYBOARD_TREE` is its registry name constant), reserved button
 /// actions (`CLOSE_DIALOG_ACTION`, `EXIT_TO_DESKTOP_ACTION`,
-/// `QUIT_TO_MENU_ACTION`, `OPEN_ACCESSIBILITY_ACTION`, `accessibilityAction`),
+/// `QUIT_TO_MENU_ACTION`, `OPEN_ACCESSIBILITY_ACTION`, `OPEN_CONTROLS_ACTION`,
+/// `accessibilityAction`),
 /// and the text-edit
 /// reactions (`appendText` / `backspaceText` / `clearText`, M13 Text Entry).
 pub(super) const UI_REACTIONS_FIELDS: &[&str] = &[
@@ -218,6 +219,7 @@ pub(super) const UI_REACTIONS_FIELDS: &[&str] = &[
     "EXIT_TO_DESKTOP_ACTION",
     "QUIT_TO_MENU_ACTION",
     "OPEN_ACCESSIBILITY_ACTION",
+    "OPEN_CONTROLS_ACTION",
     "accessibilityAction",
     "displayModeAction",
     "loadLevel",
@@ -236,7 +238,7 @@ pub(super) const UI_REACTIONS_FIELDS: &[&str] = &[
 /// `validateBorder` / `resolveReactionName` are internal helpers that
 /// `layout.luau` redeclares locally, so they stay off the module table.
 const UI_WIDGETS_FIELDS: &[&str] = &[
-    "Text", "Panel", "Image", "Spacer", "Button", "Slider", "Bar", "Ring", "Announce",
+    "Text", "Panel", "Image", "Spacer", "Glyph", "Button", "Slider", "Bar", "Ring", "Announce",
 ];
 
 /// UI layout-factory SDK fields exported through `require("postretro/ui")`.
@@ -283,6 +285,7 @@ pub const POSTRETRO_UI_MODULE_EXPORTS: &[&str] = &[
     "Panel",
     "Image",
     "Spacer",
+    "Glyph",
     "Button",
     "Slider",
     "Bar",
@@ -321,6 +324,7 @@ pub const POSTRETRO_UI_MODULE_EXPORTS: &[&str] = &[
     "EXIT_TO_DESKTOP_ACTION",
     "QUIT_TO_MENU_ACTION",
     "OPEN_ACCESSIBILITY_ACTION",
+    "OPEN_CONTROLS_ACTION",
     "accessibilityAction",
     "displayModeAction",
     "loadLevel",

@@ -12,6 +12,7 @@ mod gating;
 mod layout;
 mod local_state;
 mod ring;
+mod scroll;
 mod slider;
 mod style_ranges;
 mod theming;

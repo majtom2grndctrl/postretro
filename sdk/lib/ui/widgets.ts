@@ -1,5 +1,6 @@
 // UI widget factories: capitalized constructors for the nine non-container
-// widget kinds — Text, Panel, Image, Button, Slider, Bar, Ring, Spacer, Announce.
+// widget kinds — Text, Panel, Image, Button, Slider, Bar, Ring, Spacer, Announce,
+// Glyph.
 // (Containers — VStack/HStack/Grid — live in `./layout`.) Each mirrors the
 // `emitter()` precedent: a `Props` object validated synchronously, throwing a
 // field-named `Error`, returning a plain descriptor object whose keys are the
@@ -13,6 +14,7 @@
 // accepts a reaction handle or a bare name string.
 // See: context/lib/ui.md · context/lib/scripting.md §7
 
+import type { CommandId } from "postretro";
 import type { LocalizedText } from "./text";
 import type { ColorToken, FontToken, SpacingToken } from "./theme";
 import { __unwrapThemeToken } from "./theme";
@@ -822,6 +824,34 @@ export function Spacer(props: SpacerProps = {}): WidgetDescriptor {
     out.id = props.id;
   }
   applyA11yFields(out, props, "Spacer");
+  return out;
+}
+
+// --- Glyph ------------------------------------------------------------------
+
+/** Props for `Glyph`. `command` is a command ID such as `"nav_confirm"`. */
+export type GlyphProps = {
+  command: CommandId;
+  id?: string;
+  visibleWhen?: Predicate;
+};
+
+/**
+ * The glyph for a command on the player's current device: the mod's art for
+ * the input bound to it, else that input's label, else nothing when the command
+ * is unbound there or irrelevant. Follows rebinding and the confirm/cancel
+ * swap. Mirrors `GlyphWidget`.
+ */
+export function Glyph(props: GlyphProps): WidgetDescriptor {
+  requireObject(props, "Glyph");
+  requireNonemptyString(props.command, "command", "Glyph");
+  const out: WidgetDescriptor = { kind: "glyph", command: props.command };
+  if (props.id !== undefined) {
+    requireNonemptyString(props.id, "id", "Glyph");
+    out.id = props.id;
+  }
+  const visibleWhen = buildPredicate(props.visibleWhen, "visibleWhen", "Glyph");
+  if (visibleWhen !== undefined) out.visibleWhen = visibleWhen;
   return out;
 }
 

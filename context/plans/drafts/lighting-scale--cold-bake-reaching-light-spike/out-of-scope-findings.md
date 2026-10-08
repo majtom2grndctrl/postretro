@@ -13,6 +13,8 @@ Ranked by expected value.
 
 ## 1. The SH bounce pays the full soft-visibility sample count, no adaptive escalation
 
+**Corrected premise.** The bounce already escalates adaptively through `soft_visibility` (4 probe rays, 32 only in a penumbra); the per-call cost it did pay was the probe re-snap, removed in `context/plans/done/lighting-scale--cold-sh-bake-contribution-early-out`.
+
 **Mechanism [confirmed] in source. Win [hypothesis].**
 
 `sample_radiance_rgb` (`sh_bake.rs`) casts every shadow ray at
@@ -59,6 +61,8 @@ would make it O(texels × reaching) — the lightmap's analogue of the SH probe 
 cull. Lower priority: the stage is small (~13–37 s), so the ceiling is modest.
 
 ## 4. The shipped SH cull is range-only; cone and back-face rays still cast
+
+**Shipped** in `context/plans/done/lighting-scale--cold-sh-bake-contribution-early-out` (range, then exact-zero Lambert).
 
 **[confirmed] in source.**
 

@@ -2242,7 +2242,7 @@ impl ApplicationHandler for App {
                     self.diagnostic_inputs.clear_modifiers();
                 }
             }
-            WindowEvent::RedrawRequested => self.redraw(event_loop),
+            WindowEvent::RedrawRequested => frame_loop::redraw(self, event_loop),
             _ => {}
         }
     }

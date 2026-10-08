@@ -50,11 +50,16 @@ mod tests {
     // as a resize, and the camera is built from the committed extent.
     #[test]
     fn gameplay_frame_commits_extents_after_option_writes_and_before_the_camera() {
-        // The gameplay frame is `App::redraw`; the frontend's own option writes
-        // and commit stay in `run_frontend_ui_logic` in main.rs.
+        // The gameplay frame is the free fn `frame_loop::redraw` (`app`, not
+        // `self`); the frontend's own option writes and commit stay in
+        // `run_frontend_ui_logic` in main.rs.
         let redraw = position(FRAME_LOOP, "fn redraw(", 0);
-        let options = position(FRAME_LOOP, OPTIONS, redraw);
-        let commit = position(FRAME_LOOP, COMMIT, options);
+        let options = position(
+            FRAME_LOOP,
+            "app.update_player_options(frame_dt, options_menu_was_open);",
+            redraw,
+        );
+        let commit = position(FRAME_LOOP, "app.commit_render_extents();", options);
         let eye = position(FRAME_LOOP, "frame_eye::assemble_frame_eye(", commit);
         let viewmodel = position(FRAME_LOOP, ".update_viewmodel_view_projection(", eye);
 
@@ -75,7 +80,7 @@ mod tests {
             FRAME_LOOP[viewmodel..]
                 .trim_start_matches(".update_viewmodel_view_projection(")
                 .trim_start()
-                .starts_with("self.camera.aspect()"),
+                .starts_with("app.camera.aspect()"),
             "the viewmodel projects at the camera's committed scene aspect (P17)"
         );
     }

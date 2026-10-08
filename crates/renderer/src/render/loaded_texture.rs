@@ -2,6 +2,7 @@
 // See: context/lib/resource_management.md · context/lib/rendering_pipeline.md
 
 use std::path::Path;
+use std::time::{Duration, Instant};
 
 use postretro_level_format::prm::{
     PrmFile, PrmFormat, PrmHeader, PrmReadError, PrmSlot, cache_filename_for_key,
@@ -394,19 +395,37 @@ fn d2_texture_slot_plan(
     (header.layer_count == 1).then(|| texture_slot_plan(header.slot_mask, slot_results, policy))
 }
 
+/// Where [`load_textures`] spent its time, for the install's own log line.
+/// Log-only: nothing reads these to decide behavior.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct TextureLoadTiming {
+    /// `std::fs::read` of every `.prm` sidecar.
+    pub read: Duration,
+    /// `PrmFile::from_bytes_partial`: header decode and the per-slot payload copy.
+    pub parse: Duration,
+    /// Slot texture creation, the staged `write_texture` of every mip, and the
+    /// surface-relief derivation. Placeholder fallbacks are not counted.
+    pub create_write: Duration,
+    /// Sidecar files read (a key shared by several names reads once per name).
+    pub files_read: usize,
+    /// Total bytes those reads returned.
+    pub bytes_read: usize,
+}
+
 /// Load every world-material texture referenced by the PRL. `texture_names[i]`
 /// pairs with `texture_cache_keys.keys[i]`; an all-zero key produces a silent
 /// placeholder. Header errors and per-slot errors degrade to placeholders with
 /// a single warning each. Returns one `LoadedTexture` per entry, parallel to
-/// `texture_names`.
+/// `texture_names`, with the time spent reading, parsing and uploading them.
 pub fn load_textures(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     texture_names: &[String],
     texture_cache_keys: &TextureCacheKeysSection,
     prm_cache_root: &Path,
-) -> Vec<LoadedTexture> {
+) -> (Vec<LoadedTexture>, TextureLoadTiming) {
     let mut out: Vec<LoadedTexture> = Vec::with_capacity(texture_names.len());
+    let mut timing = TextureLoadTiming::default();
 
     for (i, name) in texture_names.iter().enumerate() {
         let key = match texture_cache_keys.keys.get(i) {
@@ -429,8 +448,15 @@ pub fn load_textures(
         }
 
         let prm_path = prm_cache_root.join(format!("{}.prm", cache_filename_for_key(&key)));
-        let bytes = match std::fs::read(&prm_path) {
-            Ok(b) => b,
+        let read_started = Instant::now();
+        let read_result = std::fs::read(&prm_path);
+        timing.read += read_started.elapsed();
+        let bytes = match read_result {
+            Ok(b) => {
+                timing.files_read += 1;
+                timing.bytes_read += b.len();
+                b
+            }
             Err(err) => {
                 log::warn!(
                     "[Loader] texture '{name}': cannot read {} : {err} — using placeholders",
@@ -441,7 +467,10 @@ pub fn load_textures(
             }
         };
 
+        let parse_started = Instant::now();
         let (header_result, slot_results) = PrmFile::from_bytes_partial(&bytes);
+        timing.parse += parse_started.elapsed();
+        let create_started = Instant::now();
         let header = match header_result {
             Ok(header) => header,
             Err(e) => {
@@ -513,9 +542,10 @@ pub fn load_textures(
             mip_count: plan.mip_count,
             surface_relief: specular_surface_relief(&slot_results[1], plan.consume[1]),
         });
+        timing.create_write += create_started.elapsed();
     }
 
-    out
+    (out, timing)
 }
 
 /// Load one model material from the shared diffuse-addressed `.prm` cache.

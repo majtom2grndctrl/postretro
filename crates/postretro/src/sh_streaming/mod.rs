@@ -7,6 +7,7 @@ pub(crate) mod generation;
 #[cfg(test)]
 pub(crate) mod sync_manifest_test_fixture;
 mod topology;
+mod topology_nodes;
 #[cfg(test)]
 mod topology_test_fixtures;
 #[cfg(test)]

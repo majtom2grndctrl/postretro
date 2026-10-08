@@ -3,6 +3,8 @@
 
 #[path = "lifecycle_boot_state.rs"]
 mod lifecycle_boot_state;
+#[path = "lifecycle_model_sweep.rs"]
+mod lifecycle_model_sweep;
 #[path = "lifecycle_net.rs"]
 mod lifecycle_net;
 #[cfg(test)]
@@ -15,6 +17,7 @@ mod lifecycle_sprite_collections;
 #[path = "lifecycle_world_cpu.rs"]
 mod lifecycle_world_cpu;
 
+use lifecycle_model_sweep::ParsedSweepModel;
 pub(crate) use lifecycle_world_cpu::install_world_cpu;
 
 use std::path::{Component, Path, PathBuf};
@@ -405,13 +408,12 @@ impl App {
 
     /// Mark the worker's delivery in the level timings, on the frame it lands.
     fn record_worker_delivery(&mut self, payload: &mut crate::startup::worker::LevelPayload) {
-        self.level_timings.record("worker_delivered");
-        // Splice worker-thread entries between dispatch and delivered so the
-        // summary reads chronologically.
-        let delivered_idx = self.level_timings.entries.len() - 1;
-        for (i, entry) in payload.timings.drain(..).enumerate() {
-            self.level_timings.entries.insert(delivered_idx + i, entry);
-        }
+        // The worker's own stages (`prl_parse`) ran inside the interval
+        // `worker_delivered` measures, so they attach to it rather than join the
+        // entries: summing the line's stages must not count the parse twice.
+        let inside = std::mem::take(&mut payload.timings);
+        self.level_timings
+            .record_containing("worker_delivered", inside);
     }
 
     fn finish_level_payload(
@@ -748,28 +750,34 @@ impl App {
         // `suppress` gates the connected-client spawn / AI-enemy suppression
         // (`false` off a connected client — single-player, listen host, headless).
         let suppress = self.is_connected_client();
-        // Cloned for the mesh hook and the segment-B handles so neither aliases a
-        // `self.content_root` borrow held across the call.
+        // Cloned so the segment-B handles do not alias a `self.content_root`
+        // borrow held across the call.
         let install_content_root = self.content_root.clone();
         let renderer = self
             .renderer
             .as_mut()
             .expect("renderer installed before level install");
         let upload_mesh_models =
-            |models: &[String],
+            |models: &[ParsedSweepModel],
              clip_tables: &mut crate::scripting_systems::mesh_anim::MeshClipTables| {
                 // Clear per-level transient mesh-pass state at the model-cache
                 // install seam, then upload each distinct model and build its
                 // game-side clip table from the renderer's clip metadata (glTF
-                // index order). A failed load cached nothing, so the metadata is
-                // empty and the table maps no clips.
+                // index order). The sweep parsed every model already; a failed
+                // parse warns here, caches nothing, so the metadata is empty and
+                // the table maps no clips.
                 renderer.clear_mesh_pass_for_level_load();
                 for model in models {
-                    renderer.load_skinned_model(model, &install_content_root, &prm_cache_root);
-                    let meta = renderer.skinned_model_clip_metadata(model);
-                    let bounds = renderer.skinned_model_local_bounds(model);
+                    renderer.upload_parsed_skinned_model(
+                        &model.handle,
+                        &model.open_path,
+                        &model.result,
+                        &prm_cache_root,
+                    );
+                    let meta = renderer.skinned_model_clip_metadata(&model.handle);
+                    let bounds = renderer.skinned_model_local_bounds(&model.handle);
                     clip_tables.insert_with_bounds(
-                        postretro_model::ModelHandle::from(model.clone()),
+                        postretro_model::ModelHandle::from(model.handle.clone()),
                         &meta,
                         bounds,
                     );
@@ -914,6 +922,7 @@ impl App {
         self.host_register_map_enemies_after_install();
         self.host_register_world_items_after_install();
         self.host_register_loaded_movers_after_install();
+        self.level_timings.record("host_registration");
 
         // Pick up any descriptor-spawned `LightComponent`s so they participate in
         // the per-frame light bridge pack.
@@ -974,6 +983,7 @@ impl App {
         self.camera.position = spawn_eye;
         self.frame_timing
             .hold_state(InterpolableState::new(spawn_eye));
+        self.level_timings.record("camera_pose");
 
         // Renderer-side fog: pixel scale + per-cell masks. The fog-volume entities
         // were created in segment B; this is the windowed GPU half.
@@ -983,6 +993,7 @@ impl App {
             renderer.set_fog_pixel_scale(world.fog_pixel_scale);
             renderer.install_fog_cell_masks_for_level(world.fog_cell_masks.clone());
         }
+        self.level_timings.record("fog_masks");
 
         // Register sprite collections for every distinct emitter `sprite` in the
         // registry — map-spawned and descriptor-spawned alike — plus descriptor
@@ -1023,6 +1034,7 @@ impl App {
                 &map_billboard_collections,
             );
         }
+        self.level_timings.record("sprite_collections");
 
         // Sound registry follows level lifetime, parallel to textures: load the
         // level's sounds from `sounds/`, released at unload. Fault-tolerant — a

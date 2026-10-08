@@ -686,6 +686,24 @@ impl Session {
                 Some(netcode::NetEndpoint::Client { .. })
             ));
         let trigger_auto_close_timers = scripting.auto_close_timers.clone();
+        // A listen host publishes the address players should dial, for the
+        // frontend to show. Written after identity setup, which can still
+        // demote the endpoint to single-player.
+        let host_address = host_address_text(
+            &net_role,
+            matches!(&net_endpoint, Some(netcode::NetEndpoint::Host { .. })),
+            netcode::probe_lan_address,
+        );
+        if !host_address.is_empty() {
+            log::info!("[Net] {host_address}");
+            if let Err(err) = postretro_scripting_core::store_bridge::write_store_slot(
+                &scripting.script_ctx,
+                HOST_ADDRESS_SLOT,
+                postretro_entities::slot_table::SlotValue::String(host_address),
+            ) {
+                log::warn!("[UI] failed to write `{HOST_ADDRESS_SLOT}`: {err}");
+            }
+        }
         boot_timings.record("net_endpoint_complete");
 
         // Seed every accessibility working copy and `accessibility.*` slot once,
@@ -776,6 +794,25 @@ fn load_player_options(settings_path: Option<&Path>) -> options::PlayerOptions {
     options::boot::BootOptions::load(settings_path.map(Path::to_path_buf))
         .finish()
         .0
+}
+
+const HOST_ADDRESS_SLOT: &str = "session.hostAddress";
+
+/// The `session.hostAddress` text: the connect line when this process is a
+/// live listen host, else empty. A host role whose endpoint failed setup has
+/// degraded to single-player and shows nothing. `probe_lan` runs only when
+/// hosting.
+fn host_address_text(
+    role: &netcode::NetRole,
+    endpoint_is_host: bool,
+    probe_lan: impl FnOnce() -> Option<std::net::IpAddr>,
+) -> String {
+    match role {
+        netcode::NetRole::Host { port } if endpoint_is_host => {
+            netcode::host_address_line(*port, probe_lan())
+        }
+        _ => String::new(),
+    }
 }
 
 /// Preserve the local seat/carry ledger when session identity entropy fails.
@@ -1301,6 +1338,29 @@ mod tests {
             std::fs::read_to_string(&path).expect("read malformed settings"),
             malformed
         );
+    }
+
+    #[test]
+    fn host_address_text_is_published_only_by_a_live_host() {
+        let lan = || Some(std::net::IpAddr::from([10, 0, 0, 7]));
+        assert_eq!(
+            host_address_text(&netcode::NetRole::Host { port: 27015 }, true, lan),
+            "Hosting on 10.0.0.7:27015 (local: 127.0.0.1:27015)"
+        );
+        // A failed bind (or identity setup) left no host endpoint.
+        assert_eq!(
+            host_address_text(&netcode::NetRole::Host { port: 27015 }, false, lan),
+            ""
+        );
+        let no_probe = || -> Option<std::net::IpAddr> { panic!("probed outside host role") };
+        assert_eq!(
+            host_address_text(&netcode::NetRole::SinglePlayer, false, no_probe),
+            ""
+        );
+        let connect = netcode::NetRole::Connect {
+            addr: "127.0.0.1:27015".parse().unwrap(),
+        };
+        assert_eq!(host_address_text(&connect, false, no_probe), "");
     }
 
     // Regression: session-id entropy failure used to abort engine boot.

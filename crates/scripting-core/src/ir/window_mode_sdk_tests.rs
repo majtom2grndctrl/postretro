@@ -49,7 +49,7 @@ fn display_mode_actions_and_slot_refs_match_both_sdk_runtimes() {
 #[test]
 fn shipped_frontend_window_controls_compile_and_evaluate() {
     let value = quickjs_fixture_value(&format!(
-        "{}\nJSON.stringify({{ menu: optionsMenu, reactions: frontendReactions }});",
+        "{}\nJSON.stringify({{ menu: optionsMenu, title: frontendMenu, reactions: frontendReactions }});",
         include_str!("../../../../content/dev/scripts/frontend-menu.ts")
     ));
     let reactions = value["reactions"].as_array().unwrap();
@@ -75,4 +75,9 @@ fn shipped_frontend_window_controls_compile_and_evaluate() {
     ] {
         assert!(menu.contains(wire), "compiled menu missing {wire}");
     }
+    let title = serde_json::to_string(&value["title"]).unwrap();
+    assert!(
+        title.contains(r#""slot":"session.hostAddress""#),
+        "title menu binds the listen-host address: {title}"
+    );
 }

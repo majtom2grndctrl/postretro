@@ -1621,6 +1621,7 @@ declare module "postretro" {
       readonly vignette: ComputedRef<ReadonlyArray<number>>;
     };
     readonly session: {
+      readonly hostAddress: ComputedRef<string>;
       readonly openSeats: ComputedRef<number>;
     };
     readonly ui: {

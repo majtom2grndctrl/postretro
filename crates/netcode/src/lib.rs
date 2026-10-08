@@ -41,6 +41,7 @@ mod endpoint;
 // headless co-op harness cannot each invent their own sequencing.
 pub mod frame_order;
 mod host;
+mod host_address;
 // Fix B: host-side delay-buffered presentation of connected-client pawns. New logic
 // lives here; `main.rs`/`interpolation.rs`/`endpoint.rs` carry only thin wiring.
 mod host_presentation;
@@ -123,6 +124,7 @@ pub use host_presentation::{
 };
 // `ResolvedCommand` / `ResolutionSource` are produced by the command queue and consumed
 // via the submodule path only; not re-exported here.
+pub use host_address::{host_address_line, probe_lan_address};
 pub(crate) use interpolation::{DemoMover, InterpolationDelayState, RemoteInterpolationBuffer};
 pub use join_seed::{HostJoinSeeds, JoinSeedArrival, ParticipationSeed};
 pub(crate) use lifecycle::{

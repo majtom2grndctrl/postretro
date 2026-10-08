@@ -250,8 +250,8 @@ mod tests {
         let Widget::VStack(col) = &tree.root else {
             panic!("frontend fallback root is a vstack column");
         };
-        assert_eq!(col.children.len(), 3);
-        assert_only_control_is_the_accessibility_entry(&col.children[2], "frontendAccessibility");
+        assert_eq!(col.children.len(), 4);
+        assert_only_control_is_the_accessibility_entry(&col.children[3], "frontendAccessibility");
 
         let Widget::Text(title) = &col.children[0] else {
             panic!("first row is the title text");
@@ -262,6 +262,24 @@ mod tests {
             panic!("second row is the status text");
         };
         assert_eq!(instruction.content, "NO MOD FRONTEND REGISTERED");
+
+        // Empty unless the engine is a listen host, so single-player and
+        // connected clients see no address row.
+        let Widget::Text(host_address) = &col.children[2] else {
+            panic!("third row is the host address text");
+        };
+        assert_eq!(host_address.content, "");
+        let bind = host_address
+            .bind
+            .as_ref()
+            .expect("host address row binds a slot");
+        assert_eq!(
+            bind.source,
+            crate::descriptor::BindSource::Slot {
+                slot: "session.hostAddress".to_string()
+            }
+        );
+        assert_eq!(bind.format, None);
     }
 
     /// The `nav.menu` toggle pushes/pops the registered pause menu through the

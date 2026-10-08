@@ -25,6 +25,16 @@
         "font": "mono"
       },
       {
+        "kind": "text",
+        "content": "",
+        "fontSize": 16.0,
+        "color": "ok",
+        "font": "mono",
+        "bind": {
+          "slot": "session.hostAddress"
+        }
+      },
+      {
         "kind": "button",
         "id": "frontendAccessibility",
         "label": "ACCESSIBILITY",

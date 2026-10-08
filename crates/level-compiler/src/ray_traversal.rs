@@ -18,7 +18,9 @@ use bvh::ray::Ray;
 /// input: a pathological grazing sliver can exceed any finite slack.
 ///
 /// Faster on large maps than a near-child-first walk, whose extra child-entry
-/// work outweighs its earlier pruning.
+/// work outweighs its earlier pruning. A walk over a packed copy of the nodes,
+/// in this same order, measured no faster on warren-mini once this node test
+/// was one pass, and slower when it tested both children's boxes up front.
 pub(crate) struct BoundedRay {
     origin: [f32; 3],
     inv_direction: [f32; 3],

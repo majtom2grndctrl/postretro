@@ -11,7 +11,7 @@ Cut the CPU time the bake spends on ray queries without a visible change to any 
 - **Scope: four steps, each kept only if it measurably pays.** A step that does not beat run-to-run noise on warren-mini is reverted, not landed.
   1. Fused node test: one pass computes the slab values once and makes both decisions (stock accept, bound prune).
   2. Last-occluder cache in the lightmap layer bake's occlusion queries.
-  3. Flat bake-tree traversal: our own packed node arrays and stack loop in place of the `bvh` crate's enum nodes and iterator. The `bvh` crate still builds the tree.
+  3. Flat bake-tree traversal: our own packed node arrays and stack loop in place of the `bvh` crate's enum nodes and iterator. The `bvh` crate still builds the tree. **Reverted (2026-10-08, from measurement):** same-host warren-mini runs against step 2 alone: testing both children up front, SH 137 → 152 s and Lightmap 80 → 87 s; fully lazy, SH unchanged and Lightmap 79 → 85 s. Exact in both forms (hashes identical).
   4. Sample-point trig hoist in the area-sample targets.
 - **Steps that move bytes bump cache epochs.** Step 2 bumps `LAYER_FORMAT_VERSION`. The area-sample target function is shared by every stage that calls `soft_visibility`; step 4 advances each such stage's epoch, so warm caches re-bake those stages once. Steps 1 and 3 bump nothing (`build_pipeline.md` §Build Cache, stage version bump rule).
 - **Landing: one PR** from `claude/friendly-meitner-f6jmdm`, with measurements and acceptance results in the body.

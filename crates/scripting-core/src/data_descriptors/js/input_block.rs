@@ -24,7 +24,10 @@ pub fn drain_input_block_js<'js>(
     ))
 }
 
-fn authored_value_js(value: JsValue<'_>, depth: usize) -> Result<AuthoredValue, DescriptorError> {
+pub(crate) fn authored_value_js(
+    value: JsValue<'_>,
+    depth: usize,
+) -> Result<AuthoredValue, DescriptorError> {
     if value.is_null() || value.is_undefined() {
         return Ok(AuthoredValue::Absent);
     }

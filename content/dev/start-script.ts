@@ -54,6 +54,13 @@ import {
   xpReadout,
 } from "./scripts/hud";
 import { pauseMenu } from "./scripts/pause-menu";
+import {
+  loadingCombatDemo,
+  loadingHazard,
+  loadingImages,
+  loadingNeon,
+  loadingPool,
+} from "./scripts/loading-screens";
 import { devInput } from "./scripts/input";
 import {
   devLevelSelectMenu,
@@ -125,7 +132,15 @@ export default defineMod({
     frontendMenu,
     devLevelSelectMenu,
     optionsMenu,
+    loadingHazard,
+    loadingNeon,
+    loadingCombatDemo,
   ],
+  // DEV FIXTURE: mod loading screens. Images any tree may draw by key, and a
+  // mod-wide pool the engine picks from per load; the combat demo's catalog
+  // entry overrides the pool (scripts/loading-screens.ts).
+  uiImages: loadingImages,
+  loading: { tree: loadingPool },
   // DEV FIXTURE — these remain global so any dev map using the shared combat
   // policies exposes floating damage and recently-damaged enemy feedback.
   presentationTemplates: [damageNumber, damagedEnemyBar],

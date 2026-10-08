@@ -397,6 +397,8 @@ mod tests {
                 presentation_overlays: Vec::new(),
                 theme: Default::default(),
                 frontend: None,
+                ui_images: Default::default(),
+                loading: Default::default(),
                 store_declarations: Default::default(),
                 dependency_paths: Vec::new(),
             })),

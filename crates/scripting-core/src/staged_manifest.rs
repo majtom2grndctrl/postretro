@@ -17,14 +17,15 @@ use super::data_descriptors::{
     drain_factions_js, drain_factions_lua, drain_fonts_js, drain_fonts_lua, drain_frontend_js,
     drain_frontend_lua, drain_global_crossings_js, drain_global_crossings_lua,
     drain_global_reactions_js, drain_global_reactions_lua, drain_impact_events_js,
-    drain_impact_events_lua, drain_input_block_js, drain_input_block_lua, drain_maps_js,
-    drain_maps_lua, drain_mover_defaults_js, drain_mover_defaults_lua,
-    drain_presentation_overlays_js, drain_presentation_overlays_lua,
+    drain_impact_events_lua, drain_input_block_js, drain_input_block_lua, drain_loading_js,
+    drain_loading_lua, drain_maps_js, drain_maps_lua, drain_mover_defaults_js,
+    drain_mover_defaults_lua, drain_presentation_overlays_js, drain_presentation_overlays_lua,
     drain_presentation_templates_js, drain_presentation_templates_lua, drain_render_profile_js,
     drain_render_profile_lua, drain_switching_js, drain_switching_lua, drain_theme_js,
     drain_theme_lua, drain_trigger_events_js, drain_trigger_events_lua, drain_trigger_pools_js,
-    drain_trigger_pools_lua, drain_ui_trees_js, drain_ui_trees_lua, entity_descriptor_from_js,
-    entity_faction_name_from_js, entity_faction_name_from_lua,
+    drain_trigger_pools_lua, drain_ui_images_js, drain_ui_images_lua, drain_ui_trees_js,
+    drain_ui_trees_lua, entity_descriptor_from_js, entity_faction_name_from_js,
+    entity_faction_name_from_lua,
 };
 use super::error::ScriptError;
 use super::luau::LuauConfig;
@@ -353,6 +354,8 @@ fn run_staged_manifest_build(
         presentation_overlays: manifest.presentation_overlays,
         theme: manifest.theme,
         frontend: manifest.frontend,
+        ui_images: manifest.ui_images,
+        loading: manifest.loading,
         store_declarations: manifest.store_declarations,
         dependency_paths,
     }))
@@ -650,6 +653,20 @@ fn manifest_from_js_value<'js>(
             ),
         }
     })?;
+    let ui_images = drain_ui_images_js(&obj, "default mod manifest export").map_err(|e| {
+        ScriptError::InvalidArgument {
+            reason: format!(
+                "mod-init: `{source_path}` default mod manifest export `uiImages` invalid: {e}"
+            ),
+        }
+    })?;
+    let loading = drain_loading_js(&obj, "default mod manifest export").map_err(|e| {
+        ScriptError::InvalidArgument {
+            reason: format!(
+                "mod-init: `{source_path}` default mod manifest export `loading` invalid: {e}"
+            ),
+        }
+    })?;
     let fonts = drain_fonts_js(&obj, "default mod manifest export").map_err(|e| {
         ScriptError::InvalidArgument {
             reason: format!(
@@ -726,6 +743,8 @@ fn manifest_from_js_value<'js>(
         presentation_overlays,
         theme,
         frontend,
+        ui_images,
+        loading,
         fonts,
         maps,
         reactions,
@@ -988,6 +1007,20 @@ fn run_staged_mod_init_luau(
             ),
         }
     })?;
+    let ui_images = drain_ui_images_lua(&table, "returned mod manifest").map_err(|e| {
+        ScriptError::InvalidArgument {
+            reason: format!(
+                "mod-init: `{source_path}` returned mod manifest `uiImages` invalid: {e}"
+            ),
+        }
+    })?;
+    let loading = drain_loading_lua(&table, "returned mod manifest").map_err(|e| {
+        ScriptError::InvalidArgument {
+            reason: format!(
+                "mod-init: `{source_path}` returned mod manifest `loading` invalid: {e}"
+            ),
+        }
+    })?;
     let fonts = drain_fonts_lua(&table, "returned mod manifest").map_err(|e| {
         ScriptError::InvalidArgument {
             reason: format!("mod-init: `{source_path}` returned mod manifest `fonts` invalid: {e}"),
@@ -1057,6 +1090,8 @@ fn run_staged_mod_init_luau(
         presentation_overlays,
         theme,
         frontend,
+        ui_images,
+        loading,
         fonts,
         maps,
         reactions,
@@ -1072,7 +1107,8 @@ fn run_staged_mod_init_luau(
 mod tests {
     use super::*;
     use crate::data_descriptors::ModThemeTokens;
-    use crate::runtime::{ModBloomProfile, ModBloomResolution, ModRenderProfile};
+    use crate::runtime::{ModBloomProfile, ModBloomResolution, ModLoading, ModRenderProfile};
+    use std::collections::BTreeMap;
     use std::time::{Duration, Instant};
 
     struct TempModRoot(PathBuf);
@@ -1928,6 +1964,73 @@ mod tests {
         assert_eq!(frontend.camera.position, [4.0, 2.0, 8.0]);
         assert_eq!(frontend.camera.yaw, -0.6);
         assert_eq!(frontend.camera.pitch, -0.1);
+    }
+
+    /// Build one staged manifest from `source` and return its loading-screen
+    /// fields, so each VM's staged path is checked against the same values.
+    fn staged_loading_fields(
+        name: &str,
+        file: &str,
+        source: &str,
+    ) -> (BTreeMap<String, String>, ModLoading, Vec<Vec<String>>) {
+        let dir = temp_mod_root(name);
+        fs::write(dir.join(file), source).unwrap();
+        let result = build_staged_manifest(&dir, 3, &StagedManifestBuildConfig::default());
+        let StagedManifestBuildStatus::Built(manifest) = result.status else {
+            panic!("expected built result, got {:?}", result.status);
+        };
+        let manifest = *manifest;
+        let pools = manifest
+            .maps
+            .into_iter()
+            .map(|map| map.loading_tree)
+            .collect();
+        (manifest.ui_images, manifest.loading, pools)
+    }
+
+    #[test]
+    fn staged_manifest_build_carries_loading_and_ui_images_in_both_vms() {
+        let js = staged_loading_fields(
+            "js_loading_fields",
+            "start-script.js",
+            r#"
+                globalThis.__postretroModManifest = {
+                    name: "LoadingMod",
+                    id: "loading-mod",
+                    version: "1",
+                    uiImages: { "art/logo": "ui/logo.png", "engine/splashLogo": "ui/x.png" },
+                    loading: { tree: ["loadA", "loadB"] },
+                    maps: [
+                        { id: "e1m1", path: "maps/e1m1.prl", name: "Entry", loadingTree: "loadC" },
+                    ],
+                };
+            "#,
+        );
+        let luau = staged_loading_fields(
+            "luau_loading_fields",
+            "start-script.luau",
+            r#"
+                return {
+                    name = "LoadingMod",
+                    id = "loading-mod",
+                    version = "1",
+                    uiImages = { ["art/logo"] = "ui/logo.png", ["engine/splashLogo"] = "ui/x.png" },
+                    loading = { tree = { "loadA", "loadB" } },
+                    maps = {
+                        { id = "e1m1", path = "maps/e1m1.prl", name = "Entry", loadingTree = "loadC" },
+                    },
+                }
+            "#,
+        );
+        let expected = (
+            BTreeMap::from([("art/logo".to_string(), "ui/logo.png".to_string())]),
+            ModLoading {
+                tree: vec!["loadA".to_string(), "loadB".to_string()],
+            },
+            vec![vec!["loadC".to_string()]],
+        );
+        assert_eq!(js, expected);
+        assert_eq!(luau, expected);
     }
 
     #[test]

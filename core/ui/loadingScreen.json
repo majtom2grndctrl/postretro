@@ -1,0 +1,36 @@
+{
+  "anchor": "center",
+  "offset": [
+    0.0,
+    15.0
+  ],
+  "root": {
+    "kind": "vstack",
+    "gap": 24.0,
+    "padding": 0.0,
+    "align": "center",
+    "children": [
+      {
+        "kind": "image",
+        "asset": "engine/splashLogo",
+        "width": 489.0,
+        "decorative": true
+      },
+      {
+        "kind": "bar",
+        "bind": {
+          "slot": "loading.progress",
+          "tween": {
+            "durationMs": 200.0,
+            "easing": "easeOut"
+          }
+        },
+        "max": 1.0,
+        "fill": "focus.ring",
+        "background": "panel.default",
+        "width": 489.0,
+        "height": 6.0
+      }
+    ]
+  }
+}

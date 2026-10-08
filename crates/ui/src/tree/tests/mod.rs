@@ -9,6 +9,7 @@ mod bar;
 mod binding;
 mod focus;
 mod gating;
+mod image;
 mod layout;
 mod local_state;
 mod ring;

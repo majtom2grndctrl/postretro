@@ -1,6 +1,7 @@
 // Directional lightmap baker.
 // See: context/lib/build_pipeline.md §Compiler pipeline
 
+use std::cell::Cell;
 use std::sync::Mutex;
 
 use bvh::bvh::Bvh;
@@ -1218,6 +1219,25 @@ pub(crate) fn segment_clear(
     from: Vec3,
     to: Vec3,
 ) -> bool {
+    segment_clear_remembering(bvh, primitives, geometry, from, to, &Cell::new(None))
+}
+
+/// [`segment_clear`] that tests `last_occluder` first and records the triangle
+/// that blocks this segment. Neighbouring texels lit by one light are mostly
+/// blocked by the same triangle, so a sequential walk over one `(light, chart)`
+/// skips most traversals in shadow. The cached triangle is tested with the same
+/// ray and hit predicate as the traversal, so it changes only which triangle is
+/// found first, not the answer — barring a hit the traversal's box test misses
+/// by rounding on a grazing ray, which the cache then reports as blocked.
+/// `last_occluder` holds the triangle's first index-buffer offset.
+pub(crate) fn segment_clear_remembering(
+    bvh: &Bvh<f32, 3>,
+    primitives: &[BvhPrimitive],
+    geometry: &GeometryResult,
+    from: Vec3,
+    to: Vec3,
+    last_occluder: &Cell<Option<usize>>,
+) -> bool {
     let delta = to - from;
     let length = delta.length();
     if length < RAY_EPSILON {
@@ -1225,31 +1245,33 @@ pub(crate) fn segment_clear(
     }
     let dir = delta / length;
     let origin = from + dir * RAY_EPSILON;
+    let max_distance = length - RAY_EPSILON;
+    let geom = &geometry.geometry;
+    let blocks = |tri: usize| {
+        let p0 = Vec3::from(geom.vertices[geom.indices[tri] as usize].position);
+        let p1 = Vec3::from(geom.vertices[geom.indices[tri + 1] as usize].position);
+        let p2 = Vec3::from(geom.vertices[geom.indices[tri + 2] as usize].position);
+        ray_triangle_hit(origin, dir, p0, p1, p2)
+            .is_some_and(|dist| dist > 0.0 && dist < max_distance)
+    };
+    if last_occluder.get().is_some_and(blocks) {
+        return false;
+    }
     let ray = Ray::new(
         Point3::new(origin.x, origin.y, origin.z),
         Vector3::new(dir.x, dir.y, dir.z),
     );
-    let max_distance = length - RAY_EPSILON;
-    let geom = &geometry.geometry;
     let query = BoundedRay::new(&ray, max_distance);
     for prim in bvh.traverse_iterator(&query, primitives) {
         let start = prim.index_offset as usize;
         let end = start + prim.index_count as usize;
         let mut tri = start;
         while tri + 3 <= end {
-            let i0 = geom.indices[tri] as usize;
-            let i1 = geom.indices[tri + 1] as usize;
-            let i2 = geom.indices[tri + 2] as usize;
-            tri += 3;
-            let p0 = Vec3::from(geom.vertices[i0].position);
-            let p1 = Vec3::from(geom.vertices[i1].position);
-            let p2 = Vec3::from(geom.vertices[i2].position);
-            if let Some(dist) = ray_triangle_hit(origin, dir, p0, p1, p2)
-                && dist > 0.0
-                && dist < max_distance
-            {
+            if blocks(tri) {
+                last_occluder.set(Some(tri));
                 return false;
             }
+            tri += 3;
         }
     }
     true

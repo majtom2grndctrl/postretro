@@ -3999,6 +3999,7 @@ mod tests {
     #[test]
     fn bounded_queries_match_full_scan_on_random_rounding_stress() {
         let mut rng = XorShift(0x2545_F491_4F6C_DD1D);
+        let last_occluder = std::cell::Cell::new(None);
         let centre = Vec3::new(210.0, 190.0, -260.0);
         let faces = [
             SlopedFace {
@@ -4114,10 +4115,26 @@ mod tests {
                     full_clear,
                     "sh, ray {i}: {origin} -> {to}"
                 );
+                let lightmap_full =
+                    crate::lightmap_bake::segment_clear_full_scan(&bvh, &prims, &geo, origin, to);
                 assert_eq!(
                     crate::lightmap_bake::segment_clear(&bvh, &prims, &geo, origin, to),
-                    crate::lightmap_bake::segment_clear_full_scan(&bvh, &prims, &geo, origin, to),
+                    lightmap_full,
                     "lightmap, ray {i}: {origin} -> {to}"
+                );
+                // The occluder cache carries across rays, so later queries test
+                // an unrelated triangle first.
+                assert_eq!(
+                    crate::lightmap_bake::segment_clear_remembering(
+                        &bvh,
+                        &prims,
+                        &geo,
+                        origin,
+                        to,
+                        &last_occluder,
+                    ),
+                    lightmap_full,
+                    "lightmap remembering, ray {i}: {origin} -> {to}"
                 );
                 if full_clear {
                     clear += 1;

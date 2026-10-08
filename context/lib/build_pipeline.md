@@ -316,8 +316,8 @@ payload byte offsets. Cross-cluster affinity cells carry one compile-time-fixed 
 owner; other references are reconstruction-only halo. One authored level remains one
 logical PRL. A missing id 49 remains a whole-load level. The loader re-derives the whole
 range table from cells, probes and the cell locator and rejects any difference; that
-derivation runs on the level worker every load, so it stays linear in probes and cell-brick
-overlap, never active bricks × member cells.
+derivation runs on the level worker every load, so its cost must never grow as active bricks
+× member cells.
 
 **Cluster SH payloads (id 50).** Id 50 is a validated, independently readable,
 cluster-major companion for ids 27/34/35/41/45. It is emitted after id 49 only when id 34

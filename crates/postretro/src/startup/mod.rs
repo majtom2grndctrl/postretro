@@ -565,7 +565,7 @@ mod tests {
     }
 
     #[test]
-    fn worker_entries_splice_preserves_chronological_order() {
+    fn contained_worker_stages_print_after_their_stage_in_order() {
         let mut t = StartupTimings::new();
         t.record("worker_dispatch");
         let worker_entries: Vec<(&'static str, Duration)> = vec![

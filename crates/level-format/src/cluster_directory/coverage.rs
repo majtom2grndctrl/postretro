@@ -22,9 +22,10 @@ const NO_CLUSTER: u32 = u32::MAX;
 /// Exact restatement of the original brick-by-member scan, which the tests
 /// keep verbatim as an oracle: the same output, and the same first error, for
 /// every input. Cost is linear in probes, in the cell-to-brick overlap
-/// volume, and in the locator boxes a probe-grid descent splits into
-/// (`ProbeLocator`), where the original was O(active bricks × member cells)
-/// plus one locator walk per valid probe.
+/// volume, in one pass over each axis's bricks per member cell, and in the
+/// locator boxes a probe-grid descent splits into (`ProbeLocator`), where the
+/// original was O(active bricks × member cells) plus one locator walk per
+/// valid probe.
 ///
 /// Error order matches the original because errors come from two places
 /// only: locating probes (per active brick ascending, probes in brick order,

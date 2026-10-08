@@ -1,7 +1,7 @@
 # Level-Load Pipeline — Research
 
 > **Read this when:** drafting the level-loading pipeline spec with the owner. This is its research section: the facts the design is made from. It chooses nothing.
-> **Key facts:** the main thread is idle for the whole parse and then does ~0.8–1.0 s of install in one redraw that also renders the first level frame. About a third of that install is level-invariant, a third could run on any thread, and a third needs the GPU device. Only ~5–20 ms needs the script VM.
+> **Key facts:** the main thread is idle for the whole parse and then does ~0.7–1.0 s of install in one redraw that also renders the first level frame. About a third of that install is level-invariant, a third could run on any thread, and a third needs the GPU device. Only ~5–20 ms needs the script VM.
 > **Related:** `context/lib/boot_sequence.md` §1–§4 · `context/plans/in-progress/level-load-perf-contract.md` · `level-load-perf-findings.md` · `context/lib/networking.md` §Admission and content parity · `context/lib/rendering_pipeline.md` §12
 
 ---
@@ -15,7 +15,7 @@ Every number carries a label.
 | **m** | Measured. Release, this Linux container (4 cores, lavapipe under Xvfb), medians. Unless noted, from the Track A interleaved A/B session's post-Track-A binary: n = 4 first loads and 8 same-map level changes per map. Raw logs lived in the session scratchpad and were not retained. |
 | **p** | Perf share from the findings (pre-Track-A, a ~1.5× slower run of the machine; the contract notes perf inflates shares). Used only to split a measured stage. |
 | **e** | Estimate: arithmetic on measured numbers, shown. |
-| **r** | Code reading at HEAD `5594fe4`, plus the in-flight single-parse model sweep. |
+| **r** | Code reading at HEAD `5594fe4`, plus the single-parse model sweep (Track C, landed since). |
 
 Two rounds landed after that session, so two stages are estimates:
 
@@ -119,9 +119,9 @@ Rows follow `install_level_payload` order. Costs are lit F / C, then camp F / C.
 | S10 | Data script; compose reactions; validation; subscriber and trigger-binding rebuild | L (script), G (global reactions), S9 | S11, `levelLoad` | M (QuickJS) | After S9 | Level | 0.3 m | 7.2 / 8.6 m |
 | S11 | Archetype sweep, player spawn, spawners, trigger pools | L, G, S10, P (carried loadout, client suppression) | S12a, camera | M | After S10 | Level | 0.3 m | 0.5 / 0.6 m |
 | S12a | Model list: registry meshes ∪ movement, weapon, projectile, touchable descriptor models ∪ spawner archetypes ∪ client-suppressed placements | S11, G | S12b | M (registry read) | Descriptor subset: before any load. Registry subset: after S11. | — | ~0 | ~0 |
-| S12b | glTF parse, once per model per load (in flight) | S12a, content root | S12c, S12d | Any (`LoadedModel`) | Descriptor subset: before any load | Level today | see S12 total | see S12 total |
+| S12b | glTF parse, once per model per load (Track C) | S12a, content root | S12c, S12d | Any (`LoadedModel`) | Descriptor subset: before any load | Level today | see S12 total | see S12 total |
 | S12c | Renderer upload: model `.prm` read + parse (Any), texture and buffer upload (R) | S12b, D | Draw; clip metadata | Any + R | After S12b | Level today (cleared on unload) | | |
-| S12d | Hit-zone build, clip tables, clip-index resolve | S12b (clip tables are a pure function of the parse, r: in-flight equivalence test) | `levelLoad` | Build Any; store and resolve M | After S12b | Level | | |
+| S12d | Hit-zone build, clip tables, clip-index resolve | S12b (clip tables are a pure function of the parse, r: Track C's sweep equivalence test) | `levelLoad` | Build Any; store and resolve M | After S12b | Level | | |
 | S12 | **Model sweep total** | | | | | | **≈ 167 / 156 e** | **≈ 196 / 155 e** |
 | S13 | Fire `levelLoad` | S12d | Sprites, camera | M | After S12 | Level | 0 m | 0.1 m |
 | — | Carried-light resolve, system-reaction bindings, weapon attachment, host registration, dynamic-light absorb | Registry | — | M | After S13 | Level | ≈ 0.3 m | ≈ 0.3 m |
@@ -137,7 +137,7 @@ Notes on the table:
 - **G1c + G2a shared estimate.** Both maps stream SH and build the same static-WGSL pipeline set (r). Campaign's G1 phase is 131 ms, and the findings put pipelines at 142 of 190 ms of it (75 %, p), so ≈ 100 ms. Compose pipelines: the empty install's compose phase is the clean proxy (43–49 ms m). Total invariant pipelines ≈ 150 ms per install on both maps, plus ≈ 45 ms per unload.
 - **X.2 read/install split.** Measured whole from `[Lightmap streaming] spawn preload: … read in N ms` (51.5 MiB lit, 35.9 MiB camp; range 110–323 ms). The findings' lit perf split was 47 ms reads, 105 ms staging and writes (31 / 69 %, p). §2 uses that split.
 - **S12 level-invariance.** On lit every model is a descriptor preload: seven distinct models, one map entity (m log, r). Camp loads ten: the same seven plus three map-placed. Camp's map-specific share ≈ 196 − 167 ≈ 29 ms first load, ≈ 0 on a change (e, noisy).
-- **Line C labels.** Today's committed line C lumps sprite collections, host registration, camera, fog and sounds into `audio_load` (3.0–3.8 ms m). The in-flight change gives each its own mark.
+- **Line C labels.** The measured session's line C lumped sprite collections, host registration, camera, fog and sounds into `audio_load` (3.0–3.8 ms m). Track C gives each its own mark.
 
 ### 1.4 Work deferred into the first level frame
 
@@ -426,7 +426,7 @@ Run on the owner's Mac from a release build. Bake the maps and model textures as
 - Same-map change (campaign-test, catalog path): `RUST_LOG=info cargo run -p xtask -- run --release -- --mod dev`. Start Campaign Test from the menu, quit to menu, start it again.
 - Different-map change (either map): `cargo run -p xtask -- run --release --features dev-tools -- content/dev/maps/<map>.prl`, then `Alt+Shift+L` loads `combat-demo.prl` (bake it first, `boot_sequence.md` §7). `dev-tools` changes the binary; compare only like with like.
 
-**Log lines to read.** The in-flight change adds the per-mark lines; confirm they are present in the build.
+**Log lines to read.** Track C added the per-mark lines; confirm the build includes it.
 
 - `[Startup] … renderer_full_init_complete=…, boot_worker_dispatch=…` (line A)
 - `[Startup] mod_init=…` (covers session install + full renderer init + mod init)
@@ -523,7 +523,7 @@ Run on the owner's Mac from a release build. Bake the maps and model textures as
 | Affinity of G1b `sparse_compose_capacity` (≈ 60 ms lit) | Its body under `crates/renderer/src/render/sh_streaming/`: does it touch `device`/`queue`, or only manifest data? |
 | Section decode order inside W4, which sets when A items could start | `load_prl_from_container` |
 | Whether built-in classname handlers or the data script add mesh models a placements × descriptors prediction would miss | Built-in handlers' `MeshComponent` inserts; `distinct_mesh_models` |
-| Post-B in-app parse and post-C model sweep | First measurement with the in-flight marks |
+| Post-B in-app parse and post-C model sweep beyond one first load each | Interleaved runs with the Track C marks |
 | Read vs install split of X.2 after Track A | A mark between the spawn preload's read and its renderer drain |
 | Peak memory | §5 #8 |
 | Metal pipeline compile timing | §5 #1 and #5 |

@@ -14,7 +14,7 @@ A requested capability, raised by the owner. Menus need timed beats: a click tha
 - **Re-fire and caps follow E18.** Each clock holds at most one pending tail per reaction body. A re-fire parked at an interruptible UI wait restarts from the top; parked at an uninterruptible one it is ignored, so a second Quit press cannot quit twice. The instance and chain-depth caps apply per session (E18 O6, O7, O10, O28).
 - **A UI tail runs session-scoped steps only.** Between a `uiWait` and the next wait of either kind, a body may hold system steps, `fire`, `wait` and `uiWait`. Install drops a reaction with a member, group or subject-token step there, naming it and the step and pointing to `wait`, because those steps address a level and the UI clock outlives it. E18 V4a and V4b treat a `uiWait` as a wait; V2, V3 and V5 concern trigger-cancelled waits and ignore it.
 - **A wait changes when a step lands, never where.** The UI clock runs on host and clients alike. A step after a `uiWait` lands on the machines it would land on with the wait removed, game-flow verbs included (`drafts/reaction-body-composition`). Where `E16--player-events` lands, its install rejection of machine-local effects it cannot forward covers `uiWait`.
-- **Reduce motion collapses decorative waits only.** `decorative: true` marks a pause that only paces motion; with reduce motion on it collapses, so the steps after it apply in the frame of the steps before it, a parked one included (`player_options.md` §5). Every other `uiWait` keeps its duration, because shortening a click's ring-out or a line's reading time changes behavior, not motion. The App applies the switch at the UI drain; no simulation code reads it (`ui.md` §3).
+- **Reduce motion collapses UI waits unless marked functional.** A `uiWait` is decorative by default: with reduce motion on it collapses, so the steps after it apply in the frame of the steps before it, a parked one included (`player_options.md` §5). `decorative: false` opts a pause out — a click's ring-out, a line's reading time — because shortening it changes behavior, not motion. Menu choreography is mostly motion, so the common case needs no option. The App applies the switch at the UI drain; no simulation code reads it (`ui.md` §3).
 - **A level `wait` needs a level.** Reached with no level installed, it parks nothing and warns once per reaction, naming it and `uiWait`; that closes the frontend defect above. The client warn-once in `reaction-body-composition` names `uiWait` too.
 - **Durations** must be finite and positive; install drops the reaction otherwise, naming it, in both runtimes (E18 V1).
 - **Placement.** A session-owned UI scheduler sits beside the level scheduler in sim scripting systems; the App advances and drains it; the builder ships in both SDKs; checks join install Pass A. Builds on `reaction-body-composition` (system steps, array bodies). Net wire unchanged.
@@ -29,19 +29,19 @@ import { openMenu, playSound, returnToFrontend, ui, uiWait } from "postretro/ui"
 // closing the menu mid-wait still quits, and a second press is ignored.
 export const quitToMenu = defineReaction("pause.quitToMenu", [
   playSound("ui/confirm"),
-  uiWait(300),
+  uiWait(300, { decorative: false }),  // the ring-out is functional
   returnToFrontend(),
 ]);
 
-// A staged briefing. Each line holds long enough to read; reduce motion never
-// shortens it. Interruptible: the wait belongs to the briefing, now on top, so
+// A staged briefing. Each line holds long enough to read, so reduce motion
+// never shortens it. Interruptible: the wait belongs to the briefing, now on top, so
 // closing the briefing cancels the remaining lines.
 export const briefingLines = ui.createLocalState({ line: 1 }); // spliced into the briefing tree
 export const showBriefing = defineReaction("hub.showBriefing", [
   openMenu("hub.briefing"),
-  uiWait(1500, { interruptible: true }),
+  uiWait(1500, { interruptible: true, decorative: false }),
   briefingLines.cells.line.set(2),
-  uiWait(1500, { interruptible: true }),
+  uiWait(1500, { interruptible: true, decorative: false }),
   briefingLines.cells.line.set(3),
 ]);
 
@@ -51,13 +51,13 @@ export const cascade = ui.createLocalState({ shown: 0 }); // spliced into the le
 export const openLevelSelect = defineReaction("title.openLevelSelect", [
   openMenu("title.levelSelect"),
   cascade.cells.shown.set(1),
-  uiWait(80, { decorative: true }),
+  uiWait(80),
   cascade.cells.shown.set(2),
-  uiWait(80, { decorative: true }),
+  uiWait(80),
   cascade.cells.shown.set(3),
 ]);
 ```
-Luau mirrors it: `UI.uiWait(1500, { interruptible = true })`; omitted options emit `false`.
+Luau mirrors it: `UI.uiWait(1500, { interruptible = true, decorative = false })`; an omitted `interruptible` emits `false` and an omitted `decorative` emits `true`.
 
 ## Acceptance
 ### Automated
@@ -72,7 +72,7 @@ Luau mirrors it: `UI.uiWait(1500, { interruptible = true })`; omitted options em
 - [ ] Hot reload: a committed staged reload drops parked UI tails with one warning naming the count, with and without a level; after a failed one they land.
 - [ ] Suspend: a parked tail survives suspend and resume and lands after its remaining time.
 - [ ] Two on one frame: tails of two reactions due on one frame land in press order; two presses of one uninterruptible reaction in one frame leave one tail.
-- [ ] Reduce motion on: steps after `uiWait(80, { decorative: true })` apply in the press frame in authored order, while a plain `uiWait(80)` still waits. Turning it on lands a parked decorative tail at the next UI drain and leaves a functional one. Off, both wait.
+- [ ] Reduce motion on: steps after a plain `uiWait(80)` apply in the press frame in authored order, while `uiWait(80, { decorative: false })` still waits. Turning it on lands a parked decorative tail at the next UI drain and leaves a functional one. Off, both wait.
 - [ ] Install, both runtimes: a member, group or subject-token step after a `uiWait` drops the reaction, naming it and the step; after a later `wait` in the same body it installs and lands on ticks. `at: on.emitter` or a dispatch input after a `uiWait` drops the reaction; before it, the reaction installs.
 - [ ] An interruptible `uiWait` in a UI-fired reaction with no trigger binding installs. Reached with no pushed tree, it runs uninterruptible and warns once naming the reaction. A trigger Exit never cancels a UI tail.
 - [ ] Trigger-bound `[updateState(alarm, 1), uiWait(300), playSound(x)]` writes `alarm` in the firing tick and plays `x` 300 ms of UI clock later.
@@ -100,7 +100,7 @@ Both runtimes ship every row.
 |---|---|---|---|---|---|
 | UI wait step | `uiWait` control primitive on the sequence registry; session UI scheduler | sequence entry `{ id: "@wait", primitive: "uiWait", args: { durationMs, interruptible, decorative } }` | `uiWait(durationMs: number, opts?: { interruptible?: boolean; decorative?: boolean }): SequenceStep[]` from `postretro/ui` | `UI.uiWait(durationMs, opts?)` | n/a |
 | `interruptible` | bool, default false | `"interruptible"`, always emitted | `interruptible` | `interruptible` | n/a |
-| `decorative` | bool, default false | `"decorative"`, always emitted | `decorative` | `decorative` | n/a |
+| `decorative` | bool, default true | `"decorative"`, always emitted | `decorative` | `decorative` | n/a |
 
 ## Wire format
 Manifest JSON only; the net wire does not change.

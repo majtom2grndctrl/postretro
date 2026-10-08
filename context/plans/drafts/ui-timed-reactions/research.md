@@ -79,7 +79,8 @@ The cap equals the tick accumulator's cap. The clock advances on Loading frames 
 |---|---|---|---|---|
 | Never collapse | kept | kept | still staggers (rows snap, timing stays) | Rival: safe, under-serves the switch |
 | Always collapse | cut | dumps every line | instant | Rejected: changes behavior, not motion |
-| Functional default, `decorative` opts in (chosen) | kept | kept | instant | Chosen: the forgotten flag degrades mildly |
+| Functional default, `decorative` opts in | kept | kept | instant | Rival: a forgotten flag leaves a cascade staggering |
+| Decorative default, `decorative: false` opts out (chosen, owner ruling) | kept when marked | kept when marked | instant | Chosen: menu choreography is mostly motion, so the common case needs no option; a forgotten opt-out cuts a ring-out or reading time for reduce-motion players only |
 
 WCAG 2.3.3 (animation from interactions) concerns motion, not delay. A collapsed wait behaves as if absent; a parked decorative tail lands at the next UI drain when the switch turns on, as a running tween snaps (`ui.md` §3).
 

@@ -4,7 +4,7 @@ local damagePresser = Postretro.defineReaction("fixture.presser.damage", functio
   return on.activators:damage(25)
 end)
 local disarmPlate = Postretro.defineReaction("fixture.presser.disarm", function(on)
-  return { sequence = on.trigger:disarm() }
+  return on.trigger:disarm()
 end)
 
 function setupLevel(_ctx)

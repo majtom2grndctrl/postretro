@@ -493,50 +493,75 @@ fn same_reaction_from_mod_global_and_level_member_on_one_volume_binds_once_with_
     assert_eq!(world.visit(10.0).0, vec![enter(sibling, &["reveal"])]);
 }
 
-// T8: `on.trigger.disarm()` / `on.trigger.arm()` lower to `@trigger` sequence
-// steps. Bound through member events on two volumes sharing a tag, the token
-// resolves to the volume that fired: entering one disarms it and leaves its
-// sibling armed, and leaving it re-arms it.
+// T8: `on.trigger.disarm()` / `on.trigger.arm()` lower to one
+// `{ primitive, target: "@trigger", args }` descriptor, used as a reaction body
+// or a sequence entry; the raw `id: "@trigger"` step is the same wire. Bound
+// through member events on two volumes sharing a tag, each form resolves to the
+// volume that fired: entering one disarms it and leaves its sibling armed, and
+// leaving it re-arms it.
 #[test]
 fn on_trigger_disarm_and_arm_target_the_volume_that_fired_through_member_events() {
-    let mut world = World::new();
-    let plate = world.volume("plate", &["plate"], 0.0, TriggerFireMode::Multiple, "");
-    let sibling = world.volume("sibling", &["plate"], 10.0, TriggerFireMode::Multiple, "");
-    let logs = world.install(
-        "({})",
-        r#"({
-            reactions: [
-                { name: "shut", sequence: [{ id: "@trigger", primitive: "disarmTrigger", args: {} }] },
-                { name: "reopen", sequence: [{ id: "@trigger", primitive: "armTrigger", args: {} }] },
-            ],
-            triggerEvents: [
-                { trigger: ID_PLATE, event: "enter", fire: ["shut"] },
-                { trigger: ID_PLATE, event: "exit", fire: ["reopen"] },
-                { trigger: ID_SIBLING, event: "enter", fire: ["shut"] },
-                { trigger: ID_SIBLING, event: "exit", fire: ["reopen"] },
-            ],
-        })"#,
-        &[],
-    );
-    assert!(warnings(&logs).is_empty(), "{logs:?}");
+    for (form, reactions) in [
+        (
+            "body and sequence entry",
+            r#"{ name: "shut", primitive: "disarmTrigger", target: "@trigger", args: {} },
+               { name: "reopen", sequence: [{ primitive: "armTrigger", target: "@trigger", args: {} }] },"#,
+        ),
+        (
+            "raw id sentinel",
+            r#"{ name: "shut", sequence: [{ id: "@trigger", primitive: "disarmTrigger", args: {} }] },
+               { name: "reopen", sequence: [{ id: "@trigger", primitive: "armTrigger", args: {} }] },"#,
+        ),
+    ] {
+        let mut world = World::new();
+        let plate = world.volume("plate", &["plate"], 0.0, TriggerFireMode::Multiple, "");
+        let sibling = world.volume("sibling", &["plate"], 10.0, TriggerFireMode::Multiple, "");
+        let logs = world.install(
+            "({})",
+            &format!(
+                r#"({{
+                    reactions: [{reactions}],
+                    triggerEvents: [
+                        {{ trigger: ID_PLATE, event: "enter", fire: ["shut"] }},
+                        {{ trigger: ID_PLATE, event: "exit", fire: ["reopen"] }},
+                        {{ trigger: ID_SIBLING, event: "enter", fire: ["shut"] }},
+                        {{ trigger: ID_SIBLING, event: "exit", fire: ["reopen"] }},
+                    ],
+                }})"#
+            ),
+            &[],
+        );
+        assert!(warnings(&logs).is_empty(), "{form}: {logs:?}");
 
-    let entered = world.step_to(Vec3::new(0.0, 1.0, 0.0));
-    assert_eq!(entered.len(), 1);
-    assert_eq!((entered[0].trigger, entered[0].commands), (plate, 1));
-    assert!(!world.armed(plate), "the volume that fired is disarmed");
-    assert!(
-        world.armed(sibling),
-        "its sibling with the same tag stays armed"
-    );
+        let entered = world.step_to(Vec3::new(0.0, 1.0, 0.0));
+        assert_eq!(entered.len(), 1, "{form}");
+        assert_eq!(
+            (entered[0].trigger, entered[0].commands),
+            (plate, 1),
+            "{form}"
+        );
+        assert!(
+            !world.armed(plate),
+            "{form}: the volume that fired is disarmed"
+        );
+        assert!(
+            world.armed(sibling),
+            "{form}: its sibling with the same tag stays armed"
+        );
 
-    let left = world.step_to(OUTSIDE);
-    assert_eq!(left.len(), 1);
-    assert_eq!(
-        (left[0].trigger, left[0].edge, left[0].commands),
-        (plate, TriggerEventEdge::Exit, 1)
-    );
-    assert!(world.armed(plate), "leaving re-arms the volume that fired");
-    assert!(world.armed(sibling));
+        let left = world.step_to(OUTSIDE);
+        assert_eq!(left.len(), 1, "{form}");
+        assert_eq!(
+            (left[0].trigger, left[0].edge, left[0].commands),
+            (plate, TriggerEventEdge::Exit, 1),
+            "{form}"
+        );
+        assert!(
+            world.armed(plate),
+            "{form}: leaving re-arms the volume that fired"
+        );
+        assert!(world.armed(sibling), "{form}");
+    }
 }
 
 // T6 (research A10, sim half): a mod hot reload replaces the mod-global rules

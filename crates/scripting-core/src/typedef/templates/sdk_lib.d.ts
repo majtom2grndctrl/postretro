@@ -121,27 +121,27 @@
     progress: { tag: string; at: number; fire: string };
   };
 
-  /** Primitive reaction body: invokes the named Rust primitive. A group command (`npcs(...)`, `players()`) carries `kind` and an optional `tag` filter; a subject-token command (`on.activators`) carries `target: "@activators"`. A raw descriptor with only a non-empty `tag` resolves over every entity carrying it — the form for fog, emitter and animation primitives (`setFogScatter`, `setEmitterRate`, `setAnimationState`), which have no typed builder. True system reactions carry neither and enqueue typed engine commands such as `playSound`, `rumble`, `flashScreen`, and the UI-stack reactions. `args` carries the primitive's typed payload (e.g. `{ rate: 0 }` for `setEmitterRate`, `{ sound: "alarm" }` for `playSound`). */
+  /** Primitive reaction body: invokes the named Rust primitive. A group command (`npcs(...)`, `players()`) carries `kind` and an optional `tag` filter; a subject-token command (`on.activators`, `on.trigger`) carries `target: "@activators"` or `target: "@trigger"`. A raw descriptor with only a non-empty `tag` resolves over every entity carrying it — the form for fog, emitter and animation primitives (`setFogScatter`, `setEmitterRate`, `setAnimationState`), which have no typed builder. True system reactions carry neither and enqueue typed engine commands such as `playSound`, `rumble`, `flashScreen`, and the UI-stack reactions. `args` carries the primitive's typed payload (e.g. `{ rate: 0 }` for `setEmitterRate`, `{ sound: "alarm" }` for `playSound`). */
   export type PrimitiveReactionDescriptor = {
     primitive: string;
     kind?: GroupKind;
     tag?: string;
-    target?: "@activators";
+    target?: SubjectTokenTarget;
     args?: Record<string, unknown>;
     onComplete?: string;
   };
 
-  /** Trigger primitive `armTrigger` takes no payload; its target is the step's id (a trigger member or `@trigger`), or a raw descriptor's `tag`. */
+  /** Trigger primitive `armTrigger` takes no payload; its target is a trigger member's id, `@trigger` (`on.trigger`), or a raw descriptor's `tag`. */
   export interface ArmTriggerArgs {
     readonly [key: string]: never;
   }
 
-  /** Trigger primitive `disarmTrigger` takes no payload; its target is the step's id (a trigger member or `@trigger`), or a raw descriptor's `tag`. */
+  /** Trigger primitive `disarmTrigger` takes no payload; its target is a trigger member's id, `@trigger` (`on.trigger`), or a raw descriptor's `tag`. */
   export interface DisarmTriggerArgs {
     readonly [key: string]: never;
   }
 
-  /** One step in a `sequence` reaction body: invokes the named sequenced primitive against the given entity with `args`. A member step targets a single `EntityId`; a group command (`GroupCommand`) resolves its group when it runs. */
+  /** One step in a `sequence` reaction body: invokes the named sequenced primitive against the given entity with `args`. A member step targets a single `EntityId`; a group command (`GroupCommand`) resolves its group when it runs; a subject-token command (`SubjectTokenCommand`) addresses the fire's subject and is legal only before any `wait`. */
   export type SetLightAnimationStep = {
     id: EntityId;
     primitive: "setLightAnimation";
@@ -248,10 +248,11 @@
     | DisarmTriggerStep
     | SpawnFromSpawnerStep
     | GroupCommand
+    | SubjectTokenCommand
     | WaitStep
     | FireStep;
 
-  /** Sequence reaction body: ordered member, group and control steps. Steps begin in array order; `fire` queues a named dispatch, while `wait` stops the current drain and resumes the remaining tail after its delay. */
+  /** Sequence reaction body: ordered member, group, subject-token and control steps. Steps begin in array order; `fire` queues a named dispatch, while `wait` stops the current drain and resumes the remaining tail after its delay. */
   export type SequenceReactionDescriptor = {
     sequence: SequenceStep[];
   };
@@ -273,21 +274,21 @@
   export interface ActivatorsTarget {
     readonly [activatorsTargetBrand]: true;
     /** Damage this fire's activators by a finite, non-negative amount. */
-    damage(amount: number): PrimitiveReactionDescriptor;
+    damage(amount: number): SubjectTokenCommand;
     /** Add health to this fire's activators. */
-    grantHealth(amount: number): PrimitiveReactionDescriptor;
+    grantHealth(amount: number): SubjectTokenCommand;
     /** Add `amount` to this fire's activators' named ammo-reserve pool. */
-    grantAmmo(type: string, amount: number): PrimitiveReactionDescriptor;
+    grantAmmo(type: string, amount: number): SubjectTokenCommand;
     /** Add `delta` to this fire's activators' value of a per-owner numeric slot. */
-    addSlot(slot: StateRef<number>, delta: number): PrimitiveReactionDescriptor;
+    addSlot(slot: StateRef<number>, delta: number): SubjectTokenCommand;
   }
   /** The trigger volume that fired the current edge (`on.trigger`). Legal only before any `wait`. */
   export interface TriggerTarget {
     readonly [triggerTargetBrand]: true;
     /** Arm the volume that fired and clear its once/rearm state. */
-    arm(): SequenceStep[];
+    arm(): SubjectTokenCommand;
     /** Disarm the volume that fired. */
-    disarm(): SequenceStep[];
+    disarm(): SubjectTokenCommand;
   }
   export type TriggerEventParams = Readonly<{ activators: ActivatorsTarget; trigger: TriggerTarget; occupancy: RuntimeRead }>;
   const emitterTargetBrand: unique symbol;
@@ -528,6 +529,10 @@
   export type GroupKind = "npc" | "player";
   /** One group command: a primitive descriptor carrying `kind` (and an optional `tag` filter) instead of a target. Legal both as a reaction body and directly as a sequence entry; the group resolves when the command takes effect, so NPCs spawned or players joined before then are included. */
   export type GroupCommand = { primitive: string; kind: GroupKind; tag?: string; args: Record<string, unknown> };
+  /** The subject a token command addresses: this fire's activators or the volume that fired. */
+  export type SubjectTokenTarget = "@activators" | "@trigger";
+  /** One subject-token command (`on.activators`, `on.trigger`): a primitive descriptor whose `target` names the fire's subject. Legal both as a reaction body and directly as a sequence entry, but only before any `wait`, because the fire context does not survive one. */
+  export type SubjectTokenCommand = { primitive: string; target: SubjectTokenTarget; args: Record<string, unknown> };
   /** Selects the NPCs a group command reaches. Omit `tag` for every NPC. */
   export type NpcGroupFilter = { tag?: string };
   /** Typed, additive partial for NPC state updates. */

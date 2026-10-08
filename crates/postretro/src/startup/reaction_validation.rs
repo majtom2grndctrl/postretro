@@ -1731,16 +1731,45 @@ mod tests {
         );
     }
 
-    // Q3 (A7), through the real `setupLevel` order — id-step primitive
-    // validation, then Pass A. A subject-token step after a `wait` drops its
-    // reaction with an error naming it (V4a), never as an unnamed unknown
-    // primitive; a players() group step in the same position installs and
-    // lands.
+    /// Bundle `source`, a TypeScript level script importing `"postretro"`,
+    /// through the `scripts-build` library and run its `setupLevel` the way
+    /// level load does, returning the SDK-authored reactions.
+    fn sdk_reactions(source: &str) -> Vec<NamedReaction> {
+        use postretro_level_format::data_script::DataScriptSection;
+        use postretro_scripting_core::primitives_registry::PrimitiveRegistry;
+        use postretro_scripting_core::runtime::{ScriptRuntime, ScriptRuntimeConfig};
+
+        let dir = tempfile::tempdir().expect("script dir");
+        let entry = dir.path().join("level.ts");
+        std::fs::write(&entry, source).expect("level script writes");
+        let bundled =
+            postretro_script_compiler::bundle_entry(&entry).expect("level script bundles");
+        let runtime = ScriptRuntime::new(
+            &PrimitiveRegistry::new(),
+            &ScriptRuntimeConfig::default(),
+            &ScriptCtx::new(),
+        )
+        .expect("script runtime constructs");
+        runtime
+            .run_data_script(
+                &DataScriptSection {
+                    compiled_bytes: bundled.into_bytes(),
+                    source_path: entry.to_string_lossy().into_owned(),
+                },
+                dir.path(),
+            )
+            .reactions
+    }
+
+    // Q3 (A7), SDK-authored, through the real `setupLevel` order — id-step
+    // primitive validation, then Pass A. A subject-token entry after a `wait`
+    // drops its reaction with an error naming it (V4a), never as an unnamed
+    // unknown primitive; the same entry before the `wait` installs, and a
+    // `players()` group entry after the `wait` installs and lands.
     #[test]
     fn subject_token_after_wait_drops_while_a_group_step_after_wait_installs_and_lands() {
         use postretro_entities::components::health::HealthComponent;
         use postretro_entities::data_descriptors::HealthDescriptor;
-        use postretro_entities::{GroupKind, GroupTarget};
         use postretro_scripting_core::reaction_dispatch::{
             fire_named_event_with_sequences, validate_sequence_primitives,
         };
@@ -1752,44 +1781,47 @@ mod tests {
         let mut reaction_registry = ReactionPrimitiveRegistry::new();
         crate::scripting::reactions::registry::register_grant_reactions(&mut reaction_registry);
 
-        let grant = |id: SequenceTarget| SequenceStep {
-            id,
-            primitive: "grantHealth".to_string(),
-            args: json!({ "amount": 5.0 }),
-        };
-        let authored = vec![
-            sequence(
-                "tokenAfterWait",
-                vec![
-                    wait_step(json!(800), false),
-                    grant(SequenceTarget::Activators),
+        let authored = sdk_reactions(
+            r#"
+            import { defineReaction, players, wait, type TriggerEventParams } from "postretro";
+            export function setupLevel() {
+              return {
+                reactions: [
+                  defineReaction("tokenAfterWait", (on: TriggerEventParams) => ({
+                    sequence: [...wait(800), on.activators.grantHealth(5)],
+                  })),
+                  defineReaction("tokenBeforeWait", (on: TriggerEventParams) => ({
+                    sequence: [on.activators.grantHealth(5), on.trigger.disarm(), ...wait(800)],
+                  })),
+                  defineReaction("groupAfterWait", {
+                    sequence: [...wait(800), players().grantHealth(5)],
+                  }),
                 ],
-            ),
-            sequence(
-                "groupAfterWait",
-                vec![
-                    wait_step(json!(800), false),
-                    grant(SequenceTarget::Group(GroupTarget {
-                        kind: GroupKind::Player,
-                        tag: None,
-                    })),
-                ],
-            ),
-        ];
+              };
+            }
+            "#,
+        );
+        assert_eq!(
+            authored.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(),
+            ["tokenAfterWait", "tokenBeforeWait", "groupAfterWait"],
+            "every SDK-authored reaction parses"
+        );
 
         let capture = LogCapture::start();
         let installed = validate_sequence_primitives(authored, &sequence_registry);
         assert_eq!(
             installed.len(),
-            2,
-            "neither step is an unknown id-step primitive"
+            3,
+            "no step is an unknown id-step primitive"
         );
         let ctx = ctx_with_reactions(installed);
         validate_reaction_bodies_pass_a(&ctx);
         capture.assert_logged_once(log::Level::Error, "reaction `tokenAfterWait` step 1");
         capture.assert_not_logged(log::Level::Error, "names unknown primitive");
         capture.assert_not_logged(log::Level::Error, "reaction `groupAfterWait`");
+        capture.assert_not_logged(log::Level::Error, "reaction `tokenBeforeWait`");
         assert!(is_dropped(&ctx, "tokenAfterWait"));
+        assert!(!is_dropped(&ctx, "tokenBeforeWait"));
         assert!(!is_dropped(&ctx, "groupAfterWait"));
 
         let pawn = {

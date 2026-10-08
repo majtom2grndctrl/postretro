@@ -1556,3 +1556,160 @@ fn group_kind_rejections_name_the_reaction_in_both_vms() {
     assert_eq!(manifest.reactions[0].name, "ok");
     capture.assert_logged_once(log::Level::Warn, "reaction `badGroup` sequence step 0");
 }
+
+// A subject-token command `{ primitive, target, args }` is one descriptor in
+// both positions: a reaction body keeps `target`, and a sequence entry lowers
+// it to the same token arm the raw `id` sentinel reaches. Both runtimes agree.
+#[test]
+fn subject_token_entries_parse_identically_in_both_vms() {
+    let js = eval_js(
+        r#"({ reactions: [
+            { name: "ambush", sequence: [
+                { primitive: "grantHealth", target: "@activators", args: { amount: 10 } },
+                { primitive: "disarmTrigger", target: "@trigger", args: {} },
+                { id: "@wait", primitive: "wait", args: { durationMs: 800 } },
+            ] },
+            { name: "rearm", primitive: "armTrigger", target: "@trigger", args: {} },
+            { name: "raw", sequence: [{ id: "@trigger", primitive: "disarmTrigger", args: {} }] },
+        ] })"#,
+        |ctx, value| LevelManifest::from_js_value(ctx, value).unwrap(),
+    );
+    let lua = eval_lua(
+        r#"return { reactions = {
+            { name = "ambush", sequence = {
+                { primitive = "grantHealth", target = "@activators", args = { amount = 10 } },
+                { primitive = "disarmTrigger", target = "@trigger", args = {} },
+                { id = "@wait", primitive = "wait", args = { durationMs = 800 } },
+            } },
+            { name = "rearm", primitive = "armTrigger", target = "@trigger", args = {} },
+            { name = "raw", sequence = { { id = "@trigger", primitive = "disarmTrigger", args = {} } } },
+        } }"#,
+        |value| LevelManifest::from_lua_value(value).unwrap(),
+    );
+    assert_eq!(js.reactions, lua.reactions);
+    assert_eq!(js.reactions.len(), 3);
+
+    let ReactionDescriptor::Sequence(steps) = &js.reactions[0].descriptor else {
+        panic!("expected sequence");
+    };
+    let targets: Vec<_> = steps.iter().map(|step| step.id.clone()).collect();
+    assert_eq!(
+        targets,
+        vec![
+            SequenceTarget::Activators,
+            SequenceTarget::FiredTrigger,
+            SequenceTarget::Wait,
+        ]
+    );
+
+    let ReactionDescriptor::Primitive(rearm) = &js.reactions[1].descriptor else {
+        panic!("a token command body stays a primitive");
+    };
+    assert_eq!(rearm.target.as_deref(), Some("@trigger"));
+    assert_eq!(rearm.kind, None);
+    assert_eq!(rearm.tag, None);
+
+    let ReactionDescriptor::Sequence(raw) = &js.reactions[2].descriptor else {
+        panic!("expected sequence");
+    };
+    assert_eq!(
+        raw[0], steps[1],
+        "the raw `id` sentinel and the `target` entry are one step"
+    );
+}
+
+// Both runtimes reject, naming the reaction, a subject-token entry or body that
+// carries `target` beside `id`, `kind` or `tag`, an unknown sentinel, or a verb
+// its subject lacks. The manifest drain skips only that reaction.
+#[test]
+fn subject_token_rejections_name_the_reaction_in_both_vms() {
+    let cases = [
+        (
+            r#"({ name: "bad", sequence: [{ id: 65536, target: "@activators", primitive: "grantHealth", args: { amount: 1 } }] })"#,
+            r#"return { name = "bad", sequence = { { id = 65536, target = "@activators", primitive = "grantHealth", args = { amount = 1 } } } }"#,
+            "reaction `bad` sequence step",
+            "cannot carry both `target` and `id`",
+        ),
+        (
+            r#"({ name: "bad", sequence: [{ id: "@trigger", target: "@trigger", primitive: "armTrigger", args: {} }] })"#,
+            r#"return { name = "bad", sequence = { { id = "@trigger", target = "@trigger", primitive = "armTrigger", args = {} } } }"#,
+            "reaction `bad` sequence step",
+            "cannot carry both `target` and `id`",
+        ),
+        (
+            r#"({ name: "bad", sequence: [{ kind: "player", target: "@activators", primitive: "grantHealth", args: { amount: 1 } }] })"#,
+            r#"return { name = "bad", sequence = { { kind = "player", target = "@activators", primitive = "grantHealth", args = { amount = 1 } } } }"#,
+            "reaction `bad` sequence step",
+            "cannot carry both `target` and `kind`",
+        ),
+        (
+            r#"({ name: "bad", sequence: [{ tag: "x", target: "@activators", primitive: "grantHealth", args: { amount: 1 } }] })"#,
+            r#"return { name = "bad", sequence = { { tag = "x", target = "@activators", primitive = "grantHealth", args = { amount = 1 } } } }"#,
+            "reaction `bad` sequence step",
+            "cannot carry both `target` and `tag`",
+        ),
+        (
+            r#"({ name: "bad", sequence: [{ target: "@wait", primitive: "wait", args: { durationMs: 1 } }] })"#,
+            r#"return { name = "bad", sequence = { { target = "@wait", primitive = "wait", args = { durationMs = 1 } } } }"#,
+            "reaction `bad` sequence step",
+            "`target` must be \"@activators\" or \"@trigger\", got \"@wait\"",
+        ),
+        (
+            r#"({ name: "bad", sequence: [{ target: 7, primitive: "grantHealth", args: { amount: 1 } }] })"#,
+            r#"return { name = "bad", sequence = { { target = 7, primitive = "grantHealth", args = { amount = 1 } } } }"#,
+            "reaction `bad` sequence step",
+            "`target` must be \"@activators\" or \"@trigger\", got a",
+        ),
+        (
+            r#"({ name: "bad", primitive: "applyDamage", target: "@everyone", args: { amount: 1 } })"#,
+            r#"return { name = "bad", primitive = "applyDamage", target = "@everyone", args = { amount = 1 } }"#,
+            "reaction `bad` primitive",
+            "`target` must be \"@activators\" or \"@trigger\", got \"@everyone\"",
+        ),
+        (
+            r#"({ name: "bad", sequence: [{ target: "@activators", primitive: "armTrigger", args: {} }] })"#,
+            r#"return { name = "bad", sequence = { { target = "@activators", primitive = "armTrigger", args = {} } } }"#,
+            "reaction `bad` sequence step",
+            "takes `@trigger`",
+        ),
+        (
+            r#"({ name: "bad", primitive: "applyDamage", target: "@trigger", args: { amount: 1 } })"#,
+            r#"return { name = "bad", primitive = "applyDamage", target = "@trigger", args = { amount = 1 } }"#,
+            "reaction `bad` primitive",
+            "carries only `armTrigger` and `disarmTrigger`",
+        ),
+        (
+            r#"({ name: "bad", sequence: [{ id: "@trigger", primitive: "moverStart", args: {} }] })"#,
+            r#"return { name = "bad", sequence = { { id = "@trigger", primitive = "moverStart", args = {} } } }"#,
+            "reaction `bad` sequence step",
+            "carries only `armTrigger` and `disarmTrigger`",
+        ),
+    ];
+
+    for (js_source, lua_source, site, reason) in cases {
+        let js_error = eval_js(js_source, |ctx, value| {
+            named_reaction_from_js(ctx, value).unwrap_err()
+        });
+        let lua_error = eval_lua(lua_source, |value| {
+            named_reaction_from_lua(value).unwrap_err()
+        });
+        for error in [js_error.to_string(), lua_error.to_string()] {
+            assert!(
+                error.contains(site) && error.contains(reason),
+                "unexpected diagnostic for {js_source}: {error}"
+            );
+        }
+    }
+
+    let capture = postretro_test_log_capture::LogCapture::start();
+    let manifest = eval_js(
+        r#"({ reactions: [
+            { name: "badToken", sequence: [{ id: 65536, target: "@activators", primitive: "grantHealth", args: { amount: 1 } }] },
+            { name: "ok", sequence: [{ target: "@activators", primitive: "grantHealth", args: { amount: 1 } }] },
+        ] })"#,
+        |ctx, value| LevelManifest::from_js_value(ctx, value).unwrap(),
+    );
+    assert_eq!(manifest.reactions.len(), 1);
+    assert_eq!(manifest.reactions[0].name, "ok");
+    capture.assert_logged_once(log::Level::Warn, "reaction `badToken` sequence step 0");
+}

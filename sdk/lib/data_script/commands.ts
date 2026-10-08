@@ -3,7 +3,7 @@
 // verbs its kind supports; a verb builds the closed wire descriptor.
 // See: context/lib/scripting.md §12 (Entity addressing)
 
-import type { PrimitiveReactionDescriptor, SequenceStep, StateRef } from "../data_script";
+import type { StateRef } from "../data_script";
 
 /** Kinds a group command addresses. */
 export type GroupKind = "npc" | "player";
@@ -55,6 +55,21 @@ export interface PlayerGroup {
   addSlot(slot: StateRef<number>, delta: number): GroupCommand;
 }
 
+/** The subject a token command addresses: this fire's activators or the volume that fired. */
+export type SubjectTokenTarget = "@activators" | "@trigger";
+
+/**
+ * One subject-token command: a primitive descriptor whose `target` names the
+ * fire's subject. Like a group command, it is legal both as a reaction body
+ * and directly as a sequence entry — but only before any `wait`, because the
+ * fire context does not survive one.
+ */
+export type SubjectTokenCommand = {
+  primitive: string;
+  target: SubjectTokenTarget;
+  args: Record<string, unknown>;
+};
+
 declare const activatorsTargetBrand: unique symbol;
 declare const triggerTargetBrand: unique symbol;
 
@@ -62,22 +77,22 @@ declare const triggerTargetBrand: unique symbol;
 export interface ActivatorsTarget {
   readonly [activatorsTargetBrand]: true;
   /** Damage this fire's activators. */
-  damage(amount: number): PrimitiveReactionDescriptor;
+  damage(amount: number): SubjectTokenCommand;
   /** Add health to this fire's activators. */
-  grantHealth(amount: number): PrimitiveReactionDescriptor;
+  grantHealth(amount: number): SubjectTokenCommand;
   /** Add to this fire's activators' named ammo-reserve pool. */
-  grantAmmo(type: string, amount: number): PrimitiveReactionDescriptor;
+  grantAmmo(type: string, amount: number): SubjectTokenCommand;
   /** Add `delta` to this fire's activators' value of a per-owner numeric slot. */
-  addSlot(slot: StateRef<number>, delta: number): PrimitiveReactionDescriptor;
+  addSlot(slot: StateRef<number>, delta: number): SubjectTokenCommand;
 }
 
 /** The trigger volume that fired the current edge. Legal only before any `wait`. */
 export interface TriggerTarget {
   readonly [triggerTargetBrand]: true;
   /** Arm the volume that fired and clear its once/rearm state. */
-  arm(): SequenceStep[];
+  arm(): SubjectTokenCommand;
   /** Disarm the volume that fired. */
-  disarm(): SequenceStep[];
+  disarm(): SubjectTokenCommand;
 }
 
 type CommandBuilder<R> = (primitive: string, args: Record<string, unknown>) => R;
@@ -113,17 +128,18 @@ export function players(): PlayerGroup {
   return Object.freeze(playerVerbs(groupCommand("player")));
 }
 
-// Subject tokens lower to the existing sentinel wire: `target: "@activators"`
-// on a primitive body, `id: "@trigger"` on a sequence step.
+// Subject tokens lower to one descriptor, `{ primitive, target, args }`, used
+// unchanged as a reaction body or a sequence entry.
+function tokenCommand(target: SubjectTokenTarget): CommandBuilder<SubjectTokenCommand> {
+  return (primitive, args) => ({ primitive, target, args });
+}
+
 export const ACTIVATORS_TARGET = Object.freeze(
-  playerVerbs<PrimitiveReactionDescriptor>((primitive, args) => ({
-    primitive,
-    target: "@activators",
-    args,
-  })),
+  playerVerbs(tokenCommand("@activators")),
 ) as unknown as ActivatorsTarget;
 
+const triggerCommand = tokenCommand("@trigger");
 export const TRIGGER_TARGET = Object.freeze({
-  arm: (): SequenceStep[] => [{ id: "@trigger", primitive: "armTrigger", args: {} }],
-  disarm: (): SequenceStep[] => [{ id: "@trigger", primitive: "disarmTrigger", args: {} }],
+  arm: () => triggerCommand("armTrigger", {}),
+  disarm: () => triggerCommand("disarmTrigger", {}),
 }) as unknown as TriggerTarget;

@@ -60,6 +60,7 @@ pub(super) fn bind_primitive(
     } else if let Some(sentinel) = primitive.target.as_deref() {
         match sentinel {
             "@activators" => Some(BoundTarget::Activators),
+            "@trigger" => Some(BoundTarget::FiredTrigger),
             spelling => {
                 log::warn!("[Trigger] illegal primitive target sentinel `{spelling}`; not binding");
                 return None;

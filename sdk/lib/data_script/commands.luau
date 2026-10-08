@@ -102,21 +102,23 @@ function CommandsSdk.players(): PlayerGroup
   return opaqueTarget("players()", playerVerbs(groupCommand("player", nil)))
 end
 
--- Subject tokens lower to the existing sentinel wire: `target = "@activators"`
--- on a primitive body, `id = "@trigger"` on a sequence step.
-local ACTIVATORS_TARGET = opaqueTarget(
-  "on.activators",
-  playerVerbs(function(primitive: string, args)
-    return { primitive = primitive, target = "@activators", args = args }
-  end)
-)
+-- Subject tokens lower to one descriptor, `{ primitive, target, args }`, used
+-- unchanged as a reaction body or a sequence entry.
+local function tokenCommand(target: string)
+  return function(primitive: string, args)
+    return { primitive = primitive, target = target, args = args }
+  end
+end
 
+local ACTIVATORS_TARGET = opaqueTarget("on.activators", playerVerbs(tokenCommand("@activators")))
+
+local triggerCommand = tokenCommand("@trigger")
 local TRIGGER_TARGET = opaqueTarget("on.trigger", {
   arm = function(_self)
-    return { { id = "@trigger", primitive = "armTrigger", args = {} } }
+    return triggerCommand("armTrigger", {})
   end,
   disarm = function(_self)
-    return { { id = "@trigger", primitive = "disarmTrigger", args = {} } }
+    return triggerCommand("disarmTrigger", {})
   end,
 })
 

@@ -258,8 +258,8 @@ export type ProgressReactionDescriptor = {
 
 --- Primitive reaction body: invokes the named Rust primitive. A group command
 --- (`npcs(...)`, `players()`) carries `kind` and an optional `tag` filter; a
---- subject-token command (`on.activators`) carries `target = "@activators"`. A
---- raw descriptor with only a non-empty `tag` resolves over every entity
+--- subject-token command (`on.activators`, `on.trigger`) carries `target =
+--- "@activators"` or `target = "@trigger"`. A raw descriptor with only a non-empty `tag` resolves over every entity
 --- carrying it — the form for fog, emitter and animation primitives
 --- (`setFogScatter`, `setEmitterRate`, `setAnimationState`), which have no
 --- typed builder. True system reactions carry neither and enqueue typed engine
@@ -270,17 +270,17 @@ export type PrimitiveReactionDescriptor = {
   primitive: string,
   kind: GroupKind?,
   tag: string?,
-  target: "@activators"?,
+  target: SubjectTokenTarget?,
   args: { [string]: any }?,
   onComplete: string?,
 }
 
---- Trigger primitive `armTrigger` takes no payload; its target is the step's
---- id (a trigger member or `@trigger`), or a raw descriptor's `tag`.
+--- Trigger primitive `armTrigger` takes no payload; its target is a trigger
+--- member's id, `@trigger` (`on.trigger`), or a raw descriptor's `tag`.
 export type ArmTriggerArgs = {}
 
---- Trigger primitive `disarmTrigger` takes no payload; its target is the
---- step's id (a trigger member or `@trigger`), or a raw descriptor's `tag`.
+--- Trigger primitive `disarmTrigger` takes no payload; its target is a trigger
+--- member's id, `@trigger` (`on.trigger`), or a raw descriptor's `tag`.
 export type DisarmTriggerArgs = {}
 
 --- One step in a `sequence` reaction body: invokes the named sequenced
@@ -420,9 +420,10 @@ export type FireStep = {
 
 --- Union of every supported sequence step shape. New sequenced primitives
 --- extend this union.
-export type SequenceStep = SetLightAnimationStep | SetFogDensityStep | SetFogGlowStep | SetFogEdgeSoftnessStep | SetFogFalloffStep | SetFogParamsStep | SetFogAnimationStep | MoverStartStep | MoverStopStep | MoverReverseStep | MoverGoToPathNodeStep | MoverSetSpinRateStep | MoverSetBlockPolicyStep | ArmTriggerStep | DisarmTriggerStep | SpawnFromSpawnerStep | GroupCommand | WaitStep | FireStep
+export type SequenceStep = SetLightAnimationStep | SetFogDensityStep | SetFogGlowStep | SetFogEdgeSoftnessStep | SetFogFalloffStep | SetFogParamsStep | SetFogAnimationStep | MoverStartStep | MoverStopStep | MoverReverseStep | MoverGoToPathNodeStep | MoverSetSpinRateStep | MoverSetBlockPolicyStep | ArmTriggerStep | DisarmTriggerStep | SpawnFromSpawnerStep | GroupCommand | SubjectTokenCommand | WaitStep | FireStep
 
---- Sequence reaction body: ordered member, group and control steps. Steps
+--- Sequence reaction body: ordered member, group, subject-token and control
+--- steps. Steps
 --- begin in array order; `fire` queues a named dispatch,
 --- while `wait` stops the current drain and resumes the remaining tail later.
 export type SequenceReactionDescriptor = {
@@ -433,7 +434,7 @@ export type SequenceReactionDescriptor = {
 --- into the descriptor at the top level so the Rust deserializer reads
 --- both fields from one flat table.
 export type ProgressNamedReactionDescriptor = { name: string, levels: {string}?, progress: { tag: string, at: number, fire: string } }
-export type PrimitiveNamedReactionDescriptor = { name: string, levels: {string}?, primitive: string, kind: GroupKind?, tag: string?, target: "@activators"?, args: { [string]: any }?, onComplete: string? }
+export type PrimitiveNamedReactionDescriptor = { name: string, levels: {string}?, primitive: string, kind: GroupKind?, tag: string?, target: SubjectTokenTarget?, args: { [string]: any }?, onComplete: string? }
 export type SequenceNamedReactionDescriptor = { name: string, levels: {string}?, sequence: {SequenceStep} }
 export type NamedReactionDescriptor = ProgressNamedReactionDescriptor | PrimitiveNamedReactionDescriptor | SequenceNamedReactionDescriptor
 export type CrossingParams = { rising: RuntimeRead }
@@ -442,21 +443,21 @@ export type TickParams = { dt: RuntimeRead }
 --- only before any `wait`. Call its verbs with `:`.
 export type ActivatorsTarget = {
   --- Damage this fire's activators by a finite, non-negative amount.
-  damage: (self: ActivatorsTarget, amount: number) -> PrimitiveReactionDescriptor,
+  damage: (self: ActivatorsTarget, amount: number) -> SubjectTokenCommand,
   --- Add health to this fire's activators.
-  grantHealth: (self: ActivatorsTarget, amount: number) -> PrimitiveReactionDescriptor,
+  grantHealth: (self: ActivatorsTarget, amount: number) -> SubjectTokenCommand,
   --- Add `amount` to this fire's activators' named ammo-reserve pool.
-  grantAmmo: (self: ActivatorsTarget, type: string, amount: number) -> PrimitiveReactionDescriptor,
+  grantAmmo: (self: ActivatorsTarget, type: string, amount: number) -> SubjectTokenCommand,
   --- Add `delta` to this fire's activators' value of a per-owner numeric slot.
-  addSlot: (self: ActivatorsTarget, slot: StateRef<number>, delta: number) -> PrimitiveReactionDescriptor,
+  addSlot: (self: ActivatorsTarget, slot: StateRef<number>, delta: number) -> SubjectTokenCommand,
 }
 --- The trigger volume that fired the current edge (`on.trigger`). Legal only
 --- before any `wait`. Call its verbs with `:`.
 export type TriggerTarget = {
   --- Arm the volume that fired and clear its once/rearm state.
-  arm: (self: TriggerTarget) -> {SequenceStep},
+  arm: (self: TriggerTarget) -> SubjectTokenCommand,
   --- Disarm the volume that fired.
-  disarm: (self: TriggerTarget) -> {SequenceStep},
+  disarm: (self: TriggerTarget) -> SubjectTokenCommand,
 }
 export type TriggerEventParams = { activators: ActivatorsTarget, trigger: TriggerTarget, occupancy: RuntimeRead }
 --- Opaque anchor for where the current named gameplay event happened. Legal
@@ -738,6 +739,13 @@ export type GroupKind = "npc" | "player"
 --- directly as a sequence entry; the group resolves when the command takes
 --- effect, so NPCs spawned or players joined before then are included.
 export type GroupCommand = { primitive: string, kind: GroupKind, tag: string?, args: { [string]: any } }
+--- The subject a token command addresses: this fire's activators or the volume
+--- that fired.
+export type SubjectTokenTarget = "@activators" | "@trigger"
+--- One subject-token command (`on.activators`, `on.trigger`): a primitive
+--- descriptor whose `target` names the fire's subject. Legal both as a reaction
+--- body and directly as a sequence entry, but only before any `wait`.
+export type SubjectTokenCommand = { primitive: string, target: SubjectTokenTarget, args: { [string]: any } }
 --- Selects the NPCs a group command reaches. Omit `tag` for every NPC.
 export type NpcGroupFilter = { tag: string? }
 --- Typed, additive partial for NPC state updates.

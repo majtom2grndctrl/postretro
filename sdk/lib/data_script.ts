@@ -9,7 +9,7 @@ import { numberNode, boolNode, numberRef, boolRef } from "./util/expression_refs
 import type { NumberValue, BoolValue, NumberRef, BoolRef, RuntimeExpressionRefs } from "./util/expression_refs";
 export type { NumberValue, BoolValue, NumberRef, BoolRef, RuntimeExpressionRefs } from "./util/expression_refs";
 import { DISPATCH_PARAMS } from "./data_script/reactions";
-import type { ActivatorsTarget, GroupCommand, TriggerTarget } from "./data_script/commands";
+import type { ActivatorsTarget, GroupCommand, SubjectTokenCommand, TriggerTarget } from "./data_script/commands";
 import type { VolumeTriggerEventDescriptor, TriggerPoolDescriptor } from "./data_script/trigger_events";
 export { defineReaction, scopeReactions, wait, fire } from "./data_script/reactions";
 export { npcs, players } from "./data_script/commands";
@@ -21,6 +21,8 @@ export type {
   NpcGroupFilter,
   NpcStateUpdateArgs,
   PlayerGroup,
+  SubjectTokenCommand,
+  SubjectTokenTarget,
   TriggerTarget,
 } from "./data_script/commands";
 export { defineTriggerEvent, defineTriggerPool } from "./data_script/trigger_events";
@@ -64,19 +66,21 @@ export type ProgressReactionDescriptor = {
   progress: { tag: string; at: number; fire: string };
 };
 
-/** Invokes a named Rust primitive. A group command (`npcs(...)`, `players()`) carries `kind` and an optional `tag` filter; a subject-token command (`on.activators`) carries `target: "@activators"`. A raw descriptor with only a non-empty `tag` resolves over every entity carrying it (fog, emitter and animation primitives have no typed builder). True system reactions carry neither and enqueue typed engine commands such as `playSound`, `rumble`, `flashScreen`, and the UI-stack reactions. `args` carries the primitive's typed payload. */
+/** Invokes a named Rust primitive. A group command (`npcs(...)`, `players()`) carries `kind` and an optional `tag` filter; a subject-token command (`on.activators`, `on.trigger`) carries `target: "@activators"` or `target: "@trigger"`. A raw descriptor with only a non-empty `tag` resolves over every entity carrying it (fog, emitter and animation primitives have no typed builder). True system reactions carry neither and enqueue typed engine commands such as `playSound`, `rumble`, `flashScreen`, and the UI-stack reactions. `args` carries the primitive's typed payload. */
 export type PrimitiveReactionDescriptor = {
   primitive: string;
   kind?: "npc" | "player";
   tag?: string;
-  target?: "@activators";
+  target?: "@activators" | "@trigger";
   args?: Record<string, unknown>;
   onComplete?: string;
 };
 
 /**
  * One step in a `sequence` reaction body. A member step targets a single
- * `EntityId`; a group command (`GroupCommand`) resolves its group when it runs.
+ * `EntityId`; a group command (`GroupCommand`) resolves its group when it runs;
+ * a subject-token command (`SubjectTokenCommand`) addresses the fire's subject
+ * and is legal only before any `wait`.
  */
 export type SetLightAnimationStep = {
   id: import("postretro").EntityId;
@@ -127,10 +131,11 @@ export type SequenceStep =
   | DisarmTriggerStep
   | SpawnFromSpawnerStep
   | GroupCommand
+  | SubjectTokenCommand
   | WaitStep
   | FireStep;
 
-/** Ordered member, group and control steps. Steps begin in
+/** Ordered member, group, subject-token and control steps. Steps begin in
  * array order; `fire` queues a named dispatch, while `wait` stops the current
  * drain and resumes the remaining tail after its delay. */
 export type SequenceReactionDescriptor = {

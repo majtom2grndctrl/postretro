@@ -976,6 +976,23 @@ fn runtime_sequence_step_shape_is_valid(step: &JsonValue) -> bool {
         return false;
     }
 
+    // A subject-token entry `{ primitive, target, args }` (`on.activators`,
+    // `on.trigger` verbs) addresses the fire's subjects: a legal step that
+    // reserves no light slot, so it must not make the caller skip the sequence
+    // (A12). Mirror the runtime parser's rejections — an unknown sentinel, a
+    // `target` beside `id`, `kind` or `tag`, a verb the token lacks.
+    match step.get("target") {
+        None | Some(JsonValue::Null) => {}
+        Some(JsonValue::String(target)) => {
+            let absent = |field: &str| matches!(step.get(field), None | Some(JsonValue::Null));
+            return absent("id")
+                && absent("kind")
+                && absent("tag")
+                && subject_token_carries(target, primitive);
+        }
+        Some(_) => return false,
+    }
+
     // A group entry `{ primitive, kind, tag?, args }` addresses NPCs or
     // players resolved at runtime: it is a legal step that reserves no light
     // slot, so it must not make the caller skip the sequence (A12). Mirror the
@@ -1001,16 +1018,25 @@ fn runtime_sequence_step_shape_is_valid(step: &JsonValue) -> bool {
             // mixes a wait with `setLightAnimation` steps still reserves its
             // light-bake slots (the caller skips the whole sequence on any invalid
             // step). Their args carry no light membership of their own.
-            matches!(
-                target.as_str(),
-                "@activators" | "@trigger" | "@wait" | "@fire"
-            ) && !(target == "@activators" && matches!(primitive, "armTrigger" | "disarmTrigger"))
+            matches!(target.as_str(), "@wait" | "@fire") || subject_token_carries(target, primitive)
         }
         Some(value) => value
             .as_u64()
             .and_then(|id| u32::try_from(id).ok())
             .is_some(),
         None => false,
+    }
+}
+
+/// Whether `target` is a subject token that carries `primitive`: the fired
+/// volume (`@trigger`) only arms and disarms, and the activators never do.
+/// Mirrors the runtime parser's `validate_subject_token_primitive`.
+fn subject_token_carries(target: &str, primitive: &str) -> bool {
+    let arms_a_trigger = matches!(primitive, "armTrigger" | "disarmTrigger");
+    match target {
+        "@activators" => !arms_a_trigger,
+        "@trigger" => arms_a_trigger,
+        _ => false,
     }
 }
 
@@ -1671,6 +1697,108 @@ mod tests {
             malformed_js.is_empty() && malformed_luau.is_empty(),
             "a step runtime rejects keeps the pass skipping its reaction"
         );
+    }
+
+    // A12 for subject tokens: an `on.activators` / `on.trigger` entry beside a
+    // light member step reserves exactly the light step's membership, in both
+    // hosts, whether authored through the SDK verbs or as raw entries. An
+    // entry runtime rejects (`target` beside `id`, or a verb its token lacks)
+    // still makes the pass skip the sequence.
+    #[test]
+    fn subject_token_steps_leave_light_membership_unchanged_in_both_hosts() {
+        let evaluate = |source: &str, path: &str| {
+            emit_light_membership_manifest(source, Path::new(path), Path::new("."), &table())
+                .expect("fixture evaluates")
+                .lights
+        };
+        let quickjs = |steps: &str| {
+            format!(
+                r#"
+                function setupLevel() {{
+                  const light = getMapEntities("light", {{ tag: "wave" }})[0];
+                  return {{ reactions: [
+                    defineReaction("levelLoad", (on) => ({{ sequence: [
+                      {{ id: light.id, primitive: "setLightAnimation", args: {{ startActive: false }} }},
+                      {steps}
+                    ] }})),
+                  ] }};
+                }}
+            "#
+            )
+        };
+        let luau = |steps: &str| {
+            format!(
+                r#"
+                function setupLevel(_)
+                  local light = getMapEntities("light", {{ tag = "wave" }})[1]
+                  return {{ reactions = {{
+                    defineReaction("levelLoad", function(on) return {{ sequence = {{
+                      {{ id = light.id, primitive = "setLightAnimation", args = {{ startActive = false }} }},
+                      {steps}
+                    }} }} end),
+                  }} }}
+                end
+            "#
+            )
+        };
+
+        let baseline_js = evaluate(&quickjs(""), "fixture.ts");
+        let baseline_luau = evaluate(&luau(""), "fixture.luau");
+        assert_eq!(
+            baseline_js.len(),
+            1,
+            "the light step alone reserves its slot"
+        );
+        assert_eq!(baseline_js, baseline_luau);
+
+        let sdk_js = evaluate(
+            &quickjs("on.activators.grantHealth(5), on.trigger.disarm(),"),
+            "fixture.ts",
+        );
+        let sdk_luau = evaluate(
+            &luau("on.activators:grantHealth(5), on.trigger:disarm(),"),
+            "fixture.luau",
+        );
+        assert_eq!(sdk_js, baseline_js);
+        assert_eq!(sdk_luau, baseline_luau);
+
+        let raw_js = evaluate(
+            &quickjs(
+                r#"{ primitive: "grantHealth", target: "@activators", args: { amount: 5 } },
+                   { primitive: "armTrigger", target: "@trigger", args: {} },"#,
+            ),
+            "fixture.ts",
+        );
+        let raw_luau = evaluate(
+            &luau(
+                r#"{ primitive = "grantHealth", target = "@activators", args = { amount = 5 } },
+                   { primitive = "armTrigger", target = "@trigger", args = {} },"#,
+            ),
+            "fixture.luau",
+        );
+        assert_eq!(raw_js, baseline_js);
+        assert_eq!(raw_luau, baseline_luau);
+
+        for (js, lua) in [
+            (
+                r#"{ id: 7, target: "@activators", primitive: "grantHealth", args: { amount: 5 } },"#,
+                r#"{ id = 7, target = "@activators", primitive = "grantHealth", args = { amount = 5 } },"#,
+            ),
+            (
+                r#"{ target: "@trigger", primitive: "applyDamage", args: { amount: 5 } },"#,
+                r#"{ target = "@trigger", primitive = "applyDamage", args = { amount = 5 } },"#,
+            ),
+            (
+                r#"{ target: "@wait", primitive: "wait", args: { durationMs: 5 } },"#,
+                r#"{ target = "@wait", primitive = "wait", args = { durationMs = 5 } },"#,
+            ),
+        ] {
+            assert!(
+                evaluate(&quickjs(js), "fixture.ts").is_empty()
+                    && evaluate(&luau(lua), "fixture.luau").is_empty(),
+                "a step runtime rejects keeps the pass skipping its reaction: {js}"
+            );
+        }
     }
 
     #[test]

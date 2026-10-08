@@ -115,37 +115,29 @@ pub fn primitive_descriptor_from_js<'js>(
     } else {
         None
     };
-    let target = if obj.contains_key("target").map_err(js_err)? {
-        let raw: JsValue = obj.get("target").map_err(js_err)?;
-        if raw.is_null() || raw.is_undefined() {
-            None
-        } else {
-            Some(String::from_js_value_required(raw, "target")?)
-        }
-    } else {
-        None
-    };
-    if target.is_some() && tag.is_some() {
-        return Err(DescriptorError::InvalidShape {
-            reason: "primitive reaction cannot carry both `target` and `tag`".to_string(),
-        });
-    }
-    if target
-        .as_deref()
-        .is_some_and(|target| target != "@activators")
-    {
-        return Err(DescriptorError::InvalidShape {
-            reason: "primitive `target` must be `@activators`".to_string(),
-        });
-    }
     let has_id = {
         let raw: JsValue = obj.get("id").map_err(js_err)?;
         !(raw.is_null() || raw.is_undefined())
     };
+    let authored_kind = authored_text_js(obj, "kind")?;
+    let token = validate_authored_subject_token(
+        reaction,
+        "primitive",
+        authored_text_js(obj, "target")?,
+        has_id,
+        !matches!(authored_kind, AuthoredText::Absent),
+        tag.is_some(),
+    )
+    .map_err(|reason| DescriptorError::InvalidShape { reason })?;
+    if let Some(token) = token {
+        validate_subject_token_primitive(reaction, "primitive", token, &primitive)
+            .map_err(|reason| DescriptorError::InvalidShape { reason })?;
+    }
+    let target = token.map(|token| token.as_wire().to_string());
     let kind = validate_authored_group_kind(
         reaction,
         "primitive",
-        authored_kind_js(obj)?,
+        authored_kind,
         has_id,
         target.is_some(),
     )
@@ -285,20 +277,31 @@ pub fn sequence_steps_from_js<'js>(
         let obj = Object::from_value(item).map_err(|_| DescriptorError::InvalidSequenceShape {
             reason: format!("step {i} must be an object"),
         })?;
+        let site = format!("sequence step {i}");
         let id_value: JsValue = obj.get("id").map_err(js_err)?;
-        let kind = validate_authored_group_kind(
+        let has_id = !(id_value.is_null() || id_value.is_undefined());
+        let authored_kind = authored_text_js(&obj, "kind")?;
+        // A subject-token verb's `{ primitive, target, args }` is the same
+        // descriptor as its reaction body, so the entry shares that check.
+        let token = validate_authored_subject_token(
             reaction,
-            &format!("sequence step {i}"),
-            authored_kind_js(&obj)?,
-            !(id_value.is_null() || id_value.is_undefined()),
-            false,
+            &site,
+            authored_text_js(&obj, "target")?,
+            has_id,
+            !matches!(authored_kind, AuthoredText::Absent),
+            !matches!(authored_text_js(&obj, "tag")?, AuthoredText::Absent),
         )
         .map_err(|reason| DescriptorError::InvalidSequenceShape { reason })?;
+        let kind =
+            validate_authored_group_kind(reaction, &site, authored_kind, has_id, token.is_some())
+                .map_err(|reason| DescriptorError::InvalidSequenceShape { reason })?;
         let id = if let Some(kind) = kind {
             SequenceTarget::Group(GroupTarget {
                 kind,
                 tag: optional_string_js(&obj, "tag")?,
             })
+        } else if let Some(token) = token {
+            token.sequence_target()
         } else if let Some(value) = id_value.as_string() {
             match value.to_string().map_err(js_err)?.as_str() {
                 "@activators" => SequenceTarget::Activators,
@@ -317,14 +320,9 @@ pub fn sequence_steps_from_js<'js>(
         let primitive = get_required_string_js(&obj, "primitive")?;
         let primitive = validate_primitive_name(primitive)?;
         validate_control_step_pair(i, &id, &primitive)?;
-        if matches!(id, SequenceTarget::Activators)
-            && matches!(primitive.as_str(), "armTrigger" | "disarmTrigger")
-        {
-            return Err(DescriptorError::InvalidSequenceShape {
-                reason: format!(
-                    "step {i} primitive `{primitive}` requires an entity id or `@trigger`, not `@activators`"
-                ),
-            });
+        if let Some(token) = SubjectToken::of_sequence_target(&id) {
+            validate_subject_token_primitive(reaction, &site, token, &primitive)
+                .map_err(|reason| DescriptorError::InvalidSequenceShape { reason })?;
         }
         let args = if obj.contains_key("args").map_err(js_err)? {
             let raw: JsValue = obj.get("args").map_err(js_err)?;
@@ -371,16 +369,20 @@ fn validate_control_step_pair(
     }
 }
 
-/// Lower an authored `kind` for the shared group-target validator. `null` and
-/// `undefined` read as absent, matching the other optional descriptor fields.
-fn authored_kind_js<'js>(obj: &Object<'js>) -> Result<AuthoredKind, DescriptorError> {
-    let raw: JsValue = obj.get("kind").map_err(js_err)?;
+/// Lower an authored optional string field (`kind`, `target`, `tag`) for the
+/// shared addressing validators. `null` and `undefined` read as absent,
+/// matching the other optional descriptor fields.
+fn authored_text_js<'js>(
+    obj: &Object<'js>,
+    field: &'static str,
+) -> Result<AuthoredText, DescriptorError> {
+    let raw: JsValue = obj.get(field).map_err(js_err)?;
     if raw.is_null() || raw.is_undefined() {
-        return Ok(AuthoredKind::Absent);
+        return Ok(AuthoredText::Absent);
     }
     match raw.as_string() {
-        Some(value) => Ok(AuthoredKind::Text(value.to_string().map_err(js_err)?)),
-        None => Ok(AuthoredKind::NonString(raw.type_name().to_string())),
+        Some(value) => Ok(AuthoredText::Text(value.to_string().map_err(js_err)?)),
+        None => Ok(AuthoredText::NonString(raw.type_name().to_string())),
     }
 }
 

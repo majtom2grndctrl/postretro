@@ -21,8 +21,11 @@ use postretro_foundation::{
     AirParams, CapsuleParams, FallParams, GroundParams, PlayerMovementComponent,
     PlayerMovementDescriptor, Seat, SpeedParams,
 };
+use postretro_level_format::data_script::DataScriptSection;
 use postretro_scripting_core::data_descriptors::LevelManifest;
 use postretro_scripting_core::data_registry::DataRegistry;
+use postretro_scripting_core::primitives_registry::PrimitiveRegistry;
+use postretro_scripting_core::runtime::{ScriptRuntime, ScriptRuntimeConfig};
 use postretro_test_log_capture::{CapturedRecord, LogCapture};
 
 use super::{BoundTriggerCommandKind, TriggerBindingTable};
@@ -89,7 +92,16 @@ impl Level {
         spawn_context: SpawnContext,
     ) -> Vec<CapturedRecord> {
         let manifest_js = manifest_js.replace("PLATE_ID", &self.plate.to_raw().to_string());
-        let manifest = parse_manifest(&manifest_js);
+        self.install_manifest(parse_manifest(&manifest_js), spawn_context)
+    }
+
+    /// Install an already-evaluated manifest — the SDK-authored path, where
+    /// `sdk_manifest` ran a real level script.
+    fn install_manifest(
+        &mut self,
+        manifest: LevelManifest,
+        spawn_context: SpawnContext,
+    ) -> Vec<CapturedRecord> {
         let mut data = DataRegistry::new();
         data.populate_level_with_trigger_events(
             manifest.reactions,
@@ -234,6 +246,29 @@ impl Level {
             .unwrap()
             .armed
     }
+}
+
+/// Bundle `source`, a TypeScript level script importing `"postretro"`, through
+/// the `scripts-build` library and run its `setupLevel` the way level load
+/// does, so a test installs exactly the wire the SDK emits.
+fn sdk_manifest(source: &str) -> LevelManifest {
+    let dir = tempfile::tempdir().expect("script dir");
+    let entry = dir.path().join("level.ts");
+    std::fs::write(&entry, source).expect("level script writes");
+    let bundled = postretro_script_compiler::bundle_entry(&entry).expect("level script bundles");
+    let runtime = ScriptRuntime::new(
+        &PrimitiveRegistry::new(),
+        &ScriptRuntimeConfig::default(),
+        &ScriptCtx::new(),
+    )
+    .expect("script runtime constructs");
+    runtime.run_data_script(
+        &DataScriptSection {
+            compiled_bytes: bundled.into_bytes(),
+            source_path: entry.to_string_lossy().into_owned(),
+        },
+        dir.path(),
+    )
 }
 
 pub(super) fn parse_manifest(manifest_js: &str) -> LevelManifest {
@@ -575,6 +610,65 @@ fn trigger_fired_sequence_applies_activator_and_group_steps_before_the_wait_in_t
     // The reverse order would leave 85.
     assert_eq!(level.health(pawn), 80.0);
     assert_eq!(level.health(npc), START_HEALTH - 5.0);
+    assert!(entered.residual_fired, "the wait tail drains at frame end");
+}
+
+// Q5 through the SDK-authored form: subject-token and group commands are
+// unspread sequence entries, and those before the wait apply inside the
+// trigger's tick in authored order — `on.trigger.disarm()` included; the tail
+// waits for the frame-end drain.
+#[test]
+fn sdk_authored_token_and_group_entries_before_the_wait_apply_in_the_trigger_tick() {
+    let mut level = Level::new();
+    let pawn = level.spawn_pawn(&[]);
+    level.registry.mark_local_player_pawn(pawn).unwrap();
+    level.set_health(pawn, 95.0);
+    let npc = level.spawn_npc(&["guard"]);
+
+    let manifest = sdk_manifest(&format!(
+        r#"
+        import {{ defineReaction, npcs, players, wait, type TriggerEventParams }} from "postretro";
+        const ambush = defineReaction("ambush", (on: TriggerEventParams) => ({{
+          sequence: [
+            on.activators.grantHealth(10),
+            players().damage(20),
+            npcs({{ tag: "guard" }}).damage(5),
+            on.trigger.disarm(),
+            ...wait(800),
+            players().grantHealth(50),
+          ],
+        }}));
+        export function setupLevel() {{
+          return {{
+            reactions: [ambush],
+            triggerEvents: [{{ trigger: {plate}, event: "enter", fire: [ambush.name] }}],
+          }};
+        }}
+        "#,
+        plate = level.plate.to_raw(),
+    ));
+    assert_eq!(manifest.reactions.len(), 1, "the SDK sequence installs");
+    let logs = level.install_manifest(manifest, SpawnContext::default());
+    assert!(warnings(&logs).is_empty(), "{logs:?}");
+
+    level.move_to(pawn, INSIDE);
+    let entered = level.tick(&[local(pawn)]);
+    assert_eq!(
+        entered.commands,
+        vec![
+            BoundTriggerCommandKind::GrantHealth,
+            BoundTriggerCommandKind::Damage,
+            BoundTriggerCommandKind::Damage,
+            BoundTriggerCommandKind::Disarm,
+        ]
+    );
+    // Authored order: heal clamps at 100, then the group hit lands (80).
+    assert_eq!(level.health(pawn), 80.0);
+    assert_eq!(level.health(npc), START_HEALTH - 5.0);
+    assert!(
+        !level.armed(level.plate),
+        "`on.trigger` disarms the volume that fired"
+    );
     assert!(entered.residual_fired, "the wait tail drains at frame end");
 }
 

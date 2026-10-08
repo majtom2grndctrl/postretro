@@ -424,8 +424,8 @@ mod tests {
     use postretro_entities::components::light::{FalloffKind, LightComponent, LightKind};
     use postretro_entities::{
         KinematicMoverComponent, KinematicMoverMode, MoverCommand, NamedReaction,
-        PrimitiveDescriptor, ReactionDescriptor, SequenceStep, SequenceTarget, TriggerActivation,
-        TriggerFireMode, TriggerVolumeComponent, VolumeTriggerEventDescriptor,
+        PrimitiveDescriptor, ReactionDescriptor, SequenceStep, TriggerActivation, TriggerFireMode,
+        TriggerVolumeComponent, VolumeTriggerEventDescriptor,
     };
     use postretro_level_format::data_script::DataScriptSection;
     use postretro_scripting_core::level_data_context::LevelDataContext;
@@ -1033,14 +1033,17 @@ mod tests {
                 },
                 NamedReaction {
                     name: "fixture.presser.disarm".into(),
-                    descriptor: ReactionDescriptor::Sequence(vec![SequenceStep {
-                        id: SequenceTarget::FiredTrigger,
+                    descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                         primitive: "disarmTrigger".into(),
+                        target: Some("@trigger".into()),
+                        kind: None,
+                        tag: None,
+                        on_complete: None,
                         args: json!({}),
-                    }]),
+                    }),
                 },
             ],
-            "`on.activators.damage` and `on.trigger.disarm` lower to the sentinel wire"
+            "`on.activators.damage` and `on.trigger.disarm` lower to subject-token bodies"
         );
     }
 

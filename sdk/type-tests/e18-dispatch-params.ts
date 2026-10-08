@@ -52,7 +52,7 @@ const invalidSharedPerOwner: import("postretro").StoreSlotSchema = { type: "numb
 declare const plate: TriggerVolumeHandle;
 
 const triggerScoped = defineReaction((on: TriggerEventParams) => on.activators.damage(25));
-const triggerSequence = defineReaction((on: TriggerEventParams) => ({ sequence: on.trigger.arm() }));
+const triggerSequence = defineReaction((on: TriggerEventParams) => ({ sequence: [on.trigger.arm()] }));
 // Both trigger-event sources accept sourceless and trigger-scoped reactions.
 plate.on("enter", [unscoped, triggerScoped, triggerSequence]);
 defineTriggerEvent({ tag: "plate", event: "enter", fire: [unscoped, triggerScoped, triggerSequence] });

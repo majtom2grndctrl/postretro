@@ -100,9 +100,9 @@ fn get_map_entities_rejects_an_unknown_kind_naming_the_call_in_both_runtimes() {
 }
 
 // G3 (SDK half), T8 (SDK half): `players()` emits kind-bearing group commands
-// for every player; `on.activators` and `on.trigger` lower to the existing
-// sentinel wire for only that fire's subjects. TS and Luau agree byte for byte,
-// Luau through colon calls.
+// for every player; `on.activators` and `on.trigger` lower to one
+// `{ primitive, target, args }` descriptor for only that fire's subjects. TS
+// and Luau agree byte for byte, Luau through colon calls.
 #[test]
 fn group_and_subject_token_commands_lower_to_their_wire_in_both_runtimes() {
     let ts = quickjs_fixture_value(
@@ -112,8 +112,8 @@ fn group_and_subject_token_commands_lower_to_their_wire_in_both_runtimes() {
         const thisFire = defineReaction("thisFire", (on: TriggerEventParams) => on.activators.grantHealth(25));
         const hurt = defineReaction("hurt", (on: TriggerEventParams) => on.activators.damage(5));
         const ammo = defineReaction("ammo", (on: TriggerEventParams) => on.activators.grantAmmo("shells.buck", 8));
-        const disarm = defineReaction("disarm", (on: TriggerEventParams) => ({ sequence: on.trigger.disarm() }));
-        const rearm = defineReaction("rearm", (on: TriggerEventParams) => ({ sequence: on.trigger.arm() }));
+        const disarm = defineReaction("disarm", (on: TriggerEventParams) => on.trigger.disarm());
+        const rearm = defineReaction("rearm", (on: TriggerEventParams) => on.trigger.arm());
         JSON.stringify([everyPlayer, thisFire, hurt, ammo, disarm, rearm]);
         "#,
     );
@@ -125,8 +125,8 @@ fn group_and_subject_token_commands_lower_to_their_wire_in_both_runtimes() {
           Postretro.defineReaction("thisFire", function(on) return on.activators:grantHealth(25) end),
           Postretro.defineReaction("hurt", function(on) return on.activators:damage(5) end),
           Postretro.defineReaction("ammo", function(on) return on.activators:grantAmmo("shells.buck", 8) end),
-          Postretro.defineReaction("disarm", function(on) return { sequence = on.trigger:disarm() } end),
-          Postretro.defineReaction("rearm", function(on) return { sequence = on.trigger:arm() } end),
+          Postretro.defineReaction("disarm", function(on) return on.trigger:disarm() end),
+          Postretro.defineReaction("rearm", function(on) return on.trigger:arm() end),
         }
         "#,
     );
@@ -142,8 +142,8 @@ fn group_and_subject_token_commands_lower_to_their_wire_in_both_runtimes() {
             { "name": "thisFire", "primitive": "grantHealth", "target": "@activators", "args": { "amount": 25 } },
             { "name": "hurt", "primitive": "applyDamage", "target": "@activators", "args": { "amount": 5 } },
             { "name": "ammo", "primitive": "grantAmmo", "target": "@activators", "args": { "type": "shells.buck", "amount": 8 } },
-            { "name": "disarm", "sequence": [{ "id": "@trigger", "primitive": "disarmTrigger", "args": {} }] },
-            { "name": "rearm", "sequence": [{ "id": "@trigger", "primitive": "armTrigger", "args": {} }] },
+            { "name": "disarm", "primitive": "disarmTrigger", "target": "@trigger", "args": {} },
+            { "name": "rearm", "primitive": "armTrigger", "target": "@trigger", "args": {} },
         ])
     );
 }
@@ -192,6 +192,91 @@ fn group_commands_are_sequence_entries_and_never_carry_an_id() {
     }
     assert_eq!(steps[1]["tag"], "closet");
     assert!(steps[3].get("tag").is_none(), "`players()` takes no tag");
+}
+
+// A subject-token command is one descriptor legal both as a reaction body and,
+// unspread, as a sequence entry before any `wait` — the same dual use a group
+// command has. The SDK wire parses to the token arms (`@activators`,
+// `@trigger`) in both runtimes, so a pre-`wait` token step is authorable.
+#[test]
+fn subject_token_commands_are_sequence_entries_in_both_runtimes() {
+    use crate::data_descriptors::{
+        GroupKind, GroupTarget, LevelManifest, ReactionDescriptor, SequenceTarget,
+    };
+    let ts = quickjs_fixture_value(
+        r#"
+        import { defineReaction, players, wait, type TriggerEventParams } from "postretro";
+        JSON.stringify(defineReaction("ambush", (on: TriggerEventParams) => ({
+          sequence: [
+            on.activators.grantHealth(25),
+            on.trigger.disarm(),
+            players().damage(5),
+            ...wait(800),
+            players().grantAmmo("shells.buck", 8),
+          ],
+        })));
+        "#,
+    );
+    let luau = luau_fixture_value(
+        r#"
+        local Postretro = require("postretro")
+        return Postretro.defineReaction("ambush", function(on)
+          local steps = {
+            on.activators:grantHealth(25),
+            on.trigger:disarm(),
+            Postretro.players():damage(5),
+          }
+          for _, step in Postretro.wait(800) do
+            table.insert(steps, step)
+          end
+          table.insert(steps, Postretro.players():grantAmmo("shells.buck", 8))
+          return { sequence = steps }
+        end)
+        "#,
+    );
+    assert_eq!(
+        serde_json::to_vec(&ts).unwrap(),
+        serde_json::to_vec(&luau).unwrap(),
+        "TS and Luau token sequences diverged"
+    );
+    assert_eq!(
+        ts["sequence"][0],
+        serde_json::json!({ "primitive": "grantHealth", "target": "@activators", "args": { "amount": 25 } })
+    );
+    assert_eq!(
+        ts["sequence"][1],
+        serde_json::json!({ "primitive": "disarmTrigger", "target": "@trigger", "args": {} })
+    );
+
+    // The emitted wire is exactly what the manifest parser takes.
+    let runtime = rquickjs::Runtime::new().unwrap();
+    let context = rquickjs::Context::full(&runtime).unwrap();
+    let manifest = context.with(|ctx| {
+        let value: rquickjs::Value = ctx
+            .eval(format!("({{ reactions: [{ts}] }})"))
+            .expect("manifest literal evaluates");
+        LevelManifest::from_js_value(&ctx, value).expect("manifest parses")
+    });
+    let [ambush] = manifest.reactions.as_slice() else {
+        panic!("the token sequence installs: {manifest:?}");
+    };
+    let ReactionDescriptor::Sequence(steps) = &ambush.descriptor else {
+        panic!("expected a sequence");
+    };
+    let player = SequenceTarget::Group(GroupTarget {
+        kind: GroupKind::Player,
+        tag: None,
+    });
+    assert_eq!(
+        steps.iter().map(|step| step.id.clone()).collect::<Vec<_>>(),
+        vec![
+            SequenceTarget::Activators,
+            SequenceTarget::FiredTrigger,
+            player.clone(),
+            SequenceTarget::Wait,
+            player,
+        ]
+    );
 }
 
 // `defineTriggerEvent` lowers reaction handles to names and keeps the

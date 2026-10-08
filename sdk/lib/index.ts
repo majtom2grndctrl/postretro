@@ -81,6 +81,8 @@ export type {
   NpcGroupFilter,
   NpcStateUpdateArgs,
   PlayerGroup,
+  SubjectTokenCommand,
+  SubjectTokenTarget,
   Reaction,
   NumberValue,
   BoolValue,

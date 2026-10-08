@@ -65,8 +65,8 @@ export type ProgressReactionDescriptor = {
 
 --- Primitive reaction body: invokes the named Rust primitive. A group command
 --- (`npcs(...)`, `players()`) carries `kind` and an optional `tag` filter; a
---- subject-token command (`on.activators`) carries `target = "@activators"`. A
---- raw descriptor with only a non-empty `tag` resolves over every entity
+--- subject-token command (`on.activators`, `on.trigger`) carries `target =
+--- "@activators"` or `target = "@trigger"`. A raw descriptor with only a non-empty `tag` resolves over every entity
 --- carrying it (fog, emitter and animation primitives have no typed builder).
 --- True system reactions carry neither and enqueue typed engine commands such
 --- as `playSound`, `rumble`, `flashScreen`, and the UI-stack reactions. `args`
@@ -76,7 +76,7 @@ export type PrimitiveReactionDescriptor = {
   primitive: string,
   kind: GroupKind?,
   tag: string?,
-  target: "@activators"?,
+  target: SubjectTokenTarget?,
   args: { [string]: any }?,
   onComplete: string?,
 }
@@ -92,6 +92,19 @@ export type GroupCommand = {
   primitive: string,
   kind: GroupKind,
   tag: string?,
+  args: { [string]: any },
+}
+
+--- The subject a token command addresses: this fire's activators or the
+--- volume that fired.
+export type SubjectTokenTarget = "@activators" | "@trigger"
+
+--- One subject-token command (`on.activators`, `on.trigger`): a primitive
+--- descriptor whose `target` names the fire's subject. Legal both as a reaction
+--- body and directly as a sequence entry, but only before any `wait`.
+export type SubjectTokenCommand = {
+  primitive: string,
+  target: SubjectTokenTarget,
   args: { [string]: any },
 }
 
@@ -244,10 +257,10 @@ export type FireStep = {
 
 -- `SetFogAnimationStep` is declared in `postretro.d.luau` (the SDK lib
 -- block generated from the primitive registry) and is not redeclared here.
---- Ordered member, group and control steps. Steps begin in array order;
---- `fire` queues a named dispatch, while `wait` stops the current drain and
---- resumes the remaining tail after its delay.
-export type SequenceStep = SetLightAnimationStep | SetFogDensityStep | SetFogScatterStep | SetFogEdgeSoftnessStep | SetFogFalloffStep | SetFogParamsStep | SetFogAnimationStep | MoverStartStep | MoverStopStep | MoverReverseStep | MoverGoToPathNodeStep | MoverSetSpinRateStep | MoverSetBlockPolicyStep | ArmTriggerStep | DisarmTriggerStep | SpawnFromSpawnerStep | GroupCommand | WaitStep | FireStep
+--- Ordered member, group, subject-token and control steps. Steps begin in
+--- array order; `fire` queues a named dispatch, while `wait` stops the current
+--- drain and resumes the remaining tail after its delay.
+export type SequenceStep = SetLightAnimationStep | SetFogDensityStep | SetFogScatterStep | SetFogEdgeSoftnessStep | SetFogFalloffStep | SetFogParamsStep | SetFogAnimationStep | MoverStartStep | MoverStopStep | MoverReverseStep | MoverGoToPathNodeStep | MoverSetSpinRateStep | MoverSetBlockPolicyStep | ArmTriggerStep | DisarmTriggerStep | SpawnFromSpawnerStep | GroupCommand | SubjectTokenCommand | WaitStep | FireStep
 
 --- Descriptor produced by `defineReaction`. The `name` field is merged
 --- into the descriptor at the top level so the Rust deserializer can read
@@ -261,10 +274,10 @@ export type NamedReactionDescriptor = {
   primitive: string?,
   kind: GroupKind?,
   tag: string?,
-  target: "@activators"?,
+  target: SubjectTokenTarget?,
   args: { [string]: any }?,
   onComplete: string?,
-  -- sequence shape: member, group and wait/fire control steps
+  -- sequence shape: member, group, subject-token and wait/fire control steps
   sequence: {SequenceStep}?,
 }
 
@@ -272,15 +285,15 @@ export type CrossingParams = { rising: RuntimeRead }
 export type TickParams = { dt: RuntimeRead }
 --- The pawns that caused the current trigger edge. Legal only before any `wait`.
 export type ActivatorsTarget = {
-  damage: (self: ActivatorsTarget, amount: number) -> PrimitiveReactionDescriptor,
-  grantHealth: (self: ActivatorsTarget, amount: number) -> PrimitiveReactionDescriptor,
-  grantAmmo: (self: ActivatorsTarget, type: string, amount: number) -> PrimitiveReactionDescriptor,
-  addSlot: (self: ActivatorsTarget, slot: StateRef<number>, delta: number) -> PrimitiveReactionDescriptor,
+  damage: (self: ActivatorsTarget, amount: number) -> SubjectTokenCommand,
+  grantHealth: (self: ActivatorsTarget, amount: number) -> SubjectTokenCommand,
+  grantAmmo: (self: ActivatorsTarget, type: string, amount: number) -> SubjectTokenCommand,
+  addSlot: (self: ActivatorsTarget, slot: StateRef<number>, delta: number) -> SubjectTokenCommand,
 }
 --- The trigger volume that fired the current edge. Legal only before any `wait`.
 export type TriggerTarget = {
-  arm: (self: TriggerTarget) -> {SequenceStep},
-  disarm: (self: TriggerTarget) -> {SequenceStep},
+  arm: (self: TriggerTarget) -> SubjectTokenCommand,
+  disarm: (self: TriggerTarget) -> SubjectTokenCommand,
 }
 export type TriggerEventParams = {
   activators: ActivatorsTarget,

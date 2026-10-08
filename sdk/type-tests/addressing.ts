@@ -4,6 +4,8 @@ import * as Postretro from "postretro";
 import {
   type GroupCommand,
   type SequenceStep,
+  type SubjectTokenCommand,
+  type TriggerEventParams,
   defineReaction,
   defineTriggerEvent,
   getGravity,
@@ -11,6 +13,7 @@ import {
   npcs,
   players,
   setGravity,
+  wait,
 } from "postretro";
 
 // Members: each map kind yields its own handle, with exactly its verbs.
@@ -77,6 +80,21 @@ Postretro["worldQuery"]({ component: "light" });
 // @ts-expect-error Group-step updates are a closed, typed partial.
 closet.update({ aggression: true });
 
+// Subject tokens: one descriptor per verb, legal as a body and, unspread, as a
+// step before any `wait` — the same dual use a group command has.
+const patchUp = defineReaction((on: TriggerEventParams) => on.activators.grantHealth(25));
+const shut = defineReaction((on: TriggerEventParams) => on.trigger.disarm());
+const ambush = defineReaction((on: TriggerEventParams) => ({
+  sequence: [on.activators.grantHealth(10), on.trigger.disarm(), closet.damage(5), ...wait(800), everyNpc.damage(1)],
+}));
+declare const fired: TriggerEventParams;
+const tokenStep: SubjectTokenCommand = fired.activators.grantHealth(5);
+const armStep: SequenceStep = fired.trigger.arm();
+defineReaction((on: TriggerEventParams) => ({
+  // @ts-expect-error A token command is one descriptor, not a step array to spread.
+  sequence: [...on.trigger.disarm()],
+}));
+
 // Trigger events: a member's `on` is volume-keyed for `setupLevel`; a mod
 // rule is tag-keyed for `ModManifest`.
 const memberEvents = plates.flatMap((t) => [t.on("enter", [reveal]), t.on("exit", ["closet.patchUp"])]);
@@ -94,5 +112,10 @@ void spawnedTags;
 void emitterRate;
 void sorted;
 void groupStep;
+void patchUp;
+void shut;
+void ambush;
+void tokenStep;
+void armStep;
 void level;
 void badLevel;

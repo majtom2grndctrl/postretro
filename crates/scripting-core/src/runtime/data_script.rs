@@ -35,6 +35,9 @@ impl ScriptRuntime {
     /// The context is created and dropped within this call.
     /// See: context/lib/scripting.md §2 (Data context lifecycle)
     pub fn run_data_script(&self, section: &DataScriptSection, mod_root: &Path) -> LevelManifest {
+        // Map-member queries (`getMapEntities`) succeed only while this marker
+        // is held; anywhere else they raise naming the call.
+        let _level_data_context = crate::level_data_context::LevelDataContext::enter();
         // Anything that isn't `.luau` runs through QuickJS, mirroring
         // `run_script_file`'s policy: prl-build emits `.js` from `.ts`, so the
         // on-disk extension is the only signal available at runtime.

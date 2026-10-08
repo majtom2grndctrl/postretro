@@ -148,6 +148,7 @@ fn atmosphere_reactions() -> Vec<NamedReaction> {
             descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                 primitive: "applyDamage".to_string(),
                 target: Some("@activators".to_string()),
+                kind: None,
                 tag: None,
                 on_complete: None,
                 args: serde_json::json!({ "amount": 25 }),
@@ -195,6 +196,7 @@ fn primitive(
         descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
             primitive: primitive.to_string(),
             target: None,
+            kind: None,
             tag: tag.map(str::to_string),
             on_complete: None,
             args,

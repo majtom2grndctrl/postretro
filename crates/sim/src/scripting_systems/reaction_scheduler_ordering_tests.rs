@@ -315,6 +315,7 @@ fn each_landing_gets_its_own_independent_hop_budget() {
                     descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                         primitive: "note".to_string(),
                         target: None,
+                        kind: None,
                         tag: Some("chain-tag".to_string()),
                         on_complete: next,
                         args: serde_json::json!({ "label": format!("{prefix}{i}") }),
@@ -727,6 +728,7 @@ fn delayed_fire_of_a_system_reaction_dispatches_host_only_through_the_resumed_ta
         descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
             primitive: "setState".to_string(),
             target: None,
+            kind: None,
             tag: None,
             on_complete: None,
             args: serde_json::json!({
@@ -1116,6 +1118,7 @@ fn crossing_fired_on_complete_chain_now_runs() {
             descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                 primitive: "note".to_string(),
                 target: None,
+                kind: None,
                 tag: Some("chain-tag".to_string()),
                 on_complete: Some("chainedReaction".to_string()),
                 args: serde_json::json!({ "label": "primWithComplete" }),

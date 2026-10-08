@@ -9,7 +9,7 @@ import {
   defineEntity,
   defineImpactEvent,
   defineReaction,
-  onTriggerEvent,
+  defineTriggerEvent,
 } from "postretro";
 import type {
   EntityTypeDescriptor,
@@ -98,9 +98,9 @@ export const factionSentimentReactions: NamedReactionDescriptor[] = [
 ];
 
 export const factionSentimentTriggerEvents: TriggerEventDescriptor[] = [
-  onTriggerEvent(
-    { tag: "faction_sentiment_story" },
-    "enter",
-    [factionSentimentStoryBeat, factionSentimentPlayerChoice],
-  ),
+  defineTriggerEvent({
+    tag: "faction_sentiment_story",
+    event: "enter",
+    fire: [factionSentimentStoryBeat, factionSentimentPlayerChoice],
+  }),
 ];

@@ -52,6 +52,7 @@ mod input_block;
 mod loading_manifest;
 mod movement_sounds;
 mod runtime_manifest;
+mod trigger_events;
 mod validate;
 mod vm_adapters;
 
@@ -64,6 +65,7 @@ mod js {
     pub mod movement_view_feel;
     pub mod reactions;
     pub mod readers;
+    pub mod trigger_events;
     pub mod ui_binds;
     pub mod ui_widgets;
     mod weapon;
@@ -78,6 +80,7 @@ mod lua {
     pub mod movement;
     pub mod movement_view_feel;
     pub mod reactions;
+    pub mod trigger_events;
     pub mod ui_binds;
     pub mod ui_widgets;
     mod weapon;
@@ -94,11 +97,11 @@ pub use validate::*;
 pub use vm_adapters::*;
 
 pub use postretro_entities::data_descriptors::{
-    CrossingCondition, CrossingDescriptor, EntityTypeDescriptor, InventoryDescriptor,
-    LocomotionDescriptor, MeshDescriptor, NamedReaction, PrimitiveDescriptor, ProgressDescriptor,
-    RawAnimationState, RawMeshDescriptor, ReactionDescriptor, SequenceStep, SequenceTarget,
-    TriggerEventDescriptor, TriggerPoolArm, TriggerPoolDescriptor, build_crossing,
-    build_predicate_crossing,
+    CrossingCondition, CrossingDescriptor, EntityTypeDescriptor, GroupKind, GroupTarget,
+    InventoryDescriptor, LocomotionDescriptor, MeshDescriptor, NamedReaction, PrimitiveDescriptor,
+    ProgressDescriptor, RawAnimationState, RawMeshDescriptor, ReactionDescriptor, SequenceStep,
+    SequenceTarget, TriggerEventDescriptor, TriggerPoolArm, TriggerPoolDescriptor,
+    VolumeTriggerEventDescriptor, build_crossing, build_predicate_crossing,
 };
 pub use postretro_foundation::data_descriptors::LightDescriptor;
 pub use postretro_foundation::data_descriptors::types::{
@@ -113,6 +116,7 @@ pub use js::movement::*;
 pub use js::movement_view_feel::*;
 pub use js::reactions::*;
 pub use js::readers::*;
+pub use js::trigger_events::*;
 pub use js::ui_binds::*;
 pub use js::ui_widgets::*;
 
@@ -124,6 +128,7 @@ pub use lua::maps::*;
 pub use lua::movement::*;
 pub use lua::movement_view_feel::*;
 pub use lua::reactions::*;
+pub use lua::trigger_events::*;
 pub use lua::ui_binds::*;
 pub use lua::ui_widgets::*;
 

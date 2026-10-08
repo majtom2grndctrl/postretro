@@ -1,7 +1,7 @@
-import { defineReaction, world } from "postretro";
+import { defineReaction, getMapEntities } from "postretro";
 
 export function setupLevel(_ctx: unknown) {
-  const lights = world.query({ component: "light", tag: "script_wave" });
+  const lights = getMapEntities("light", { tag: "script_wave" });
   return {
     reactions: [
       defineReaction("levelLoad", {

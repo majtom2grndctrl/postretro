@@ -1,21 +1,19 @@
 local Postretro = require("postretro")
 
 local damagePresser = Postretro.defineReaction("fixture.presser.damage", function(on)
-  return Postretro.damage(on.activators, 25)
+  return on.activators:damage(25)
 end)
 local disarmPlate = Postretro.defineReaction("fixture.presser.disarm", function(on)
-  return { sequence = Postretro.disarmTrigger(on.trigger) }
+  return on.trigger:disarm()
 end)
 
 function setupLevel(_ctx)
+  local triggerEvents = {}
+  for _, plate in Postretro.getMapEntities("trigger", { tag = "fixture_presser" }) do
+    table.insert(triggerEvents, plate:on("enter", { damagePresser, disarmPlate }))
+  end
   return {
     reactions = { damagePresser, disarmPlate },
-    triggerEvents = {
-      Postretro.onTriggerEvent(
-        { tag = "fixture_presser" },
-        "enter",
-        { damagePresser, disarmPlate }
-      )
-    }
+    triggerEvents = triggerEvents,
   }
 end

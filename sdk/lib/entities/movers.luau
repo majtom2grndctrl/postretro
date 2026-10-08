@@ -1,7 +1,9 @@
 --!strict
 -- Kinematic-mover entity vocabulary. Handles expose closed command-reaction
 -- builders; scripts cannot attach or mutate raw KinematicMover components.
+-- See: context/lib/scripting.md §12 (Entity addressing)
 
+--- Mover member returned by `getMapEntities("mover")`.
 export type MoverEntityHandle = {
   id: EntityId,
   position: Vec3,

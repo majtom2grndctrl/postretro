@@ -675,7 +675,7 @@ mod tests {
         PlayerMovementDescriptor, SpeedParams,
     };
     use postretro_scripting_core::data_descriptors::{
-        NamedReaction, PrimitiveDescriptor, ReactionDescriptor, TriggerEventDescriptor,
+        NamedReaction, PrimitiveDescriptor, ReactionDescriptor, VolumeTriggerEventDescriptor,
     };
     use postretro_scripting_core::data_registry::DataRegistry;
 
@@ -1487,7 +1487,7 @@ mod tests {
 
     #[test]
     fn script_bound_edge_dispatches_enter_and_exit_with_no_kvp_event_name() {
-        // AC 6: a volume bound only through the script path (onTriggerEvent)
+        // AC 6: a volume bound only through the script path (a trigger member's `on`)
         // carries no on_fire/on_exit KVP, yet the widened enter/exit dispatch
         // gates must still fire because `bound_edges` holds its (volume, edge).
         // The existing tests either name their events or pass an empty
@@ -1571,7 +1571,7 @@ mod tests {
 
     #[test]
     fn closet_reveal_enter_edge_dispatches_door_and_enemy_release_reactions() {
-        // E18-C containment is authored as an onTriggerEvent fan-out. One
+        // E18-C containment is authored as a trigger-event fan-out. One
         // script-bound enter edge must dispatch both named reaction bodies;
         // neither is nested in the other as a sequence step.
         let mut registry = EntityRegistry::new();
@@ -1637,6 +1637,7 @@ mod tests {
                     descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                         primitive: "moverStart".into(),
                         target: None,
+                        kind: None,
                         tag: Some("closet_door".into()),
                         args: serde_json::json!({}),
                         on_complete: None,
@@ -1645,8 +1646,9 @@ mod tests {
                 NamedReaction {
                     name: "closet.releaseCloset".into(),
                     descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
-                        primitive: "updateEnemyState".into(),
+                        primitive: "updateNpcState".into(),
                         target: None,
+                        kind: None,
                         tag: Some("closet_enemies".into()),
                         args: serde_json::json!({ "aggro": true }),
                         on_complete: None,
@@ -1654,11 +1656,10 @@ mod tests {
                 },
             ],
             Vec::new(),
-            vec![TriggerEventDescriptor {
-                tag: "closet_reveal_plate".into(),
+            vec![VolumeTriggerEventDescriptor {
+                trigger,
                 event: "enter".into(),
                 fire: vec!["closet.openDoor".into(), "closet.releaseCloset".into()],
-                levels: Vec::new(),
             }],
             Vec::new(),
             &[],
@@ -1709,7 +1710,7 @@ mod tests {
             dispatched,
             vec![
                 crate::trigger_bindings::BoundTriggerCommandKind::Mover,
-                crate::trigger_bindings::BoundTriggerCommandKind::UpdateEnemyState,
+                crate::trigger_bindings::BoundTriggerCommandKind::UpdateNpcState,
             ],
             "one reveal enter edge fans out to the door and aggro-release reactions"
         );
@@ -1766,6 +1767,7 @@ mod tests {
                 postretro_entities::components::spawner::SpawnerComponent {
                     archetype_name: "cultist".into(),
                     count: SPAWN_COUNT,
+                    spawned_tags: Vec::new(),
                     resolved: true,
                 },
             )
@@ -1778,17 +1780,17 @@ mod tests {
                 descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                     primitive: "spawnFromSpawner".into(),
                     target: None,
+                    kind: None,
                     tag: Some("ambush_spawner".into()),
                     args: serde_json::json!({}),
                     on_complete: None,
                 }),
             }],
             Vec::new(),
-            vec![TriggerEventDescriptor {
-                tag: "ambush_plate".into(),
+            vec![VolumeTriggerEventDescriptor {
+                trigger,
                 event: "enter".into(),
                 fire: vec!["ambush.spawn".into()],
-                levels: Vec::new(),
             }],
             Vec::new(),
             &[],

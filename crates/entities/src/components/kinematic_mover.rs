@@ -1,7 +1,7 @@
 // Deterministic kinematic mover state.
 //
-// Scripts query movers through `world.query` handles. Raw phase remains
-// engine-owned and cannot be attached or mutated directly.
+// Scripts address movers as `getMapEntities("mover")` member handles. Raw
+// phase remains engine-owned and cannot be attached or mutated directly.
 
 use glam::Vec3;
 use serde::{Deserialize, Serialize};

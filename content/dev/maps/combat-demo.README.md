@@ -194,8 +194,8 @@ to reach you.
   through the level's named `applyDamage` reaction.
 - `content/dev/scripts/combat-demo-reaction.ts` — the level **data script**
   (`setupLevel`). Returns a `progress` reaction over the `dummy` tag firing
-  `dummiesCleared`, and an `applyDamage` reaction NAMED `dummiesCleared` targeting
-  the `player` tag. It also binds the `ammo_pickup` trigger's enter edge to a
+  `dummiesCleared`, and a `players().damage(35)` reaction NAMED `dummiesCleared`
+  addressed to every player. It also binds the `ammo_pickup` trigger's enter edge to a
   24-`shells.buck` grant for its activators. Wired into the map via the
   worldspawn `data_script` KVP.
 - `content/dev/scripts/combat-lifecycle.ts` — a **mod-global**
@@ -304,7 +304,7 @@ The descriptor → `components.health` → model-authored hit-zone capsules → 
 - `dummiesCleared` is dispatched through the **death-event drain**
   (`fire_named_event_with_sequences`) — the only drain that invokes primitive
   reaction handlers. It matches the `applyDamage` reaction registered under the
-  same name, which routes **35 damage** to the `player`-tagged pawn. The player's
+  same name, which routes **35 damage** to each player pawn. The player's
   HP drops from 100 to 65, and the readonly `player.health` HUD slot follows.
 
 ## Resource-grant walkthrough (reference content)
@@ -331,7 +331,7 @@ its smaller ring open and settle back more quickly.
    not pay the kill edge.
 
 2. **Volume payout — trigger activator.** From the player start, walk east through
-   `ammo_pickup_volume` (the `A` in the floor plan). Its `onTriggerEvent` enter
+   `ammo_pickup_volume` (the `A` in the floor plan). Its trigger member's `on("enter")`
    binding grants the entering player **24 `shells.buck`**, independently of
    combat. The touch volume uses `fire_mode: multiple` with a 3-second rearm and
    deliberately never self-disarms in v1, so leave it, wait three seconds, and
@@ -363,8 +363,8 @@ The `dummy` tag is **exclusive to the target dummies**. The progress denominator
 counts every entity carrying the tag, so a shared tag would skew the ratio —
 e.g. tagging the player `dummy` too would make `at: 0.5` require killing 2 of 5.
 The player is targetable, but their own weapon queries exclude the firing pawn,
-so shooting cannot advance that extra progress entry. The player gets its own
-`player` tag, matched only by the named retaliation reaction.
+so shooting cannot advance that extra progress entry. The retaliation reaches
+the player through the `players()` group, not a tag.
 
 ## Authoring notes / caveats
 
@@ -374,7 +374,8 @@ so shooting cannot advance that extra progress entry. The player gets its own
 - **`_tags` on `player_spawn`:** the spawn path forwards the parsed `_tags` list
   onto the spawned player pawn (`spawn_descriptor_instance` →
   `try_spawn(transform, &entity.tags)`), so `"_tags" "player"` lands on the pawn
-  and the `applyDamage` reaction's `tag: "player"` resolves to it.
+  and tag-filtered addressing can reach it. The retaliation needs no tag: the
+  `players()` group resolves every seat-bound pawn.
 - **Composition shape:** the map data script returns level-local `reactions`, while
   the dev mod's `ModManifest.events` contributes the impact policies. Their scopes
   compose at level install; the `dummy` and `combat-zombie` tags are exclusive to

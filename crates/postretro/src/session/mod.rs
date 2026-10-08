@@ -27,9 +27,9 @@ use crate::scripting::primitives::light::register_sequenced_light_primitives;
 use crate::scripting::primitives::register_all;
 use crate::scripting::reactions::registry::{
     ReactionPrimitiveRegistry, register_emitter_reaction_primitives,
-    register_enemy_state_reaction_primitives, register_fog_reaction_primitives,
-    register_grant_reactions, register_mover_reaction_primitives,
-    register_sequenced_fog_primitives, register_sequenced_mover_primitives,
+    register_fog_reaction_primitives, register_grant_reactions, register_mover_reaction_primitives,
+    register_npc_state_reaction_primitives, register_sequenced_fog_primitives,
+    register_sequenced_mover_primitives, register_sequenced_spawner_primitives,
     register_sequenced_trigger_primitives, register_spawner_reaction_primitives,
     register_trigger_reaction_primitives,
 };
@@ -854,12 +854,17 @@ fn build_scripting_core(
         script_ctx.clone(),
         command_diagnostics.clone(),
     );
+    register_sequenced_spawner_primitives(
+        &mut sequence_registry,
+        script_ctx.clone(),
+        spawn_context.clone(),
+    );
 
     // Reaction-primitive handlers invoked by name when a `Primitive` reaction
     // fires. Populated once at startup; survives level reloads.
     let mut reaction_registry = ReactionPrimitiveRegistry::new();
     register_emitter_reaction_primitives(&mut reaction_registry);
-    register_enemy_state_reaction_primitives(&mut reaction_registry);
+    register_npc_state_reaction_primitives(&mut reaction_registry);
     register_grant_reactions(&mut reaction_registry);
     register_fog_reaction_primitives(&mut reaction_registry);
     register_mover_reaction_primitives(

@@ -327,7 +327,7 @@ where
         }
         // Fold the locomotion latch into whatever the component NOW holds. The
         // damage chokepoint and `on_impact` ran since the publish above, and
-        // either can mutate this entity's brain (`apply_update_enemy_state_to_brain`
+        // either can mutate this entity's brain (`apply_update_npc_state_to_brain`
         // writes exactly this component); writing the pre-callback snapshot back
         // would silently discard that. The latch is the only field this pass
         // still owns. A missing component means the entity did not survive the

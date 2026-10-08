@@ -1098,6 +1098,7 @@ fn deterministic_trigger_primitive(
         descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
             primitive: primitive.to_string(),
             target: None,
+            kind: None,
             tag: tag.map(str::to_string),
             on_complete: None,
             args,
@@ -1105,7 +1106,7 @@ fn deterministic_trigger_primitive(
     }
 }
 
-/// The presser half of the determinism trigger: `damage(on.activators, amount)`.
+/// The presser half of the determinism trigger: `on.activators.damage(amount)`.
 /// Unlike the tag/system primitives above it targets the fire's activator pawns
 /// through the `@activators` sentinel, so both pressers take the hit each run.
 fn deterministic_trigger_activator_damage(amount: f32) -> NamedReaction {
@@ -1114,6 +1115,7 @@ fn deterministic_trigger_activator_damage(amount: f32) -> NamedReaction {
         descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
             primitive: "applyDamage".to_string(),
             target: Some("@activators".to_string()),
+            kind: None,
             tag: None,
             on_complete: None,
             args: serde_json::json!({ "amount": amount }),
@@ -2322,6 +2324,7 @@ fn spawner_path_first_rate_pass_uses_derived_clip_calibration_before_index_resol
             SpawnerComponent {
                 archetype_name: "runtime_enemy".to_string(),
                 count: 1,
+                spawned_tags: Vec::new(),
                 resolved: true,
             },
         )
@@ -3534,7 +3537,7 @@ fn trigger_events_keep_two_activator_order_across_spawn_reversal() {
 #[test]
 fn trigger_events_keep_multi_pawn_damage_ledger_across_spawn_reversal() {
     // AC 14: determinism of the damage EFFECT, not just fire order. The
-    // determinism trigger runs `damage(on.activators, 25)`, so both pressers
+    // determinism trigger runs `on.activators.damage(25)`, so both pressers
     // take the hit on their tick-one enter. The resulting per-pawn health ledger
     // must be identical run-to-run and across spawn-order reversal.
     let commands = [RecordedCommand {

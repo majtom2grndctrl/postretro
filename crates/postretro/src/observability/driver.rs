@@ -226,7 +226,7 @@ fn run_headless_inner(
         // (aim carries no neutral — it persists until overridden).
         let active = active_command_at(&runspec.commands, tick);
         let effective_aim = effective_aim_at(&runspec.commands, tick);
-        // Re-read every tick (a `Cell<f32>`, cheap) so a mid-run `world.setGravity`
+        // Re-read every tick (a `Cell<f32>`, cheap) so a mid-run `setGravity`
         // reaction is observed the same tick as the windowed loop (`main.rs`),
         // rather than only at level-load time.
         let gravity = script_ctx.gravity.get();
@@ -379,16 +379,9 @@ fn run_headless_frame_end_removals(
     progress_tracker: &mut ProgressTracker,
     next_tick_death_events: &mut Vec<String>,
 ) {
-    crate::impact_effects::run_end_of_frame_removal_pass(
-        &mut registry.borrow_mut(),
-        |_, pending_kill_credit| {
-            let Some(pending_kill_credit) = pending_kill_credit else {
-                return;
-            };
-            next_tick_death_events
-                .extend(progress_tracker.on_entity_killed(&pending_kill_credit.tags));
-        },
-    );
+    crate::impact_effects::run_end_of_frame_removal_pass(&mut registry.borrow_mut(), |removal| {
+        next_tick_death_events.extend(removal.report_to_progress(progress_tracker))
+    });
 }
 
 fn active_level_tags_for_headless_install() -> Vec<String> {
@@ -754,6 +747,126 @@ mod tests {
         assert_eq!(
             death_events_for_next_tick,
             vec!["wave_complete".to_string()]
+        );
+    }
+
+    // Regression: a drain after the fixed tick zeroed a member's health and
+    // despawned it before any death sweep latched credit, so the removal pass
+    // shrank the `progress` total instead of counting a kill.
+    #[test]
+    fn headless_removal_counts_drain_zeroed_despawn_as_a_kill() {
+        let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let members: Vec<_> = (0..2)
+            .map(|_| {
+                let mut registry = registry.borrow_mut();
+                let id = registry.spawn(Transform::default());
+                registry.set_tags(id, vec!["wave".to_string()]).unwrap();
+                let health = HealthComponent::from_descriptor(&HealthDescriptor {
+                    max: 10.0,
+                    hitbox: None,
+                    zone_multipliers: Default::default(),
+                });
+                registry.set_component(id, health).unwrap();
+                id
+            })
+            .collect();
+
+        let mut data = DataRegistry::new();
+        data.populate_level(
+            vec![NamedReaction {
+                name: "half_wave".to_string(),
+                descriptor: ReactionDescriptor::Progress(ProgressDescriptor {
+                    tag: "wave".to_string(),
+                    at: 0.5,
+                    fire: "wave_half".to_string(),
+                }),
+            }],
+            Vec::new(),
+            &[],
+        );
+        let mut progress_tracker = ProgressTracker::new();
+        assert!(
+            progress_tracker
+                .initialize(&data, &registry.borrow())
+                .is_empty()
+        );
+
+        // `[setHealth(0), despawn()]` applied by one post-tick drain: no sweep
+        // runs between them and the frame-end removal pass.
+        crate::impact_effects::set_health(&mut registry.borrow_mut(), members[0], 0.0, None);
+        crate::impact_effects::despawn(&mut registry.borrow_mut(), members[0], None);
+
+        let mut next_tick_death_events = Vec::new();
+        run_headless_frame_end_removals(
+            &registry,
+            &mut progress_tracker,
+            &mut next_tick_death_events,
+        );
+        assert!(!registry.borrow().exists(members[0]));
+        assert_eq!(
+            next_tick_death_events,
+            vec!["wave_half".to_string()],
+            "one kill of two members meets `at: 0.5`; an uncredited removal would leave 0 of 1"
+        );
+    }
+
+    // A member despawned above zero HP reports no kill but leaves the set, so
+    // the remaining member's kill completes `at: 1.0`.
+    #[test]
+    fn headless_uncredited_removal_drops_the_member_from_kill_progress() {
+        let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let health = |current: f32| {
+            let mut health = HealthComponent::from_descriptor(&HealthDescriptor {
+                max: 10.0,
+                hitbox: None,
+                zone_multipliers: Default::default(),
+            });
+            health.current = current;
+            health
+        };
+        let despawned = registry.borrow_mut().spawn(Transform::default());
+        let killed = registry.borrow_mut().spawn(Transform::default());
+        for (id, current) in [(despawned, 10.0), (killed, 0.0)] {
+            let mut registry = registry.borrow_mut();
+            registry.set_tags(id, vec!["wave".to_string()]).unwrap();
+            registry.set_component(id, health(current)).unwrap();
+        }
+
+        let mut data = DataRegistry::new();
+        data.populate_level(
+            vec![NamedReaction {
+                name: "wave_done".to_string(),
+                descriptor: ReactionDescriptor::Progress(ProgressDescriptor {
+                    tag: "wave".to_string(),
+                    at: 1.0,
+                    fire: "wave_complete".to_string(),
+                }),
+            }],
+            Vec::new(),
+            &[],
+        );
+        let mut progress_tracker = ProgressTracker::new();
+        assert!(
+            progress_tracker
+                .initialize(&data, &registry.borrow())
+                .is_empty()
+        );
+
+        postretro_sim::scripting_systems::health::sweep_deaths_for_test(&mut registry.borrow_mut());
+        crate::impact_effects::despawn(&mut registry.borrow_mut(), despawned, None);
+        crate::impact_effects::despawn(&mut registry.borrow_mut(), killed, None);
+
+        let mut next_tick_death_events = Vec::new();
+        run_headless_frame_end_removals(
+            &registry,
+            &mut progress_tracker,
+            &mut next_tick_death_events,
+        );
+        assert!(!registry.borrow().exists(despawned));
+        assert_eq!(
+            next_tick_death_events,
+            vec!["wave_complete".to_string()],
+            "one kill over the one member left fires once"
         );
     }
 }

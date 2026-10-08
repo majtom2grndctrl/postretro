@@ -27,9 +27,9 @@ pub fn named_reaction_from_js<'js>(
                 .map_err(|e| DescriptorError::InvalidSequenceShape {
                     reason: e.to_string(),
                 })?;
-        ReactionDescriptor::Sequence(sequence_steps_from_js(ctx, &arr)?)
+        ReactionDescriptor::Sequence(sequence_steps_from_js(ctx, &name, &arr)?)
     } else if has_primitive {
-        ReactionDescriptor::Primitive(primitive_descriptor_from_js(ctx, &obj)?)
+        ReactionDescriptor::Primitive(primitive_descriptor_from_js(ctx, &name, &obj)?)
     } else {
         return Err(DescriptorError::UnknownShape);
     };
@@ -99,6 +99,7 @@ fn crossing_edge_from_js<'js>(obj: &Object<'js>) -> Result<Option<String>, Descr
 
 pub fn primitive_descriptor_from_js<'js>(
     ctx: &Ctx<'js>,
+    reaction: &str,
     obj: &Object<'js>,
 ) -> Result<PrimitiveDescriptor, DescriptorError> {
     let primitive = get_required_string_js(obj, "primitive")?;
@@ -114,28 +115,36 @@ pub fn primitive_descriptor_from_js<'js>(
     } else {
         None
     };
-    let target = if obj.contains_key("target").map_err(js_err)? {
-        let raw: JsValue = obj.get("target").map_err(js_err)?;
-        if raw.is_null() || raw.is_undefined() {
-            None
-        } else {
-            Some(String::from_js_value_required(raw, "target")?)
-        }
-    } else {
-        None
+    let has_id = {
+        let raw: JsValue = obj.get("id").map_err(js_err)?;
+        !(raw.is_null() || raw.is_undefined())
     };
-    if target.is_some() && tag.is_some() {
-        return Err(DescriptorError::InvalidShape {
-            reason: "primitive reaction cannot carry both `target` and `tag`".to_string(),
-        });
+    let authored_kind = authored_text_js(obj, "kind")?;
+    let token = validate_authored_subject_token(
+        reaction,
+        "primitive",
+        authored_text_js(obj, "target")?,
+        has_id,
+        !matches!(authored_kind, AuthoredText::Absent),
+        tag.is_some(),
+    )
+    .map_err(|reason| DescriptorError::InvalidShape { reason })?;
+    if let Some(token) = token {
+        validate_subject_token_primitive(reaction, "primitive", token, &primitive)
+            .map_err(|reason| DescriptorError::InvalidShape { reason })?;
     }
-    if target
-        .as_deref()
-        .is_some_and(|target| target != "@activators")
-    {
-        return Err(DescriptorError::InvalidShape {
-            reason: "primitive `target` must be `@activators`".to_string(),
-        });
+    let target = token.map(|token| token.as_wire().to_string());
+    let kind = validate_authored_group_kind(
+        reaction,
+        "primitive",
+        authored_kind,
+        has_id,
+        target.is_some(),
+    )
+    .map_err(|reason| DescriptorError::InvalidShape { reason })?;
+    if kind.is_some() {
+        validate_group_kind_primitive(reaction, "primitive", &primitive)
+            .map_err(|reason| DescriptorError::InvalidShape { reason })?;
     }
     if primitive == "spawnFromSpawner"
         && (tag.as_deref().is_none() || tag.as_deref().is_some_and(str::is_empty))
@@ -169,97 +178,28 @@ pub fn primitive_descriptor_from_js<'js>(
         serde_json::Value::Object(Default::default())
     };
 
-    validate_consequential_reaction(&primitive, tag.as_deref(), target.as_deref(), &args)?;
+    validate_consequential_reaction(
+        reaction,
+        &primitive,
+        kind,
+        tag.as_deref(),
+        target.as_deref(),
+        &args,
+    )?;
 
     Ok(PrimitiveDescriptor {
         primitive,
         target,
+        kind,
         tag,
         on_complete,
         args,
     })
 }
 
-/// Resource grants and owner-slot additions carry fixed author-time payloads.
-/// Keep this validation in the VM converter so a malformed setup descriptor
-/// cannot reach a reaction handler or a fixed-tick trigger binding.
-fn validate_consequential_reaction(
-    primitive: &str,
-    tag: Option<&str>,
-    target: Option<&str>,
-    args: &serde_json::Value,
-) -> Result<(), DescriptorError> {
-    if !matches!(primitive, "grantHealth" | "grantAmmo" | "addSlot") {
-        return Ok(());
-    }
-
-    let has_non_empty_tag = tag.is_some_and(|tag| !tag.is_empty());
-    if !matches!(
-        (has_non_empty_tag, target),
-        (true, None) | (false, Some("@activators"))
-    ) {
-        return Err(DescriptorError::InvalidShape {
-            reason: format!(
-                "primitive `{primitive}` requires exactly one of a non-empty `tag` or target `@activators`"
-            ),
-        });
-    }
-
-    let object = args
-        .as_object()
-        .ok_or_else(|| DescriptorError::InvalidShape {
-            reason: format!("primitive `{primitive}` `args` must be an object"),
-        })?;
-    if primitive == "addSlot" {
-        if object
-            .get("slot")
-            .and_then(serde_json::Value::as_str)
-            .is_none()
-        {
-            return Err(DescriptorError::InvalidShape {
-                reason: "primitive `addSlot` `args.slot` must be a string".to_string(),
-            });
-        }
-        let Some(delta) = object.get("delta").and_then(serde_json::Value::as_f64) else {
-            return Err(DescriptorError::InvalidShape {
-                reason: "primitive `addSlot` `args.delta` must be a finite number".to_string(),
-            });
-        };
-        if !delta.is_finite() || !(delta as f32).is_finite() {
-            return Err(DescriptorError::InvalidShape {
-                reason:
-                    "primitive `addSlot` `args.delta` must be a finite number representable as f32"
-                        .to_string(),
-            });
-        }
-        return Ok(());
-    }
-    let Some(amount) = object.get("amount").and_then(serde_json::Value::as_f64) else {
-        return Err(DescriptorError::InvalidShape {
-            reason: format!("primitive `{primitive}` `args.amount` must be a finite number"),
-        });
-    };
-    if !amount.is_finite() || !(amount as f32).is_finite() {
-        return Err(DescriptorError::InvalidShape {
-            reason: format!(
-                "primitive `{primitive}` `args.amount` must be a finite number representable as f32"
-            ),
-        });
-    }
-
-    if primitive == "grantAmmo" {
-        let Some(ammo_type) = object.get("type").and_then(serde_json::Value::as_str) else {
-            return Err(DescriptorError::InvalidShape {
-                reason: "primitive `grantAmmo` `args.type` must be a string".to_string(),
-            });
-        };
-        validate_ascii_identifier("grantAmmo.type", ammo_type)?;
-    }
-    Ok(())
-}
-
 pub fn sequence_steps_from_js<'js>(
     ctx: &Ctx<'js>,
+    reaction: &str,
     arr: &Array<'js>,
 ) -> Result<Vec<SequenceStep>, DescriptorError> {
     let mut out = Vec::with_capacity(arr.len());
@@ -268,16 +208,42 @@ pub fn sequence_steps_from_js<'js>(
         let obj = Object::from_value(item).map_err(|_| DescriptorError::InvalidSequenceShape {
             reason: format!("step {i} must be an object"),
         })?;
+        let site = format!("sequence step {i}");
         let id_value: JsValue = obj.get("id").map_err(js_err)?;
-        let id = if let Some(value) = id_value.as_string() {
+        let has_id = !(id_value.is_null() || id_value.is_undefined());
+        let authored_kind = authored_text_js(&obj, "kind")?;
+        // A subject-token verb's `{ primitive, target, args }` is the same
+        // descriptor as its reaction body, so the entry shares that check.
+        let token = validate_authored_subject_token(
+            reaction,
+            &site,
+            authored_text_js(&obj, "target")?,
+            has_id,
+            !matches!(authored_kind, AuthoredText::Absent),
+            !matches!(authored_text_js(&obj, "tag")?, AuthoredText::Absent),
+        )
+        .map_err(|reason| DescriptorError::InvalidSequenceStep { reason })?;
+        let kind =
+            validate_authored_group_kind(reaction, &site, authored_kind, has_id, token.is_some())
+                .map_err(|reason| DescriptorError::InvalidSequenceStep { reason })?;
+        let id = if let Some(kind) = kind {
+            SequenceTarget::Group(GroupTarget {
+                kind,
+                tag: optional_string_js(&obj, "tag")?,
+            })
+        } else if let Some(token) = token {
+            token.sequence_target()
+        } else if let Some(value) = id_value.as_string() {
             match value.to_string().map_err(js_err)?.as_str() {
                 "@activators" => SequenceTarget::Activators,
                 "@trigger" => SequenceTarget::FiredTrigger,
                 "@wait" => SequenceTarget::Wait,
                 "@fire" => SequenceTarget::Fire,
                 spelling => {
-                    return Err(DescriptorError::InvalidSequenceShape {
-                        reason: format!("step {i} has illegal sentinel `{spelling}`"),
+                    return Err(DescriptorError::InvalidSequenceStep {
+                        reason: format!(
+                            "reaction `{reaction}` {site}: illegal sentinel `{spelling}`"
+                        ),
                     });
                 }
             }
@@ -286,15 +252,14 @@ pub fn sequence_steps_from_js<'js>(
         };
         let primitive = get_required_string_js(&obj, "primitive")?;
         let primitive = validate_primitive_name(primitive)?;
-        validate_control_step_pair(i, id, &primitive)?;
-        if matches!(id, SequenceTarget::Activators)
-            && matches!(primitive.as_str(), "armTrigger" | "disarmTrigger")
-        {
-            return Err(DescriptorError::InvalidSequenceShape {
-                reason: format!(
-                    "step {i} primitive `{primitive}` requires an entity id or `@trigger`, not `@activators`"
-                ),
-            });
+        validate_control_step_pair(reaction, &site, &id, &primitive)?;
+        if let Some(token) = SubjectToken::of_sequence_target(&id) {
+            validate_subject_token_primitive(reaction, &site, token, &primitive)
+                .map_err(|reason| DescriptorError::InvalidSequenceStep { reason })?;
+        }
+        if matches!(id, SequenceTarget::Group(_)) {
+            validate_group_kind_primitive(reaction, &site, &primitive)
+                .map_err(|reason| DescriptorError::InvalidSequenceStep { reason })?;
         }
         let args = if obj.contains_key("args").map_err(js_err)? {
             let raw: JsValue = obj.get("args").map_err(js_err)?;
@@ -302,6 +267,12 @@ pub fn sequence_steps_from_js<'js>(
         } else {
             serde_json::Value::Null
         };
+        // A step's grant payload is the body's payload; the same load-time
+        // check guards the grant handlers. A failure skips the reaction in a
+        // level script's drain and rejects the mod manifest in a mod-global
+        // drain.
+        validate_consequential_args(reaction, &site, &primitive, &args)
+            .map_err(|reason| DescriptorError::InvalidSequenceStep { reason })?;
         out.push(SequenceStep {
             id,
             primitive,
@@ -315,30 +286,60 @@ pub fn sequence_steps_from_js<'js>(
 /// both directions prevents a sentinel from selecting an arbitrary handler and
 /// prevents an entity-targeted `wait`/`fire` from reaching an inert handler.
 fn validate_control_step_pair(
-    step_index: usize,
-    target: SequenceTarget,
+    reaction: &str,
+    site: &str,
+    target: &SequenceTarget,
     primitive: &str,
 ) -> Result<(), DescriptorError> {
     let mismatch = match (target, primitive) {
         (SequenceTarget::Wait, "wait") | (SequenceTarget::Fire, "fire") => None,
         (SequenceTarget::Wait, _) => Some(format!(
-            "step {step_index} sentinel `@wait` requires primitive `wait`, got `{primitive}`"
+            "reaction `{reaction}` {site}: sentinel `@wait` requires primitive `wait`, got `{primitive}`"
         )),
         (SequenceTarget::Fire, _) => Some(format!(
-            "step {step_index} sentinel `@fire` requires primitive `fire`, got `{primitive}`"
+            "reaction `{reaction}` {site}: sentinel `@fire` requires primitive `fire`, got `{primitive}`"
         )),
         (_, "wait") => Some(format!(
-            "step {step_index} control primitive `wait` requires sentinel `@wait`; it cannot be entity-targeted"
+            "reaction `{reaction}` {site}: control primitive `wait` requires sentinel `@wait`; it cannot be entity-targeted"
         )),
         (_, "fire") => Some(format!(
-            "step {step_index} control primitive `fire` requires sentinel `@fire`; it cannot be entity-targeted"
+            "reaction `{reaction}` {site}: control primitive `fire` requires sentinel `@fire`; it cannot be entity-targeted"
         )),
         _ => None,
     };
     match mismatch {
-        Some(reason) => Err(DescriptorError::InvalidSequenceShape { reason }),
+        Some(reason) => Err(DescriptorError::InvalidSequenceStep { reason }),
         None => Ok(()),
     }
+}
+
+/// Lower an authored optional string field (`kind`, `target`, `tag`) for the
+/// shared addressing validators. `null` and `undefined` read as absent,
+/// matching the other optional descriptor fields.
+fn authored_text_js<'js>(
+    obj: &Object<'js>,
+    field: &'static str,
+) -> Result<AuthoredText, DescriptorError> {
+    let raw: JsValue = obj.get(field).map_err(js_err)?;
+    if raw.is_null() || raw.is_undefined() {
+        return Ok(AuthoredText::Absent);
+    }
+    match raw.as_string() {
+        Some(value) => Ok(AuthoredText::Text(value.to_string().map_err(js_err)?)),
+        None => Ok(AuthoredText::NonString(raw.type_name().to_string())),
+    }
+}
+
+/// An optional string field: absent, `null` or `undefined` read as `None`.
+fn optional_string_js<'js>(
+    obj: &Object<'js>,
+    field: &'static str,
+) -> Result<Option<String>, DescriptorError> {
+    let raw: JsValue = obj.get(field).map_err(js_err)?;
+    if raw.is_null() || raw.is_undefined() {
+        return Ok(None);
+    }
+    Ok(Some(String::from_js_value_required(raw, field)?))
 }
 
 pub fn get_required_u32_js<'js>(

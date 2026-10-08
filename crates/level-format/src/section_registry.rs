@@ -76,7 +76,7 @@ pub enum SectionId {
     /// Optional script tags for AlphaLights (one entry per AlphaLights record,
     /// same order). Authored via the FGD `_tags` key; consumed by the runtime
     /// to populate the scripting entity registry's tag column so
-    /// `world.query({ component: "light", tag: "<tag>" })` can filter lights.
+    /// `getMapEntities("light", { tag: "<tag>" })` can filter lights.
     /// See `light_tags::LightTagsSection`.
     LightTags = 26,
 

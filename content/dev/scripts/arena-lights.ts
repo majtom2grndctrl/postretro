@@ -1,7 +1,7 @@
 import {
   type NamedReactionDescriptor,
   defineReaction,
-  world,
+  getMapEntities,
 } from "postretro";
 import {
   appendText,
@@ -20,7 +20,7 @@ export function setupLevel(_ctx: unknown) {
   const gameState = getGameState();
 
   // Arena 1: angular sweep from the NW corner, counterclockwise.
-  const arena1Raw = world.query({ component: "light", tag: "arena_1_light" });
+  const arena1Raw = getMapEntities("light", { tag: "arena_1_light" });
   if (arena1Raw.length > 0) {
     let centroidX = 0,
       centroidZ = 0;
@@ -83,7 +83,7 @@ export function setupLevel(_ctx: unknown) {
   }
 
   // Arena 2: west-wall wave, south → north (descending engine-x order).
-  const arena2Raw = world.query({ component: "light", tag: "arena_wave_2" });
+  const arena2Raw = getMapEntities("light", { tag: "arena_wave_2" });
   if (arena2Raw.length > 0) {
     const sorted = [...arena2Raw].sort((a, b) => b.position.x - a.position.x);
 
@@ -122,10 +122,7 @@ export function setupLevel(_ctx: unknown) {
 
   // Crusher room: a single baked spotlight pulses slowly enough to inspect the
   // crusher and bridge-door self-shadow handoff while the mover ping-pongs.
-  const crusherPulseLights = world.query({
-    component: "light",
-    tag: "crusher_pulse_light",
-  });
+  const crusherPulseLights = getMapEntities("light", { tag: "crusher_pulse_light" });
   if (crusherPulseLights.length > 0) {
     const brightness = [0.12, 0.18, 0.35, 0.62, 0.88, 1.0, 0.88, 0.62, 0.35, 0.18];
     const steps = crusherPulseLights.map((light) => ({
@@ -148,7 +145,7 @@ export function setupLevel(_ctx: unknown) {
   // Fog demo: both fog entity types in the map carry the "pulse_fog" tag,
   // so the tag-targeted scatter primitive and the per-id fog.pulse sequence
   // both demonstrate cross-subtype dispatch (fog_volume + fog_lamp hit together).
-  const fogs = world.query({ component: "fog_volume", tag: "pulse_fog" });
+  const fogs = getMapEntities("fog", { tag: "pulse_fog" });
   if (fogs.length > 0) {
     // Tag-targeted Primitive: one descriptor, batch-applied to every
     // "pulse_fog" volume regardless of entity subtype.

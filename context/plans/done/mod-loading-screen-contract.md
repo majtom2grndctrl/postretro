@@ -62,6 +62,8 @@ Track 2:
 - `ui_images` is a `BTreeMap<String, String>` on both result types. Path shape (relative, no `..`) is validated at parse; file existence and PNG decode are load-time checks.
 - SDK manifest types register in `crates/sim`; regenerate with `cargo run -p postretro-sim --bin gen-script-types`; freshness test `committed_sdk_types_match_current_registry`.
 
-## Open questions
+## Outcome
 
-None at dispatch.
+- Landed on `feat/mod-loading-screen`; `context/lib/` absorbed the durable facts (`boot_sequence.md` §1 Loading screen, §2; `ui.md` §1, §3, §5; `rendering_pipeline.md`).
+- Accepted for now: on windows wider than 16:9 the fallback logo is smaller than the splash logo at handoff (the splash sizes by window width, UI layout by `min(w/1280, h/720)`). Fitting the splash logo to the 16:9 reference box would remove the step at no boot cost.
+- Unverified at landing: a live windowed load (handoff, bar motion, held frame), ultrawide, DX12, and `sdk/type-tests/loading-screen.ts` under `tsc`.

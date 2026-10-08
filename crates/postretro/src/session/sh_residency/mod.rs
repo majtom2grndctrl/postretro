@@ -286,11 +286,16 @@ impl ShStreamingSession {
         }
     }
 
-    /// Capture uses this to continue its deterministic preload/render loop
-    /// until the complete current visible/owner closure is sampleable.
-    #[cfg(any(test, feature = "capture"))]
+    /// Every current target, optional classes included, is sampleable.
+    #[cfg(test)]
     pub(crate) fn all_targets_sampleable(&self) -> bool {
         self.controller.all_targets_sampleable()
+    }
+
+    /// Settle-set targets not yet sampleable; `None` before the first
+    /// target update. See the controller's `unsettled_targets`.
+    pub(crate) fn unsettled_targets(&self) -> Option<usize> {
+        self.controller.unsettled_targets()
     }
 
     #[cfg(test)]

@@ -79,6 +79,7 @@ fn frame<'a>(
         camera_cell: Some(camera_cell),
         path: PORTAL,
         monotonic_seconds: 0.0,
+        settling: false,
         cpu,
     }
 }
@@ -201,6 +202,7 @@ fn level_issuer_reads_sh_and_lightmap_mandatory_first_in_ascending_offset_on_one
                     path: PORTAL,
                     visible_cells: &visible,
                 },
+                false,
                 &mut drain,
             )
             .unwrap();

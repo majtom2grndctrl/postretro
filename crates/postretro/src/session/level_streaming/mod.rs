@@ -4,6 +4,7 @@
 mod hooks;
 mod io;
 mod sessions;
+pub(crate) mod settle;
 #[cfg(test)]
 mod tests;
 
@@ -33,6 +34,9 @@ pub(crate) struct StreamingFrame<'a> {
     pub(crate) camera_cell: Option<usize>,
     pub(crate) path: VisibilityPath,
     pub(crate) monotonic_seconds: f64,
+    /// A Settling frame: the level is held behind the loading tree until its
+    /// settle set is resident.
+    pub(crate) settling: bool,
     /// This frame's streaming CPU stages; the binary folds them under
     /// `render_prep`.
     pub(crate) cpu: &'a StageFrame<StreamingStage>,
@@ -170,7 +174,7 @@ impl LevelStreaming {
         let lightmap_drains = match (lightmap, lightmap_frame) {
             (Some(lightmap), Some(lightmap_frame)) => {
                 let _scope = frame.cpu.scope(StreamingStage::LightmapResidency);
-                lightmap.begin_drain(lightmap_frame, &mut self.drain)?;
+                lightmap.begin_drain(lightmap_frame, frame.settling, &mut self.drain)?;
                 true
             }
             _ => false,

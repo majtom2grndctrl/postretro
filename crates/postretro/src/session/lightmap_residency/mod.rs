@@ -252,6 +252,12 @@ impl LightmapStreamingSession {
         Ok(summary)
     }
 
+    /// Settle-set blocks not installed; `None` before the first demand
+    /// update. See [`LightmapResidencyController::unsettled_blocks`].
+    pub(crate) fn unsettled_blocks(&self) -> Option<usize> {
+        self.controller.unsettled_blocks()
+    }
+
     /// Whether the camera cell's mandatory set is resident, as of the latest
     /// demand update. See [`LightmapResidencyController::settled`].
     pub(crate) fn settled(&self) -> bool {
@@ -284,12 +290,20 @@ impl LightmapStreamingSession {
 
     /// First half of this frame's drain: demand from this frame's visibility,
     /// completed reads admitted, and ready pairs offered to `drain`.
+    /// A settling frame demands every block its view draws, on any
+    /// visibility path, as capture does: the entry's first frame waits on
+    /// them, where play only holds them.
     pub(in crate::session) fn begin_drain(
         &mut self,
         frame: DemandFrame<'_>,
+        settling: bool,
         drain: &mut SharedDrain,
     ) -> Result<()> {
-        self.controller.update(frame);
+        if settling {
+            self.controller.update_capture_view(frame);
+        } else {
+            self.controller.update(frame);
+        }
         loop {
             match self.completions.try_recv() {
                 Ok(completion) => {

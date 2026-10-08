@@ -21,6 +21,7 @@ fn drain_once(session: &mut LightmapStreamingSession, set: &CellResidencySetSect
                 path: PORTAL,
                 visible_cells: &visible,
             },
+            false,
             &mut drain,
         )
         .unwrap();

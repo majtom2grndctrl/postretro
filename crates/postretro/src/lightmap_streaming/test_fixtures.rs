@@ -355,6 +355,27 @@ impl Rig {
         path: VisibilityPath,
         visible_cells: &VisibleCells,
     ) -> Option<LightmapDrainBatch> {
+        self.frame_as(camera_cell, path, visible_cells, false)
+    }
+
+    /// One Settling frame: capture-view demand, so every drawn block is
+    /// requested on any path.
+    pub(crate) fn settling_frame(
+        &mut self,
+        camera_cell: u32,
+        path: VisibilityPath,
+        visible_cells: &VisibleCells,
+    ) -> Option<LightmapDrainBatch> {
+        self.frame_as(camera_cell, path, visible_cells, true)
+    }
+
+    fn frame_as(
+        &mut self,
+        camera_cell: u32,
+        path: VisibilityPath,
+        visible_cells: &VisibleCells,
+        settling: bool,
+    ) -> Option<LightmapDrainBatch> {
         let Self {
             set,
             controller,
@@ -362,12 +383,17 @@ impl Rig {
             drain,
             ..
         } = self;
-        controller.update(DemandFrame {
+        let frame = DemandFrame {
             residency_set: set,
             camera_cell,
             path,
             visible_cells,
-        });
+        };
+        if settling {
+            controller.update_capture_view(frame);
+        } else {
+            controller.update(frame);
+        }
         drain.begin();
         controller.offer_ready(drain).unwrap();
         drain.admit().unwrap();

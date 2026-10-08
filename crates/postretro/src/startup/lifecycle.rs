@@ -27,7 +27,6 @@ use glam::Vec3;
 use winit::event_loop::ActiveEventLoop;
 
 use crate::App;
-use crate::frame_timing::InterpolableState;
 use crate::render;
 use crate::scripting::builtins::descriptor_materializes_ai_enemy;
 use crate::startup::loading_screen::LoadingStep;
@@ -1470,7 +1469,7 @@ pub(crate) mod tests {
     use std::collections::{BTreeMap, VecDeque};
     use std::time::Instant;
 
-    use crate::frame_timing::{FrameRateMeter, FrameTiming};
+    use crate::frame_timing::{FrameRateMeter, FrameTiming, InterpolableState};
     use crate::input::InputFocus;
     use crate::scripting;
     use crate::scripting::primitives::register_all;

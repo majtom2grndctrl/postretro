@@ -1085,3 +1085,54 @@ fn releasing_ready_pairs_drops_their_payloads_and_in_hand_bytes() {
     let batch = rig.portal(6, &[]).unwrap();
     assert!(batch.ready.is_empty(), "nothing left to drain");
 }
+
+// ---- Settle chokepoint: the lightmap answer ----
+
+/// Settling frames at camera 0 with no band headroom until nothing new
+/// installs, so band blocks stay cold.
+fn settle_lightmap(rig: &mut Rig, path: VisibilityPath, drawn: &[u32]) {
+    for _ in 0..16 {
+        let batch = rig
+            .settling_frame(0, path, &VisibleCells::Culled(drawn.to_vec()))
+            .expect("no outcome outstanding");
+        rig.install_all(&batch, headroom(0));
+        rig.complete_all();
+    }
+}
+
+#[test]
+fn settle_check_waits_on_drawn_blocks_on_every_visibility_path() {
+    for path in [
+        PORTAL,
+        VisibilityPath::PortalStepLimitFallback {
+            considered: 10,
+            accepted: 3,
+        },
+        VisibilityPath::NoPortalsFallback,
+    ] {
+        let mut rig = Rig::corridor(None);
+        assert_eq!(rig.controller.unsettled_blocks(), None, "not yet asked");
+        // Mandatory at L = 16 m: blocks 0, 1, 2. Drawn outside the baked set:
+        // 5 and 6. Band: 3 (20 m) and 4 (30 m).
+        let first = rig
+            .settling_frame(0, path, &VisibleCells::Culled(vec![0, 5, 6]))
+            .expect("no outcome outstanding");
+        assert_eq!(rig.controller.unsettled_blocks(), Some(5), "{path:?}");
+        assert_eq!(rig.controller.target(5), visible(5), "{path:?}");
+
+        rig.install_all(&first, headroom(0));
+        rig.complete_all();
+        settle_lightmap(&mut rig, path, &[0, 5, 6]);
+        assert_eq!(rig.controller.unsettled_blocks(), Some(0), "{path:?}");
+        assert!(
+            rig.controller.target(3).is_some() && rig.controller.target(4).is_some(),
+            "band blocks stay targeted"
+        );
+        assert!(
+            ![3, 4]
+                .iter()
+                .any(|&block| rig.controller.phase(block) == BlockPhase::Installed),
+            "band blocks are still cold, and the set settles anyway"
+        );
+    }
+}

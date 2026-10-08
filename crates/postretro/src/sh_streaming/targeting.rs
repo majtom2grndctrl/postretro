@@ -101,6 +101,7 @@ impl ShResidencyController {
         }
         self.targets = targets;
         self.last_time = Some(monotonic_seconds);
+        self.demand_updated = true;
         Ok(())
     }
 

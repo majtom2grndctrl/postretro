@@ -140,6 +140,7 @@ impl App {
                             camera_cell: Some(visible_render.stats.camera_cell as usize),
                             path: visible_render.stats.path,
                             monotonic_seconds: self.script_time,
+                            settling: true,
                             cpu: &streaming_cpu,
                         },
                     ) {

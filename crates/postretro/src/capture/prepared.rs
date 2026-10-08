@@ -256,8 +256,10 @@ impl PreparedCapture {
         Ok(prepared)
     }
 
-    /// Capture is a fixed authored instant, so make its visible SH closure
-    /// sampleable before either PNG publication or timed measurement begins.
+    /// Capture is a fixed authored instant, so make its settle set sampleable
+    /// before either PNG publication or timed measurement begins: the same SH
+    /// answer the settle chokepoint asks a level entry. Optional targets
+    /// (seam-warm, prefetch) do not hold it.
     fn preload_visible_sh(&mut self, max_frames: usize) -> Result<()> {
         let Some(streaming) = self.sh_streaming.as_mut() else {
             return Ok(());
@@ -268,7 +270,7 @@ impl PreparedCapture {
             if self
                 .sh_streaming
                 .as_ref()
-                .is_some_and(ShStreamingSession::all_targets_sampleable)
+                .is_some_and(|streaming| streaming.unsettled_targets() == Some(0))
             {
                 self.renderer.reset_capture_measurement_timing();
                 return Ok(());
@@ -290,7 +292,7 @@ impl PreparedCapture {
             // record before the captured frame could pin it.
             let _ = self.submit_frame_without_readback(false, 0.0)?;
         }
-        bail!("SH capture preload did not make its visible cluster closure sampleable")
+        bail!("SH capture preload did not make its settle set sampleable")
     }
 
     fn take_sh_drain_batch(&mut self) -> Result<postretro_level_loader::ShDrainBatch> {

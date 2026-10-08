@@ -429,6 +429,7 @@ fn run(world: &LevelWorld, walk: &Walk, levers: Levers) -> RunReport {
                         camera_cell: Some(camera_cell as usize),
                         path: visibility.stats.path,
                         monotonic_seconds: seconds,
+                        settling: false,
                         cpu: &cpu,
                     },
                 )

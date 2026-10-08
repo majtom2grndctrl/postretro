@@ -1731,3 +1731,44 @@ fn outcome_preflight_does_not_evict_before_later_install_counter_overflow() {
     assert_eq!(controller.counters.evictions, 0);
     assert!(controller.in_drain.contains_key(&1));
 }
+
+#[test]
+fn settle_check_waits_on_each_sh_settle_tier_and_ignores_optional_targets() {
+    // Cluster 0 is drawn and owned by 2; 1 neighbours 0 (prefetch); 3 is pinned.
+    let mut controller = controller(hinted_topology(
+        vec![0, 1, 2, 3],
+        vec![vec![1], vec![0], vec![], vec![]],
+        vec![vec![2], vec![], vec![], vec![]],
+        vec![4, 8, 16, 32],
+        Vec::new(),
+        [3].into_iter().collect(),
+        Vec::new(),
+    ));
+    assert_eq!(
+        controller.unsettled_targets(),
+        None,
+        "no view yet: not asked, not settled"
+    );
+    controller
+        .update_targets(&VisibleCells::Culled(vec![0]), Some(0), 0.0)
+        .unwrap();
+    assert!(
+        controller.is_targeted(1),
+        "the neighbour is an optional target"
+    );
+    assert_eq!(
+        controller.unsettled_targets(),
+        Some(3),
+        "visible, owner, pin"
+    );
+
+    for (cluster_id, remaining) in [(0, 2), (2, 1), (3, 0)] {
+        mark_sampleable(&mut controller, cluster_id);
+        assert_eq!(controller.unsettled_targets(), Some(remaining));
+    }
+    assert_ne!(
+        controller.state(1),
+        Some(ClusterResidencyState::Sampleable),
+        "the prefetch target is still cold, and the set settles anyway"
+    );
+}

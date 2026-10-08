@@ -106,6 +106,12 @@ impl TargetClass {
         matches!(self, Self::SeamWarm | Self::Prefetch)
     }
 
+    /// In the set a level entry waits on before its first frame. Owners take
+    /// their dependent's class, so the closure of a settle target is one too.
+    const fn is_settle_target(self) -> bool {
+        matches!(self, Self::Visible | Self::Pinned)
+    }
+
     /// The class on the shared drain scale. Order-preserving, so the shared
     /// drain admits SH clusters in SH's own class order.
     const fn drain_class(self) -> DrainClass {
@@ -273,6 +279,9 @@ pub(crate) struct ShResidencyController {
     non_evictable_overshoot_bytes: u64,
     overshoot_reported: bool,
     prior_visible_misses: BTreeSet<u32>,
+    /// Targets have been derived from a view at least once. Until then an
+    /// empty target set means "not yet asked", not "nothing to hold".
+    demand_updated: bool,
     counters: ShResidencyCounters,
 }
 
@@ -355,6 +364,7 @@ impl ShResidencyController {
             non_evictable_overshoot_bytes: 0,
             overshoot_reported: false,
             prior_visible_misses: BTreeSet::new(),
+            demand_updated: false,
             counters: ShResidencyCounters::default(),
         })
     }
@@ -401,10 +411,26 @@ impl ShResidencyController {
         &self.targets
     }
 
-    /// True only when every current visible/prefetch/owner target has crossed
-    /// the renderer-confirmed one-frame compose boundary. Static capture uses
-    /// this to know when its deterministic preload is complete.
-    #[cfg(any(test, feature = "capture"))]
+    /// Settle-set targets (Visible and Pinned, owner closure included) not
+    /// yet Sampleable, as of the latest target update. `None` before the
+    /// first update: the controller has not been asked for a view yet. A
+    /// failed target stays unsettled; the settle timeout bounds it.
+    pub(crate) fn unsettled_targets(&self) -> Option<usize> {
+        self.demand_updated.then(|| {
+            self.targets
+                .iter()
+                .filter(|&&cluster_id| {
+                    let state = &self.states[cluster_id as usize];
+                    state.class.is_some_and(TargetClass::is_settle_target)
+                        && state.state != ClusterResidencyState::Sampleable
+                })
+                .count()
+        })
+    }
+
+    /// True only when every current target, optional classes included, has
+    /// crossed the renderer-confirmed one-frame compose boundary.
+    #[cfg(test)]
     pub(crate) fn all_targets_sampleable(&self) -> bool {
         self.targets.iter().all(|&cluster_id| {
             self.states

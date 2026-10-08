@@ -253,6 +253,9 @@ pub(crate) struct LightmapResidencyController {
     /// The latest demand update drew cells whose blocks have not yet been
     /// counted for visible misses.
     misses_due: bool,
+    /// Demand has been derived from a view at least once. Until then an empty
+    /// target set means "not yet asked", not "nothing to hold".
+    demand_updated: bool,
     /// Reused by outcome validation.
     outcome_scratch: Vec<u32>,
 }
@@ -345,6 +348,7 @@ impl LightmapResidencyController {
             counters: LightmapResidencyCounters::default(),
             residency: LightmapResidencyBytes::default(),
             misses_due: false,
+            demand_updated: false,
             outcome_scratch: Vec::new(),
         })
     }
@@ -441,6 +445,7 @@ impl LightmapResidencyController {
         self.camera_set_only = !frame.is_portal_walk();
         self.retarget_dirty();
         self.misses_due = frame.draws_cells();
+        self.demand_updated = true;
     }
 
     /// Capture's fixed view: the camera cell's baked set plus every drawn
@@ -455,6 +460,7 @@ impl LightmapResidencyController {
         self.camera_set_only = false;
         self.retarget_dirty();
         self.misses_due = frame.draws_cells();
+        self.demand_updated = true;
     }
 
     /// Demand from `camera_cell`'s baked set within lead L plus the pins, with
@@ -470,6 +476,7 @@ impl LightmapResidencyController {
         self.may_request = true;
         self.camera_set_only = true;
         self.retarget_dirty();
+        self.demand_updated = true;
     }
 
     /// Whether the camera cell's mandatory set (every block within lead L of
@@ -483,6 +490,28 @@ impl LightmapResidencyController {
             slot.target
                 .is_none_or(|target| target.class != LightmapBlockClass::Mandatory)
                 || slot.phase == BlockPhase::Installed
+        })
+    }
+
+    /// Settle-set blocks not installed, as of the latest demand update: every
+    /// mandatory block and every visible (drawn) one. Under
+    /// [`Self::update_capture_view`] demand, which Settling uses, that is
+    /// every block the view draws on any visibility path. `None` before the
+    /// first demand update. A failed pair stays unsettled; the settle timeout
+    /// bounds it.
+    pub(crate) fn unsettled_blocks(&self) -> Option<usize> {
+        self.demand_updated.then(|| {
+            self.slots
+                .iter()
+                .filter(|slot| {
+                    slot.target.is_some_and(|target| {
+                        matches!(
+                            target.class,
+                            LightmapBlockClass::Mandatory | LightmapBlockClass::Visible
+                        )
+                    }) && slot.phase != BlockPhase::Installed
+                })
+                .count()
         })
     }
 

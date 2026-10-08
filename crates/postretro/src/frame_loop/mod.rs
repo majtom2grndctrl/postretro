@@ -1946,6 +1946,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                 camera_cell: app.level.as_ref().map(|_| stats.camera_cell as usize),
                 path: stats.path,
                 monotonic_seconds: app.script_time,
+                settling: false,
                 cpu: &streaming_cpu,
             },
         ) {

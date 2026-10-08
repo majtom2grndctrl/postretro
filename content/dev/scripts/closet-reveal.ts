@@ -1,57 +1,61 @@
-// Timed, interruptible closet reveal with a replicated alarm cue.
+// Timed, interruptible closet reveal with a replicated alarm cue: the SDK
+// addressing surface in one set piece — map members, NPC and player groups,
+// and a trigger member's per-volume events.
+// Luau twin: closet-reveal.luau (byte-identical wire, so every reaction is
+// named — derived ids differ per runtime).
 // See: context/lib/scripting.md §12
 
-import { defineReaction, npcs, getMapEntities, fire, wait } from "postretro";
-import type { NamedReactionDescriptor } from "postretro";
+import { defineReaction, getMapEntities, npcs, players, fire, wait } from "postretro";
+import type { TriggerEventParams } from "postretro";
 import { onStateCrossing, updateState } from "postretro/ui";
 import { closetStore } from "./closet-store";
 
-// System-targeted state write: a Primitive reaction, dispatched via `fire()`
-// — never a sequence step.
+// System-targeted state write: a primitive reaction, dispatched via `fire()`.
 const raiseAlarm = defineReaction("closet.raiseAlarm", updateState(closetStore.alarm, 1));
-
-// An NPC group command, resolved when the reaction fires.
-const releaseCloset = defineReaction(
-  "closet.releaseCloset",
-  npcs({ tag: "closet_enemies" }).update({ aggro: true }),
+// Stepping off the plate heals whoever stepped off.
+const patchUp = defineReaction("closet.patchUp", (on: TriggerEventParams) =>
+  on.activators.grantHealth(25),
 );
+// Every seat-bound player, resolved when the reaction fires.
+const resupply = defineReaction("closet.resupply", players().grantAmmo("shells.buck", 8));
 
 export function setupLevel() {
-  const door = getMapEntities("mover", { tag: "closet_door" });
-  const alarmLights = getMapEntities("light", { tag: "closet_alarm" });
+  const door = getMapEntities("mover", { tag: "closet_door" }); // members, fixed at install
+  const closets = getMapEntities("spawner", { tag: "closet_spawner" }); // spawned_tags "closet"
+  const plate = getMapEntities("trigger", { tag: "closet_reveal_plate" });
+  const alarmLights = getMapEntities("light", { tag: "closet_alarm" }).sort(
+    (a, b) => a.position.x - b.position.x, // inspect in JS
+  );
+  // Group: the placed residents and whatever the spawners release.
+  const closet = npcs({ tag: "closet" });
 
-  // Client-local presentation: pulses the closet_alarm light whenever the
-  // replicated alarm slot reads nonzero. Runs on every client independently
-  // of the host scheduler — the wait above is host-only and never reaches
-  // here; this reaction only watches the slot the alarm write settles.
+  // Client-local presentation: pulses the alarm lights, staggered west to
+  // east, whenever the replicated alarm slot reads nonzero. The wait below is
+  // host-only; this reaction only watches the slot the alarm write settles.
   const alarmLight = defineReaction("closet.alarmLight", {
-    sequence: alarmLights.flatMap((l) => l.pulse({ min: 0.3, max: 1.0, periodMs: 400 })),
+    sequence: alarmLights.flatMap((l, i) =>
+      l.pulse({ min: 0.3, max: 1.0, periodMs: 400 + i * 50 }),
+    ),
   });
-
-  // One authored beat: raise the alarm now, hold, then slam and release
-  // together. Stepping off the plate during the hold cancels both.
+  // One authored beat: raise the alarm now, hold, then open, release and
+  // rouse the closet. Stepping off the plate during the hold cancels the rest.
   const reveal = defineReaction("closet.timedReveal", {
     sequence: [
-      ...fire(raiseAlarm), // dispatched; replicates, clients light it locally
-      ...wait(800, { interruptible: true }), // enrolls the remainder, stops here
-      ...door.flatMap((m) => m.start()), // resumes ~48 ticks later
-      ...fire(releaseCloset), // dispatches the NPC-group release
+      ...fire(raiseAlarm),
+      ...wait(800, { interruptible: true }),
+      ...door.flatMap((m) => m.start()),
+      ...closets.flatMap((s) => s.fire()),
+      closet.update({ aggro: true }), // whoever exists when this step runs
+      closet.damage(5),
+      ...fire(resupply),
     ],
   });
 
-  const reactions: NamedReactionDescriptor[] = [reveal, raiseAlarm, releaseCloset, alarmLight];
-
   return {
-    reactions,
-    // No "exit" registration needed — V5 derives the Exit edge from the
-    // interruptible wait.
-    triggerEvents: getMapEntities("trigger", { tag: "closet_reveal_plate" }).map((plate) =>
-      plate.on("enter", [reveal]),
-    ),
-    // Crossing is frame-sampled (O44): this fixture never re-writes `alarm`
-    // back to 0 in the same frame the alarm-raising landing runs, so no
-    // opposing landing ever shares a frame with the write and the crossing
-    // always observes it.
+    reactions: [reveal, raiseAlarm, alarmLight, patchUp, resupply],
+    triggerEvents: plate.flatMap((t) => [t.on("enter", [reveal]), t.on("exit", [patchUp])]),
+    // Crossing is frame-sampled (O44): nothing writes `alarm` back to 0 in the
+    // frame the alarm write lands, so the crossing always observes it.
     crossings: [onStateCrossing(closetStore.alarm, { above: 0 }, [alarmLight])],
   };
 }

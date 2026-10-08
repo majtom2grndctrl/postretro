@@ -21,7 +21,7 @@
 // degenerate duplicate-point faces.
 // Scripts-first authoring: the trigger names no reaction and commands no mover,
 // so prl-build prints a benign [inert trigger] note. That is a static-view
-// false positive; the compiler cannot see the onTriggerEvent binding in
+// false positive; the compiler cannot see the trigger member on binding in
 // spawner-test.ts that owns the plate enter edge.
 // NOTE: keep map comments free of braces and quotes; the .map parser does not
 // fully strip // comments and those characters break the parse.
@@ -143,9 +143,10 @@
 }
 // entity 2
 // Scripts-first trigger: it carries only its _tags handle. spawner-test.ts
-// binds onTriggerEvent by this tag and fans out the door, spawn, and alarm
-// reactions on the enter edge. No target_tag/command/on_fire KVP, so prl-build
-// prints a benign [inert trigger] note it cannot resolve to the script observer.
+// binds each tagged member through its trigger member on method and fans out
+// the door, spawn, and alarm reactions on the enter edge. No
+// target_tag/command/on_fire KVP, so prl-build prints a benign [inert trigger]
+// note it cannot resolve to the script observer.
 {
 "classname" "trigger_volume"
 "_tags" "closet_reveal_plate"

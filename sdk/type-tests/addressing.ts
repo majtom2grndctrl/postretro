@@ -69,7 +69,7 @@ npcs().grantHealth(5);
 players().update({ aggro: true });
 // Retired spellings are reached by element access so the retired-name grep
 // gate over `sdk/` stays clean; each must still fail to compile.
-// @ts-expect-error The free target-taking verbs retired with plain tag targets: `damage("boss", 10)` (S3).
+// @ts-expect-error The free target-taking verbs retired with plain tag targets: `damage` taking a tag string (S3).
 Postretro["damage"]("boss", 10);
 // @ts-expect-error `enemies` retired; NPCs are `npcs({ tag })`.
 Postretro["enemies"]({ tag: "closet" });

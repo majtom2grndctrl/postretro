@@ -15,6 +15,8 @@ use std::process::{Command, Stdio};
 
 mod crate_graph;
 mod dist;
+#[cfg(test)]
+mod surface_gates;
 
 fn main() {
     let code = match try_main() {

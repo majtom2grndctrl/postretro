@@ -173,7 +173,7 @@ pub use lightmap_streaming::{
     MAX_LIGHTMAP_POOL_CAP_LAYERS,
 };
 use promoted_depth_cache::{PromotedDepthCache, PromotedDepthCacheFramePlan};
-pub use renderer_render_frame::ShDrainFrameResult;
+pub use renderer_render_frame::{FrameScene, ShDrainFrameResult};
 pub use renderer_splash::PresentationDrawInput;
 pub use residency::{
     ResidencyAllocation, ResidencyAllocationShape, ResidencyAllocationState, ResidencySource,

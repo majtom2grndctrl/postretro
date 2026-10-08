@@ -1937,7 +1937,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
         let streaming_cpu = postretro_stage_timing::StageFrame::<cpu_timing::StreamingStage>::new(
             app.cpu_timer.gate(),
         );
-        let sh_drain_batch = match session.prepare_streaming_drains(
+        let sh_drain_batch = match session.run_level_streaming_step(
             sh_stream_manifest.as_ref(),
             app.level.as_ref(),
             renderer,
@@ -1956,15 +1956,6 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                 return;
             }
         };
-        // The lightmap drain runs now, before the forward pass is
-        // recorded, so this frame samples what it made resident.
-        if let Err(err) =
-            session.drain_lightmap_streaming(renderer, &streaming_cpu, app.script_time)
-        {
-            app.exit_result = Err(err);
-            event_loop.exit();
-            return;
-        }
         app.cpu_timer.nested_mut().extend_from(
             &streaming_cpu,
             Some(postretro_stage_timing::StageSet::label(
@@ -2418,7 +2409,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                 b: 0.08,
                 a: 1.0,
             },
-            true,
+            render::FrameScene::World,
             sh_drain_batch,
         ) {
             Ok(result) => result,

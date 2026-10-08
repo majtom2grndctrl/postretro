@@ -336,6 +336,7 @@ impl Renderer {
         cam_vis: CameraCullVisibility<'_>,
         view_proj: Mat4,
         render_world: bool,
+        composes_sh: bool,
         frame_light_term_mask: LightTermMask,
     ) -> bool {
         let visible: &VisibleCells = cam_vis.cells;
@@ -555,7 +556,7 @@ impl Renderer {
         }
 
         // Before depth pre-pass: storage-write → sampled-read barrier for SH.
-        if render_world {
+        if composes_sh {
             let _sh_compose_scope = cpu.scope(RenderStage::ShCompose);
             let sh_compose_ts = full
                 .frame_timing

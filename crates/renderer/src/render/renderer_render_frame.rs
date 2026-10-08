@@ -23,6 +23,29 @@ pub struct ShDrainFrameResult<T> {
     pub acquire_nanos: Option<u64>,
 }
 
+/// What a windowed frame records beneath its UI.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FrameScene {
+    /// The level: every world pass, plus streamed SH compose for this frame's
+    /// sample regions.
+    World,
+    /// No world draw, but streamed SH compose for the sample regions, so a
+    /// held level's clusters become sampleable before it is first shown.
+    ComposeOnly,
+    /// Neither: a clear and the UI (frontend, first-launch hold, Loading).
+    Empty,
+}
+
+impl FrameScene {
+    pub fn draws_world(self) -> bool {
+        self == Self::World
+    }
+
+    pub fn composes_sh(self) -> bool {
+        self != Self::Empty
+    }
+}
+
 // Must match the near/far the caller bakes into `view_proj`
 // (`postretro::camera::{NEAR, FAR}`) — the fog pass reconstructs
 // view-space depth by inverting that projection.
@@ -62,7 +85,7 @@ impl Renderer {
         particle_collections: &[(&str, &[u8])],
         now_seconds: f64,
         clear_color: ClearColor,
-        render_world: bool,
+        scene: FrameScene,
         sh_drain_batch: ShDrainBatch,
     ) -> std::result::Result<ShDrainFrameResult<Option<PresentHandle>>, ShResidencyDrainError> {
         // The binary commits after its option writes and before building the
@@ -118,7 +141,7 @@ impl Renderer {
                 &[],
                 now_seconds,
                 clear_color,
-                render_world,
+                scene,
             )?;
             {
                 let _submit = cpu.scope(RenderStage::Submit);
@@ -160,8 +183,9 @@ impl Renderer {
         capture_animated_promotion_weights: &[(usize, f32)],
         now_seconds: f64,
         clear_color: ClearColor,
-        render_world: bool,
+        scene: FrameScene,
     ) -> Result<bool> {
+        let render_world = scene.draws_world();
         // The drawable visible-cell set; candidate-cull eligibility derives
         // from `cam_vis` (set + path provenance) inside `record_pre_scene_compute`.
         let visible: &VisibleCells = cam_vis.cells;
@@ -278,6 +302,7 @@ impl Renderer {
                 cam_vis,
                 view_proj,
                 true,
+                true,
                 frame_light_term_mask,
             );
             let direct_scope = cpu.scope(RenderStage::DirectShCompose);
@@ -285,13 +310,31 @@ impl Renderer {
             drop(direct_scope);
         } else {
             let _pre_scene_scope = cpu.scope(RenderStage::PreScene);
+            let composes_sh = scene.composes_sh();
+            if composes_sh {
+                // No light slots run without the world, so no baked light is
+                // promoted: the held view composes its full baked direct SH.
+                let _prep_scope = cpu.scope(RenderStage::ShComposePrep);
+                self.prepare_streamed_sh_compose(
+                    sh_sample_regions,
+                    None,
+                    false,
+                    fog_reachable.is_empty(),
+                    true,
+                )?;
+            }
             compose_succeeded &= self.record_pre_scene_compute(
                 encoder,
                 cam_vis,
                 view_proj,
                 false,
+                composes_sh,
                 frame_light_term_mask,
             );
+            if composes_sh {
+                let _direct_scope = cpu.scope(RenderStage::DirectShCompose);
+                compose_succeeded &= self.record_direct_sh_pre_scene_compute(encoder);
+            }
         }
 
         // --- Skinned-mesh pose/upload HOIST ----------------------------------

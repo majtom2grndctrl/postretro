@@ -53,6 +53,27 @@ impl crate::session::Session {
             .prepare_drains(&mut self.sh_streaming, residency_set, frame)
     }
 
+    /// The frame's whole streaming step, shared by every frame that holds a
+    /// level: [`Self::prepare_streaming_drains`], then
+    /// [`Self::drain_lightmap_streaming`]. Returns SH's batch for the
+    /// renderer's pre-compose drain. A Running frame draws what it made
+    /// resident; a held frame (Settling) composes it without drawing.
+    pub(crate) fn run_level_streaming_step(
+        &mut self,
+        sh_manifest: Option<&Arc<ShStreamManifest>>,
+        level: Option<&LevelWorld>,
+        renderer: &mut Renderer,
+        frame: StreamingFrame<'_>,
+    ) -> Result<ShDrainBatch> {
+        let cpu = frame.cpu;
+        let now_seconds = frame.monotonic_seconds;
+        let batch = self.prepare_streaming_drains(sh_manifest, level, renderer, frame)?;
+        // The lightmap drain runs before the frame records its passes, so
+        // the frame samples what it made resident.
+        self.drain_lightmap_streaming(renderer, cpu, now_seconds)?;
+        Ok(batch)
+    }
+
     /// Level install: creates the level's streaming sessions, then makes the
     /// spawn camera cell's mandatory lightmap set resident before the first
     /// frame renders. `spawn_eye` is the eye the first frame presents. See

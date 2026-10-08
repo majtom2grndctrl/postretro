@@ -91,7 +91,7 @@
   /** Narrows a member query to instances carrying `tag`. */
   export type MapEntityFilter = { tag?: string };
 
-  /** Return the map-placed members of `kind`, optionally only those carrying `tag`, in authored map order. Membership is fixed at install: an instance a runtime spawn carries never appears. Returns `[]` on no match. Callable only inside a level's `setupLevel`; elsewhere it raises. */
+  /** Return the map-placed members of `kind`, optionally only those carrying `tag`, in authored map order. Membership is fixed at install: an instance a runtime spawn carries never appears. Returns `[]` on no match. Callable only inside a level's data script (module evaluation or `setupLevel`); elsewhere it raises. */
   export function getMapEntities<K extends MapEntityKind>(kind: K, filter?: MapEntityFilter): MapEntityForKind<K>[];
 
   /** Current world gravity in m/s² (negative = downward; positive = upward). Seeded from the worldspawn `initialGravity` KVP at level load and persists until the next level load or `setGravity` call. */
@@ -131,12 +131,12 @@
     onComplete?: string;
   };
 
-  /** Trigger primitive `armTrigger` takes no payload; its target is a trigger member's id, `@trigger` (`on.trigger`), or a raw descriptor's `tag`. */
+  /** Trigger primitive `armTrigger` takes no payload; its target is a trigger member's id (a member handle's `arm()` / `disarm()`), a subject-token command (`on.trigger.arm()` carries `target: "@trigger"`), or a raw descriptor's `tag`. */
   export interface ArmTriggerArgs {
     readonly [key: string]: never;
   }
 
-  /** Trigger primitive `disarmTrigger` takes no payload; its target is a trigger member's id, `@trigger` (`on.trigger`), or a raw descriptor's `tag`. */
+  /** Trigger primitive `disarmTrigger` takes no payload; its target is a trigger member's id (a member handle's `arm()` / `disarm()`), a subject-token command (`on.trigger.arm()` carries `target: "@trigger"`), or a raw descriptor's `tag`. */
   export interface DisarmTriggerArgs {
     readonly [key: string]: never;
   }
@@ -213,9 +213,9 @@
   export type MoverSetBlockPolicyStep = { id: EntityId; primitive: "moverSetBlockPolicy"; args: { policy: "displace" | "reverse" | "stop" | "crush" } };
 
   /** Sequence step that arms one trigger volume. */
-  export type ArmTriggerStep = { id: EntityId | "@trigger"; primitive: "armTrigger"; args: ArmTriggerArgs };
+  export type ArmTriggerStep = { id: EntityId; primitive: "armTrigger"; args: ArmTriggerArgs };
   /** Sequence step that disarms one trigger volume. */
-  export type DisarmTriggerStep = { id: EntityId | "@trigger"; primitive: "disarmTrigger"; args: DisarmTriggerArgs };
+  export type DisarmTriggerStep = { id: EntityId; primitive: "disarmTrigger"; args: DisarmTriggerArgs };
   /** Sequence step that spawns one batch from one spawner member (`s.fire()`). */
   export type SpawnFromSpawnerStep = { id: EntityId; primitive: "spawnFromSpawner"; args?: never };
 

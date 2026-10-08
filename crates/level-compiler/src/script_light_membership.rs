@@ -5,10 +5,23 @@
 
 use anyhow::{Context as _, Result, bail};
 use postretro_level_format::light_membership::{
-    LightComponentSnapshot, LightMembershipManifest, LightTable, LightTableLight,
+    LightComponentSnapshot, LightMembershipManifest, LightTable, LightTableLight, MapMember,
+    MapMemberKind,
 };
 
-use crate::map_data::{FalloffModel, LightType, MapLight, animated_light_placeholder};
+use crate::map_data::{
+    FalloffModel, LightType, MapEntityRecord, MapKinematicMover, MapLight, MapTriggerVolume,
+    animated_light_placeholder,
+};
+
+/// Runtime classname whose built-in handler places a spawner
+/// (`postretro-sim` `scripting::builtins::entity_spawner::CLASSNAME`). The
+/// level compiler interprets no other map-entity classname as a member.
+const ENTITY_SPAWNER_CLASSNAME: &str = "entity_spawner";
+
+/// Raw KVP the runtime spawner handler splits on whitespace into the tags its
+/// spawns carry.
+const SPAWNED_TAGS_KEY: &str = "spawned_tags";
 
 /// Inventory emitted by `prl-build` after it accepts a manifest. Keeping it as
 /// data makes the routing decision directly testable; logging stays at the
@@ -64,6 +77,51 @@ pub(crate) fn light_table_from_lights(lights: &[MapLight]) -> Result<LightTable>
         })
         .collect::<Result<Vec<_>>>()?;
     Ok(LightTable::new(lights))
+}
+
+/// Build the non-light member table: exactly the movers, trigger volumes
+/// (switches included) and spawners the runtime places, each with the tags and
+/// Transform position runtime gives it. Order is authored order within each
+/// kind, the order runtime spawns them and therefore answers queries in.
+///
+/// Positions mirror the runtime spawn sites: a mover's packed origin
+/// (`runtime_movers` spawns at the PRL record origin), a trigger volume's AABB
+/// center (`TriggerVolumeBridge::populate_from_level`), and a spawner's
+/// narrowed entity origin (`entity_spawner::handle`).
+pub(crate) fn map_members_from_map(
+    movers: &[MapKinematicMover],
+    triggers: &[MapTriggerVolume],
+    entities: &[MapEntityRecord],
+) -> Vec<MapMember> {
+    let movers = movers.iter().map(|mover| MapMember {
+        kind: MapMemberKind::KinematicMover,
+        tags: mover.tags.clone(),
+        position: vec3(mover.origin),
+        spawned_tags: Vec::new(),
+    });
+    let triggers = triggers.iter().map(|trigger| MapMember {
+        kind: MapMemberKind::TriggerVolume,
+        tags: trigger.tags.clone(),
+        position: aabb_center(trigger.aabb_min, trigger.aabb_max),
+        spawned_tags: Vec::new(),
+    });
+    let spawners = entities
+        .iter()
+        .filter(|entity| entity.classname == ENTITY_SPAWNER_CLASSNAME)
+        .map(|entity| MapMember {
+            kind: MapMemberKind::Spawner,
+            tags: entity.tags.clone(),
+            position: vec3(entity.origin),
+            // The runtime reads the KVP table last-occurrence-wins.
+            spawned_tags: entity
+                .key_values
+                .iter()
+                .rev()
+                .find(|(key, _)| key == SPAWNED_TAGS_KEY)
+                .map(|(_, raw)| raw.split_whitespace().map(str::to_owned).collect())
+                .unwrap_or_default(),
+        });
+    movers.chain(triggers).chain(spawners).collect()
 }
 
 /// Validate and apply script-derived membership before namespaces are formed.
@@ -190,6 +248,11 @@ pub(crate) fn log_inventory(inventory: &MembershipInventory, lights: &[MapLight]
             "[prl-build] light membership: data-script evaluation stubbed primitive {primitive}"
         );
     }
+}
+
+/// The runtime trigger Transform: `(min + max) * 0.5` in `f32`.
+fn aabb_center(min: [f32; 3], max: [f32; 3]) -> [f32; 3] {
+    std::array::from_fn(|axis| (min[axis] + max[axis]) * 0.5)
 }
 
 fn vec3(origin: glam::DVec3) -> [f32; 3] {
@@ -436,5 +499,207 @@ mod tests {
         assert_eq!(table.lights.len(), 1);
         assert_eq!(table.lights[0].index, 1);
         assert_eq!(table.lights[0].tags, ["runtime"]);
+    }
+
+    /// Parse `map_text` through the real `.map` front end.
+    fn parse_inline_map(label: &str, map_text: &str) -> crate::map_data::MapData {
+        let path = std::env::temp_dir().join(format!(
+            "postretro-map-members-{label}-{}.map",
+            std::process::id()
+        ));
+        std::fs::write(&path, format!("{}\n", map_text.trim())).expect("write fixture map");
+        let parsed = crate::parse::parse_map_file(&path, crate::map_format::MapFormat::IdTech2);
+        let _ = std::fs::remove_file(&path);
+        parsed.expect("fixture map parses")
+    }
+
+    fn box_brush(min: [i32; 3], max: [i32; 3], texture: &str) -> String {
+        let ([x0, y0, z0], [x1, y1, z1]) = (min, max);
+        format!(
+            "{{\n\
+             ( {x0} 0 0 ) ( {x0} 1 0 ) ( {x0} 0 1 ) {texture} 0 0 0 1 1\n\
+             ( {x1} 0 0 ) ( {x1} 0 1 ) ( {x1} 1 0 ) {texture} 0 0 0 1 1\n\
+             ( 0 {y0} 0 ) ( 0 {y0} 1 ) ( 1 {y0} 0 ) {texture} 0 0 0 1 1\n\
+             ( 0 {y1} 0 ) ( 1 {y1} 0 ) ( 0 {y1} 1 ) {texture} 0 0 0 1 1\n\
+             ( 0 0 {z0} ) ( 1 0 {z0} ) ( 0 1 {z0} ) {texture} 0 0 0 1 1\n\
+             ( 0 0 {z1} ) ( 0 1 {z1} ) ( 1 0 {z1} ) {texture} 0 0 0 1 1\n\
+             }}"
+        )
+    }
+
+    fn worldspawn() -> String {
+        format!(
+            "// entity 0\n{{\n\"classname\" \"worldspawn\"\n{}\n}}\n",
+            box_brush([-512, -512, -512], [-448, -448, -448], "static_tex")
+        )
+    }
+
+    /// A mover, a trigger volume, a switch, a spawner, and a point entity the
+    /// runtime does not place as a member, in that authored order.
+    fn member_map() -> String {
+        let mover = box_brush([-32, -32, -16], [32, 32, 16], "mover_tex");
+        let trigger = box_brush([256, 0, 0], [288, 32, 64], "trigger_tex");
+        let switch = box_brush([512, 0, 0], [544, 32, 32], "switch_tex");
+        format!(
+            r#"{world}// entity 1
+{{
+"classname" "kinematic_mover"
+"name" "lift_a"
+"path" "wp_a"
+"_tags" "lift arena"
+{mover}
+}}
+// entity 2
+{{
+"classname" "kinematic_waypoint"
+"name" "wp_a"
+"next" "wp_b"
+"origin" "0 0 0"
+}}
+// entity 3
+{{
+"classname" "kinematic_waypoint"
+"name" "wp_b"
+"next" ""
+"origin" "0 0 64"
+}}
+// entity 4
+{{
+"classname" "trigger_volume"
+"name" "plate"
+"on_fire" "open_gate"
+"_tags" "plate"
+{trigger}
+}}
+// entity 5
+{{
+"classname" "switch"
+"name" "panel"
+"on_fire" "open_door"
+"_tags" "panel"
+{switch}
+}}
+// entity 6
+{{
+"classname" "entity_spawner"
+"origin" "64 32 16"
+"archetype" "cultist"
+"count" "2"
+"_tags" "closet"
+"spawned_tags" "  wave_1 wave_2 "
+}}
+// entity 7
+{{
+"classname" "info_marker"
+"origin" "8 8 8"
+"_tags" "closet"
+"spawned_tags" "not_a_spawner"
+}}
+"#,
+            world = worldspawn()
+        )
+    }
+
+    // Regression: build-side mover, trigger and spawner queries answered `[]`
+    // because `prl-build` sent no member table, so a level script indexing a
+    // member failed the map compile. The table now carries exactly the
+    // members runtime places, at the positions and with the tags runtime
+    // gives them.
+    #[test]
+    fn parsed_map_members_mirror_runtime_placement() {
+        let map = parse_inline_map("members", &member_map());
+        let members = map_members_from_map(
+            &map.kinematic_movers,
+            &map.trigger_volumes,
+            &map.map_entities,
+        );
+
+        let kinds: Vec<_> = members.iter().map(|member| member.kind).collect();
+        assert_eq!(
+            kinds,
+            [
+                MapMemberKind::KinematicMover,
+                MapMemberKind::TriggerVolume,
+                MapMemberKind::TriggerVolume,
+                MapMemberKind::Spawner,
+            ],
+            "a switch is a trigger volume; an unhandled classname is no member"
+        );
+        let tags: Vec<_> = members.iter().map(|member| member.tags.clone()).collect();
+        assert_eq!(
+            tags,
+            [
+                vec!["lift".to_string(), "arena".to_string()],
+                vec!["plate".to_string()],
+                vec!["panel".to_string()],
+                vec!["closet".to_string()],
+            ]
+        );
+        assert_eq!(members[3].spawned_tags, ["wave_1", "wave_2"]);
+        assert!(
+            members[..3]
+                .iter()
+                .all(|member| member.spawned_tags.is_empty())
+        );
+
+        // Runtime Transform sources: the packed mover origin, the trigger
+        // AABB center (after switch use-reach growth), the spawner origin.
+        assert_eq!(members[0].position, vec3(map.kinematic_movers[0].origin));
+        for (member, trigger) in members[1..3].iter().zip(&map.trigger_volumes) {
+            let min = glam::Vec3::from(trigger.aabb_min);
+            let max = glam::Vec3::from(trigger.aabb_max);
+            assert_eq!(member.position, ((min + max) * 0.5).to_array());
+        }
+        let spawner = map
+            .map_entities
+            .iter()
+            .find(|entity| entity.classname == ENTITY_SPAWNER_CLASSNAME)
+            .expect("spawner record");
+        assert_eq!(members[3].position, vec3(spawner.origin));
+        assert_ne!(members[3].position, [0.0; 3]);
+
+        let json = serde_json::to_value(
+            light_table_from_lights(&map.lights)
+                .expect("table builds")
+                .with_map_members(members),
+        )
+        .expect("table serializes");
+        let wire_kinds: Vec<_> = json["mapMembers"]
+            .as_array()
+            .expect("mapMembers present")
+            .iter()
+            .map(|member| member["kind"].as_str().expect("kind").to_owned())
+            .collect();
+        assert_eq!(
+            wire_kinds,
+            [
+                "kinematic_mover",
+                "trigger_volume",
+                "trigger_volume",
+                "spawner"
+            ]
+        );
+        assert_eq!(json["mapMembers"][3]["spawnedTags"][1], "wave_2");
+        assert!(json["mapMembers"][0].get("spawnedTags").is_none());
+    }
+
+    // A map with no movers, triggers or spawners sends the same light-table
+    // bytes as before the member table existed.
+    #[test]
+    fn map_without_members_sends_a_lights_only_light_table() {
+        let map = parse_inline_map("no-members", &worldspawn());
+        let members = map_members_from_map(
+            &map.kinematic_movers,
+            &map.trigger_volumes,
+            &map.map_entities,
+        );
+        assert!(members.is_empty());
+        let table = light_table_from_lights(&map.lights)
+            .expect("table builds")
+            .with_map_members(members);
+        assert_eq!(
+            serde_json::to_vec(&table).expect("table serializes"),
+            br#"{"version":1,"lights":[]}"#
+        );
     }
 }

@@ -3,8 +3,7 @@
 // a player entering the volume on tick k → bound commands applied in that tick.
 // The named and scheduled paths are covered in
 // `scripting_systems/group_command_tests.rs`.
-// See: context/plans/in-progress/sdk-addressing-model/index.md — Groups,
-// Sequences, Roles; research.md Ordering pins A1, A2, A4, A11.
+// See: context/lib/scripting.md §12.
 
 use std::collections::{HashMap, HashSet};
 
@@ -397,7 +396,7 @@ pub(super) fn warnings(records: &[CapturedRecord]) -> Vec<&CapturedRecord> {
         .collect()
 }
 
-// G1 trigger-tick path (research A1): the npc group keeps its kind in the
+// Trigger-tick path: the npc group keeps its kind in the
 // tick. A kindless tag binding would damage the tagged pawn too.
 #[test]
 fn trigger_tick_npc_group_damage_skips_a_player_pawn_carrying_the_tag() {
@@ -442,7 +441,7 @@ fn trigger_tick_npc_group_damage_skips_a_player_pawn_carrying_the_tag() {
     );
 }
 
-// G2 (research A2): tagless player and npc groups bind at install — as a
+// Tagless player and npc groups bind at install — as a
 // primitive body and as a step before a wait — and apply on the enter tick,
 // with no missing-tag warning anywhere in binding.
 #[test]
@@ -482,7 +481,7 @@ fn trigger_tick_tagless_groups_bind_at_install_and_apply_on_the_enter_tick() {
         !install_logs
             .iter()
             .any(|record| record.message.contains("no target tag")
-                || record.message.contains("requires a fire-time tag target")),
+                || record.message.contains("requires a tag or group target")),
         "a tagless group is a complete target, never a missing tag: {install_logs:?}"
     );
     assert!(
@@ -516,7 +515,7 @@ fn trigger_tick_tagless_groups_bind_at_install_and_apply_on_the_enter_tick() {
     );
 }
 
-// G3, `on.activators` half: in the tick, the activator token credits only the
+// `on.activators` half: in the tick, the activator token credits only the
 // pawn whose entry fired, and the player group credits every pawn exactly once.
 #[test]
 fn trigger_tick_activators_credit_only_the_firer_while_the_player_group_credits_each_pawn_once() {
@@ -570,7 +569,7 @@ fn trigger_tick_activators_credit_only_the_firer_while_the_player_group_credits_
     assert_eq!(level.health(npc), START_HEALTH, "an NPC is no player");
 }
 
-// Q5: in a trigger-fired sequence, activator and group steps before the wait
+// In a trigger-fired sequence, activator and group steps before the wait
 // apply inside the trigger's tick, in authored order; the tail does not.
 #[test]
 fn trigger_fired_sequence_applies_activator_and_group_steps_before_the_wait_in_the_tick() {
@@ -613,7 +612,7 @@ fn trigger_fired_sequence_applies_activator_and_group_steps_before_the_wait_in_t
     assert!(entered.residual_fired, "the wait tail drains at frame end");
 }
 
-// Q5 through the SDK-authored form: subject-token and group commands are
+// Through the SDK-authored form: subject-token and group commands are
 // unspread sequence entries, and those before the wait apply inside the
 // trigger's tick in authored order — `on.trigger.disarm()` included; the tail
 // waits for the frame-end drain.
@@ -672,7 +671,7 @@ fn sdk_authored_token_and_group_entries_before_the_wait_apply_in_the_trigger_tic
     assert!(entered.residual_fired, "the wait tail drains at frame end");
 }
 
-// A4, tick half: a group step bound after a tag-targeted spawn on the same
+// Tick half: a group step bound after a tag-targeted spawn on the same
 // edge sees the NPCs that spawn produced in the same tick. The `s.fire()`
 // member form is covered below (`trigger_tick_spawner_member_*`).
 #[test]
@@ -755,7 +754,7 @@ fn trigger_tick_npc_group_after_a_spawn_on_the_same_edge_reaches_the_spawned_npc
     assert!(!level.aggro(resident));
 }
 
-// R1/R2 on the tick path. A connected client never runs this path today: its
+// On the tick path. A connected client never runs this path today: its
 // frame advances prediction only and `continue`s before `simulate_tick`
 // (`postretro/src/main.rs`, the `is_connected_client()` branch), so no trigger
 // tick fires there. This pins the role rule the bound commands carry anyway:
@@ -881,9 +880,9 @@ fn near(registry: &EntityRegistry, ids: &HashSet<EntityId>, anchor: EntityId) ->
         .count()
 }
 
-// M5 / A3 / A5, trigger tick: `[s.fire(), s.fire()]` Enter-bound spawns two
+// Trigger tick: `[s.fire(), s.fire()]` Enter-bound spawns two
 // batches from `s` on the enter tick and nothing from a sibling sharing its
-// tag. The id step binds without the "requires a fire-time tag target"
+// tag. The id step binds without the "requires a tag or group target"
 // warning, and nothing warns while it applies.
 #[test]
 fn trigger_tick_spawner_member_steps_spawn_from_that_spawner_only_one_batch_per_step() {
@@ -939,7 +938,7 @@ fn trigger_tick_spawner_member_steps_spawn_from_that_spawner_only_one_batch_per_
     assert_eq!(near(&level.registry, &spawned, sibling), 0);
 }
 
-// Q2 (A4), trigger tick: `[s.fire(), npcs().update(…)]` before any wait
+// Trigger tick: `[s.fire(), npcs().update(…)]` before any wait
 // reaches every NPC `s` spawned earlier in the same tick. Spawned NPCs arrive
 // aggro armed, so the step disarms to make its reach observable.
 #[test]

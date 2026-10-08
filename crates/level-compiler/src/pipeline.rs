@@ -653,6 +653,11 @@ fn run_after_parsing(
         &args.input,
         map_data.data_script.as_deref(),
         &map_data.lights,
+        crate::script_light_membership::map_members_from_map(
+            &map_data.kinematic_movers,
+            &map_data.trigger_volumes,
+            &map_data.map_entities,
+        ),
     )?;
     let (data_script_section, membership_manifest) = match compiled_data_script {
         Some(script) => (Some(script.section), Some(script.membership_manifest)),

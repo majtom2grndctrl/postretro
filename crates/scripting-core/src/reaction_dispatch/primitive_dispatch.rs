@@ -14,12 +14,16 @@ use crate::slot_table::SlotType;
 
 use super::group_dispatch::dispatch_group;
 
-/// Routes a `Primitive` descriptor to one of two execution arms (M13 HUD
-/// dynamics): a `Some(tag)` resolves entities and runs the entity-targeted
-/// `ReactionPrimitiveRegistry`; a `None` tag is a system reaction, dispatched
-/// against the `SystemReactionRegistry`, which enqueues a typed command onto
-/// `ScriptCtx::system_commands` for the app's per-frame drain. Both arms share
-/// the one named-event vocabulary.
+/// Routes a `Primitive` descriptor to one of three execution arms:
+/// - A `kind` makes it a group command, resolved by kind and run through the
+///   entity-targeted `ReactionPrimitiveRegistry`; host/single-player only
+///   (`group_dispatch.rs`).
+/// - A `Some(tag)` resolves tagged entities and runs the same registry.
+/// - A `None` tag is a system reaction (M13 HUD dynamics), dispatched against
+///   the `SystemReactionRegistry`, which enqueues a typed command onto
+///   `ScriptCtx::system_commands` for the app's per-frame drain.
+///
+/// All arms share the one named-event vocabulary.
 pub(super) fn dispatch_primitive(
     descriptor: &PrimitiveDescriptor,
     reaction_registry: &ReactionPrimitiveRegistry,
@@ -54,8 +58,8 @@ pub(super) fn dispatch_primitive(
         return;
     };
 
-    // Targeting walks the Transform column per the invariant in
-    // `count_entities_with_tag`. Empty target sets are passed through; handlers
+    // Raw tag scans walk the Transform column: every spawned entity carries a
+    // Transform, so it enumerates all of them. Empty target sets are passed through; handlers
     // decide whether to warn.
     let targets: Vec<EntityId> = {
         let reg = script_ctx.registry.borrow();

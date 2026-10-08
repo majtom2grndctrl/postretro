@@ -59,6 +59,8 @@ pub(super) fn dispatch_group(
     if let Err(error) = reaction_registry.dispatch_tagged(
         primitive,
         &mut registry,
+        // Targets are pre-resolved by kind, so handlers must not rescan by
+        // this tag. `""` means no tag filter.
         target.tag.as_deref().unwrap_or(""),
         &targets,
         args,

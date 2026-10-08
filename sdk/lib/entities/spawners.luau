@@ -2,6 +2,7 @@
 -- Spawner member vocabulary. A spawner's archetype and count are authored on
 -- its map entity; `s:fire()` spawns one batch from this spawner only, when its
 -- step runs.
+-- See: context/lib/scripting.md §12 (Entity addressing)
 
 --- Spawner member returned by `getMapEntities("spawner")`. `spawnedTags` are
 --- the tags each NPC it spawns carries.

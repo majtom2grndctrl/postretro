@@ -1,7 +1,7 @@
 //! `updateNpcState` reaction primitive: mutate consequential, authored NPC
 //! state on Brain-bearing entities. Tag lookup belongs to the caller: named
 //! reactions arrive with Transform-resolved targets, while trigger commands
-//! resolve the live Brain-tag set at fire time.
+//! resolve the live Brain-tag set or `npcs` group at fire time.
 
 use serde::{Deserialize, Serialize};
 

@@ -78,28 +78,25 @@ function buildFlickerSamples(min: number, max: number): number[] {
   return FLICKER_PATTERN.map((t) => lo + t * span);
 }
 
-function densityAnim(periodMs: number, density: number[], playCount: number | null): FogAnimation {
-  return {
-    periodMs,
-    phase: null,
-    playCount,
-    density,
-    saturation: null,
-    minBrightness: null,
-    lightRange: null,
-  };
+// Luau tables cannot hold `nil`, so the Luau twin's wire omits every unset
+// field. Omitting them here too keeps both twins' wire byte-identical; the
+// engine reads an absent field as unset. `playCount` absent loops forever.
+function fogAnimation(
+  periodMs: number,
+  playCount: number | undefined,
+  channel: { density: number[] } | { saturation: number[] },
+): FogAnimation {
+  const fields =
+    playCount === undefined ? { periodMs, ...channel } : { periodMs, playCount, ...channel };
+  return fields as Partial<FogAnimation> as FogAnimation;
 }
 
-function saturationAnim(periodMs: number, saturation: number[], playCount: number | null): FogAnimation {
-  return {
-    periodMs,
-    phase: null,
-    playCount,
-    density: null,
-    saturation,
-    minBrightness: null,
-    lightRange: null,
-  };
+function densityAnim(periodMs: number, density: number[], playCount?: number): FogAnimation {
+  return fogAnimation(periodMs, playCount, { density });
+}
+
+function saturationAnim(periodMs: number, saturation: number[], playCount?: number): FogAnimation {
+  return fogAnimation(periodMs, playCount, { saturation });
 }
 
 export function wrapFogVolumeEntity(
@@ -115,7 +112,7 @@ export function wrapFogVolumeEntity(
         {
           id,
           primitive: "setFogAnimation",
-          args: densityAnim(opts.periodMs, buildPulseSamples(opts.min, opts.max), null),
+          args: densityAnim(opts.periodMs, buildPulseSamples(opts.min, opts.max)),
         },
       ];
     },
@@ -135,7 +132,7 @@ export function wrapFogVolumeEntity(
         {
           id,
           primitive: "setFogAnimation",
-          args: densityAnim(1000 / opts.rate, buildFlickerSamples(opts.min, opts.max), null),
+          args: densityAnim(1000 / opts.rate, buildFlickerSamples(opts.min, opts.max)),
         },
       ];
     },
@@ -145,7 +142,7 @@ export function wrapFogVolumeEntity(
         {
           id,
           primitive: "setFogAnimation",
-          args: saturationAnim(opts.periodMs, buildPulseSamples(opts.min, opts.max), null),
+          args: saturationAnim(opts.periodMs, buildPulseSamples(opts.min, opts.max)),
         },
       ];
     },

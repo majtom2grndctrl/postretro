@@ -1,6 +1,7 @@
 // Spawner member handle. A spawner's archetype and count are authored on its
 // map entity; `fire()` spawns one batch from this spawner only, when its step
 // runs.
+// See: context/lib/scripting.md §12 (Entity addressing)
 
 import type { EntityId, SpawnerEntity } from "postretro";
 import type { SequenceStep } from "../data_script";

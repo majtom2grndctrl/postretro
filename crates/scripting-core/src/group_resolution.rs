@@ -23,8 +23,9 @@ pub fn group_commands_apply_here(script_ctx: &ScriptCtx) -> bool {
 
 /// Resolve `target` against `registry` in registry slot order.
 ///
-/// - `npc`: entities carrying a `BrainComponent`, excluding any entity bound to
-///   a seat — a brained pawn is a player, never an NPC.
+/// - `npc`: entities carrying a `BrainComponent`, excluding every entity the
+///   `player` group reaches — a brained pawn is a player, never an NPC, so the
+///   two groups never overlap.
 /// - `player`: pawns bound to a seat. A pawn whose seat is in a disconnect hold
 ///   has had its binding cleared (`SeatTable::hold_disconnected_client`), so it
 ///   resolves to nothing until reclaim rebinds it. The marked local pawn is
@@ -36,20 +37,19 @@ pub fn group_commands_apply_here(script_ctx: &ScriptCtx) -> bool {
 /// orders, including when a later spawn reuses a slot a despawn freed.
 pub fn resolve_group(registry: &EntityRegistry, target: &GroupTarget) -> Vec<EntityId> {
     let tag = target.tag.as_deref();
+    let local_pawn = registry.local_player_pawn();
+    let is_player = |id: EntityId| registry.seat_for_pawn(id).is_some() || Some(id) == local_pawn;
     match target.kind {
         GroupKind::Npc => registry
             .query_by_component_and_tag(ComponentKind::Brain, tag)
             .map(|(id, _)| id)
-            .filter(|id| registry.seat_for_pawn(*id).is_none())
+            .filter(|id| !is_player(*id))
             .collect(),
-        GroupKind::Player => {
-            let local_pawn = registry.local_player_pawn();
-            registry
-                .query_by_component_and_tag(ComponentKind::Transform, tag)
-                .map(|(id, _)| id)
-                .filter(|id| registry.seat_for_pawn(*id).is_some() || Some(*id) == local_pawn)
-                .collect()
-        }
+        GroupKind::Player => registry
+            .query_by_component_and_tag(ComponentKind::Transform, tag)
+            .map(|(id, _)| id)
+            .filter(|id| is_player(*id))
+            .collect(),
     }
 }
 
@@ -128,6 +128,21 @@ mod tests {
     }
 
     #[test]
+    fn npc_group_excludes_an_unbound_brained_local_pawn() {
+        let mut registry = EntityRegistry::new();
+        let npc = spawn_npc(&mut registry, &[]);
+        let local = spawn_npc(&mut registry, &[]);
+        registry.mark_local_player_pawn(local).unwrap();
+
+        assert_eq!(resolve_group(&registry, &npcs(None)), vec![npc]);
+        assert_eq!(
+            resolve_group(&registry, &players()),
+            vec![local],
+            "the local pawn is a player, so it sits in exactly one group"
+        );
+    }
+
+    #[test]
     fn player_group_is_seat_bound_pawns_plus_an_unbound_local_pawn() {
         let mut registry = EntityRegistry::new();
         let remote = registry.spawn(Transform::default());
@@ -148,7 +163,7 @@ mod tests {
         );
     }
 
-    // G4: deterministic order, including a spawn that reuses a freed slot.
+    // Deterministic order, including a spawn that reuses a freed slot.
     #[test]
     fn group_resolution_order_is_slot_order_and_repeats_across_identical_histories() {
         fn history() -> (EntityRegistry, Vec<EntityId>) {

@@ -546,7 +546,7 @@ fn lua_crossings_accept_dense_arrays() {
     assert_eq!(m.crossings[0].fire, vec!["lowHealth".to_string()]);
 }
 
-// T2 (parse half): a level script keys trigger events by volume. A tag-keyed
+// A level script keys trigger events by volume. A tag-keyed
 // entry is rejected with a warning naming the level script, while the
 // volume-keyed entries beside it parse identically in both runtimes.
 #[test]
@@ -606,9 +606,40 @@ fn level_trigger_events_keep_volume_entries_and_reject_tag_keyed_naming_the_leve
         "one rejection per runtime: {rejections:?}"
     );
     capture.assert_logged(log::Level::Warn, "carries both `trigger` and `tag`");
+    // Both runtimes report each skipped entry with one identical message,
+    // indexed from 0.
+    for needle in [
+        "triggerEvents[1] is keyed by tag `plate`",
+        "triggerEvents[3] has unknown event `occupied`",
+        "triggerEvents[4] is malformed",
+    ] {
+        assert_identical_warning_per_runtime(&capture, needle);
+    }
 }
 
-// T3 (parse half): the mod manifest keys trigger events by tag. A volume-keyed
+/// Exactly one warning per runtime contains `needle`, and the two read the same.
+fn assert_identical_warning_per_runtime(
+    capture: &postretro_test_log_capture::LogCapture,
+    needle: &str,
+) {
+    let messages: Vec<String> = capture
+        .records()
+        .into_iter()
+        .filter(|record| record.level == log::Level::Warn && record.message.contains(needle))
+        .map(|record| record.message)
+        .collect();
+    assert_eq!(
+        messages.len(),
+        2,
+        "one `{needle}` per runtime: {messages:?}"
+    );
+    assert_eq!(
+        messages[0], messages[1],
+        "the runtimes' diagnostics diverged"
+    );
+}
+
+// The mod manifest keys trigger events by tag. A volume-keyed
 // entry is rejected with a warning naming the manifest, while the tag-keyed
 // entries beside it keep their `levels` selector in both runtimes.
 #[test]
@@ -624,7 +655,7 @@ fn mod_trigger_events_keep_tag_entries_and_reject_volume_keyed_naming_the_manife
         ] })"#,
         |_ctx, value| {
             let obj = rquickjs::Object::from_value(value).unwrap();
-            drain_mod_trigger_events_js(&obj, "default mod manifest export").unwrap()
+            drain_mod_trigger_events_js(&obj, "mod manifest").unwrap()
         },
     );
     let lua = eval_lua(
@@ -637,7 +668,7 @@ fn mod_trigger_events_keep_tag_entries_and_reject_volume_keyed_naming_the_manife
             let LuaValue::Table(table) = value else {
                 panic!("manifest is a table")
             };
-            drain_mod_trigger_events_lua(&table, "returned mod manifest").unwrap()
+            drain_mod_trigger_events_lua(&table, "mod manifest").unwrap()
         },
     );
 
@@ -673,6 +704,7 @@ fn mod_trigger_events_keep_tag_entries_and_reject_volume_keyed_naming_the_manife
         2,
         "one rejection per runtime: {rejections:?}"
     );
+    assert_identical_warning_per_runtime(&capture, "triggerEvents[1] is keyed by trigger volume");
 }
 
 // Regression: Luau rejected the whole `events` field for a sparse table while
@@ -1409,7 +1441,7 @@ fn lua_crossing_fire_rejects_non_dense_tables() {
     }
 }
 
-// W1: a group entry parses to the same descriptor in both runtimes. A sequence
+// A group entry parses to the same descriptor in both runtimes. A sequence
 // entry `{ primitive, kind, tag?, args }` becomes a group step; a primitive
 // descriptor keeps its optional tag beside the kind; a kindless descriptor is
 // unchanged raw data.
@@ -1477,7 +1509,7 @@ fn group_entries_parse_identically_in_both_vms() {
     assert_eq!(raw.tag.as_deref(), Some("x"));
 }
 
-// W1: both runtimes reject, naming the reaction, an entry or primitive
+// Both runtimes reject, naming the reaction, an entry or primitive
 // descriptor that carries both `id` and `kind`, or a `kind` other than
 // `npc`/`player`. The manifest drain skips the reaction and warns with that name.
 #[test]
@@ -1539,6 +1571,10 @@ fn group_kind_rejections_name_the_reaction_in_both_vms() {
                 error.contains(site) && error.contains(reason),
                 "unexpected diagnostic for {js_source}: {error}"
             );
+        }
+        // Identical apart from a non-string value's VM type name.
+        if !js_error.to_string().contains(", got a ") {
+            assert_eq!(js_error.to_string(), lua_error.to_string());
         }
     }
 
@@ -1699,6 +1735,10 @@ fn subject_token_rejections_name_the_reaction_in_both_vms() {
                 "unexpected diagnostic for {js_source}: {error}"
             );
         }
+        // Identical apart from a non-string value's VM type name.
+        if !js_error.to_string().contains(", got a ") {
+            assert_eq!(js_error.to_string(), lua_error.to_string());
+        }
     }
 
     let capture = postretro_test_log_capture::LogCapture::start();
@@ -1712,4 +1752,137 @@ fn subject_token_rejections_name_the_reaction_in_both_vms() {
     assert_eq!(manifest.reactions.len(), 1);
     assert_eq!(manifest.reactions[0].name, "ok");
     capture.assert_logged_once(log::Level::Warn, "reaction `badToken` sequence step 0");
+}
+
+/// Parse one reaction in both runtimes, expect both to reject it, and return
+/// the shared diagnostic after asserting the two are identical.
+fn identical_rejection(js_source: &str, lua_source: &str) -> String {
+    let js_error = eval_js(js_source, |ctx, value| {
+        named_reaction_from_js(ctx, value).unwrap_err()
+    })
+    .to_string();
+    let lua_error = eval_lua(lua_source, |value| {
+        named_reaction_from_lua(value).unwrap_err()
+    })
+    .to_string();
+    assert_eq!(js_error, lua_error, "the runtimes' diagnostics diverged");
+    js_error
+}
+
+// A group or subject-token sequence step carries the same grant payload as a
+// reaction body, so both runtimes run the same load-time payload check on it
+// and name the reaction and step. The grant handlers rely on that check.
+#[test]
+fn sequence_step_grant_payloads_are_validated_like_bodies_in_both_vms() {
+    let cases = [
+        (
+            r#"({ name: "bad", sequence: [{ kind: "player", primitive: "grantAmmo", args: { type: "bad key!", amount: 1 } }] })"#,
+            r#"return { name = "bad", sequence = { { kind = "player", primitive = "grantAmmo", args = { type = "bad key!", amount = 1 } } } }"#,
+            "reaction `bad` sequence step 0: `grantAmmo.type` must match",
+        ),
+        (
+            r#"({ name: "bad", sequence: [{ kind: "player", primitive: "grantAmmo", args: { type: "shells", amount: 1e40 } }] })"#,
+            r#"return { name = "bad", sequence = { { kind = "player", primitive = "grantAmmo", args = { type = "shells", amount = 1e40 } } } }"#,
+            "reaction `bad` sequence step 0: `grantAmmo` `args.amount` must be a finite number representable as f32",
+        ),
+        (
+            r#"({ name: "bad", sequence: [{ target: "@activators", primitive: "grantHealth", args: { amount: "lots" } }] })"#,
+            r#"return { name = "bad", sequence = { { target = "@activators", primitive = "grantHealth", args = { amount = "lots" } } } }"#,
+            "reaction `bad` sequence step 0: `grantHealth` `args.amount` must be a finite number",
+        ),
+        (
+            r#"({ name: "bad", sequence: [{ target: "@activators", primitive: "addSlot", args: { delta: 1 } }] })"#,
+            r#"return { name = "bad", sequence = { { target = "@activators", primitive = "addSlot", args = { delta = 1 } } } }"#,
+            "reaction `bad` sequence step 0: `addSlot` `args.slot` must be a string",
+        ),
+        (
+            r#"({ name: "bad", sequence: [{ id: "@wait", primitive: "wait", args: { durationMs: 1 } }, { kind: "player", primitive: "addSlot", args: { slot: "xp", delta: 1e40 } }] })"#,
+            r#"return { name = "bad", sequence = { { id = "@wait", primitive = "wait", args = { durationMs = 1 } }, { kind = "player", primitive = "addSlot", args = { slot = "xp", delta = 1e40 } } } }"#,
+            "reaction `bad` sequence step 1: `addSlot` `args.delta` must be a finite number representable as f32",
+        ),
+        (
+            r#"({ name: "bad", sequence: [{ kind: "player", primitive: "grantHealth" }] })"#,
+            r#"return { name = "bad", sequence = { { kind = "player", primitive = "grantHealth" } } }"#,
+            "reaction `bad` sequence step 0: `grantHealth` `args` must be an object",
+        ),
+    ];
+    for (js_source, lua_source, expected) in cases {
+        let error = identical_rejection(js_source, lua_source);
+        assert!(error.contains(expected), "unexpected diagnostic: {error}");
+    }
+
+    // A failing step skips only its reaction, with a warning naming it; unlike
+    // a malformed grant body, it does not reject the whole manifest.
+    let capture = postretro_test_log_capture::LogCapture::start();
+    let js = eval_js(
+        r#"({ reactions: [
+            { name: "badAmmo", sequence: [{ kind: "player", primitive: "grantAmmo", args: { type: "bad key!", amount: 1 } }] },
+            { name: "ok", sequence: [{ kind: "player", primitive: "grantAmmo", args: { type: "shells", amount: 8 } }] },
+        ] })"#,
+        |ctx, value| LevelManifest::from_js_value(ctx, value).unwrap(),
+    );
+    let lua = eval_lua(
+        r#"return { reactions = {
+            { name = "badAmmo", sequence = { { kind = "player", primitive = "grantAmmo", args = { type = "bad key!", amount = 1 } } } },
+            { name = "ok", sequence = { { kind = "player", primitive = "grantAmmo", args = { type = "shells", amount = 8 } } } },
+        } }"#,
+        |value| LevelManifest::from_lua_value(value).unwrap(),
+    );
+    assert_eq!(js.reactions, lua.reactions);
+    assert_eq!(js.reactions.len(), 1);
+    assert_eq!(js.reactions[0].name, "ok");
+    assert_identical_warning_per_runtime(
+        &capture,
+        "reactions[0] is malformed and was skipped: 'sequence' field must be an array of step objects: reaction `badAmmo` sequence step 0",
+    );
+}
+
+// `spawnFromSpawner` addresses spawners, never a group: a `kind` beside it is
+// rejected in both runtimes, as a body and as a sequence entry, naming the
+// reaction. Raw-only — the SDK has no group verb that emits it.
+#[test]
+fn spawn_from_spawner_with_a_group_kind_is_rejected_in_both_vms() {
+    let cases = [
+        (
+            r#"({ name: "bad", primitive: "spawnFromSpawner", kind: "npc", tag: "closet" })"#,
+            r#"return { name = "bad", primitive = "spawnFromSpawner", kind = "npc", tag = "closet" }"#,
+            "reaction `bad` primitive: `spawnFromSpawner` addresses spawners, so it cannot carry a group `kind`",
+        ),
+        (
+            r#"({ name: "bad", sequence: [{ kind: "npc", tag: "closet", primitive: "spawnFromSpawner" }] })"#,
+            r#"return { name = "bad", sequence = { { kind = "npc", tag = "closet", primitive = "spawnFromSpawner" } } }"#,
+            "reaction `bad` sequence step 0: `spawnFromSpawner` addresses spawners, so it cannot carry a group `kind`",
+        ),
+    ];
+    for (js_source, lua_source, expected) in cases {
+        let error = identical_rejection(js_source, lua_source);
+        assert!(error.contains(expected), "unexpected diagnostic: {error}");
+    }
+}
+
+// Sequence-step diagnostics count steps from 0 in both runtimes, so a Luau
+// author and a TS author read the same index for the same entry.
+#[test]
+fn sequence_step_diagnostics_count_from_zero_in_both_vms() {
+    let cases = [
+        (
+            r#"({ name: "bad", sequence: [{ id: "@wait", primitive: "wait", args: { durationMs: 1 } }, { id: "@bogus", primitive: "wait", args: {} }] })"#,
+            r#"return { name = "bad", sequence = { { id = "@wait", primitive = "wait", args = { durationMs = 1 } }, { id = "@bogus", primitive = "wait", args = {} } } }"#,
+            "step 1 has illegal sentinel `@bogus`",
+        ),
+        (
+            r#"({ name: "bad", sequence: [{ id: "@wait", primitive: "wait", args: { durationMs: 1 } }, { id: "@wait", primitive: "fire", args: {} }] })"#,
+            r#"return { name = "bad", sequence = { { id = "@wait", primitive = "wait", args = { durationMs = 1 } }, { id = "@wait", primitive = "fire", args = {} } } }"#,
+            "step 1 sentinel `@wait` requires primitive `wait`, got `fire`",
+        ),
+        (
+            r#"({ name: "bad", sequence: [{ id: "@wait", primitive: "wait", args: { durationMs: 1 } }, { kind: "enemy", primitive: "applyDamage", args: { amount: 1 } }] })"#,
+            r#"return { name = "bad", sequence = { { id = "@wait", primitive = "wait", args = { durationMs = 1 } }, { kind = "enemy", primitive = "applyDamage", args = { amount = 1 } } } }"#,
+            "reaction `bad` sequence step 1: `kind` must be",
+        ),
+    ];
+    for (js_source, lua_source, expected) in cases {
+        let error = identical_rejection(js_source, lua_source);
+        assert!(error.contains(expected), "unexpected diagnostic: {error}");
+    }
 }

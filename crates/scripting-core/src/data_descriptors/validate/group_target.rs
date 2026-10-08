@@ -55,6 +55,22 @@ pub fn validate_authored_group_kind(
     Ok(Some(kind))
 }
 
+/// A group carries only verbs that act on a pawn. `spawnFromSpawner` acts on a
+/// spawner, addressed by `tag` or member id, so a `kind` beside it is rejected
+/// rather than silently dropped.
+pub fn validate_group_kind_primitive(
+    reaction: &str,
+    site: &str,
+    primitive: &str,
+) -> Result<(), String> {
+    if primitive == "spawnFromSpawner" {
+        return Err(format!(
+            "reaction `{reaction}` {site}: `spawnFromSpawner` addresses spawners, so it cannot carry a group `kind`"
+        ));
+    }
+    Ok(())
+}
+
 /// A trigger-fire subject token: the entity a fire is about. Legal only before
 /// any `wait`, because the fire context does not survive it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

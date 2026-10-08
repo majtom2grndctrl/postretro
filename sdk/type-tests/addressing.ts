@@ -35,9 +35,9 @@ const emitterRate: number = emitters[0].component.rate;
 // Members are plain arrays the author inspects.
 const sorted = lights.sort((a, b) => a.position.x - b.position.x);
 
-// @ts-expect-error NPCs are a group, not a map kind (M3).
+// @ts-expect-error NPCs are a group, not a map kind.
 getMapEntities("npc");
-// @ts-expect-error `transform` is not a map kind (M3).
+// @ts-expect-error `transform` is not a map kind.
 getMapEntities("transform");
 // @ts-expect-error A light member has no mover verbs.
 lights[0].start();
@@ -55,13 +55,13 @@ const reveal = defineReaction("closet.reveal", {
 });
 const groupStep: GroupCommand = players().grantHealth(10);
 
-// @ts-expect-error A group has no length (S3).
+// @ts-expect-error A group has no length.
 closet.length;
-// @ts-expect-error A group has no members to map over (S3).
+// @ts-expect-error A group has no members to map over.
 closet.map((npc: unknown) => npc);
-// @ts-expect-error A group is not indexable (S3).
+// @ts-expect-error A group is not indexable.
 players()[0];
-// @ts-expect-error `fire` is not an NPC-group verb (S3).
+// @ts-expect-error `fire` is not an NPC-group verb.
 npcs().fire();
 // @ts-expect-error NPC groups have no resource grants.
 npcs().grantHealth(5);
@@ -69,7 +69,7 @@ npcs().grantHealth(5);
 players().update({ aggro: true });
 // Retired spellings are reached by element access so the retired-name grep
 // gate over `sdk/` stays clean; each must still fail to compile.
-// @ts-expect-error The free target-taking verbs retired with plain tag targets: `damage` taking a tag string (S3).
+// @ts-expect-error The free target-taking verbs retired with plain tag targets: `damage` taking a tag string.
 Postretro["damage"]("boss", 10);
 // @ts-expect-error `enemies` retired; NPCs are `npcs({ tag })`.
 Postretro["enemies"]({ tag: "closet" });

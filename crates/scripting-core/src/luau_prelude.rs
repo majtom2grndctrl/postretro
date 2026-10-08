@@ -445,7 +445,7 @@ pub fn evaluate_prelude(
     let gravity_sdk = eval_sdk_table(lua, GRAVITY_LUAU_SRC, "gravity.luau")?;
     lift_fields(&globals, &gravity_sdk, GRAVITY_FIELDS, "gravity.luau")?;
 
-    // Step 5: evaluate `util/keyframes.luau` and lift its fields to globals.
+    // Step 4: evaluate `util/keyframes.luau` and lift its fields to globals.
     let keyframes_sdk: Table = lua
         .load(KEYFRAMES_LUAU_SRC)
         .set_name("postretro/sdk/util/keyframes.luau")
@@ -468,7 +468,7 @@ pub fn evaluate_prelude(
             })?;
     }
 
-    // Step 6: evaluate `entities/emitters.luau` and lift its fields to globals.
+    // Step 5: evaluate `entities/emitters.luau` and lift its fields to globals.
     let emitters_sdk: Table = lua
         .load(EMITTERS_LUAU_SRC)
         .set_name("postretro/sdk/entities/emitters.luau")
@@ -507,7 +507,7 @@ pub fn evaluate_prelude(
             reason: format!("failed to install temporary expression-ref bridge: {e}"),
         })?;
 
-    // Step 7: evaluate `data_script.luau` and lift its fields to globals. The
+    // Step 6: evaluate `data_script.luau` and lift its fields to globals. The
     // private array metatable lets pure builders distinguish empty descriptor
     // arrays from empty descriptor maps when the result crosses through serde.
     globals
@@ -554,7 +554,7 @@ pub fn evaluate_prelude(
             reason: format!("failed to clear temporary expression-ref bridge: {e}"),
         })?;
 
-    // Step 7b: evaluate `ui/reactions.luau` for the `postretro/ui` virtual
+    // Step 6b: evaluate `ui/reactions.luau` for the `postretro/ui` virtual
     // module. Do not lift its fields to globals: Task 1 of the UI SDK split
     // removes author-visible Luau UI bare globals.
     let ui_reactions_sdk: Table = lua
@@ -586,7 +586,7 @@ pub fn evaluate_prelude(
             reason: format!("failed to install temporary theme-token validator: {e}"),
         })?;
 
-    // Step 7c–7f: evaluate the M13 G1a UI factory modules for the
+    // Step 6c–6f: evaluate the M13 G1a UI factory modules for the
     // `postretro/ui` virtual module. Widget/layout modules capture the
     // temporary theme-token validator as an upvalue so token records cannot be
     // forged structurally by author code.
@@ -640,7 +640,7 @@ pub fn evaluate_prelude(
             source_name: "sdk/lib/ui/state.luau".to_string(),
         })?;
 
-    // Step 8: evaluate `runtime.luau` and promote its table to global `runtime`.
+    // Step 7: evaluate `runtime.luau` and promote its table to global `runtime`.
     // The builders are pure (no primitive dependency), so ordering relative to
     // the other steps is irrelevant.
     let runtime: mlua::Value = lua
@@ -657,7 +657,7 @@ pub fn evaluate_prelude(
             reason: format!("failed to install global `runtime`: {e}"),
         })?;
 
-    // Step 9: evaluate `brain.luau` and lift its behavior-graph guard-input
+    // Step 8: evaluate `brain.luau` and lift its behavior-graph guard-input
     // sugar to globals. Pure data assembly like `runtime.luau`; the ordering is
     // free.
     let brain_sdk: Table = lua

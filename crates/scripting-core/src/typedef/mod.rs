@@ -20,11 +20,21 @@ pub mod common;
 pub mod luau;
 pub mod ts;
 
+/// Types that exist only to describe a hidden primitive's arguments. `worldQuery`
+/// is not author-facing (see below), so its filter types stay out of the typedefs.
+fn is_hidden_type(name: &str) -> bool {
+    matches!(name, "WorldQueryComponent" | "WorldQueryFilter")
+}
+
 pub fn generate_typescript(registry: &PrimitiveRegistry) -> String {
     let mut out = String::new();
     out.push_str(TS_HEADER);
     out.push_str("declare module \"postretro\" {\n");
-    for (i, ty) in registry.iter_types().enumerate() {
+    for (i, ty) in registry
+        .iter_types()
+        .filter(|ty| !is_hidden_type(ty.name))
+        .enumerate()
+    {
         if i > 0 {
             out.push('\n');
         }
@@ -89,7 +99,11 @@ pub fn generate_typescript(registry: &PrimitiveRegistry) -> String {
 pub fn generate_luau(registry: &PrimitiveRegistry) -> String {
     let mut out = String::new();
     out.push_str(LUAU_HEADER);
-    for (i, ty) in registry.iter_types().enumerate() {
+    for (i, ty) in registry
+        .iter_types()
+        .filter(|ty| !is_hidden_type(ty.name))
+        .enumerate()
+    {
         if i > 0 {
             out.push('\n');
         }

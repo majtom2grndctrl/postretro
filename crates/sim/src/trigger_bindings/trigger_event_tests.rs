@@ -4,8 +4,7 @@
 // (`defineTriggerEvent`, `{ tag, event, fire, levels? }`). Each test parses
 // manifest JS through the production drains, composes through `DataRegistry`,
 // installs through `TriggerBindingTable`, and walks a pawn through the volumes.
-// See: context/plans/in-progress/sdk-addressing-model/index.md — Trigger events
-// and sources; research.md Ordering pins A8, A9.
+// See: context/lib/scripting.md §12.
 
 use std::collections::{HashMap, HashSet};
 
@@ -301,7 +300,7 @@ fn warned_containing<'a>(
         .collect()
 }
 
-// M6 / A8 (sibling half): a trigger member's `on("enter", …)` binds its own
+// A trigger member's `on("enter", …)` binds its own
 // volume only. A sibling volume carrying the same tag neither fires nor gains
 // an edge.
 #[test]
@@ -332,7 +331,7 @@ fn level_member_enter_fires_for_its_volume_only_not_a_sibling_with_the_same_tag(
     );
 }
 
-// T1: a mod-global `defineTriggerEvent` binds every volume carrying its tag in
+// A mod-global `defineTriggerEvent` binds every volume carrying its tag in
 // a level its `levels` selector matches, and fires on each as the retired
 // level tag-keyed trigger event did. An untagged volume stays unbound.
 #[test]
@@ -358,7 +357,7 @@ fn mod_global_trigger_event_binds_every_tagged_volume_in_a_matching_level() {
     );
 }
 
-// T3 (selector half): a `defineTriggerEvent` binds nothing in a level whose
+// A `defineTriggerEvent` binds nothing in a level whose
 // catalog tags its `levels` selector excludes.
 #[test]
 fn mod_global_trigger_event_binds_nothing_in_a_level_its_selector_excludes() {
@@ -376,7 +375,7 @@ fn mod_global_trigger_event_binds_nothing_in_a_level_its_selector_excludes() {
     assert!(world.visit(0.0).0.is_empty());
 }
 
-// T3 (rejection half): a volume-keyed entry in `ModManifest` is rejected at
+// A volume-keyed entry in `ModManifest` is rejected at
 // load with a warning naming the manifest; the tag-keyed rule beside it binds.
 #[test]
 fn volume_keyed_trigger_event_in_the_mod_manifest_is_rejected_and_tag_rules_beside_it_bind() {
@@ -399,7 +398,7 @@ fn volume_keyed_trigger_event_in_the_mod_manifest_is_rejected_and_tag_rules_besi
     assert_eq!(world.visit(0.0).0, vec![enter(plate, &["rule"])]);
 }
 
-// T2: a tag-keyed trigger event returned from `setupLevel` is rejected at load
+// A tag-keyed trigger event returned from `setupLevel` is rejected at load
 // with a warning naming the level script; the volume-keyed event beside it
 // installs, and the tag's sibling volume stays unbound.
 #[test]
@@ -430,7 +429,7 @@ fn tag_keyed_trigger_event_from_setup_level_is_rejected_and_volume_events_beside
     assert!(world.visit(10.0).0.is_empty());
 }
 
-// T5 (research A9): on one edge the brush `on_fire` runs first, then the
+// On one edge the brush `on_fire` runs first, then the
 // mod-global rules, then the level member events — each in authored order,
 // independent of the order the reactions were declared in.
 #[test]
@@ -460,7 +459,7 @@ fn one_edge_runs_brush_then_mod_global_then_level_member_each_in_authored_order(
     );
 }
 
-// T7: a mod-global rule and a level member event that resolve to the same
+// A mod-global rule and a level member event that resolve to the same
 // volume, edge and reaction bind it once, with one warning naming the
 // reaction and both sources. The rule's other tagged volume still binds it,
 // unwarned.
@@ -493,7 +492,7 @@ fn same_reaction_from_mod_global_and_level_member_on_one_volume_binds_once_with_
     assert_eq!(world.visit(10.0).0, vec![enter(sibling, &["reveal"])]);
 }
 
-// T8: `on.trigger.disarm()` / `on.trigger.arm()` lower to one
+// `on.trigger.disarm()` / `on.trigger.arm()` lower to one
 // `{ primitive, target: "@trigger", args }` descriptor, used as a reaction body
 // or a sequence entry; the raw `id: "@trigger"` step is the same wire. Bound
 // through member events on two volumes sharing a tag, each form resolves to the
@@ -564,7 +563,7 @@ fn on_trigger_disarm_and_arm_target_the_volume_that_fired_through_member_events(
     }
 }
 
-// T6 (research A10, sim half): a mod hot reload replaces the mod-global rules
+// Sim half: a mod hot reload replaces the mod-global rules
 // and recomposes the active sets; the rebind keeps a level member's
 // `on("enter", …)` on its volume only. The binary's
 // `rebuild_active_trigger_bindings` test drives the same path through `App`.

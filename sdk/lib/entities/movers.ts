@@ -1,6 +1,7 @@
 // Kinematic-mover entity handle and closed command-reaction builders.
 // Raw mover phase remains engine-owned; these descriptors are consumed only
 // when a named reaction fires.
+// See: context/lib/scripting.md §12 (Entity addressing)
 
 import type { EntityId, MoverEntity as GeneratedMoverEntity } from "postretro";
 import type { SequenceStep } from "../data_script";

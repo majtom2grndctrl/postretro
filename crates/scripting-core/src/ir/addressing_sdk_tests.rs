@@ -19,9 +19,10 @@ fn luau_error(body: &str) -> String {
     value.as_str().expect("error text").to_string()
 }
 
-// S3 (Luau half): a group is opaque. `#group`, `group[1]`, `group.length` and
-// a verb its kind lacks each raise naming the call that built the group; none
-// reads as 0 or nil.
+// A group is opaque. `#group`, `group[1]`, `group.length`,
+// `for _ in group`, a verb its kind lacks, and a verb called with `.` instead
+// of `:` each raise naming the call that built the group; none reads as 0 or
+// nil, and none builds a command from shifted arguments.
 #[test]
 fn luau_groups_raise_naming_the_call_on_length_index_and_missing_verbs() {
     for (body, call, what) in [
@@ -43,6 +44,21 @@ fn luau_groups_raise_naming_the_call_on_length_index_and_missing_verbs() {
             "npcs({ tag = \"closet\" })",
             "`members`",
         ),
+        (
+            "for _ in Postretro.npcs({ tag = \"closet\" }) do end",
+            "npcs({ tag = \"closet\" })",
+            "cannot be iterated",
+        ),
+        (
+            "local closet = Postretro.npcs({ tag = \"closet\" })\n            return closet.damage(5)",
+            "npcs({ tag = \"closet\" }).damage",
+            "called with `.`",
+        ),
+        (
+            "return Postretro.players().grantAmmo(\"shells.buck\", 8)",
+            "players().grantAmmo",
+            "called with `.`",
+        ),
     ] {
         let error = luau_error(body);
         assert!(
@@ -50,9 +66,27 @@ fn luau_groups_raise_naming_the_call_on_length_index_and_missing_verbs() {
             "`{body}` must raise naming `{call}` ({what}): {error}"
         );
     }
+
+    // Luau's `pairs` ignores metatables, so it cannot raise on a group; it
+    // walks the empty target table and yields no member.
+    let members = luau_fixture_value(
+        r#"
+        local Postretro = require("postretro")
+        local count = 0
+        for _ in pairs(Postretro.npcs({ tag = "closet" })) do
+          count += 1
+        end
+        return count
+        "#,
+    );
+    assert_eq!(
+        members.as_f64(),
+        Some(0.0),
+        "`pairs(group)` yields no member"
+    );
 }
 
-// S3 (Luau half): the retired free verbs and group constructors are gone, so a
+// The retired free verbs and group constructors are gone, so a
 // call raises instead of emitting a tag-keyed descriptor.
 #[test]
 fn luau_retired_free_verbs_and_world_are_absent() {
@@ -76,7 +110,7 @@ fn luau_retired_free_verbs_and_world_are_absent() {
     }
 }
 
-// M3 (runtime half): an unknown map kind raises naming the call in both
+// An unknown map kind raises naming the call in both
 // runtimes before any engine query runs.
 #[test]
 fn get_map_entities_rejects_an_unknown_kind_naming_the_call_in_both_runtimes() {
@@ -99,7 +133,7 @@ fn get_map_entities_rejects_an_unknown_kind_naming_the_call_in_both_runtimes() {
     }
 }
 
-// G3 (SDK half), T8 (SDK half): `players()` emits kind-bearing group commands
+// SDK half: `players()` emits kind-bearing group commands
 // for every player; `on.activators` and `on.trigger` lower to one
 // `{ primitive, target, args }` descriptor for only that fire's subjects. TS
 // and Luau agree byte for byte, Luau through colon calls.
@@ -149,7 +183,7 @@ fn group_and_subject_token_commands_lower_to_their_wire_in_both_runtimes() {
 }
 
 // A group command is one descriptor legal both as a reaction body and,
-// unspread, as a sequence entry. W1 (wire half): no SDK builder emits an entry
+// unspread, as a sequence entry. Wire half: no SDK builder emits an entry
 // carrying both `id` and `kind`.
 #[test]
 fn group_commands_are_sequence_entries_and_never_carry_an_id() {

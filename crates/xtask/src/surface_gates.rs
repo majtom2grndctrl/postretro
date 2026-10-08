@@ -126,7 +126,7 @@ fn relative(root: &Path, path: &Path) -> String {
         .to_string()
 }
 
-// U2: none of the retired spellings remains in authored content, the SDK, the
+// None of the retired spellings remains in authored content, the SDK, the
 // human docs or the context library. Raw `armTrigger` wire descriptors
 // (string, no call) pass.
 #[test]
@@ -168,7 +168,7 @@ fn retired_addressing_spellings_stay_out_of_content_sdk_and_docs() {
     );
 }
 
-// W2, half one: `NetworkId` never reaches scripts — no scripting crate, no
+// Half one: `NetworkId` never reaches scripts — no scripting crate, no
 // `sdk/` file and no generated typedef (`sdk/types/`) names it.
 #[test]
 fn network_id_stays_out_of_every_scripting_layer() {
@@ -229,7 +229,7 @@ fn wire_version(handshake_source: &str) -> u32 {
         .expect("WIRE_VERSION is an integer literal")
 }
 
-// W2, half two: the addressing model changes manifest JSON only, so the net
+// Half two: the addressing model changes manifest JSON only, so the net
 // wire version matches `main`. Branch-scoped — a later brief may bump the
 // wire on purpose — so it runs on demand:
 // `cargo test -p xtask -- --ignored wire_version_matches_main`.

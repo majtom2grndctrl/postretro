@@ -1,8 +1,7 @@
 // Group commands (`npcs`/`players` lowered to `kind` on the wire) on the named
 // and scheduled-sequence paths, against the production reaction handlers and
 // the real seat ledger. The trigger-tick path is covered beside the binder.
-// See: context/plans/in-progress/sdk-addressing-model/index.md — Groups,
-// Sequences, Roles, Wire; research.md Ordering pins A1, A6, A7, A11.
+// See: context/lib/scripting.md §12.
 
 #![cfg(test)]
 
@@ -400,10 +399,10 @@ fn damage(amount: f32) -> serde_json::Value {
 }
 
 // ---------------------------------------------------------------------------
-// Q1 (A6), NPC half — the first-slice falsification. An NPC group step after a
+// NPC half — the first-slice falsification. An NPC group step after a
 // wait resolves when it lands: an NPC spawned during the wait is reached, one
-// despawned during it is not, and a player pawn carrying the tag never is (G1,
-// after-wait path).
+// despawned during it is not, and a player pawn carrying the tag never is (after-wait
+// path).
 // ---------------------------------------------------------------------------
 #[test]
 fn npc_group_step_after_wait_reaches_npcs_present_at_landing() {
@@ -454,7 +453,7 @@ fn npc_group_step_after_wait_reaches_npcs_present_at_landing() {
     assert!(!fx.ctx.registry.borrow().exists(doomed));
 }
 
-// Q1 (A6), player half: a players() step after a wait reaches a player who
+// Player half: a players() step after a wait reaches a player who
 // joined during the wait and skips one whose seat went into a disconnect hold.
 #[test]
 fn player_group_step_after_wait_reaches_joiners_and_skips_held_seats() {
@@ -495,7 +494,7 @@ fn player_group_step_after_wait_reaches_joiners_and_skips_held_seats() {
     assert_eq!(fx.health(npc), START_HEALTH, "an npc is never a player");
 }
 
-// Q1 (A6): a group step with zero matches at landing is a debug no-op — no
+// A group step with zero matches at landing is a debug no-op — no
 // handler warning, nothing above debug from the group dispatch.
 #[test]
 fn group_step_with_no_matches_at_landing_is_a_debug_noop() {
@@ -530,7 +529,7 @@ fn group_step_with_no_matches_at_landing_is_a_debug_noop() {
 }
 
 // ---------------------------------------------------------------------------
-// G1 (A1), name-fired path: an npc group with tag "x" skips a player pawn
+// Name-fired path: an npc group with tag "x" skips a player pawn
 // tagged "x" — as a primitive body and as a sequence step — and a tagless npc
 // group reaches every NPC.
 // ---------------------------------------------------------------------------
@@ -582,7 +581,7 @@ fn npc_group_damage_skips_a_tagged_pawn_and_tagless_reaches_every_npc() {
     assert_eq!(fx.health(pawn), START_HEALTH);
 }
 
-// W1: a raw kindless tag descriptor keeps today's Transform scan and reaches
+// A raw kindless tag descriptor keeps today's Transform scan and reaches
 // every tagged entity, a player pawn included.
 #[test]
 fn raw_kindless_tag_descriptor_reaches_every_tagged_entity_as_before() {
@@ -605,7 +604,7 @@ fn raw_kindless_tag_descriptor_reaches_every_tagged_entity_as_before() {
     assert_eq!(fx.health(other), START_HEALTH);
 }
 
-// W1: the retired `updateEnemyState` name is an unknown primitive — no alias —
+// The retired `updateEnemyState` name is an unknown primitive — no alias —
 // on every path, while `updateNpcState` applies.
 #[test]
 fn retired_update_enemy_state_is_rejected_as_unknown_and_update_npc_state_applies() {
@@ -656,7 +655,7 @@ fn retired_update_enemy_state_is_rejected_as_unknown_and_update_npc_state_applie
 }
 
 // ---------------------------------------------------------------------------
-// G3, players() half on the named path: grantHealth credits every seat-bound
+// Players() half on the named path: grantHealth credits every seat-bound
 // pawn exactly once and nothing else.
 // ---------------------------------------------------------------------------
 #[test]
@@ -689,7 +688,7 @@ fn player_group_grant_health_credits_every_seat_bound_pawn_once() {
 }
 
 // ---------------------------------------------------------------------------
-// G4: matches reach the handler in slot order, identically on every run with
+// Matches reach the handler in slot order, identically on every run with
 // identical inputs, including after a despawn frees a slot a later spawn reuses.
 // ---------------------------------------------------------------------------
 #[test]
@@ -722,7 +721,7 @@ fn group_matches_reach_the_handler_in_the_same_order_across_identical_runs() {
 }
 
 // ---------------------------------------------------------------------------
-// G5: during a disconnect hold players() skips that pawn for every verb, and
+// During a disconnect hold players() skips that pawn for every verb, and
 // reaches the seat's pawn again after reclaim. The local pawn is reached
 // throughout (single player is the local seat alone).
 // ---------------------------------------------------------------------------
@@ -790,7 +789,7 @@ fn disconnect_hold_skips_the_pawn_for_every_player_verb_and_reclaim_restores_it(
 }
 
 // ---------------------------------------------------------------------------
-// R1: on a connected client, a reaction with no wait applies nothing from its
+// On a connected client, a reaction with no wait applies nothing from its
 // npc update or players() grant — not even to the client's own pawn — and logs
 // nothing above debug. The same reactions on the host apply to every match. A
 // group step after a wait never runs on the client.
@@ -874,7 +873,7 @@ fn connected_client_group_commands_apply_nothing_and_stay_below_debug() {
     assert_eq!(host.health(remote), START_HEALTH + 10.0);
 }
 
-// R2 (A11): on a connected client, a member step in the same reaction as a
+// On a connected client, a member step in the same reaction as a
 // skipped group step still applies.
 #[test]
 fn connected_client_runs_member_steps_beside_a_skipped_group_step() {
@@ -905,7 +904,7 @@ fn connected_client_runs_member_steps_beside_a_skipped_group_step() {
 }
 
 // ---------------------------------------------------------------------------
-// Q4: a mover member step followed by a group step run in authored order on
+// A mover member step followed by a group step run in authored order on
 // one drain — at fire and after a wait. An Exit that cancels the interruptible
 // wait runs neither tail step. (The Exit is fed to the scheduler directly; the
 // trigger-volume plumbing that produces it is covered by the trigger suites.)

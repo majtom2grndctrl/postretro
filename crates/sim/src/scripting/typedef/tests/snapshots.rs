@@ -90,13 +90,16 @@ fn day_one_primitives_all_appear_in_both_outputs() {
     register_all(&mut r, ScriptCtx::new());
     let ts = generate_typescript(&r);
     let luau = generate_luau(&r);
-    for name in ["entityExists", "worldQuery"] {
-        assert!(ts.contains(name), "ts missing primitive {name}:\n{ts}");
-        assert!(
-            luau.contains(name),
-            "luau missing primitive {name}:\n{luau}"
-        );
-    }
+    // `worldQuery` is hidden from the typedefs (not author-facing), so only
+    // `entityExists` is checked here.
+    assert!(
+        ts.contains("entityExists"),
+        "ts missing primitive entityExists:\n{ts}"
+    );
+    assert!(
+        luau.contains("entityExists"),
+        "luau missing primitive entityExists:\n{luau}"
+    );
     // `registerEntity` was removed in favor of `ModManifest.entities`
     // return field; it must not appear as a primitive declaration.
     for line in ts.lines() {

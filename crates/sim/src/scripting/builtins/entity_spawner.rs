@@ -134,7 +134,7 @@ mod tests {
         assert_eq!(registry.get_tags(id).unwrap(), &["closet"]);
     }
 
-    // S1 parse path: the space-delimited `spawned_tags` KVP reaches the
+    // Parse path: the space-delimited `spawned_tags` KVP reaches the
     // component split like `_tags`, apart from the spawner's own tags.
     #[test]
     fn spawned_tags_kvp_reaches_the_component_apart_from_the_spawner_tags() {

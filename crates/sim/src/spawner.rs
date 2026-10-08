@@ -561,7 +561,7 @@ mod tests {
         registry.set_component(spawner, component).unwrap();
     }
 
-    // S1: an NPC spawned by a spawner whose `spawned_tags` include `x` carries
+    // An NPC spawned by a spawner whose `spawned_tags` include `x` carries
     // exactly those tags (never the spawner's own), and `npcs({ tag: x })`
     // reaches it. Firing stays stateless across repeats.
     #[test]
@@ -601,7 +601,7 @@ mod tests {
         assert_eq!(group, enemies, "`npcs({{ tag }})` reaches the spawned NPCs");
     }
 
-    // S1: a spawner tagged `x` with no `spawned_tags` spawns untagged NPCs; its
+    // A spawner tagged `x` with no `spawned_tags` spawns untagged NPCs; its
     // own tag never passes on.
     #[test]
     fn spawner_without_spawned_tags_spawns_untagged_npcs() {
@@ -780,9 +780,9 @@ mod tests {
         }
     }
 
-    // S2: `progress` counts kills only among the entities carrying its tag at
+    // `progress` counts kills only among the entities carrying its tag at
     // install. NPCs a spawner releases later carry `wave` through its
-    // `spawned_tags` (S1) yet neither raise the total nor count.
+    // `spawned_tags` yet neither raise the total nor count.
     #[test]
     fn progress_counts_only_install_time_members_not_later_spawns_carrying_the_tag() {
         const WAVE: &str = "wave";
@@ -838,7 +838,7 @@ mod tests {
         );
     }
 
-    // M5 / A5 seam: the member path spawns from that spawner only, and every
+    // Seam: the member path spawns from that spawner only, and every
     // call is a fresh batch.
     #[test]
     fn member_spawn_ignores_a_sibling_sharing_the_tag_and_repeats_are_two_batches() {

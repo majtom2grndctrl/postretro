@@ -36,6 +36,15 @@ const FLICKER_PATTERN: ReadonlyArray<number> = [
   0.95, 0.40, 1.00, 0.72, 0.15, 0.88, 0.30, 0.65,
 ];
 
+// Luau tables cannot hold `nil`, so the Luau twin's wire omits every unset
+// field. Omitting them here too keeps both twins' wire byte-identical; the
+// engine reads an absent field as unset.
+function lightAnimation(
+  fields: Partial<LightAnimation> & { periodMs: number },
+): LightAnimation {
+  return fields as LightAnimation;
+}
+
 function buildPulse(min: number, max: number, periodMs: number): LightAnimation {
   const SAMPLES = 16;
   const lo = Math.min(min, max);
@@ -47,15 +56,10 @@ function buildPulse(min: number, max: number, periodMs: number): LightAnimation 
     const theta = (i / SAMPLES) * Math.PI * 2;
     brightness[i] = mid + amp * Math.sin(theta);
   }
-  return {
+  return lightAnimation({
     periodMs,
-    phase: null,
-    playCount: null,
-    startActive: null,
     brightness,
-    color: null,
-    direction: null,
-  };
+  });
 }
 
 function buildFade(from: number, to: number, periodMs: number): LightAnimation {
@@ -65,15 +69,11 @@ function buildFade(from: number, to: number, periodMs: number): LightAnimation {
     const t = i / (SAMPLES - 1);
     brightness[i] = from + (to - from) * t;
   }
-  return {
+  return lightAnimation({
     periodMs,
-    phase: null,
     playCount: 1,
-    startActive: null,
     brightness,
-    color: null,
-    direction: null,
-  };
+  });
 }
 
 function buildFlicker(min: number, max: number, rate: number): LightAnimation {
@@ -81,28 +81,18 @@ function buildFlicker(min: number, max: number, rate: number): LightAnimation {
   const hi = Math.max(min, max);
   const span = hi - lo;
   const brightness = FLICKER_PATTERN.map((t) => lo + t * span);
-  return {
+  return lightAnimation({
     periodMs: 1000 / rate,
-    phase: null,
-    playCount: null,
-    startActive: null,
     brightness,
-    color: null,
-    direction: null,
-  };
+  });
 }
 
 function buildColorShift(values: Vec3[], periodMs: number): LightAnimation {
   const color: Vec3[] = values.map((v) => ({ x: v.x, y: v.y, z: v.z }));
-  return {
+  return lightAnimation({
     periodMs,
-    phase: null,
-    playCount: null,
-    startActive: null,
-    brightness: null,
     color,
-    direction: null,
-  };
+  });
 }
 
 function buildSweep(values: Vec3[], periodMs: number): LightAnimation {
@@ -116,15 +106,10 @@ function buildSweep(values: Vec3[], periodMs: number): LightAnimation {
     }
     return { x, y, z };
   });
-  return {
+  return lightAnimation({
     periodMs,
-    phase: null,
-    playCount: null,
-    startActive: null,
-    brightness: null,
-    color: null,
     direction,
-  };
+  });
 }
 
 export function wrapLightEntity(snapshot: GeneratedLightEntity): LightEntityHandle {

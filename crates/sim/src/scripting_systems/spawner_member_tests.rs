@@ -2,8 +2,7 @@
 // on the named-dispatch and scheduled-landing paths: manifest JS → parsed
 // descriptors → install validation → dispatch → the production spawn executor.
 // The trigger-tick path is covered in `trigger_bindings/group_tick_tests.rs`.
-// See: context/plans/in-progress/sdk-addressing-model/index.md — Members,
-// Sequences; research.md Ordering pins A3, A4, A5.
+// See: context/lib/scripting.md §12.
 
 #![cfg(test)]
 
@@ -225,7 +224,7 @@ fn warnings(records: &[CapturedRecord]) -> Vec<&CapturedRecord> {
         .collect()
 }
 
-// M5 / A5, name-fired: `[s.fire(), s.fire()]` spawns two batches from `s`
+// Name-fired: `[s.fire(), s.fire()]` spawns two batches from `s`
 // only; the sibling sharing `closet` spawns nothing.
 #[test]
 fn name_fired_spawner_member_steps_spawn_from_that_spawner_only_one_batch_per_step() {
@@ -264,7 +263,7 @@ fn name_fired_spawner_member_steps_spawn_from_that_spawner_only_one_batch_per_st
     assert!(warnings(&logs).is_empty(), "{logs:?}");
 }
 
-// M5, after a `wait`: the member step lands on the scheduler drain, and only
+// After a `wait`: the member step lands on the scheduler drain, and only
 // then spawns — from that spawner only.
 #[test]
 fn spawner_member_step_after_a_wait_spawns_from_that_spawner_on_landing() {
@@ -317,7 +316,7 @@ fn spawner_member_step_with_a_despawned_spawner_warn_skips() {
     );
 }
 
-// Q2 (A4), named and after a wait: `[s.fire(), npcs().update(…)]` reaches
+// Named and after a wait: `[s.fire(), npcs().update(…)]` reaches
 // every NPC `s` just spawned in the same drain. Spawned NPCs arrive with aggro
 // armed (`enabled_on_spawn`), so the step disarms to make its reach observable;
 // `aggro: true` resolves the same group at the same moment.

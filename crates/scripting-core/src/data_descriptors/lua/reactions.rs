@@ -158,6 +158,10 @@ pub fn primitive_descriptor_from_lua(
         target.is_some(),
     )
     .map_err(|reason| DescriptorError::InvalidShape { reason })?;
+    if kind.is_some() {
+        validate_group_kind_primitive(reaction, "primitive", &primitive)
+            .map_err(|reason| DescriptorError::InvalidShape { reason })?;
+    }
     if primitive == "spawnFromSpawner"
         && (tag.as_deref().is_none() || tag.as_deref().is_some_and(str::is_empty))
     {
@@ -193,7 +197,14 @@ pub fn primitive_descriptor_from_lua(
         serde_json::Value::Object(Default::default())
     };
 
-    validate_consequential_reaction(&primitive, kind, tag.as_deref(), target.as_deref(), &args)?;
+    validate_consequential_reaction(
+        reaction,
+        &primitive,
+        kind,
+        tag.as_deref(),
+        target.as_deref(),
+        &args,
+    )?;
 
     Ok(PrimitiveDescriptor {
         primitive,
@@ -203,85 +214,6 @@ pub fn primitive_descriptor_from_lua(
         on_complete,
         args,
     })
-}
-
-/// Luau twin of the QuickJS primitive-specific consequential validation. The
-/// two authoring runtimes must reject the same malformed reaction descriptors.
-fn validate_consequential_reaction(
-    primitive: &str,
-    kind: Option<GroupKind>,
-    tag: Option<&str>,
-    target: Option<&str>,
-    args: &serde_json::Value,
-) -> Result<(), DescriptorError> {
-    if !matches!(primitive, "grantHealth" | "grantAmmo" | "addSlot") {
-        return Ok(());
-    }
-
-    // A group `kind` addresses its recipients with or without a tag filter.
-    let has_recipients = kind.is_some() || tag.is_some_and(|tag| !tag.is_empty());
-    if !matches!(
-        (has_recipients, target),
-        (true, None) | (false, Some("@activators"))
-    ) {
-        return Err(DescriptorError::InvalidShape {
-            reason: format!(
-                "primitive `{primitive}` requires exactly one of a group `kind`, a non-empty `tag`, or target `@activators`"
-            ),
-        });
-    }
-
-    let object = args
-        .as_object()
-        .ok_or_else(|| DescriptorError::InvalidShape {
-            reason: format!("primitive `{primitive}` `args` must be an object"),
-        })?;
-    if primitive == "addSlot" {
-        if object
-            .get("slot")
-            .and_then(serde_json::Value::as_str)
-            .is_none()
-        {
-            return Err(DescriptorError::InvalidShape {
-                reason: "primitive `addSlot` `args.slot` must be a string".to_string(),
-            });
-        }
-        let Some(delta) = object.get("delta").and_then(serde_json::Value::as_f64) else {
-            return Err(DescriptorError::InvalidShape {
-                reason: "primitive `addSlot` `args.delta` must be a finite number".to_string(),
-            });
-        };
-        if !delta.is_finite() || !(delta as f32).is_finite() {
-            return Err(DescriptorError::InvalidShape {
-                reason:
-                    "primitive `addSlot` `args.delta` must be a finite number representable as f32"
-                        .to_string(),
-            });
-        }
-        return Ok(());
-    }
-    let Some(amount) = object.get("amount").and_then(serde_json::Value::as_f64) else {
-        return Err(DescriptorError::InvalidShape {
-            reason: format!("primitive `{primitive}` `args.amount` must be a finite number"),
-        });
-    };
-    if !amount.is_finite() || !(amount as f32).is_finite() {
-        return Err(DescriptorError::InvalidShape {
-            reason: format!(
-                "primitive `{primitive}` `args.amount` must be a finite number representable as f32"
-            ),
-        });
-    }
-
-    if primitive == "grantAmmo" {
-        let Some(ammo_type) = object.get("type").and_then(serde_json::Value::as_str) else {
-            return Err(DescriptorError::InvalidShape {
-                reason: "primitive `grantAmmo` `args.type` must be a string".to_string(),
-            });
-        };
-        validate_ascii_identifier("grantAmmo.type", ammo_type)?;
-    }
-    Ok(())
 }
 
 pub fn sequence_steps_from_lua(
@@ -294,8 +226,10 @@ pub fn sequence_steps_from_lua(
         }
     })?;
     let mut out = Vec::with_capacity(len);
-    for i in 1..=(len as i64) {
-        let item: LuaValue = arr.get(i).map_err(lua_err)?;
+    for slot in 1..=(len as i64) {
+        let item: LuaValue = arr.get(slot).map_err(lua_err)?;
+        // Diagnostics count steps from 0, matching the QuickJS converter.
+        let i = slot - 1;
         let step_table = match item {
             LuaValue::Table(t) => t,
             other => {
@@ -352,12 +286,20 @@ pub fn sequence_steps_from_lua(
             validate_subject_token_primitive(reaction, &site, token, &primitive)
                 .map_err(|reason| DescriptorError::InvalidSequenceShape { reason })?;
         }
+        if matches!(id, SequenceTarget::Group(_)) {
+            validate_group_kind_primitive(reaction, &site, &primitive)
+                .map_err(|reason| DescriptorError::InvalidSequenceShape { reason })?;
+        }
         let args = if step_table.contains_key("args").map_err(lua_err)? {
             let raw: LuaValue = step_table.get("args").map_err(lua_err)?;
             conv::lua_to_json(raw).map_err(lua_err)?
         } else {
             serde_json::Value::Null
         };
+        // A step's grant payload is the body's payload; the same load-time
+        // check guards the grant handlers. A failure skips the reaction.
+        validate_consequential_args(reaction, &site, &primitive, &args)
+            .map_err(|reason| DescriptorError::InvalidSequenceShape { reason })?;
         out.push(SequenceStep {
             id,
             primitive,

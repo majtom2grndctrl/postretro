@@ -1645,7 +1645,7 @@ Postretro.getMapEntities("light", { tag = "hallway_wave" })
 
 - Fields are a snapshot taken when the query runs. Member methods build reaction steps; they never change the entity during setup.
 - Only map-placed entities appear. A light or emitter carried by a spawned NPC, or by a player, never does.
-- Call it from a map's data script. Anywhere else — a mod start script, for example — it raises an error naming the call, because no level exists yet.
+- Call it in a level's data script, during module evaluation or in `setupLevel`. In a mod start script it raises an error naming the call, because no level exists yet.
 - An unknown kind is an error. NPCs and players are not members; use `npcs()` and `players()`.
 - Member methods return step arrays: spread them into a `sequence` (`...door.start()`), or use one as a whole `sequence`.
 
@@ -1662,7 +1662,8 @@ players();                    // every player
 - A group has no members and no length. `npcs().length` and `npcs().map(…)` are type errors in TypeScript; `#g`, `g[1]` and `g.length` raise in Luau.
 - Each verb returns one descriptor. Use it as a reaction body, or put it — unspread — in a `sequence`, before or after a `wait`. It resolves when its step runs, so `[...wait(800), npcs().damage(5)]` damages the NPCs alive when the wait ends. A group with no matches does nothing.
 - Groups resolve in the same order on every run with the same inputs.
-- **Host only.** Group commands apply on the host and in single player. On a connected client they do nothing and log nothing, because every machine runs the same reactions and the host's results replicate. Member steps in the same reaction still run on the client.
+- **Host only.** Group commands apply on the host and in single player. On a connected client they do nothing and log nothing above debug, because every machine runs the same reactions and the host's results replicate. Member steps in the same reaction still run on the client.
+- **A `wait` tail runs once per activating player.** Each player's fire parks its own instance of the reaction, so on a volume that is not `once`, a group command after a `wait` runs once for every player who fired the trigger.
 
 ### Subject tokens
 
@@ -2432,9 +2433,11 @@ export function setupLevel(): LevelManifest {
 | Fog reaction primitive targets an entity lacking `FogVolumeComponent` | Skipped with `log::warn!` (tag-typo guard). |
 | `applyDamage` `amount` is negative or non-finite | The whole dispatch is a `log::warn!` no-op — no target takes damage (healing is out of scope). |
 | `applyDamage` targets an entity lacking a health component | Skipped with `log::warn!` (tag-typo guard); other matched targets still take damage. |
-| `grantHealth` / `grantAmmo` names no non-empty tag or `@activators` target | Rejected with the whole setup manifest while its descriptors load. |
+| `grantHealth` / `grantAmmo` names no group `kind` (`npcs()` / `players()`, with or without a tag), non-empty tag or `@activators` target | Rejected with the whole setup manifest while its descriptors load. |
 | `grantHealth` / `grantAmmo` amount is not a finite `f32`-representable JSON number | Rejected with the whole setup manifest while its descriptors load. |
 | `grantAmmo` pool key is malformed | Rejected while the setup descriptor loads using the weapon-resource identifier grammar. |
+
+The amount and pool-key rules apply to the command whether it is a reaction body or a sequence step, for group and subject-token commands alike.
 | A grant recipient lacks the required component | The chokepoint emits one `log::warn!` and skips that recipient; sibling targets still receive their grants. |
 
 ---

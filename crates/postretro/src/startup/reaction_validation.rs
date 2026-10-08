@@ -1158,7 +1158,7 @@ mod tests {
         );
     }
 
-    // --- T4 / A8: interruptible wait bound only by a level member `on` -------
+    // --- Interruptible wait bound only by a level member `on` -------
 
     /// One volume-overlap box per trigger, centred at `x`.
     fn place(bridge: &mut TriggerVolumeBridge, trigger: EntityId, x: f32) {
@@ -1170,7 +1170,7 @@ mod tests {
         );
     }
 
-    // T4 (research A8): `reveal` holds an interruptible wait and is bound only
+    // `reveal` holds an interruptible wait and is bound only
     // through a member `t.on("enter", [reveal])`; sibling `t2` carries the
     // same tag and no binding. `reveal` installs (V3 counts the member
     // binding); V5 derives the Exit edge for `t` only; leaving `t` before the
@@ -1346,7 +1346,7 @@ mod tests {
         assert_eq!(landings.get(), 1, "an uncancelled tail lands once");
     }
 
-    // T4 (research A8, `once` half): the same member-bound interruptible wait
+    // `once` half: the same member-bound interruptible wait
     // on a `once` volume is dropped by V2 — a cancel would spend the latch.
     #[test]
     fn member_enter_on_a_once_volume_drops_the_interruptible_wait() {
@@ -1761,7 +1761,7 @@ mod tests {
             .reactions
     }
 
-    // Q3 (A7), SDK-authored, through the real `setupLevel` order — id-step
+    // SDK-authored, through the real `setupLevel` order — id-step
     // primitive validation, then Pass A. A subject-token entry after a `wait`
     // drops its reaction with an error naming it (V4a), never as an unnamed
     // unknown primitive; the same entry before the `wait` installs, and a

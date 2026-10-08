@@ -1284,28 +1284,6 @@ export type LightAnimation = {
 
 export type LightComponent = { origin: Vec3, lightType: LightKind, intensity: number, color: Vec3, falloffModel: FalloffKind, falloffRange: number, coneAngleInner: number?, coneAngleOuter: number?, coneDirection: Vec3?, isDynamic: boolean, animation: LightAnimation? }
 
---- Engine component-name literals accepted by the raw `worldQuery` primitive that `getMapEntities` lowers to. New queryable component types extend this union. Valid values: `light`, `transform`, `emitter`, `fog_volume`, `kinematic_mover`, `trigger_volume`, `spawner`, `particle`, `sprite_visual`.
-export type WorldQueryComponent =
-  "light"
-  | "transform"
-  | "emitter"
-  | "fog_volume"
-  | "kinematic_mover"
-  | "trigger_volume"
-  --- Map-placed `entity_spawner` instances: id, position, tags and spawnedTags (the tags each spawned NPC carries).
-  | "spawner"
-  --- Always returns []. Engine-managed; scripts never iterate individual particles.
-  | "particle"
-  --- Always returns []. Engine-managed.
-  | "sprite_visual"
-
-export type WorldQueryFilter = {
-  --- Component name to query.
-  component: WorldQueryComponent,
-  --- Optional tag filter (exact string match).
-  tag: string?,
-}
-
 --- Generic entity snapshot: id, position and tags.
 export type Entity = {
   id: EntityId,
@@ -1582,8 +1560,8 @@ export type MapEntityFilter = { tag: string? }
 --- `filter.tag`, in authored map order. Membership is fixed at install: an
 --- instance a runtime spawn carries never appears. Returns an empty array on
 --- no match. An unknown kind raises naming the call. Callable only inside a
---- level's `setupLevel`; elsewhere it raises. `"emitter"` yields the snapshot
---- only, with no verbs.
+--- level's data script (module evaluation or `setupLevel`); elsewhere it
+--- raises. `"emitter"` yields the snapshot only, with no verbs.
 declare getMapEntities: ((kind: "mover", filter: MapEntityFilter?) -> {MoverEntityHandle})
   & ((kind: "trigger", filter: MapEntityFilter?) -> {TriggerVolumeHandle})
   & ((kind: "light", filter: MapEntityFilter?) -> {LightEntityHandle})
@@ -1721,12 +1699,12 @@ export type ProgressReactionDescriptor = {
 --- Primitive reaction body: invokes the named Rust primitive. A group command
 --- (`npcs(...)`, `players()`) carries `kind` and an optional `tag` filter; a
 --- subject-token command (`on.activators`, `on.trigger`) carries `target =
---- "@activators"` or `target = "@trigger"`. A raw descriptor with only a non-empty `tag` resolves over every entity
---- carrying it — the form for fog, emitter and animation primitives
---- (`setFogScatter`, `setEmitterRate`, `setAnimationState`), which have no
---- typed builder. True system reactions carry neither and enqueue typed engine
---- commands such as `playSound`, `rumble`, `flashScreen`, and the UI-stack
---- reactions. `args` carries the primitive's typed payload (e.g. `{ rate = 0 }`
+--- "@activators"` or `target = "@trigger"`. A raw descriptor with only a
+--- non-empty `tag` resolves over every entity carrying it — the form for fog,
+--- emitter and animation primitives (`setFogScatter`, `setEmitterRate`,
+--- `setAnimationState`), which have no typed builder. True system reactions
+--- carry neither and enqueue typed engine commands such as `playSound`,
+--- `rumble`, `flashScreen`, and the UI-stack reactions. `args` carries the primitive's typed payload (e.g. `{ rate = 0 }`
 --- for `setEmitterRate`, `{ sound = "alarm" }` for `playSound`).
 export type PrimitiveReactionDescriptor = {
   primitive: string,
@@ -1738,11 +1716,13 @@ export type PrimitiveReactionDescriptor = {
 }
 
 --- Trigger primitive `armTrigger` takes no payload; its target is a trigger
---- member's id, `@trigger` (`on.trigger`), or a raw descriptor's `tag`.
+--- member's id (a member handle's `arm()`), a subject-token command
+--- (`on.trigger.arm()` carries `target = "@trigger"`), or a raw descriptor's `tag`.
 export type ArmTriggerArgs = {}
 
 --- Trigger primitive `disarmTrigger` takes no payload; its target is a trigger
---- member's id, `@trigger` (`on.trigger`), or a raw descriptor's `tag`.
+--- member's id (a member handle's `disarm()`), a subject-token command
+--- (`on.trigger.disarm()` carries `target = "@trigger"`), or a raw descriptor's `tag`.
 export type DisarmTriggerArgs = {}
 
 --- One step in a `sequence` reaction body: invokes the named sequenced
@@ -1841,13 +1821,13 @@ export type MoverSetBlockPolicyStep = {
 }
 
 export type ArmTriggerStep = {
-  id: EntityId | "@trigger",
+  id: EntityId,
   primitive: "armTrigger",
   args: ArmTriggerArgs,
 }
 
 export type DisarmTriggerStep = {
-  id: EntityId | "@trigger",
+  id: EntityId,
   primitive: "disarmTrigger",
   args: DisarmTriggerArgs,
 }
@@ -1885,9 +1865,8 @@ export type FireStep = {
 export type SequenceStep = SetLightAnimationStep | SetFogDensityStep | SetFogGlowStep | SetFogEdgeSoftnessStep | SetFogFalloffStep | SetFogParamsStep | SetFogAnimationStep | MoverStartStep | MoverStopStep | MoverReverseStep | MoverGoToPathNodeStep | MoverSetSpinRateStep | MoverSetBlockPolicyStep | ArmTriggerStep | DisarmTriggerStep | SpawnFromSpawnerStep | GroupCommand | SubjectTokenCommand | WaitStep | FireStep
 
 --- Sequence reaction body: ordered member, group, subject-token and control
---- steps. Steps
---- begin in array order; `fire` queues a named dispatch,
---- while `wait` stops the current drain and resumes the remaining tail later.
+--- steps. Steps begin in array order; `fire` queues a named dispatch, while
+--- `wait` stops the current drain and resumes the remaining tail later.
 export type SequenceReactionDescriptor = {
   sequence: {SequenceStep},
 }
@@ -2989,7 +2968,8 @@ export type PostretroModule = {
   runtime: Runtime,
   --- Pure bounded weapon-action data builders with read-only normalized charge.
   activation: Activation,
-  --- Map-placed members of one kind (`mover`, `trigger`, `light`, `fog`, `emitter`, `spawner`), as handles. Callable only in `setupLevel`.
+  --- Map-placed members of one kind (`mover`, `trigger`, `light`, `fog`, `emitter`, `spawner`), as handles.
+  --- Callable only inside a level's data script (module evaluation or `setupLevel`).
   getMapEntities: typeof(getMapEntities),
   --- Current world gravity in m/s².
   getGravity: typeof(getGravity),

@@ -294,7 +294,7 @@ pub(super) fn bind_command(
         }
         "updateNpcState" => {
             let Some(target) = target_from_context else {
-                log::warn!("[Trigger] updateNpcState requires a fire-time tag target; not binding");
+                log::warn!("[Trigger] updateNpcState requires a tag or group target; not binding");
                 return None;
             };
             let args: UpdateNpcStateArgs = match serde_json::from_value(args.clone()) {

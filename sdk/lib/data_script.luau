@@ -219,13 +219,13 @@ export type MoverSetBlockPolicyStep = {
 }
 
 export type ArmTriggerStep = {
-  id: number | "@trigger",
+  id: number,
   primitive: "armTrigger",
   args: {},
 }
 
 export type DisarmTriggerStep = {
-  id: number | "@trigger",
+  id: number,
   primitive: "disarmTrigger",
   args: {},
 }

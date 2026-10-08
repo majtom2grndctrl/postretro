@@ -42,8 +42,10 @@ fn trigger_event_entries_lua(
     };
     let len = validate_dense_lua_array(&arr, "`triggerEvents` field")?;
     let mut out = Vec::with_capacity(len);
-    for i in 1..=(len as i64) {
-        let item: LuaValue = arr.get(i).map_err(lua_err)?;
+    for slot in 1..=(len as i64) {
+        let item: LuaValue = arr.get(slot).map_err(lua_err)?;
+        // Diagnostics count entries from 0, matching the QuickJS drain.
+        let i = slot - 1;
         match trigger_event_from_lua(item, i, scope) {
             Ok(Some(entry)) => out.push((i, entry)),
             Ok(None) => {}

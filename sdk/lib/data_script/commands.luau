@@ -12,8 +12,12 @@
 local CommandsSdk = {}
 
 -- A command target is opaque: an empty frozen table whose metatable serves its
--- verbs. Indexing anything else, `#target`, or a write raises an error naming
--- the call that built the target, so a group never reads as 0 or nil.
+-- verbs. Indexing anything else, `#target`, `for _ in target`, or a write raises
+-- an error naming the call that built the target, so a group never reads as 0
+-- or nil. `pairs(target)` cannot raise — Luau's `pairs` ignores metatables —
+-- but it walks the empty table and yields no member.
+-- Each verb checks its receiver, so `target.verb(x)` (a dot call, which passes
+-- `x` as the receiver) raises instead of building a command from shifted args.
 local function opaqueTarget(call: string, verbs: { [string]: any })
   local names = {}
   for name in pairs(verbs) do
@@ -29,11 +33,30 @@ local function opaqueTarget(call: string, verbs: { [string]: any })
       verbList
     )
   end
+  local target = {}
+  local bound = {}
+  for name, verb in pairs(verbs) do
+    bound[name] = function(self, ...)
+      if not rawequal(self, target) then
+        error(
+          string.format(
+            "%s.%s was called with `.`; call it with `:`, as `%s:%s(...)`",
+            call,
+            name,
+            call,
+            name
+          ),
+          2
+        )
+      end
+      return verb(self, ...)
+    end
+  end
   -- Both the target and its metatable are frozen, so no write or metatable
   -- swap can open it up (a protected `__metatable` would refuse the freeze).
-  return table.freeze(setmetatable({}, table.freeze({
+  return table.freeze(setmetatable(target, table.freeze({
     __index = function(_target, key)
-      local verb = verbs[key]
+      local verb = bound[key]
       if verb ~= nil then
         return verb
       end
@@ -44,6 +67,9 @@ local function opaqueTarget(call: string, verbs: { [string]: any })
     end,
     __len = function()
       error(misuse("has no length"), 2)
+    end,
+    __iter = function()
+      error(misuse("cannot be iterated"), 2)
     end,
     __newindex = function()
       error(misuse("cannot be written"), 2)

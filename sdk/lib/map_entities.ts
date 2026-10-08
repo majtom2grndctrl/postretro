@@ -67,7 +67,8 @@ function projectEmitter(snapshot: EmitterEntity): EmitterEntity {
  * Return the map-placed members of `kind`, optionally only those carrying
  * `tag`, in authored map order. An instance a runtime spawn carries never
  * appears. Returns `[]` on no match. Callable only inside a level's
- * `setupLevel`; elsewhere it raises.
+ * data script (module evaluation or `setupLevel`); elsewhere, e.g. a mod start
+ * script, it raises.
  */
 export function getMapEntities<K extends MapEntityKind>(
   kind: K,

@@ -20,8 +20,9 @@ impl LevelManifest {
             let arr: Table = table.get("reactions").map_err(lua_err)?;
             let len = validate_dense_lua_array(&arr, "`reactions` field")?;
             let mut out = Vec::with_capacity(len);
-            for i in 1..=(len as i64) {
-                let item: LuaValue = arr.get(i).map_err(lua_err)?;
+            for i in 0..len {
+                // Lua arrays are 1-based; the log index stays 0-based like JS.
+                let item: LuaValue = arr.get(i as i64 + 1).map_err(lua_err)?;
                 let is_resource_grant = is_resource_grant_reaction_lua(&item);
                 match named_reaction_from_lua(item) {
                     Ok(reaction) => out.push(reaction),

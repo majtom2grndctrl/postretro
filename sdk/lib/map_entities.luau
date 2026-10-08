@@ -48,7 +48,8 @@ local MapEntitiesSdk = {}
 --- Return the map-placed members of `kind`, optionally only those carrying
 --- `filter.tag`, in authored map order. An instance a runtime spawn carries
 --- never appears. Returns an empty array on no match. Callable only inside a
---- level's `setupLevel`; elsewhere it raises.
+--- level's data script (module evaluation or `setupLevel`); elsewhere, e.g. a
+--- mod start script, it raises.
 function MapEntitiesSdk.getMapEntities(kind: MapEntityKind, filter: MapEntityFilter?): {any}
   local entry = if type(kind) == "string" then MAP_KINDS[kind] else nil
   if entry == nil then

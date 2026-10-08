@@ -245,7 +245,7 @@ fn progress_with_zero_total_never_fires() {
     assert!(fired.is_empty());
 }
 
-// S2: membership is the id set carrying the tag at install. An entity tagged
+// Membership is the id set carrying the tag at install. An entity tagged
 // later — a spawner's output carries its `spawned_tags` — neither counts nor
 // raises the total, and a mod hot reload recompose keeps both the set and the
 // tally.
@@ -266,7 +266,7 @@ fn progress_recompose_keeps_install_membership_and_kill_tally() {
     assert!(tracker.on_entity_killed(first).is_empty());
 
     let late = spawn_with_tags(&mut entities, &["wave1"]);
-    tracker.recompose(&data, &entities);
+    assert!(tracker.recompose(&data).is_empty());
     assert!(
         tracker.on_entity_killed(late).is_empty(),
         "an entity tagged after install never joins the set"
@@ -294,10 +294,173 @@ fn progress_recompose_keeps_a_fired_subscription_fired() {
     tracker.initialize(&data, &entities);
     assert_eq!(tracker.on_entity_killed(first), vec!["midwave".to_string()]);
 
-    tracker.recompose(&data, &entities);
+    assert!(tracker.recompose(&data).is_empty());
     assert!(
         tracker.on_entity_killed(second).is_empty(),
         "a recompose does not re-arm a fired progress"
+    );
+}
+
+fn spawn_runtime_npc(reg: &mut EntityRegistry, tags: &[&str]) -> EntityId {
+    use crate::provenance::{DescriptorProvenance, DescriptorSpawnPath};
+
+    let id = spawn_with_tags(reg, tags);
+    reg.set_component(
+        id,
+        DescriptorProvenance {
+            canonical_name: "grunt".to_string(),
+            owned_components: Default::default(),
+            map_overrides: Default::default(),
+            spawn_path: DescriptorSpawnPath::RuntimeSpawn,
+        },
+    )
+    .unwrap();
+    id
+}
+
+fn progress_data(reactions: Vec<NamedReaction>) -> DataRegistry {
+    let mut data = DataRegistry::new();
+    data.populate_level(reactions, Vec::new(), &[]);
+    data
+}
+
+// A tag first subscribed at a recompose resolves against the install-time set:
+// a spawner's output carrying the tag stays out, and a member killed before the
+// subscription existed counts as already killed.
+#[test]
+fn progress_tag_added_at_recompose_excludes_spawned_npcs() {
+    let mut entities = EntityRegistry::new();
+    let first = spawn_with_tags(&mut entities, &["wave1"]);
+    let second = spawn_with_tags(&mut entities, &["wave1"]);
+
+    let mut tracker = ProgressTracker::new();
+    tracker.initialize(&progress_data(Vec::new()), &entities);
+    assert!(tracker.on_entity_killed(first).is_empty());
+
+    let spawned = spawn_runtime_npc(&mut entities, &["wave1"]);
+    let data = progress_data(vec![progress_reaction("waveDone", "wave1", 1.0, "powerOn")]);
+    assert!(
+        tracker.recompose(&data).is_empty(),
+        "one of two install-time members dead is below the threshold"
+    );
+    assert!(
+        tracker.on_entity_killed(spawned).is_empty(),
+        "a spawned NPC carrying the tag never joins a late-subscribed set"
+    );
+
+    // Dropped and re-added: the same install-time set and kill record.
+    assert!(tracker.recompose(&progress_data(Vec::new())).is_empty());
+    assert!(tracker.recompose(&data).is_empty());
+    assert_eq!(
+        tracker.on_entity_killed(second),
+        vec!["powerOn".to_string()],
+        "total stays two and the pre-subscription kill counts"
+    );
+}
+
+#[test]
+fn progress_install_excludes_runtime_spawns_already_present() {
+    let data = progress_data(vec![progress_reaction("waveDone", "wave1", 1.0, "powerOn")]);
+    let mut entities = EntityRegistry::new();
+    let member = spawn_with_tags(&mut entities, &["wave1"]);
+    let spawned = spawn_runtime_npc(&mut entities, &["wave1"]);
+
+    let mut tracker = ProgressTracker::new();
+    tracker.initialize(&data, &entities);
+    assert!(tracker.on_entity_killed(spawned).is_empty());
+    assert_eq!(
+        tracker.on_entity_killed(member),
+        vec!["powerOn".to_string()]
+    );
+}
+
+#[test]
+fn progress_editing_at_after_firing_does_not_refire() {
+    let mut entities = EntityRegistry::new();
+    let members: Vec<EntityId> = (0..4)
+        .map(|_| spawn_with_tags(&mut entities, &["wave1"]))
+        .collect();
+
+    let mut tracker = ProgressTracker::new();
+    tracker.initialize(
+        &progress_data(vec![progress_reaction("quarter", "wave1", 0.25, "beep")]),
+        &entities,
+    );
+    assert_eq!(
+        tracker.on_entity_killed(members[0]),
+        vec!["beep".to_string()]
+    );
+
+    let edited = progress_data(vec![progress_reaction("quarter", "wave1", 0.5, "beep")]);
+    assert!(tracker.recompose(&edited).is_empty());
+    assert!(
+        tracker.on_entity_killed(members[1]).is_empty(),
+        "the fired latch survives an `at` edit"
+    );
+}
+
+#[test]
+fn progress_lowered_threshold_already_met_fires_once_on_recompose() {
+    let mut entities = EntityRegistry::new();
+    let members: Vec<EntityId> = (0..4)
+        .map(|_| spawn_with_tags(&mut entities, &["wave1"]))
+        .collect();
+
+    let mut tracker = ProgressTracker::new();
+    tracker.initialize(
+        &progress_data(vec![progress_reaction("done", "wave1", 1.0, "powerOn")]),
+        &entities,
+    );
+    assert!(tracker.on_entity_killed(members[0]).is_empty());
+    assert!(tracker.on_entity_killed(members[1]).is_empty());
+
+    let lowered = progress_data(vec![progress_reaction("done", "wave1", 0.5, "powerOn")]);
+    assert_eq!(tracker.recompose(&lowered), vec!["powerOn".to_string()]);
+    assert!(tracker.recompose(&lowered).is_empty());
+    assert!(tracker.on_entity_killed(members[2]).is_empty());
+    assert!(tracker.on_entity_killed(members[3]).is_empty());
+}
+
+// Two thresholds firing one event on one tag latch independently.
+#[test]
+fn progress_same_tag_and_fire_at_two_thresholds_fires_twice() {
+    let data = progress_data(vec![
+        progress_reaction("half", "wave1", 0.5, "beep"),
+        progress_reaction("all", "wave1", 1.0, "beep"),
+    ]);
+    let mut entities = EntityRegistry::new();
+    let first = spawn_with_tags(&mut entities, &["wave1"]);
+    let second = spawn_with_tags(&mut entities, &["wave1"]);
+
+    let mut tracker = ProgressTracker::new();
+    tracker.initialize(&data, &entities);
+    assert_eq!(tracker.on_entity_killed(first), vec!["beep".to_string()]);
+    assert!(tracker.recompose(&data).is_empty());
+    assert_eq!(tracker.on_entity_killed(second), vec!["beep".to_string()]);
+}
+
+#[test]
+fn progress_with_zero_install_members_warns_once() {
+    let data = progress_data(vec![
+        progress_reaction("waveDone", "wave1", 1.0, "powerOn"),
+        progress_reaction("waveHalf", "wave1", 0.5, "midwave"),
+    ]);
+    let mut entities = EntityRegistry::new();
+    // A closet holding only spawner output tagged `wave1`.
+    spawn_runtime_npc(&mut entities, &["wave1"]);
+
+    let logs = LogCapture::start();
+    let mut tracker = ProgressTracker::new();
+    tracker.initialize(&data, &entities);
+    logs.assert_logged_once(
+        Level::Warn,
+        "[Scripting] progress on tag `wave1` has no members",
+    );
+
+    assert!(tracker.recompose(&data).is_empty());
+    logs.assert_logged_once(
+        Level::Warn,
+        "[Scripting] progress on tag `wave1` has no members",
     );
 }
 

@@ -517,16 +517,12 @@ impl Scripting {
     }
 }
 
-/// Keys sorted, and null-valued keys dropped: a Luau table cannot hold `nil`,
-/// so an SDK builder's explicit `null` in TS is an absent key in Luau, and the
-/// manifest parse reads both the same.
+/// Keys sorted; values untouched. Null-valued keys are kept, so a builder that
+/// emits an explicit `null` shows up as a wire divergence.
 fn canonical(value: Value) -> Value {
     match value {
         Value::Object(map) => {
-            let mut entries: Vec<(String, Value)> = map
-                .into_iter()
-                .filter(|(_, value)| !value.is_null())
-                .collect();
+            let mut entries: Vec<(String, Value)> = map.into_iter().collect();
             entries.sort_by(|a, b| a.0.cmp(&b.0));
             Value::Object(
                 entries
@@ -667,7 +663,7 @@ fn frame(
     fired
 }
 
-// U1: the Scripting surface example as shipped. Stepping onto the plate raises
+// The Scripting surface example as shipped. Stepping onto the plate raises
 // the alarm and parks the reveal; after the 800 ms wait lands, the door
 // starts, the spawner releases its count tagged `closet`, the `closet` NPC
 // group — placed residents and the just-released NPCs alike — is aggroed and
@@ -789,10 +785,9 @@ fn closet_reveal_surface_example_rouses_placed_and_spawned_npcs_and_resupplies_e
     }
 }
 
-// U1, twin half: the Luau twin emits byte-identical wire data — the raw value
-// `setupLevel` returns, as canonical JSON. The parsed manifests keep `args` as
-// raw JSON, where the TS light builders' explicit nulls survive, so the parsed
-// comparison covers everything but step `args`.
+// The Luau twin emits byte-identical wire data — the raw value `setupLevel`
+// returns, as canonical (key-sorted) JSON. TS builders omit unset args, so no
+// null normalization is applied.
 #[test]
 fn closet_reveal_twins_emit_byte_identical_wire_data() {
     let level = Level::new();
@@ -808,6 +803,7 @@ fn closet_reveal_twins_emit_byte_identical_wire_data() {
             .collect()
     };
     assert_eq!(names(&ts_manifest), names(&luau_manifest));
+    assert_eq!(ts_manifest.reactions, luau_manifest.reactions);
     assert_eq!(ts_manifest.trigger_events, luau_manifest.trigger_events);
     assert_eq!(ts_manifest.crossings, luau_manifest.crossings);
     assert_eq!(ts_manifest.reactions.len(), 5);

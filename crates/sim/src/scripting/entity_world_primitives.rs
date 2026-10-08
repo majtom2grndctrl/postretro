@@ -99,7 +99,7 @@ fn parse_query_filter(component: &str, tag: Option<String>) -> Result<QueryFilte
     }
 }
 
-const WORLD_QUERY_DOC: &str = "Return an array of raw entity snapshots matching the filter. Available in definition and data contexts. \
+const WORLD_QUERY_DOC: &str = "Return an array of raw entity snapshots matching the filter. Raises outside a level's data script (module evaluation or `setupLevel`). \
      Returns map-placed instances only; an entity a runtime spawn carries never appears. \
      Filter shape: { component: \"light\" | \"transform\" | \"emitter\" | \"fog_volume\" | \"kinematic_mover\" | \"trigger_volume\" | \"spawner\" | \"particle\" | \"sprite_visual\", tag?: string }. \
      `\"particle\"` and `\"sprite_visual\"` always return `[]` (engine-managed; scripts never iterate individual particles). \
@@ -326,7 +326,8 @@ fn require_level_data_context() -> Result<(), ScriptError> {
 }
 
 /// Register the world-domain primitives: `worldQuery`, `worldGetGravity`, and
-/// `worldSetGravity`. All three install in both definition and data contexts.
+/// `worldSetGravity`. All three install in both definition and data contexts; `worldQuery`
+/// itself raises outside a level data context (`require_level_data_context`).
 pub(crate) fn register_world_primitives(registry: &mut PrimitiveRegistry, ctx: ScriptCtx) {
     register_world_query(registry, ctx.clone());
     register_world_gravity(registry, ctx);
@@ -881,7 +882,7 @@ mod tests {
         );
     }
 
-    // M4: map members exist only inside a level, so the map-member query
+    // Map members exist only inside a level, so the map-member query
     // (`getMapEntities`, lowered to the raw `worldQuery` primitive) raises
     // naming the call in a mod start script, and the same call succeeds in
     // `setupLevel` — in both runtimes.
@@ -1447,7 +1448,7 @@ mod tests {
         })
     }
 
-    // M8: a light or emitter a spawned NPC carries never appears, even when the
+    // A light or emitter a spawned NPC carries never appears, even when the
     // NPC carries the queried tag through its spawner's `spawned_tags`. Map-placed instances (no
     // provenance) still do.
     #[test]
@@ -1704,7 +1705,7 @@ mod tests {
         );
     }
 
-    // M3: a member query with no match returns an empty array in both runtimes.
+    // A member query with no match returns an empty array in both runtimes.
     #[test]
     fn get_map_entities_returns_an_empty_array_on_no_match_in_both_runtimes() {
         let _level = LevelDataContext::enter();
@@ -1746,7 +1747,7 @@ mod tests {
         assert_eq!(empties, 6);
     }
 
-    // T9: the SDK's `getGravity` / `setGravity` behave as `world.getGravity` /
+    // The SDK's `getGravity` / `setGravity` behave as `world.getGravity` /
     // `world.setGravity` did, in both runtimes: a read sees the seeded value, a
     // finite write lands, and a non-finite write warns and leaves gravity as it
     // was.

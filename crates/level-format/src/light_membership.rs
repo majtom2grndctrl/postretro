@@ -7,15 +7,24 @@
 /// The only supported light-membership sidecar contract version.
 pub const LIGHT_MEMBERSHIP_MANIFEST_VERSION: u32 = 1;
 
-/// Runtime-present map-light data supplied to `scripts-build` while evaluating
-/// a level data script. `_bake_only` lights are omitted; each surviving
+/// Runtime-present map data supplied to `scripts-build` while evaluating a
+/// level data script. `_bake_only` lights are omitted; each surviving
 /// `index` is its stable `MapData::lights` vector index, not a runtime entity id.
+/// `map_members` carries the runtime-placed movers, trigger volumes and
+/// spawners so build-side member queries answer what runtime answers.
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 #[derive(Clone, Debug, PartialEq)]
 pub struct LightTable {
     pub version: u32,
     pub lights: Vec<LightTableLight>,
+    /// Omitted from the wire when empty, so a map with no such members
+    /// serializes exactly as a lights-only table.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Vec::is_empty")
+    )]
+    pub map_members: Vec<MapMember>,
 }
 
 impl LightTable {
@@ -25,7 +34,13 @@ impl LightTable {
         Self {
             version: Self::VERSION,
             lights,
+            map_members: Vec::new(),
         }
+    }
+
+    pub fn with_map_members(mut self, map_members: Vec<MapMember>) -> Self {
+        self.map_members = map_members;
+        self
     }
 
     pub fn validate_version(&self) -> std::result::Result<(), LightMembershipVersionError> {
@@ -55,6 +70,57 @@ pub struct LightTableLight {
     /// reshaped to `{ x, y, z }` vectors before the SDK sees them. Internal
     /// routing fields are removed from the authored query surface.
     pub component: LightComponentSnapshot,
+}
+
+/// Non-light map kinds whose identity snapshots the build answers. The wire
+/// spelling is the `worldQuery` component name.
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MapMemberKind {
+    KinematicMover,
+    TriggerVolume,
+    Spawner,
+}
+
+impl MapMemberKind {
+    pub const ALL: [Self; 3] = [Self::KinematicMover, Self::TriggerVolume, Self::Spawner];
+
+    /// The `worldQuery` component name, which is also the wire spelling.
+    pub fn component(self) -> &'static str {
+        match self {
+            Self::KinematicMover => "kinematic_mover",
+            Self::TriggerVolume => "trigger_volume",
+            Self::Spawner => "spawner",
+        }
+    }
+
+    pub fn from_component(component: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|kind| kind.component() == component)
+    }
+}
+
+/// One runtime-placed mover, trigger volume or spawner, in authored order
+/// within its kind. Mirrors the runtime identity snapshot
+/// (`collect_identity_snapshots_json` in `postretro-sim`); `scripts-build`
+/// assigns the build id.
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
+#[derive(Clone, Debug, PartialEq)]
+pub struct MapMember {
+    pub kind: MapMemberKind,
+    pub tags: Vec<String>,
+    /// Engine-space position of the runtime Transform, `[x, y, z]` on the wire.
+    pub position: [f32; 3],
+    /// Tags each NPC a spawner spawns carries. Empty, and omitted from the
+    /// wire, for every other kind.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Vec::is_empty")
+    )]
+    pub spawned_tags: Vec<String>,
 }
 
 /// Build-side light component as it crosses the compiler-side JSON seam.
@@ -232,6 +298,57 @@ mod tests {
             serde_json::from_value::<LightMembershipManifest>(manifest_json)
                 .expect("manifest round trips"),
             manifest
+        );
+    }
+
+    // An empty member table leaves the light-table bytes exactly as a
+    // lights-only table; a populated one rides under `mapMembers`.
+    #[test]
+    fn map_members_are_omitted_when_empty_and_round_trip_when_present() {
+        let lights_only = serde_json::to_value(LightTable::new(vec![light()])).expect("serializes");
+        assert!(lights_only.get("mapMembers").is_none());
+        assert_eq!(
+            serde_json::from_value::<LightTable>(lights_only)
+                .expect("absent key reads as empty")
+                .map_members,
+            Vec::new()
+        );
+
+        let table = LightTable::new(Vec::new()).with_map_members(vec![
+            MapMember {
+                kind: MapMemberKind::TriggerVolume,
+                tags: vec!["plate".to_string()],
+                position: [1.0, 2.0, 3.0],
+                spawned_tags: Vec::new(),
+            },
+            MapMember {
+                kind: MapMemberKind::Spawner,
+                tags: Vec::new(),
+                position: [4.0, 5.0, 6.0],
+                spawned_tags: vec!["wave_1".to_string()],
+            },
+        ]);
+        let json = serde_json::to_value(&table).expect("serializes");
+        assert_eq!(json["mapMembers"][0]["kind"], "trigger_volume");
+        assert!(json["mapMembers"][0].get("spawnedTags").is_none());
+        assert_eq!(json["mapMembers"][1]["kind"], "spawner");
+        assert_eq!(json["mapMembers"][1]["spawnedTags"][0], "wave_1");
+        assert_eq!(
+            serde_json::from_value::<LightTable>(json).expect("round trips"),
+            table
+        );
+        for kind in MapMemberKind::ALL {
+            assert_eq!(
+                serde_json::to_value(kind).expect("kind serializes"),
+                kind.component()
+            );
+            assert_eq!(MapMemberKind::from_component(kind.component()), Some(kind));
+        }
+        assert!(
+            serde_json::from_value::<MapMember>(serde_json::json!({
+                "kind": "light", "tags": [], "position": [0, 0, 0]
+            }))
+            .is_err()
         );
     }
 

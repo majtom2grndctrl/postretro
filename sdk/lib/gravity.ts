@@ -1,5 +1,5 @@
 // World gravity: thin wrappers over the gravity primitives.
-// See: context/lib/scripting.md §10.1
+// See: context/lib/scripting.md §7 (SDK Type Definitions)
 
 import { worldGetGravity, worldSetGravity } from "postretro";
 

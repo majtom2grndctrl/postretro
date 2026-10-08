@@ -192,12 +192,15 @@ impl App {
         let Some(session) = self.session.as_mut() else {
             return;
         };
-        rebuild_reaction_subscribers(
+        // A recompose that already meets a threshold fires through the same
+        // queue as kill-driven progress, dispatched on the next frame.
+        let progress_events = rebuild_reaction_subscribers(
             &mut session.progress_tracker,
             &mut session.crossing_detector,
             &session.scripting.script_ctx,
             SubscriberRebuild::Recompose,
         );
+        session.pending_death_events.extend(progress_events);
         session
             .scripting
             .slot_accumulator_bindings
@@ -1039,16 +1042,20 @@ enum SubscriberRebuild {
     Recompose,
 }
 
-/// Rebuild the level's reaction subscribers: reinitialize the kill-progress
-/// tracker and the state-crossing detector from the current data + entity
-/// registries and slot table. Free function so both [`App`]'s method and segment
-/// B drive it without an `App`.
+/// Rebuild the level's reaction subscribers from the current data registry and
+/// slot table. The kill-progress tracker's membership is captured once, at level
+/// install, from the map-placed entities then in the entity registry; a
+/// recompose keeps that membership, its kill record and its fired latches, and
+/// only re-reads the subscriptions. The state-crossing detector reinitializes on
+/// both. Returns progress events a recompose's subscriptions already meet (a
+/// lowered `at`); install returns none. Free function so both [`App`]'s method
+/// and segment B drive it without an `App`.
 fn rebuild_reaction_subscribers(
     progress_tracker: &mut postretro_scripting_core::reaction_dispatch::ProgressTracker,
     crossing_detector: &mut postretro_scripting_core::state_crossings::CrossingDetector,
     script_ctx: &postretro_entities::ScriptCtx,
     rebuild: SubscriberRebuild,
-) {
+) -> Vec<String> {
     {
         let mut data_registry = script_ctx.data_registry.borrow_mut();
         // Group reactions by dispatch address (name). Addressing is many-to-one
@@ -1104,25 +1111,25 @@ fn rebuild_reaction_subscribers(
             );
         }
     }
-    match rebuild {
+    let progress_events = match rebuild {
         SubscriberRebuild::LevelInstall => {
-            progress_tracker.clear();
             progress_tracker.initialize(
                 &script_ctx.data_registry.borrow(),
                 &script_ctx.registry.borrow(),
             );
+            Vec::new()
         }
-        SubscriberRebuild::Recompose => progress_tracker.recompose(
-            &script_ctx.data_registry.borrow(),
-            &script_ctx.registry.borrow(),
-        ),
-    }
+        SubscriberRebuild::Recompose => {
+            progress_tracker.recompose(&script_ctx.data_registry.borrow())
+        }
+    };
     crossing_detector.clear();
     crossing_detector.initialize(
         &script_ctx.data_registry.borrow(),
         &script_ctx.slot_table.borrow(),
         script_ctx,
     );
+    progress_events
 }
 
 fn reaction_uses_trigger_sentinel(
@@ -3852,6 +3859,16 @@ pub(crate) mod tests {
             .borrow_mut()
             .insert("test.health".to_string(), number_slot(75.0))
             .expect("test slot should be vacant");
+        // Level install snapshots progress membership from the map-placed
+        // entities; a recompose keeps that membership and only re-subscribes.
+        {
+            let ctx = script_ctx(&app);
+            app.session
+                .as_mut()
+                .expect("test app session installed")
+                .progress_tracker
+                .initialize(&ctx.data_registry.borrow(), &ctx.registry.borrow());
+        }
 
         if app.has_installed_level() {
             script_ctx(&app)
@@ -4014,7 +4031,7 @@ pub(crate) mod tests {
         );
     }
 
-    // T6 (research A10): a mod hot reload recomposes the active sets and
+    // A mod hot reload recomposes the active sets and
     // rebuilds trigger bindings through `rebuild_active_trigger_bindings`. A
     // level member's `on("enter", …)` is retained level-local data keyed by
     // its volume, so after the reload it still fires for that volume and never

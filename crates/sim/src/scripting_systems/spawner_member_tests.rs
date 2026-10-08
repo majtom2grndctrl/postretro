@@ -201,6 +201,7 @@ fn add_spawner(ctx: &ScriptCtx, count: u32, position: glam::Vec3) -> EntityId {
             SpawnerComponent {
                 archetype_name: "cultist".to_string(),
                 count,
+                spawned_tags: Vec::new(),
                 resolved: true,
             },
         )

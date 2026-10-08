@@ -596,6 +596,7 @@ fn trigger_tick_npc_group_after_a_spawn_on_the_same_edge_reaches_the_spawned_npc
             SpawnerComponent {
                 archetype_name: "cultist".into(),
                 count: SPAWN_COUNT,
+                spawned_tags: Vec::new(),
                 resolved: true,
             },
         )
@@ -759,6 +760,7 @@ fn add_spawner(registry: &mut EntityRegistry, count: u32, position: Vec3) -> Ent
             SpawnerComponent {
                 archetype_name: "cultist".into(),
                 count,
+                spawned_tags: Vec::new(),
                 resolved: true,
             },
         )

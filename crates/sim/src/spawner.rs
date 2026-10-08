@@ -217,12 +217,10 @@ fn spawn_from_spawner_targets_inner(
         .filter_map(|id| {
             let spawner = registry.get_component::<SpawnerComponent>(id).ok()?.clone();
             let transform = *registry.get_component::<Transform>(id).ok()?;
-            let tags = registry.get_tags(id).ok()?.to_vec();
             Some(ResolvedSpawner {
                 id,
                 spawner,
                 transform,
-                tags,
             })
         })
         .collect();
@@ -267,9 +265,6 @@ struct ResolvedSpawner {
     id: EntityId,
     spawner: SpawnerComponent,
     transform: Transform,
-    /// The spawner placement's tags. Each NPC it spawns carries them, as if
-    /// placed there, so `npcs({ tag })` reaches a closet's output.
-    tags: Vec<String>,
 }
 
 fn spawn_resolved_spawners(
@@ -281,12 +276,16 @@ fn spawn_resolved_spawners(
         id: spawner_id,
         spawner,
         transform: spawner_transform,
-        tags,
     } in spawners
     {
         if !spawner.resolved || spawner.count == 0 {
             continue;
         }
+        // Each NPC carries the spawner's `spawned_tags`, so `npcs({ tag })`
+        // reaches a closet's output. The spawner's own tags never pass on: a
+        // spawner never dies, and a `progress` over its output's tag must not
+        // count it.
+        let tags = &spawner.spawned_tags;
         let Some((descriptor, agent_params)) = ({
             let state = context.state();
             state
@@ -327,7 +326,7 @@ fn spawn_resolved_spawners(
                 rotation: spawner_transform.rotation,
                 scale: spawner_transform.scale,
             };
-            let Some(enemy) = registry.try_spawn(transform, &tags) else {
+            let Some(enemy) = registry.try_spawn(transform, tags) else {
                 context.warn_capacity_exhaustion_once();
                 return;
             };
@@ -474,6 +473,7 @@ mod tests {
                 SpawnerComponent {
                     archetype_name: "cultist".to_string(),
                     count,
+                    spawned_tags: Vec::new(),
                     resolved,
                 },
             )
@@ -552,15 +552,23 @@ mod tests {
         player
     }
 
-    // S1: a spawned NPC carries its spawner placement's tags, as if placed
-    // there; firing stays stateless across repeats.
+    fn set_spawned_tags(registry: &mut EntityRegistry, spawner: EntityId, tags: &[&str]) {
+        let mut component = registry
+            .get_component::<SpawnerComponent>(spawner)
+            .unwrap()
+            .clone();
+        component.spawned_tags = tags.iter().map(|tag| tag.to_string()).collect();
+        registry.set_component(spawner, component).unwrap();
+    }
+
+    // S1: an NPC spawned by a spawner whose `spawned_tags` include `x` carries
+    // exactly those tags (never the spawner's own), and `npcs({ tag: x })`
+    // reaches it. Firing stays stateless across repeats.
     #[test]
-    fn repeated_fire_is_stateless_and_spawned_npcs_carry_the_spawner_tags() {
+    fn repeated_fire_is_stateless_and_spawned_npcs_carry_the_spawned_tags() {
         let mut registry = EntityRegistry::new();
         let spawner = add_spawner(&mut registry, TAG, 2, true, Transform::default());
-        registry
-            .set_tags(spawner, vec![TAG.to_string(), "wing_b".to_string()])
-            .unwrap();
+        set_spawned_tags(&mut registry, spawner, &["wing_b", "wave_1"]);
         let context = context();
 
         spawn_from_spawner_tag(&mut registry, TAG, &context);
@@ -571,8 +579,8 @@ mod tests {
         for &enemy in &enemies {
             assert_eq!(
                 registry.get_tags(enemy).unwrap(),
-                &[TAG.to_string(), "wing_b".to_string()],
-                "each spawned NPC carries every spawner tag"
+                &["wing_b".to_string(), "wave_1".to_string()],
+                "each spawned NPC carries the spawner's `spawned_tags`, not its own `_tags`"
             );
             assert_eq!(
                 registry
@@ -593,21 +601,29 @@ mod tests {
         assert_eq!(group, enemies, "`npcs({{ tag }})` reaches the spawned NPCs");
     }
 
-    // S1: a spawner with no tags spawns untagged NPCs.
+    // S1: a spawner tagged `x` with no `spawned_tags` spawns untagged NPCs; its
+    // own tag never passes on.
     #[test]
-    fn untagged_spawner_spawns_untagged_npcs() {
+    fn spawner_without_spawned_tags_spawns_untagged_npcs() {
         let mut registry = EntityRegistry::new();
         let spawner = add_spawner(&mut registry, TAG, 2, true, Transform::default());
-        registry.set_tags(spawner, Vec::new()).unwrap();
         let context = context();
 
         spawn_from_spawner_member(&mut registry, spawner, &context);
 
         let enemies = spawned(&registry);
         assert_eq!(enemies.len(), 2);
-        for enemy in enemies {
+        for &enemy in &enemies {
             assert!(registry.get_tags(enemy).unwrap().is_empty());
         }
+        let group = postretro_scripting_core::group_resolution::resolve_group(
+            &registry,
+            &postretro_entities::GroupTarget {
+                kind: postretro_entities::GroupKind::Npc,
+                tag: Some(TAG.to_string()),
+            },
+        );
+        assert!(group.is_empty(), "the spawner's `{TAG}` reaches no spawn");
     }
 
     #[test]
@@ -765,8 +781,8 @@ mod tests {
     }
 
     // S2: `progress` counts kills only among the entities carrying its tag at
-    // install. NPCs a `wave`-tagged spawner releases later carry `wave` (S1) yet
-    // neither raise the total nor count.
+    // install. NPCs a spawner releases later carry `wave` through its
+    // `spawned_tags` (S1) yet neither raise the total nor count.
     #[test]
     fn progress_counts_only_install_time_members_not_later_spawns_carrying_the_tag() {
         const WAVE: &str = "wave";
@@ -779,9 +795,7 @@ mod tests {
             })
             .collect();
         let spawner = add_spawner(&mut registry, TAG, 2, true, Transform::default());
-        registry
-            .set_tags(spawner, vec![TAG.to_string(), WAVE.to_string()])
-            .unwrap();
+        set_spawned_tags(&mut registry, spawner, &[WAVE]);
         let context = context();
 
         let mut data = DataRegistry::new();
@@ -789,10 +803,10 @@ mod tests {
             name: "waveProgress".to_string(),
             descriptor: ReactionDescriptor::Progress(ProgressDescriptor {
                 tag: WAVE.to_string(),
-                // Install-time members: the two placed NPCs and the spawner
-                // itself (it carries `wave` too), so 2/3 crosses and 1/3 does
-                // not. Counting the two spawns would cross at the first placed
-                // kill (3/5).
+                // Install-time members: the two placed NPCs only (the
+                // spawner carries `closet`, not `wave`), so 2/2 crosses and
+                // 1/2 does not. Counting the two spawns toward the total would
+                // hold two placed kills at 2/4.
                 at: 0.6,
                 fire: "release".to_string(),
             }),
@@ -806,7 +820,7 @@ mod tests {
         for &npc in &released {
             assert!(
                 registry.get_tags(npc).unwrap().contains(&WAVE.to_string()),
-                "the released NPC inherits `wave`"
+                "the released NPC carries `wave` from `spawned_tags`"
             );
             assert!(
                 progress.on_entity_killed(npc).is_empty(),
@@ -815,12 +829,12 @@ mod tests {
         }
         assert!(
             progress.on_entity_killed(placed[0]).is_empty(),
-            "one placed kill is a third of the install-time total"
+            "one placed kill is half the install-time total"
         );
         assert_eq!(
             progress.on_entity_killed(placed[1]),
             vec!["release".to_string()],
-            "the total stays the three install-time members"
+            "the total stays the two install-time members"
         );
     }
 

@@ -246,8 +246,9 @@ fn progress_with_zero_total_never_fires() {
 }
 
 // S2: membership is the id set carrying the tag at install. An entity tagged
-// later — a spawner's output inherits its tags — neither counts nor raises the
-// total, and a mod hot reload recompose keeps both the set and the tally.
+// later — a spawner's output carries its `spawned_tags` — neither counts nor
+// raises the total, and a mod hot reload recompose keeps both the set and the
+// tally.
 #[test]
 fn progress_recompose_keeps_install_membership_and_kill_tally() {
     let mut data = DataRegistry::new();

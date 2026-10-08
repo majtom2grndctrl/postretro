@@ -54,8 +54,20 @@ fn count_from_entity(entity: &MapEntity) -> u32 {
     }
 }
 
-/// Spawn an inert, unresolved spawner configuration. Its tags are attached at
-/// `try_spawn`, and the common dispatch layer writes the raw KVP table.
+/// Tags each spawned NPC carries. Space-delimited like `_tags`, which the
+/// level compiler pre-splits the same way; `spawned_tags` stays in the raw KVP
+/// table, so it splits here. Absent or blank → untagged spawns.
+fn spawned_tags_from_entity(entity: &MapEntity) -> Vec<String> {
+    entity
+        .key_values
+        .get("spawned_tags")
+        .map(|raw| raw.split_whitespace().map(str::to_string).collect())
+        .unwrap_or_default()
+}
+
+/// Spawn an inert, unresolved spawner configuration. Its own tags are attached
+/// at `try_spawn` and never pass to its spawns; `spawned_tags` labels those.
+/// The common dispatch layer writes the raw KVP table.
 pub fn handle(entity: &MapEntity, registry: &mut EntityRegistry) -> Option<EntityId> {
     let transform = Transform {
         position: entity.origin,
@@ -74,6 +86,7 @@ pub fn handle(entity: &MapEntity, registry: &mut EntityRegistry) -> Option<Entit
         SpawnerComponent {
             archetype_name: archetype_from_entity(entity),
             count: count_from_entity(entity),
+            spawned_tags: spawned_tags_from_entity(entity),
             resolved: false,
         },
     );
@@ -114,10 +127,49 @@ mod tests {
             &SpawnerComponent {
                 archetype_name: "cultist".into(),
                 count: 3,
+                spawned_tags: Vec::new(),
                 resolved: false,
             }
         );
         assert_eq!(registry.get_tags(id).unwrap(), &["closet"]);
+    }
+
+    // S1 parse path: the space-delimited `spawned_tags` KVP reaches the
+    // component split like `_tags`, apart from the spawner's own tags.
+    #[test]
+    fn spawned_tags_kvp_reaches_the_component_apart_from_the_spawner_tags() {
+        let mut registry = EntityRegistry::new();
+        let id = handle(
+            &entity_with_kvps(&[
+                ("archetype", "cultist"),
+                ("count", "2"),
+                ("spawned_tags", "  wave_1\twave_2 "),
+            ]),
+            &mut registry,
+        )
+        .expect("spawner should fit");
+
+        assert_eq!(
+            registry
+                .get_component::<SpawnerComponent>(id)
+                .unwrap()
+                .spawned_tags,
+            vec!["wave_1".to_string(), "wave_2".to_string()]
+        );
+        assert_eq!(registry.get_tags(id).unwrap(), &["closet"]);
+
+        for kvps in [vec![], vec![("spawned_tags", "   ")]] {
+            let mut registry = EntityRegistry::new();
+            let id = handle(&entity_with_kvps(&kvps), &mut registry).expect("spawner should fit");
+            assert!(
+                registry
+                    .get_component::<SpawnerComponent>(id)
+                    .unwrap()
+                    .spawned_tags
+                    .is_empty(),
+                "absent or blank `spawned_tags` spawns untagged NPCs"
+            );
+        }
     }
 
     #[test]

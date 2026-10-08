@@ -1767,6 +1767,7 @@ mod tests {
                 postretro_entities::components::spawner::SpawnerComponent {
                     archetype_name: "cultist".into(),
                     count: SPAWN_COUNT,
+                    spawned_tags: Vec::new(),
                     resolved: true,
                 },
             )

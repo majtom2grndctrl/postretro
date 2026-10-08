@@ -1041,6 +1041,7 @@ fn host_armed_trap_pool_spawn_reaches_client() {
             SpawnerComponent {
                 archetype_name: ENEMY_CLASS.to_string(),
                 count: 1,
+                spawned_tags: Vec::new(),
                 resolved: true,
             },
         )

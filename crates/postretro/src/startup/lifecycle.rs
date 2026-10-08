@@ -1524,6 +1524,7 @@ pub(crate) mod tests {
                         SpawnerComponent {
                             archetype_name: archetype.to_string(),
                             count: 1,
+                            spawned_tags: Vec::new(),
                             resolved,
                         },
                     )

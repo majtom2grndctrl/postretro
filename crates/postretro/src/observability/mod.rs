@@ -410,6 +410,7 @@ mod tests {
                 ComponentValue::Spawner(postretro_entities::components::spawner::SpawnerComponent {
                     archetype_name: String::new(),
                     count: 0,
+                    spawned_tags: Vec::new(),
                     resolved: false,
                 })
             }

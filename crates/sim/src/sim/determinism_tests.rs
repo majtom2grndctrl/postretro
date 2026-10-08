@@ -2324,6 +2324,7 @@ fn spawner_path_first_rate_pass_uses_derived_clip_calibration_before_index_resol
             SpawnerComponent {
                 archetype_name: "runtime_enemy".to_string(),
                 count: 1,
+                spawned_tags: Vec::new(),
                 resolved: true,
             },
         )

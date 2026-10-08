@@ -8,8 +8,8 @@ use crate::data_registry::DataRegistry;
 use crate::registry::{EntityId, EntityRegistry};
 
 /// The entities carrying one progress tag when the level installed. Only
-/// their kills count, so an NPC a spawner releases later — which inherits its
-/// spawner's tags — neither raises `total` nor advances `killed`.
+/// their kills count, so an NPC a spawner releases later — which carries its
+/// spawner's `spawned_tags` — neither raises `total` nor advances `killed`.
 #[derive(Debug, Clone, PartialEq)]
 struct TagMembership {
     /// Install-time members not yet killed. A credited kill removes its id, so

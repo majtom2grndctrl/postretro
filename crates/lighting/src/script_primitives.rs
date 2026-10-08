@@ -307,7 +307,7 @@ pub fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .variant("fog_volume", "")
         .variant("kinematic_mover", "")
         .variant("trigger_volume", "")
-        .variant("spawner", "Map-placed `entity_spawner` instances: id, position and tags.")
+        .variant("spawner", "Map-placed `entity_spawner` instances: id, position, tags and spawnedTags (the tags each spawned NPC carries).")
         .variant("particle", "Always returns []. Engine-managed; scripts never iterate individual particles.")
         .variant("sprite_visual", "Always returns []. Engine-managed.")
         .finish();

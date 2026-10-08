@@ -1,6 +1,7 @@
 // Entity/world scripting primitive handlers and registration.
 // See: context/lib/scripting.md
 
+use postretro_entities::components::spawner::SpawnerComponent;
 use postretro_entities::provenance::{DescriptorProvenance, DescriptorSpawnPath};
 use postretro_entities::{
     ComponentKind, ComponentValue, EntityId, EntityRegistry, ScriptCtx, ScriptError, Transform,
@@ -248,7 +249,8 @@ fn collect_fog_volume_handles_json(ctx: &ScriptCtx, tag: Option<&str>) -> serde_
 /// Collect identity-only member snapshots (`id`, `position`, `tags`) for a map
 /// kind whose runtime phase stays engine-owned: kinematic movers (deterministic
 /// phase), trigger volumes (arming and activation phase) and spawners (fire-time
-/// materialization). Position reads the entity's Transform.
+/// materialization). Position reads the entity's Transform. A spawner snapshot
+/// also carries `spawnedTags`, the tags each NPC it spawns carries.
 fn collect_identity_snapshots_json(
     ctx: &ScriptCtx,
     kind: ComponentKind,
@@ -280,6 +282,16 @@ fn collect_identity_snapshots_json(
             "tags".to_string(),
             Value::Array(tags.into_iter().map(Value::String).collect()),
         );
+        if kind == ComponentKind::Spawner {
+            let spawned_tags = reg
+                .get_component::<SpawnerComponent>(id)
+                .map(|spawner| spawner.spawned_tags.clone())
+                .unwrap_or_default();
+            obj.insert(
+                "spawnedTags".to_string(),
+                Value::Array(spawned_tags.into_iter().map(Value::String).collect()),
+            );
+        }
         arr.push(Value::Object(obj));
     }
     Value::Array(arr)
@@ -1387,7 +1399,7 @@ mod tests {
     }
 
     // M8: a light or emitter a spawned NPC carries never appears, even when the
-    // NPC inherited the queried tag from its spawner. Map-placed instances (no
+    // NPC carries the queried tag through its spawner's `spawned_tags`. Map-placed instances (no
     // provenance) still do.
     #[test]
     fn world_query_light_and_emitter_exclude_ones_carried_by_a_spawned_npc() {
@@ -1408,6 +1420,7 @@ mod tests {
                 postretro_entities::components::spawner::SpawnerComponent {
                     archetype_name: "cultist".to_string(),
                     count: 2,
+                    spawned_tags: vec![TAG.to_string()],
                     resolved: true,
                 },
             )
@@ -1461,7 +1474,7 @@ mod tests {
     }
 
     // Spawner is a map query kind with the identity snapshot shape movers and
-    // triggers use: id, position, tags.
+    // triggers use (id, position, tags), plus the `spawnedTags` its spawns carry.
     #[test]
     fn world_query_spawner_returns_identity_snapshots_in_both_runtimes() {
         let _level = LevelDataContext::enter();
@@ -1482,6 +1495,7 @@ mod tests {
                 postretro_entities::components::spawner::SpawnerComponent {
                     archetype_name: "cultist".to_string(),
                     count: 2,
+                    spawned_tags: vec!["wave_1".to_string(), "wave_2".to_string()],
                     resolved: true,
                 },
             )
@@ -1496,6 +1510,7 @@ mod tests {
             "id": spawner.to_raw(),
             "position": { "x": 1, "y": 2, "z": 3 },
             "tags": ["closet"],
+            "spawnedTags": ["wave_1", "wave_2"],
         }]);
 
         let rt = rquickjs::Runtime::new().unwrap();
@@ -1515,15 +1530,18 @@ mod tests {
 
         let lua = mlua::Lua::new();
         install_all_lua(&r, &lua);
-        let (count, id, z): (i64, u32, f64) = lua
+        let (count, id, z, spawned): (i64, u32, f64, String) = lua
             .load(
                 r#"
                 local hs = worldQuery({ component = "spawner" })
-                return #hs, hs[1].id, hs[1].position.z
+                return #hs, hs[1].id, hs[1].position.z, table.concat(hs[1].spawnedTags, " ")
             "#,
             )
             .eval()
             .unwrap();
-        assert_eq!((count, id, z), (1, spawner.to_raw(), 3.0));
+        assert_eq!(
+            (count, id, z, spawned.as_str()),
+            (1, spawner.to_raw(), 3.0, "wave_1 wave_2")
+        );
     }
 }

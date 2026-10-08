@@ -1292,7 +1292,7 @@ export type WorldQueryComponent =
   | "fog_volume"
   | "kinematic_mover"
   | "trigger_volume"
-  --- Map-placed `entity_spawner` instances: id, position and tags.
+  --- Map-placed `entity_spawner` instances: id, position, tags and spawnedTags (the tags each spawned NPC carries).
   | "spawner"
   --- Always returns []. Engine-managed; scripts never iterate individual particles.
   | "particle"

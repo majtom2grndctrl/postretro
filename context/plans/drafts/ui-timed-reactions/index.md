@@ -92,9 +92,6 @@ Luau mirrors it: `UI.uiWait(1500, { interruptible = true })`; omitted options em
 - **Split first.** `reaction_scheduler.rs`, `reaction_validation.rs`, `system_reactions.rs`, `session/mod.rs`, `modal_stack/mod.rs`, `staged_manifest_lifecycle.rs` and `main.rs` are past ~800 lines. Split only those extended, behavior-preserving, each in its own commit.
 
 ## Open questions
-- Spelling: a `uiWait` step (recommended) or a per-reaction `clock` option on `defineReaction` that makes its `wait`s UI waits. The step keeps the clock beside the delay it governs and allows mixed bodies (`research.md` §Spelling). **blocks build**
-- Steps after a `uiWait`: session-scoped only (recommended), or every step, resolved against whatever exists at landing. Restricting turns a level-addressed step that would outlive its level into a load-time error naming `wait` as the fix (`research.md` §Step class). **blocks build**
-- Reduce motion: functional by default with `decorative` opting in (recommended), or every `uiWait` collapses. Collapsing by default would cut ring-outs and reading time for players who asked only for less motion (`research.md` §Reduce motion). **blocks build**
 - Clock-generic core or standalone UI scheduler. **delegated**
 
 ## Boundary inventory

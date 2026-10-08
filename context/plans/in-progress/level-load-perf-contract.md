@@ -77,3 +77,18 @@ campaign-test moves by under 25 ms either way.
 
 - **Targets are relative to this machine.** The investigation's absolute baselines do not reproduce here (this run of the machine is about 1.5× faster). A track's target is a share of the cost it measures itself, in one interleaved A/B session against a saved pre-change binary — never an absolute number carried from the findings.
 - **Measurement practice:** apply `measure-scaffold.patch` alone (the instrumentation patch already contains it). Reverse it before `cargo fmt`, re-apply after (`scratchpad/fmt.sh`). Interleave base and new binaries (`scratchpad/ab.sh`, `run2.sh`); the first load after a pause can hit a cold page cache. `perf report` hangs here — use `perf script --no-inline -F comm,tid,time,ip,sym | rustfilt` and `scratchpad/incl.py` / `under.py`. Delete `target/debug` after a test round if `/` nears the 15 GB floor. `postretro` is a bin crate: `cargo test -p postretro --bin postretro <filter>`.
+
+## Track B outcome
+
+Built: the id-49 range-table derivation moved to `cluster_directory/coverage.rs`, with an exact batched probe locator in `cluster_directory/probe_locate.rs`. The check still runs in full and still compares the whole table; only its cost changed. Exact restatements replace the O(active bricks × member cells) scan and the per-probe locator walk. The cell-bounds overlap test is separable per axis. Probe boxes descend the cell locator together: a rounded `f32` plane test is monotone in each per-axis product, so a box's corner products bound every probe in it exactly, and axis-aligned planes cut a box where its side changes. The node closure and range emission use flat arrays. On any locator fault the per-probe walk runs instead, so the first error is the original's. The old derivation stays verbatim in `coverage_oracle.rs` (tests only). Equivalence tests compare the full result, ranges, counts, stats or error, on 6000 random and hostile directories, 1500 single-range mutations of a baked table, boundary fixtures (face, corner and ulp contact, zero-volume, outside-grid, empty clusters, duplicate members, a plane through a probe row) and the first-fault order. An uncommitted check held the baked `campaign-test` (22 924 ranges) and `stress-warren-lit` (250 329 ranges) equal to the oracle through the real loader.
+
+Measured, release, `x_parse_bench` worker parse (one `load_prl` per process), n = 15 each, interleaved with rotated order, medians (ms):
+
+| Map | Before | After | Skip-comparison prototype | Share of prototype saving kept |
+|---|---|---|---|---|
+| stress-warren-lit | 1478 | 771 | 657 | 86 % |
+| campaign-test | 131 | 109 | 110 | ≈ all (within noise) |
+
+The derivation alone went from 836 to 29 ms on stress-warren-lit and from 32 to 4 ms on campaign-test (same process, scratch timers). The rest of the after-vs-prototype gap on stress-warren-lit is not this code. The id-50 validator's `sparse_row_role` loop, which runs before id-49 validation and is byte-identical across builds, costs about 70 ms when the linker places it at offset 16 mod 32 and 115–140 ms at offset 0. Base and prototype landed at 16, this build at 0; five perturbation builds followed the same rule (four at 0 and slow, one at 16 and fast). Measure id-50 changes with that in mind on this CPU.
+
+Left: id-50 `ValidationPlan` (`cluster_sh_payloads`) is now about 0.5 s of the ≈ 0.7 s stress-warren-lit parse, outside `cluster_directory*`; `sparse_row_role` scans a cluster's ranges linearly per row. The id-49 canonical partition (`canonical_cell_partition`, about 30 ms) picks each cluster seed by scanning every unassigned cell: O(clusters × cells).

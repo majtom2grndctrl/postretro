@@ -1,7 +1,7 @@
 # sh-streaming--reveal-gate-and-warm-horizon — plan of record
 
 mode: resumable
-status: proposed
+status: approved
 read at: 4677eda27
 
 Source is unchanged since the brief's `ef855f247`; only plan files moved. Every symbol cited by Decisions and Path was re-read at `4677eda27`. No Decision premise is false. The corrections below are Path or location drift, plus facts the Path omits that the build must handle.
@@ -140,3 +140,6 @@ Test names are planned, not yet written. "Engine-free" means a pure function, co
 | 11 | **Measurement prep for owner runs.** Rebuild stale stress PRLs if needed. Pin the route, machine, cache mode and baseline (`main` at `4677eda27`). Hand the owner M2–M5 checklists with the counters to record. | integrating executor | 8, 10 | |
 
 Hot paths touched: the Running frame's streaming call (task 2: same work, new seam, no per-frame allocation), SH targeting (task 7: the warm walk is replaced by a cached per-camera-cell id-51 lookup recomputed only on cell or L change, as lightmap does today), and diagnostics counters (task 8: fixed counters, no allocation).
+
+## Owner notes
+- 2026-10-08: approved. Owner sample at the hallway spawn, today's code: lightmap mandatory 58 blocks / 36.7 MiB, pool 15 layers / 224 MiB; SH 70 targets (8 warm) all Sampleable, logical occupancy 80.2 MiB, pool capacity 720.4 MiB. Task 1 confirms which SH bytes the 256 MiB floor covers before applying the go/no-go threshold.

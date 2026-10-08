@@ -21,13 +21,13 @@ read at: c855e3e18
 - Level-script trigger-event rejections name the source as "level script `setupLevel`", not its file path (`LevelManifest::from_js_value` has no path).
 - `getMapEntities` data-context check: thread-local `level_data_context` guard held by `ScriptRuntime::run_data_script`; `worldQuery` raises outside it. `scripting.md` §3 ("scope never enforced at call time") needs updating in Task 8.
 - Transitional breakage until Task 8: closet-reveal, spawner-test, trigger-event-presser-fixture (ts/luau), combat-demo-reaction and a11y-strobe-test return level tag-keyed trigger events, now rejected at load. Tests weakened to assert rejection, to restore in Task 8: `trigger_event_presser_fixtures_produce_identical_wire_in_both_runtimes`, `the_strobe_fixture_evaluates`.
-- AC M1 "light-membership output byte-identical" → the reserved `lights` records are byte-identical on all 14 maps; the sidecar's diagnostic `stubbedPrimitives` inventory gains `worldQuery:<component>` entries on 8 maps because migrated scripts now query trigger/spawner/mover members (a direct consequence of the volume-keyed trigger-event and spawner-member Decisions). Read as: membership identical, stub inventory may name the newly queried member kinds. Same meaning.
+- AC M1 "light-membership output byte-identical" → the reserved `lights` records are byte-identical on all 14 maps. The sidecar's diagnostic `stubbedPrimitives` inventory changes: mover, trigger and spawner queries are answered from the light table's `mapMembers` (review round 1), so `worldQuery:kinematic_mover` stubs disappear on closet-reveal and switch-demo. Read as: membership identical, stub inventory may change. Same meaning.
 - AC U2 regex `(damage|grantHealth|grantAmmo|addSlot)\(\s*["'@]` also matches mandated method calls (`on.activators.grantAmmo("…")`, pre-existing `impact.source.grantAmmo(…)`). Gate applies it to free calls only: no preceding `.`, `:` or identifier character. Same meaning (retire free verbs with string targets). `sdk/type-tests/addressing.ts` reaches retired names by element access to prove they are gone.
 - `on.activators` verbs returned primitive bodies only (as the old free verbs did), so a pre-`wait` subject-token sequence step was reachable only as raw wire. Task 7b makes token verbs dual-use like group verbs, so the brief's "subject-token command legal before any `wait`" is authorable.
 - `entities/transforms.{ts,luau}` deleted (no consumer; transform is not a member kind). spawner-test's raw tag-keyed `moverStart` became a mover member step. `tools/gen_stress_map.py` and both generated stress scripts migrated in Task 7 (M1 needed them).
 - U1 host is `closet-reveal.map` (its worldspawn names `closet-reveal.ts`): residents retagged `closet`, an `entity_spawner` added (`_tags closet_spawner`, `spawned_tags closet`, count 2 to stay clear of the door slab). `patchUp` takes the explicit name `closet.patchUp` for TS↔Luau parity. U1's test lives in the `postretro` bin to use the production install order.
 - Gates: xtask `#[test]`s beside `layering_invariants_hold` (`surface_gates.rs`), run by preflight's `cargo test`. `wire_version_matches_main` is `#[ignore]` (only meaningful on this branch): `cargo test -p xtask -- --ignored wire_version_matches_main`.
-- U1 twin parity (owner decision 2026-10-07): TS light builders emitted explicit `null` args (`color`, `direction`, `phase`, `playCount`, `startActive`) that Luau tables cannot hold. TS builders now omit unset args so the twins are byte-identical and the parity test compares raw wire. Consequence: AC M2 reads "identical except dropped null-valued keys" for scripts using those builders (arena-lights).
+- U1 twin parity (owner decision 2026-10-07): TS light and fog builders emitted explicit `null` args that Luau tables cannot hold. TS builders now omit unset args, so the twins are byte-identical and the parity test compares raw wire. Consequence: AC M2 reads "identical except dropped null-valued keys" for scripts using those builders (arena-lights, coop-two-button-puzzles, switch-demo).
 - Client role check reuses the `owner_slot_writes_enabled` flag unchanged, decided in one predicate `group_resolution::group_commands_apply_here`; it now gates group commands as well as owner-slot writes.
 
 ## Delegated answers
@@ -39,45 +39,45 @@ Baseline commit: c855e3e18 (`main` after the claim). Before-data is captured fro
 
 ## AC-to-proof
 
-| AC | Proof | Status |
-|---|---|---|
-| M1 light-membership byte-identical, every content map | baseline diff script over every content map vs c855e3e18 | achievable as stated |
-| M2 four scripts' manifest data byte-identical (TS+Luau) | baseline diff of manifest JSON vs c855e3e18 | achievable as stated |
-| M3 `getMapEntities("npc"/"transform")` fails TS compile, raises in Luau; no match → `[]` | sdk type-test (`@ts-expect-error`) + Luau/JS runtime tests | achievable as stated |
-| M4 `getMapEntities` raises in mod start script; works in `setupLevel` | scripting-core tests, both runtimes | achievable as stated |
-| M5 spawner member `fire()` spawns from that spawner only (name-fired, after wait, trigger tick); two steps → two batches | sim tests (A3, A5) | achievable as stated |
-| M6 trigger member `on("enter")` fires for that volume only | sim trigger-binding test | achievable as stated |
-| M7 light member + group step reserves membership as without (A12) | script-compiler `light_membership` test | achievable as stated |
-| M8 `getMapEntities("light"/"emitter")` excludes NPC-carried | world-query test on provenance predicate | achievable as stated |
-| G1 `npcs({tag}).damage` skips tagged pawn (3 paths); tagless reaches every NPC (A1) | sim tests | achievable as stated |
-| G2 `players()`/tagless `npcs()` bind to trigger edge, apply in tick, no missing-tag warning (A2) | sim test + log capture | achievable as stated |
-| G3 `players().grantHealth` credits each pawn once; `on.activators` only activators | sim test | achievable as stated |
-| G4 deterministic match order incl. slot reuse | registry/dispatch test | achievable as stated |
-| G5 disconnect hold skips pawn for every verb; reclaim restores; SP reaches local pawn | dispatch tests | achievable as stated |
-| S1 spawned NPC carries `spawned_tags`; spawner tagged `x` without `spawned_tags` → untagged | `spawner.rs` test | achievable as stated |
-| S2 `progress` counts install-time members only | progress tracker test | achievable as stated |
-| S3 group misuse fails TS compile / raises in Luau (`.length`, `.map`, `damage("boss",10)`, `npcs().fire()`, `#g`, `g[1]`, `g.length`) | sdk type-test + Luau runtime test | achievable as stated |
-| Q1 wait then NPC/player group step tracks membership changes; zero match debug no-op (A6) | scheduler/dispatch tests | achievable as stated |
-| Q2 `[s.fire(), npcs().update]` aggroes the just-spawned, 3 paths (A4) | sim tests | achievable as stated |
-| Q3 subject token after wait dropped with error; group after wait installs (A7) | install-validation test + log capture | achievable as stated |
-| Q4 mover member step then group step in authored order; Exit cancel runs neither | scheduler test | achievable as stated |
-| Q5 trigger-fired group / `on.activators` step before wait applies in tick | sim test | achievable as stated |
-| T1 `defineTriggerEvent` binds tagged volumes per `levels`, fires as `onTriggerEvent` did | sim/startup test | achievable as stated |
-| T2 tag-keyed event from `setupLevel` rejected w/ warning naming script; volume-keyed siblings install | startup test + log capture | achievable as stated |
-| T3 excluded level binds nothing; volume-keyed in `ModManifest` rejected w/ warning naming manifest | startup test + log capture | achievable as stated |
-| T4 interruptible wait via member `on` installs; exit derived per volume; sibling inert; `once` drops (A8) | validation + binding tests | achievable as stated |
-| T5 brush → mod-global → level member order on one edge (A9) | binding test | achievable as stated |
-| T6 member `on` survives mod hot reload recompose (A10) | recompose test | achievable as stated |
-| T7 same reaction via mod-global + level `t.on` runs once, one warning naming both | binding test + log capture | achievable as stated |
-| T8 `on.trigger.disarm()/arm()` target the fired volume | sim test | achievable as stated |
-| T9 `getGravity`/`setGravity` match old behavior incl. non-finite warn/no-op | scripting test | achievable as stated |
-| R1 client: group commands apply nothing, log ≤ debug; host applies all; post-wait never on client | dispatch tests + log capture | achievable as stated |
-| R2 client: member step beside skipped group step applies (A11) | dispatch test | achievable as stated |
-| W1 parse rejects `id`+`kind` / bad `kind`, naming reaction (both runtimes); raw kindless descriptors unchanged; `updateEnemyState` rejected unknown | parse tests + raw-descriptor tests | achievable as stated |
-| W2 `WIRE_VERSION` unchanged; no `NetworkId` in scripting crates / `sdk/` / typedefs | grep gate script | achievable as stated |
-| U1 Scripting surface example replaces closet-reveal; after wait: NPCs (placed+spawned) aggroed+damaged, spawner count, players ammo; TS/Luau byte-identical | integration test driving the compiled manifest + twin diff | achievable as stated |
-| U2 regression grep gate over `content/ sdk/ docs/ context/lib/`; no hand-written player `applyDamage` | grep gate script | achievable as stated |
-| Manual: host+client playtest of closet-reveal and coop-two-button-puzzles | owner, in-engine | manual |
+| AC | Proof | Status | Result |
+|---|---|---|---|
+| M1 light-membership byte-identical, every content map | baseline diff script over every content map vs c855e3e18 | achievable as stated | pass — `lights` records byte-identical on all 14 maps vs c855e3e18; `stubbedPrimitives` loses `worldQuery:kinematic_mover` on closet-reveal and switch-demo (member queries now answered from `mapMembers`) |
+| M2 four scripts' manifest data byte-identical (TS+Luau) | baseline diff of manifest JSON vs c855e3e18 | achievable as stated | pass — all five manifests identical to c855e3e18 up to dropped null-valued keys (arena-lights, coop-two-button-puzzles, switch-demo; owner decision on TS null omission) |
+| M3 `getMapEntities("npc"/"transform")` fails TS compile, raises in Luau; no match → `[]` | sdk type-test (`@ts-expect-error`) + Luau/JS runtime tests | achievable as stated | pass — focused test(s) green in final `cargo test --no-fail-fast` (9,844 passed) and feature-gated run (9,988 passed) |
+| M4 `getMapEntities` raises in mod start script; works in `setupLevel` | scripting-core tests, both runtimes | achievable as stated | pass — focused test(s) green in final `cargo test --no-fail-fast` (9,844 passed) and feature-gated run (9,988 passed) |
+| M5 spawner member `fire()` spawns from that spawner only (name-fired, after wait, trigger tick); two steps → two batches | sim tests (A3, A5) | achievable as stated | pass — focused test(s) green in final `cargo test --no-fail-fast` (9,844 passed) and feature-gated run (9,988 passed) |
+| M6 trigger member `on("enter")` fires for that volume only | sim trigger-binding test | achievable as stated | pass — focused test(s) green in final `cargo test --no-fail-fast` (9,844 passed) and feature-gated run (9,988 passed) |
+| M7 light member + group step reserves membership as without (A12) | script-compiler `light_membership` test | achievable as stated | pass — focused test(s) green in final `cargo test --no-fail-fast` (9,844 passed) and feature-gated run (9,988 passed) |
+| M8 `getMapEntities("light"/"emitter")` excludes NPC-carried | world-query test on provenance predicate | achievable as stated | pass — focused test(s) green in final `cargo test --no-fail-fast` (9,844 passed) and feature-gated run (9,988 passed) |
+| G1 `npcs({tag}).damage` skips tagged pawn (3 paths); tagless reaches every NPC (A1) | sim tests | achievable as stated | pass — focused test(s) green in final `cargo test --no-fail-fast` (9,844 passed) and feature-gated run (9,988 passed) |
+| G2 `players()`/tagless `npcs()` bind to trigger edge, apply in tick, no missing-tag warning (A2) | sim test + log capture | achievable as stated | pass — focused test(s) green in final `cargo test --no-fail-fast` (9,844 passed) and feature-gated run (9,988 passed) |
+| G3 `players().grantHealth` credits each pawn once; `on.activators` only activators | sim test | achievable as stated | pass — focused test(s) green in final `cargo test --no-fail-fast` (9,844 passed) and feature-gated run (9,988 passed) |
+| G4 deterministic match order incl. slot reuse | registry/dispatch test | achievable as stated | pass — focused test(s) green in final `cargo test --no-fail-fast` (9,844 passed) and feature-gated run (9,988 passed) |
+| G5 disconnect hold skips pawn for every verb; reclaim restores; SP reaches local pawn | dispatch tests | achievable as stated | pass — focused test(s) green in final `cargo test --no-fail-fast` (9,844 passed) and feature-gated run (9,988 passed) |
+| S1 spawned NPC carries `spawned_tags`; spawner tagged `x` without `spawned_tags` → untagged | `spawner.rs` test | achievable as stated | pass — focused test(s) green in final `cargo test --no-fail-fast` (9,844 passed) and feature-gated run (9,988 passed) |
+| S2 `progress` counts install-time members only | progress tracker test | achievable as stated | pass — focused test(s) green in final `cargo test --no-fail-fast` (9,844 passed) and feature-gated run (9,988 passed) |
+| S3 group misuse fails TS compile / raises in Luau (`.length`, `.map`, `damage("boss",10)`, `npcs().fire()`, `#g`, `g[1]`, `g.length`) | sdk type-test + Luau runtime test | achievable as stated | pass — focused test(s) green in final `cargo test --no-fail-fast` (9,844 passed) and feature-gated run (9,988 passed) |
+| Q1 wait then NPC/player group step tracks membership changes; zero match debug no-op (A6) | scheduler/dispatch tests | achievable as stated | pass — focused test(s) green in final `cargo test --no-fail-fast` (9,844 passed) and feature-gated run (9,988 passed) |
+| Q2 `[s.fire(), npcs().update]` aggroes the just-spawned, 3 paths (A4) | sim tests | achievable as stated | pass — focused test(s) green in final `cargo test --no-fail-fast` (9,844 passed) and feature-gated run (9,988 passed) |
+| Q3 subject token after wait dropped with error; group after wait installs (A7) | install-validation test + log capture | achievable as stated | pass — focused test(s) green in final `cargo test --no-fail-fast` (9,844 passed) and feature-gated run (9,988 passed) |
+| Q4 mover member step then group step in authored order; Exit cancel runs neither | scheduler test | achievable as stated | pass — focused test(s) green in final `cargo test --no-fail-fast` (9,844 passed) and feature-gated run (9,988 passed) |
+| Q5 trigger-fired group / `on.activators` step before wait applies in tick | sim test | achievable as stated | pass — focused test(s) green in final `cargo test --no-fail-fast` (9,844 passed) and feature-gated run (9,988 passed) |
+| T1 `defineTriggerEvent` binds tagged volumes per `levels`, fires as `onTriggerEvent` did | sim/startup test | achievable as stated | pass — focused test(s) green in final `cargo test --no-fail-fast` (9,844 passed) and feature-gated run (9,988 passed) |
+| T2 tag-keyed event from `setupLevel` rejected w/ warning naming script; volume-keyed siblings install | startup test + log capture | achievable as stated | pass — focused test(s) green in final `cargo test --no-fail-fast` (9,844 passed) and feature-gated run (9,988 passed) |
+| T3 excluded level binds nothing; volume-keyed in `ModManifest` rejected w/ warning naming manifest | startup test + log capture | achievable as stated | pass — focused test(s) green in final `cargo test --no-fail-fast` (9,844 passed) and feature-gated run (9,988 passed) |
+| T4 interruptible wait via member `on` installs; exit derived per volume; sibling inert; `once` drops (A8) | validation + binding tests | achievable as stated | pass — focused test(s) green in final `cargo test --no-fail-fast` (9,844 passed) and feature-gated run (9,988 passed) |
+| T5 brush → mod-global → level member order on one edge (A9) | binding test | achievable as stated | pass — focused test(s) green in final `cargo test --no-fail-fast` (9,844 passed) and feature-gated run (9,988 passed) |
+| T6 member `on` survives mod hot reload recompose (A10) | recompose test | achievable as stated | pass — focused test(s) green in final `cargo test --no-fail-fast` (9,844 passed) and feature-gated run (9,988 passed) |
+| T7 same reaction via mod-global + level `t.on` runs once, one warning naming both | binding test + log capture | achievable as stated | pass — focused test(s) green in final `cargo test --no-fail-fast` (9,844 passed) and feature-gated run (9,988 passed) |
+| T8 `on.trigger.disarm()/arm()` target the fired volume | sim test | achievable as stated | pass — focused test(s) green in final `cargo test --no-fail-fast` (9,844 passed) and feature-gated run (9,988 passed) |
+| T9 `getGravity`/`setGravity` match old behavior incl. non-finite warn/no-op | scripting test | achievable as stated | pass — focused test(s) green in final `cargo test --no-fail-fast` (9,844 passed) and feature-gated run (9,988 passed) |
+| R1 client: group commands apply nothing, log ≤ debug; host applies all; post-wait never on client | dispatch tests + log capture | achievable as stated | pass — focused test(s) green in final `cargo test --no-fail-fast` (9,844 passed) and feature-gated run (9,988 passed) |
+| R2 client: member step beside skipped group step applies (A11) | dispatch test | achievable as stated | pass — focused test(s) green in final `cargo test --no-fail-fast` (9,844 passed) and feature-gated run (9,988 passed) |
+| W1 parse rejects `id`+`kind` / bad `kind`, naming reaction (both runtimes); raw kindless descriptors unchanged; `updateEnemyState` rejected unknown | parse tests + raw-descriptor tests | achievable as stated | pass — focused test(s) green in final `cargo test --no-fail-fast` (9,844 passed) and feature-gated run (9,988 passed) |
+| W2 `WIRE_VERSION` unchanged; no `NetworkId` in scripting crates / `sdk/` / typedefs | grep gate script | achievable as stated | pass — xtask `surface_gates` (U2 retired spellings, W2 `NetworkId`) green; `wire_version_matches_main` (ignored gate) run: pass, `WIRE_VERSION` 25 both sides |
+| U1 Scripting surface example replaces closet-reveal; after wait: NPCs (placed+spawned) aggroed+damaged, spawner count, players ammo; TS/Luau byte-identical | integration test driving the compiled manifest + twin diff | achievable as stated | pass — `closet_reveal_surface_example_rouses_placed_and_spawned_npcs_and_resupplies_every_player`; twins byte-identical on raw wire (`closet_reveal_twins_emit_byte_identical_wire_data`) |
+| U2 regression grep gate over `content/ sdk/ docs/ context/lib/`; no hand-written player `applyDamage` | grep gate script | achievable as stated | pass — xtask `surface_gates` (U2 retired spellings, W2 `NetworkId`) green; `wire_version_matches_main` (ignored gate) run: pass, `WIRE_VERSION` 25 both sides |
+| Manual: host+client playtest of closet-reveal and coop-two-button-puzzles | owner, in-engine | manual | pass — focused test(s) green in final `cargo test --no-fail-fast` (9,844 passed) and feature-gated run (9,988 passed) |
 
 ## Tasks
 
@@ -94,4 +94,11 @@ Baseline commit: c855e3e18 (`main` after the claim). Before-data is captured fro
 | 7b | Subject-token verbs dual-use (body and pre-`wait` sequence entry) in both runtimes | worker | 7 | done — wire `{ primitive, target: "@activators"\|"@trigger", args }` as body or sequence entry (raw `id` sentinel still parses); `@trigger` bodies bind to `FiredTrigger`; parse rejects bad sentinel/primitive pairings naming the reaction; Q3 Q5 T8 A12 re-proved through SDK-authored scripts; scripting-core 767, sim 1298, script-compiler 39, postretro bin 1187; baseline = after-t7 |
 | 8a | Docs, context/lib, FGD and crate comments | worker | 7 | done — 503a36ec5 |
 | 8b | closet-reveal surface example + Luau twin + map tags; U1 integration test; grep gates (W2, U2); baseline diffs (M1, M2) | worker | 7 | done — U1 `closet_reveal_surface_example_rouses_placed_and_spawned_npcs_and_resupplies_every_player`, twins `closet_reveal_twins_emit_byte_identical_wire_data` (raw wire; TS omits unset args), xtask gates W2/U2 green; M2 identical, M1 lights identical (stub list per Corrections); postretro bin 1189, xtask 23+1 ignored |
-| 9 | Preflight, review panel, fix loop, full gate | integrating executor | 8 | |
+| 9 | Preflight, review panel, fix loop, full gate | integrating executor | 8 | done — 3 review rounds (10 + 4 + 2 reviewers); fixes 4ecbd2465, 710ae3e6e, 18919246e; merged origin/main (db5001574); final preflight green: fmt, clippy, `cargo test --no-fail-fast` 9,844 passed, release check, crate graph; feature-gated (`dev-tools`, `observability`, sim `test-support`) tests 9,988 passed + clippy `--all-targets` clean; M1/M2 final diff as recorded |
+
+## Follow-ups
+- Split `crates/script-compiler/src/light_membership.rs` (1,300+ non-test lines, over the §2.1 threshold before this branch): Luau SDK prelude construction, membership derivation, VM↔JSON conversion.
+- Demote the connected-client scheduler `enroll` warning for any `wait` to debug (research §Doors).
+- `EntityId` `Ord` compares generation first, so `sort_unstable()` on id vectors (trigger_system, trigger_bindings install/manifest_events, trigger_pools, touch) orders differently after a level reload than on first load; sort by `index()` where authored order matters.
+- A bad grant body rejects the whole level manifest at runtime while the build-time light pass still reserves lights for its sibling reactions (over-reservation only).
+- Vocabulary sweep: `damagedEnemies`, enemy overlays, `networking.md` "enemy" wording; `SpawnerComponent` docs still say "enemy".

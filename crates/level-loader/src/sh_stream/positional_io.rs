@@ -73,6 +73,20 @@ pub(crate) fn read_vec_at(
     len: u64,
     what: &'static str,
 ) -> Result<Vec<u8>, PrlLoadError> {
+    read_vec_at_in_chunks(file, offset, len, len, what, |_| {})
+}
+
+/// [`read_vec_at`] issued as consecutive reads of at most `chunk` bytes,
+/// calling `on_chunk` with each one's length once it lands. Lets a long read
+/// report progress as it goes; the bytes, counters and errors match one read.
+pub(crate) fn read_vec_at_in_chunks(
+    file: &PrlFile,
+    offset: u64,
+    len: u64,
+    chunk: u64,
+    what: &'static str,
+    mut on_chunk: impl FnMut(u64),
+) -> Result<Vec<u8>, PrlLoadError> {
     #[cfg(test)]
     record_positional_read(offset, len);
     let byte_len =
@@ -82,7 +96,14 @@ pub(crate) fn read_vec_at(
         .try_reserve_exact(byte_len)
         .map_err(|_| stream_error("positional read allocation failed"))?;
     bytes.resize(byte_len, 0);
-    read_exact_at(file.file(), offset, &mut bytes).map_err(PrlLoadError::IoError)?;
+    let chunk = usize::try_from(chunk.max(1)).unwrap_or(usize::MAX);
+    let mut at = offset;
+    for piece in bytes.chunks_mut(chunk) {
+        read_exact_at(file.file(), at, piece).map_err(PrlLoadError::IoError)?;
+        let piece_len = piece.len() as u64;
+        at += piece_len;
+        on_chunk(piece_len);
+    }
     file.read_counters().record(offset, len);
     let _ = what;
     Ok(bytes)

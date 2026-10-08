@@ -42,6 +42,11 @@ fn warned_once(key: &str) -> bool {
     set.insert(key.to_string())
 }
 
+/// Whether a Rust type name (possibly fully qualified) is `Option<T>`.
+pub(super) fn is_option_type(ty_name: &str) -> bool {
+    strip_generic(&short_name(ty_name), "Option").is_some()
+}
+
 /// Map a Rust type name (possibly fully qualified) to its TypeScript spelling.
 ///
 /// Unknown types fall through as their short name and produce a one-time
@@ -205,6 +210,10 @@ pub fn rust_to_ts(ty_name: &str) -> String {
         }
         "FontFamilyMap" => "{ readonly [token: string]: string }".to_string(),
         "ThemeSpacingMap" => "{ readonly [token: string]: number }".to_string(),
+        "ModLoading" => "ModLoading".to_string(),
+        "UiImageMap" => "{ readonly [name: string]: string }".to_string(),
+        // A loading-tree pool: one UI tree registry name or several.
+        "LoadingTreePool" => "string | ReadonlyArray<string>".to_string(),
         // The `defineStore` return is special-cased in
         // `generate_typescript`: a hand-written generic `defineStore<const S>`
         // in the static SDK block carries each slot's declared value type. It
@@ -370,6 +379,9 @@ pub fn rust_to_luau(ty_name: &str) -> String {
         "ThemeColorMap" => "{ [string]: {number} }".to_string(),
         "FontFamilyMap" => "{ [string]: string }".to_string(),
         "ThemeSpacingMap" => "{ [string]: number }".to_string(),
+        "ModLoading" => "ModLoading".to_string(),
+        "UiImageMap" => "{ [string]: string }".to_string(),
+        "LoadingTreePool" => "string | {string}".to_string(),
         // The `defineStore` return is special-cased in
         // `generate_luau`: a hand-written `defineStore` declaration in the
         // static SDK block supplies the handle map. It never reaches this

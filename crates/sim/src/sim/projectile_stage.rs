@@ -1008,7 +1008,7 @@ mod tests {
 
         let mut registry = registry.borrow_mut();
         crate::impact_effects::tick_deferred_effects(&mut registry, 0.180);
-        crate::impact_effects::run_end_of_frame_removal_pass(&mut registry, |_, _| {});
+        crate::impact_effects::run_end_of_frame_removal_pass(&mut registry, |_| {});
         assert!(
             !registry.exists(flash),
             "the completed flash self-despawns through the ordinary deferred path"

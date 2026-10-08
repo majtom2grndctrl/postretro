@@ -13,14 +13,16 @@ use crate::data_descriptors::{
     drain_faction_sentiments_js, drain_faction_sentiments_lua, drain_factions_js,
     drain_factions_lua, drain_fonts_js, drain_fonts_lua, drain_frontend_js, drain_frontend_lua,
     drain_global_crossings_js, drain_global_crossings_lua, drain_global_reactions_js,
-    drain_global_reactions_lua, drain_impact_events_js, drain_impact_events_lua, drain_maps_js,
-    drain_maps_lua, drain_mover_defaults_js, drain_mover_defaults_lua,
-    drain_presentation_overlays_js, drain_presentation_overlays_lua,
-    drain_presentation_templates_js, drain_presentation_templates_lua, drain_render_profile_js,
-    drain_render_profile_lua, drain_switching_js, drain_switching_lua, drain_theme_js,
-    drain_theme_lua, drain_trigger_events_js, drain_trigger_events_lua, drain_trigger_pools_js,
-    drain_trigger_pools_lua, drain_ui_trees_js, drain_ui_trees_lua, entity_descriptor_from_js,
-    entity_descriptor_from_lua, entity_faction_name_from_js, entity_faction_name_from_lua,
+    drain_global_reactions_lua, drain_impact_events_js, drain_impact_events_lua,
+    drain_input_block_js, drain_input_block_lua, drain_loading_js, drain_loading_lua,
+    drain_maps_js, drain_maps_lua, drain_mod_trigger_events_js, drain_mod_trigger_events_lua,
+    drain_mover_defaults_js, drain_mover_defaults_lua, drain_presentation_overlays_js,
+    drain_presentation_overlays_lua, drain_presentation_templates_js,
+    drain_presentation_templates_lua, drain_render_profile_js, drain_render_profile_lua,
+    drain_switching_js, drain_switching_lua, drain_theme_js, drain_theme_lua,
+    drain_trigger_pools_js, drain_trigger_pools_lua, drain_ui_images_js, drain_ui_images_lua,
+    drain_ui_trees_js, drain_ui_trees_lua, entity_descriptor_from_js, entity_descriptor_from_lua,
+    entity_faction_name_from_js, entity_faction_name_from_lua,
 };
 use crate::error::ScriptError;
 use crate::primitives_registry::ScriptPrimitive;
@@ -391,6 +393,17 @@ pub(super) fn run_mod_init_quickjs(
                 return;
             }
         };
+        let input = match drain_input_block_js(&obj, "default mod manifest export") {
+            Ok(block) => block,
+            Err(e) => {
+                out = Err(ScriptError::InvalidArgument {
+                    reason: format!(
+                        "mod-init: `{source_path}` default mod manifest export `input` invalid: {e}"
+                    ),
+                });
+                return;
+            }
+        };
         let switching = match drain_switching_js(&obj, "default mod manifest export") {
             Ok(switching) => switching,
             Err(e) => {
@@ -419,6 +432,24 @@ pub(super) fn run_mod_init_quickjs(
             Err(e) => {
                 out = Err(ScriptError::InvalidArgument {
                     reason: format!("mod-init: `{source_path}` default mod manifest export `frontend` invalid: {e}"),
+                });
+                return;
+            }
+        };
+        let ui_images = match drain_ui_images_js(&obj, "default mod manifest export") {
+            Ok(images) => images,
+            Err(e) => {
+                out = Err(ScriptError::InvalidArgument {
+                    reason: format!("mod-init: `{source_path}` default mod manifest export `uiImages` invalid: {e}"),
+                });
+                return;
+            }
+        };
+        let loading = match drain_loading_js(&obj, "default mod manifest export") {
+            Ok(loading) => loading,
+            Err(e) => {
+                out = Err(ScriptError::InvalidArgument {
+                    reason: format!("mod-init: `{source_path}` default mod manifest export `loading` invalid: {e}"),
                 });
                 return;
             }
@@ -479,7 +510,7 @@ pub(super) fn run_mod_init_quickjs(
                 return;
             }
         };
-        let trigger_events = match drain_trigger_events_js(&obj, "default mod manifest export") {
+        let trigger_events = match drain_mod_trigger_events_js(&obj, "default mod manifest export") {
             Ok(v) => v,
             Err(e) => {
                 out = Err(ScriptError::InvalidArgument { reason: format!("mod-init: `{source_path}` triggerEvents invalid: {e}") });
@@ -501,6 +532,7 @@ pub(super) fn run_mod_init_quickjs(
             render,
             movers,
             audio,
+            input,
             switching,
             default_weapon_placement,
             entities,
@@ -513,6 +545,8 @@ pub(super) fn run_mod_init_quickjs(
             presentation_overlays,
             theme,
             frontend,
+            ui_images,
+            loading,
             fonts,
             maps,
             reactions,
@@ -752,6 +786,11 @@ pub(super) fn run_mod_init_luau(
             reason: format!("mod-init: `{source_path}` returned mod manifest `audio` invalid: {e}"),
         }
     })?;
+    let input = drain_input_block_lua(&table, "returned mod manifest").map_err(|e| {
+        ScriptError::InvalidArgument {
+            reason: format!("mod-init: `{source_path}` returned mod manifest `input` invalid: {e}"),
+        }
+    })?;
     let switching = drain_switching_lua(&table, "returned mod manifest").map_err(|e| {
         ScriptError::InvalidArgument {
             reason: format!(
@@ -772,6 +811,20 @@ pub(super) fn run_mod_init_luau(
         ScriptError::InvalidArgument {
             reason: format!(
                 "mod-init: `{source_path}` returned mod manifest `frontend` invalid: {e}"
+            ),
+        }
+    })?;
+    let ui_images = drain_ui_images_lua(&table, "returned mod manifest").map_err(|e| {
+        ScriptError::InvalidArgument {
+            reason: format!(
+                "mod-init: `{source_path}` returned mod manifest `uiImages` invalid: {e}"
+            ),
+        }
+    })?;
+    let loading = drain_loading_lua(&table, "returned mod manifest").map_err(|e| {
+        ScriptError::InvalidArgument {
+            reason: format!(
+                "mod-init: `{source_path}` returned mod manifest `loading` invalid: {e}"
             ),
         }
     })?;
@@ -813,7 +866,7 @@ pub(super) fn run_mod_init_luau(
             ),
         })?;
     let trigger_events =
-        drain_trigger_events_lua(&table, "returned mod manifest").map_err(|e| {
+        drain_mod_trigger_events_lua(&table, "returned mod manifest").map_err(|e| {
             ScriptError::InvalidArgument {
                 reason: format!("mod-init: `{source_path}` returned triggerEvents invalid: {e}"),
             }
@@ -831,6 +884,7 @@ pub(super) fn run_mod_init_luau(
         render,
         movers,
         audio,
+        input,
         switching,
         default_weapon_placement,
         entities,
@@ -843,6 +897,8 @@ pub(super) fn run_mod_init_luau(
         presentation_overlays,
         theme,
         frontend,
+        ui_images,
+        loading,
         fonts,
         maps,
         reactions,
@@ -933,6 +989,32 @@ mod tests {
     }
 
     #[test]
+    fn mod_init_ui_images_and_loading_match_in_both_runtimes() {
+        let registry = PrimitiveRegistry::new();
+        let quickjs = QuickJsSubsystem::new(&registry, &crate::quickjs::QuickJsConfig::default())
+            .expect("QuickJS subsystem should initialize");
+        let js = run_mod_init_quickjs(
+            &quickjs,
+            "globalThis.__postretroModManifest = { name: 'Load', id: 'load', version: '1',              uiImages: { logo: 'ui/logo.png', 'engine/x': 'ui/x.png', bad: 4 },              loading: { tree: 'modLoading' } };",
+            "load.js",
+        )
+        .expect("malformed optional image entries must not reject the manifest");
+        let luau = run_mod_init_luau(
+            &[],
+            "return { name = 'Load', id = 'load', version = '1',              uiImages = { logo = 'ui/logo.png', ['engine/x'] = 'ui/x.png', bad = 4 },              loading = { tree = 'modLoading' } }",
+            "load.luau",
+            Path::new("."),
+        )
+        .expect("malformed optional image entries must not reject the manifest");
+        let expected_images =
+            std::collections::BTreeMap::from([("logo".to_string(), "ui/logo.png".to_string())]);
+        assert_eq!(js.ui_images, expected_images);
+        assert_eq!(luau.ui_images, expected_images);
+        assert_eq!(js.loading.tree, vec!["modLoading".to_string()]);
+        assert_eq!(luau.loading, js.loading);
+    }
+
+    #[test]
     fn mod_init_mover_defaults_match_in_both_runtimes_and_degrade_to_off() {
         let registry = PrimitiveRegistry::new();
         let quickjs = QuickJsSubsystem::new(&registry, &crate::quickjs::QuickJsConfig::default())
@@ -1020,6 +1102,51 @@ mod tests {
             ),
             (ModAudioProfile::default(), ModAudioProfile::default())
         );
+    }
+
+    #[test]
+    fn mod_init_input_block_drains_in_both_runtimes_and_degrades_without_rejecting() {
+        use crate::runtime::{ModInputBlock, ModInputCommand};
+
+        let registry = PrimitiveRegistry::new();
+        let quickjs = QuickJsSubsystem::new(&registry, &crate::quickjs::QuickJsConfig::default())
+            .expect("QuickJS subsystem should initialize");
+        let cold = |js_input: &str, luau_input: &str| {
+            let js = run_mod_init_quickjs(
+                &quickjs,
+                &format!(
+                    "globalThis.__postretroModManifest = {{ name: 'Input', id: 'input', version: '1'{js_input} }};"
+                ),
+                "input.js",
+            )
+            .expect("an optional QuickJS input block must not reject the manifest");
+            let luau = run_mod_init_luau(
+                &[],
+                &format!("return {{ name = 'Input', id = 'input', version = '1'{luau_input} }}"),
+                "input.luau",
+                Path::new("."),
+            )
+            .expect("an optional Luau input block must not reject the manifest");
+            (js.input, luau.input)
+        };
+
+        let expected = Some(ModInputBlock {
+            commands: vec![ModInputCommand {
+                id: "sprint".to_string(),
+                gamepad: Some(Vec::new()),
+                ..ModInputCommand::default()
+            }],
+            ..ModInputBlock::default()
+        });
+        assert_eq!(
+            cold(
+                ", input: { commands: { sprint: { gamepad: [] } } }",
+                ", input = { commands = { sprint = { gamepad = {} } } }",
+            ),
+            (expected.clone(), expected)
+        );
+        assert_eq!(cold("", ""), (None, None));
+        assert_eq!(cold(", input: 5", ", input = 5"), (None, None));
     }
 
     #[test]

@@ -227,20 +227,7 @@ impl ShResidencyState {
                         promotion_plan.rows(),
                         promotion_timestamp_writes,
                     )?;
-                self.compose_planner.commit_pass(promotion_plan);
-                self.static_direct_compose_diagnostics = pass_diagnostics(
-                    promotion_plan,
-                    dispatches,
-                    self.compose_planner
-                        .lagging_rows(compose_plan::ComposePass::StaticDirect),
-                );
-                self.direct_promotion_dirty_rows.clear();
-                // Planning Pass A already made the matching Pass-B work durable.
-                // Clearing both residency dirty sets here prevents a failed Pass B
-                // from needlessly reseeding and rewriting committed Pass A.
-                self.direct_animated_dirty_rows.clear();
-                self.dirty_rows
-                    .retain(|(section, _)| *section != DIRECT_DELTA_ID);
+                self.commit_static_direct_compose(promotion_plan, dispatches);
                 encoded_any = true;
             }
 
@@ -261,16 +248,7 @@ impl ShResidencyState {
                         animated_plan.rows(),
                         animated_timestamp_writes,
                     )?;
-                self.compose_planner.commit_pass(animated_plan);
-                self.animated_direct_compose_diagnostics = pass_diagnostics(
-                    animated_plan,
-                    dispatches,
-                    self.compose_planner
-                        .lagging_rows(compose_plan::ComposePass::AnimatedDirect),
-                );
-                self.direct_animated_dirty_rows.clear();
-                self.dirty_rows
-                    .retain(|(section, _)| *section != ANIMATED_DIRECT_DELTA_ID);
+                self.commit_animated_direct_compose(animated_plan, promotion_plan, dispatches);
                 encoded_any = true;
             }
 
@@ -322,21 +300,7 @@ impl ShResidencyState {
                 plan.rows(),
                 timestamp_writes,
             )?;
-            self.compose_planner.commit_pass(plan);
-            self.indirect_compose_diagnostics = pass_diagnostics(
-                plan,
-                dispatches,
-                self.compose_planner
-                    .lagging_rows(compose_plan::ComposePass::Indirect),
-            );
-            self.indirect_compose_epoch = self
-                .indirect_compose_epoch
-                .checked_add(1)
-                .ok_or(ShResidencyDrainError::SlotOverflow)?;
-            self.indirect_dirty_rows.clear();
-            self.dirty_rows
-                .retain(|(section, _)| *section != INDIRECT_DELTA_ID);
-            Ok(())
+            self.commit_indirect_compose(plan, dispatches)
         })();
         self.compose_frame_plan = Some(frame_plan);
         result
@@ -439,6 +403,98 @@ impl ShResidencyState {
         }
     }
 
+    // The commits below are the CPU half of each pass's dispatch, run once
+    // its encode succeeded. They stay apart from the GPU encode so CPU tests
+    // drive the same planner commit and residency-work consumption. The
+    // direct epoch bump stays in `dispatch_direct_compose`: it advances once
+    // for both direct passes, so a CPU-only commit never makes a cluster
+    // that needs direct compose sampleable.
+
+    pub(super) fn commit_indirect_compose(
+        &mut self,
+        plan: &compose_plan::ComposePassPlan,
+        dispatches: usize,
+    ) -> Result<(), ShResidencyDrainError> {
+        self.compose_planner.commit_pass(plan);
+        self.indirect_compose_diagnostics = pass_diagnostics(
+            plan,
+            self.entry_rows_composed(plan, |row| {
+                self.sparse_row_has_entries(INDIRECT_DELTA_ID, row)
+            }),
+            dispatches,
+            self.compose_planner
+                .lagging_rows(compose_plan::ComposePass::Indirect),
+        );
+        self.indirect_compose_epoch = self
+            .indirect_compose_epoch
+            .checked_add(1)
+            .ok_or(ShResidencyDrainError::SlotOverflow)?;
+        self.indirect_dirty_rows.clear();
+        self.dirty_rows
+            .retain(|(section, _)| *section != INDIRECT_DELTA_ID);
+        Ok(())
+    }
+
+    pub(super) fn commit_static_direct_compose(
+        &mut self,
+        plan: &compose_plan::ComposePassPlan,
+        dispatches: usize,
+    ) {
+        self.compose_planner.commit_pass(plan);
+        self.static_direct_compose_diagnostics = pass_diagnostics(
+            plan,
+            self.entry_rows_composed(plan, |row| {
+                self.sparse_row_has_entries(DIRECT_DELTA_ID, row)
+            }),
+            dispatches,
+            self.compose_planner
+                .lagging_rows(compose_plan::ComposePass::StaticDirect),
+        );
+        self.direct_promotion_dirty_rows.clear();
+        // Planning Pass A already made the matching Pass-B work durable.
+        // Clearing both residency dirty sets here prevents a failed Pass B
+        // from needlessly reseeding and rewriting committed Pass A.
+        self.direct_animated_dirty_rows.clear();
+        self.dirty_rows
+            .retain(|(section, _)| *section != DIRECT_DELTA_ID);
+    }
+
+    /// `promotion_plan` is the same frame's Pass A plan: a row Pass A
+    /// rewrote carries changed Pass B input whatever its id-45 entries.
+    pub(super) fn commit_animated_direct_compose(
+        &mut self,
+        plan: &compose_plan::ComposePassPlan,
+        promotion_plan: &compose_plan::ComposePassPlan,
+        dispatches: usize,
+    ) {
+        self.compose_planner.commit_pass(plan);
+        self.animated_direct_compose_diagnostics = pass_diagnostics(
+            plan,
+            self.entry_rows_composed(plan, |row| {
+                self.sparse_row_has_entries(ANIMATED_DIRECT_DELTA_ID, row)
+                    || promotion_plan.rows().binary_search(&row).is_ok()
+            }),
+            dispatches,
+            self.compose_planner
+                .lagging_rows(compose_plan::ComposePass::AnimatedDirect),
+        );
+        self.direct_animated_dirty_rows.clear();
+        self.dirty_rows
+            .retain(|(section, _)| *section != ANIMATED_DIRECT_DELTA_ID);
+    }
+
+    /// Planned rows whose pass input carries a CSR entry. O(planned rows).
+    fn entry_rows_composed(
+        &self,
+        plan: &compose_plan::ComposePassPlan,
+        carries_entry: impl Fn(u32) -> bool,
+    ) -> usize {
+        plan.rows()
+            .iter()
+            .filter(|&&row| carries_entry(row))
+            .count()
+    }
+
     pub(in crate::render) fn streaming_allocation_summary(
         &self,
     ) -> crate::render::sh_residency::ShStreamingAllocationSummary {
@@ -456,11 +512,13 @@ impl ShResidencyState {
 
 fn pass_diagnostics(
     plan: &compose_plan::ComposePassPlan,
+    entry_rows: usize,
     dispatches: usize,
     remaining_lag: usize,
 ) -> ShComposePassDiagnostics {
     ShComposePassDiagnostics {
         rows_composed: u64::try_from(plan.rows().len()).unwrap_or(u64::MAX),
+        entry_rows_composed: u64::try_from(entry_rows).unwrap_or(u64::MAX),
         dispatches: u64::try_from(dispatches).unwrap_or(u64::MAX),
         lagged_rows_composed: u64::try_from(plan.lagged_rows()).unwrap_or(u64::MAX),
         resident_rows_still_lagging: u64::try_from(remaining_lag).unwrap_or(u64::MAX),
@@ -486,9 +544,10 @@ mod tests {
             2,
         );
         assert_eq!(
-            pass_diagnostics(&plan, 1, 4),
+            pass_diagnostics(&plan, 2, 1, 4),
             ShComposePassDiagnostics {
                 rows_composed: 3,
+                entry_rows_composed: 2,
                 dispatches: 1,
                 lagged_rows_composed: 2,
                 resident_rows_still_lagging: 4,

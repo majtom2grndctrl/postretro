@@ -14,10 +14,10 @@ use super::*;
 /// does not draw, and a single warning names the missing key. Each entry owns
 /// its texture so the bind group's view stays valid for the registry's lifetime.
 ///
-/// E19's current UI manifest surface carries trees, theme tokens, and font
-/// assets, but no authored UI image asset list/path contract. `register_uploaded`
-/// is the renderer-owned seam that future producer will call; until then
-/// production may legitimately run with an empty registry.
+/// Producers, all through `register_uploaded`: the engine's own images
+/// (`engine/` keys, such as the splash logo), the mod manifest's `uiImages`
+/// (name → mod-relative PNG), and glyph art, registered in that order so a
+/// glyph wins a key it shares with a mod image.
 #[derive(Default)]
 pub(crate) struct UiImageRegistry {
     pub(super) entries: std::collections::HashMap<String, UiImageEntry>,
@@ -37,7 +37,6 @@ impl UiImageRegistry {
     /// creates the GPU objects; the registry keeps the texture alive, resolves
     /// the key at draw time, and exposes the same texture's natural size to
     /// layout.
-    #[allow(dead_code)]
     pub fn register_uploaded(
         &mut self,
         key: impl Into<String>,

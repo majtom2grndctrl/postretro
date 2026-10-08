@@ -257,6 +257,7 @@ fn real_map_steady_state_stages_binary_prewrites_and_window_only_writers() {
                     text_entry_target: None,
                     accessible_name: None,
                     role: None,
+                    restore_on_return: None,
                 };
                 postretro_ui::UiTreeEntry {
                     name: format!("upload-{index}"),

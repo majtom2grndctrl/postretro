@@ -383,6 +383,39 @@ fn luau_bridge_preserves_slider_value_display_mapping() {
 }
 
 #[test]
+fn luau_image_factory_carries_sizes_and_rejects_non_positive_ones() {
+    const WIDGETS_SRC: &str = include_str!("../../../../../sdk/lib/ui/widgets.luau");
+    let lua = mlua::Lua::new();
+    install_ui_theme_token_validator(&lua);
+    let widgets: mlua::Table = lua.load(WIDGETS_SRC).eval().expect("widgets module");
+    lua.globals().set("W", widgets).unwrap();
+    let value: mlua::Value = lua
+        .load(
+            r#"return {
+                anchor = "center", offset = {0, 0},
+                root = W.Image({ asset = "loading/skyline", width = 256, decorative = true }),
+            }"#,
+        )
+        .eval()
+        .expect("valid sized image tree");
+    let tree = anchored_tree_from_lua_value(value).expect("bridge must convert");
+    assert_eq!(
+        serde_json::to_string(&tree.root).unwrap(),
+        r#"{"kind":"image","asset":"loading/skyline","width":256.0,"decorative":true}"#
+    );
+
+    let error = lua
+        .load(r#"return W.Image({ asset = "loading/skyline", height = 0, decorative = true })"#)
+        .eval::<mlua::Value>()
+        .expect_err("a zero height must be rejected by the factory");
+    assert!(
+        error
+            .to_string()
+            .contains("Image: `height` must be greater than zero")
+    );
+}
+
+#[test]
 fn js_bridge_malformed_tree_surfaces_named_error_not_panic() {
     // Unknown widget kind → InvalidShape (a named DescriptorError), no panic.
     let bad_kind = r#"({ anchor: "center", offset: [0.0, 0.0], root: { kind: "carousel" } })"#;
@@ -896,4 +929,134 @@ fn drain_theme_lua_skips_bad_token_and_keeps_good_token() {
         Some(&[1.0f32, 0.0, 0.0, 1.0]),
         "the valid color token must survive"
     );
+}
+
+#[test]
+fn restore_on_return_is_a_tree_prop_in_both_sdks_and_an_explicit_false_survives() {
+    // JS: an authored `false` opts the tree out; an absent key restores.
+    let src = r#"({ anchor: "center", offset: [0.0, 0.0], restoreOnReturn: false,
+        root: { kind: "spacer", flexGrow: 1.0 } })"#;
+    let tree = eval_js(src, |ctx, v| {
+        anchored_tree_from_js_value(ctx, v).expect("must convert")
+    });
+    assert_eq!(tree.restore_on_return, Some(false));
+    assert!(!tree.restores_on_return());
+    let src =
+        r#"({ anchor: "center", offset: [0.0, 0.0], root: { kind: "spacer", flexGrow: 1.0 } })"#;
+    let tree = eval_js(src, |ctx, v| {
+        anchored_tree_from_js_value(ctx, v).expect("must convert")
+    });
+    assert!(tree.restores_on_return());
+
+    // Luau, through the SDK's `Tree` factory.
+    const WIDGETS_SRC: &str = include_str!("../../../../../sdk/lib/ui/widgets.luau");
+    const TREE_SRC: &str = include_str!("../../../../../sdk/lib/ui/tree.luau");
+    let lua = mlua::Lua::new();
+    install_ui_theme_token_validator(&lua);
+    let widgets: mlua::Table = lua.load(WIDGETS_SRC).eval().unwrap();
+    let tree_mod: mlua::Table = lua.load(TREE_SRC).eval().unwrap();
+    lua.globals().set("W", widgets).unwrap();
+    lua.globals().set("T", tree_mod).unwrap();
+    let opted_out: mlua::Value = lua
+        .load(r#"return T.Tree({ anchor = "center", offset = { 0, 0 }, restoreOnReturn = false }, W.Spacer({ flexGrow = 1 }))"#)
+        .eval()
+        .expect("factory builds a tree");
+    let tree = anchored_tree_from_lua_value(opted_out).expect("bridge converts");
+    assert_eq!(tree.restore_on_return, Some(false));
+    let default: mlua::Value = lua
+        .load(r#"return T.Tree({ anchor = "center", offset = { 0, 0 } }, W.Spacer({ flexGrow = 1 }))"#)
+        .eval()
+        .expect("factory builds a tree");
+    let tree = anchored_tree_from_lua_value(default).expect("bridge converts");
+    assert_eq!(tree.restore_on_return, None);
+    assert!(tree.restores_on_return());
+}
+
+const HSTACK_SCROLL_DIAGNOSTIC: &str = "authors `scroll`; ignored (only VStack and Grid scroll";
+
+// MC15 (SDK half): `scroll` is a container attribute on VStack and Grid in both
+// SDKs; on an HStack the drain draws one diagnostic and drops it.
+#[test]
+fn scroll_drains_on_vstack_and_grid_and_an_hstack_scroll_is_diagnosed_and_ignored_in_both_sdks() {
+    // JS: the wire form the TypeScript factories emit.
+    let capture = LogCapture::start();
+    let src = r#"({ anchor: "center", offset: [0.0, 0.0], root: { kind: "vstack", gap: 0, padding: 0,
+        align: "start", scroll: { maxHeight: 320 }, focus: "linear", children: [
+            { kind: "grid", gap: 0, padding: 0, align: "start", cols: 2, scroll: { maxHeight: 64 }, children: [] },
+            { kind: "hstack", gap: 0, padding: 0, align: "start", id: "row", scroll: { maxHeight: 10 }, children: [] },
+        ] } })"#;
+    let from_js = eval_js(src, |ctx, v| {
+        anchored_tree_from_js_value(ctx, v).expect("scroll must drain")
+    });
+    let expect_scroll = |tree: &AnchoredTree| {
+        let Widget::VStack(root) = &tree.root else {
+            panic!("root must be a vstack");
+        };
+        assert_eq!(root.scroll.map(|s| s.max_height), Some(320.0));
+        let Widget::Grid(grid) = &root.children[0] else {
+            panic!("first child must be a grid");
+        };
+        assert_eq!(grid.scroll.map(|s| s.max_height), Some(64.0));
+        let Widget::HStack(row) = &root.children[1] else {
+            panic!("second child must be an hstack");
+        };
+        assert_eq!(row.scroll, None, "an HStack's scroll is ignored");
+    };
+    expect_scroll(&from_js);
+    capture.assert_logged_once(Level::Warn, HSTACK_SCROLL_DIAGNOSTIC);
+    capture.assert_logged_once(Level::Warn, "HStack 'row'");
+
+    // Luau, through the SDK's layout factories (the HStack factory still emits
+    // `scroll`, so the diagnostic is the drain's).
+    capture.clear();
+    const LAYOUT_SRC: &str = include_str!("../../../../../sdk/lib/ui/layout.luau");
+    const TREE_SRC: &str = include_str!("../../../../../sdk/lib/ui/tree.luau");
+    let lua = mlua::Lua::new();
+    install_ui_theme_token_validator(&lua);
+    let layout: mlua::Table = lua.load(LAYOUT_SRC).eval().unwrap();
+    let tree_mod: mlua::Table = lua.load(TREE_SRC).eval().unwrap();
+    lua.globals().set("L", layout).unwrap();
+    lua.globals().set("T", tree_mod).unwrap();
+    let value: mlua::Value = lua
+        .load(
+            r#"return T.Tree({ anchor = "center", offset = { 0, 0 } },
+                L.VStack({ scroll = { maxHeight = 320 }, focus = "linear" }, {
+                    L.Grid({ cols = 2, scroll = { maxHeight = 64 } }, {}),
+                    L.HStack({ id = "row", scroll = { maxHeight = 10 } }, {}),
+                }))"#,
+        )
+        .eval()
+        .expect("factories build a scrolling tree");
+    let from_lua = anchored_tree_from_lua_value(value).expect("scroll must drain");
+    expect_scroll(&from_lua);
+    capture.assert_logged_once(Level::Warn, HSTACK_SCROLL_DIAGNOSTIC);
+    assert_eq!(
+        serde_json::to_value(&from_js.root).unwrap(),
+        serde_json::to_value(&from_lua.root).unwrap(),
+        "both SDKs drain the same scroll descriptors"
+    );
+}
+
+#[test]
+fn a_non_positive_scroll_max_height_is_a_named_error_in_both_sdks() {
+    for max_height in ["0", "-20"] {
+        let src = format!(
+            r#"({{ kind: "vstack", gap: 0, padding: 0, align: "start", scroll: {{ maxHeight: {max_height} }}, children: [] }})"#
+        );
+        let err = eval_js(&src, |ctx, v| widget_from_js(ctx, v).unwrap_err());
+        assert!(
+            err.to_string()
+                .contains("`scroll.maxHeight` must be a finite number greater than zero"),
+            "JS maxHeight {max_height}: {err}"
+        );
+        let src = format!(
+            r#"return {{ kind = "grid", gap = 0, padding = 0, align = "start", cols = 1, scroll = {{ maxHeight = {max_height} }}, children = {{}} }}"#
+        );
+        let err = eval_lua(&src, |v| widget_from_lua(v).unwrap_err());
+        assert!(
+            err.to_string()
+                .contains("`scroll.maxHeight` must be a finite number greater than zero"),
+            "Luau maxHeight {max_height}: {err}"
+        );
+    }
 }

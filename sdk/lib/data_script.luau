@@ -63,23 +63,71 @@ export type ProgressReactionDescriptor = {
   progress: { tag: string, at: number, fire: string },
 }
 
---- Primitive reaction body: invokes the named Rust primitive. A non-empty
---- `tag` targets matching entities. Tag-targeted primitives include
---- emitter/fog/mover commands, `applyDamage`, `grantHealth`, `grantAmmo`, `addSlot`,
---- `setAnimationState`, `updateEnemyState`, `spawnFromSpawner`, `armTrigger`,
---- and `disarmTrigger`. In a trigger-event reaction, `applyDamage`,
---- `grantHealth`, `grantAmmo`, and `addSlot` may instead target `@activators`. True system
---- reactions carry neither `tag` nor `target` and enqueue typed engine commands
---- such as `playSound`, `rumble`, `flashScreen`, and the UI-stack reactions.
---- `args`
+--- Primitive reaction body: invokes the named Rust primitive. A group command
+--- (`npcs(...)`, `players()`) carries `kind` and an optional `tag` filter; a
+--- subject-token command (`on.activators`, `on.trigger`) carries `target =
+--- "@activators"` or `target = "@trigger"`. A raw descriptor with only a non-empty `tag` resolves over every entity
+--- carrying it (fog, emitter and animation primitives have no typed builder).
+--- True system reactions carry neither and enqueue typed engine commands such
+--- as `playSound`, `rumble`, `flashScreen`, and the UI-stack reactions. `args`
 --- carries the primitive's typed payload (e.g. `{ rate = 0 }` for
 --- `setEmitterRate`).
 export type PrimitiveReactionDescriptor = {
   primitive: string,
+  kind: GroupKind?,
   tag: string?,
-  target: "@activators"?,
+  target: SubjectTokenTarget?,
   args: { [string]: any }?,
   onComplete: string?,
+}
+
+--- Kinds a group command addresses.
+export type GroupKind = "npc" | "player"
+
+--- One group command: a primitive descriptor carrying `kind` (and an optional
+--- `tag` filter) instead of a target. Legal both as a reaction body and
+--- directly as a sequence entry; the group resolves when the command takes
+--- effect.
+export type GroupCommand = {
+  primitive: string,
+  kind: GroupKind,
+  tag: string?,
+  args: { [string]: any },
+}
+
+--- The subject a token command addresses: this fire's activators or the
+--- volume that fired.
+export type SubjectTokenTarget = "@activators" | "@trigger"
+
+--- One subject-token command (`on.activators`, `on.trigger`): a primitive
+--- descriptor whose `target` names the fire's subject. Legal both as a reaction
+--- body and directly as a sequence entry, but only before any `wait`.
+export type SubjectTokenCommand = {
+  primitive: string,
+  target: SubjectTokenTarget,
+  args: { [string]: any },
+}
+
+--- Selects the NPCs a group command reaches. Omit `tag` for every NPC.
+export type NpcGroupFilter = { tag: string? }
+
+--- Typed, additive partial for NPC state updates.
+export type NpcStateUpdateArgs = { aggro: boolean? }
+
+--- Brain-driven characters that are not players. Opaque: no members, no
+--- length; indexing anything but a verb raises.
+export type NpcGroup = {
+  update: (self: NpcGroup, fields: NpcStateUpdateArgs) -> GroupCommand,
+  damage: (self: NpcGroup, amount: number) -> GroupCommand,
+}
+
+--- Every seat-bound player pawn. Opaque: no members, no length; indexing
+--- anything but a verb raises.
+export type PlayerGroup = {
+  damage: (self: PlayerGroup, amount: number) -> GroupCommand,
+  grantHealth: (self: PlayerGroup, amount: number) -> GroupCommand,
+  grantAmmo: (self: PlayerGroup, type: string, amount: number) -> GroupCommand,
+  addSlot: (self: PlayerGroup, slot: StateRef<number>, delta: number) -> GroupCommand,
 }
 
 --- Tween shape used by the billboard-emitter reaction primitive
@@ -171,15 +219,21 @@ export type MoverSetBlockPolicyStep = {
 }
 
 export type ArmTriggerStep = {
-  id: number | "@trigger",
+  id: number,
   primitive: "armTrigger",
   args: {},
 }
 
 export type DisarmTriggerStep = {
-  id: number | "@trigger",
+  id: number,
   primitive: "disarmTrigger",
   args: {},
+}
+
+--- Member step: spawn one batch from one spawner (`s:fire()`).
+export type SpawnFromSpawnerStep = {
+  id: number,
+  primitive: "spawnFromSpawner",
 }
 
 export type WaitArgs = { durationMs: number, interruptible: boolean }
@@ -203,10 +257,10 @@ export type FireStep = {
 
 -- `SetFogAnimationStep` is declared in `postretro.d.luau` (the SDK lib
 -- block generated from the primitive registry) and is not redeclared here.
---- Ordered entity-targeted primitive and control steps. Entity steps begin in
+--- Ordered member, group, subject-token and control steps. Steps begin in
 --- array order; `fire` queues a named dispatch, while `wait` stops the current
 --- drain and resumes the remaining tail after its delay.
-export type SequenceStep = SetLightAnimationStep | SetFogDensityStep | SetFogScatterStep | SetFogEdgeSoftnessStep | SetFogFalloffStep | SetFogParamsStep | SetFogAnimationStep | MoverStartStep | MoverStopStep | MoverReverseStep | MoverGoToPathNodeStep | MoverSetSpinRateStep | MoverSetBlockPolicyStep | ArmTriggerStep | DisarmTriggerStep | WaitStep | FireStep
+export type SequenceStep = SetLightAnimationStep | SetFogDensityStep | SetFogScatterStep | SetFogEdgeSoftnessStep | SetFogFalloffStep | SetFogParamsStep | SetFogAnimationStep | MoverStartStep | MoverStopStep | MoverReverseStep | MoverGoToPathNodeStep | MoverSetSpinRateStep | MoverSetBlockPolicyStep | ArmTriggerStep | DisarmTriggerStep | SpawnFromSpawnerStep | GroupCommand | SubjectTokenCommand | WaitStep | FireStep
 
 --- Descriptor produced by `defineReaction`. The `name` field is merged
 --- into the descriptor at the top level so the Rust deserializer can read
@@ -218,18 +272,29 @@ export type NamedReactionDescriptor = {
   progress: { tag: string, at: number, fire: string }?,
   -- primitive shape
   primitive: string?,
+  kind: GroupKind?,
   tag: string?,
-  target: "@activators"?,
+  target: SubjectTokenTarget?,
   args: { [string]: any }?,
   onComplete: string?,
-  -- sequence shape: entity-targeted primitives plus wait/fire control steps
+  -- sequence shape: member, group, subject-token and wait/fire control steps
   sequence: {SequenceStep}?,
 }
 
 export type CrossingParams = { rising: RuntimeRead }
 export type TickParams = { dt: RuntimeRead }
-export type ActivatorsTarget = { __triggerActivatorsTarget: true }
-export type TriggerTarget = { __firedTriggerTarget: true }
+--- The pawns that caused the current trigger edge. Legal only before any `wait`.
+export type ActivatorsTarget = {
+  damage: (self: ActivatorsTarget, amount: number) -> SubjectTokenCommand,
+  grantHealth: (self: ActivatorsTarget, amount: number) -> SubjectTokenCommand,
+  grantAmmo: (self: ActivatorsTarget, type: string, amount: number) -> SubjectTokenCommand,
+  addSlot: (self: ActivatorsTarget, slot: StateRef<number>, delta: number) -> SubjectTokenCommand,
+}
+--- The trigger volume that fired the current edge. Legal only before any `wait`.
+export type TriggerTarget = {
+  arm: (self: TriggerTarget) -> SubjectTokenCommand,
+  disarm: (self: TriggerTarget) -> SubjectTokenCommand,
+}
 export type TriggerEventParams = {
   activators: ActivatorsTarget,
   trigger: TriggerTarget,
@@ -355,7 +420,8 @@ export type LevelManifest = {
   -- in postretro.d.luau (the generated SDK-lib type block). See
   -- `onStateCrossing`.
   crossings: {CrossingDescriptor}?,
-  triggerEvents: {TriggerEventDescriptor}?,
+  -- Level trigger events, keyed by volume: build each with a trigger member's `on`.
+  triggerEvents: {VolumeTriggerEventDescriptor}?,
   triggerPools: {TriggerPoolDescriptor}?,
   -- Per-level UI trees (name + `AnchoredTree` + optional `alwaysOn` / `hideBelow`). Optional; same shape
   -- as `ModManifest.uiTrees` but level-scoped (cleared on unload). Malformed
@@ -407,218 +473,12 @@ export type StoreDefinition = {
 local DataScriptSdk = {}
 local storeDeclarations = setmetatable({}, { __mode = "k" })
 
--- Opaque target tokens are distinct frozen tables. Builders compare identity
--- to lower the matching token and leave a mismatched sentinel visible for Rust
--- validation. The empty tables never enter returned descriptors.
-local ACTIVATORS_TARGET = table.freeze({})
-local TRIGGER_TARGET = table.freeze({})
--- The emitter token carries its own wire spelling, so `playSound` (a separate
--- prelude chunk) lowers it without seeing this chunk's private tokens.
-local EMITTER_TARGET = table.freeze({ __wire = "@emitter" })
-
--- One SDK-internal merged params table is shared by every author-time tracer.
--- Its value shape includes sibling opaque target tokens (activators, trigger)
--- alongside the input nodes.
-local DISPATCH_PARAMS = table.freeze({
-  rising = table.freeze({ op = "input", name = "@rising" }),
-  dt = table.freeze({ op = "input", name = "@dt" }),
-  activators = ACTIVATORS_TARGET,
-  trigger = TRIGGER_TARGET,
-  occupancy = table.freeze({ op = "input", name = "@occupancy" }),
-  emitter = EMITTER_TARGET,
-})
-
-export type TriggerEventDescriptor = {
-  tag: string,
-  event: "enter" | "exit",
-  fire: {string},
-  levels: {string}?,
-}
-
-export type TriggerPoolDescriptor = {
-  tag: string,
-  arm: number?,
-  armPercentage: number?,
-  levels: {string}?,
-}
-
-export type TriggerEventOptions = { levels: {string}? }
-
-function DataScriptSdk.onTriggerEvent(
-  filter: { tag: string },
-  event: "enter" | "exit",
-  fire: {Reaction<any> | string},
-  options: TriggerEventOptions?
-): TriggerEventDescriptor
-  local names = {}
-  for i, reaction in ipairs(fire) do
-    names[i] = if type(reaction) == "string" then reaction else (reaction :: Reaction<any>).name
-  end
-  local out: TriggerEventDescriptor = { tag = filter.tag, event = event, fire = names }
-  if options ~= nil and options.levels ~= nil then
-    out.levels = options.levels
-  end
-  return out
-end
-
-function DataScriptSdk.damage(target: ActivatorsTarget | string, amount: number): PrimitiveReactionDescriptor
-  if type(target) == "string" then
-    return { primitive = "applyDamage", tag = target, args = { amount = amount } }
-  end
-  local wireTarget: any = if target == ACTIVATORS_TARGET then "@activators" else "@invalid"
-  return { primitive = "applyDamage", target = wireTarget, args = { amount = amount } }
-end
-
---- Grant health to the current trigger activators or every entity with a tag.
-function DataScriptSdk.grantHealth(target: ActivatorsTarget | string, amount: number): PrimitiveReactionDescriptor
-  if type(target) == "string" then
-    return { primitive = "grantHealth", tag = target, args = { amount = amount } }
-  end
-  local wireTarget: any = if target == ACTIVATORS_TARGET then "@activators" else "@invalid"
-  return { primitive = "grantHealth", target = wireTarget, args = { amount = amount } }
-end
-
---- Grant an ammo-reserve pool to the current trigger activators or every entity with a tag.
-function DataScriptSdk.grantAmmo(target: ActivatorsTarget | string, ammoType: string, amount: number): PrimitiveReactionDescriptor
-  if type(target) == "string" then
-    return { primitive = "grantAmmo", tag = target, args = { type = ammoType, amount = amount } }
-  end
-  local wireTarget: any = if target == ACTIVATORS_TARGET then "@activators" else "@invalid"
-  return { primitive = "grantAmmo", target = wireTarget, args = { type = ammoType, amount = amount } }
-end
-
---- Add a delta to a per-owner numeric slot for current trigger activators or
---- every player pawn with a tag.
-function DataScriptSdk.addSlot(target: ActivatorsTarget | string, slot: StateRef<number>, delta: number): PrimitiveReactionDescriptor
-  if type(target) == "string" then
-    return { primitive = "addSlot", tag = target, args = { slot = slot.slot, delta = delta } }
-  end
-  local wireTarget: any = if target == ACTIVATORS_TARGET then "@activators" else "@invalid"
-  return { primitive = "addSlot", target = wireTarget, args = { slot = slot.slot, delta = delta } }
-end
-
---- Selects a live enemy group addressed when a reaction fires.
-export type EnemyGroupFilter = { tag: string? }
-
---- Typed, additive partial for consequential enemy-state updates.
-export type EnemyStateUpdateArgs = { aggro: boolean? }
-
---- Fire-time-tag enemy handle. `update` emits one primitive descriptor.
-export type EnemyGroup = {
-  update: (self: EnemyGroup, fields: EnemyStateUpdateArgs) -> PrimitiveReactionDescriptor,
-}
-
---- Select a live enemy group by tag. The tag resolves when the reaction fires.
-function DataScriptSdk.enemies(filter: EnemyGroupFilter): EnemyGroup
-  return {
-    update = function(_self: EnemyGroup, fields: EnemyStateUpdateArgs): PrimitiveReactionDescriptor
-      return { primitive = "updateEnemyState", tag = filter.tag, args = fields }
-    end,
-  }
-end
-
---- Selects the live spawner group addressed when a reaction fires.
-export type SpawnerFilter = { tag: string }
-
---- Fire-time-tag spawner handle. `fire` emits one primitive descriptor.
-export type SpawnerHandle = {
-  fire: (self: SpawnerHandle) -> PrimitiveReactionDescriptor,
-}
-
---- Select a live spawner group by tag and fire each matching spawner.
-function DataScriptSdk.spawner(filter: SpawnerFilter): SpawnerHandle
-  return {
-    fire = function(_self: SpawnerHandle): PrimitiveReactionDescriptor
-      return { primitive = "spawnFromSpawner", tag = filter.tag }
-    end,
-  }
-end
-
-function DataScriptSdk.armTrigger(target: TriggerTarget): {SequenceStep}
-  local wireTarget: any = if target == TRIGGER_TARGET then "@trigger" else "@invalid"
-  return { { id = wireTarget, primitive = "armTrigger", args = {} } :: any }
-end
-
-function DataScriptSdk.disarmTrigger(target: TriggerTarget): {SequenceStep}
-  local wireTarget: any = if target == TRIGGER_TARGET then "@trigger" else "@invalid"
-  return { { id = wireTarget, primitive = "disarmTrigger", args = {} } :: any }
-end
-
---- Enroll the rest of this sequence body with the host scheduler and stop;
---- the remaining steps resume after `durationMs` (rounded up to whole
---- authoritative ticks). `interruptible` (default `false`) lets the
---- reaction's paired trigger Exit edge cancel the remaining steps while
---- parked.
-function DataScriptSdk.wait(durationMs: number, opts: { interruptible: boolean? }?): {SequenceStep}
-  local interruptible = if opts ~= nil and opts.interruptible ~= nil then opts.interruptible else false
-  return { { id = "@wait", primitive = "wait", args = { durationMs = durationMs, interruptible = interruptible } } :: any }
-end
-
---- Dispatch a named reaction by handle or name from inside a sequence body.
---- Resolves exactly as `onTriggerEvent` resolves its `fire` entries. Luau has
---- no phantom-typed scope gate; a scoped reaction fired this way is rejected
---- at install (V4b), not at author time.
-function DataScriptSdk.fire(reaction: Reaction<any> | string): {SequenceStep}
-  local event = if type(reaction) == "string" then reaction else (reaction :: Reaction<any>).name
-  return { { id = "@fire", primitive = "fire", args = { event = event } } :: any }
-end
-
--- Order-stable serialization of a reaction body: table keys are emitted sorted
--- so two structurally identical bodies always serialize identically. Used only
--- to derive a deterministic auto-id; not a general JSON encoder.
-local function stableStringify(value: any): string
-  local t = type(value)
-  if t == "table" then
-    -- Distinguish array-like from map-like by checking a contiguous 1..n run.
-    local n = #value
-    local isArray = n > 0
-    if isArray then
-      for k in pairs(value) do
-        if type(k) ~= "number" then
-          isArray = false
-          break
-        end
-      end
-    end
-    if isArray then
-      local parts = {}
-      for i = 1, n do
-        parts[i] = stableStringify(value[i])
-      end
-      return "[" .. table.concat(parts, ",") .. "]"
-    end
-    local keys = {}
-    for k in pairs(value) do
-      table.insert(keys, tostring(k))
-    end
-    table.sort(keys)
-    local parts = {}
-    for _, k in ipairs(keys) do
-      table.insert(parts, string.format("%q", k) .. ":" .. stableStringify((value :: any)[k]))
-    end
-    return "{" .. table.concat(parts, ",") .. "}"
-  elseif t == "string" then
-    return string.format("%q", value)
-  else
-    return tostring(value)
-  end
-end
-
--- Deterministic, run-stable id derived from a reaction body via FNV-1a (32-bit)
--- over its order-stable serialization. Re-running registration yields the same
--- id — crossings and the `onPress` wire form reference it. Bit ops use bit32.
--- NOTE: run-stable within Luau but NOT identical to the TS auto-id (different
--- stable-stringify). Do not assume cross-runtime id parity; use an explicit
--- name when the id must match between TS and Luau runtimes.
-local function autoReactionId(descriptor: any): string
-  local serialized = stableStringify(descriptor)
-  local hash = 0x811c9dc5
-  for i = 1, #serialized do
-    hash = bit32.bxor(hash, string.byte(serialized, i))
-    hash = bit32.band(hash * 0x01000193, 0xffffffff)
-  end
-  return string.format("reaction_%08x", hash)
-end
+-- Part chunks (`data_script/*.luau`) evaluate before this module and publish
+-- through the temporary `__postretroDataScriptParts` bridge; the host clears it
+-- once this module returns. `defineStore` traces accumulators with the same
+-- shared dispatch params as `defineReaction`.
+local dataScriptParts = __postretroDataScriptParts
+local DISPATCH_PARAMS = dataScriptParts.reactions.DISPATCH_PARAMS
 
 local expressionRefs = __postretroExpressionRefs
 local numberNode = expressionRefs.numberNode
@@ -871,85 +731,6 @@ function DataScriptSdk.defineImpactEvent(...: any): ImpactEvent
   return impactEvent(id, eventFilter, policy, filter.levels, false)
 end
 
---- Build a named reaction descriptor. Pure: returns a plain table, no FFI.
---- `descriptor` accepts exactly one body shape: `progress`, `primitive`, or
---- `sequence`. `name` is optional; when omitted a deterministic, run-stable id
---- is derived from the body. Use explicit names when TS and Luau scripts must
---- agree. The returned handle can be passed to button `onPress` or crossing
---- `fire` entries.
-function DataScriptSdk.defineReaction(
-  nameOrBody: string | (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor) | ((CrossingParams) -> (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor)),
-  descriptor: (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor | ((CrossingParams) -> (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor)))?
-): NamedReactionDescriptor
-  local name: string
-  local body: any
-  if type(nameOrBody) == "string" then
-    name = nameOrBody
-    body = if type(descriptor) == "function" then (descriptor :: any)(DISPATCH_PARAMS) else descriptor
-  else
-    body = if type(nameOrBody) == "function" then (nameOrBody :: any)(DISPATCH_PARAMS) else nameOrBody
-    name = autoReactionId(body)
-  end
-  local out: NamedReactionDescriptor = { name = name }
-  -- Copy fields from the body into the flat shape the deserializer reads. Only
-  -- the fields present on each variant are set; unused fields are left absent.
-  local d = body :: any
-  if d.progress ~= nil then
-    out.progress = d.progress
-  end
-  if d.primitive ~= nil then
-    out.primitive = d.primitive
-  end
-  if d.tag ~= nil then
-    out.tag = d.tag
-  end
-  if d.target ~= nil then
-    out.target = d.target
-  end
-  if d.args ~= nil then
-    out.args = d.args
-  end
-  if d.onComplete ~= nil then
-    out.onComplete = d.onComplete
-  end
-  if d.sequence ~= nil then
-    out.sequence = d.sequence
-  end
-  return out
-end
-
---- Stamp a shared map-tag scope onto each reaction in a plain list. `tags` are
---- matched against `ModMapEntry.tags`; omit scoping for every level.
-function DataScriptSdk.scopeReactions<S>(tags: {string}, list: {Reaction<S>}): {Reaction<S>}
-  local out = {}
-  for i, reaction in ipairs(list) do
-    local scoped: NamedReactionDescriptor = { name = reaction.name, levels = tags }
-    if reaction.progress ~= nil then
-      scoped.progress = reaction.progress
-    end
-    if reaction.primitive ~= nil then
-      scoped.primitive = reaction.primitive
-    end
-    if reaction.tag ~= nil then
-      scoped.tag = reaction.tag
-    end
-    if reaction.target ~= nil then
-      scoped.target = reaction.target
-    end
-    if reaction.args ~= nil then
-      scoped.args = reaction.args
-    end
-    if reaction.onComplete ~= nil then
-      scoped.onComplete = reaction.onComplete
-    end
-    if reaction.sequence ~= nil then
-      scoped.sequence = reaction.sequence
-    end
-    out[i] = scoped
-  end
-  return out
-end
-
 --- Identity builder for entity type descriptors returned from
 --- `ModManifest.entities`. `descriptor` is the full archetype object: optional
 --- `canonicalName`, optional `components.inventory.loadout`, and optional component presets.
@@ -1056,12 +837,6 @@ end
 --- `defineMod({ defaultWeaponPlacement = ... })`; no engine registration occurs.
 function DataScriptSdk.defineWeaponPlacement(desc: WeaponPlacementDescriptor): WeaponPlacementDescriptor
   return desc
-end
-
---- Identity builder for a trigger-pool declaration returned from a level or
---- mod manifest. Engine parsing owns arming validation.
-function DataScriptSdk.defineTriggerPool(pool: TriggerPoolDescriptor): TriggerPoolDescriptor
-  return pool
 end
 
 local MAGIC_SCHEMA_KEYS = {
@@ -1172,6 +947,15 @@ function DataScriptSdk.defineStore(...: any): StoreDefinition
     schema = frozenSchema,
   })
   return handle
+end
+
+-- Merge the part chunks' public builders. Field names are disjoint from the
+-- builders declared above; `data_script_export_inventory_matches_returned_sdk_fields`
+-- pins the merged set.
+for _, part in ipairs({ dataScriptParts.commands, dataScriptParts.reactions, dataScriptParts.triggerEvents }) do
+  for name, builder in pairs(part.builders) do
+    DataScriptSdk[name] = builder
+  end
 end
 
 return DataScriptSdk

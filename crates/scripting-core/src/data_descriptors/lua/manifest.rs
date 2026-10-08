@@ -20,8 +20,9 @@ impl LevelManifest {
             let arr: Table = table.get("reactions").map_err(lua_err)?;
             let len = validate_dense_lua_array(&arr, "`reactions` field")?;
             let mut out = Vec::with_capacity(len);
-            for i in 1..=(len as i64) {
-                let item: LuaValue = arr.get(i).map_err(lua_err)?;
+            for i in 0..len {
+                // Lua arrays are 1-based; the log index stays 0-based like JS.
+                let item: LuaValue = arr.get(i as i64 + 1).map_err(lua_err)?;
                 let is_resource_grant = is_resource_grant_reaction_lua(&item);
                 match named_reaction_from_lua(item) {
                     Ok(reaction) => out.push(reaction),
@@ -49,7 +50,7 @@ impl LevelManifest {
             Vec::new()
         };
         let events = drain_impact_events_lua(&table, "setupLevel")?;
-        let trigger_events = drain_trigger_events_lua(&table, "setupLevel")?;
+        let trigger_events = drain_level_trigger_events_lua(&table, "setupLevel")?;
         let trigger_pools = drain_trigger_pools_lua(&table, "setupLevel")?;
 
         let ui_trees = drain_ui_trees_lua(&table, "setupLevel")?;
@@ -354,8 +355,9 @@ pub fn drain_impact_events_lua(
         return Ok(Vec::new());
     }
     let mut out = Vec::with_capacity(len);
-    for i in 1..=(len as i64) {
-        let value: LuaValue = match arr.get(i) {
+    for i in 0..len {
+        // Lua arrays are 1-based; the log index stays 0-based like JS.
+        let value: LuaValue = match arr.get(i as i64 + 1) {
             Ok(value) => value,
             Err(error) => {
                 log::warn!(
@@ -444,57 +446,6 @@ fn impact_policy_entry_from_lua(raw: LuaValue) -> Result<serde_json::Value, Desc
     Ok(json)
 }
 
-/// Drain the `triggerEvents` array from a Luau manifest table. Mirrors
-/// [`drain_trigger_events_js`]: a malformed entry (non-table, or missing/invalid
-/// `tag`/`fire`/`levels`) is logged and skipped rather than aborting the whole
-/// manifest; an unknown `event` value is likewise logged and skipped.
-pub fn drain_trigger_events_lua(
-    table: &Table,
-    scope: &str,
-) -> Result<Vec<TriggerEventDescriptor>, DescriptorError> {
-    let Some(arr) = optional_manifest_array_lua(table, "triggerEvents", scope)? else {
-        return Ok(Vec::new());
-    };
-    let len = validate_dense_lua_array(&arr, "`triggerEvents` field")?;
-    let mut out = Vec::with_capacity(len);
-    for i in 1..=(len as i64) {
-        let item: LuaValue = arr.get(i).map_err(lua_err)?;
-        match trigger_event_from_lua(item, i, scope) {
-            Ok(Some(descriptor)) => out.push(descriptor),
-            Ok(None) => {}
-            Err(e) => log::warn!(
-                "[Scripting] {scope}: triggerEvents[{i}] is malformed and was skipped: {e}"
-            ),
-        }
-    }
-    Ok(out)
-}
-
-/// Parse a single `triggerEvents` entry (`{ event, tag, fire, levels? }`) from
-/// Luau. `Ok(None)` means the entry parsed but its `event` is unrecognized (the
-/// caller has already logged the reason); a genuinely malformed entry returns
-/// `Err` for the caller to log and skip.
-fn trigger_event_from_lua(
-    value: LuaValue,
-    i: i64,
-    scope: &str,
-) -> Result<Option<TriggerEventDescriptor>, DescriptorError> {
-    let item = lua_table(value, "trigger-event entry")?;
-    let event = get_required_string_lua(&item, "event")?;
-    if !matches!(event.as_str(), "enter" | "exit") {
-        log::warn!(
-            "[Scripting] {scope}: triggerEvents[{i}] has unknown event `{event}` and was skipped"
-        );
-        return Ok(None);
-    }
-    Ok(Some(TriggerEventDescriptor {
-        tag: get_required_string_lua(&item, "tag")?,
-        event,
-        fire: string_array_from_lua(&item, "fire")?,
-        levels: string_array_from_lua(&item, "levels")?,
-    }))
-}
-
 /// Drain the `triggerPools` array from a Luau manifest table. A malformed
 /// entry is logged and skipped so one bad pool does not abort the manifest.
 /// Pool tags are unique within this drain; a later duplicate is skipped.
@@ -508,7 +459,9 @@ pub fn drain_trigger_pools_lua(
     let entries = trigger_pool_entries_lua(&arr, scope)?;
     let mut out = Vec::with_capacity(entries.len());
     let mut seen_tags = BTreeSet::new();
-    for (i, value) in entries {
+    for (slot, value) in entries {
+        // Lua arrays are 1-based; the log index stays 0-based like JS.
+        let i = slot - 1;
         match trigger_pool_from_lua(value) {
             Ok(descriptor) if seen_tags.insert(descriptor.tag.clone()) => out.push(descriptor),
             Ok(descriptor) => log::warn!(
@@ -671,8 +624,9 @@ pub fn drain_ui_trees_lua(
     };
     let len = dense_lua_prefix_len(&arr, "uiTrees", scope)?;
     let mut out = Vec::with_capacity(len);
-    for i in 1..=(len as i64) {
-        let item: LuaValue = arr.get(i).map_err(lua_err)?;
+    for i in 0..len {
+        // Lua arrays are 1-based; the log index stays 0-based like JS.
+        let item: LuaValue = arr.get(i as i64 + 1).map_err(lua_err)?;
         match registered_ui_tree_from_lua(item) {
             Ok(tree) => out.push(tree),
             Err(e) => {
@@ -696,8 +650,9 @@ pub fn drain_presentation_templates_lua(
     let len = dense_lua_prefix_len(&arr, "presentationTemplates", scope)?;
     let mut seen_ids = BTreeSet::new();
     let mut out = Vec::with_capacity(len);
-    for i in 1..=(len as i64) {
-        let value: LuaValue = arr.get(i).map_err(lua_err)?;
+    for i in 0..len {
+        // Lua arrays are 1-based; the log index stays 0-based like JS.
+        let value: LuaValue = arr.get(i as i64 + 1).map_err(lua_err)?;
         match presentation_template_from_lua(value) {
             Ok(template) if !seen_ids.insert(template.id.clone()) => log::warn!(
                 "[Scripting] {scope}: `presentationTemplates[{i}]` duplicates `{}` and was skipped",
@@ -926,10 +881,11 @@ pub fn drain_maps_lua(table: &Table, scope: &str) -> Result<Vec<ModMapEntry>, De
     let len = dense_lua_prefix_len(&arr, "maps", scope)?;
     let mut out = Vec::with_capacity(len);
     let mut seen_ids = BTreeSet::new();
-    for i in 1..=(len as i64) {
-        let item: LuaValue = arr.get(i).map_err(lua_err)?;
-        match mod_map_entry_from_lua(item) {
-            Ok(entry) => push_valid_map_entry(entry, &mut seen_ids, &mut out, scope, i as usize),
+    for i in 0..len {
+        // Lua arrays are 1-based; the log index stays 0-based like JS.
+        let item: LuaValue = arr.get(i as i64 + 1).map_err(lua_err)?;
+        match mod_map_entry_from_lua(item, scope, &format!("maps[{i}]")) {
+            Ok(entry) => push_valid_map_entry(entry, &mut seen_ids, &mut out, scope, i),
             Err(e) => {
                 log::warn!("[Scripting] {scope}: `maps[{i}]` is malformed and was skipped: {e}")
             }
@@ -1011,8 +967,9 @@ pub fn drain_faction_sentiments_lua(
     };
     let length = validate_dense_lua_array(&array, "`sentiment` field")?;
     let mut entries = Vec::with_capacity(length);
-    for index in 1..=(length as i64) {
-        let value: LuaValue = array.get(index).map_err(lua_err)?;
+    for index in 0..length {
+        // Lua arrays are 1-based; the diagnostic index stays 0-based like JS.
+        let value: LuaValue = array.get(index as i64 + 1).map_err(lua_err)?;
         let entry = lua_table(value, "sentiment entry")?;
         let sentiment = get_required_f32_lua(&entry, "sentiment")?;
         let tolerance = get_required_f32_lua(&entry, "tolerance")?;
@@ -1106,13 +1063,19 @@ pub fn optional_manifest_array_lua(
     }
 }
 
-pub fn mod_map_entry_from_lua(value: LuaValue) -> Result<ModMapEntry, DescriptorError> {
+/// Luau twin of [`mod_map_entry_from_js`].
+pub fn mod_map_entry_from_lua(
+    value: LuaValue,
+    scope: &str,
+    entry_path: &str,
+) -> Result<ModMapEntry, DescriptorError> {
     let table = lua_table(value, "map catalog entry")?;
     Ok(ModMapEntry {
         id: get_required_string_lua(&table, "id")?,
         path: get_required_string_lua(&table, "path")?,
         name: get_required_string_lua(&table, "name")?,
         tags: string_array_from_lua(&table, "tags")?,
+        loading_tree: loading_tree_from_lua(&table, scope, entry_path)?,
     })
 }
 

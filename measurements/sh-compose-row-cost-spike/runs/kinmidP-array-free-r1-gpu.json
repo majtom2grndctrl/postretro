@@ -1,0 +1,94 @@
+{
+  "source": "raw/kinmidP-array-free-r1-gpu.xml.gz",
+  "camera_frames": 140,
+  "frame_count_pass": "Streamed SH Compose (+ [B])",
+  "once_per_frame_counts": {
+    "UI Pass": 111,
+    "Screen Effects Resolve Pass": 0,
+    "Textured Pass": 111,
+    "Depth Pre-Pass": 111
+  },
+  "shadow_passes": {
+    "Dynamic Cube Entity Shadow Depth Pass": {
+      "count": 1342,
+      "total_ms": 36.255,
+      "per_frame_ms": 0.259
+    },
+    "Dynamic Cube World Depth Cache Pass": {
+      "count": 1228,
+      "total_ms": 23.143,
+      "per_frame_ms": 0.1653
+    },
+    "Dynamic Spot Entity Shadow Depth Pass": {
+      "count": 112,
+      "total_ms": 3.952,
+      "per_frame_ms": 0.0282
+    },
+    "Dynamic Spot World Depth Cache Pass": {
+      "count": 89,
+      "total_ms": 2.349,
+      "per_frame_ms": 0.0168
+    },
+    "Promoted Spot Entity Shadow Depth Pass": {
+      "count": 884,
+      "total_ms": 58.208,
+      "per_frame_ms": 0.4158
+    },
+    "Promoted Spot World Depth Cache Pass": {
+      "count": 2,
+      "total_ms": 0.037,
+      "per_frame_ms": 0.0003
+    }
+  },
+  "shadow_total_per_frame_ms": 0.8853,
+  "sum_labelled_passes_per_frame_ms": 29.1382,
+  "all_passes_per_frame_ms": {
+    "Textured Pass": 4.7388,
+    "Streamed Animated Direct SH": 4.6714,
+    "Streamed SH Compose": 3.9794,
+    "Streamed Animated Direct SH [B]": 3.2572,
+    "Streamed SH Compose [B]": 3.2283,
+    "Skinned Viewmodel Pass": 3.2265,
+    "Streamed Direct SH Promotion": 2.0714,
+    "Animated LM Compose": 1.2154,
+    "Kinematic Brush Pass": 0.4644,
+    "Promoted Spot Entity Shadow Depth Pass": 0.4158,
+    "Frame Encoder": 0.344,
+    "Per-frame Upload Copies": 0.281,
+    "Dynamic Cube Entity Shadow Depth Pass": 0.259,
+    "Dynamic Cube World Depth Cache Pass": 0.1653,
+    "Bloom Bright Pass": 0.1565,
+    "UI Pass": 0.1303,
+    "Bloom Horizontal Gaussian Pass": 0.1232,
+    "Bloom Scene Composite Pass": 0.0693,
+    "Skinned Mesh Pass": 0.0576,
+    "Billboard Direct Scatter Compose": 0.0458,
+    "Bloom Vertical Gaussian Pass": 0.0438,
+    "Candidate Cull Pass": 0.0357,
+    "Bloom Upsample Pass": 0.0318,
+    "Bloom Downsample Pass": 0.0305,
+    "Dynamic Spot Entity Shadow Depth Pass": 0.0282,
+    "Depth Pre-Pass": 0.0279,
+    "(wgpu internal) PendingWrites": 0.0225,
+    "Dynamic Spot World Depth Cache Pass": 0.0168,
+    "Promoted Spot World Depth Cache Pass": 0.0003
+  },
+  "compose_per_encoder_ms": {
+    "Streamed Animated Direct SH": 9.3428,
+    "Streamed Animated Direct SH [B]": 6.5144,
+    "Streamed SH Compose": 7.9589,
+    "Streamed SH Compose [B]": 6.4566
+  },
+  "compose_per_encoder_median_ms": {
+    "Streamed Animated Direct SH": 9.3192,
+    "Streamed Animated Direct SH [B]": 6.5086,
+    "Streamed SH Compose": 7.9204,
+    "Streamed SH Compose [B]": 6.4215
+  },
+  "compose_encoder_counts": {
+    "Streamed Animated Direct SH": 70,
+    "Streamed Animated Direct SH [B]": 70,
+    "Streamed SH Compose": 70,
+    "Streamed SH Compose [B]": 70
+  }
+}

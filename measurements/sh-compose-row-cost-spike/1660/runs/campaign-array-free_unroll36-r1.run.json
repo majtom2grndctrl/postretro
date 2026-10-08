@@ -1,0 +1,712 @@
+{
+ "label": "campaign-array-free_unroll36-r1",
+ "arm": "array-free,unroll36",
+ "pose": "campaign",
+ "args": [
+  "content\\dev\\maps\\campaign-test.prl"
+ ],
+ "start": 1791341688.724501,
+ "windows": [
+  {
+   "t": 1791341733.0691438,
+   "readbacks": 120,
+   "passes": {
+    "cull": {
+     "ms": 0.0,
+     "present": null
+    },
+    "animated_lm_compose": {
+     "ms": 0.17,
+     "present": null
+    },
+    "depth_prepass": {
+     "ms": 0.01,
+     "present": null
+    },
+    "forward": {
+     "ms": 1.51,
+     "present": null
+    },
+    "sh_compose": {
+     "ms": 0.74,
+     "present": null
+    },
+    "promoted_depth_cache_upper": {
+     "ms": 0.05,
+     "present": null
+    },
+    "animated_direct_sh_compose": {
+     "ms": 0.82,
+     "present": null
+    },
+    "bloom": {
+     "ms": 0.23,
+     "present": null
+    },
+    "billboard_direct_scatter_compose": {
+     "ms": 0.02,
+     "present": null
+    },
+    "dynamic_spot_depth_upper": {
+     "ms": 0.08,
+     "present": 66
+    },
+    "resolve": {
+     "ms": 0.2,
+     "present": null
+    }
+   }
+  },
+  {
+   "t": 1791341735.0692828,
+   "readbacks": 120,
+   "passes": {
+    "cull": {
+     "ms": 0.0,
+     "present": null
+    },
+    "animated_lm_compose": {
+     "ms": 0.17,
+     "present": null
+    },
+    "depth_prepass": {
+     "ms": 0.01,
+     "present": null
+    },
+    "forward": {
+     "ms": 1.51,
+     "present": null
+    },
+    "sh_compose": {
+     "ms": 0.74,
+     "present": null
+    },
+    "promoted_depth_cache_upper": {
+     "ms": 0.04,
+     "present": null
+    },
+    "animated_direct_sh_compose": {
+     "ms": 0.82,
+     "present": null
+    },
+    "bloom": {
+     "ms": 0.23,
+     "present": null
+    },
+    "billboard_direct_scatter_compose": {
+     "ms": 0.02,
+     "present": null
+    },
+    "dynamic_spot_depth_upper": {
+     "ms": 0.08,
+     "present": 47
+    },
+    "resolve": {
+     "ms": 0.2,
+     "present": null
+    }
+   }
+  },
+  {
+   "t": 1791341737.0691295,
+   "readbacks": 120,
+   "passes": {
+    "cull": {
+     "ms": 0.0,
+     "present": null
+    },
+    "animated_lm_compose": {
+     "ms": 0.17,
+     "present": null
+    },
+    "depth_prepass": {
+     "ms": 0.01,
+     "present": null
+    },
+    "forward": {
+     "ms": 1.51,
+     "present": null
+    },
+    "sh_compose": {
+     "ms": 0.74,
+     "present": null
+    },
+    "promoted_depth_cache_upper": {
+     "ms": 0.04,
+     "present": null
+    },
+    "animated_direct_sh_compose": {
+     "ms": 0.82,
+     "present": null
+    },
+    "bloom": {
+     "ms": 0.23,
+     "present": null
+    },
+    "billboard_direct_scatter_compose": {
+     "ms": 0.02,
+     "present": null
+    },
+    "dynamic_spot_depth_upper": {
+     "ms": 0.07,
+     "present": 45
+    },
+    "resolve": {
+     "ms": 0.2,
+     "present": null
+    }
+   }
+  },
+  {
+   "t": 1791341739.0692682,
+   "readbacks": 120,
+   "passes": {
+    "cull": {
+     "ms": 0.0,
+     "present": null
+    },
+    "animated_lm_compose": {
+     "ms": 0.17,
+     "present": null
+    },
+    "depth_prepass": {
+     "ms": 0.01,
+     "present": null
+    },
+    "forward": {
+     "ms": 1.51,
+     "present": null
+    },
+    "sh_compose": {
+     "ms": 0.74,
+     "present": null
+    },
+    "promoted_depth_cache_upper": {
+     "ms": 0.04,
+     "present": null
+    },
+    "animated_direct_sh_compose": {
+     "ms": 0.82,
+     "present": null
+    },
+    "bloom": {
+     "ms": 0.23,
+     "present": null
+    },
+    "billboard_direct_scatter_compose": {
+     "ms": 0.02,
+     "present": null
+    },
+    "dynamic_spot_depth_upper": {
+     "ms": 0.08,
+     "present": 68
+    },
+    "resolve": {
+     "ms": 0.2,
+     "present": null
+    }
+   }
+  },
+  {
+   "t": 1791341741.0692654,
+   "readbacks": 120,
+   "passes": {
+    "cull": {
+     "ms": 0.0,
+     "present": null
+    },
+    "animated_lm_compose": {
+     "ms": 0.17,
+     "present": null
+    },
+    "depth_prepass": {
+     "ms": 0.01,
+     "present": null
+    },
+    "forward": {
+     "ms": 1.51,
+     "present": null
+    },
+    "sh_compose": {
+     "ms": 0.74,
+     "present": null
+    },
+    "promoted_depth_cache_upper": {
+     "ms": 0.03,
+     "present": null
+    },
+    "animated_direct_sh_compose": {
+     "ms": 0.82,
+     "present": null
+    },
+    "bloom": {
+     "ms": 0.23,
+     "present": null
+    },
+    "billboard_direct_scatter_compose": {
+     "ms": 0.02,
+     "present": null
+    },
+    "dynamic_spot_depth_upper": {
+     "ms": 0.07,
+     "present": 24
+    },
+    "resolve": {
+     "ms": 0.2,
+     "present": null
+    }
+   }
+  },
+  {
+   "t": 1791341743.0693722,
+   "readbacks": 120,
+   "passes": {
+    "cull": {
+     "ms": 0.0,
+     "present": null
+    },
+    "animated_lm_compose": {
+     "ms": 0.17,
+     "present": null
+    },
+    "depth_prepass": {
+     "ms": 0.01,
+     "present": null
+    },
+    "forward": {
+     "ms": 1.51,
+     "present": null
+    },
+    "sh_compose": {
+     "ms": 0.74,
+     "present": null
+    },
+    "promoted_depth_cache_upper": {
+     "ms": 0.05,
+     "present": null
+    },
+    "animated_direct_sh_compose": {
+     "ms": 0.82,
+     "present": null
+    },
+    "bloom": {
+     "ms": 0.22,
+     "present": null
+    },
+    "billboard_direct_scatter_compose": {
+     "ms": 0.02,
+     "present": null
+    },
+    "dynamic_spot_depth_upper": {
+     "ms": 0.08,
+     "present": 89
+    },
+    "resolve": {
+     "ms": 0.2,
+     "present": null
+    }
+   }
+  },
+  {
+   "t": 1791341745.0694137,
+   "readbacks": 120,
+   "passes": {
+    "cull": {
+     "ms": 0.0,
+     "present": null
+    },
+    "animated_lm_compose": {
+     "ms": 0.17,
+     "present": null
+    },
+    "depth_prepass": {
+     "ms": 0.01,
+     "present": null
+    },
+    "forward": {
+     "ms": 1.51,
+     "present": null
+    },
+    "sh_compose": {
+     "ms": 0.74,
+     "present": null
+    },
+    "promoted_depth_cache_upper": {
+     "ms": 0.02,
+     "present": null
+    },
+    "animated_direct_sh_compose": {
+     "ms": 0.82,
+     "present": null
+    },
+    "bloom": {
+     "ms": 0.23,
+     "present": null
+    },
+    "billboard_direct_scatter_compose": {
+     "ms": 0.02,
+     "present": null
+    },
+    "dynamic_spot_depth_upper": {
+     "ms": 0.05,
+     "present": 3
+    },
+    "resolve": {
+     "ms": 0.2,
+     "present": null
+    }
+   }
+  },
+  {
+   "t": 1791341747.0694253,
+   "readbacks": 120,
+   "passes": {
+    "cull": {
+     "ms": 0.0,
+     "present": null
+    },
+    "animated_lm_compose": {
+     "ms": 0.17,
+     "present": null
+    },
+    "depth_prepass": {
+     "ms": 0.01,
+     "present": null
+    },
+    "forward": {
+     "ms": 1.51,
+     "present": null
+    },
+    "sh_compose": {
+     "ms": 0.74,
+     "present": null
+    },
+    "promoted_depth_cache_upper": {
+     "ms": 0.05,
+     "present": null
+    },
+    "animated_direct_sh_compose": {
+     "ms": 0.82,
+     "present": null
+    },
+    "bloom": {
+     "ms": 0.23,
+     "present": null
+    },
+    "billboard_direct_scatter_compose": {
+     "ms": 0.02,
+     "present": null
+    },
+    "dynamic_spot_depth_upper": {
+     "ms": 0.07,
+     "present": 92
+    },
+    "resolve": {
+     "ms": 0.2,
+     "present": null
+    }
+   }
+  }
+ ],
+ "counts": [
+  {
+   "t": 1791341726.0005784,
+   "line": "indirect: frames 120 rows min 480 max 874 | last rows L0 730 L1 0 L2 0 | entries L0 352 L1 0 L2 0 | rows with entries 352 | lane-entries 12201"
+  },
+  {
+   "t": 1791341726.0005994,
+   "line": "animated-direct: frames 120 rows min 480 max 874 | last rows L0 730 L1 0 L2 0 | entries L0 352 L1 0 L2 0 | rows with entries 352 | lane-entries 12201"
+  },
+  {
+   "t": 1791341727.0006704,
+   "line": "indirect: frames 120 rows min 730 max 730 | last rows L0 730 L1 0 L2 0 | entries L0 352 L1 0 L2 0 | rows with entries 352 | lane-entries 12201"
+  },
+  {
+   "t": 1791341727.0006924,
+   "line": "animated-direct: frames 120 rows min 730 max 730 | last rows L0 730 L1 0 L2 0 | entries L0 352 L1 0 L2 0 | rows with entries 352 | lane-entries 12201"
+  },
+  {
+   "t": 1791341728.0006483,
+   "line": "indirect: frames 120 rows min 730 max 730 | last rows L0 730 L1 0 L2 0 | entries L0 352 L1 0 L2 0 | rows with entries 352 | lane-entries 12201"
+  },
+  {
+   "t": 1791341728.0006697,
+   "line": "animated-direct: frames 120 rows min 730 max 730 | last rows L0 730 L1 0 L2 0 | entries L0 352 L1 0 L2 0 | rows with entries 352 | lane-entries 12201"
+  },
+  {
+   "t": 1791341729.0007334,
+   "line": "indirect: frames 120 rows min 730 max 730 | last rows L0 730 L1 0 L2 0 | entries L0 352 L1 0 L2 0 | rows with entries 352 | lane-entries 12201"
+  },
+  {
+   "t": 1791341729.000754,
+   "line": "animated-direct: frames 120 rows min 730 max 730 | last rows L0 730 L1 0 L2 0 | entries L0 352 L1 0 L2 0 | rows with entries 352 | lane-entries 12201"
+  },
+  {
+   "t": 1791341730.000748,
+   "line": "indirect: frames 120 rows min 730 max 730 | last rows L0 730 L1 0 L2 0 | entries L0 352 L1 0 L2 0 | rows with entries 352 | lane-entries 12201"
+  },
+  {
+   "t": 1791341730.0007687,
+   "line": "animated-direct: frames 120 rows min 730 max 730 | last rows L0 730 L1 0 L2 0 | entries L0 352 L1 0 L2 0 | rows with entries 352 | lane-entries 12201"
+  },
+  {
+   "t": 1791341731.000851,
+   "line": "indirect: frames 120 rows min 730 max 730 | last rows L0 730 L1 0 L2 0 | entries L0 352 L1 0 L2 0 | rows with entries 352 | lane-entries 12201"
+  },
+  {
+   "t": 1791341731.0008714,
+   "line": "animated-direct: frames 120 rows min 730 max 730 | last rows L0 730 L1 0 L2 0 | entries L0 352 L1 0 L2 0 | rows with entries 352 | lane-entries 12201"
+  },
+  {
+   "t": 1791341732.0009303,
+   "line": "indirect: frames 120 rows min 730 max 730 | last rows L0 730 L1 0 L2 0 | entries L0 352 L1 0 L2 0 | rows with entries 352 | lane-entries 12201"
+  },
+  {
+   "t": 1791341732.0009522,
+   "line": "animated-direct: frames 120 rows min 730 max 730 | last rows L0 730 L1 0 L2 0 | entries L0 352 L1 0 L2 0 | rows with entries 352 | lane-entries 12201"
+  },
+  {
+   "t": 1791341733.0007842,
+   "line": "indirect: frames 120 rows min 730 max 730 | last rows L0 730 L1 0 L2 0 | entries L0 352 L1 0 L2 0 | rows with entries 352 | lane-entries 12201"
+  },
+  {
+   "t": 1791341733.0008054,
+   "line": "animated-direct: frames 120 rows min 730 max 730 | last rows L0 730 L1 0 L2 0 | entries L0 352 L1 0 L2 0 | rows with entries 352 | lane-entries 12201"
+  },
+  {
+   "t": 1791341734.0008872,
+   "line": "indirect: frames 120 rows min 730 max 730 | last rows L0 730 L1 0 L2 0 | entries L0 352 L1 0 L2 0 | rows with entries 352 | lane-entries 12201"
+  },
+  {
+   "t": 1791341734.0009065,
+   "line": "animated-direct: frames 120 rows min 730 max 730 | last rows L0 730 L1 0 L2 0 | entries L0 352 L1 0 L2 0 | rows with entries 352 | lane-entries 12201"
+  },
+  {
+   "t": 1791341735.0008636,
+   "line": "indirect: frames 120 rows min 730 max 730 | last rows L0 730 L1 0 L2 0 | entries L0 352 L1 0 L2 0 | rows with entries 352 | lane-entries 12201"
+  },
+  {
+   "t": 1791341735.000884,
+   "line": "animated-direct: frames 120 rows min 730 max 730 | last rows L0 730 L1 0 L2 0 | entries L0 352 L1 0 L2 0 | rows with entries 352 | lane-entries 12201"
+  },
+  {
+   "t": 1791341736.0009468,
+   "line": "indirect: frames 120 rows min 730 max 730 | last rows L0 730 L1 0 L2 0 | entries L0 352 L1 0 L2 0 | rows with entries 352 | lane-entries 12201"
+  },
+  {
+   "t": 1791341736.000967,
+   "line": "animated-direct: frames 120 rows min 730 max 730 | last rows L0 730 L1 0 L2 0 | entries L0 352 L1 0 L2 0 | rows with entries 352 | lane-entries 12201"
+  },
+  {
+   "t": 1791341737.0009916,
+   "line": "indirect: frames 120 rows min 730 max 730 | last rows L0 730 L1 0 L2 0 | entries L0 352 L1 0 L2 0 | rows with entries 352 | lane-entries 12201"
+  },
+  {
+   "t": 1791341737.0010123,
+   "line": "animated-direct: frames 120 rows min 730 max 730 | last rows L0 730 L1 0 L2 0 | entries L0 352 L1 0 L2 0 | rows with entries 352 | lane-entries 12201"
+  },
+  {
+   "t": 1791341738.000967,
+   "line": "indirect: frames 120 rows min 730 max 730 | last rows L0 730 L1 0 L2 0 | entries L0 352 L1 0 L2 0 | rows with entries 352 | lane-entries 12201"
+  },
+  {
+   "t": 1791341738.0009868,
+   "line": "animated-direct: frames 120 rows min 730 max 730 | last rows L0 730 L1 0 L2 0 | entries L0 352 L1 0 L2 0 | rows with entries 352 | lane-entries 12201"
+  },
+  {
+   "t": 1791341739.0010748,
+   "line": "indirect: frames 120 rows min 730 max 730 | last rows L0 730 L1 0 L2 0 | entries L0 352 L1 0 L2 0 | rows with entries 352 | lane-entries 12201"
+  },
+  {
+   "t": 1791341739.0010943,
+   "line": "animated-direct: frames 120 rows min 730 max 730 | last rows L0 730 L1 0 L2 0 | entries L0 352 L1 0 L2 0 | rows with entries 352 | lane-entries 12201"
+  },
+  {
+   "t": 1791341740.00111,
+   "line": "indirect: frames 120 rows min 730 max 730 | last rows L0 730 L1 0 L2 0 | entries L0 352 L1 0 L2 0 | rows with entries 352 | lane-entries 12201"
+  },
+  {
+   "t": 1791341740.001131,
+   "line": "animated-direct: frames 120 rows min 730 max 730 | last rows L0 730 L1 0 L2 0 | entries L0 352 L1 0 L2 0 | rows with entries 352 | lane-entries 12201"
+  },
+  {
+   "t": 1791341741.0011308,
+   "line": "indirect: frames 120 rows min 730 max 730 | last rows L0 730 L1 0 L2 0 | entries L0 352 L1 0 L2 0 | rows with entries 352 | lane-entries 12201"
+  },
+  {
+   "t": 1791341741.0011513,
+   "line": "animated-direct: frames 120 rows min 730 max 730 | last rows L0 730 L1 0 L2 0 | entries L0 352 L1 0 L2 0 | rows with entries 352 | lane-entries 12201"
+  },
+  {
+   "t": 1791341742.0011659,
+   "line": "indirect: frames 120 rows min 730 max 730 | last rows L0 730 L1 0 L2 0 | entries L0 352 L1 0 L2 0 | rows with entries 352 | lane-entries 12201"
+  },
+  {
+   "t": 1791341742.001186,
+   "line": "animated-direct: frames 120 rows min 730 max 730 | last rows L0 730 L1 0 L2 0 | entries L0 352 L1 0 L2 0 | rows with entries 352 | lane-entries 12201"
+  },
+  {
+   "t": 1791341743.0012054,
+   "line": "indirect: frames 120 rows min 730 max 730 | last rows L0 730 L1 0 L2 0 | entries L0 352 L1 0 L2 0 | rows with entries 352 | lane-entries 12201"
+  },
+  {
+   "t": 1791341743.0012264,
+   "line": "animated-direct: frames 120 rows min 730 max 730 | last rows L0 730 L1 0 L2 0 | entries L0 352 L1 0 L2 0 | rows with entries 352 | lane-entries 12201"
+  },
+  {
+   "t": 1791341744.0013678,
+   "line": "indirect: frames 120 rows min 730 max 730 | last rows L0 730 L1 0 L2 0 | entries L0 352 L1 0 L2 0 | rows with entries 352 | lane-entries 12201"
+  },
+  {
+   "t": 1791341744.0013907,
+   "line": "animated-direct: frames 120 rows min 730 max 730 | last rows L0 730 L1 0 L2 0 | entries L0 352 L1 0 L2 0 | rows with entries 352 | lane-entries 12201"
+  },
+  {
+   "t": 1791341745.0012755,
+   "line": "indirect: frames 120 rows min 730 max 730 | last rows L0 730 L1 0 L2 0 | entries L0 352 L1 0 L2 0 | rows with entries 352 | lane-entries 12201"
+  },
+  {
+   "t": 1791341745.0012958,
+   "line": "animated-direct: frames 120 rows min 730 max 730 | last rows L0 730 L1 0 L2 0 | entries L0 352 L1 0 L2 0 | rows with entries 352 | lane-entries 12201"
+  },
+  {
+   "t": 1791341746.001522,
+   "line": "indirect: frames 120 rows min 730 max 730 | last rows L0 730 L1 0 L2 0 | entries L0 352 L1 0 L2 0 | rows with entries 352 | lane-entries 12201"
+  },
+  {
+   "t": 1791341746.0015488,
+   "line": "animated-direct: frames 120 rows min 730 max 730 | last rows L0 730 L1 0 L2 0 | entries L0 352 L1 0 L2 0 | rows with entries 352 | lane-entries 12201"
+  },
+  {
+   "t": 1791341747.0013819,
+   "line": "indirect: frames 120 rows min 730 max 730 | last rows L0 730 L1 0 L2 0 | entries L0 352 L1 0 L2 0 | rows with entries 352 | lane-entries 12201"
+  },
+  {
+   "t": 1791341747.0014021,
+   "line": "animated-direct: frames 120 rows min 730 max 730 | last rows L0 730 L1 0 L2 0 | entries L0 352 L1 0 L2 0 | rows with entries 352 | lane-entries 12201"
+  }
+ ],
+ "arms_logged": "array-free,unroll36,scale-shared",
+ "nvsmi": [
+  [
+   1791341733.1385927,
+   "1950",
+   "7000",
+   "P0",
+   "56",
+   "81.71",
+   "71"
+  ],
+  [
+   1791341734.2184687,
+   "1950",
+   "7000",
+   "P0",
+   "56",
+   "82.47",
+   "71"
+  ],
+  [
+   1791341735.2976499,
+   "1950",
+   "7000",
+   "P0",
+   "57",
+   "83.69",
+   "71"
+  ],
+  [
+   1791341736.376649,
+   "1950",
+   "7000",
+   "P0",
+   "57",
+   "83.22",
+   "71"
+  ],
+  [
+   1791341737.4671443,
+   "1950",
+   "7000",
+   "P0",
+   "57",
+   "82.67",
+   "70"
+  ],
+  [
+   1791341738.5550456,
+   "1950",
+   "7000",
+   "P0",
+   "57",
+   "83.20",
+   "71"
+  ],
+  [
+   1791341739.63093,
+   "1950",
+   "7000",
+   "P0",
+   "57",
+   "83.04",
+   "72"
+  ],
+  [
+   1791341740.7120795,
+   "1950",
+   "7000",
+   "P0",
+   "57",
+   "83.06",
+   "71"
+  ],
+  [
+   1791341741.7925305,
+   "1950",
+   "7000",
+   "P0",
+   "57",
+   "83.27",
+   "70"
+  ],
+  [
+   1791341742.8719878,
+   "1950",
+   "7000",
+   "P0",
+   "57",
+   "83.47",
+   "71"
+  ],
+  [
+   1791341743.965854,
+   "1950",
+   "7000",
+   "P0",
+   "57",
+   "82.58",
+   "71"
+  ],
+  [
+   1791341745.0515692,
+   "1950",
+   "7000",
+   "P0",
+   "57",
+   "83.19",
+   "71"
+  ],
+  [
+   1791341746.1432884,
+   "1950",
+   "7000",
+   "P0",
+   "57",
+   "83.60",
+   "70"
+  ]
+ ],
+ "valid": true,
+ "reason": null,
+ "end": 1791341747.634411
+}

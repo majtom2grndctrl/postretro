@@ -10,6 +10,7 @@
 - **Engineering conventions / code style** → `development_guide.md`
 - **Crate layering / where new code goes / dependency direction** → `development_guide.md` §Workspace
 - **Build and run commands / standard build configuration / which cargo profile and features to use** → `development_guide.md` §Build and run
+- **Worktree builds / where a worktree's `target/` goes / disk budget for parallel builds / A/B binaries from another commit** → `development_guide.md` §Worktree builds
 - **Crate dependency graph / blast radius / what depends on X** → `crate-graph.md` (generated); live queries via `cargo run -p xtask -- crate-graph --rdeps <crate>`
 - **Context file writing / updates** → `context_style_guide.md`
 - **Testing** → `testing_guide.md`
@@ -38,8 +39,8 @@
 - **Authoring launch against a project / `postretro-tool run` / `--core-root` / `--install-root` / who supplies `--baked-root` and `--cache-dir`** → `build_pipeline.md` §Distribution packaging (§Authoring launch) · `ui.md` §5 · `docs/external-projects.md` (author-facing)
 - **Where `.prm` sidecars live / materials-root derivation / mod root shape / `--baked-root` / game content in a repo outside the engine install** → `build_pipeline.md` §Baked texture mips
 - **Input format adapters / adding a new map source format / what Quake or TrenchBroom vocabulary may cross into shared compiler stages** → `build_pipeline.md` §Source-format neutrality
-- **Input handling / gamepad** → `input.md`
-- **Remapping / rebinding / key bindings / author default bindings / command relevance / tap-hold activators / UI nav from the binding table / console menu conventions (restore focus, hold-to-repeat, tabs, scroll, glyphs)** → `player_options.md` §6 · `input.md` §2, §5, §7 · `ui.md` §4
+- **Input handling / gamepad / triggers / active pad / device family (glyph family by vendor id)** → `input.md`
+- **Remapping / rebinding / key bindings / author default bindings / manifest `input` block / command relevance / tap-hold activators / controls panel / rebind capture / UI nav from the binding table / console menu conventions (restore focus, hold-to-repeat, nested groups, tabs, scroll, glyphs, text-entry shortcuts)** → `player_options.md` §6 · `input.md` §2, §5, §7 · `ui.md` §4, §4.1
 - **Player options / settings persistence / mouse sensitivity / invert-Y / view_feel_scale** → `player_options.md`
 - **Window modes / fullscreen / exclusive display mode / mode confirm / `--windowed`** → `player_options.md` §7 · `boot_sequence.md` §1 (Window mode) · `ui.md` §4.1
 - **Accessibility preferences / OS preference seeding / `accessibility.*` slots / reduce motion / per-field settings fallback** → `player_options.md` §5, §2
@@ -58,6 +59,7 @@
 - **3D model / glTF import (scale, pivot, material format)** → `resource_management.md` §7
 - **Scripting / primitives / SDK types / scripting crate boundaries / VM compile firewall** → `scripting.md`
 - **Reaction dispatch model / event sources / dispatch scopes / reaction parameters / occupancy exposure** → `scripting.md` §12
+- **Entity addressing / map members (`getMapEntities`) vs. groups (`npcs`, `players`) vs. subject tokens / per-member `.on` sources / spawned-NPC tags** → `scripting.md` §12 (Entity addressing)
 - **Netcode / multiplayer / co-op / replication / transport / wire format** → `networking.md`
 - **Live introspection channel / observe-live / localhost debug socket / reading a running session's state over a socket** → `networking.md` §Not netcode: the live introspection channel
 - **Joining a session / admission vs content parity / slot lifecycle / host level change / what gates vs what replicates** → `networking.md` §Admission and content parity · §Slot lifecycle · §What gates, and what replicates instead
@@ -78,6 +80,7 @@
 - **Frame timing / game loop** → `rendering_pipeline.md` §1 · `entity_model.md` §5
 - **CPU profiling / per-stage CPU timing / Tracy / GPU pass timing / Metal System Trace when timestamps are unsupported / Mac perf measurement confounders / diagnostic env vars vs features** → `rendering_pipeline.md` §12 · `development_guide.md` §6.4
 - **Boot / startup / splash / level-load sequence / mod loading** → `boot_sequence.md`
+- **Loading screen / loading tree pools / `loading.progress` / level-load progress counter / install deferral / mod `uiImages`** → `boot_sequence.md` §1 (Loading screen), §2 · `ui.md` §5
 - **Experimental spikes / build-to-learn specs** → `experimental_spikes.md`
 - **3rd party library docs** → use `context7` tool (wgpu, winit, kira, glam).
 

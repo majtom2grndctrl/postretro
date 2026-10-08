@@ -1,0 +1,806 @@
+{
+ "label": "kinstation-new-floor-r2",
+ "arm": "new-floor",
+ "pose": "kinstation",
+ "args": [
+  "content\\dev\\maps\\kinematic-platform.prl",
+  "--start-pose=-6.5,1.22,-27.94,0,0"
+ ],
+ "start": 1791353143.83593,
+ "windows": [
+  {
+   "t": 1791353154.801465,
+   "readbacks": 120,
+   "passes": {
+    "cull": {
+     "ms": 0.0,
+     "present": null
+    },
+    "animated_lm_compose": {
+     "ms": 0.6,
+     "present": null
+    },
+    "depth_prepass": {
+     "ms": 0.01,
+     "present": null
+    },
+    "forward": {
+     "ms": 1.25,
+     "present": null
+    },
+    "sh_compose": {
+     "ms": 0.31,
+     "present": null
+    },
+    "direct_sh_compose": {
+     "ms": 0.52,
+     "present": 36
+    },
+    "promoted_depth_cache_upper": {
+     "ms": 0.28,
+     "present": null
+    },
+    "animated_direct_sh_compose": {
+     "ms": 0.14,
+     "present": null
+    },
+    "bloom": {
+     "ms": 0.18,
+     "present": null
+    },
+    "billboard_direct_scatter_compose": {
+     "ms": 0.01,
+     "present": null
+    },
+    "dynamic_spot_depth_upper": {
+     "ms": 0.12,
+     "present": null
+    },
+    "dynamic_cube_depth_upper": {
+     "ms": 0.16,
+     "present": null
+    },
+    "resolve": {
+     "ms": 0.2,
+     "present": null
+    }
+   }
+  },
+  {
+   "t": 1791353156.8013916,
+   "readbacks": 120,
+   "passes": {
+    "cull": {
+     "ms": 0.0,
+     "present": null
+    },
+    "animated_lm_compose": {
+     "ms": 0.6,
+     "present": null
+    },
+    "depth_prepass": {
+     "ms": 0.01,
+     "present": null
+    },
+    "forward": {
+     "ms": 1.25,
+     "present": null
+    },
+    "sh_compose": {
+     "ms": 0.31,
+     "present": null
+    },
+    "direct_sh_compose": {
+     "ms": 0.52,
+     "present": 43
+    },
+    "promoted_depth_cache_upper": {
+     "ms": 0.28,
+     "present": null
+    },
+    "animated_direct_sh_compose": {
+     "ms": 0.15,
+     "present": null
+    },
+    "bloom": {
+     "ms": 0.18,
+     "present": null
+    },
+    "billboard_direct_scatter_compose": {
+     "ms": 0.01,
+     "present": null
+    },
+    "dynamic_spot_depth_upper": {
+     "ms": 0.12,
+     "present": null
+    },
+    "dynamic_cube_depth_upper": {
+     "ms": 0.16,
+     "present": null
+    },
+    "resolve": {
+     "ms": 0.2,
+     "present": null
+    }
+   }
+  },
+  {
+   "t": 1791353158.8014634,
+   "readbacks": 120,
+   "passes": {
+    "cull": {
+     "ms": 0.0,
+     "present": null
+    },
+    "animated_lm_compose": {
+     "ms": 0.6,
+     "present": null
+    },
+    "depth_prepass": {
+     "ms": 0.01,
+     "present": null
+    },
+    "forward": {
+     "ms": 1.25,
+     "present": null
+    },
+    "sh_compose": {
+     "ms": 0.31,
+     "present": null
+    },
+    "direct_sh_compose": {
+     "ms": 0.51,
+     "present": 57
+    },
+    "promoted_depth_cache_upper": {
+     "ms": 0.27,
+     "present": null
+    },
+    "animated_direct_sh_compose": {
+     "ms": 0.18,
+     "present": null
+    },
+    "bloom": {
+     "ms": 0.18,
+     "present": null
+    },
+    "billboard_direct_scatter_compose": {
+     "ms": 0.01,
+     "present": null
+    },
+    "dynamic_spot_depth_upper": {
+     "ms": 0.12,
+     "present": null
+    },
+    "dynamic_cube_depth_upper": {
+     "ms": 0.15,
+     "present": null
+    },
+    "resolve": {
+     "ms": 0.2,
+     "present": null
+    }
+   }
+  },
+  {
+   "t": 1791353160.8015254,
+   "readbacks": 120,
+   "passes": {
+    "cull": {
+     "ms": 0.0,
+     "present": null
+    },
+    "animated_lm_compose": {
+     "ms": 0.6,
+     "present": null
+    },
+    "depth_prepass": {
+     "ms": 0.01,
+     "present": null
+    },
+    "forward": {
+     "ms": 1.25,
+     "present": null
+    },
+    "sh_compose": {
+     "ms": 0.31,
+     "present": null
+    },
+    "direct_sh_compose": {
+     "ms": 0.52,
+     "present": 16
+    },
+    "promoted_depth_cache_upper": {
+     "ms": 0.28,
+     "present": null
+    },
+    "animated_direct_sh_compose": {
+     "ms": 0.1,
+     "present": null
+    },
+    "bloom": {
+     "ms": 0.18,
+     "present": null
+    },
+    "billboard_direct_scatter_compose": {
+     "ms": 0.01,
+     "present": null
+    },
+    "dynamic_spot_depth_upper": {
+     "ms": 0.12,
+     "present": null
+    },
+    "dynamic_cube_depth_upper": {
+     "ms": 0.16,
+     "present": null
+    },
+    "resolve": {
+     "ms": 0.2,
+     "present": null
+    }
+   }
+  },
+  {
+   "t": 1791353162.8015985,
+   "readbacks": 120,
+   "passes": {
+    "cull": {
+     "ms": 0.0,
+     "present": null
+    },
+    "animated_lm_compose": {
+     "ms": 0.61,
+     "present": null
+    },
+    "depth_prepass": {
+     "ms": 0.01,
+     "present": null
+    },
+    "forward": {
+     "ms": 1.25,
+     "present": null
+    },
+    "sh_compose": {
+     "ms": 0.31,
+     "present": null
+    },
+    "direct_sh_compose": {
+     "ms": 0.52,
+     "present": 54
+    },
+    "promoted_depth_cache_upper": {
+     "ms": 0.28,
+     "present": null
+    },
+    "animated_direct_sh_compose": {
+     "ms": 0.18,
+     "present": null
+    },
+    "bloom": {
+     "ms": 0.18,
+     "present": null
+    },
+    "billboard_direct_scatter_compose": {
+     "ms": 0.01,
+     "present": null
+    },
+    "dynamic_spot_depth_upper": {
+     "ms": 0.12,
+     "present": null
+    },
+    "dynamic_cube_depth_upper": {
+     "ms": 0.16,
+     "present": null
+    },
+    "resolve": {
+     "ms": 0.2,
+     "present": null
+    }
+   }
+  },
+  {
+   "t": 1791353164.8016207,
+   "readbacks": 120,
+   "passes": {
+    "cull": {
+     "ms": 0.0,
+     "present": null
+    },
+    "animated_lm_compose": {
+     "ms": 0.61,
+     "present": null
+    },
+    "depth_prepass": {
+     "ms": 0.01,
+     "present": null
+    },
+    "forward": {
+     "ms": 1.25,
+     "present": null
+    },
+    "sh_compose": {
+     "ms": 0.31,
+     "present": null
+    },
+    "direct_sh_compose": {
+     "ms": 0.53,
+     "present": 36
+    },
+    "promoted_depth_cache_upper": {
+     "ms": 0.28,
+     "present": null
+    },
+    "animated_direct_sh_compose": {
+     "ms": 0.14,
+     "present": null
+    },
+    "bloom": {
+     "ms": 0.18,
+     "present": null
+    },
+    "billboard_direct_scatter_compose": {
+     "ms": 0.01,
+     "present": null
+    },
+    "dynamic_spot_depth_upper": {
+     "ms": 0.12,
+     "present": null
+    },
+    "dynamic_cube_depth_upper": {
+     "ms": 0.16,
+     "present": null
+    },
+    "resolve": {
+     "ms": 0.2,
+     "present": null
+    }
+   }
+  },
+  {
+   "t": 1791353166.8017797,
+   "readbacks": 120,
+   "passes": {
+    "cull": {
+     "ms": 0.0,
+     "present": null
+    },
+    "animated_lm_compose": {
+     "ms": 0.61,
+     "present": null
+    },
+    "depth_prepass": {
+     "ms": 0.01,
+     "present": null
+    },
+    "forward": {
+     "ms": 1.26,
+     "present": null
+    },
+    "sh_compose": {
+     "ms": 0.31,
+     "present": null
+    },
+    "direct_sh_compose": {
+     "ms": 0.52,
+     "present": 52
+    },
+    "promoted_depth_cache_upper": {
+     "ms": 0.27,
+     "present": null
+    },
+    "animated_direct_sh_compose": {
+     "ms": 0.17,
+     "present": null
+    },
+    "bloom": {
+     "ms": 0.18,
+     "present": null
+    },
+    "billboard_direct_scatter_compose": {
+     "ms": 0.01,
+     "present": null
+    },
+    "dynamic_spot_depth_upper": {
+     "ms": 0.12,
+     "present": null
+    },
+    "dynamic_cube_depth_upper": {
+     "ms": 0.15,
+     "present": null
+    },
+    "resolve": {
+     "ms": 0.2,
+     "present": null
+    }
+   }
+  },
+  {
+   "t": 1791353168.8016906,
+   "readbacks": 120,
+   "passes": {
+    "cull": {
+     "ms": 0.0,
+     "present": null
+    },
+    "animated_lm_compose": {
+     "ms": 0.61,
+     "present": null
+    },
+    "depth_prepass": {
+     "ms": 0.01,
+     "present": null
+    },
+    "forward": {
+     "ms": 1.25,
+     "present": null
+    },
+    "sh_compose": {
+     "ms": 0.31,
+     "present": null
+    },
+    "direct_sh_compose": {
+     "ms": 0.52,
+     "present": 36
+    },
+    "promoted_depth_cache_upper": {
+     "ms": 0.29,
+     "present": null
+    },
+    "animated_direct_sh_compose": {
+     "ms": 0.14,
+     "present": null
+    },
+    "bloom": {
+     "ms": 0.18,
+     "present": null
+    },
+    "billboard_direct_scatter_compose": {
+     "ms": 0.01,
+     "present": null
+    },
+    "dynamic_spot_depth_upper": {
+     "ms": 0.12,
+     "present": null
+    },
+    "dynamic_cube_depth_upper": {
+     "ms": 0.16,
+     "present": null
+    },
+    "resolve": {
+     "ms": 0.2,
+     "present": null
+    }
+   }
+  }
+ ],
+ "counts": [
+  {
+   "t": 1791353147.7988389,
+   "line": "indirect: frames 120 rows min 780 max 2547 | last rows L0 780 L1 0 L2 0 | entries L0 780 L1 0 L2 0 | rows with entries 780 | lane-entries 43456 | rows with entries or upstream 780 | upstream rows 0"
+  },
+  {
+   "t": 1791353147.7988987,
+   "line": "animated-direct: frames 120 rows min 75 max 2547 | last rows L0 340 L1 0 L2 0 | entries L0 75 L1 0 L2 0 | rows with entries 75 | lane-entries 4376 | rows with entries or upstream 340 | upstream rows 327"
+  },
+  {
+   "t": 1791353148.7989614,
+   "line": "indirect: frames 120 rows min 780 max 780 | last rows L0 780 L1 0 L2 0 | entries L0 780 L1 0 L2 0 | rows with entries 780 | lane-entries 43456 | rows with entries or upstream 780 | upstream rows 0"
+  },
+  {
+   "t": 1791353148.7989826,
+   "line": "animated-direct: frames 120 rows min 75 max 340 | last rows L0 75 L1 0 L2 0 | entries L0 75 L1 0 L2 0 | rows with entries 75 | lane-entries 4376 | rows with entries or upstream 75 | upstream rows 0"
+  },
+  {
+   "t": 1791353149.7990072,
+   "line": "indirect: frames 120 rows min 780 max 780 | last rows L0 780 L1 0 L2 0 | entries L0 780 L1 0 L2 0 | rows with entries 780 | lane-entries 43456 | rows with entries or upstream 780 | upstream rows 0"
+  },
+  {
+   "t": 1791353149.7990289,
+   "line": "animated-direct: frames 120 rows min 75 max 75 | last rows L0 75 L1 0 L2 0 | entries L0 75 L1 0 L2 0 | rows with entries 75 | lane-entries 4376 | rows with entries or upstream 75 | upstream rows 0"
+  },
+  {
+   "t": 1791353150.1073725,
+   "line": "static-direct: frames 120 rows min 65 max 2547 | last rows L0 272 L1 41 L2 14 | entries L0 332 L1 49 L2 14 | rows with entries 327 | lane-entries 22549 | rows with entries or upstream 327 | upstream rows 0"
+  },
+  {
+   "t": 1791353150.799017,
+   "line": "indirect: frames 120 rows min 780 max 780 | last rows L0 780 L1 0 L2 0 | entries L0 780 L1 0 L2 0 | rows with entries 780 | lane-entries 43456 | rows with entries or upstream 780 | upstream rows 0"
+  },
+  {
+   "t": 1791353150.7990384,
+   "line": "animated-direct: frames 120 rows min 75 max 340 | last rows L0 340 L1 0 L2 0 | entries L0 75 L1 0 L2 0 | rows with entries 75 | lane-entries 4376 | rows with entries or upstream 340 | upstream rows 327"
+  },
+  {
+   "t": 1791353151.7991216,
+   "line": "indirect: frames 120 rows min 780 max 780 | last rows L0 780 L1 0 L2 0 | entries L0 780 L1 0 L2 0 | rows with entries 780 | lane-entries 43456 | rows with entries or upstream 780 | upstream rows 0"
+  },
+  {
+   "t": 1791353151.7991438,
+   "line": "animated-direct: frames 120 rows min 75 max 340 | last rows L0 340 L1 0 L2 0 | entries L0 75 L1 0 L2 0 | rows with entries 75 | lane-entries 4376 | rows with entries or upstream 340 | upstream rows 327"
+  },
+  {
+   "t": 1791353152.0241475,
+   "line": "static-direct: frames 120 rows min 327 max 327 | last rows L0 272 L1 41 L2 14 | entries L0 332 L1 49 L2 14 | rows with entries 327 | lane-entries 22549 | rows with entries or upstream 327 | upstream rows 0"
+  },
+  {
+   "t": 1791353152.79908,
+   "line": "indirect: frames 120 rows min 780 max 780 | last rows L0 780 L1 0 L2 0 | entries L0 780 L1 0 L2 0 | rows with entries 780 | lane-entries 43456 | rows with entries or upstream 780 | upstream rows 0"
+  },
+  {
+   "t": 1791353152.799102,
+   "line": "animated-direct: frames 120 rows min 75 max 340 | last rows L0 75 L1 0 L2 0 | entries L0 75 L1 0 L2 0 | rows with entries 75 | lane-entries 4376 | rows with entries or upstream 75 | upstream rows 0"
+  },
+  {
+   "t": 1791353153.799125,
+   "line": "indirect: frames 120 rows min 780 max 780 | last rows L0 780 L1 0 L2 0 | entries L0 780 L1 0 L2 0 | rows with entries 780 | lane-entries 43456 | rows with entries or upstream 780 | upstream rows 0"
+  },
+  {
+   "t": 1791353153.7992423,
+   "line": "animated-direct: frames 120 rows min 75 max 340 | last rows L0 75 L1 0 L2 0 | entries L0 75 L1 0 L2 0 | rows with entries 75 | lane-entries 4376 | rows with entries or upstream 75 | upstream rows 0"
+  },
+  {
+   "t": 1791353154.7991168,
+   "line": "indirect: frames 120 rows min 780 max 780 | last rows L0 780 L1 0 L2 0 | entries L0 780 L1 0 L2 0 | rows with entries 780 | lane-entries 43456 | rows with entries or upstream 780 | upstream rows 0"
+  },
+  {
+   "t": 1791353154.7991383,
+   "line": "animated-direct: frames 120 rows min 75 max 340 | last rows L0 75 L1 0 L2 0 | entries L0 75 L1 0 L2 0 | rows with entries 75 | lane-entries 4376 | rows with entries or upstream 75 | upstream rows 0"
+  },
+  {
+   "t": 1791353155.7991672,
+   "line": "indirect: frames 120 rows min 780 max 780 | last rows L0 780 L1 0 L2 0 | entries L0 780 L1 0 L2 0 | rows with entries 780 | lane-entries 43456 | rows with entries or upstream 780 | upstream rows 0"
+  },
+  {
+   "t": 1791353155.7991881,
+   "line": "animated-direct: frames 120 rows min 75 max 75 | last rows L0 75 L1 0 L2 0 | entries L0 75 L1 0 L2 0 | rows with entries 75 | lane-entries 4376 | rows with entries or upstream 75 | upstream rows 0"
+  },
+  {
+   "t": 1791353155.874198,
+   "line": "static-direct: frames 120 rows min 327 max 327 | last rows L0 272 L1 41 L2 14 | entries L0 332 L1 49 L2 14 | rows with entries 327 | lane-entries 22549 | rows with entries or upstream 327 | upstream rows 0"
+  },
+  {
+   "t": 1791353156.7991617,
+   "line": "indirect: frames 120 rows min 780 max 780 | last rows L0 780 L1 0 L2 0 | entries L0 780 L1 0 L2 0 | rows with entries 780 | lane-entries 43456 | rows with entries or upstream 780 | upstream rows 0"
+  },
+  {
+   "t": 1791353156.7991834,
+   "line": "animated-direct: frames 120 rows min 75 max 340 | last rows L0 75 L1 0 L2 0 | entries L0 75 L1 0 L2 0 | rows with entries 75 | lane-entries 4376 | rows with entries or upstream 75 | upstream rows 0"
+  },
+  {
+   "t": 1791353157.7992718,
+   "line": "indirect: frames 120 rows min 780 max 780 | last rows L0 780 L1 0 L2 0 | entries L0 780 L1 0 L2 0 | rows with entries 780 | lane-entries 43456 | rows with entries or upstream 780 | upstream rows 0"
+  },
+  {
+   "t": 1791353157.7992926,
+   "line": "animated-direct: frames 120 rows min 75 max 340 | last rows L0 75 L1 0 L2 0 | entries L0 75 L1 0 L2 0 | rows with entries 75 | lane-entries 4376 | rows with entries or upstream 75 | upstream rows 0"
+  },
+  {
+   "t": 1791353158.082678,
+   "line": "static-direct: frames 120 rows min 327 max 327 | last rows L0 272 L1 41 L2 14 | entries L0 332 L1 49 L2 14 | rows with entries 327 | lane-entries 22549 | rows with entries or upstream 327 | upstream rows 0"
+  },
+  {
+   "t": 1791353158.7993412,
+   "line": "indirect: frames 120 rows min 780 max 780 | last rows L0 780 L1 0 L2 0 | entries L0 780 L1 0 L2 0 | rows with entries 780 | lane-entries 43456 | rows with entries or upstream 780 | upstream rows 0"
+  },
+  {
+   "t": 1791353158.799363,
+   "line": "animated-direct: frames 120 rows min 75 max 340 | last rows L0 340 L1 0 L2 0 | entries L0 75 L1 0 L2 0 | rows with entries 75 | lane-entries 4376 | rows with entries or upstream 340 | upstream rows 327"
+  },
+  {
+   "t": 1791353159.7993846,
+   "line": "indirect: frames 120 rows min 780 max 780 | last rows L0 780 L1 0 L2 0 | entries L0 780 L1 0 L2 0 | rows with entries 780 | lane-entries 43456 | rows with entries or upstream 780 | upstream rows 0"
+  },
+  {
+   "t": 1791353159.7994058,
+   "line": "animated-direct: frames 120 rows min 75 max 340 | last rows L0 75 L1 0 L2 0 | entries L0 75 L1 0 L2 0 | rows with entries 75 | lane-entries 4376 | rows with entries or upstream 75 | upstream rows 0"
+  },
+  {
+   "t": 1791353160.7993875,
+   "line": "indirect: frames 120 rows min 780 max 780 | last rows L0 780 L1 0 L2 0 | entries L0 780 L1 0 L2 0 | rows with entries 780 | lane-entries 43456 | rows with entries or upstream 780 | upstream rows 0"
+  },
+  {
+   "t": 1791353160.7995071,
+   "line": "animated-direct: frames 120 rows min 75 max 75 | last rows L0 75 L1 0 L2 0 | entries L0 75 L1 0 L2 0 | rows with entries 75 | lane-entries 4376 | rows with entries or upstream 75 | upstream rows 0"
+  },
+  {
+   "t": 1791353161.0996459,
+   "line": "static-direct: frames 120 rows min 327 max 327 | last rows L0 272 L1 41 L2 14 | entries L0 332 L1 49 L2 14 | rows with entries 327 | lane-entries 22549 | rows with entries or upstream 327 | upstream rows 0"
+  },
+  {
+   "t": 1791353161.7993824,
+   "line": "indirect: frames 120 rows min 780 max 780 | last rows L0 780 L1 0 L2 0 | entries L0 780 L1 0 L2 0 | rows with entries 780 | lane-entries 43456 | rows with entries or upstream 780 | upstream rows 0"
+  },
+  {
+   "t": 1791353161.7994049,
+   "line": "animated-direct: frames 120 rows min 75 max 340 | last rows L0 340 L1 0 L2 0 | entries L0 75 L1 0 L2 0 | rows with entries 75 | lane-entries 4376 | rows with entries or upstream 340 | upstream rows 327"
+  },
+  {
+   "t": 1791353162.7993975,
+   "line": "indirect: frames 120 rows min 780 max 780 | last rows L0 780 L1 0 L2 0 | entries L0 780 L1 0 L2 0 | rows with entries 780 | lane-entries 43456 | rows with entries or upstream 780 | upstream rows 0"
+  },
+  {
+   "t": 1791353162.7994199,
+   "line": "animated-direct: frames 120 rows min 75 max 340 | last rows L0 75 L1 0 L2 0 | entries L0 75 L1 0 L2 0 | rows with entries 75 | lane-entries 4376 | rows with entries or upstream 75 | upstream rows 0"
+  },
+  {
+   "t": 1791353163.79951,
+   "line": "indirect: frames 120 rows min 780 max 780 | last rows L0 780 L1 0 L2 0 | entries L0 780 L1 0 L2 0 | rows with entries 780 | lane-entries 43456 | rows with entries or upstream 780 | upstream rows 0"
+  },
+  {
+   "t": 1791353163.7995305,
+   "line": "animated-direct: frames 120 rows min 75 max 75 | last rows L0 75 L1 0 L2 0 | entries L0 75 L1 0 L2 0 | rows with entries 75 | lane-entries 4376 | rows with entries or upstream 75 | upstream rows 0"
+  },
+  {
+   "t": 1791353164.1495745,
+   "line": "static-direct: frames 120 rows min 327 max 327 | last rows L0 272 L1 41 L2 14 | entries L0 332 L1 49 L2 14 | rows with entries 327 | lane-entries 22549 | rows with entries or upstream 327 | upstream rows 0"
+  },
+  {
+   "t": 1791353164.7995594,
+   "line": "indirect: frames 120 rows min 780 max 780 | last rows L0 780 L1 0 L2 0 | entries L0 780 L1 0 L2 0 | rows with entries 780 | lane-entries 43456 | rows with entries or upstream 780 | upstream rows 0"
+  },
+  {
+   "t": 1791353164.7995813,
+   "line": "animated-direct: frames 120 rows min 75 max 340 | last rows L0 75 L1 0 L2 0 | entries L0 75 L1 0 L2 0 | rows with entries 75 | lane-entries 4376 | rows with entries or upstream 75 | upstream rows 0"
+  },
+  {
+   "t": 1791353165.799596,
+   "line": "indirect: frames 120 rows min 780 max 780 | last rows L0 780 L1 0 L2 0 | entries L0 780 L1 0 L2 0 | rows with entries 780 | lane-entries 43456 | rows with entries or upstream 780 | upstream rows 0"
+  },
+  {
+   "t": 1791353165.7996175,
+   "line": "animated-direct: frames 120 rows min 75 max 340 | last rows L0 75 L1 0 L2 0 | entries L0 75 L1 0 L2 0 | rows with entries 75 | lane-entries 4376 | rows with entries or upstream 75 | upstream rows 0"
+  },
+  {
+   "t": 1791353166.4662874,
+   "line": "static-direct: frames 120 rows min 327 max 327 | last rows L0 272 L1 41 L2 14 | entries L0 332 L1 49 L2 14 | rows with entries 327 | lane-entries 22549 | rows with entries or upstream 327 | upstream rows 0"
+  },
+  {
+   "t": 1791353166.7997026,
+   "line": "indirect: frames 120 rows min 780 max 780 | last rows L0 780 L1 0 L2 0 | entries L0 780 L1 0 L2 0 | rows with entries 780 | lane-entries 43456 | rows with entries or upstream 780 | upstream rows 0"
+  },
+  {
+   "t": 1791353166.799722,
+   "line": "animated-direct: frames 120 rows min 75 max 340 | last rows L0 75 L1 0 L2 0 | entries L0 75 L1 0 L2 0 | rows with entries 75 | lane-entries 4376 | rows with entries or upstream 75 | upstream rows 0"
+  },
+  {
+   "t": 1791353167.7996342,
+   "line": "indirect: frames 120 rows min 780 max 780 | last rows L0 780 L1 0 L2 0 | entries L0 780 L1 0 L2 0 | rows with entries 780 | lane-entries 43456 | rows with entries or upstream 780 | upstream rows 0"
+  },
+  {
+   "t": 1791353167.799656,
+   "line": "animated-direct: frames 120 rows min 75 max 75 | last rows L0 75 L1 0 L2 0 | entries L0 75 L1 0 L2 0 | rows with entries 75 | lane-entries 4376 | rows with entries or upstream 75 | upstream rows 0"
+  },
+  {
+   "t": 1791353168.7996116,
+   "line": "indirect: frames 120 rows min 780 max 780 | last rows L0 780 L1 0 L2 0 | entries L0 780 L1 0 L2 0 | rows with entries 780 | lane-entries 43456 | rows with entries or upstream 780 | upstream rows 0"
+  },
+  {
+   "t": 1791353168.7996335,
+   "line": "animated-direct: frames 120 rows min 75 max 340 | last rows L0 75 L1 0 L2 0 | entries L0 75 L1 0 L2 0 | rows with entries 75 | lane-entries 4376 | rows with entries or upstream 75 | upstream rows 0"
+  }
+ ],
+ "arms_logged": "floor",
+ "nvsmi": [
+  [
+   1791353154.880331,
+   "1965",
+   "7000",
+   "P0",
+   "54",
+   "76.45",
+   "47"
+  ],
+  [
+   1791353155.961528,
+   "1965",
+   "7000",
+   "P0",
+   "55",
+   "80.74",
+   "45"
+  ],
+  [
+   1791353157.0500624,
+   "1965",
+   "7000",
+   "P0",
+   "55",
+   "80.27",
+   "50"
+  ],
+  [
+   1791353158.1375692,
+   "1965",
+   "7000",
+   "P0",
+   "55",
+   "76.84",
+   "46"
+  ],
+  [
+   1791353159.2150927,
+   "1965",
+   "7000",
+   "P0",
+   "55",
+   "80.16",
+   "50"
+  ],
+  [
+   1791353160.2953782,
+   "1965",
+   "7000",
+   "P0",
+   "55",
+   "77.06",
+   "45"
+  ],
+  [
+   1791353161.37619,
+   "1965",
+   "7000",
+   "P0",
+   "56",
+   "78.69",
+   "44"
+  ],
+  [
+   1791353162.4545243,
+   "1950",
+   "7000",
+   "P0",
+   "56",
+   "76.02",
+   "52"
+  ],
+  [
+   1791353163.53981,
+   "1950",
+   "7000",
+   "P0",
+   "56",
+   "77.64",
+   "44"
+  ],
+  [
+   1791353164.6302626,
+   "1950",
+   "7000",
+   "P0",
+   "56",
+   "81.16",
+   "44"
+  ],
+  [
+   1791353165.715637,
+   "1950",
+   "7000",
+   "P0",
+   "56",
+   "77.48",
+   "50"
+  ],
+  [
+   1791353166.8055384,
+   "1950",
+   "7000",
+   "P0",
+   "56",
+   "80.53",
+   "47"
+  ],
+  [
+   1791353167.8835776,
+   "1950",
+   "7000",
+   "P0",
+   "56",
+   "77.48",
+   "49"
+  ]
+ ],
+ "valid": true,
+ "reason": null,
+ "membership_logged": "entry-carrying",
+ "end": 1791353169.3699865
+}

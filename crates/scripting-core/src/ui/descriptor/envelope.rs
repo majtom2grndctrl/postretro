@@ -81,9 +81,20 @@ pub struct AnchoredTree {
     /// `accessible_name`; absent omits the key. Wire key `role`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<Role>,
+    /// Whether a pop that reveals this tree again restores the focus it had.
+    /// Absent means on (the console convention); an explicit `false` opts the
+    /// tree out so it lands on its initial focus. A fresh push always lands on
+    /// initial focus. Wire key `restoreOnReturn`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restore_on_return: Option<bool>,
 }
 
 impl AnchoredTree {
+    /// Whether a returning pop restores this tree's saved focus.
+    pub fn restores_on_return(&self) -> bool {
+        self.restore_on_return.unwrap_or(true)
+    }
+
     /// Build a passthrough-mode tree (the HUD/splash default). Most programmatic
     /// trees never capture, so this keeps their construction terse and lets the
     /// `capture_mode` field be added without touching every call site.
@@ -98,6 +109,7 @@ impl AnchoredTree {
             text_entry_target: None,
             accessible_name: None,
             role: None,
+            restore_on_return: None,
         }
     }
 }

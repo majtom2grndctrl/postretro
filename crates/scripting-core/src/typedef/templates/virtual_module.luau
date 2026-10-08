@@ -8,8 +8,8 @@
 --- Accessibility toggles a menu button may cycle.
 export type AccessibilityToggleField = "reduceMotion" | "flashLimiter" | "monoAudio"
 
---- Accessibility numeric fields a mod menu button may step, each within [0, 1].
-export type AccessibilityNumericField = "screenShakeScale" | "viewFeelScale" | "masterVolume" | "sfxVolume" | "musicVolume" | "uiVolume"
+--- Accessibility numeric fields a mod menu button may step, each within its range ([0, 1], or [1, 3] for `holdTimingScale`).
+export type AccessibilityNumericField = "screenShakeScale" | "viewFeelScale" | "masterVolume" | "sfxVolume" | "musicVolume" | "uiVolume" | "holdTimingScale"
 
 --- Reserved operations for the engine display-mode picker and confirmation.
 export type DisplayModeOperation = "next" | "previous" | "apply" | "keep" | "revert"
@@ -23,6 +23,8 @@ export type PostretroUiModule = {
   Image: (props: ImageProps) -> WidgetDescriptor,
   --- Build a spacer descriptor. `flexGrow` is finite and defaults to 1.
   Spacer: (props: SpacerProps?) -> WidgetDescriptor,
+  --- Build a glyph for a command on the player's current device; follows rebinding and the confirm/cancel swap.
+  Glyph: (props: GlyphProps) -> WidgetDescriptor,
   --- Build an interactive button descriptor. `onPress` accepts a reaction handle, bare reaction name, or reserved `ui.*` action.
   Button: (props: ButtonProps) -> WidgetDescriptor,
   --- Build an interactive slider descriptor. `bind` is writable numeric state/local cell; writes clamp to `[min, max]`.
@@ -110,6 +112,8 @@ export type PostretroUiModule = {
   QUIT_TO_MENU_ACTION: "ui.quitToMenu",
   --- Reserved button `onPress` action that opens the engine accessibility panel.
   OPEN_ACCESSIBILITY_ACTION: "ui.openAccessibility",
+  --- Reserved button `onPress` action that opens the engine controls panel.
+  OPEN_CONTROLS_ACTION: "ui.openControls",
   --- Build a reserved `ui.displayMode.<op>` action. `next`/`previous` browse without saving;
   --- `apply` commits the selection (exclusive opens the engine confirmation).
   displayModeAction: (op: DisplayModeOperation) -> string,
@@ -123,10 +127,16 @@ export type PostretroUiModule = {
 }
 
 export type PostretroModule = {
-  world: World,
   runtime: Runtime,
   --- Pure bounded weapon-action data builders with read-only normalized charge.
   activation: Activation,
+  --- Map-placed members of one kind (`mover`, `trigger`, `light`, `fog`, `emitter`, `spawner`), as handles.
+  --- Callable only inside a level's data script (module evaluation or `setupLevel`).
+  getMapEntities: typeof(getMapEntities),
+  --- Current world gravity in m/s².
+  getGravity: typeof(getGravity),
+  --- Set world gravity in m/s²; non-finite values are ignored with a warning.
+  setGravity: typeof(setGravity),
   getGameState: typeof(getGameState),
   timeline: typeof(timeline),
   sequence: typeof(sequence),
@@ -134,17 +144,14 @@ export type PostretroModule = {
   defineReaction: typeof(defineReaction),
   --- Define a pure impact-policy descriptor. Register it only through `events`.
   defineImpactEvent: typeof(defineImpactEvent),
-  damage: typeof(damage),
-  grantHealth: typeof(grantHealth),
-  grantAmmo: typeof(grantAmmo),
-  addSlot: typeof(addSlot),
-  enemies: typeof(enemies),
-  spawner: typeof(spawner),
-  armTrigger: typeof(armTrigger),
-  disarmTrigger: typeof(disarmTrigger),
+  --- Address NPCs, optionally by tag. An opaque group resolved when each command takes effect.
+  npcs: typeof(npcs),
+  --- Address every seat-bound player pawn. An opaque group resolved when each command takes effect.
+  players: typeof(players),
   wait: typeof(wait),
   fire: typeof(fire),
-  onTriggerEvent: typeof(onTriggerEvent),
+  --- Declare a mod-global, tag-keyed trigger event for `ModManifest.triggerEvents`.
+  defineTriggerEvent: typeof(defineTriggerEvent),
   --- Stamp a shared map-tag scope onto a reaction list.
   scopeReactions: typeof(scopeReactions),
   --- Pure identity builder for entity type descriptors returned from `ModManifest.entities`.

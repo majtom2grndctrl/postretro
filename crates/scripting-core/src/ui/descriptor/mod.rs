@@ -7,6 +7,7 @@
 mod accessibility;
 mod envelope;
 mod focus;
+mod image;
 mod values;
 mod widgets;
 
@@ -18,17 +19,18 @@ pub use accessibility::Role;
 pub use accessibility::implicit_role;
 pub use envelope::{AnchoredTree, CaptureMode};
 pub use focus::{FocusKind, FocusNeighbors, FocusPolicy, RepeatPolicy};
+pub use image::ImageWidget;
 pub use values::{
     Align, BindSource, Border, BoundScalar, CellInit, ColorValue, Easing, LocalState, Predicate,
     PredicateValue, ScalarValue, SpacingValue, TextTween,
 };
-pub(crate) use widgets::validate_stack_width;
 pub use widgets::{
     AnnounceWidget, BarExitFade, BarMax, BarMaxStateRef, BarWidget, ButtonWidget, ContainerWidget,
-    GridWidget, ImageWidget, PanelBind, PanelTween, PanelWidget, Priority, RingRadiusRange,
-    RingWidget, SliderBind, SliderValueDisplay, SliderWidget, SpacerWidget, TextBind, TextWidget,
-    ValueTextCase, Widget,
+    GlyphWidget, GridWidget, PanelBind, PanelTween, PanelWidget, Priority, RingRadiusRange,
+    RingWidget, ScrollProps, SliderBind, SliderValueDisplay, SliderWidget, SpacerWidget, TextBind,
+    TextWidget, ValueTextCase, Widget, warn_hstack_scroll_ignored,
 };
+pub(crate) use widgets::{validate_scroll_max_height, validate_stack_width};
 
 #[cfg(test)]
 mod tests {
@@ -73,6 +75,30 @@ mod tests {
             assert!(result.is_err(), "width {width} must be rejected");
         }
         assert!(validate_stack_width(Some(f32::NAN)).is_err());
+    }
+
+    #[test]
+    fn scroll_round_trips_on_stack_and_grid_and_rejects_a_non_positive_max_height() {
+        for json in [
+            r#"{"kind":"vstack","gap":0.0,"padding":0.0,"align":"start","scroll":{"maxHeight":320.0},"children":[]}"#,
+            r#"{"kind":"grid","gap":0.0,"padding":0.0,"align":"start","cols":2,"scroll":{"maxHeight":200.0},"children":[]}"#,
+        ] {
+            let widget: Widget = serde_json::from_str(json).expect("scroll must parse");
+            assert_eq!(serde_json::to_string(&widget).unwrap(), json);
+        }
+        for bad in ["0.0", "-4.0"] {
+            let json = format!(
+                r#"{{"kind":"vstack","gap":0.0,"padding":0.0,"align":"start","scroll":{{"maxHeight":{bad}}},"children":[]}}"#
+            );
+            let error = serde_json::from_str::<Widget>(&json)
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.contains("`scroll.maxHeight` must be a finite number greater than zero"),
+                "maxHeight {bad} must be rejected by name: {error}",
+            );
+        }
+        assert!(validate_scroll_max_height(f32::INFINITY).is_err());
     }
 
     #[test]
@@ -424,14 +450,14 @@ mod tests {
     #[test]
     fn focus_field_less_widget_round_trips_byte_identically() {
         // A pre-F widget carrying none of the new focus fields (`id`,
-        // `focusNeighbors`, `focus`, `restoreOnReturn`) keeps its EXACT wire form:
+        // `focusNeighbors`, `focus`) keeps its EXACT wire form:
         // every new field skip-serializes when absent/default, so the descriptor is
         // byte-identical across a round-trip. The locked-wire guarantee for Task 3.
         let json = r#"{"kind":"vstack","gap":4.0,"padding":8.0,"align":"start","children":[{"kind":"text","content":"hi","fontSize":12.0,"color":[1.0,1.0,1.0,1.0]}]}"#;
         let widget: Widget = serde_json::from_str(json).expect("must deserialize");
         let reserialized = serde_json::to_string(&widget).expect("must serialize");
         assert_eq!(reserialized, json);
-        for key in ["\"id\"", "focusNeighbors", "\"focus\"", "restoreOnReturn"] {
+        for key in ["\"id\"", "focusNeighbors", "\"focus\""] {
             assert!(!reserialized.contains(key), "absent {key} emits no key");
         }
     }
@@ -482,12 +508,23 @@ mod tests {
 
     #[test]
     fn anchored_tree_initial_focus_and_restore_on_return_round_trip() {
-        // `initialFocus` lives on the envelope beside `captureMode`;
-        // `restoreOnReturn` on the container. Both round-trip byte-identically.
-        let json = r#"{"anchor":"center","offset":[0.0,0.0],"root":{"kind":"vstack","gap":0.0,"padding":0.0,"align":"start","restoreOnReturn":true,"children":[]},"captureMode":"capture","initialFocus":"btnA"}"#;
+        // `initialFocus` and `restoreOnReturn` live on the envelope beside
+        // `captureMode` and round-trip byte-identically. An explicit `false` is
+        // kept (it opts the tree out); an absent key means on.
+        let json = r#"{"anchor":"center","offset":[0.0,0.0],"root":{"kind":"vstack","gap":0.0,"padding":0.0,"align":"start","children":[]},"captureMode":"capture","initialFocus":"btnA","restoreOnReturn":false}"#;
         let tree: AnchoredTree = serde_json::from_str(json).expect("deserialize");
         assert_eq!(tree.initial_focus.as_deref(), Some("btnA"));
+        assert_eq!(tree.restore_on_return, Some(false));
+        assert!(!tree.restores_on_return());
         assert_eq!(serde_json::to_string(&tree).unwrap(), json);
+        let absent: AnchoredTree = serde_json::from_str(
+            r#"{"anchor":"center","offset":[0.0,0.0],"root":{"kind":"spacer","flexGrow":1.0}}"#,
+        )
+        .expect("deserialize");
+        assert!(absent.restores_on_return(), "restore is on by default");
+        // A container no longer carries the flag.
+        let on_container = r#"{"anchor":"center","offset":[0.0,0.0],"root":{"kind":"vstack","gap":0.0,"padding":0.0,"align":"start","restoreOnReturn":true,"children":[]}}"#;
+        assert!(serde_json::from_str::<AnchoredTree>(on_container).is_err());
     }
 
     // --- M13 Text-Entry, Task 3: text-entry target envelope field ---
@@ -1114,6 +1151,38 @@ mod tests {
         let deco = r#"{"kind":"image","asset":"ui/logo","decorative":true}"#;
         let w: Widget = serde_json::from_str(deco).expect("deserialize");
         assert_eq!(serde_json::to_string(&w).unwrap(), deco);
+    }
+
+    #[test]
+    fn unsized_image_round_trips_byte_identically_without_size_keys() {
+        // A pre-sizing image descriptor must serialize exactly as before.
+        for json in [
+            r#"{"kind":"image","asset":"ui/logo"}"#,
+            r#"{"kind":"image","asset":"ui/portrait","id":"hero","label":"Hero portrait","visibleWhen":{"slot":"hud.visible"}}"#,
+        ] {
+            let widget: Widget = serde_json::from_str(json).expect("deserialize");
+            let reserialized = serde_json::to_string(&widget).unwrap();
+            assert_eq!(reserialized, json);
+            assert!(!reserialized.contains("width") && !reserialized.contains("height"));
+        }
+    }
+
+    #[test]
+    fn sized_image_round_trips_and_raw_descriptors_reject_invalid_sizes() {
+        let sized =
+            r#"{"kind":"image","asset":"engine/splashLogo","width":256.0,"decorative":true}"#;
+        let widget: Widget = serde_json::from_str(sized).expect("deserialize");
+        assert_eq!(serde_json::to_string(&widget).unwrap(), sized);
+
+        for json in [
+            r#"{"kind":"image","asset":"ui/logo","width":0.0}"#,
+            r#"{"kind":"image","asset":"ui/logo","height":-1.0}"#,
+        ] {
+            assert!(
+                serde_json::from_str::<Widget>(json).is_err(),
+                "invalid raw image size must fail serde validation: {json}"
+            );
+        }
     }
 
     #[test]

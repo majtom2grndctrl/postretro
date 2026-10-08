@@ -1,0 +1,237 @@
+{
+  "arena1": {
+    "binaries": [
+      {
+        "probe_commit": "1ddd56691",
+        "sha256": "6522abd8ec9452561448a33c84b689ebffcf9a37b06aeb59b048c452cd7b08f3"
+      }
+    ],
+    "one_binary": true,
+    "fixtures": {
+      "stress-warren-hallway-inspection.prl": "a543d0e0291dbceb"
+    }
+  },
+  "arena2": {
+    "binaries": [
+      {
+        "probe_commit": "1ddd56691",
+        "sha256": "6522abd8ec9452561448a33c84b689ebffcf9a37b06aeb59b048c452cd7b08f3"
+      }
+    ],
+    "one_binary": true,
+    "fixtures": {
+      "stress-warren-hallway-inspection.prl": "a543d0e0291dbceb"
+    }
+  },
+  "arena3": {
+    "binaries": [
+      {
+        "probe_commit": "1ddd56691",
+        "sha256": "6522abd8ec9452561448a33c84b689ebffcf9a37b06aeb59b048c452cd7b08f3"
+      }
+    ],
+    "one_binary": true,
+    "fixtures": {
+      "stress-warren-hallway-inspection.prl": "a543d0e0291dbceb"
+    }
+  },
+  "arenaC": {
+    "binaries": [
+      {
+        "probe_commit": "1a052cfed",
+        "sha256": "8ddcb632e02c28cabf7c232dbb0fa44edf84457df39ce59e205cd93e5e0e8c55"
+      }
+    ],
+    "one_binary": true,
+    "fixtures": {
+      "stress-warren-hallway-inspection.prl": "a543d0e0291dbceb"
+    }
+  },
+  "arenaCP": {
+    "binaries": [
+      {
+        "probe_commit": "1a052cfed",
+        "sha256": "8ddcb632e02c28cabf7c232dbb0fa44edf84457df39ce59e205cd93e5e0e8c55"
+      }
+    ],
+    "one_binary": true,
+    "fixtures": {
+      "stress-warren-hallway-inspection.prl": "a543d0e0291dbceb"
+    }
+  },
+  "arenaD": {
+    "binaries": [
+      {
+        "probe_commit": "1a052cfed",
+        "sha256": "8ddcb632e02c28cabf7c232dbb0fa44edf84457df39ce59e205cd93e5e0e8c55"
+      }
+    ],
+    "one_binary": true,
+    "fixtures": {
+      "stress-warren-hallway-inspection.prl": "a543d0e0291dbceb"
+    }
+  },
+  "arenaP": {
+    "binaries": [
+      {
+        "probe_commit": "c42738393",
+        "sha256": "53fcbe2457f27831ad44cb77176504cb1b51adbcd5a1c00d54a596bed6dc3225"
+      }
+    ],
+    "one_binary": true,
+    "fixtures": {
+      "stress-warren-hallway-inspection.prl": "a543d0e0291dbceb"
+    }
+  },
+  "arenaQ": {
+    "binaries": [
+      {
+        "probe_commit": "c42738393",
+        "sha256": "53fcbe2457f27831ad44cb77176504cb1b51adbcd5a1c00d54a596bed6dc3225"
+      }
+    ],
+    "one_binary": true,
+    "fixtures": {
+      "stress-warren-hallway-inspection.prl": "a543d0e0291dbceb"
+    }
+  },
+  "arenaR": {
+    "binaries": [
+      {
+        "probe_commit": "7a58f4833",
+        "sha256": "676d66809efcd50c855aecdc50b977b8df29ce3f8697d54183dd3a4cab71293b"
+      }
+    ],
+    "one_binary": true,
+    "fixtures": {
+      "stress-warren-hallway-inspection.prl": "a543d0e0291dbceb"
+    }
+  },
+  "campaignP": {
+    "binaries": [
+      {
+        "probe_commit": "7a58f4833",
+        "sha256": "676d66809efcd50c855aecdc50b977b8df29ce3f8697d54183dd3a4cab71293b"
+      }
+    ],
+    "one_binary": true,
+    "fixtures": {
+      "campaign-test.prl": "2470294d8cb54730"
+    }
+  },
+  "counters": {
+    "binaries": [
+      {
+        "probe_commit": "7a58f4833",
+        "sha256": "676d66809efcd50c855aecdc50b977b8df29ce3f8697d54183dd3a4cab71293b"
+      }
+    ],
+    "one_binary": true,
+    "fixtures": {
+      "campaign-test.prl": "2470294d8cb54730",
+      "stress-warren-hallway-inspection.prl": "a543d0e0291dbceb"
+    }
+  },
+  "counts": {
+    "binaries": [
+      {
+        "probe_commit": "6f72df62d",
+        "sha256": "795a7dc71658c4d540db4ce6961aabfac3a35c720b1375d6a3850f38ba89021f"
+      }
+    ],
+    "one_binary": true,
+    "fixtures": {
+      "campaign-test.prl": "2470294d8cb54730",
+      "kinematic-platform.prl": "8939e012bc683c0c",
+      "stress-warren-hallway-inspection.prl": "a543d0e0291dbceb"
+    }
+  },
+  "diag1": {
+    "binaries": [
+      {
+        "probe_commit": "1ddd56691",
+        "sha256": "6522abd8ec9452561448a33c84b689ebffcf9a37b06aeb59b048c452cd7b08f3"
+      }
+    ],
+    "one_binary": true,
+    "fixtures": {
+      "stress-warren-hallway-inspection.prl": "a543d0e0291dbceb"
+    }
+  },
+  "kinmidC": {
+    "binaries": [
+      {
+        "probe_commit": "1a052cfed",
+        "sha256": "8ddcb632e02c28cabf7c232dbb0fa44edf84457df39ce59e205cd93e5e0e8c55"
+      }
+    ],
+    "one_binary": true,
+    "fixtures": {
+      "kinematic-platform.prl": "8939e012bc683c0c"
+    }
+  },
+  "kinmidCP": {
+    "binaries": [
+      {
+        "probe_commit": "1a052cfed",
+        "sha256": "8ddcb632e02c28cabf7c232dbb0fa44edf84457df39ce59e205cd93e5e0e8c55"
+      }
+    ],
+    "one_binary": true,
+    "fixtures": {
+      "kinematic-platform.prl": "8939e012bc683c0c"
+    }
+  },
+  "kinmidP": {
+    "binaries": [
+      {
+        "probe_commit": "7a58f4833",
+        "sha256": "676d66809efcd50c855aecdc50b977b8df29ce3f8697d54183dd3a4cab71293b"
+      }
+    ],
+    "one_binary": true,
+    "fixtures": {
+      "kinematic-platform.prl": "8939e012bc683c0c"
+    }
+  },
+  "kinspawnP": {
+    "binaries": [
+      {
+        "probe_commit": "7a58f4833",
+        "sha256": "676d66809efcd50c855aecdc50b977b8df29ce3f8697d54183dd3a4cab71293b"
+      }
+    ],
+    "one_binary": true,
+    "fixtures": {
+      "kinematic-platform.prl": "8939e012bc683c0c"
+    }
+  },
+  "mix": {
+    "binaries": [
+      {
+        "probe_commit": "c42738393",
+        "sha256": "53fcbe2457f27831ad44cb77176504cb1b51adbcd5a1c00d54a596bed6dc3225"
+      }
+    ],
+    "one_binary": true,
+    "fixtures": {
+      "campaign-test-sh-fidelity-1.prl": "2470294d8cb54730",
+      "campaign-test-sh-fidelity-7.prl": "9fbeed1396cd31a6",
+      "campaign-test.prl": "2470294d8cb54730",
+      "kinematic-platform.prl": "8939e012bc683c0c",
+      "stress-warren-mini.prl": "d3a3610b57793890"
+    }
+  },
+  "pairv": {
+    "binaries": [
+      {
+        "probe_commit": "27f691833",
+        "sha256": "99e0ea4b332f40ff8a1e1f13740264ba80377360f8b881362101e64b1f7e3469"
+      }
+    ],
+    "one_binary": true,
+    "fixtures": {
+      "stress-warren-hallway-inspection.prl": "a543d0e0291dbceb"
+    }
+  }
+}

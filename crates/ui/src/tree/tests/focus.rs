@@ -15,12 +15,12 @@ fn focus_export_lists_ids_rects_and_a_linear_group() {
         padding: SpacingValue::Literal(0.0),
         align: Align::Start,
         width: None,
+        scroll: None,
         fill: None,
         border: None,
         id: None,
         focus_neighbors: crate::descriptor::FocusNeighbors::default(),
         focus: Some(FocusPolicy::Shorthand(FocusKind::Linear)),
-        restore_on_return: false,
         local_state: None,
         visible_when: None,
         role: None,
@@ -39,6 +39,7 @@ fn focus_export_lists_ids_rects_and_a_linear_group() {
         text_entry_target: None,
         accessible_name: None,
         role: None,
+        restore_on_return: None,
     };
     let mut ui = UiTree::from_descriptor(&tree, &theme());
     let mut fs = font_system();
@@ -140,13 +141,13 @@ fn focus_export_nested_interactive_widgets_join_the_enclosing_group() {
     // slider and button join the outer group; the labels do not.
     let grid = Widget::Grid(GridWidget {
         cols: 2,
+        scroll: None,
         gap: SpacingValue::Literal(0.0),
         padding: SpacingValue::Literal(0.0),
         align: Align::Start,
         id: None,
         focus_neighbors: Default::default(),
         focus: None,
-        restore_on_return: false,
         visible_when: None,
         role: None,
         children: vec![
@@ -210,6 +211,15 @@ fn focus_export_nested_policy_container_opens_its_own_group() {
     );
     assert_eq!(focus.rects[0].group, Some(0));
     assert_eq!(focus.rects[2].group, Some(0));
+    // The nested group knows its enclosing group, its layout axis, and the
+    // container bounds it is navigated by as one candidate.
+    assert_eq!(focus.groups[0].parent, None);
+    assert_eq!(focus.groups[1].parent, Some(0));
+    assert_eq!(focus.groups[1].axis, Some(crate::tree::FocusAxis::Vertical));
+    let [ox, oy, ow, oh] = focus.groups[0].bounds;
+    let [ix, iy, iw, ih] = focus.groups[1].bounds;
+    assert!(iw > 0.0 && ih > 0.0, "{:?}", focus.groups[1].bounds);
+    assert!(ix >= ox && iy >= oy && ix + iw <= ox + ow + 0.5 && iy + ih <= oy + oh + 0.5);
 }
 
 #[test]
@@ -919,6 +929,46 @@ fn shipped_display_confirm_exports_revert_focus_and_only_reserved_actions() {
         vec![
             ("displayModeRevert", "ui.displayMode.revert"),
             ("displayModeKeep", "ui.displayMode.keep")
+        ]
+    );
+}
+
+#[test]
+fn focus_export_numbers_tablists_and_marks_only_their_tab_stops() {
+    use crate::descriptor::Role;
+    let tab = |id: &str| {
+        let mut widget = button(id, "pick");
+        if let Widget::Button(b) = &mut widget {
+            b.role = Some(Role::Tab);
+        }
+        widget
+    };
+    let strip = |children: Vec<Widget>| {
+        let mut widget = hstack(0.0, 0.0, Align::Start, children);
+        if let Widget::HStack(c) = &mut widget {
+            c.role = Some(Role::Tablist);
+        }
+        widget
+    };
+    let tree = anchored(linear_group(vec![
+        strip(vec![tab("t0"), tab("t1"), button("plain", "x")]),
+        button("panel", "y"),
+        strip(vec![tab("u0")]),
+    ]));
+    let focus = export(&tree);
+    let tablists: Vec<(&str, Option<usize>)> = focus
+        .rects
+        .iter()
+        .map(|r| (r.id.as_str(), r.tablist))
+        .collect();
+    assert_eq!(
+        tablists,
+        [
+            ("t0", Some(0)),
+            ("t1", Some(0)),
+            ("plain", None),
+            ("panel", None),
+            ("u0", Some(1)),
         ]
     );
 }

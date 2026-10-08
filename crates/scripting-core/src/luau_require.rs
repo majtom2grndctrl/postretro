@@ -405,7 +405,7 @@ mod tests {
                   UI.ui.createLocalState = nil
                 end)
                 local rootNestedWriteOk = pcall(function()
-                  root.world.extra = true
+                  root.runtime.extra = true
                 end)
 
                 return
@@ -425,22 +425,18 @@ mod tests {
             &root,
             &[
                 "activation",
-                "world",
                 "runtime",
+                "getMapEntities",
+                "getGravity",
+                "setGravity",
                 "getGameState",
                 "timeline",
                 "sequence",
                 "defineReaction",
                 "defineImpactEvent",
-                "onTriggerEvent",
-                "damage",
-                "grantHealth",
-                "grantAmmo",
-                "addSlot",
-                "enemies",
-                "spawner",
-                "armTrigger",
-                "disarmTrigger",
+                "defineTriggerEvent",
+                "npcs",
+                "players",
                 "wait",
                 "fire",
                 "scopeReactions",
@@ -473,6 +469,7 @@ mod tests {
                 "Panel",
                 "Image",
                 "Spacer",
+                "Glyph",
                 "Button",
                 "Slider",
                 "Bar",
@@ -511,6 +508,7 @@ mod tests {
                 "EXIT_TO_DESKTOP_ACTION",
                 "QUIT_TO_MENU_ACTION",
                 "OPEN_ACCESSIBILITY_ACTION",
+                "OPEN_CONTROLS_ACTION",
                 "accessibilityAction",
                 "displayModeAction",
                 "loadLevel",

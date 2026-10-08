@@ -340,13 +340,12 @@ fn sdk_attack_params_discriminate_weapon_and_contact_entries() {
     );
 }
 
-/// `worldQuery` exposes raw snapshots; the `world.query` SDK vocabulary is
-/// the layer that attaches light/fog capability methods plus mover and trigger
-/// commands.
-/// Keeping those declarations distinct prevents the bare primitive from
-/// promising methods that its JSON serialization never includes.
+/// Map members reach authors only through `getMapEntities`, whose kind union
+/// selects each member handle. The raw `worldQuery` primitive stays out of both
+/// author-facing typedefs: its kindless component spelling is what
+/// `getMapEntities` replaces, and its JSON never carries the handle methods.
 #[test]
-fn world_query_raw_snapshots_and_sdk_handles_remain_distinct() {
+fn raw_world_query_is_hidden_and_get_map_entities_selects_member_handles() {
     use crate::scripting::typedef::register_all;
     use postretro_entities::ctx::ScriptCtx;
 
@@ -356,26 +355,29 @@ fn world_query_raw_snapshots_and_sdk_handles_remain_distinct() {
     let luau = generate_luau(&r);
 
     assert!(
-        ts.contains(
-            "export function worldQuery<T extends WorldQueryComponent>(filter: { component: T; tag?: string | null }): ReadonlyArray<RawEntityForComponent<T>>;"
-        ) && ts.contains("T extends \"kinematic_mover\" ? MoverEntity :")
-            && ts.contains("T extends \"kinematic_mover\" ? MoverEntityHandle :")
-            && ts.contains("T extends \"trigger_volume\" ? TriggerVolumeEntity :")
-            && ts.contains("T extends \"trigger_volume\" ? TriggerVolumeHandle :"),
-        "TypeScript must distinguish raw worldQuery mover/trigger snapshots from world.query handles:\n{ts}"
+        !ts.contains("function worldQuery") && !luau.contains("declare worldQuery"),
+        "the raw worldQuery primitive must not appear in author-facing typedefs"
     );
     assert!(
-        luau.contains("((filter: { component: \"kinematic_mover\", tag: string? }) -> {MoverEntity})")
-            && luau.contains(
-                "((self: World, filter: { component: \"kinematic_mover\", tag: string? }) -> {MoverEntityHandle})"
-            )
-            && luau.contains(
-                "((filter: { component: \"trigger_volume\", tag: string? }) -> {TriggerVolumeEntity})"
-            )
-            && luau.contains(
-                "((self: World, filter: { component: \"trigger_volume\", tag: string? }) -> {TriggerVolumeHandle})"
+        ts.contains(
+            "export function getMapEntities<K extends MapEntityKind>(kind: K, filter?: MapEntityFilter): MapEntityForKind<K>[];"
+        ) && ts.contains("K extends \"mover\" ? MoverEntityHandle :")
+            && ts.contains("K extends \"trigger\" ? TriggerVolumeHandle :")
+            && ts.contains("K extends \"spawner\" ? SpawnerEntityHandle :")
+            && ts.contains(
+                "export type MapEntityKind = \"mover\" | \"trigger\" | \"light\" | \"fog\" | \"emitter\" | \"spawner\";"
             ),
-        "Luau must distinguish raw worldQuery mover/trigger snapshots from world:query handles:\n{luau}"
+        "TypeScript must select each member handle by map kind:\n{ts}"
+    );
+    assert!(
+        luau.contains("((kind: \"mover\", filter: MapEntityFilter?) -> {MoverEntityHandle})")
+            && luau.contains(
+                "((kind: \"trigger\", filter: MapEntityFilter?) -> {TriggerVolumeHandle})"
+            )
+            && luau.contains(
+                "((kind: \"spawner\", filter: MapEntityFilter?) -> {SpawnerEntityHandle})"
+            ),
+        "Luau must select each member handle by map kind:\n{luau}"
     );
 }
 

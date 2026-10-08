@@ -1,0 +1,16 @@
+{
+  "indirect": {
+    "bytes": 120823808,
+    "identical": false,
+    "diff_texels": 1097461,
+    "texels": 15102976,
+    "max_abs_dev_rgb": 0.268310546875
+  },
+  "direct": {
+    "bytes": 120823808,
+    "identical": false,
+    "diff_texels": 282483,
+    "texels": 15102976,
+    "max_abs_dev_rgb": 0.7073974609375
+  }
+}

@@ -1,0 +1,61 @@
+{
+  "source": "raw/arenaCP-coalesced-b_vs_coalesced-b+array-free+unroll36-r3-gpu.xml.gz",
+  "camera_frames": 131,
+  "frame_count_pass": "Streamed SH Compose (+ [B])",
+  "once_per_frame_counts": {
+    "UI Pass": 130,
+    "Screen Effects Resolve Pass": 0,
+    "Textured Pass": 130,
+    "Depth Pre-Pass": 131
+  },
+  "shadow_passes": {
+    "Promoted Spot Entity Shadow Depth Pass": {
+      "count": 1030,
+      "total_ms": 51.278,
+      "per_frame_ms": 0.3914
+    }
+  },
+  "shadow_total_per_frame_ms": 0.3914,
+  "sum_labelled_passes_per_frame_ms": 26.206,
+  "all_passes_per_frame_ms": {
+    "Skinned Mesh Pass": 4.3159,
+    "Skinned Viewmodel Pass": 3.9845,
+    "Streamed Animated Direct SH": 3.9654,
+    "Streamed SH Compose": 3.3633,
+    "Bloom Bright Pass": 2.6079,
+    "Streamed Animated Direct SH [B]": 2.5637,
+    "Streamed SH Compose [B]": 2.2229,
+    "Textured Pass": 1.2832,
+    "Promoted Spot Entity Shadow Depth Pass": 0.3914,
+    "Billboard Direct Scatter Compose": 0.3559,
+    "UI Pass": 0.3532,
+    "Per-frame Upload Copies": 0.2563,
+    "Bloom Horizontal Gaussian Pass": 0.1826,
+    "Bloom Scene Composite Pass": 0.0605,
+    "Depth Pre-Pass": 0.0566,
+    "Candidate Cull Pass": 0.0559,
+    "Bloom Vertical Gaussian Pass": 0.0553,
+    "Bloom Downsample Pass": 0.0397,
+    "Bloom Upsample Pass": 0.0368,
+    "Frame Encoder": 0.0278,
+    "(wgpu internal) PendingWrites": 0.0273
+  },
+  "compose_per_encoder_ms": {
+    "Streamed Animated Direct SH": 7.9919,
+    "Streamed Animated Direct SH [B]": 5.1669,
+    "Streamed SH Compose": 6.6757,
+    "Streamed SH Compose [B]": 4.48
+  },
+  "compose_per_encoder_median_ms": {
+    "Streamed Animated Direct SH": 7.9539,
+    "Streamed Animated Direct SH [B]": 5.1385,
+    "Streamed SH Compose": 6.6523,
+    "Streamed SH Compose [B]": 4.4293
+  },
+  "compose_encoder_counts": {
+    "Streamed Animated Direct SH": 65,
+    "Streamed Animated Direct SH [B]": 65,
+    "Streamed SH Compose": 66,
+    "Streamed SH Compose [B]": 65
+  }
+}

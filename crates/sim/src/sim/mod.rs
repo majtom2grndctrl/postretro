@@ -2883,6 +2883,7 @@ mod tests {
                 descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                     primitive: primitive.into(),
                     target: None,
+                    kind: None,
                     tag: tag.map(str::to_string),
                     on_complete: None,
                     args,
@@ -3180,6 +3181,7 @@ mod tests {
                         descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                             primitive: command.into(),
                             target: None,
+                            kind: None,
                             tag: Some("second-trigger".into()),
                             on_complete: None,
                             args: serde_json::json!({}),
@@ -3190,6 +3192,7 @@ mod tests {
                         descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                             primitive: "applyDamage".into(),
                             target: None,
+                            kind: None,
                             tag: Some("damage-target".into()),
                             on_complete: None,
                             args: serde_json::json!({ "amount": 5 }),

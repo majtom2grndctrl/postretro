@@ -3,11 +3,10 @@ import {
   type Reaction,
   type TickParams,
   type TriggerEventParams,
-  armTrigger,
-  damage,
+  type TriggerVolumeHandle,
   defineReaction,
+  defineTriggerEvent,
   fire,
-  onTriggerEvent,
   runtime,
   scopeReactions,
 } from "postretro";
@@ -50,19 +49,27 @@ const invalidBooleanAccumulator: import("postretro").StoreSlotSchema = { type: "
 // @ts-expect-error shared replication serializes one global scalar, so it cannot carry per-owner cardinality.
 const invalidSharedPerOwner: import("postretro").StoreSlotSchema = { type: "number", default: 0, perOwner: true, network: "shared" };
 
-const triggerScoped = defineReaction((on: TriggerEventParams) => damage(on.activators, 25));
-const triggerSequence = defineReaction((on: TriggerEventParams) => ({ sequence: armTrigger(on.trigger) }));
-onTriggerEvent({ tag: "plate" }, "enter", [unscoped, triggerScoped, triggerSequence]);
+declare const plate: TriggerVolumeHandle;
+
+const triggerScoped = defineReaction((on: TriggerEventParams) => on.activators.damage(25));
+const triggerSequence = defineReaction((on: TriggerEventParams) => ({ sequence: [on.trigger.arm()] }));
+// Both trigger-event sources accept sourceless and trigger-scoped reactions.
+plate.on("enter", [unscoped, triggerScoped, triggerSequence]);
+defineTriggerEvent({ tag: "plate", event: "enter", fire: [unscoped, triggerScoped, triggerSequence] });
+// @ts-expect-error A crossing-scoped reaction cannot be bound to a trigger edge.
+plate.on("enter", [crossingScoped]);
 
 // @ts-expect-error Trigger-scoped reactions cannot be fired by a state crossing.
 onStateCrossing(runtime.constant(true), [triggerScoped]);
 
 defineReaction((on: TriggerEventParams) => {
-  // @ts-expect-error The fired trigger token is not a damage target.
-  const wrongTarget = damage(on.trigger, 5);
+  // @ts-expect-error The fired trigger token has no damage verb.
+  on.trigger.damage(5);
+  // @ts-expect-error The activators token has no arm verb.
+  on.activators.arm();
   // @ts-expect-error Opaque entity targets are not runtime IR operands.
   const wrongOperand = runtime.add(on.activators, 1);
-  return wrongTarget;
+  return on.activators.grantHealth(5);
 });
 
 void invalidTickRead;

@@ -27,9 +27,9 @@ use crate::scripting::primitives::light::register_sequenced_light_primitives;
 use crate::scripting::primitives::register_all;
 use crate::scripting::reactions::registry::{
     ReactionPrimitiveRegistry, register_emitter_reaction_primitives,
-    register_enemy_state_reaction_primitives, register_fog_reaction_primitives,
-    register_grant_reactions, register_mover_reaction_primitives,
-    register_sequenced_fog_primitives, register_sequenced_mover_primitives,
+    register_fog_reaction_primitives, register_grant_reactions, register_mover_reaction_primitives,
+    register_npc_state_reaction_primitives, register_sequenced_fog_primitives,
+    register_sequenced_mover_primitives, register_sequenced_spawner_primitives,
     register_sequenced_trigger_primitives, register_spawner_reaction_primitives,
     register_trigger_reaction_primitives,
 };
@@ -70,6 +70,28 @@ pub(crate) struct Session {
     /// Keyboard/mouse/gamepad action state. Seeded at build with the loaded
     /// look preferences. See: context/lib/input.md
     pub(crate) input_system: input::InputSystem,
+
+    /// Binding layers (author, player, swap) and the effective table the
+    /// input system runs. Rebuilt by `App::refresh_effective_bindings`.
+    pub(crate) bindings: input::BindingState,
+
+    /// The mod's glyph art the renderer holds.
+    pub(crate) glyph_art: crate::app::glyph_art::GlyphArtState,
+
+    /// The mod's `uiImages` and the engine's images the renderer holds.
+    pub(crate) mod_ui_images: crate::app::ui_images::ModUiImages,
+
+    /// The committed mod loading pool and the load the screen is showing.
+    pub(crate) loading_screen: crate::startup::loading_screen::LoadingScreenState,
+
+    /// The device family glyphs follow, settled once per frame.
+    pub(crate) device_family: input::DeviceFamilyTracker,
+
+    /// The engine controls panel's capture prompt and pending conflict.
+    pub(crate) controls: crate::app::controls_panel::ControlsPanelState,
+
+    /// Slider value steps captured this frame, applied at the command drain.
+    pub(crate) pending_slider_steps: Vec<crate::app::ui_actions::PendingSliderStep>,
 
     /// Per-tick gameplay-input latch; neutralized while a modal captures input.
     pub(crate) gameplay_input_latch: input::GameplayInputLatch,
@@ -278,6 +300,55 @@ pub(crate) struct Session {
     pub(crate) debug_ui: Option<render::debug_ui::DebugUi>,
 }
 
+/// The focus-engine key of a pushed modal instance.
+pub(crate) fn modal_focus_key(
+    name: &str,
+    instance: postretro_ui::modal_stack::ModalInstance,
+) -> String {
+    format!("{name}#{}", instance.id())
+}
+
+impl Session {
+    /// The focus-engine key and registry name of the tree on top: a pushed
+    /// modal is keyed by name and instance, so a fresh push never inherits the
+    /// focus a previous instance of the same tree had; with no modal, the
+    /// fallback tree (HUD or frontend root) is keyed by name.
+    pub(crate) fn ui_focus_target(&self, fallback: &str) -> (String, String) {
+        match (
+            self.modal_stack.active_name(),
+            self.modal_stack.active_instance(),
+        ) {
+            (Some(name), Some(instance)) => (modal_focus_key(name, instance), name.to_string()),
+            _ => (fallback.to_string(), fallback.to_string()),
+        }
+    }
+
+    /// Drop saved focus for modal instances no longer on the stack, once
+    /// enough have accumulated to matter; a settled frame does no work.
+    pub(crate) fn prune_ui_focus(&mut self) {
+        if self.ui_focus.tree_count() <= self.modal_stack.len() + 8 {
+            return;
+        }
+        let stack = &self.modal_stack;
+        self.ui_focus
+            .retain_trees(|key| match key.rsplit_once('#') {
+                Some((_, id)) => id.parse().is_ok_and(|id| stack.contains_instance_id(id)),
+                None => true,
+            });
+    }
+
+    /// Which UI commands are live under the top of the modal stack.
+    pub(crate) fn ui_nav_context(&self) -> input::UiNavContext {
+        if self.modal_stack.active_text_entry_target().is_some() {
+            input::UiNavContext::TextEntry
+        } else if self.ui_dispatch.mode() == input::UiCaptureMode::Capture {
+            input::UiNavContext::Capture
+        } else {
+            input::UiNavContext::Open
+        }
+    }
+}
+
 /// Scripting tranche grouped under [`Session`]. The whole group is built at
 /// `Session::build`: `ScriptCtx` is `Clone` (`Rc`-backed), and all clones are
 /// distributed from that single construction site.
@@ -460,6 +531,12 @@ impl Session {
         input_system.set_mouse_sensitivity(player_options.mouse_sensitivity);
         input_system.set_invert_y(player_options.invert_y);
         input_system.set_scroll_notch_pixels(player_options.scroll_notch_pixels);
+        input_system.set_gamepad_look_sensitivity(player_options.gamepad_look_sensitivity);
+        input_system.set_gamepad_look_dead_zone(player_options.gamepad_look_dead_zone);
+        input_system.set_gamepad_invert_y(player_options.gamepad_invert_y);
+        input_system.set_hold_timing_scale(player_options.accessibility.hold_timing_scale);
+        let mut bindings = input::BindingState::default();
+        bindings.set_swap_confirm_cancel(player_options.swap_confirm_cancel);
 
         // Register engine built-in trees through the one shared load-and-register
         // path (`tree_asset::register_tree_from_disk`): each built-in screen's
@@ -517,6 +594,23 @@ impl Session {
                 core_root,
                 postretro_ui::demo::ACCESSIBILITY_PANEL_NAME,
                 "accessibilityPanel.json",
+                false,
+            );
+            // The controls panel's shell; the engine fills its rows.
+            postretro_ui::tree_asset::register_tree_from_disk(
+                registry,
+                core_root,
+                postretro_ui::demo::CONTROLS_PANEL_NAME,
+                "controlsPanel.json",
+                false,
+            );
+            // The fallback loading screen; a mod tree of the same name, or a
+            // mod or catalog loading pool, replaces it.
+            postretro_ui::tree_asset::register_tree_from_disk(
+                registry,
+                core_root,
+                crate::startup::loading_screen::LOADING_SCREEN_NAME,
+                "loadingScreen.json",
                 false,
             );
         }
@@ -611,6 +705,13 @@ impl Session {
 
         Ok(Self {
             input_system,
+            bindings,
+            glyph_art: Default::default(),
+            mod_ui_images: Default::default(),
+            loading_screen: Default::default(),
+            device_family: Default::default(),
+            controls: Default::default(),
+            pending_slider_steps: Vec::new(),
             gameplay_input_latch: input::GameplayInputLatch::new(),
             ui_dispatch: input::UiDispatch::new(),
             gamepad_system: input::gamepad::GamepadSystem::new(),
@@ -753,12 +854,17 @@ fn build_scripting_core(
         script_ctx.clone(),
         command_diagnostics.clone(),
     );
+    register_sequenced_spawner_primitives(
+        &mut sequence_registry,
+        script_ctx.clone(),
+        spawn_context.clone(),
+    );
 
     // Reaction-primitive handlers invoked by name when a `Primitive` reaction
     // fires. Populated once at startup; survives level reloads.
     let mut reaction_registry = ReactionPrimitiveRegistry::new();
     register_emitter_reaction_primitives(&mut reaction_registry);
-    register_enemy_state_reaction_primitives(&mut reaction_registry);
+    register_npc_state_reaction_primitives(&mut reaction_registry);
     register_grant_reactions(&mut reaction_registry);
     register_fog_reaction_primitives(&mut reaction_registry);
     register_mover_reaction_primitives(
@@ -1063,6 +1169,15 @@ mod headless_tests {
             "names the observe launcher: {msg}",
         );
     }
+}
+
+/// The focus export when it describes the tree named `name`, or `None` while it
+/// still describes another tree (the stack changed earlier this frame).
+pub(crate) fn focus_rects_for<'a>(
+    rects: Option<&'a postretro_ui::tree::FocusRectList>,
+    name: &str,
+) -> Option<&'a postretro_ui::tree::FocusRectList> {
+    rects.filter(|rects| rects.owner.as_ref().is_none_or(|owner| owner.name == name))
 }
 
 #[cfg(test)]

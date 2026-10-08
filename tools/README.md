@@ -25,6 +25,13 @@ default cutoff. Output PNGs are deliberately untagged (no `sRGB`, `gAMA`, or
 regardless of PNG color-space metadata. Run with `python3 tools/gen_emissive.py
 --help` for usage.
 
+### `gen_dev_glyphs.py`
+
+Generates the dev mod's placeholder input glyph art: one PNG per input name for
+keyboard and mouse, Xbox, PlayStation, and Nintendo, drawn from shapes and a
+small bitmap font. Standard library only (no Pillow). Run with `python3
+tools/gen_dev_glyphs.py --out content/dev/ui/glyphs`.
+
 ### `blender_model_rebake.py`
 
 Turns a downloaded high-poly source glTF (Sketchfab, Rodin, etc.) into an

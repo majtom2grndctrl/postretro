@@ -5,6 +5,9 @@
 mod lifecycle_boot_state;
 #[path = "lifecycle_net.rs"]
 mod lifecycle_net;
+#[cfg(test)]
+#[path = "lifecycle_progress_install_tests.rs"]
+mod lifecycle_progress_install_tests;
 #[path = "lifecycle_spawn_residency.rs"]
 mod lifecycle_spawn_residency;
 #[path = "lifecycle_sprite_collections.rs"]
@@ -24,6 +27,7 @@ use crate::App;
 use crate::frame_timing::InterpolableState;
 use crate::render;
 use crate::scripting::builtins::descriptor_materializes_ai_enemy;
+use crate::startup::loading_screen::LoadingStep;
 use crate::startup::{
     BootState, InFlightLevelLoad, LevelLoadEntry, LevelSource, LoadOutcome, StartupTimings,
     spawn_level_worker,
@@ -192,11 +196,15 @@ impl App {
         let Some(session) = self.session.as_mut() else {
             return;
         };
-        rebuild_reaction_subscribers(
+        // A recompose that already meets a threshold fires through the same
+        // queue as kill-driven progress, dispatched on the next frame.
+        let progress_events = rebuild_reaction_subscribers(
             &mut session.progress_tracker,
             &mut session.crossing_detector,
             &session.scripting.script_ctx,
+            SubscriberRebuild::Recompose,
         );
+        session.pending_death_events.extend(progress_events);
         session
             .scripting
             .slot_accumulator_bindings
@@ -245,7 +253,7 @@ impl App {
         self.trigger_bindings = bindings;
     }
 
-    fn resolve_level_source(&self, source: LevelSource) -> Option<InFlightLevelLoad> {
+    pub(super) fn resolve_level_source(&self, source: LevelSource) -> Option<InFlightLevelLoad> {
         match source {
             LevelSource::Catalog(id) => {
                 let entry = {
@@ -274,6 +282,7 @@ impl App {
                         path: entry.path,
                         name: entry.name,
                         tags: entry.tags,
+                        loading_tree: entry.loading_tree,
                     },
                 })
             }
@@ -290,6 +299,7 @@ impl App {
                         path: map_path.to_string_lossy().into_owned(),
                         name,
                         tags: Vec::new(),
+                        loading_tree: Vec::new(),
                     },
                     map_path,
                 })
@@ -297,13 +307,15 @@ impl App {
         }
     }
 
-    fn begin_level_load(&mut self, load: InFlightLevelLoad) {
+    pub(super) fn begin_level_load(&mut self, load: InFlightLevelLoad) {
         self.level_timings = StartupTimings::new();
+        let progress = self.begin_loading_screen(&load.entry);
         let (tx, rx) = mpsc::channel();
         let handle = spawn_level_worker(
             load.map_path.clone(),
             load.content_root.clone(),
             self.baked_root.clone(),
+            progress,
             tx,
         );
         self.level_load = Some(load);
@@ -323,26 +335,49 @@ impl App {
         // A worker may take longer than the netcode timeout. Poll the live
         // endpoint before checking its channel, without touching level state.
         let _ = self.poll_world_less_transport(frame_dt);
-        match self.poll_loading_level_worker() {
-            LoadingPoll::Ready(outcome) => match *outcome {
-                Ok(payload) => self.finish_level_payload(payload, event_loop),
-                Err(err) => {
-                    self.finish_level_failure(format!("worker failed: {err:#}"), event_loop);
-                    false
-                }
-            },
-            LoadingPoll::Disconnected => {
-                self.finish_level_failure(
-                    "worker channel disconnected before delivery".to_string(),
-                    event_loop,
-                );
+        match self.next_loading_step() {
+            LoadingStep::Install(payload) => self.finish_level_payload(*payload, event_loop),
+            LoadingStep::Fail(reason) => {
+                self.finish_level_failure(reason, event_loop);
                 false
             }
-            LoadingPoll::Pending => {
-                let _ = self.paint_splash(event_loop); // Loading redraws unconditionally; the outcome doesn't drive state advance here.
+            LoadingStep::Paint => {
+                // Loading redraws unconditionally; painting never advances state.
+                self.paint_loading_frame(event_loop, frame_dt);
                 self.request_redraw();
                 false
             }
+        }
+    }
+
+    /// Decide one Loading frame. A delivered payload is held for one painted
+    /// frame (the bar at its parse share), then installs on the next. A
+    /// payload without a level has nothing to install, so it goes straight to
+    /// the failure path without a held frame.
+    pub(super) fn next_loading_step(&mut self) -> LoadingStep {
+        if let Some(payload) = self.take_deferred_level_payload() {
+            // The held frame is its own stage, neither worker nor install time.
+            self.level_timings.record("install_deferral");
+            return LoadingStep::Install(Box::new(payload));
+        }
+        match self.poll_loading_level_worker() {
+            LoadingPoll::Ready(outcome) => match *outcome {
+                Ok(mut payload) => {
+                    self.record_worker_delivery(&mut payload);
+                    if payload.level.is_none() {
+                        return LoadingStep::Install(Box::new(payload));
+                    }
+                    match self.defer_level_payload(payload) {
+                        Some(payload) => LoadingStep::Install(Box::new(payload)),
+                        None => LoadingStep::Paint,
+                    }
+                }
+                Err(err) => LoadingStep::Fail(format!("worker failed: {err:#}")),
+            },
+            LoadingPoll::Disconnected => {
+                LoadingStep::Fail("worker channel disconnected before delivery".to_string())
+            }
+            LoadingPoll::Pending => LoadingStep::Paint,
         }
     }
 
@@ -368,11 +403,8 @@ impl App {
         }
     }
 
-    fn finish_level_payload(
-        &mut self,
-        mut payload: crate::startup::worker::LevelPayload,
-        event_loop: &ActiveEventLoop,
-    ) -> bool {
+    /// Mark the worker's delivery in the level timings, on the frame it lands.
+    fn record_worker_delivery(&mut self, payload: &mut crate::startup::worker::LevelPayload) {
         self.level_timings.record("worker_delivered");
         // Splice worker-thread entries between dispatch and delivered so the
         // summary reads chronologically.
@@ -380,7 +412,13 @@ impl App {
         for (i, entry) in payload.timings.drain(..).enumerate() {
             self.level_timings.entries.insert(delivered_idx + i, entry);
         }
+    }
 
+    fn finish_level_payload(
+        &mut self,
+        payload: crate::startup::worker::LevelPayload,
+        event_loop: &ActiveEventLoop,
+    ) -> bool {
         match payload.level {
             Some(world) => {
                 if let Err(err) = self.install_level_payload(world, payload.prm_cache_root) {
@@ -404,6 +442,7 @@ impl App {
                 // player_spawn. The host pawn stays driven locally by `simulate_tick`.
                 self.host_register_own_pawn_after_install();
                 self.level_load = None;
+                self.end_loading_screen();
                 if let Some(renderer) = self.renderer.as_mut() {
                     renderer.clear_splash();
                 }
@@ -427,6 +466,7 @@ impl App {
 
     fn finish_level_failure(&mut self, reason: String, event_loop: &ActiveEventLoop) {
         self.level_load = None;
+        self.end_loading_screen();
         let was_boot_load = std::mem::take(&mut self.boot_load);
         if was_boot_load {
             log::error!("[Loader] {reason}; boot map load failed");
@@ -535,7 +575,7 @@ impl App {
             );
         }
         // Segment A of the CPU world install: seed gravity from the level's
-        // authored value (before the data script runs, so a `world.getGravity()`
+        // authored value (before the data script runs, so a `getGravity()`
         // in `setupLevel` / `levelLoad` reactions sees it) and build the runtime
         // navigation graph. Renderer-free; the nav build reads the un-normalized
         // navmesh section, which the renderer UV pass below does not touch. The
@@ -1029,15 +1069,31 @@ pub(crate) fn install_world_gravity_and_nav(
         .map(crate::nav::NavGraph::from_section)
 }
 
-/// Rebuild the level's reaction subscribers: reinitialize the kill-progress
-/// tracker and the state-crossing detector from the current data + entity
-/// registries and slot table. Free function so both [`App`]'s method and segment
-/// B drive it without an `App`.
+/// Which lifecycle moment rebuilds the subscribers. A `progress` counts kills
+/// among the entities carrying its tag at level install, so only an install
+/// captures that membership ([`capture_progress_membership`]); a recompose keeps
+/// it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SubscriberRebuild {
+    LevelInstall,
+    Recompose,
+}
+
+/// Rebuild the level's reaction subscribers from the current data registry and
+/// slot table. At level install this only drops the previous level's
+/// kill-progress state: membership is captured later, by
+/// [`capture_progress_membership`], once the map placements it counts exist. A
+/// recompose keeps that membership, its kill record and its fired latches, and
+/// only re-reads the subscriptions. The state-crossing detector reinitializes on
+/// both. Returns progress events a recompose's subscriptions already meet (a
+/// lowered `at`); install returns none. Free function so both [`App`]'s method
+/// and segment B drive it without an `App`.
 fn rebuild_reaction_subscribers(
     progress_tracker: &mut postretro_scripting_core::reaction_dispatch::ProgressTracker,
     crossing_detector: &mut postretro_scripting_core::state_crossings::CrossingDetector,
     script_ctx: &postretro_entities::ScriptCtx,
-) {
+    rebuild: SubscriberRebuild,
+) -> Vec<String> {
     {
         let mut data_registry = script_ctx.data_registry.borrow_mut();
         // Group reactions by dispatch address (name). Addressing is many-to-one
@@ -1093,17 +1149,39 @@ fn rebuild_reaction_subscribers(
             );
         }
     }
-    progress_tracker.clear();
-    progress_tracker.initialize(
-        &script_ctx.data_registry.borrow(),
-        &script_ctx.registry.borrow(),
-    );
+    let progress_events = match rebuild {
+        SubscriberRebuild::LevelInstall => {
+            progress_tracker.clear();
+            Vec::new()
+        }
+        SubscriberRebuild::Recompose => {
+            progress_tracker.recompose(&script_ctx.data_registry.borrow())
+        }
+    };
     crossing_detector.clear();
     crossing_detector.initialize(
         &script_ctx.data_registry.borrow(),
         &script_ctx.slot_table.borrow(),
         script_ctx,
     );
+    progress_events
+}
+
+/// Level install: capture kill-progress membership and subscribe the composed
+/// `progress` set. Runs after every map placement has materialized — the
+/// data-archetype sweep (descriptor NPCs, player pawns) and the spawner
+/// resolve — and before `levelLoad`, so a `progress` over a map-placed NPC tag
+/// counts those NPCs while anything `levelLoad` or a later tick spawns stays
+/// out. Returns events whose threshold the set already meets (an `at` at or
+/// below zero); the caller dispatches them after `levelLoad`.
+fn capture_progress_membership(
+    progress_tracker: &mut postretro_scripting_core::reaction_dispatch::ProgressTracker,
+    script_ctx: &postretro_entities::ScriptCtx,
+) -> Vec<String> {
+    progress_tracker.initialize(
+        &script_ctx.data_registry.borrow(),
+        &script_ctx.registry.borrow(),
+    )
 }
 
 fn reaction_uses_trigger_sentinel(
@@ -1505,6 +1583,7 @@ pub(crate) mod tests {
                         SpawnerComponent {
                             archetype_name: archetype.to_string(),
                             count: 1,
+                            spawned_tags: Vec::new(),
                             resolved,
                         },
                     )
@@ -1571,6 +1650,13 @@ pub(crate) mod tests {
             // reaction/classname dispatch; the real `Session::build` populates them.
             session: Some(crate::session::Session {
                 input_system: input::InputSystem::new(input::default_bindings()),
+                bindings: input::BindingState::default(),
+                glyph_art: Default::default(),
+                mod_ui_images: Default::default(),
+                loading_screen: Default::default(),
+                device_family: Default::default(),
+                controls: Default::default(),
+                pending_slider_steps: Vec::new(),
                 gameplay_input_latch: input::GameplayInputLatch::new(),
                 ui_dispatch: input::UiDispatch::new(),
                 gamepad_system: None,
@@ -1657,9 +1743,11 @@ pub(crate) mod tests {
             observe_live: None,
             remote_player_presentation: crate::netcode::ClientPresentationInputs::default(),
             crouch_toggle_active: false,
+            sprint_toggle_active: false,
             ai_runtime: postretro_ai::AiRuntime::new(),
             cursor_pos: None,
-            nav_stick_tracker: input::StickNavTracker::new(),
+            ui_wheel: None,
+            nav_stick_tracker: input::StickNavTrackers::new(),
             frame_timing: FrameTiming::new(initial_state),
             view_feel_state: view_feel::ViewFeelState::default(),
             view_feel_followed_pawn: None,
@@ -1725,7 +1813,7 @@ pub(crate) mod tests {
     /// The scripting core lives on `Session`; this keeps the many test reads of
     /// the shared registries one short call away without a borrow fight against
     /// the non-`Clone` session subsystems.
-    fn script_ctx(app: &App) -> ScriptCtx {
+    pub(super) fn script_ctx(app: &App) -> ScriptCtx {
         app.session
             .as_ref()
             .expect("test app session installed")
@@ -1752,7 +1840,7 @@ pub(crate) mod tests {
             .collect()
     }
 
-    fn descriptor(name: &str) -> EntityTypeDescriptor {
+    pub(super) fn descriptor(name: &str) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
             faction: None,
             tolerance: None,
@@ -1775,6 +1863,7 @@ pub(crate) mod tests {
             descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                 primitive: "testPrimitive".to_string(),
                 target: None,
+                kind: None,
                 tag: None,
                 on_complete: None,
                 args: serde_json::Value::Object(Default::default()),
@@ -1811,6 +1900,7 @@ pub(crate) mod tests {
                 descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                     primitive: "setState".to_string(),
                     target: None,
+                    kind: None,
                     tag: None,
                     on_complete: None,
                     args: serde_json::json!({ "slot": "trigger.flag", "value": value }),
@@ -1868,6 +1958,7 @@ pub(crate) mod tests {
                 descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                     primitive: "setState".to_string(),
                     target: None,
+                    kind: None,
                     tag: None,
                     on_complete: None,
                     args: serde_json::json!({
@@ -1915,6 +2006,7 @@ pub(crate) mod tests {
             path: path.to_string(),
             name: name.to_string(),
             tags: tags.iter().map(|tag| tag.to_string()).collect(),
+            loading_tree: Vec::new(),
         }
     }
 
@@ -1987,7 +2079,10 @@ pub(crate) mod tests {
         }
     }
 
-    fn level_world(_name: &str, triangle_count: usize) -> postretro_level_loader::LevelWorld {
+    pub(super) fn level_world(
+        _name: &str,
+        triangle_count: usize,
+    ) -> postretro_level_loader::LevelWorld {
         let mut vertices = vec![
             vertex([0.0, 0.0, 0.0]),
             vertex([1.0, 0.0, 0.0]),
@@ -2604,6 +2699,7 @@ pub(crate) mod tests {
                 path: "maps/e1m1.prl".to_string(),
                 name: "Entryway".to_string(),
                 tags: vec!["campaign".to_string()],
+                loading_tree: Vec::new(),
             }]);
         let data_before = {
             let ctx = script_ctx(&app);
@@ -3263,6 +3359,7 @@ pub(crate) mod tests {
                 name: "Replacement".to_string(),
                 id: "replacement".to_string(),
                 version: "1".to_string(),
+                input: None,
                 render: Default::default(),
                 movers: Default::default(),
                 audio: Default::default(),
@@ -3297,6 +3394,8 @@ pub(crate) mod tests {
                         pitch: -0.5,
                     },
                 }),
+                ui_images: Default::default(),
+                loading: Default::default(),
                 store_declarations: Default::default(),
                 dependency_paths: Vec::new(),
             })),
@@ -3378,6 +3477,8 @@ pub(crate) mod tests {
                 selected: None,
                 checked: None,
                 disabled: false,
+                tablist: None,
+                clip: None,
             }],
             groups: Vec::new(),
             initial_focus: Some("play".to_string()),
@@ -3393,6 +3494,7 @@ pub(crate) mod tests {
                 descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                     primitive: "loadLevel".to_string(),
                     target: None,
+                    kind: None,
                     tag: None,
                     args: serde_json::json!({ "map": "e1m1" }),
                     on_complete: None,
@@ -3593,6 +3695,7 @@ pub(crate) mod tests {
                 path: "maps/e1m1.prl".to_string(),
                 name: "Entryway".to_string(),
                 tags: Vec::new(),
+                loading_tree: Vec::new(),
             },
         });
         app.follow_relevel_catalog("e1m1".to_string());
@@ -3816,17 +3919,38 @@ pub(crate) mod tests {
             .data_registry
             .borrow_mut()
             .replace_global_crossings(vec![scoped_global_crossing("test.health", "healthLow")]);
-        {
+        let wave_member = {
             let ctx = script_ctx(&app);
             let mut entities = ctx.registry.borrow_mut();
             let id = entities.spawn(Transform::default());
             entities.set_tags(id, vec!["wave1".to_string()]).unwrap();
-        }
+            id
+        };
         script_ctx(&app)
             .slot_table
             .borrow_mut()
             .insert("test.health".to_string(), number_slot(75.0))
             .expect("test slot should be vacant");
+        // Level install, in production order: the subscriber rebuild, then the
+        // progress membership capture once the map placements exist. A
+        // recompose keeps that membership and only re-subscribes.
+        {
+            let ctx = script_ctx(&app);
+            ctx.data_registry
+                .borrow_mut()
+                .recompose_active_sets(&app.active_level_tags);
+            let session = app.session.as_mut().expect("test app session installed");
+            rebuild_reaction_subscribers(
+                &mut session.progress_tracker,
+                &mut session.crossing_detector,
+                &ctx,
+                SubscriberRebuild::LevelInstall,
+            );
+            assert!(
+                capture_progress_membership(&mut session.progress_tracker, &ctx).is_empty(),
+                "one living member is below `at: 1.0`"
+            );
+        }
 
         if app.has_installed_level() {
             script_ctx(&app)
@@ -3835,13 +3959,21 @@ pub(crate) mod tests {
                 .recompose_active_sets(&app.active_level_tags);
             app.rebuild_active_reaction_subscribers();
         }
+        assert!(
+            app.session
+                .as_ref()
+                .expect("test app session installed")
+                .pending_death_events
+                .is_empty(),
+            "a recompose over an unmet threshold queues no progress fire"
+        );
 
         assert_eq!(
             app.session
                 .as_mut()
                 .expect("test app session installed")
                 .progress_tracker
-                .on_entity_killed(&["wave1".to_string()]),
+                .on_entity_killed(wave_member),
             vec!["powerOn".to_string()],
         );
         script_ctx(&app)
@@ -3989,6 +4121,111 @@ pub(crate) mod tests {
         );
     }
 
+    // A mod hot reload recomposes the active sets and
+    // rebuilds trigger bindings through `rebuild_active_trigger_bindings`. A
+    // level member's `on("enter", …)` is retained level-local data keyed by
+    // its volume, so after the reload it still fires for that volume and never
+    // for a sibling carrying the same tag.
+    #[test]
+    fn staged_recomposition_keeps_a_level_member_enter_on_its_volume_only() {
+        let mut app = test_app();
+        app.level = Some(level_world("member_reload_level", 1));
+        let spawn_plate = |app: &App| {
+            let ctx = script_ctx(app);
+            let mut entities = ctx.registry.borrow_mut();
+            let id = entities.spawn(Transform::default());
+            entities
+                .set_component(
+                    id,
+                    TriggerVolumeComponent::new(
+                        TriggerActivation::Touch,
+                        String::new(),
+                        String::new(),
+                        String::new(),
+                        MoverCommand::Start,
+                        TriggerFireMode::Multiple,
+                        0.0,
+                        true,
+                    ),
+                )
+                .expect("trigger component attaches");
+            entities
+                .set_tags(id, vec!["plate".to_string()])
+                .expect("trigger tags attach");
+            id
+        };
+        let plate = spawn_plate(&app);
+        let sibling = spawn_plate(&app);
+        script_ctx(&app)
+            .slot_table
+            .borrow_mut()
+            .insert("trigger.flag".to_string(), number_slot(0.0))
+            .expect("trigger fixture slot should be vacant");
+
+        script_ctx(&app)
+            .data_registry
+            .borrow_mut()
+            .populate_level_with_trigger_events(
+                vec![scoped_global_set_state("reveal", 7.0).reaction],
+                Vec::new(),
+                vec![postretro_entities::VolumeTriggerEventDescriptor {
+                    trigger: plate,
+                    event: "enter".to_string(),
+                    fire: vec!["reveal".to_string()],
+                }],
+                Vec::new(),
+                &app.active_level_tags,
+            );
+        // The reload: the mod manifest's global rules change, then the staged
+        // commit recomposes and rebinds.
+        script_ctx(&app)
+            .data_registry
+            .borrow_mut()
+            .replace_global_reactions(vec![scoped_global_set_state("ambient", 1.0)]);
+        script_ctx(&app)
+            .data_registry
+            .borrow_mut()
+            .recompose_active_sets(&app.active_level_tags);
+        app.rebuild_active_reaction_subscribers();
+        app.rebuild_active_trigger_bindings();
+
+        let fire_enter = |app: &App, trigger| {
+            let ctx = script_ctx(app);
+            let mut entities = ctx.registry.borrow_mut();
+            let mut slots = ctx.slot_table.borrow_mut();
+            app.trigger_bindings
+                .execute(
+                    trigger,
+                    crate::trigger_system::TriggerEventEdge::Enter,
+                    &mut entities,
+                    &mut slots,
+                    &crate::trigger_commands::TriggerFireContext::default(),
+                )
+                .command_count()
+        };
+        let flag = |app: &App| {
+            script_ctx(app)
+                .slot_table
+                .borrow()
+                .get("trigger.flag")
+                .and_then(|record| record.value.clone())
+        };
+        assert!(
+            !app.trigger_bindings
+                .bound_edges()
+                .contains(&(sibling, crate::trigger_system::TriggerEventEdge::Enter)),
+            "the sibling carrying the same tag gains no edge"
+        );
+        assert_eq!(fire_enter(&app, sibling), 0);
+        assert_eq!(flag(&app), Some(SlotValue::Number(0.0)));
+        assert_eq!(fire_enter(&app, plate), 1);
+        assert_eq!(
+            flag(&app),
+            Some(SlotValue::Number(7.0)),
+            "the member's reaction still runs on its volume after the reload"
+        );
+    }
+
     // Regression: filtering a trigger-scoped reaction from a crossing used to
     // discard all of the crossing's compatible reactions.
     #[test]
@@ -4009,6 +4246,7 @@ pub(crate) mod tests {
                         descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                             primitive: "applyDamage".to_string(),
                             target: Some("@activators".to_string()),
+                            kind: None,
                             tag: None,
                             on_complete: None,
                             args: serde_json::json!({ "amount": 10.0 }),

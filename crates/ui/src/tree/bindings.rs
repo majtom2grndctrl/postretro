@@ -29,6 +29,9 @@ pub struct DrawWalkCtx<'a> {
     pub cell_values: &'a CellValues,
     pub time_seconds: f64,
     pub inert_theme: &'a UiTheme,
+    /// Scroll containers' retained offsets: their children draw shifted up by
+    /// the offset and clipped to the container's viewport.
+    pub scroll: &'a [super::scroll::ScrollState],
 }
 
 /// The frame clock the tween drivers advance on, plus whether the player's

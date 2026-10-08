@@ -50,7 +50,7 @@ Crates form a one-way dependency graph: `foundation` and `entities` at the base,
 
 `xtask run` builds the `scripts-build` sidecar, then runs the engine: `cargo run -p xtask -- run [cargo flags...] -- [engine args...]`. A bare `cargo run -p postretro` assumes the sidecar is already built.
 
-**Standard configuration: default `dev` profile with `dev-tools`.** Builds, runs, and targeted tests share that one warm artifact set; any other profile or feature set compiles its own. `dev` keeps incremental builds, `debug_assert!`, and symbols, with workspace crates optimized enough to play-test.
+**Standard configuration: default `dev` profile with `dev-tools`.** Builds, runs, and targeted tests share that one warm artifact set; any other profile or feature set compiles its own. `dev` keeps incremental builds, `debug_assert!`, and line-table debug info (file:line backtraces), with workspace crates optimized enough to play-test. It turns off rustc's implicit thin-local LTO: at opt-level ≥ 1 that pass re-optimizes much of a crate after any codegen edit, and it dominated edit rebuilds of the binary.
 
 ```bash
 cargo run -p xtask -- run --features dev-tools -- content/dev/maps/<map>.prl
@@ -58,9 +58,20 @@ cargo test -p <crate> <filter>   # add --features dev-tools where the crate has 
 cargo run -p postretro-level-compiler -- <in>.map -o <out>.prl   # compile a level (binary: prl-build)
 ```
 
-Other profiles are deliberate exceptions. `--release` (thin LTO, no incremental: an edit rebuild takes a minute or more) is for distribution, perf validation, and preflight's release check. `--profile dev-debug` drops workspace optimization for stepping through code in a debugger.
+Other profiles are deliberate exceptions. `--release` (thin LTO, no incremental: an edit rebuild takes a minute or more) is for distribution, perf validation, and preflight's release check. `--profile dev-debug` drops workspace optimization and restores full debug info for stepping through code in a debugger.
 
 Runtime-only environment variables never trigger a rebuild: `RUST_LOG`, `WGPU_BACKEND`, and the `POSTRETRO_*` diagnostics (§6.4). Distribution builds: `cargo run -p xtask -- dist` and `sdk-dist` (`build_pipeline.md` §Distribution packaging).
+
+### Worktree builds
+
+Default: sequential tracks on the main checkout's warm `target/`. A worktree is for genuine parallelism or another commit's build. Each one builds the engine cold; the `rquickjs-sys` QuickJS C dependency dominates.
+
+- **One checkout, one `target/`.** Never point a worktree at another checkout's target dir. Cargo names workspace-crate artifacts relative to the workspace root and judges freshness by mtime. A second checkout's build overwrites same-named artifacts, and the first treats them as fresh — its tests silently run the other commit's code.
+- **Lean and disposable.** Target dir inside the worktree, `CARGO_INCREMENTAL=0` (incremental is ~a quarter of a debug target), only the packages the track needs, one profile. Delete the target with the worktree.
+- **Comparison binaries** (A/B against another commit): build, copy the binary out, delete that target at once.
+- **Disk budget first.** Start a worktree build only if free space stays above 15 GB plus its size: ~8 GB for a release binary, ~25–30 GB for a full debug test build. Otherwise run the track on the main checkout. The budget covers every build in flight.
+- **Cap at 3 concurrent.** Past three simultaneous engine builds, compiles saturate CPU and exhaust disk; a full volume surfaces as linker "No space left on device" or bus errors that fail correct work. Batch the next group after the first merges.
+- **No shared dependency cache.** Stable Cargo cannot share third-party artifacts across workspaces without also sharing workspace crates. `sccache` trades disk for compile time, the wrong trade on a constrained machine. Cargo's cross-workspace cache, nightly-only so far, is the eventual fix.
 
 ## Stack
 
@@ -183,8 +194,6 @@ Inside the hot path the ordinary defaults still hold: avoid per-frame allocation
 **Bound the full resource lifetime.** A working-set or disk bound spans the full lifecycle: production, buffering, serialization, cache or container writes, return, and cleanup. Count representations that coexist. Persistence can duplicate the output of an otherwise bounded algorithm.
 
 **Netcode feel is a budget too.** Co-op clients on home connections must feel smooth: no rubber-banding, no jitter on remote entities, no input lag on the local player. Verify with the dev latency harness at realistic latency, jitter, and loss; loopback alone is unmeasured. Levers: prediction and reconciliation that converge without snapping, snapshot interpolation with an adequate buffer, sending only what changed. Scope stays co-op (index §4).
-
-**Concurrent agents in isolated worktrees: cap at 3.** Each worktree builds the engine from scratch, and that build is heavy — the `rquickjs-sys` QuickJS C dependency dominates. Beyond three simultaneous engine builds, concurrent compiles saturate CPU and exhaust disk; a full volume surfaces as linker "No space left on device" or bus errors that fail otherwise-correct work. Three is the safe ceiling. Need more parallelism? Batch — run the next group after the first merges, not wider.
 
 When per-pass GPU timing (`POSTRETRO_GPU_TIMING=1`) or a profile confirms a real bottleneck, optimize aggressively — but keep the result clean. An optimization that makes the code unmaintainable is not acceptable, even with measurements behind it. Fast *and* clean is the goal; brittleness moves the cost from runtime to maintenance.
 

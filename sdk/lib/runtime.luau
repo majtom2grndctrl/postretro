@@ -3,7 +3,7 @@
 -- Each builder assembles a `RuntimeValue` table as plain data and returns it --
 -- no FFI side effect. Nodes cross the boundary through manifest data
 -- (`ModManifest` / `setupLevel`), never as a primitive call. The constructors are
--- namespaced under a single `runtime` global (mirroring `world`) so generic op
+-- namespaced under a single `runtime` global (like `getMapEntities`) so generic op
 -- names like `add` / `eq` / `select` do not collide with author symbols.
 -- See: context/lib/scripting.md §11 (Typed Command Buffer), §12.
 --

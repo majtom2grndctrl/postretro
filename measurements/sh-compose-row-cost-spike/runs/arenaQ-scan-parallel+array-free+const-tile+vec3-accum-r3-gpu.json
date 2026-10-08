@@ -1,0 +1,61 @@
+{
+  "source": "raw/arenaQ-scan-parallel+array-free+const-tile+vec3-accum-r3-gpu.xml.gz",
+  "camera_frames": 172,
+  "frame_count_pass": "Streamed SH Compose (+ [B])",
+  "once_per_frame_counts": {
+    "UI Pass": 140,
+    "Screen Effects Resolve Pass": 0,
+    "Textured Pass": 140,
+    "Depth Pre-Pass": 141
+  },
+  "shadow_passes": {
+    "Promoted Spot Entity Shadow Depth Pass": {
+      "count": 1100,
+      "total_ms": 57.51,
+      "per_frame_ms": 0.3344
+    }
+  },
+  "shadow_total_per_frame_ms": 0.3344,
+  "sum_labelled_passes_per_frame_ms": 24.2229,
+  "all_passes_per_frame_ms": {
+    "Streamed Animated Direct SH": 3.994,
+    "Streamed SH Compose": 3.3384,
+    "Skinned Mesh Pass": 3.082,
+    "Skinned Viewmodel Pass": 2.983,
+    "Bloom Bright Pass": 2.8121,
+    "Streamed SH Compose [B]": 2.7169,
+    "Streamed Animated Direct SH [B]": 2.5637,
+    "Textured Pass": 0.8331,
+    "UI Pass": 0.5406,
+    "Billboard Direct Scatter Compose": 0.3431,
+    "Promoted Spot Entity Shadow Depth Pass": 0.3344,
+    "Per-frame Upload Copies": 0.2105,
+    "Bloom Horizontal Gaussian Pass": 0.1629,
+    "Candidate Cull Pass": 0.0543,
+    "Bloom Scene Composite Pass": 0.0483,
+    "Bloom Vertical Gaussian Pass": 0.0483,
+    "Depth Pre-Pass": 0.0441,
+    "Bloom Downsample Pass": 0.0329,
+    "Bloom Upsample Pass": 0.0309,
+    "(wgpu internal) PendingWrites": 0.0252,
+    "Frame Encoder": 0.0242
+  },
+  "compose_per_encoder_ms": {
+    "Streamed Animated Direct SH": 7.9881,
+    "Streamed Animated Direct SH [B]": 5.1877,
+    "Streamed SH Compose": 6.6768,
+    "Streamed SH Compose [B]": 5.4338
+  },
+  "compose_per_encoder_median_ms": {
+    "Streamed Animated Direct SH": 7.9474,
+    "Streamed Animated Direct SH [B]": 5.1698,
+    "Streamed SH Compose": 6.6465,
+    "Streamed SH Compose [B]": 5.4155
+  },
+  "compose_encoder_counts": {
+    "Streamed Animated Direct SH": 86,
+    "Streamed Animated Direct SH [B]": 85,
+    "Streamed SH Compose": 86,
+    "Streamed SH Compose [B]": 86
+  }
+}

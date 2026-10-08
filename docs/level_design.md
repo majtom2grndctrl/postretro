@@ -295,13 +295,25 @@ python3 tools/gen_specular.py --input <content-root>/textures --recursive
 
 ### Surface Depth (Height Maps)
 
-Add a height map next to any diffuse texture and its surface gets real depth: cobblestones stand proud of their mortar, panel seams sink in, plank gaps read as gaps. The effect is strongest at shallow viewing angles, which is exactly where a flat texture normally gives itself away.
+Add a height map next to any diffuse texture and its surface gets real relief: cobblestones stand proud of their mortar, panel seams sink in, rivets and studs rise, plank gaps read as gaps. The effect is strongest at shallow viewing angles, which is exactly where a flat texture normally gives itself away.
 
 Name it `{diffuse}_h.png`. That's the whole workflow — the compiler finds it by suffix. There is no material file to edit and no map key to set, and you don't need an `_s.png` alongside it; a height map on its own is fine. (A helper that generates one is below, but nothing requires you to use it.)
 
 Example: `cobble.png` → diffuse; `cobble_h.png` → height.
 
-**Author an ordinary height map: white = raised, black = recessed.** This is the familiar convention and it is the one the engine wants. Do not pre-invert it. `prl-build` converts height to depth when it bakes, so the inverted form only ever exists inside the compiled `.prm` — you never see it or think about it.
+**Mid-gray is the brush face. Darker sinks into it, lighter rises out of it.**
+
+| Shade | Value | Where the surface appears |
+|-------|-------|---------------------------|
+| Black | `#000000` (0) | Sunk the material's full depth below the face |
+| Dark gray | `#404040` (64) | Sunk about half the depth (exactly half for even terrace counts) |
+| **Mid-gray** | **`#808080` (128)** | **Exactly on the brush face** |
+| Light gray | `#C0C0C0` (192) | Raised about half the depth (exactly half for even terrace counts) |
+| White | `#FFFFFF` (255) | Raised the full depth above the face, once terraced |
+
+The scale is linear between rows. White sits at 127/128 of the depth before terracing, and every prefix's terracing carries it up to the full depth. The half-depth rows land exactly on a terrace only when the prefix has an even terrace count. With an odd count, such as `grate` and the default prefix (3 terraces per direction), an exact half step snaps up: `#404040` sinks one third and `#C0C0C0` rises two thirds.
+
+Paint flat areas exactly `#808080` — Photoshop's and GIMP's 50% gray. The engine snaps 127 to flat too. A map with nothing lighter than mid-gray only carves, and pays nothing for raise.
 
 Requirements — each of these **fails the compile**. None of them is a warning you can ignore:
 
@@ -309,32 +321,38 @@ Requirements — each of these **fails the compile**. None of them is a warning 
 - **Same dimensions as the diffuse.** No scaling, no half-res height maps.
 - **Same dimensions as `_s.png`, if you have one.** Specular and height are packed into one two-channel texture in the compiled output, so they have to line up texel for texel.
 
-#### How deep it carves
+#### How far it reaches
 
 Depth character comes from the **material prefix** — the same first-token-before-the-underscore rule the Material System table above uses. You control it by naming the texture, not by tuning the PNG:
 
-| Prefix | Carve |
+| Prefix | Depth (each direction) |
 |--------|-------|
 | `concrete` | Deepest — the cobblestone and pavement case this is built for |
 | `grate` | Moderate |
-| `wood` | Shallow — plank gaps |
-| `metal` | Shallowest — panel seams and rivets |
+| `wood` | Shallow (same as `metal`) — plank gaps |
+| `metal` | Shallow — panel seams and rivets |
 | `glass`, `neon` | **Flat.** Deliberately |
-| anything else | A conservative carve, so a `_h.png` on an unrecognized prefix still shows up |
+| anything else | Moderate, so a `_h.png` on an unrecognized prefix still shows up |
 
 The compiler does not know about prefixes — it bakes any `_h.png` it finds. So a `glass_*_h.png` compiles cleanly, makes that material's compiled surface texture twice the size it needed to be, and is then ignored at render time. Don't ship one.
 
-A height map's own black-to-white range shapes *where* the surface is high and low; the prefix decides *how far* in meters, and how many flat terraces the depth snaps to. Depths are a couple of centimeters at most.
+The map's shades decide *where* the surface sits high or low. The prefix decides *how far*: how deep black sinks, how high white rises, and how many flat terraces each direction snaps to. Depth applies in each direction, so a full-range `concrete` map spans twice its depth from deepest mortar to highest stone. Depth is counted in the texture's own texels — six each way at most, for `concrete` — so it follows the texture's pixel grid, not a fixed distance.
 
-#### Depth never changes where you can walk
+#### Raised texels and the true surface
 
-The carve goes **inward only**. Nothing is ever pushed out past the real brush face, so the surface you see is never higher than the surface the map actually has. The player walks on the stone tops — that *is* the true plane — and collision, clipping and mover geometry are untouched. You cannot break a jump or a ledge by adding a height map.
+Height maps never change collision. The player walks on the brush face — the mid-gray level — whatever the map shows. Sunk texels sit below that face, where feet never reach. Raised texels draw *above* it, but the effect cannot change the brush's real shape. Raising therefore costs three things sinking never does:
+
+- **Edges stay straight.** Raised texels never poke past their face's outline. At a ledge lip or outside corner, raised stones look sliced flat along the edge.
+- **Walls cut raised floors.** Where floor meets wall, the wall hides any part of a raised floor stone that should stand in front of it.
+- **Objects sink into raised texels.** Feet, props, pickups and projectiles draw against the true face. On a strongly raised floor they read as sitting slightly *into* the stones, not on top.
+
+None of this changes how a room plays, only how it reads. Keep strong raises off floors that props and players stand on, and away from ledge lips and trim edges. Sink seams instead. Save raising for studs, rivets, wall brick, and surfaces the player looks at rather than stands on.
 
 The effect applies to static world brushes and to `kinematic_mover` brushes. It does not apply to `prop_mesh` glTF models.
 
 #### Generating one
 
-`tools/texture-tool` writes `{stem}_h.png` alongside the diffuse, specular and normal maps in the same run. It derives height from diffuse luminance and terraces it so the plateaus line up with the diffuse's own quantization:
+`tools/texture-tool` writes `{stem}_h.png` alongside the diffuse, specular and normal maps in the same run. It derives height from diffuse luminance and places the diffuse's average brightness on mid-gray, so the result both rises and sinks. Its terrace boundaries follow the diffuse's own edges:
 
 `texture-tool` is the one exception to the bundle's "no toolchain needed"
 rule. Unlike the prebuilt helpers in `bin/`, it ships as Rust *source* under
@@ -349,11 +367,11 @@ cargo run --release --manifest-path tools/texture-tool/Cargo.toml -- \
   --height-strength 1.6 --height-quantize-levels 6
 ```
 
-`--height-strength` scales the relief (above `1.0` exaggerates it, below flattens it; each spec profile has its own default). `--height-quantize-levels` sets how many terraces — **lower means fewer, flatter, chunkier plateaus**, which is the retro read the effect is tuned for. The tool writes untagged linear PNGs at the diffuse's exact dimensions, so its output satisfies the rules above by construction. See `tools/texture-tool/README.md` for the full flag list and the per-profile defaults.
+`--height-strength` scales the relief (above `1.0` exaggerates it, below flattens it; each spec profile has its own default). `--height-quantize-levels` sets how many terraces, split evenly above and below mid-gray — **lower means fewer, flatter, chunkier plateaus**, which is the retro read the effect is tuned for. Left out, it follows the stem's prefix: `concrete` 12, `metal` and `wood` 4, `grate` and anything else 6. That is twice the engine's own terraces per direction, so every terrace lands exactly on one of the engine's plateaus. A lower count still lands on plateaus when half of it divides the prefix's count: `concrete` (6 each way) also suits 4 or 6. Other counts can put a terrace on a half step, where raised sides render one terrace taller than sunk sides. The tool writes untagged linear PNGs at the diffuse's exact dimensions, so its output satisfies the rules above by construction. See `tools/texture-tool/README.md` for the full flag list and the per-profile defaults.
 
 #### The player's on/off setting
 
-Players get a **SURFACE DEPTH** setting in the graphics options: **Off** or **On**, defaulting to **On**. `On` is the full effect. `Off` renders exactly as the engine did before the feature existed, and costs nothing — it is there for machines that can't afford the per-pixel march. There is no middle setting. Author for `On`, but don't build a room whose readability depends on it — someone will be playing with it off.
+Players get a **SURFACE DEPTH** setting in the graphics options: **Off** or **On**, defaulting to **On**. `On` is the full effect. `Off` renders exactly as the engine did before the feature existed and skips the per-pixel march — it is there for machines that can't afford it. There is no middle setting. Author for `On`, but don't build a room whose readability depends on it — someone will be playing with it off.
 
 ### Model Texture Sidecars
 

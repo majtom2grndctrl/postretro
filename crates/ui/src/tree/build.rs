@@ -6,8 +6,10 @@
 use std::cell::RefCell;
 
 use taffy::prelude::{
-    AlignItems, Display, FlexDirection, NodeId, Size, Style, TaffyTree, evenly_sized_tracks, length,
+    AlignItems, Display, FlexDirection, NodeId, Size, Style, TaffyTree, auto, evenly_sized_tracks,
+    length,
 };
+use taffy::style::Overflow;
 
 use super::super::descriptor::{
     BindSource, Border, ButtonWidget, ContainerWidget, GridWidget, ImageWidget, PanelWidget,
@@ -151,11 +153,18 @@ pub fn build_node(
                 )
                 .expect("taffy leaf creation must succeed")
         }
-        Widget::Image(ImageWidget { asset, .. }) => taffy
+        Widget::Image(ImageWidget {
+            asset,
+            width,
+            height,
+            ..
+        }) => taffy
             .new_leaf_with_context(
-                Style::default(),
+                image_style(*width, *height),
                 NodeContext::Image {
                     asset: asset.clone(),
+                    width: *width,
+                    height: *height,
                 },
             )
             .expect("taffy leaf creation must succeed"),
@@ -183,7 +192,9 @@ pub fn build_node(
         Widget::Ring(ring) => build_ring(taffy, ring, theme, scope),
         // M13 G2: a non-visual announcement lays out as an empty zero-size leaf
         // (no quad, no glyph). Routing its text to the a11y layer is a later task.
-        Widget::Announce(_) => taffy
+        // A glyph the engine has not resolved into an image or text (a tree
+        // laid out outside the App's snapshot) lays out as nothing.
+        Widget::Announce(_) | Widget::Glyph(_) => taffy
             .new_leaf(Style::default())
             .expect("taffy leaf creation must succeed"),
     }
@@ -378,6 +389,18 @@ fn build_slider(
         .expect("taffy slider composition creation must succeed")
 }
 
+/// Pin each authored image axis so layout treats it as definite, like a bar's
+/// size. An unpinned axis stays auto and comes from the measure seam.
+fn image_style(width: Option<f32>, height: Option<f32>) -> Style {
+    Style {
+        size: Size {
+            width: width.map_or_else(auto, length),
+            height: height.map_or_else(auto, length),
+        },
+        ..Default::default()
+    }
+}
+
 /// Build a passive horizontal `bar` leaf. Carries an explicit
 /// style size (a bar has no content to measure) and a `NodeContext::Bar` draw
 /// payload. Its `fill`/`background` color tokens resolve against the theme at
@@ -552,6 +575,22 @@ fn build_stack(
         }
         None => {}
     }
+    // Only a vertical stack scrolls; an `HStack`'s `scroll` was diagnosed at
+    // registration and is ignored here.
+    if direction == FlexDirection::Column
+        && let Some(scroll) = container.scroll
+    {
+        apply_scroll_viewport(&mut style, scroll.max_height);
+        // Rows keep their content height and overflow the viewport rather
+        // than squeezing to fit it.
+        for &child in &children {
+            let mut child_style = taffy.style(child).expect("child has a style").clone();
+            child_style.flex_shrink = 0.0;
+            taffy
+                .set_style(child, child_style)
+                .expect("child exists in its own tree");
+        }
+    }
     let node = taffy
         .new_with_children(style, &children)
         .expect("taffy container creation must succeed");
@@ -585,7 +624,7 @@ fn build_grid(
     // `evenly_sized_tracks(N)` yields N equal `1fr` tracks — the descriptor's
     // "N equal columns" maps straight onto it.
     let cols = grid.cols.try_into().unwrap_or(u16::MAX);
-    let style = Style {
+    let mut style = Style {
         display: Display::Grid,
         grid_template_columns: evenly_sized_tracks(cols),
         // Resolve the spacing tokens to scalar `f32` against the theme.
@@ -595,7 +634,19 @@ fn build_grid(
             grid.align,
         )
     };
+    if let Some(scroll) = grid.scroll {
+        apply_scroll_viewport(&mut style, scroll.max_height);
+    }
     taffy
         .new_with_children(style, &children)
         .expect("taffy grid creation must succeed")
+}
+
+/// Make a container a vertical scroll viewport: it sizes to its content up to
+/// `max_height` logical px, and as a flex/grid item never demands more than
+/// that from its parent. Clipping and the offset are applied by the draw and
+/// focus walks (`scroll.rs`), not by taffy.
+fn apply_scroll_viewport(style: &mut Style, max_height: f32) {
+    style.max_size.height = length(max_height);
+    style.overflow.y = Overflow::Hidden;
 }

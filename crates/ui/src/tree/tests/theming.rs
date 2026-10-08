@@ -25,6 +25,7 @@ fn themed_text(color: ColorValue, font: Option<&str>) -> AnchoredTree {
         text_entry_target: None,
         accessible_name: None,
         role: None,
+        restore_on_return: None,
     }
 }
 
@@ -78,12 +79,12 @@ fn spacing_token_resolves_into_layout_gap() {
             padding: SpacingValue::Literal(0.0),
             align: Align::Start,
             width: None,
+            scroll: None,
             fill: None,
             border: None,
             id: None,
             focus_neighbors: Default::default(),
             focus: None,
-            restore_on_return: false,
             local_state: None,
             visible_when: None,
             role: None,
@@ -94,6 +95,7 @@ fn spacing_token_resolves_into_layout_gap() {
         text_entry_target: None,
         accessible_name: None,
         role: None,
+        restore_on_return: None,
     };
     let mut ui = UiTree::from_descriptor(&tree, &theme);
     let mut fs = font_system();
@@ -120,12 +122,12 @@ fn unknown_spacing_token_lays_out_as_zero() {
             padding: SpacingValue::Literal(0.0),
             align: Align::Start,
             width: None,
+            scroll: None,
             fill: None,
             border: None,
             id: None,
             focus_neighbors: Default::default(),
             focus: None,
-            restore_on_return: false,
             local_state: None,
             visible_when: None,
             role: None,
@@ -136,6 +138,7 @@ fn unknown_spacing_token_lays_out_as_zero() {
         text_entry_target: None,
         accessible_name: None,
         role: None,
+        restore_on_return: None,
     };
     let mut ui = UiTree::from_descriptor(&tree, &theme);
     let mut fs = font_system();

@@ -8,6 +8,7 @@ use serde::{Deserialize, Deserializer, Serialize, de::Error as _};
 use super::super::style_ranges::StyleRanges;
 use super::accessibility::Role;
 use super::focus::{FocusNeighbors, FocusPolicy, RepeatPolicy};
+use super::image::ImageWidget;
 use super::values::{
     Align, BindSource, Border, ColorValue, Easing, LocalState, Predicate, ScalarValue,
     SpacingValue, TextTween,
@@ -20,7 +21,7 @@ use super::values::{
 /// tag is read by buffering the object through `serde_json::Value`, which a
 /// tuple variant cannot map onto. Container kinds (`vstack`/`hstack`/`grid`)
 /// carry positional `children`; leaf kinds (`text`/`panel`/`image`/`spacer`/
-/// `button`/`slider`/`bar`/`ring`/`announce`) carry no
+/// `button`/`slider`/`bar`/`ring`/`glyph`/`announce`) carry no
 /// `children` field. Compare `postretro_entities::ReactionDescriptor`,
 /// which discriminates by manual key-presence instead — this enum deliberately
 /// uses serde's tag mechanism.
@@ -51,6 +52,10 @@ pub enum Widget {
     // glyph); its sole payload is an a11y live-region announcement a later task
     // routes to the platform a11y layer with the declared `priority`.
     Announce(AnnounceWidget),
+    /// The current glyph for a command: the mod's art for the input bound to
+    /// it on the player's device, else that input's label, else nothing. The
+    /// engine resolves it each frame into an image or text before layout.
+    Glyph(GlyphWidget),
 }
 
 /// Leaf text run. `content` is the literal string; `font_size` is logical px;
@@ -221,43 +226,6 @@ pub struct PanelTween {
     pub from: Option<[f32; 4]>,
 }
 
-/// Leaf image referencing a texture asset by key. The image has no wire-level
-/// size: it sizes from the asset's NATURAL pixel dimensions (content-driven, the
-/// same category as text measurement). The renderer threads each asset's natural
-/// reference size into the measure seam (see `tree::UiTree::build_draw_data`), so
-/// the on-screen image is always shaped to the real asset and never stretched.
-///
-/// Accessible name (M13 G2): an image is name-XOR-decorative — exactly one of
-/// `label` or `decorative: true` is required (the bridge enforces it).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ImageWidget {
-    pub asset: String,
-    /// Authored stable id (M13 Goal F, Task 3). See `TextWidget::id`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub id: Option<String>,
-    /// Directional focus-neighbor overrides (M13 Goal F, Task 3). See
-    /// `TextWidget::focus_neighbors`.
-    #[serde(default, skip_serializing_if = "FocusNeighbors::is_empty")]
-    pub focus_neighbors: FocusNeighbors,
-    /// Accessible name (M13 G2). A named image announces `label`; a decorative one
-    /// is hidden from a11y. Name-XOR-decorative is a bridge precondition, not a
-    /// serde constraint. Skip-serialized when absent.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub label: Option<String>,
-    /// Marks the image purely decorative (M13 G2) — hidden from a11y, no name
-    /// required. Skip-serialized when `false` so a pre-G2 image round-trips
-    /// byte-identically.
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub decorative: bool,
-    /// Optional reactive visibility predicate (M13 G2). See `TextWidget::visible_when`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub visible_when: Option<Predicate>,
-    /// Optional a11y role override (M13 G2). See `TextWidget::role`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub role: Option<Role>,
-}
-
 /// Stack container (`vstack`/`hstack`). Lays its `children` out along one axis
 /// with `gap` between them, `padding` inside its bounds, and cross-axis
 /// `align`. `children` carries no `skip_serializing_if`: an empty container
@@ -286,6 +254,11 @@ pub struct ContainerWidget {
         deserialize_with = "deserialize_optional_stack_width"
     )]
     pub width: Option<f32>,
+    /// Optional vertical scroll viewport. Honored on a `VStack`; an `HStack`
+    /// ignores it with a registration-time diagnostic (horizontal scrolling is
+    /// a non-goal). Creates no focus stop or group.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scroll: Option<ScrollProps>,
     /// Optional backdrop fill (linear RGBA), drawn beneath the children.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fill: Option<ColorValue>,
@@ -302,10 +275,6 @@ pub struct ContainerWidget {
     /// Absent leaves the container's children outside any focus group of its own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub focus: Option<FocusPolicy>,
-    /// Restore this container's last-focused descendant when a tree popped above
-    /// it returns focus here (M13 Goal F, Task 3). Skip-serialized when `false`.
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub restore_on_return: bool,
     /// Presentation-cell scope declared on this container (M13 G1b, Task 5). When
     /// present, descendant `{ local }` binds resolve against the named cells, the
     /// cells seed the app-side cell store, and the scope id keys the cell store +
@@ -338,6 +307,43 @@ where
     validate_stack_width(Option::<f32>::deserialize(deserializer)?).map_err(D::Error::custom)
 }
 
+/// A container's vertical scroll viewport (`scroll: { maxHeight }`). The
+/// container sizes to its content up to `max_height` logical-reference pixels,
+/// then clips its children and scrolls vertically. The offset is retained-UI
+/// presentation state; nothing here is authoritative.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ScrollProps {
+    #[serde(deserialize_with = "deserialize_scroll_max_height")]
+    pub max_height: f32,
+}
+
+/// Validate an authored `scroll.maxHeight`: a finite number greater than zero.
+/// Shared by the serde boundary and both script bridges.
+pub(crate) fn validate_scroll_max_height(max_height: f32) -> Result<f32, String> {
+    if !max_height.is_finite() || max_height <= 0.0 {
+        return Err("`scroll.maxHeight` must be a finite number greater than zero".to_string());
+    }
+    Ok(max_height)
+}
+
+/// The one diagnostic for `scroll` authored on an `HStack`, which is ignored
+/// (horizontal scrolling is a non-goal). Both script bridges and the retained
+/// UI's registration check emit it, so the wording stays in one place.
+pub fn warn_hstack_scroll_ignored(id: Option<&str>) {
+    let id = id.unwrap_or("<no id>");
+    log::warn!(
+        "[UI] HStack '{id}' authors `scroll`; ignored (only VStack and Grid scroll, vertically)"
+    );
+}
+
+fn deserialize_scroll_max_height<'de, D>(deserializer: D) -> Result<f32, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    validate_scroll_max_height(f32::deserialize(deserializer)?).map_err(D::Error::custom)
+}
+
 /// Grid container. Like a stack but flows `children` across a fixed number of
 /// columns. Shares the stack fields; adds `cols`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -347,6 +353,9 @@ pub struct GridWidget {
     pub padding: SpacingValue,
     pub align: Align,
     pub cols: u32,
+    /// Optional vertical scroll viewport. See `ContainerWidget::scroll`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scroll: Option<ScrollProps>,
     /// Authored stable id (M13 Goal F, Task 3). See `TextWidget::id`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
@@ -357,9 +366,6 @@ pub struct GridWidget {
     /// `"spatial"` so nav moves nearest-neighbor by direction.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub focus: Option<FocusPolicy>,
-    /// Restore this grid's last-focused descendant on return (see `ContainerWidget`).
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub restore_on_return: bool,
     /// Optional reactive visibility predicate (M13 G2). See `TextWidget::visible_when`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub visible_when: Option<Predicate>,
@@ -370,10 +376,23 @@ pub struct GridWidget {
 }
 
 /// `skip_serializing_if` predicate for boolean flags that default to `false`
-/// (`restore_on_return`, `decorative`, `disabled`): omit when `false` so a
+/// (`decorative`, `disabled`): omit when `false` so a
 /// pre-feature widget round-trips byte-identically.
-fn is_false(b: &bool) -> bool {
+pub(super) fn is_false(b: &bool) -> bool {
     !*b
+}
+
+/// A command's glyph. `command` is a command ID (`nav_confirm`, `jump`); the
+/// TypeScript types reject an unknown ID; one that reaches the engine draws
+/// nothing and logs a warning once.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GlyphWidget {
+    pub command: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub visible_when: Option<Predicate>,
 }
 
 /// Flexible-space leaf. `flex_grow` is the proportional share of leftover space

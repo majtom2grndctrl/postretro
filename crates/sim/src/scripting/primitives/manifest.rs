@@ -82,6 +82,7 @@ pub(crate) fn register_sdk_type(registry: &mut PrimitiveRegistry) {
             "Distance attenuation for positional sounds. Optional; defaults to 2 to 60 metres, linear.",
         )
         .finish();
+    register_input_types(registry);
     registry
         .register_type("SwitchingDescriptor")
         .doc("Mod-global switching policy. Omit the whole block to preserve immediate direct selection, zero cycle dwell, and reload interruption.")
@@ -145,6 +146,11 @@ pub(crate) fn register_sdk_type(registry: &mut PrimitiveRegistry) {
             "Static audio preferences for the entire mod. Optional; defaults to 2 to 60 metre linear attenuation.",
         )
         .field(
+            "input?",
+            "ModInput",
+            "The game's commands, default bindings, and glyph art. Optional; omission keeps the engine's default bindings. Malformed entries warn and fall back per command and device class; they never reject the manifest.",
+        )
+        .field(
             "switching?",
             "SwitchingDescriptor",
             "Mod-global switching policy. Optional; omission preserves immediate direct selection, zero cycle dwell, and reload interruption.",
@@ -200,6 +206,16 @@ pub(crate) fn register_sdk_type(registry: &mut PrimitiveRegistry) {
             "Font assets: family name → TTF asset path. Optional; changing custom font assets requires an engine restart.",
         )
         .field(
+            "uiImages?",
+            "UiImageMap",
+            "UI images: image name → PNG path relative to the mod root. Optional. Each loads into the UI image registry under its name at mod init and after a hot reload, so any tree can show it with `Image({ asset: name })`. Names beginning `engine/` are reserved. A reserved name, a non-string value, a path that leaves the mod, a missing file, or an undecodable PNG warns and skips that entry.",
+        )
+        .field(
+            "loading?",
+            "ModLoading",
+            "Mod-wide loading screen. Optional; omission shows the engine fallback loading screen.",
+        )
+        .field(
             "maps?",
             "Vec<ModMapEntry>",
             "Pre-load-discoverable map catalog. Optional; use catalog ids with `loadLevel(id)` and `frontend.backgroundLevel`.",
@@ -227,7 +243,7 @@ pub(crate) fn register_sdk_type(registry: &mut PrimitiveRegistry) {
         .field(
             "triggerEvents?",
             "Vec<TriggerEventDescriptor>",
-            "Trigger-volume enter/exit observers. Optional; compose by level tags.",
+            "Mod-global trigger events, each a standing rule keyed by tag: build each with `defineTriggerEvent({ tag, event, fire, levels? })`. Optional; `levels` selects the map tags it binds in. A volume-keyed entry (a trigger member's `on`) belongs in `setupLevel` and is rejected here.",
         )
         .field(
             "triggerPools?",
@@ -242,6 +258,231 @@ pub(crate) fn register_sdk_type(registry: &mut PrimitiveRegistry) {
         .finish();
 }
 
+/// Engine command IDs an `input` block may key, with their hover docs. The
+/// set is engine-closed and mirrors the binary's `input::commands::Command`
+/// table; a drift guard beside that table compares it against the registered
+/// `CommandId` union.
+const COMMAND_IDS: &[(&str, &str)] = &[
+    (
+        "move_forward",
+        "Move forward. Digital; a half-axis stick input carries its magnitude. Accepts `press` or `hold`.",
+    ),
+    (
+        "move_back",
+        "Move backward. Digital; a half-axis stick input carries its magnitude. Accepts `press` or `hold`.",
+    ),
+    (
+        "move_left",
+        "Strafe left. Digital; a half-axis stick input carries its magnitude. Accepts `press` or `hold`.",
+    ),
+    (
+        "move_right",
+        "Strafe right. Digital; a half-axis stick input carries its magnitude. Accepts `press` or `hold`.",
+    ),
+    (
+        "move_up",
+        "Fly-cam up. Dev-only: always bound to engine defaults and hidden from the controls panel.",
+    ),
+    (
+        "move_down",
+        "Fly-cam down. Dev-only: always bound to engine defaults and hidden from the controls panel.",
+    ),
+    (
+        "look_x",
+        "Look horizontally; positive looks right. Analog: accepts axes only (`mouse_x`, stick axes) and only `press`.",
+    ),
+    (
+        "look_y",
+        "Look vertically; positive looks up. Analog: accepts axes only (`mouse_y`, stick axes) and only `press`.",
+    ),
+    ("sprint", "Sprint. Accepts `press` or `hold`."),
+    ("jump", "Jump."),
+    (
+        "dash",
+        "Dash. Relevant only when a movement descriptor declares dash.",
+    ),
+    (
+        "crouch",
+        "Crouch. Accepts `press` or `hold`. Relevant only when a movement descriptor declares crouch.",
+    ),
+    ("use", "Use or interact."),
+    ("drop", "Drop the wielded item."),
+    ("shoot", "Primary fire. Accepts only `press`."),
+    (
+        "alt_fire",
+        "Secondary fire. Accepts only `press`. Relevant only when a weapon declares a secondary activation.",
+    ),
+    (
+        "reload",
+        "Reload. Relevant only when a weapon uses a magazine resource.",
+    ),
+    ("select_wieldable_1", "Select wieldable slot 1."),
+    ("select_wieldable_2", "Select wieldable slot 2."),
+    ("select_wieldable_3", "Select wieldable slot 3."),
+    ("select_wieldable_4", "Select wieldable slot 4."),
+    ("select_wieldable_5", "Select wieldable slot 5."),
+    ("select_wieldable_6", "Select wieldable slot 6."),
+    ("select_wieldable_7", "Select wieldable slot 7."),
+    ("select_wieldable_8", "Select wieldable slot 8."),
+    ("select_wieldable_9", "Select wieldable slot 9."),
+    ("select_wieldable_10", "Select wieldable slot 10."),
+    (
+        "cycle_wieldable_next",
+        "Cycle to the next wieldable, one step per wheel notch or press. Accepts only `press`.",
+    ),
+    (
+        "cycle_wieldable_previous",
+        "Cycle to the previous wieldable, one step per wheel notch or press. Accepts only `press`.",
+    ),
+    (
+        "toggle_last_wieldable",
+        "Switch back to the previously wielded item.",
+    ),
+    (
+        "nav_up",
+        "Menu: move focus up. UI commands are always shown.",
+    ),
+    ("nav_down", "Menu: move focus down."),
+    ("nav_left", "Menu: move focus left."),
+    ("nav_right", "Menu: move focus right."),
+    ("nav_next", "Menu: move focus to the next control."),
+    ("nav_prev", "Menu: move focus to the previous control."),
+    (
+        "nav_tab_next",
+        "Menu: activate the next tab, wrapping. Steps Next in a menu with no tabs.",
+    ),
+    (
+        "nav_tab_prev",
+        "Menu: activate the previous tab, wrapping. Steps Prev in a menu with no tabs.",
+    ),
+    (
+        "nav_confirm",
+        "Menu: confirm. Must stay bound on each device class, and cannot be hidden.",
+    ),
+    (
+        "nav_cancel",
+        "Menu: cancel or back. Must stay bound on each device class, and cannot be hidden.",
+    ),
+    (
+        "nav_menu",
+        "Open the pause menu. Must stay bound on each device class, and cannot be hidden.",
+    ),
+    ("nav_options", "Menu: options."),
+    (
+        "text_backspace",
+        "On-screen keyboard: backspace, live while a text-entry menu is on top.",
+    ),
+    (
+        "text_space",
+        "On-screen keyboard: space, live while a text-entry menu is on top.",
+    ),
+    (
+        "text_commit",
+        "On-screen keyboard: commit, live while a text-entry menu is on top.",
+    ),
+];
+
+fn register_input_types(registry: &mut PrimitiveRegistry) {
+    let mut command_ids = registry
+        .register_enum("CommandId")
+        .doc("Stable ID of an engine command that an `input` block can label, show or hide, and bind. The set is engine-closed.");
+    for &(id, doc) in COMMAND_IDS {
+        command_ids = command_ids.variant(id, doc);
+    }
+    command_ids.finish();
+    registry
+        .register_enum("InputActivator")
+        .doc("When a binding fires. Each command accepts a fixed set; an activator outside it is diagnosed and that command's device class falls back to the engine default.")
+        .variant("press", "Fire on the press. This is the default.")
+        .variant("release", "Fire on release.")
+        .variant("tap", "Fire on release when the input was held no longer than `threshold`.")
+        .variant("hold", "Fire once the input has been held for `threshold`.")
+        .finish();
+    registry
+        .register_type("ModInputBinding")
+        .doc("One default binding for a command. Players rebind the input only: this input keeps its activator wherever it sits, and an input that replaces it takes its activator. A wheel notch always fires on press.")
+        .field(
+            "input",
+            "String",
+            "Physical input name: a W3C `KeyboardEvent.code` (`KeyW`, `ShiftLeft`), a mouse name (`mouse_left`, `wheel_up`, `mouse_x`), or a gamepad position (`south`, `left_shoulder`, `left_stick_press`, `left_stick_x`, `left_stick_up`). An unknown name is diagnosed and the device class falls back.",
+        )
+        .field(
+            "activator?",
+            "InputActivator",
+            "When the binding fires. Optional; defaults to `\"press\"`.",
+        )
+        .field(
+            "threshold?",
+            "f32",
+            "Seconds: a `tap`'s maximum or a `hold`'s minimum. Finite and greater than 0. Clamped to 0.05–5 s. Optional; defaults to 0.2, scaled by the player's hold-timing setting.",
+        )
+        .finish();
+    registry
+        .register_type("ModInputCommand")
+        .doc("Author settings for one command. Every field is optional.")
+        .field(
+            "label?",
+            "String",
+            "Name shown in the controls panel. Optional.",
+        )
+        .field(
+            "category?",
+            "String",
+            "Controls-panel group heading. Optional.",
+        )
+        .field(
+            "order?",
+            "f32",
+            "Sort position within the category. Optional.",
+        )
+        .field(
+            "show?",
+            "bool",
+            "`true` forces the command shown and bound, `false` hidden and unbound, overriding relevance derived from the mod's data. Optional. Ignored, with a warning, on every UI command and on the dev-only `move_up` and `move_down`.",
+        )
+        .field(
+            "keyboardMouse?",
+            "Vec<ModInputBinding>",
+            "Default keyboard and mouse bindings. Optional; omission keeps the engine default, and an empty list leaves the command unbound.",
+        )
+        .field(
+            "gamepad?",
+            "Vec<ModInputBinding>",
+            "Default gamepad bindings. Optional; omission keeps the engine default, and an empty list leaves the command unbound.",
+        )
+        .finish();
+    registry
+        .register_type("ModInputCommands")
+        .doc("Command settings keyed by command ID. Commands left out keep their engine defaults.")
+        .alias(
+            "Partial<Record<CommandId, ModInputCommand>>",
+            "{ [string]: ModInputCommand }",
+        )
+        .finish();
+    registry
+        .register_type("ModInputGlyphs")
+        .doc("Glyph art directory per device family. A glyph's asset is `<dir>/<input>`, for example `ui/glyphs/xbox/south`. Missing art draws the input's label (`east` draws \"EAST\", `KeyW` draws \"W\").")
+        .field("keyboardMouse?", "String", "Keyboard and mouse glyph directory. Optional.")
+        .field("xbox?", "String", "Xbox-layout glyph directory, also used for unrecognized pads. Optional.")
+        .field("playstation?", "String", "PlayStation glyph directory. Optional.")
+        .field("nintendo?", "String", "Nintendo glyph directory. Optional.")
+        .finish();
+    registry
+        .register_type("ModInput")
+        .doc("The game's commands, default bindings, and glyph art. Each command and device class is validated on its own: an unknown command ID, unknown input, refused activator, or a default leaving `nav_confirm`, `nav_cancel`, or `nav_menu` unbound is diagnosed, and that command and device class fall back to the engine default.")
+        .field(
+            "commands?",
+            "ModInputCommands",
+            "Command settings keyed by command ID. Optional; omission leaves every command on its engine defaults.",
+        )
+        .field(
+            "glyphs?",
+            "ModInputGlyphs",
+            "Glyph art per device family. Optional.",
+        )
+        .finish();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -252,8 +493,10 @@ mod tests {
     };
     use postretro_scripting_core::primitives_registry::TypeShape;
     use postretro_scripting_core::runtime::{
-        ModAudioProfile, ModManifestResult, ModMoverDefaults, ModRenderProfile,
+        ModAudioProfile, ModInputBinding, ModInputBlock, ModInputCommand, ModInputGlyphs,
+        ModLoading, ModManifestResult, ModMoverDefaults, ModRenderProfile,
     };
+    use std::collections::BTreeMap;
 
     #[test]
     fn mod_manifest_registered_type_matches_mod_manifest_result() {
@@ -278,6 +521,7 @@ mod tests {
             render: ModRenderProfile::default(),
             movers: ModMoverDefaults::default(),
             audio: ModAudioProfile::default(),
+            input: None,
             switching: SwitchingDescriptor::default(),
             default_weapon_placement: None,
             entities: Vec::new(),
@@ -290,6 +534,8 @@ mod tests {
             presentation_overlays: Vec::<PresentationOverlay>::new(),
             theme: ModThemeTokens::default(),
             frontend: None,
+            ui_images: BTreeMap::new(),
+            loading: ModLoading::default(),
             fonts: ModFontAssets::default(),
             maps: Vec::new(),
             reactions: Vec::new(),
@@ -306,6 +552,7 @@ mod tests {
             "render",
             "movers",
             "audio",
+            "input",
             "switching",
             "defaultWeaponPlacement",
             "entities",
@@ -317,6 +564,8 @@ mod tests {
             "presentationOverlays",
             "theme",
             "frontend",
+            "uiImages",
+            "loading",
             "fonts",
             "maps",
             "reactions",
@@ -415,6 +664,83 @@ mod tests {
                 ["minDistance?", "maxDistance?", "curve?"].as_slice(),
             ),
             ("AudioProfile", ["attenuation?"].as_slice()),
+        ] {
+            let registered = registry
+                .iter_types()
+                .find(|registered| registered.name == name)
+                .unwrap_or_else(|| panic!("{name} must be registered"));
+            let TypeShape::Struct { fields } = &registered.shape else {
+                panic!("{name} must be a Struct, got {:?}", registered.shape);
+            };
+            let names: Vec<&str> = fields.iter().map(|field| field.name).collect();
+            assert_eq!(names, expected_fields);
+        }
+    }
+
+    #[test]
+    fn input_sdk_types_mirror_the_drained_input_block() {
+        let mut registry = PrimitiveRegistry::new();
+        register_sdk_type(&mut registry);
+
+        let activator = registry
+            .iter_types()
+            .find(|registered| registered.name == "InputActivator")
+            .expect("InputActivator must be registered");
+        match &activator.shape {
+            TypeShape::StringEnum { variants } => {
+                let names: Vec<&str> = variants.iter().map(|variant| variant.name).collect();
+                assert_eq!(names, ["press", "release", "tap", "hold"]);
+            }
+            other => panic!("InputActivator must be a StringEnum, got {other:?}"),
+        }
+
+        // Compile-time anchor: a field added to or renamed on the drained Rust
+        // structs breaks this literal, forcing the script lists below to follow.
+        let _shape_anchor = ModInputBlock {
+            commands: vec![ModInputCommand {
+                id: String::new(),
+                label: None,
+                category: None,
+                order: None,
+                show: None,
+                keyboard_mouse: Some(vec![ModInputBinding {
+                    input: String::new(),
+                    activator: None,
+                    threshold: None,
+                }]),
+                gamepad: None,
+            }],
+            glyphs: ModInputGlyphs {
+                keyboard_mouse: None,
+                xbox: None,
+                playstation: None,
+                nintendo: None,
+            },
+        };
+        // Script names of the fields each drained Rust struct carries; the
+        // drain reads exactly these keys.
+        for (name, expected_fields) in [
+            ("ModInput", ["commands?", "glyphs?"].as_slice()),
+            (
+                "ModInputCommand",
+                [
+                    "label?",
+                    "category?",
+                    "order?",
+                    "show?",
+                    "keyboardMouse?",
+                    "gamepad?",
+                ]
+                .as_slice(),
+            ),
+            (
+                "ModInputBinding",
+                ["input", "activator?", "threshold?"].as_slice(),
+            ),
+            (
+                "ModInputGlyphs",
+                ["keyboardMouse?", "xbox?", "playstation?", "nintendo?"].as_slice(),
+            ),
         ] {
             let registered = registry
                 .iter_types()

@@ -1,5 +1,6 @@
 //! Owned data transferred from the staged mod-init worker to the main thread.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use super::super::data_descriptors::{
@@ -11,7 +12,8 @@ use super::super::data_registry::{
     FactionRegistry, FactionSentimentDescriptor, ScopedCrossing, ScopedReaction,
 };
 use super::super::runtime::{
-    Frontend, ModAudioProfile, ModMapEntry, ModMoverDefaults, ModRenderProfile,
+    Frontend, ModAudioProfile, ModInputBlock, ModLoading, ModMapEntry, ModMoverDefaults,
+    ModRenderProfile,
 };
 use super::super::slot_table::StoreDeclarationSet;
 
@@ -51,6 +53,8 @@ pub struct StagedManifest {
     pub render: ModRenderProfile,
     pub movers: ModMoverDefaults,
     pub audio: ModAudioProfile,
+    /// The author's optional `input` block; `None` when the manifest has none.
+    pub input: Option<ModInputBlock>,
     pub switching: SwitchingDescriptor,
     pub default_weapon_placement: Option<WeaponPlacementDescriptor>,
     pub entities: Vec<EntityTypeDescriptor>,
@@ -74,6 +78,12 @@ pub struct StagedManifest {
     pub presentation_overlays: Vec<PresentationOverlay>,
     pub theme: ModThemeTokens,
     pub frontend: Option<Frontend>,
+    /// Mod UI images (key → mod-relative PNG path). The app reloads them only
+    /// when this generation commits, like glyph art.
+    pub ui_images: BTreeMap<String, String>,
+    /// Mod-wide loading-screen pool. Commits with this generation, like
+    /// `frontend`; a failed or stale build leaves the committed pool alone.
+    pub loading: ModLoading,
     pub store_declarations: StoreDeclarationSet,
     /// Canonical mod-init source dependencies carried across the worker→main
     /// thread boundary. The descriptor registry write and watcher classifier

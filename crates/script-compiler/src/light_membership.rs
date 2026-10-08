@@ -3,6 +3,8 @@
 //! The script compiler is the only build-side crate allowed to embed the
 //! scripting VMs. `prl-build` passes a resolved light table in and consumes a
 //! resolved sidecar out; it never links a VM or reinterprets script data.
+//!
+//! See: context/lib/scripting.md §2 (compile-time light membership)
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
@@ -12,9 +14,10 @@ use std::rc::Rc;
 use anyhow::{Context as _, Result, anyhow, bail};
 use mlua::chunk::Compiler as LuaCompiler;
 use mlua::{Function as LuaFunction, Lua, Table as LuaTable, Value as LuaValue};
+use postretro_foundation::data_descriptors::validate::consequential::validate_consequential_args;
 use postretro_level_format::light_membership::{
     LightAnimationSnapshot, LightComponentSnapshot, LightMembershipManifest, LightMembershipRecord,
-    LightTable, LightTableLight,
+    LightTable, LightTableLight, MapMember, MapMemberKind,
 };
 use rquickjs::{
     CatchResultExt, Context as JsContext, Ctx as JsCtx, Function as JsFunction, IntoJs,
@@ -29,16 +32,63 @@ const SDK_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../sdk/lib");
 // Luau modules are intentionally embedded here rather than borrowed from
 // scripting-core. The dependency direction is scripting-core -> script-compiler,
 // so reusing that runtime module would form a cycle.
-const WORLD_LUAU: &str = include_str!("../../../sdk/lib/world.luau");
-const LIGHTS_LUAU: &str = include_str!("../../../sdk/lib/entities/lights.luau");
-const FOG_VOLUMES_LUAU: &str = include_str!("../../../sdk/lib/entities/fog_volumes.luau");
-const MOVERS_LUAU: &str = include_str!("../../../sdk/lib/entities/movers.luau");
-const TRIGGERS_LUAU: &str = include_str!("../../../sdk/lib/entities/triggers.luau");
+/// Member-handle wrappers, evaluated in this order and installed as temporary
+/// globals for `map_entities.luau` to capture, mirroring scripting-core's
+/// `MEMBER_WRAPPER_SOURCES`. `(wrapper global, source, path)`.
+const MEMBER_WRAPPER_LUAU: &[(&str, &str, &str)] = &[
+    (
+        "wrapLightEntity",
+        include_str!("../../../sdk/lib/entities/lights.luau"),
+        "sdk/lib/entities/lights.luau",
+    ),
+    (
+        "wrapFogVolumeEntity",
+        include_str!("../../../sdk/lib/entities/fog_volumes.luau"),
+        "sdk/lib/entities/fog_volumes.luau",
+    ),
+    (
+        "wrapMoverEntity",
+        include_str!("../../../sdk/lib/entities/movers.luau"),
+        "sdk/lib/entities/movers.luau",
+    ),
+    (
+        "wrapTriggerVolumeEntity",
+        include_str!("../../../sdk/lib/entities/triggers.luau"),
+        "sdk/lib/entities/triggers.luau",
+    ),
+    (
+        "wrapSpawnerEntity",
+        include_str!("../../../sdk/lib/entities/spawners.luau"),
+        "sdk/lib/entities/spawners.luau",
+    ),
+];
+const MAP_ENTITIES_LUAU: &str = include_str!("../../../sdk/lib/map_entities.luau");
+const GRAVITY_LUAU: &str = include_str!("../../../sdk/lib/gravity.luau");
 const KEYFRAMES_LUAU: &str = include_str!("../../../sdk/lib/util/keyframes.luau");
 const EMITTERS_LUAU: &str = include_str!("../../../sdk/lib/entities/emitters.luau");
 const EXPRESSION_REFS_LUAU: &str = include_str!("../../../sdk/lib/util/expression_refs.luau");
 const ACTIVATION_LUAU: &str = include_str!("../../../sdk/lib/activation.luau");
 const DATA_SCRIPT_LUAU: &str = include_str!("../../../sdk/lib/data_script.luau");
+/// `data_script.luau` part chunks, evaluated in this order before it and
+/// published through the temporary `__postretroDataScriptParts` bridge,
+/// mirroring scripting-core's `evaluate_data_script_sdk`.
+const DATA_SCRIPT_PART_LUAU: &[(&str, &str, &str)] = &[
+    (
+        "commands",
+        include_str!("../../../sdk/lib/data_script/commands.luau"),
+        "sdk/lib/data_script/commands.luau",
+    ),
+    (
+        "reactions",
+        include_str!("../../../sdk/lib/data_script/reactions.luau"),
+        "sdk/lib/data_script/reactions.luau",
+    ),
+    (
+        "triggerEvents",
+        include_str!("../../../sdk/lib/data_script/trigger_events.luau"),
+        "sdk/lib/data_script/trigger_events.luau",
+    ),
+];
 const RUNTIME_LUAU: &str = include_str!("../../../sdk/lib/runtime.luau");
 const GAME_STATE_LUAU: &str = include_str!("../../../sdk/lib/game_state.luau");
 const BRAIN_LUAU: &str = include_str!("../../../sdk/lib/brain.luau");
@@ -52,10 +102,20 @@ const UI_THEME_LUAU: &str = include_str!("../../../sdk/lib/ui/theme.luau");
 
 const MAX_VIRTUAL_MODULE_COPY_DEPTH: usize = 32;
 
+/// First build-side id of a non-light map member (mover, trigger volume,
+/// spawner). Map-light ids are their raw `MapData::lights` indexes, so the two
+/// ranges never meet: a member id cannot resolve to a light, or change which
+/// light a step names. Members answer identity snapshots (`id`, `position`,
+/// `tags`, plus `spawnedTags` on a spawner) so a script that indexes one
+/// evaluates at build time as it does at runtime.
+pub const MAP_MEMBER_ID_BASE: u32 = 0x8000_0000;
+
 /// Evaluate a compiled data script against `light_table` and derive the
 /// map-light membership sidecar. The script path selects QuickJS for `.ts` /
 /// `.js` input and Luau for `.luau` input; callers pass the already compiled
-/// bytes represented as UTF-8 source.
+/// bytes represented as UTF-8 source. Mover, trigger and spawner queries
+/// answer from `light_table.map_members` when the table supplies them (a
+/// lights-only table stubs them); light records do not depend on it.
 pub fn emit_light_membership_manifest(
     compiled_source: &str,
     script_path: &Path,
@@ -64,17 +124,14 @@ pub fn emit_light_membership_manifest(
 ) -> Result<LightMembershipManifest> {
     light_table.validate_version().map_err(|e| anyhow!(e))?;
     validate_light_table(light_table)?;
+    let world = Rc::new(BuildWorld::new(light_table)?);
 
     let stubs = Rc::new(RefCell::new(BTreeSet::new()));
     let returned = match script_path.extension().and_then(|ext| ext.to_str()) {
-        Some(ext) if ext.eq_ignore_ascii_case("luau") => evaluate_luau(
-            compiled_source,
-            script_path,
-            mod_root,
-            light_table,
-            stubs.clone(),
-        )?,
-        _ => evaluate_quickjs(compiled_source, script_path, light_table, stubs.clone())?,
+        Some(ext) if ext.eq_ignore_ascii_case("luau") => {
+            evaluate_luau(compiled_source, script_path, mod_root, world, stubs.clone())?
+        }
+        _ => evaluate_quickjs(compiled_source, script_path, world, stubs.clone())?,
     };
 
     let records = collect_membership(&returned, light_table)?;
@@ -85,6 +142,12 @@ pub fn emit_light_membership_manifest(
 fn validate_light_table(light_table: &LightTable) -> Result<()> {
     let mut indexes = BTreeSet::new();
     for light in &light_table.lights {
+        if light.index >= MAP_MEMBER_ID_BASE {
+            bail!(
+                "light table map-light index {} reaches the non-light member id range (from {MAP_MEMBER_ID_BASE}); script handle ids would collide",
+                light.index
+            );
+        }
         if !indexes.insert(light.index) {
             bail!(
                 "light table contains duplicate map-light index {}; stable script handle ids would be ambiguous",
@@ -92,13 +155,65 @@ fn validate_light_table(light_table: &LightTable) -> Result<()> {
             );
         }
     }
+    if !light_table.members_supplied() && !light_table.map_members.is_empty() {
+        bail!(
+            "light table version {} predates `mapMembers` but carries {} of them; a lights-only producer supplies no member table",
+            light_table.version,
+            light_table.map_members.len()
+        );
+    }
+    for (index, member) in light_table.map_members.iter().enumerate() {
+        if member.kind != MapMemberKind::Spawner && !member.spawned_tags.is_empty() {
+            bail!(
+                "light table `mapMembers[{index}]` is a `{}` carrying `spawnedTags`, which only a spawner has",
+                member.kind.component()
+            );
+        }
+        if member.position.iter().any(|axis| !axis.is_finite()) {
+            bail!("light table `mapMembers[{index}]` has a non-finite position");
+        }
+    }
     Ok(())
+}
+
+/// Everything a build-side `worldQuery` can answer: the light table, and the
+/// non-light members with their assigned build ids.
+struct BuildWorld {
+    lights: Vec<LightTableLight>,
+    members: Vec<(u32, MapMember)>,
+    /// False for a lights-only table: its member kinds are unknown, not empty,
+    /// so their queries degrade to stubs.
+    members_supplied: bool,
+}
+
+impl BuildWorld {
+    fn new(light_table: &LightTable) -> Result<Self> {
+        let members = light_table
+            .map_members
+            .iter()
+            .enumerate()
+            .map(|(ordinal, member)| {
+                let id = u32::try_from(ordinal)
+                    .ok()
+                    .and_then(|ordinal| MAP_MEMBER_ID_BASE.checked_add(ordinal))
+                    .ok_or_else(|| {
+                        anyhow!("map member table has more members than the id range holds")
+                    })?;
+                Ok((id, member.clone()))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok(Self {
+            lights: light_table.lights.clone(),
+            members,
+            members_supplied: light_table.members_supplied(),
+        })
+    }
 }
 
 fn evaluate_quickjs(
     source: &str,
     script_path: &Path,
-    light_table: &LightTable,
+    world: Rc<BuildWorld>,
     stubs: StubInventory,
 ) -> Result<JsonValue> {
     let runtime =
@@ -114,7 +229,7 @@ fn evaluate_quickjs(
         let evaluation = (|| -> Result<JsonValue> {
             install_js_determinism(&ctx)?;
             install_js_game_state(&ctx)?;
-            install_js_primitives(&ctx, light_table, stubs.clone())?;
+            install_js_primitives(&ctx, world.clone(), stubs.clone())?;
 
             let prelude = bundle_prelude(Path::new(SDK_ROOT))
                 .context("failed to assemble TypeScript SDK prelude for manifest evaluation")?;
@@ -145,7 +260,7 @@ fn evaluate_luau(
     source: &str,
     script_path: &Path,
     mod_root: &Path,
-    light_table: &LightTable,
+    world: Rc<BuildWorld>,
     stubs: StubInventory,
 ) -> Result<JsonValue> {
     let lua = Lua::new();
@@ -156,7 +271,7 @@ fn evaluate_luau(
         .map_err(|error| anyhow!("failed to install deterministic Luau clock and RNG: {error}"))?;
     install_lua_game_state(&lua)
         .map_err(|error| anyhow!("failed to install Luau getGameState bridge: {error}"))?;
-    install_lua_primitives(&lua, light_table, stubs).map_err(|error| {
+    install_lua_primitives(&lua, world, stubs).map_err(|error| {
         anyhow!("failed to install Luau manifest-evaluation primitives: {error}")
     })?;
     install_lua_prelude(&lua, mod_root)
@@ -283,7 +398,7 @@ fn install_js_game_state(ctx: &JsCtx<'_>) -> Result<()> {
 
 fn install_js_primitives(
     ctx: &JsCtx<'_>,
-    light_table: &LightTable,
+    world: Rc<BuildWorld>,
     stubs: StubInventory,
 ) -> Result<()> {
     let globals = ctx.globals();
@@ -301,14 +416,13 @@ fn install_js_primitives(
         globals.set(*name, f)?;
     }
 
-    let light_table = light_table.clone();
     let stubs_for_query = stubs.clone();
     let f = JsFunction::new(
         ctx.clone(),
         move |ctx: JsCtx<'_>, filter: JsObject<'_>| -> rquickjs::Result<JsJsonValue> {
             let component: String = filter.get("component")?;
             let tag: Option<String> = filter.get("tag")?;
-            query_world_json(&light_table, &component, tag.as_deref(), &stubs_for_query)
+            query_world_json(&world, &component, tag.as_deref(), &stubs_for_query)
                 .map(JsJsonValue)
                 .map_err(|message| rquickjs::Exception::throw_message(&ctx, &message))
         },
@@ -371,7 +485,7 @@ fn install_lua_game_state(lua: &Lua) -> mlua::Result<()> {
 
 fn install_lua_primitives(
     lua: &Lua,
-    light_table: &LightTable,
+    world: Rc<BuildWorld>,
     stubs: StubInventory,
 ) -> mlua::Result<()> {
     let globals = lua.globals();
@@ -389,12 +503,11 @@ fn install_lua_primitives(
         globals.set(*name, f)?;
     }
 
-    let light_table = light_table.clone();
     let stubs_for_query = stubs.clone();
     let f = lua.create_function(move |lua, filter: LuaTable| {
         let component: String = filter.get("component")?;
         let tag: Option<String> = filter.get("tag")?;
-        let value = query_world_json(&light_table, &component, tag.as_deref(), &stubs_for_query)
+        let value = query_world_json(&world, &component, tag.as_deref(), &stubs_for_query)
             .map_err(mlua::Error::RuntimeError)?;
         json_to_lua(lua, &value)
     })?;
@@ -402,48 +515,62 @@ fn install_lua_primitives(
     Ok(())
 }
 
+const MAP_ENTITIES_FIELDS: &[&str] = &["getMapEntities"];
+const GRAVITY_FIELDS: &[&str] = &["getGravity", "setGravity"];
+/// `data_script.luau` fields lifted to bare globals and onto
+/// `require("postretro")`. Mirrors scripting-core's `DATA_SCRIPT_FIELDS`
+/// (the compiler cannot depend on scripting-core); the drift guard
+/// `luau_build_prelude_exports_match_runtime_prelude` derives its expectation
+/// from that runtime source.
+const DATA_SCRIPT_FIELDS: &[&str] = &[
+    "defineReaction",
+    "defineImpactEvent",
+    "defineTriggerEvent",
+    "npcs",
+    "players",
+    "wait",
+    "fire",
+    "scopeReactions",
+    "defineEntity",
+    "defineMod",
+    "defineFaction",
+    "sentiment",
+    "defineMapCatalog",
+    "defineWeaponPlacement",
+    "defineTriggerPool",
+    "defineStore",
+    "read",
+    "fromRuntime",
+    "set",
+    "update",
+    "when",
+];
+/// `ui/widgets.luau` constructors exported through `require("postretro/ui")`.
+/// Mirrors scripting-core's `UI_WIDGETS_FIELDS`.
+const UI_WIDGETS_FIELDS: &[&str] = &[
+    "Text", "Panel", "Image", "Spacer", "Glyph", "Button", "Slider", "Bar", "Ring", "Announce",
+];
+
 /// Ordered Luau SDK construction. The wrapper bridges are visible only long
-/// enough for `world.luau` to capture them, exactly like the runtime prelude.
+/// enough for `map_entities.luau` to capture them, exactly like the runtime
+/// prelude.
 fn install_lua_prelude(lua: &Lua, mod_root: &Path) -> mlua::Result<()> {
     let globals = lua.globals();
 
     let game_state = eval_lua_table(lua, GAME_STATE_LUAU, "sdk/lib/game_state.luau")?;
     copy_lua_fields(&globals, &game_state, &["getGameState"])?;
 
-    let lights = eval_lua_table(lua, LIGHTS_LUAU, "sdk/lib/entities/lights.luau")?;
-    globals.set(
-        "wrapLightEntity",
-        lights.get::<LuaValue>("wrapLightEntity")?,
-    )?;
-
-    let fog = eval_lua_table(lua, FOG_VOLUMES_LUAU, "sdk/lib/entities/fog_volumes.luau")?;
-    globals.set(
-        "wrapFogVolumeEntity",
-        fog.get::<LuaValue>("wrapFogVolumeEntity")?,
-    )?;
-
-    let movers = eval_lua_table(lua, MOVERS_LUAU, "sdk/lib/entities/movers.luau")?;
-    globals.set(
-        "wrapMoverEntity",
-        movers.get::<LuaValue>("wrapMoverEntity")?,
-    )?;
-
-    let triggers = eval_lua_table(lua, TRIGGERS_LUAU, "sdk/lib/entities/triggers.luau")?;
-    globals.set(
-        "wrapTriggerVolumeEntity",
-        triggers.get::<LuaValue>("wrapTriggerVolumeEntity")?,
-    )?;
-
-    let world: LuaValue = lua.load(WORLD_LUAU).set_name("sdk/lib/world.luau").eval()?;
-    globals.set("world", world.clone())?;
-    for name in [
-        "wrapLightEntity",
-        "wrapFogVolumeEntity",
-        "wrapMoverEntity",
-        "wrapTriggerVolumeEntity",
-    ] {
-        globals.set(name, LuaValue::Nil)?;
+    for (wrapper, source, name) in MEMBER_WRAPPER_LUAU {
+        let module = eval_lua_table(lua, source, name)?;
+        globals.set(*wrapper, module.get::<LuaValue>(*wrapper)?)?;
     }
+    let map_entities = eval_lua_table(lua, MAP_ENTITIES_LUAU, "sdk/lib/map_entities.luau")?;
+    copy_lua_fields(&globals, &map_entities, MAP_ENTITIES_FIELDS)?;
+    for (wrapper, _, _) in MEMBER_WRAPPER_LUAU {
+        globals.set(*wrapper, LuaValue::Nil)?;
+    }
+    let gravity = eval_lua_table(lua, GRAVITY_LUAU, "sdk/lib/gravity.luau")?;
+    copy_lua_fields(&globals, &gravity, GRAVITY_FIELDS)?;
 
     let keyframes = eval_lua_table(lua, KEYFRAMES_LUAU, "sdk/lib/util/keyframes.luau")?;
     copy_lua_fields(&globals, &keyframes, &["timeline", "sequence"])?;
@@ -463,28 +590,15 @@ fn install_lua_prelude(lua: &Lua, mod_root: &Path) -> mlua::Result<()> {
     globals.set("__postretroExpressionRefs", expression_refs)?;
     let activation = eval_lua_table(lua, ACTIVATION_LUAU, "sdk/lib/activation.luau")?;
     globals.set("activation", activation.clone())?;
+    let data_script_parts = lua.create_table()?;
+    globals.set("__postretroDataScriptParts", data_script_parts.clone())?;
+    for (key, source, name) in DATA_SCRIPT_PART_LUAU {
+        data_script_parts.set(*key, eval_lua_table(lua, source, name)?)?;
+    }
     let data = eval_lua_table(lua, DATA_SCRIPT_LUAU, "sdk/lib/data_script.luau")?;
+    globals.set("__postretroDataScriptParts", LuaValue::Nil)?;
     globals.set("__postretroExpressionRefs", LuaValue::Nil)?;
-    const DATA_FIELDS: &[&str] = &[
-        "defineReaction",
-        "onTriggerEvent",
-        "damage",
-        "addSlot",
-        "enemies",
-        "spawner",
-        "armTrigger",
-        "disarmTrigger",
-        "wait",
-        "fire",
-        "scopeReactions",
-        "defineEntity",
-        "defineMod",
-        "defineMapCatalog",
-        "defineWeaponPlacement",
-        "defineTriggerPool",
-        "defineStore",
-    ];
-    copy_lua_fields(&globals, &data, DATA_FIELDS)?;
+    copy_lua_fields(&globals, &data, DATA_SCRIPT_FIELDS)?;
 
     // Keep the SDK's virtual-module construction in its runtime order. In
     // particular, widgets and layouts capture the temporary theme-token
@@ -513,7 +627,8 @@ fn install_lua_prelude(lua: &Lua, mod_root: &Path) -> mlua::Result<()> {
     copy_lua_fields(&globals, &brain, &["brain", "candidate", "state"])?;
 
     let root = lua.create_table()?;
-    root.set("world", world)?;
+    copy_lua_fields(&root, &map_entities, MAP_ENTITIES_FIELDS)?;
+    copy_lua_fields(&root, &gravity, GRAVITY_FIELDS)?;
     root.set("runtime", runtime)?;
     copy_lua_fields(&root, &game_state, &["getGameState"])?;
     copy_lua_fields(&root, &brain, &["brain", "candidate", "state"])?;
@@ -523,7 +638,7 @@ fn install_lua_prelude(lua: &Lua, mod_root: &Path) -> mlua::Result<()> {
         &emitters,
         &["emitter", "smokeEmitter", "sparkEmitter", "dustEmitter"],
     )?;
-    copy_lua_fields(&root, &data, DATA_FIELDS)?;
+    copy_lua_fields(&root, &data, DATA_SCRIPT_FIELDS)?;
     let root = copy_readonly_lua_table(lua, root, 0)?;
     // NumberRef lowering uses table identity. Keep the original frozen action
     // namespace after copying the ordinary module values, before publishing it.
@@ -531,13 +646,7 @@ fn install_lua_prelude(lua: &Lua, mod_root: &Path) -> mlua::Result<()> {
     root.set("activation", activation)?;
     root.set_readonly(true);
     let ui = lua.create_table()?;
-    copy_lua_fields(
-        &ui,
-        &ui_widgets,
-        &[
-            "Text", "Panel", "Image", "Spacer", "Button", "Slider", "Bar", "Announce",
-        ],
-    )?;
+    copy_lua_fields(&ui, &ui_widgets, UI_WIDGETS_FIELDS)?;
     copy_lua_fields(&ui, &ui_layout, &["VStack", "HStack", "Grid"])?;
     copy_lua_fields(&ui, &ui_tree, &["Tree", "defineUiTree"])?;
     copy_lua_fields(
@@ -581,6 +690,7 @@ fn install_lua_prelude(lua: &Lua, mod_root: &Path) -> mlua::Result<()> {
             "EXIT_TO_DESKTOP_ACTION",
             "QUIT_TO_MENU_ACTION",
             "OPEN_ACCESSIBILITY_ACTION",
+            "OPEN_CONTROLS_ACTION",
             "accessibilityAction",
             "displayModeAction",
             "loadLevel",
@@ -750,32 +860,46 @@ const WORLD_QUERY_COMPONENTS: &[&str] = &[
     "fog_volume",
     "kinematic_mover",
     "trigger_volume",
+    "spawner",
     "particle",
     "sprite_visual",
 ];
 
 fn query_world_json(
-    light_table: &LightTable,
+    world: &BuildWorld,
     component: &str,
     tag: Option<&str>,
     stubs: &StubInventory,
 ) -> std::result::Result<JsonValue, String> {
+    let tagged = |tags: &[String]| match tag {
+        Some(tag) => tags.iter().any(|candidate| candidate == tag),
+        None => true,
+    };
     match component {
         "light" => Ok(JsonValue::Array(
-            light_table
+            world
                 .lights
                 .iter()
-                .filter(|light| match tag {
-                    Some(tag) => light.tags.iter().any(|candidate| candidate == tag),
-                    None => true,
-                })
+                .filter(|light| tagged(&light.tags))
                 .map(light_handle_json)
                 .collect(),
         )),
         component if WORLD_QUERY_COMPONENTS.contains(&component) => {
-            // The v1 compiler seam carries only map lights. Other valid
-            // runtime component kinds degrade to an empty query, and the
-            // inventory makes any branch-sensitive under-derivation visible.
+            if let Some(kind) = MapMemberKind::from_component(component)
+                && world.members_supplied
+            {
+                return Ok(JsonValue::Array(
+                    world
+                        .members
+                        .iter()
+                        .filter(|(_, member)| member.kind == kind && tagged(&member.tags))
+                        .map(|(id, member)| member_snapshot_json(*id, member))
+                        .collect(),
+                ));
+            }
+            // A kind the build has no table for (every member kind, under a
+            // lights-only table) degrades to an empty query, and the inventory
+            // makes any branch-sensitive under-derivation visible.
             stubs.borrow_mut().insert(format!("worldQuery:{component}"));
             Ok(JsonValue::Array(Vec::new()))
         }
@@ -788,6 +912,19 @@ fn query_world_json(
                 .join(" | ")
         )),
     }
+}
+
+/// The runtime identity snapshot shape: `id`, `position`, `tags`, and
+/// `spawnedTags` on a spawner only.
+fn member_snapshot_json(id: u32, member: &MapMember) -> JsonValue {
+    let mut snapshot = JsonMap::new();
+    snapshot.insert("id".to_owned(), JsonValue::from(id));
+    snapshot.insert("position".to_owned(), vec3_json(member.position));
+    snapshot.insert("tags".to_owned(), json!(member.tags));
+    if member.kind == MapMemberKind::Spawner {
+        snapshot.insert("spawnedTags".to_owned(), json!(member.spawned_tags));
+    }
+    JsonValue::Object(snapshot)
 }
 
 fn light_handle_json(light: &LightTableLight) -> JsonValue {
@@ -899,9 +1036,15 @@ fn collect_membership(
                 continue;
             };
             let light = lights_by_id.get(&id).ok_or_else(|| {
-                anyhow!(
-                    "setLightAnimation targets unknown light handle id {id}; the supplied light table has no matching map-light index"
-                )
+                if id >= MAP_MEMBER_ID_BASE {
+                    anyhow!(
+                        "setLightAnimation targets id {id}, which names a map member (mover, trigger volume or spawner), not a light; animate a member from getMapEntities(\"light\")"
+                    )
+                } else {
+                    anyhow!(
+                        "setLightAnimation targets unknown light handle id {id}; the supplied light table has no matching map-light index"
+                    )
+                }
             })?;
             let record = records
                 .entry(light.index)
@@ -943,23 +1086,90 @@ fn runtime_sequence_step_shape_is_valid(step: &JsonValue) -> bool {
     if primitive.is_empty() {
         return false;
     }
+    // A grant or `addSlot` payload the runtime rejects drops the reaction, so
+    // it must reserve nothing. Same check as the runtime converters; the
+    // diagnostic is discarded here.
+    let absent_args = JsonValue::Null;
+    let args = step.get("args").unwrap_or(&absent_args);
+    if validate_consequential_args("", "", primitive, args).is_err() {
+        return false;
+    }
+    // `wait` and `fire` pair only with their own sentinels, in both directions
+    // (runtime `validate_control_step_pair`): a token-, group- or
+    // entity-targeted control primitive, or a sentinel carrying another
+    // primitive, makes runtime drop the reaction.
+    let control = matches!(primitive, "wait" | "fire");
+
+    // A subject-token entry `{ primitive, target, args }` (`on.activators`,
+    // `on.trigger` verbs) addresses the fire's subjects: a legal step that
+    // reserves no light slot, so it must not make the caller skip the sequence.
+    // Mirror the runtime parser's rejections — an unknown sentinel, a
+    // `target` beside `id`, `kind` or `tag`, a verb the token lacks, a control
+    // primitive.
+    match step.get("target") {
+        None | Some(JsonValue::Null) => {}
+        Some(JsonValue::String(target)) => {
+            let absent = |field: &str| matches!(step.get(field), None | Some(JsonValue::Null));
+            return absent("id")
+                && absent("kind")
+                && absent("tag")
+                && !control
+                && subject_token_carries(target, primitive);
+        }
+        Some(_) => return false,
+    }
+
+    // A group entry `{ primitive, kind, tag?, args }` addresses NPCs or
+    // players resolved at runtime: it is a legal step that reserves no light
+    // slot, so it must not make the caller skip the sequence. Mirror the
+    // runtime parser's rejections — an unknown kind, an `id` beside `kind`, a
+    // non-string tag, a control primitive, and `spawnFromSpawner` (a spawner
+    // is a map member, never a group).
+    match step.get("kind") {
+        None | Some(JsonValue::Null) => {}
+        Some(JsonValue::String(kind)) => {
+            return matches!(kind.as_str(), "npc" | "player")
+                && matches!(step.get("id"), None | Some(JsonValue::Null))
+                && matches!(
+                    step.get("tag"),
+                    None | Some(JsonValue::Null) | Some(JsonValue::String(_))
+                )
+                && !control
+                && primitive != "spawnFromSpawner";
+        }
+        Some(_) => return false,
+    }
 
     match step.get("id") {
-        Some(JsonValue::String(target)) => {
-            // `@wait`/`@fire` are control sentinels: accept them so a body that
-            // mixes a wait with `setLightAnimation` steps still reserves its
-            // light-bake slots (the caller skips the whole sequence on any invalid
-            // step). Their args carry no light membership of their own.
-            matches!(
-                target.as_str(),
-                "@activators" | "@trigger" | "@wait" | "@fire"
-            ) && !(target == "@activators" && matches!(primitive, "armTrigger" | "disarmTrigger"))
+        // `@wait`/`@fire` are control sentinels: accepted with their own
+        // primitive so a body that mixes a wait with `setLightAnimation` steps
+        // still reserves its light-bake slots (the caller skips the whole
+        // sequence on any invalid step). Their args carry no light membership.
+        Some(JsonValue::String(target)) => match target.as_str() {
+            "@wait" => primitive == "wait",
+            "@fire" => primitive == "fire",
+            token => !control && subject_token_carries(token, primitive),
+        },
+        Some(value) => {
+            !control
+                && value
+                    .as_u64()
+                    .and_then(|id| u32::try_from(id).ok())
+                    .is_some()
         }
-        Some(value) => value
-            .as_u64()
-            .and_then(|id| u32::try_from(id).ok())
-            .is_some(),
         None => false,
+    }
+}
+
+/// Whether `target` is a subject token that carries `primitive`: the fired
+/// volume (`@trigger`) only arms and disarms, and the activators never do.
+/// Mirrors the runtime parser's `validate_subject_token_primitive`.
+fn subject_token_carries(target: &str, primitive: &str) -> bool {
+    let arms_a_trigger = matches!(primitive, "armTrigger" | "disarmTrigger");
+    match target {
+        "@activators" => !arms_a_trigger,
+        "@trigger" => arms_a_trigger,
+        _ => false,
     }
 }
 
@@ -1163,8 +1373,8 @@ mod tests {
     fn quickjs_collects_static_and_dynamic_membership_from_light_handles() {
         let source = r#"
             function setupLevel() {
-              const staticLights = world.query({ component: "light", tag: "wave" });
-              const dynamicLights = world.query({ component: "light", tag: "dynamic" });
+              const staticLights = getMapEntities("light", { tag: "wave" });
+              const dynamicLights = getMapEntities("light", { tag: "dynamic" });
               return { reactions: [
                 defineReaction("levelLoad", { sequence: [
                   ...staticLights[0].pulse({ min: 0.2, max: 1.0, periodMs: 1000 }),
@@ -1192,7 +1402,7 @@ mod tests {
     fn level_load_start_active_filters_non_load_reactions_and_marks_conflicts() {
         let source = r#"
             function setupLevel() {
-              const light = world.query({ component: "light", tag: "wave" })[0];
+              const light = getMapEntities("light", { tag: "wave" })[0];
               return { reactions: [
                 defineReaction("trigger", { sequence: [{ id: light.id, primitive: "setLightAnimation", args: { startActive: false } }] }),
                 defineReaction("levelLoad", { sequence: [{ id: light.id, primitive: "setLightAnimation", args: { startActive: false } }] }),
@@ -1217,7 +1427,7 @@ mod tests {
         let source = r#"
             function setupLevel() {
               const pick = Math.random() < 1 && Date.now() === 0;
-              const light = world.query({ component: "light", tag: pick ? "wave" : "dynamic" })[0];
+              const light = getMapEntities("light", { tag: pick ? "wave" : "dynamic" })[0];
               return { reactions: [defineReaction("levelLoad", { sequence: light.pulse({ min: 0, max: 1, periodMs: 1 }) })] };
             }
         "#;
@@ -1256,7 +1466,7 @@ mod tests {
                 && explicit.getTime() === 1234
                 && Date.now() === 0
                 && Date.UTC(1970, 0, 1) === 0;
-              const light = world.query({ component: "light", tag: compatible ? "wave" : "dynamic" })[0];
+              const light = getMapEntities("light", { tag: compatible ? "wave" : "dynamic" })[0];
               return { reactions: [defineReaction("levelLoad", { sequence: light.pulse({ min: 0, max: 1, periodMs: 1 }) })] };
             }
         "#;
@@ -1280,14 +1490,14 @@ mod tests {
 
         let quickjs = r#"
             function setupLevel() {
-              const light = world.query({ component: "light", tag: "wave" })[0];
+              const light = getMapEntities("light", { tag: "wave" })[0];
               if (Object.hasOwn(light.component, "animatedSlot")) throw new Error("leaked animatedSlot");
               return { reactions: [defineReaction("levelLoad", { sequence: light.pulse({ min: 0, max: 1, periodMs: 1 }) })] };
             }
         "#;
         let luau = r#"
             function setupLevel(_)
-              local light = world:query({ component = "light", tag = "wave" })[1]
+              local light = getMapEntities("light", { tag = "wave" })[1]
               if light.component.animatedSlot ~= nil then error("leaked animatedSlot") end
               return { reactions = {
                 defineReaction("levelLoad", { sequence = light:pulse({ min = 0, max = 1, periodMs = 1 }) }),
@@ -1334,7 +1544,7 @@ mod tests {
               fireTick();
               const state = getGameState();
               if (!state.player.health.slot) throw new Error("missing state bridge");
-              const light = world.query({ component: "light", tag: "wave" })[0];
+              const light = getMapEntities("light", { tag: "wave" })[0];
               return { reactions: [defineReaction("levelLoad", { sequence: light.flicker({ min: 0, max: 1, rate: 4 }) })] };
             }
         "#;
@@ -1348,14 +1558,21 @@ mod tests {
         assert_eq!(manifest.stubbed_primitives, vec!["fireTick"]);
     }
 
+    // Kinds the build carries no table for (fog, emitter) degrade to `[]` and
+    // land in the stub inventory. Mover, trigger and spawner queries answer
+    // from the member table, so an empty one is an authoritative `[]`, not a
+    // stub.
     #[test]
-    fn unavailable_world_queries_degrade_and_inventory_branch_sensitive_use() {
+    fn unavailable_member_kinds_degrade_and_inventory_branch_sensitive_use() {
         let source = r#"
             function setupLevel() {
-              const transforms = world.query({ component: "transform" });
-              world.query({ component: "particle" });
-              const light = world.query({ component: "light", tag: "wave" })[0];
-              return { reactions: transforms.length === 0 ? [] : [
+              const fogs = getMapEntities("fog");
+              getMapEntities("emitter");
+              getMapEntities("mover");
+              getMapEntities("trigger");
+              getMapEntities("spawner");
+              const light = getMapEntities("light", { tag: "wave" })[0];
+              return { reactions: fogs.length === 0 ? [] : [
                 defineReaction("levelLoad", { sequence: light.pulse({ min: 0, max: 1, periodMs: 1 }) }),
               ] };
             }
@@ -1370,35 +1587,35 @@ mod tests {
         assert!(manifest.lights.is_empty());
         assert_eq!(
             manifest.stubbed_primitives,
-            vec!["worldQuery:particle", "worldQuery:transform"]
+            vec!["worldQuery:emitter", "worldQuery:fog_volume"]
         );
     }
 
     #[test]
-    fn unknown_world_query_component_matches_runtime_error_contract() {
+    fn unknown_map_kind_raises_naming_the_call_in_both_runtimes() {
         let quickjs = emit_light_membership_manifest(
-            "function setupLevel() { world.query({ component: 'decal' }); return {}; }",
+            "function setupLevel() { getMapEntities('decal'); return {}; }",
             Path::new("fixture.ts"),
             Path::new("."),
             &table(),
         )
-        .expect_err("unknown QuickJS component must throw")
+        .expect_err("unknown QuickJS kind must throw")
         .to_string();
         assert!(
-            quickjs.contains("invalid argument") && quickjs.contains("decal"),
+            quickjs.contains("getMapEntities") && quickjs.contains("decal"),
             "{quickjs}"
         );
 
         let luau = emit_light_membership_manifest(
-            "function setupLevel(_) world:query({ component = 'decal' }); return {} end",
+            "function setupLevel(_) getMapEntities('decal'); return {} end",
             Path::new("fixture.luau"),
             Path::new("."),
             &table(),
         )
-        .expect_err("unknown Luau component must throw")
+        .expect_err("unknown Luau kind must throw")
         .to_string();
         assert!(
-            luau.contains("invalid argument") && luau.contains("decal"),
+            luau.contains("getMapEntities") && luau.contains("decal"),
             "{luau}"
         );
     }
@@ -1421,8 +1638,8 @@ mod tests {
         // manifest drain warns about and skips.
         let quickjs = r#"
             function setupLevel() {
-              const good = world.query({ component: "light", tag: "wave" })[0];
-              const discarded = world.query({ component: "light", tag: "dynamic" })[0];
+              const good = getMapEntities("light", { tag: "wave" })[0];
+              const discarded = getMapEntities("light", { tag: "dynamic" })[0];
               return { reactions: [
                 null,
                 { name: "bad-sequence", sequence: "not-an-array" },
@@ -1438,8 +1655,8 @@ mod tests {
         "#;
         let luau = r#"
             function setupLevel(_)
-              local good = world:query({ component = "light", tag = "wave" })[1]
-              local discarded = world:query({ component = "light", tag = "dynamic" })[1]
+              local good = getMapEntities("light", { tag = "wave" })[1]
+              local discarded = getMapEntities("light", { tag = "dynamic" })[1]
               return { reactions = {
                 false,
                 { name = "bad-sequence", sequence = "not-an-array" },
@@ -1483,7 +1700,7 @@ mod tests {
     fn wait_and_fire_mixed_sequence_still_reserves_light_membership_in_both_hosts() {
         let quickjs = r#"
             function setupLevel() {
-              const light = world.query({ component: "light", tag: "wave" })[0];
+              const light = getMapEntities("light", { tag: "wave" })[0];
               return { reactions: [
                 { name: "levelLoad", sequence: [
                   { id: "@wait", primitive: "wait", args: { durationMs: 800, interruptible: true } },
@@ -1495,7 +1712,7 @@ mod tests {
         "#;
         let luau = r#"
             function setupLevel(_)
-              local light = world:query({ component = "light", tag = "wave" })[1]
+              local light = getMapEntities("light", { tag = "wave" })[1]
               return { reactions = {
                 { name = "levelLoad", sequence = {
                   { id = "@wait", primitive = "wait", args = { durationMs = 800, interruptible = true } },
@@ -1536,6 +1753,680 @@ mod tests {
         assert!(!quickjs_manifest.lights[0].is_dynamic);
     }
 
+    // A group step beside a light member step reserves exactly the
+    // membership the light step reserves alone, in both hosts — before and
+    // after a `wait`, whether authored through the SDK groups
+    // (`npcs({ tag }).update(...)`, `closet:update(...)`) or as raw entries. A
+    // malformed group step (both `id` and `kind`) still makes the pass skip
+    // the sequence, because runtime drops that whole reaction.
+    #[test]
+    fn group_steps_leave_light_membership_unchanged_in_both_hosts() {
+        let quickjs = |group_steps: &str| {
+            format!(
+                r#"
+                function setupLevel() {{
+                  const light = getMapEntities("light", {{ tag: "wave" }})[0];
+                  const closet = npcs({{ tag: "closet" }});
+                  return {{ reactions: [
+                    {{ name: "levelLoad", sequence: [
+                      {{ id: light.id, primitive: "setLightAnimation", args: {{ startActive: false }} }},
+                      {group_steps}
+                    ] }},
+                  ] }};
+                }}
+            "#
+            )
+        };
+        let luau = |group_steps: &str| {
+            format!(
+                r#"
+                function setupLevel(_)
+                  local light = getMapEntities("light", {{ tag = "wave" }})[1]
+                  local closet = npcs({{ tag = "closet" }})
+                  return {{ reactions = {{
+                    {{ name = "levelLoad", sequence = {{
+                      {{ id = light.id, primitive = "setLightAnimation", args = {{ startActive = false }} }},
+                      {group_steps}
+                    }} }},
+                  }} }}
+                end
+            "#
+            )
+        };
+        let evaluate = |source: String, path: &str| {
+            emit_light_membership_manifest(&source, Path::new(path), Path::new("."), &table())
+                .expect("fixture evaluates")
+                .lights
+        };
+
+        let baseline_js = evaluate(quickjs(""), "fixture.ts");
+        let baseline_luau = evaluate(luau(""), "fixture.luau");
+        assert_eq!(
+            baseline_js.len(),
+            1,
+            "the light step alone reserves its slot"
+        );
+        assert_eq!(baseline_js, baseline_luau);
+
+        let with_groups_js = evaluate(
+            quickjs(
+                r#"{ kind: "npc", primitive: "updateNpcState", args: { aggro: true } },
+                   { id: "@wait", primitive: "wait", args: { durationMs: 800 } },
+                   { kind: "npc", tag: "closet", primitive: "applyDamage", args: { amount: 5 } },
+                   { kind: "player", primitive: "grantHealth", args: { amount: 10 } },"#,
+            ),
+            "fixture.ts",
+        );
+        let with_groups_luau = evaluate(
+            luau(
+                r#"{ kind = "npc", primitive = "updateNpcState", args = { aggro = true } },
+                   { id = "@wait", primitive = "wait", args = { durationMs = 800 } },
+                   { kind = "npc", tag = "closet", primitive = "applyDamage", args = { amount = 5 } },
+                   { kind = "player", primitive = "grantHealth", args = { amount = 10 } },"#,
+            ),
+            "fixture.luau",
+        );
+        assert_eq!(with_groups_js, baseline_js);
+        assert_eq!(with_groups_luau, baseline_luau);
+
+        let sdk_groups_js = evaluate(
+            quickjs(
+                r#"npcs({ tag: "closet" }).update({ aggro: true }),
+                   ...wait(800),
+                   closet.damage(5),
+                   players().grantHealth(10),"#,
+            ),
+            "fixture.ts",
+        );
+        let sdk_groups_luau = evaluate(
+            luau(
+                r#"closet:update({ aggro = true }),
+                   wait(800)[1],
+                   npcs():damage(5),
+                   players():grantHealth(10),"#,
+            ),
+            "fixture.luau",
+        );
+        assert_eq!(sdk_groups_js, baseline_js);
+        assert_eq!(sdk_groups_luau, baseline_luau);
+
+        let malformed_js = evaluate(
+            quickjs(r#"{ id: 7, kind: "npc", primitive: "updateNpcState", args: {} },"#),
+            "fixture.ts",
+        );
+        let malformed_luau = evaluate(
+            luau(r#"{ id = 7, kind = "npc", primitive = "updateNpcState", args = {} },"#),
+            "fixture.luau",
+        );
+        assert!(
+            malformed_js.is_empty() && malformed_luau.is_empty(),
+            "a step runtime rejects keeps the pass skipping its reaction"
+        );
+    }
+
+    // A grant payload the runtime rejects drops its reaction at load, so the
+    // light step beside it must reserve nothing; a valid payload in the same
+    // position leaves the light step's reservation intact.
+    #[test]
+    fn rejected_grant_payload_reserves_no_light_in_both_hosts() {
+        let quickjs = |ammo_type: &str| {
+            format!(
+                r#"
+                function setupLevel() {{
+                  const light = getMapEntities("light", {{ tag: "wave" }})[0];
+                  return {{ reactions: [
+                    defineReaction("levelLoad", {{ sequence: [
+                      ...light.pulse({{ min: 0.2, max: 1.0, periodMs: 1000 }}),
+                      players().grantAmmo("{ammo_type}", 1),
+                    ] }}),
+                  ] }};
+                }}
+            "#
+            )
+        };
+        let luau = |ammo_type: &str| {
+            format!(
+                r#"
+                function setupLevel(_)
+                  local light = getMapEntities("light", {{ tag = "wave" }})[1]
+                  local steps = light:pulse({{ min = 0.2, max = 1.0, periodMs = 1000 }})
+                  table.insert(steps, players():grantAmmo("{ammo_type}", 1))
+                  return {{ reactions = {{ defineReaction("levelLoad", {{ sequence = steps }}) }} }}
+                end
+            "#
+            )
+        };
+        let evaluate = |source: String, path: &str| {
+            emit_light_membership_manifest(&source, Path::new(path), Path::new("."), &table())
+                .expect("fixture evaluates")
+                .lights
+        };
+
+        let valid_js = evaluate(quickjs("shells"), "fixture.ts");
+        assert_eq!(valid_js.len(), 1, "a valid grant keeps the light reserved");
+        assert_eq!(valid_js, evaluate(luau("shells"), "fixture.luau"));
+
+        let rejected_js = evaluate(quickjs("bad key!"), "fixture.ts");
+        let rejected_luau = evaluate(luau("bad key!"), "fixture.luau");
+        assert!(
+            rejected_js.is_empty() && rejected_luau.is_empty(),
+            "a grant payload runtime rejects keeps the pass skipping its reaction"
+        );
+    }
+
+    // A lights-only table predates `mapMembers`: its member kinds are unknown,
+    // not empty, so their queries answer `[]` and enter the stub inventory,
+    // where a current table with no members answers them authoritatively.
+    #[test]
+    fn lights_only_table_stubs_member_kind_queries() {
+        let source = r#"
+            function setupLevel() {
+              getMapEntities("mover");
+              getMapEntities("trigger");
+              getMapEntities("spawner");
+              const light = getMapEntities("light", { tag: "wave" })[0];
+              return { reactions: [
+                defineReaction("levelLoad", { sequence: light.pulse({ min: 0, max: 1, periodMs: 1 }) }),
+              ] };
+            }
+        "#;
+        let evaluate = |light_table: &LightTable| {
+            emit_light_membership_manifest(
+                source,
+                Path::new("fixture.ts"),
+                Path::new("."),
+                light_table,
+            )
+        };
+        let mut legacy = table();
+        legacy.version = LightTable::LIGHTS_ONLY_VERSION;
+
+        let legacy_manifest = evaluate(&legacy).expect("a lights-only table evaluates");
+        assert_eq!(legacy_manifest.lights.len(), 1);
+        assert_eq!(
+            legacy_manifest.stubbed_primitives,
+            vec![
+                "worldQuery:kinematic_mover",
+                "worldQuery:spawner",
+                "worldQuery:trigger_volume",
+            ]
+        );
+
+        let current = evaluate(&table()).expect("a current table evaluates");
+        assert_eq!(current.lights, legacy_manifest.lights);
+        assert!(current.stubbed_primitives.is_empty());
+
+        // A lights-only producer never writes members; a table claiming both
+        // is malformed.
+        let mut inconsistent = table().with_map_members(members());
+        inconsistent.version = LightTable::LIGHTS_ONLY_VERSION;
+        assert!(evaluate(&inconsistent).is_err());
+    }
+
+    // A raw `setLightAnimation` aimed at a member id still fails the build,
+    // and says the id names a member rather than an unknown light.
+    #[test]
+    fn set_light_animation_on_a_member_id_names_the_member_range() {
+        let source = r#"
+            function setupLevel() {
+              const lift = getMapEntities("mover", { tag: "lift" })[0];
+              return { reactions: [
+                { name: "levelLoad", sequence: [{ id: lift.id, primitive: "setLightAnimation", args: {} }] },
+              ] };
+            }
+        "#;
+        let error = emit_light_membership_manifest(
+            source,
+            Path::new("fixture.ts"),
+            Path::new("."),
+            &table().with_map_members(members()),
+        )
+        .expect_err("a member id never names a light");
+        assert!(
+            format!("{error:#}").contains("names a map member"),
+            "unexpected diagnostic: {error:#}"
+        );
+    }
+
+    // An `on.activators` / `on.trigger` entry beside a
+    // light member step reserves exactly the light step's membership, in both
+    // hosts, whether authored through the SDK verbs or as raw entries. An
+    // entry runtime rejects (`target` beside `id`, or a verb its token lacks)
+    // still makes the pass skip the sequence.
+    #[test]
+    fn subject_token_steps_leave_light_membership_unchanged_in_both_hosts() {
+        let evaluate = |source: &str, path: &str| {
+            emit_light_membership_manifest(source, Path::new(path), Path::new("."), &table())
+                .expect("fixture evaluates")
+                .lights
+        };
+        let quickjs = |steps: &str| {
+            format!(
+                r#"
+                function setupLevel() {{
+                  const light = getMapEntities("light", {{ tag: "wave" }})[0];
+                  return {{ reactions: [
+                    defineReaction("levelLoad", (on) => ({{ sequence: [
+                      {{ id: light.id, primitive: "setLightAnimation", args: {{ startActive: false }} }},
+                      {steps}
+                    ] }})),
+                  ] }};
+                }}
+            "#
+            )
+        };
+        let luau = |steps: &str| {
+            format!(
+                r#"
+                function setupLevel(_)
+                  local light = getMapEntities("light", {{ tag = "wave" }})[1]
+                  return {{ reactions = {{
+                    defineReaction("levelLoad", function(on) return {{ sequence = {{
+                      {{ id = light.id, primitive = "setLightAnimation", args = {{ startActive = false }} }},
+                      {steps}
+                    }} }} end),
+                  }} }}
+                end
+            "#
+            )
+        };
+
+        let baseline_js = evaluate(&quickjs(""), "fixture.ts");
+        let baseline_luau = evaluate(&luau(""), "fixture.luau");
+        assert_eq!(
+            baseline_js.len(),
+            1,
+            "the light step alone reserves its slot"
+        );
+        assert_eq!(baseline_js, baseline_luau);
+
+        let sdk_js = evaluate(
+            &quickjs("on.activators.grantHealth(5), on.trigger.disarm(),"),
+            "fixture.ts",
+        );
+        let sdk_luau = evaluate(
+            &luau("on.activators:grantHealth(5), on.trigger:disarm(),"),
+            "fixture.luau",
+        );
+        assert_eq!(sdk_js, baseline_js);
+        assert_eq!(sdk_luau, baseline_luau);
+
+        let raw_js = evaluate(
+            &quickjs(
+                r#"{ primitive: "grantHealth", target: "@activators", args: { amount: 5 } },
+                   { primitive: "armTrigger", target: "@trigger", args: {} },"#,
+            ),
+            "fixture.ts",
+        );
+        let raw_luau = evaluate(
+            &luau(
+                r#"{ primitive = "grantHealth", target = "@activators", args = { amount = 5 } },
+                   { primitive = "armTrigger", target = "@trigger", args = {} },"#,
+            ),
+            "fixture.luau",
+        );
+        assert_eq!(raw_js, baseline_js);
+        assert_eq!(raw_luau, baseline_luau);
+
+        for (js, lua) in [
+            (
+                r#"{ id: 7, target: "@activators", primitive: "grantHealth", args: { amount: 5 } },"#,
+                r#"{ id = 7, target = "@activators", primitive = "grantHealth", args = { amount = 5 } },"#,
+            ),
+            (
+                r#"{ target: "@trigger", primitive: "applyDamage", args: { amount: 5 } },"#,
+                r#"{ target = "@trigger", primitive = "applyDamage", args = { amount = 5 } },"#,
+            ),
+            (
+                r#"{ target: "@wait", primitive: "wait", args: { durationMs: 5 } },"#,
+                r#"{ target = "@wait", primitive = "wait", args = { durationMs = 5 } },"#,
+            ),
+        ] {
+            assert!(
+                evaluate(&quickjs(js), "fixture.ts").is_empty()
+                    && evaluate(&luau(lua), "fixture.luau").is_empty(),
+                "a step runtime rejects keeps the pass skipping its reaction: {js}"
+            );
+        }
+    }
+
+    // Control primitives pair only with their own sentinels (runtime
+    // `validate_control_step_pair`), and a group never carries
+    // `spawnFromSpawner`: runtime drops each such reaction, so the pass must
+    // skip it too and reserve nothing for the light step beside it.
+    #[test]
+    fn control_step_pairing_and_group_spawner_mirror_runtime_in_both_hosts() {
+        let evaluate = |source: &str, path: &str| {
+            emit_light_membership_manifest(source, Path::new(path), Path::new("."), &table())
+                .expect("fixture evaluates")
+                .lights
+        };
+        let quickjs = |step: &str| {
+            format!(
+                r#"
+                function setupLevel() {{
+                  const light = getMapEntities("light", {{ tag: "wave" }})[0];
+                  return {{ reactions: [
+                    {{ name: "levelLoad", sequence: [
+                      {{ id: light.id, primitive: "setLightAnimation", args: {{ startActive: false }} }},
+                      {step}
+                    ] }},
+                  ] }};
+                }}
+            "#
+            )
+        };
+        let luau = |step: &str| {
+            format!(
+                r#"
+                function setupLevel(_)
+                  local light = getMapEntities("light", {{ tag = "wave" }})[1]
+                  return {{ reactions = {{
+                    {{ name = "levelLoad", sequence = {{
+                      {{ id = light.id, primitive = "setLightAnimation", args = {{ startActive = false }} }},
+                      {step}
+                    }} }},
+                  }} }}
+                end
+            "#
+            )
+        };
+
+        let accepted_js = evaluate(
+            &quickjs(
+                r#"{ id: "@wait", primitive: "wait", args: { durationMs: 5 } },
+                   { id: "@fire", primitive: "fire", args: { event: "x" } },"#,
+            ),
+            "fixture.ts",
+        );
+        let accepted_luau = evaluate(
+            &luau(
+                r#"{ id = "@wait", primitive = "wait", args = { durationMs = 5 } },
+                   { id = "@fire", primitive = "fire", args = { event = "x" } },"#,
+            ),
+            "fixture.luau",
+        );
+        assert_eq!(accepted_js.len(), 1, "paired sentinels keep the light step");
+        assert_eq!(accepted_js, accepted_luau);
+
+        for (js, lua) in [
+            (
+                r#"{ target: "@activators", primitive: "wait", args: { durationMs: 5 } },"#,
+                r#"{ target = "@activators", primitive = "wait", args = { durationMs = 5 } },"#,
+            ),
+            (
+                r#"{ target: "@trigger", primitive: "fire", args: { event: "x" } },"#,
+                r#"{ target = "@trigger", primitive = "fire", args = { event = "x" } },"#,
+            ),
+            (
+                r#"{ kind: "npc", primitive: "wait", args: { durationMs: 5 } },"#,
+                r#"{ kind = "npc", primitive = "wait", args = { durationMs = 5 } },"#,
+            ),
+            (
+                r#"{ kind: "player", primitive: "fire", args: { event: "x" } },"#,
+                r#"{ kind = "player", primitive = "fire", args = { event = "x" } },"#,
+            ),
+            (
+                r#"{ kind: "npc", tag: "closet", primitive: "spawnFromSpawner" },"#,
+                r#"{ kind = "npc", tag = "closet", primitive = "spawnFromSpawner" },"#,
+            ),
+            (
+                r#"{ id: 5, primitive: "wait", args: { durationMs: 5 } },"#,
+                r#"{ id = 5, primitive = "wait", args = { durationMs = 5 } },"#,
+            ),
+            (
+                r#"{ id: 5, primitive: "fire", args: { event: "x" } },"#,
+                r#"{ id = 5, primitive = "fire", args = { event = "x" } },"#,
+            ),
+            (
+                r#"{ id: "@activators", primitive: "wait", args: { durationMs: 5 } },"#,
+                r#"{ id = "@activators", primitive = "wait", args = { durationMs = 5 } },"#,
+            ),
+            (
+                r#"{ id: "@wait", primitive: "setLightAnimation", args: {} },"#,
+                r#"{ id = "@wait", primitive = "setLightAnimation", args = {} },"#,
+            ),
+            (
+                r#"{ id: "@fire", primitive: "wait", args: { durationMs: 5 } },"#,
+                r#"{ id = "@fire", primitive = "wait", args = { durationMs = 5 } },"#,
+            ),
+        ] {
+            assert!(
+                evaluate(&quickjs(js), "fixture.ts").is_empty()
+                    && evaluate(&luau(lua), "fixture.luau").is_empty(),
+                "a step runtime rejects keeps the pass skipping its reaction: {js}"
+            );
+        }
+    }
+
+    fn members() -> Vec<MapMember> {
+        vec![
+            MapMember {
+                kind: MapMemberKind::TriggerVolume,
+                tags: vec!["plate".to_string()],
+                position: [1.0, 2.0, 3.0],
+                spawned_tags: Vec::new(),
+            },
+            MapMember {
+                kind: MapMemberKind::Spawner,
+                tags: vec!["closet".to_string()],
+                position: [4.0, 5.0, 6.0],
+                spawned_tags: vec!["wave_1".to_string()],
+            },
+            MapMember {
+                kind: MapMemberKind::KinematicMover,
+                tags: vec!["lift".to_string()],
+                position: [7.0, 8.0, 9.0],
+                spawned_tags: Vec::new(),
+            },
+        ]
+    }
+
+    // Regression: build-side member queries for triggers, spawners and movers
+    // returned `[]`, so a script indexing a member threw at build and failed
+    // the map though it ran fine. With the member table they answer identity
+    // snapshots whose ids never name a light, and light records stay exactly
+    // what the light step alone reserves.
+    #[test]
+    fn indexed_trigger_spawner_and_mover_members_evaluate_at_build_in_both_hosts() {
+        let quickjs = r#"
+            function setupLevel() {
+              const light = getMapEntities("light", { tag: "wave" })[0];
+              const bind = getMapEntities("trigger", { tag: "plate" })[0].on("enter", ["levelLoad"]);
+              const [closet] = getMapEntities("spawner", { tag: "closet" });
+              const lift = getMapEntities("mover", { tag: "lift" })[0];
+              const plate = getMapEntities("trigger")[0];
+              if (closet.spawnedTags.join() !== "wave_1") throw new Error("spawnedTags");
+              if (plate.position.y !== 2 || plate.tags[0] !== "plate") throw new Error("snapshot");
+              if ("spawnedTags" in plate) throw new Error("spawnedTags on a trigger");
+              for (const member of [plate, closet, lift]) {
+                if (member.id < 2147483648) throw new Error("member id in the light range");
+              }
+              if (new Set([plate.id, closet.id, lift.id]).size !== 3) throw new Error("ids collide");
+              if (getMapEntities("spawner", { tag: "plate" }).length !== 0) throw new Error("tag filter");
+              return {
+                reactions: [defineReaction("levelLoad", { sequence: [
+                  { id: light.id, primitive: "setLightAnimation", args: { startActive: false } },
+                  ...closet.fire(),
+                  ...lift.start(),
+                  ...plate.arm(),
+                ] })],
+                triggerEvents: [bind],
+              };
+            }
+        "#;
+        let luau = r#"
+            function setupLevel(_)
+              local light = getMapEntities("light", { tag = "wave" })[1]
+              local bind = getMapEntities("trigger", { tag = "plate" })[1]:on("enter", { "levelLoad" })
+              local closet = getMapEntities("spawner", { tag = "closet" })[1]
+              local lift = getMapEntities("mover", { tag = "lift" })[1]
+              local plate = getMapEntities("trigger")[1]
+              if table.concat(closet.spawnedTags, ",") ~= "wave_1" then error("spawnedTags") end
+              if plate.position.y ~= 2 or plate.tags[1] ~= "plate" then error("snapshot") end
+              for _, member in { plate, closet, lift } do
+                if member.id < 2147483648 then error("member id in the light range") end
+              end
+              if plate.id == closet.id or closet.id == lift.id or plate.id == lift.id then
+                error("ids collide")
+              end
+              if #getMapEntities("spawner", { tag = "plate" }) ~= 0 then error("tag filter") end
+              return {
+                reactions = { defineReaction("levelLoad", { sequence = {
+                  { id = light.id, primitive = "setLightAnimation", args = { startActive = false } },
+                  closet:fire()[1],
+                  lift:start()[1],
+                  plate:arm()[1],
+                } }) },
+                triggerEvents = { bind },
+              }
+            end
+        "#;
+        let baseline = r#"
+            function setupLevel() {
+              const light = getMapEntities("light", { tag: "wave" })[0];
+              return { reactions: [defineReaction("levelLoad", { sequence: [
+                { id: light.id, primitive: "setLightAnimation", args: { startActive: false } },
+              ] })] };
+            }
+        "#;
+        let with_members = table().with_map_members(members());
+        let evaluate = |source: &str, path: &str| {
+            emit_light_membership_manifest(source, Path::new(path), Path::new("."), &with_members)
+                .unwrap_or_else(|error| panic!("{path} evaluates with members: {error:#}"))
+        };
+
+        let baseline = evaluate(baseline, "fixture.ts");
+        let quickjs_manifest = evaluate(quickjs, "fixture.ts");
+        let luau_manifest = evaluate(luau, "fixture.luau");
+        assert_eq!(baseline.lights.len(), 1);
+        assert_eq!(quickjs_manifest.lights, baseline.lights);
+        assert_eq!(luau_manifest.lights, baseline.lights);
+        assert!(
+            quickjs_manifest.stubbed_primitives.is_empty()
+                && luau_manifest.stubbed_primitives.is_empty(),
+            "answered member kinds are not stubs: {:?} / {:?}",
+            quickjs_manifest.stubbed_primitives,
+            luau_manifest.stubbed_primitives,
+        );
+
+        // With an empty member table the same kinds answer `[]`, so indexing
+        // a member throws: the table is what makes the script evaluate.
+        assert!(
+            emit_light_membership_manifest(
+                quickjs,
+                Path::new("fixture.ts"),
+                Path::new("."),
+                &table()
+            )
+            .is_err()
+        );
+    }
+
+    // The shared wire type carries `spawnedTags` on any kind; the evaluator
+    // rejects it off a spawner, as the runtime snapshot never carries it there.
+    #[test]
+    fn member_table_rejects_spawned_tags_off_a_spawner_and_non_finite_positions() {
+        let source = "function setupLevel() { return { reactions: [] }; }";
+        let evaluate = |member: MapMember| {
+            emit_light_membership_manifest(
+                source,
+                Path::new("fixture.ts"),
+                Path::new("."),
+                &table().with_map_members(vec![member]),
+            )
+        };
+        assert!(
+            evaluate(MapMember {
+                kind: MapMemberKind::TriggerVolume,
+                tags: Vec::new(),
+                position: [0.0; 3],
+                spawned_tags: vec!["x".to_string()],
+            })
+            .is_err()
+        );
+        assert!(
+            evaluate(MapMember {
+                kind: MapMemberKind::Spawner,
+                tags: Vec::new(),
+                position: [f32::NAN, 0.0, 0.0],
+                spawned_tags: Vec::new(),
+            })
+            .is_err()
+        );
+        assert!(
+            evaluate(MapMember {
+                kind: MapMemberKind::Spawner,
+                tags: Vec::new(),
+                position: [0.0; 3],
+                spawned_tags: vec!["x".to_string()],
+            })
+            .is_ok()
+        );
+    }
+
+    /// Extract a `&[&str]` constant's entries from the runtime prelude source.
+    fn runtime_prelude_list(name: &str) -> BTreeSet<String> {
+        const RUNTIME_PRELUDE: &str = include_str!("../../scripting-core/src/luau_prelude.rs");
+        let marker = format!("const {name}: &[&str] = &[");
+        let start = RUNTIME_PRELUDE
+            .find(&marker)
+            .unwrap_or_else(|| panic!("runtime luau_prelude.rs no longer defines `{name}`"))
+            + marker.len();
+        let body = &RUNTIME_PRELUDE[start..];
+        let body = &body[..body.find("];").expect("runtime list is terminated")];
+        body.split('"')
+            .skip(1)
+            .step_by(2)
+            .map(str::to_owned)
+            .collect()
+    }
+
+    // Drift guard: the build-side Luau SDK must expose exactly what the
+    // runtime prelude exposes — bare data-script globals and the
+    // `postretro` / `postretro/ui` module tables — or a level script using a
+    // runtime global fails the light pass. Expectations derive from the
+    // runtime source, never a second hand-written list.
+    #[test]
+    fn luau_build_prelude_exports_match_runtime_prelude() {
+        let lua = Lua::new();
+        install_lua_game_state(&lua).expect("game-state bridge");
+        let world = Rc::new(BuildWorld::new(&table()).expect("build world"));
+        install_lua_primitives(&lua, world, Rc::new(RefCell::new(BTreeSet::new())))
+            .expect("primitives");
+        install_lua_prelude(&lua, Path::new(".")).expect("prelude");
+
+        let globals = lua.globals();
+        for name in runtime_prelude_list("DATA_SCRIPT_FIELDS") {
+            assert!(
+                !matches!(
+                    globals.get::<LuaValue>(name.as_str()).unwrap(),
+                    LuaValue::Nil
+                ),
+                "runtime bare global `{name}` is missing from the build-side prelude"
+            );
+        }
+
+        let require: LuaFunction = globals.get("require").expect("require installed");
+        let keys = |module: &str| -> BTreeSet<String> {
+            let table: LuaTable = require.call(module).expect("virtual module resolves");
+            table
+                .pairs::<String, LuaValue>()
+                .map(|pair| pair.expect("string key").0)
+                .collect()
+        };
+        assert_eq!(
+            keys("postretro"),
+            runtime_prelude_list("POSTRETRO_ROOT_MODULE_EXPORTS"),
+            "build-side require(\"postretro\") drifted from the runtime"
+        );
+        assert_eq!(
+            keys("postretro/ui"),
+            runtime_prelude_list("POSTRETRO_UI_MODULE_EXPORTS"),
+            "build-side require(\"postretro/ui\") drifted from the runtime"
+        );
+    }
+
     #[test]
     fn luau_random_preserves_argument_forms_and_is_deterministic() {
         let source = r#"
@@ -1544,7 +2435,7 @@ mod tests {
               local one = math.random(1)
               local exact = math.random(2, 2)
               local tag = unit >= 0 and unit < 1 and one == 1 and exact == 2 and "wave" or "dynamic"
-              local light = world:query({ component = "light", tag = tag })[1]
+              local light = getMapEntities("light", { tag = tag })[1]
               return { reactions = {
                 defineReaction("levelLoad", { sequence = light:pulse({ min = 0, max = 1, periodMs = 1 }) }),
               } }
@@ -1581,7 +2472,7 @@ mod tests {
             r#"
                 local Postretro = require("postretro")
                 return function()
-                  local light = Postretro.world:query({ component = "light", tag = "wave" })[1]
+                  local light = Postretro.getMapEntities("light", { tag = "wave" })[1]
                   return Postretro.defineReaction("levelLoad", {
                     sequence = light:pulse({ min = 0, max = 1, periodMs = 1 }),
                   })
@@ -1617,7 +2508,7 @@ mod tests {
             local fluent = activation.shot({ scale = { damage = activation.charge:times(5):plus(1) } })
             assert(fluent.scale.damage.op == "add" and fluent.scale.damage.a.op == "mul")
             function setupLevel(_)
-              local light = world:query({ component = "light", tag = "wave" })[1]
+              local light = getMapEntities("light", { tag = "wave" })[1]
               return { reactions = {
                 defineReaction("levelLoad", { sequence = light:pulse({ min = 0, max = 1, periodMs = 1 }) })
               } }
@@ -1641,7 +2532,7 @@ mod tests {
             local Postretro = require("postretro")
             local Ui = require("postretro/ui")
             local rootMutationOk = pcall(function()
-              Postretro.world.query = function() return {} end
+              Postretro.runtime.add = function() return {} end
             end)
             local uiMutationOk = pcall(function()
               Ui.ui.createLocalState = function() return {} end
@@ -1650,7 +2541,7 @@ mod tests {
               if rootMutationOk or uiMutationOk then
                 error("nested SDK module table was writable")
               end
-              local light = Postretro.world:query({ component = "light", tag = "wave" })[1]
+              local light = Postretro.getMapEntities("light", { tag = "wave" })[1]
               return { reactions = {
                 Postretro.defineReaction("levelLoad", { sequence = light:pulse({ min = 0, max = 1, periodMs = 1 }) }),
               } }
@@ -1674,7 +2565,7 @@ mod tests {
             local Ui = require("postretro/ui")
             local value = Ui.fact.number("damage", { format = "{}" })
             function setupLevel(_)
-              local light = Postretro.world:query({ component = "light", tag = "wave" })[1]
+              local light = Postretro.getMapEntities("light", { tag = "wave" })[1]
               return { reactions = {
                 Postretro.defineReaction("levelLoad", { sequence = light:pulse({ min = 0, max = 1, periodMs = 1 }) }),
               } }
@@ -1711,7 +2602,7 @@ mod tests {
               if type(openAction) ~= "string" or type(fieldAction) ~= "string" then
                 error("postretro/ui accessibility action exports missing")
               end
-              local light = Postretro.world:query({ component = "light", tag = "wave" })[1]
+              local light = Postretro.getMapEntities("light", { tag = "wave" })[1]
               return { reactions = {
                 Postretro.defineReaction("levelLoad", { sequence = light:pulse({ min = 0, max = 1, periodMs = 1 }) }),
               } }
@@ -1731,14 +2622,14 @@ mod tests {
     fn luau_and_typescript_derive_identical_membership() {
         let ts = r#"
             function setupLevel() {
-              const light = world.query({ component: "light", tag: "wave" })[0];
+              const light = getMapEntities("light", { tag: "wave" })[0];
               return { reactions: [defineReaction("levelLoad", { sequence: light.colorShift({ values: [{x: 1, y: 0, z: 0}], periodMs: 1000 }) })] };
             }
         "#;
         let luau = r#"
             local Postretro = require("postretro")
             function setupLevel(_ctx)
-              local light = Postretro.world:query({ component = "light", tag = "wave" })[1]
+              local light = Postretro.getMapEntities("light", { tag = "wave" })[1]
               return { reactions = {
                 Postretro.defineReaction("levelLoad", { sequence = light:colorShift({ values = {{x = 1, y = 0, z = 0}}, periodMs = 1000 }) }),
               } }

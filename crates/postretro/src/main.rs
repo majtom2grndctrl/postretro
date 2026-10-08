@@ -642,6 +642,109 @@ fn resolve_crouch_intent(mode: options::CrouchMode, button: ButtonState, latch: 
     }
 }
 
+/// The sprint twin of [`resolve_crouch_intent`]: in toggle mode each press edge
+/// of the resolved command (a hold binding's edge comes when its threshold
+/// passes) flips the latch.
+fn resolve_sprint_intent(mode: options::SprintMode, button: ButtonState, latch: &mut bool) -> bool {
+    match mode {
+        options::SprintMode::Hold => button.is_active(),
+        options::SprintMode::Toggle => {
+            if matches!(button, ButtonState::Pressed) {
+                *latch = !*latch;
+            }
+            *latch
+        }
+    }
+}
+
+/// What one frame's gamepad poll asks of the App once the session borrow ends.
+#[derive(Debug, Default, Clone, Copy)]
+struct GamepadPollVotes {
+    /// A gamepad nav intent arrived: a `focus`-mode signal.
+    nav_seen: bool,
+    /// `nav.menu` (gamepad Start) was pressed.
+    menu_toggle: bool,
+    /// A pad disconnect or switch lifted Shoot or AltFire to neutral.
+    weapon_lifted: bool,
+}
+
+/// Poll the gamepad once in the Input stage, before the `UiDispatch`
+/// `take_ready`/`advance_frame` pair, so pad nav intents ride the keyboard's
+/// N→N+1 contract. Feeds the pad into the input system, hands presses to an
+/// open capture prompt, releases the focus engine's repeat clocks, and queues
+/// text shortcuts and nav intents only while a capturing tree owns input.
+/// See: context/lib/input.md §7
+fn poll_gamepad(
+    session: &mut session::Session,
+    nav_sticks: &mut input::StickNavTrackers,
+    frame_dt: f32,
+) -> GamepadPollVotes {
+    let mut votes = GamepadPollVotes::default();
+    let context = session.ui_nav_context();
+    let capture_prompt = session.capture_prompt_is_active();
+    let Some(gp) = session.gamepad_system.as_mut() else {
+        return votes;
+    };
+    let mut gp_nav = gp.update(
+        &mut session.input_system,
+        nav_sticks,
+        session.bindings.ui_nav(),
+        context,
+    );
+    if !gp_nav.presses.is_empty() {
+        session.device_family.note_pad(gp_nav.vendor_id);
+    }
+    votes.weapon_lifted = gp_nav
+        .lifted_commands
+        .iter()
+        .any(|command| matches!(command, input::Action::Shoot | input::Action::AltFire));
+    if capture_prompt {
+        // The capture prompt takes the pad's presses; a captured press neither
+        // navigates nor opens the menu.
+        for press in std::mem::take(&mut gp_nav.presses) {
+            session.controls.offer_press(press);
+        }
+        gp_nav.nav_intents.clear();
+    }
+    // Advance any active rumble's timeout and stop it once its duration
+    // elapses (started by a drained `Rumble` command on a prior frame).
+    gp.tick_rumble(frame_dt);
+    // A confirm RELEASE stops the activation-repeat clock — the gamepad twin of
+    // the keyboard Enter-release.
+    if gp_nav.confirm_released {
+        session.ui_focus.release_confirm_repeat();
+    }
+    if gp_nav.text_shortcut_released {
+        session.ui_focus.release_shortcut_repeat();
+    }
+    // No directional input held releases the directional hold-to-repeat clock,
+    // mirroring the arrow-key-up path.
+    if gp_nav.directional_released {
+        session.ui_focus.release_repeat();
+    }
+    votes.nav_seen = !gp_nav.nav_intents.is_empty();
+    let capture = session.ui_dispatch.mode() == input::UiCaptureMode::Capture;
+    if capture {
+        for command in gp_nav.text_shortcuts {
+            session
+                .ui_dispatch
+                .enqueue_intent(input::UiIntentPayload::TextShortcut(command));
+        }
+    }
+    for intent in gp_nav.nav_intents {
+        if intent == input::NavIntent::Menu {
+            votes.menu_toggle = true;
+            continue;
+        }
+        if capture {
+            session
+                .ui_dispatch
+                .enqueue_intent(input::UiIntentPayload::Nav(intent));
+        }
+    }
+    votes
+}
+
 /// Client-side tick path for static PRL-loaded movers. The host replicates
 /// mover *phase*, not a transform or carried-light pose; render consumers read
 /// the transform reconstructed here through the same interpolation accessor.
@@ -726,6 +829,8 @@ pub(crate) struct App {
     /// the movement component. Inert in `CrouchMode::Hold` (hold tracks the
     /// button level directly). See: context/lib/input.md, context/lib/player_options.md
     crouch_toggle_active: bool,
+    /// Sprint's toggle-mode latch, the crouch latch's twin.
+    sprint_toggle_active: bool,
 
     /// Warn-once state for the enemy-AI tick. Content-keyed diagnostics (e.g.
     /// `anim:<name>` for an animation state that fails to switch,
@@ -746,11 +851,16 @@ pub(crate) struct App {
     /// See: context/lib/input.md §7
     cursor_pos: Option<input::PointerPos>,
 
+    /// Pointer wheel a capturing UI tree consumed since the last UI snapshot,
+    /// at the cursor. Taken onto the next snapshot, where the top tree scrolls
+    /// the scroll container under the cursor. See: context/lib/ui.md §4
+    ui_wheel: Option<postretro_ui::UiWheelScroll>,
+
     /// Edge detector turning the gamepad nav stick (left stick) into discrete
     /// D-pad-style nav intents: one intent per push past the dead zone. Polled
     /// in the input stage before the `take_ready`/`advance_frame` pair so
     /// gamepad nav shares the keyboard's N→N+1 contract. See: context/lib/input.md §7
-    nav_stick_tracker: input::StickNavTracker,
+    nav_stick_tracker: input::StickNavTrackers,
 
     frame_timing: FrameTiming,
 
@@ -769,7 +879,7 @@ pub(crate) struct App {
     view_feel_descriptor: Option<postretro_foundation::ViewFeelParams>,
 
     /// Parallel to `input_system`; same key events, debug actions only.
-    /// See: context/lib/input.md §7
+    /// See: context/lib/input.md §8
     diagnostic_inputs: input::DiagnosticInputs,
 
     /// One-shot flag: set by `DumpPortalWalk`, consumed and cleared on the
@@ -819,7 +929,7 @@ pub(crate) struct App {
     /// (close) the registered `pauseMenu` via the engine push/pop API. `nav.menu` opens
     /// the menu from gameplay where the UI-dispatch seam is `Passthrough` and so
     /// queues nothing — hence the dedicated punch-through, mirroring how
-    /// `ToggleDebugPanel` bypasses the capture gate. See: context/lib/input.md §7.
+    /// `ToggleDebugPanel` bypasses the capture gate. See: context/lib/input.md §5.
     pending_menu_toggle: bool,
 
     /// Whether the engine accessibility panel was on the stack at the last
@@ -1274,6 +1384,7 @@ fn build_sim_command(
     snapshot: &input::ActionSnapshot,
     camera: &Camera,
     crouch_intent: bool,
+    sprint_intent: bool,
     dash_pressed: bool,
     shoot_pressed: bool,
     select_pressed: bool,
@@ -1281,7 +1392,7 @@ fn build_sim_command(
     drop_pressed: bool,
 ) -> sim::SimCommand {
     let jump_pressed = snapshot.button(Action::Jump).is_active();
-    let sprint = snapshot.button(Action::Sprint).is_active();
+    let sprint = sprint_intent;
     let shoot = snapshot.button(Action::Shoot);
     let reload = snapshot.button(Action::Reload);
     let select_slot = select_pressed
@@ -1969,7 +2080,7 @@ impl ApplicationHandler for App {
                 // exactly like gamepad Start) and Escape inside a capturing tree —
                 // including an open text-entry modal — to `nav.cancel`. The Shift state is
                 // the diagnostic resolver's modifier tracking (the Shift key-down was seen
-                // by the general arm before this Esc). See: context/lib/input.md §7.
+                // by the general arm before this Esc). See: context/lib/input.md §5.
                 self.release_cursor_for_exit();
                 log::info!("[Engine] Shutting down");
                 event_loop.exit();
@@ -1997,6 +2108,17 @@ impl ApplicationHandler for App {
                 let Some(session) = self.session.as_mut() else {
                     return;
                 };
+                if state.is_pressed() {
+                    session.device_family.note_keyboard_mouse();
+                }
+                // The capture prompt takes mouse buttons too; a captured click
+                // activates nothing.
+                if session.capture_prompt_is_active() {
+                    if state.is_pressed() {
+                        session.offer_capture_press(input::PhysicalInput::MouseButton(button));
+                    }
+                    return;
+                }
                 if !session
                     .ui_dispatch
                     .dispatch_event(click_intent)
@@ -2035,10 +2157,34 @@ impl ApplicationHandler for App {
                     }
                     return;
                 };
+                // The capture prompt takes a whole wheel notch as `wheel_up`
+                // or `wheel_down` and scrolls nothing. Partial travel, such as
+                // trackpad momentum, neither binds the wheel nor cancels.
+                if session.capture_prompt_is_active() {
+                    if let Some(notch) = session.input_system.capture_wheel_notch(delta) {
+                        session.offer_capture_press(notch);
+                    }
+                    return;
+                }
                 let forwards_to_gameplay = session
                     .ui_dispatch
                     .dispatch_event(None)
                     .forwards_to_gameplay();
+                if !forwards_to_gameplay {
+                    // A capturing tree consumed the wheel: it scrolls the scroll
+                    // container under the cursor on the next UI snapshot.
+                    if let Some(pos) = self.cursor_pos {
+                        let (lines, pixels) = match delta {
+                            winit::event::MouseScrollDelta::LineDelta(_, y) => (y, 0.0),
+                            winit::event::MouseScrollDelta::PixelDelta(p) => (0.0, p.y as f32),
+                        };
+                        self.ui_wheel.get_or_insert_default().accumulate(
+                            [pos.x as f32, pos.y as f32],
+                            lines,
+                            pixels,
+                        );
+                    }
+                }
                 if forwards_to_gameplay && session.input_focus == InputFocus::Gameplay {
                     session.input_system.handle_mouse_wheel(delta);
                 } else if input::wheel_diagnostics_enabled() {
@@ -2084,6 +2230,8 @@ impl ApplicationHandler for App {
                         input::cursor::release_cursor(&ws.window);
                     }
                     if let Some(session) = self.session.as_mut() {
+                        // Leaving the window abandons a capture unchanged.
+                        session.abandon_capture();
                         session.input_system.clear_all();
                         self.client_weapon
                             .suspend(&session.scripting.script_ctx.registry.borrow());
@@ -2108,7 +2256,7 @@ impl ApplicationHandler for App {
                 let cpu_stages = self.cpu_timer.stages();
                 let stage_scope = cpu_stages.scope(cpu_timing::FrameStage::Housekeeping);
                 // OS preference replies land ahead of the Input stage, so a
-                // player write later this frame wins over them (UO1).
+                // player write later this frame wins over them.
                 self.poll_os_preferences();
                 self.poll_window_mode_readback();
 
@@ -2148,8 +2296,8 @@ impl ApplicationHandler for App {
                 // after the boot/install boundary but before any same-frame UI
                 // dispatch or gameplay ticks. A `levelLoad` wait enrolled while a
                 // ready world installs above therefore advances on this redraw's
-                // first tick (O1/O2/O31). A UI wait enrolled below stamps the new
-                // counter and remains protected from this redraw's ticks (O51).
+                // first tick. A UI wait enrolled below stamps the new counter and
+                // remains protected from this redraw's ticks.
                 // Distinct from `frame_timing.begin_frame`.
                 if let Some(session) = self.session.as_ref() {
                     session.scripting.scheduler.begin_frame();
@@ -2175,6 +2323,9 @@ impl ApplicationHandler for App {
 
                 drop(stage_scope);
                 let stage_scope = cpu_stages.scope(cpu_timing::FrameStage::Input);
+                // Registry, layer, or host-tuning changes from earlier frames
+                // rebuild the binding table before this frame's input reads it.
+                self.refresh_effective_bindings();
 
                 // The frame's animation sample clock is a single value shared by
                 // game-side hit-zone pose resolution and render collection. It is
@@ -2194,71 +2345,40 @@ impl ApplicationHandler for App {
                     frozen,
                 );
 
-                // Tail of the Input stage: poll the gamepad. This must run
-                // BEFORE the `take_ready`/`advance_frame` pair below so gamepad
-                // nav intents land in `pending` ahead of promotion and share the
-                // keyboard's N→N+1 contract — a gamepad nav consumed this frame
-                // first reaches game logic next frame, never same-frame. (gilrs
-                // previously polled *after* promotion, which would have leaked
-                // gamepad intents a frame early.) The intents are enqueued only
-                // while a capturing tree owns input (`Capture` mode); under
-                // `Passthrough` they are dropped here, exactly as keyboard
-                // events forward through the seam. See: context/lib/input.md §7
+                // Tail of the Input stage: poll the gamepad, BEFORE the
+                // `take_ready`/`advance_frame` pair below (see `poll_gamepad`).
                 // Reached only in Running (Frontend returned above), so the
                 // session is installed. Disjoint borrows of the session group and
                 // the non-session `nav_stick_tracker`; mode-signal and menu-toggle
                 // votes are collected and applied after the borrow ends.
-                let (gamepad_nav_seen, gamepad_menu_toggle) = {
+                let gamepad_votes = {
                     let App {
                         session,
                         nav_stick_tracker,
                         ..
                     } = self;
-                    let mut nav_seen = false;
-                    let mut menu_toggle = false;
-                    if let Some(session) = session.as_mut()
-                        && let Some(gp) = session.gamepad_system.as_mut()
-                    {
-                        let gp_nav = gp.update(&mut session.input_system, nav_stick_tracker);
-                        // Advance any active rumble's timeout in the input stage
-                        // and stop it once its duration elapses (started by a
-                        // drained `Rumble` command on a prior frame).
-                        gp.tick_rumble(frame_dt);
-                        // A confirm (South) RELEASE stops the activation-repeat
-                        // clock — the gamepad twin of the keyboard Enter-release.
-                        if gp_nav.confirm_released {
-                            session.ui_focus.release_confirm_repeat();
-                        }
-                        // No directional input held releases the directional
-                        // hold-to-repeat clock, mirroring the arrow-key-up path.
-                        if gp_nav.directional_released {
-                            session.ui_focus.release_repeat();
-                        }
-                        // Any gamepad nav intent is a `focus`-mode signal.
-                        nav_seen = !gp_nav.nav_intents.is_empty();
-                        // `nav.menu` (gamepad Start) toggles the pause menu via
-                        // the punch-through flag (Passthrough queues nothing);
-                        // other nav intents enqueue only while capturing.
-                        let capture = session.ui_dispatch.mode() == input::UiCaptureMode::Capture;
-                        for intent in gp_nav.nav_intents {
-                            if intent == input::NavIntent::Menu {
-                                menu_toggle = true;
-                                continue;
-                            }
-                            if capture {
-                                session
-                                    .ui_dispatch
-                                    .enqueue_intent(input::UiIntentPayload::Nav(intent));
-                            }
-                        }
-                    }
-                    (nav_seen, menu_toggle)
+                    session
+                        .as_mut()
+                        .map_or_else(GamepadPollVotes::default, |session| {
+                            poll_gamepad(session, nav_stick_tracker, frame_dt)
+                        })
                 };
-                if gamepad_nav_seen {
+                if gamepad_votes.nav_seen {
                     self.record_mode_signal(scripting_systems::input_mode::ModeSignal::NavInput);
                 }
-                if gamepad_menu_toggle {
+                // `nav.menu` (gamepad Start) toggles the pause menu via the
+                // punch-through flag (Passthrough queues nothing).
+                if gamepad_votes.menu_toggle {
                     self.pending_menu_toggle = true;
+                }
+                // A pad lost or switched mid-charge cancels the activation, as
+                // focus loss does: neutral input is never a charge release.
+                if gamepad_votes.weapon_lifted
+                    && let Some(session) = self.session.as_mut()
+                {
+                    self.client_weapon
+                        .suspend(&session.scripting.script_ctx.registry.borrow());
+                    session.gameplay_input_latch.activation.suspend();
                 }
 
                 // Resolve this frame's input-mode signal into the engine-owned
@@ -2275,7 +2395,15 @@ impl ApplicationHandler for App {
                         .scripting
                         .input_mode_tracker
                         .update(mode_signal, frame_dt);
+                    // Mouse motion moves glyphs to keyboard-and-mouse only once
+                    // it passes the pointer-mode debounce.
+                    if resolved_input_mode == input::InputMode::Pointer
+                        && session.ui_input_mode != input::InputMode::Pointer
+                    {
+                        session.device_family.note_keyboard_mouse();
+                    }
                     session.ui_input_mode = resolved_input_mode;
+                    session.device_family.end_frame();
                 }
 
                 // Game-logic phase begins here. Read the UI captures made
@@ -2309,6 +2437,9 @@ impl ApplicationHandler for App {
                 // below. Returns whether a commit or cancel fired so the pause-menu
                 // path is skipped this frame.
                 let text_entry_consumed_nav = self.resolve_text_entry_intents(&ui_intents);
+                // Shortcuts resolve after a commit or cancel, so one landing on
+                // the frame text entry closes does nothing.
+                self.apply_text_shortcuts(&ui_intents, frame_dt);
 
                 // Focus engine (game-logic phase): split the drained intents into
                 // nav (directional/confirm/cancel/next/prev) and pointer clicks,
@@ -2338,7 +2469,9 @@ impl ApplicationHandler for App {
                         }
                         input::UiIntentPayload::PointerClick { pos } => click_positions.push(*pos),
                         // Text / Backspace are text-entry edits, resolved above.
-                        input::UiIntentPayload::Text(_) | input::UiIntentPayload::Backspace => {}
+                        input::UiIntentPayload::Text(_)
+                        | input::UiIntentPayload::Backspace
+                        | input::UiIntentPayload::TextShortcut(_) => {}
                     }
                 }
                 // Slider nav-capture (M13 Goal F, Task 4): the focused slider gets
@@ -2355,14 +2488,16 @@ impl ApplicationHandler for App {
                 let cursor = self.cursor_pos;
                 let focus_result = {
                     let session = self.session.as_mut().expect("running session installed");
-                    let active_key = session
-                        .modal_stack
-                        .active_name()
-                        .map(str::to_string)
-                        .unwrap_or_else(|| postretro_ui::tree_asset::HUD_NAME.to_string());
+                    let (active_key, active_name) =
+                        session.ui_focus_target(postretro_ui::tree_asset::HUD_NAME);
+                    session.prune_ui_focus();
+                    let rects = crate::session::focus_rects_for(
+                        session.ui_focus_rects.as_ref(),
+                        &active_name,
+                    );
                     session.ui_focus.tick(
                         Some(active_key.as_str()),
-                        session.ui_focus_rects.as_ref(),
+                        rects,
                         &nav_intents,
                         cursor,
                         &click_positions,
@@ -2371,6 +2506,10 @@ impl ApplicationHandler for App {
                     )
                 };
                 self.ui_focused_id = focus_result.focused.clone();
+                self.apply_slider_repeat_steps(focus_result.slider_steps);
+                for tab in &focus_result.activations {
+                    self.fire_focused_button_activation(Some(tab));
+                }
 
                 // Button activation: a `confirm` (gamepad
                 // confirm or pointer click — the focus engine reports both as
@@ -2413,6 +2552,11 @@ impl ApplicationHandler for App {
                         );
                     }
                 }
+
+                // After the frame's activations: resolve a capture and refresh
+                // the controls panel.
+                self.update_controls_panel();
+                self.sync_glyph_art();
 
                 let ui_captures_gameplay = {
                     let session = self.session.as_ref().expect("running session installed");
@@ -2493,6 +2637,7 @@ impl ApplicationHandler for App {
                         let mut command = build_sim_command(
                             &input::ActionSnapshot::neutral(),
                             &self.camera,
+                            false,
                             false,
                             false,
                             false,
@@ -2605,12 +2750,22 @@ impl ApplicationHandler for App {
                         snapshot.button(Action::Crouch),
                         &mut self.crouch_toggle_active,
                     );
+                    let sprint_mode = self
+                        .session
+                        .as_ref()
+                        .map(|session| session.player_options.sprint_mode)
+                        .unwrap_or_default();
+                    let sprint_intent = resolve_sprint_intent(
+                        sprint_mode,
+                        snapshot.button(Action::Sprint),
+                        &mut self.sprint_toggle_active,
+                    );
 
                     for tick_index in 0..ticks {
                         let forward_axis = snapshot.axis_value(Action::MoveForward);
                         let right_axis = snapshot.axis_value(Action::MoveRight);
                         let up_axis = snapshot.axis_value(Action::MoveUp);
-                        let sprint = snapshot.button(Action::Sprint).is_active();
+                        let sprint = sprint_intent;
 
                         let speed = if sprint {
                             camera::MOVE_SPEED * camera::SPRINT_MULTIPLIER
@@ -2704,6 +2859,7 @@ impl ApplicationHandler for App {
                             snapshot,
                             &self.camera,
                             crouch_intent,
+                            sprint_intent,
                             dash_pressed,
                             shoot_pressed,
                             false,
@@ -3021,8 +3177,8 @@ impl ApplicationHandler for App {
                         // frame-end drain, after every tick's accumulator pass. An
                         // instance enrolled this frame is skipped via its stamp.
                         // This tick's paired-trigger Exit fires cancel matching
-                        // interruptible instances before the countdown advances
-                        // (O4), so an Exit on the exact landing tick wins.
+                        // interruptible instances before the countdown advances,
+                        // so an Exit on the exact landing tick wins.
                         scripting
                             .scheduler
                             .evaluate(&tick_events.trigger_exit_fires);
@@ -3398,14 +3554,14 @@ impl ApplicationHandler for App {
                             continue;
                         };
                         // Scope the origin guard to THIS residual iteration only,
-                        // released before the deferred batch below (O54): a `wait`
+                        // released before the deferred batch below: a `wait`
                         // reached synchronously here keys its instance to this
                         // `(trigger, player)`, while a batch-seeded `fire` stays
-                        // sourceless. The paired-enter standing check (O52/O60)
-                        // reads the trigger system from the session the drain
-                        // already holds — an interruptible instance parks only
-                        // while its origin's enter is live, so a player who left
-                        // within the frame does not park an uncancellable beat.
+                        // sourceless. The paired-enter standing check reads the
+                        // trigger system from the session the drain already
+                        // holds — an interruptible instance parks only while its
+                        // origin's enter is live, so a player who left within
+                        // the frame does not park an uncancellable beat.
                         let paired_enter_standing = session
                             .trigger_system
                             .paired_enters()
@@ -3443,18 +3599,18 @@ impl ApplicationHandler for App {
                     // dispatch and OUTSIDE any origin guard: a resumed tail runs
                     // where a trigger residual runs, but each landing gets its own
                     // deferred-dispatch call so a `fire`-seeded child's depth is
-                    // attributable per instance (O27, O65). The scheduler owns its
-                    // tails as `Vec<SequenceStep>` and never mints a
-                    // `TriggerResidualHandle`, so this never resolves through
-                    // `self.trigger_bindings` (O33). `take_landings` (inside
-                    // `drain_landings`) `mem::take`s the queue, so nothing borrows
-                    // it across the block — no need to move it onto `App`.
+                    // attributable per instance. The scheduler owns its tails as
+                    // `Vec<SequenceStep>` and never mints a `TriggerResidualHandle`,
+                    // so this never resolves through `self.trigger_bindings`.
+                    // `take_landings` (inside `drain_landings`) `mem::take`s the
+                    // queue, so nothing borrows it across the block — no need to
+                    // move it onto `App`.
                     //
                     // Before draining, drop any interruptible instance whose keyed
                     // trigger left the level mid-wait: `paired_enters` retains only
                     // live triggers, so a surviving parked interruptible instance
                     // absent from it has no Exit to ever cancel on and must not land
-                    // uncancelled (O63).
+                    // uncancelled.
                     session
                         .scripting
                         .scheduler
@@ -3573,16 +3729,10 @@ impl ApplicationHandler for App {
                 // rendered frame, before replication and render observe state.
                 impact_effects::run_end_of_frame_removal_pass(
                     &mut script_ctx.registry.borrow_mut(),
-                    |_, pending_kill_credit| {
-                        let Some(pending_kill_credit) = pending_kill_credit else {
-                            return;
-                        };
+                    |removal| {
                         let session = self.session.as_mut().expect("running session installed");
-                        session.pending_death_events.extend(
-                            session
-                                .progress_tracker
-                                .on_entity_killed(&pending_kill_credit.tags),
-                        );
+                        let fired = removal.report_to_progress(&mut session.progress_tracker);
+                        session.pending_death_events.extend(fired);
                     },
                 );
 
@@ -4533,7 +4683,7 @@ impl ApplicationHandler for App {
                     // second `self.session.as_mut()` here would alias it.
                     let frontend_menu_is_present =
                         frontend_root_is_pushed(&session.modal_stack, frontend_menu_name);
-                    let ui_snapshot = Self::build_ui_read_snapshot(
+                    let mut ui_snapshot = Self::build_ui_read_snapshot(
                         &session.modal_stack,
                         &mut session.presentation_cells,
                         &script_ctx.slot_table.borrow(),
@@ -4542,6 +4692,8 @@ impl ApplicationHandler for App {
                         self.ui_focused_id.clone(),
                         frontend_menu_is_present,
                     );
+                    ui_snapshot.wheel = self.ui_wheel.take();
+                    crate::app::glyph_art::resolve_snapshot_glyphs(&mut ui_snapshot, session);
                     renderer.set_ui_snapshot(ui_snapshot);
                     let limiter_frame = Self::next_limiter_frame(&mut self.last_resolve_at, now);
                     renderer.set_limiter_frame(limiter_frame);
@@ -4767,6 +4919,9 @@ impl ApplicationHandler for App {
         let Some(session) = self.session.as_mut() else {
             return;
         };
+        if let DeviceEvent::MouseMotion { delta } = event {
+            session.offer_capture_mouse_motion(delta.0, delta.1);
+        }
         // UI-dispatch seam, ahead of the gameplay forward: a captured raw
         // delta is consumed by the UI layer and must not reach the look path.
         // Mirrors the `window_event` seam; the decision is the mode flag. A raw
@@ -5361,6 +5516,7 @@ impl App {
         result: &StagedManifestBuildResult,
         outcome: &StagedManifestCommitOutcome,
     ) {
+        self.commit_staged_loading_manifest(result, outcome);
         let Some((ui_trees, theme, frontend)) = staged_ui_commit_payload(result, outcome) else {
             return;
         };
@@ -5636,43 +5792,28 @@ impl App {
         if self.session.is_none() {
             return true;
         }
+        self.refresh_effective_bindings();
 
         // Gamepad poll: disjoint borrows of the session group and the
         // non-session `nav_stick_tracker`. A nav intent votes `focus` mode;
-        // recorded after the borrow ends.
-        let nav_input_seen = {
+        // recorded after the borrow ends. The frontend has no pause menu, so a
+        // `nav.menu` vote is dropped.
+        let gamepad_votes = {
             let App {
                 session,
                 nav_stick_tracker,
                 ..
             } = self;
             let session = session.as_mut().expect("frontend session installed");
-            let mut nav_input_seen = false;
-            if let Some(gp) = session.gamepad_system.as_mut() {
-                let gp_nav = gp.update(&mut session.input_system, nav_stick_tracker);
-                gp.tick_rumble(frame_dt);
-                if gp_nav.confirm_released {
-                    session.ui_focus.release_confirm_repeat();
-                }
-                if gp_nav.directional_released {
-                    session.ui_focus.release_repeat();
-                }
-                nav_input_seen = !gp_nav.nav_intents.is_empty();
-                let capture = session.ui_dispatch.mode() == input::UiCaptureMode::Capture;
-                for intent in gp_nav.nav_intents {
-                    if intent == input::NavIntent::Menu {
-                        continue;
-                    }
-                    if capture {
-                        session
-                            .ui_dispatch
-                            .enqueue_intent(input::UiIntentPayload::Nav(intent));
-                    }
-                }
-            }
-            nav_input_seen
+            let votes = poll_gamepad(session, nav_stick_tracker, frame_dt);
+            // No snapshot reads gameplay input on these frames, so the pad's
+            // gameplay edges are cancelled every frame instead of replaying as
+            // presses on the first Running frame. A pad input still held then
+            // stays inert until pressed again.
+            session.input_system.suspend_gameplay();
+            votes
         };
-        if nav_input_seen {
+        if gamepad_votes.nav_seen {
             self.record_mode_signal(scripting_systems::input_mode::ModeSignal::NavInput);
         }
 
@@ -5684,12 +5825,19 @@ impl App {
                 .scripting
                 .input_mode_tracker
                 .update(mode_signal, frame_dt);
+            if ui_input_mode == input::InputMode::Pointer
+                && session.ui_input_mode != input::InputMode::Pointer
+            {
+                session.device_family.note_keyboard_mouse();
+            }
             session.ui_input_mode = ui_input_mode;
+            session.device_family.end_frame();
             let ui_intents = session.ui_dispatch.take_ready();
             session.ui_dispatch.advance_frame();
             ui_intents
         };
         let text_entry_consumed_nav = self.resolve_text_entry_intents(&ui_intents);
+        self.apply_text_shortcuts(&ui_intents, frame_dt);
 
         let mut nav_intents: Vec<input::NavIntent> = Vec::new();
         let mut click_positions: Vec<input::PointerPos> = Vec::new();
@@ -5704,7 +5852,9 @@ impl App {
                     nav_intents.push(*nav);
                 }
                 input::UiIntentPayload::PointerClick { pos } => click_positions.push(*pos),
-                input::UiIntentPayload::Text(_) | input::UiIntentPayload::Backspace => {}
+                input::UiIntentPayload::Text(_)
+                | input::UiIntentPayload::Backspace
+                | input::UiIntentPayload::TextShortcut(_) => {}
             }
         }
         self.apply_slider_nav_capture(&mut nav_intents);
@@ -5713,14 +5863,13 @@ impl App {
         let cursor_pos = self.cursor_pos;
         let focus_result = {
             let session = self.session.as_mut().expect("frontend session installed");
-            let active_key = session
-                .modal_stack
-                .active_name()
-                .map(str::to_string)
-                .unwrap_or(frontend_menu_tree_name);
+            let (active_key, active_name) = session.ui_focus_target(&frontend_menu_tree_name);
+            session.prune_ui_focus();
+            let rects =
+                crate::session::focus_rects_for(session.ui_focus_rects.as_ref(), &active_name);
             session.ui_focus.tick(
                 Some(active_key.as_str()),
-                session.ui_focus_rects.as_ref(),
+                rects,
                 &nav_intents,
                 cursor_pos,
                 &click_positions,
@@ -5729,6 +5878,10 @@ impl App {
             )
         };
         self.ui_focused_id = focus_result.focused.clone();
+        self.apply_slider_repeat_steps(focus_result.slider_steps);
+        for tab in &focus_result.activations {
+            self.fire_focused_button_activation(Some(tab));
+        }
         if focus_result.confirmed {
             self.fire_focused_button_activation(focus_result.focused.as_deref());
         }
@@ -5736,10 +5889,15 @@ impl App {
             && !text_entry_consumed_nav
             && !self.frontend_menu_is_top()
             && let Some(session) = self.session.as_mut()
+            && !session.capture_prompt_is_active()
         {
             session.modal_stack.pop();
         }
         self.pending_menu_toggle = false;
+        // After the frame's activations: resolve a capture and refresh the
+        // controls panel.
+        self.update_controls_panel();
+        self.sync_glyph_art();
 
         if self.pending_exit_to_desktop {
             self.pending_exit_to_desktop = false;
@@ -5774,7 +5932,7 @@ impl App {
         let Some(session) = self.session.as_mut() else {
             return;
         };
-        let ui_snapshot = Self::build_ui_read_snapshot(
+        let mut ui_snapshot = Self::build_ui_read_snapshot(
             &session.modal_stack,
             &mut session.presentation_cells,
             &session.scripting.script_ctx.slot_table.borrow(),
@@ -5783,78 +5941,15 @@ impl App {
             self.ui_focused_id.clone(),
             frontend_menu_is_present,
         );
-
-        let Some(renderer) = self.renderer.as_mut() else {
-            return;
-        };
-        // Frontend renders through the full UI/scene path — requires full-ready.
-        if !renderer.is_full_ready() {
-            return;
-        }
-
-        #[cfg(feature = "dev-tools")]
-        renderer.clear_debug_lines();
-
-        renderer.set_ui_snapshot(ui_snapshot);
-        let limiter_frame = Self::next_limiter_frame(&mut self.last_resolve_at, frame_start);
-        renderer.set_limiter_frame(limiter_frame);
-        let recycled_inputs = renderer.set_presentation_draw_inputs(Vec::new());
-        session
-            .presentation_pool
-            .recycle_draw_inputs(recycled_inputs);
-        let visible_render = render_preparation::VisibleRenderPreparation::empty_world();
-        session.clear_level_streaming();
-        let sh_frame_result = match renderer.render_frame_indirect(
-            &mut session.font_system,
-            visible_render.camera_cull(),
-            &visible_render.light_reachable_cell_mask,
-            &visible_render.reachable_cell_aabbs,
-            &visible_render.fog_reachable,
-            render::ShSampleRegionSets {
-                visible_cells: &visible_render.visible_cells,
-                fog_cells: &visible_render.fog_reachable,
-                movers: &[],
-            },
-            None,
-            glam::Mat4::IDENTITY,
-            &[],
-            self.script_time,
+        ui_snapshot.wheel = self.ui_wheel.take();
+        crate::app::glyph_art::resolve_snapshot_glyphs(&mut ui_snapshot, session);
+        self.present_world_less_frame(
+            event_loop,
+            frame_start,
+            ui_snapshot,
             FRONTEND_CLEAR_COLOR,
-            false,
-            postretro_level_loader::ShDrainBatch::default(),
-        ) {
-            Ok(result) => result,
-            Err(err) => {
-                self.exit_result = Err(err.into());
-                event_loop.exit();
-                return;
-            }
-        };
-        let compose_submitted = sh_frame_result.compose_submitted;
-        if let Err(err) = session.apply_sh_streaming_outcome(sh_frame_result.outcome, renderer) {
-            self.exit_result = Err(err);
-            event_loop.exit();
-            return;
-        }
-        let present_handle = match sh_frame_result.frame {
-            Ok(present_handle) => present_handle,
-            Err(err) => {
-                self.exit_result = Err(err);
-                event_loop.exit();
-                return;
-            }
-        };
-        session.mark_sh_streaming_compose_submitted(compose_submitted);
-        let exported_rects = renderer.export_ui_focus_rects();
-        if let Some(session) = self.session.as_mut() {
-            session.ui_focus_rects = Some(exported_rects);
-        }
-        if let Some(present_handle) = present_handle {
-            renderer.present(present_handle);
-        }
-
-        let frame_cpu = Instant::now().duration_since(frame_start);
-        self.frame_rate_meter.record(frame_cpu);
+            true,
+        );
     }
 
     fn request_redraw(&self) {
@@ -6246,6 +6341,8 @@ impl App {
                 }
             }
         }
+        // Slider steps land after this frame's queued writes.
+        self.apply_pending_slider_steps(&script_ctx);
     }
 
     /// Net poll plus client apply (M15 Phase 1). Thin delegation to
@@ -8484,13 +8581,20 @@ mod tests {
             !production.contains("mark_sh_streaming_compose_submitted(present_handle.is_some())"),
             "surface acquisition/presentation is not proof that SH compose encoded"
         );
+        // Frontend, first-launch-hold, and Loading frames share the
+        // world-less presenter.
+        let world_less = include_str!("app/world_less_frame.rs");
         assert_eq!(
             production
                 .matches("mark_sh_streaming_compose_submitted(compose_submitted)")
-                .count(),
+                .count()
+                + world_less
+                    .matches("mark_sh_streaming_compose_submitted(compose_submitted)")
+                    .count(),
             2,
-            "gameplay and frontend paths must consume the renderer-owned signal"
+            "gameplay and world-less paths must consume the renderer-owned signal"
         );
+        assert!(!world_less.contains("present_handle.is_some())"));
     }
 
     // A connected client skips the global clean-exit save; its private
@@ -10427,12 +10531,12 @@ mod tests {
                     padding: SpacingValue::Literal(0.0),
                     align: Align::Start,
                     width: None,
+                    scroll: None,
                     fill: None,
                     border: None,
                     id: None,
                     focus_neighbors: Default::default(),
                     focus: None,
-                    restore_on_return: false,
                     local_state: None,
                     visible_when: None,
                     role: None,
@@ -10443,6 +10547,7 @@ mod tests {
                 text_entry_target: None,
                 accessible_name: None,
                 role: None,
+                restore_on_return: None,
             }
         }
 
@@ -10830,6 +10935,7 @@ mod tests {
                 descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                     primitive: "playSound".to_string(),
                     target: None,
+                    kind: None,
                     tag: None,
                     on_complete: None,
                     args: serde_json::json!({ "sound": "door_open", "bus": "sfx" }),
@@ -10888,6 +10994,7 @@ mod tests {
                 descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                     primitive: "playSound".to_string(),
                     target: None,
+                    kind: None,
                     tag: None,
                     on_complete: None,
                     args: serde_json::json!({
@@ -10975,6 +11082,7 @@ mod tests {
                 descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                     primitive: "playSound".to_string(),
                     target: None,
+                    kind: None,
                     tag: None,
                     on_complete: None,
                     args: serde_json::json!({ "sound": "fixtures/door_open", "at": "@emitter" }),
@@ -11121,6 +11229,7 @@ mod tests {
                 descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                     primitive: "playSound".to_string(),
                     target: None,
+                    kind: None,
                     tag: None,
                     on_complete: None,
                     args: serde_json::json!({ "sound": "sfx/brass" }),
@@ -11203,6 +11312,7 @@ mod tests {
             descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                 primitive: "playSound".to_string(),
                 target: None,
+                kind: None,
                 tag: None,
                 on_complete: None,
                 args: serde_json::json!({ "sound": "event_chain", "bus": "sfx" }),
@@ -11365,6 +11475,54 @@ mod tests {
     }
 
     #[test]
+    fn toggle_sprint_latches_on_the_hold_resolution_and_releases_on_the_next() {
+        use input::{Activator, ActivatorKind, Binding, PhysicalInput};
+        let shift = PhysicalInput::Key(winit::keyboard::KeyCode::ShiftLeft);
+        let mut sys = InputSystem::new(vec![
+            Binding::new(shift, Action::Sprint)
+                .with_activator(Activator::with_threshold(ActivatorKind::Hold, 0.2)),
+        ]);
+        let mut latch = false;
+        let sprint_at = |sys: &mut InputSystem, t: f64, latch: &mut bool| {
+            let snap = sys.snapshot_at(t);
+            resolve_sprint_intent(
+                options::SprintMode::Toggle,
+                snap.button(Action::Sprint),
+                latch,
+            )
+        };
+        sys.handle_keyboard_event_at(winit::keyboard::KeyCode::ShiftLeft, true, 0.0);
+        assert!(
+            !sprint_at(&mut sys, 0.1, &mut latch),
+            "not before the hold resolves"
+        );
+        assert!(
+            sprint_at(&mut sys, 0.25, &mut latch),
+            "latches at the threshold"
+        );
+        sys.handle_keyboard_event_at(winit::keyboard::KeyCode::ShiftLeft, false, 0.3);
+        assert!(
+            sprint_at(&mut sys, 0.35, &mut latch),
+            "stays latched after release"
+        );
+        sys.handle_keyboard_event_at(winit::keyboard::KeyCode::ShiftLeft, true, 1.0);
+        assert!(sprint_at(&mut sys, 1.1, &mut latch));
+        assert!(
+            !sprint_at(&mut sys, 1.25, &mut latch),
+            "the next resolution releases it"
+        );
+
+        // Hold mode follows the command.
+        let mut hold_latch = false;
+        let snap = sys.snapshot_at(1.5);
+        assert!(resolve_sprint_intent(
+            options::SprintMode::Hold,
+            snap.button(Action::Sprint),
+            &mut hold_latch
+        ));
+    }
+
+    #[test]
     fn sim_command_reuses_frame_resolved_crouch_toggle_across_catchup_ticks() {
         let mut input_system = InputSystem::new(default_bindings());
         input_system.set_physical_input(
@@ -11390,6 +11548,7 @@ mod tests {
                     &snapshot,
                     &camera,
                     crouch_intent,
+                    false,
                     false,
                     false,
                     false,
@@ -11430,6 +11589,7 @@ mod tests {
                     &snapshot,
                     &camera,
                     false,
+                    false,
                     dash_pressed,
                     false,
                     false,
@@ -11466,6 +11626,7 @@ mod tests {
                     &camera,
                     false,
                     false,
+                    false,
                     shoot_pressed,
                     false,
                     false,
@@ -11499,7 +11660,9 @@ mod tests {
         let camera = Camera::new(Vec3::ZERO, 0.0, 0.0);
         let commands: Vec<sim::SimCommand> = (0..2)
             .map(|_| {
-                build_sim_command(&snapshot, &camera, false, false, false, false, false, false)
+                build_sim_command(
+                    &snapshot, &camera, false, false, false, false, false, false, false,
+                )
             })
             .collect();
 
@@ -11527,6 +11690,7 @@ mod tests {
                 build_sim_command(
                     &snapshot,
                     &camera,
+                    false,
                     false,
                     false,
                     false,
@@ -12004,6 +12168,179 @@ mod tests {
 
     #[cfg(debug_assertions)]
     #[test]
+    fn dev_input_block_validates_cleanly_and_shares_shift() {
+        use crate::input::{ActivatorKind, Command, DeviceClass, EffectiveTable, PhysicalInput};
+        use postretro_test_log_capture::LogCapture;
+
+        if !install_scripts_build_next_to_current_exe() {
+            eprintln!("skipping: could not install scripts-build next to test binary");
+            return;
+        }
+        let mut rt = test_runtime();
+        rt.run_mod_init(&workspace_root().join("content/dev"))
+            .expect("development TypeScript mod entry bundles and initializes");
+        let manifest = rt.mod_manifest().expect("dev mod manifest exists");
+        let capture = LogCapture::start();
+        let author = crate::input::author_layer_from_block(manifest.input.as_ref());
+        capture.assert_not_logged(log::Level::Warn, "[Input]");
+        assert_eq!(author.glyphs.xbox.as_deref(), Some("ui/glyphs/xbox"));
+
+        let facts = crate::input::RelevanceFacts {
+            dash: true,
+            crouch: true,
+            magazine: true,
+            secondary: true,
+        };
+        let table = EffectiveTable::build(&author, &Default::default(), facts, false);
+        let shift = PhysicalInput::Key(winit::keyboard::KeyCode::ShiftLeft);
+        let on_shift: Vec<(Command, ActivatorKind)> = table
+            .entries()
+            .iter()
+            .filter(|e| e.class == DeviceClass::KeyboardMouse && e.input == shift)
+            .map(|e| (e.command, e.activator.kind))
+            .collect();
+        assert_eq!(
+            on_shift,
+            [
+                (Command::Sprint, ActivatorKind::Hold),
+                (Command::Dash, ActivatorKind::Tap)
+            ],
+            "tap-Shift dashes and hold-Shift sprints"
+        );
+        assert!(table.conflicting_pairs().is_empty());
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn dev_exit_and_quit_confirmations_land_a_repeated_confirm_on_cancel() {
+        // Confirm on EXIT opens the confirmation; a second confirm on the next
+        // frame lands on its safe choice and closes it. A confirmation closed
+        // and reopened on one frame lands there too.
+        use crate::input::{InputMode, NavIntent};
+        use postretro_ui::tree::CellValues;
+
+        if !install_scripts_build_next_to_current_exe() {
+            eprintln!("skipping: could not install scripts-build next to test binary");
+            return;
+        }
+        let mut rt = test_runtime();
+        rt.run_mod_init(&workspace_root().join("content/dev"))
+            .expect("development TypeScript mod entry bundles and initializes");
+        let manifest = rt.mod_manifest().expect("dev mod manifest exists");
+        let tree = |name: &str| {
+            manifest
+                .ui_trees
+                .iter()
+                .find(|tree| tree.name == name)
+                .unwrap_or_else(|| panic!("dev manifest exports {name}"))
+                .tree
+                .clone()
+        };
+        let reactions: Vec<&str> = manifest
+            .reactions
+            .iter()
+            .map(|r| r.reaction.name.as_str())
+            .collect();
+        for (name, prefix, reaction, action) in [
+            (
+                "dev.exitConfirm",
+                "exitConfirm",
+                "dev.askExit",
+                postretro_ui::actions::EXIT_TO_DESKTOP_ACTION,
+            ),
+            (
+                "dev.quitConfirm",
+                "quitConfirm",
+                "dev.askQuit",
+                postretro_ui::actions::QUIT_TO_MENU_ACTION,
+            ),
+        ] {
+            assert!(reactions.contains(&reaction), "{reaction} is registered");
+            let dialog = tree(name);
+            let cancel = format!("{prefix}Cancel");
+            let confirm = format!("{prefix}Confirm");
+            assert_eq!(dialog.initial_focus.as_deref(), Some(cancel.as_str()));
+            assert_eq!(
+                button_action(&dialog.root, &cancel),
+                Some(postretro_ui::actions::CLOSE_DIALOG_ACTION)
+            );
+            assert_eq!(button_action(&dialog.root, &confirm), Some(action));
+
+            let theme = postretro_ui::theme::UiTheme::engine_default();
+            let mut retained = postretro_ui::tree::UiTree::from_descriptor(&dialog, &theme);
+            let mut font_system = postretro_ui::text::build_font_system();
+            let slots = std::collections::HashMap::new();
+            let cells = CellValues::new();
+            retained.build_draw_data_retained(
+                [1280, 720],
+                &mut font_system,
+                &postretro_ui::tree::ImageSizes::new(),
+                &slots,
+                &cells,
+                0.0,
+            );
+            let mut rects = retained.export_focus_rects(&dialog, [1280, 720], &slots, &cells);
+            rects.owner = Some(postretro_ui::tree::FocusRectOwner {
+                name: name.to_string(),
+                tier: postretro_ui::modal_stack::ScopeTier::Mod,
+            });
+
+            let mut app = crate::startup::lifecycle::tests::test_app();
+            let tick = |app: &mut App, intents: &[NavIntent]| {
+                let session = app.session.as_mut().unwrap();
+                let (key, _) = session.ui_focus_target("hud");
+                let result = session.ui_focus.tick(
+                    Some(&key),
+                    Some(&rects),
+                    intents,
+                    None,
+                    &[],
+                    InputMode::Focus,
+                    0.016,
+                );
+                session.ui_focus_rects = Some(rects.clone());
+                app.ui_focused_id = result.focused.clone();
+                if result.confirmed {
+                    app.fire_focused_button_activation(result.focused.as_deref());
+                }
+                result
+            };
+            // Frame N: the first confirm pushed the dialog (the reaction's
+            // effect). Frame N+1: the second confirm.
+            app.session
+                .as_mut()
+                .unwrap()
+                .modal_stack
+                .push(name, dialog.clone());
+            let result = tick(&mut app, &[NavIntent::Confirm]);
+            assert_eq!(result.focused.as_deref(), Some(cancel.as_str()));
+            assert!(
+                !app.pending_exit_to_desktop,
+                "{name}: the game keeps running"
+            );
+            assert_eq!(
+                app.session.as_ref().unwrap().modal_stack.active_name(),
+                None,
+                "{name}: the confirmation closed"
+            );
+
+            // Focus the destructive choice, then close and reopen on one frame;
+            // the fresh push lands on the safe choice.
+            let stack = &mut app.session.as_mut().unwrap().modal_stack;
+            stack.push(name, dialog.clone());
+            tick(&mut app, &[]);
+            let moved = tick(&mut app, &[NavIntent::Right]);
+            assert_eq!(moved.focused.as_deref(), Some(confirm.as_str()));
+            let stack = &mut app.session.as_mut().unwrap().modal_stack;
+            stack.pop();
+            stack.push(name, dialog.clone());
+            let reopened = tick(&mut app, &[]);
+            assert_eq!(reopened.focused.as_deref(), Some(cancel.as_str()), "{name}");
+        }
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
     fn production_pause_menu_sdk_tree_drives_cpu_interaction_end_to_end() {
         use crate::input::{InputMode, NavIntent, PointerPos, UiFocusEngine};
         use postretro_scripting_core::data_descriptors::RegisteredUiTree;
@@ -12061,8 +12398,13 @@ mod tests {
         );
         assert_eq!(
             button_action(&mod_pause.root, "pauseExitDesktop"),
-            Some(postretro_ui::actions::EXIT_TO_DESKTOP_ACTION),
-            "Exit to Desktop resolves to the generic reserved quit action wire value",
+            Some("dev.askExit"),
+            "Exit to Desktop asks first",
+        );
+        assert_eq!(
+            button_action(&mod_pause.root, "pauseQuitToMenu"),
+            Some("dev.askQuit"),
+            "Quit to Menu asks first",
         );
 
         let theme = postretro_ui::theme::UiTheme::engine_default();
@@ -12308,7 +12650,7 @@ mod tests {
         );
         assert_eq!(
             button_action(&title.root, "frontendExit"),
-            Some(postretro_ui::actions::EXIT_TO_DESKTOP_ACTION)
+            Some("dev.askExit")
         );
         assert_eq!(
             button_action(&title.root, "frontendAccessibility"),
@@ -12334,6 +12676,32 @@ mod tests {
             button_action(&tree("frontend.devLevelSelect").root, "levelSelectBack"),
             Some(postretro_ui::actions::CLOSE_DIALOG_ACTION)
         );
+        {
+            use postretro_ui::descriptor::{FocusKind, Widget};
+            let Widget::VStack(select_root) = &tree("frontend.devLevelSelect").root else {
+                panic!("level select root is a vstack");
+            };
+            let Some(Widget::HStack(columns)) = select_root.children.first() else {
+                panic!("level select opens with its columns");
+            };
+            assert_eq!(
+                columns.focus.as_ref().map(|focus| focus.kind()),
+                Some(FocusKind::Spatial),
+                "level select is spatial: Left and Right cross columns"
+            );
+            for column in &columns.children {
+                let Widget::VStack(column) = column else {
+                    panic!("each column is a vstack");
+                };
+                assert!(
+                    column.children.iter().any(|child| matches!(
+                        child,
+                        Widget::VStack(list) if list.scroll.is_some()
+                    )),
+                    "each column's list scrolls"
+                );
+            }
+        }
 
         let options_registration = manifest
             .ui_trees
@@ -12363,7 +12731,7 @@ mod tests {
             "one focus group spans the tab strip, the visible panel and BACK"
         );
         assert!(
-            options_root.restore_on_return,
+            options_tree.restores_on_return(),
             "closing a tree pushed above returns focus to the control it left"
         );
         let tab_state = options_root
@@ -12430,9 +12798,14 @@ mod tests {
                 _ => None,
             })
             .expect("the options root carries a tablist strip outside every panel");
-        assert!(
-            tab_strip.focus.is_none(),
-            "a focus policy on the strip would open a nested group and trap nav in it"
+        let strip_focus = tab_strip
+            .focus
+            .as_ref()
+            .expect("the strip is its own nested group");
+        assert_eq!(
+            (strip_focus.kind(), strip_focus.wrap()),
+            (postretro_ui::descriptor::FocusKind::Linear, true),
+            "the strip steps across its tabs and wraps; Down leaves for the panel"
         );
         let tab_ids: Vec<&str> = tab_strip
             .children
@@ -12463,14 +12836,23 @@ mod tests {
                 "optionsTabControls",
                 "controls",
                 "optionsPanelControls",
-                8,
+                20,
                 &[
+                    "optionsRebind",
                     "optionsMouseSensitivity",
                     "optionsInvertYOff",
                     "optionsInvertYOn",
                     "optionsViewFeelScale",
                     "optionsCrouchHold",
                     "optionsCrouchToggle",
+                    "optionsSprintHold",
+                    "optionsSprintToggle",
+                    "optionsGamepadLookSensitivity",
+                    "optionsGamepadLookDeadZone",
+                    "optionsGamepadInvertYOff",
+                    "optionsGamepadInvertYOn",
+                    "optionsSwapConfirmCancelOff",
+                    "optionsSwapConfirmCancelOn",
                 ][..],
             ),
             (
@@ -12503,10 +12885,11 @@ mod tests {
                 "optionsTabAccessibility",
                 "accessibility",
                 "optionsPanelAccessibility",
-                // A label and a control for each of the nine accessibility fields.
-                18,
+                // A label and a control for each of the ten accessibility fields.
+                20,
                 &[
                     "optionsReduceMotion",
+                    "optionsHoldTimingScale",
                     "optionsScreenShakeScale",
                     "optionsA11yViewFeelScale",
                     "optionsFlashLimiter",
@@ -12561,6 +12944,11 @@ mod tests {
             let grids = grids_in(panel_widget);
             assert_eq!(grids.len(), 1, "{panel_id} lays its rows out in one grid");
             assert_eq!(grids[0].cols, 2);
+            assert_eq!(
+                grids[0].focus.as_ref().map(|focus| focus.kind()),
+                Some(postretro_ui::descriptor::FocusKind::Spatial),
+                "{panel_id}: its grid is a nested spatial group"
+            );
             assert_eq!(grids[0].children.len(), grid_len, "{panel_id} grid cells");
             assert!(
                 grids[0]
@@ -12581,6 +12969,11 @@ mod tests {
             grids_in(&options_tree.root).len(),
             3,
             "no grid sits outside the three tab panels"
+        );
+        assert_eq!(
+            button_action(&options_tree.root, "optionsRebind"),
+            Some(postretro_ui::actions::OPEN_CONTROLS_ACTION),
+            "the controls tab opens the engine controls panel"
         );
 
         // Every toggle is one value button on the right, named by its label on
@@ -12921,12 +13314,12 @@ mod tests {
                     padding: SpacingValue::Literal(0.0),
                     align: Align::Start,
                     width: None,
+                    scroll: None,
                     fill: None,
                     border: None,
                     id: None,
                     focus_neighbors: Default::default(),
                     focus: None,
-                    restore_on_return: false,
                     local_state: None,
                     visible_when: None,
                     role: None,
@@ -12937,6 +13330,7 @@ mod tests {
                 text_entry_target: None,
                 accessible_name: None,
                 role: None,
+                restore_on_return: None,
             }
         }
 
@@ -13173,12 +13567,12 @@ mod tests {
                     padding: SpacingValue::Literal(0.0),
                     align: Align::Start,
                     width: None,
+                    scroll: None,
                     fill: None,
                     border: None,
                     id: None,
                     focus_neighbors: Default::default(),
                     focus: None,
-                    restore_on_return: false,
                     local_state: None,
                     visible_when: None,
                     role: None,
@@ -13189,6 +13583,7 @@ mod tests {
                 text_entry_target: None,
                 accessible_name: None,
                 role: None,
+                restore_on_return: None,
             },
             always_on: true,
             hide_below: false,
@@ -13206,6 +13601,7 @@ mod tests {
                     name: "UiCommit".to_string(),
                     id: "ui-commit".to_string(),
                     version: "1".to_string(),
+                    input: None,
                     render: Default::default(),
                     movers: Default::default(),
                     audio: Default::default(),
@@ -13238,6 +13634,8 @@ mod tests {
                             pitch: -0.5,
                         },
                     }),
+                    ui_images: Default::default(),
+                    loading: Default::default(),
                     store_declarations: Default::default(),
                     dependency_paths: Vec::new(),
                 },
@@ -13816,6 +14214,7 @@ mod tests {
                 SpawnerComponent {
                     archetype_name: "spawner_only".to_string(),
                     count: 1,
+                    spawned_tags: Vec::new(),
                     resolved: true,
                 },
             )
@@ -14251,10 +14650,19 @@ mod tests {
             !snapshot.contains_key("player.cell"),
             "value-less weapon-resource numbers are skipped",
         );
+        // The loading slots are value-bearing at their defaults (0 and "").
+        assert_eq!(
+            snapshot.get("loading.progress"),
+            Some(&SlotValue::Number(0.0))
+        );
+        assert_eq!(
+            snapshot.get("loading.levelName"),
+            Some(&SlotValue::String(String::new()))
+        );
         assert_eq!(
             snapshot.len(),
-            49,
-            "only value-bearing player, screen, input, UI, options, accessibility and window slots appear, plus the explicitly set player.health",
+            58,
+            "only value-bearing player, screen, input, loading, UI, options, accessibility and window slots appear, plus the explicitly set player.health",
         );
     }
 
@@ -14490,12 +14898,12 @@ mod tests {
                     padding: SpacingValue::Literal(0.0),
                     align: Align::Start,
                     width: None,
+                    scroll: None,
                     fill: None,
                     border: None,
                     id: None,
                     focus_neighbors: Default::default(),
                     focus: None,
-                    restore_on_return: false,
                     local_state,
                     visible_when: None,
                     role: None,
@@ -14506,6 +14914,7 @@ mod tests {
                 text_entry_target: None,
                 accessible_name: None,
                 role: None,
+                restore_on_return: None,
             }
         }
 

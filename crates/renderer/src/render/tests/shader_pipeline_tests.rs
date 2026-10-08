@@ -10,7 +10,8 @@ fn world_material_uniform_mirrors_shininess_and_emissive_strength_packing() {
     for shader in [forward, kinematic] {
         assert!(shader.contains("shininess: f32,"));
         assert!(shader.contains("emissive_strength: f32,"));
-        assert!(shader.contains("_pad: vec2<f32>,"));
+        assert!(shader.contains("surface_depth_peak_raise: f32,"));
+        assert!(shader.contains("surface_depth_trough: f32,"));
     }
     assert!(forward.contains("@group(1) @binding(1) var emissive_texture"));
     assert!(kinematic.contains("@group(1) @binding(1) var emissive_texture"));

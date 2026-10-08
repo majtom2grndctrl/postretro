@@ -83,7 +83,7 @@ fn authoritative_snapshot_after_removal_omits_terminal_entity() {
     replicable.register(target);
 
     despawn(&mut registry, target, None);
-    run_end_of_frame_removal_pass(&mut registry, |_, _| {});
+    run_end_of_frame_removal_pass(&mut registry, |_| {});
 
     let snapshots = crate::produce_owned_snapshots(
         &registry,

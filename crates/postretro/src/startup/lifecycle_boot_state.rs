@@ -35,6 +35,13 @@ impl App {
         self.level_requests.clear();
         self.boot_load = false;
         self.boot_destination = None;
+        self.end_loading_screen();
+        // The renderer holding the UI images is gone; upload them again to the
+        // resumed one.
+        if let Some(session) = self.session.as_mut() {
+            session.mod_ui_images.forget_uploads();
+            session.glyph_art.invalidate();
+        }
     }
 
     pub(crate) fn drive_boot_state_for_redraw(
@@ -49,8 +56,9 @@ impl App {
             self.drain_level_requests();
         }
 
-        // Splash and Loading frames draw no UI, so UI input that reached them
-        // is dropped here rather than delivered to the first frame that does.
+        // Splash frames draw no UI and Loading frames draw a display-only
+        // loading tree, so UI input that reached them is dropped here rather
+        // than delivered to the first frame that takes input.
         if matches!(
             self.boot_state,
             BootState::Booting | BootState::Splash | BootState::Loading
@@ -197,7 +205,7 @@ impl App {
         }
     }
 
-    pub(super) fn level_load_in_flight(&self) -> bool {
-        self.level_rx.is_some() || self.level_worker.is_some()
+    pub(in crate::startup) fn level_load_in_flight(&self) -> bool {
+        self.level_rx.is_some() || self.level_worker.is_some() || self.has_deferred_level_payload()
     }
 }

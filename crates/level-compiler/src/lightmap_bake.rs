@@ -1,6 +1,7 @@
 // Directional lightmap baker.
 // See: context/lib/build_pipeline.md §Compiler pipeline
 
+use std::cell::Cell;
 use std::sync::Mutex;
 
 use bvh::bvh::Bvh;
@@ -948,7 +949,8 @@ fn probe_indices(light: &MapLight, full_samples: u32) -> [u32; SOFT_PROBE_SAMPLE
 /// Un-rotated (seed == 0) sample direction for index `i` of `count`, using the
 /// emitter's per-light-type lattice mapping. Used only to pick the probe subset
 /// (`probe_indices`); the live sampling re-derives targets through
-/// `area_sample_target` with the real seed.
+/// `area_sample_target` with the real seed. The Point/Spot arm must stay
+/// light-independent: `SoftProbes::new` memoizes its snap keyed by count alone.
 fn probe_sample_direction(light: &MapLight, i: u32, count: u32) -> Vec3 {
     match light.light_type {
         LightType::Point | LightType::Spot => fibonacci_sphere_sample(i, count, 0),
@@ -1005,7 +1007,9 @@ pub(crate) fn soft_visibility(
 }
 
 /// A light's probe subset at one escalated sample count. It depends only on
-/// the light and the count, so per-texel callers compute it once.
+/// the light and the count: the lightmap builds it once per chart, and point
+/// and spot lights also reuse one snap per thread (see `new`), so per-call
+/// callers need not hoist it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct SoftProbes {
     full_samples: u32,
@@ -1017,11 +1021,35 @@ impl SoftProbes {
     /// [`soft_visibility`].
     pub(crate) fn new(light: &MapLight, full_samples: u32) -> Self {
         let full_samples = full_samples.max(SOFT_PROBE_SAMPLES);
+        let probes = match light.light_type {
+            // Point and spot probe sets snap on the unrotated sphere lattice,
+            // which depends on the count alone, so per-call callers (the SH
+            // bounce, delta and scatter bakes) reuse one snap per thread
+            // instead of re-deriving it for every receiver and light.
+            LightType::Point | LightType::Spot => SPHERE_PROBE_INDICES.with(|memo| {
+                if let Some((count, probes)) = memo.get()
+                    && count == full_samples
+                {
+                    return probes;
+                }
+                let probes = probe_indices(light, full_samples);
+                memo.set(Some((full_samples, probes)));
+                probes
+            }),
+            LightType::Directional => probe_indices(light, full_samples),
+        };
         Self {
             full_samples,
-            probes: probe_indices(light, full_samples),
+            probes,
         }
     }
+}
+
+thread_local! {
+    /// The last point/spot probe set this thread snapped, keyed by its count.
+    /// One entry suffices: a stage bakes at one count, and stages run in turn.
+    static SPHERE_PROBE_INDICES: std::cell::Cell<Option<(u32, [u32; SOFT_PROBE_SAMPLES as usize])>> =
+        const { std::cell::Cell::new(None) };
 }
 
 /// [`soft_visibility`] with a caller-supplied probe set; `probes` runs only
@@ -1191,6 +1219,27 @@ pub(crate) fn segment_clear(
     from: Vec3,
     to: Vec3,
 ) -> bool {
+    segment_clear_remembering(bvh, primitives, geometry, from, to, &Cell::new(None))
+}
+
+/// [`segment_clear`] that tests `last_occluder` first and records the triangle
+/// that blocks this segment. Neighbouring texels lit by one light are mostly
+/// blocked by the same triangle, so a sequential walk over one `(light, chart)`
+/// skips most traversals in shadow. The cached triangle is tested with the same
+/// ray and hit predicate as the traversal, so it changes only which triangle is
+/// found first, not the answer — barring a hit the traversal's box test misses
+/// by rounding, which the cache then reports as blocked. That miss needs the
+/// hit on the box's boundary: at an axis-aligned edge or a vertex of the
+/// triangle, at any ray angle. `last_occluder` holds the triangle's first
+/// index-buffer offset into `geometry`.
+pub(crate) fn segment_clear_remembering(
+    bvh: &Bvh<f32, 3>,
+    primitives: &[BvhPrimitive],
+    geometry: &GeometryResult,
+    from: Vec3,
+    to: Vec3,
+    last_occluder: &Cell<Option<usize>>,
+) -> bool {
     let delta = to - from;
     let length = delta.length();
     if length < RAY_EPSILON {
@@ -1198,31 +1247,33 @@ pub(crate) fn segment_clear(
     }
     let dir = delta / length;
     let origin = from + dir * RAY_EPSILON;
+    let max_distance = length - RAY_EPSILON;
+    let geom = &geometry.geometry;
+    let blocks = |tri: usize| {
+        let p0 = Vec3::from(geom.vertices[geom.indices[tri] as usize].position);
+        let p1 = Vec3::from(geom.vertices[geom.indices[tri + 1] as usize].position);
+        let p2 = Vec3::from(geom.vertices[geom.indices[tri + 2] as usize].position);
+        ray_triangle_hit(origin, dir, p0, p1, p2)
+            .is_some_and(|dist| dist > 0.0 && dist < max_distance)
+    };
+    if last_occluder.get().is_some_and(blocks) {
+        return false;
+    }
     let ray = Ray::new(
         Point3::new(origin.x, origin.y, origin.z),
         Vector3::new(dir.x, dir.y, dir.z),
     );
-    let max_distance = length - RAY_EPSILON;
-    let geom = &geometry.geometry;
     let query = BoundedRay::new(&ray, max_distance);
     for prim in bvh.traverse_iterator(&query, primitives) {
         let start = prim.index_offset as usize;
         let end = start + prim.index_count as usize;
         let mut tri = start;
         while tri + 3 <= end {
-            let i0 = geom.indices[tri] as usize;
-            let i1 = geom.indices[tri + 1] as usize;
-            let i2 = geom.indices[tri + 2] as usize;
-            tri += 3;
-            let p0 = Vec3::from(geom.vertices[i0].position);
-            let p1 = Vec3::from(geom.vertices[i1].position);
-            let p2 = Vec3::from(geom.vertices[i2].position);
-            if let Some(dist) = ray_triangle_hit(origin, dir, p0, p1, p2)
-                && dist > 0.0
-                && dist < max_distance
-            {
+            if blocks(tri) {
+                last_occluder.set(Some(tri));
                 return false;
             }
+            tri += 3;
         }
     }
     true

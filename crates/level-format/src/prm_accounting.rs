@@ -4,7 +4,7 @@
 // `prl-build` reports a summary of this at its `TextureMips` stage; an asset
 // streaming system is the anticipated second consumer, which is why the
 // granularity is per-mip rather than a single total — residency is decided one
-// mip at a time (`resource_management.md` §4.6, Surface Depth design D6.3).
+// mip at a time (`resource_management.md` §4.6).
 //
 // A `.prm` slot stores its mip chain as one concatenated payload with a
 // `level_count` and a `payload_bytes` count, so per-mip offsets and sizes are
@@ -59,7 +59,7 @@ pub fn mip_level_bytes(format: PrmFormat, width: u32, height: u32) -> u64 {
     let h = u64::from(height.max(1));
     match format {
         PrmFormat::Rgba8UnormSrgb | PrmFormat::Rgba8Unorm => 4 * w * h,
-        // The two-channel surface map: R specular, G depth (Surface Depth D1).
+        // The two-channel surface map: R specular, G inverted height.
         PrmFormat::Rg8Unorm => 2 * w * h,
         PrmFormat::R8Unorm => w * h,
         PrmFormat::Bc5RgUnorm => w.div_ceil(4) * h.div_ceil(4) * 16,

@@ -1,8 +1,6 @@
 import {
   Button,
   CLOSE_DIALOG_ACTION,
-  EXIT_TO_DESKTOP_ACTION,
-  QUIT_TO_MENU_ACTION,
   Text,
   Tree,
   VStack,
@@ -10,7 +8,7 @@ import {
   defineUiTree,
   getDesignTokens,
 } from "postretro/ui";
-import { openOptions } from "./frontend-menu";
+import { askExit, askQuit, openOptions } from "./frontend-menu";
 
 const pauseTheme = defineTheme({
   color: {
@@ -71,12 +69,12 @@ export const pauseMenu = defineUiTree({
         Button({
           id: "pauseQuitToMenu",
           label: "QUIT TO MENU",
-          onPress: QUIT_TO_MENU_ACTION,
+          onPress: askQuit,
         }),
         Button({
           id: "pauseExitDesktop",
           label: "EXIT TO DESKTOP",
-          onPress: EXIT_TO_DESKTOP_ACTION,
+          onPress: askExit,
         }),
       ],
     ),

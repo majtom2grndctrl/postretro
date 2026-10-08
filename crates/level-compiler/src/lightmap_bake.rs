@@ -1228,8 +1228,10 @@ pub(crate) fn segment_clear(
 /// skips most traversals in shadow. The cached triangle is tested with the same
 /// ray and hit predicate as the traversal, so it changes only which triangle is
 /// found first, not the answer — barring a hit the traversal's box test misses
-/// by rounding on a grazing ray, which the cache then reports as blocked.
-/// `last_occluder` holds the triangle's first index-buffer offset.
+/// by rounding, which the cache then reports as blocked. That miss needs the
+/// hit on the box's boundary: at an axis-aligned edge or a vertex of the
+/// triangle, at any ray angle. `last_occluder` holds the triangle's first
+/// index-buffer offset into `geometry`.
 pub(crate) fn segment_clear_remembering(
     bvh: &Bvh<f32, 3>,
     primitives: &[BvhPrimitive],

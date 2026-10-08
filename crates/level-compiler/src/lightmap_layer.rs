@@ -45,7 +45,8 @@ pub use cache_keys::{
 /// (`chart_raster::chart_texel_seed`), not bake-layer coordinates.
 ///
 /// v9: shadow rays test the chart walk's last occluding triangle first, which
-/// also catches a hit the box test misses by rounding on a grazing ray.
+/// also catches a hit the box test misses by rounding where the triangle meets
+/// its box's boundary.
 pub const LAYER_FORMAT_VERSION: u32 = 9;
 
 /// Bump when the composite/dilate/`encode_section` pipeline or

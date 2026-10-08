@@ -527,3 +527,87 @@ Run on the owner's Mac from a release build. Bake the maps and model textures as
 | Read vs install split of X.2 after Track A | A mark between the spawn preload's read and its renderer drain |
 | Peak memory | §5 #8 |
 | Metal pipeline compile timing | §5 #1 and #5 |
+
+---
+
+## 8. Re-verified at `da46511f7` (brief drafting session)
+
+Code reading only (r). Supersedes §1–§7 where they disagree.
+
+**Drift since `5594fe4`.** No change to the worker, SH or lightmap streaming, or the renderer geometry install. sdk-addressing added kill-progress membership capture, after the model sweep and before `levelLoad`. It has no line-C mark and is timed inside `level_load_event`. `boot_sequence.md` §3 renumbered: `levelLoad` = 14, sprites = 15, sounds = 16. The main.rs split moved only the frame body; `first_level_frame` is now recorded in `frame_loop`.
+
+**Install-time pipelines.** All of them use static WGSL, fixed bind-group layouts, and no override constants. Level data sizes only the buffers and bind groups. Created from `install_level_geometry`:
+
+| Pipeline family | Constructor |
+|---|---|
+| SH compose | `ShComposeResources::new` |
+| Direct SH compose | `DirectShComposeResources::new` |
+| Animated direct SH compose | animated_direct_sh_compose |
+| Billboard direct scatter | `BillboardDirectScatterComposeResources::new` |
+| Animated lightmap | `AnimatedLightmapResources::new` |
+| SH-streaming indirect compose | `initialize_gpu` path, sh_streaming/gpu/indirect |
+| SH-streaming direct compose passes | sh_streaming/direct_compose/passes |
+| BVH cull (skipped when no leaves) | `ComputeCullPipeline::new`, `CandidateCullPipeline::new` |
+
+Each constructor bundles the pipeline with level-sized buffers, so creating pipelines once means splitting each constructor. `SdfAtlasResources::new` and `LightmapResources::new` were not checked for pipelines. `release_level_resources` installs an empty `LevelGeometry` through the full `install_level_geometry`, which rebuilds every family except cull.
+
+**SH CPU work.** `ShResidencyState::from_manifest` / `from_parts` is pure; `initialize_gpu` is the only GPU step. `derive_dense_node_layout` is `pub(super)`. `sparse_compose_capacity` is pure CPU (base metadata, optional sparse metadata, floor tuple) and is recomputed at three call sites: `IndirectCompose::new`, `preflight_sparse_carrier`, `build_grid_and_sparse`. Whether `ShResidencyState` is `Send` was not checked.
+
+**Thread affinity.** `cpu_frame: Rc<StageFrame<RenderStage>>` is the only `Rc` in the renderer, render-cpu and stage-timing crates. The `Cell`/`RefCell` fields (`UploadQueue`, `StageFrame`, `ComputeCull.draw_trace`, the UI image registry) are `Send`. `UploadQueue::installation()` disables batching, so writes go through `direct_write_buffer` to the raw queue. `assert_empty` is a `debug_assert!`. No renderer code spawns threads. SH and lightmap streaming threads only do I/O and CPU decode, and hand bytes back over channels (`ShWorkerCompletion`, `LightmapCompletion`).
+
+**Texture install.** In `load_textures`, each texture is read, parsed with `PrmFile::from_bytes_partial`, planned (`d2_texture_slot_plan`), uploaded (`upload_slot_or_placeholder` → `create_texture` + `write_texture`), then gets specular relief. The pure helpers live in render-cpu. Placeholder fallback needs the device. `load_model_texture` has the same shape.
+
+**Worker.** `load_prl_from_container` is monolithic and returns one `LevelWorld`. Order: id 49, geometry, texture names and cache keys, BVH, portals, cells, visibility, residency set, locator, lights, lightmap index (streaming: index prefixes only), SDF and SH deltas, the remaining lighting sections, data script, map entities, kinematics, triggers, fog, nav, cell draw index, cluster-directory validation, lighting split, then the lightmap stream manifest. The SH stream manifest loads before it. `progress.begin` runs after the manifest, so `fraction()` is 0 through the manifest load.
+
+**Spawn lightmap preload.** It runs after `install_level_payload` returns, through `install_spawn_streaming` → `LevelStreaming::install_spawn_lightmap`. The eye is `spawn_eye_position()`: the frontend camera, else the camera set at install from the followed pawn eye, after first spawn and `--start-pose`. The `levelLoad` system commands drain after install. No script primitive teleports before the preload (grep, medium confidence).
+
+**Model set.** Beyond descriptors: the `prop_mesh` built-in takes its model from the map entity `model` key, which the compiler also scans (`prop_mesh_model_handles`). Runtime spawners, net materialization and projectile meshes reuse descriptor models. No script primitive attaches a new model. `distinct_mesh_models` sweeps the live registry.
+
+**Cancellation and requests.** `drain_level_requests` returns early while a load is in flight, so requests queue. Suspend drops the receiver and the `JoinHandle`, and the worker runs to completion.
+
+**Parse-end rewrites (round 2 review).** The SH manifest's cluster adjacency and seam portals are installed at the very end of the parse, and their accessors panic before that; planner topology needs them, so §2.3's "X.1 topology needs only W2" is wrong. The lightmap stream manifest is finalized at parse end, and the shadowmask may be dropped after entity shadow lights decode.
+
+**Full-init pipelines (round 2 review).** Full init runs with no level data, so the direct-SH, animated direct-SH, billboard-scatter and animated-lightmap compose constructors return their disabled form and build no pipeline. Only SH compose has a full-init instance install could reuse. SDF atlas and lightmap resources create no pipelines.
+
+**Settings during Loading.** Loading frames drop UI input and return before the options bridge applies, so no tier changes between request and commit today. Surface Depth is live (installed material uniforms are rewritten); the shadow tier is consumed at the next level boundary.
+
+**Models and Surface Depth.** Skinned-model materials are outside Surface Depth: their uniform is flat at every tier and never rewritten.
+
+**Boot (for the later boot brief).** The order is `run_splash_frame_one` → `install_pending_session` → `ensure_debug_ui` → `finish_renderer_full_init` (`build_full_renderer`, serial, no pipeline cache) → `run_deferred_mod_init` → OS-preference wait → `start_boot_destination` (`boot_worker_dispatch`). The worker's inputs (map path, content root, baked root) are all resolved before the window. Separable CPU work in mod init: font reads, `decode_mod_ui_images`, glyph-art decode, and start-script byte reads. GPU registration and the script VM stay on the main thread. rayon is already a workspace dependency, used only by the compiler.
+
+---
+
+## 9. Ordering pins
+
+Brief review. Acceptance rows cite these by id.
+
+| Id | Scenario | Ordering | Expected outcome |
+|---|---|---|---|
+| P1 | Request queued earlier; its frame's Loading step finds the bundle ready | Drain runs before the Loading step | The in-flight load is cancelled and never commits. The new load installs. |
+| P2 | Relevel received by the Loading frame's own transport poll; the same frame commits | Transport poll → readiness check → commit; drain only next frame | The load commits. The relevel drains next frame and takes the ordinary unload path. |
+| P3 | Load X in flight; an unload queued behind it (e.g. `loadLevel` then `returnToFrontend` on one tick) | Unload drains during Loading | X is cancelled and never commits. The game enters Frontend. A backdrop arrives only through a load return-to-frontend queued (P24). The unload is never dropped. |
+| P4 | A cancelled and retiring; B requested; C requested on a later frame before A joins | Cancel A → B queued behind retirement → C supersedes B | Only C installs. B runs no stage. No two generations' stages overlap. |
+| P5 | Load cancelled while the background pipeline build runs | Build in flight (started after full init) → cancel load → next load | The build is not cancelled or restarted. The next load creates no pipelines. |
+| P6 | Suspend during prep or upload | Suspend drops renderer → Booting → Splash → resumed load | Retirement survives the renderer drop and keeps polling. No join on the event-loop thread. The resumed load's stages start after the old ones join. |
+| P7 | Suspend with a ready, uncommitted bundle | Bundle ready → suspend → resume | The bundle drops uncommitted. Nothing from it reaches the resumed renderer or the cache. |
+| P8 | Runtime request during a CLI boot load | Enqueue during boot Loading | Refused with the existing warning. The boot load is not cancelled. |
+| P9 | Hot reload changing a mesh block, committed while Running, then a load request | Reload commit → request → prep → commit | Prep predicts the reloaded set: zero misses. No reload commits between request and commit. |
+| P10 | Parse fails while manifest-only prep runs; or two stages fail together | Failure A, failure B on one frame | Exactly one load failure is reported. All stages join. Nothing commits. Runtime → Frontend; boot → non-zero exit. |
+| P11 | Load fails or is cancelled after some models are uploaded | Upload → failure or cancel → Frontend → later commit | No entry from the failed load is in the cache. The later commit releases unreferenced entries. |
+| P12 | Request queued during the first-launch hold or the OS-preference wait; level change from Running | Enqueue → (hold ends) → drain → unload → dispatch | No stage work before dispatch (the background pipeline build is not level work). On a change, none before the old level's unload. |
+| P13 | Upload finishes | Last upload write → submit → commit → Settling → first presented level frame | The last write is submitted before the first level frame presents, including when an acquire is skipped. |
+| P14 | Host level change | Unload → Loading frames → commit | Parity, relevel id and join seed are unset through Loading and set on the commit frame, after the range and collision checks. |
+| P15 | Parse finishes; prep, upload and settling remain | Parse end → prep → upload → commit → settle → reveal | Progress stays below 1.0 until reveal. The parse's end doesn't finish the load's counter. |
+| P16 | Window resize or render-resolution change during Loading | Upload builds extent-bound bind groups → resize replaces views on main → commit | Commit detects the changed extent, rebuilds the extent-bound bind groups once, and counts it. No bind group references a replaced view. |
+| P17 | Player changes a tier | Options apply only on Frontend, Running and splash frames, never on Loading | The request's tiers equal the commit's. A change after commit follows the live (Surface Depth) or next-boundary (shadow) rule. |
+| P18 | Late parse validation (cluster directory, cross-section checks) rejects after hand-outs went out | Hand-outs → prep/upload running → parse error | Exactly one load failure. All stages cancel and join. Nothing commits, and no cache entry from the load remains. |
+
+| P19 | Streamed map; manifest handed out early; planner topology prep queued | Manifest hand-out → section reads → id-49 semantic validation → topology install → parse returns | No stage reads the manifest's cluster adjacency or seam portals before the install. Planner topology prep starts after it. |
+| P20 | Load cancelled (supersede or suspend); a stage returns an error, or observes the cancel, after the next load dispatched | Cancel → next dispatch → old stage error polled | The error reaches no failure path. The next load keeps its state and installs. After a suspend during a boot load, the resumed boot load installs and the process does not exit. |
+| P21 | Request queued on a Running or Frontend frame; the same frame applies a tier change | Enqueue → options apply → next frame drain → dispatch | The load reads tiers at dispatch, so the change reaches it. |
+| P22 | Suspend while the background pipeline build runs | Build in flight → suspend drops renderer → resume → full init → build | No pipeline from the old device reaches the resumed renderer. The resumed renderer builds its own, once. |
+| P23 | Window resize or scale-factor change recorded after the last Loading paint | Last paint → resize recorded → commit redraw: commit, then the frame's extent commit | The commit counts no rebuild; the frame's ordinary resize rebuilds the extent-bound groups. |
+| P24 | loadLevel then returnToFrontend on one tick, backdrop declared | Enqueue Load X → enqueue Unload → enqueue Load backdrop (replaces X) → drain | X never dispatches. The backdrop installs. Only without a backdrop does an unload queue behind an in-flight X (P3). |
+| P25 | Parse-end rewrites of earlier sections | Section decode → late rewrite (cluster topology install, lightmap stream manifest finalize, shadowmask drop after entity shadow lights, lighting split) → hand-out | A hand-out carries final data. Data a later step rewrites is handed out only after that rewrite. |
+
+Already guarded by an existing test: a relevel naming the in-flight catalog id neither cancels nor restarts the load. Keep it green under cancellation. Unreachable today: a frontend backdrop load superseded by Start, because UI input is dropped on Loading frames.

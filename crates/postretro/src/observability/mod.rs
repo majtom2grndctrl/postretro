@@ -163,7 +163,7 @@ mod tests {
     use postretro_entities::{
         ActionVerb, AirParams, AmmoReserve, AttackParams, BehaviorActivityDescriptor,
         BehaviorGraphDescriptor, BehaviorGraphEnvelope, CapsuleParams, ComponentValue,
-        DescriptorProvenance, DescriptorSpawnPath, EntityId, FallParams, FireMode,
+        DescriptorProvenance, DescriptorSpawnPath, EntityId, FallParams,
         FogVolumeComponent, GroundParams, KinematicMoverComponent, KinematicMoverMode, MotionVerb,
         MoverCommand, PlayerMovementDescriptor, ResolutionMode, SpeedParams, Transform,
         TriggerActivation, TriggerFireMode, TriggerVolumeComponent, WeaponDescriptor,

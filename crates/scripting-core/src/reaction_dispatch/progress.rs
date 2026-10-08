@@ -85,9 +85,9 @@ impl ProgressTracker {
     /// Level install, once every map placement exists: drop any previous level's
     /// state, snapshot the install-time tag index from `entity_registry`, and
     /// subscribe. Warns once per subscribed tag that captures no members, since
-    /// such a `progress` can never fire, and once per subscription whose `at` is
-    /// non-finite or outside `(0, 1]`. Returns event names whose threshold the
-    /// set already meets (an `at` at or below zero), latched exactly as a
+    /// such a `progress` can never fire, and once per subscription over a
+    /// non-empty set whose `at` is not in `(0, 1]`. Returns event names whose
+    /// threshold the set already meets (`at: 0`), latched exactly as a
     /// recompose would; the caller dispatches them like kill-driven fires.
     pub fn initialize(
         &mut self,
@@ -97,8 +97,8 @@ impl ProgressTracker {
         self.clear();
         self.install_tags = snapshot_install_tags(entity_registry);
         self.captured = true;
-        warn_out_of_range_thresholds(data_registry);
         self.subscribe(data_registry);
+        self.warn_install_thresholds();
         self.evaluate()
     }
 
@@ -222,12 +222,41 @@ impl ProgressTracker {
                 continue;
             }
             let ratio = membership.killed as f32 / membership.total as f32;
-            if ratio >= state.at {
+            if state.at.is_finite() && ratio >= state.at {
                 self.fired.insert(state.latch.clone());
                 to_fire.push(state.latch.fire.clone());
             }
         }
         to_fire
+    }
+
+    /// Parsing rejects `at` outside `[0, 1]` (NaN and infinities included), so
+    /// authored content reaches here in range, where `at: 0` fires at install;
+    /// install warns once for it. Hand-built descriptors skip parsing, so the
+    /// other branches are defensive: a finite `at` below zero fires at install,
+    /// and one above one or non-finite never fires. A tag with no members has
+    /// already warned that it can never fire, so it gets no threshold warning.
+    fn warn_install_thresholds(&self) {
+        for state in &self.subscriptions {
+            let has_members = self
+                .memberships
+                .get(&state.latch.tag)
+                .is_some_and(|membership| membership.total > 0);
+            if !has_members || (state.at.is_finite() && state.at > 0.0 && state.at <= 1.0) {
+                continue;
+            }
+            let consequence = if state.at.is_finite() && state.at <= 0.0 {
+                "it fires as soon as the level loads"
+            } else {
+                "it can never fire"
+            };
+            log::warn!(
+                "[Scripting] progress on tag `{}` firing `{}` has `at` {}: {consequence}",
+                state.latch.tag,
+                state.latch.fire,
+                state.at
+            );
+        }
     }
 
     pub fn clear(&mut self) {
@@ -251,31 +280,6 @@ impl ProgressTracker {
 impl Default for ProgressTracker {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-/// An `at` at or below zero fires as soon as membership is captured; one above
-/// one, or non-finite, never fires. Neither is rejected at parse time, so the
-/// install says so once per subscription.
-fn warn_out_of_range_thresholds(data_registry: &DataRegistry) {
-    for named in &data_registry.reactions {
-        let ReactionDescriptor::Progress(p) = &named.descriptor else {
-            continue;
-        };
-        if p.at.is_finite() && p.at > 0.0 && p.at <= 1.0 {
-            continue;
-        }
-        let consequence = if p.at.is_finite() && p.at <= 0.0 {
-            "it fires as soon as the level loads"
-        } else {
-            "it can never fire"
-        };
-        log::warn!(
-            "[Scripting] progress on tag `{}` firing `{}` has `at` {} outside (0, 1]: {consequence}",
-            p.tag,
-            p.fire,
-            p.at
-        );
     }
 }
 

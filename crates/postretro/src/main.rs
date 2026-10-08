@@ -3573,15 +3573,9 @@ impl ApplicationHandler for App {
                 // rendered frame, before replication and render observe state.
                 impact_effects::run_end_of_frame_removal_pass(
                     &mut script_ctx.registry.borrow_mut(),
-                    |removed, pending_kill_credit| {
+                    |removal| {
                         let session = self.session.as_mut().expect("running session installed");
-                        // An above-zero despawn carries no credit and reports no
-                        // kill; it only leaves any `progress` set it was in.
-                        let fired = if pending_kill_credit.is_some() {
-                            session.progress_tracker.on_entity_killed(removed)
-                        } else {
-                            session.progress_tracker.on_entity_removed(removed)
-                        };
+                        let fired = removal.report_to_progress(&mut session.progress_tracker);
                         session.pending_death_events.extend(fired);
                     },
                 );

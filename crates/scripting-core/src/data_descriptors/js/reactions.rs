@@ -241,7 +241,9 @@ pub fn sequence_steps_from_js<'js>(
                 "@fire" => SequenceTarget::Fire,
                 spelling => {
                     return Err(DescriptorError::InvalidSequenceStep {
-                        reason: format!("step {i} has illegal sentinel `{spelling}`"),
+                        reason: format!(
+                            "reaction `{reaction}` {site}: illegal sentinel `{spelling}`"
+                        ),
                     });
                 }
             }
@@ -250,7 +252,7 @@ pub fn sequence_steps_from_js<'js>(
         };
         let primitive = get_required_string_js(&obj, "primitive")?;
         let primitive = validate_primitive_name(primitive)?;
-        validate_control_step_pair(i, &id, &primitive)?;
+        validate_control_step_pair(reaction, &site, &id, &primitive)?;
         if let Some(token) = SubjectToken::of_sequence_target(&id) {
             validate_subject_token_primitive(reaction, &site, token, &primitive)
                 .map_err(|reason| DescriptorError::InvalidSequenceStep { reason })?;
@@ -284,23 +286,24 @@ pub fn sequence_steps_from_js<'js>(
 /// both directions prevents a sentinel from selecting an arbitrary handler and
 /// prevents an entity-targeted `wait`/`fire` from reaching an inert handler.
 fn validate_control_step_pair(
-    step_index: usize,
+    reaction: &str,
+    site: &str,
     target: &SequenceTarget,
     primitive: &str,
 ) -> Result<(), DescriptorError> {
     let mismatch = match (target, primitive) {
         (SequenceTarget::Wait, "wait") | (SequenceTarget::Fire, "fire") => None,
         (SequenceTarget::Wait, _) => Some(format!(
-            "step {step_index} sentinel `@wait` requires primitive `wait`, got `{primitive}`"
+            "reaction `{reaction}` {site}: sentinel `@wait` requires primitive `wait`, got `{primitive}`"
         )),
         (SequenceTarget::Fire, _) => Some(format!(
-            "step {step_index} sentinel `@fire` requires primitive `fire`, got `{primitive}`"
+            "reaction `{reaction}` {site}: sentinel `@fire` requires primitive `fire`, got `{primitive}`"
         )),
         (_, "wait") => Some(format!(
-            "step {step_index} control primitive `wait` requires sentinel `@wait`; it cannot be entity-targeted"
+            "reaction `{reaction}` {site}: control primitive `wait` requires sentinel `@wait`; it cannot be entity-targeted"
         )),
         (_, "fire") => Some(format!(
-            "step {step_index} control primitive `fire` requires sentinel `@fire`; it cannot be entity-targeted"
+            "reaction `{reaction}` {site}: control primitive `fire` requires sentinel `@fire`; it cannot be entity-targeted"
         )),
         _ => None,
     };

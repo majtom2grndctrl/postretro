@@ -1206,6 +1206,9 @@ fn compiler_freshness_roots() -> Vec<PathBuf> {
         // The `LightTable` / `MapMember` sidecar contract scripts-build reads
         // lives here; a wire or version change must rebuild the sidecar.
         workspace_root.join("crates/level-format/src"),
+        // scripts-build links the shared consequential-step validator from
+        // here; a rule change alters which steps reserve a light.
+        workspace_root.join("crates/foundation/src"),
     ]
 }
 
@@ -1661,6 +1664,10 @@ mod tests {
         assert!(
             roots.contains(&workspace.join("crates/level-format/src")),
             "the light-table sidecar contract must participate in production freshness"
+        );
+        assert!(
+            roots.contains(&workspace.join("crates/foundation/src")),
+            "the consequential-step validator scripts-build links must participate in production freshness"
         );
     }
 

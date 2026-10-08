@@ -209,19 +209,19 @@ fn js_sequence_control_steps_require_canonical_target_primitive_pairs() {
     let cases = [
         (
             r#"({ name: "bad", sequence: [{ id: "@wait", primitive: "ping", args: {} }] })"#,
-            "sentinel `@wait` requires primitive `wait`",
+            "reaction `bad` sequence step 0: sentinel `@wait` requires primitive `wait`",
         ),
         (
             r#"({ name: "bad", sequence: [{ id: "@fire", primitive: "ping", args: {} }] })"#,
-            "sentinel `@fire` requires primitive `fire`",
+            "reaction `bad` sequence step 0: sentinel `@fire` requires primitive `fire`",
         ),
         (
             r#"({ name: "bad", sequence: [{ id: 65536, primitive: "wait", args: {} }] })"#,
-            "control primitive `wait` requires sentinel `@wait`; it cannot be entity-targeted",
+            "reaction `bad` sequence step 0: control primitive `wait` requires sentinel `@wait`; it cannot be entity-targeted",
         ),
         (
             r#"({ name: "bad", sequence: [{ id: 65536, primitive: "fire", args: {} }] })"#,
-            "control primitive `fire` requires sentinel `@fire`; it cannot be entity-targeted",
+            "reaction `bad` sequence step 0: control primitive `fire` requires sentinel `@fire`; it cannot be entity-targeted",
         ),
     ];
 
@@ -416,19 +416,19 @@ fn lua_sequence_control_steps_require_canonical_target_primitive_pairs() {
     let cases = [
         (
             r#"return { name = "bad", sequence = { { id = "@wait", primitive = "ping", args = {} } } }"#,
-            "sentinel `@wait` requires primitive `wait`",
+            "reaction `bad` sequence step 0: sentinel `@wait` requires primitive `wait`",
         ),
         (
             r#"return { name = "bad", sequence = { { id = "@fire", primitive = "ping", args = {} } } }"#,
-            "sentinel `@fire` requires primitive `fire`",
+            "reaction `bad` sequence step 0: sentinel `@fire` requires primitive `fire`",
         ),
         (
             r#"return { name = "bad", sequence = { { id = 65536, primitive = "wait", args = {} } } }"#,
-            "control primitive `wait` requires sentinel `@wait`; it cannot be entity-targeted",
+            "reaction `bad` sequence step 0: control primitive `wait` requires sentinel `@wait`; it cannot be entity-targeted",
         ),
         (
             r#"return { name = "bad", sequence = { { id = 65536, primitive = "fire", args = {} } } }"#,
-            "control primitive `fire` requires sentinel `@fire`; it cannot be entity-targeted",
+            "reaction `bad` sequence step 0: control primitive `fire` requires sentinel `@fire`; it cannot be entity-targeted",
         ),
     ];
 
@@ -1868,12 +1868,12 @@ fn sequence_step_diagnostics_count_from_zero_in_both_vms() {
         (
             r#"({ name: "bad", sequence: [{ id: "@wait", primitive: "wait", args: { durationMs: 1 } }, { id: "@bogus", primitive: "wait", args: {} }] })"#,
             r#"return { name = "bad", sequence = { { id = "@wait", primitive = "wait", args = { durationMs = 1 } }, { id = "@bogus", primitive = "wait", args = {} } } }"#,
-            "step 1 has illegal sentinel `@bogus`",
+            "reaction `bad` sequence step 1: illegal sentinel `@bogus`",
         ),
         (
             r#"({ name: "bad", sequence: [{ id: "@wait", primitive: "wait", args: { durationMs: 1 } }, { id: "@wait", primitive: "fire", args: {} }] })"#,
             r#"return { name = "bad", sequence = { { id = "@wait", primitive = "wait", args = { durationMs = 1 } }, { id = "@wait", primitive = "fire", args = {} } } }"#,
-            "step 1 sentinel `@wait` requires primitive `wait`, got `fire`",
+            "reaction `bad` sequence step 1: sentinel `@wait` requires primitive `wait`, got `fire`",
         ),
         (
             r#"({ name: "bad", sequence: [{ id: "@wait", primitive: "wait", args: { durationMs: 1 } }, { kind: "enemy", primitive: "applyDamage", args: { amount: 1 } }] })"#,

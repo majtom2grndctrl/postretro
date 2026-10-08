@@ -43,7 +43,8 @@ fn member_registry() -> PrimitiveRegistry {
 }
 
 /// Run a TypeScript fixture that stores its result in
-/// `globalThis.__memberSteps`, converting through the manifest converter.
+/// `globalThis.__memberSteps`, converting it with the same value converter
+/// (`js_to_json`) the step drains use.
 fn quickjs_member_steps(source: &str) -> serde_json::Value {
     let fixture = TypeScriptFixture::new(source);
     let bundled = postretro_script_compiler::bundle_entry(fixture.entry())
@@ -56,8 +57,8 @@ fn quickjs_member_steps(source: &str) -> serde_json::Value {
     })
 }
 
-/// Run a Luau fixture returning its result, converting through the manifest
-/// converter.
+/// Run a Luau fixture returning its result, converting it with the same value
+/// converter (`lua_to_json`) the step drains use.
 fn luau_member_steps(source: &str) -> serde_json::Value {
     let primitives: Vec<_> = member_registry().iter().cloned().collect();
     let lua = build_lua_state(
@@ -78,7 +79,7 @@ fn luau_member_steps(source: &str) -> serde_json::Value {
 // fields are present (`fade`'s finite `playCount`, `colorShift`'s color,
 // `sweep`'s direction including a zero-length and a non-unit sample,
 // `flicker`'s fractional period, a reversed `min`/`max`). The twins must emit
-// byte-identical steps through the converters the manifest drains use.
+// byte-identical steps through the value converters the step drains use.
 #[test]
 fn light_and_fog_member_builders_emit_byte_identical_steps_in_both_runtimes() {
     let ts = quickjs_member_steps(

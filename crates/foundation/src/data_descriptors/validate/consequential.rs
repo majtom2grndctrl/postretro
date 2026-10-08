@@ -15,7 +15,9 @@ pub fn is_consequential_primitive(primitive: &str) -> bool {
 /// reason names the reaction so the caller's skip or reject points at it.
 ///
 /// Both VM converters and the build-time light pass call this one check, so
-/// the build never reserves a light for a reaction the runtime drops.
+/// a reaction the runtime drops for a bad sequence step reserves no light. A
+/// bad primitive body is different: the runtime rejects the whole manifest,
+/// while the light pass still reserves for that manifest's other reactions.
 pub fn validate_consequential_args(
     reaction: &str,
     site: &str,

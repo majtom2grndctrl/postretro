@@ -61,8 +61,10 @@ impl LightTable {
             Ok(())
         } else {
             Err(LightMembershipVersionError {
+                document: LightMembershipDocument::LightTable,
                 found: self.version,
-                expected: Self::VERSION,
+                oldest: Self::LIGHTS_ONLY_VERSION,
+                newest: Self::VERSION,
             })
         }
     }
@@ -206,8 +208,10 @@ impl LightMembershipManifest {
             Ok(())
         } else {
             Err(LightMembershipVersionError {
+                document: LightMembershipDocument::Manifest,
                 found: self.version,
-                expected: Self::VERSION,
+                oldest: Self::VERSION,
+                newest: Self::VERSION,
             })
         }
     }
@@ -227,21 +231,42 @@ pub struct LightMembershipRecord {
     pub start_active_conflict: bool,
 }
 
-/// A stale or future sidecar was supplied to a compiler that does not
-/// understand its version.
+/// Which light-membership document carried an unsupported version.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LightMembershipDocument {
+    /// The map-light table `prl-build` hands `scripts-build`.
+    LightTable,
+    /// The resolved light-membership sidecar `scripts-build` hands back.
+    Manifest,
+}
+
+impl std::fmt::Display for LightMembershipDocument {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::LightTable => "light table",
+            Self::Manifest => "light-membership sidecar",
+        })
+    }
+}
+
+/// A stale or future light table or sidecar was supplied to a tool that does
+/// not understand its version. `oldest..=newest` is the accepted range.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LightMembershipVersionError {
+    pub document: LightMembershipDocument,
     pub found: u32,
-    pub expected: u32,
+    pub oldest: u32,
+    pub newest: u32,
 }
 
 impl std::fmt::Display for LightMembershipVersionError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "unsupported light-membership sidecar version {} (expected {})",
-            self.found, self.expected
-        )
+        write!(f, "unsupported {} version {} ", self.document, self.found)?;
+        if self.oldest == self.newest {
+            write!(f, "(expected {})", self.newest)
+        } else {
+            write!(f, "(expected {} through {})", self.oldest, self.newest)
+        }
     }
 }
 
@@ -380,11 +405,33 @@ mod tests {
             assert_eq!(
                 table.validate_version(),
                 Err(LightMembershipVersionError {
+                    document: LightMembershipDocument::LightTable,
                     found: version,
-                    expected: LightTable::VERSION,
+                    oldest: LightTable::LIGHTS_ONLY_VERSION,
+                    newest: LightTable::VERSION,
                 })
             );
         }
+        let mut table = LightTable::new(Vec::new());
+        table.version = 0;
+        assert_eq!(
+            table.validate_version().unwrap_err().to_string(),
+            format!(
+                "unsupported light table version 0 (expected {} through {})",
+                LightTable::LIGHTS_ONLY_VERSION,
+                LightTable::VERSION
+            )
+        );
+        let mut manifest = LightMembershipManifest::new(Vec::new(), Vec::new());
+        manifest.version = LightMembershipManifest::VERSION + 1;
+        assert_eq!(
+            manifest.validate_version().unwrap_err().to_string(),
+            format!(
+                "unsupported light-membership sidecar version {} (expected {})",
+                LightMembershipManifest::VERSION + 1,
+                LightMembershipManifest::VERSION
+            )
+        );
     }
 
     // A v2 table supplies its member table, so an absent `mapMembers` key is an

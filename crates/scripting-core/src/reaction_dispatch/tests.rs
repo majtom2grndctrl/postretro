@@ -494,15 +494,17 @@ fn progress_duplicated_tag_on_one_entity_counts_its_kill_once() {
     assert_eq!(tracker.on_entity_killed(other), vec!["powerOn".to_string()]);
 }
 
-// Install and recompose agree on an out-of-range `at`: one at or below zero
-// fires as soon as membership exists, one above one or non-finite never fires,
-// and install warns once for each.
+// Install and recompose agree on threshold edges. `at: 0` is the one edge
+// parsing accepts: it fires as soon as membership exists, and install warns.
+// The rest are defensive hand-built descriptors, since parsing rejects `at`
+// outside `[0, 1]`: above one or non-finite never fires, and install warns.
 #[test]
-fn progress_out_of_range_at_behaves_alike_at_install_and_recompose_and_warns_at_install() {
+fn progress_threshold_edges_behave_alike_at_install_and_recompose_and_warn_at_install() {
     let data = progress_data(vec![
         progress_reaction("eager", "wave1", 0.0, "early"),
         progress_reaction("never", "wave1", 1.5, "late"),
         progress_reaction("broken", "wave1", f32::NAN, "nan"),
+        progress_reaction("sunk", "wave1", f32::NEG_INFINITY, "neginf"),
     ]);
     let mut entities = EntityRegistry::new();
     let first = spawn_with_tags(&mut entities, &["wave1"]);
@@ -514,16 +516,23 @@ fn progress_out_of_range_at_behaves_alike_at_install_and_recompose_and_warns_at_
         vec!["early".to_string()],
         "install fires an already-met threshold, as a recompose does"
     );
-    logs.assert_logged_once(Level::Warn, "firing `early` has `at` 0 outside (0, 1]");
-    logs.assert_logged_once(Level::Warn, "firing `late` has `at` 1.5 outside (0, 1]");
-    logs.assert_logged_once(Level::Warn, "firing `nan` has `at` NaN outside (0, 1]");
+    logs.assert_logged_once(
+        Level::Warn,
+        "firing `early` has `at` 0: it fires as soon as the level loads",
+    );
+    logs.assert_logged_once(Level::Warn, "firing `late` has `at` 1.5: it can never fire");
+    logs.assert_logged_once(Level::Warn, "firing `nan` has `at` NaN: it can never fire");
+    logs.assert_logged_once(
+        Level::Warn,
+        "firing `neginf` has `at` -inf: it can never fire",
+    );
 
     assert!(tracker.recompose(&data).is_empty());
     assert!(
         tracker.on_entity_killed(first).is_empty(),
-        "`at` above one or NaN never fires, even with every member dead"
+        "`at` above one or non-finite never fires, even with every member dead"
     );
-    logs.assert_logged_once(Level::Warn, "firing `late` has `at` 1.5 outside (0, 1]");
+    logs.assert_logged_once(Level::Warn, "firing `late` has `at` 1.5: it can never fire");
 }
 
 // A member despawned above zero HP carries no kill credit. It leaves the set,
@@ -591,6 +600,9 @@ fn progress_with_zero_install_members_warns_once() {
     let data = progress_data(vec![
         progress_reaction("waveDone", "wave1", 1.0, "powerOn"),
         progress_reaction("waveHalf", "wave1", 0.5, "midwave"),
+        // A memberless set never fires, so `at: 0` gets no threshold warning
+        // contradicting the no-members one.
+        progress_reaction("waveStart", "wave1", 0.0, "opening"),
     ]);
     let mut entities = EntityRegistry::new();
     // A closet holding only spawner output tagged `wave1`.
@@ -598,11 +610,12 @@ fn progress_with_zero_install_members_warns_once() {
 
     let logs = LogCapture::start();
     let mut tracker = ProgressTracker::new();
-    tracker.initialize(&data, &entities);
+    assert!(tracker.initialize(&data, &entities).is_empty());
     logs.assert_logged_once(
         Level::Warn,
         "[Scripting] progress on tag `wave1` has no members",
     );
+    logs.assert_not_logged(Level::Warn, "it fires as soon as the level loads");
 
     assert!(tracker.recompose(&data).is_empty());
     logs.assert_logged_once(

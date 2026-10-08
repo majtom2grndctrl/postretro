@@ -3735,7 +3735,7 @@ mod tests {
         assert_eq!(live_runtime_count(&bridge), 2);
 
         crate::sim::advance_client_presentation_effects(&mut registry, 0.020);
-        crate::impact_effects::run_end_of_frame_removal_pass(&mut registry, |_, _| {});
+        crate::impact_effects::run_end_of_frame_removal_pass(&mut registry, |_| {});
         let lights_bytes = bridge
             .update(&mut registry, 0.020, 0.0)
             .expect("client-side despawns dirty the bridge")

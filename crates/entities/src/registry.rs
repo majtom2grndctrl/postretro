@@ -1317,10 +1317,12 @@ impl EntityRegistry {
         }
         // Every non-retired slot is free now. Rebuild the free list so `pop()`
         // yields the lowest index first: the next level then allocates slots in
-        // ascending order, and slot-order queries (`worldQuery`, group
-        // resolution) answer in spawn order, as they did on the first load.
-        // Only reuse order changes; each slot keeps the generation `despawn`
-        // bumped, and retired slots stay out of circulation.
+        // ascending order, and slot-order walks (`worldQuery`, group
+        // resolution) visit entities in spawn order, as they did on the first
+        // load. Sorting by `EntityId` does not recover that order: its `Ord`
+        // compares generation first, and generations differ per slot. Only
+        // reuse order changes; each slot keeps the generation `despawn` bumped,
+        // and retired slots stay out of circulation.
         self.free_list.clear();
         self.free_list.extend(
             self.slots

@@ -1695,7 +1695,7 @@ const sequence = [...closets.flatMap((s) => s.fire()), npcs({ tag: "closet" }).u
 
 The NPC step reaches the NPCs those spawners just released.
 
-A `progress` reaction counts kills among the map-placed entities carrying its tag when the level loads, including NPCs placed on the map. NPCs a spawner releases later with that tag neither raise its total nor count toward it. Each `progress` fires at most once per level for its tag and `fire` event: two thresholds naming the same event on the same tag fire it once. An entity despawned without being killed drops out of the total. A `progress` whose tag no map-placed entity carries logs a warning, since it can never fire.
+A `progress` reaction counts kills among the map-placed entities carrying its tag when the level loads, including NPCs placed on the map. NPCs a spawner releases later with that tag neither raise its total nor count toward it. Each `progress` fires at most once per level for its tag and `fire` event: two thresholds naming the same event on the same tag fire it once. An entity despawned without being killed drops out of the total, so despawning the last unkilled member can itself fire the `progress`. A `progress` whose tag no map-placed entity carries logs a warning, since it can never fire.
 
 ### LightEntityHandle
 
@@ -2433,14 +2433,14 @@ export function setupLevel(): LevelManifest {
 | Fog reaction primitive targets an entity lacking `FogVolumeComponent` | Skipped with `log::warn!` (tag-typo guard). |
 | `applyDamage` `amount` is negative or non-finite | The whole dispatch is a `log::warn!` no-op — no target takes damage (healing is out of scope). |
 | `applyDamage` targets an entity lacking a health component | Skipped with `log::warn!` (tag-typo guard); other matched targets still take damage. |
-| A `grantHealth` / `grantAmmo` / `addSlot` reaction body names not exactly one recipient: a group `kind` (with or without a tag), a non-empty tag, or the `@activators` target | Rejected with the whole setup manifest while its descriptors load. |
+| A `grantHealth` / `grantAmmo` / `addSlot` reaction body names not exactly one recipient: a group `kind` (with or without a tag), a non-empty tag, or the `@activators` target | Rejected with its whole manifest while its descriptors load: the setup manifest in a level script, the mod manifest in a mod-global reaction. |
 | `grantHealth` / `grantAmmo` amount, or `addSlot` delta, is not a finite `f32`-representable JSON number | Rejected while its descriptor loads (see below). |
 | `grantAmmo` pool key is malformed | Rejected while its descriptor loads, using the weapon-resource identifier grammar (see below). |
 | A grant recipient lacks the required component | The chokepoint emits one `log::warn!` and skips that recipient; sibling targets still receive their grants. |
 
 The amount and pool-key rules apply to the command whether it is a reaction body or a sequence step, for group and subject-token commands alike. What a failure rejects depends on where the command sits:
 
-- A bad `grantHealth`, `grantAmmo` or `addSlot` **reaction body** rejects the whole setup manifest.
+- A bad `grantHealth`, `grantAmmo` or `addSlot` **reaction body** rejects its whole manifest: the setup manifest in a level script, the mod manifest in a mod-global reaction.
 - A bad **sequence step** in a level script skips that one reaction, with a warning naming it; the level's other reactions install.
 - In a **mod-global** reaction, any failing step rejects the whole mod manifest.
 

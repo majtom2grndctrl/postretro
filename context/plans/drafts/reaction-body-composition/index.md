@@ -20,7 +20,9 @@ When done:
   - Every other system step queues at the walk and applies at the frame-end system drain. Authored order holds among system steps; a member or group step earlier in the same walk has already applied.
   - IR-valued `setState` steps bind at install like `setState` bodies (`research.md` §Dispatch today).
 - **A wait changes when a presentation step plays, never where.** Presentation means `playSound`, `rumble`, `flashScreen`, `vignette` and `screenShake`.
-  - From a source that runs on every machine (`levelLoad`, crossings, UI presses, named gameplay events), a connected client parks the tail too, and lands only its presentation steps. It lands nothing else.
+  - From a source the host mirrors (`levelLoad`, crossings over shared state, named gameplay events), a connected client parks the tail too and lands only its presentation steps; the host's copy lands the rest, so the client logs nothing above debug.
+  - From a local-only source (UI presses, crossings over the machine's own owner-private or local slots), the client also lands only its presentation steps. No machine runs the rest, so the client warns once per reaction, naming it and the dropped step, keeping the diagnostic E18 shipped (`plans/done/E18--timed-reaction-steps` O43).
+  - A post-wait `fire(r)` on a client dispatches `r` through the same filter, so a shared sting reached through `fire` plays where its inline twin would.
   - From a host-only source (trigger events), the host lands the tail. Its presentation reaches the audience a pre-wait step would have reached, which today is the host.
   - Every non-presentation step after a wait stays host-only, keeping E18's rule that delayed consequences are host-authoritative and replicated (`plans/done/E18--timed-reaction-steps` Invariants).
   - This adopts E18's named follow-up, client tails restricted to presentation, and reverses its client-refusal default (owner ruling). Rivals: `research.md` §Where a post-wait presentation step should play.
@@ -28,7 +30,7 @@ When done:
   - Before a wait, a step inherits the fire it runs under. `at: on.emitter` resolves, dispatch inputs bind, and E16's presentation routing applies.
   - After a wait, install drops a reaction whose system step reads `at: on.emitter` (V4a, unchanged) or a `setState` value that reads a dispatch input (V4a, extended).
   - V4b extends to a `fire` target's `setState` steps.
-  - No author-visible token survives a wait, but `E16--player-events`' internal target player does. This brief lands after E16 and lifts its post-wait install drop: in a `players().on` reaction, a post-wait presentation step, inline or reached through `fire`, reaches the target player's machine over E16's message kind, and a post-wait plain per-player read binds to that player. The scheduler instance retains the target player across the wait.
+  - No author-visible token survives a wait, but `E16--player-events`' internal target player, which routes presentation only, does. This brief lands after E16: in a `players().on` reaction, an inline post-wait presentation step reaches the target player's machine over E16's message kind. The scheduler instance retains the target player across the wait. E16's `fire` rule and its plain-read rejection are unchanged.
 - **E18 interactions are unchanged.** An interruptible wait's Exit cancel and a re-fire restart cover system steps in the tail. On a client, where no trigger runs, an interruptible wait lands as non-interruptible and logs nothing above debug. Teardown, suspend and hot reload drop client tails as they drop host ones.
 - **`fire(r)` stays as the reuse idiom.** Use it for named, sourceless beats that several reactions, brush KVPs or a TS/Luau pair share. It is no longer needed to wrap a single effect. Nothing deprecates it. An inline step keeps the emitter, the subject routing and authored order, all of which `fire` loses (`research.md` §`fire(r)` after this brief). Reference content drops its single-effect wrappers.
 - **Multi-effect bodies (separable).**
@@ -120,11 +122,12 @@ Luau mirrors it: `Postretro.defineReaction("closet.medkit", function(on) return 
 - [ ] Loopback host plus client, `levelLoad = [wait(500), npcs().update({ aggro: true }), playSound(x), m.start()]`. The client plays `x` once and applies neither other step. The host applies all three. Neither logs above debug about the client tail (research S3).
 - [ ] Loopback, a `player.health` crossing below 25 with `[vignette(…), wait(600), playSound(x)]`. Each machine plays `x` only for its own crossing, and the host sends the client nothing (research S4).
 - [ ] Loopback, a trigger-fired `[wait(300), flashScreen(…)]`. The host presents it and the client does not, matching the same step before the wait.
-- [ ] On a client, a post-wait `setState`, `loadLevel` or `fire` step does not run. On the host the same steps run.
+- [ ] On a client, a post-wait `setState` or `loadLevel` step does not run, and a post-wait `fire(r)` lands only `r`'s presentation steps. On the host the same steps all run.
+- [ ] On a client, a UI press firing `[playSound(click), wait(300), returnToFrontend()]` plays the click, drops the return and warns once naming the reaction and step; a second press warns no further. A crossing over shared state with the same shape warns nothing above debug.
+- [ ] On a client, a crossing firing `[wait(300), fire(sting)]` plays `sting`'s sound exactly as `[wait(300), playSound(…)]` does.
 - [ ] Unloading the level, suspending or hot-reloading on a client drops its parked tails, and nothing lands into the next level.
 - [ ] Grep and diff gate: `WIRE_VERSION` is unchanged, and no Presentation message kind is added.
-- [ ] Loopback host plus two clients, a `players().on` reaction for client A's player holding `[wait(300), flashScreen(…)]` and, separately, `[wait(300), fire(flash)]`: each presents on A only, not the host or client B. Before this brief both reactions were dropped at install; now both install.
-- [ ] On the host, with two players at different health, a post-wait plain `read(player.health)` in a `players().on` reaction yields the event's player's value, matching the same read before the wait.
+- [ ] Loopback host plus two clients, a `players().on` reaction for client A's player holding `[on.player.damage(5), wait(300), flashScreen(…)]`: the flash presents on A only, not the host or client B, as the same step before the wait does. `[wait(300), fire(flash)]` in the same reaction is still dropped at install.
 
 **Multi-effect bodies**
 - [ ] `defineReaction(name, [a, [b, wait(5)], c])` and `defineReaction(name, { sequence: [a, b, ...wait(5), c] })` emit byte-identical wire data, in TS and Luau alike (research S9).

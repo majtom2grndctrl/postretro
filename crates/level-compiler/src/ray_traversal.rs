@@ -129,17 +129,13 @@ mod tests {
     /// directions are often axis-parallel, which exercises the NaN and
     /// infinite slab cases a uniform draw would almost never hit.
     fn coord() -> impl Strategy<Value = f32> {
-        prop_oneof![
-            (-4i32..=4).prop_map(|v| v as f32),
-            -8.0f32..8.0,
-        ]
+        prop_oneof![(-4i32..=4).prop_map(|v| v as f32), -8.0f32..8.0,]
     }
 
     fn direction() -> impl Strategy<Value = Vector3<f32>> {
         prop_oneof![
-            (-1i32..=1, -1i32..=1, -1i32..=1).prop_map(|(x, y, z)| Vector3::new(
-                x as f32, y as f32, z as f32
-            )),
+            (-1i32..=1, -1i32..=1, -1i32..=1)
+                .prop_map(|(x, y, z)| Vector3::new(x as f32, y as f32, z as f32)),
             (-1.0f32..1.0, -1.0f32..1.0, -1.0f32..1.0).prop_map(|(x, y, z)| Vector3::new(x, y, z)),
         ]
         .prop_filter("non-zero", |d| d.norm() > 1e-3)

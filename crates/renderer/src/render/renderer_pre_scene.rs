@@ -385,9 +385,8 @@ impl Renderer {
             // indexes fail at load time. Gathered into the pipeline's reused
             // scratch (no per-frame allocation): `cell_draw_index` borrowed
             // immutably and `candidate_cull` mutably — disjoint fields. The
-            // returned flag only signals readiness; the gathered leaves live in
-            // the pipeline (`candidate.candidates()`), read after this borrow
-            // ends in the dispatch match below.
+            // returned flag only signals readiness; the gathered leaves stay in
+            // the pipeline's scratch for the dispatch match below.
             let candidates_ready: bool = match (
                 full.cell_draw_index.as_ref(),
                 full.candidate_cull.as_mut(),
@@ -434,8 +433,8 @@ impl Renderer {
                 full.candidate_cull.as_mut(),
             ) {
                 (true, Some(cull), Some(candidate)) => {
-                    // CPU-derived Spatial diagnostics (dev-tools only: the sole
-                    // reader is the debug UI): candidate count vs total BVH
+                    // CPU-derived Spatial diagnostics (dev-tools only, like the
+                    // tab that shows them): candidate count vs total BVH
                     // leaves, and submitted = candidates passing the frustum
                     // predicate. The gathered leaves live in the pipeline scratch
                     // (`candidate.candidates()`); read immutably here before the

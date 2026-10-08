@@ -285,6 +285,10 @@ pub struct CandidateCullPipeline {
     /// Reused per frame by [`Self::gather`]: the first-seen dedupe set for
     /// visible cell ids. Cleared each frame alongside `gather_out`.
     gather_seen: HashSet<u32>,
+    /// [`Self::dispatch`] calls, so frame tests can prove which camera-cull
+    /// path ran in every feature set.
+    #[cfg(test)]
+    pub(crate) dispatches: u32,
 }
 
 impl CandidateCullPipeline {
@@ -396,6 +400,8 @@ impl CandidateCullPipeline {
             candidate_scratch: Vec::new(),
             gather_out: Vec::new(),
             gather_seen: HashSet::new(),
+            #[cfg(test)]
+            dispatches: 0,
         }
     }
 
@@ -434,8 +440,8 @@ impl CandidateCullPipeline {
     /// shared buffer untouched.
     ///
     /// The candidate leaves come from this pipeline's own [`Self::gather`]
-    /// scratch (`self.candidates()`), not a parameter — so the caller never
-    /// holds a borrow that conflicts with `&mut self` here.
+    /// scratch, not a parameter — so the caller never holds a borrow that
+    /// conflicts with `&mut self` here.
     #[allow(clippy::too_many_arguments)]
     pub fn dispatch(
         &mut self,
@@ -448,6 +454,10 @@ impl CandidateCullPipeline {
         view_proj: &Mat4,
         timestamp_writes: Option<wgpu::ComputePassTimestampWrites<'_>>,
     ) {
+        #[cfg(test)]
+        {
+            self.dispatches += 1;
+        }
         // Clear ONLY the camera world ranges. The candidate path writes only
         // submitted candidate slots, so the indirect buffer must start zeroed
         // (the tree walk instead explicitly writes index_count=0 for rejects).

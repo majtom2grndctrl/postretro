@@ -36,11 +36,12 @@ const SPLASH_TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Uno
 ///   R 28/255 → 0.011612, G 33/255 → 0.015209, B 39/255 → 0.020289.
 /// This matches how `FRONTEND_CLEAR_COLOR` authors linear values for the same
 /// sRGB attachment (`startup/lifecycle.rs`).
+/// Shared with Loading frames as `render::SPLASH_CLEAR_COLOR`.
 const SPLASH_CLEAR_COLOR: wgpu::Color = wgpu::Color {
-    r: 0.011612,
-    g: 0.015209,
-    b: 0.020289,
-    a: 1.0,
+    r: super::SPLASH_CLEAR_COLOR.r,
+    g: super::SPLASH_CLEAR_COLOR.g,
+    b: super::SPLASH_CLEAR_COLOR.b,
+    a: super::SPLASH_CLEAR_COLOR.a,
 };
 
 /// Fraction of the window width the logo spans: the minor golden section,
@@ -397,8 +398,14 @@ mod tests {
     #[test]
     fn logo_rect_stays_within_window_margin() {
         let [x, y, w, h] = logo_rect([800, 600], [1024, 768]);
-        assert!(w <= 1024.0 * LOGO_WIDTH_FRACTION + EPS, "width within margin");
-        assert!(h <= 768.0 * LOGO_MAX_HEIGHT_FRACTION + EPS, "height within margin");
+        assert!(
+            w <= 1024.0 * LOGO_WIDTH_FRACTION + EPS,
+            "width within margin"
+        );
+        assert!(
+            h <= 768.0 * LOGO_MAX_HEIGHT_FRACTION + EPS,
+            "height within margin"
+        );
         assert!(x >= 0.0 && y >= 0.0, "rect origin inside the frame");
         assert!(x + w <= 1024.0 + EPS && y + h <= 768.0 + EPS, "rect fits");
     }

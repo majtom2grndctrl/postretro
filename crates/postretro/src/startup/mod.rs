@@ -9,6 +9,7 @@ pub(crate) mod app_dirs;
 pub(crate) mod audio_profile;
 pub(crate) mod first_launch_hold;
 pub(crate) mod lifecycle;
+pub(crate) mod loading_screen;
 pub(crate) mod reaction_validation;
 pub(crate) mod render_profile;
 pub(crate) mod session;
@@ -60,6 +61,9 @@ pub(crate) struct LevelLoadEntry {
     pub(crate) path: String,
     pub(crate) name: String,
     pub(crate) tags: Vec<String>,
+    /// The catalog entry's loading-tree pool; empty for raw-path loads, which
+    /// start at the mod pool.
+    pub(crate) loading_tree: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

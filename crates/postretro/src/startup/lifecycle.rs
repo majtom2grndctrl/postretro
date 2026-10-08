@@ -24,6 +24,7 @@ use crate::App;
 use crate::frame_timing::InterpolableState;
 use crate::render;
 use crate::scripting::builtins::descriptor_materializes_ai_enemy;
+use crate::startup::loading_screen::LoadingStep;
 use crate::startup::{
     BootState, InFlightLevelLoad, LevelLoadEntry, LevelSource, LoadOutcome, StartupTimings,
     spawn_level_worker,
@@ -245,7 +246,7 @@ impl App {
         self.trigger_bindings = bindings;
     }
 
-    fn resolve_level_source(&self, source: LevelSource) -> Option<InFlightLevelLoad> {
+    pub(super) fn resolve_level_source(&self, source: LevelSource) -> Option<InFlightLevelLoad> {
         match source {
             LevelSource::Catalog(id) => {
                 let entry = {
@@ -274,6 +275,7 @@ impl App {
                         path: entry.path,
                         name: entry.name,
                         tags: entry.tags,
+                        loading_tree: entry.loading_tree,
                     },
                 })
             }
@@ -290,6 +292,7 @@ impl App {
                         path: map_path.to_string_lossy().into_owned(),
                         name,
                         tags: Vec::new(),
+                        loading_tree: Vec::new(),
                     },
                     map_path,
                 })
@@ -297,13 +300,15 @@ impl App {
         }
     }
 
-    fn begin_level_load(&mut self, load: InFlightLevelLoad) {
+    pub(super) fn begin_level_load(&mut self, load: InFlightLevelLoad) {
         self.level_timings = StartupTimings::new();
+        let progress = self.begin_loading_screen(&load.entry);
         let (tx, rx) = mpsc::channel();
         let handle = spawn_level_worker(
             load.map_path.clone(),
             load.content_root.clone(),
             self.baked_root.clone(),
+            progress,
             tx,
         );
         self.level_load = Some(load);
@@ -323,26 +328,39 @@ impl App {
         // A worker may take longer than the netcode timeout. Poll the live
         // endpoint before checking its channel, without touching level state.
         let _ = self.poll_world_less_transport(frame_dt);
-        match self.poll_loading_level_worker() {
-            LoadingPoll::Ready(outcome) => match *outcome {
-                Ok(payload) => self.finish_level_payload(payload, event_loop),
-                Err(err) => {
-                    self.finish_level_failure(format!("worker failed: {err:#}"), event_loop);
-                    false
-                }
-            },
-            LoadingPoll::Disconnected => {
-                self.finish_level_failure(
-                    "worker channel disconnected before delivery".to_string(),
-                    event_loop,
-                );
+        match self.next_loading_step() {
+            LoadingStep::Install(payload) => self.finish_level_payload(*payload, event_loop),
+            LoadingStep::Fail(reason) => {
+                self.finish_level_failure(reason, event_loop);
                 false
             }
-            LoadingPoll::Pending => {
-                let _ = self.paint_splash(event_loop); // Loading redraws unconditionally; the outcome doesn't drive state advance here.
+            LoadingStep::Paint => {
+                // Loading redraws unconditionally; painting never advances state.
+                self.paint_loading_frame(event_loop, frame_dt);
                 self.request_redraw();
                 false
             }
+        }
+    }
+
+    /// Decide one Loading frame. A delivered payload is held for one painted
+    /// frame (the bar at its parse share), then installs on the next.
+    pub(super) fn next_loading_step(&mut self) -> LoadingStep {
+        if let Some(payload) = self.take_deferred_level_payload() {
+            return LoadingStep::Install(Box::new(payload));
+        }
+        match self.poll_loading_level_worker() {
+            LoadingPoll::Ready(outcome) => match *outcome {
+                Ok(payload) => match self.defer_level_payload(payload) {
+                    Some(payload) => LoadingStep::Install(Box::new(payload)),
+                    None => LoadingStep::Paint,
+                },
+                Err(err) => LoadingStep::Fail(format!("worker failed: {err:#}")),
+            },
+            LoadingPoll::Disconnected => {
+                LoadingStep::Fail("worker channel disconnected before delivery".to_string())
+            }
+            LoadingPoll::Pending => LoadingStep::Paint,
         }
     }
 
@@ -404,6 +422,7 @@ impl App {
                 // player_spawn. The host pawn stays driven locally by `simulate_tick`.
                 self.host_register_own_pawn_after_install();
                 self.level_load = None;
+                self.end_loading_screen();
                 if let Some(renderer) = self.renderer.as_mut() {
                     renderer.clear_splash();
                 }
@@ -427,6 +446,7 @@ impl App {
 
     fn finish_level_failure(&mut self, reason: String, event_loop: &ActiveEventLoop) {
         self.level_load = None;
+        self.end_loading_screen();
         let was_boot_load = std::mem::take(&mut self.boot_load);
         if was_boot_load {
             log::error!("[Loader] {reason}; boot map load failed");
@@ -1573,6 +1593,8 @@ pub(crate) mod tests {
                 input_system: input::InputSystem::new(input::default_bindings()),
                 bindings: input::BindingState::default(),
                 glyph_art: Default::default(),
+                mod_ui_images: Default::default(),
+                loading_screen: Default::default(),
                 device_family: Default::default(),
                 controls: Default::default(),
                 pending_slider_steps: Vec::new(),
@@ -3607,6 +3629,7 @@ pub(crate) mod tests {
                 path: "maps/e1m1.prl".to_string(),
                 name: "Entryway".to_string(),
                 tags: Vec::new(),
+                loading_tree: Vec::new(),
             },
         });
         app.follow_relevel_catalog("e1m1".to_string());

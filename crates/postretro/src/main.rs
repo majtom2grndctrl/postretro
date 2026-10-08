@@ -5508,6 +5508,7 @@ impl App {
         result: &StagedManifestBuildResult,
         outcome: &StagedManifestCommitOutcome,
     ) {
+        self.commit_staged_loading_manifest(result, outcome);
         let Some((ui_trees, theme, frontend)) = staged_ui_commit_payload(result, outcome) else {
             return;
         };
@@ -5934,78 +5935,13 @@ impl App {
         );
         ui_snapshot.wheel = self.ui_wheel.take();
         crate::app::glyph_art::resolve_snapshot_glyphs(&mut ui_snapshot, session);
-
-        let Some(renderer) = self.renderer.as_mut() else {
-            return;
-        };
-        // Frontend renders through the full UI/scene path — requires full-ready.
-        if !renderer.is_full_ready() {
-            return;
-        }
-
-        #[cfg(feature = "dev-tools")]
-        renderer.clear_debug_lines();
-
-        renderer.set_ui_snapshot(ui_snapshot);
-        let limiter_frame = Self::next_limiter_frame(&mut self.last_resolve_at, frame_start);
-        renderer.set_limiter_frame(limiter_frame);
-        let recycled_inputs = renderer.set_presentation_draw_inputs(Vec::new());
-        session
-            .presentation_pool
-            .recycle_draw_inputs(recycled_inputs);
-        let visible_render = render_preparation::VisibleRenderPreparation::empty_world();
-        session.clear_level_streaming();
-        let sh_frame_result = match renderer.render_frame_indirect(
-            &mut session.font_system,
-            visible_render.camera_cull(),
-            &visible_render.light_reachable_cell_mask,
-            &visible_render.reachable_cell_aabbs,
-            &visible_render.fog_reachable,
-            render::ShSampleRegionSets {
-                visible_cells: &visible_render.visible_cells,
-                fog_cells: &visible_render.fog_reachable,
-                movers: &[],
-            },
-            None,
-            glam::Mat4::IDENTITY,
-            &[],
-            self.script_time,
+        self.present_world_less_frame(
+            event_loop,
+            frame_start,
+            ui_snapshot,
             FRONTEND_CLEAR_COLOR,
-            false,
-            postretro_level_loader::ShDrainBatch::default(),
-        ) {
-            Ok(result) => result,
-            Err(err) => {
-                self.exit_result = Err(err.into());
-                event_loop.exit();
-                return;
-            }
-        };
-        let compose_submitted = sh_frame_result.compose_submitted;
-        if let Err(err) = session.apply_sh_streaming_outcome(sh_frame_result.outcome, renderer) {
-            self.exit_result = Err(err);
-            event_loop.exit();
-            return;
-        }
-        let present_handle = match sh_frame_result.frame {
-            Ok(present_handle) => present_handle,
-            Err(err) => {
-                self.exit_result = Err(err);
-                event_loop.exit();
-                return;
-            }
-        };
-        session.mark_sh_streaming_compose_submitted(compose_submitted);
-        let exported_rects = renderer.export_ui_focus_rects();
-        if let Some(session) = self.session.as_mut() {
-            session.ui_focus_rects = Some(exported_rects);
-        }
-        if let Some(present_handle) = present_handle {
-            renderer.present(present_handle);
-        }
-
-        let frame_cpu = Instant::now().duration_since(frame_start);
-        self.frame_rate_meter.record(frame_cpu);
+            true,
+        );
     }
 
     fn request_redraw(&self) {
@@ -8637,13 +8573,20 @@ mod tests {
             !production.contains("mark_sh_streaming_compose_submitted(present_handle.is_some())"),
             "surface acquisition/presentation is not proof that SH compose encoded"
         );
+        // Frontend, first-launch-hold, and Loading frames share the
+        // world-less presenter.
+        let world_less = include_str!("app/world_less_frame.rs");
         assert_eq!(
             production
                 .matches("mark_sh_streaming_compose_submitted(compose_submitted)")
-                .count(),
+                .count()
+                + world_less
+                    .matches("mark_sh_streaming_compose_submitted(compose_submitted)")
+                    .count(),
             2,
-            "gameplay and frontend paths must consume the renderer-owned signal"
+            "gameplay and world-less paths must consume the renderer-owned signal"
         );
+        assert!(!world_less.contains("present_handle.is_some())"));
     }
 
     // A connected client skips the global clean-exit save; its private
@@ -14693,10 +14636,19 @@ mod tests {
             !snapshot.contains_key("player.cell"),
             "value-less weapon-resource numbers are skipped",
         );
+        // The loading slots are value-bearing at their defaults (0 and "").
+        assert_eq!(
+            snapshot.get("loading.progress"),
+            Some(&SlotValue::Number(0.0))
+        );
+        assert_eq!(
+            snapshot.get("loading.levelName"),
+            Some(&SlotValue::String(String::new()))
+        );
         assert_eq!(
             snapshot.len(),
-            56,
-            "only value-bearing player, screen, input, UI, options, accessibility and window slots appear, plus the explicitly set player.health",
+            58,
+            "only value-bearing player, screen, input, loading, UI, options, accessibility and window slots appear, plus the explicitly set player.health",
         );
     }
 

@@ -12,6 +12,18 @@ pub struct ClearColor {
     pub a: f64,
 }
 
+/// The boot splash background: the linear form of the splash art's uniform
+/// sRGB 8-bit `(28, 33, 39)` background, for an sRGB attachment. The boot
+/// splash pass clears to it, and Loading frames clear to it too so the
+/// splash→loading-screen handoff has no color step. Derivation:
+/// `splash_pass.rs`.
+pub const SPLASH_CLEAR_COLOR: ClearColor = ClearColor {
+    r: 0.011612,
+    g: 0.015209,
+    b: 0.020289,
+    a: 1.0,
+};
+
 /// Adapter identity retained as plain data for capture measurement reports.
 ///
 /// The renderer obtains this while it still owns the `wgpu::Adapter`; callers

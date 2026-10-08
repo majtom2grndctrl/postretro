@@ -101,6 +101,7 @@ mod renderer_splash;
 mod renderer_state;
 mod renderer_types;
 mod renderer_ui_layer;
+mod renderer_world_less_capture;
 #[cfg(test)]
 mod shadow_reach_probes;
 mod shadow_world_draws;
@@ -230,8 +231,8 @@ pub use renderer_types::{
     CaptureGpuTimingState, CaptureGpuTimingWindow, CellOverlayState, ClearColor,
     DEFAULT_AMBIENT_FLOOR, DEFAULT_DYNAMIC_DIRECT_SCALE, DEFAULT_INDIRECT_SCALE, LevelGeometry,
     LevelGeometryLightmapStreaming, LevelGeometryShStorage, LocatorDiagnostics, PortalOverlayState,
-    PresentHandle, RUNTIME_DYNAMIC_LIGHT_RESERVE, Renderer, SpatialCellSetDiagnostics,
-    SpatialDiagnostics, WorldWireframeMode,
+    PresentHandle, RUNTIME_DYNAMIC_LIGHT_RESERVE, Renderer, SPLASH_CLEAR_COLOR,
+    SpatialCellSetDiagnostics, SpatialDiagnostics, WorldWireframeMode,
 };
 pub(crate) use renderer_types::{GpuTexture, POST_RETRO_ANISO_CLAMP};
 pub use rigid_occluder_depth::MoverOccluderAabb;

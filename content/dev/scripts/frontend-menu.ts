@@ -72,6 +72,9 @@ export const mapCatalog = defineMapCatalog([
     path: "maps/combat-demo.prl",
     name: "Combat + Emissive Test",
     tags: ["combat", "emissive", "recommended"],
+    // Overrides the mod-wide loading pool for this map (it is also the
+    // frontend backdrop, so its loading screen shows at every boot).
+    loadingTree: "dev.loading.combatDemo",
   },
   {
     id: "splash-damage-demo",

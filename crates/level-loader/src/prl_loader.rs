@@ -2189,6 +2189,10 @@ pub(crate) fn load_prl_from_container(
                         entry.size,
                         max_scatter_section_bytes,
                     );
+                    container.settle_section(
+                        SectionId::AnimatedBillboardDirectScatterDeltaVolumes as u32,
+                        0,
+                    );
                     None
                 } else {
                     match read_section(SectionId::AnimatedBillboardDirectScatterDeltaVolumes)? {

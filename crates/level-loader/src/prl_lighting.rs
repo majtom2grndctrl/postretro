@@ -323,6 +323,7 @@ pub(crate) fn read_bounded_delta_section_data_with_limit<'a>(
         log::warn!(
             "[PRL] {section_name} raw payload is {len} B, above the {max_binding_bytes} B storage-binding floor; disabling before decode",
         );
+        container.settle_section(section_id as u32, 0);
         return Ok(BoundedDeltaSectionData::OverBindingFloor);
     }
     Ok(match container.section_bytes(section_id as u32)? {
@@ -379,6 +380,7 @@ pub(crate) fn read_bounded_scatter_section_data_with_limit(
         log::warn!(
             "[PRL] {NAME} is {len} B, above the {max_encoded_bytes} B encoded section cap; disabling billboard direct scatter before decode",
         );
+        container.settle_section(SECTION as u32, 0);
         return BoundedScatterSectionData::OverPackCap;
     }
     match read_soft_optional_scatter_section_data(container, SECTION, NAME) {

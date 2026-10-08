@@ -1,5 +1,6 @@
 //! Renderer-free CPU portion of level installation.
 
+use super::lifecycle_model_sweep::{ParsedSweepModel, install_hit_zones, parse_sweep_models};
 use super::*;
 
 use crate::scripting::builtins::data_archetype::projectile_presentation_assets;
@@ -17,13 +18,15 @@ use postretro_scripting_core::reaction_dispatch::{
 /// Segment B of the CPU world install (renderer-free): fog-volume entities,
 /// kinematic movers, classname dispatch, the data script, the
 /// data-archetype sweep (incl. player-pawn spawn), the mesh sweep's CPU half
-/// (hit-zone store build + clip-index resolve), and the `levelLoad` fire. The
-/// sole renderer-coupled step — skinned-model upload + clip-table build — is
-/// injected as `upload_mesh_models`, called between the archetype sweep and the
-/// clip-index resolve: the windowed caller uploads models and fills the clip
-/// tables and returns renderer ownership of model-load diagnostics; a headless
-/// caller passes a no-op that returns game-side ownership, leaving clips
-/// unresolved while preserving load warnings. Stage durations record into
+/// (one glTF parse per model, hit-zone store build + clip-index resolve), and
+/// the `levelLoad` fire. The sole renderer-coupled step — skinned-model upload +
+/// clip-table build — is injected as `upload_mesh_models`, called between the
+/// archetype sweep and the clip-index resolve with the models already parsed
+/// (the hit-zone store consumes the same parses afterwards): the windowed
+/// caller uploads models and fills the clip tables and returns renderer
+/// ownership of model-load diagnostics; a headless caller passes a no-op that
+/// returns game-side ownership, leaving clips unresolved while preserving load
+/// warnings. Stage durations record into
 /// `timings`, matching the windowed log-line-C labels. The caller-owned
 /// `before_level_load` hook runs after player-pawn materialization and before
 /// the event fire, so session state may bind a local pawn without making this
@@ -34,7 +37,7 @@ pub(crate) fn install_world_cpu(
     handles: WorldInstallHandles<'_>,
     timings: &mut StartupTimings,
     mut upload_mesh_models: impl FnMut(
-        &[String],
+        &[ParsedSweepModel],
         &mut crate::scripting_systems::mesh_anim::MeshClipTables,
     )
         -> crate::scripting_systems::hit_zones::ModelLoadWarningOwner,
@@ -354,10 +357,12 @@ pub(crate) fn install_world_cpu(
 
     // Mesh model sweep, CPU half. Runs AFTER both dispatch sweeps so it sees every
     // mesh entity. Reset the game-side tables, compute the distinct model list
-    // (unioning models missing due to connected-client suppression), then the
-    // renderer-coupled upload + clip-table build runs via the injected hook,
-    // followed by the CPU hit-zone build, clip-index resolve, and zone-multiplier
-    // cross-check.
+    // (unioning models missing due to connected-client suppression), parse each
+    // glTF once, then the renderer-coupled upload + clip-table build runs via the
+    // injected hook on those parses, followed by the CPU hit-zone build from the
+    // same parses, clip-index resolve, and zone-multiplier cross-check. The parse
+    // stays here, on the main thread before `levelLoad`, where each consumer's
+    // own parse used to run.
     mesh_clip_tables.clear();
     hit_zone_store.clear();
     let models = {
@@ -396,12 +401,12 @@ pub(crate) fn install_world_cpu(
         }
         models
     };
-    let model_load_warning_owner = upload_mesh_models(&models, mesh_clip_tables);
-    for model in &models {
-        // Build this model's game-side hit-zone entry by re-loading the glTF
-        // independently of the renderer (CPU-only).
-        hit_zone_store.insert_from_load(model, content_root, model_load_warning_owner);
-    }
+    let parsed_models = parse_sweep_models(&models, content_root);
+    timings.record("model_parse");
+    let model_load_warning_owner = upload_mesh_models(&parsed_models, mesh_clip_tables);
+    timings.record("model_upload");
+    install_hit_zones(hit_zone_store, parsed_models, model_load_warning_owner);
+    timings.record("hit_zone_build");
     crate::resolve_mesh_entity_bindings(
         &mut script_ctx.registry.borrow_mut(),
         mesh_clip_tables,
@@ -411,7 +416,7 @@ pub(crate) fn install_world_cpu(
         &script_ctx.data_registry.borrow().entities,
         hit_zone_store,
     );
-    timings.record("model_load");
+    timings.record("model_bindings");
 
     // Bind caller-owned session state after the archetype sweep has created
     // player pawns but before `levelLoad` can address their owner association.

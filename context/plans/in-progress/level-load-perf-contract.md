@@ -92,3 +92,24 @@ Measured, release, `x_parse_bench` worker parse (one `load_prl` per process), n 
 The derivation alone went from 836 to 29 ms on stress-warren-lit and from 32 to 4 ms on campaign-test (same process, scratch timers). The rest of the after-vs-prototype gap on stress-warren-lit is not this code. The id-50 validator's `sparse_row_role` loop, which runs before id-49 validation and is byte-identical across builds, costs about 70 ms when the linker places it at offset 16 mod 32 and 115–140 ms at offset 0. Base and prototype landed at 16, this build at 0; five perturbation builds followed the same rule (four at 0 and slow, one at 16 and fast). Measure id-50 changes with that in mind on this CPU.
 
 Left: id-50 `ValidationPlan` (`cluster_sh_payloads`) is now about 0.5 s of the ≈ 0.7 s stress-warren-lit parse, outside `cluster_directory*`; `sparse_row_role` scans a cluster's ranges linearly per row. The id-49 canonical partition (`canonical_cell_partition`, about 30 ms) picks each cluster seed by scanning every unassigned cell: O(clusters × cells).
+
+## Track C outcome
+
+Built: the model sweep parses each glTF once. `install_world_cpu` parses every distinct model on the main thread at its old position (stage 12, before `levelLoad`), hands the parses to the renderer upload hook by reference (`Renderer::upload_parsed_skinned_model`), then moves them into the hit-zone store (`HitZoneStore::insert_loaded`). The mesh pass keeps cloned skeleton, clips and pose stack; the store keeps the originals. `load_skinned_model` and `insert_from_load` stay as parse-it-yourself forms (capture and the existing tests use them). A failed parse stays in the sweep result: the renderer warns as owner and the store stays silent, as before. Models still clear on unload; no crate edge changed. Removing the second parse also removed the second blake3 pass over each material's source PNG (strace on campaign-test: 2 → 1 `.gltf` open and 28 → 14 model `.png` opens per load).
+
+Marks added, all log-only: `model_parse`, `model_upload`, `hit_zone_build` and `model_bindings` replace `model_load`; `host_registration`, `camera_pose`, `fog_masks` and `sprite_collections` split what used to land in `audio_load`; `[Renderer] Texture install timing:` splits `texture_upload` into read, parse, create and write, bind groups and other. Line C now attaches the worker's `prl_parse` to `worker_delivered` (`worker_delivered=… (incl. prl_parse=…)`) instead of listing it beside it, so the stages add up and both numbers stay. `host_registration` also holds the bindings between segment B and the host registrations; they cost under 1 ms.
+
+Equivalence: the pre-change `insert_from_load` body is kept verbatim in `hit_zones_load_equivalence_tests.rs` as the oracle. The tests compare skeleton, clips, zones, sockets, derived bound, legs, pose stack, pose-stack membership and the failed-load warning set between the oracle and the single-parse path, on all 21 glTFs in `content/dev` (21 load; 3 carry zones and derived bounds, 13 sockets, 3 pose stacks, 2 legs, 5 clips) and on four failing loads (garbage, missing buffer, missing file, empty handle), under both warning owners. A second test pins the premise: parsing the same file twice gives an identical model. In `lifecycle_model_sweep.rs`, the app-level test compares a sweep with two parses to one with a shared parse on hit-zone entries, clip tables and bounds. A real run with `exo_red/model.gltf` hidden logged the same WARN, ERROR and `[Model]` lines (as a multiset) before and after, including one renderer warning and nothing from the game side.
+
+Measured, release, interleaved A/B on one machine, medians, n = 5 first loads and 10 changes per map (ms):
+
+| Map and path | Hit-zone mark before → after | `model_load` total before → after | `model_parse` after |
+|---|---|---|---|
+| stress-warren-lit, first load | 40.7 → 0.0 | 231 → 187 (−44) | 45.5 |
+| stress-warren-lit, change | 43.0 → 0.0 | 206 → 167 (−39) | 46.0 |
+| campaign-test, first load | 48.4 → 1.3 | 260 → 218 (−42) | 56.1 |
+| campaign-test, change | 48.6 → 1.4 | 192 → 143 (−49) | 49.6 |
+
+The renderer upload mark plus the parse equals the old renderer mark within 4 ms (the cloned skeleton, clips and pose stack). Other stages (`texture_upload`, `geometry_upload`, `streaming_preload`, `first_level_frame`) moved by up to 30 ms between binaries with code Track C did not touch; that is the alignment noise Track B found, not a saving. The saving this track claims is the hit-zone mark: 41–49 ms to about zero, in all four cells.
+
+Left: the remaining `model_upload` (about 90–160 ms, medians) is mostly model textures by the investigation's perf, each read, copied and written like world textures; its read, parse and write split is not logged (the new texture line covers world textures only). Keeping uploaded models across a level change stays the owner decision recorded for the Mac brief.

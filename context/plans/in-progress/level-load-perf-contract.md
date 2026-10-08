@@ -113,3 +113,8 @@ Measured, release, interleaved A/B on one machine, medians, n = 5 first loads an
 The renderer upload mark plus the parse equals the old renderer mark within 4 ms (the cloned skeleton, clips and pose stack). Other stages (`texture_upload`, `geometry_upload`, `streaming_preload`, `first_level_frame`) moved by up to 30 ms between binaries with code Track C did not touch; that is the alignment noise Track B found, not a saving. The saving this track claims is the hit-zone mark: 41–49 ms to about zero, in all four cells.
 
 Left: the remaining `model_upload` (about 90–160 ms, medians) is mostly model textures by the investigation's perf, each read, copied and written like world textures; its read, parse and write split is not logged (the new texture line covers world textures only). Keeping uploaded models across a level change stays the owner decision recorded for the Mac brief.
+
+## Amendment after Track C
+
+- **Numeric targets withdrawn.** The owner's direction: an improvement is an improvement. The thresholds in the Tracks table (≥ 0.8 s, ≥ 80 % of a prototype's saving, ≈ 0 ms) were set from the findings, not from any requirement, and are not acceptance gates. What gates a change is proof that its output is identical to the old path's and an honest interleaved before/after measurement.
+- **Next is a designed pipeline, not more candidates.** The remaining candidates (3, 4's cache, 5–9) are consequences of one design question: which work runs on which thread, when it may start, and whether it survives a level change. That becomes its own spec, drafted with the owner. Its research section is `context/plans/drafts/level-load-pipeline/research.md`, which also carries the Metal measurement protocol that replaces a separate Mac brief.

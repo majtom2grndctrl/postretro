@@ -998,3 +998,107 @@ fn coverage_matches_oracle_on_a_large_lit_like_grid() {
         assert_eq!(case.assert_equivalent(), Verdict::Ranges);
     }
 }
+
+/// The batched descent reports the same `(brick, cell)` set as locating every
+/// valid probe one by one, and faults exactly when some valid probe's walk
+/// does. Compared per cell, not per cluster, so a probe sent to the wrong cell
+/// of its cluster still fails here.
+#[test]
+fn batched_locator_matches_the_per_probe_walk_cell_for_cell() {
+    let mut outcomes = [0u32; 2];
+    for (seed, hostile) in (0..1500u64)
+        .map(|seed| (seed, false))
+        .chain((0..1500).map(|seed| (seed ^ 0x10C0_0000, true)))
+    {
+        let case = random_case(seed, hostile);
+        let Ok(affinity_dims) = affinity_dimensions(case.base.grid_dimensions) else {
+            continue;
+        };
+        let grid = case.base.grid_dimensions;
+        let mut expected = std::collections::BTreeSet::new();
+        let mut faulted = false;
+        for (index, probe) in case.base.probes.iter().enumerate() {
+            if probe.validity == 0 {
+                continue;
+            }
+            let coords = probe_coords(index as u32, grid);
+            match locate_cell(
+                &case.locator,
+                case.directory.runtime_cell_count,
+                probe_position(coords, &case.base),
+            ) {
+                Ok(cell) => {
+                    let brick = flatten(coords.map(|coord| coord / 4), affinity_dims).unwrap();
+                    expected.insert((brick, cell));
+                }
+                Err(_) => faulted = true,
+            }
+        }
+        let mut located = Vec::new();
+        let batched = super::probe_locate::ProbeLocator::new(
+            &case.locator,
+            case.directory.runtime_cell_count,
+            &case.base,
+        )
+        .locate_grid(affinity_dims, &mut located);
+        assert_eq!(batched.is_err(), faulted, "seed {seed}: fault verdict");
+        if !faulted {
+            let actual: std::collections::BTreeSet<_> = located.into_iter().collect();
+            assert_eq!(actual, expected, "seed {seed}: located cells");
+        }
+        outcomes[usize::from(faulted)] += 1;
+    }
+    assert!(outcomes[0] > 1000 && outcomes[1] > 50, "{outcomes:?}");
+}
+
+// Regression: the batched locator recursed once per straddled node, so a valid
+// near-linear locator chain overflowed the stack where the per-probe walk
+// (and the original validation) succeeded.
+#[test]
+fn coverage_survives_a_deep_axis_plane_chain() {
+    const PROBES: u32 = 200_000;
+    let grid = [PROBES, 1, 1];
+    let affinity_dims = affinity_dimensions(grid).unwrap();
+    let mut probes = vec![probe(0, 0); PROBES as usize];
+    probes[PROBES as usize - 1].validity = 1;
+    // Node i cuts between probes i and i + 1: back is cell 0, front walks on.
+    let node_count = PROBES - 1;
+    let nodes = (0..node_count)
+        .map(|index| CellLocatorNodeRecord {
+            plane_normal: [1.0, 0.0, 0.0],
+            plane_distance: index as f32 + 0.5,
+            front: if index + 1 < node_count {
+                CellLocatorChild::Node(index + 1)
+            } else {
+                CellLocatorChild::Cell(1)
+            },
+            back: CellLocatorChild::Cell(0),
+        })
+        .collect();
+    let case = Case {
+        directory: directory(
+            2,
+            &[vec![0], vec![1]],
+            &[
+                ClusterResourceDomain::DenseProbe,
+                ClusterResourceDomain::AffinityCell,
+            ],
+            affinity_dims,
+            grid,
+        ),
+        cells: CellsSection {
+            cells: vec![
+                cell([0.0; 3], [0.0; 3], CELL_FLAG_SOLID),
+                cell([0.0; 3], [0.0; 3], CELL_FLAG_SOLID),
+            ],
+            portal_refs: Vec::new(),
+        },
+        locator: CellLocatorSection {
+            root: CellLocatorChild::Node(0),
+            nodes,
+        },
+        base: base_volume(grid, [0.0; 3], [1.0; 3], probes),
+        sparse: None,
+    };
+    assert_eq!(case.assert_equivalent(), Verdict::Ranges);
+}

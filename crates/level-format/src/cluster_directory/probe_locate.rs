@@ -118,17 +118,26 @@ impl<'a> ProbeLocator<'a> {
         if !self.any_valid(whole) {
             return Ok(());
         }
-        self.descend(
-            self.locator.root,
-            self.locator.nodes.len() + 1,
-            whole,
-            affinity_dims,
-            located,
-        )
+        // Pending boxes live on the heap, not the call stack: a valid but
+        // near-linear locator chain straddles one node per level, as deep as
+        // the grid is wide. Box order cannot change the result.
+        let mut pending = vec![(self.locator.root, self.locator.nodes.len() + 1, whole)];
+        while let Some((child, remaining, probes)) = pending.pop() {
+            self.descend(
+                child,
+                remaining,
+                probes,
+                affinity_dims,
+                located,
+                &mut pending,
+            )?;
+        }
+        Ok(())
     }
 
     /// Walk from `child` with `remaining` steps, as `locate_cell` does, for a
-    /// box holding at least one valid probe.
+    /// box holding at least one valid probe. A box that straddles a node
+    /// queues its parts in `pending`.
     fn descend(
         &self,
         mut child: CellLocatorChild,
@@ -136,6 +145,7 @@ impl<'a> ProbeLocator<'a> {
         probes: ProbeBox,
         affinity_dims: [u32; 3],
         located: &mut Vec<(u32, u32)>,
+        pending: &mut Vec<(CellLocatorChild, usize, ProbeBox)>,
     ) -> Result<(), LocateFault> {
         loop {
             if remaining == 0 {
@@ -161,7 +171,7 @@ impl<'a> ProbeLocator<'a> {
                     // was reached with.
                     for part in self.split(node, probes) {
                         if self.any_valid(part) {
-                            self.descend(child, remaining + 1, part, affinity_dims, located)?;
+                            pending.push((child, remaining + 1, part));
                         }
                     }
                     return Ok(());

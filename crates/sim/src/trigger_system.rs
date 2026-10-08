@@ -675,7 +675,7 @@ mod tests {
         PlayerMovementDescriptor, SpeedParams,
     };
     use postretro_scripting_core::data_descriptors::{
-        NamedReaction, PrimitiveDescriptor, ReactionDescriptor, TriggerEventDescriptor,
+        NamedReaction, PrimitiveDescriptor, ReactionDescriptor, VolumeTriggerEventDescriptor,
     };
     use postretro_scripting_core::data_registry::DataRegistry;
 
@@ -1656,11 +1656,10 @@ mod tests {
                 },
             ],
             Vec::new(),
-            vec![TriggerEventDescriptor {
-                tag: "closet_reveal_plate".into(),
+            vec![VolumeTriggerEventDescriptor {
+                trigger,
                 event: "enter".into(),
                 fire: vec!["closet.openDoor".into(), "closet.releaseCloset".into()],
-                levels: Vec::new(),
             }],
             Vec::new(),
             &[],
@@ -1787,11 +1786,10 @@ mod tests {
                 }),
             }],
             Vec::new(),
-            vec![TriggerEventDescriptor {
-                tag: "ambush_plate".into(),
+            vec![VolumeTriggerEventDescriptor {
+                trigger,
                 event: "enter".into(),
                 fire: vec!["ambush.spawn".into()],
-                levels: Vec::new(),
             }],
             Vec::new(),
             &[],

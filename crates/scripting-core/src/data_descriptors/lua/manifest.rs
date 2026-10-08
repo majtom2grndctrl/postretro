@@ -49,7 +49,7 @@ impl LevelManifest {
             Vec::new()
         };
         let events = drain_impact_events_lua(&table, "setupLevel")?;
-        let trigger_events = drain_trigger_events_lua(&table, "setupLevel")?;
+        let trigger_events = drain_level_trigger_events_lua(&table, "setupLevel")?;
         let trigger_pools = drain_trigger_pools_lua(&table, "setupLevel")?;
 
         let ui_trees = drain_ui_trees_lua(&table, "setupLevel")?;
@@ -442,57 +442,6 @@ fn impact_policy_entry_from_lua(raw: LuaValue) -> Result<serde_json::Value, Desc
     }
     json_object.insert("do".into(), serde_json::Value::Array(lowered));
     Ok(json)
-}
-
-/// Drain the `triggerEvents` array from a Luau manifest table. Mirrors
-/// [`drain_trigger_events_js`]: a malformed entry (non-table, or missing/invalid
-/// `tag`/`fire`/`levels`) is logged and skipped rather than aborting the whole
-/// manifest; an unknown `event` value is likewise logged and skipped.
-pub fn drain_trigger_events_lua(
-    table: &Table,
-    scope: &str,
-) -> Result<Vec<TriggerEventDescriptor>, DescriptorError> {
-    let Some(arr) = optional_manifest_array_lua(table, "triggerEvents", scope)? else {
-        return Ok(Vec::new());
-    };
-    let len = validate_dense_lua_array(&arr, "`triggerEvents` field")?;
-    let mut out = Vec::with_capacity(len);
-    for i in 1..=(len as i64) {
-        let item: LuaValue = arr.get(i).map_err(lua_err)?;
-        match trigger_event_from_lua(item, i, scope) {
-            Ok(Some(descriptor)) => out.push(descriptor),
-            Ok(None) => {}
-            Err(e) => log::warn!(
-                "[Scripting] {scope}: triggerEvents[{i}] is malformed and was skipped: {e}"
-            ),
-        }
-    }
-    Ok(out)
-}
-
-/// Parse a single `triggerEvents` entry (`{ event, tag, fire, levels? }`) from
-/// Luau. `Ok(None)` means the entry parsed but its `event` is unrecognized (the
-/// caller has already logged the reason); a genuinely malformed entry returns
-/// `Err` for the caller to log and skip.
-fn trigger_event_from_lua(
-    value: LuaValue,
-    i: i64,
-    scope: &str,
-) -> Result<Option<TriggerEventDescriptor>, DescriptorError> {
-    let item = lua_table(value, "trigger-event entry")?;
-    let event = get_required_string_lua(&item, "event")?;
-    if !matches!(event.as_str(), "enter" | "exit") {
-        log::warn!(
-            "[Scripting] {scope}: triggerEvents[{i}] has unknown event `{event}` and was skipped"
-        );
-        return Ok(None);
-    }
-    Ok(Some(TriggerEventDescriptor {
-        tag: get_required_string_lua(&item, "tag")?,
-        event,
-        fire: string_array_from_lua(&item, "fire")?,
-        levels: string_array_from_lua(&item, "levels")?,
-    }))
 }
 
 /// Drain the `triggerPools` array from a Luau manifest table. A malformed

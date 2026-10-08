@@ -4013,6 +4013,111 @@ pub(crate) mod tests {
         );
     }
 
+    // T6 (research A10): a mod hot reload recomposes the active sets and
+    // rebuilds trigger bindings through `rebuild_active_trigger_bindings`. A
+    // level member's `on("enter", …)` is retained level-local data keyed by
+    // its volume, so after the reload it still fires for that volume and never
+    // for a sibling carrying the same tag.
+    #[test]
+    fn staged_recomposition_keeps_a_level_member_enter_on_its_volume_only() {
+        let mut app = test_app();
+        app.level = Some(level_world("member_reload_level", 1));
+        let spawn_plate = |app: &App| {
+            let ctx = script_ctx(app);
+            let mut entities = ctx.registry.borrow_mut();
+            let id = entities.spawn(Transform::default());
+            entities
+                .set_component(
+                    id,
+                    TriggerVolumeComponent::new(
+                        TriggerActivation::Touch,
+                        String::new(),
+                        String::new(),
+                        String::new(),
+                        MoverCommand::Start,
+                        TriggerFireMode::Multiple,
+                        0.0,
+                        true,
+                    ),
+                )
+                .expect("trigger component attaches");
+            entities
+                .set_tags(id, vec!["plate".to_string()])
+                .expect("trigger tags attach");
+            id
+        };
+        let plate = spawn_plate(&app);
+        let sibling = spawn_plate(&app);
+        script_ctx(&app)
+            .slot_table
+            .borrow_mut()
+            .insert("trigger.flag".to_string(), number_slot(0.0))
+            .expect("trigger fixture slot should be vacant");
+
+        script_ctx(&app)
+            .data_registry
+            .borrow_mut()
+            .populate_level_with_trigger_events(
+                vec![scoped_global_set_state("reveal", 7.0).reaction],
+                Vec::new(),
+                vec![postretro_entities::VolumeTriggerEventDescriptor {
+                    trigger: plate,
+                    event: "enter".to_string(),
+                    fire: vec!["reveal".to_string()],
+                }],
+                Vec::new(),
+                &app.active_level_tags,
+            );
+        // The reload: the mod manifest's global rules change, then the staged
+        // commit recomposes and rebinds.
+        script_ctx(&app)
+            .data_registry
+            .borrow_mut()
+            .replace_global_reactions(vec![scoped_global_set_state("ambient", 1.0)]);
+        script_ctx(&app)
+            .data_registry
+            .borrow_mut()
+            .recompose_active_sets(&app.active_level_tags);
+        app.rebuild_active_reaction_subscribers();
+        app.rebuild_active_trigger_bindings();
+
+        let fire_enter = |app: &App, trigger| {
+            let ctx = script_ctx(app);
+            let mut entities = ctx.registry.borrow_mut();
+            let mut slots = ctx.slot_table.borrow_mut();
+            app.trigger_bindings
+                .execute(
+                    trigger,
+                    crate::trigger_system::TriggerEventEdge::Enter,
+                    &mut entities,
+                    &mut slots,
+                    &crate::trigger_commands::TriggerFireContext::default(),
+                )
+                .command_count()
+        };
+        let flag = |app: &App| {
+            script_ctx(app)
+                .slot_table
+                .borrow()
+                .get("trigger.flag")
+                .and_then(|record| record.value.clone())
+        };
+        assert!(
+            !app.trigger_bindings
+                .bound_edges()
+                .contains(&(sibling, crate::trigger_system::TriggerEventEdge::Enter)),
+            "the sibling carrying the same tag gains no edge"
+        );
+        assert_eq!(fire_enter(&app, sibling), 0);
+        assert_eq!(flag(&app), Some(SlotValue::Number(0.0)));
+        assert_eq!(fire_enter(&app, plate), 1);
+        assert_eq!(
+            flag(&app),
+            Some(SlotValue::Number(7.0)),
+            "the member's reaction still runs on its volume after the reload"
+        );
+    }
+
     // Regression: filtering a trigger-scoped reaction from a crossing used to
     // discard all of the crossing's compatible reactions.
     #[test]

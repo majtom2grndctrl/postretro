@@ -12,7 +12,9 @@ use postretro_scripting_core::data_descriptors::{
 };
 
 use crate::scripting_systems::system_reactions::SystemReactionIrBindings;
-use crate::trigger_bindings::TriggerBindingTable;
+use crate::trigger_bindings::{
+    ResolutionDiagnostics, TriggerBindingTable, resolve_manifest_trigger_events,
+};
 use crate::trigger_system::TriggerEventEdge;
 
 /// Whether a `wait` step's `durationMs` is a valid positive, finite duration that
@@ -206,7 +208,9 @@ pub(crate) fn validate_reaction_bodies_pass_a(script_ctx: &ScriptCtx) {
 /// Enter-binding provenance for Pass B, read from the sources the binder reads —
 /// never from `TriggerBindingTable`, which discards reaction identity:
 /// brush-KVP `TriggerVolumeComponent.on_fire` across `EntityRegistry` triggers,
-/// plus manifest `data_registry.trigger_events` (tag × "enter" × fire names).
+/// plus the manifest trigger events the binder resolves
+/// ([`resolve_manifest_trigger_events`]: mod-global tag rules and level member
+/// events, Enter edge).
 struct EnterBindingProvenance {
     /// Reaction name → triggers it is Enter-bound to.
     enter_triggers: HashMap<String, Vec<EntityId>>,
@@ -241,25 +245,22 @@ fn collect_enter_provenance(script_ctx: &ScriptCtx) -> EnterBindingProvenance {
         }
     }
 
-    // Manifest `onTriggerEvent` bindings: (tag, "enter", fire names).
-    let trigger_events = script_ctx.data_registry.borrow().trigger_events.clone();
-    for descriptor in &trigger_events {
-        if descriptor.event != "enter" {
+    // Manifest trigger events, resolved exactly as the binder resolves them:
+    // mod-global `defineTriggerEvent` rules expand over their tag, level
+    // member events (`t.on`) name their one volume. A volume-keyed Enter
+    // therefore counts toward V3, and V2/V5 see only that volume.
+    let resolved = {
+        let data_registry = script_ctx.data_registry.borrow();
+        resolve_manifest_trigger_events(&registry, &data_registry, ResolutionDiagnostics::Silent)
+    };
+    for binding in resolved {
+        if binding.edge != TriggerEventEdge::Enter {
             continue;
         }
-        let mut triggers: Vec<EntityId> = registry
-            .query_by_component_and_tag(ComponentKind::TriggerVolume, Some(&descriptor.tag))
-            .map(|(id, _)| id)
-            .collect();
-        triggers.sort_unstable();
-        for event_name in &descriptor.fire {
-            for &trigger in &triggers {
-                enter_triggers
-                    .entry(event_name.clone())
-                    .or_default()
-                    .push(trigger);
-            }
-        }
+        enter_triggers
+            .entry(binding.reaction)
+            .or_default()
+            .push(binding.trigger);
     }
     EnterBindingProvenance {
         enter_triggers,
@@ -475,7 +476,7 @@ mod tests {
     use postretro_entities::{
         MoverCommand, NamedReaction, PrimitiveDescriptor, SlotOwnership, SlotRecord, SlotSchema,
         SlotType, SlotValue, Transform, TriggerActivation, TriggerEventDescriptor,
-        TriggerVolumeComponent,
+        TriggerVolumeComponent, VolumeTriggerEventDescriptor,
     };
     use postretro_scripting_core::reaction_dispatch::{
         PrepartitionedReactionStep, ResidualOrigin, fire_prepartitioned_reactions_with_sequences,
@@ -490,6 +491,7 @@ mod tests {
     use crate::scripting_systems::reaction_scheduler::{
         ReactionScheduler, register_reaction_control_primitives,
     };
+    use crate::scripting_systems::trigger_volume_bridge::TriggerVolumeBridge;
 
     // --- fixture builders ---------------------------------------------------
 
@@ -604,6 +606,15 @@ mod tests {
             id: SequenceTarget::Entity(EntityId::from_raw(1)),
             primitive: "playSound".to_string(),
             args: json!({ "sound": "sfx/test_tone", "at": postretro_entities::EMITTER_AT_TOKEN }),
+        }
+    }
+
+    /// A level member `t.on("enter", fire)` on `trigger`.
+    fn member_enter(trigger: EntityId, fire: &[&str]) -> VolumeTriggerEventDescriptor {
+        VolumeTriggerEventDescriptor {
+            trigger,
+            event: "enter".to_string(),
+            fire: fire.iter().map(|name| name.to_string()).collect(),
         }
     }
 
@@ -1102,31 +1113,31 @@ mod tests {
         );
     }
 
-    // --- O36: V2/V3/V5 with a manifest onTriggerEvent binding ---------------
+    // --- O36: V2/V3/V5 with a mod-global defineTriggerEvent binding ---------
 
-    // O36: the consumer's reveal is Enter-bound only through a manifest
-    // `onTriggerEvent({tag}, "enter", [reveal])`. V3 does not drop it (it has an
-    // Enter binding) and V5 derives the Exit edge from the tag-matched trigger.
+    // O36: the consumer's reveal is Enter-bound only through a mod-global
+    // `defineTriggerEvent({ tag, event: "enter", fire: [reveal] })`. V3 does
+    // not drop it (it has an Enter binding) and V5 derives the Exit edge from
+    // the tag-matched trigger.
     #[test]
     fn o36_manifest_enter_binding_survives_v3_and_derives_v5_exit() {
         let ctx = ScriptCtx::new();
         ctx.data_registry
             .borrow_mut()
-            .populate_level_with_trigger_events(
-                vec![sequence(
-                    "reveal",
-                    vec![wait_step(json!(800), true), entity_step(1)],
-                )],
-                Vec::new(),
-                vec![TriggerEventDescriptor {
-                    tag: "closet_reveal_plate".to_string(),
-                    event: "enter".to_string(),
-                    fire: vec!["reveal".to_string()],
-                    levels: Vec::new(),
-                }],
-                Vec::new(),
-                &[],
-            );
+            .replace_global_trigger_events(vec![TriggerEventDescriptor {
+                tag: "closet_reveal_plate".to_string(),
+                event: "enter".to_string(),
+                fire: vec!["reveal".to_string()],
+                levels: Vec::new(),
+            }]);
+        ctx.data_registry.borrow_mut().populate_level(
+            vec![sequence(
+                "reveal",
+                vec![wait_step(json!(800), true), entity_step(1)],
+            )],
+            Vec::new(),
+            &[],
+        );
         let trigger = spawn_trigger(
             &ctx,
             "",
@@ -1147,15 +1158,231 @@ mod tests {
         );
     }
 
+    // --- T4 / A8: interruptible wait bound only by a level member `on` -------
+
+    /// One volume-overlap box per trigger, centred at `x`.
+    fn place(bridge: &mut TriggerVolumeBridge, trigger: EntityId, x: f32) {
+        let center = glam::Vec3::new(x, 0.0, 0.0);
+        bridge.insert_for_test(
+            trigger,
+            center + glam::Vec3::new(-1.0, 0.0, -1.0),
+            center + glam::Vec3::new(1.0, 2.0, 1.0),
+        );
+    }
+
+    // T4 (research A8): `reveal` holds an interruptible wait and is bound only
+    // through a member `t.on("enter", [reveal])`; sibling `t2` carries the
+    // same tag and no binding. `reveal` installs (V3 counts the member
+    // binding); V5 derives the Exit edge for `t` only; leaving `t` before the
+    // landing cancels the tail; entering and leaving `t2` does nothing.
+    #[test]
+    fn member_enter_alone_installs_an_interruptible_wait_and_only_its_exit_cancels_it() {
+        let ctx = ScriptCtx::new();
+        let t = spawn_trigger(&ctx, "", "", TriggerFireMode::Multiple, &["plate"]);
+        let t2 = spawn_trigger(&ctx, "", "", TriggerFireMode::Multiple, &["plate"]);
+        let mut bridge = TriggerVolumeBridge::new();
+        place(&mut bridge, t, 0.0);
+        place(&mut bridge, t2, 10.0);
+        let landed = note_step(&ctx);
+        ctx.data_registry
+            .borrow_mut()
+            .populate_level_with_trigger_events(
+                vec![sequence(
+                    "reveal",
+                    vec![wait_step(json!(800), true), landed],
+                )],
+                Vec::new(),
+                vec![member_enter(t, &["reveal"])],
+                Vec::new(),
+                &[],
+            );
+
+        let capture = LogCapture::start();
+        let table = validated_bindings(&ctx);
+        assert!(!is_dropped(&ctx, "reveal"), "V3 counts the member binding");
+        capture.assert_not_logged(log::Level::Error, "reaction `reveal`");
+        let edges = table.bound_edges();
+        assert!(edges.contains(&(t, TriggerEventEdge::Enter)));
+        assert!(
+            edges.contains(&(t, TriggerEventEdge::Exit)),
+            "V5 derives the member volume's Exit edge"
+        );
+        assert!(
+            !edges.contains(&(t2, TriggerEventEdge::Enter))
+                && !edges.contains(&(t2, TriggerEventEdge::Exit)),
+            "the sibling with the same tag gains no edge"
+        );
+
+        // Runtime: the frame order of the session — trigger tick, Exit cancels
+        // (`evaluate`), residual drain under the fire's origin, landings.
+        let scheduler = ReactionScheduler::default();
+        scheduler.set_enabled(true);
+        let landings = std::rc::Rc::new(std::cell::Cell::new(0usize));
+        let mut sequence_registry = SequencedPrimitiveRegistry::new();
+        register_reaction_control_primitives(&mut sequence_registry, scheduler.clone());
+        {
+            let landings = landings.clone();
+            sequence_registry.register("note", move |_id, _args| {
+                landings.set(landings.get() + 1);
+                Ok(())
+            });
+        }
+        let reaction_registry = ReactionPrimitiveRegistry::new();
+        let system_registry = SystemReactionRegistry::new();
+        let pawn = {
+            let mut registry = ctx.registry.borrow_mut();
+            let pawn = registry.spawn(Transform {
+                position: glam::Vec3::new(-20.0, 1.0, 0.0),
+                ..Transform::default()
+            });
+            registry
+                .set_component(
+                    pawn,
+                    postretro_foundation::PlayerMovementComponent::from_descriptor(
+                        &crate::tests::minimal_player_descriptor(),
+                    ),
+                )
+                .unwrap();
+            pawn
+        };
+        let player = crate::trigger_system::AuthoritativePlayer {
+            id: crate::trigger_system::PlayerId::Local(pawn),
+            pawn,
+        };
+        let mut system = crate::trigger_system::TriggerSystem::default();
+        let mut frame = |x: f32| -> Vec<(EntityId, TriggerEventEdge)> {
+            {
+                let mut registry = ctx.registry.borrow_mut();
+                let mut transform = *registry.get_component::<Transform>(pawn).unwrap();
+                transform.position = glam::Vec3::new(x, 1.0, 0.0);
+                registry.set_component(pawn, transform).unwrap();
+            }
+            scheduler.begin_frame();
+            let alive = HashSet::from([player.id]);
+            let mut dispatched = Vec::new();
+            let mut residuals = Vec::new();
+            {
+                let mut registry = ctx.registry.borrow_mut();
+                let mut slot_table = ctx.slot_table.borrow_mut();
+                system.run_authoritative_tick_with_dispatch(
+                    &mut registry,
+                    &bridge,
+                    crate::trigger_system::TriggerTickInputs {
+                        players: &[player],
+                        use_pressed: &HashMap::new(),
+                        tick_dt: 1.0 / 60.0,
+                    },
+                    crate::trigger_system::TriggerDispatchInputs {
+                        alive_players: &alive,
+                        bound_edges: table.bound_edges(),
+                    },
+                    |event, _occupancy, registry| {
+                        dispatched.push((event.fire.trigger, event.edge));
+                        let execution = table.execute(
+                            event.fire.trigger,
+                            event.edge,
+                            registry,
+                            &mut slot_table,
+                            &crate::trigger_commands::TriggerFireContext::default(),
+                        );
+                        if let Some(handle) = execution.residual() {
+                            residuals.push((event.fire.trigger, handle));
+                        }
+                    },
+                );
+            }
+            let exits: Vec<_> = dispatched
+                .iter()
+                .filter(|(_, edge)| *edge == TriggerEventEdge::Exit)
+                .map(|(trigger, _)| (*trigger, player.id))
+                .collect();
+            scheduler.evaluate(&exits);
+            for (trigger, handle) in residuals {
+                let standing = system.paired_enters().contains(&(trigger, player.id));
+                let _origin = scheduler.begin_origin(trigger, player.id, standing);
+                let steps = table.residual(handle).unwrap().steps().to_vec();
+                fire_prepartitioned_reactions_with_sequences(
+                    &steps,
+                    &sequence_registry,
+                    &reaction_registry,
+                    &system_registry,
+                    &ctx,
+                    ResidualOrigin::TriggerBinding,
+                );
+            }
+            let data_registry = ctx.data_registry.borrow();
+            scheduler.drain_landings(
+                &data_registry,
+                &sequence_registry,
+                &reaction_registry,
+                &system_registry,
+                &ctx,
+            );
+            dispatched
+        };
+
+        // The sibling: entering and leaving `t2` dispatches nothing.
+        assert!(frame(10.0).is_empty());
+        assert!(frame(-20.0).is_empty());
+        assert_eq!(scheduler.pending_len(), 0);
+
+        // Enter `t`: the wait parks under `t`'s origin.
+        assert_eq!(frame(0.0), vec![(t, TriggerEventEdge::Enter)]);
+        assert_eq!(scheduler.pending_len(), 1, "the wait parks on Enter");
+        // Walk through the sibling while parked: no edge, no cancel.
+        assert!(frame(10.0).iter().all(|(trigger, _)| *trigger == t));
+        assert_eq!(scheduler.pending_len(), 0, "leaving `t` cancels the tail");
+        for _ in 0..80 {
+            frame(-20.0);
+        }
+        assert_eq!(landings.get(), 0, "a cancelled tail never lands");
+
+        // Control: staying inside `t` lets the same wait land.
+        frame(0.0);
+        assert_eq!(scheduler.pending_len(), 1);
+        for _ in 0..80 {
+            frame(0.0);
+        }
+        assert_eq!(landings.get(), 1, "an uncancelled tail lands once");
+    }
+
+    // T4 (research A8, `once` half): the same member-bound interruptible wait
+    // on a `once` volume is dropped by V2 — a cancel would spend the latch.
+    #[test]
+    fn member_enter_on_a_once_volume_drops_the_interruptible_wait() {
+        let ctx = ScriptCtx::new();
+        let t = spawn_trigger(&ctx, "", "", TriggerFireMode::Once, &["plate"]);
+        ctx.data_registry
+            .borrow_mut()
+            .populate_level_with_trigger_events(
+                vec![sequence(
+                    "reveal",
+                    vec![wait_step(json!(800), true), entity_step(1)],
+                )],
+                Vec::new(),
+                vec![member_enter(t, &["reveal"])],
+                Vec::new(),
+                &[],
+            );
+        let capture = LogCapture::start();
+        let table = validated_bindings(&ctx);
+        capture.assert_logged_once(log::Level::Error, "(V2)");
+        assert!(is_dropped(&ctx, "reveal"));
+        let (commands, steps) = enter_execution(&table, &ctx, t);
+        assert_eq!(commands, 0);
+        assert!(steps.is_none(), "the dropped reaction binds nothing");
+    }
+
     // --- O46: body whose first step is the wait -----------------------------
 
     // O46: a non-interruptible wait whose body's first step is the wait, bound
-    // solely by a manifest `onTriggerEvent`, still installs (Pass A/B leave it
-    // untouched) — the binder half of O46 lives in the trigger binder, but the
-    // validation passes must not reject it.
+    // solely by a level member `t.on("enter", …)`, still installs (Pass A/B
+    // leave it untouched) — the binder half of O46 lives in the trigger binder,
+    // but the validation passes must not reject it.
     #[test]
     fn o46_first_step_wait_survives_validation() {
         let ctx = ScriptCtx::new();
+        let trigger = spawn_trigger(&ctx, "", "", TriggerFireMode::Multiple, &["plate"]);
         ctx.data_registry
             .borrow_mut()
             .populate_level_with_trigger_events(
@@ -1164,16 +1391,10 @@ mod tests {
                     vec![wait_step(json!(800), false), entity_step(1)],
                 )],
                 Vec::new(),
-                vec![TriggerEventDescriptor {
-                    tag: "plate".to_string(),
-                    event: "enter".to_string(),
-                    fire: vec!["reveal".to_string()],
-                    levels: Vec::new(),
-                }],
+                vec![member_enter(trigger, &["reveal"])],
                 Vec::new(),
                 &[],
             );
-        let trigger = spawn_trigger(&ctx, "", "", TriggerFireMode::Multiple, &["plate"]);
         let table = validated_bindings(&ctx);
         assert!(!is_dropped(&ctx, "reveal"));
         assert!(
@@ -1294,6 +1515,7 @@ mod tests {
     #[test]
     fn v2_rejection_leaves_sibling_in_merged_residual_and_nothing_enrolls() {
         let ctx = ScriptCtx::new();
+        let trigger = spawn_trigger(&ctx, "reveal", "", TriggerFireMode::Once, &["plate"]);
         let innocent_body = vec![note_step(&ctx)];
         ctx.data_registry
             .borrow_mut()
@@ -1303,16 +1525,10 @@ mod tests {
                     sequence("innocent", innocent_body),
                 ],
                 Vec::new(),
-                vec![TriggerEventDescriptor {
-                    tag: "plate".to_string(),
-                    event: "enter".to_string(),
-                    fire: vec!["innocent".to_string()],
-                    levels: Vec::new(),
-                }],
+                vec![member_enter(trigger, &["innocent"])],
                 Vec::new(),
                 &[],
             );
-        let trigger = spawn_trigger(&ctx, "reveal", "", TriggerFireMode::Once, &["plate"]);
 
         let table = validated_bindings(&ctx);
         assert!(is_dropped(&ctx, "reveal"));
@@ -1402,13 +1618,14 @@ mod tests {
     // no `raiseAlarm` dispatch, while the innocent sibling still runs.
     #[test]
     fn v4b_rejection_strips_deferred_event_from_merged_residual_drain() {
+        let ctx = ScriptCtx::new();
+        let trigger = spawn_trigger(&ctx, "reveal", "", TriggerFireMode::Multiple, &["plate"]);
         let scoped_value = json!({
             "op": "select",
             "cond": { "op": "input", "name": "@rising" },
             "a": { "op": "const", "value": 1.0 },
             "b": { "op": "const", "value": 0.0 }
         });
-        let ctx = ScriptCtx::new();
         let innocent_body = vec![note_step(&ctx)];
         ctx.data_registry
             .borrow_mut()
@@ -1426,17 +1643,11 @@ mod tests {
                     sequence("innocent", innocent_body),
                 ],
                 Vec::new(),
-                vec![TriggerEventDescriptor {
-                    tag: "plate".to_string(),
-                    event: "enter".to_string(),
-                    fire: vec!["innocent".to_string()],
-                    levels: Vec::new(),
-                }],
+                vec![member_enter(trigger, &["innocent"])],
                 Vec::new(),
                 &[],
             );
         insert_writable_number(&ctx, "puzzle.target");
-        let trigger = spawn_trigger(&ctx, "reveal", "", TriggerFireMode::Multiple, &["plate"]);
 
         let table = validated_bindings(&ctx);
         assert!(is_dropped(&ctx, "reveal"));

@@ -513,11 +513,10 @@ fn manifest_trigger_events_append_after_brush_bindings() {
         ],
         Vec::new(),
         vec![
-            postretro_scripting_core::data_descriptors::TriggerEventDescriptor {
-                tag: "plate".into(),
+            postretro_scripting_core::data_descriptors::VolumeTriggerEventDescriptor {
+                trigger,
                 event: "enter".into(),
                 fire: vec!["script".into()],
-                levels: Vec::new(),
             },
         ],
         Vec::new(),
@@ -577,6 +576,14 @@ fn manifest_trigger_event_with_zero_tag_matches_is_inert() {
         .unwrap();
     let ctx = ScriptCtx::new();
     let mut data = DataRegistry::new();
+    data.replace_global_trigger_events(vec![
+        postretro_scripting_core::data_descriptors::TriggerEventDescriptor {
+            tag: "missing-plate".into(),
+            event: "enter".into(),
+            fire: vec!["never".into()],
+            levels: Vec::new(),
+        },
+    ]);
     data.populate_level_with_trigger_events(
         vec![primitive(
             "never",
@@ -586,14 +593,7 @@ fn manifest_trigger_event_with_zero_tag_matches_is_inert() {
             None,
         )],
         Vec::new(),
-        vec![
-            postretro_scripting_core::data_descriptors::TriggerEventDescriptor {
-                tag: "missing-plate".into(),
-                event: "enter".into(),
-                fire: vec!["never".into()],
-                levels: Vec::new(),
-            },
-        ],
+        Vec::new(),
         Vec::new(),
         &[],
     );

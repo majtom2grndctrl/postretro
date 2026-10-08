@@ -207,29 +207,12 @@ fn the_strobe_fixture_evaluates() {
     };
 
     let strobe = run("a11y-strobe-test.ts");
-    let pads: Vec<&str> = strobe
-        .trigger_events
-        .iter()
-        .map(|t| t.tag.as_str())
-        .collect();
-    assert_eq!(
-        pads,
-        [
-            "strobe_white",
-            "strobe_red",
-            "strobe_small_panel",
-            "strobe_large_panel",
-            "strobe_light_square",
-            "strobe_light_sine",
-        ]
-    );
-    for pad in &strobe.trigger_events {
-        assert!(
-            strobe.reactions.iter().any(|r| pad.fire.contains(&r.name)),
-            "pad `{}` fires a declared reaction",
-            pad.tag
-        );
-    }
+    // The fixture still returns the retired level tag-keyed trigger events
+    // (`onTriggerEvent`), which a level script now rejects. sdk-addressing-model
+    // Task 8 migrates the six pads to trigger members' `t.on` and restores the
+    // per-pad assertions here.
+    assert!(strobe.trigger_events.is_empty());
+    assert!(!strobe.reactions.is_empty());
     let trees: Vec<&str> = strobe.ui_trees.iter().map(|t| t.name.as_str()).collect();
     assert_eq!(trees, ["a11y.strobe.smallPanel", "a11y.strobe.largePanel"]);
 }

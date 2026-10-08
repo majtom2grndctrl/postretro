@@ -187,57 +187,6 @@ impl TriggerBindingTable {
             .insert((trigger, edge), TriggerBinding { commands, residual });
     }
 
-    /// Bind manifest-declared trigger events (tag + edge → fired reaction names)
-    /// after brush-authored bindings are built. Manifest events append to any
-    /// existing binding for the same trigger edge — brush KVP bindings always
-    /// run first, manifest events after.
-    pub fn install_manifest_events(
-        &mut self,
-        registry: &EntityRegistry,
-        data_registry: &DataRegistry,
-        script_ctx: &ScriptCtx,
-    ) {
-        let descriptors = data_registry.trigger_events.clone();
-        let slots = script_ctx.slot_table.borrow();
-        for descriptor in descriptors {
-            let edge = match descriptor.event.as_str() {
-                "enter" => TriggerEventEdge::Enter,
-                "exit" => TriggerEventEdge::Exit,
-                other => {
-                    log::warn!(
-                        "[Trigger] unknown trigger-event `{other}` on tag `{}`; descriptor is inert",
-                        descriptor.tag
-                    );
-                    continue;
-                }
-            };
-            let mut triggers: Vec<_> = registry
-                .query_by_component_and_tag(ComponentKind::TriggerVolume, Some(&descriptor.tag))
-                .map(|(id, _)| id)
-                .collect();
-            triggers.sort_unstable();
-            if triggers.is_empty() {
-                log::warn!(
-                    "[Trigger] trigger-event tag `{}` matched no trigger volumes; descriptor is inert",
-                    descriptor.tag
-                );
-                continue;
-            }
-            for event_name in descriptor.fire {
-                for &trigger in &triggers {
-                    self.bind_event(
-                        trigger,
-                        edge,
-                        &event_name,
-                        data_registry,
-                        &slots,
-                        Some(script_ctx),
-                    );
-                }
-            }
-        }
-    }
-
     /// Register `(trigger, edge)` as a bound edge without adding any command or
     /// residual work. E18 V5 uses this to derive the paired Exit edge for an
     /// interruptible wait whose trigger authored no `on_exit` KVP: without the

@@ -44,6 +44,9 @@ const OUTSIDE: Vec3 = Vec3::new(20.0, 1.0, 20.0);
 /// One level: a touch plate tagged `plate`, the authoritative trigger system,
 /// and the bindings the install path builds from a parsed `setupLevel` return.
 struct Level {
+    /// The plate volume. A manifest names it as `PLATE_ID`, which `install`
+    /// replaces with this id — the id a trigger member handle bakes.
+    plate: EntityId,
     registry: EntityRegistry,
     bridge: TriggerVolumeBridge,
     system: TriggerSystem,
@@ -62,8 +65,9 @@ impl Level {
     fn new() -> Self {
         let mut registry = EntityRegistry::new();
         let mut bridge = TriggerVolumeBridge::new();
-        spawn_volume(&mut registry, &mut bridge, PLATE, Vec3::ZERO);
+        let plate = spawn_volume(&mut registry, &mut bridge, PLATE, Vec3::ZERO);
         Self {
+            plate,
             registry,
             bridge,
             system: TriggerSystem::default(),
@@ -84,7 +88,8 @@ impl Level {
         manifest_js: &str,
         spawn_context: SpawnContext,
     ) -> Vec<CapturedRecord> {
-        let manifest = parse_manifest(manifest_js);
+        let manifest_js = manifest_js.replace("PLATE_ID", &self.plate.to_raw().to_string());
+        let manifest = parse_manifest(&manifest_js);
         let mut data = DataRegistry::new();
         data.populate_level_with_trigger_events(
             manifest.reactions,
@@ -231,7 +236,7 @@ impl Level {
     }
 }
 
-fn parse_manifest(manifest_js: &str) -> LevelManifest {
+pub(super) fn parse_manifest(manifest_js: &str) -> LevelManifest {
     let runtime = rquickjs::Runtime::new().unwrap();
     let context = rquickjs::Context::full(&runtime).unwrap();
     context.with(|ctx| {
@@ -302,7 +307,7 @@ fn attach_brain(registry: &mut EntityRegistry, id: EntityId) {
         .unwrap();
 }
 
-fn movement() -> PlayerMovementComponent {
+pub(super) fn movement() -> PlayerMovementComponent {
     PlayerMovementComponent::from_descriptor(&PlayerMovementDescriptor {
         sounds: None,
         knockback: Default::default(),
@@ -343,14 +348,14 @@ fn movement() -> PlayerMovementComponent {
     })
 }
 
-fn local(pawn: EntityId) -> AuthoritativePlayer {
+pub(super) fn local(pawn: EntityId) -> AuthoritativePlayer {
     AuthoritativePlayer {
         id: PlayerId::Local(pawn),
         pawn,
     }
 }
 
-fn warnings(records: &[CapturedRecord]) -> Vec<&CapturedRecord> {
+pub(super) fn warnings(records: &[CapturedRecord]) -> Vec<&CapturedRecord> {
     records
         .iter()
         .filter(|record| record.level <= log::Level::Warn)
@@ -372,7 +377,7 @@ fn trigger_tick_npc_group_damage_skips_a_player_pawn_carrying_the_tag() {
                 name: "hurt",
                 sequence: [{ primitive: "applyDamage", kind: "npc", tag: "x", args: { amount: 5 } }],
             }],
-            triggerEvents: [{ tag: "plate", event: "enter", fire: ["hurt"] }],
+            triggerEvents: [{ trigger: PLATE_ID, event: "enter", fire: ["hurt"] }],
         })"#,
     );
     assert!(
@@ -435,7 +440,7 @@ fn trigger_tick_tagless_groups_bind_at_install_and_apply_on_the_enter_tick() {
                     ],
                 },
             ],
-            triggerEvents: [{ tag: "plate", event: "enter", fire: ["heal", "rouse"] }],
+            triggerEvents: [{ trigger: PLATE_ID, event: "enter", fire: ["heal", "rouse"] }],
         })"#,
     );
     assert!(
@@ -497,7 +502,7 @@ fn trigger_tick_activators_credit_only_the_firer_while_the_player_group_credits_
                     { primitive: "grantHealth", kind: "player", args: { amount: 10 } },
                 ],
             }],
-            triggerEvents: [{ tag: "plate", event: "enter", fire: ["heal"] }],
+            triggerEvents: [{ trigger: PLATE_ID, event: "enter", fire: ["heal"] }],
         })"#,
     );
 
@@ -552,7 +557,7 @@ fn trigger_fired_sequence_applies_activator_and_group_steps_before_the_wait_in_t
                     { primitive: "grantHealth", kind: "player", args: { amount: 50 } },
                 ],
             }],
-            triggerEvents: [{ tag: "plate", event: "enter", fire: ["ambush"] }],
+            triggerEvents: [{ trigger: PLATE_ID, event: "enter", fire: ["ambush"] }],
         })"#,
     );
 
@@ -622,7 +627,7 @@ fn trigger_tick_npc_group_after_a_spawn_on_the_same_edge_reaches_the_spawned_npc
                 { name: "release", primitive: "spawnFromSpawner", tag: "closet" },
                 { name: "calm", primitive: "updateNpcState", kind: "npc", args: { aggro: false } },
             ],
-            triggerEvents: [{ tag: "plate", event: "enter", fire: ["release", "calm"] }],
+            triggerEvents: [{ trigger: PLATE_ID, event: "enter", fire: ["release", "calm"] }],
         })"#,
         spawn_context,
     );
@@ -685,7 +690,7 @@ fn bound_group_commands_skip_silently_under_the_client_role_while_member_steps_a
                     {{ id: "@activators", primitive: "grantHealth", args: {{ amount: 3 }} }},
                 ],
             }}],
-            triggerEvents: [{{ tag: "plate", event: "enter", fire: ["mixed"] }}],
+            triggerEvents: [{{ trigger: PLATE_ID, event: "enter", fire: ["mixed"] }}],
         }})"#,
         gate = gate.to_raw(),
     ));
@@ -803,7 +808,7 @@ fn trigger_tick_spawner_member_steps_spawn_from_that_spawner_only_one_batch_per_
                         {{ id: {s}, primitive: "spawnFromSpawner" }},
                     ],
                 }}],
-                triggerEvents: [{{ tag: "plate", event: "enter", fire: ["release"] }}],
+                triggerEvents: [{{ trigger: PLATE_ID, event: "enter", fire: ["release"] }}],
             }})"#,
             s = spawner.to_raw(),
         ),
@@ -861,7 +866,7 @@ fn trigger_tick_npc_group_step_after_a_spawner_member_step_reaches_the_just_spaw
                         {{ id: {s}, primitive: "spawnFromSpawner" }},
                     ],
                 }}],
-                triggerEvents: [{{ tag: "plate", event: "enter", fire: ["release"] }}],
+                triggerEvents: [{{ trigger: PLATE_ID, event: "enter", fire: ["release"] }}],
             }})"#,
             s = spawner.to_raw(),
         ),

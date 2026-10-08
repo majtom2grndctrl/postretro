@@ -5,9 +5,17 @@ mod command_binding;
 #[cfg(test)]
 mod group_tick_tests;
 mod install;
+mod manifest_events;
 mod partition;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod trigger_event_tests;
+
+pub use manifest_events::{
+    ResolutionDiagnostics, ResolvedTriggerEvent, TriggerEventSource,
+    resolve_manifest_trigger_events,
+};
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};

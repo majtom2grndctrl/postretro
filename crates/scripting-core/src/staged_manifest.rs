@@ -17,13 +17,14 @@ use super::data_descriptors::{
     drain_factions_js, drain_factions_lua, drain_fonts_js, drain_fonts_lua, drain_frontend_js,
     drain_frontend_lua, drain_global_crossings_js, drain_global_crossings_lua,
     drain_global_reactions_js, drain_global_reactions_lua, drain_impact_events_js,
-    drain_impact_events_lua, drain_maps_js, drain_maps_lua, drain_mover_defaults_js,
-    drain_mover_defaults_lua, drain_presentation_overlays_js, drain_presentation_overlays_lua,
+    drain_impact_events_lua, drain_maps_js, drain_maps_lua, drain_mod_trigger_events_js,
+    drain_mod_trigger_events_lua, drain_mover_defaults_js, drain_mover_defaults_lua,
+    drain_presentation_overlays_js, drain_presentation_overlays_lua,
     drain_presentation_templates_js, drain_presentation_templates_lua, drain_render_profile_js,
     drain_render_profile_lua, drain_switching_js, drain_switching_lua, drain_theme_js,
-    drain_theme_lua, drain_trigger_events_js, drain_trigger_events_lua, drain_trigger_pools_js,
-    drain_trigger_pools_lua, drain_ui_trees_js, drain_ui_trees_lua, entity_descriptor_from_js,
-    entity_faction_name_from_js, entity_faction_name_from_lua,
+    drain_theme_lua, drain_trigger_pools_js, drain_trigger_pools_lua, drain_ui_trees_js,
+    drain_ui_trees_lua, entity_descriptor_from_js, entity_faction_name_from_js,
+    entity_faction_name_from_lua,
 };
 use super::error::ScriptError;
 use super::luau::LuauConfig;
@@ -685,7 +686,7 @@ fn manifest_from_js_value<'js>(
             ),
         })?;
     let trigger_events =
-        drain_trigger_events_js(&obj, "default mod manifest export").map_err(|e| {
+        drain_mod_trigger_events_js(&obj, "default mod manifest export").map_err(|e| {
             ScriptError::InvalidArgument {
                 reason: format!("mod-init: `{source_path}` triggerEvents invalid: {e}"),
             }
@@ -1011,7 +1012,7 @@ fn run_staged_mod_init_luau(
             ),
         })?;
     let trigger_events =
-        drain_trigger_events_lua(&table, "returned mod manifest").map_err(|e| {
+        drain_mod_trigger_events_lua(&table, "returned mod manifest").map_err(|e| {
             ScriptError::InvalidArgument {
                 reason: format!("mod-init: `{source_path}` triggerEvents invalid: {e}"),
             }

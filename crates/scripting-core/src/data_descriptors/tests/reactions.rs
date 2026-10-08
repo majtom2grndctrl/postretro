@@ -546,26 +546,133 @@ fn lua_crossings_accept_dense_arrays() {
     assert_eq!(m.crossings[0].fire, vec!["lowHealth".to_string()]);
 }
 
+// T2 (parse half): a level script keys trigger events by volume. A tag-keyed
+// entry is rejected with a warning naming the level script, while the
+// volume-keyed entries beside it parse identically in both runtimes.
 #[test]
-fn trigger_event_manifests_parse_identically_and_drop_unknown_events() {
+fn level_trigger_events_keep_volume_entries_and_reject_tag_keyed_naming_the_level_script() {
+    use postretro_test_log_capture::LogCapture;
+
+    let capture = LogCapture::start();
     let js = eval_js(
         r#"({ triggerEvents: [
-            { tag: "plate", event: "enter", fire: ["zap", "once"], levels: ["campaign"] },
-            { tag: "plate", event: "occupied", fire: ["bad"] }
+            { trigger: 65536, event: "enter", fire: ["zap", "once"] },
+            { tag: "plate", event: "enter", fire: ["stale"] },
+            { trigger: 131072, event: "exit", fire: ["leave"] },
+            { trigger: 65536, event: "occupied", fire: ["bad"] },
+            { trigger: 65536, tag: "plate", event: "enter", fire: ["both"] }
         ] })"#,
         |ctx, value| LevelManifest::from_js_value(ctx, value).unwrap(),
     );
     let lua = eval_lua(
         r#"return { triggerEvents = {
-            { tag = "plate", event = "enter", fire = { "zap", "once" }, levels = { "campaign" } },
-            { tag = "plate", event = "occupied", fire = { "bad" } }
+            { trigger = 65536, event = "enter", fire = { "zap", "once" } },
+            { tag = "plate", event = "enter", fire = { "stale" } },
+            { trigger = 131072, event = "exit", fire = { "leave" } },
+            { trigger = 65536, event = "occupied", fire = { "bad" } },
+            { trigger = 65536, tag = "plate", event = "enter", fire = { "both" } }
         } }"#,
         |value| LevelManifest::from_lua_value(value).unwrap(),
     );
 
     assert_eq!(js.trigger_events, lua.trigger_events);
-    assert_eq!(js.trigger_events.len(), 1);
-    assert_eq!(js.trigger_events[0].fire, ["zap", "once"]);
+    assert_eq!(
+        js.trigger_events,
+        vec![
+            VolumeTriggerEventDescriptor {
+                trigger: EntityId::from_raw(65536),
+                event: "enter".into(),
+                fire: vec!["zap".into(), "once".into()],
+            },
+            VolumeTriggerEventDescriptor {
+                trigger: EntityId::from_raw(131072),
+                event: "exit".into(),
+                fire: vec!["leave".into()],
+            },
+        ]
+    );
+    let rejections: Vec<_> = capture
+        .records()
+        .into_iter()
+        .filter(|record| {
+            record.level == log::Level::Warn
+                && record.message.contains("level script `setupLevel`")
+                && record.message.contains("keyed by tag `plate`")
+        })
+        .collect();
+    assert_eq!(
+        rejections.len(),
+        2,
+        "one rejection per runtime: {rejections:?}"
+    );
+    capture.assert_logged(log::Level::Warn, "carries both `trigger` and `tag`");
+}
+
+// T3 (parse half): the mod manifest keys trigger events by tag. A volume-keyed
+// entry is rejected with a warning naming the manifest, while the tag-keyed
+// entries beside it keep their `levels` selector in both runtimes.
+#[test]
+fn mod_trigger_events_keep_tag_entries_and_reject_volume_keyed_naming_the_manifest() {
+    use postretro_test_log_capture::LogCapture;
+
+    let capture = LogCapture::start();
+    let js = eval_js(
+        r#"({ triggerEvents: [
+            { tag: "plate", event: "enter", fire: ["zap"], levels: ["campaign"] },
+            { trigger: 65536, event: "enter", fire: ["member"] },
+            { tag: "door", event: "exit", fire: ["shut"] }
+        ] })"#,
+        |_ctx, value| {
+            let obj = rquickjs::Object::from_value(value).unwrap();
+            drain_mod_trigger_events_js(&obj, "default mod manifest export").unwrap()
+        },
+    );
+    let lua = eval_lua(
+        r#"return { triggerEvents = {
+            { tag = "plate", event = "enter", fire = { "zap" }, levels = { "campaign" } },
+            { trigger = 65536, event = "enter", fire = { "member" } },
+            { tag = "door", event = "exit", fire = { "shut" } }
+        } }"#,
+        |value| {
+            let LuaValue::Table(table) = value else {
+                panic!("manifest is a table")
+            };
+            drain_mod_trigger_events_lua(&table, "returned mod manifest").unwrap()
+        },
+    );
+
+    assert_eq!(js, lua);
+    assert_eq!(
+        js,
+        vec![
+            TriggerEventDescriptor {
+                tag: "plate".into(),
+                event: "enter".into(),
+                fire: vec!["zap".into()],
+                levels: vec!["campaign".into()],
+            },
+            TriggerEventDescriptor {
+                tag: "door".into(),
+                event: "exit".into(),
+                fire: vec!["shut".into()],
+                levels: Vec::new(),
+            },
+        ]
+    );
+    let rejections: Vec<_> = capture
+        .records()
+        .into_iter()
+        .filter(|record| {
+            record.level == log::Level::Warn
+                && record.message.contains("mod manifest")
+                && record.message.contains("keyed by trigger volume")
+        })
+        .collect();
+    assert_eq!(
+        rejections.len(),
+        2,
+        "one rejection per runtime: {rejections:?}"
+    );
 }
 
 // Regression: Luau rejected the whole `events` field for a sparse table while
@@ -834,7 +941,7 @@ fn throwing_trigger_pool_container_getters_degrade_field_and_keep_manifest_sibli
             const manifest = {
                 reactions: [{ name: "good", primitive: "playSound" }],
                 crossings: [{ slot: "test.value", above: 1, fire: ["good"] }],
-                triggerEvents: [{ tag: "plate", event: "enter", fire: ["good"] }]
+                triggerEvents: [{ trigger: 65536, event: "enter", fire: ["good"] }]
             };
             Object.defineProperty(manifest, "triggerPools", {
                 enumerable: true,
@@ -848,7 +955,7 @@ fn throwing_trigger_pool_container_getters_degrade_field_and_keep_manifest_sibli
         r#"local manifest = {
             reactions = { { name = "good", primitive = "playSound" } },
             crossings = { { slot = "test.value", above = 1, fire = { "good" } } },
-            triggerEvents = { { tag = "plate", event = "enter", fire = { "good" } } }
+            triggerEvents = { { trigger = 65536, event = "enter", fire = { "good" } } }
         }
         return setmetatable(manifest, {
             __index = function(_, key)
@@ -883,7 +990,7 @@ fn js_throwing_trigger_pool_index_accessor_skips_entry_and_keeps_sparse_siblings
             return {
                 reactions: [{ name: "good", primitive: "playSound" }],
                 crossings: [{ slot: "test.value", above: 1, fire: ["good"] }],
-                triggerEvents: [{ tag: "plate", event: "enter", fire: ["good"] }],
+                triggerEvents: [{ trigger: 65536, event: "enter", fire: ["good"] }],
                 triggerPools
             };
         })()"#,
@@ -1046,20 +1153,20 @@ fn trigger_pool_manifests_skip_malformed_entries_keep_first_duplicate_and_accept
 fn malformed_reactions_do_not_discard_valid_manifest_siblings_in_either_vm() {
     let cases = [
         (
-            r#"({ reactions: [{ name: "bad", primitive: "applyDamage", target: "@trigger", args: { amount: 5 } }, { name: "good", primitive: "playSound" }], crossings: [{ slot: "test.value", above: 1, fire: ["good"] }], triggerEvents: [{ tag: "plate", event: "enter", fire: ["good"] }], uiTrees: [{ name: "good", tree: { anchor: "top", offset: [0, 0], root: { kind: "spacer", flexGrow: 1 } } }] })"#,
-            r#"return { reactions = { { name = "bad", primitive = "applyDamage", target = "@trigger", args = { amount = 5 } }, { name = "good", primitive = "playSound" } }, crossings = { { slot = "test.value", above = 1, fire = { "good" } } }, triggerEvents = { { tag = "plate", event = "enter", fire = { "good" } } }, uiTrees = { { name = "good", tree = { anchor = "top", offset = { 0, 0 }, root = { kind = "spacer", flexGrow = 1 } } } } }"#,
+            r#"({ reactions: [{ name: "bad", primitive: "applyDamage", target: "@trigger", args: { amount: 5 } }, { name: "good", primitive: "playSound" }], crossings: [{ slot: "test.value", above: 1, fire: ["good"] }], triggerEvents: [{ trigger: 65536, event: "enter", fire: ["good"] }], uiTrees: [{ name: "good", tree: { anchor: "top", offset: [0, 0], root: { kind: "spacer", flexGrow: 1 } } }] })"#,
+            r#"return { reactions = { { name = "bad", primitive = "applyDamage", target = "@trigger", args = { amount = 5 } }, { name = "good", primitive = "playSound" } }, crossings = { { slot = "test.value", above = 1, fire = { "good" } } }, triggerEvents = { { trigger = 65536, event = "enter", fire = { "good" } } }, uiTrees = { { name = "good", tree = { anchor = "top", offset = { 0, 0 }, root = { kind = "spacer", flexGrow = 1 } } } } }"#,
         ),
         (
-            r#"({ reactions: [{ name: "bad", primitive: "applyDamage", target: "@unknown", args: { amount: 5 } }, { name: "good", primitive: "playSound" }], crossings: [{ slot: "test.value", above: 1, fire: ["good"] }], triggerEvents: [{ tag: "plate", event: "enter", fire: ["good"] }], uiTrees: [{ name: "good", tree: { anchor: "top", offset: [0, 0], root: { kind: "spacer", flexGrow: 1 } } }] })"#,
-            r#"return { reactions = { { name = "bad", primitive = "applyDamage", target = "@unknown", args = { amount = 5 } }, { name = "good", primitive = "playSound" } }, crossings = { { slot = "test.value", above = 1, fire = { "good" } } }, triggerEvents = { { tag = "plate", event = "enter", fire = { "good" } } }, uiTrees = { { name = "good", tree = { anchor = "top", offset = { 0, 0 }, root = { kind = "spacer", flexGrow = 1 } } } } }"#,
+            r#"({ reactions: [{ name: "bad", primitive: "applyDamage", target: "@unknown", args: { amount: 5 } }, { name: "good", primitive: "playSound" }], crossings: [{ slot: "test.value", above: 1, fire: ["good"] }], triggerEvents: [{ trigger: 65536, event: "enter", fire: ["good"] }], uiTrees: [{ name: "good", tree: { anchor: "top", offset: [0, 0], root: { kind: "spacer", flexGrow: 1 } } }] })"#,
+            r#"return { reactions = { { name = "bad", primitive = "applyDamage", target = "@unknown", args = { amount = 5 } }, { name = "good", primitive = "playSound" } }, crossings = { { slot = "test.value", above = 1, fire = { "good" } } }, triggerEvents = { { trigger = 65536, event = "enter", fire = { "good" } } }, uiTrees = { { name = "good", tree = { anchor = "top", offset = { 0, 0 }, root = { kind = "spacer", flexGrow = 1 } } } } }"#,
         ),
         (
-            r#"({ reactions: [{ name: "bad", primitive: "applyDamage", target: "@activators", tag: "enemy", args: { amount: 5 } }, { name: "good", primitive: "playSound" }], crossings: [{ slot: "test.value", above: 1, fire: ["good"] }], triggerEvents: [{ tag: "plate", event: "enter", fire: ["good"] }], uiTrees: [{ name: "good", tree: { anchor: "top", offset: [0, 0], root: { kind: "spacer", flexGrow: 1 } } }] })"#,
-            r#"return { reactions = { { name = "bad", primitive = "applyDamage", target = "@activators", tag = "enemy", args = { amount = 5 } }, { name = "good", primitive = "playSound" } }, crossings = { { slot = "test.value", above = 1, fire = { "good" } } }, triggerEvents = { { tag = "plate", event = "enter", fire = { "good" } } }, uiTrees = { { name = "good", tree = { anchor = "top", offset = { 0, 0 }, root = { kind = "spacer", flexGrow = 1 } } } } }"#,
+            r#"({ reactions: [{ name: "bad", primitive: "applyDamage", target: "@activators", tag: "enemy", args: { amount: 5 } }, { name: "good", primitive: "playSound" }], crossings: [{ slot: "test.value", above: 1, fire: ["good"] }], triggerEvents: [{ trigger: 65536, event: "enter", fire: ["good"] }], uiTrees: [{ name: "good", tree: { anchor: "top", offset: [0, 0], root: { kind: "spacer", flexGrow: 1 } } }] })"#,
+            r#"return { reactions = { { name = "bad", primitive = "applyDamage", target = "@activators", tag = "enemy", args = { amount = 5 } }, { name = "good", primitive = "playSound" } }, crossings = { { slot = "test.value", above = 1, fire = { "good" } } }, triggerEvents = { { trigger = 65536, event = "enter", fire = { "good" } } }, uiTrees = { { name = "good", tree = { anchor = "top", offset = { 0, 0 }, root = { kind = "spacer", flexGrow = 1 } } } } }"#,
         ),
         (
-            r#"({ reactions: [{ name: "bad", sequence: [{ id: "@occupancy", primitive: "armTrigger", args: {} }] }, { name: "good", primitive: "playSound" }], crossings: [{ slot: "test.value", above: 1, fire: ["good"] }], triggerEvents: [{ tag: "plate", event: "enter", fire: ["good"] }], uiTrees: [{ name: "good", tree: { anchor: "top", offset: [0, 0], root: { kind: "spacer", flexGrow: 1 } } }] })"#,
-            r#"return { reactions = { { name = "bad", sequence = { { id = "@occupancy", primitive = "armTrigger", args = {} } } }, { name = "good", primitive = "playSound" } }, crossings = { { slot = "test.value", above = 1, fire = { "good" } } }, triggerEvents = { { tag = "plate", event = "enter", fire = { "good" } } }, uiTrees = { { name = "good", tree = { anchor = "top", offset = { 0, 0 }, root = { kind = "spacer", flexGrow = 1 } } } } }"#,
+            r#"({ reactions: [{ name: "bad", sequence: [{ id: "@occupancy", primitive: "armTrigger", args: {} }] }, { name: "good", primitive: "playSound" }], crossings: [{ slot: "test.value", above: 1, fire: ["good"] }], triggerEvents: [{ trigger: 65536, event: "enter", fire: ["good"] }], uiTrees: [{ name: "good", tree: { anchor: "top", offset: [0, 0], root: { kind: "spacer", flexGrow: 1 } } }] })"#,
+            r#"return { reactions = { { name = "bad", sequence = { { id = "@occupancy", primitive = "armTrigger", args = {} } } }, { name = "good", primitive = "playSound" } }, crossings = { { slot = "test.value", above = 1, fire = { "good" } } }, triggerEvents = { { trigger = 65536, event = "enter", fire = { "good" } } }, uiTrees = { { name = "good", tree = { anchor = "top", offset = { 0, 0 }, root = { kind = "spacer", flexGrow = 1 } } } } }"#,
         ),
     ];
 

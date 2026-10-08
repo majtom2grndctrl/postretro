@@ -4,12 +4,30 @@
 use crate::registry::EntityId;
 use postretro_foundation::ir::IrNode;
 
+/// Mod-global trigger event: a standing rule keyed by tag, declared in
+/// `ModManifest.triggerEvents` (`defineTriggerEvent`) before any level exists.
+/// Wire: `{ tag, event, fire, levels? }`. Binds every trigger volume carrying
+/// `tag` in each level whose catalog tags match `levels` (empty = every level).
+/// Rejected in a level script, which keys trigger events by volume.
+/// See: context/lib/scripting.md §12 (Per-member sources).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct TriggerEventDescriptor {
     pub tag: String,
     pub event: String,
     pub fire: Vec<String>,
     pub levels: Vec<String>,
+}
+
+/// Level trigger event: a trigger member's `t.on(event, fire)`, keyed by the
+/// one volume whose id the member baked when `setupLevel` ran. Wire:
+/// `{ trigger: <id>, event, fire }`. The id is generation-checked at install
+/// and warn-skipped when stale; a sibling volume carrying the same tag is never
+/// bound. Rejected in `ModManifest`, where no level exists yet.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct VolumeTriggerEventDescriptor {
+    pub trigger: EntityId,
+    pub event: String,
+    pub fire: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

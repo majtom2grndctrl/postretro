@@ -297,6 +297,22 @@ fn is_map_placed(reg: &EntityRegistry, id: EntityId) -> bool {
         })
 }
 
+/// Map members exist only once a level is installed, so the map-member query
+/// raises outside a level's data script — in a mod start script, mod init, or
+/// the definition context — naming the author-facing call. The message names
+/// `getMapEntities` (the SDK spelling) and the raw `worldQuery` primitive.
+/// See: context/lib/scripting.md §12 (Entity addressing).
+fn require_level_data_context() -> Result<(), ScriptError> {
+    if postretro_scripting_core::level_data_context::in_level_data_context() {
+        return Ok(());
+    }
+    Err(ScriptError::InvalidArgument {
+        reason: "getMapEntities (worldQuery) is available only inside a level's data script \
+                 (`setupLevel`); no level's map entities exist in a mod start script or mod init"
+            .to_string(),
+    })
+}
+
 /// Register the world-domain primitives: `worldQuery`, `worldGetGravity`, and
 /// `worldSetGravity`. All three install in both definition and data contexts.
 pub(crate) fn register_world_primitives(registry: &mut PrimitiveRegistry, ctx: ScriptCtx) {
@@ -310,6 +326,7 @@ fn register_world_query(registry: &mut PrimitiveRegistry, ctx: ScriptCtx) {
         .register("worldQuery", {
             let ctx = ctx.clone();
             move |filter: WorldQueryFilterInput| -> Result<JsonValue, ScriptError> {
+                require_level_data_context()?;
                 let filter = parse_query_filter(&filter.component, filter.tag)?;
                 match filter {
                     QueryFilter::Light { tag } => {
@@ -399,6 +416,7 @@ mod tests {
         TriggerVolumeComponent,
     };
     use postretro_level_format::data_script::DataScriptSection;
+    use postretro_scripting_core::level_data_context::LevelDataContext;
     use postretro_scripting_core::primitives_registry::PrimitiveRegistry;
     use postretro_scripting_core::runtime::{ScriptRuntime, ScriptRuntimeConfig};
     use serde_json::json;
@@ -561,6 +579,7 @@ mod tests {
 
     #[test]
     fn world_query_reachable_from_quickjs_returns_handle_array() {
+        let _level = LevelDataContext::enter();
         let (ctx, id) = test_ctx_with_light(true, Some("foo"));
         let r = registry_for(ctx);
         let rt = rquickjs::Runtime::new().unwrap();
@@ -587,6 +606,7 @@ mod tests {
 
     #[test]
     fn world_query_reachable_from_luau_returns_handle_table() {
+        let _level = LevelDataContext::enter();
         let (ctx, _id) = test_ctx_with_light(true, None);
         let r = registry_for(ctx);
         let lua = mlua::Lua::new();
@@ -605,6 +625,7 @@ mod tests {
 
     #[test]
     fn world_query_light_component_returns_light_handles() {
+        let _level = LevelDataContext::enter();
         let (ctx, id) = test_ctx_with_light(true, Some("hallway_wave"));
         let r = registry_for(ctx);
         let raw = id.to_raw();
@@ -657,6 +678,7 @@ mod tests {
 
     #[test]
     fn world_query_kinematic_mover_returns_tagged_mover_snapshots() {
+        let _level = LevelDataContext::enter();
         let (ctx, _) = test_ctx_with_light(true, Some("not_a_mover"));
         let id = add_mover(&ctx, Some("bridge-lift"));
         let r = registry_for(ctx);
@@ -700,6 +722,7 @@ mod tests {
 
     #[test]
     fn world_query_trigger_volume_returns_identity_snapshot_without_runtime_state() {
+        let _level = LevelDataContext::enter();
         let (ctx, _) = test_ctx_with_light(true, Some("not_a_trigger"));
         let id = add_trigger(&ctx, Some("tripwire"));
         let r = registry_for(ctx);
@@ -743,6 +766,7 @@ mod tests {
 
     #[test]
     fn world_query_trigger_volume_sdk_handles_build_arm_and_disarm_steps_in_both_runtimes() {
+        let _level = LevelDataContext::enter();
         let (ctx, _) = test_ctx_with_light(true, Some("not_a_trigger"));
         let id = add_trigger(&ctx, Some("tripwire"));
         let r = registry_for(ctx);
@@ -845,6 +869,88 @@ mod tests {
         );
     }
 
+    // M4: map members exist only inside a level, so the map-member query
+    // (`getMapEntities`, lowered to the raw `worldQuery` primitive) raises
+    // naming the call in a mod start script, and the same call succeeds in
+    // `setupLevel` — in both runtimes.
+    #[test]
+    fn get_map_entities_raises_in_a_mod_start_script_and_succeeds_in_setup_level() {
+        let ctx = ScriptCtx::new();
+        let plate = add_trigger(&ctx, Some("plate"));
+        let primitives = registry_for(ctx.clone());
+
+        for (file, source) in [
+            (
+                "start-script.js",
+                r#"worldQuery({ component: "trigger_volume", tag: "plate" });
+                   globalThis.__postretroModManifest = { name: "m", id: "m", version: "1" };"#,
+            ),
+            (
+                "start-script.luau",
+                r#"worldQuery({ component = "trigger_volume", tag = "plate" })
+                   return { name = "m", id = "m", version = "1" }"#,
+            ),
+        ] {
+            let mod_root = tempfile::tempdir().expect("mod root");
+            std::fs::write(mod_root.path().join(file), source).expect("start script writes");
+            let mut runtime =
+                ScriptRuntime::new(&primitives, &ScriptRuntimeConfig::default(), &ctx)
+                    .expect("runtime constructs");
+            let error = runtime
+                .run_mod_init(mod_root.path())
+                .expect_err("a start script has no level to query");
+            assert!(
+                error.to_string().contains("getMapEntities"),
+                "{file}: the error names the call: {error}"
+            );
+        }
+
+        let runtime = ScriptRuntime::new(&primitives, &ScriptRuntimeConfig::default(), &ctx)
+            .expect("runtime constructs");
+        let level_root = tempfile::tempdir().expect("level root");
+        for (file, source) in [
+            (
+                "level.js",
+                r#"function setupLevel() {
+                       const plates = worldQuery({ component: "trigger_volume", tag: "plate" });
+                       return { reactions: [{ name: "seen", sequence: plates.map(
+                           (t) => ({ id: t.id, primitive: "armTrigger", args: {} })) }] };
+                   }"#,
+            ),
+            (
+                "level.luau",
+                r#"function setupLevel()
+                       local plates = worldQuery({ component = "trigger_volume", tag = "plate" })
+                       return { reactions = { { name = "seen", sequence = {
+                           { id = plates[1].id, primitive = "armTrigger", args = {} } } } } }
+                   end"#,
+            ),
+        ] {
+            let path = level_root.path().join(file);
+            let section = DataScriptSection {
+                compiled_bytes: source.as_bytes().to_vec(),
+                source_path: path.to_string_lossy().into_owned(),
+            };
+            let manifest = runtime.run_data_script(&section, level_root.path());
+            assert_eq!(
+                manifest.reactions,
+                vec![NamedReaction {
+                    name: "seen".into(),
+                    descriptor: ReactionDescriptor::Sequence(vec![SequenceStep {
+                        id: plate.into(),
+                        primitive: "armTrigger".into(),
+                        args: json!({}),
+                    }]),
+                }],
+                "{file}: setupLevel queries the installed trigger member"
+            );
+        }
+        assert!(
+            !postretro_scripting_core::level_data_context::in_level_data_context(),
+            "the data context ends with the data script"
+        );
+    }
+
     #[test]
     fn trigger_event_presser_fixtures_produce_identical_wire_in_both_runtimes() {
         let ctx = ScriptCtx::new();
@@ -872,17 +978,17 @@ mod tests {
             ts, luau,
             "TS and Luau must emit byte-equivalent descriptor data"
         );
-        assert_eq!(ts.trigger_events.len(), 1);
-        assert_eq!(ts.trigger_events[0].tag, "fixture_presser");
-        assert_eq!(ts.trigger_events[0].event, "enter");
-        assert_eq!(
-            ts.trigger_events[0].fire,
-            ["fixture.presser.damage", "fixture.presser.disarm"]
-        );
+        assert_eq!(ts.reactions.len(), 2);
+        // The fixture still returns the retired level tag-keyed form
+        // (`onTriggerEvent`), which a level script now rejects in both
+        // runtimes. sdk-addressing-model Task 8 migrates it to a trigger
+        // member's `t.on` and restores the per-volume `fire` assertions.
+        assert!(ts.trigger_events.is_empty());
     }
 
     #[test]
     fn world_query_handle_component_exposes_camel_case_keys() {
+        let _level = LevelDataContext::enter();
         // Regression: if `LightComponent`'s serde shape ever reverts to snake_case,
         // scripts silently see `undefined`/`nil` for `lightType`, `falloffModel`, etc.
         let (ctx, id) = test_ctx_with_light(true, Some("alpha"));
@@ -952,6 +1058,7 @@ mod tests {
 
     #[test]
     fn world_query_unknown_component_errors() {
+        let _level = LevelDataContext::enter();
         let (ctx, _id) = test_ctx_with_light(true, None);
         let r = registry_for(ctx);
 
@@ -993,6 +1100,7 @@ mod tests {
 
     #[test]
     fn world_query_tag_filter_excludes_unmatched() {
+        let _level = LevelDataContext::enter();
         let (ctx, first) = test_ctx_with_light(true, Some("alpha"));
         let second;
         {
@@ -1061,6 +1169,7 @@ mod tests {
 
     #[test]
     fn world_query_returns_both_tags_for_multi_tagged_entity() {
+        let _level = LevelDataContext::enter();
         // Regression: after `Option<String>` -> `Vec<String>` migration, a query
         // matching one tag must still surface all tags on the JS-facing handle.
         let (ctx, id) = test_ctx_with_light(true, None);
@@ -1282,6 +1391,7 @@ mod tests {
     // provenance) still do.
     #[test]
     fn world_query_light_and_emitter_exclude_ones_carried_by_a_spawned_npc() {
+        let _level = LevelDataContext::enter();
         const TAG: &str = "lamp";
         let (ctx, map_light) = test_ctx_with_light(false, Some(TAG));
         let (map_emitter, spawner) = {
@@ -1354,6 +1464,7 @@ mod tests {
     // triggers use: id, position, tags.
     #[test]
     fn world_query_spawner_returns_identity_snapshots_in_both_runtimes() {
+        let _level = LevelDataContext::enter();
         let ctx = ScriptCtx::new();
         let spawner = {
             let mut reg = ctx.registry.borrow_mut();

@@ -32,24 +32,28 @@ fn drain_maps_js_defaults_absent_and_null_tags_to_empty() {
                 path: "maps/valid.prl".to_string(),
                 name: "Valid".to_string(),
                 tags: vec!["campaign".to_string()],
+                loading_tree: Vec::new(),
             },
             ModMapEntry {
                 id: "nullTags".to_string(),
                 path: "maps/null-tags.prl".to_string(),
                 name: "Null Tags".to_string(),
                 tags: Vec::new(),
+                loading_tree: Vec::new(),
             },
             ModMapEntry {
                 id: "absentTags".to_string(),
                 path: "maps/absent-tags.prl".to_string(),
                 name: "Absent Tags".to_string(),
                 tags: Vec::new(),
+                loading_tree: Vec::new(),
             },
             ModMapEntry {
                 id: "alsoValid".to_string(),
                 path: "maps/also-valid.prl".to_string(),
                 name: "Also Valid".to_string(),
                 tags: Vec::new(),
+                loading_tree: Vec::new(),
             },
         ]
     );
@@ -110,6 +114,7 @@ fn drain_maps_lua_keeps_dense_prefix_and_skips_non_prefix_entries() {
                 path: "maps/e1m1.prl".to_string(),
                 name: "Entryway".to_string(),
                 tags: vec!["campaign".to_string()],
+                loading_tree: Vec::new(),
             }],
             "{label} case should keep the dense prefix"
         );
@@ -161,24 +166,28 @@ fn drain_maps_lua_defaults_absent_and_nil_tags_to_empty() {
                 path: "maps/valid.prl".to_string(),
                 name: "Valid".to_string(),
                 tags: vec!["campaign".to_string()],
+                loading_tree: Vec::new(),
             },
             ModMapEntry {
                 id: "nilTags".to_string(),
                 path: "maps/nil.prl".to_string(),
                 name: "Nil".to_string(),
                 tags: Vec::new(),
+                loading_tree: Vec::new(),
             },
             ModMapEntry {
                 id: "absentTags".to_string(),
                 path: "maps/absent-tags.prl".to_string(),
                 name: "Absent Tags".to_string(),
                 tags: Vec::new(),
+                loading_tree: Vec::new(),
             },
             ModMapEntry {
                 id: "alsoValid".to_string(),
                 path: "maps/also-valid.prl".to_string(),
                 name: "Also Valid".to_string(),
                 tags: Vec::new(),
+                loading_tree: Vec::new(),
             },
         ]
     );

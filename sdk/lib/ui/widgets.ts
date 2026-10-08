@@ -760,6 +760,10 @@ export function validateBorder(value: unknown, factory: string): BorderProp {
  */
 export type ImageProps = {
   asset: string;
+  /** Logical-reference px. Alone, the height follows the source aspect. */
+  width?: number;
+  /** Logical-reference px. Alone, the width follows the source aspect. */
+  height?: number;
   id?: string;
   focusNeighbors?: FocusNeighborsProp;
   visibleWhen?: Predicate;
@@ -767,8 +771,9 @@ export type ImageProps = {
 } & ({ label: string; decorative?: never } | { decorative: true; label?: never });
 
 /**
- * An `image` leaf referencing a texture asset by key; it sizes from the asset's
- * natural pixel dimensions. No bind capability. Exactly one of `label` /
+ * An `image` leaf referencing a texture asset by key. Without `width` /
+ * `height` it takes the asset's natural size; one of them keeps the source
+ * aspect; both give an exact box. No bind capability. Exactly one of `label` /
  * `decorative: true` is required (the bridge enforces the same precondition).
  * Mirrors `ImageWidget`.
  */
@@ -790,6 +795,14 @@ export function Image(props: ImageProps): WidgetDescriptor {
     );
   }
   const out: WidgetDescriptor = { kind: "image", asset: props.asset };
+  for (const field of ["width", "height"] as const) {
+    const value = props[field];
+    if (value !== undefined) {
+      requireFiniteNumber(value, field, "Image");
+      if (value <= 0) throw new Error(`Image: \`${field}\` must be greater than zero`);
+      out[field] = value;
+    }
+  }
   applyFocusFields(out, props, "Image");
   if (hasLabel) {
     requireNonemptyString(p.label, "label", "Image");

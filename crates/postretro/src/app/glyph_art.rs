@@ -36,6 +36,12 @@ impl GlyphArtState {
             .is_some_and(|(dirs, generation)| dirs == glyphs && *generation == reload_generation)
     }
 
+    /// Forget the uploaded art so the next sync registers it again: the
+    /// renderer holding it is gone, or other images just took its keys.
+    pub(crate) fn invalidate(&mut self) {
+        self.loaded = None;
+    }
+
     /// Warn once per unknown glyph `command` id.
     fn warn_unknown_command(&self, command: &str) {
         let mut warned = self.warned_unknown_commands.borrow_mut();
@@ -107,7 +113,15 @@ impl App {
     /// the declared directories change or a staged reload commits (its art may
     /// have changed in the same directories). A failed, stale, or rejected
     /// staged build leaves the art alone. Cheap otherwise.
+    ///
+    /// The mod's `uiImages` and the engine's images sync first; when they
+    /// re-register, the glyph art follows so a glyph keeps any key both claim.
     pub(crate) fn sync_glyph_art(&mut self) {
+        if self.sync_ui_images()
+            && let Some(session) = self.session.as_mut()
+        {
+            session.glyph_art.invalidate();
+        }
         let (Some(session), Some(renderer)) = (self.session.as_mut(), self.renderer.as_mut())
         else {
             return;
@@ -128,8 +142,12 @@ impl App {
         let mut keys = HashSet::new();
         for dir in &dirs {
             for (key, rgba, width, height) in read_glyph_dir(&self.content_root, dir) {
-                renderer.register_ui_image(&key, rgba, width, height);
-                keys.insert(key);
+                match renderer.register_ui_image(&key, rgba, width, height) {
+                    Ok(()) => {
+                        keys.insert(key);
+                    }
+                    Err(err) => log::warn!("[UI] glyph art `{key}` did not load ({err})"),
+                }
             }
         }
         if !dirs.is_empty() {
@@ -141,6 +159,9 @@ impl App {
         }
         session.glyph_art.loaded = Some((glyphs, reload_generation));
         session.glyph_art.keys = keys;
+        session
+            .mod_ui_images
+            .warn_glyph_collisions(&session.glyph_art.keys);
     }
 }
 
@@ -165,6 +186,8 @@ fn resolved_widget(
     match view {
         Some(GlyphView::Art(asset)) => Widget::Image(ImageWidget {
             asset,
+            width: None,
+            height: None,
             id: glyph.id.clone(),
             focus_neighbors: Default::default(),
             label: None,

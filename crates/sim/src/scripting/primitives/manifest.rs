@@ -206,6 +206,16 @@ pub(crate) fn register_sdk_type(registry: &mut PrimitiveRegistry) {
             "Font assets: family name → TTF asset path. Optional; changing custom font assets requires an engine restart.",
         )
         .field(
+            "uiImages?",
+            "UiImageMap",
+            "UI images: image name → PNG path relative to the mod root. Optional. Each loads into the UI image registry under its name at mod init and after a hot reload, so any tree can show it with `Image({ asset: name })`. Names beginning `engine/` are reserved. A reserved name, a non-string value, a path that leaves the mod, a missing file, or an undecodable PNG warns and skips that entry.",
+        )
+        .field(
+            "loading?",
+            "ModLoading",
+            "Mod-wide loading screen. Optional; omission shows the engine fallback loading screen.",
+        )
+        .field(
             "maps?",
             "Vec<ModMapEntry>",
             "Pre-load-discoverable map catalog. Optional; use catalog ids with `loadLevel(id)` and `frontend.backgroundLevel`.",
@@ -484,8 +494,9 @@ mod tests {
     use postretro_scripting_core::primitives_registry::TypeShape;
     use postretro_scripting_core::runtime::{
         ModAudioProfile, ModInputBinding, ModInputBlock, ModInputCommand, ModInputGlyphs,
-        ModManifestResult, ModMoverDefaults, ModRenderProfile,
+        ModLoading, ModManifestResult, ModMoverDefaults, ModRenderProfile,
     };
+    use std::collections::BTreeMap;
 
     #[test]
     fn mod_manifest_registered_type_matches_mod_manifest_result() {
@@ -523,6 +534,8 @@ mod tests {
             presentation_overlays: Vec::<PresentationOverlay>::new(),
             theme: ModThemeTokens::default(),
             frontend: None,
+            ui_images: BTreeMap::new(),
+            loading: ModLoading::default(),
             fonts: ModFontAssets::default(),
             maps: Vec::new(),
             reactions: Vec::new(),
@@ -551,6 +564,8 @@ mod tests {
             "presentationOverlays",
             "theme",
             "frontend",
+            "uiImages",
+            "loading",
             "fonts",
             "maps",
             "reactions",

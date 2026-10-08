@@ -20,7 +20,10 @@ pub fn drain_input_block_lua(
     ))
 }
 
-fn authored_value_lua(value: LuaValue, depth: usize) -> Result<AuthoredValue, DescriptorError> {
+pub(crate) fn authored_value_lua(
+    value: LuaValue,
+    depth: usize,
+) -> Result<AuthoredValue, DescriptorError> {
     Ok(match value {
         LuaValue::Nil => AuthoredValue::Absent,
         LuaValue::Boolean(flag) => AuthoredValue::Bool(flag),

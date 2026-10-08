@@ -36,18 +36,22 @@ const SPLASH_TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Uno
 ///   R 28/255 → 0.011612, G 33/255 → 0.015209, B 39/255 → 0.020289.
 /// This matches how `FRONTEND_CLEAR_COLOR` authors linear values for the same
 /// sRGB attachment (`startup/lifecycle.rs`).
+/// Shared with Loading frames as `render::SPLASH_CLEAR_COLOR`.
 const SPLASH_CLEAR_COLOR: wgpu::Color = wgpu::Color {
-    r: 0.011612,
-    g: 0.015209,
-    b: 0.020289,
-    a: 1.0,
+    r: super::SPLASH_CLEAR_COLOR.r,
+    g: super::SPLASH_CLEAR_COLOR.g,
+    b: super::SPLASH_CLEAR_COLOR.b,
+    a: super::SPLASH_CLEAR_COLOR.a,
 };
 
-/// Fraction of the smaller window axis the logo's bounding box is allowed to
-/// fill, so the logo always sits inside a margin regardless of window size. The
-/// logo keeps its source aspect ratio and is centered; whichever axis binds
-/// first caps it. A wide banner logo is width-bound on most windows.
-const LOGO_MAX_FRACTION: f32 = 0.7;
+/// Fraction of the window width the logo spans: the minor golden section,
+/// `1 - 1/φ`. The logo keeps its source aspect ratio and is centered.
+const LOGO_WIDTH_FRACTION: f32 = 0.381_966;
+
+/// Cap on the logo's height as a fraction of the window height, so a tall logo
+/// on a short window still sits inside a margin. The committed wide banner
+/// never reaches it.
+const LOGO_MAX_HEIGHT_FRACTION: f32 = 0.7;
 
 /// Splash uniform: device viewport (vec2 + pad for 16-byte alignment) and the
 /// logo's device-pixel rect `[x, y, w, h]`. Mirrors `SplashUniform` in
@@ -321,8 +325,8 @@ impl BootSplashPass {
 }
 
 /// Aspect-preserving device-pixel rect `[x, y, w, h]` for the logo, centered in
-/// the `viewport` with each axis capped at `LOGO_MAX_FRACTION` of the window so
-/// the logo never fills the whole frame or stretches. Pure math — no GPU — so it
+/// the `viewport`: `LOGO_WIDTH_FRACTION` of the window width, unless that would
+/// exceed `LOGO_MAX_HEIGHT_FRACTION` of its height. Pure math — no GPU — so it
 /// is unit-tested without a device. A degenerate viewport or source (zero on any
 /// axis) yields a zero-size rect, which the draw renders as nothing.
 fn logo_rect(src_dims: [u32; 2], viewport: [u32; 2]) -> [f32; 4] {
@@ -332,10 +336,9 @@ fn logo_rect(src_dims: [u32; 2], viewport: [u32; 2]) -> [f32; 4] {
         return [0.0, 0.0, 0.0, 0.0];
     }
 
-    // Max box the logo may occupy, then fit the source aspect inside it: scale
-    // by whichever axis binds first so neither dimension exceeds the box.
-    let max_w = vw * LOGO_MAX_FRACTION;
-    let max_h = vh * LOGO_MAX_FRACTION;
+    // Size by width, then let the height cap bind for a tall source.
+    let max_w = vw * LOGO_WIDTH_FRACTION;
+    let max_h = vh * LOGO_MAX_HEIGHT_FRACTION;
     let scale = (max_w / sw).min(max_h / sh);
     let w = sw * scale;
     let h = sh * scale;
@@ -359,8 +362,8 @@ mod tests {
         let [x, y, w, h] = logo_rect([2028, 582], [1280, 720]);
         // Width capped at the fraction of the window width.
         assert!(
-            (w - 1280.0 * LOGO_MAX_FRACTION).abs() < EPS,
-            "wide logo is width-bound, got w={w}",
+            (w - 1280.0 * LOGO_WIDTH_FRACTION).abs() < EPS,
+            "wide logo spans the golden-section width, got w={w}",
         );
         // Height derives from the source aspect — no stretch.
         let src_aspect = 2028.0 / 582.0;
@@ -377,16 +380,16 @@ mod tests {
         assert!((y - (720.0 - h) * 0.5).abs() < EPS, "centered vertically");
     }
 
-    /// A tall logo on a wide window is height-bound: the height cap binds first
+    /// A tall logo on a short window is height-bound: the height cap binds first
     /// and the width follows the aspect.
     #[test]
-    fn logo_rect_is_height_bound_for_tall_source_on_wide_window() {
-        let [_x, _y, w, h] = logo_rect([100, 400], [1600, 600]);
+    fn logo_rect_is_height_bound_for_tall_source_on_short_window() {
+        let [_x, _y, w, h] = logo_rect([100, 1000], [1600, 600]);
         assert!(
-            (h - 600.0 * LOGO_MAX_FRACTION).abs() < EPS,
+            (h - 600.0 * LOGO_MAX_HEIGHT_FRACTION).abs() < EPS,
             "tall logo is height-bound, got h={h}",
         );
-        let src_aspect = 100.0 / 400.0;
+        let src_aspect = 100.0 / 1000.0;
         assert!((w / h - src_aspect).abs() < EPS, "preserves source aspect");
     }
 
@@ -395,8 +398,14 @@ mod tests {
     #[test]
     fn logo_rect_stays_within_window_margin() {
         let [x, y, w, h] = logo_rect([800, 600], [1024, 768]);
-        assert!(w <= 1024.0 * LOGO_MAX_FRACTION + EPS, "width within margin");
-        assert!(h <= 768.0 * LOGO_MAX_FRACTION + EPS, "height within margin");
+        assert!(
+            w <= 1024.0 * LOGO_WIDTH_FRACTION + EPS,
+            "width within margin"
+        );
+        assert!(
+            h <= 768.0 * LOGO_MAX_HEIGHT_FRACTION + EPS,
+            "height within margin"
+        );
         assert!(x >= 0.0 && y >= 0.0, "rect origin inside the frame");
         assert!(x + w <= 1024.0 + EPS && y + h <= 768.0 + EPS, "rect fits");
     }

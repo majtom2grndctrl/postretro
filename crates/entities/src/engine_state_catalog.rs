@@ -1085,6 +1085,29 @@ const BUILTIN_ENGINE_STATE: &[EngineStateCatalogEntry<'static>] = &[
         capability: EngineStateCapability::Writable,
         network: ReplicationScope::None,
     },
+    // Level-load presentation: written by the app while a level loads and
+    // reset to these defaults when the load ends. Client-local; never
+    // replicated or persisted.
+    EngineStateCatalogEntry {
+        wire_name: "loading.progress",
+        sdk_path: &["loading", "progress"],
+        value_type: EngineStateValueType::Number,
+        default: EngineStateDefault::Number(0.0),
+        range: Some(NumericRange { min: 0.0, max: 1.0 }),
+        persist: false,
+        capability: EngineStateCapability::Readonly,
+        network: ReplicationScope::None,
+    },
+    EngineStateCatalogEntry {
+        wire_name: "loading.levelName",
+        sdk_path: &["loading", "levelName"],
+        value_type: EngineStateValueType::String,
+        default: EngineStateDefault::String(""),
+        range: None,
+        persist: false,
+        capability: EngineStateCapability::Readonly,
+        network: ReplicationScope::None,
+    },
     EngineStateCatalogEntry {
         wire_name: "ui.textEntry",
         sdk_path: &["ui", "textEntry"],
@@ -1251,6 +1274,36 @@ mod tests {
     }
 
     #[test]
+    fn built_in_loading_slots_are_readonly_client_local_presentation() {
+        let catalog = engine_state_catalog().unwrap();
+        let entry = |wire_name: &str| {
+            *catalog
+                .entries()
+                .iter()
+                .find(|entry| entry.wire_name == wire_name)
+                .unwrap_or_else(|| panic!("{wire_name} must be declared"))
+        };
+
+        let progress = entry("loading.progress");
+        assert_eq!(progress.sdk_path, &["loading", "progress"]);
+        assert_eq!(progress.value_type, EngineStateValueType::Number);
+        assert_eq!(progress.default, EngineStateDefault::Number(0.0));
+        assert_eq!(progress.range, Some(NumericRange { min: 0.0, max: 1.0 }));
+
+        let level_name = entry("loading.levelName");
+        assert_eq!(level_name.sdk_path, &["loading", "levelName"]);
+        assert_eq!(level_name.value_type, EngineStateValueType::String);
+        assert_eq!(level_name.default, EngineStateDefault::String(""));
+        assert_eq!(level_name.range, None);
+
+        for slot in [progress, level_name] {
+            assert_eq!(slot.capability, EngineStateCapability::Readonly);
+            assert_eq!(slot.network, ReplicationScope::None);
+            assert!(!slot.persist);
+        }
+    }
+
+    #[test]
     fn built_in_catalog_preserves_wire_names_and_capabilities() {
         let catalog = engine_state_catalog().unwrap();
         let entries = catalog.entries();
@@ -1274,6 +1327,8 @@ mod tests {
                 "accessibility.uiVolume",
                 "accessibility.viewFeelScale",
                 "input.mode",
+                "loading.levelName",
+                "loading.progress",
                 "options.crouchMode",
                 "options.fogQuality",
                 "options.gamepadInvertY",

@@ -1108,7 +1108,7 @@ pub fn drain_maps_js<'js>(
     let mut seen_ids = BTreeSet::new();
     for i in 0..arr.len() {
         let item: JsValue = arr.get(i).map_err(js_err)?;
-        match mod_map_entry_from_js(item) {
+        match mod_map_entry_from_js(item, scope, &format!("maps[{i}]")) {
             Ok(entry) => push_valid_map_entry(entry, &mut seen_ids, &mut out, scope, i),
             Err(e) => {
                 log::warn!("[Scripting] {scope}: `maps[{i}]` is malformed and was skipped: {e}")
@@ -1308,7 +1308,13 @@ pub fn optional_manifest_array_js<'js>(
     Ok(Some(arr.clone()))
 }
 
-pub fn mod_map_entry_from_js<'js>(value: JsValue<'js>) -> Result<ModMapEntry, DescriptorError> {
+/// Read one map catalog entry. `entry_path` names it in warnings (`maps[2]`);
+/// a malformed `loadingTree` warns and leaves the entry's pool empty.
+pub fn mod_map_entry_from_js<'js>(
+    value: JsValue<'js>,
+    scope: &str,
+    entry_path: &str,
+) -> Result<ModMapEntry, DescriptorError> {
     let obj = Object::from_value(value).map_err(|_| DescriptorError::InvalidShape {
         reason: "map catalog entry must be an object".to_string(),
     })?;
@@ -1317,6 +1323,7 @@ pub fn mod_map_entry_from_js<'js>(value: JsValue<'js>) -> Result<ModMapEntry, De
         path: get_required_string_js(&obj, "path")?,
         name: get_required_string_js(&obj, "name")?,
         tags: string_array_from_js(&obj, "tags")?,
+        loading_tree: loading_tree_from_js(&obj, scope, entry_path)?,
     })
 }
 

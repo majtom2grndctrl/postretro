@@ -392,6 +392,12 @@ impl App {
             postretro_foundation::ModThemeTokens,
             postretro_foundation::ModFontAssets,
         )> = None;
+        // `uiImages` and the loading pool commit with the frontend, after the
+        // session borrow below ends.
+        let mut committed_loading: Option<(
+            std::collections::BTreeMap<String, String>,
+            postretro_scripting_core::runtime::ModLoading,
+        )> = None;
         // Same deferral as theme/fonts and `frontend`: the renderer setter needs
         // `&mut self`, which the session borrow below forbids. A failed mod init
         // leaves this `None` and therefore makes NO setter call, so the renderer
@@ -474,6 +480,10 @@ impl App {
                     );
 
                     committed_frontend = Some(manifest.frontend.take());
+                    committed_loading = Some((
+                        std::mem::take(&mut manifest.ui_images),
+                        std::mem::take(&mut manifest.loading),
+                    ));
                     let mod_theme = std::mem::take(&mut manifest.theme);
                     let mod_fonts = std::mem::take(&mut manifest.fonts);
                     deferred_theme_fonts = Some((mod_theme, mod_fonts));
@@ -579,6 +589,9 @@ impl App {
         if let Some((mod_theme, mod_fonts)) = deferred_theme_fonts {
             self.install_mod_ui_theme_and_fonts(mod_theme, mod_fonts);
         }
+        if let Some((ui_images, loading)) = committed_loading {
+            self.commit_loading_manifest(ui_images, loading);
+        }
         self.apply_mod_bloom_render_profile(committed_render_profile);
         self.apply_mod_audio_profile(committed_audio_profile);
         if let Some(renderer) = self.renderer.as_mut() {
@@ -604,6 +617,9 @@ impl App {
         self.load_author_bindings(input_block.as_ref());
         self.load_player_bindings();
         self.refresh_effective_bindings();
+        // Images before the first frame that could draw them: a CLI boot map
+        // enters Loading straight from this frame.
+        self.sync_glyph_art();
         self.mod_timings.record("mod_init");
         true
     }

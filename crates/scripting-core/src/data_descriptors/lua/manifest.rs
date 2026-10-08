@@ -928,7 +928,7 @@ pub fn drain_maps_lua(table: &Table, scope: &str) -> Result<Vec<ModMapEntry>, De
     let mut seen_ids = BTreeSet::new();
     for i in 1..=(len as i64) {
         let item: LuaValue = arr.get(i).map_err(lua_err)?;
-        match mod_map_entry_from_lua(item) {
+        match mod_map_entry_from_lua(item, scope, &format!("maps[{i}]")) {
             Ok(entry) => push_valid_map_entry(entry, &mut seen_ids, &mut out, scope, i as usize),
             Err(e) => {
                 log::warn!("[Scripting] {scope}: `maps[{i}]` is malformed and was skipped: {e}")
@@ -1106,13 +1106,19 @@ pub fn optional_manifest_array_lua(
     }
 }
 
-pub fn mod_map_entry_from_lua(value: LuaValue) -> Result<ModMapEntry, DescriptorError> {
+/// Luau twin of [`mod_map_entry_from_js`].
+pub fn mod_map_entry_from_lua(
+    value: LuaValue,
+    scope: &str,
+    entry_path: &str,
+) -> Result<ModMapEntry, DescriptorError> {
     let table = lua_table(value, "map catalog entry")?;
     Ok(ModMapEntry {
         id: get_required_string_lua(&table, "id")?,
         path: get_required_string_lua(&table, "path")?,
         name: get_required_string_lua(&table, "name")?,
         tags: string_array_from_lua(&table, "tags")?,
+        loading_tree: loading_tree_from_lua(&table, scope, entry_path)?,
     })
 }
 

@@ -26,10 +26,11 @@ pub use postretro_renderer::{
     DEFAULT_INDIRECT_SCALE, KinematicMoverInstance, LevelGeometry, LevelGeometryRangeError,
     LightTermMask, LightmapResidencyReport, LocatorDiagnostics, MoverOccluderAabb,
     PortalOverlayState, PresentHandle, Renderer, ResidencyAllocation, ResidencyAllocationShape,
-    ResidencyAllocationState, ResidencySource, SdfShadowMode, ShResidencyReport, ShSampleRegion,
-    ShSampleRegionSets, ShStreamingLifecycleSummary, SpatialCellSetDiagnostics, SpatialDiagnostics,
-    SpriteCollectionRegistration, WorldWireframeMode, level_world_to_geometry,
-    sprite_specular_exponent_is_valid, validate_level_geometry_ranges,
+    ResidencyAllocationState, ResidencySource, SPLASH_CLEAR_COLOR, SdfShadowMode,
+    ShResidencyReport, ShSampleRegion, ShSampleRegionSets, ShStreamingLifecycleSummary,
+    SpatialCellSetDiagnostics, SpatialDiagnostics, SpriteCollectionRegistration,
+    WorldWireframeMode, level_world_to_geometry, sprite_specular_exponent_is_valid,
+    validate_level_geometry_ranges,
 };
 
 #[cfg(feature = "dev-tools")]

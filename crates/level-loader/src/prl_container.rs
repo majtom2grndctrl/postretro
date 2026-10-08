@@ -7,10 +7,11 @@ use std::fs::File;
 use std::io::Cursor;
 #[cfg(test)]
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use postretro_level_format as prl_format;
 
+use crate::load_progress::LoadProgress;
 use crate::prl::PrlLoadError;
 use crate::prl_file::{PrlFile, PrlReadCounters};
 use crate::sh_stream::read_vec_at;
@@ -24,6 +25,16 @@ pub(crate) struct PrlContainer {
     backing: PrlBacking,
     metadata: prl_format::ContainerMeta,
     reads: Option<Arc<PrlReadCounters>>,
+    progress: Option<SectionProgress>,
+}
+
+/// The load's progress counter plus the planned sections not yet credited.
+/// Each planned section credits its table size once: on its first read, or,
+/// when the load reads only part of it or refuses it, through
+/// [`PrlContainer::settle_section`].
+struct SectionProgress {
+    shared: Arc<LoadProgress>,
+    pending: Mutex<Vec<(u32, u64)>>,
 }
 
 enum PrlBacking {
@@ -52,6 +63,7 @@ impl PrlContainer {
             backing: PrlBacking::Whole(file_data),
             metadata,
             reads: None,
+            progress: None,
         })
     }
 
@@ -71,6 +83,7 @@ impl PrlContainer {
             },
             metadata,
             reads,
+            progress: None,
         }
     }
 
@@ -86,6 +99,45 @@ impl PrlContainer {
             backing: PrlBacking::Whole(file_data),
             metadata,
             reads,
+            progress: None,
+        }
+    }
+
+    /// Report section reads to `progress`. `planned` lists `(section id,
+    /// size)` for every section this load expects to read; the caller has
+    /// already included their sizes in the counter's plan.
+    pub(crate) fn with_progress(
+        mut self,
+        progress: Arc<LoadProgress>,
+        planned: Vec<(u32, u64)>,
+    ) -> Self {
+        self.progress = Some(SectionProgress {
+            shared: progress,
+            pending: Mutex::new(planned),
+        });
+        self
+    }
+
+    /// Credit a planned section the load consumed only `bytes_read` of (an
+    /// index prefix) or refused outright (`0`): the bytes read count as done,
+    /// the rest leaves the plan. A section already credited is left alone.
+    pub(crate) fn settle_section(&self, section_id: u32, bytes_read: u64) {
+        let Some(progress) = &self.progress else {
+            return;
+        };
+        let Some(size) = progress.take_pending(section_id) else {
+            return;
+        };
+        let read = bytes_read.min(size);
+        progress.shared.advance(read);
+        progress.shared.forgo(size - read);
+    }
+
+    fn credit_read(&self, section_id: u32) {
+        if let Some(progress) = &self.progress
+            && let Some(size) = progress.take_pending(section_id)
+        {
+            progress.shared.advance(size);
         }
     }
 
@@ -117,11 +169,9 @@ impl PrlContainer {
         match &self.backing {
             PrlBacking::Whole(file_data) => {
                 let mut cursor = Cursor::new(file_data);
-                Ok(prl_format::read_section_data(
-                    &mut cursor,
-                    &self.metadata,
-                    section_id,
-                )?)
+                let data = prl_format::read_section_data(&mut cursor, &self.metadata, section_id)?;
+                self.credit_read(section_id);
+                Ok(data)
             }
             PrlBacking::Positional {
                 file,
@@ -145,12 +195,9 @@ impl PrlContainer {
                     });
                 }
                 prl_format::validate_container_entry_bounds(&self.metadata, entry, file.len()?)?;
-                Ok(Some(read_vec_at(
-                    file,
-                    entry.offset,
-                    entry.size,
-                    "PRL non-streamed section",
-                )?))
+                let data = read_vec_at(file, entry.offset, entry.size, "PRL non-streamed section")?;
+                self.credit_read(section_id);
+                Ok(Some(data))
             }
         }
     }
@@ -163,10 +210,12 @@ impl PrlContainer {
     ) -> Result<Option<Cow<'_, [u8]>>, PrlLoadError> {
         match &self.backing {
             PrlBacking::Whole(file_data) => {
-                Ok(
-                    prl_format::section_data_from_bytes(file_data, &self.metadata, section_id)?
-                        .map(Cow::Borrowed),
-                )
+                let data =
+                    prl_format::section_data_from_bytes(file_data, &self.metadata, section_id)?;
+                if data.is_some() {
+                    self.credit_read(section_id);
+                }
+                Ok(data.map(Cow::Borrowed))
             }
             PrlBacking::Positional { .. } => Ok(self.read_section(section_id)?.map(Cow::Owned)),
         }
@@ -192,6 +241,17 @@ impl PrlContainer {
 
     pub(crate) fn has_section(&self, section_id: u32) -> bool {
         self.metadata.find_section(section_id).is_some()
+    }
+}
+
+impl SectionProgress {
+    fn take_pending(&self, section_id: u32) -> Option<u64> {
+        let mut pending = self
+            .pending
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let index = pending.iter().position(|(id, _)| *id == section_id)?;
+        Some(pending.swap_remove(index).1)
     }
 }
 

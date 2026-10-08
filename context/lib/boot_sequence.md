@@ -87,6 +87,8 @@ The boundary is **type-enforced**: while `App.session` is `None` (Booting/Splash
 
 `StartupTimings` records ordered named stage marks (logged as `[Startup] …`). Boot marks in order: `args_parsed`, `event_loop_created`, `window_created`, `wgpu_init` (boot-ready renderer), `first_black_frame`, `splash_decoded`, `splash_uploaded`, `first_splash_frame`, `audio_init_complete`, `script_runtime_ctor` (post-first-pixel, inside `Session::build`), `net_endpoint_complete`, `os_reader_started`, `session_init_complete`, `renderer_full_init_complete`, and (CLI-map boot) `boot_worker_dispatch`. `first_black_frame` / `first_splash_frame` are recorded only after the renderer returns a `PresentHandle`; the window is visible before the first redraw request (see "Window visibility (Windows white-flash)"). `first_black_frame` precedes the net/audio/debug-UI/mod/level-worker marks **and** `script_runtime_ctor` — the script runtime is now built behind first pixels in `Session::build`.
 
+Two level-change marks log their own lines because `StartupTimings` cannot carry them. The renderer logs `[Renderer] Geometry install timing:` with the phases inside `geometry_upload` (buffers and SH streaming init, SDF atlas and compose family, lightmap and SDF shadow, BVH and cull pipelines, `other`); it never sees app-side timing types. `unload_level` logs `[Startup] unload_level=` because unload runs before `begin_level_load` resets the timings.
+
 ---
 
 ## 2. Worker vs. Main Thread

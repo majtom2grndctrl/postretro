@@ -73,6 +73,7 @@ mod sdf_light_select_test;
 mod shadowmask_sample_test;
 
 // --- Extracted submodules (module root is slim; impls split by concern) ---
+mod geometry_install_marks;
 mod geometry_ranges;
 #[cfg(all(test, debug_assertions))]
 mod geometry_ranges_gpu_test;

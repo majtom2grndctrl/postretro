@@ -17,7 +17,7 @@ Facts read at a76d99e15. These inform the brief without deciding it.
 - The hot-reload drop is skipped with no installed level, so a frontend tail also survives a staged reload.
 
 ## UI time today
-- `ui.md` §3 calls UI time dt-accumulated game time. In source it is `App::script_time`, fed to `build_ui_read_snapshot` and from there to tween, `exitFade` and presentation-layout clocks (`time_seconds`). `script_time` advances only on the Running path, under the dev-tools freeze gate, and resets to zero at level install (`startup/lifecycle.rs`) and unload (`startup/lifecycle_net.rs`). `render_frontend_frame` and the world-less frame pass the same value, so UI time stands still in the world-less frontend and the first-launch hold. Frontend tweens are therefore frozen today; `ui-tween-clock` owns that defect. The title cascade's steps stagger on presented time either way, but its rows' tweens animate there only once that brief lands.
+- `ui.md` §3 calls UI time dt-accumulated game time. In source it is `App::script_time`, fed to `build_ui_read_snapshot` and from there to tween, `exitFade` and presentation-layout clocks (`time_seconds`). `script_time` advances only on the Running path, under the dev-tools freeze gate, and resets to zero at level install (`startup/lifecycle.rs`) and unload (`startup/lifecycle_net.rs`). `render_frontend_frame` and the world-less frame pass the same value, so UI time stands still in the world-less frontend and the first-launch hold. Frontend tweens are therefore frozen today; `ui-tween-clock` owns that defect. The title cascade's steps stagger on UI time either way, but its rows' tweens animate there only once that brief lands.
 - Loading keeps its own `ui_time` in `startup/loading_screen.rs`, from zero each load, advanced by `frame_dt`.
 - Hold-to-repeat and slider acceleration run on `frame_dt` passed to the focus engine, not on UI time.
 - `frame_dt` (`FrameTiming::begin_frame`, `crates/sim/src/sim/frame_timing.rs`) is raw elapsed time; only the tick accumulator is capped (`MAX_ACCUMULATOR`, 250 ms).
@@ -33,7 +33,7 @@ Facts read at a76d99e15. These inform the brief without deciding it.
 ## Spelling
 | Rule | How the clock is known | Same reaction from two sources | Verdict |
 |---|---|---|---|
-| Firing source decides; `wait()` from a UI press uses presented time | the caller | two clocks, lifetimes and cancel rules | Rejected: the caller-dependent meaning `scripting.md` §12 forbids; `fire(r)` from a press leaves `r`'s clock ambiguous |
+| Firing source decides; `wait()` from a UI press uses UI time | the caller | two clocks, lifetimes and cancel rules | Rejected: the caller-dependent meaning `scripting.md` §12 forbids; `fire(r)` from a press leaves `r`'s clock ambiguous |
 | Declaration site decides: reactions under a UI manifest key, or referenced by a button | which list returned it | a handle returned through both lists forks | Rejected: structural but non-local, and splits the registry |
 | Per-reaction option, `defineReaction(name, body, { clock: "ui" })` | an option away from the step | same everywhere | Rival: lexical, but the reader of `wait(300)` must check the definition; no mixed bodies |
 | Per-tree declared clock | the tree | a reaction is not owned by a tree | Rejected: reactions are referenced by trees, not owned |
@@ -46,10 +46,10 @@ Name: `uiWait` pairs with `wait`, and the prefix names the clock. Exporting it a
 |---|---|---|---|---|
 | Fixed ticks (`wait`) | never advances | freezes | stretches | level beats only |
 | Tween UI time (`script_time`) | stands still | pauses with game logic | raw | Rejected: never lands in the frontend, resets per level |
-| Raw presented time | advances | runs | lands a staged sequence unseen | Rejected: a 2 s hitch skips a 1 s dialog |
-| Presented time capped per frame (chosen) | advances | runs | stretches by the excess | Chosen: menus are used while paused; the flash limiter's presented-time and hitch-clamp precedent |
+| Raw UI time | advances | runs | lands a staged sequence unseen | Rejected: a 2 s hitch skips a 1 s dialog |
+| UI time capped per frame (chosen) | advances | runs | stretches by the excess | Chosen: menus are used while paused; the flash limiter's presented-time and hitch-clamp precedent |
 
-The cap equals the tick accumulator's cap. The clock advances on Loading frames because it measures presented time, but nothing lands there: Loading drains nothing and accepts no input. Rival: freeze it during Loading, so `[loadLevel(x), uiWait(500), …]` counts from the first playable frame. Rejected: the clock's meaning would depend on boot state, and `levelLoad` already owns "after the level is up".
+The cap equals the tick accumulator's cap. The clock advances on Loading frames because it measures UI time, but nothing lands there: Loading drains nothing and accepts no input. Rival: freeze it during Loading, so `[loadLevel(x), uiWait(500), …]` counts from the first playable frame. Rejected: the clock's meaning would depend on boot state, and `levelLoad` already owns "after the level is up".
 
 ## Cancellation
 | Anchor for an interruptible wait | `[openMenu(briefing), uiWait(i), …]` | From `levelLoad` | Verdict |
@@ -104,7 +104,7 @@ WCAG 2.3.3 (animation from interactions) concerns motion, not delay. A collapsed
 | U8 | 10-minute suspend mid-wait | the resume frame advances the clock by at most 250 ms |
 | U9 | Level unload while a level-defined reaction is parked at an interruptible `uiWait` anchored to a level-tier tree | dropped by the unload and counted in its one warning; the anchor cancel at the next UI drain finds nothing |
 | U10 | A mod-global and a level-defined tail parked, then `restartLevel` | the level-defined tail drops with one warning naming one; the mod-global tail lands after the reload |
-| U11 | `[wait(300), playSound(a), uiWait(100), playSound(b)]` on loopback from `levelLoad` | each machine enrolls the `uiWait` when it lands the level tail, and plays `b` 100 ms of its own presented time after `a` |
+| U11 | `[wait(300), playSound(a), uiWait(100), playSound(b)]` on loopback from `levelLoad` | each machine enrolls the `uiWait` when it lands the level tail, and plays `b` 100 ms of its own UI time after `a` |
 
 ## Precedents
 Recalled, not fetched.
@@ -113,7 +113,7 @@ Recalled, not fetched.
 - Godot `SceneTree.create_timer` takes `process_always` and `ignore_time_scale` per call; Unreal timers pause with the game unless ticked while paused. Both put the clock at the delay's call site.
 
 ## Doors
-- Tween and `exitFade` time stands still in the world-less frontend because it is `script_time`. `ui-tween-clock` owns it; moving tweens onto presented time would reverse `ui.md` §3's "pausing game logic pauses presentation".
+- Tween and `exitFade` time stands still in the world-less frontend because it is `script_time`. `ui-tween-clock` owns it; moving tweens onto UI time would reverse `ui.md` §3's "pausing game logic pauses presentation".
 - Repeating choreography (attract loops, blinking prompts) wants a loop step or a cap exemption for presented-time loops.
 - A cancel verb naming a reaction's pending tail.
 - `decorative` on level `wait`s, if a gameplay cascade wants it.
@@ -134,7 +134,7 @@ Owner rulings after `/validate-plan`. Facts below read at 82a008480.
 - The `fire` walk mirrors V4b's reach into targets, but over step class, so it needs only the registry and slot declarations and fits Pass A.
 - Pass A runs only from `lifecycle_world_cpu.rs` (level install) and `staged_manifest_lifecycle.rs` (staged commit). A frontend-only reaction is never validated there, so the check must also run where the world-less frontend's active set composes.
 
-**2. One scheduler.** One instance table, each instance carrying its clock, keeps E18 O18 whole: the wait a body is parked at decides a re-fire, whether that wait counts ticks or presented time.
+**2. One scheduler.** One instance table, each instance carrying its clock, keeps E18 O18 whole: the wait a body is parked at decides a re-fire, whether that wait counts ticks or UI time.
 - Rejected: two schedulers, one per clock. Each would hold its own tail per body, so a re-fire parked at one clock would enroll a duplicate on the other. The earlier U4 pinned exactly that divergence.
 - Rejected: a clock-generic core run twice. It shares code, not the instance table, and keeps the duplicate.
 - One table also means one instance cap across both clocks.
@@ -145,4 +145,7 @@ Owner rulings after `/validate-plan`. Facts below read at 82a008480.
 - Suspend is not an unload, so it keeps level-defined presented-time tails, though it drops tick-clocked ones (O39).
 - `levels` scoping does not make a mod-global reaction level-defined; its tail survives even when the next level's tags exclude it.
 
-**4. Clock name.** "Presented time" matches `rendering_pipeline.md` §7.8, which already distinguishes presented-frame time from UI time for the flash limiter. "UI clock" would collide with UI time, the tween clock that pauses with game logic. Promotion amends `ui.md` §3 and `rendering_pipeline.md` §7.8 to name both. Frontend tweens are frozen today because `App::script_time` is level-relative; `ui-tween-clock` owns that, and the cascade example says so.
+**4. Clock name.** "UI time" matches `rendering_pipeline.md` §7.8, which already distinguishes presented-frame time from UI time for the flash limiter. "UI clock" would collide with UI time, the tween clock that pauses with game logic. Promotion amends `ui.md` §3 and `rendering_pipeline.md` §7.8 to name both. Frontend tweens are frozen today because `App::script_time` is level-relative; `ui-tween-clock` owns that, and the cascade example says so.
+
+## Clock name
+Owner ruling: every UI timer runs on one never-pausing session clock, named UI time, redefining `ui.md` §3 (`ui-tween-clock`). The interim name "presented time" existed only to avoid the pausing UI time, which no longer exists.

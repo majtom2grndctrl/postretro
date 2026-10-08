@@ -3982,6 +3982,56 @@ mod tests {
         }
     }
 
+    /// The lightmap occlusion answer with no box test: each triangle in turn is
+    /// handed to the occluder cache, which tests it before any traversal.
+    fn lightmap_clear_by_every_triangle(
+        bvh: &Bvh<f32, 3>,
+        prims: &[BvhPrimitive],
+        geo: &GeometryResult,
+        from: Vec3,
+        to: Vec3,
+    ) -> bool {
+        (0..geo.geometry.indices.len()).step_by(3).all(|tri| {
+            crate::lightmap_bake::segment_clear_remembering(
+                bvh,
+                prims,
+                geo,
+                from,
+                to,
+                &std::cell::Cell::new(Some(tri)),
+            )
+        })
+    }
+
+    /// A flat triangle's box is flat, and the stock box test can reject it, by
+    /// rounding, for a ray the triangle test hits at the triangle's edge. The
+    /// traversal then reports the segment clear; the occluder cache, holding
+    /// that triangle, reports it blocked. The ray is steep: the rounding is in
+    /// the slab bounds, not the angle.
+    #[test]
+    fn lightmap_segment_clear_occluder_cache_catches_flat_box_rounding_leak() {
+        let geo = multi_triangle_geometry(&[[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0]]]);
+        let (bvh, prims, _) = build_bvh(&geo).unwrap();
+        // Crosses z = 0 at the triangle's x = 1 edge.
+        let from = Vec3::from_array([1068354961, 1063499892, 1065798143].map(f32::from_bits));
+        let to = Vec3::from_array([1059964654, 1061407677, 3211917106].map(f32::from_bits));
+
+        assert!(
+            crate::lightmap_bake::segment_clear(&bvh, &prims, &geo, from, to),
+            "the stock box test must reject this ray's box for the leak to exist"
+        );
+        let empty = std::cell::Cell::new(None);
+        assert!(crate::lightmap_bake::segment_clear_remembering(
+            &bvh, &prims, &geo, from, to, &empty
+        ));
+        assert_eq!(empty.get(), None, "a clear traversal records no occluder");
+        let holding = std::cell::Cell::new(Some(0));
+        assert!(!crate::lightmap_bake::segment_clear_remembering(
+            &bvh, &prims, &geo, from, to, &holding
+        ));
+        assert_eq!(holding.get(), Some(0));
+    }
+
     /// Randomized parity against the unbounded reference scans, on geometry
     /// that stresses Möller–Trumbore rounding: vertices 100–500 m from the
     /// origin, large rotated triangles, and two crossing sloped faces cut into
@@ -4123,19 +4173,24 @@ mod tests {
                     "lightmap, ray {i}: {origin} -> {to}"
                 );
                 // The occluder cache carries across rays, so later queries test
-                // an unrelated triangle first.
-                assert_eq!(
-                    crate::lightmap_bake::segment_clear_remembering(
-                        &bvh,
-                        &prims,
-                        &geo,
-                        origin,
-                        to,
-                        &last_occluder,
-                    ),
-                    lightmap_full,
-                    "lightmap remembering, ray {i}: {origin} -> {to}"
+                // an unrelated triangle first. It may only add a blocked answer
+                // the box test lost to rounding, so a disagreement must be a
+                // real hit by some triangle.
+                let remembered = crate::lightmap_bake::segment_clear_remembering(
+                    &bvh,
+                    &prims,
+                    &geo,
+                    origin,
+                    to,
+                    &last_occluder,
                 );
+                if remembered != lightmap_full {
+                    assert!(
+                        lightmap_full
+                            && !lightmap_clear_by_every_triangle(&bvh, &prims, &geo, origin, to),
+                        "lightmap remembering, ray {i}: {origin} -> {to}"
+                    );
+                }
                 if full_clear {
                     clear += 1;
                 } else {

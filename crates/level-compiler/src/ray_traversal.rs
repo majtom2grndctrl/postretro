@@ -48,9 +48,7 @@ impl BoundedRay {
             self.bound.set(distance);
         }
     }
-}
 
-impl BoundedRay {
     /// The stock slab test alone: the entry distance when the stock ray
     /// accepts the box `[min, max]`, `None` when it rejects it. A NaN slab
     /// value (the ray lies in a box face plane) rejects, as the stock test
@@ -58,7 +56,7 @@ impl BoundedRay {
     /// the sign of zero, which no comparison here distinguishes. Entry is
     /// negative when the origin is inside.
     #[inline]
-    pub(crate) fn stock_entry(&self, min: &[f32; 3], max: &[f32; 3]) -> Option<f32> {
+    fn stock_entry(&self, min: &[f32; 3], max: &[f32; 3]) -> Option<f32> {
         let mut entry = f32::NEG_INFINITY;
         let mut exit = f32::INFINITY;
         let mut nan = false;
@@ -74,7 +72,7 @@ impl BoundedRay {
 
     /// Whether a box entered at `entry` lies within the current bound.
     #[inline]
-    pub(crate) fn within_bound(&self, entry: f32) -> bool {
+    fn within_bound(&self, entry: f32) -> bool {
         entry <= prune_limit(self.bound.get())
     }
 }
@@ -132,10 +130,12 @@ mod tests {
         prop_oneof![(-4i32..=4).prop_map(|v| v as f32), -8.0f32..8.0,]
     }
 
+    /// Lattice components include both signed zeros, so an axis-parallel ray
+    /// carries an inverse component of `+inf` or `-inf`.
     fn direction() -> impl Strategy<Value = Vector3<f32>> {
+        let lattice = || prop_oneof![Just(-1.0f32), Just(-0.0f32), Just(0.0f32), Just(1.0f32)];
         prop_oneof![
-            (-1i32..=1, -1i32..=1, -1i32..=1)
-                .prop_map(|(x, y, z)| Vector3::new(x as f32, y as f32, z as f32)),
+            (lattice(), lattice(), lattice()).prop_map(|(x, y, z)| Vector3::new(x, y, z)),
             (-1.0f32..1.0, -1.0f32..1.0, -1.0f32..1.0).prop_map(|(x, y, z)| Vector3::new(x, y, z)),
         ]
         .prop_filter("non-zero", |d| d.norm() > 1e-3)

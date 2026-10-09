@@ -224,6 +224,7 @@ where
                                 weapon: None,
                                 zone: None,
                                 producer: DamageProducer::InTick,
+                                point: None,
                             },
                         );
                         // Observe the direct damage result before impact policy

@@ -599,6 +599,7 @@ export type ImpactEvent = {
 
 --- Passive renderer-owned template data returned through ModManifest only.
 export type PresentationEasing = "linear" | "easeIn" | "easeOut" | "easeInOut"
+--- `motion.rise` and `spawnScatter.radius` are device pixels, not world metres.
 export type PresentationTemplate = {
   id: string,
   root: { [string]: any },
@@ -608,6 +609,7 @@ export type PresentationTemplate = {
   spawnScatter: { radius: number },
   worldAnchor: { socket: string, offsetY: number }?,
 }
+--- `motion.rise` and `spawnScatter.radius` are device pixels, not world metres.
 export type PresentationTemplateProps = {
   root: { [string]: any },
   lifetimeMs: number,

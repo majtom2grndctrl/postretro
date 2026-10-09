@@ -40,9 +40,12 @@ pub(crate) fn apply_weapon_impact_damage(
         impact,
         effective.credit_source.to_string(),
         payload.amount,
+        Some(impact.point),
     );
 }
 
+/// Direct (non-splash) impact damage. The dispatch carries `impact.point`, the
+/// exact ray or contact point, for presentation anchoring.
 pub fn apply_authorized_weapon_impact_damage(
     registry: &mut EntityRegistry,
     weapon_id: EntityId,
@@ -58,6 +61,28 @@ pub fn apply_authorized_weapon_impact_damage(
         impact,
         credit_source,
         damage_amount,
+        Some(impact.point),
+    );
+}
+
+/// Splash receiver damage. `impact.point` is the blast centre, which is not
+/// where the receiver was hit, so the dispatch carries no point.
+pub(crate) fn apply_authorized_splash_impact_damage(
+    registry: &mut EntityRegistry,
+    weapon_id: EntityId,
+    attacker: Option<EntityId>,
+    impact: &weapon::WeaponImpact,
+    credit_source: String,
+    damage_amount: f32,
+) {
+    apply_weapon_impact_damage_with_source(
+        registry,
+        weapon_id,
+        attacker,
+        impact,
+        credit_source,
+        damage_amount,
+        None,
     );
 }
 
@@ -68,6 +93,7 @@ fn apply_weapon_impact_damage_with_source(
     impact: &weapon::WeaponImpact,
     credit_source: String,
     damage_amount: f32,
+    point: Option<glam::Vec3>,
 ) {
     let (Some(target), weapon::ActivationOutcome::Hit(payload)) = (impact.target, impact.outcome)
     else {
@@ -117,6 +143,7 @@ fn apply_weapon_impact_damage_with_source(
             weapon: Some(weapon_id),
             zone: impact.zone.clone(),
             producer: DamageProducer::InTick,
+            point,
         },
     );
 }

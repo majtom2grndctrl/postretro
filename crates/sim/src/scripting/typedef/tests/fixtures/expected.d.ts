@@ -2303,7 +2303,7 @@ declare module "postretro" {
   };
   /** Motion easing used by passive world-anchored presentation templates. */
   export type PresentationEasing = "linear" | "easeIn" | "easeOut" | "easeInOut";
-  /** VM-free passive template resolved by the impact and renderer registries. */
+  /** VM-free passive template resolved by the impact and renderer registries. `motion.rise` and `spawnScatter.radius` are device pixels, not world metres. */
   export type PresentationTemplate = {
     id: string;
     root: WidgetDescriptor;
@@ -2696,6 +2696,7 @@ declare module "postretro/ui" {
   export type RepeatPolicyProp = { initialDelayMs: number; intervalMs: number };
   export type ReactionHandleRef = { name: string };
   export type WidgetDescriptor = { kind: string; [field: string]: unknown };
+  /** `motion.rise` and `spawnScatter.radius` are device pixels, not world metres. */
   export type PresentationTemplateProps = {
     root: WidgetDescriptor;
     lifetimeMs: number;
@@ -2704,6 +2705,7 @@ declare module "postretro/ui" {
     spawnScatter: { radius: number };
     worldAnchor?: { socket: string; offsetY: number };
   };
+  /** `motion.rise` and `spawnScatter.radius` are device pixels, not world metres. */
   export type PresentationTemplate<Name extends string = string> = Readonly<{
     id: Name;
     root: WidgetDescriptor;

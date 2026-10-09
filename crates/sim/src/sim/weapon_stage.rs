@@ -15,6 +15,7 @@ pub(super) use commands::{
     run_remote_weapon_commands, weapon_fire_command,
 };
 pub use commands::{ProjectileSource, projectile_model_body_rotation, spawn_projectile};
+pub(crate) use impact::apply_authorized_splash_impact_damage;
 pub use impact::apply_authorized_weapon_impact_damage;
 pub(super) use resource::tick_weapon_resources;
 pub(crate) use state::transition_to_idle;
@@ -4423,6 +4424,99 @@ mod tests {
         assert!(
             crate::scripting_systems::health::is_terminally_committed_to_removal(&registry, target,)
         );
+    }
+
+    #[test]
+    fn hitscan_pellet_dispatch_carries_the_weapon_impact_point() {
+        let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let (pawn, target) = {
+            let mut registry = registry.borrow_mut();
+            let (pawn, _) = spawn_local_pellet_weapon(&mut registry, "weapon.test.pellet");
+            let target = spawn_pellet_target(&mut registry);
+            (pawn, target)
+        };
+        let mut dispatch_points = Vec::new();
+        let mut policy = |registry: &mut EntityRegistry| {
+            dispatch_points.extend(
+                registry
+                    .take_impact_dispatches()
+                    .into_iter()
+                    .map(|dispatch| (dispatch.target, dispatch.point)),
+            );
+        };
+
+        let result = run_local_weapon_command(
+            &registry,
+            Some(pawn),
+            false,
+            None,
+            &fire_command(true, true),
+            false,
+            &CollisionWorld::new(),
+            &HitZoneStore::new(),
+            0.0,
+            0.0,
+            &mut policy,
+        );
+
+        assert_eq!(result.weapon_impact_points.len(), 8);
+        assert_eq!(dispatch_points.len(), 8, "one dispatch per pellet");
+        let target_origin = Vec3::new(0.0, 0.0, -5.0);
+        for ((dispatch_target, point), impact_point) in
+            dispatch_points.iter().zip(&result.weapon_impact_points)
+        {
+            assert_eq!(*dispatch_target, target);
+            assert_eq!(*point, Some(*impact_point));
+            assert_ne!(
+                *impact_point, target_origin,
+                "the point is the ray contact, not the target origin"
+            );
+        }
+    }
+
+    #[test]
+    fn direct_impact_damage_carries_the_point_and_splash_damage_does_not() {
+        let mut registry = EntityRegistry::new();
+        let weapon_id = registry.spawn(Transform::default());
+        registry
+            .set_component(weapon_id, weapon_component("weapon.test.rifle"))
+            .unwrap();
+        let target = spawn_pellet_target(&mut registry);
+        let contact = Vec3::new(0.1, 0.2, -4.5);
+        let impact = weapon::WeaponImpact {
+            point: contact,
+            normal: Vec3::Z,
+            target: Some(target),
+            zone: None,
+            outcome: weapon::ActivationOutcome::Hit(weapon::DamagePayload {
+                amount: 5.0,
+                impulse: Vec3::ZERO,
+            }),
+        };
+
+        apply_authorized_weapon_impact_damage(
+            &mut registry,
+            weapon_id,
+            None,
+            &impact,
+            "weapon.test.rifle".to_string(),
+            5.0,
+        );
+        super::impact::apply_authorized_splash_impact_damage(
+            &mut registry,
+            weapon_id,
+            None,
+            &impact,
+            "weapon.test.rifle".to_string(),
+            5.0,
+        );
+
+        let points: Vec<_> = registry
+            .take_impact_dispatches()
+            .into_iter()
+            .map(|dispatch| dispatch.point)
+            .collect();
+        assert_eq!(points, vec![Some(contact), None]);
     }
 
     #[test]

@@ -13,6 +13,7 @@ use super::super::layout::{Anchor, REFERENCE_HEIGHT, REFERENCE_WIDTH};
 use super::super::theme::UiTheme;
 use postretro_entities::SlotValue;
 
+use super::background::BackgroundState;
 use super::bindings::{
     BindingDiff, TweenClock, drive_bar_binding, drive_bar_max, drive_panel_binding,
     drive_ring_scalar_binding, drive_text_binding,
@@ -79,6 +80,10 @@ pub struct UiTree {
     /// Scroll containers and their retained offsets. Empty for a tree with no
     /// `scroll` container, which then does no scroll work at all.
     pub(super) scroll: ScrollViews,
+    /// The envelope's optional full-window background. Its image size is an
+    /// external measure input like `image_nodes`: re-read on the same
+    /// generation change, so the retained draw list rebuilds with it.
+    pub(super) background: Option<BackgroundState>,
 }
 
 impl UiTree {
@@ -123,6 +128,10 @@ impl UiTree {
             image_nodes,
             last_image_sizes_generation: None,
             scroll,
+            background: tree
+                .background
+                .as_ref()
+                .map(|background| BackgroundState::new(&background.image)),
         }
     }
 
@@ -193,6 +202,12 @@ impl UiTree {
         let image_nodes = self.image_nodes.clone();
         for node in image_nodes {
             self.mark_dirty(node);
+        }
+    }
+
+    fn refresh_background_size(&mut self, image_sizes: &ImageSizes) {
+        if let Some(background) = self.background.as_mut() {
+            background.refresh_size(image_sizes);
         }
     }
 
@@ -309,6 +324,10 @@ impl UiTree {
             self.recompute_count += 1;
         }
 
+        // The fresh path caches no image-size generation, so it reads the
+        // background's size every build.
+        self.refresh_background_size(image_sizes);
+
         // Fresh/test path: no retained clock, so styleRange effects evaluate at
         // a steady `0.0`. Gameplay uses the retained path, which threads the real
         // `time_seconds`. This path also carries no
@@ -398,6 +417,10 @@ impl UiTree {
         let image_sizes_changed = self.last_image_sizes_generation != Some(image_sizes_generation);
         if image_sizes_changed {
             self.mark_image_nodes_dirty();
+            // The background caches its image size; re-read it here, and the
+            // relayout below forces the draw-list rebuild that recomputes the
+            // crop from it.
+            self.refresh_background_size(image_sizes);
         }
         // taffy reports the root dirty after a structural rebuild OR after the
         // diff marked a content-changed text node dirty, or after a renderer

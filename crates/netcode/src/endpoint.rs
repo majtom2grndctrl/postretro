@@ -439,10 +439,13 @@ impl NetEndpoint {
 
     /// Send a client-local switch declaration over reliable Control. The client
     /// transport refuses to queue it before participation, so an old level cannot
-    /// leak a selection into a newly promoted pawn.
+    /// leak a selection into a newly promoted pawn. `client_tick` is the tick of
+    /// the input command the switch was made on; the host orders the switch
+    /// against that command's neighbours by it.
     pub fn send_client_switch_declaration(
         &mut self,
         slot: u8,
+        client_tick: u32,
         rollback_slot: usize,
         rollback_last_weapon_slot: Option<usize>,
     ) {
@@ -465,6 +468,7 @@ impl NetEndpoint {
             client.send_switch_declaration(ClientSwitchDeclaration {
                 declaration_id,
                 slot,
+                client_tick,
             });
         }
     }

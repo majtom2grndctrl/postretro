@@ -1,4 +1,4 @@
-// Frozen reliable observer weapon cues; assets and sound playback remain local.
+// Frozen observer weapon cue records and the impact bursts spawned from them.
 // See: context/lib/networking.md · context/lib/audio.md · context/lib/scripting.md §12
 
 use glam::Vec3;
@@ -179,6 +179,31 @@ pub fn materialize_observer_weapon_cue(
         alias: cue.alias,
         emitter,
     })
+}
+
+/// Spawn the built-in impact burst for each observed impact cue's contacts.
+/// This is the only route by which a peer that did not simulate the shot sees
+/// its burst: the firing peer's own simulation spawns it, and the firing owner
+/// is excluded from cue delivery, so nothing spawns twice. Only an impact cue
+/// anchored at contacts has a surface to burst from; activation cues spawn none.
+///
+/// Invariant: every `impact` producer emits contact anchors. A delivery cannot
+/// tell a contact anchor from an unresolved entity anchor, which
+/// `materialize_observer_weapon_cue` turns into one zero-normal contact at the
+/// producer's origin. An entity-anchored impact cue would burst there. Producers
+/// guarantee it never occurs; this function does not enforce it.
+pub fn spawn_observer_impact_bursts(
+    registry: &mut EntityRegistry,
+    cues: &[ObserverWeaponCueDelivery],
+) {
+    for cue in cues {
+        if cue.kind != WeaponCueKind::Impact {
+            continue;
+        }
+        if let Emitter::Contacts(contacts) = &cue.emitter {
+            crate::weapon::spawn_impact_effects_for_contacts(registry, contacts);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -438,6 +463,76 @@ mod tests {
                 &allocator
             )
             .is_none()
+        );
+    }
+
+    fn burst_particles(registry: &EntityRegistry) -> usize {
+        registry
+            .iter_with_kind(postretro_entities::ComponentKind::ParticleState)
+            .count()
+    }
+
+    /// Freeze `emitter` as a cue of `kind`, then materialize it as a client would.
+    fn delivered(kind: WeaponCueKind, emitter: &Emitter) -> ObserverWeaponCueDelivery {
+        let allocator = NetworkIdAllocator::new();
+        let id = ShotId::from_parts(7, 20, ActivationLane::Primary, 0);
+        let cue = freeze_observer_weapon_cue(
+            id,
+            NetworkId(7),
+            kind,
+            None,
+            Some("sound"),
+            None,
+            emitter,
+            &allocator,
+        )
+        .expect("valid cue");
+        materialize_observer_weapon_cue(cue, &ClientReplication::new(), &EntityRegistry::new())
+            .expect("valid cue materializes")
+    }
+
+    #[test]
+    fn observer_impact_cue_bursts_once_per_contact() {
+        let contacts = vec![
+            ImpactContact::new(Vec3::new(1.0, 0.0, 0.0), Vec3::X, None),
+            ImpactContact::new(Vec3::new(2.0, 0.0, 0.0), Vec3::Y, None),
+            ImpactContact::new(Vec3::new(3.0, 0.0, 0.0), Vec3::ZERO, None),
+        ];
+        let cue = delivered(WeaponCueKind::Impact, &Emitter::Contacts(contacts));
+        let mut registry = EntityRegistry::new();
+
+        spawn_observer_impact_bursts(&mut registry, &[cue]);
+
+        assert_eq!(
+            burst_particles(&registry),
+            3 * crate::weapon::IMPACT_PARTICLE_COUNT,
+            "a zero normal still bursts, along the burst's own fallback"
+        );
+    }
+
+    #[test]
+    fn observer_cues_burst_once_per_cue_and_only_for_impact_contacts() {
+        let one_contact = Emitter::Contacts(vec![ImpactContact::new(Vec3::ZERO, Vec3::Y, None)]);
+        let impact = delivered(WeaponCueKind::Impact, &one_contact);
+        let activate = delivered(WeaponCueKind::Activate, &one_contact);
+        // A muzzle cue anchored on a missing entity materializes at its captured
+        // origin, but it carries no surface and bursts nothing.
+        let entity_anchored = delivered(
+            WeaponCueKind::Activate,
+            &Emitter::Entity {
+                id: EntityId::from_raw(3),
+                origin: Vec3::new(1.0, 2.0, 3.0),
+            },
+        );
+        let mut registry = EntityRegistry::new();
+
+        spawn_observer_impact_bursts(&mut registry, &[activate, entity_anchored]);
+        assert_eq!(burst_particles(&registry), 0);
+
+        spawn_observer_impact_bursts(&mut registry, &[impact]);
+        assert_eq!(
+            burst_particles(&registry),
+            crate::weapon::IMPACT_PARTICLE_COUNT
         );
     }
 }

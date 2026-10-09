@@ -8,6 +8,8 @@ use std::collections::HashMap;
 
 use postretro_entities::SlotValue;
 
+/// Full-window cover-fit background image beneath a tree's root.
+mod background;
 /// Per-frame bound-value diff + tween drivers (content vs. appearance change).
 mod bindings;
 /// Descriptor → taffy node construction.

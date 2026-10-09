@@ -611,6 +611,7 @@ impl TimedAlarmHarness {
                 fire_tick: 0,
                 client_tick: 0,
                 aim_pitch: 0.0,
+                start_aim: None,
                 command: idle_command(),
             }],
             &idle_command(),

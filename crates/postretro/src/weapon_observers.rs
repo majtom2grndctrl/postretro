@@ -1,4 +1,4 @@
-// Authoritative per-shot observer publication and local frozen cue delivery.
+// Per-shot observer weapon cue publication, delivery, and observer impact bursts.
 // See: context/lib/networking.md §Combat authority · context/lib/audio.md §4
 use crate::{App, netcode};
 use postretro_entities::{AiCue, AiEmission, Emitter, WeaponEmission};
@@ -6,6 +6,21 @@ use postretro_foundation::ShotId;
 use postretro_net::wire::NetworkId;
 
 impl App {
+    /// Burst this frame's received impact cues, once per contact. Only a
+    /// connected client receives cues; the host and single player burst from
+    /// their own simulation and HIT ingestion, so this route never doubles them.
+    pub(crate) fn spawn_observer_impact_bursts(
+        &self,
+        registry: &mut postretro_entities::EntityRegistry,
+    ) {
+        if self.is_connected_client() {
+            netcode::weapon_cues::spawn_observer_impact_bursts(
+                registry,
+                &self.observer_weapon_cues,
+            );
+        }
+    }
+
     /// Publish every tick before producer ownership/identity can retire. Remote
     /// HIT contacts have already been published by host ingestion and are not in
     /// this batch. Gameplay projectile contacts retain the normalized launch id.

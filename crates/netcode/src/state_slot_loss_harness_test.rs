@@ -760,12 +760,6 @@ fn host_splash_damage_converges_to_connected_pawn_over_conditioned_health_replic
         host_health < 100.0,
         "only the host splash path changes the connected pawn's Health"
     );
-    assert_eq!(
-        h.registry.take_world_point_presentation_spawns().len(),
-        1,
-        "the host records one world-point explosion for remote presentation routing"
-    );
-
     h.step();
     assert_eq!(
         h.client_value("player.health"),

@@ -38,7 +38,9 @@ enum PresentationFlight {
         endpoint: Option<EndpointPublication>,
     },
     /// A connected client's authority projectile runs only on that client. The
-    /// host advances this visual from the replicated pawn aim until its shot retires.
+    /// host advances this visual along the launch direction frozen from the
+    /// authorized shot (a late-admitted start's captured aim), never the live
+    /// pawn aim, until the path ends or its shot retires.
     StraightLine {
         shot_id: ShotId,
         direction: Vec3,
@@ -1032,6 +1034,7 @@ mod tests {
                 projectile_speed: None,
                 projectile_lifetime_seconds: None,
                 projectile_tick_seconds: None,
+                projectile_static_contact_distance: None,
                 is_projectile: true,
                 fire_origin: origin,
                 timeout_budget_ticks: 180,
@@ -1868,6 +1871,7 @@ mod tests {
                 projectile_speed: None,
                 projectile_lifetime_seconds: None,
                 projectile_tick_seconds: None,
+                projectile_static_contact_distance: None,
                 is_projectile: true,
                 fire_origin: Vec3::ZERO,
                 timeout_budget_ticks: 180,
@@ -2293,6 +2297,7 @@ mod tests {
                 projectile_speed: None,
                 projectile_lifetime_seconds: None,
                 projectile_tick_seconds: None,
+                projectile_static_contact_distance: None,
                 is_projectile: true,
                 fire_origin: Vec3::ZERO,
                 timeout_budget_ticks: 180,
@@ -2436,6 +2441,7 @@ mod tests {
                 projectile_speed: None,
                 projectile_lifetime_seconds: None,
                 projectile_tick_seconds: None,
+                projectile_static_contact_distance: None,
                 is_projectile: true,
                 fire_origin: Vec3::ZERO,
                 timeout_budget_ticks: 180,
@@ -2820,6 +2826,7 @@ mod tests {
                 projectile_speed: None,
                 projectile_lifetime_seconds: None,
                 projectile_tick_seconds: None,
+                projectile_static_contact_distance: None,
                 is_projectile: true,
                 fire_origin: Vec3::ZERO,
                 timeout_budget_ticks: 180,

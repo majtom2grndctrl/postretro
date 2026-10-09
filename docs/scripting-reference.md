@@ -506,8 +506,8 @@ A splash projectile does not also apply its ordinary single-target impact
 damage: the struck entity receives splash once, which prevents double-counting.
 A projectile without `splash` keeps direct-impact behavior. Splash damage is
 host-authoritative in connected play; Health changes replicate normally, while
-the firing client keeps its predicted burst and remote observers receive one
-impact burst over the presentation channel.
+the firing client keeps its predicted burst and every other player sees one
+impact burst at the blast point.
 
 `visual.body` is a required discriminated union. Use either a sprite body,
 `{ kind: "sprite", sprite: "projectiles/plasma_blue_orb.png" }`, or a rigid
@@ -3246,12 +3246,18 @@ const hud = Tree(
 - **Leaves:** `Text`, `Panel`, `Image`, `Spacer`, `Bar`, `Ring`, `Glyph`, and
   non-visual `Announce`; interactive `Button` / `Slider` (see *Operable UI*
   above) — `(props)`.
-- **Envelope:** `Tree({ anchor, offset, captureMode?, initialFocus?, textEntryTarget?, restoreOnReturn? }, root)`
+- **Envelope:** `Tree({ anchor, offset, captureMode?, initialFocus?, textEntryTarget?, restoreOnReturn?, background? }, root)`
   places the whole tree once on the 1280×720 logical canvas. `captureMode`
   defaults to `"passthrough"` (a HUD never captures input); `"capture"` routes
   UI input to the tree, suppresses player controls, and freezes lower UI trees.
   `restoreOnReturn` defaults to `true`: when a tree pushed above closes, focus
   returns to the control it left (see *Focus and repeat props*).
+  `background: { image }` draws one UI image (the same keys as `Image`'s
+  `asset`) behind the whole tree, filling the entire window rather than the
+  1280×720 canvas. It scales to cover the window and crops the overflow, so it
+  never stretches or leaves bars at any aspect ratio. It ignores `anchor` and
+  `offset` and is purely decorative. If the image isn't loaded, nothing is drawn
+  behind the tree. An empty `image` or any key other than `image` is an error.
 
 Color props accept a color token from `getDesignTokens(theme)` or an inline
 literal `[r, g, b, a]`. Spacing props accept a spacing token or a number. Font
@@ -3387,7 +3393,8 @@ continuing — a bad UI registration never aborts boot or level load.
 
 `uiImages` maps an image name to a PNG inside your mod. Each entry loads into
 the engine's UI image registry under its name, so any tree — HUD, menu, or
-loading screen — draws it with `Image({ asset: name })`:
+loading screen — draws it with `Image({ asset: name })`, or across the whole
+window with `Tree({ background: { image: name } })`:
 
 ```typescript
 export default defineMod({
@@ -3406,9 +3413,20 @@ export default defineMod({
   logo, which your trees may draw too.
 - A missing file or a PNG that does not decode is skipped with a warning naming
   the entry. The rest still load; a bad image never stops the game.
-- Images load at mod init and again whenever a hot reload commits. An image
-  whose name matches a glyph image (`input.glyphs`) is drawn as the glyph, with a
-  warning.
+- Images load at mod init and again whenever a hot reload commits, except an
+  image only loading screens draw — one named by a loading tree (a map's
+  `loadingTree`, `loading.tree`, or your own `loadingScreen`) and by no other
+  tree or presentation template. That image loads in the background when a load
+  shows its tree and is released when the load ends, so a large screenshot costs
+  nothing while you play. Until it finishes loading, the tree's other widgets
+  draw without it; on a very short load it may never appear. If a level's own
+  trees (`setupLevel().uiTrees`) draw it too, it loads with the level instead
+  and stays loaded.
+- An image whose name matches a glyph image (`input.glyphs`) is drawn as the
+  glyph, with a warning.
+- A tree `background` naming an image that is neither in `uiImages`, an
+  engine image, nor a glyph image draws nothing and logs a warning naming the
+  tree.
 
 In Luau the field is the same table: `uiImages = { ["loading/skyline"] = "ui/loading/skyline.png" }`.
 
@@ -3496,7 +3514,8 @@ every frame of the load, and its tweens and fades run, but it never takes input
 — a button on it cannot be pressed. No HUD or menu draws with it. The screen
 clears to the boot splash's background color, so keep your art's edges on that
 color, `[28, 33, 39]` in 8-bit sRGB, if you want a seamless hand-off from the
-splash.
+splash. To fill the window with a picture instead, give the tree a
+`background: { image }` (see the `Tree` envelope under *Factories*).
 
 In Luau, the same manifest fields are `loading = { tree = { "loadingSkyline", "loadingAlley" } }`
 and `loadingTree = "loadingEntry"` on a map entry.

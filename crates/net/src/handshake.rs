@@ -24,7 +24,8 @@ pub const PROTOCOL_ID: u32 = 0x_5052_4C41; // "PRLA"
 /// Activation input and the four-part shot identity advance it to 24.
 /// The tuning-payload epoch remains independent.
 /// Frozen projectile facts and reliable observer cues advance this to 25.
-pub const WIRE_VERSION: u32 = 25;
+/// The weapon-switch declaration's client tick advances it to 26.
+pub const WIRE_VERSION: u32 = 26;
 
 #[must_use]
 pub const fn transport_protocol_id() -> u64 {
@@ -255,6 +256,7 @@ mod tests {
         let switch = ClientSwitchDeclaration {
             declaration_id: 17,
             slot: 3,
+            client_tick: 17,
         };
         let cases = [
             (
@@ -306,6 +308,7 @@ mod tests {
         let switch = ClientSwitchDeclaration {
             declaration_id: 25,
             slot: 2,
+            client_tick: 26,
         };
         let slots = BTreeMap::from([("kplayer0000000001".to_owned(), JoinSeedValue::Number(3.0))]);
         let cases = [
@@ -514,7 +517,7 @@ mod activation_epoch_tests {
 
     #[test]
     fn activation_records_and_outcomes_reject_previous_layout_and_vocabulary() {
-        assert_eq!(WIRE_VERSION, 25);
+        assert_eq!(WIRE_VERSION, 26);
         assert_eq!(PROTOCOL_ID, 0x5052_4c41);
         for received in [
             ProtocolVersion {
@@ -531,5 +534,73 @@ mod activation_epoch_tests {
                 Err(ClosingCause::Protocol { .. })
             ));
         }
+    }
+}
+
+#[cfg(test)]
+mod switch_tick_epoch_tests {
+    use super::*;
+    use bitcode::{Decode, Encode};
+
+    /// The switch declaration as shipped at wire 25, before its client tick.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
+    struct PreTickSwitchDeclaration {
+        declaration_id: u32,
+        slot: u8,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+    enum PreTickClientControlMessage {
+        Admission {
+            protocol: ProtocolVersion,
+            mod_id: String,
+            mod_version: String,
+        },
+        Parity(crate::wire::ParityDeclaration),
+        SwitchDeclaration(PreTickSwitchDeclaration),
+    }
+
+    #[test]
+    fn switch_tick_advances_only_the_wire_version_and_refuses_wire_25_peers() {
+        assert_eq!(WIRE_VERSION, 26);
+        assert_eq!(PROTOCOL_ID, 0x5052_4c41, "the vocabulary is unchanged");
+        assert_eq!(
+            crate::wire::SNAPSHOT_VERSION,
+            17,
+            "no snapshot record changed"
+        );
+        assert!(matches!(
+            validate_handshake(
+                protocol_version(),
+                ProtocolVersion {
+                    app_protocol_id: PROTOCOL_ID,
+                    wire_version: 25,
+                },
+            ),
+            Err(ClosingCause::Protocol { .. })
+        ));
+    }
+
+    #[test]
+    fn switch_tick_changes_the_declaration_layout() {
+        use crate::wire::{ClientControlMessage, ClientSwitchDeclaration};
+        let before = bitcode::encode(&PreTickClientControlMessage::SwitchDeclaration(
+            PreTickSwitchDeclaration {
+                declaration_id: 9,
+                slot: 2,
+            },
+        ));
+        let after = crate::wire::encode(&ClientControlMessage::SwitchDeclaration(
+            ClientSwitchDeclaration {
+                declaration_id: 9,
+                slot: 2,
+                client_tick: 0x0102_0304,
+            },
+        ));
+        assert_ne!(before, after, "the added tick changes the layout");
+        assert!(
+            crate::wire::decode::<ClientControlMessage>(&before).is_err(),
+            "a wire-25 declaration never decodes as a tick-stamped one"
+        );
     }
 }

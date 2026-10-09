@@ -3,7 +3,7 @@
 use crate::weapon;
 use postretro_entities::components::weapon::WeaponComponent;
 use postretro_entities::{EntityId, EntityRegistry};
-use postretro_foundation::ActivationToken;
+use postretro_foundation::{ActivationToken, activation_ticks_ms};
 use std::collections::{HashMap, VecDeque};
 
 const MAX_RECORDS: usize = 64;
@@ -21,6 +21,9 @@ pub(crate) struct OutcomeEffect {
     pub weapon: EntityId,
     pub terminal: bool,
     pub rejected: bool,
+    /// Local cooldown the outcome left on `weapon`, in ms. `None` when the
+    /// outcome carries no recovery or names an activation older than the
+    /// weapon's latest, which never rewinds newer execution.
     pub recovery_ms: Option<f32>,
 }
 #[derive(Default)]
@@ -170,11 +173,15 @@ impl ActivationRecords {
                 recovery_ticks,
                 ..
             } => (Some(weapon.0), None, Some(recovery_ticks), true),
+            // The host ran every authored step, so a local execution still
+            // running is the same program behind it, as after a host hitch's
+            // catch-up ticks; its remaining shots were authorized too.
+            // Cancelling it would drop them and restart early.
             O::Completed {
                 weapon,
                 recovery_ticks,
                 ..
-            } => (Some(weapon.0), None, Some(recovery_ticks), true),
+            } => (Some(weapon.0), None, Some(recovery_ticks), false),
         };
         if host.is_some() && host != record.host_weapon {
             return None;
@@ -198,6 +205,7 @@ impl ActivationRecords {
                 }
             }
         }
+        let mut recovery_ms = None;
         if let Ok(postretro_entities::ComponentValue::Weapon(component)) = registry
             .get_component_value_mut(record.weapon, postretro_entities::ComponentKind::Weapon)
         {
@@ -214,7 +222,19 @@ impl ActivationRecords {
             if self.latest.get(&record.weapon) == Some(&token)
                 && let Some(ticks) = recovery
             {
-                component.cooldown_remaining_ms = ticks as f32 * (1000.0 / 60.0);
+                let host_ms = activation_ticks_ms(ticks);
+                // The host's remaining recovery is one transit stale. An admitted
+                // execution's recovery began at this client's own shot, which is
+                // where host admission measures cadence from, so it may only
+                // shorten the local countdown. A refused start adopts the host's,
+                // which never runs ahead of admission.
+                let applied = if matches!(outcome, O::InitiationRejected { .. }) {
+                    host_ms
+                } else {
+                    host_ms.min(component.cooldown_remaining_ms)
+                };
+                component.cooldown_remaining_ms = applied;
+                recovery_ms = Some(applied);
             }
         }
         let terminal = cancel || matches!(outcome, O::Completed { .. });
@@ -227,10 +247,7 @@ impl ActivationRecords {
             weapon: record.weapon,
             terminal,
             rejected: record.invalid_correction || matches!(outcome, O::InitiationRejected { .. }),
-            recovery_ms: (self.latest.get(&record.weapon) == Some(&token))
-                .then_some(recovery)
-                .flatten()
-                .map(|ticks| ticks as f32 * (1000.0 / 60.0)),
+            recovery_ms,
         })
     }
 }
@@ -238,6 +255,89 @@ impl ActivationRecords {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use postretro_net::wire::{ActivationOutcome as O, NetworkId, WireActivationToken};
+
+    fn cooldown(registry: &EntityRegistry, weapon: EntityId) -> f32 {
+        registry
+            .get_component::<WeaponComponent>(weapon)
+            .unwrap()
+            .cooldown_remaining_ms
+    }
+
+    // Regression: an admitted execution's outcome reset the client's recovery to
+    // the host's transit-stale remaining value, so the client fired slower than
+    // the host player.
+    #[test]
+    fn client_weapon_admitted_outcome_only_shortens_recovery_and_refusal_adopts_host() {
+        let descriptor: postretro_foundation::WeaponDescriptor =
+            serde_json::from_value(serde_json::json!({
+                "damage": 5, "range": 20, "resolution": "hitscan",
+                "primary": { "trigger": "hold", "recoveryMs": 130, "steps": [{ "kind": "shot" }] },
+            }))
+            .unwrap();
+        let mut registry = EntityRegistry::new();
+        let weapon = registry.spawn(postretro_entities::Transform::default());
+        let mut component = WeaponComponent::from_descriptor(&descriptor.validate().unwrap());
+        component.cooldown_remaining_ms = 100.0;
+        registry.set_component(weapon, component).unwrap();
+        let mut records = ActivationRecords::default();
+        let token = ActivationToken {
+            start_tick: 10,
+            lane: postretro_foundation::ActivationLane::Primary,
+        };
+        let wire = WireActivationToken {
+            start_tick: 10,
+            lane: 0,
+        };
+        records.request(token, weapon);
+        records.outcome(
+            &mut registry,
+            O::InitiationAccepted {
+                token: wire,
+                weapon: NetworkId(3),
+            },
+        );
+        let completed = records
+            .outcome(
+                &mut registry,
+                O::Completed {
+                    token: wire,
+                    weapon: NetworkId(3),
+                    recovery_ticks: 8,
+                },
+            )
+            .unwrap();
+        let near = |actual: Option<f32>, expected: f32| {
+            actual.is_some_and(|actual| (actual - expected).abs() < 1.0e-4)
+        };
+        assert!(
+            near(completed.recovery_ms, 100.0),
+            "{:?}",
+            completed.recovery_ms
+        );
+        assert!(near(Some(cooldown(&registry, weapon)), 100.0));
+
+        let refused = ActivationToken {
+            start_tick: 18,
+            ..token
+        };
+        records.request(refused, weapon);
+        let effect = records
+            .outcome(
+                &mut registry,
+                O::InitiationRejected {
+                    token: WireActivationToken {
+                        start_tick: 18,
+                        lane: 0,
+                    },
+                    recovery_ticks: 8,
+                },
+            )
+            .unwrap();
+        let host_ms = activation_ticks_ms(8);
+        assert!(near(effect.recovery_ms, host_ms));
+        assert!(near(Some(cooldown(&registry, weapon)), host_ms));
+    }
     #[test]
     fn client_weapon_active_history_does_not_expire_during_max_charge_and_waits() {
         let mut records = ActivationRecords::default();

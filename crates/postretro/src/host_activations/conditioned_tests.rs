@@ -2,6 +2,7 @@
 //! E16 acceptance through opaque conditioned packets and the production weapon paths.
 //! The sockets only construct the transports; the relay exercises renet's actual
 //! reliable ordered channels, including retransmission, in both directions.
+//! It also hosts the client combat-feel parity reproductions and the cadence-bound tests.
 
 use super::*;
 use crate::client_weapon::ClientWeaponFrame;
@@ -38,6 +39,13 @@ const DT: f32 = 1.0 / 60.0;
 const TARGET_HP: f32 = 10_000.0;
 const MAGAZINE: u32 = 32;
 
+/// The E16 mandated-link seed; its losses reach ordinary held commands.
+const MANDATED_SEED: u64 = 0x1502;
+/// Mandated-link seeds whose losses stall the input stream into the catch-up
+/// trim, so a hold restart reaches the host early against its cadence.
+const TRIM_SEED_A: u64 = 0x1_3c6e_e670;
+const TRIM_SEED_B: u64 = 0x9e37_6cbb;
+
 fn near(actual: f32, expected: f32) {
     assert!(
         (actual - expected).abs() < 0.001,
@@ -50,7 +58,14 @@ fn mandated_link() -> LinkConfig {
         delay: 45,
         jitter: 60,
         loss_probability: 0.05,
-        seed: 0x1502,
+        seed: MANDATED_SEED,
+    }
+}
+
+fn mandated_link_seeded(seed: u64) -> LinkConfig {
+    LinkConfig {
+        seed,
+        ..mandated_link()
     }
 }
 
@@ -306,6 +321,8 @@ struct Fixture {
     weaponless: HashSet<EntityId>,
     tick: u32,
     sent: Vec<wire::InputCommand>,
+    /// Host tick on which each `sent` command left the client.
+    sent_at: Vec<u32>,
     snapshots: Vec<weapon::ResolvedWeaponShot>,
     snapshot_ticks: Vec<u32>,
     hidden_launches: usize,
@@ -316,8 +333,33 @@ struct Fixture {
     hit_refusals: Vec<ShotId>,
     retired_hit_feedback: Vec<ShotId>,
     reconciled: Vec<(ActivationToken, bool, bool)>,
-    sources: Vec<netcode::ResolutionSource>,
-    resolved_ticks: Vec<u32>,
+    /// Retract a rejected activation's predictions through the same
+    /// `retract_rejected_activation` the binary's outcome handling calls.
+    mirror_rejection_despawn: bool,
+    /// Predicted shots whose flight ended naturally (range/lifetime expiry).
+    expired: Vec<ShotId>,
+    /// `(host tick, resolved client tick, source)` per host resolution.
+    playout: Vec<(u32, u32, netcode::ResolutionSource)>,
+    /// `(host tick, start, why)` per retained start the lane refused.
+    lane_refusals: Vec<(u32, ActivationToken, netcode::LaneRefusal)>,
+    /// `(host tick, command)` per host resolution, as playout delivered it.
+    resolved_commands: Vec<(u32, netcode::ResolvedPawnCommand)>,
+    /// Camera pitch the next `send_input` declares.
+    aim_pitch: f32,
+    /// `(host tick, owned pawn facing yaw)` after each host simulation tick.
+    host_facing: Vec<(u32, f32)>,
+    weapon_owners: netcode::WeaponOwners,
+    /// Switch declarations the client has sent, numbered as production does.
+    next_switch_id: u32,
+    /// `(host tick, declaration id, accepted)` per switch outcome the client received.
+    switch_outcomes: Vec<(u32, u32, bool)>,
+    /// `(host tick, active slot)` on the host after each tick's switches applied.
+    host_active: Vec<(u32, usize)>,
+    /// `(host tick, weapon, outcome)` per host reload delivery.
+    reloads: Vec<(u32, EntityId, sim::ReloadOutcome)>,
+    /// Host touch stage state and the descriptors it resolves drops against.
+    touch: crate::sim::touch::TouchSystem,
+    descriptors: Vec<postretro_entities::EntityTypeDescriptor>,
 }
 
 impl Fixture {
@@ -387,6 +429,7 @@ impl Fixture {
             weaponless: HashSet::new(),
             tick: 0,
             sent: Vec::new(),
+            sent_at: Vec::new(),
             snapshots: Vec::new(),
             snapshot_ticks: Vec::new(),
             hidden_launches: 0,
@@ -397,8 +440,20 @@ impl Fixture {
             hit_refusals: Vec::new(),
             retired_hit_feedback: Vec::new(),
             reconciled: Vec::new(),
-            sources: Vec::new(),
-            resolved_ticks: Vec::new(),
+            mirror_rejection_despawn: false,
+            expired: Vec::new(),
+            playout: Vec::new(),
+            lane_refusals: Vec::new(),
+            resolved_commands: Vec::new(),
+            aim_pitch: 0.0,
+            host_facing: Vec::new(),
+            weapon_owners: Default::default(),
+            next_switch_id: 0,
+            switch_outcomes: Vec::new(),
+            host_active: Vec::new(),
+            reloads: Vec::new(),
+            touch: Default::default(),
+            descriptors: Vec::new(),
         };
         for _ in 0..256 {
             fixture.transport();
@@ -411,6 +466,50 @@ impl Fixture {
             "conditioned parity handshake must finish"
         );
         fixture
+    }
+
+    /// Give both peers' pawns a second weapon in slot 1. Returns the host instance.
+    fn equip_second(&mut self, descriptor: &WeaponDescriptor) -> EntityId {
+        let mut host_weapon = None;
+        for (registry, pawn) in [
+            (&self.host, self.host_actors.pawn),
+            (&self.local, self.local_actors.pawn),
+        ] {
+            let mut registry = registry.borrow_mut();
+            let weapon = registry.spawn(Transform::default());
+            registry
+                .set_component(
+                    weapon,
+                    WeaponComponent::from_descriptor_with_canonical(
+                        descriptor,
+                        Some("conditioned-second"),
+                    ),
+                )
+                .expect("second weapon component attaches");
+            registry
+                .set_component(
+                    weapon,
+                    DescriptorProvenance {
+                        canonical_name: "conditioned-second".into(),
+                        owned_components: BTreeSet::from([DescriptorComponentKind::Weapon]),
+                        map_overrides: BTreeSet::new(),
+                        spawn_path: DescriptorSpawnPath::DefaultWeapon,
+                    },
+                )
+                .expect("second weapon provenance attaches");
+            let mut inventory = registry
+                .get_component::<Inventory>(pawn)
+                .expect("pawn holds an inventory")
+                .clone();
+            inventory.wieldables[1] = Some(weapon);
+            registry
+                .set_component(pawn, inventory)
+                .expect("pawn inventory updates");
+            host_weapon.get_or_insert(weapon);
+        }
+        let host_weapon = host_weapon.expect("the host registry is equipped first");
+        self.allocator.stamp(host_weapon);
+        host_weapon
     }
 
     fn pawn_network(&self) -> u32 {
@@ -443,8 +542,27 @@ impl Fixture {
         for packet in self.down.take_ready() {
             self.client.process_packet(&packet);
         }
-        let _ = self.server.poll_handshakes();
-        let _ = self.client.drain_control();
+        let poll = self.server.poll_handshakes();
+        for (client_id, declaration) in poll.switch_declarations {
+            netcode::host_retain_switch_declaration(
+                &mut self.queues,
+                &self.owners,
+                client_id,
+                declaration,
+            );
+        }
+        for message in self.client.drain_control() {
+            match message {
+                wire::ServerControlMessage::SwitchAccepted(accepted) => self
+                    .switch_outcomes
+                    .push((self.tick, accepted.declaration_id, true)),
+                wire::ServerControlMessage::SwitchRefused(refused) => {
+                    self.switch_outcomes
+                        .push((self.tick, refused.declaration_id, false))
+                }
+                _ => {}
+            }
+        }
         for bytes in self.client.drain_input() {
             match wire::decode::<wire::ServerMessage>(&bytes).unwrap() {
                 wire::ServerMessage::ActivationOutcomes(outcomes) => {
@@ -464,6 +582,14 @@ impl Fixture {
                                     effect.weapon,
                                     component,
                                     recovery,
+                                );
+                            }
+                            if self.mirror_rejection_despawn && effect.rejected {
+                                self.frame.retract_rejected_activation(
+                                    &mut self.local.borrow_mut(),
+                                    &mut self.predicted,
+                                    effect.token,
+                                    effect.weapon,
                                 );
                             }
                             self.reconciled
@@ -509,11 +635,11 @@ impl Fixture {
                 dash_pressed: false,
                 running: false,
                 crouch_intent: false,
-                facing_yaw: 0.0,
+                facing_yaw: command.movement.facing_yaw,
                 use_pressed: false,
-                drop_pressed: false,
-                aim_pitch: 0.0,
-                firing_slot: 0,
+                drop_pressed: command.movement.drop_pressed,
+                aim_pitch: self.aim_pitch,
+                firing_slot: command.firing_slot,
             },
             fire_button: wire::WireFireButtonState {
                 pressed: command.fire_button.pressed,
@@ -539,6 +665,7 @@ impl Fixture {
         self.client
             .send_input(wire::encode(&wire::ClientMessage::Input(input)));
         self.sent.push(input);
+        self.sent_at.push(self.tick);
     }
 
     fn declare(&mut self, shot: ShotId, records: Vec<wire::HitRecord>) {
@@ -568,7 +695,7 @@ impl Fixture {
         command.input_tick = tick;
         // Match the real main loop: equip/switch first, fixed activation second,
         // spatial resolution last. This catches accidental double advancement.
-        sim::simulate_client_wieldable_tick(
+        let (switch_accepted, _) = sim::simulate_client_wieldable_tick(
             self.local.clone(),
             &self.world,
             &self.zones,
@@ -580,6 +707,17 @@ impl Fixture {
             0.0,
             DT,
         );
+        // Production declares an accepted switch on Control, stamped with the
+        // tick of the command it was made on.
+        if switch_accepted && let Some(slot) = command.select_slot {
+            self.client
+                .send_switch_declaration(wire::ClientSwitchDeclaration {
+                    declaration_id: self.next_switch_id,
+                    slot: u8::try_from(slot).expect("inventory slots fit a u8"),
+                    client_tick: tick,
+                });
+            self.next_switch_id += 1;
+        }
         let pawn_network = self.pawn_network();
         self.frame.predict(
             &mut self.local.borrow_mut(),
@@ -698,6 +836,7 @@ impl Fixture {
                     );
                 }
                 sim::PredictedProjectileResolution::Expired { shot_id } => {
+                    self.expired.push(shot_id);
                     self.declare(shot_id, Vec::new())
                 }
             }
@@ -718,10 +857,32 @@ impl Fixture {
             u64::from(self.tick) * 16_667,
         );
         let resolved = netcode::host_resolve_remote_commands(&self.owners, &mut self.queues);
+        netcode::host_apply_switch_deliveries(
+            &mut self.host.borrow_mut(),
+            &mut self.server,
+            &self.owners,
+            &mut self.queues,
+            &mut self.weapon_owners,
+            false,
+        );
+        let active = self
+            .host
+            .borrow()
+            .get_component::<Inventory>(self.host_actors.pawn)
+            .map_or(usize::MAX, |inventory| inventory.active_slot);
+        self.host_active.push((self.tick, active));
         let mut commands = Vec::new();
         for resolved in resolved {
-            self.sources.push(resolved.source);
-            self.resolved_ticks.push(resolved.client_tick);
+            self.playout
+                .push((self.tick, resolved.client_tick, resolved.source));
+            if let Some(start) = resolved.rejected_activation {
+                let why = self
+                    .queues
+                    .lane_refusal(CLIENT, start)
+                    .expect("the lane names why it refused a start");
+                self.lane_refusals.push((self.tick, start, why));
+            }
+            self.resolved_commands.push((self.tick, resolved.clone()));
             let mut registry = self.host.borrow_mut();
             observe_lifecycle(
                 &mut registry,
@@ -740,7 +901,7 @@ impl Fixture {
                 &resolved,
             );
             guard_initiation(
-                &registry,
+                &mut registry,
                 &mut self.allocator,
                 &mut self.queues,
                 &mut self.server,
@@ -748,14 +909,28 @@ impl Fixture {
             );
             commands.push(command);
         }
-        let events = sim::simulate_tick(
+        // The production drop route: each remote drop press becomes a touch-stage edge.
+        let drops: std::collections::HashMap<_, _> = commands
+            .iter()
+            .filter(|remote| remote.command.drop_pressed)
+            .map(|remote| {
+                (
+                    crate::trigger_system::PlayerId::Remote(remote.owner_client_id),
+                    true,
+                )
+            })
+            .collect();
+        let factions = postretro_entities::FactionRegistry::default();
+        let sentiment = RefCell::new(postretro_entities::FactionSentimentState::default());
+        let events = sim::simulate_tick_with_presentation_aim(
             self.host.clone(),
             &self.world,
             &self.zones,
             None,
             0.0,
-            None,
+            false,
             0.0,
+            (0.0, 0.0),
             &mut self.progress,
             postretro_ai::tick_runner!(&mut self.ai),
             &[],
@@ -767,8 +942,31 @@ impl Fixture {
                 aim_direction: Vec3::NEG_Z,
             },
             DT,
+            &mut self.touch,
+            &self.descriptors,
+            0,
+            &factions,
+            &sentiment,
             None,
+            &std::collections::HashMap::new(),
+            &drops,
+            None,
+            |_, _| {},
             |_| {},
+            sim::TimingGate::OFF,
+        );
+        let facing = self
+            .host
+            .borrow()
+            .get_component::<Transform>(self.host_actors.pawn)
+            .map(|transform| transform.rotation.to_euler(glam::EulerRot::YXZ).0)
+            .unwrap_or(f32::NAN);
+        self.host_facing.push((self.tick, facing));
+        self.reloads.extend(
+            events
+                .reload_deliveries
+                .iter()
+                .map(|delivery| (self.tick, delivery.weapon(), delivery.outcome)),
         );
         for progress in events.remote_activation_progress {
             record_activation_progress(&mut self.allocator, &mut self.queues, &progress, |fact| {
@@ -790,6 +988,7 @@ impl Fixture {
                 }
             });
         }
+        release_departed_weapons(&mut self.host.borrow_mut(), &mut self.queues, &self.owners);
         for open in events.authorized_shots {
             self.authorized.push(open.shot.clone());
             self.open.record(open.shot, open.owner_client_id);
@@ -909,12 +1108,12 @@ fn conditioned_activation_clean_and_mandated_link_preserve_full_charge_sequence_
                         fixture.up.dropped() > held_losses_before,
                         "ordinary held-command packets must actually be lost under the mandated seed"
                     );
-                    assert!(fixture.sources.contains(&netcode::ResolutionSource::Held));
-                    assert!(
-                        fixture
-                            .sources
-                            .contains(&netcode::ResolutionSource::Neutral)
-                    );
+                    for source in [
+                        netcode::ResolutionSource::Held,
+                        netcode::ResolutionSource::Neutral,
+                    ] {
+                        assert!(fixture.playout.iter().any(|&(_, _, s)| s == source));
+                    }
                 }
                 let release_tick = start.start_tick.wrapping_add(96);
                 let mut release = neutral();
@@ -1045,7 +1244,7 @@ fn conditioned_activation_backlog_clamps_accepted_charge_and_corrects_live_owner
     fixture.step(100, held(start.lane, true));
     fixture.step(101, held(start.lane, false));
     assert_eq!(fixture.tick, 2);
-    assert_eq!(fixture.resolved_ticks.last(), Some(&100));
+    assert_eq!(fixture.playout.last().map(|&(_, tick, _)| tick), Some(100));
     assert!(fixture.host_charging());
     // Deliver the real initiation outcome before producing the owner's full-charge shot.
     fixture.transport();
@@ -1127,10 +1326,12 @@ fn conditioned_activation_backlog_clamps_accepted_charge_and_corrects_live_owner
 
     fixture.host_tick();
     assert_eq!(fixture.tick, 3);
-    assert_eq!(fixture.resolved_ticks.last(), Some(&129));
     assert_eq!(
-        fixture.sources.last(),
-        Some(&netcode::ResolutionSource::Real)
+        fixture
+            .playout
+            .last()
+            .map(|&(_, tick, source)| (tick, source)),
+        Some((129, netcode::ResolutionSource::Real))
     );
     assert_eq!(fixture.authorized.len(), 1);
     assert_eq!(fixture.authorized[0].shot_id, id);
@@ -1342,19 +1543,19 @@ fn conditioned_activation_release_before_admission_and_same_tick_early_release_a
 #[test]
 fn conditioned_activation_trimmed_start_stale_projection_and_named_hold_restart() {
     let mut trimmed = Fixture::new(LinkConfig::perfect(), descriptor(false, true, 1, "hold"));
-    let discarded = token(1, ActivationLane::Secondary);
+    let retained = token(1, ActivationLane::Secondary);
     trimmed
         .frame
         .records
-        .request(discarded, trimmed.local_actors.weapon);
+        .request(retained, trimmed.local_actors.weapon);
     for tick in 1..=12 {
         let mut command = neutral();
         if tick == 1 {
-            command.activation.initiation = Some(discarded);
+            command.activation.initiation = Some(retained);
         }
         if tick == 3 {
             command.activation.release = Some(ActivationRelease {
-                token: discarded,
+                token: retained,
                 release_tick: 3,
             });
         }
@@ -1363,12 +1564,25 @@ fn conditioned_activation_trimmed_start_stale_projection_and_named_hold_restart(
     trimmed.host_tick();
     trimmed.idle(13, 16);
     trimmed.assert_no_host_shot();
+    assert_eq!(
+        trimmed.accepted(retained),
+        1,
+        "the trimmed start survives in its retained lane"
+    );
+    assert!(
+        trimmed.cancelled(retained),
+        "its retained early release cancels without debit"
+    );
     let mut retry = neutral();
-    retry.activation.initiation = Some(discarded);
-    trimmed.send_input(discarded.start_tick, &retry);
+    retry.activation.initiation = Some(retained);
+    trimmed.send_input(retained.start_tick, &retry);
     trimmed.idle(30, 32);
     trimmed.assert_no_host_shot();
-    assert_eq!(trimmed.accepted(discarded), 0);
+    assert_eq!(
+        trimmed.accepted(retained),
+        1,
+        "a stale retransmit cannot admit the settled start again"
+    );
 
     let mut fixture = Fixture::new(mandated_link(), descriptor(true, false, 1, "hold"));
     // A stale empty projection suppresses cosmetics, while host ammo permits a
@@ -1687,3 +1901,1510 @@ fn conditioned_activation_stale_full_projection_refuses_damage_and_old_verdict_p
     near(fixture.damage(), 30.0);
     assert_eq!(fixture.ammo(), MAGAZINE - 1);
 }
+
+/// Reference plasma rifle shape (`content/dev/scripts/reference-projectiles.ts`,
+/// `reference_plasma_bolt` primary): hold, 130 ms recovery, one shot per step,
+/// cell resource, 40 m/s bolt, 96 m range, 5 s lifetime.
+fn plasma_rifle(cell_capacity: f32) -> WeaponDescriptor {
+    serde_json::from_value::<WeaponDescriptor>(json!({
+        "damage": 10, "knockback": { "speed": 3.0, "upwardBias": 0.1 }, "range": 96,
+        "resolution": "projectile",
+        "primary": { "trigger": "hold", "recoveryMs": 130, "steps": [{ "kind": "shot" }] },
+        "resource": { "kind": "cell", "capacity": cell_capacity, "costPerShot": 5,
+            "regenPerSecond": 25, "regenDelayMs": 600 },
+        "projectile": { "speed": 40, "radius": 0.5, "lifetimeMs": 5000,
+            "visual": { "body": { "kind": "sprite", "sprite": "sprites/test.png", "size": 1.5 } } },
+    }))
+    .expect("plasma rifle fixture parses")
+    .validate()
+    .expect("plasma rifle fixture validates")
+}
+
+/// A one-shot hitscan rifle with an ample magazine.
+fn hitscan_rifle(trigger: &str, recovery_ms: f32) -> WeaponDescriptor {
+    serde_json::from_value::<WeaponDescriptor>(json!({
+        "damage": 10, "range": 96, "resolution": "hitscan",
+        "primary": { "trigger": trigger, "recoveryMs": recovery_ms, "steps": [{ "kind": "shot" }] },
+        "resource": { "kind": "ammo", "type": "rounds", "magazine": 100_000, "reserve": 0 },
+    }))
+    .expect("hitscan rifle fixture parses")
+    .validate()
+    .expect("hitscan rifle fixture validates")
+}
+
+/// Client ticks one stream cell runs: 6 s at 60 Hz.
+const STREAM_TICKS: u32 = 360;
+
+/// 130 ms of recovery is 8 ticks at 60 Hz: the plasma and hitscan rifles' cadence.
+const RIFLE_RECOVERY_TICKS: u32 = 8;
+
+/// A floor proving a stream cell fired: half the shots its authored period
+/// allows over the stream. It asserts that the weapon was exercised, not its cadence.
+fn fired_floor(period_ticks: u32, shots_per_execution: usize) -> usize {
+    STREAM_TICKS.div_ceil(period_ticks) as usize * shots_per_execution / 2
+}
+
+/// The cell fired at least `floor` shots and the host authorized each one, in order.
+fn fired_in_order(report: &StreamReport, floor: usize) -> bool {
+    report.predicted.len() >= floor && report.authorized == report.predicted
+}
+
+/// Move both peers' targets far off the line of fire so every bolt can reach
+/// its full range.
+fn clear_line_of_fire(fixture: &Fixture) {
+    for (registry, target) in [
+        (&fixture.host, fixture.host_actors.target),
+        (&fixture.local, fixture.local_actors.target),
+    ] {
+        registry
+            .borrow_mut()
+            .set_component(
+                target,
+                Transform {
+                    position: Vec3::new(500.0, 0.5, 500.0),
+                    ..Default::default()
+                },
+            )
+            .expect("target transform updates");
+    }
+}
+
+/// A primary press naming its own start at `tick`, as a client stamps it.
+fn stamped_start(tick: u32) -> sim::SimCommand {
+    let mut command = held(ActivationLane::Primary, true);
+    command.activation.initiation = Some(token(tick, ActivationLane::Primary));
+    command
+}
+
+/// Drives a stream's client ticks against a host that may hitch.
+/// `hitch = Some((period, length))`: every `period` client ticks the host
+/// simulation stalls for `length` ticks (a long host frame) while the client
+/// keeps predicting and sending, then runs the missed fixed ticks back to back,
+/// as the frame loop's accumulator does.
+struct HitchDriver {
+    hitch: Option<(u32, u32)>,
+    /// Client tick of the stream's first command.
+    start: u32,
+    stalled: u32,
+}
+
+impl HitchDriver {
+    fn new(hitch: Option<(u32, u32)>, start: u32) -> Self {
+        Self {
+            hitch,
+            start,
+            stalled: 0,
+        }
+    }
+
+    /// The stream's client tick `offset` ticks in.
+    fn step(&mut self, fixture: &mut Fixture, offset: u32, mut command: sim::SimCommand) {
+        let tick = self.start + offset;
+        let in_hitch = self
+            .hitch
+            .is_some_and(|(period, length)| offset >= period && offset % period < length);
+        if in_hitch {
+            fixture.predict(tick, &mut command);
+            fixture.send_input(tick, &command);
+            fixture.advance_projectiles();
+            self.stalled += 1;
+            return;
+        }
+        for _ in 0..std::mem::take(&mut self.stalled) {
+            fixture.host_tick();
+        }
+        fixture.step(tick, command);
+    }
+}
+
+/// Authorized shots over every window between two host fires stay within the
+/// cadence window bound for `recovery_ticks`.
+fn assert_within_cadence_window_bound(fixture: &Fixture, recovery_ticks: u32, label: &str) {
+    let fire_ticks: Vec<u32> = fixture
+        .authorized
+        .iter()
+        .map(|shot| shot.fire_tick)
+        .collect();
+    for (first, &opened) in fire_ticks.iter().enumerate() {
+        for (last, &closed) in fire_ticks.iter().enumerate().skip(first) {
+            let shots = (last - first + 1) as u32;
+            let window = closed - opened;
+            assert!(
+                shots <= netcode::HostCommandQueues::cadence_window_bound(window, recovery_ticks),
+                "{label}: {shots} shots in {window} host ticks"
+            );
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+struct StreamReport {
+    predicted: Vec<ShotId>,
+    authorized: Vec<ShotId>,
+    /// Activation starts the host refused (never a resource decision).
+    initiation_rejected: Vec<ShotId>,
+    /// Per-shot FIRE denials (resource or other).
+    fire_denied: Vec<ShotId>,
+    /// Predicted bolts removed before natural expiry.
+    bolts_removed_early: Vec<ShotId>,
+    /// Predicted shots the host neither authorized nor refused.
+    ghosts: Vec<ShotId>,
+    /// `(start tick, why)` per start the lane refused.
+    lane_refused: Vec<(u32, netcode::LaneRefusal)>,
+    /// Playout steps whose resolved client tick skipped ahead: the catch-up trim.
+    catch_up_jumps: usize,
+}
+
+fn run_steady_hold(
+    link: LinkConfig,
+    descriptor: WeaponDescriptor,
+    projectile: bool,
+) -> (Fixture, StreamReport) {
+    run_stream(link, descriptor, projectile, None, None)
+}
+
+/// A `STREAM_TICKS` primary stream: a steady hold, or with `tap_period` a tap
+/// every that many ticks (pressed one tick, held two). `hitch` is a
+/// [`HitchDriver`] schedule.
+fn run_stream(
+    link: LinkConfig,
+    descriptor: WeaponDescriptor,
+    projectile: bool,
+    hitch: Option<(u32, u32)>,
+    tap_period: Option<u32>,
+) -> (Fixture, StreamReport) {
+    let mut fixture = Fixture::new(link, descriptor);
+    fixture.mirror_rejection_despawn = true;
+    if projectile {
+        clear_line_of_fire(&fixture);
+    }
+    let start = 1000u32;
+    let mut driver = HitchDriver::new(hitch, start);
+    for offset in 0..STREAM_TICKS {
+        let command = match tap_period {
+            None => held(ActivationLane::Primary, offset == 0),
+            Some(period) if offset % period < 2 => {
+                held(ActivationLane::Primary, offset % period == 0)
+            }
+            Some(_) => neutral(),
+        };
+        driver.step(&mut fixture, offset, command);
+    }
+    // Long enough for 96 m at 40 m/s plus the declaration round trip.
+    fixture.idle(start + STREAM_TICKS, 360);
+    let report = stream_report(&fixture, projectile);
+    (fixture, report)
+}
+
+/// Classify every predicted shot of a finished stream by its host outcome.
+fn stream_report(fixture: &Fixture, projectile: bool) -> StreamReport {
+    let mut report = StreamReport {
+        predicted: fixture
+            .snapshots
+            .iter()
+            .map(|shot| shot.activation.shot_id)
+            .collect(),
+        authorized: fixture.authorized.iter().map(|shot| shot.shot_id).collect(),
+        ..Default::default()
+    };
+    let wire_of = |id: ShotId| netcode::wire_convert::shot_id_to_wire(id);
+    for &id in &report.predicted {
+        let token = wire_token(id.activation().token);
+        if fixture.outcomes.iter().any(|outcome| {
+            matches!(outcome, wire::ActivationOutcome::InitiationRejected { token: t, .. } if *t == token)
+        }) {
+            report.initiation_rejected.push(id);
+        }
+        if fixture
+            .verdicts
+            .iter()
+            .any(|verdict| verdict.shot_id == wire_of(id) && !verdict.accept)
+        {
+            report.fire_denied.push(id);
+        }
+        let authorized = report.authorized.contains(&id);
+        if !authorized
+            && !report.initiation_rejected.contains(&id)
+            && !report.fire_denied.contains(&id)
+        {
+            report.ghosts.push(id);
+        }
+    }
+    if projectile {
+        let live: HashSet<ShotId> = fixture
+            .local
+            .borrow()
+            .iter_with_kind(ComponentKind::Projectile)
+            .filter_map(|(_, value)| match value {
+                ComponentValue::Projectile(component) => component.predicted_shot_id,
+                _ => None,
+            })
+            .collect();
+        assert!(live.is_empty(), "every flight must have ended: {live:?}");
+        report.bolts_removed_early = report
+            .predicted
+            .iter()
+            .copied()
+            .filter(|id| !fixture.expired.contains(id))
+            .collect();
+    }
+    report.lane_refused = fixture
+        .lane_refusals
+        .iter()
+        .map(|&(_, token, why)| (token.start_tick, why))
+        .collect();
+    report.catch_up_jumps = fixture
+        .playout
+        .windows(2)
+        .filter(|pair| pair[1].1.wrapping_sub(pair[0].1) > 1)
+        .count();
+    report
+}
+
+fn summarize(label: &str, report: &StreamReport) -> String {
+    format!(
+        "{label}: predicted {}, host authorized {}, initiation-rejected {} {:?}, \
+         fire-denied {}, bolts removed early {}, ghosts {}, playout jumps {}, \
+         lane refusals (start, why) {:?}",
+        report.predicted.len(),
+        report.authorized.len(),
+        report.initiation_rejected.len(),
+        report
+            .initiation_rejected
+            .iter()
+            .map(|id| id.start_tick)
+            .collect::<Vec<_>>(),
+        report.fire_denied.len(),
+        report.bolts_removed_early.len(),
+        report.ghosts.len(),
+        report.catch_up_jumps,
+        report.lane_refused,
+    )
+}
+
+/// A cell that hitches the host or runs a trim seed claims the catch-up trim,
+/// so it must show one.
+fn missed_its_trim(link: LinkConfig, hitch: Option<(u32, u32)>, report: &StreamReport) -> bool {
+    let claims_trim = hitch.is_some() || [TRIM_SEED_A, TRIM_SEED_B].contains(&link.seed);
+    claims_trim && report.catch_up_jumps == 0
+}
+
+/// The 500 ms catch-up allowance (networking.md §Combat authority) refuses a
+/// start whose input stalled past it. Checks that every refused start of
+/// `report` is such a refusal, and measures its stall: the host ticks from the
+/// earliest it could have played (its send plus the cell's fastest transit) to
+/// its refusal on which the host could not deliver it, because no real command
+/// resolved, the real command resolved was stamped before it, or an older start
+/// of the backlog was executing. The lane, not the machine, refused it, and for
+/// lagging past the allowance: a client-half, expiry or settled refusal fails.
+/// The stall must exceed the allowance, and a newer start the client had
+/// already sent still fired, so only the backlog's oldest starts were refused.
+/// Returns `(start tick, stall in host ticks)` per refused start.
+fn stall_refusals(fixture: &Fixture, report: &StreamReport) -> Result<Vec<(u32, u32)>, String> {
+    let allowance = netcode::HostCommandQueues::CATCH_UP_ALLOWANCE_TICKS;
+    let mut sent_at = std::collections::HashMap::new();
+    for (command, &tick) in fixture.sent.iter().zip(&fixture.sent_at) {
+        sent_at.entry(command.client_tick).or_insert(tick);
+    }
+    let transit = fixture
+        .playout
+        .iter()
+        .filter(|(_, _, source)| *source == netcode::ResolutionSource::Real)
+        .filter_map(|(tick, client_tick, _)| Some(tick - sent_at.get(client_tick)?))
+        .min()
+        .unwrap_or(0);
+    // Host ticks from each authorized start's first shot to its last.
+    let mut executions = std::collections::HashMap::new();
+    for shot in &fixture.authorized {
+        let span = executions
+            .entry(shot.shot_id.start_tick)
+            .or_insert((shot.fire_tick, shot.fire_tick));
+        span.0 = span.0.min(shot.fire_tick);
+        span.1 = span.1.max(shot.fire_tick);
+    }
+    let mut starts: Vec<u32> = report
+        .initiation_rejected
+        .iter()
+        .map(|id| id.start_tick)
+        .collect();
+    starts.dedup();
+    starts
+        .into_iter()
+        .map(|start| {
+            let &(refused_at, _, why) = fixture
+                .lane_refusals
+                .iter()
+                .find(|(_, token, _)| token.start_tick == start)
+                .ok_or_else(|| format!("{start}: refused outside the lane"))?;
+            if why != netcode::LaneRefusal::Lagged {
+                return Err(format!(
+                    "{start}: the lane refused it as {why:?}, not for lag"
+                ));
+            }
+            let sent = *sent_at
+                .get(&start)
+                .ok_or_else(|| format!("{start}: never sent"))?;
+            let older_executing = |tick: u32| {
+                executions
+                    .iter()
+                    .any(|(&older, &(first, last))| older < start && (first..=last).contains(&tick))
+                    || fixture
+                        .lane_refusals
+                        .iter()
+                        .any(|&(at, token, _)| at == tick && token.start_tick < start)
+            };
+            let stall = fixture
+                .playout
+                .iter()
+                .filter(|&&(tick, client_tick, source)| {
+                    (sent + transit..refused_at).contains(&tick)
+                        && (source != netcode::ResolutionSource::Real
+                            || client_tick < start
+                            || older_executing(tick))
+                })
+                .count() as u32;
+            let newer_fired = report.authorized.iter().any(|shot| {
+                shot.start_tick > start
+                    && sent_at
+                        .get(&shot.start_tick)
+                        .is_some_and(|&at| at < refused_at)
+            });
+            if stall <= allowance {
+                Err(format!("{start}: input stalled only {stall} host ticks"))
+            } else if !newer_fired {
+                Err(format!("{start}: no newer start of its backlog fired"))
+            } else if refused_at - sent >= netcode::HostCommandQueues::START_RETENTION_TICKS {
+                Err(format!(
+                    "{start}: refused {} host ticks after its send, not promptly",
+                    refused_at - sent
+                ))
+            } else {
+                Ok((start, stall))
+            }
+        })
+        .collect()
+}
+
+/// A stream cell's parity: at least `floor` predicted shots, each authorized
+/// in order, none denied, none cut short. On a lossy link the shots of starts
+/// `stall_refusals` accepts are exempt: their input stalled past the catch-up
+/// allowance, as when a lost packet's resend is lost too, and the 500 ms
+/// catch-up allowance (networking.md §Combat authority) refuses them. The mandated seed does that once near every stream's start.
+fn stream_parity(
+    link: LinkConfig,
+    fixture: &Fixture,
+    report: &StreamReport,
+    floor: usize,
+) -> Result<(), String> {
+    let refusals = if link.loss_probability > 0.0 {
+        stall_refusals(fixture, report)?
+    } else if report.initiation_rejected.is_empty() {
+        Vec::new()
+    } else {
+        return Err("refused on a loss-free link".into());
+    };
+    let refused = |id: &ShotId| refusals.iter().any(|&(start, _)| start == id.start_tick);
+    let kept: Vec<ShotId> = report
+        .predicted
+        .iter()
+        .copied()
+        .filter(|id| !refused(id))
+        .collect();
+    if report.predicted.len() < floor {
+        Err(format!("predicted only {}", report.predicted.len()))
+    } else if report.authorized != kept {
+        Err("authorized differs from the predicted shots of unrefused starts".into())
+    } else if !report.fire_denied.iter().all(refused) {
+        Err("a FIRE denial outside the stall refusals".into())
+    } else if !report.bolts_removed_early.iter().all(refused) {
+        Err("a bolt cut short outside the stall refusals".into())
+    } else {
+        Ok(())
+    }
+}
+
+/// Why a stream cell fails `stream_parity` or its trim, if it does.
+fn stream_cell_failure(
+    label: &str,
+    link: LinkConfig,
+    hitch: Option<(u32, u32)>,
+    fixture: &Fixture,
+    report: &StreamReport,
+    floor: usize,
+) -> Option<String> {
+    let verdict = stream_parity(link, fixture, report, floor).and_then(|()| {
+        if missed_its_trim(link, hitch, report) {
+            Err("no catch-up trim".into())
+        } else {
+            Ok(())
+        }
+    });
+    verdict
+        .err()
+        .map(|why| format!("{}: {why}", summarize(label, report)))
+}
+
+// Regression: during a steady hold, a connected client's predicted plasma bolts
+// vanished mid-flight although the host had resource to fire every one of them.
+// Exempt: a stall past the 500 ms catch-up allowance (networking.md §Combat
+// authority), held to `stall_refusals`.
+#[test]
+fn conditioned_steady_hold_keeps_every_resourced_predicted_bolt_to_its_natural_end() {
+    let mut failures = Vec::new();
+    for (label, link) in [
+        ("clean", LinkConfig::perfect()),
+        ("mandated", mandated_link()),
+        ("mandated-seed-a", mandated_link_seeded(TRIM_SEED_A)),
+        ("mandated-seed-b", mandated_link_seeded(TRIM_SEED_B)),
+    ] {
+        // Cell large enough that drain cannot explain any refusal.
+        let (fixture, report) = run_steady_hold(link, plasma_rifle(1.0e6), true);
+        failures.extend(stream_cell_failure(
+            label,
+            link,
+            None,
+            &fixture,
+            &report,
+            fired_floor(RIFLE_RECOVERY_TICKS, 1),
+        ));
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+// Regression: on a loss-free link, a host frame hitch longer than the playout
+// backlog bound deletes the client's in-flight predicted bolt the same way.
+#[test]
+fn conditioned_steady_hold_host_hitch_on_clean_link_keeps_resourced_bolts() {
+    let (_, report) = run_stream(
+        LinkConfig::perfect(),
+        plasma_rifle(1.0e6),
+        true,
+        Some((60, 12)),
+        None,
+    );
+    let summary = summarize("clean+host-hitch-200ms-every-1s", &report);
+    assert!(
+        report.catch_up_jumps > 0,
+        "the hitch must take the trim: {summary}"
+    );
+    assert!(
+        report.bolts_removed_early.is_empty() && report.initiation_rejected.is_empty(),
+        "{summary}"
+    );
+    assert!(
+        fired_in_order(&report, fired_floor(RIFLE_RECOVERY_TICKS, 1)),
+        "{summary}"
+    );
+}
+
+// A refused hold restart is not projectile-specific: it retracts a hitscan
+// shot's muzzle flash and hitmarker the same way.
+// Exempt: a stall past the 500 ms catch-up allowance (networking.md §Combat
+// authority), held to `stall_refusals`.
+#[test]
+fn conditioned_steady_hitscan_hold_is_never_refused_with_ample_ammo() {
+    let mut failures = Vec::new();
+    for (label, link) in [
+        ("clean", LinkConfig::perfect()),
+        ("mandated", mandated_link()),
+        ("mandated-seed-a", mandated_link_seeded(TRIM_SEED_A)),
+    ] {
+        let (fixture, report) = run_steady_hold(link, hitscan_rifle("hold", 130.0), false);
+        failures.extend(stream_cell_failure(
+            label,
+            link,
+            None,
+            &fixture,
+            &report,
+            fired_floor(RIFLE_RECOVERY_TICKS, 1),
+        ));
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+// Same mechanism for a press trigger tapped at its recovery rate.
+// Exempt: a stall past the 500 ms catch-up allowance (networking.md §Combat
+// authority), held to `stall_refusals`.
+#[test]
+fn conditioned_rapid_press_taps_are_never_refused_with_ample_ammo() {
+    // 9 ticks covers the 8-tick (130 ms) recovery.
+    const TAP_PERIOD: u32 = 9;
+    let mut failures = Vec::new();
+    let tap = hitscan_rifle("press", 130.0);
+    for (label, link) in [
+        ("clean", LinkConfig::perfect()),
+        ("mandated", mandated_link()),
+        ("mandated-seed-a", mandated_link_seeded(TRIM_SEED_A)),
+    ] {
+        let (fixture, report) = run_stream(link, tap.clone(), false, None, Some(TAP_PERIOD));
+        failures.extend(stream_cell_failure(
+            &format!("press {label}"),
+            link,
+            None,
+            &fixture,
+            &report,
+            fired_floor(TAP_PERIOD, 1),
+        ));
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+/// The reference cell (100 / 5 / 25 s⁻¹ after 600 ms) drains after twenty bolts.
+/// Those later refusals are resource decisions: per-shot FIRE denials that remove
+/// the stale-projection bolt, never a refused activation start.
+#[test]
+fn conditioned_steady_hold_reference_cell_drain_refuses_only_for_resource() {
+    let (_, report) = run_steady_hold(LinkConfig::perfect(), plasma_rifle(100.0), true);
+    let summary = summarize("cell-100 clean", &report);
+    assert!(
+        report.predicted.len() >= fired_floor(RIFLE_RECOVERY_TICKS, 1),
+        "{summary}"
+    );
+    assert!(report.initiation_rejected.is_empty(), "{summary}");
+    assert!(report.authorized.len() >= 20, "{summary}");
+    assert!(!report.fire_denied.is_empty(), "{summary}");
+    let first_twenty: Vec<ShotId> = report.predicted.iter().take(20).copied().collect();
+    assert!(
+        report
+            .fire_denied
+            .iter()
+            .all(|id| !first_twenty.contains(id)),
+        "a full cell pays for the first twenty bolts"
+    );
+    assert_eq!(report.bolts_removed_early, report.fire_denied);
+}
+
+/// Shots in one burst execution.
+const BURST_SHOTS: usize = 3;
+
+/// A burst's two 50 ms (3-tick) waits, then the 8-tick (130 ms) recovery from
+/// its last shot.
+const BURST_PERIOD_TICKS: u32 = 14;
+
+/// Three-round hitscan burst: shots 50 ms apart, then the authored recovery.
+fn burst_rifle(trigger: &str, recovery_ms: f32) -> WeaponDescriptor {
+    serde_json::from_value::<WeaponDescriptor>(json!({
+        "damage": 10, "range": 96, "resolution": "hitscan",
+        "primary": { "trigger": trigger, "recoveryMs": recovery_ms, "steps": [
+            { "kind": "shot" }, { "kind": "wait", "durationMs": 50 },
+            { "kind": "shot" }, { "kind": "wait", "durationMs": 50 },
+            { "kind": "shot" },
+        ] },
+        "resource": { "kind": "ammo", "type": "rounds", "magazine": 100_000, "reserve": 0 },
+    }))
+    .expect("burst rifle fixture parses")
+    .validate()
+    .expect("burst rifle fixture validates")
+}
+
+/// Reference rocket cadence (`reference_rocket` primary: press, 750 ms recovery)
+/// without splash, with an ample magazine so no reload interrupts the stream.
+fn rocket_launcher() -> WeaponDescriptor {
+    serde_json::from_value::<WeaponDescriptor>(json!({
+        "damage": 36, "range": 128, "resolution": "projectile",
+        "primary": { "trigger": "press", "recoveryMs": 750, "steps": [{ "kind": "shot" }] },
+        "resource": { "kind": "ammo", "type": "rockets", "magazine": 100_000, "reserve": 0 },
+        "projectile": { "speed": 30, "radius": 0.25, "lifetimeMs": 4000,
+            "visual": { "body": { "kind": "sprite", "sprite": "sprites/test.png", "size": 1.0 } } },
+    }))
+    .expect("rocket launcher fixture parses")
+    .validate()
+    .expect("rocket launcher fixture validates")
+}
+
+// Regression: a burst restart reaching the host while its previous burst still
+// executed there was refused as a concurrent activation. Also: a host hitch ran
+// a whole burst before the client's last shot, and the client, cancelling its
+// burst on that completion, restarted inside the host's recovery.
+// Exempt: a stall past the 500 ms catch-up allowance (networking.md §Combat
+// authority), held to `stall_refusals`.
+#[test]
+fn conditioned_burst_hold_restarts_are_never_refused_under_loss_and_hitch() {
+    let mut failures = Vec::new();
+    for (label, link, hitch) in [
+        ("clean", LinkConfig::perfect(), None),
+        ("mandated", mandated_link(), None),
+        ("mandated-seed-a", mandated_link_seeded(TRIM_SEED_A), None),
+        ("clean+host-hitch", LinkConfig::perfect(), Some((60, 12))),
+    ] {
+        let (fixture, report) = run_stream(link, burst_rifle("hold", 130.0), false, hitch, None);
+        failures.extend(stream_cell_failure(
+            &format!("burst {label}"),
+            link,
+            hitch,
+            &fixture,
+            &report,
+            fired_floor(BURST_PERIOD_TICKS, BURST_SHOTS),
+        ));
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+// Regression: a release delivered mid-burst moved the burst's cadence clock to
+// the release, so the next tap at the authored rate was refused as cooling.
+// Exempt: a stall past the 500 ms catch-up allowance (networking.md §Combat
+// authority), held to `stall_refusals`.
+#[test]
+fn conditioned_burst_taps_released_mid_burst_are_never_refused() {
+    let mut failures = Vec::new();
+    for (label, link, hitch) in [
+        ("clean", LinkConfig::perfect(), None),
+        ("mandated", mandated_link(), None),
+        ("mandated-seed-a", mandated_link_seeded(TRIM_SEED_A), None),
+        (
+            "clean+host-hitch",
+            LinkConfig::perfect(),
+            Some((56u32, 12u32)),
+        ),
+    ] {
+        let mut fixture = Fixture::new(link, burst_rifle("press", 130.0));
+        let start = 1000u32;
+        let mut driver = HitchDriver::new(hitch, start);
+        for offset in 0..STREAM_TICKS {
+            let phase = offset % BURST_PERIOD_TICKS;
+            let mut command = if phase < 2 {
+                held(ActivationLane::Primary, phase == 0)
+            } else {
+                neutral()
+            };
+            if phase == 2 {
+                command.activation.release = Some(ActivationRelease {
+                    token: token(start + offset - 2, ActivationLane::Primary),
+                    release_tick: start + offset,
+                });
+            }
+            driver.step(&mut fixture, offset, command);
+        }
+        fixture.idle(start + STREAM_TICKS, 120);
+        let taps = STREAM_TICKS.div_ceil(BURST_PERIOD_TICKS) as usize;
+        let report = stream_report(&fixture, false);
+        if report.predicted.len() != BURST_SHOTS * taps {
+            failures.push(summarize(label, &report));
+        }
+        failures.extend(stream_cell_failure(
+            label,
+            link,
+            hitch,
+            &fixture,
+            &report,
+            BURST_SHOTS * taps,
+        ));
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+// Regression: rocket presses at the authored rate lost their in-flight rocket
+// to a refused start after a stalled input stream. Strict: unlike the stream
+// cells, it takes no exemption for a stall past the catch-up allowance.
+#[test]
+fn conditioned_rocket_presses_at_recovery_rate_keep_every_rocket_under_loss_and_hitch() {
+    // 45 ticks covers the 750 ms recovery.
+    const PRESS_PERIOD: u32 = 45;
+    let mut failures = Vec::new();
+    for (label, link, hitch) in [
+        ("clean", LinkConfig::perfect(), None),
+        ("mandated", mandated_link(), None),
+        ("mandated-seed-a", mandated_link_seeded(TRIM_SEED_A), None),
+        ("clean+host-hitch", LinkConfig::perfect(), Some((45, 12))),
+    ] {
+        let (_, report) = run_stream(link, rocket_launcher(), true, hitch, Some(PRESS_PERIOD));
+        // Every press lands at the authored rate, so every press fires.
+        if report.predicted.len() != STREAM_TICKS.div_ceil(PRESS_PERIOD) as usize
+            || report.authorized != report.predicted
+            || !report.initiation_rejected.is_empty()
+            || !report.bolts_removed_early.is_empty()
+            || missed_its_trim(link, hitch, &report)
+        {
+            failures.push(format!("rocket {}", summarize(label, &report)));
+        }
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+/// A plasma hold on a clean link whose input stalls: every command from
+/// `STALL_AT` for `stall` ticks is withheld, then the backlog arrives at once,
+/// while the host keeps ticking, as after a lost packet's resend.
+struct StalledHold {
+    fixture: Fixture,
+    /// Host tick on which the client's offset-0 command was sent.
+    base: u32,
+    /// Host tick on which the backlog arrived.
+    stall_end: u32,
+    /// `(start tick, host tick the client saw its refusal)` per refused start.
+    refusals: Vec<(u32, u32)>,
+}
+
+const STALL_START: u32 = 1000;
+const STALL_AT: u32 = 120;
+
+impl StalledHold {
+    fn run(stall: u32) -> Self {
+        let mut fixture = Fixture::new(LinkConfig::perfect(), plasma_rifle(1.0e6));
+        fixture.mirror_rejection_despawn = true;
+        clear_line_of_fire(&fixture);
+        let base = fixture.tick;
+        let mut withheld = Vec::new();
+        let mut refusals = Vec::new();
+        for offset in 0..STREAM_TICKS {
+            let tick = STALL_START + offset;
+            let mut command = held(ActivationLane::Primary, offset == 0);
+            fixture.predict(tick, &mut command);
+            if (STALL_AT..STALL_AT + stall).contains(&offset) {
+                withheld.push((tick, command));
+            } else {
+                for (tick, command) in withheld.drain(..) {
+                    fixture.send_input(tick, &command);
+                }
+                fixture.send_input(tick, &command);
+            }
+            fixture.advance_projectiles();
+            let seen = fixture.outcomes.len();
+            fixture.host_tick();
+            for outcome in &fixture.outcomes[seen..] {
+                if let wire::ActivationOutcome::InitiationRejected { token, .. } = outcome {
+                    refusals.push((token.start_tick, fixture.tick));
+                }
+            }
+        }
+        fixture.idle(STALL_START + STREAM_TICKS, 360);
+        Self {
+            fixture,
+            base,
+            stall_end: base + STALL_AT + stall,
+            refusals,
+        }
+    }
+
+    /// Host ticks between a shot's client prediction and its host fire.
+    fn fire_lag(&self, shot: &AuthorizedShot) -> u32 {
+        shot.fire_tick - (self.base + shot.shot_id.start_tick - STALL_START)
+    }
+
+    /// After two recoveries past the stall, every shot fires within the
+    /// tolerance of its prediction: the backlog drained instead of delaying
+    /// the rest of the hold by the stall.
+    fn assert_rest_of_hold_on_time(&self, label: &str) {
+        let late: Vec<(u32, u32)> = self
+            .fixture
+            .authorized
+            .iter()
+            .filter(|shot| shot.fire_tick >= self.stall_end + 2 * RIFLE_RECOVERY_TICKS)
+            .map(|shot| (shot.shot_id.start_tick, self.fire_lag(shot)))
+            .filter(|&(_, lag)| lag > postretro_combat_model::activation::CHARGE_TOLERANCE_TICKS)
+            .collect();
+        assert!(late.is_empty(), "{label}: (start, fire lag) {late:?}");
+    }
+}
+
+// The 500 ms catch-up allowance (networking.md §Combat authority): a stall up to
+// it drains at once and
+// refuses nothing. Credited no earlier than host now, the backlog drained one
+// shot per recovery and the rest of the hold lagged by the stall.
+#[test]
+fn conditioned_input_stall_within_the_allowance_drains_at_once_and_refuses_nothing() {
+    let run = StalledHold::run(24);
+    let report = stream_report(&run.fixture, true);
+    let summary = summarize("400 ms stall", &report);
+    assert!(
+        report.catch_up_jumps > 0,
+        "the backlog must take the trim: {summary}"
+    );
+    assert!(run.refusals.is_empty(), "{summary}");
+    assert!(
+        report.initiation_rejected.is_empty()
+            && report.fire_denied.is_empty()
+            && report.ghosts.is_empty()
+            && report.bolts_removed_early.is_empty(),
+        "{summary}"
+    );
+    assert!(
+        report.predicted.len() >= 40 && report.authorized == report.predicted,
+        "{summary}"
+    );
+    run.assert_rest_of_hold_on_time("400 ms stall");
+}
+
+// The 500 ms catch-up allowance (networking.md §Combat authority): past it,
+// only the oldest stalled starts are refused, within one resolution per stalled
+// start of the backlog arriving, and the rest of the hold stays on time.
+#[test]
+fn conditioned_input_stall_past_the_allowance_refuses_only_its_oldest_starts_promptly() {
+    const STALL: u32 = 60;
+    let run = StalledHold::run(STALL);
+    let report = stream_report(&run.fixture, true);
+    let summary = summarize("1 s stall", &report);
+    assert!(
+        report.catch_up_jumps > 0,
+        "the backlog must take the trim: {summary}"
+    );
+    let stalled: Vec<u32> = report
+        .predicted
+        .iter()
+        .map(|shot| shot.start_tick)
+        .filter(|tick| (STALL_START + STALL_AT..STALL_START + STALL_AT + STALL).contains(tick))
+        .collect();
+    let refused: Vec<u32> = run.refusals.iter().map(|&(start, _)| start).collect();
+    assert!(!refused.is_empty(), "{summary}");
+    assert_eq!(
+        refused,
+        stalled[..refused.len()],
+        "only the oldest stalled starts, once each: {summary}"
+    );
+    // A stalled start's claim trails host now by its lag behind the stall's end
+    // plus one resolution for each older stalled start the lane met first. So a
+    // start lagging past the allowance is always refused, and one lagging less
+    // than the allowance by more than the whole backlog never is. Between them
+    // lies a grey band where refusal depends on the start's place in the backlog.
+    let allowance = netcode::HostCommandQueues::CATCH_UP_ALLOWANCE_TICKS;
+    let backlog = stalled.len() as u32;
+    let stall_end_tick = STALL_START + STALL_AT + STALL;
+    for &start in &stalled {
+        let lag = stall_end_tick - start;
+        if lag > allowance {
+            assert!(refused.contains(&start), "{start} lagged {lag}: {summary}");
+        } else if lag + backlog < allowance {
+            assert!(!refused.contains(&start), "{start} lagged {lag}: {summary}");
+        }
+    }
+    // The lane meets the backlog one start per resolution once it arrives, past
+    // the standing playout floor on this zero-delay link.
+    const PLAYOUT_FLOOR_TICKS: u32 = 2;
+    for &(start, seen) in &run.refusals {
+        assert!(
+            seen <= run.stall_end + PLAYOUT_FLOOR_TICKS + backlog,
+            "{start} refused on host tick {seen}, stall ended {}",
+            run.stall_end
+        );
+    }
+    assert!(
+        report.fire_denied.is_empty() && report.ghosts.is_empty(),
+        "refused starts mint nothing; every other start fires: {summary}"
+    );
+    assert_eq!(
+        report.authorized.len() + refused.len(),
+        report.predicted.len(),
+        "{summary}"
+    );
+    run.assert_rest_of_hold_on_time("1 s stall");
+}
+
+/// Shots the listen host's own player gets from the same weapon over `ticks`
+/// fixed ticks of held primary: the shared machine with controller starts.
+fn host_player_shots(descriptor: &WeaponDescriptor, ticks: u32) -> usize {
+    let mut component =
+        WeaponComponent::from_descriptor_with_canonical(descriptor, Some("host-player"));
+    (0..ticks)
+        .filter(|&tick| {
+            weapon::execution::advance_weapon_activation(
+                &mut component,
+                weapon::execution::ActivationCommand {
+                    tick,
+                    pawn: 1,
+                    real_command: true,
+                    input: ActivationInput::default(),
+                    controller_starts: true,
+                    primary: weapon::FireButtonState {
+                        pressed: tick == 0,
+                        active: true,
+                    },
+                    secondary: weapon::FireButtonState {
+                        pressed: false,
+                        active: false,
+                    },
+                },
+                DT * 1000.0,
+                false,
+                true,
+            )
+            .shot
+            .is_some()
+        })
+        .count()
+}
+
+// Regression: an outcome reset the client's recovery to the host's remaining
+// value without transit, so a clean-link client fired every ~10 ticks, not 8.
+#[test]
+fn conditioned_clean_link_hold_at_authored_rate_matches_the_host_player_shot_count() {
+    let rifle = plasma_rifle(1.0e6);
+    let host_player = host_player_shots(&rifle, STREAM_TICKS);
+    assert_eq!(
+        host_player, 45,
+        "130 ms recovery is 8 ticks: 45 shots in 6 s"
+    );
+    let (_, report) = run_steady_hold(LinkConfig::perfect(), rifle, true);
+    let summary = summarize("clean", &report);
+    assert_eq!(report.predicted.len(), host_player, "{summary}");
+    assert_eq!(report.authorized, report.predicted, "{summary}");
+    assert!(
+        report.initiation_rejected.is_empty() && report.fire_denied.is_empty(),
+        "{summary}"
+    );
+}
+
+// A client that stamps its starts one recovery apart in client ticks, while its
+// clock runs many times faster than the host's, gains no fire rate: authorized
+// shots over any host window stay within the cadence window bound.
+#[test]
+fn conditioned_tick_stamping_client_cannot_exceed_the_host_cadence_bound() {
+    const HOST_TICKS: u32 = 360;
+    for commands_per_host_tick in [8u32, 24] {
+        let mut fixture = Fixture::new(LinkConfig::perfect(), hitscan_rifle("press", 130.0));
+        let mut client_tick = 1000u32;
+        for _ in 0..HOST_TICKS {
+            for _ in 0..commands_per_host_tick {
+                let command = if client_tick.is_multiple_of(RIFLE_RECOVERY_TICKS) {
+                    stamped_start(client_tick)
+                } else {
+                    neutral()
+                };
+                fixture.send_input(client_tick, &command);
+                client_tick += 1;
+            }
+            fixture.host_tick();
+        }
+        let label = format!("{commands_per_host_tick} commands per host tick");
+        let authorized = fixture.authorized.len() as u32;
+        // The first and last host ticks of the run are `HOST_TICKS - 1` apart.
+        let run_window = HOST_TICKS - 1;
+        // The cadence, not a clogged lane, is what limits the stamping client.
+        assert!(
+            authorized >= run_window / RIFLE_RECOVERY_TICKS,
+            "{label}: {authorized} authorized"
+        );
+        assert!(
+            authorized
+                <= netcode::HostCommandQueues::cadence_window_bound(
+                    run_window,
+                    RIFLE_RECOVERY_TICKS
+                ),
+            "{label}: {authorized} authorized"
+        );
+        assert_within_cadence_window_bound(&fixture, RIFLE_RECOVERY_TICKS, &label);
+    }
+}
+
+// Regression: after an A→B→A switch, A's start read no recorded recovery, fell
+// back to the host's own cooldown, and was refused after compressed delivery.
+// Also: a backlog's commands after the switch froze B's recovery under B's own
+// retained start, which then held A's start until its claim lagged past the
+// allowance.
+// Exempt: a stall past the 500 ms catch-up allowance (networking.md §Combat
+// authority), held to `stall_refusals`.
+#[test]
+fn conditioned_alternating_two_weapons_at_authored_rates_are_never_refused() {
+    // A floor proving both weapons were exercised: each fires on most visits.
+    const MIN_SHOTS_PER_WEAPON: usize = 6;
+    let plasma = plasma_rifle(1.0e6);
+    let rifle = hitscan_rifle("hold", 200.0);
+    let mut failures = Vec::new();
+    for (label, link, hitch) in [
+        (
+            "clean+host-hitch",
+            LinkConfig::perfect(),
+            Some((60u32, 12u32)),
+        ),
+        ("mandated", mandated_link(), None),
+        ("mandated+host-hitch", mandated_link(), Some((60, 12))),
+        (
+            "mandated-seed-a+host-hitch",
+            mandated_link_seeded(TRIM_SEED_A),
+            Some((45, 12)),
+        ),
+    ] {
+        // A phase of 9 ticks fires each weapon about once per visit; 24 several times.
+        for phase in [9u32, 24] {
+            let mut fixture = Fixture::new(link, plasma.clone());
+            fixture.mirror_rejection_despawn = true;
+            let second = fixture.equip_second(&rifle);
+            clear_line_of_fire(&fixture);
+            let start = 1000u32;
+            let mut driver = HitchDriver::new(hitch, start);
+            for offset in 0..STREAM_TICKS {
+                let visit = offset % phase == 0;
+                let mut command = held(ActivationLane::Primary, visit);
+                if visit {
+                    command.select_slot = Some(((offset / phase) % 2) as usize);
+                }
+                driver.step(&mut fixture, offset, command);
+            }
+            fixture.idle(start + STREAM_TICKS, 360);
+            let mut report = stream_report(&fixture, true);
+            // Only the plasma's shots are bolts; the rifle's hitscan has no flight.
+            report.bolts_removed_early.retain(|id| {
+                fixture
+                    .authorized
+                    .iter()
+                    .any(|shot| shot.shot_id == *id && shot.is_projectile)
+            });
+            let per_weapon = [fixture.host_actors.weapon, second].map(|weapon| {
+                fixture
+                    .authorized
+                    .iter()
+                    .filter(|shot| shot.weapon == weapon)
+                    .count()
+            });
+            let label = format!("alternating {label} phase {phase}");
+            if per_weapon.iter().any(|&count| count < MIN_SHOTS_PER_WEAPON) {
+                failures.push(format!(
+                    "{} per weapon {per_weapon:?}",
+                    summarize(&label, &report)
+                ));
+            }
+            failures.extend(stream_cell_failure(
+                &label, link, hitch, &fixture, &report, 0,
+            ));
+        }
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+// Regression: a start the host admitted late fired along the aim of the later
+// command that delivered it, so the host's bolt left on a different line.
+#[test]
+fn conditioned_late_admitted_start_fires_along_its_own_aim_while_the_pawn_faces_the_delivering_command()
+ {
+    let mut fixture = Fixture::new(LinkConfig::perfect(), descriptor(true, false, 1, "press"));
+    fixture.idle(1, 30);
+    let start = token(40, ActivationLane::Primary);
+    let (start_yaw, start_pitch) = (0.6_f32, 0.2_f32);
+    let (later_yaw, later_pitch) = (-0.9_f32, -0.3_f32);
+    // A stalled stream arrives at once: the catch-up trim keeps only the newest
+    // two commands, so the retained start is delivered by command 50.
+    for tick in 31..=51 {
+        let mut command = neutral();
+        if tick == start.start_tick {
+            command = held(ActivationLane::Primary, true);
+            command.activation.initiation = Some(start);
+            command.movement.facing_yaw = start_yaw;
+            fixture.aim_pitch = start_pitch;
+        } else {
+            command.movement.facing_yaw = later_yaw;
+            fixture.aim_pitch = later_pitch;
+        }
+        fixture.send_input(tick, &command);
+    }
+    fixture.host_tick();
+    let fire_tick = fixture.tick - 1;
+    assert_eq!(
+        fixture.playout.last().map(|(_, tick, _)| *tick),
+        Some(50),
+        "the start's own command was trimmed"
+    );
+    let shot = fixture
+        .authorized
+        .iter()
+        .find(|shot| shot.shot_id == fixture.shot_id(start, 0))
+        .expect("the retained start is authorized");
+    assert_eq!(shot.fire_tick, fire_tick);
+    let aim = |yaw: f32, pitch: f32| {
+        Vec3::new(
+            -yaw.sin() * pitch.cos(),
+            pitch.sin(),
+            -yaw.cos() * pitch.cos(),
+        )
+    };
+    let direction = shot.projectile_direction.expect("projectile launch fact");
+    assert!(
+        direction.dot(aim(start_yaw, start_pitch)) > 0.99,
+        "the shot flies along the start's own aim: {direction:?}"
+    );
+    assert!(direction.dot(aim(later_yaw, later_pitch)) < 0.5);
+    let presentation = fixture
+        .presentations
+        .iter()
+        .find(|launch| launch.shot_id == shot.shot_id)
+        .expect("observer launch");
+    assert!(presentation.direction.dot(direction) > 0.999);
+    assert!((presentation.origin - shot.fire_origin).length() < 1.0e-4);
+    let (_, facing) = *fixture
+        .host_facing
+        .iter()
+        .find(|(tick, _)| *tick == fire_tick)
+        .expect("the host recorded its facing on the fire tick");
+    near(facing, later_yaw);
+}
+
+/// Where [`hand_weapon`] puts the client's slot-0 host weapon.
+#[derive(Clone, Copy)]
+enum WeaponLocation {
+    /// Back in the client pawn's slot 0. A holder's inventory is left as it was.
+    Pawn,
+    /// Out of the client pawn's inventory, as when dropped into the world: its
+    /// cooldown freezes.
+    World,
+    /// Out of the client pawn's inventory and into `holder`'s slot 0, as when
+    /// handed over.
+    Holder(EntityId),
+}
+
+fn hand_weapon(fixture: &Fixture, to: WeaponLocation) {
+    let mut registry = fixture.host.borrow_mut();
+    let weapon = fixture.host_actors.weapon;
+    let mut inventory = registry
+        .get_component::<Inventory>(fixture.host_actors.pawn)
+        .expect("client pawn holds an inventory")
+        .clone();
+    inventory.wieldables[0] = matches!(to, WeaponLocation::Pawn).then_some(weapon);
+    registry
+        .set_component(fixture.host_actors.pawn, inventory)
+        .expect("client pawn inventory updates");
+    if let WeaponLocation::Holder(holder) = to {
+        let mut holder_inventory = Inventory::default();
+        holder_inventory.wieldables[0] = Some(weapon);
+        registry
+            .set_component(holder, holder_inventory)
+            .expect("holder inventory attaches");
+    }
+}
+
+// A stamping client that lets its weapon go between starts, dropped to the
+// world (its cooldown frozen) or handed to a holder who wields it (its cooldown
+// running), cannot restart its credited recovery when it takes the weapon
+// back: on that weapon, authorized shots over any host window stay within the
+// cadence window bound.
+#[test]
+fn conditioned_drop_or_hand_over_under_stamping_cannot_exceed_the_weapon_bound() {
+    use postretro_combat_model::activation::CHARGE_TOLERANCE_TICKS;
+    const HOST_TICKS: u32 = 600;
+    // The weapon is away for one host tick on even cycles and two on odd ones.
+    const MAX_AWAY_TICKS: u32 = 2;
+    for (recovery_ms, recovery_ticks) in [(16.0, 1u32), (66.0, 4), (130.0, 8), (500.0, 30)] {
+        for (drop_period, holder_wields) in [(5u32, false), (23, false), (5, true), (23, true)] {
+            let mut fixture =
+                Fixture::new(LinkConfig::perfect(), hitscan_rifle("press", recovery_ms));
+            let holder = fixture.host.borrow_mut().spawn(Transform::default());
+            let away_to = if holder_wields {
+                WeaponLocation::Holder(holder)
+            } else {
+                WeaponLocation::World
+            };
+            // Leave late enough in each cycle that even the longer absence
+            // returns before the next one begins.
+            let leaves_at = drop_period - 1 - MAX_AWAY_TICKS;
+            let mut client_tick = 1000u32;
+            let mut away = false;
+            for host_tick in 0..HOST_TICKS {
+                let phase = host_tick % drop_period;
+                let away_ticks = 1 + (host_tick / drop_period) % MAX_AWAY_TICKS;
+                if phase == leaves_at {
+                    hand_weapon(&fixture, away_to);
+                    away = true;
+                } else if away && phase == leaves_at + away_ticks {
+                    hand_weapon(&fixture, WeaponLocation::Pawn);
+                    away = false;
+                }
+                if away && holder_wields {
+                    // The other holder's machine counts the cooldown down.
+                    let mut registry = fixture.host.borrow_mut();
+                    let Ok(ComponentValue::Weapon(component)) = registry
+                        .get_component_value_mut(fixture.host_actors.weapon, ComponentKind::Weapon)
+                    else {
+                        panic!("the handed-over weapon stays live");
+                    };
+                    component.cooldown_remaining_ms =
+                        (component.cooldown_remaining_ms - DT * 1000.0).max(0.0);
+                }
+                for _ in 0..8 {
+                    let command = if client_tick.is_multiple_of(recovery_ticks) {
+                        stamped_start(client_tick)
+                    } else {
+                        neutral()
+                    };
+                    fixture.send_input(client_tick, &command);
+                    client_tick += 1;
+                }
+                fixture.host_tick();
+            }
+            let label = format!(
+                "R {recovery_ticks}, away every {drop_period}, holder wields {holder_wields}"
+            );
+            let authorized = fixture.authorized.len() as u32;
+            assert!(
+                authorized >= HOST_TICKS / (recovery_ticks + CHARGE_TOLERANCE_TICKS) / 2,
+                "{label}: the weapon still fires, {authorized} authorized"
+            );
+            assert_within_cadence_window_bound(&fixture, recovery_ticks, &label);
+        }
+    }
+}
+
+// Regression: a weapon handed back to a client carried that client's stale
+// cadence record, which zeroed the host cooldown another holder had just begun.
+#[test]
+fn conditioned_handed_back_weapon_cannot_fire_on_its_old_holders_stale_record() {
+    let mut fixture = Fixture::new(LinkConfig::perfect(), hitscan_rifle("press", 130.0));
+    let mut client_tick = 1000u32;
+    let send = |fixture: &mut Fixture, client_tick: u32, start: bool| {
+        let command = if start {
+            stamped_start(client_tick)
+        } else {
+            neutral()
+        };
+        fixture.send_input(client_tick, &command);
+    };
+    for _ in 0..40 {
+        send(
+            &mut fixture,
+            client_tick,
+            client_tick.is_multiple_of(RIFLE_RECOVERY_TICKS),
+        );
+        client_tick += 1;
+        fixture.host_tick();
+    }
+    let earlier = fixture.authorized.len();
+    assert!(earlier >= 3, "the client's own cadence is recorded");
+    let other = fixture.host.borrow_mut().spawn(Transform::default());
+    hand_weapon(&fixture, WeaponLocation::Holder(other));
+    send(&mut fixture, client_tick, false);
+    client_tick += 1;
+    fixture.host_tick();
+    // The other holder fires it on this host tick, so its recovery runs anew.
+    let handed_tick = fixture.tick;
+    {
+        let mut registry = fixture.host.borrow_mut();
+        let Ok(ComponentValue::Weapon(component)) =
+            registry.get_component_value_mut(fixture.host_actors.weapon, ComponentKind::Weapon)
+        else {
+            panic!("host weapon");
+        };
+        component.cooldown_remaining_ms = 130.0;
+    }
+    hand_weapon(&fixture, WeaponLocation::Pawn);
+    // Back with the client, whose stamps claim a whole recovery has passed.
+    let stale = client_tick + 64;
+    for tick in client_tick..stale {
+        send(&mut fixture, tick, false);
+    }
+    send(&mut fixture, stale, true);
+    for tick in stale + 1..stale + 30 {
+        send(&mut fixture, tick, false);
+        fixture.host_tick();
+    }
+    let early: Vec<u32> = fixture.authorized[earlier..]
+        .iter()
+        .map(|shot| shot.fire_tick)
+        .filter(|&tick| tick < handed_tick + RIFLE_RECOVERY_TICKS)
+        .collect();
+    assert!(
+        early.is_empty(),
+        "no shot inside the other holder's recovery: {early:?}"
+    );
+    let stale_token = wire_token(token(stale, ActivationLane::Primary));
+    assert!(
+        fixture.outcomes.iter().any(|outcome| matches!(
+            outcome,
+            wire::ActivationOutcome::InitiationRejected { token, .. }
+                if *token == stale_token
+        )),
+        "the stale-stamped start is refused, not admitted on the old record"
+    );
+}
+
+/// Host ticks from when the client sent its command at `client_tick` to `host_tick`.
+fn delay_since_sent(fixture: &Fixture, client_tick: u32, host_tick: u32) -> u32 {
+    let sent = fixture
+        .sent
+        .iter()
+        .position(|input| input.client_tick == client_tick)
+        .expect("the command was sent");
+    host_tick - fixture.sent_at[sent]
+}
+
+/// A clean link carries no stall, so playout delivers each command within a
+/// few ticks of sending it.
+const CLEAN_LINK_DELIVERY_TICKS: u32 = 4;
+
+/// A 600 ms press rifle in slot 0, tapped twice 3 ticks apart: the second tap
+/// lands inside its recovery, so the client's prediction refuses it, but the
+/// client names a start on every rising edge as production does. `then` runs
+/// the client ticks after it.
+fn double_tap_then(then: impl Fn(u32) -> sim::SimCommand) -> Fixture {
+    let mut fixture = Fixture::new(LinkConfig::perfect(), hitscan_rifle("press", 600.0));
+    fixture.mirror_rejection_despawn = true;
+    fixture.equip_second(&hitscan_rifle("press", 130.0));
+    let start = 1000u32;
+    for offset in 0..60 {
+        let tick = start + offset;
+        let command = match offset {
+            0 | 3 => stamped_start(tick),
+            _ => then(offset),
+        };
+        fixture.step(tick, command);
+    }
+    fixture.idle(start + 60, 60);
+    let refused_tap = token(start + 3, ActivationLane::Primary);
+    assert!(
+        fixture
+            .snapshots
+            .iter()
+            .all(|shot| shot.activation.shot_id.start_tick != refused_tap.start_tick),
+        "the client's prediction refuses the second tap"
+    );
+    assert!(
+        fixture
+            .sent
+            .iter()
+            .any(|input| input.activation.initiation == Some(wire_token(refused_tap))),
+        "but still names its start"
+    );
+    assert!(
+        fixture.outcomes.iter().any(|outcome| matches!(outcome,
+            wire::ActivationOutcome::InitiationRejected { token, .. } if *token == wire_token(refused_tap))),
+        "the host refuses it"
+    );
+    assert!(
+        fixture
+            .authorized
+            .iter()
+            .all(|shot| shot.shot_id.start_tick != refused_tap.start_tick)
+    );
+    fixture
+}
+
+// Regression: a tap the client's prediction refused still named a start, which
+// waited at the host's lane front on host time for most of the weapon's
+// recovery. A switch-and-fire or a reload right after the double tap waited
+// behind it, about half a second on a clean link.
+#[test]
+fn conditioned_locally_refused_tap_never_delays_a_following_switch_and_fire() {
+    let fired = 1006u32;
+    let fixture = double_tap_then(|offset| {
+        let mut command = if offset == 6 {
+            stamped_start(1000 + offset)
+        } else {
+            neutral()
+        };
+        if offset == 5 {
+            command.select_slot = Some(1);
+        }
+        command
+    });
+    let shot = fixture
+        .authorized
+        .iter()
+        .find(|shot| shot.shot_id.start_tick == fired)
+        .expect("the switched-to weapon fires");
+    assert_ne!(shot.weapon, fixture.host_actors.weapon, "fired from slot 1");
+    let delay = delay_since_sent(&fixture, fired, shot.fire_tick);
+    assert!(
+        delay <= CLEAN_LINK_DELIVERY_TICKS,
+        "fired {delay} host ticks after sending"
+    );
+}
+
+#[test]
+fn conditioned_locally_refused_tap_never_delays_a_following_reload() {
+    let pressed = 1005u32;
+    let fixture = double_tap_then(|offset| {
+        let mut command = neutral();
+        command.reload = offset == 5;
+        command
+    });
+    let (host_tick, _) = fixture
+        .resolved_commands
+        .iter()
+        .find(|(_, resolved)| resolved.command.reload)
+        .expect("the reload press reaches the host");
+    let delay = delay_since_sent(&fixture, pressed, *host_tick);
+    assert!(
+        delay <= CLEAN_LINK_DELIVERY_TICKS,
+        "reloaded {delay} host ticks after sending"
+    );
+}
+
+/// A three-round burst tapped at `TAP`, whose input then stalls into the
+/// catch-up trim, so the host admits the start late. Four ticks into the burst,
+/// after its second shot and before its third, `edge` adds a reload press or
+/// the burst's cancel.
+fn late_burst_with_edge(edge: impl Fn(&mut sim::SimCommand, ActivationToken)) -> Fixture {
+    const START: u32 = 1000;
+    const TAP: u32 = 10;
+    const STALL: std::ops::Range<u32> = 8..30;
+    let mut fixture = Fixture::new(LinkConfig::perfect(), burst_rifle("press", 130.0));
+    fixture.mirror_rejection_despawn = true;
+    let tap = token(START + TAP, ActivationLane::Primary);
+    let mut withheld = Vec::new();
+    for offset in 0..60 {
+        let tick = START + offset;
+        let mut command = if offset == TAP {
+            stamped_start(tick)
+        } else {
+            neutral()
+        };
+        if offset == TAP + 4 {
+            edge(&mut command, tap);
+        }
+        fixture.predict(tick, &mut command);
+        if STALL.contains(&offset) {
+            withheld.push((tick, command));
+        } else {
+            for (tick, command) in withheld.drain(..) {
+                fixture.send_input(tick, &command);
+            }
+            fixture.send_input(tick, &command);
+        }
+        fixture.advance_projectiles();
+        fixture.host_tick();
+    }
+    fixture.idle(START + 60, 120);
+    let delivered = fixture
+        .resolved_commands
+        .iter()
+        .find(|(_, resolved)| resolved.command.activation.initiation == Some(tap))
+        .map(|(_, resolved)| resolved.client_tick)
+        .expect("the stalled start is delivered");
+    assert!(
+        delivered > tap.start_tick + 4,
+        "the start is admitted late, behind its edge"
+    );
+    let predicted: Vec<u8> = fixture
+        .snapshots
+        .iter()
+        .map(|shot| shot.activation.shot_id.ordinal)
+        .collect();
+    assert_eq!(
+        predicted,
+        vec![0, 1],
+        "the client fires two rounds before its edge"
+    );
+    fixture
+}
+
+fn assert_host_fires_what_the_client_fired(fixture: &Fixture) {
+    let predicted: Vec<ShotId> = fixture
+        .snapshots
+        .iter()
+        .map(|shot| shot.activation.shot_id)
+        .collect();
+    let authorized: Vec<ShotId> = fixture.authorized.iter().map(|shot| shot.shot_id).collect();
+    assert_eq!(
+        authorized, predicted,
+        "the host mints every round the client fired, no more"
+    );
+    assert!(
+        fixture.hit_refusals.is_empty(),
+        "{:?}",
+        fixture.hit_refusals
+    );
+}
+
+// Regression: after a late start's delivery, a reload the client pressed
+// mid-burst reached the host on the next tick and cut the burst short of a
+// round the client had already fired, so that round's HIT was denied.
+#[test]
+fn conditioned_reload_pressed_mid_burst_keeps_every_round_fired_before_it_after_a_stall() {
+    let fixture = late_burst_with_edge(|command, _| command.reload = true);
+    assert_host_fires_what_the_client_fired(&fixture);
+}
+
+// Regression: the same for a cancel, which reached the host on the start's own
+// delivery tick.
+#[test]
+fn conditioned_cancel_mid_burst_keeps_every_round_fired_before_it_after_a_stall() {
+    let fixture = late_burst_with_edge(|command, tap| command.activation.cancel = Some(tap));
+    assert_host_fires_what_the_client_fired(&fixture);
+}
+
+// Weapon-switch declarations ordered by client tick with starts and presses.
+mod switch_order;

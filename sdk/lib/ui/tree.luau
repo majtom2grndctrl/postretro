@@ -82,7 +82,9 @@ end
 
 --- Build a placement envelope wrapping `root`. Props come first, the root widget
 --- descriptor (from `widgets`/`layout`) is a POSITIONAL second argument. `offset`
---- is an `{x, y}` logical-reference px tuple (+x right, +y down).
+--- is an `{x, y}` logical-reference px tuple (+x right, +y down). An optional
+--- `background = { image }` names a UI image drawn across the whole window with
+--- cover fit, beneath the tree's widgets.
 ---
 --- Field emission order matches the Rust struct declaration (anchor, offset,
 --- root, captureMode, initialFocus, textEntryTarget) so the JSON re-serializes
@@ -154,6 +156,18 @@ function UiTreeSdk.Tree(props: any, root: any): WidgetDescriptor
     end
     -- An explicit value is kept either way: `false` opts the tree out.
     out.restoreOnReturn = props.restoreOnReturn
+  end
+  if props.background ~= nil then
+    if type(props.background) ~= "table" then
+      error("Tree: `background` must be a table `{ image }`")
+    end
+    for key in pairs(props.background) do
+      if key ~= "image" then
+        error("Tree: unknown `background` key `" .. tostring(key) .. "`")
+      end
+    end
+    requireNonemptyString(props.background.image, "background.image", "Tree")
+    out.background = { image = props.background.image }
   end
   return out
 end

@@ -438,6 +438,7 @@ mod tests {
             accessible_name: None,
             role: None,
             restore_on_return: None,
+            background: None,
         }
     }
 

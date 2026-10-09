@@ -17,6 +17,8 @@
   export type WidgetAnchor = "topLeft" | "top" | "topRight" | "left" | "center" | "right" | "bottomLeft" | "bottom" | "bottomRight";
   /** Tree input behavior. */
   export type WidgetCaptureMode = "capture" | "passthrough";
+  /** Tree background: `image` is a UI image key (the `Image({ asset })` namespace), drawn full-window with cover fit beneath the tree's widgets. Decorative; a missing image draws nothing. */
+  export type TreeBackground = { image: string };
   /** Flat `AnchoredTree` manifest envelope stored in UI registries. */
   export type AnchoredTreeDescriptor = {
     anchor: WidgetAnchor;
@@ -28,6 +30,7 @@
     accessibleName?: string;
     role?: WidgetRole;
     restoreOnReturn?: boolean;
+    background?: TreeBackground;
   };
   /** Motion easing used by passive world-anchored presentation templates. */
   export type PresentationEasing = "linear" | "easeIn" | "easeOut" | "easeInOut";

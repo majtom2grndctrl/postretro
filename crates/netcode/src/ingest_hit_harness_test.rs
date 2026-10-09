@@ -169,6 +169,7 @@ fn remote_fire(pawn: EntityId, weapon: EntityId, shot_id: ShotId) -> RemotePawnC
         fire_tick: 10,
         client_tick: shot_id.client_tick(),
         aim_pitch: 0.0,
+        start_aim: None,
         command: SimCommand {
             input_tick: 0,
             activation: postretro_foundation::ActivationInput {

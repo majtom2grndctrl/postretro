@@ -1,7 +1,7 @@
 // Loading screen: which UI tree a level load shows, the two `loading.*`
 // slots it publishes, the world-less frame it draws on, and the one frame of
 // delay between the worker's delivery and the install.
-// See: context/lib/boot_sequence.md §1, §4 · context/lib/ui.md §1, §3
+// See: context/lib/boot_sequence.md §1, §4 · context/lib/ui.md §1, §3, §5
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -13,8 +13,13 @@ use postretro_scripting_core::runtime::ModLoading;
 use winit::event_loop::ActiveEventLoop;
 
 use crate::App;
+use crate::app::ui_images::ManifestImageRefs;
 use crate::startup::LevelLoadEntry;
 use crate::startup::worker::LevelPayload;
+
+#[path = "loading_screen_images.rs"]
+mod images;
+use images::{LoadingImages, wanted_loading_images};
 
 /// Registry name of the engine fallback loading tree (`core/ui/loadingScreen.json`).
 /// A mod tree under the same name shadows it.
@@ -50,6 +55,9 @@ struct ActiveLoad {
     ui_time: f64,
     /// A delivered payload waiting one painted frame before it installs.
     delivered: Option<LevelPayload>,
+    /// The chosen tree's loading-only images: decoding, then uploaded until
+    /// this load ends.
+    images: LoadingImages,
 }
 
 impl LoadingScreenState {
@@ -57,6 +65,14 @@ impl LoadingScreenState {
     /// reload). A load already showing keeps its tree.
     pub(crate) fn commit(&mut self, loading: ModLoading) {
         self.mod_pool = loading.tree;
+    }
+
+    /// `keys` were just registered by their own owner (eager mod images or
+    /// glyph art); the active load must not release them.
+    pub(crate) fn disown_images(&mut self, keys: &HashSet<String>) {
+        if let Some(load) = self.active.as_mut() {
+            load.images.disown(keys);
+        }
     }
 }
 
@@ -116,10 +132,14 @@ fn random_index(len: usize) -> usize {
 }
 
 impl App {
-    /// Start the loading screen for `entry`: pick its tree, publish the level
-    /// name and zero progress. Returns the counter the worker reports through.
+    /// Start the loading screen for `entry`: pick its tree, start decoding
+    /// its loading-only images, publish the level name and zero progress.
+    /// Returns the counter the worker reports through.
     pub(crate) fn begin_loading_screen(&mut self, entry: &LevelLoadEntry) -> Arc<LoadProgress> {
         let progress = Arc::new(LoadProgress::new());
+        // A load replacing one still showing releases that load's images.
+        self.end_active_load();
+        let renderer = self.renderer.as_ref();
         let Some(session) = self.session.as_mut() else {
             return progress;
         };
@@ -143,12 +163,29 @@ impl App {
                 "[UI] no loading tree is registered, not even `{LOADING_SCREEN_NAME}`; loads show the boot splash"
             );
         }
+        let wanted = tree
+            .as_deref()
+            .and_then(|name| modal_stack.resolve_with_tier(name))
+            .map(|(_, descriptor)| {
+                wanted_loading_images(descriptor, &session.mod_ui_images, |key| {
+                    renderer.is_some_and(|renderer| renderer.has_ui_image(key))
+                })
+            })
+            .unwrap_or_default();
+        // An `Image` drawing one of them misses it until its upload lands;
+        // that is the decode's wait, not an unregistered key.
+        if let Some(renderer) = renderer {
+            for (key, _) in &wanted {
+                renderer.expect_ui_image(key);
+            }
+        }
         state.active = Some(ActiveLoad {
             tree,
             progress: progress.clone(),
             shown: 0.0,
             ui_time: 0.0,
             delivered: None,
+            images: LoadingImages::start(&self.content_root, wanted),
         });
         let ctx = session.scripting.script_ctx.clone();
         write_loading_slot(&ctx, LEVEL_NAME_SLOT, SlotValue::String(entry.name.clone()));
@@ -156,18 +193,37 @@ impl App {
         progress
     }
 
-    /// End the loading screen, success or failure: drop any undelivered
-    /// payload and reset both slots to their defaults.
+    /// End the loading screen — reveal, failure, abandon, relevel or suspend:
+    /// drop any undelivered payload, release the load's loading-only images
+    /// and discard decodes still in flight, and reset both slots to their
+    /// defaults.
     pub(crate) fn end_loading_screen(&mut self) {
+        if !self.end_active_load() {
+            return;
+        }
         let Some(session) = self.session.as_mut() else {
             return;
         };
-        if session.loading_screen.active.take().is_none() {
-            return;
-        }
         let ctx = session.scripting.script_ctx.clone();
         write_loading_slot(&ctx, LEVEL_NAME_SLOT, SlotValue::String(String::new()));
         write_loading_slot(&ctx, PROGRESS_SLOT, SlotValue::Number(0.0));
+    }
+
+    /// Drop the active load, if any, unregistering the images it uploaded.
+    /// Without a renderer (suspend) there is nothing left to unregister.
+    /// Returns whether a load was active.
+    fn end_active_load(&mut self) -> bool {
+        let Some(load) = self
+            .session
+            .as_mut()
+            .and_then(|session| session.loading_screen.active.take())
+        else {
+            return false;
+        };
+        if let Some(renderer) = self.renderer.as_mut() {
+            load.images.release(renderer);
+        }
+        true
     }
 
     /// Whether a delivered payload is waiting for its install frame. Counts as
@@ -267,6 +323,7 @@ impl App {
         let frame_start = Instant::now();
         self.advance_loading_screen(frame_dt);
         self.sync_glyph_art();
+        self.poll_loading_images();
         match self.loading_screen_snapshot() {
             Some(snapshot) => {
                 if !self.present_world_less_frame(
@@ -324,16 +381,18 @@ impl App {
         Some(snapshot)
     }
 
-    /// Commit a manifest's loading-screen fields: the mod pool and `uiImages`.
-    /// The images upload on the next sync.
+    /// Commit a manifest's loading-screen fields: the mod pool, `uiImages`,
+    /// and the image keys its UI names, which decide the loading-only split.
+    /// Eager images upload on the next sync.
     pub(crate) fn commit_loading_manifest(
         &mut self,
         ui_images: std::collections::BTreeMap<String, String>,
         loading: ModLoading,
+        image_refs: ManifestImageRefs,
     ) {
         if let Some(session) = self.session.as_mut() {
             session.loading_screen.commit(loading);
-            session.mod_ui_images.commit(ui_images);
+            session.mod_ui_images.commit(ui_images, image_refs);
         }
     }
 
@@ -350,14 +409,21 @@ impl App {
         if !matches!(outcome, StagedManifestCommitOutcome::Committed { .. }) {
             return;
         }
-        let (ui_images, loading) = match &result.status {
-            StagedManifestBuildStatus::Built(manifest) => {
-                (manifest.ui_images.clone(), manifest.loading.clone())
-            }
+        let (ui_images, loading, image_refs) = match &result.status {
+            StagedManifestBuildStatus::Built(manifest) => (
+                manifest.ui_images.clone(),
+                manifest.loading.clone(),
+                ManifestImageRefs::from_manifest(
+                    &manifest.ui_trees,
+                    &manifest.presentation_templates,
+                    &manifest.maps,
+                    &manifest.loading.tree,
+                ),
+            ),
             StagedManifestBuildStatus::NoStartScript => Default::default(),
             StagedManifestBuildStatus::Failed => return,
         };
-        self.commit_loading_manifest(ui_images, loading);
+        self.commit_loading_manifest(ui_images, loading, image_refs);
     }
 }
 

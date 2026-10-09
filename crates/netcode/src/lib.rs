@@ -7,6 +7,7 @@
 #![deny(unsafe_code)]
 
 mod activation_edges;
+pub use activation_edges::LaneRefusal;
 pub mod activation_ledger;
 mod shot_records;
 #[cfg(test)]
@@ -42,6 +43,9 @@ mod endpoint;
 pub mod frame_order;
 mod host;
 mod host_address;
+// Weapon-switch declarations: intake into the ordered switch lane, then
+// validation, application and reply on the fixed tick that releases them.
+mod host_switch;
 // Fix B: host-side delay-buffered presentation of connected-client pawns. New logic
 // lives here; `main.rs`/`interpolation.rs`/`endpoint.rs` carry only thin wiring.
 mod host_presentation;
@@ -103,8 +107,8 @@ mod snapshot_regression_harness_test;
 
 pub use client::{ClientPresentationInputs, ClientReplication, MoverCorrection};
 pub use command_queue::{
-    HostCommandQueues, MovementOwners, ResolutionSource, ResolvedPawnCommand, WeaponOwners,
-    active_wieldable_for_pawn, host_resolve_remote_commands,
+    CadenceVerdict, HostCommandQueues, MovementOwners, ResolutionSource, ResolvedPawnCommand,
+    WeaponOwners, active_wieldable_for_pawn, host_resolve_remote_commands,
 };
 pub use endpoint::{
     ClientApplyFrameOutcome, ClientArmedLocalPawn, ClientTimeSync, CurrentSwitchResolution,
@@ -122,6 +126,9 @@ pub use host_presentation::{
     record_client_pawn_poses as host_record_client_pawn_poses,
     restore_client_pawn_authoritative_poses as host_restore_client_pawn_authoritative_poses,
 };
+#[cfg(test)]
+use host_switch::{HostSwitchDecision, apply_host_switch_declaration};
+pub use host_switch::{host_apply_switch_deliveries, host_retain_switch_declaration};
 // `ResolvedCommand` / `ResolutionSource` are produced by the command queue and consumed
 // via the submodule path only; not re-exported here.
 pub use host_address::{dialable_host_address, probe_lan_address};
@@ -135,8 +142,7 @@ pub use prediction::ClientPrediction;
 pub use presentation::{ClientOverlayFact, ingest_client_overlay_fact};
 pub use presentation::{
     ClientOverlayFactState, HostOverlayFactTracker, ingest_client_presentation_messages,
-    route_host_presentation_spawns, route_host_world_point_presentation_spawns,
-    send_host_overlay_facts, update_client_overlay_anchors,
+    route_host_presentation_spawns, send_host_overlay_facts, update_client_overlay_anchors,
 };
 pub use seat::clear_released_seat_slot_values;
 pub use state_slots::{HostStateReplication, ReplicatedSlotIdentity};
@@ -185,7 +191,7 @@ use postretro_entities::components::weapon::WeaponComponent;
 use postretro_entities::provenance::DescriptorProvenance;
 use postretro_entities::{
     ComponentKind, ComponentValue, EntityId, EntityRegistry, EntityTypeDescriptor, FactionRegistry,
-    FactionSentimentState, SlotTable, Transform, WorldPointPresentationSpawn,
+    FactionSentimentState, SlotTable, Transform,
 };
 use postretro_foundation::{NavAgentParams, PlayerMovementComponent, WeaponPlacementDescriptor};
 use postretro_net::replication::ServerReplication;
@@ -1462,120 +1468,6 @@ pub fn tuning_payload_for_pawn(
     TuningPayload::new(movement, wieldables)
 }
 
-/// Validate one client-declared switch against the host's live pawn inventory.
-/// The client owns its equip presentation, while the host owns the committed slot
-/// used by snapshots and server-side systems. A refusal is owner-private reliable
-/// Control because a snapshot cannot recover a stationary client with no later
-/// baseline change to compare against.
-#[allow(clippy::too_many_arguments)] // keeps the wire declaration handler a flat leaf entry point.
-pub fn host_handle_switch_declaration(
-    registry: &mut EntityRegistry,
-    server: &mut NetServer,
-    slot_pawns: &SlotPawns,
-    weapon_owners: &mut WeaponOwners,
-    client_id: u64,
-    declaration_id: u32,
-    slot: u8,
-    mod_block_during_reload: bool,
-) {
-    let Some(pawn) = slot_pawns.pawn_for(client_id) else {
-        return;
-    };
-    if apply_host_switch_declaration(
-        registry,
-        pawn,
-        weapon_owners,
-        usize::from(slot),
-        mod_block_during_reload,
-    ) == HostSwitchDecision::Accepted
-    {
-        send_switch_accepted(server, client_id, declaration_id, slot);
-    } else {
-        send_switch_refusal(server, client_id, declaration_id, slot);
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum HostSwitchDecision {
-    Accepted,
-    Refused,
-}
-
-fn apply_host_switch_declaration(
-    registry: &mut EntityRegistry,
-    pawn: EntityId,
-    weapon_owners: &mut WeaponOwners,
-    target_slot: usize,
-    mod_block_during_reload: bool,
-) -> HostSwitchDecision {
-    let Some((mut inventory, active_changed)) =
-        crate::sim::normalize_wieldable_inventory(registry, pawn)
-    else {
-        return HostSwitchDecision::Refused;
-    };
-    if active_changed {
-        weapon_owners.mark_attachment_dirty(pawn);
-    }
-    let Some(_target) = inventory.wieldables.get(target_slot).copied().flatten() else {
-        return HostSwitchDecision::Refused;
-    };
-    if target_slot == inventory.active_slot {
-        return HostSwitchDecision::Accepted;
-    }
-
-    let reload_blocks_switch = inventory
-        .active_wieldable()
-        .and_then(|active| {
-            registry
-                .get_component::<postretro_entities::components::weapon::WeaponComponent>(active)
-                .ok()
-        })
-        .is_some_and(|weapon| {
-            weapon
-                .block_during_reload
-                .unwrap_or(mod_block_during_reload)
-                && weapon.state.is_reload_activity()
-        });
-    if reload_blocks_switch {
-        return HostSwitchDecision::Refused;
-    }
-
-    if let Some(outgoing) = inventory.active_wieldable()
-        && let Ok(postretro_entities::ComponentValue::Weapon(component)) =
-            registry.get_component_value_mut(outgoing, postretro_entities::ComponentKind::Weapon)
-    {
-        component.cancel_activation();
-    }
-    inventory.active_slot = target_slot;
-    inventory.switch_target = None;
-    inventory.switch_origin = None;
-    let _ = registry.set_component(pawn, inventory);
-    weapon_owners.mark_attachment_dirty(pawn);
-    HostSwitchDecision::Accepted
-}
-
-fn send_switch_accepted(server: &mut NetServer, client_id: u64, declaration_id: u32, slot: u8) {
-    server.send_control(
-        client_id,
-        wire::encode(&ServerControlMessage::SwitchAccepted(
-            ServerSwitchAccepted {
-                declaration_id,
-                slot,
-            },
-        )),
-    );
-}
-
-fn send_switch_refusal(server: &mut NetServer, client_id: u64, declaration_id: u32, slot: u8) {
-    server.send_control(
-        client_id,
-        wire::encode(&ServerControlMessage::SwitchRefused(ServerSwitchRefused {
-            declaration_id,
-            slot,
-        })),
-    );
-}
-
 pub fn host_send_tuning_if_changed(
     server: &mut NetServer,
     last_sent_tuning: &mut HashMap<u64, TuningPayload>,
@@ -1775,12 +1667,16 @@ const WORLD_CONTACT_LOS_PULLBACK: f32 = 0.01;
 /// How far from unit length a declared normal may be and still count.
 const DECLARED_NORMAL_TOLERANCE: f32 = 1.0e-2;
 
-/// A declared normal is contact data only: finite and unit length, or the
-/// record's contact is dropped. Damage validation never reads it.
-fn declared_normal(record: &wire::HitRecord) -> Option<Vec3> {
+/// A declared normal is contact data only: finite and unit length, or zero so
+/// an accepted contact keeps its burst along the upward fallback. Damage
+/// validation never reads it.
+fn declared_normal(record: &wire::HitRecord) -> Vec3 {
     let normal = Vec3::from_array(record.normal);
-    (normal.is_finite() && (normal.length() - 1.0).abs() <= DECLARED_NORMAL_TOLERANCE)
-        .then(|| normal.normalize())
+    if normal.is_finite() && (normal.length() - 1.0).abs() <= DECLARED_NORMAL_TOLERANCE {
+        normal.normalize()
+    } else {
+        Vec3::ZERO
+    }
 }
 
 /// A presentation-only hitscan world contact: within range of the shooter's
@@ -1915,7 +1811,10 @@ pub fn host_ingest_ready_hit_declarations(
             );
         }
         // A remote shot's validated contacts are its one `impact`, as a local shot's are.
+        // The host's own screen bursts once per contact here, splash included; every
+        // other peer bursts from the cue below.
         if !result.contacts.is_empty() {
+            weapon::spawn_impact_effects_for_contacts(registry, &result.contacts);
             let shot_id = crate::wire_convert::shot_id_from_wire(pending.declaration.shot_id);
             let emitter = emission::Emitter::Contacts(result.contacts);
             if let Some(cue) = weapon_cues::freeze_observer_weapon_cue(
@@ -2162,13 +2061,6 @@ fn ingest_hit_declaration(
             );
         }
         let point = impact.point;
-        weapon::spawn_impact_effect_at(context.registry, point, impact.normal);
-        context
-            .registry
-            .push_world_point_presentation_spawn(WorldPointPresentationSpawn {
-                world_anchor: point,
-                owner_pawn: open.shot.pawn.to_raw(),
-            });
         let hit_accepted = crate::sim::splash::emit_splash_damage(
             context.registry,
             context.hit_zone_store,
@@ -2215,15 +2107,13 @@ fn ingest_hit_declaration(
         None
     };
     let mut contacts = Vec::new();
-    if let Some(record) = projectile_record
-        && let Some(normal) = declared_normal(record)
-    {
+    if let Some(record) = projectile_record {
         let target = context
             .allocator
             .entity_for_network_id(NetworkId(record.target));
         contacts.push(emission::ImpactContact::new(
             Vec3::from_array(record.point),
-            normal,
+            declared_normal(record),
             target,
         ));
     }
@@ -2248,11 +2138,8 @@ fn ingest_hit_declaration(
             continue;
         }
         // Every validated hitscan pellet is a contact of the shot's one impact:
-        // an accepted entity hit, or a presentation-only world contact. A bad
-        // normal drops only this record's contact data.
-        let Some(normal) = declared_normal(record) else {
-            continue;
-        };
+        // an accepted entity hit, or a presentation-only world contact.
+        let normal = declared_normal(record);
         let point = Vec3::from_array(record.point);
         if accepted {
             let target = context
@@ -2434,7 +2321,7 @@ fn apply_valid_hit_record(
         point,
         // A malformed declared normal leaves the impact normal-less; damage
         // never depends on it.
-        normal: declared_normal(record).unwrap_or(Vec3::ZERO),
+        normal: declared_normal(record),
         target: Some(target),
         zone: record.zone.clone(),
         outcome: ActivationOutcome::Hit(weapon::DamagePayload {
@@ -3791,6 +3678,7 @@ mod tests {
             projectile_speed: None,
             projectile_lifetime_seconds: None,
             projectile_tick_seconds: None,
+            projectile_static_contact_distance: None,
             is_projectile: false,
             fire_origin: Vec3::ZERO,
             timeout_budget_ticks: MAX_OPEN_SHOT_AGE_TICKS,
@@ -3960,11 +3848,11 @@ mod tests {
         );
     }
 
-    // A malformed normal voids only that record's contact data; damage
-    // validation never reads it. A wall contact the shooter cannot see is not a
-    // contact.
+    // A malformed normal never voids an accepted contact: the contact keeps a
+    // zero normal, and damage validation never reads it. A wall contact the
+    // shooter cannot see is not a contact.
     #[test]
-    fn remote_contact_normals_and_sightlines_gate_only_contact_data() {
+    fn remote_contacts_zero_malformed_normals_and_drop_unseen_world_contacts() {
         let mut fixture = HitIngestFixture::new(wall_at_x(2.0));
         fixture.set_live_pellet_count(2);
         fixture.mint_shot_from_live_weapon();
@@ -3973,7 +3861,15 @@ mod tests {
         bad_normal.normal = [0.0, 0.0, 0.0];
         let behind_wall = world_contact(Vec3::new(8.0, 0.5, 0.0), Vec3::NEG_X);
         let result = fixture.ingest_result(7, &fixture.declaration(vec![bad_normal, behind_wall]));
-        assert!(result.contacts.is_empty(), "{:?}", result.contacts);
+        assert_eq!(
+            result.contacts,
+            vec![emission::ImpactContact::new(
+                Vec3::new(1.5, 0.5, 0.0),
+                Vec3::ZERO,
+                None
+            )],
+            "the visible contact keeps a zero normal; the hidden one is dropped",
+        );
 
         let mut fixture = HitIngestFixture::new(wall_at_x(8.0));
         let health_before = fixture.target_health().current;
@@ -3982,9 +3878,423 @@ mod tests {
         let result = fixture.ingest_result(7, &fixture.declaration(vec![entity_hit]));
         assert!(result.hit_accepted, "damage validation ignores the normal");
         assert!(fixture.target_health().current < health_before);
+        assert_eq!(
+            result.contacts,
+            vec![emission::ImpactContact::new(
+                Vec3::new(4.0, 0.5, 0.0),
+                Vec3::ZERO,
+                Some(fixture.target),
+            )],
+            "the accepted hit keeps its contact with a zero normal",
+        );
+    }
+
+    /// What one pass of the production host intake produced at one host tick.
+    struct HostIntake {
+        /// Impact-burst particles the host's own registry holds afterwards.
+        particles: usize,
+        /// Every `impact` emission raised for the host's scripts and sounds;
+        /// its emitter is what the observer impact cue freezes.
+        impacts: Vec<emission::WeaponEmission>,
+        projectile_contacts: Vec<Vec3>,
+        hit_accepted: bool,
+    }
+
+    /// Runs the production host intake at `tick` over whatever `pending`
+    /// holds ready by then.
+    fn host_intake_at(
+        fixture: &mut HitIngestFixture,
+        pending: &mut PendingHitDeclarations,
+        tick: u32,
+    ) -> HostIntake {
+        let ready = host_take_ready_hit_declarations(
+            &HostCommandQueues::new(),
+            &mut fixture.open_shots,
+            pending,
+            tick,
+        );
+        let (mut server, _client) = hit_refusal_link();
+        let mut impacts = Vec::new();
+        let mut projectile_contacts = Vec::new();
+        let hit_accepted = host_ingest_ready_hit_declarations(
+            &mut server,
+            &mut fixture.registry,
+            &fixture.collision_world,
+            &fixture.hit_zone_store,
+            &fixture.allocator,
+            &fixture.owners,
+            &mut fixture.open_shots,
+            tick,
+            0.0,
+            ready,
+            |_| {},
+            |_, point| projectile_contacts.push(point),
+            |emission| impacts.push(emission),
+        );
+        let particles = fixture
+            .registry
+            .iter_with_kind(ComponentKind::ParticleState)
+            .count();
+        HostIntake {
+            particles,
+            impacts,
+            projectile_contacts,
+            hit_accepted,
+        }
+    }
+
+    /// Ingests `declaration` through the production host intake and returns the
+    /// host's burst particles and `impact` emission count.
+    fn host_burst_after_ingest(
+        fixture: &mut HitIngestFixture,
+        declaration: wire::HitDeclaration,
+    ) -> (usize, usize) {
+        // Late enough after the fixture's FIRE (tick 99) for any fixture splash
+        // declaration's host travel to cover its contact.
+        const INTAKE_TICK: u32 = 110;
+        let mut pending = PendingHitDeclarations::new();
+        assert!(pending.push_at(7, declaration, 100));
+        let intake = host_intake_at(fixture, &mut pending, INTAKE_TICK);
+        assert_eq!(
+            pending.len(),
+            0,
+            "the declaration is ready by tick {INTAKE_TICK}"
+        );
+        (intake.particles, intake.impacts.len())
+    }
+
+    /// The contacts of the one `impact` an intake raised, frozen into the
+    /// observer impact cue every other peer bursts from.
+    fn observer_cue_contacts(
+        fixture: &HitIngestFixture,
+        intake: &HostIntake,
+    ) -> Vec<wire::WeaponCueContact> {
+        let [impact] = intake.impacts.as_slice() else {
+            panic!("expected one impact, got {}", intake.impacts.len());
+        };
+        let cue = weapon_cues::freeze_observer_weapon_cue(
+            fixture.shot_id,
+            NetworkId(fixture.shot_id.pawn),
+            weapon_cues::WeaponCueKind::Impact,
+            None,
+            None,
+            None,
+            &impact.emitter,
+            &fixture.allocator,
+        )
+        .expect("an impact with contacts freezes a cue");
+        let wire::WeaponCueAnchor::Contacts(contacts) = cue.anchor else {
+            panic!("a contact impact freezes a contact-anchored cue");
+        };
+        contacts
+    }
+
+    // The host's screen bursts once per validated hitscan contact, entity and
+    // world alike, beside the one `impact` it raises for the shot.
+    #[test]
+    fn host_ingest_bursts_once_per_validated_remote_hitscan_contact() {
+        let mut fixture = HitIngestFixture::new(wall_at_x(8.0));
+        fixture.set_live_pellet_count(2);
+        fixture.mint_shot_from_live_weapon();
+        let mut entity_hit = fixture.record(Vec3::new(4.0, 0.5, 0.0), None);
+        entity_hit.normal = [-1.0, 0.0, 0.0];
+        let wall_hit = world_contact(Vec3::new(8.0, 0.5, 0.0), Vec3::NEG_X);
+        let declaration = fixture.declaration(vec![entity_hit, wall_hit]);
+
+        let (particles, impacts) = host_burst_after_ingest(&mut fixture, declaration);
+
+        assert_eq!(impacts, 1, "one impact per remote shot");
+        assert_eq!(particles, 2 * weapon::IMPACT_PARTICLE_COUNT);
+    }
+
+    // A contact the host rejects is not presented: no burst for a wall the
+    // shooter cannot see.
+    #[test]
+    fn host_ingest_does_not_burst_for_rejected_remote_contacts() {
+        let mut fixture = HitIngestFixture::new(wall_at_x(2.0));
+        fixture.mint_shot_from_live_weapon();
+        let behind_wall = world_contact(Vec3::new(8.0, 0.5, 0.0), Vec3::NEG_X);
+        let declaration = fixture.declaration(vec![behind_wall]);
+
+        let (particles, impacts) = host_burst_after_ingest(&mut fixture, declaration);
+
+        assert_eq!((particles, impacts), (0, 0));
+    }
+
+    // Regression: an accepted contact whose declared normal was zero, non-unit
+    // or non-finite lost its contact, so damage applied with no burst and no
+    // observer cue.
+    #[test]
+    fn host_ingest_keeps_accepted_contacts_with_invalid_normals_on_the_burst_fallback() {
+        let mut fixture = HitIngestFixture::new(wall_at_x(8.0));
+        fixture.set_live_pellet_count(2);
+        fixture.mint_shot_from_live_weapon();
+        let mut entity_hit = fixture.record(Vec3::new(4.0, 0.5, 0.0), None);
+        entity_hit.normal = [f32::NAN, 0.0, 0.0];
+        let mut wall_hit = world_contact(Vec3::new(8.0, 0.5, 0.0), Vec3::NEG_X);
+        wall_hit.normal = [-2.0, 0.0, 0.0];
+        let mut pending = PendingHitDeclarations::new();
+        assert!(pending.push_at(7, fixture.declaration(vec![entity_hit, wall_hit]), 100));
+
+        let hitscan = host_intake_at(&mut fixture, &mut pending, 100);
+
+        assert!(hitscan.hit_accepted);
+        assert_eq!(hitscan.particles, 2 * weapon::IMPACT_PARTICLE_COUNT);
+        let cue_contacts = observer_cue_contacts(&fixture, &hitscan);
+        assert_eq!(cue_contacts.len(), 2, "{cue_contacts:?}");
         assert!(
-            result.contacts.is_empty(),
-            "the bad normal voids the contact"
+            cue_contacts
+                .iter()
+                .all(|contact| contact.normal == [0.0; 3]),
+            "observers burst along the fallback too: {cue_contacts:?}",
+        );
+
+        let mut fixture = HitIngestFixture::new(CollisionWorld::new());
+        fixture.mint_shot_from_live_weapon();
+        fixture.shot_mut().is_projectile = true;
+        let mut direct_hit = fixture.record(Vec3::new(4.0, 0.5, 0.0), None);
+        direct_hit.normal = [0.0, 0.0, 0.0];
+        let mut pending = PendingHitDeclarations::new();
+        assert!(pending.push_at(7, fixture.declaration(vec![direct_hit]), 100));
+
+        let direct = host_intake_at(&mut fixture, &mut pending, 100);
+
+        assert!(direct.hit_accepted);
+        assert_eq!(direct.particles, weapon::IMPACT_PARTICLE_COUNT);
+        assert_eq!(direct.projectile_contacts, vec![Vec3::new(4.0, 0.5, 0.0)]);
+        let cue_contacts = observer_cue_contacts(&fixture, &direct);
+        assert_eq!(cue_contacts.len(), 1, "{cue_contacts:?}");
+        assert_eq!(cue_contacts[0].normal, [0.0; 3]);
+    }
+
+    #[test]
+    fn host_ingest_bursts_once_for_a_remote_direct_projectile_contact() {
+        let mut fixture = HitIngestFixture::new(CollisionWorld::new());
+        fixture.mint_shot_from_live_weapon();
+        fixture.shot_mut().is_projectile = true;
+        let mut hit = fixture.record(Vec3::new(4.0, 0.5, 0.0), None);
+        hit.normal = [-1.0, 0.0, 0.0];
+        let declaration = fixture.declaration(vec![hit]);
+
+        let (particles, impacts) = host_burst_after_ingest(&mut fixture, declaration);
+
+        assert_eq!(impacts, 1);
+        assert_eq!(particles, weapon::IMPACT_PARTICLE_COUNT);
+    }
+
+    // Splash ingestion bursts at the host-resolved contact and nowhere else:
+    // one burst per contact.
+    #[test]
+    fn host_ingest_bursts_exactly_once_for_a_remote_splash_contact() {
+        let mut fixture = HitIngestFixture::new(wall_at_x(0.5));
+        fixture.configure_projectile_splash(0.0);
+        let declaration = fixture.declaration(vec![wire::HitRecord {
+            normal: [0.0, 1.0, 0.0],
+            target: PRESENTATION_CONTACT_TARGET,
+            point: Vec3::new(0.5, 0.0, 0.0).to_array(),
+            zone: None,
+        }]);
+
+        let (particles, impacts) = host_burst_after_ingest(&mut fixture, declaration);
+
+        assert_eq!(impacts, 1);
+        assert_eq!(particles, weapon::IMPACT_PARTICLE_COUNT);
+    }
+
+    // Regression: a splash declaration was held only one tick past FIRE. A start
+    // admitted late after a stall carries a late fire tick while the client's
+    // rocket had already struck a near wall, so the host's replay fell short:
+    // no damage, no burst, no observer cue.
+    #[test]
+    fn late_admitted_splash_waits_for_host_travel_to_reach_its_declared_contact() {
+        // `configure_projectile_splash` flies 1 m per host tick.
+        const WALL_X: f32 = 5.0;
+        const LATE_FIRE_TICK: u32 = 200;
+        let mut fixture = HitIngestFixture::new(wall_at_x(WALL_X));
+        let beside_wall = fixture.spawn_splash_target(Vec3::new(WALL_X - 0.5, 0.0, 0.75));
+        fixture.configure_projectile_splash(0.0);
+        fixture.shot_mut().fire_tick = LATE_FIRE_TICK;
+        // The declaration arrived with the stalled start, before its late FIRE.
+        let mut pending = PendingHitDeclarations::new();
+        assert!(pending.push_at(
+            7,
+            fixture.declaration(vec![world_contact(
+                Vec3::new(WALL_X, 0.0, 0.0),
+                Vec3::NEG_X
+            )]),
+            LATE_FIRE_TICK - 20,
+        ));
+
+        let mut resolved = None;
+        for tick in LATE_FIRE_TICK + 1..LATE_FIRE_TICK + 60 {
+            let intake = host_intake_at(&mut fixture, &mut pending, tick);
+            if pending.len() == 0 {
+                resolved = Some((tick, intake));
+                break;
+            }
+            assert!(intake.impacts.is_empty() && intake.particles == 0);
+        }
+        let (tick, intake) = resolved.expect("the held declaration resolves within its lifetime");
+
+        assert!(
+            tick - LATE_FIRE_TICK >= WALL_X as u32,
+            "resolved at {tick}, before host travel covered the wall"
+        );
+        assert!(intake.hit_accepted, "the wall blast damages its neighbour");
+        assert!(
+            fixture
+                .registry
+                .get_component::<HealthComponent>(beside_wall)
+                .expect("target beside the wall remains live")
+                .current
+                < 100.0,
+        );
+        assert_eq!(intake.particles, weapon::IMPACT_PARTICLE_COUNT);
+        let [contact] = intake.projectile_contacts.as_slice() else {
+            panic!("one projectile contact: {:?}", intake.projectile_contacts);
+        };
+        assert!(
+            (contact.x - WALL_X).abs() <= 1.0e-4,
+            "the observer flight ends at the wall, not the muzzle: {contact}"
+        );
+        assert_eq!(observer_cue_contacts(&fixture, &intake).len(), 1);
+    }
+
+    // Regression: a late start fires from the pawn's live eye along its captured
+    // aim. After a strafe, that ray meets a slanted wall farther out than the
+    // declared point lies from the new origin, so a hold sized by the declared
+    // point alone released before the host's flight reached the wall.
+    #[test]
+    fn late_splash_fired_after_a_strafe_waits_for_the_hosts_own_wall_contact() {
+        const LATE_FIRE_TICK: u32 = 200;
+        // A 45-degree wall through the client's contact at (10, 0, 0).
+        let slanted_wall = CollisionWorld::from_triangles_for_test(
+            vec![
+                Vec3::new(0.0, -5.0, -10.0),
+                Vec3::new(0.0, 5.0, -10.0),
+                Vec3::new(20.0, 5.0, 10.0),
+                Vec3::new(20.0, -5.0, 10.0),
+            ],
+            vec![[0, 1, 2], [0, 2, 3]],
+        );
+        let mut fixture = HitIngestFixture::new(slanted_wall);
+        fixture.configure_projectile_splash(0.25);
+        // The pawn strafed 2 m before the late FIRE; the captured aim stayed +X.
+        let fire_origin = Vec3::new(0.0, 0.0, 2.0);
+        // FIRE freezes where the host's own flight meets the static world.
+        let host_wall = crate::sim::projectile_static_contact_distance(
+            &fixture.collision_world,
+            fire_origin,
+            Vec3::X,
+            0.25,
+            30.0,
+        );
+        let declared = Vec3::new(10.0, 0.0, 0.0);
+        assert!(
+            host_wall.is_some_and(|wall| wall > fire_origin.distance(declared) + 1.0),
+            "the host's wall lies beyond the declared point: {host_wall:?}"
+        );
+        let shot = fixture.shot_mut();
+        shot.fire_origin = fire_origin;
+        shot.range = 30.0;
+        shot.projectile_speed = Some(30.0);
+        shot.projectile_static_contact_distance = host_wall;
+        shot.fire_tick = LATE_FIRE_TICK;
+        let mut pending = PendingHitDeclarations::new();
+        assert!(pending.push_at(
+            7,
+            fixture.declaration(vec![world_contact(declared, Vec3::NEG_X)]),
+            LATE_FIRE_TICK - 20,
+        ));
+
+        let mut resolved = None;
+        for tick in LATE_FIRE_TICK + 1..LATE_FIRE_TICK + 120 {
+            let intake = host_intake_at(&mut fixture, &mut pending, tick);
+            if pending.len() == 0 {
+                resolved = Some(intake);
+                break;
+            }
+        }
+        let intake = resolved.expect("the held declaration resolves within its lifetime");
+
+        let [contact] = intake.projectile_contacts.as_slice() else {
+            panic!(
+                "the host's flight reaches its own wall contact: {:?}",
+                intake.projectile_contacts
+            );
+        };
+        assert!(
+            (contact.x - contact.z - 10.0).abs() <= 0.5,
+            "detonates on the slanted wall: {contact}"
+        );
+        assert!(
+            (contact.z - 2.0).abs() <= 1.0e-4,
+            "along the host's frozen ray, not at the declared point: {contact}"
+        );
+        assert_eq!(intake.particles, weapon::IMPACT_PARTICLE_COUNT);
+        assert_eq!(observer_cue_contacts(&fixture, &intake).len(), 1);
+    }
+
+    // An entity contact must not wait for the wall behind it: by then the replay
+    // would read a target that has moved off the ray.
+    #[test]
+    fn splash_entity_contact_is_not_held_for_the_wall_behind_it() {
+        // `configure_projectile_splash` flies 1 m per host tick.
+        const WALL_X: f32 = 20.0;
+        let mut fixture = HitIngestFixture::new(wall_at_x(WALL_X));
+        let struck = fixture.spawn_splash_target(Vec3::new(5.0, 0.0, 0.0));
+        let struck_net = fixture.allocator.stamp(struck);
+        fixture.configure_projectile_splash(0.0);
+        let shot = fixture.shot_mut();
+        shot.range = 30.0;
+        shot.projectile_static_contact_distance = Some(WALL_X);
+        let fire_tick = shot.fire_tick;
+        let mut pending = PendingHitDeclarations::new();
+        assert!(pending.push_at(
+            7,
+            fixture.declaration(vec![wire::HitRecord {
+                normal: [-1.0, 0.0, 0.0],
+                target: struck_net.0,
+                point: Vec3::new(4.9, 0.0, 0.0).to_array(),
+                zone: None,
+            }]),
+            fire_tick,
+        ));
+
+        let intake = host_intake_at(&mut fixture, &mut pending, fire_tick + 6);
+
+        assert_eq!(pending.len(), 0, "released once travel covers the entity");
+        assert!(intake.hit_accepted);
+        let [contact] = intake.projectile_contacts.as_slice() else {
+            panic!("one projectile contact: {:?}", intake.projectile_contacts);
+        };
+        assert!(contact.x < 5.0, "detonates on the entity: {contact}");
+    }
+
+    // A direct projectile presents its declared endpoint and replays nothing, so
+    // its declaration still resolves one tick after FIRE however far it flew.
+    #[test]
+    fn direct_projectile_declaration_is_not_held_for_travel() {
+        let mut fixture = HitIngestFixture::new(CollisionWorld::new());
+        fixture.configure_projectile_splash(0.0);
+        let shot = fixture.shot_mut();
+        shot.splash = None;
+        let fire_tick = shot.fire_tick;
+        let mut pending = PendingHitDeclarations::new();
+        pending.push(
+            7,
+            fixture.declaration(vec![fixture.record(Vec3::new(9.0, 0.0, 0.0), None)]),
+        );
+
+        assert_eq!(
+            pending
+                .drain_ready(
+                    &HostCommandQueues::new(),
+                    &fixture.open_shots,
+                    fire_tick + 1
+                )
+                .len(),
+            1,
         );
     }
 
@@ -4191,6 +4501,7 @@ mod tests {
                     projectile_speed: None,
                     projectile_lifetime_seconds: None,
                     projectile_tick_seconds: None,
+                    projectile_static_contact_distance: None,
                     is_projectile: false,
                     fire_origin: Vec3::ZERO,
                     timeout_budget_ticks: MAX_OPEN_SHOT_AGE_TICKS,
@@ -4216,13 +4527,17 @@ mod tests {
                 .clone()
         }
 
-        fn configure_projectile_splash(&mut self, radius: f32) {
-            let shot = &mut self
+        fn shot_mut(&mut self) -> &mut AuthorizedShot {
+            &mut self
                 .open_shots
                 .shots
                 .get_mut(&self.shot_id)
                 .expect("fixture shot remains open")
-                .shot;
+                .shot
+        }
+
+        fn configure_projectile_splash(&mut self, radius: f32) {
+            let shot = self.shot_mut();
             shot.is_projectile = true;
             shot.projectile_radius = Some(radius);
             shot.projectile_direction = Some(Vec3::X);
@@ -5743,8 +6058,8 @@ mod tests {
         );
         assert_eq!(
             postretro_net::handshake::WIRE_VERSION,
-            25,
-            "frozen observer projectile facts and reliable cues require wire version 25"
+            26,
+            "the switch declaration's client tick advances the wire version to 26"
         );
         assert_eq!(
             postretro_net::wire::SNAPSHOT_VERSION,
@@ -5756,13 +6071,7 @@ mod tests {
     #[test]
     fn projectile_world_contact_marker_preserves_presentation_without_damage_target() {
         let mut fixture = HitIngestFixture::new(CollisionWorld::new());
-        fixture
-            .open_shots
-            .shots
-            .get_mut(&fixture.shot_id)
-            .expect("authorized test shot remains open")
-            .shot
-            .is_projectile = true;
+        fixture.shot_mut().is_projectile = true;
         let point = Vec3::new(4.0, 0.5, 0.0);
         let declaration = fixture.declaration(vec![wire::HitRecord {
             normal: [0.0, 1.0, 0.0],
@@ -5839,12 +6148,6 @@ mod tests {
         assert!(!result.hit_accepted);
         assert_eq!(result.projectile_contact, None);
         assert!(fixture.open_shots.get(fixture.shot_id).is_none());
-        assert!(
-            fixture
-                .registry
-                .take_world_point_presentation_spawns()
-                .is_empty()
-        );
         assert_eq!(
             fixture
                 .registry
@@ -5860,13 +6163,7 @@ mod tests {
     fn remote_splash_rejects_contact_beyond_frozen_projectile_lifetime() {
         let mut fixture = HitIngestFixture::new(wall_at_x(0.5));
         fixture.configure_projectile_splash(0.0);
-        fixture
-            .open_shots
-            .shots
-            .get_mut(&fixture.shot_id)
-            .expect("fixture shot remains open")
-            .shot
-            .projectile_lifetime_seconds = Some(0.005);
+        fixture.shot_mut().projectile_lifetime_seconds = Some(0.005);
         let declaration = fixture.declaration(vec![wire::HitRecord {
             normal: [0.0, 1.0, 0.0],
             target: PRESENTATION_CONTACT_TARGET,
@@ -6003,13 +6300,7 @@ mod tests {
     #[test]
     fn invalid_entity_target_does_not_erase_valid_projectile_contact() {
         let mut fixture = HitIngestFixture::new(CollisionWorld::new());
-        fixture
-            .open_shots
-            .shots
-            .get_mut(&fixture.shot_id)
-            .expect("authorized test shot remains open")
-            .shot
-            .is_projectile = true;
+        fixture.shot_mut().is_projectile = true;
         let point = Vec3::new(4.0, 0.5, 0.0);
         let declaration = fixture.declaration(vec![wire::HitRecord {
             normal: [0.0, 1.0, 0.0],

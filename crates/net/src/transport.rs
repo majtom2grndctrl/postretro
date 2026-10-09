@@ -1921,6 +1921,7 @@ mod tests {
         client.send_switch_declaration(ClientSwitchDeclaration {
             declaration_id: 9,
             slot: 2,
+            client_tick: 4_000,
         });
 
         relay_client_to_server(&mut client, &mut server);
@@ -1935,6 +1936,7 @@ mod tests {
                 ClientSwitchDeclaration {
                     declaration_id: 9,
                     slot: 2,
+                    client_tick: 4_000,
                 },
             )]
         );

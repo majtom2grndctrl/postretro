@@ -1,0 +1,18 @@
+{
+  "map": "content/dev/maps/combat-demo.prl",
+  "camera": {
+    "position": [
+      -2.794,
+      1.6256,
+      -1.016
+    ],
+    "yaw_deg": 42,
+    "pitch_deg": -3,
+    "fov_deg": 90
+  },
+  "resolution": [
+    1920,
+    1080
+  ],
+  "output": "content/dev/ui/loading/combat-demo.png"
+}

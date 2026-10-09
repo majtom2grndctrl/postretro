@@ -485,6 +485,79 @@ fn ring_bridge_parses_mixed_scalars_and_rejects_invalid_contracts_in_both_runtim
 }
 
 #[test]
+fn tree_background_crosses_both_runtime_bridges() {
+    let js = eval_js(
+        r#"({ anchor: "center", offset: [0, 0], root: { kind: "spacer", flexGrow: 1 }, background: { image: "dev/loading/campaign-test" } })"#,
+        |ctx, value| anchored_tree_from_js_value(ctx, value).unwrap(),
+    );
+    let lua = eval_lua(
+        r#"return { anchor = "center", offset = {0, 0}, root = { kind = "spacer", flexGrow = 1 }, background = { image = "dev/loading/campaign-test" } }"#,
+        |value| anchored_tree_from_lua_value(value).unwrap(),
+    );
+
+    for tree in [js, lua] {
+        assert_eq!(
+            tree.background.as_ref().map(|b| b.image.as_str()),
+            Some("dev/loading/campaign-test")
+        );
+        let wire = serde_json::to_string(&tree).expect("must serialize");
+        assert!(
+            wire.ends_with(r#""background":{"image":"dev/loading/campaign-test"}}"#),
+            "{wire}"
+        );
+    }
+}
+
+#[test]
+fn tree_without_background_has_none_in_both_runtime_bridges() {
+    let js = eval_js(
+        r#"({ anchor: "center", offset: [0, 0], root: { kind: "spacer", flexGrow: 1 } })"#,
+        |ctx, value| anchored_tree_from_js_value(ctx, value).unwrap(),
+    );
+    let lua = eval_lua(
+        r#"return { anchor = "center", offset = {0, 0}, root = { kind = "spacer", flexGrow = 1 } }"#,
+        |value| anchored_tree_from_lua_value(value).unwrap(),
+    );
+    for tree in [js, lua] {
+        assert_eq!(tree.background, None);
+    }
+}
+
+#[test]
+fn tree_background_rejects_empty_image_and_unknown_keys_in_both_runtime_bridges() {
+    for background in [
+        (r#"{ image: "" }"#, r#"{ image = "" }"#),
+        (
+            r#"{ image: "dev/loading/a", fit: "contain" }"#,
+            r#"{ image = "dev/loading/a", fit = "contain" }"#,
+        ),
+        (r#"{}"#, r#"{}"#),
+        (r#""dev/loading/a""#, r#""dev/loading/a""#),
+    ] {
+        let js_src = format!(
+            r#"({{ anchor: "center", offset: [0, 0], root: {{ kind: "spacer", flexGrow: 1 }}, background: {} }})"#,
+            background.0
+        );
+        let lua_src = format!(
+            r#"return {{ anchor = "center", offset = {{0, 0}}, root = {{ kind = "spacer", flexGrow = 1 }}, background = {} }}"#,
+            background.1
+        );
+        let js = eval_js(&js_src, |ctx, value| {
+            anchored_tree_from_js_value(ctx, value).unwrap_err()
+        });
+        let lua = eval_lua(&lua_src, |value| {
+            anchored_tree_from_lua_value(value).unwrap_err()
+        });
+        for err in [js, lua] {
+            assert!(
+                matches!(&err, DescriptorError::InvalidShape { reason } if reason.contains("background")),
+                "background {background:?} must be rejected naming `background`, got {err:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn js_bridge_rejects_a_bind_with_neither_slot_nor_local() {
     // A bind object must carry exactly one source key; neither is a shape error.
     let src = r#"({

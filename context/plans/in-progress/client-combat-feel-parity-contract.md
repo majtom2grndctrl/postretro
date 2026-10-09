@@ -13,7 +13,7 @@ A connected client's combat should read the way the listen host's does. Two play
 3. **The splash world-point presentation spawn stops being a burst route.** Splash detonations already raise an impact cue, so the `BUILTIN_SPLASH_IMPACT_TEMPLATE_ID` burst would double the cue's. Observers take the splash burst from the cue only. If retiring that burst leaves its producer and template id with no remaining consumer, remove them in the same change.
 4. **The host bursts remote contacts at ingest.** Where host HIT ingestion raises the remote shot's one `impact` emission, it also spawns one burst per validated contact. Remote splash already spawns its burst there and must not gain a second.
 5. **A client's own hitscan burst follows the `impact` address.** It plays from predicted contacts only under `ClientPullPresentation::Fire`, the same gate that raises `impact`. A dry or silent pull shows none. A later FIRE or HIT rejection does not retract it, just as the impact sound is not retracted. The burst lasts about 0.18 s, so it usually ends before the verdict arrives.
-6. **Plasma bolts: open — see Open questions.**
+6. **The plasma cutoff is treated as a general fault until shown otherwise.** The owner directed that the vanishing bolts be read as a possible symptom of something not specific to the plasma gun. Consequence: Track B fixes the general mechanism and covers every affected weapon shape and prediction surface the diagnosis finds, with plasma as one acceptance case among them, not a plasma-only patch. Root cause and fix direction: open, see Open questions.
 
 ## Invariants
 

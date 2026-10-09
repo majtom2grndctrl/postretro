@@ -56,3 +56,16 @@ Content:
 ## Open
 
 - **Not tested:** whether eight numbers at a one-metre point-blank range read cleanly. The pellets land about 7 cm apart. The question is whether natural spread plus 8 px of scatter separates them. This needs a manual check in play.
+
+## Results
+
+- Every acceptance command passed:
+  - Python tool tests: 22 OK.
+  - `impact_policy`: 55. `weapon_stage`: 109. `projectile_stage`: 24.
+  - Entities `health`: 27. `typedef`: 39.
+  - The frozen-path diff is empty.
+  - Map diffs touch only tag lines.
+- One review-and-fix round found zero blockers.
+- In the full workspace preflight, format, clippy, `cargo check --release` and `crate-graph --check` came back clean. `cargo test --no-fail-fast` had one failure, `ui_slot_snapshot_clones_present_values_and_skips_valueless_slots`, which counts 60 slots against an expected 58. That failure predates this work: no change here touches UI slots.
+- Still needs a manual check in play: whether eight point-blank pellet numbers read cleanly.
+- Known gap: a connected client's hitscan or projectile claim supplies a point the host checks for range, finiteness and, for hitscan, line of sight, but never against the target's volume. A dishonest client can therefore misplace only its own damage numbers. The fix belongs in `crates/netcode`.

@@ -169,7 +169,7 @@ The digest is deliberately not a hash of the compiled level bytes. That would tu
 
 Combat feedback the player reads and forgets — floating damage numbers and damaged-enemy health or shield facts — is **presented, not replicated**. The host sends it as transient events on a dedicated unreliable channel to the client that earned it; loss and reordering are acceptable. Enemy health and state stay host-only. Clients display the pushed facts without simulating them, so cosmetics never enter a digest or block a join.
 
-**Impact bursts follow the same rule: one per contact on every peer, spawned locally.** The built-in spark burst never crosses the wire. The firing peer's own simulation spawns it: the host's local fire, or the client's predicted hitscan and projectile contact, gated like its `impact` event, so a dry or silent pull shows none and a later rejection does not retract it. Every other client spawns it from the reliable observer impact cue's contacts, using each contact's normal, and the host spawns it for a client's shot at HIT ingestion from the validated contacts. One route per peer is the invariant. Splash once also sent observers a burst over the Presentation channel, which would have doubled the cue's, so the cue is now the only observer route. An impact that publishes no cue (no `shot_id`, or more contacts than a cue carries) shows no burst to observers.
+**Impact bursts follow the same rule: one per contact on every peer, spawned locally.** The built-in spark burst never crosses the wire. The firing peer's own simulation spawns it: the host's local fire, or the client's predicted hitscan and projectile contact, gated like its `impact` event, so a dry or silent pull shows none and a later rejection does not retract it. Every other client spawns it from the reliable observer impact cue's contacts, using each contact's normal, and the host spawns it for a client's shot at HIT ingestion from the validated contacts. One route per peer is the invariant: splash sends no Presentation-channel burst, since it would double the cue's. An impact that publishes no cue (no `shot_id`, or more contacts than a cue carries) shows no burst to observers.
 
 Damaged-enemy overlays are private per recipient. The host renderer owns only
 host-local feedback; each remote recipient has an independent cap and linger
@@ -512,14 +512,13 @@ of movement cursor holds or jumps, with at most one shot per execution per tick.
 
 **Starts survive playout.** A reliable-ordered Input stream stalls for a whole resend
 interval when one packet is lost or the host hitches, and the catch-up trim then keeps
-only the newest commands. A start dropped there was once gone for good, and the start
-that survived arrived too few host ticks after the previous shot and was refused as
-cooling, so a lagging client lost shots and saw its predicted bolts deleted mid-flight.
-Intake therefore retains each start before stale-drop and trim, up to 64 per client,
-and delivers the oldest once its own command tick has resolved and no execution is
-live. A start that arrives during a live execution waits rather than being refused. A
-retained start expires two seconds after it first becomes due and is reported as an
-initiation rejection.
+only the newest commands. A start dropped there loses its shot, and a surviving start
+judged by host spacing alone is refused as cooling; either deletes a lagging client's
+predicted bolt mid-flight. Intake therefore retains each start before stale-drop and
+trim, up to 64 per client, and delivers the oldest once its own command tick has
+resolved and no execution is live. A start that arrives during a live execution waits
+rather than being refused. A retained start expires two seconds after it first becomes
+due and is reported as an initiation rejection.
 
 **Cadence is judged in client ticks, capped by host time.** Two halves gate a start.
 The client half: its client tick must be at least the weapon's recovery,
@@ -532,9 +531,12 @@ its lead into the next rather than earning a fresh tolerance per shot. Over any 
 ticks, executions admitted stay at or below ⌊(W + tolerance) / R⌋ + 1 whatever ticks a
 client stamps. Measuring in host ticks alone is what refused on-time starts after a
 trim; measuring in client ticks alone would let a client fire as fast as it stamps. A
-weapon with no recorded recovery falls back to the host's own cooldown. After a long
-stall the host half may hold later shots of the same hold by up to the tolerance; it
-delays them, never refuses them.
+charged action's recovery runs from its client release tick, moved forward only; other
+executions ignore releases for cadence, as the weapon machine does. The client half
+applies only while the recorded recovery names the same weapon in the same slot;
+otherwise the host's own cooldown applies. After a long stall the host half may hold
+later shots of the same hold by up to the tolerance; it delays them, never refuses
+them.
 
 Explicit release/cancel names the initiating activation. Intake retains edges before
 stale-drop or backlog trimming, deduplicates them, and delivers them once after that
@@ -567,11 +569,12 @@ predicted projectile size, speed, radius, and remaining travel budget. Correctio
 respawns, rewinds a transform, replays damage, or resurrects a contacted projectile.
 Recovery corrections name an activation and bound instance; older results cannot
 rewind newer execution. An admitted execution's outcome may only shorten the client's
-predicted recovery, never lengthen it: the host now admits on the client's own shot
-tick, so the local countdown is already exactly what admission requires, and adopting
-the host's in-flight remainder made a connected client fire slower than the host
-player. An initiation rejection still adopts the host's value. Slot-only cooldown projection can seed an instance before
-prediction starts, but cannot roll back its active prediction. No full weapon rollback.
+predicted recovery, never lengthen it: the host admits on the client's own shot tick,
+so the local countdown is already what admission requires; the host's remainder is
+one transit stale and would make a client fire slower than the host player. An
+initiation rejection still adopts the host's value. Slot-only cooldown projection can
+seed an instance before prediction starts, but cannot roll back its active prediction.
+No full weapon rollback.
 
 Client-side ammo, heat, cell, and reload prediction/reconciliation remain out of scope;
 connected clients never run the heat or cell update. Owner-private state-slot projection

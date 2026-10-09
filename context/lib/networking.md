@@ -401,8 +401,12 @@ Reload uses a reliable edge lane beside command playout. Host intake observes re
 rising edges before stale-drop and backlog trimming, then delivers each due edge once on
 an authoritative resolution. Duplicate or stale retransmits cannot create another edge.
 If the previously emitted reload level is still high, recovery emits a low tick before
-the preserved press so weapon-side level dedup sees a genuine rising edge. Movement,
-look, and fire keep the ordinary gap and catch-up behavior.
+the preserved press so weapon-side level dedup sees a genuine rising edge. Use and drop
+presses ride the same kind of lane: rising edges observed at intake, each delivered once
+on an advancing resolution, so a trim cannot lose a door press or a weapon drop.
+Activation starts and their release/cancel edges have their own lane (§Combat authority).
+Movement, look, and held fire keep the ordinary gap and catch-up behavior; a trimmed jump
+is still lost.
 
 A catch-up jump advances `last_processed_client_tick` by more than one tick. This is
 safe for client reconciliation: the client prunes predicted history monotonically up to
@@ -501,9 +505,34 @@ descriptor replacement. Hit declarations cannot select those statistics.
 Each execution, including a hold restart, requires a client-named initiation on an
 admitted real input command. The request names its client tick and primary/secondary
 lane and binds to the live weapon instance. The host never invents remote restarts
-from held input. A start discarded by playout cannot become a delayed activation.
-Committed waits advance once per host simulation tick, independently of movement
-cursor holds or jumps, with at most one shot per execution per tick.
+from held input. Committed waits advance once per host simulation tick, independently
+of movement cursor holds or jumps, with at most one shot per execution per tick.
+
+**Starts survive playout.** A reliable-ordered Input stream stalls for a whole resend
+interval when one packet is lost or the host hitches, and the catch-up trim then keeps
+only the newest commands. A start dropped there was once gone for good, and the start
+that survived arrived too few host ticks after the previous shot and was refused as
+cooling, so a lagging client lost shots and saw its predicted bolts deleted mid-flight.
+Intake therefore retains each start before stale-drop and trim, up to 64 per client,
+and delivers the oldest once its own command tick has resolved and no execution is
+live. A start that arrives during a live execution waits rather than being refused. A
+retained start expires two seconds after it first becomes due and is reported as an
+initiation rejection.
+
+**Cadence is judged in client ticks, capped by host time.** Two halves gate a start.
+The client half: its client tick must be at least the weapon's recovery,
+`ceil(recovery_ms / tick_ms)`, after the client tick at which the previous execution's
+recovery began; failing it refuses the start and mints nothing. The host half: the
+start waits in its lane until host time since that recovery began, plus the 150 ms
+charge tolerance, covers the recovery. Each execution is credited at the client's
+claimed time clamped to at most the tolerance past host time, so an early start carries
+its lead into the next rather than earning a fresh tolerance per shot. Over any W host
+ticks, executions admitted stay at or below ⌊(W + tolerance) / R⌋ + 1 whatever ticks a
+client stamps. Measuring in host ticks alone is what refused on-time starts after a
+trim; measuring in client ticks alone would let a client fire as fast as it stamps. A
+weapon with no recorded recovery falls back to the host's own cooldown. After a long
+stall the host half may hold later shots of the same hold by up to the tolerance; it
+delays them, never refuses them.
 
 Explicit release/cancel names the initiating activation. Intake retains edges before
 stale-drop or backlog trimming, deduplicates them, and delivers them once after that
@@ -535,7 +564,11 @@ host weapon id. Matching installed tuning corrects future snapshots and still-li
 predicted projectile size, speed, radius, and remaining travel budget. Correction never
 respawns, rewinds a transform, replays damage, or resurrects a contacted projectile.
 Recovery corrections name an activation and bound instance; older results cannot
-rewind newer execution. Slot-only cooldown projection can seed an instance before
+rewind newer execution. An admitted execution's outcome may only shorten the client's
+predicted recovery, never lengthen it: the host now admits on the client's own shot
+tick, so the local countdown is already exactly what admission requires, and adopting
+the host's in-flight remainder made a connected client fire slower than the host
+player. An initiation rejection still adopts the host's value. Slot-only cooldown projection can seed an instance before
 prediction starts, but cannot roll back its active prediction. No full weapon rollback.
 
 Client-side ammo, heat, cell, and reload prediction/reconciliation remain out of scope;

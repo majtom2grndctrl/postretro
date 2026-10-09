@@ -2792,17 +2792,18 @@ export type WidgetAnchor = "topLeft" | "top" | "topRight" | "left" | "center" | 
 --- lower modal layers; `"passthrough"` is the HUD/default mode and lets game
 --- input continue.
 export type WidgetCaptureMode = "capture" | "passthrough"
---- Placement envelope props for `Tree`. `anchor` + `offset` position the root in
---- 1280x720 logical UI space; `captureMode`, `initialFocus`, and
---- `textEntryTarget` control modal/input behavior. `restoreOnReturn` (on by
---- default) returns focus to the control it left when a tree pushed above
---- closes; `false` lands on `initialFocus`.
 --- A tree's background. `image` is a UI image key (the same namespace as
 --- `Image({ asset })`). It fills the whole window with cover fit (scaled to
 --- fill, cropped to keep its aspect), beneath the tree's widgets, ignoring
 --- `anchor` and `offset`. Decorative: no focus or accessibility node. A missing
 --- image draws nothing.
 export type TreeBackground = { image: string }
+--- Placement envelope props for `Tree`. `anchor` + `offset` position the root in
+--- 1280x720 logical UI space; `captureMode`, `initialFocus`, and
+--- `textEntryTarget` control modal/input behavior. `restoreOnReturn` (on by
+--- default) returns focus to the control it left when a tree pushed above
+--- closes; `false` lands on `initialFocus`. `background` draws one UI image
+--- across the whole window beneath the tree.
 export type TreeProps = { anchor: WidgetAnchor, offset: {number}, captureMode: WidgetCaptureMode?, initialFocus: string?, textEntryTarget: Ref<string>?, accessibleName: string?, role: WidgetRole?, restoreOnReturn: boolean?, background: TreeBackground? }
 --- The flat `AnchoredTree` envelope produced by `Tree(...)` and stored in UI
 --- registries. `textEntryTarget` is serialized to its dotted state-slot name.

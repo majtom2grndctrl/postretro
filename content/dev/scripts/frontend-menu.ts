@@ -32,7 +32,14 @@ import {
   type ValueTextCase,
   type WidgetDescriptor,
 } from "postretro/ui";
-import { loadingTreeName } from "./loading-screens";
+
+// Tests bundle this module standalone (`menu_tests`, `window_mode_sdk_tests`),
+// so it takes no relative imports; `loading-screens.ts` imports from here.
+
+/// The loading tree `loading-screens.ts` registers for catalog map `mapId`.
+export function loadingTreeName(mapId: string): string {
+  return `dev.loading.${mapId}`;
+}
 
 const TITLE_MENU_NAME = "frontend.menuTree";
 const LEVEL_SELECT_MENU_NAME = "frontend.devLevelSelect";

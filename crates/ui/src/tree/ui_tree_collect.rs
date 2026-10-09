@@ -1,6 +1,7 @@
-// The retained `UiTree`'s draw-list collection walk (`collect_node`): reads each
-// laid-out node's `NodeContext` and emits device-pixel quads / shaped-text runs,
-// applying bound values, tweens, and styleRanges. A second `impl UiTree` block.
+// The retained `UiTree`'s draw-list collection walk (`collect_node`): emits the
+// tree background, then reads each laid-out node's `NodeContext` into
+// device-pixel quads / shaped-text runs, applying bound values, tweens, and
+// styleRanges. A second `impl UiTree` block.
 // See: context/lib/ui.md §1 (retained tree), §3 (display vs. authoritative value)
 
 use std::collections::HashMap;

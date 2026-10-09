@@ -8,9 +8,10 @@ use super::super::UiInstance;
 use super::ImageSizes;
 
 /// A tree's background image key plus the natural size last read from the
-/// renderer's image registry. The size is re-read whenever the registry
-/// generation moves (the same signal image leaves relayout on), so a late
-/// upload starts drawing and a viewport change recomputes the crop.
+/// renderer's image registry. The retained path re-reads the size when the
+/// registry generation moves (the same signal image leaves relayout on), so a
+/// late upload starts drawing. The crop itself is computed per draw-list build
+/// from the device size, so a viewport change recomputes it.
 pub(super) struct BackgroundState {
     image: String,
     /// `None` while the key is unregistered or not yet uploaded: no quad is

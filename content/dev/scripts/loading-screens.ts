@@ -12,6 +12,7 @@ import {
   getDesignTokens,
   getGameState,
 } from "postretro/ui";
+import { loadingTreeName } from "./frontend-menu";
 import { hudTheme } from "./hud";
 
 /// Catalog maps with a loading screenshot. Each shot is a capture scene in
@@ -46,11 +47,6 @@ function imageKey(mapId: ScreenshotMap): string {
 export const loadingImages = Object.fromEntries(
   SCREENSHOT_MAPS.map((mapId) => [imageKey(mapId), `ui/loading/${mapId}.png`]),
 );
-
-/// The loading tree a catalog entry names for `mapId`.
-export function loadingTreeName(mapId: ScreenshotMap): string {
-  return `dev.loading.${mapId}`;
-}
 
 /// The level name and progress bar on a dark panel in the bottom-left corner,
 /// over the map's screenshot when it has one.

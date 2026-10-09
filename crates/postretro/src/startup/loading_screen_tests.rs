@@ -548,29 +548,45 @@ fn dev_manifest() -> postretro_scripting_core::staged_manifest::StagedManifest {
 }
 
 #[test]
-fn dev_mod_declares_loading_pool_override_and_images() {
+fn dev_mod_declares_per_map_screenshot_trees_plain_pool_and_images() {
     let manifest = dev_manifest();
-    let pool = &manifest.loading.tree;
-    assert!(
-        pool.len() >= 2,
-        "a mod-wide pool of at least two trees: {pool:?}"
-    );
-    let override_pool = manifest
-        .maps
-        .iter()
-        .find(|map| !map.loading_tree.is_empty())
-        .map(|map| map.loading_tree.clone())
-        .expect("one catalog map overrides the pool");
-    let tree_names: HashSet<&str> = manifest
+    let trees: std::collections::HashMap<&str, &AnchoredTree> = manifest
         .ui_trees
         .iter()
-        .map(|tree| tree.name.as_str())
+        .map(|tree| (tree.name.as_str(), &tree.tree))
         .collect();
-    for name in pool.iter().chain(&override_pool) {
-        assert!(
-            tree_names.contains(name.as_str()),
-            "`{name}` is a registered dev tree"
+
+    // Path loads with no catalog entry fall back to one plain tree.
+    let pool = &manifest.loading.tree;
+    assert_eq!(pool, &names(&["dev.loading.plain"]));
+    let plain = trees
+        .get("dev.loading.plain")
+        .expect("the plain pool tree is registered");
+    assert_eq!(plain.background, None, "the plain tree draws no imagery");
+
+    // Every catalog map names its own tree, which draws that map's screenshot.
+    assert!(!manifest.maps.is_empty());
+    for map in &manifest.maps {
+        let expected = format!("dev.loading.{}", map.id);
+        assert_eq!(map.loading_tree, vec![expected.clone()], "{}", map.id);
+        let tree = trees
+            .get(expected.as_str())
+            .unwrap_or_else(|| panic!("`{expected}` is a registered dev tree"));
+        let image = &tree
+            .background
+            .as_ref()
+            .unwrap_or_else(|| panic!("`{expected}` draws a background"))
+            .image;
+        assert_eq!(image, &format!("dev/loading/{}", map.id));
+        assert_eq!(
+            manifest.ui_images.get(image).map(String::as_str),
+            Some(format!("ui/loading/{}.png", map.id).as_str()),
+            "`{image}` maps to the map's screenshot"
         );
+    }
+    // Loading screens draw no world textures.
+    for (key, path) in &manifest.ui_images {
+        assert!(!path.starts_with("textures/"), "{key} -> {path}");
     }
     let decoded = crate::app::ui_images::decode_mod_ui_images(
         &workspace_root().join("content/dev"),
@@ -588,7 +604,7 @@ fn dev_mod_declares_loading_pool_override_and_images() {
 /// windowed UI + resolve passes. Self-skips without a GPU adapter. With
 /// `POSTRETRO_LOADING_CAPTURE_DIR` set, writes the frames there as PNGs.
 #[test]
-fn loading_frames_render_the_tree_over_the_splash_background() {
+fn loading_frames_render_the_tree_over_the_splash_or_its_background() {
     const SIZE: [u32; 2] = [1280, 720];
     let mut renderer = match crate::render::Renderer::new_offscreen(SIZE[0], SIZE[1]) {
         Ok(renderer) => renderer,
@@ -622,19 +638,41 @@ fn loading_frames_render_the_tree_over_the_splash_background() {
             .is_err()
     );
     let manifest = dev_manifest();
-    for image in crate::app::ui_images::decode_mod_ui_images(
-        &workspace_root().join("content/dev"),
-        &manifest.ui_images,
-    ) {
-        renderer
-            .register_ui_image(&image.key, image.rgba, image.width, image.height)
-            .expect("every dev image fits a texture");
-    }
     let dev_tree = manifest
         .maps
         .iter()
         .find_map(|map| map.loading_tree.first().cloned())
         .unwrap();
+    let dev_background = manifest
+        .ui_trees
+        .iter()
+        .find(|tree| tree.name == dev_tree)
+        .and_then(|tree| tree.tree.background.as_ref())
+        .map(|background| background.image.clone())
+        .expect("the catalog loading tree draws a background");
+    // The screenshot's top-left texels, which a cover fit at the image's own
+    // aspect lands on the frame's corner.
+    let mut background_corner = None;
+    for image in crate::app::ui_images::decode_mod_ui_images(
+        &workspace_root().join("content/dev"),
+        &manifest.ui_images,
+    ) {
+        if image.key == dev_background {
+            assert_eq!(
+                image.width * SIZE[1],
+                image.height * SIZE[0],
+                "the corner check assumes the screenshot matches the frame's aspect"
+            );
+            let scale = image.width as f32 / SIZE[0] as f32;
+            let texel = (4.5 * scale) as u32;
+            let at = ((texel * image.width + texel) * 4) as usize;
+            background_corner = Some([image.rgba[at], image.rgba[at + 1], image.rgba[at + 2]]);
+        }
+        renderer
+            .register_ui_image(&image.key, image.rgba, image.width, image.height)
+            .expect("every dev image fits a texture");
+    }
+    let background_corner = background_corner.expect("the background image decodes");
     // The dev theme, merged as mod init installs it, so tokens resolve as in play.
     renderer.set_ui_theme(
         postretro_ui::theme::UiTheme::engine_default().with_override(
@@ -683,12 +721,18 @@ fn loading_frames_render_the_tree_over_the_splash_background() {
         app.end_loading_screen();
 
         let image = image::RgbaImage::from_raw(SIZE[0], SIZE[1], pixels).unwrap();
-        // The splash background, sRGB 8-bit (28, 33, 39), within rounding.
+        // The engine fallback shows the splash background, sRGB 8-bit
+        // (28, 33, 39), within rounding. The dev tree's full-window background
+        // covers it with the screenshot, within filtering.
         let corner = image.get_pixel(4, 4).0;
-        for (channel, expected) in corner.iter().zip([28u8, 33, 39]) {
+        let (expected, tolerance) = match label {
+            "engine-fallback" => ([28u8, 33, 39], 1),
+            _ => (background_corner, 24),
+        };
+        for (channel, want) in corner.iter().zip(expected) {
             assert!(
-                channel.abs_diff(expected) <= 1,
-                "{label}: corner {corner:?} is the splash background"
+                channel.abs_diff(want) <= tolerance,
+                "{label}: corner {corner:?} is not {expected:?}"
             );
         }
         let drawn = image

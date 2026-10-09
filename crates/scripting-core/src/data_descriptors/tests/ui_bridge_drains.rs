@@ -477,6 +477,62 @@ fn luau_tree_factory_forwards_background_through_bridge() {
     }
 }
 
+/// The TypeScript twin of `luau_tree_factory_forwards_background_through_bridge`:
+/// the bundled SDK `Tree` forwards `background` and rejects the same malformed
+/// shapes, while an `undefined` extra key is absent, as in the bridge.
+#[test]
+fn ts_tree_factory_forwards_background_through_bridge() {
+    let directory = std::env::temp_dir().join(format!(
+        "postretro-tree-background-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_nanos())
+    ));
+    std::fs::create_dir_all(&directory).expect("create fixture directory");
+    let entry = directory.join("tree-background.ts");
+    std::fs::write(
+        &entry,
+        r#"import { Tree } from "postretro/ui";
+const root = { kind: "spacer", flexGrow: 1 } as any;
+const tree = (background: unknown) =>
+  Tree({ anchor: "bottom", offset: [0, -40], background } as any, root);
+const rejects = (background: unknown) => {
+  try { tree(background); return false; } catch { return true; }
+};
+(globalThis as any).__tree = tree({ image: "dev/loading/a", fit: undefined });
+(globalThis as any).__rejected = [
+  rejects({ image: "" }),
+  rejects({ image: "dev/loading/a", fit: "contain" }),
+  rejects({}),
+  rejects("dev/loading/a"),
+  rejects(null),
+];
+"#,
+    )
+    .expect("write fixture");
+    let entry = std::fs::canonicalize(&entry).expect("canonicalize fixture");
+    let bundled = postretro_script_compiler::bundle_entry(&entry).expect("fixture bundles");
+    let _ = std::fs::remove_dir_all(&directory);
+
+    let registry = crate::primitives_registry::PrimitiveRegistry::new();
+    let subsystem =
+        crate::quickjs::QuickJsSubsystem::new(&registry, &crate::quickjs::QuickJsConfig::default())
+            .expect("quickjs definition context");
+    subsystem.definition_ctx().with(|ctx| {
+        let _: JsValue = crate::quickjs::run_script(&ctx, &bundled, "tree-background.js")
+            .expect("fixture evaluates");
+        let value: JsValue = ctx.globals().get("__tree").unwrap();
+        let tree = anchored_tree_from_js_value(&ctx, value).expect("factory output converts");
+        assert_eq!(
+            serde_json::to_string(&tree).unwrap(),
+            r#"{"anchor":"bottom","offset":[0.0,-40.0],"root":{"kind":"spacer","flexGrow":1.0},"background":{"image":"dev/loading/a"}}"#
+        );
+        let rejected: Vec<bool> = ctx.globals().get("__rejected").unwrap();
+        assert_eq!(rejected, vec![true; 5], "every malformed background throws");
+    });
+}
+
 /// The end-to-end AC: run the ACTUAL Luau `widgets`/`layout`/`tree` factories
 /// under mlua, pass the produced descriptor value through the bridge, and
 /// assert the typed result + a byte-identical re-serialization. This is the

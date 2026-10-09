@@ -226,8 +226,9 @@ export function Tree(props: TreeProps, root: WidgetDescriptor): AnchoredTreeDesc
     if (background === null || typeof background !== "object" || Array.isArray(background)) {
       throw new Error("Tree: `background` must be an object `{ image }`");
     }
-    for (const key of Object.keys(background)) {
-      if (key !== "image") {
+    // An `undefined` property is absent, as the bridge and Luau treat it.
+    for (const [key, value] of Object.entries(background)) {
+      if (key !== "image" && value !== undefined) {
         throw new Error(`Tree: unknown \`background\` key \`${key}\``);
       }
     }

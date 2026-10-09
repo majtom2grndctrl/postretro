@@ -3781,7 +3781,6 @@ impl App {
         // inside the client arm (a disjoint `self` field from `self.session`).
         let gravity = script_ctx.gravity.get();
         let collision_world = &self.collision_world;
-        let mod_block_during_reload = self.switching.block_during_reload;
         // `net_endpoint` and `mesh_clip_tables` are both session-owned but distinct
         // fields; bind the session once and reach each as a disjoint field borrow,
         // so the client arm's `mesh_clip_tables` read does not re-borrow the
@@ -3853,7 +3852,6 @@ impl App {
                         if !poll.disconnects.is_empty()
                             || !poll.handshakes.is_empty()
                             || !poll.lifecycle.is_empty()
-                            || !poll.switch_declarations.is_empty()
                             || !poll.join_seeds.is_empty()
                         {
                             let mut registry = script_ctx.registry.borrow_mut();
@@ -4144,18 +4142,16 @@ impl App {
                                     payload,
                                 );
                             }
-                            for &(client_id, declaration) in &poll.switch_declarations {
-                                netcode::host_handle_switch_declaration(
-                                    &mut registry,
-                                    server,
-                                    slot_pawns,
-                                    weapon_owners,
-                                    client_id,
-                                    declaration.declaration_id,
-                                    declaration.slot,
-                                    mod_block_during_reload,
-                                );
-                            }
+                        }
+                        // Switches apply on the fixed tick their lane releases
+                        // them, ordered with the client's starts and presses.
+                        for &(client_id, declaration) in &poll.switch_declarations {
+                            netcode::host_retain_switch_declaration(
+                                command_queues,
+                                owners,
+                                client_id,
+                                declaration,
+                            );
                         }
                         if let Some(seats) = seat_table {
                             netcode::clear_released_seat_slot_values(
@@ -4274,35 +4270,12 @@ impl App {
                             );
                         }
                         if effect.rejected {
-                            self.client_weapon.due.retain(|queued| {
-                                queued.weapon != effect.weapon
-                                    || (queued.shot.activation.shot_id.start_tick
-                                        != effect.token.start_tick
-                                        || queued.shot.activation.shot_id.lane != effect.token.lane)
-                            });
-                            let shots: Vec<_> = registry
-                                .iter_with_kind(postretro_entities::ComponentKind::Projectile)
-                                .filter_map(|(_, value)| {
-                                    let postretro_entities::ComponentValue::Projectile(projectile) =
-                                        value
-                                    else {
-                                        return None;
-                                    };
-                                    projectile.predicted_shot_id.filter(|id| {
-                                        id.start_tick == effect.token.start_tick
-                                            && id.lane == effect.token.lane
-                                            && projectile.owner_weapon == effect.weapon
-                                    })
-                                })
-                                .collect();
-                            for id in shots {
-                                let _ = self.client_predicted_shots.apply_verdict(
-                                    &mut registry,
-                                    id,
-                                    false,
-                                    false,
-                                );
-                            }
+                            self.client_weapon.retract_rejected_activation(
+                                &mut registry,
+                                &mut self.client_predicted_shots,
+                                effect.token,
+                                effect.weapon,
+                            );
                         }
                     }
                 }
@@ -4662,10 +4635,6 @@ impl App {
             projectile_presentations,
         }) = session.net_endpoint.as_mut()
         else {
-            script_ctx
-                .registry
-                .borrow_mut()
-                .clear_world_point_presentation_spawns();
             return Vec::new();
         };
 
@@ -4676,7 +4645,6 @@ impl App {
         {
             let mut registry = script_ctx.registry.borrow_mut();
             netcode::route_host_presentation_spawns(&mut registry, server, owners);
-            netcode::route_host_world_point_presentation_spawns(&mut registry, server, owners);
             netcode::host_drive_demo_mover(&mut registry, demo_mover, allocator, replicable, *tick);
             if weapon_owners.has_attachment_changes() {
                 let descriptors = script_ctx.data_registry.borrow();
@@ -4975,19 +4943,35 @@ impl App {
     /// per OWNED remote pawn through the deterministic gap policy. Movement consumes
     /// only the movement subset; host FIRE/reload consumes the same resolved command
     /// later in the sim weapon stage.
+    ///
+    /// Weapon switches the resolution released apply here, before the tick's
+    /// simulation, so each reaches the inventory ahead of the starts and presses
+    /// the client stamped after it.
     fn host_resolve_remote_commands(&mut self) -> Vec<netcode::ResolvedPawnCommand> {
+        let mod_block_during_reload = self.switching.block_during_reload;
+        let Some(session) = self.session.as_mut() else {
+            return Vec::new();
+        };
         let Some(netcode::NetEndpoint::Host {
             command_queues,
             owners,
+            server,
+            weapon_owners,
             ..
-        }) = self
-            .session
-            .as_mut()
-            .and_then(|session| session.net_endpoint.as_mut())
+        }) = session.net_endpoint.as_mut()
         else {
             return Vec::new();
         };
-        netcode::host_resolve_remote_commands(owners, command_queues)
+        let resolved = netcode::host_resolve_remote_commands(owners, command_queues);
+        netcode::host_apply_switch_deliveries(
+            &mut session.scripting.script_ctx.registry.borrow_mut(),
+            server,
+            owners,
+            command_queues,
+            weapon_owners,
+            mod_block_during_reload,
+        );
+        resolved
     }
 
     fn host_prepare_remote_pawn_commands(
@@ -5037,7 +5021,7 @@ impl App {
                     resolved,
                 );
                 host_activations::guard_initiation(
-                    &registry,
+                    &mut registry,
                     allocator,
                     command_queues,
                     server,
@@ -5094,6 +5078,7 @@ impl App {
             fire_tick,
             client_tick: resolved.client_tick,
             aim_pitch: resolved.aim_pitch,
+            start_aim: None,
             command: resolved.command.clone(),
         }
     }
@@ -5569,10 +5554,11 @@ impl App {
         ))
     }
 
-    /// Send a switch already accepted by the local wieldable machine to the host.
+    /// Send a switch already accepted by the local wieldable machine to the host,
+    /// stamped with `client_tick`, the tick of the command it was made on.
     /// Occupancy and reload policy were checked before the immediate local lower,
     /// including a zero-duration lower that may already have repointed.
-    fn client_declare_switch(&mut self, slot: usize) {
+    fn client_declare_switch(&mut self, slot: usize, client_tick: u32) {
         let Ok(slot) = u8::try_from(slot) else {
             return;
         };
@@ -5597,7 +5583,12 @@ impl App {
             .wieldable_selection()
             .last_weapon_slot_before_latest_declaration();
         if let Some(endpoint) = session.net_endpoint.as_mut() {
-            endpoint.send_client_switch_declaration(slot, rollback_slot, rollback_last_weapon_slot);
+            endpoint.send_client_switch_declaration(
+                slot,
+                client_tick,
+                rollback_slot,
+                rollback_last_weapon_slot,
+            );
         }
     }
 

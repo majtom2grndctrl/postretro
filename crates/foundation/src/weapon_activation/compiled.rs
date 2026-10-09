@@ -222,6 +222,12 @@ impl CompiledActivation {
 pub fn activation_duration_ticks(ms: f32) -> u32 {
     (f64::from(ms) * f64::from(ACTIVATION_TICKS_PER_SECOND) / 1000.0).ceil() as u32
 }
+
+/// Milliseconds in `ticks` fixed activation ticks: the host's recovery unit
+/// back in the component's millisecond cooldown.
+pub fn activation_ticks_ms(ticks: u32) -> f32 {
+    ticks as f32 * 1000.0 / ACTIVATION_TICKS_PER_SECOND as f32
+}
 fn compile_charge(
     charge: &ActivationCharge,
     trigger: ActivationTrigger,

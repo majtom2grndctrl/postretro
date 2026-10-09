@@ -39,7 +39,7 @@ pub use engine_state_catalog::*;
 pub use postretro_foundation::{
     MAX_PENDING_PRESENTATION_SPAWNS, PoseInputs, PresentationEasing, PresentationFact,
     PresentationFacts, PresentationFade, PresentationMotion, PresentationPresenter,
-    PresentationSpawn, PresentationTemplateHandle, WorldPointPresentationSpawn,
+    PresentationSpawn, PresentationTemplateHandle,
 };
 pub use provenance::*;
 pub use reactions::emitter::{

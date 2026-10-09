@@ -51,6 +51,7 @@
 - **Theme variants / high contrast / text scale / contrast diagnostic / focus visuals** → `ui.md` §1, §2
 - **Captions / subtitles / sound-direction cues / mono audio / bus volume options** → `audio.md` §1 (Mixer bus tree), §5
 - **Damage direction indicator / player damage bearing** → `networking.md` §Presentation events vs. replicated state
+- **Impact burst / spark burst / observer impact cue / which peer spawns the burst** → `networking.md` §Presentation events vs. replicated state
 - **UI layer / HUD / widgets / theming / UI state binding** → `ui.md`
 - **Engine-owned assets / `core/` tree / built-in UI descriptors / splash image / where engine assets live vs. mod content** → `ui.md` §5 · `build_pipeline.md` §Distribution packaging
 - **Resource management / textures / materials** → `resource_management.md`
@@ -66,6 +67,8 @@
 - **First-person weapon placement / viewmodel offset / where a weapon sits in view / placement vs view-feel / FP vs TP weapon vantage** → `networking.md` §Weapon placement is content
 - **Projectile fire origin / muzzle point / where a shot spawns / camera-eye vs barrel** → `networking.md` §Weapon placement is content (Fire origin composes on placement)
 - **Weapon descriptor vocabulary / one canonical weapon type / no player-vs-enemy weapon kind / wield restriction as attribute** → `entity_model.md` §Components (Weapon vocabulary)
+- **Remote fire rate under lag / activation start lane / client-tick cadence admission / starts, use, or drop lost to the playout trim** → `networking.md` §Combat authority · §Host input command queue
+- **Weapon switch ordering / switch lane / switch declaration client tick (`WIRE_VERSION` 26) / input applied in client-tick order after a stall** → `networking.md` §Combat authority · §Host input command queue · §Version gates
 - **Weapon resources / ammo vs heat vs cell / overheat lockout / cell regen / holstered weapons cooling / weapon-resource HUD slots** → `entity_model.md` §Components (Weapon resources) · connected-client prediction: `networking.md` §Combat authority
 - **Dynamic weapon accuracy / spread / bloom / recoil-as-accuracy-loss / movement inaccuracy / crosshair spread ring** → `entity_model.md` §Components (Weapon vocabulary — Dynamic accuracy) · `networking.md` §engine-randomness carve-out
 - **Splash / AoE / area damage / blast radius / distance falloff / rocket explosion** → `entity_model.md` §Components (Splash / area effects)

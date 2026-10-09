@@ -1,11 +1,69 @@
-//! Host shot lifetime and ordinal-aware pending declarations.
+// Host open authorized shots and pending hit declarations held for their FIRE.
+// See: context/lib/networking.md §Combat authority: FIRE vs HIT
 use crate::{HostCommandQueues, NetworkIdAllocator, activation_ledger, prediction};
+use glam::Vec3;
 use postretro_combat_model::{AuthorizedShot, OpenAuthorizedShot, ShotId};
 use postretro_entities::EntityId;
 use postretro_net::wire;
 use std::collections::{HashMap, VecDeque};
 
 pub(crate) const MAX_PENDING_HIT_DECLARATIONS_PER_CLIENT: usize = 64;
+
+/// A projectile cannot have struck anything on its own FIRE tick.
+const MIN_PROJECTILE_HOLD_TICKS: u32 = 1;
+
+/// Slack past a splash declaration's contact: the host's reconstructed fire
+/// origin may sit a little behind the client's launch point.
+const SPLASH_HOLD_MARGIN_TICKS: u32 = 1;
+
+/// Host ticks after FIRE before a projectile declaration may resolve. Splash
+/// replays its flight from the host fire tick, which a late-admitted start
+/// pushes past the client's whole flight, so it waits until host travel at its
+/// frozen speed covers the farthest declared contact, capped by frozen range
+/// and lifetime. A declared world contact also waits for the host's own frozen
+/// wall contact: a late start fires from the pawn's live eye along the start's
+/// captured aim, so the host's ray can meet the wall beyond the declared point.
+/// An entity contact waits only for its declared point; a longer wait would
+/// replay against a target that has since moved. The declaration only delays
+/// the replay; the replay still picks the detonation.
+fn projectile_hold_ticks(shot: &AuthorizedShot, declaration: &wire::HitDeclaration) -> u32 {
+    let (Some(_), Some(speed), Some(tick_seconds), Some(lifetime_seconds)) = (
+        shot.splash.as_ref(),
+        shot.projectile_speed,
+        shot.projectile_tick_seconds,
+        shot.projectile_lifetime_seconds,
+    ) else {
+        return MIN_PROJECTILE_HOLD_TICKS;
+    };
+    let step = f64::from(speed) * f64::from(tick_seconds);
+    let reach = f64::from(shot.range).min(f64::from(speed) * f64::from(lifetime_seconds));
+    if !step.is_finite() || step <= 0.0 || !reach.is_finite() || reach < 0.0 {
+        return MIN_PROJECTILE_HOLD_TICKS;
+    }
+    let host_wall = shot
+        .projectile_static_contact_distance
+        .map(f64::from)
+        .filter(|distance| distance.is_finite())
+        .unwrap_or(0.0);
+    let held = declaration
+        .records
+        .iter()
+        .take(shot.pellet_count)
+        .filter(|record| crate::valid_projectile_contact(shot, record))
+        .map(|record| {
+            let declared = f64::from(shot.fire_origin.distance(Vec3::from_array(record.point)));
+            if record.target == crate::PRESENTATION_CONTACT_TARGET {
+                declared.max(host_wall)
+            } else {
+                declared
+            }
+        })
+        .fold(0.0, f64::max);
+    // Bounded by the frozen reach; the clamp keeps the cast inside the
+    // wrap-aware half of the tick clock even for absurd authored tuning.
+    let travel_ticks = (held.min(reach) / step).ceil().min(f64::from(u32::MAX / 2)) as u32;
+    travel_ticks.saturating_add(SPLASH_HOLD_MARGIN_TICKS)
+}
 
 #[derive(Debug, Default)]
 pub struct OpenAuthorizedShots {
@@ -176,8 +234,10 @@ impl PendingHitDeclarations {
             let shot_id = crate::wire_convert::shot_id_from_wire(pending.declaration.shot_id);
             let open_shot = open_shots.get(shot_id);
             let shot_open = open_shot.is_some();
-            let projectile_waits_for_later_tick = open_shot.as_ref().is_some_and(|open| {
-                open.shot.is_projectile && current_tick.wrapping_sub(open.shot.fire_tick) == 0
+            let projectile_hold_active = open_shot.as_ref().is_some_and(|open| {
+                open.shot.is_projectile
+                    && current_tick.wrapping_sub(open.shot.fire_tick)
+                        < projectile_hold_ticks(&open.shot, &pending.declaration)
             });
             use activation_ledger::OrdinalStatus;
             let ordinal =
@@ -193,7 +253,7 @@ impl PendingHitDeclarations {
                 }
                 _ => false,
             };
-            if !projectile_waits_for_later_tick
+            if !projectile_hold_active
                 && (shot_open
                     || matches!(ordinal, OrdinalStatus::Rejected | OrdinalStatus::Authorized)
                     || expired)

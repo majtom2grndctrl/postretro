@@ -278,13 +278,21 @@ fn conditioned_reload_then_switch_then_fire_inside_a_stall_reloads_the_pressed_s
     let mut fixture = Fixture::new(LinkConfig::perfect(), hitscan_rifle("press", 130.0));
     fixture.mirror_rejection_despawn = true;
     let second = fixture.equip_second(&reloading_rifle());
-    let mut reserve = postretro_entities::AmmoReserve::new();
-    reserve.credit("rounds", 100);
-    fixture
-        .host
-        .borrow_mut()
-        .set_component(fixture.host_actors.pawn, reserve)
-        .unwrap();
+    {
+        let mut host = fixture.host.borrow_mut();
+        host.set_component(
+            fixture.host_actors.pawn,
+            postretro_entities::AmmoReserve::new(),
+        )
+        .expect("host pawn takes an ammo reserve");
+        // Post-spawn reserve writes route through the grant chokepoint.
+        postretro_entities::components::grant::grant_ammo(
+            &mut host,
+            fixture.host_actors.pawn,
+            "rounds",
+            100.0,
+        );
+    }
     // On a clean link: hold slot 1 and spend a round so its reload has work.
     fixture.step(START - 30, switch_to(1));
     fixture.idle(START - 29, 9);

@@ -123,9 +123,12 @@ pub(super) fn guard_initiation(
             .can_accept(command.owner_client_id, id, command.fire_tick)
     });
     let cadence = match command.weapon {
-        Some(weapon) if command.rejected_activation.is_none() => {
-            queues.activation_cadence(command.owner_client_id, weapon, token.start_tick)
-        }
+        Some(weapon) if command.rejected_activation.is_none() => queues.activation_cadence(
+            command.owner_client_id,
+            weapon,
+            command.command.firing_slot,
+            token.start_tick,
+        ),
         _ => netcode::CadenceVerdict::Unrecorded,
     };
     if command.rejected_activation.is_some()
@@ -291,6 +294,10 @@ fn record_activation_progress(
             shot.activation().token,
             progress.weapon,
             recovery_ticks,
+            advance
+                .program
+                .as_ref()
+                .is_some_and(|program| program.timing.charge.is_some()),
         );
     }
     if let Some(shot) = advance.attempted {

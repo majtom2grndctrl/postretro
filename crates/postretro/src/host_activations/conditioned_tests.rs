@@ -2194,6 +2194,80 @@ fn conditioned_burst_hold_restarts_are_never_refused_under_loss_and_hitch() {
     assert!(failures.is_empty(), "{failures:#?}");
 }
 
+// Regression: a release delivered mid-burst moved the burst's cadence clock to
+// the release, so the next tap at the authored rate was refused as cooling.
+#[test]
+fn conditioned_burst_taps_released_mid_burst_are_never_refused() {
+    // A 6-tick burst, then the 8-tick (130 ms) recovery from its last shot.
+    const PERIOD: u32 = 14;
+    let mut failures = Vec::new();
+    for (label, link, hitch) in [
+        ("clean", LinkConfig::perfect(), None),
+        ("mandated", mandated_link(), None),
+        ("mandated-seed-a", mandated_link_seeded(0x13c6_ee670), None),
+        (
+            "clean+host-hitch",
+            LinkConfig::perfect(),
+            Some((56u32, 12u32)),
+        ),
+    ] {
+        let mut fixture = Fixture::new(link, burst_rifle("press", 130.0));
+        let start = 1000u32;
+        let mut stalled = 0;
+        for offset in 0..360u32 {
+            let phase = offset % PERIOD;
+            let mut command = if phase < 2 {
+                held(ActivationLane::Primary, phase == 0)
+            } else {
+                neutral()
+            };
+            if phase == 2 {
+                command.activation.release = Some(ActivationRelease {
+                    token: token(start + offset - 2, ActivationLane::Primary),
+                    release_tick: start + offset,
+                });
+            }
+            if hitch.is_some_and(|(period, length)| offset >= period && offset % period < length) {
+                fixture.predict(start + offset, &mut command);
+                fixture.send_input(start + offset, &command);
+                stalled += 1;
+                continue;
+            }
+            for _ in 0..stalled {
+                fixture.host_tick();
+            }
+            stalled = 0;
+            fixture.step(start + offset, command);
+        }
+        fixture.idle(start + 360, 120);
+        let rejected: Vec<u32> = fixture
+            .outcomes
+            .iter()
+            .filter_map(|outcome| match outcome {
+                wire::ActivationOutcome::InitiationRejected { token, .. } => Some(token.start_tick),
+                _ => None,
+            })
+            .collect();
+        let taps = 360usize.div_ceil(PERIOD as usize);
+        eprintln!(
+            "burst taps {label}: predicted {}, authorized {}, refused {rejected:?}",
+            fixture.snapshots.len(),
+            fixture.authorized.len()
+        );
+        if !rejected.is_empty()
+            || fixture.snapshots.len() != 3 * taps
+            || fixture.authorized.len() != fixture.snapshots.len()
+        {
+            failures.push(format!(
+                "{label}: predicted {}, authorized {}, refused {rejected:?}",
+                fixture.snapshots.len(),
+                fixture.authorized.len()
+            ));
+        }
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
 // Regression: rocket presses at the authored rate lost their in-flight rocket
 // to a refused start after a stalled input stream.
 #[test]
@@ -2302,7 +2376,8 @@ fn conditioned_tick_stamping_client_cannot_exceed_the_host_cadence_bound() {
             "{commands_per_host_tick} commands per host tick: {} authorized over 360 host ticks",
             fire_ticks.len()
         );
-        assert!(!fire_ticks.is_empty());
+        // The cadence, not a clogged lane, is what limits the stamping client.
+        assert!(fire_ticks.len() as u32 >= 359 / RECOVERY_TICKS);
         assert!(fire_ticks.len() as u32 <= (359 + TOLERANCE_TICKS) / RECOVERY_TICKS + 1);
         for (first, &opened) in fire_ticks.iter().enumerate() {
             for (last, &closed) in fire_ticks.iter().enumerate().skip(first) {

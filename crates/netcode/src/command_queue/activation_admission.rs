@@ -58,8 +58,9 @@ impl ClientCommandState {
         }
     }
 
-    /// Deliver retained release/cancel edges. A release reaching the live
-    /// execution restarts its cadence clock at the client's release tick.
+    /// Deliver retained release/cancel edges. Cadence notes each delivered
+    /// release, including one riding with its own start; a charged execution
+    /// runs its recovery from it.
     pub(super) fn deliver_edges(
         &mut self,
         activation: &mut ActivationInput,
@@ -67,10 +68,7 @@ impl ClientCommandState {
     ) {
         self.activation_edges
             .deliver(activation, self.host_tick, live);
-        if let Some(release) = activation
-            .release
-            .filter(|release| Some(release.token) == live)
-        {
+        if let Some(release) = activation.release {
             self.cadence
                 .release(release.token, release.release_tick, self.host_tick);
         }
@@ -78,33 +76,39 @@ impl ClientCommandState {
 }
 
 impl HostCommandQueues {
-    /// Client half of the cadence rule for a start about to bind `weapon`.
+    /// Client half of the cadence rule for a start about to bind `weapon` in
+    /// `firing_slot`.
     pub fn activation_cadence(
         &self,
         client_id: u64,
         weapon: EntityId,
+        firing_slot: u8,
         start_tick: u32,
     ) -> CadenceVerdict {
         self.clients
             .get(&client_id)
             .map_or(CadenceVerdict::Unrecorded, |state| {
-                state.cadence.client_spacing(weapon, start_tick)
+                state
+                    .cadence
+                    .client_spacing(weapon, firing_slot, start_tick)
             })
     }
 
-    /// The host machine began `token`'s recovery this host tick.
+    /// The host machine began `token`'s recovery this host tick. `charged`: the
+    /// action charges, so its shots began at the delivered release.
     pub fn activation_recovery_began(
         &mut self,
         client_id: u64,
         token: ActivationToken,
         weapon: EntityId,
         recovery_ticks: u32,
+        charged: bool,
     ) {
         if let Some(state) = self.clients.get_mut(&client_id) {
             let host_tick = state.host_tick;
             state
                 .cadence
-                .recovery_began(token, weapon, recovery_ticks, host_tick);
+                .recovery_began(token, weapon, recovery_ticks, charged, host_tick);
         }
     }
 }

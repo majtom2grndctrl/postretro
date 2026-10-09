@@ -1,4 +1,4 @@
-// Frozen reliable observer weapon cues; assets and sound playback remain local.
+// Frozen reliable observer weapon cues and impact-burst spawning from them; assets and sound playback remain local.
 // See: context/lib/networking.md · context/lib/audio.md · context/lib/scripting.md §12
 
 use glam::Vec3;
@@ -185,8 +185,13 @@ pub fn materialize_observer_weapon_cue(
 /// This is the only route by which a peer that did not simulate the shot sees
 /// its burst: the firing peer's own simulation spawns it, and the firing owner
 /// is excluded from cue delivery, so nothing spawns twice. Only an impact cue
-/// anchored at contacts has a surface to burst from; activation cues and
-/// entity-anchored cues spawn none.
+/// anchored at contacts has a surface to burst from; activation cues spawn none.
+///
+/// Invariant: every `impact` producer emits contact anchors. A delivery cannot
+/// tell a contact anchor from an unresolved entity anchor, which
+/// `materialize_observer_weapon_cue` turns into one zero-normal contact at the
+/// producer's origin. An entity-anchored impact cue would burst there. Producers
+/// guarantee it never occurs; this function does not enforce it.
 pub fn spawn_observer_impact_bursts(
     registry: &mut EntityRegistry,
     cues: &[ObserverWeaponCueDelivery],

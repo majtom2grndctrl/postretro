@@ -7,7 +7,7 @@ use std::time::Instant;
 use anyhow::{Context, Result, bail};
 #[cfg(any(test, feature = "capture"))]
 use postretro_level_loader::ShDrainBatch;
-use postretro_level_loader::{CellVisibility, ShDrainOutcome, ShStreamManifest, ShStreamingMode};
+use postretro_level_loader::{ShDrainOutcome, ShStreamManifest, ShStreamingMode};
 use postretro_renderer::{Renderer, ShResidencySnapshot, ShStreamingLiveDiagnostics};
 use postretro_visibility::VisibleCells;
 
@@ -15,6 +15,7 @@ use super::sh_async_workers::{ShAsyncWorkers, ShWorkerRetirement, ShWorkerStats}
 use super::sh_streaming_diagnostics::{ShStreamingLogWindow, assemble_live_diagnostics};
 use crate::sh_streaming::budget::{FixedGpuCharges, ShGpuBudgetInputs, StreamedPoolMinima};
 use crate::sh_streaming::controller::{ShResidencyController, SyncReadResult};
+use crate::streaming::cell_demand::DemandFrame;
 use crate::streaming::cluster_hints::ClusterHints;
 use crate::streaming::issuer::ReadRoute;
 
@@ -54,27 +55,18 @@ pub(crate) struct ShStreamingSession {
 
 impl ShStreamingSession {
     /// Builds a controller from the renderer's actual allocation snapshot.
-    /// `cell_visibility` is the same level's id-46 section, if loaded;
-    /// `hints` is its id 49, decoded once for every streamed resource.
+    /// `hints` is the level's id 49, decoded once for every streamed resource.
     #[cfg(feature = "capture")]
     pub(crate) fn from_renderer(
         manifest: Arc<ShStreamManifest>,
-        cell_visibility: Option<&CellVisibility>,
         renderer: &Renderer,
         hints: Arc<ClusterHints>,
     ) -> Result<Self> {
-        Self::from_renderer_with_mode(
-            manifest,
-            cell_visibility,
-            renderer,
-            ShStreamingMode::SyncProof,
-            hints,
-        )
+        Self::from_renderer_with_mode(manifest, renderer, ShStreamingMode::SyncProof, hints)
     }
 
     pub(in crate::session) fn from_renderer_with_mode(
         manifest: Arc<ShStreamManifest>,
-        cell_visibility: Option<&CellVisibility>,
         renderer: &Renderer,
         mode: ShStreamingMode,
         hints: Arc<ClusterHints>,
@@ -82,7 +74,7 @@ impl ShStreamingSession {
         let snapshot = renderer.sh_residency_snapshot().with_context(
             || "[SH streaming] renderer has no residency snapshot for a streamed level",
         )?;
-        let mut session = Self::from_snapshot(manifest.clone(), snapshot, cell_visibility, hints)?;
+        let mut session = Self::from_snapshot(manifest.clone(), snapshot, hints)?;
         session.mode = mode;
         Ok(session)
     }
@@ -94,25 +86,19 @@ impl ShStreamingSession {
     #[cfg(feature = "capture")]
     pub(crate) fn for_capture(
         manifest: Arc<ShStreamManifest>,
-        cell_visibility: Option<&CellVisibility>,
         renderer: &Renderer,
         hints: Arc<ClusterHints>,
     ) -> Result<Self> {
-        Self::from_renderer(manifest, cell_visibility, renderer, hints)
+        Self::from_renderer(manifest, renderer, hints)
     }
 
     pub(in crate::session) fn from_snapshot(
         manifest: Arc<ShStreamManifest>,
         snapshot: ShResidencySnapshot,
-        cell_visibility: Option<&CellVisibility>,
         hints: Arc<ClusterHints>,
     ) -> Result<Self> {
-        let controller = ShResidencyController::new(
-            manifest.clone(),
-            budget_inputs(snapshot),
-            cell_visibility,
-            hints,
-        )?;
+        let controller =
+            ShResidencyController::new(manifest.clone(), budget_inputs(snapshot), hints)?;
         Ok(Self {
             manifest,
             mode: ShStreamingMode::SyncProof,
@@ -178,16 +164,16 @@ impl ShStreamingSession {
     }
 
     /// Updates the controller from one real visibility result and the
-    /// locator's camera cell (`None` without a level). Capture uses the same
-    /// method with its deterministic fixed cell set.
+    /// cell-demand stage's reach (`None` without a usable id 51). Capture
+    /// uses the same method with its deterministic fixed cell set.
     pub(crate) fn update_targets(
         &mut self,
         visible_cells: &VisibleCells,
-        camera_cell: Option<usize>,
+        reach: Option<DemandFrame<'_>>,
         monotonic_seconds: f64,
     ) -> Result<()> {
         self.controller
-            .update_targets(visible_cells, camera_cell, monotonic_seconds)?;
+            .update_targets(visible_cells, reach, monotonic_seconds)?;
         self.monotonic_seconds = monotonic_seconds;
         Ok(())
     }

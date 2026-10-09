@@ -134,7 +134,7 @@ fn streaming_sections(d: &ShStreamingLiveDiagnostics) -> [StreamingSection; 5] {
             title: "Residency",
             rows: vec![
                 ("Target clusters", d.target_clusters.to_string()),
-                ("Warm clusters", d.warm_clusters.to_string()),
+                ("Lead clusters", d.lead_clusters.to_string()),
                 ("Sampleable clusters", d.sampleable_clusters.to_string()),
                 ("Queued clusters", d.queued_clusters.to_string()),
                 ("Ready clusters", d.ready_clusters.to_string()),

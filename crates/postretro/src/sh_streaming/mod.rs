@@ -4,6 +4,7 @@
 pub(crate) mod budget;
 pub(crate) mod controller;
 pub(crate) mod generation;
+mod reach;
 #[cfg(test)]
 mod reach_measurement;
 #[cfg(test)]
@@ -14,4 +15,3 @@ mod topology_nodes;
 mod topology_test_fixtures;
 #[cfg(test)]
 pub(crate) mod trace_fixture;
-mod warm_set;

@@ -25,7 +25,6 @@ fn async_worker_failure_warns_once_across_same_identity_retry() {
             effective_floor_bytes: 1024 * 1024,
             ..ShResidencySnapshot::default()
         },
-        world.cell_visibility.as_ref(),
         level_hints(&world),
     )
     .unwrap();
@@ -43,7 +42,7 @@ fn async_worker_failure_warns_once_across_same_identity_retry() {
     let capture = LogCapture::start();
     let visible = VisibleCells::Culled(vec![0]);
     let empty = VisibleCells::Culled(Vec::new());
-    session.prepare_async_batch(&visible, Some(0), 0.0).unwrap();
+    session.prepare_async_batch(&visible, None, 0.0).unwrap();
 
     let wait_for_failure = |session: &mut ShStreamingSession, time| {
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -52,9 +51,7 @@ fn async_worker_failure_warns_once_across_same_identity_retry() {
         {
             assert!(Instant::now() < deadline, "worker failure did not arrive");
             std::thread::yield_now();
-            session
-                .prepare_async_batch(&visible, Some(0), time)
-                .unwrap();
+            session.prepare_async_batch(&visible, None, time).unwrap();
         }
     };
     wait_for_failure(&mut session, 0.0);
@@ -63,7 +60,7 @@ fn async_worker_failure_warns_once_across_same_identity_retry() {
     // No camera cell stands for the camera leaving; its warm set departs.
     session.prepare_async_batch(&empty, None, 0.1).unwrap();
     session.prepare_async_batch(&empty, None, 2.1).unwrap();
-    session.prepare_async_batch(&visible, Some(0), 2.2).unwrap();
+    session.prepare_async_batch(&visible, None, 2.2).unwrap();
     assert_eq!(session.controller.counters().retries, 1);
     wait_for_failure(&mut session, 2.2);
     assert_eq!(session.controller.permits_in_use(), 0);
@@ -79,13 +76,8 @@ fn periodic_log_line_appears_once_per_active_interval_and_never_when_idle() {
         effective_floor_bytes: 1024 * 1024,
         ..ShResidencySnapshot::default()
     };
-    let mut session = ShStreamingSession::from_snapshot(
-        manifest,
-        renderer,
-        world.cell_visibility.as_ref(),
-        level_hints(&world),
-    )
-    .unwrap();
+    let mut session =
+        ShStreamingSession::from_snapshot(manifest, renderer, level_hints(&world)).unwrap();
     session.mode = ShStreamingMode::Async;
     session.start_async_workers().unwrap();
     let capture = LogCapture::start();
@@ -94,7 +86,7 @@ fn periodic_log_line_appears_once_per_active_interval_and_never_when_idle() {
     // every ready cluster.
     let frame = |session: &mut ShStreamingSession, seconds: f64| {
         let batch = session
-            .prepare_async_batch(&visible, Some(0), seconds)
+            .prepare_async_batch(&visible, None, seconds)
             .unwrap();
         let accepted = batch
             .ready
@@ -151,14 +143,13 @@ fn sync_proof_reads_fill_the_read_counters() {
             effective_floor_bytes: 1024 * 1024,
             ..ShResidencySnapshot::default()
         },
-        world.cell_visibility.as_ref(),
         level_hints(&world),
     )
     .unwrap();
     assert_eq!(session.mode, ShStreamingMode::SyncProof);
 
     session
-        .update_targets(&VisibleCells::Culled(vec![0]), Some(0), 0.0)
+        .update_targets(&VisibleCells::Culled(vec![0]), None, 0.0)
         .unwrap();
     assert_eq!(
         session.read_one_sync().unwrap(),

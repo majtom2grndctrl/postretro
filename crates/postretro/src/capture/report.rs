@@ -500,7 +500,7 @@ struct ShStreamingLifecycleSummaryJson {
     installs: u64,
     evictions: u64,
     retries: u64,
-    warm_clusters: u64,
+    lead_clusters: u64,
     cancelled_requests: u64,
     discarded_reads: u64,
     discarded_read_bytes: u64,
@@ -572,7 +572,7 @@ impl From<ShStreamingLifecycleSummary> for ShStreamingLifecycleSummaryJson {
             installs: summary.installs,
             evictions: summary.evictions,
             retries: summary.retries,
-            warm_clusters: summary.warm_clusters,
+            lead_clusters: summary.lead_clusters,
             cancelled_requests: summary.cancelled_requests,
             discarded_reads: summary.discarded_reads,
             discarded_read_bytes: summary.discarded_read_bytes,
@@ -1082,7 +1082,7 @@ mod tests {
             installs: 8,
             evictions: 9,
             retries: 10,
-            warm_clusters: 8,
+            lead_clusters: 8,
             reads_issued: 11,
             coalesced_reads: 3,
             gap_bytes: 12,
@@ -1139,7 +1139,7 @@ mod tests {
         assert_eq!(lifecycle["permits_in_use"], 2);
         assert_eq!(lifecycle["sampleable_clusters"], 5);
         assert_eq!(lifecycle["retries"], 10);
-        assert_eq!(lifecycle["warm_clusters"], 8);
+        assert_eq!(lifecycle["lead_clusters"], 8);
         assert_eq!(lifecycle["reads_issued"], 11);
         assert_eq!(lifecycle["coalesced_reads"], 3);
         assert_eq!(lifecycle["gap_bytes"], 12);

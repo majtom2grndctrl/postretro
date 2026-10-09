@@ -75,7 +75,8 @@ fn duration_micros(elapsed: Duration) -> u64 {
 pub struct ShStreamingLiveDiagnostics {
     // Gauges.
     pub target_clusters: u64,
-    pub warm_clusters: u64,
+    /// Clusters in the mandatory reach: the id-51 set within lead L.
+    pub lead_clusters: u64,
     pub sampleable_clusters: u64,
     pub queued_clusters: u64,
     pub ready_clusters: u64,

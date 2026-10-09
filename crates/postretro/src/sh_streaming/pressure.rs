@@ -203,7 +203,7 @@ impl ShResidencyController {
     }
 
     /// Pressure yields by class, then lower authored priority, then the
-    /// farthest warm cluster (non-warm counts as farthest), then LRU. Expired
+    /// farthest reach lead (outside the reach counts as farthest), then LRU. Expired
     /// departures deliberately keep `compare_eviction_keys` above, because
     /// they are no longer policy work.
     fn compare_pressure_keys(&self, left: u32, right: u32) -> Ordering {
@@ -214,13 +214,13 @@ impl ShResidencyController {
                     .effective_priority
                     .cmp(&self.states[right as usize].effective_priority)
             })
-            .then_with(|| self.warm_rank(right).cmp(&self.warm_rank(left)))
+            .then_with(|| self.reach_lead(right).cmp(&self.reach_lead(left)))
             .then_with(|| self.compare_eviction_keys(left, right))
     }
 
     fn pressure_class_rank(&self, cluster_id: u32) -> u8 {
         match self.states[cluster_id as usize].class {
-            Some(TargetClass::Prefetch) => 0,
+            Some(TargetClass::Band) => 0,
             Some(TargetClass::SeamWarm) => 1,
             // Callers only request a rank for pressure-eligible candidates;
             // retain a total key for defensive test construction.

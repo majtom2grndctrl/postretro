@@ -76,7 +76,7 @@ impl ShStreamingSession {
             installs: controller.counters.installs,
             evictions: controller.counters.evictions,
             retries: controller.counters.retries,
-            warm_clusters: live.warm_clusters,
+            lead_clusters: live.lead_clusters,
             cancelled_requests: live.cancelled_requests,
             discarded_reads: live.discarded_reads,
             discarded_read_bytes: live.discarded_read_bytes,

@@ -74,10 +74,7 @@ impl ShResidencyController {
         )?;
         let state = &mut self.states[cluster_id as usize];
         state.state = ClusterResidencyState::Queued;
-        let mandatory = matches!(
-            state.class,
-            Some(TargetClass::Visible | TargetClass::Pinned)
-        );
+        let mandatory = state.class.is_some_and(TargetClass::is_mandatory);
         Ok(Some(ShClusterRequest {
             generation: self.generation,
             content_tag: self.content_tag,

@@ -5,27 +5,31 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use postretro_visibility::VisibleCells;
 
+use crate::streaming::cell_demand::DemandFrame;
+
 use super::*;
 
 impl ShResidencyController {
     /// Uses monotonic render seconds, not a frame count, so the two-second
     /// retention window is identical at 30, 60, and 144 Hz. The horizon is
-    /// `visible ∪ warm`; the warm set follows `camera_cell` alone, so view
-    /// rotation moves only visible-class targets.
+    /// `visible ∪ reach`. The reach is the cell-demand stage's id-51 set for
+    /// the camera cell, `None` without a usable id 51: it follows the camera
+    /// cell and L alone, so view rotation moves only visible-class targets.
     pub(crate) fn update_targets(
         &mut self,
         visible: &VisibleCells,
-        camera_cell: Option<usize>,
+        reach: Option<DemandFrame<'_>>,
         monotonic_seconds: f64,
     ) -> Result<(), ShResidencyControllerError> {
         self.validate_time(monotonic_seconds)?;
         let visible = self.visible_clusters(visible)?;
-        self.refresh_warm_set(camera_cell)?;
+        self.reach
+            .update(reach, &self.topology.hints.cell_to_cluster)?;
         self.record_visible_misses(&visible)?;
         let horizon: BTreeSet<u32> = visible
             .iter()
             .copied()
-            .chain(self.warm.clusters())
+            .chain(self.reach.clusters().map(|(cluster, _)| cluster))
             .collect();
         let raw_departures: Vec<_> = self.last_horizon.difference(&horizon).copied().collect();
         let horizon_changed = horizon != self.last_horizon;
@@ -170,13 +174,13 @@ impl ShResidencyController {
                 );
             }
         }
-        for &cluster_id in horizon {
-            let priority = self.authored_priority(cluster_id)?;
-            Self::merge_directive(
-                &mut classes,
-                cluster_id,
-                TargetDirective::new(TargetClass::Prefetch, priority),
-            );
+        for (cluster_id, lead) in self.reach.clusters() {
+            let directive = if self.reach.is_lead(lead) {
+                TargetDirective::new(TargetClass::Lead, 0)
+            } else {
+                TargetDirective::new(TargetClass::Band, self.authored_priority(cluster_id)?)
+            };
+            Self::merge_directive(&mut classes, cluster_id, directive);
         }
         for (cluster_id, state) in self.states.iter().enumerate() {
             let cluster_id = cluster_id as u32;
@@ -245,16 +249,6 @@ impl ShResidencyController {
                 })
                 .collect(),
         }
-    }
-
-    fn refresh_warm_set(
-        &mut self,
-        camera_cell: Option<usize>,
-    ) -> Result<(), ShResidencyControllerError> {
-        if self.warm.camera_cell() != camera_cell {
-            self.warm = self.warm_source.warm_set(&self.topology, camera_cell)?;
-        }
-        Ok(())
     }
 
     fn close_owner_targets(
@@ -442,14 +436,14 @@ impl ShResidencyController {
                 self.states[cluster_id as usize].state == ClusterResidencyState::Absent
             })
             .collect();
-        // Authored priority outranks warm distance.
+        // Authored priority outranks reach lead.
         candidates.sort_by_key(|&cluster_id| {
             (
                 self.states[cluster_id as usize]
                     .class
                     .unwrap_or(TargetClass::Hysteresis),
                 std::cmp::Reverse(self.states[cluster_id as usize].effective_priority),
-                self.warm_rank(cluster_id),
+                self.reach_lead(cluster_id),
                 cluster_id,
             )
         });

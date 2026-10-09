@@ -103,7 +103,6 @@ impl crate::session::Session {
             }
             None => None,
         };
-        let cell_visibility = level.and_then(|world| world.cell_visibility.as_ref());
         self.level_streaming.ensure_sessions(
             &mut self.sh_streaming,
             WantedStreaming {
@@ -114,13 +113,7 @@ impl crate::session::Session {
             },
             |manifest, mode, hints| {
                 let hints = hints.context("[SH streaming] a streamed level carries no id 49")?;
-                ShStreamingSession::from_renderer_with_mode(
-                    manifest,
-                    cell_visibility,
-                    renderer,
-                    mode,
-                    hints,
-                )
+                ShStreamingSession::from_renderer_with_mode(manifest, renderer, mode, hints)
             },
         )
     }

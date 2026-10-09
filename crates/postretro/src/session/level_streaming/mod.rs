@@ -168,16 +168,8 @@ impl LevelStreaming {
         self.poll_retirement();
         self.start_reads(sh)?;
         self.drain.begin();
-        let sh_pending = match sh.as_mut() {
-            Some(streaming) => Some(streaming.begin_drain(
-                frame.visible_cells,
-                frame.camera_cell,
-                frame.monotonic_seconds,
-                &mut self.drain,
-            )?),
-            None => None,
-        };
-        let lightmap_frame = residency_set
+        // One cell-demand frame for both resources: one L, one reach.
+        let demand_frame = residency_set
             .zip(self.cell_demand.as_ref())
             .zip(frame.camera_cell)
             .map(|((residency_set, stage), camera_cell)| {
@@ -188,6 +180,15 @@ impl LevelStreaming {
                     frame.visible_cells,
                 )
             });
+        let sh_pending = match sh.as_mut() {
+            Some(streaming) => Some(streaming.begin_drain(
+                frame.visible_cells,
+                demand_frame,
+                frame.monotonic_seconds,
+                &mut self.drain,
+            )?),
+            None => None,
+        };
         if let Some(parked) = self
             .lightmap
             .as_mut()
@@ -199,7 +200,7 @@ impl LevelStreaming {
             .lightmap
             .as_mut()
             .filter(|session| !session.is_declined());
-        let lightmap_drains = match (lightmap, lightmap_frame) {
+        let lightmap_drains = match (lightmap, demand_frame) {
             (Some(lightmap), Some(lightmap_frame)) => {
                 let _scope = frame.cpu.scope(StreamingStage::LightmapResidency);
                 lightmap.begin_drain(lightmap_frame, frame.settling, &mut self.drain)?;

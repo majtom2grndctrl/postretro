@@ -6,126 +6,119 @@
 # left behind, requests in issue order (m = mandatory, o = optional) with class,
 # then the published targets. Do not regenerate to make a refactor pass.
 frame 0 t=0.0 camera_cell=0 visible_cells=[0 1] in_flight=[]
-  drain target_reset=[0 1 2 3 4 5 6 7 11]
+  drain target_reset=[0 1 2 3 4 5 6 11]
   install: [] = 0B of 8388608B
-  requests: [0 m visible, 1 m visible, 11 m pinned, 7 o prefetch, 2 o prefetch, 3 o prefetch, 4 o prefetch, 6 o prefetch]
-  targets: [0 visible, 1 visible, 2 prefetch, 3 prefetch, 4 prefetch, 5 prefetch, 6 prefetch, 7 prefetch p3, 11 pinned]
-  counters: installs=0 evictions=0 cancelled=0 discarded_reads=0 decoded_installed=0B budget_limited_drains=0 permits=8
+  requests: [0 m visible, 1 m visible, 11 m pinned, 2 m lead, 3 m lead, 4 m lead, 6 o band]
+  targets: [0 visible, 1 visible, 2 lead, 3 lead, 4 lead, 5 band, 6 band, 11 pinned]
+  counters: installs=0 evictions=0 cancelled=0 discarded_reads=0 decoded_installed=0B budget_limited_drains=0 permits=7
 frame 1 t=0.1 camera_cell=0 visible_cells=[0 1] in_flight=[]
-  completions: 0 ready, 1 ready, 11 ready, 7 ready, 2 ready, 3 ready, 4 ready, 6 ready
-  drain target_add=[] target_remove=[6]
-  install: [0 2097152B, 1 1048576B, 11 2097152B, 7 2097152B] = 7340032B of 8388608B
-  ready left: [2 3145728B budget, 3 5242880B budget, 4 1048576B budget]
+  completions: 0 ready, 1 ready, 11 ready, 2 ready, 3 ready, 4 ready, 6 ready
+  drain target_add=[] target_remove=[]
+  install: [0 2097152B, 1 1048576B, 11 2097152B, 2 3145728B] = 8388608B of 8388608B
+  ready left: [3 5242880B budget, 4 1048576B budget, 6 9437184B budget]
   requests: []
-  targets: [0 visible, 1 visible, 2 prefetch, 3 prefetch, 4 prefetch, 5 prefetch, 7 prefetch p3, 11 pinned]
-  suppressed: [6]
-  counters: installs=4 evictions=0 cancelled=0 discarded_reads=0 decoded_installed=7340032B budget_limited_drains=1 permits=3
+  targets: [0 visible, 1 visible, 2 lead, 3 lead, 4 lead, 5 band, 6 band, 11 pinned]
+  counters: installs=4 evictions=0 cancelled=0 discarded_reads=0 decoded_installed=8388608B budget_limited_drains=1 permits=3
 frame 2 t=0.2 camera_cell=0 visible_cells=[0 1] in_flight=[]
   drain target_add=[] target_remove=[]
-  install: [2 3145728B, 3 5242880B] = 8388608B of 8388608B
-  ready left: [4 1048576B budget]
+  install: [3 5242880B, 4 1048576B] = 6291456B of 8388608B
+  ready left: [6 9437184B budget]
   requests: []
-  targets: [0 visible, 1 visible, 2 prefetch, 3 prefetch, 4 prefetch, 5 prefetch, 7 prefetch p3, 11 pinned]
-  suppressed: [6]
-  counters: installs=6 evictions=0 cancelled=0 discarded_reads=0 decoded_installed=15728640B budget_limited_drains=2 permits=1
+  targets: [0 visible, 1 visible, 2 lead, 3 lead, 4 lead, 5 band, 6 band, 11 pinned]
+  counters: installs=6 evictions=0 cancelled=0 discarded_reads=0 decoded_installed=14680064B budget_limited_drains=2 permits=1
 frame 3 t=0.3 camera_cell=3 visible_cells=[3 6] in_flight=[]
-  drain target_add=[6 9] target_remove=[]
-  install: [4 1048576B] = 1048576B of 8388608B
-  requests: [6 m visible, 9 o seam-warm]
-  targets: [0 prefetch, 1 prefetch, 2 prefetch, 3 visible, 4 prefetch, 5 prefetch, 6 visible, 7 prefetch p3, 9 seam-warm p2, 11 pinned]
-  counters: installs=7 evictions=0 cancelled=0 discarded_reads=0 decoded_installed=16777216B budget_limited_drains=2 permits=2
-frame 4 t=0.4 camera_cell=3 visible_cells=[3] in_flight=[]
-  completions: 6 ready, 9 cancelled
-  drain target_add=[] target_remove=[6 9]
-  install: [] = 0B of 8388608B
-  requests: [5 o prefetch]
-  targets: [0 prefetch, 1 prefetch, 2 prefetch, 3 visible, 4 prefetch, 5 prefetch, 7 prefetch p3, 11 pinned]
-  suppressed: [6]
-  counters: installs=7 evictions=0 cancelled=1 discarded_reads=0 decoded_installed=16777216B budget_limited_drains=2 permits=1
-frame 5 t=0.5 camera_cell=3 visible_cells=[3 6] in_flight=[]
-  completions: 5 ready
-  drain target_add=[6 9] target_remove=[0]
-  evict: [0]
-  install: [5 1048576B] = 1048576B of 8388608B
-  requests: [6 m visible, 9 o seam-warm]
-  targets: [1 prefetch, 2 prefetch, 3 visible, 4 prefetch, 5 prefetch, 6 visible, 7 prefetch p3, 9 seam-warm p2, 11 pinned]
-  suppressed: [0]
-  counters: installs=8 evictions=1 cancelled=1 discarded_reads=0 decoded_installed=17825792B budget_limited_drains=2 permits=2
-frame 6 t=0.6 camera_cell=3 visible_cells=[3] in_flight=[9]
-  completions: 6 ready, 9 in-flight
-  drain target_add=[] target_remove=[6 9]
-  install: [] = 0B of 8388608B
-  requests: []
-  targets: [1 prefetch, 2 prefetch, 3 visible, 4 prefetch, 5 prefetch, 7 prefetch p3, 11 pinned]
-  suppressed: [0 6]
-  counters: installs=8 evictions=1 cancelled=1 discarded_reads=0 decoded_installed=17825792B budget_limited_drains=2 permits=1
-frame 7 t=0.7 camera_cell=3 visible_cells=[3] in_flight=[]
-  completions: 9 dropped-not-targeted
-  drain target_add=[] target_remove=[]
-  install: [] = 0B of 8388608B
-  requests: []
-  targets: [1 prefetch, 2 prefetch, 3 visible, 4 prefetch, 5 prefetch, 7 prefetch p3, 11 pinned]
-  suppressed: [0 6]
-  counters: installs=8 evictions=1 cancelled=1 discarded_reads=1 decoded_installed=17825792B budget_limited_drains=2 permits=0
-frame 8 t=1.0 camera_cell=6 visible_cells=[6 7] in_flight=[]
-  drain target_add=[0 6 8 9] target_remove=[]
-  install: [] = 0B of 8388608B
-  requests: [6 m visible, 9 o seam-warm, 8 o prefetch, 0 o hysteresis]
-  targets: [0 hysteresis, 1 hysteresis, 2 prefetch, 3 prefetch, 4 prefetch, 5 prefetch, 6 visible, 7 visible, 8 prefetch, 9 seam-warm p2, 11 pinned]
-  counters: installs=8 evictions=1 cancelled=1 discarded_reads=1 decoded_installed=17825792B budget_limited_drains=2 permits=4
-frame 9 t=1.1 camera_cell=6 visible_cells=[6 7] in_flight=[]
-  completions: 6 ready, 9 ready, 8 ready, 0 ready
-  drain target_add=[] target_remove=[2 3 5 8]
-  evict: [2 5 3]
+  drain target_add=[7 8 9] target_remove=[]
   install: [6 9437184B] = 9437184B of 8388608B
-  ready left: [0 2097152B budget, 9 3145728B budget]
+  requests: [5 m lead, 7 m lead, 9 o seam-warm, 8 o band]
+  targets: [0 lead, 1 lead, 2 lead, 3 visible, 4 lead, 5 lead, 6 visible, 7 lead, 8 band, 9 seam-warm p2, 11 pinned]
+  counters: installs=7 evictions=0 cancelled=0 discarded_reads=0 decoded_installed=24117248B budget_limited_drains=2 permits=4
+frame 4 t=0.4 camera_cell=3 visible_cells=[3] in_flight=[]
+  completions: 5 ready, 7 ready, 9 ready, 8 ready
+  drain target_add=[] target_remove=[8 9]
+  install: [5 1048576B, 7 2097152B] = 3145728B of 8388608B
   requests: []
-  targets: [0 hysteresis, 1 hysteresis, 4 prefetch, 6 visible, 7 visible, 9 seam-warm p2, 11 pinned]
-  suppressed: [2 3 5 8]
-  counters: installs=9 evictions=4 cancelled=1 discarded_reads=1 decoded_installed=27262976B budget_limited_drains=3 permits=2
-frame 10 t=1.2 camera_cell=6 visible_cells=[6 7] in_flight=[]
+  targets: [0 lead, 1 lead, 2 lead, 3 visible, 4 lead, 5 lead, 6 lead, 7 lead, 11 pinned]
+  suppressed: [8 9]
+  counters: installs=9 evictions=0 cancelled=0 discarded_reads=0 decoded_installed=27262976B budget_limited_drains=2 permits=0
+frame 5 t=0.5 camera_cell=3 visible_cells=[3 6] in_flight=[]
   drain target_add=[] target_remove=[]
-  install: [9 3145728B, 0 2097152B] = 5242880B of 8388608B
+  install: [] = 0B of 8388608B
   requests: []
-  targets: [0 hysteresis, 1 hysteresis, 4 prefetch, 6 visible, 7 visible, 9 seam-warm p2, 11 pinned]
-  suppressed: [2 3 5 8]
-  counters: installs=11 evictions=4 cancelled=1 discarded_reads=1 decoded_installed=32505856B budget_limited_drains=3 permits=0
-frame 11 t=3.5 camera_cell=10 visible_cells=[10 11] in_flight=[]
-  drain target_add=[2 3 5 8 10] target_remove=[0 1]
+  targets: [0 lead, 1 lead, 2 lead, 3 visible, 4 lead, 5 lead, 6 visible, 7 lead, 11 pinned]
+  suppressed: [8 9]
+  counters: installs=9 evictions=0 cancelled=0 discarded_reads=0 decoded_installed=27262976B budget_limited_drains=2 permits=0
+frame 6 t=0.6 camera_cell=3 visible_cells=[3] in_flight=[9]
+  drain target_add=[] target_remove=[]
+  install: [] = 0B of 8388608B
+  requests: []
+  targets: [0 lead, 1 lead, 2 lead, 3 visible, 4 lead, 5 lead, 6 lead, 7 lead, 11 pinned]
+  suppressed: [8 9]
+  counters: installs=9 evictions=0 cancelled=0 discarded_reads=0 decoded_installed=27262976B budget_limited_drains=2 permits=0
+frame 7 t=0.7 camera_cell=3 visible_cells=[3] in_flight=[]
+  drain target_add=[] target_remove=[]
+  install: [] = 0B of 8388608B
+  requests: []
+  targets: [0 lead, 1 lead, 2 lead, 3 visible, 4 lead, 5 lead, 6 lead, 7 lead, 11 pinned]
+  suppressed: [8 9]
+  counters: installs=9 evictions=0 cancelled=0 discarded_reads=0 decoded_installed=27262976B budget_limited_drains=2 permits=0
+frame 8 t=1.0 camera_cell=6 visible_cells=[6 7] in_flight=[]
+  drain target_add=[8 9 10] target_remove=[0 1]
   evict: [0 1]
   install: [] = 0B of 8388608B
-  requests: [10 m visible, 8 o prefetch, 5 o prefetch, 2 o hysteresis, 3 o hysteresis]
-  targets: [2 hysteresis, 3 hysteresis, 4 prefetch, 5 prefetch, 6 prefetch, 7 prefetch p3, 8 prefetch, 9 prefetch p2, 10 visible, 11 visible]
-  counters: installs=11 evictions=6 cancelled=1 discarded_reads=1 decoded_installed=32505856B budget_limited_drains=3 permits=5
-frame 12 t=3.6 camera_cell=10 visible_cells=[10 11] in_flight=[]
-  completions: 10 ready, 8 ready, 5 ready, 2 ready, 3 ready
-  drain target_add=[] target_remove=[4 5 6]
-  evict: [4 6]
-  install: [10 1048576B, 8 1048576B, 2 3145728B] = 5242880B of 8388608B
-  ready left: [3 5242880B budget]
-  requests: []
-  targets: [2 hysteresis, 3 hysteresis, 7 prefetch p3, 8 prefetch, 9 prefetch p2, 10 visible, 11 visible]
-  suppressed: [4 5 6]
-  counters: installs=14 evictions=8 cancelled=1 discarded_reads=1 decoded_installed=37748736B budget_limited_drains=4 permits=1
-frame 13 t=3.7 camera_cell=10 visible_cells=[10 11] in_flight=[]
+  requests: [8 m lead, 9 m lead, 10 m lead]
+  targets: [2 lead, 3 lead, 4 lead, 5 lead, 6 visible, 7 visible, 8 lead, 9 lead, 10 lead, 11 pinned]
+  suppressed: [0 1]
+  counters: installs=9 evictions=2 cancelled=0 discarded_reads=0 decoded_installed=27262976B budget_limited_drains=2 permits=3
+frame 9 t=1.1 camera_cell=6 visible_cells=[6 7] in_flight=[]
+  completions: 8 ready, 9 ready, 10 ready
   drain target_add=[] target_remove=[]
-  install: [3 5242880B] = 5242880B of 8388608B
+  install: [8 1048576B, 9 3145728B, 10 1048576B] = 5242880B of 8388608B
   requests: []
-  targets: [2 hysteresis, 3 hysteresis, 7 prefetch p3, 8 prefetch, 9 prefetch p2, 10 visible, 11 visible]
-  suppressed: [4 5 6]
-  counters: installs=15 evictions=8 cancelled=1 discarded_reads=1 decoded_installed=42991616B budget_limited_drains=4 permits=0
-frame 14 t=6.0 camera_cell=10 visible_cells=[10] in_flight=[]
-  drain target_add=[] target_remove=[2 3]
-  evict: [2 3]
+  targets: [2 lead, 3 lead, 4 lead, 5 lead, 6 visible, 7 visible, 8 lead, 9 lead, 10 lead, 11 pinned]
+  suppressed: [0 1]
+  counters: installs=12 evictions=2 cancelled=0 discarded_reads=0 decoded_installed=32505856B budget_limited_drains=2 permits=0
+frame 10 t=1.2 camera_cell=6 visible_cells=[6 7] in_flight=[]
+  drain target_add=[] target_remove=[]
   install: [] = 0B of 8388608B
   requests: []
-  targets: [7 prefetch p3, 8 prefetch, 9 prefetch p2, 10 visible, 11 pinned]
-  suppressed: [4 5 6]
-  counters: installs=15 evictions=10 cancelled=1 discarded_reads=1 decoded_installed=42991616B budget_limited_drains=4 permits=0
+  targets: [2 lead, 3 lead, 4 lead, 5 lead, 6 visible, 7 visible, 8 lead, 9 lead, 10 lead, 11 pinned]
+  suppressed: [0 1]
+  counters: installs=12 evictions=2 cancelled=0 discarded_reads=0 decoded_installed=32505856B budget_limited_drains=2 permits=0
+frame 11 t=3.5 camera_cell=10 visible_cells=[10 11] in_flight=[]
+  drain target_add=[0 1] target_remove=[4 5]
+  evict: [5 4]
+  install: [] = 0B of 8388608B
+  requests: [0 o hysteresis, 1 o hysteresis]
+  targets: [0 hysteresis, 1 hysteresis, 2 hysteresis, 3 hysteresis, 6 lead, 7 lead, 8 lead, 9 lead, 10 visible, 11 visible]
+  suppressed: [4 5]
+  counters: installs=12 evictions=4 cancelled=0 discarded_reads=0 decoded_installed=32505856B budget_limited_drains=2 permits=2
+frame 12 t=3.6 camera_cell=10 visible_cells=[10 11] in_flight=[]
+  completions: 0 ready, 1 ready
+  drain target_add=[] target_remove=[]
+  install: [0 2097152B, 1 1048576B] = 3145728B of 8388608B
+  requests: []
+  targets: [0 hysteresis, 1 hysteresis, 2 hysteresis, 3 hysteresis, 6 lead, 7 lead, 8 lead, 9 lead, 10 visible, 11 visible]
+  suppressed: [4 5]
+  counters: installs=14 evictions=4 cancelled=0 discarded_reads=0 decoded_installed=35651584B budget_limited_drains=2 permits=0
+frame 13 t=3.7 camera_cell=10 visible_cells=[10 11] in_flight=[]
+  drain target_add=[] target_remove=[]
+  install: [] = 0B of 8388608B
+  requests: []
+  targets: [0 hysteresis, 1 hysteresis, 2 hysteresis, 3 hysteresis, 6 lead, 7 lead, 8 lead, 9 lead, 10 visible, 11 visible]
+  suppressed: [4 5]
+  counters: installs=14 evictions=4 cancelled=0 discarded_reads=0 decoded_installed=35651584B budget_limited_drains=2 permits=0
+frame 14 t=6.0 camera_cell=10 visible_cells=[10] in_flight=[]
+  drain target_add=[] target_remove=[0 1 2 3]
+  evict: [2 0 1 3]
+  install: [] = 0B of 8388608B
+  requests: []
+  targets: [6 lead, 7 lead, 8 lead, 9 lead, 10 visible, 11 pinned]
+  suppressed: [4 5]
+  counters: installs=14 evictions=8 cancelled=0 discarded_reads=0 decoded_installed=35651584B budget_limited_drains=2 permits=0
 frame 15 t=6.1 camera_cell=10 visible_cells=[10] in_flight=[]
   drain target_add=[] target_remove=[]
   install: [] = 0B of 8388608B
   requests: []
-  targets: [7 prefetch p3, 8 prefetch, 9 prefetch p2, 10 visible, 11 pinned]
-  suppressed: [4 5 6]
-  counters: installs=15 evictions=10 cancelled=1 discarded_reads=1 decoded_installed=42991616B budget_limited_drains=4 permits=0
+  targets: [6 lead, 7 lead, 8 lead, 9 lead, 10 visible, 11 pinned]
+  suppressed: [4 5]
+  counters: installs=14 evictions=8 cancelled=0 discarded_reads=0 decoded_installed=35651584B budget_limited_drains=2 permits=0

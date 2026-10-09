@@ -75,7 +75,8 @@ pub struct ShStreamingLifecycleSummary {
     pub installs: u64,
     pub evictions: u64,
     pub retries: u64,
-    pub warm_clusters: u64,
+    /// Clusters in the mandatory reach: the id-51 set within lead L.
+    pub lead_clusters: u64,
     pub cancelled_requests: u64,
     pub discarded_reads: u64,
     pub discarded_read_bytes: u64,

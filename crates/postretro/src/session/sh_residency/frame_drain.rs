@@ -8,6 +8,7 @@ use postretro_visibility::VisibleCells;
 use super::super::sh_async_workers::ShWorkerResult;
 use super::ShStreamingSession;
 use crate::sh_streaming::controller::SyncReadResult;
+use crate::streaming::cell_demand::DemandFrame;
 use crate::streaming::shared_drain::SharedDrain;
 
 /// SH's half-built batch between the two halves of a level-scope drain.
@@ -29,12 +30,12 @@ impl ShStreamingSession {
     pub(super) fn prepare_async_batch(
         &mut self,
         visible_cells: &VisibleCells,
-        camera_cell: Option<usize>,
+        reach: Option<DemandFrame<'_>>,
         monotonic_seconds: f64,
     ) -> Result<ShDrainBatch> {
         let mut drain = SharedDrain::default();
         let pending =
-            self.begin_async_drain(visible_cells, camera_cell, monotonic_seconds, &mut drain)?;
+            self.begin_async_drain(visible_cells, reach, monotonic_seconds, &mut drain)?;
         drain.admit()?;
         self.finish_drain(pending, &drain)
     }
@@ -45,13 +46,13 @@ impl ShStreamingSession {
     pub(in crate::session) fn begin_drain(
         &mut self,
         visible_cells: &VisibleCells,
-        camera_cell: Option<usize>,
+        reach: Option<DemandFrame<'_>>,
         monotonic_seconds: f64,
         drain: &mut SharedDrain,
     ) -> Result<PendingShDrain> {
         match self.mode {
             ShStreamingMode::SyncProof => {
-                self.update_targets(visible_cells, camera_cell, monotonic_seconds)?;
+                self.update_targets(visible_cells, reach, monotonic_seconds)?;
                 while matches!(self.read_one_sync()?, SyncReadResult::Prepared(_)) {}
                 self.promote_composed_clusters();
                 Ok(PendingShDrain {
@@ -60,7 +61,7 @@ impl ShStreamingSession {
                 })
             }
             ShStreamingMode::Async => {
-                self.begin_async_drain(visible_cells, camera_cell, monotonic_seconds, drain)
+                self.begin_async_drain(visible_cells, reach, monotonic_seconds, drain)
             }
             ShStreamingMode::Off => unreachable!("a loaded streaming session cannot be off"),
         }
@@ -69,11 +70,11 @@ impl ShStreamingSession {
     fn begin_async_drain(
         &mut self,
         visible_cells: &VisibleCells,
-        camera_cell: Option<usize>,
+        reach: Option<DemandFrame<'_>>,
         monotonic_seconds: f64,
         drain: &mut SharedDrain,
     ) -> Result<PendingShDrain> {
-        self.update_targets(visible_cells, camera_cell, monotonic_seconds)?;
+        self.update_targets(visible_cells, reach, monotonic_seconds)?;
         let Some(workers) = self.workers.as_ref() else {
             // A prior generation may still be finishing an uncancellable OS
             // read. Publish target deltas and miss fallback without waiting;

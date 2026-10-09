@@ -9,7 +9,7 @@ use std::thread::ThreadId;
 
 use postretro_level_format::cluster_sh_payloads::DecodedClusterShPayload;
 use postretro_level_loader::{
-    LevelWorld, LightmapDrainOutcome, PrlLoadError, ShStreamManifest, ShStreamingMode,
+    LightmapDrainOutcome, PrlLoadError, ShStreamManifest, ShStreamingMode,
 };
 use postretro_renderer::{LightmapResidencyDrainError, ShResidencySnapshot};
 use postretro_visibility::VisibleCells;
@@ -32,11 +32,7 @@ fn sh_hints(manifest: &ShStreamManifest) -> Arc<ClusterHints> {
 }
 
 /// An SH session over `manifest` in `mode`, budgeted as the tests' renderer.
-fn sh_session(
-    world: &LevelWorld,
-    manifest: Arc<ShStreamManifest>,
-    mode: ShStreamingMode,
-) -> ShStreamingSession {
+fn sh_session(manifest: Arc<ShStreamManifest>, mode: ShStreamingMode) -> ShStreamingSession {
     let hints = sh_hints(&manifest);
     let mut session = ShStreamingSession::from_snapshot(
         manifest,
@@ -44,7 +40,6 @@ fn sh_session(
             effective_floor_bytes: 1024 * 1024,
             ..ShResidencySnapshot::default()
         },
-        world.cell_visibility.as_ref(),
         hints,
     )
     .unwrap();
@@ -343,7 +338,6 @@ fn sh_and_lightmap_stream_through_one_issuer_and_unload_releases_everything() {
             effective_floor_bytes: 1024 * 1024,
             ..ShResidencySnapshot::default()
         },
-        world.cell_visibility.as_ref(),
         sh_hints(&manifest),
     )
     .unwrap();
@@ -416,11 +410,7 @@ fn sh_only_level_streams_through_the_level_drain_step_and_retires_cleanly() {
     let world = postretro_level_loader::load_prl(path.to_str().unwrap()).unwrap();
     let manifest = Arc::clone(world.sh_stream_manifest().expect("id 50 selects streaming"));
     let baseline = Arc::strong_count(&manifest);
-    let mut sh = Some(sh_session(
-        &world,
-        Arc::clone(&manifest),
-        ShStreamingMode::Async,
-    ));
+    let mut sh = Some(sh_session(Arc::clone(&manifest), ShStreamingMode::Async));
     let mut level = LevelStreaming::default();
     let visible = VisibleCells::Culled(vec![0]);
     let cpu = StageFrame::default();
@@ -520,9 +510,8 @@ fn sh_mode_change_mid_level_keeps_the_lightmap_session_and_its_resident_blocks()
     );
     // The SH fixture is a level of its own, so its session decodes its own
     // hints rather than the lightmap level's.
-    let make_sh = |manifest, mode, _: Option<Arc<ClusterHints>>| {
-        anyhow::Ok(sh_session(&sh_world, manifest, mode))
-    };
+    let make_sh =
+        |manifest, mode, _: Option<Arc<ClusterHints>>| anyhow::Ok(sh_session(manifest, mode));
     let wanted = |mode| WantedStreaming {
         sh: Some((&sh_manifest, mode)),
         lightmap: Some(view),
@@ -644,9 +633,8 @@ fn a_mid_level_lightmap_decline_keeps_sh_for_its_pending_outcome() {
             .sh_stream_manifest()
             .expect("id 50 selects streaming"),
     );
-    let make_sh = |manifest, mode, _: Option<Arc<ClusterHints>>| {
-        anyhow::Ok(sh_session(&sh_world, manifest, mode))
-    };
+    let make_sh =
+        |manifest, mode, _: Option<Arc<ClusterHints>>| anyhow::Ok(sh_session(manifest, mode));
     let wanted = WantedStreaming {
         sh: Some((&sh_manifest, ShStreamingMode::SyncProof)),
         lightmap: Some(view),

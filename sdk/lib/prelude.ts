@@ -71,6 +71,7 @@ export type {
   WidgetAnchor,
   WidgetCaptureMode,
   TreeProps,
+  TreeBackground,
   AnchoredTreeDescriptor,
   UiTreeRegistrationProps,
   UiTreeRegistration,

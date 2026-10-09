@@ -3246,12 +3246,18 @@ const hud = Tree(
 - **Leaves:** `Text`, `Panel`, `Image`, `Spacer`, `Bar`, `Ring`, `Glyph`, and
   non-visual `Announce`; interactive `Button` / `Slider` (see *Operable UI*
   above) — `(props)`.
-- **Envelope:** `Tree({ anchor, offset, captureMode?, initialFocus?, textEntryTarget?, restoreOnReturn? }, root)`
+- **Envelope:** `Tree({ anchor, offset, captureMode?, initialFocus?, textEntryTarget?, restoreOnReturn?, background? }, root)`
   places the whole tree once on the 1280×720 logical canvas. `captureMode`
   defaults to `"passthrough"` (a HUD never captures input); `"capture"` routes
   UI input to the tree, suppresses player controls, and freezes lower UI trees.
   `restoreOnReturn` defaults to `true`: when a tree pushed above closes, focus
   returns to the control it left (see *Focus and repeat props*).
+  `background: { image }` draws one UI image (the same keys as `Image`'s
+  `asset`) behind the whole tree, filling the entire window rather than the
+  1280×720 canvas. It scales to cover the window and crops the overflow, so it
+  never stretches or leaves bars at any aspect ratio. It ignores `anchor` and
+  `offset` and is purely decorative. If the image isn't loaded, nothing is drawn
+  behind the tree. An empty `image` or any key other than `image` is an error.
 
 Color props accept a color token from `getDesignTokens(theme)` or an inline
 literal `[r, g, b, a]`. Spacing props accept a spacing token or a number. Font

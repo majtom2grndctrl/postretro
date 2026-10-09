@@ -162,6 +162,7 @@ fn composite_fixture() -> AnchoredTree {
         accessible_name: None,
         role: None,
         restore_on_return: None,
+        background: None,
     }
 }
 
@@ -327,6 +328,7 @@ fn empty_gameplay_tree_early_outs_the_ui_pass() {
         accessible_name: None,
         role: None,
         restore_on_return: None,
+        background: None,
     };
     let draw_empty = {
         let mut ui = UiTree::from_descriptor(&empty, &UiTheme::engine_default());

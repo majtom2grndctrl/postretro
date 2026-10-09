@@ -69,6 +69,7 @@ fn text_tree(content: &str, color: ColorValue, font: Option<String>) -> Anchored
         accessible_name: None,
         role: None,
         restore_on_return: None,
+        background: None,
     }
 }
 
@@ -419,6 +420,7 @@ fn mod_theme_token_overrides_engine_default_in_a_rendered_panel() {
         accessible_name: None,
         role: None,
         restore_on_return: None,
+        background: None,
     };
 
     let data = render_tree(&tree, &theme, &no_slots(), &CellValues::new());
@@ -550,6 +552,7 @@ fn mixed_tree(scope: &str) -> AnchoredTree {
         accessible_name: None,
         role: None,
         restore_on_return: None,
+        background: None,
     }
 }
 
@@ -729,6 +732,7 @@ fn health_bar_tree() -> AnchoredTree {
         accessible_name: None,
         role: None,
         restore_on_return: None,
+        background: None,
     }
 }
 

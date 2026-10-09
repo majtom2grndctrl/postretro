@@ -27,6 +27,7 @@ fn vstack_distributes_children_along_column_with_gap() {
         accessible_name: None,
         role: None,
         restore_on_return: None,
+        background: None,
     };
     let mut ui = UiTree::from_descriptor(&tree, &theme());
     let mut fs = font_system();
@@ -85,6 +86,7 @@ fn nested_hstack_in_vstack_distributes_inner_row_along_x() {
         accessible_name: None,
         role: None,
         restore_on_return: None,
+        background: None,
     };
     let mut ui = UiTree::from_descriptor(&tree, &theme());
     let mut fs = font_system();
@@ -130,6 +132,7 @@ fn stack_authored_width_establishes_a_fixed_layout_canvas() {
         accessible_name: None,
         role: None,
         restore_on_return: None,
+        background: None,
     };
     let mut ui = UiTree::from_descriptor(&tree, &theme());
     let mut fs = font_system();
@@ -162,6 +165,7 @@ fn spacer_maps_to_flex_grow_and_emits_no_draw_payload() {
         accessible_name: None,
         role: None,
         restore_on_return: None,
+        background: None,
     };
     let mut ui = UiTree::from_descriptor(&tree, &theme());
     let mut fs = font_system();
@@ -207,6 +211,7 @@ fn child_rects_scale_uniformly_at_4k() {
         accessible_name: None,
         role: None,
         restore_on_return: None,
+        background: None,
     };
     let mut fs = font_system();
     let mut ui_ref = UiTree::from_descriptor(&tree, &theme());
@@ -275,6 +280,7 @@ fn grid_places_children_across_equal_columns() {
         accessible_name: None,
         role: None,
         restore_on_return: None,
+        background: None,
     };
     let mut ui = UiTree::from_descriptor(&tree, &theme());
     let mut fs = font_system();
@@ -334,6 +340,7 @@ fn anchored_tree_centers_against_non_16_9_letterbox() {
         accessible_name: None,
         role: None,
         restore_on_return: None,
+        background: None,
     };
     let mut ui = UiTree::from_descriptor(&tree, &theme());
     let mut fs = font_system();
@@ -392,6 +399,7 @@ fn container_backdrop_quad_rects_snap_to_integer_device_pixels() {
         accessible_name: None,
         role: None,
         restore_on_return: None,
+        background: None,
     };
     let mut ui = UiTree::from_descriptor(&tree, &theme());
     let mut fs = font_system();
@@ -439,6 +447,7 @@ fn container_backdrop_draws_beneath_children_sized_to_full_rect() {
         accessible_name: None,
         role: None,
         restore_on_return: None,
+        background: None,
     };
     let mut ui = UiTree::from_descriptor(&tree, &theme());
     let mut fs = font_system();
@@ -489,6 +498,7 @@ fn measured_text_size(content: &str, font_size: f32) -> taffy::geometry::Size<f3
         accessible_name: None,
         role: None,
         restore_on_return: None,
+        background: None,
     };
     let mut ui = UiTree::from_descriptor(&tree, &theme());
     let mut fs = font_system();

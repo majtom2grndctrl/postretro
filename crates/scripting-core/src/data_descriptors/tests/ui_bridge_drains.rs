@@ -440,6 +440,43 @@ fn js_bridge_malformed_tree_surfaces_named_error_not_panic() {
     assert!(matches!(err, DescriptorError::InvalidShape { .. }));
 }
 
+/// The SDK Luau `Tree` factory forwards `background` to the bridge and rejects
+/// a malformed one before it reaches the engine.
+#[test]
+fn luau_tree_factory_forwards_background_through_bridge() {
+    const TREE_SRC: &str = include_str!("../../../../../sdk/lib/ui/tree.luau");
+    let lua = mlua::Lua::new();
+    let tree_mod: mlua::Table = lua.load(TREE_SRC).eval().unwrap();
+    lua.globals().set("T", tree_mod).unwrap();
+
+    let value: LuaValue = lua
+        .load(
+            r#"return T.Tree({ anchor = "bottom", offset = { 0, -40 }, background = { image = "dev/loading/a" } },
+                { kind = "spacer", flexGrow = 1 })"#,
+        )
+        .eval()
+        .unwrap();
+    let tree = anchored_tree_from_lua_value(value).expect("factory output converts");
+    assert_eq!(
+        serde_json::to_string(&tree).unwrap(),
+        r#"{"anchor":"bottom","offset":[0.0,-40.0],"root":{"kind":"spacer","flexGrow":1.0},"background":{"image":"dev/loading/a"}}"#
+    );
+
+    for bad in [
+        r#"{ image = "" }"#,
+        r#"{ image = "dev/loading/a", fit = "contain" }"#,
+        r#""dev/loading/a""#,
+    ] {
+        let src = format!(
+            r#"return T.Tree({{ anchor = "center", offset = {{ 0, 0 }}, background = {bad} }}, {{ kind = "spacer", flexGrow = 1 }})"#
+        );
+        assert!(
+            lua.load(&src).eval::<LuaValue>().is_err(),
+            "factory must reject background {bad}"
+        );
+    }
+}
+
 /// The end-to-end AC: run the ACTUAL Luau `widgets`/`layout`/`tree` factories
 /// under mlua, pass the produced descriptor value through the bridge, and
 /// assert the typed result + a byte-identical re-serialization. This is the

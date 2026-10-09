@@ -26,6 +26,7 @@ fn themed_text(color: ColorValue, font: Option<&str>) -> AnchoredTree {
         accessible_name: None,
         role: None,
         restore_on_return: None,
+        background: None,
     }
 }
 
@@ -96,6 +97,7 @@ fn spacing_token_resolves_into_layout_gap() {
         accessible_name: None,
         role: None,
         restore_on_return: None,
+        background: None,
     };
     let mut ui = UiTree::from_descriptor(&tree, &theme);
     let mut fs = font_system();
@@ -139,6 +141,7 @@ fn unknown_spacing_token_lays_out_as_zero() {
         accessible_name: None,
         role: None,
         restore_on_return: None,
+        background: None,
     };
     let mut ui = UiTree::from_descriptor(&tree, &theme);
     let mut fs = font_system();

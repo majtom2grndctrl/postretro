@@ -6,7 +6,9 @@ use std::collections::BTreeSet;
 
 use mlua::{Table, Value as LuaValue};
 
-use crate::ui::descriptor::{Align, CaptureMode, Easing, FocusKind, Priority, Role};
+use crate::ui::descriptor::{
+    Align, CaptureMode, Easing, FocusKind, Priority, Role, TreeBackground,
+};
 use crate::ui::layout::Anchor;
 
 use super::super::{DescriptorError, lua_err};
@@ -107,6 +109,15 @@ pub fn parse_capture_mode(s: &str) -> Result<CaptureMode, DescriptorError> {
                 ),
             });
         }
+    })
+}
+
+/// Parse a tree's `background` object, already lowered to JSON by the calling
+/// bridge. VM-agnostic so QuickJS and Luau accept and reject identically: the
+/// serde model rejects an unknown key and an empty `image`.
+pub fn parse_tree_background(json: serde_json::Value) -> Result<TreeBackground, DescriptorError> {
+    serde_json::from_value(json).map_err(|e| DescriptorError::InvalidShape {
+        reason: format!("`background` invalid: {e}"),
     })
 }
 

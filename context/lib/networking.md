@@ -535,11 +535,25 @@ ticks, executions admitted stay at or below ⌊(W + tolerance) / R⌋ + 1 whatev
 client stamps. Measuring in host ticks alone is what refused on-time starts after a
 trim; measuring in client ticks alone would let a client fire as fast as it stamps. A
 charged action's recovery runs from its client release tick, moved forward only; other
-executions ignore releases for cadence, as the weapon machine does. The client half
-applies only while the recorded recovery names the same weapon in the same slot;
-otherwise the host's own cooldown applies. After a long stall the host half may hold
-later shots of the same hold by up to the tolerance; it delays them, never refuses
-them.
+executions ignore releases for cadence, as the weapon machine does.
+
+Cadence state is **per weapon**: one record per inventory slot, naming the weapon that
+began it, so the bound holds for each weapon and a switch away and back keeps that
+weapon's own record. The client half applies only when the record names the same weapon
+in the same slot; a weapon with no record falls back to the host's own cooldown. After
+each host tick, a record whose weapon no longer holds its slot in that client's
+inventory (drop, hand-over, despawn) is removed, so it can never authorize again. The
+ticks its credit still owed are charged to the weapon's own host cooldown, raising it
+only: without that, a weapon leaving and returning would restart its credit chain and
+earn the tolerance again. After a long stall the host half may hold later shots of the
+same hold by up to the tolerance; it delays them, never refuses them.
+
+**A late start fires along its own aim.** A retained start keeps the aim of the command
+that carried it at intake, and a shot fired on the tick that start is delivered uses
+that aim for FIRE origin, direction and projectile launch, so it lands where the client's
+prediction showed it. Movement, facing and avatar pose follow the delivering command.
+Later ordinals and a charged release use the live aim, as client prediction does. World
+line-of-sight and origin-obstruction checks are unchanged.
 
 Explicit release/cancel names the initiating activation. Intake retains edges before
 stale-drop or backlog trimming, deduplicates them, and delivers them once after that

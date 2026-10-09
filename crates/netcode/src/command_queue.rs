@@ -404,9 +404,10 @@ pub struct ResolvedPawnCommand {
     /// consumes it locally; snapshot production reads the same queue state.
     pub aim_pitch: f32,
     pub client_tick: u32,
-    /// A retained start the lane refused: lagging past the catch-up allowance,
-    /// expired, or settled while retained. It never executes; its rejection
-    /// reports the recovery of the weapon in the slot it named.
+    /// A retained start the lane refused: by the client half at the lane front,
+    /// lagging past the catch-up allowance, expired, or settled while retained.
+    /// It never executes; its rejection reports the recovery of the weapon in
+    /// the slot it named.
     pub rejected_activation: Option<postretro_foundation::ActivationToken>,
     #[allow(dead_code)]
     pub source: ResolutionSource,

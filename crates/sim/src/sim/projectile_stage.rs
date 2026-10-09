@@ -506,6 +506,20 @@ fn advance_matching(
     }
 }
 
+/// Distance along `direction` to the first static-world contact of a projectile
+/// swept at `radius`, within `reach`. The same sweep the projectile's world
+/// contact uses, so a host replay of that ray meets the wall at this distance.
+pub fn projectile_static_contact_distance(
+    collision_world: &CollisionWorld,
+    origin: Vec3,
+    direction: Vec3,
+    radius: f32,
+    reach: f32,
+) -> Option<f32> {
+    cast_sphere_exact(collision_world, origin, radius, direction, reach)
+        .map(|hit| hit.time_of_impact.max(0.0))
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn resolve_projectile_impact(
     collision_world: &CollisionWorld,

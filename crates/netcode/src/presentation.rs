@@ -1297,6 +1297,7 @@ mod tests {
                 projectile_speed: Some(60.0),
                 projectile_lifetime_seconds: Some(10.0),
                 projectile_tick_seconds: Some(1.0 / 60.0),
+                projectile_static_contact_distance: None,
                 is_projectile: true,
                 fire_origin: Vec3::ZERO,
                 timeout_budget_ticks: MAX_OPEN_SHOT_AGE_TICKS,

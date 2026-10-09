@@ -319,6 +319,32 @@ pub(in crate::sim) fn run_remote_weapon_commands(
         } else {
             None
         };
+        // Splash intake replays this ray; freeze where the host's own flight
+        // meets the static world, so the declaration hold can cover it.
+        let projectile_static_contact_distance = match (
+            splash.as_ref(),
+            projectile.as_ref(),
+            projectile_direction,
+            projectile_radius,
+        ) {
+            (Some(_), Some(projectile), Some(direction), Some(radius))
+                if radius.is_finite() && radius >= 0.0 =>
+            {
+                let reach = range.min(projectile.speed * projectile.lifetime_ms / 1_000.0);
+                (reach.is_finite() && reach >= 0.0)
+                    .then(|| {
+                        crate::sim::projectile_static_contact_distance(
+                            collision_world,
+                            fire_origin,
+                            direction,
+                            radius,
+                            reach,
+                        )
+                    })
+                    .flatten()
+            }
+            _ => None,
+        };
         authorized.push(OpenAuthorizedShot {
             shot: AuthorizedShot {
                 sounds: frozen.as_ref().map(|shot| shot.sounds.clone()),
@@ -341,6 +367,7 @@ pub(in crate::sim) fn run_remote_weapon_commands(
                     .as_ref()
                     .map(|projectile| projectile.lifetime_ms / 1_000.0),
                 projectile_tick_seconds: is_projectile.then_some(tick_dt),
+                projectile_static_contact_distance,
                 is_projectile,
                 fire_origin,
                 timeout_budget_ticks,

@@ -7,6 +7,7 @@
 #![deny(unsafe_code)]
 
 mod activation_edges;
+pub use activation_edges::LaneRefusal;
 pub mod activation_ledger;
 mod shot_records;
 #[cfg(test)]
@@ -3675,6 +3676,7 @@ mod tests {
             projectile_speed: None,
             projectile_lifetime_seconds: None,
             projectile_tick_seconds: None,
+            projectile_static_contact_distance: None,
             is_projectile: false,
             fire_origin: Vec3::ZERO,
             timeout_budget_ticks: MAX_OPEN_SHOT_AGE_TICKS,
@@ -3848,7 +3850,7 @@ mod tests {
     // zero normal, and damage validation never reads it. A wall contact the
     // shooter cannot see is not a contact.
     #[test]
-    fn remote_contact_normals_and_sightlines_gate_only_contact_data() {
+    fn remote_contacts_zero_malformed_normals_and_drop_unseen_world_contacts() {
         let mut fixture = HitIngestFixture::new(wall_at_x(2.0));
         fixture.set_live_pellet_count(2);
         fixture.mint_shot_from_live_weapon();
@@ -4047,13 +4049,7 @@ mod tests {
 
         let mut fixture = HitIngestFixture::new(CollisionWorld::new());
         fixture.mint_shot_from_live_weapon();
-        fixture
-            .open_shots
-            .shots
-            .get_mut(&fixture.shot_id)
-            .expect("fixture shot remains open")
-            .shot
-            .is_projectile = true;
+        fixture.shot_mut().is_projectile = true;
         let mut direct_hit = fixture.record(Vec3::new(4.0, 0.5, 0.0), None);
         direct_hit.normal = [0.0, 0.0, 0.0];
         let mut pending = PendingHitDeclarations::new();
@@ -4073,13 +4069,7 @@ mod tests {
     fn host_ingest_bursts_once_for_a_remote_direct_projectile_contact() {
         let mut fixture = HitIngestFixture::new(CollisionWorld::new());
         fixture.mint_shot_from_live_weapon();
-        fixture
-            .open_shots
-            .shots
-            .get_mut(&fixture.shot_id)
-            .expect("fixture shot remains open")
-            .shot
-            .is_projectile = true;
+        fixture.shot_mut().is_projectile = true;
         let mut hit = fixture.record(Vec3::new(4.0, 0.5, 0.0), None);
         hit.normal = [-1.0, 0.0, 0.0];
         let declaration = fixture.declaration(vec![hit]);
@@ -4121,13 +4111,7 @@ mod tests {
         let mut fixture = HitIngestFixture::new(wall_at_x(WALL_X));
         let beside_wall = fixture.spawn_splash_target(Vec3::new(WALL_X - 0.5, 0.0, 0.75));
         fixture.configure_projectile_splash(0.0);
-        fixture
-            .open_shots
-            .shots
-            .get_mut(&fixture.shot_id)
-            .expect("fixture shot remains open")
-            .shot
-            .fire_tick = LATE_FIRE_TICK;
+        fixture.shot_mut().fire_tick = LATE_FIRE_TICK;
         // The declaration arrived with the stalled start, before its late FIRE.
         let mut pending = PendingHitDeclarations::new();
         assert!(pending.push_at(
@@ -4174,18 +4158,124 @@ mod tests {
         assert_eq!(observer_cue_contacts(&fixture, &intake).len(), 1);
     }
 
+    // Regression: a late start fires from the pawn's live eye along its captured
+    // aim. After a strafe, that ray meets a slanted wall farther out than the
+    // declared point lies from the new origin, so a hold sized by the declared
+    // point alone released before the host's flight reached the wall.
+    #[test]
+    fn late_splash_fired_after_a_strafe_waits_for_the_hosts_own_wall_contact() {
+        const LATE_FIRE_TICK: u32 = 200;
+        // A 45-degree wall through the client's contact at (10, 0, 0).
+        let slanted_wall = CollisionWorld::from_triangles_for_test(
+            vec![
+                Vec3::new(0.0, -5.0, -10.0),
+                Vec3::new(0.0, 5.0, -10.0),
+                Vec3::new(20.0, 5.0, 10.0),
+                Vec3::new(20.0, -5.0, 10.0),
+            ],
+            vec![[0, 1, 2], [0, 2, 3]],
+        );
+        let mut fixture = HitIngestFixture::new(slanted_wall);
+        fixture.configure_projectile_splash(0.25);
+        // The pawn strafed 2 m before the late FIRE; the captured aim stayed +X.
+        let fire_origin = Vec3::new(0.0, 0.0, 2.0);
+        // FIRE freezes where the host's own flight meets the static world.
+        let host_wall = crate::sim::projectile_static_contact_distance(
+            &fixture.collision_world,
+            fire_origin,
+            Vec3::X,
+            0.25,
+            30.0,
+        );
+        let declared = Vec3::new(10.0, 0.0, 0.0);
+        assert!(
+            host_wall.is_some_and(|wall| wall > fire_origin.distance(declared) + 1.0),
+            "the host's wall lies beyond the declared point: {host_wall:?}"
+        );
+        let shot = fixture.shot_mut();
+        shot.fire_origin = fire_origin;
+        shot.range = 30.0;
+        shot.projectile_speed = Some(30.0);
+        shot.projectile_static_contact_distance = host_wall;
+        shot.fire_tick = LATE_FIRE_TICK;
+        let mut pending = PendingHitDeclarations::new();
+        assert!(pending.push_at(
+            7,
+            fixture.declaration(vec![world_contact(declared, Vec3::NEG_X)]),
+            LATE_FIRE_TICK - 20,
+        ));
+
+        let mut resolved = None;
+        for tick in LATE_FIRE_TICK + 1..LATE_FIRE_TICK + 120 {
+            let intake = host_intake_at(&mut fixture, &mut pending, tick);
+            if pending.len() == 0 {
+                resolved = Some(intake);
+                break;
+            }
+        }
+        let intake = resolved.expect("the held declaration resolves within its lifetime");
+
+        let [contact] = intake.projectile_contacts.as_slice() else {
+            panic!(
+                "the host's flight reaches its own wall contact: {:?}",
+                intake.projectile_contacts
+            );
+        };
+        assert!(
+            (contact.x - contact.z - 10.0).abs() <= 0.5,
+            "detonates on the slanted wall: {contact}"
+        );
+        assert!(
+            (contact.z - 2.0).abs() <= 1.0e-4,
+            "along the host's frozen ray, not at the declared point: {contact}"
+        );
+        assert_eq!(intake.particles, weapon::IMPACT_PARTICLE_COUNT);
+        assert_eq!(observer_cue_contacts(&fixture, &intake).len(), 1);
+    }
+
+    // An entity contact must not wait for the wall behind it: by then the replay
+    // would read a target that has moved off the ray.
+    #[test]
+    fn splash_entity_contact_is_not_held_for_the_wall_behind_it() {
+        // `configure_projectile_splash` flies 1 m per host tick.
+        const WALL_X: f32 = 20.0;
+        let mut fixture = HitIngestFixture::new(wall_at_x(WALL_X));
+        let struck = fixture.spawn_splash_target(Vec3::new(5.0, 0.0, 0.0));
+        let struck_net = fixture.allocator.stamp(struck);
+        fixture.configure_projectile_splash(0.0);
+        let shot = fixture.shot_mut();
+        shot.range = 30.0;
+        shot.projectile_static_contact_distance = Some(WALL_X);
+        let fire_tick = shot.fire_tick;
+        let mut pending = PendingHitDeclarations::new();
+        assert!(pending.push_at(
+            7,
+            fixture.declaration(vec![wire::HitRecord {
+                normal: [-1.0, 0.0, 0.0],
+                target: struck_net.0,
+                point: Vec3::new(4.9, 0.0, 0.0).to_array(),
+                zone: None,
+            }]),
+            fire_tick,
+        ));
+
+        let intake = host_intake_at(&mut fixture, &mut pending, fire_tick + 6);
+
+        assert_eq!(pending.len(), 0, "released once travel covers the entity");
+        assert!(intake.hit_accepted);
+        let [contact] = intake.projectile_contacts.as_slice() else {
+            panic!("one projectile contact: {:?}", intake.projectile_contacts);
+        };
+        assert!(contact.x < 5.0, "detonates on the entity: {contact}");
+    }
+
     // A direct projectile presents its declared endpoint and replays nothing, so
     // its declaration still resolves one tick after FIRE however far it flew.
     #[test]
     fn direct_projectile_declaration_is_not_held_for_travel() {
         let mut fixture = HitIngestFixture::new(CollisionWorld::new());
         fixture.configure_projectile_splash(0.0);
-        let shot = &mut fixture
-            .open_shots
-            .shots
-            .get_mut(&fixture.shot_id)
-            .expect("fixture shot remains open")
-            .shot;
+        let shot = fixture.shot_mut();
         shot.splash = None;
         let fire_tick = shot.fire_tick;
         let mut pending = PendingHitDeclarations::new();
@@ -4409,6 +4499,7 @@ mod tests {
                     projectile_speed: None,
                     projectile_lifetime_seconds: None,
                     projectile_tick_seconds: None,
+                    projectile_static_contact_distance: None,
                     is_projectile: false,
                     fire_origin: Vec3::ZERO,
                     timeout_budget_ticks: MAX_OPEN_SHOT_AGE_TICKS,
@@ -4434,13 +4525,17 @@ mod tests {
                 .clone()
         }
 
-        fn configure_projectile_splash(&mut self, radius: f32) {
-            let shot = &mut self
+        fn shot_mut(&mut self) -> &mut AuthorizedShot {
+            &mut self
                 .open_shots
                 .shots
                 .get_mut(&self.shot_id)
                 .expect("fixture shot remains open")
-                .shot;
+                .shot
+        }
+
+        fn configure_projectile_splash(&mut self, radius: f32) {
+            let shot = self.shot_mut();
             shot.is_projectile = true;
             shot.projectile_radius = Some(radius);
             shot.projectile_direction = Some(Vec3::X);
@@ -5974,13 +6069,7 @@ mod tests {
     #[test]
     fn projectile_world_contact_marker_preserves_presentation_without_damage_target() {
         let mut fixture = HitIngestFixture::new(CollisionWorld::new());
-        fixture
-            .open_shots
-            .shots
-            .get_mut(&fixture.shot_id)
-            .expect("authorized test shot remains open")
-            .shot
-            .is_projectile = true;
+        fixture.shot_mut().is_projectile = true;
         let point = Vec3::new(4.0, 0.5, 0.0);
         let declaration = fixture.declaration(vec![wire::HitRecord {
             normal: [0.0, 1.0, 0.0],
@@ -6072,13 +6161,7 @@ mod tests {
     fn remote_splash_rejects_contact_beyond_frozen_projectile_lifetime() {
         let mut fixture = HitIngestFixture::new(wall_at_x(0.5));
         fixture.configure_projectile_splash(0.0);
-        fixture
-            .open_shots
-            .shots
-            .get_mut(&fixture.shot_id)
-            .expect("fixture shot remains open")
-            .shot
-            .projectile_lifetime_seconds = Some(0.005);
+        fixture.shot_mut().projectile_lifetime_seconds = Some(0.005);
         let declaration = fixture.declaration(vec![wire::HitRecord {
             normal: [0.0, 1.0, 0.0],
             target: PRESENTATION_CONTACT_TARGET,
@@ -6215,13 +6298,7 @@ mod tests {
     #[test]
     fn invalid_entity_target_does_not_erase_valid_projectile_contact() {
         let mut fixture = HitIngestFixture::new(CollisionWorld::new());
-        fixture
-            .open_shots
-            .shots
-            .get_mut(&fixture.shot_id)
-            .expect("authorized test shot remains open")
-            .shot
-            .is_projectile = true;
+        fixture.shot_mut().is_projectile = true;
         let point = Vec3::new(4.0, 0.5, 0.0);
         let declaration = fixture.declaration(vec![wire::HitRecord {
             normal: [0.0, 1.0, 0.0],

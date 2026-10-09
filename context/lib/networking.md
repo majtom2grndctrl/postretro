@@ -406,6 +406,10 @@ the preserved press so weapon-side level dedup sees a genuine rising edge. Use a
 presses ride the same kind of lane: rising edges observed at intake, each delivered once
 on an advancing resolution, so a trim cannot lose a door press or a weapon drop.
 Activation starts and their release/cancel edges have their own lane (§Combat authority).
+Weapon switches have a lane too: up to 64 per client, retained on arrival from Control,
+released on any resolution including a non-advancing hold, and applied after command
+resolution and before the tick's simulation. Every lane delivers in the client's tick
+order (§Combat authority).
 Movement, look, and held fire keep the ordinary gap and catch-up behavior; a trimmed jump
 is still lost.
 
@@ -515,39 +519,49 @@ only the newest commands. A start dropped there would lose its shot, and a survi
 start judged by host spacing alone would be refused as cooling; either deletes a lagging
 client's predicted bolt mid-flight. Intake therefore retains each start before stale-drop
 and trim, up to 64 per client, and delivers the oldest once its own command tick has
-resolved and no execution is live. A start that arrives during a live execution waits
-rather than being refused. A retained start expires two seconds after it first becomes
-due and is reported as an initiation rejection. A start dropped at intake, because 64
-are already retained or because it replays a settled start, mints nothing and is not
-reported; the client's predicted shot stands until its HIT is denied. Reaching 64 takes
-seconds of total stall, so the gap is accepted rather than given its own refusal slot.
+resolved, no execution is live, and the host half below allows it. A start that arrives
+during a live execution waits rather than being refused. A retained start expires two
+seconds after it first reaches the front of the lane due, and is reported as an
+initiation rejection; a start waiting behind a retained switch has not reached it. A
+start dropped at intake, because 64 are already retained or because it replays a settled
+start, mints nothing and is not reported; the client's predicted shot stands until its
+HIT is denied. Reaching 64 takes seconds of total stall, so the gap is accepted rather
+than given its own refusal slot.
 
 **Cadence is judged in client ticks, capped by host time.** Two halves gate a start.
 The client half: its client tick must be at least the weapon's recovery,
 `ceil(recovery_ms / tick_ms)`, after the client tick at which the previous execution's
-recovery began; failing it refuses the start and mints nothing. The host half: each
-execution is credited at the client's claimed host time clamped to
-[host now − 500 ms, host now + 150 ms] (30 and 9 ticks at 60 Hz), and a start waits in
-its lane until host time since the previous recovery began, measured at that credit,
-covers the recovery. The upper clamp makes an early start carry its lead into the next
-rather than earn a fresh tolerance per shot. The lower clamp lets a stall's backlog up to
-500 ms old drain at once; flooring credit at host time would drain a held trigger's
-backlog at exactly the rate new starts arrive, so the rest of the hold would lag by the
-stall, hitscan HITs would expire, and press lanes would overtake the lagging starts. A
-start is refused promptly as an initiation rejection, minting nothing, when its claimed
-time lags host now by more than the 500 ms allowance and it was also stamped more than
-the allowance before the client's newest received command. The second condition keeps a
-lasting rise in latency or clock drift, which shifts a whole credit chain late, from
-refusing every later start on that weapon; the bound comes from the credit clamp either
-way. A stall over 500 ms therefore
-refuses its oldest excess shots, and observers see the surviving delayed shots as a brief
-burst. Over any W host ticks, executions admitted per weapon stay at or below
-⌊(W + 39) / R⌋ + 1 whatever ticks a client stamps: a fixed allowance (30 + 9 ticks),
-never a faster sustained rate. A recovery of zero ticks is capped at one start per real
-resolution, since the formula needs R ≥ 1. Measuring in host ticks alone would refuse
-on-time starts after a trim; measuring in client ticks alone would let a client fire as
-fast as it stamps. A charged action's recovery runs from its client release tick, moved
-forward only; other executions ignore releases for cadence, as the weapon machine does.
+recovery began; failing it refuses the start and mints nothing. The lane checks it
+against the slot's record as soon as a start reaches the front, even during a live
+execution, which only moves the record later. A start the client half refuses, such as
+a tap the client's own prediction refused while cooling, is refused at once and never
+holds a later start, press or switch behind it. The host half: each execution is
+credited at the client's claimed host time clamped to [host now − 500 ms, host now +
+150 ms] (30 and 9 ticks at 60 Hz), and a start waits in its lane until host time since
+the previous recovery began, measured at that credit, plus the 150 ms tolerance (9
+ticks), covers the recovery. The upper clamp makes an early start carry its lead into
+the next rather than earn a fresh tolerance per shot. The lower clamp lets a stall's
+backlog up to 500 ms old drain at once; flooring credit at host time would drain a held
+trigger's backlog at exactly the rate new starts arrive, so the rest of the hold would
+lag by the stall, hitscan HITs would expire, and press lanes would overtake the lagging
+starts. A start is refused promptly as an initiation rejection, minting nothing, when
+its claimed time lags host now by more than the 500 ms allowance and it was also stamped
+more than the allowance before the client's newest received command. The second
+condition keeps a lasting rise in latency or clock drift, which shifts a whole credit
+chain late, from refusing every later start on that weapon; the bound comes from the
+credit clamp either way. A stall over 500 ms therefore refuses its oldest excess shots,
+and observers see the surviving delayed shots as a brief burst. Only a start whose slot
+holds a record claims a host time, so only it can be refused for lag. A start whose
+slot record names another weapon, or none, claims its delivery tick less the smallest
+of: how far it trailed the newest command received, the allowance, and the host ticks
+since that weapon's last departed recovery ended. Over any W host ticks, executions
+admitted per weapon stay at or below ⌊(W + 39) / R⌋ + 1 whatever ticks a client stamps:
+a fixed allowance (30 + 9 ticks), never a faster sustained rate. A recovery of zero
+ticks is capped at one start per real resolution, since the formula needs R ≥ 1.
+Measuring in host ticks alone would refuse on-time starts after a trim; measuring in
+client ticks alone would let a client fire as fast as it stamps. A charged action's
+recovery runs from its client release tick, moved forward only; other executions ignore
+releases for cadence, as the weapon machine does.
 
 Cadence state is **per weapon**: one record per inventory slot, naming the weapon that
 began it, so the bound holds for each weapon and a switch away and back keeps that
@@ -557,33 +571,72 @@ each host tick, a record whose weapon no longer holds its slot in that client's
 inventory (drop, hand-over, despawn) is removed, so it can never authorize again. The
 ticks its credit still owed are charged to the weapon's own host cooldown, raising it
 only: without that, a weapon leaving and returning would restart its credit chain and
-earn the tolerance again. While a weapon is holstered its owed recovery freezes, as the
-host player's does, and the frozen ticks do not count toward the host half, so switching
-away and back cannot clear a recovery early. A weapon whose retained start is already due
-is not frozen by commands stamped after that start, since the client fired it before
-switching. The remote weapon stage never fires or
-ticks a weapon that has left the pawn's inventory; a start bound to one is refused, and
-a refusal reports the recovery of the weapon in the start's own slot.
+earn the tolerance again. A client that disconnects or is demoted takes its records
+with it, and their owed ticks are charged the same way on the next host tick. Each real
+resolution whose command names another slot freezes that slot's owed recovery for the
+tick, as the host player's holstered cooldown freezes, and frozen ticks do not count
+toward the host half, so switching away and back cannot clear a recovery early. A weapon
+whose retained start is already due is not frozen by commands stamped after that start,
+since the client fired it before switching. The lane learns which weapon holds a slot
+only from the post-tick reconcile, so for one resolution after an inventory change made
+outside the fixed tick it judges a start against the slot's previous record; this is a
+known edge. The remote weapon stage never fires or ticks a weapon that has left the
+pawn's inventory: a start bound to one is refused with that weapon's remaining cooldown.
+A start whose pawn or weapon vanished mid-tick is refused too, so every delivered start
+reaches a terminal. A lane refusal reports the recovery of the weapon now in the start's
+own slot, or none when that slot is empty.
 
-**Presses keep their order against retained starts.** A reload, use or drop press
-stamped after the oldest still-retained start waits until that start is delivered or
-refused, and a press stamped before it is delivered first, holding the start a tick, so
-drop-then-fire and fire-then-reload reach the host in the client's order. On a start's
-delivery tick only presses stamped at or before that start ride with it. A retained
-start's own release and cancel edges do not age while it waits. Weapon switches carry no
-client tick and are still applied on arrival, so a switch can overtake a retained start;
-the start still fires the weapon in its own captured slot.
+**Inputs keep the client's order.** Reload, use and drop presses, cancels, and weapon
+switches each name the client tick they were made on, and the host applies them in that
+order with retained starts:
+
+- A press stamped after the oldest still-retained start waits until that start is
+  delivered or refused; a press stamped before it is delivered first, holding the start
+  a resolution, so drop-then-fire and fire-then-reload reach the host in the client's
+  order. On a start's delivery tick only presses stamped at or before that start ride
+  with it.
+- A press or cancel stamped at client tick t waits while a live execution's clock is
+  behind t, so every shot the client fired before it is minted first. The clock is the
+  execution's start tick, or a charge's release tick once its shot has fired, plus host
+  ticks since; an unreleased charge holds nothing. Bound: the clock advances one tick per
+  host tick and the execution ends after its last authored step, so the wait ends when
+  the clock reaches t or the steps run out.
+- Presses of different client ticks never share a resolution, so the simulation's fixed
+  stage order (drop before use, reload after) cannot reorder them. A reload or drop
+  applies to the slot it was pressed in, whatever slot the delivering command names.
+  A frozen hold never replays the raw reload level of a press still held back.
+- A retained start's own release and cancel edges do not age while it waits.
+
+**Switches keep the client's order.** A switch declaration rides reliable Control, apart
+from Input, and names the client tick it was made on. The host retains it and applies it
+once its own command has resolved and nothing stamped before it is pending: no older
+retained start, no older due press, and a live execution's clock at its tick. Starts and
+presses stamped at or after a waiting switch wait for it; one stamped on the switch's
+own command lands after it in the same resolution, as the client's equip pass runs
+before its fire. At most one switch applies per resolution. A switch stamped more than
+120 client ticks ahead of the newest command received is malformed and refused in order
+without touching the inventory. A client that has sent no command applies its switch on
+the next tick. Bounds: a switch applies no later than 240 host ticks after intake,
+whatever is still pending, and at the lane's 64-switch bound the oldest is released at
+once, unordered. On a clean link a switch applies on its own command's resolution, so
+ordering adds no latency. Known gaps: a switch arriving after input stamped later than
+it cannot reorder that input; a drop pressed while the client is still lowering after a
+switch drops the new active slot; a reload squeezed by a stall can be interrupted by the
+following switch; and if Input stalls over 2 s while Control flows, a switch reads as
+stamped too far ahead and is refused as malformed.
 
 **A late start fires along its own aim, once.** A retained start keeps the aim of the
 command that carried it at intake. That captured aim applies only to an uncharged
-action's shot fired on the tick the start is delivered: it sets FIRE origin, direction
-and projectile launch for that shot, so it lands where the client's prediction showed it.
-A charged release and later burst ordinals use the delivering command's aim; for a late
-start that is not the aim the client predicted for those ordinals, a known divergence.
-Movement, facing and avatar pose follow the delivering command. World line-of-sight and
-origin-obstruction checks are unchanged. A late-admitted direct projectile whose HIT is
-already waiting retires its observer flight at the contact almost immediately, so
-observers see the contact rather than the flight; this is known behaviour.
+action's projectile launch on the tick the start is delivered: it sets the shot's FIRE
+origin and direction, so the projectile lands where the client's prediction showed it.
+Hitscan FIRE records no direction; its declared contacts are validated from the live
+eye. A charged release and later burst ordinals use the delivering command's aim; for a
+late start that is not the aim the client predicted for those ordinals, a known
+divergence. Movement, facing and avatar pose follow the delivering command. World
+line-of-sight and origin-obstruction checks are unchanged. A late-admitted direct
+projectile whose HIT is already waiting retires its observer flight at the contact
+almost immediately, so observers see the contact rather than the flight; this is known
+behaviour.
 
 Explicit release/cancel names the initiating activation. Intake retains edges before
 stale-drop or backlog trimming, deduplicates them, and delivers them once after that
@@ -594,13 +647,15 @@ even on a render-only frame; intent does not advance execution, and the host app
 it on its next tick. Switch, drop, death, disconnect, level change, and descriptor
 replacement also cancel future work without refunding authorized shots.
 
-Charge uses wrap-safe release tick minus start tick, capped by host elapsed time
-since admission plus 150 ms and then by authored full duration. Out-of-lifetime spans
-reject. Missing intermediate samples never imply release or weaken a valid hold;
-late arrival cannot add charge beyond the input timestamps. Severe backlog compression
-can clamp charge. Release before the minimum cancels without debit; full charge never
-auto-fires. Two seconds without an admitted real command cancels pending work; charge
-also expires without firing 60 seconds after its full duration.
+Charge uses wrap-safe release tick minus start tick, capped by host elapsed time since
+admission plus 150 ms and then by authored full duration. Out-of-lifetime spans reject.
+Missing intermediate samples never imply release or weaken a valid hold; late arrival
+cannot add charge beyond the input timestamps. Severe backlog compression can clamp
+charge: the catch-up allowance does not cover charge, so a backlogged charged start whose
+release arrives with it is admitted late, and its charge is clamped to host time since
+that admission plus 150 ms. Release before the minimum cancels without debit; full charge
+never auto-fires. Two seconds without an admitted real command cancels pending work;
+charge also expires without firing 60 seconds after its full duration.
 
 Connected prediction advances once per real fixed command after an equip-only
 switch/timer pass. It freezes every due shot's action/program, scaling bases,
@@ -609,21 +664,21 @@ All due shots in a rendered frame resolve against that frame's displayed aim/tar
 pose. Render-only frames advance no charge or steps.
 
 Reliable owner outcomes report initiation accept/reject, execution acceptance with
-resolved charge, cancellation, completion, and per-shot verdicts. Execution acceptance
-is sent before awaiting HIT. Outcomes bind the token's captured local instance to the
-host weapon id. Matching installed tuning corrects future snapshots and still-live
-predicted projectile size, speed, radius, and remaining travel budget. Correction never
-respawns, rewinds a transform, replays damage, or resurrects a contacted projectile.
-Recovery corrections name an activation and bound instance; older results cannot
-rewind newer execution. An admitted execution's outcome may only shorten the client's
-predicted recovery, never lengthen it: the host admits on the client's own shot tick,
-so the local countdown is already what admission requires; the host's remainder is
-one transit stale and would make a client fire slower than the host player. An
-initiation rejection still adopts the host's value. A completion marks the activation
-terminal but never cancels a client execution still in progress: under catch-up the host
-can finish a burst before the client has predicted its last shot. Slot-only cooldown projection can
-seed an instance before prediction starts, but cannot roll back its active prediction.
-No full weapon rollback.
+resolved charge, cancellation, completion, and per-shot verdicts. Execution acceptance is
+sent before awaiting HIT. Outcomes bind the token's captured local instance to the host
+weapon id. Matching installed tuning corrects future snapshots and still-live predicted
+projectile size, speed, radius, and remaining travel budget. Correction never respawns,
+rewinds a transform, replays damage, or resurrects a contacted projectile. Recovery
+corrections name an activation and bound instance; older results cannot rewind newer
+execution. An admitted execution's outcome may only shorten the client's predicted
+recovery, never lengthen it: the host admits on the client's own shot tick, so the local
+countdown is already what admission requires; the host's remainder is one transit stale
+and would make a client fire slower than the host player. An initiation rejection still
+adopts the host's value. A completion marks the activation terminal but never cancels a
+client execution still in progress: under catch-up the host can finish a burst before the
+client has predicted its last shot. Slot-only cooldown projection can seed an instance
+before prediction starts, but cannot roll back its active prediction. No full weapon
+rollback.
 
 Client-side ammo, heat, cell, and reload prediction/reconciliation remain out of scope;
 connected clients never run the heat or cell update. Owner-private state-slot projection
@@ -632,54 +687,53 @@ reload-active, heat, overheat threshold, overheated latch, cell charge, and cell
 each read from that owner's own pawn and beside the host wieldable slot it describes.
 
 Each owner-private weapon value — cooldown, magazine, reserve, reload progress,
-reload-active, heat, overheat threshold, overheated, cell charge, cell capacity — travels as a
-`[host wieldable slot, value]` sample; the store keeps a plain
-number or boolean, so HUD and script readers never see the slot. The slot names the weapon a
-value describes: the host projects its own active weapon, which lags a local switch by a
-round trip, and state records arrive per slot rather than atomically. An active weapon
-without ammo sends its magazine and reserve as the `[slot]` absence instead, which the client
-applies as the same store clear the host HUD makes; presentation reads it as no magazine to run
-dry (a fire) and reload edges as no reload-capable weapon. Heat and cell numbers follow the
-same rule for a weapon of another kind; the overheated latch has no absence and reads false
-there. Which resource the active weapon runs is not replicated: every role publishes it from
-its own active weapon, as it does the weapon name, so it leads the host-correlated values by up
-to a round trip after a local switch. A pawn with no inventory sends the
+reload-active, heat, overheat threshold, overheated, cell charge, cell capacity — travels
+as a `[host wieldable slot, value]` sample; the store keeps a plain number or boolean, so
+HUD and script readers never see the slot. The slot names the weapon a value describes:
+the host projects its own active weapon, which lags a local switch by a round trip, and
+state records arrive per slot rather than atomically. An active weapon without ammo sends
+its magazine and reserve as the `[slot]` absence instead, which the client applies as the
+same store clear the host HUD makes; presentation reads it as no magazine to run dry (a
+fire) and reload edges as no reload-capable weapon. Heat and cell numbers follow the same
+rule for a weapon of another kind; the overheated latch has no absence and reads false
+there. Which resource the active weapon runs is not replicated: every role publishes it
+from its own active weapon, as it does the weapon name, so it leads the host-correlated
+values by up to a round trip after a local switch. A pawn with no inventory sends the
 HUD's reload defaults (no progress, not reloading) attributed to slot 0. `Unset` skips the
 write for plain and correlated slots alike, and a correlated slot is sent only from its
-projection, never from a plain table value. **Client fire
-prediction is presentation-gated only.** Every due shot predicts, resolves, and declares
-its contacts, including every shot in a multi-tick frame. Stale resource samples cannot
-stop semantic attempts or declarations. The projection only chooses what a shot presents,
-trusting each value it reads only when that value names the client's own active slot;
-otherwise it presents a fire. An idle weapon whose magazine cannot pay the resolved shot cost
-presents a dry fire: the dry-fire sound, with no fire sound, muzzle FX or impact. So does a cell
-weapon whose charge cannot pay it. An overheated heat weapon presents nothing; the shot that
-crosses the threshold presents a fire, since its latch arrives a round trip later. A magazine
+projection, never from a plain table value. **Client fire prediction is presentation-gated
+only.** Every due shot predicts, resolves, and declares its contacts, including every shot
+in a multi-tick frame. Stale resource samples cannot stop semantic attempts or
+declarations. The projection only chooses what a shot presents, trusting each value it
+reads only when that value names the client's own active slot; otherwise it presents a
+fire. An idle weapon whose magazine cannot pay the resolved shot cost presents a dry fire:
+the dry-fire sound, with no fire sound, muzzle FX or impact. So does a cell weapon whose
+charge cannot pay it. An overheated heat weapon presents nothing; the shot that crosses
+the threshold presents a fire, since its latch arrives a round trip later. A magazine
 reload in progress, or a per-shell reload whose magazine cannot pay the cost, presents
-nothing; a per-shell reload the magazine covers presents a fire, since the shot cancels it. A
-reload flag held at full progress is the replayed Completed endpoint, so the weapon reads
-idle. A dry or silent shot suppresses cosmetics, but its predicted projectile still
-simulates contact and declares normally. Only authoritative denial stops resource-dependent
-future execution. A dry or silent shot shows neither muzzle FX nor a hitmarker, even when
-its declaration carries an entity hit; verdicts retract presentation/flight without changing
-newer recovery. Hitscan prediction keeps
-world contacts and each contact's normal, so predicted impact presentation matches the
-host's contact data.
-Reload presentation edges (start, shell, complete) derive from the projected reload-active,
-reload-progress, magazine, and reserve samples, one round trip late, attributed to the weapon
-the client holds in the host slot the reload flag names. Every value read must name that
-slot; a frame whose values name different slots is held unread. Complete is the flag falling
-after the last held sample showed completion (magazine full, reserve empty, or a magazine
-reload at full progress), or a fall in which ammo rose by exactly what the reserve fell while
-the client wields that weapon. A rise that projects full progress replays a completion
-endpoint and is no start. A local switch the host refuses keeps the reload tracked; one it
-performs names another slot and presents nothing — including a switch away and back, when
-any sample of the other slot arrives in between. Any other fall is a cancel and presents
-nothing (`audio.md` §4). The overheat cue is the projected latch rising on the weapon the
-client holds in the named slot while that slot is its active one. Heat and threshold must
-name the same slot or the frame is held; a change of projected weapon resets the baseline, so
-a switch back to a weapon still locked out plays nothing. Presentation only; ammo, heat, and
-cell stay unpredicted.
+nothing; a per-shell reload the magazine covers presents a fire, since the shot cancels
+it. A reload flag held at full progress is the replayed Completed endpoint, so the weapon
+reads idle. A dry or silent shot suppresses cosmetics, but its predicted projectile still
+simulates contact and declares normally. Only authoritative denial stops
+resource-dependent future execution. A dry or silent shot shows neither muzzle FX nor a
+hitmarker, even when its declaration carries an entity hit; verdicts retract
+presentation/flight without changing newer recovery. Hitscan prediction keeps world
+contacts and each contact's normal, so predicted impact presentation matches the host's
+contact data. Reload presentation edges (start, shell, complete) derive from the projected
+reload-active, reload-progress, magazine, and reserve samples, one round trip late,
+attributed to the weapon the client holds in the host slot the reload flag names. Every
+value read must name that slot; a frame whose values name different slots is held unread.
+Complete is the flag falling after the last held sample showed completion (magazine full,
+reserve empty, or a magazine reload at full progress), or a fall in which ammo rose by
+exactly what the reserve fell while the client wields that weapon. A rise that projects
+full progress replays a completion endpoint and is no start. A local switch the host
+refuses keeps the reload tracked; one it performs names another slot and presents nothing
+— including a switch away and back, when any sample of the other slot arrives in between.
+Any other fall is a cancel and presents nothing (`audio.md` §4). The overheat cue is the
+projected latch rising on the weapon the client holds in the named slot while that slot is
+its active one. Heat and threshold must name the same slot or the frame is held; a change
+of projected weapon resets the baseline, so a switch back to a weapon still locked out
+plays nothing. Presentation only; ammo, heat, and cell stay unpredicted.
 
 Projectile launch prediction is not rewind-synchronized. The firing client launches from
 its rendered local camera and rendered target state; the host later reconstructs from the
@@ -699,7 +753,14 @@ radius, range, lifetime, and elapsed host ticks. The client never selects a spla
 A splash declaration waits until host travel since FIRE, at the frozen speed, covers its
 farthest valid declared contact plus one tick, capped by frozen range and lifetime, so a
 start admitted late after a stall still replays far enough to reach the contact the
-client saw; the declared point only delays the replay and never selects the detonation.
+client saw. A late start fires from the pawn's live eye along its captured aim, so after
+the pawn moves the host's ray can meet the world beyond the declared point. FIRE
+therefore freezes the host's own first static-world contact along the frozen ray, swept
+at the frozen radius within frozen reach, and a declared world contact waits for the
+larger of that distance and its own. A declared entity contact waits only for its own
+point: a longer wait would replay against a target that has since moved. If the host's
+ray misses that entity, nothing detonates; a known gap. The declaration only delays the
+replay and never selects the detonation.
 
 ### `shot_id`: the security spine
 
@@ -709,33 +770,34 @@ firing connection. A declaration is accepted only when its `shot_id` matches a s
 shot owned by the declaring client — ownership is checked, not assumed, because `shot_id`
 derives from public inputs (pawn network id, initiating client tick, action lane, authored
 shot ordinal) and is therefore guessable. Host fire tick remains separate. Ordinals name
-authored attempts, including refused ones; movement-cursor progress never names a later shot. Accepting
-a declaration retires its shot, so one authorized fire accepts at most one declaration. A
-fire the host rejected because it is cooling, reloading, or lacks enough magazine ammo
-mints no authorized shot, so no declaration can bind to it — free damage is structurally
-unreachable, not merely discouraged by a check. This binding is validated first, before
-any geometry check.
+authored attempts, including refused ones; movement-cursor progress never names a later
+shot. Accepting a declaration retires its shot, so one authorized fire accepts at most one
+declaration. A fire the host rejected because it is cooling, reloading, or lacks enough
+magazine ammo mints no authorized shot, so no declaration can bind to it — free damage is
+structurally unreachable, not merely discouraged by a check. This binding is validated
+first, before any geometry check.
 
 Early HIT for a future ordinal waits for its matching decision. Cancellation rejects
 unissued ordinals; previously authorized projectiles retain their normal validation and
 lifetime. Per client, pending declarations, retained release/cancel records, terminal
-activation records, and retained starts are each bounded to 64, as is each of the use
-and drop press lanes; a press arriving at a full lane is dropped silently. Unknown
-declarations/edges expire two seconds from first receipt; duplicates never refresh
-expiry. A retained start expires two seconds after it first becomes due, not from
-receipt. Future ordinals expire two seconds
-after their scheduled decision. Terminal records expire two seconds after termination;
-overflow evicts the oldest, while a monotonic settled-start watermark prevents replay
-after eviction. Live future ordinals remain independent of that watermark. Declaration
-overflow rejects the newest HIT without undoing FIRE. Expiry of a HIT declaration or
-edge record does not reject a FIRE initiation that remains eligible for admission; only a
-retained start's own expiry does. If FIRE is still unknown or
-pending at overflow or expiry, a reliable HIT-only refusal retires the client's hit feedback record without
-changing recovery or its predicted flight. A later actual FIRE denial still removes
-that shot's flight even after its hit feedback record has gone; no refusal queue is
-retained. Already-decided FIRE keeps its ordinary accurate verdict. Edge overflow rejects the newest
-edge and cancels its affected active execution. Live delivered-edge history stays until
-termination so duplicate release cannot revive and a later cancel remains valid.
+activation records, and retained starts are each bounded to 64, as are the use and drop
+press lanes and the switch lane. A press arriving at a full lane is dropped silently; a
+switch arriving at a full lane releases the oldest retained switch unordered. Unknown
+declarations/edges expire two seconds from first receipt; duplicates never refresh expiry.
+A retained start expires two seconds after it first reaches the front of the lane due, not
+from receipt. Future ordinals expire two seconds after their scheduled decision. Terminal
+records expire two seconds after termination; overflow evicts the oldest, while a
+monotonic settled-start watermark prevents replay after eviction. Live future ordinals
+remain independent of that watermark. Declaration overflow rejects the newest HIT without
+undoing FIRE. Expiry of a HIT declaration or edge record does not reject a FIRE initiation
+that remains eligible for admission; only a retained start's own expiry does. If FIRE is
+still unknown or pending at overflow or expiry, a reliable HIT-only refusal retires the
+client's hit feedback record without changing recovery or its predicted flight. A later
+actual FIRE denial still removes that shot's flight even after its hit feedback record has
+gone; no refusal queue is retained. Already-decided FIRE keeps its ordinary accurate
+verdict. Edge overflow rejects the newest edge and cancels its affected active execution.
+Live delivered-edge history stays until termination so duplicate release cannot revive and
+a later cancel remains valid.
 
 ### World-LOS-only validation
 
@@ -792,12 +854,13 @@ standing-eye ray would false-reject a legitimate crouched shot near cover.
   initiation/execution and terminal facts naming the token, bound host instance where
   accepted, resolved charge at execution acceptance, and authoritative recovery.
 - **`ShotVerdict`** (server -> client, owner-private): the per-shot accept/reject fact,
-  scoped to the declaring client only and never broadcast. Owner-private state slots
-  carry the firing pawn's cooldown, magazine, reserve, reload progress, reload-active
-  state, and heat or cell values, each beside the host wieldable slot it describes, following the same per-owner projection pattern as `player.health`. The firing
-  client reconciles predicted fire, flight, and hitmarker state against the verdict;
-  activation outcomes own recovery correction. Ammo and reload remain authoritative
-  projections rather than predicted state.
+  scoped to the declaring client only and never broadcast. Owner-private state slots carry
+  the firing pawn's cooldown, magazine, reserve, reload progress, reload-active state, and
+  heat or cell values, each beside the host wieldable slot it describes, following the
+  same per-owner projection pattern as `player.health`. The firing client reconciles
+  predicted fire, flight, and hitmarker state against the verdict; activation outcomes own
+  recovery correction. Ammo and reload remain authoritative projections rather than
+  predicted state.
 - **Observer weapon cues** (server -> participating clients, reliable ordered Input
   channel): frozen fire/impact sound keys, action aliases, shot identity, and captured
   entity/contact anchors, independently of snapshot cadence. The firing owner is
@@ -814,35 +877,34 @@ any changed message layout — including a later, independent field addition to 
 already-shipped message — bumps the wire-version (layout) constant again, independently of
 any vocabulary change. `SNAPSHOT_VERSION` is untouched by anything that rides
 `ClientMessage`/`ServerMessage` on the Input channel; it bumps only when a change lands on
-the snapshot record itself. Rotating-mover phase fields use `SNAPSHOT_VERSION` 11;
-mover replay provenance advances it to 12, and E17's replicated mover `blocked`
-phase advances it to 13. Slide advances it to 14. The static-kinematic handshake field uses `WIRE_VERSION`
-12; mover replay provenance advances it to 13, E15's tagged Control layout advances
-it to 14, and participation-framed traffic advances it to 15. E16's `drop_pressed`
-input edge advances it to 16, and E17's `blocked` phase advances it to 17. E16's
-`JoinSeed` variant on `ClientControlMessage` advances it to 18. E16's dedicated
-unreliable Presentation channel and `ServerPresentationMessage` family advance it to
-19. Slide advances it to 20. The sparse faction-sentiment snapshot record advances
+the snapshot record itself. Rotating-mover phase fields use `SNAPSHOT_VERSION` 11; mover
+replay provenance advances it to 12, and E17's replicated mover `blocked` phase advances
+it to 13. Slide advances it to 14. The static-kinematic handshake field uses
+`WIRE_VERSION` 12; mover replay provenance advances it to 13, E15's tagged Control layout
+advances it to 14, and participation-framed traffic advances it to 15. E16's
+`drop_pressed` input edge advances it to 16, and E17's `blocked` phase advances it to 17.
+E16's `JoinSeed` variant on `ClientControlMessage` advances it to 18. E16's dedicated
+unreliable Presentation channel and `ServerPresentationMessage` family advance it to 19.
+Slide advances it to 20. The sparse faction-sentiment snapshot record advances
 `SNAPSHOT_VERSION` to 15 and `WIRE_VERSION` to 21; it changes no Input-channel
-`ClientMessage` or `ServerMessage` variant. Protected player knockback velocity
-advances `SNAPSHOT_VERSION` to 16 and `WIRE_VERSION` to 22. The hit record's contact
-normal advances `WIRE_VERSION` to 23; `SNAPSHOT_VERSION` is unchanged. Weapon
-activation commands/outcomes advance the application protocol to PRL8 and wire to
-24. Explicit projectile body size/model scale/shot identity and reliable frozen
-observer weapon cues advance the application protocol to PRL9, `WIRE_VERSION` to
-25, and `SNAPSHOT_VERSION` to 17. Incompatible peers fail the handshake; snapshot
-17 independently rejects older snapshot envelopes. The PRL level-file format is
-unchanged. The host movement descriptor's knockback response advances the tuning
-epoch to 9; host-resolved activation programs/scaling bases advance it to 10.
-Slot-correlated owner-private weapon samples change only the state-schema fingerprint,
-through per-slot wire-shape tags: `[slot, number]` is tag 1, `[slot, flag]` tag 2, and
-`[slot, number]` or `[slot]` (magazine and reserve) tag 3. They ride the existing array
-value, so `WIRE_VERSION` and `SNAPSHOT_VERSION` are unchanged. A mixed-build peer is not
-refused: the handshake admits it, and its client rejects every state batch at the
-fingerprint check for the whole session, so no replicated state (health included) reaches
-it until both peers run the same build. A client built before observer bursts spawned from
-the impact cue gets no observer splash burst from a newer host, because it bursts only from
-the retired presentation spawn; nothing gates on it.
+`ClientMessage` or `ServerMessage` variant. Protected player knockback velocity advances
+`SNAPSHOT_VERSION` to 16 and `WIRE_VERSION` to 22. The hit record's contact normal
+advances `WIRE_VERSION` to 23; `SNAPSHOT_VERSION` is unchanged. Weapon activation
+commands/outcomes advance the application protocol to PRL8 and wire to 24. Explicit
+projectile body size/model scale/shot identity and reliable frozen observer weapon cues
+advance the application protocol to PRL9, `WIRE_VERSION` to 25, and `SNAPSHOT_VERSION` to
+17. The switch declaration's client tick advances `WIRE_VERSION` to 26; the application
+protocol (PRL9), `SNAPSHOT_VERSION` (17) and the tuning epoch are unchanged. Incompatible
+peers fail the handshake; snapshot 17 independently rejects older snapshot envelopes. The
+PRL level-file format is unchanged. The host movement descriptor's knockback response
+advances the tuning epoch to 9; host-resolved activation programs/scaling bases advance it
+to 10. Slot-correlated owner-private weapon samples change only the state-schema
+fingerprint, through per-slot wire-shape tags: `[slot, number]` is tag 1, `[slot, flag]`
+tag 2, and `[slot, number]` or `[slot]` (magazine and reserve) tag 3. They ride the
+existing array value, so `WIRE_VERSION` and `SNAPSHOT_VERSION` are unchanged. A
+mixed-build peer is not refused: the handshake admits it, and its client rejects every
+state batch at the fingerprint check for the whole session, so no replicated state (health
+included) reaches it until both peers run the same build.
 
 ## Current contract
 

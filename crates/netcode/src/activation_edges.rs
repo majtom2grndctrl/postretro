@@ -39,6 +39,18 @@ pub(crate) struct RetainedStart {
     /// a start playout has not reached yet is never refused for waiting.
     due_since: Option<u32>,
 }
+/// Why the lane refused a retained start.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LaneRefusal {
+    /// The client half of the cadence rule refused it at the lane front.
+    ClientHalf,
+    /// Its claimed host time lagged past the catch-up allowance.
+    Lagged,
+    /// It waited due in the lane for `RETENTION_TICKS` without admission.
+    Expired,
+    /// A terminal settled it while it was retained.
+    Settled,
+}
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum DueStart {
     Start(RetainedStart),
@@ -52,9 +64,9 @@ pub(crate) struct ActivationEdges {
     starts: VecDeque<RetainedStart>,
     /// The start most recently taken from the lane, for its shot's aim.
     delivered: Option<RetainedStart>,
-    /// The start most recently refused from the lane, for its own weapon's
-    /// recovery in the refusal.
-    refused: Option<RetainedStart>,
+    /// The start most recently refused from the lane and why, for its own
+    /// weapon's recovery in the refusal.
+    refused: Option<(RetainedStart, LaneRefusal)>,
     admitted: VecDeque<ActivationToken>,
     overflow_cancel: Option<ActivationToken>,
     settled_start: [Option<u32>; 2],
@@ -90,7 +102,7 @@ impl ActivationEdges {
         let due_since = *front.due_since.get_or_insert(tick);
         if tick.wrapping_sub(due_since) >= RETENTION_TICKS {
             let token = front.token;
-            self.refuse_front(token);
+            self.refuse_front(token, LaneRefusal::Expired);
             return Some(DueStart::Expired(token));
         }
         Some(DueStart::Start(*front))
@@ -100,20 +112,20 @@ impl ActivationEdges {
     pub fn take_start(&mut self, token: ActivationToken) -> bool {
         let taken = self.pop_front_start(token);
         let admitted = self.admit(token);
-        if taken.is_some() {
+        if let Some(start) = taken {
             if admitted {
-                self.delivered = taken;
+                self.delivered = Some(start);
             } else {
-                self.refused = taken;
+                self.refused = Some((start, LaneRefusal::Settled));
             }
         }
         admitted
     }
     /// Refuse the front start without admitting it; the caller publishes the
     /// refusal and settles it.
-    pub fn refuse_front(&mut self, token: ActivationToken) {
+    pub fn refuse_front(&mut self, token: ActivationToken, reason: LaneRefusal) {
         if let Some(start) = self.pop_front_start(token) {
-            self.refused = Some(start);
+            self.refused = Some((start, reason));
         }
     }
     fn pop_front_start(&mut self, token: ActivationToken) -> Option<RetainedStart> {
@@ -151,8 +163,14 @@ impl ActivationEdges {
     /// Firing slot `token`'s start named, once the lane has refused it.
     pub fn refused_slot(&self, token: ActivationToken) -> Option<u8> {
         self.refused
-            .filter(|start| start.token == token)
-            .map(|start| start.firing_slot)
+            .filter(|(start, _)| start.token == token)
+            .map(|(start, _)| start.firing_slot)
+    }
+    /// Why the lane refused `token`'s start, once it has.
+    pub fn refusal(&self, token: ActivationToken) -> Option<LaneRefusal> {
+        self.refused
+            .filter(|(start, _)| start.token == token)
+            .map(|(_, reason)| reason)
     }
     /// Aim captured with `token`'s start, once the lane has delivered it.
     pub fn delivered_aim(&self, token: ActivationToken) -> Option<RemoteStartAim> {

@@ -43,6 +43,11 @@ pub struct AuthorizedShot {
     pub projectile_speed: Option<f32>,
     pub projectile_lifetime_seconds: Option<f32>,
     pub projectile_tick_seconds: Option<f32>,
+    /// Host's own static-world first contact along the frozen ray, swept at
+    /// the frozen radius and capped by frozen reach. A splash declaration of a
+    /// world contact waits for host travel to cover it, because a late start's
+    /// live origin can put the host's wall farther than the client's point.
+    pub projectile_static_contact_distance: Option<f32>,
     /// Frozen at FIRE because the weapon may be switched or despawned before a
     /// later projectile declaration arrives. This authority data never crosses
     /// the wire.

@@ -68,7 +68,8 @@ use postretro_scripting_core::reaction_dispatch::ProgressTracker;
 pub use projectile_stage::advance;
 pub use projectile_stage::{
     PredictedProjectileResolution, ProjectileContactEvent, advance_predicted,
-    correct_predicted_projectile, projectile_splash_occlusion_origin, resolve_projectile_impact,
+    correct_predicted_projectile, projectile_splash_occlusion_origin,
+    projectile_static_contact_distance, resolve_projectile_impact,
     set_predicted_projectile_visible,
 };
 pub use weapon_stage::{ProjectileSource, projectile_model_body_rotation, spawn_projectile};

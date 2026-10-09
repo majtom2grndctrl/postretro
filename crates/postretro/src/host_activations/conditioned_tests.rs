@@ -333,8 +333,6 @@ struct Fixture {
     hit_refusals: Vec<ShotId>,
     retired_hit_feedback: Vec<ShotId>,
     reconciled: Vec<(ActivationToken, bool, bool)>,
-    sources: Vec<netcode::ResolutionSource>,
-    resolved_ticks: Vec<u32>,
     /// Retract a rejected activation's predictions through the same
     /// `retract_rejected_activation` the binary's outcome handling calls.
     mirror_rejection_despawn: bool,
@@ -342,8 +340,8 @@ struct Fixture {
     expired: Vec<ShotId>,
     /// `(host tick, resolved client tick, source)` per host resolution.
     playout: Vec<(u32, u32, netcode::ResolutionSource)>,
-    /// `(host tick, start)` per retained start the lane refused.
-    lane_refusals: Vec<(u32, ActivationToken)>,
+    /// `(host tick, start, why)` per retained start the lane refused.
+    lane_refusals: Vec<(u32, ActivationToken, netcode::LaneRefusal)>,
     /// `(host tick, command)` per host resolution, as playout delivered it.
     resolved_commands: Vec<(u32, netcode::ResolvedPawnCommand)>,
     /// Camera pitch the next `send_input` declares.
@@ -441,8 +439,6 @@ impl Fixture {
             hit_refusals: Vec::new(),
             retired_hit_feedback: Vec::new(),
             reconciled: Vec::new(),
-            sources: Vec::new(),
-            resolved_ticks: Vec::new(),
             mirror_rejection_despawn: false,
             expired: Vec::new(),
             playout: Vec::new(),
@@ -876,12 +872,14 @@ impl Fixture {
         self.host_active.push((self.tick, active));
         let mut commands = Vec::new();
         for resolved in resolved {
-            self.sources.push(resolved.source);
-            self.resolved_ticks.push(resolved.client_tick);
             self.playout
                 .push((self.tick, resolved.client_tick, resolved.source));
             if let Some(start) = resolved.rejected_activation {
-                self.lane_refusals.push((self.tick, start));
+                let why = self
+                    .queues
+                    .lane_refusal(CLIENT, start)
+                    .expect("the lane names why it refused a start");
+                self.lane_refusals.push((self.tick, start, why));
             }
             self.resolved_commands.push((self.tick, resolved.clone()));
             let mut registry = self.host.borrow_mut();
@@ -1109,12 +1107,12 @@ fn conditioned_activation_clean_and_mandated_link_preserve_full_charge_sequence_
                         fixture.up.dropped() > held_losses_before,
                         "ordinary held-command packets must actually be lost under the mandated seed"
                     );
-                    assert!(fixture.sources.contains(&netcode::ResolutionSource::Held));
-                    assert!(
-                        fixture
-                            .sources
-                            .contains(&netcode::ResolutionSource::Neutral)
-                    );
+                    for source in [
+                        netcode::ResolutionSource::Held,
+                        netcode::ResolutionSource::Neutral,
+                    ] {
+                        assert!(fixture.playout.iter().any(|&(_, _, s)| s == source));
+                    }
                 }
                 let release_tick = start.start_tick.wrapping_add(96);
                 let mut release = neutral();
@@ -1245,7 +1243,7 @@ fn conditioned_activation_backlog_clamps_accepted_charge_and_corrects_live_owner
     fixture.step(100, held(start.lane, true));
     fixture.step(101, held(start.lane, false));
     assert_eq!(fixture.tick, 2);
-    assert_eq!(fixture.resolved_ticks.last(), Some(&100));
+    assert_eq!(fixture.playout.last().map(|&(_, tick, _)| tick), Some(100));
     assert!(fixture.host_charging());
     // Deliver the real initiation outcome before producing the owner's full-charge shot.
     fixture.transport();
@@ -1327,10 +1325,12 @@ fn conditioned_activation_backlog_clamps_accepted_charge_and_corrects_live_owner
 
     fixture.host_tick();
     assert_eq!(fixture.tick, 3);
-    assert_eq!(fixture.resolved_ticks.last(), Some(&129));
     assert_eq!(
-        fixture.sources.last(),
-        Some(&netcode::ResolutionSource::Real)
+        fixture
+            .playout
+            .last()
+            .map(|&(_, tick, source)| (tick, source)),
+        Some((129, netcode::ResolutionSource::Real))
     );
     assert_eq!(fixture.authorized.len(), 1);
     assert_eq!(fixture.authorized[0].shot_id, id);
@@ -2048,9 +2048,8 @@ struct StreamReport {
     bolts_removed_early: Vec<ShotId>,
     /// Predicted shots the host neither authorized nor refused.
     ghosts: Vec<ShotId>,
-    /// For each refused start: its start tick, the client gap since the previous
-    /// authorized start, and the host ticks between their resolutions.
-    refusal_spacing: Vec<(u32, u32, u32)>,
+    /// `(start tick, why)` per start the lane refused.
+    lane_refused: Vec<(u32, netcode::LaneRefusal)>,
     /// Playout steps whose resolved client tick skipped ahead: the catch-up trim.
     catch_up_jumps: usize,
 }
@@ -2148,32 +2147,11 @@ fn stream_report(fixture: &Fixture, projectile: bool) -> StreamReport {
             .filter(|id| !fixture.expired.contains(id))
             .collect();
     }
-    let host_tick_of = |client_tick: u32| {
-        fixture
-            .playout
-            .iter()
-            .find(|(_, tick, source)| {
-                *tick == client_tick && *source == netcode::ResolutionSource::Real
-            })
-            .map(|(host, _, _)| *host)
-    };
-    for &id in &report.initiation_rejected {
-        let previous = report
-            .authorized
-            .iter()
-            .filter(|shot| shot.start_tick < id.start_tick)
-            .map(|shot| shot.start_tick)
-            .max();
-        if let (Some(previous), Some(now), Some(then)) = (
-            previous,
-            host_tick_of(id.start_tick),
-            previous.and_then(host_tick_of),
-        ) {
-            report
-                .refusal_spacing
-                .push((id.start_tick, id.start_tick - previous, now - then));
-        }
-    }
+    report.lane_refused = fixture
+        .lane_refusals
+        .iter()
+        .map(|&(_, token, why)| (token.start_tick, why))
+        .collect();
     report.catch_up_jumps = fixture
         .playout
         .windows(2)
@@ -2186,7 +2164,7 @@ fn summarize(label: &str, report: &StreamReport) -> String {
     format!(
         "{label}: predicted {}, host authorized {}, initiation-rejected {} {:?}, \
          fire-denied {}, bolts removed early {}, ghosts {}, playout jumps {}, \
-         refused (start, client gap, host gap) {:?}",
+         lane refusals (start, why) {:?}",
         report.predicted.len(),
         report.authorized.len(),
         report.initiation_rejected.len(),
@@ -2199,7 +2177,7 @@ fn summarize(label: &str, report: &StreamReport) -> String {
         report.bolts_removed_early.len(),
         report.ghosts.len(),
         report.catch_up_jumps,
-        report.refusal_spacing,
+        report.lane_refused,
     )
 }
 
@@ -2210,17 +2188,17 @@ fn missed_its_trim(link: LinkConfig, hitch: Option<(u32, u32)>, report: &StreamR
     claims_trim && report.catch_up_jumps == 0
 }
 
-/// Decision 14: a start whose input stalled past the catch-up allowance is
-/// refused. Checks that every refused start of `report` is such a refusal, and
-/// measures its stall: the host ticks from the earliest it could have played
-/// (its send plus the cell's fastest transit) to its refusal on which the host
-/// could not deliver it, because no real command resolved, the real command
-/// resolved was stamped before it, or an older start of the backlog was
-/// executing. The stall must exceed the allowance; the lane, not the client
-/// half or the machine, refused it; a newer start the client had already sent
-/// still fired, so only the backlog's oldest starts were refused; and the
-/// refusal came before the lane's retention could have expired it. Returns
-/// `(start tick, stall in host ticks)` per refused start.
+/// The 500 ms catch-up allowance (networking.md §Combat authority) refuses a
+/// start whose input stalled past it. Checks that every refused start of
+/// `report` is such a refusal, and measures its stall: the host ticks from the
+/// earliest it could have played (its send plus the cell's fastest transit) to
+/// its refusal on which the host could not deliver it, because no real command
+/// resolved, the real command resolved was stamped before it, or an older start
+/// of the backlog was executing. The lane, not the machine, refused it, and for
+/// lagging past the allowance: a client-half, expiry or settled refusal fails.
+/// The stall must exceed the allowance, and a newer start the client had
+/// already sent still fired, so only the backlog's oldest starts were refused.
+/// Returns `(start tick, stall in host ticks)` per refused start.
 fn stall_refusals(fixture: &Fixture, report: &StreamReport) -> Result<Vec<(u32, u32)>, String> {
     let allowance = netcode::HostCommandQueues::CATCH_UP_ALLOWANCE_TICKS;
     let mut sent_at = std::collections::HashMap::new();
@@ -2252,11 +2230,16 @@ fn stall_refusals(fixture: &Fixture, report: &StreamReport) -> Result<Vec<(u32, 
     starts
         .into_iter()
         .map(|start| {
-            let &(refused_at, _) = fixture
+            let &(refused_at, _, why) = fixture
                 .lane_refusals
                 .iter()
-                .find(|(_, token)| token.start_tick == start)
+                .find(|(_, token, _)| token.start_tick == start)
                 .ok_or_else(|| format!("{start}: refused outside the lane"))?;
+            if why != netcode::LaneRefusal::Lagged {
+                return Err(format!(
+                    "{start}: the lane refused it as {why:?}, not for lag"
+                ));
+            }
             let sent = *sent_at
                 .get(&start)
                 .ok_or_else(|| format!("{start}: never sent"))?;
@@ -2267,7 +2250,7 @@ fn stall_refusals(fixture: &Fixture, report: &StreamReport) -> Result<Vec<(u32, 
                     || fixture
                         .lane_refusals
                         .iter()
-                        .any(|&(at, token)| at == tick && token.start_tick < start)
+                        .any(|&(at, token, _)| at == tick && token.start_tick < start)
             };
             let stall = fixture
                 .playout
@@ -2304,8 +2287,8 @@ fn stall_refusals(fixture: &Fixture, report: &StreamReport) -> Result<Vec<(u32, 
 /// A stream cell's parity: at least `floor` predicted shots, each authorized
 /// in order, none denied, none cut short. On a lossy link the shots of starts
 /// `stall_refusals` accepts are exempt: their input stalled past the catch-up
-/// allowance, as when a lost packet's resend is lost too, and decision 14
-/// refuses them. The mandated seed does that once near every stream's start.
+/// allowance, as when a lost packet's resend is lost too, and the 500 ms
+/// catch-up allowance (networking.md §Combat authority) refuses them. The mandated seed does that once near every stream's start.
 fn stream_parity(
     link: LinkConfig,
     fixture: &Fixture,
@@ -2362,9 +2345,8 @@ fn stream_cell_failure(
 
 // Regression: during a steady hold, a connected client's predicted plasma bolts
 // vanished mid-flight although the host had resource to fire every one of them.
-// In this and the stream cells below, "never refused" means short of a stall
-// past the catch-up allowance, which decision 14 refuses; `stream_parity` holds
-// those refusals to its rules.
+// Exempt: a stall past the 500 ms catch-up allowance (networking.md §Combat
+// authority), held to `stall_refusals`.
 #[test]
 fn conditioned_steady_hold_keeps_every_resourced_predicted_bolt_to_its_natural_end() {
     let mut failures = Vec::new();
@@ -2416,6 +2398,8 @@ fn conditioned_steady_hold_host_hitch_on_clean_link_keeps_resourced_bolts() {
 
 // A refused hold restart is not projectile-specific: it retracts a hitscan
 // shot's muzzle flash and hitmarker the same way.
+// Exempt: a stall past the 500 ms catch-up allowance (networking.md §Combat
+// authority), held to `stall_refusals`.
 #[test]
 fn conditioned_steady_hitscan_hold_is_never_refused_with_ample_ammo() {
     let mut failures = Vec::new();
@@ -2438,6 +2422,8 @@ fn conditioned_steady_hitscan_hold_is_never_refused_with_ample_ammo() {
 }
 
 // Same mechanism for a press trigger tapped at its recovery rate.
+// Exempt: a stall past the 500 ms catch-up allowance (networking.md §Combat
+// authority), held to `stall_refusals`.
 #[test]
 fn conditioned_rapid_press_taps_are_never_refused_with_ample_ammo() {
     // 9 ticks covers the 8-tick (130 ms) recovery.
@@ -2529,6 +2515,8 @@ fn rocket_launcher() -> WeaponDescriptor {
 // executed there was refused as a concurrent activation. Also: a host hitch ran
 // a whole burst before the client's last shot, and the client, cancelling its
 // burst on that completion, restarted inside the host's recovery.
+// Exempt: a stall past the 500 ms catch-up allowance (networking.md §Combat
+// authority), held to `stall_refusals`.
 #[test]
 fn conditioned_burst_hold_restarts_are_never_refused_under_loss_and_hitch() {
     let mut failures = Vec::new();
@@ -2553,6 +2541,8 @@ fn conditioned_burst_hold_restarts_are_never_refused_under_loss_and_hitch() {
 
 // Regression: a release delivered mid-burst moved the burst's cadence clock to
 // the release, so the next tap at the authored rate was refused as cooling.
+// Exempt: a stall past the 500 ms catch-up allowance (networking.md §Combat
+// authority), held to `stall_refusals`.
 #[test]
 fn conditioned_burst_taps_released_mid_burst_are_never_refused() {
     let mut failures = Vec::new();
@@ -2603,7 +2593,8 @@ fn conditioned_burst_taps_released_mid_burst_are_never_refused() {
 }
 
 // Regression: rocket presses at the authored rate lost their in-flight rocket
-// to a refused start after a stalled input stream.
+// to a refused start after a stalled input stream. Strict: unlike the stream
+// cells, it takes no exemption for a stall past the catch-up allowance.
 #[test]
 fn conditioned_rocket_presses_at_recovery_rate_keep_every_rocket_under_loss_and_hitch() {
     // 45 ticks covers the 750 ms recovery.
@@ -2704,7 +2695,8 @@ impl StalledHold {
     }
 }
 
-// Decision 14: a stall up to the 500 ms catch-up allowance drains at once and
+// The 500 ms catch-up allowance (networking.md §Combat authority): a stall up to
+// it drains at once and
 // refuses nothing. Credited no earlier than host now, the backlog drained one
 // shot per recovery and the rest of the hold lagged by the stall.
 #[test]
@@ -2731,9 +2723,9 @@ fn conditioned_input_stall_within_the_allowance_drains_at_once_and_refuses_nothi
     run.assert_rest_of_hold_on_time("400 ms stall");
 }
 
-// Decision 14: past the allowance, only the oldest stalled starts are refused,
-// within a few ticks of the backlog arriving, and the rest of the hold stays on
-// time.
+// The 500 ms catch-up allowance (networking.md §Combat authority): past it,
+// only the oldest stalled starts are refused, within one resolution per stalled
+// start of the backlog arriving, and the rest of the hold stays on time.
 #[test]
 fn conditioned_input_stall_past_the_allowance_refuses_only_its_oldest_starts_promptly() {
     const STALL: u32 = 60;
@@ -2757,18 +2749,28 @@ fn conditioned_input_stall_past_the_allowance_refuses_only_its_oldest_starts_pro
         stalled[..refused.len()],
         "only the oldest stalled starts, once each: {summary}"
     );
+    // A stalled start's claim trails host now by its lag behind the stall's end
+    // plus one resolution for each older stalled start the lane met first. So a
+    // start lagging past the allowance is always refused, and one lagging less
+    // than the allowance by more than the whole backlog never is. Between them
+    // lies a grey band where refusal depends on the start's place in the backlog.
+    let allowance = netcode::HostCommandQueues::CATCH_UP_ALLOWANCE_TICKS;
+    let backlog = stalled.len() as u32;
     let stall_end_tick = STALL_START + STALL_AT + STALL;
     for &start in &stalled {
         let lag = stall_end_tick - start;
-        if lag > 40 {
+        if lag > allowance {
             assert!(refused.contains(&start), "{start} lagged {lag}: {summary}");
-        } else if lag < 15 {
+        } else if lag + backlog < allowance {
             assert!(!refused.contains(&start), "{start} lagged {lag}: {summary}");
         }
     }
+    // The lane meets the backlog one start per resolution once it arrives, past
+    // the standing playout floor on this zero-delay link.
+    const PLAYOUT_FLOOR_TICKS: u32 = 2;
     for &(start, seen) in &run.refusals {
         assert!(
-            seen <= run.stall_end + 20,
+            seen <= run.stall_end + PLAYOUT_FLOOR_TICKS + backlog,
             "{start} refused on host tick {seen}, stall ended {}",
             run.stall_end
         );
@@ -2886,6 +2888,8 @@ fn conditioned_tick_stamping_client_cannot_exceed_the_host_cadence_bound() {
 // Also: a backlog's commands after the switch froze B's recovery under B's own
 // retained start, which then held A's start until its claim lagged past the
 // allowance.
+// Exempt: a stall past the 500 ms catch-up allowance (networking.md §Combat
+// authority), held to `stall_refusals`.
 #[test]
 fn conditioned_alternating_two_weapons_at_authored_rates_are_never_refused() {
     // A floor proving both weapons were exercised: each fires on most visits.

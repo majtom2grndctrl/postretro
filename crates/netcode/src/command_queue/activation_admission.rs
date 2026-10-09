@@ -4,7 +4,7 @@
 use super::activation_cadence::{self, CadenceVerdict};
 use super::press_edges::PressGate;
 use super::{ClientCommandState, HostCommandQueues, MovementOwners};
-use crate::activation_edges::DueStart;
+use crate::activation_edges::{DueStart, LaneRefusal};
 use crate::prediction::client_tick_le;
 use crate::sim::{RemoteStartAim, SimCommand};
 use postretro_entities::components::inventory::Inventory;
@@ -134,18 +134,22 @@ impl ClientCommandState {
             DueStart::Start(start) => start,
         };
         let newest = self.newest_observed_tick().unwrap_or(resolved_tick);
-        let refused = self
+        let refused = if self
             .cadence
             .client_half_refuses(start.firing_slot, start.token.start_tick)
-            || (live.is_none()
-                && self.cadence.lags_allowance(
-                    start.token,
-                    start.firing_slot,
-                    self.host_tick,
-                    newest,
-                ));
-        if refused {
-            self.activation_edges.refuse_front(start.token);
+        {
+            Some(LaneRefusal::ClientHalf)
+        } else if live.is_none()
+            && self
+                .cadence
+                .lags_allowance(start.token, start.firing_slot, self.host_tick, newest)
+        {
+            Some(LaneRefusal::Lagged)
+        } else {
+            None
+        };
+        if let Some(reason) = refused {
+            self.activation_edges.refuse_front(start.token, reason);
             return Some(start.token);
         }
         if live.is_some()
@@ -222,6 +226,14 @@ impl HostCommandQueues {
         self.clients
             .get(&client_id)
             .and_then(|state| state.activation_edges.refused_slot(token))
+    }
+
+    /// Why the lane refused `token`'s start, once it has. Only a lagging
+    /// refusal is one the catch-up allowance mandates.
+    pub fn lane_refusal(&self, client_id: u64, token: ActivationToken) -> Option<LaneRefusal> {
+        self.clients
+            .get(&client_id)
+            .and_then(|state| state.activation_edges.refusal(token))
     }
 
     /// Aim of the command that carried `token`'s start, once playout delivered

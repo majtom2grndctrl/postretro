@@ -2203,6 +2203,80 @@ mod tests {
         }
     }
 
+    // A late start fires from the pawn's live eye along its captured aim, so
+    // splash intake must hold until the host's own flight can reach the wall it
+    // meets; FIRE freezes that distance with the shot.
+    #[test]
+    fn remote_splash_fire_freezes_the_hosts_static_wall_distance() {
+        const WALL_Z: f32 = -6.0;
+        const RADIUS: f32 = 0.25;
+        let wall = CollisionWorld::from_triangles_for_test(
+            vec![
+                Vec3::new(-10.0, -10.0, WALL_Z),
+                Vec3::new(10.0, -10.0, WALL_Z),
+                Vec3::new(10.0, 10.0, WALL_Z),
+                Vec3::new(-10.0, 10.0, WALL_Z),
+            ],
+            vec![[0, 1, 2], [0, 2, 3]],
+        );
+        let fire = |splash: Option<SplashDescriptor>| {
+            let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+            let (pawn, weapon) = {
+                let mut registry = registry.borrow_mut();
+                let pawn = registry.spawn(Transform::default());
+                registry
+                    .set_component(pawn, trigger_movement())
+                    .expect("remote pawn carries eye-height movement");
+                let weapon = registry.spawn(Transform::default());
+                let mut component = projectile_weapon_component("weapon.test.rocket");
+                let projectile = component.projectile.as_mut().expect("projectile weapon");
+                projectile.speed = 30.0;
+                projectile.radius = RADIUS;
+                component.splash = splash;
+                registry
+                    .set_component(weapon, component)
+                    .expect("remote projectile weapon attaches");
+                (pawn, weapon)
+            };
+            // Facing yaw 0 and level pitch aim down -Z, at the wall.
+            let remote = remote_command(pawn, Some(weapon), 42, 9, true, false);
+            let result = run_remote_weapon_commands(
+                &registry,
+                &[remote],
+                &[],
+                None,
+                &wall,
+                &HitZoneStore::new(),
+                0.0,
+                1.0 / 60.0,
+            );
+            let [authorized] = result.authorized_shots.as_slice() else {
+                panic!("accepted remote projectile fire mints one authorization");
+            };
+            authorized.shot.clone()
+        };
+
+        let rocket = fire(Some(SplashDescriptor {
+            knockback: None,
+            radius: 3.0,
+            min_fraction: 0.0,
+            self_damage: true,
+        }));
+        let eye_to_wall = rocket.fire_origin.z - WALL_Z;
+        let frozen = rocket
+            .projectile_static_contact_distance
+            .expect("a splash shot freezes its static-world contact");
+        assert!(
+            (frozen - (eye_to_wall - RADIUS)).abs() <= 1.0e-3,
+            "the swept sphere touches the wall one radius short: {frozen}"
+        );
+        assert_eq!(
+            fire(None).projectile_static_contact_distance,
+            None,
+            "a direct projectile replays nothing and freezes no wall distance"
+        );
+    }
+
     #[test]
     fn rejected_remote_projectile_fire_mints_neither_authorization_nor_visual() {
         let registry = Rc::new(RefCell::new(EntityRegistry::new()));

@@ -42,6 +42,12 @@ impl GlyphArtState {
         self.loaded = None;
     }
 
+    /// The keys the art registered, once it is loaded for the current
+    /// directories; `None` before the first load.
+    fn loaded_keys(&self) -> Option<&HashSet<String>> {
+        self.loaded.as_ref().map(|_| &self.keys)
+    }
+
     /// Warn once per unknown glyph `command` id.
     fn warn_unknown_command(&self, command: &str) {
         let mut warned = self.warned_unknown_commands.borrow_mut();
@@ -116,12 +122,23 @@ impl App {
     ///
     /// The mod's `uiImages` and the engine's images sync first; when they
     /// re-register, the glyph art follows so a glyph keeps any key both claim.
+    /// Once every image source is known, a committed manifest's tree
+    /// backgrounds are checked for keys none of them registers.
     pub(crate) fn sync_glyph_art(&mut self) {
         if self.sync_ui_images()
             && let Some(session) = self.session.as_mut()
         {
             session.glyph_art.invalidate();
         }
+        self.reload_glyph_art_if_stale();
+        if let Some(session) = self.session.as_mut()
+            && let Some(glyph_keys) = session.glyph_art.loaded_keys()
+        {
+            session.mod_ui_images.warn_unknown_backgrounds(glyph_keys);
+        }
+    }
+
+    fn reload_glyph_art_if_stale(&mut self) {
         let (Some(session), Some(renderer)) = (self.session.as_mut(), self.renderer.as_mut())
         else {
             return;
@@ -157,6 +174,9 @@ impl App {
                 dirs.len()
             );
         }
+        // Glyph art wins a key a loading screen uploaded; that load must not
+        // release it.
+        session.loading_screen.disown_images(&keys);
         session.glyph_art.loaded = Some((glyphs, reload_generation));
         session.glyph_art.keys = keys;
         session

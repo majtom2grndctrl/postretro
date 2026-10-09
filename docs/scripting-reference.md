@@ -3413,9 +3413,18 @@ export default defineMod({
   logo, which your trees may draw too.
 - A missing file or a PNG that does not decode is skipped with a warning naming
   the entry. The rest still load; a bad image never stops the game.
-- Images load at mod init and again whenever a hot reload commits. An image
-  whose name matches a glyph image (`input.glyphs`) is drawn as the glyph, with a
-  warning.
+- Images load at mod init and again whenever a hot reload commits, except an
+  image only loading screens draw — one named by a loading tree (a map's
+  `loadingTree`, `loading.tree`, or your own `loadingScreen`) and by no other
+  tree or presentation template. That image loads in the background when a load
+  shows its tree and is released when the load ends, so a large screenshot costs
+  nothing while you play. Until it finishes loading, the tree's other widgets
+  draw without it; on a very short load it may never appear.
+- An image whose name matches a glyph image (`input.glyphs`) is drawn as the
+  glyph, with a warning.
+- A tree `background` naming an image that is neither in `uiImages`, an
+  engine image, nor a glyph image draws nothing and logs a warning naming the
+  tree.
 
 In Luau the field is the same table: `uiImages = { ["loading/skyline"] = "ui/loading/skyline.png" }`.
 

@@ -181,6 +181,7 @@ fn raw_path_load_shows_a_tree_from_the_mod_pool() {
         ModLoading {
             tree: names(&["modLoading"]),
         },
+        Default::default(),
     );
 
     let load = app
@@ -385,6 +386,7 @@ fn level_tier_trees_are_never_loading_candidates() {
         ModLoading {
             tree: names(&["levelLoading"]),
         },
+        Default::default(),
     );
     app.begin_loading_screen(&entry("Entryway", &["levelLoading"]));
     assert_eq!(active_tree(&app).as_deref(), Some(LOADING_SCREEN_NAME));
@@ -424,6 +426,7 @@ fn staged_loading_fields_commit_only_with_a_committed_generation() {
         ModLoading {
             tree: names(&["committed"]),
         },
+        Default::default(),
     );
     app.begin_loading_screen(&entry("Entryway", &[]));
 
@@ -752,4 +755,144 @@ fn loading_frames_render_the_tree_over_the_splash_or_its_background() {
                 .unwrap();
         }
     }
+}
+
+/// Every catalog screenshot is named only by its map's loading tree, so mod
+/// init decodes none of the dev mod's `uiImages`; each waits for its load.
+#[test]
+fn dev_mod_defers_every_loading_screenshot_and_loads_no_image_eagerly() {
+    let manifest = dev_manifest();
+    let mut images = crate::app::ui_images::ModUiImages::default();
+    images.commit(
+        manifest.ui_images.clone(),
+        crate::app::ui_images::ManifestImageRefs::from_manifest(
+            &manifest.ui_trees,
+            &manifest.presentation_templates,
+            &manifest.maps,
+            &manifest.loading.tree,
+        ),
+    );
+    assert!(!manifest.ui_images.is_empty());
+    for (key, path) in &manifest.ui_images {
+        assert_eq!(
+            images.deferred_path(key),
+            Some(path.as_str()),
+            "{key} is loading-only"
+        );
+    }
+}
+
+/// Reveal, failure, abandon (unload during Settling, which a network relevel
+/// takes too) and suspend all end the loading screen through the one path
+/// that releases its images. These need an event loop to run, so the routes
+/// are pinned in source.
+#[test]
+fn every_loading_screen_end_path_goes_through_the_releasing_end() {
+    fn body<'a>(source: &'a str, function: &str) -> &'a str {
+        // Production code precedes each file's tests, so the first match is it.
+        let start = source
+            .find(&format!("fn {function}("))
+            .unwrap_or_else(|| panic!("`{function}` exists"));
+        let rest = &source[start + 3..];
+        &rest[..rest
+            .find("\n    fn ")
+            .or(rest.find("\n    pub"))
+            .unwrap_or(rest.len())]
+    }
+    for (file, source, function) in [
+        ("settling.rs", include_str!("settling.rs"), "reveal_level"),
+        (
+            "lifecycle.rs",
+            include_str!("lifecycle.rs"),
+            "finish_level_failure",
+        ),
+        (
+            "lifecycle_net.rs",
+            include_str!("lifecycle_net.rs"),
+            "unload_level",
+        ),
+        (
+            "lifecycle_boot_state.rs",
+            include_str!("lifecycle_boot_state.rs"),
+            "reset_boot_state_after_suspend",
+        ),
+    ] {
+        assert!(
+            body(source, function).contains("self.end_loading_screen();"),
+            "{file}: `{function}` ends the loading screen"
+        );
+    }
+    // A load that replaces one still showing releases it before choosing.
+    let begin = body(include_str!("loading_screen.rs"), "begin_loading_screen");
+    assert!(begin.contains("self.end_active_load();"));
+    let end = body(include_str!("loading_screen.rs"), "end_loading_screen");
+    assert!(end.contains("self.end_active_load()"));
+}
+
+/// The real renderer: a loading-only image is not uploaded at mod init,
+/// arrives from the decode worker while its tree shows, and is gone when the
+/// load ends, by reveal-style end and by suspend. Self-skips without a GPU
+/// adapter.
+#[test]
+fn loading_only_images_upload_while_the_tree_shows_and_release_when_it_ends() {
+    const SHOT: &str = "shots/e1m1";
+    const TREE: &str = "load.e1m1";
+    let renderer = match crate::render::Renderer::new_offscreen(64, 64) {
+        Ok(renderer) => renderer,
+        Err(err) => {
+            eprintln!("loading-only image upload skipped: {err:#}");
+            return;
+        }
+    };
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(root.path().join("ui")).unwrap();
+    image::RgbaImage::from_pixel(8, 4, image::Rgba([200, 100, 50, 255]))
+        .save(root.path().join("ui/e1m1.png"))
+        .unwrap();
+
+    let mut app = test_app();
+    app.renderer = Some(renderer);
+    app.content_root = root.path().to_path_buf();
+    let tree = crate::app::ui_images::tests::tree(TREE, Some(SHOT), &[]);
+    app.session
+        .as_mut()
+        .unwrap()
+        .modal_stack
+        .register_script_trees(vec![tree.clone()], ScopeTier::Mod);
+    app.commit_loading_manifest(
+        [(SHOT.to_string(), "ui/e1m1.png".to_string())].into(),
+        ModLoading {
+            tree: names(&[TREE]),
+        },
+        crate::app::ui_images::ManifestImageRefs::from_manifest(&[tree], &[], &[], &[TREE.into()]),
+    );
+    let registered = |app: &App| app.renderer.as_ref().unwrap().has_ui_image(SHOT);
+
+    app.sync_glyph_art();
+    assert!(
+        !registered(&app),
+        "mod init leaves a loading-only image alone"
+    );
+
+    let show_until_uploaded = |app: &mut App| {
+        app.begin_loading_screen(&entry("Entryway", &[]));
+        assert_eq!(active_tree(app).as_deref(), Some(TREE));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !registered(app) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the image never uploaded"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            app.poll_loading_images();
+        }
+    };
+
+    show_until_uploaded(&mut app);
+    app.end_loading_screen();
+    assert!(!registered(&app), "the end of the load releases it");
+
+    show_until_uploaded(&mut app);
+    app.reset_boot_state_after_suspend();
+    assert!(!registered(&app), "suspend releases it");
 }

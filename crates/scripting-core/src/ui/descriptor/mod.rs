@@ -8,6 +8,7 @@ mod accessibility;
 mod envelope;
 mod focus;
 mod image;
+mod image_refs;
 mod values;
 mod widgets;
 

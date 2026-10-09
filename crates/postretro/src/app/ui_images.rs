@@ -1,12 +1,17 @@
 // UI image registry producers other than glyph art: the mod's `uiImages` and
 // the engine's own images. Loaded before glyph art, which re-registers after
-// them so a glyph wins any key both claim.
-// See: context/lib/ui.md §5
+// them so a glyph wins any key both claim. Loading-only mod images are split
+// off here and load with their loading screen instead.
+// See: context/lib/ui.md §5 · context/lib/boot_sequence.md §1
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::Path;
 
+use postretro_scripting_core::data_descriptors::{PresentationTemplate, RegisteredUiTree};
+use postretro_scripting_core::runtime::ModMapEntry;
+
 use crate::App;
+use crate::startup::loading_screen::LOADING_SCREEN_NAME;
 
 /// Engine image registry keys start here. A mod may not declare one; the
 /// manifest parse already drops such names, and the loader refuses them too.
@@ -16,15 +21,77 @@ pub(crate) const ENGINE_IMAGE_PREFIX: &str = "engine/";
 /// screen first) can draw the same art the splash shows.
 pub(crate) const SPLASH_LOGO_IMAGE: &str = "engine/splashLogo";
 
+/// Every image the engine registers itself.
+const ENGINE_IMAGES: &[&str] = &[SPLASH_LOGO_IMAGE];
+
+/// The image keys one manifest's UI names, split by whether a loading
+/// candidate names them. Built when a manifest commits, before its trees and
+/// catalog drain elsewhere.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub(crate) struct ManifestImageRefs {
+    /// Keys some loading-candidate tree names.
+    loading: BTreeSet<String>,
+    /// Keys some other mod tree or a presentation template names.
+    other: BTreeSet<String>,
+    /// Every tree background, as `(tree name, image key)`.
+    backgrounds: Vec<(String, String)>,
+}
+
+impl ManifestImageRefs {
+    /// Loading candidates are every name in a catalog entry's `loadingTree`
+    /// pool, in the mod's `loading.tree` pool, and a mod tree registered as
+    /// the engine's `loadingScreen`.
+    pub(crate) fn from_manifest(
+        trees: &[RegisteredUiTree],
+        templates: &[PresentationTemplate],
+        maps: &[ModMapEntry],
+        mod_pool: &[String],
+    ) -> Self {
+        let candidates: HashSet<&str> = maps
+            .iter()
+            .flat_map(|map| map.loading_tree.iter())
+            .chain(mod_pool)
+            .map(String::as_str)
+            .chain([LOADING_SCREEN_NAME])
+            .collect();
+        let mut refs = Self::default();
+        for registered in trees {
+            let keys = if candidates.contains(registered.name.as_str()) {
+                &mut refs.loading
+            } else {
+                &mut refs.other
+            };
+            keys.extend(registered.tree.image_keys().into_iter().map(String::from));
+            if let Some(background) = &registered.tree.background {
+                refs.backgrounds
+                    .push((registered.name.clone(), background.image.clone()));
+            }
+        }
+        for template in templates {
+            refs.other
+                .extend(template.root.image_keys().into_iter().map(String::from));
+        }
+        refs
+    }
+}
+
 /// What the renderer's image registry holds from the mod and the engine.
 #[derive(Debug, Default)]
 pub(crate) struct ModUiImages {
     /// The committed manifest's `uiImages`: key → mod-relative PNG path.
     committed: BTreeMap<String, String>,
-    /// The map and staged-reload generation the uploaded images were read at.
-    /// `None` until the first load and after the renderer is lost.
+    /// The committed entries that load at mod init and on staged reload:
+    /// everything but `deferred`.
+    eager: BTreeMap<String, String>,
+    /// Loading-only keys: named by a loading candidate and by nothing else.
+    /// They load with the loading screen that shows them.
+    deferred: BTreeSet<String>,
+    /// Tree backgrounds still to check for an unknown key, once per commit.
+    unchecked_backgrounds: Option<Vec<(String, String)>>,
+    /// The eager map and staged-reload generation the uploaded images were
+    /// read at. `None` until the first load and after the renderer is lost.
     loaded: Option<(BTreeMap<String, String>, Option<u64>)>,
-    /// Keys the mod's images registered.
+    /// Keys the mod's eager images registered.
     keys: HashSet<String>,
     /// Whether the engine's own images are uploaded to the current renderer.
     engine_loaded: bool,
@@ -33,10 +100,31 @@ pub(crate) struct ModUiImages {
 }
 
 impl ModUiImages {
-    /// Commit a manifest's `uiImages` (mod init, or a committed staged reload).
-    /// The next sync reloads when the map differs.
-    pub(crate) fn commit(&mut self, images: BTreeMap<String, String>) {
+    /// Commit a manifest's `uiImages` and the image keys its UI names (mod
+    /// init, or a committed staged reload). The next sync reloads the eager
+    /// images when they differ.
+    pub(crate) fn commit(&mut self, images: BTreeMap<String, String>, refs: ManifestImageRefs) {
+        self.deferred = images
+            .keys()
+            .filter(|key| refs.loading.contains(*key) && !refs.other.contains(*key))
+            .cloned()
+            .collect();
+        self.eager = images
+            .iter()
+            .filter(|(key, _)| !self.deferred.contains(*key))
+            .map(|(key, path)| (key.clone(), path.clone()))
+            .collect();
         self.committed = images;
+        self.unchecked_backgrounds = Some(refs.backgrounds);
+    }
+
+    /// The mod-relative path of a loading-only image, or `None` when `key` is
+    /// not one under the committed manifest.
+    pub(crate) fn deferred_path(&self, key: &str) -> Option<&str> {
+        if !self.deferred.contains(key) {
+            return None;
+        }
+        self.committed.get(key).map(String::as_str)
     }
 
     /// The renderer holding the images is gone; upload everything again to the
@@ -49,17 +137,49 @@ impl ModUiImages {
 
     fn is_current(&self, reload_generation: Option<u64>) -> bool {
         self.loaded.as_ref().is_some_and(|(images, generation)| {
-            *images == self.committed && *generation == reload_generation
+            *images == self.eager && *generation == reload_generation
         })
     }
 
     /// Warn once per mod image key glyph art also registered; the glyph's art
-    /// is what the key draws.
+    /// is what the key draws. A loading-only key counts: glyph art keeps it
+    /// when its loading screen shows.
     pub(crate) fn warn_glyph_collisions(&mut self, glyph_keys: &HashSet<String>) {
-        for key in glyph_collisions(&self.keys, glyph_keys, &mut self.warned_glyph_collisions) {
+        let mod_keys: HashSet<String> = self.keys.iter().chain(&self.deferred).cloned().collect();
+        for key in glyph_collisions(&mod_keys, glyph_keys, &mut self.warned_glyph_collisions) {
             log::warn!("[UI] uiImages.{key} shares its key with a glyph image; the glyph art wins");
         }
     }
+
+    /// Warn, once per committed manifest, for each tree background naming no
+    /// `uiImages` entry, engine image, or glyph art key: such a background
+    /// draws nothing, and nothing else reports it.
+    pub(crate) fn warn_unknown_backgrounds(&mut self, glyph_keys: &HashSet<String>) {
+        let Some(backgrounds) = self.unchecked_backgrounds.take() else {
+            return;
+        };
+        for (tree, key) in unknown_backgrounds(backgrounds, &self.committed, glyph_keys) {
+            log::warn!(
+                "[UI] tree `{tree}` background names `{key}`, which is no uiImages entry, engine image, or glyph; it draws nothing"
+            );
+        }
+    }
+}
+
+/// Backgrounds whose key nothing registers, in commit order.
+fn unknown_backgrounds(
+    backgrounds: Vec<(String, String)>,
+    images: &BTreeMap<String, String>,
+    glyph_keys: &HashSet<String>,
+) -> Vec<(String, String)> {
+    backgrounds
+        .into_iter()
+        .filter(|(_, key)| {
+            !images.contains_key(key)
+                && !ENGINE_IMAGES.contains(&key.as_str())
+                && !glyph_keys.contains(key)
+        })
+        .collect()
 }
 
 /// Mod image keys glyph art also claims, not yet reported, in sorted order.
@@ -85,47 +205,56 @@ pub(crate) struct DecodedUiImage {
     pub(crate) height: u32,
 }
 
-/// Decode every `uiImages` entry under `mod_root`. An entry with a reserved
+/// Decode one `uiImages` entry under `mod_root`. The error names the file and
+/// the cause; the caller's warning names the entry. Runs on whichever thread
+/// calls it: the main thread for eager images, a worker for loading-only ones.
+pub(crate) fn decode_ui_image(
+    mod_root: &Path,
+    key: &str,
+    relative: &str,
+) -> Result<DecodedUiImage, String> {
+    if key.starts_with(ENGINE_IMAGE_PREFIX) {
+        return Err(format!("uses the reserved `{ENGINE_IMAGE_PREFIX}` prefix"));
+    }
+    let path = mod_root.join(relative);
+    let image = image::open(&path).map_err(|err| format!("at {} ({err})", path.display()))?;
+    let rgba = image.to_rgba8();
+    let (width, height) = rgba.dimensions();
+    Ok(DecodedUiImage {
+        key: key.to_string(),
+        rgba: rgba.into_raw(),
+        width,
+        height,
+    })
+}
+
+/// Decode every entry of `images` under `mod_root`. An entry with a reserved
 /// `engine/` key, a missing file, or a PNG that does not decode warns naming
 /// the entry and is skipped; the rest still load.
 pub(crate) fn decode_mod_ui_images(
     mod_root: &Path,
     images: &BTreeMap<String, String>,
 ) -> Vec<DecodedUiImage> {
-    let mut decoded = Vec::with_capacity(images.len());
-    for (key, relative) in images {
-        if key.starts_with(ENGINE_IMAGE_PREFIX) {
-            log::warn!(
-                "[UI] uiImages.{key} uses the reserved `{ENGINE_IMAGE_PREFIX}` prefix; skipping it"
-            );
-            continue;
-        }
-        let path = mod_root.join(relative);
-        match image::open(&path) {
-            Ok(image) => {
-                let rgba = image.to_rgba8();
-                let (width, height) = rgba.dimensions();
-                decoded.push(DecodedUiImage {
-                    key: key.clone(),
-                    rgba: rgba.into_raw(),
-                    width,
-                    height,
-                });
-            }
-            Err(err) => log::warn!(
-                "[UI] uiImages.{key} at {} did not load ({err}); skipping it",
-                path.display()
-            ),
-        }
-    }
-    decoded
+    images
+        .iter()
+        .filter_map(
+            |(key, relative)| match decode_ui_image(mod_root, key, relative) {
+                Ok(image) => Some(image),
+                Err(err) => {
+                    log::warn!("[UI] uiImages.{key} did not load: {err}; skipping it");
+                    None
+                }
+            },
+        )
+        .collect()
 }
 
 impl App {
-    /// Upload the engine's images once per renderer, and the mod's `uiImages`
-    /// at mod init and after each committed staged reload. Returns whether the
-    /// mod's images were (re)registered, so glyph art can re-register after
-    /// them. Cheap when nothing changed.
+    /// Upload the engine's images once per renderer, and the mod's eager
+    /// `uiImages` at mod init and after each committed staged reload. Returns
+    /// whether the mod's images were (re)registered, so glyph art can
+    /// re-register after them. Cheap when nothing changed. Loading-only images
+    /// are not touched here; their loading screen loads them.
     pub(crate) fn sync_ui_images(&mut self) -> bool {
         let (Some(session), Some(renderer)) = (self.session.as_mut(), self.renderer.as_mut())
         else {
@@ -159,7 +288,7 @@ impl App {
             return false;
         }
         let mut keys = HashSet::new();
-        for image in decode_mod_ui_images(&self.content_root, &images.committed) {
+        for image in decode_mod_ui_images(&self.content_root, &images.eager) {
             match renderer.register_ui_image(&image.key, image.rgba, image.width, image.height) {
                 Ok(()) => {
                     keys.insert(image.key);
@@ -172,112 +301,21 @@ impl App {
         }
         if !images.committed.is_empty() {
             log::info!(
-                "[UI] loaded {} of {} mod UI image(s)",
+                "[UI] loaded {} of {} eager mod UI image(s); deferred {} loading-only image(s) until a loading screen shows them",
                 keys.len(),
-                images.committed.len()
+                images.eager.len(),
+                images.deferred.len()
             );
         }
-        images.loaded = Some((images.committed.clone(), reload_generation));
+        images.loaded = Some((images.eager.clone(), reload_generation));
+        // A key a reload made eager now belongs to the mod's eager set; the
+        // load that uploaded it must not release it.
+        session.loading_screen.disown_images(&keys);
         images.keys = keys;
         true
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use postretro_test_log_capture::LogCapture;
-
-    /// A mod root holding one 3×2 PNG at `ui/good.png` and one file that is not
-    /// a PNG at `ui/broken.png`.
-    fn mod_root() -> tempfile::TempDir {
-        let root = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(root.path().join("ui")).unwrap();
-        image::RgbaImage::from_pixel(3, 2, image::Rgba([10, 20, 30, 255]))
-            .save(root.path().join("ui/good.png"))
-            .unwrap();
-        std::fs::write(root.path().join("ui/broken.png"), b"not a png").unwrap();
-        root
-    }
-
-    fn images(entries: &[(&str, &str)]) -> BTreeMap<String, String> {
-        entries
-            .iter()
-            .map(|(key, path)| (key.to_string(), path.to_string()))
-            .collect()
-    }
-
-    #[test]
-    fn ui_images_decode_good_entries_and_warn_naming_the_bad_ones() {
-        let root = mod_root();
-        let capture = LogCapture::start();
-        let decoded = decode_mod_ui_images(
-            root.path(),
-            &images(&[
-                ("art/good", "ui/good.png"),
-                ("art/missing", "ui/missing.png"),
-                ("art/broken", "ui/broken.png"),
-            ]),
-        );
-
-        assert_eq!(decoded.len(), 1, "only the decodable entry loads");
-        assert_eq!(decoded[0].key, "art/good");
-        assert_eq!((decoded[0].width, decoded[0].height), (3, 2));
-        assert_eq!(decoded[0].rgba.len(), 3 * 2 * 4);
-        capture.assert_logged_once(log::Level::Warn, "uiImages.art/missing");
-        capture.assert_logged_once(log::Level::Warn, "uiImages.art/broken");
-    }
-
-    /// The manifest parse already drops `engine/` names; the loader refuses
-    /// them again, so no mod entry can replace an engine image.
-    #[test]
-    fn ui_images_never_load_an_engine_prefixed_key() {
-        let root = mod_root();
-        let capture = LogCapture::start();
-        let decoded = decode_mod_ui_images(
-            root.path(),
-            &images(&[
-                (SPLASH_LOGO_IMAGE, "ui/good.png"),
-                ("art/good", "ui/good.png"),
-            ]),
-        );
-        let keys: Vec<&str> = decoded.iter().map(|image| image.key.as_str()).collect();
-        assert_eq!(keys, ["art/good"]);
-        capture.assert_logged_once(log::Level::Warn, "reserved `engine/` prefix");
-    }
-
-    #[test]
-    fn ui_images_shadowed_by_glyph_art_warn_once_per_key() {
-        let mod_keys: HashSet<String> = ["ui/glyphs/kbm/space", "art/logo"]
-            .into_iter()
-            .map(String::from)
-            .collect();
-        let glyph_keys: HashSet<String> = ["ui/glyphs/kbm/space", "ui/glyphs/kbm/e"]
-            .into_iter()
-            .map(String::from)
-            .collect();
-        let mut warned = HashSet::new();
-        assert_eq!(
-            glyph_collisions(&mod_keys, &glyph_keys, &mut warned),
-            ["ui/glyphs/kbm/space"]
-        );
-        assert!(
-            glyph_collisions(&mod_keys, &glyph_keys, &mut warned).is_empty(),
-            "a reload that keeps the collision does not warn again"
-        );
-    }
-
-    #[test]
-    fn ui_images_reload_when_the_map_or_staged_generation_changes() {
-        let mut state = ModUiImages::default();
-        assert!(!state.is_current(None), "nothing has loaded yet");
-        state.commit(images(&[("art/a", "ui/a.png")]));
-        state.loaded = Some((state.committed.clone(), None));
-        assert!(state.is_current(None));
-        assert!(!state.is_current(Some(1)), "a committed reload reloads");
-        state.commit(images(&[("art/b", "ui/b.png")]));
-        assert!(!state.is_current(None), "a changed map reloads");
-        state.forget_uploads();
-        assert!(state.loaded.is_none() && !state.engine_loaded);
-    }
-}
+#[path = "ui_images_tests.rs"]
+pub(crate) mod tests;

@@ -38,7 +38,9 @@ enum PresentationFlight {
         endpoint: Option<EndpointPublication>,
     },
     /// A connected client's authority projectile runs only on that client. The
-    /// host advances this visual from the replicated pawn aim until its shot retires.
+    /// host advances this visual along the launch direction frozen from the
+    /// authorized shot (a late-admitted start's captured aim), never the live
+    /// pawn aim, until the path ends or its shot retires.
     StraightLine {
         shot_id: ShotId,
         direction: Vec3,

@@ -51,8 +51,8 @@ fn presentation_template_wire_round_trips_for_js_and_luau() {
     );
 }
 
-// Regression: an author template could claim the engine-owned splash id and
-// silently materialize the built-in impact burst before template lookup.
+// Author templates must stay out of the engine-owned id namespace.
+// `splash-impact` is only an example id inside it; that engine effect is retired.
 #[test]
 fn presentation_templates_reject_engine_owned_ids_in_js_and_luau() {
     let js_error = eval_js(

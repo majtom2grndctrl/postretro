@@ -90,9 +90,11 @@ pub fn spawn_impact_effect_at(registry: &mut EntityRegistry, point: Vec3, normal
 }
 
 /// Spawn one impact burst per contact, each along that contact's own normal.
-/// A zero or non-finite normal takes the burst's upward fallback. Callers that
-/// raise an `impact` for a shot's contacts spawn through here so the burst and
-/// the event stay one-to-one.
+/// A zero or non-finite normal takes the burst's upward fallback. The
+/// multi-contact routes (client-predicted hitscan, host ingest of a remote
+/// shot, and observer impact cues) spawn through here so each contact gets
+/// exactly one burst. Host-local fire and projectile advance spawn per impact
+/// through `spawn_impact_effect_at` instead.
 pub fn spawn_impact_effects_for_contacts(
     registry: &mut EntityRegistry,
     contacts: &[ImpactContact],

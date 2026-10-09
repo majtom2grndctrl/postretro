@@ -12,9 +12,11 @@ mod closet_reveal_surface_tests;
 pub(crate) mod first_launch_hold;
 pub(crate) mod lifecycle;
 pub(crate) mod loading_screen;
+pub(crate) mod presented_pose;
 pub(crate) mod reaction_validation;
 pub(crate) mod render_profile;
 pub(crate) mod session;
+pub(crate) mod settling;
 pub(crate) mod splash_lifecycle;
 pub(crate) mod staged_manifest_lifecycle;
 pub(crate) mod start_pose;
@@ -32,6 +34,10 @@ pub(crate) use worker::{LoadOutcome, spawn_level_worker};
 /// `FirstLaunchHold` = world-less frames showing only the accessibility panel,
 /// before any level loads on a profile that has never closed it. Drains no
 /// level requests; ends when the panel closes.
+/// `Settling` = a level is installed but held behind the loading tree until
+/// its first frame's streamed resources are resident (or a timeout). The sim
+/// does not tick, no world frame is presented, no level sound starts. Counts
+/// as installed for request draining, parity, hot reload and observe-live.
 /// `Running` = steady-state level loop.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum BootState {
@@ -40,7 +46,20 @@ pub(crate) enum BootState {
     Loading,
     Frontend,
     FirstLaunchHold,
+    Settling,
     Running,
+}
+
+impl BootState {
+    /// Splash frames draw no UI, and Loading and Settling frames draw a
+    /// display-only loading tree, so UI input that reaches them is dropped
+    /// rather than delivered to the first frame that takes input.
+    pub(crate) fn drops_ui_input(&self) -> bool {
+        matches!(
+            self,
+            Self::Booting | Self::Splash | Self::Loading | Self::Settling
+        )
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

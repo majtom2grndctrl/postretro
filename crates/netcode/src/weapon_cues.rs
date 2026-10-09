@@ -209,6 +209,7 @@ mod tests {
         client.set_mod_identity("test".into(), "1".into());
         client.set_mod_digest(Some([7; 32]));
         client.set_level_parity(Some(("map".into(), [9; 32])));
+        postretro_net::harness::reveal_both(server, &mut client, "map");
         server.add_relay_connection(client_id, None);
         client.set_connected();
         client.update_connections(Duration::from_millis(16));

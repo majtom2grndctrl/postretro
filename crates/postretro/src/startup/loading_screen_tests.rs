@@ -243,10 +243,13 @@ fn loading_slots_are_set_at_begin_and_reset_at_end() {
     );
 }
 
-/// The install and failure routes both end the loading screen; they need an
-/// event loop to run, so the routes are pinned in source.
+/// Install hands the level to Settling with the loading screen still active;
+/// the reveal and the failure route end it. These need an event loop to run,
+/// so the routes are pinned in source. Every entry (boot map, catalog load,
+/// restart, backdrop, relevel) installs through `finish_level_payload`, so
+/// none reaches Running without Settling.
 #[test]
-fn loading_slots_reset_on_both_the_success_and_failure_routes() {
+fn loading_screen_ends_at_reveal_and_on_failure() {
     let source = include_str!("lifecycle.rs")
         .split("#[cfg(test)]\npub(crate) mod tests")
         .next()
@@ -259,11 +262,27 @@ fn loading_slots_reset_on_both_the_success_and_failure_routes() {
         .next()
         .unwrap();
     let installed = success.find("self.install_level_payload(").unwrap();
-    let ended = success.find("self.end_loading_screen();").unwrap();
-    let running = success
+    let settling = success.find("self.enter_settling(").unwrap();
+    assert!(installed < settling);
+    assert!(
+        !success.contains("self.end_loading_screen();"),
+        "the loading tree stays active through Settling"
+    );
+    assert!(
+        !success.contains("BootState::Running"),
+        "install never enters Running directly"
+    );
+
+    let settling_source = include_str!("settling.rs")
+        .split("#[cfg(test)]")
+        .next()
+        .unwrap();
+    let reveal = settling_source.split("fn reveal_level(").nth(1).unwrap();
+    let ended = reveal.find("self.end_loading_screen();").unwrap();
+    let running = reveal
         .find("self.boot_state = BootState::Running;")
         .unwrap();
-    assert!(installed < ended && ended < running);
+    assert!(ended < running);
 
     let failure = source
         .split("fn finish_level_failure(")

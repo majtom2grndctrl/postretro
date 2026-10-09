@@ -16,7 +16,7 @@
 - **Testing** → `testing_guide.md`
 - **Asserting on log output / log capture in tests** → `testing_guide.md` §3 · entry point `crates/test-log-capture`
 - **Rendering pipeline / lighting** → `rendering_pipeline.md`
-- **SH probe streaming / cluster residency / warm set / read scheduling / streaming diagnostics** → `rendering_pipeline.md` §Cluster SH residency · ids 46/49/50: `build_pipeline.md` §PRL section IDs
+- **SH probe streaming / cluster residency / id-51 reach and lead L / cell-demand stage / read scheduling / streaming diagnostics and miss buckets** → `rendering_pipeline.md` §Cluster SH residency · ids 49/50/51: `build_pipeline.md` §PRL section IDs
 - **Lightmap/shadowmask residency / cell blocks / lightmap pool / vertex block table / lightmap miss policy / `POSTRETRO_LIGHTMAP_STREAMING` / shared SH+lightmap read issuer and drain budget** → `rendering_pipeline.md` §4 (Lightmap cell-block residency) · ids 22/42/51: `build_pipeline.md` §PRL section IDs
 - **Frame capture / offscreen readback / headless (surfaceless) rendering** → `rendering_pipeline.md` §7.8
 - **Render resolution / HiDPI / scene extent vs surface extent / integer upscale / native UI layer / covers-HUD effect switches** → `rendering_pipeline.md` §7.8 · `player_options.md` §4 · `ui.md` §5
@@ -62,7 +62,7 @@
 - **Entity addressing / map members (`getMapEntities`) vs. groups (`npcs`, `players`) vs. subject tokens / per-member `.on` sources / spawned-NPC tags** → `scripting.md` §12 (Entity addressing)
 - **Netcode / multiplayer / co-op / replication / transport / wire format** → `networking.md`
 - **Live introspection channel / observe-live / localhost debug socket / reading a running session's state over a socket** → `networking.md` §Not netcode: the live introspection channel
-- **Joining a session / admission vs content parity / slot lifecycle / host level change / what gates vs what replicates** → `networking.md` §Admission and content parity · §Slot lifecycle · §What gates, and what replicates instead
+- **Joining a session / admission vs content parity / slot lifecycle / revealed term and revealed holds / host level change / what gates vs what replicates** → `networking.md` §Admission and content parity · §Slot lifecycle · §What gates, and what replicates instead
 - **First-person weapon placement / viewmodel offset / where a weapon sits in view / placement vs view-feel / FP vs TP weapon vantage** → `networking.md` §Weapon placement is content
 - **Projectile fire origin / muzzle point / where a shot spawns / camera-eye vs barrel** → `networking.md` §Weapon placement is content (Fire origin composes on placement)
 - **Weapon descriptor vocabulary / one canonical weapon type / no player-vs-enemy weapon kind / wield restriction as attribute** → `entity_model.md` §Components (Weapon vocabulary)
@@ -80,6 +80,7 @@
 - **Frame timing / game loop** → `rendering_pipeline.md` §1 · `entity_model.md` §5
 - **CPU profiling / per-stage CPU timing / Tracy / GPU pass timing / Metal System Trace when timestamps are unsupported / Mac perf measurement confounders / diagnostic env vars vs features** → `rendering_pipeline.md` §12 · `development_guide.md` §6.4
 - **Boot / startup / splash / level-load sequence / mod loading** → `boot_sequence.md`
+- **Settling / level reveal / settle chokepoint and timeout / presented pose / first complete frame** → `boot_sequence.md` §1 (Settling) · streamed settle sets: `rendering_pipeline.md` §4 · co-op reveal: `networking.md` §Slot lifecycle
 - **Level-load timing / log line C / per-stage install, texture, geometry and unload marks / where load time goes** → `boot_sequence.md` §Startup timing vocabulary
 - **Loading screen / loading tree pools / `loading.progress` / level-load progress counter / install deferral / mod `uiImages`** → `boot_sequence.md` §1 (Loading screen), §2 · `ui.md` §5
 - **Experimental spikes / build-to-learn specs** → `experimental_spikes.md`

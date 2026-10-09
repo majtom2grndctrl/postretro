@@ -21,8 +21,8 @@ use crate::startup::worker::LevelPayload;
 pub(crate) const LOADING_SCREEN_NAME: &str = "loadingScreen";
 
 /// Share of the bar the worker's parse fills. The rest stands for the
-/// main-thread install, which runs as one blocking frame, so the bar holds
-/// here for the frame painted between delivery and install.
+/// main-thread install and the Settling hold: the bar holds here for the frame
+/// painted between delivery and install, then rises with the settle to 1.0.
 pub(crate) const LOAD_PARSE_SHARE: f32 = 0.85;
 
 const PROGRESS_SLOT: &str = "loading.progress";
@@ -230,6 +230,26 @@ impl App {
         let target = LOAD_PARSE_SHARE * load.progress.fraction().clamp(0.0, 1.0);
         if target > load.shown {
             load.shown = target;
+            let shown = load.shown;
+            write_loading_slot(
+                &session.scripting.script_ctx,
+                PROGRESS_SLOT,
+                SlotValue::Number(shown),
+            );
+        }
+    }
+
+    /// Raise `loading.progress` to `progress` past the parse share, through
+    /// Settling. Never lowers the bar.
+    pub(crate) fn raise_loading_progress(&mut self, progress: f32) {
+        let Some(session) = self.session.as_mut() else {
+            return;
+        };
+        let Some(load) = session.loading_screen.active.as_mut() else {
+            return;
+        };
+        if progress > load.shown {
+            load.shown = progress.min(1.0);
             let shown = load.shown;
             write_loading_slot(
                 &session.scripting.script_ctx,

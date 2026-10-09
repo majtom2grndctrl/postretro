@@ -66,9 +66,9 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
     app.drain_observe_live_requests();
 
     // Seat holds measure elapsed rendered time rather than fixed
-    // simulation time: Frontend and Loading keep polling a host even
-    // though neither runs the simulation loop. Advance exactly here,
-    // once per frame, because a Splash/install frame can drain the
+    // simulation time: Frontend, Loading and Settling keep polling a
+    // host even though none runs the simulation loop. Advance exactly
+    // here, once per frame, because a Splash/install frame can drain the
     // transport more than once.
     app.advance_seat_hold_clock(frame_dt);
 
@@ -89,6 +89,9 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
         app.drain_script_reload_requests();
     }
 
+    // A Settling redraw that reaches the Running path below is the reveal
+    // frame: its release was decided on the previous frame.
+    let reveal_frame = app.boot_state == BootState::Settling;
     if !app.drive_boot_state_for_redraw(event_loop, frame_dt) {
         app.service_window_modes();
         return;
@@ -96,8 +99,8 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
 
     // Advance the timed-reaction scheduler's monotonic frame counter
     // after the boot/install boundary but before any same-frame UI
-    // dispatch or gameplay ticks. A `levelLoad` wait enrolled while a
-    // ready world installs above therefore advances on this redraw's
+    // dispatch or gameplay ticks. A `levelLoad` wait enrolled at install,
+    // held through Settling, therefore advances on the reveal redraw's
     // first tick. A UI wait enrolled below stamps the new counter and
     // remains protected from this redraw's ticks.
     // Distinct from `frame_timing.begin_frame`.
@@ -357,11 +360,13 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
     // mouse_axes and look state belongs to the render-rate path.
     // Capturing UI still drains raw input to prevent stale deltas from
     // replaying later, but the consumed look is neutral so player aim
-    // cannot move while a modal owns input.
+    // cannot move while a modal owns input. The reveal frame's look is
+    // neutral too, so it presents the settled orientation even under a
+    // stick held through the hold.
     let gameplay_snapshot = {
         let session = app.session.as_mut().expect("running session installed");
         let drained_look = session.input_system.drain_look_inputs();
-        let look = if ui_captures_gameplay {
+        let look = if ui_captures_gameplay || reveal_frame {
             input::LookInputs::default()
         } else {
             drained_look
@@ -1926,18 +1931,16 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                 presentation_tick,
             );
         }
-        // Prepare the controller while no borrowed draw collection
-        // is live. The actual drain still occurs as the first step
-        // inside `render_frame_indirect`, before scene recording.
-        // The warm set follows the same locator cell that seeded
-        // portal visibility this frame.
-        // One level-scope drain step for SH and lightmap blocks:
-        // one read issuer, one shared install budget.
-        // Lightmap residency CPU, folded under `render_prep` below.
+        // One level-scope streaming step for SH and lightmap blocks (one read
+        // issuer, one shared install budget), run while no borrowed draw
+        // collection is live: it prepares SH's batch, which drains as the first
+        // step inside `render_frame_indirect`, and drains the lightmap now, so
+        // the frame samples what it made resident. Its CPU folds under
+        // `render_prep` below.
         let streaming_cpu = postretro_stage_timing::StageFrame::<cpu_timing::StreamingStage>::new(
             app.cpu_timer.gate(),
         );
-        let sh_drain_batch = match session.prepare_streaming_drains(
+        let sh_drain_batch = match session.run_level_streaming_step(
             sh_stream_manifest.as_ref(),
             app.level.as_ref(),
             renderer,
@@ -1946,6 +1949,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                 camera_cell: app.level.as_ref().map(|_| stats.camera_cell as usize),
                 path: stats.path,
                 monotonic_seconds: app.script_time,
+                settling: false,
                 cpu: &streaming_cpu,
             },
         ) {
@@ -1956,15 +1960,6 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                 return;
             }
         };
-        // The lightmap drain runs now, before the forward pass is
-        // recorded, so this frame samples what it made resident.
-        if let Err(err) =
-            session.drain_lightmap_streaming(renderer, &streaming_cpu, app.script_time)
-        {
-            app.exit_result = Err(err);
-            event_loop.exit();
-            return;
-        }
         app.cpu_timer.nested_mut().extend_from(
             &streaming_cpu,
             Some(postretro_stage_timing::StageSet::label(
@@ -2224,6 +2219,13 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                         (*streaming.live_diagnostics(), streaming.slider_levers())
                     });
                     let mut lightmap_levers = lightmap_streaming.map(|(_, levers)| levers);
+                    let reach_before = session.level_streaming.cell_demand().map(|stage| {
+                        render::StreamingReachLever {
+                            lead_metres: stage.lead_metres(),
+                            max_lead_metres: stage.max_lead_metres(),
+                        }
+                    });
+                    let mut reach = reach_before;
                     let ctx_clone = debug_ui.ctx.clone();
                     let full_output = ctx_clone.run_ui(raw_input, |ui| {
                         let ctx = ui.ctx();
@@ -2259,6 +2261,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                                             levers,
                                         }
                                     }),
+                                reach.as_mut(),
                             );
                         }
                     });
@@ -2267,6 +2270,12 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                         && let Some(streaming) = session.level_streaming.lightmap_mut()
                     {
                         streaming.set_slider_levers(after);
+                    }
+                    if let Some(after) = reach
+                        && reach_before != Some(after)
+                        && let Some(stage) = session.level_streaming.cell_demand_mut()
+                    {
+                        stage.set_lead_metres(after.lead_metres);
                     }
                     debug_ui
                         .winit_state
@@ -2418,7 +2427,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                 b: 0.08,
                 a: 1.0,
             },
-            true,
+            render::FrameScene::World,
             sh_drain_batch,
         ) {
             Ok(result) => result,
@@ -2491,7 +2500,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                 );
             }
             if app.pending_level_log {
-                // First level frame just presented — close out
+                // Reveal frame just presented — close out
                 // log line C with the present-cost of the frame
                 // the user is about to see.
                 app.level_timings.record("first_level_frame");

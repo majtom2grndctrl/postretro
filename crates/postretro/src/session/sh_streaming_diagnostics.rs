@@ -21,13 +21,15 @@ pub(super) fn assemble_live_diagnostics(
 ) {
     let count = |value: usize| u64::try_from(value).unwrap_or(u64::MAX);
     live.target_clusters = count(controller.target_clusters);
-    live.warm_clusters = count(controller.warm_clusters);
+    live.lead_clusters = count(controller.lead_clusters);
     live.sampleable_clusters = count(controller.sampleable_clusters);
     live.queued_clusters = count(controller.queued_clusters);
     live.ready_clusters = count(controller.ready_clusters);
     live.permits_in_use = count(controller.permits_in_use);
     let counters = &controller.counters;
     live.misses = counters.misses;
+    live.miss_buckets = counters.miss_buckets;
+    live.rereads = counters.rereads;
     live.installs = counters.installs;
     live.evictions = counters.evictions;
     live.retries = counters.retries;
@@ -102,9 +104,10 @@ fn compose_gauges_changed_or_active(
         || now.animated_direct_compose != before.animated_direct_compose
 }
 
-fn cumulative_counters(d: &ShStreamingLiveDiagnostics) -> [u64; 17] {
+fn cumulative_counters(d: &ShStreamingLiveDiagnostics) -> [u64; 18] {
     [
         d.misses,
+        d.rereads,
         d.installs,
         d.evictions,
         d.retries,
@@ -135,7 +138,9 @@ fn format_line(
     format!(
         "[SH streaming] last {elapsed_seconds:.1} s: {reads} reads ({coalesced} coalesced) \
          {read_bytes} incl. {gap_bytes} gap, {installs} installs {installed_bytes}, \
-         {misses} misses, {evictions} evictions, {retries} retries, {cancelled} cancelled, \
+         {misses} misses (reach {miss_reach}, pressure {miss_pressure}, in flight \
+         {miss_in_flight}, budget {miss_budget}, compose {miss_compose}, failed {miss_failed}), \
+         {rereads} re-reads, {evictions} evictions, {retries} retries, {cancelled} cancelled, \
          {discarded} discarded ({discarded_bytes}), {budget_limited} budget-limited drains, \
          {growths} pool growths (+{growth_bytes}), install CPU {install_ms:.2} ms \
          (growth {growth_ms:.2} ms) \
@@ -144,7 +149,7 @@ fn format_line(
          {static_rows}/{static_dispatches} ({static_lagged} lagged, {static_remaining} remain), \
          animated-direct {animated_rows}/{animated_dispatches} ({animated_lagged} lagged, \
          {animated_remaining} remain), planning {planning_ms:.3} ms \
-         | now: {targets} targets ({warm} warm), {sampleable} sampleable, {queued} queued, \
+         | now: {targets} targets ({lead} lead), {sampleable} sampleable, {queued} queued, \
          {ready} ready, {permits}/{MAX_STREAM_PERMITS} permits, pool {occupancy} of {capacity}, \
          read latency p50 {p50:.1} / p95 {p95:.1} / max {read_max:.1} ms, \
          decode max {decode_max:.1} ms, largest drain {largest_drain}, \
@@ -156,6 +161,13 @@ fn format_line(
         installs = delta(|d| d.installs),
         installed_bytes = format_bytes(delta(|d| d.decoded_bytes_installed)),
         misses = delta(|d| d.misses),
+        miss_reach = delta(|d| d.miss_buckets.outside_reach),
+        miss_pressure = delta(|d| d.miss_buckets.trimmed_by_pressure),
+        miss_in_flight = delta(|d| d.miss_buckets.read_in_flight),
+        miss_budget = delta(|d| d.miss_buckets.held_by_drain_budget),
+        miss_compose = delta(|d| d.miss_buckets.awaiting_compose),
+        miss_failed = delta(|d| d.miss_buckets.failed),
+        rereads = delta(|d| d.rereads),
         evictions = delta(|d| d.evictions),
         retries = delta(|d| d.retries),
         cancelled = delta(|d| d.cancelled_requests),
@@ -180,7 +192,7 @@ fn format_line(
         animated_remaining = now.animated_direct_compose.resident_rows_still_lagging,
         planning_ms = now.compose_planning_cpu_micros as f64 / 1000.0,
         targets = now.target_clusters,
-        warm = now.warm_clusters,
+        lead = now.lead_clusters,
         sampleable = now.sampleable_clusters,
         queued = now.queued_clusters,
         ready = now.ready_clusters,
@@ -221,7 +233,7 @@ mod tests {
         let mut live = ShStreamingLiveDiagnostics::default();
         let controller = ShResidencyControllerSnapshot {
             target_clusters: 12,
-            warm_clusters: 8,
+            lead_clusters: 8,
             sampleable_clusters: 2,
             permits_in_use: 3,
             counters: ShResidencyCounters {
@@ -245,7 +257,7 @@ mod tests {
         };
         assemble_live_diagnostics(&mut live, &controller, Some(&worker), Some(&renderer));
         assert_eq!(live.target_clusters, 12);
-        assert_eq!(live.warm_clusters, 8);
+        assert_eq!(live.lead_clusters, 8);
         assert_eq!(live.permits_in_use, 3);
         assert_eq!(live.misses, 4);
         assert_eq!(live.cancelled_requests, 5);
@@ -329,7 +341,7 @@ mod tests {
             read_bytes: 3 * 1024 * 1024,
             gap_bytes: 2048,
             target_clusters: 24,
-            warm_clusters: 8,
+            lead_clusters: 8,
             permits_in_use: 4,
             read_latency_p95_ms: 9.3,
             indirect_compose: postretro_renderer::ShComposePassDiagnostics {
@@ -359,7 +371,7 @@ mod tests {
         let line = format_line(5.0, &before, &now);
         assert!(line.starts_with("[SH streaming] last 5.0 s: 3 reads (1 coalesced)"));
         assert!(line.contains("2.0 MiB incl. 2.0 KiB gap"), "{line}");
-        assert!(line.contains("24 targets (8 warm)"), "{line}");
+        assert!(line.contains("24 targets (8 lead)"), "{line}");
         assert!(line.contains("4/8 permits"), "{line}");
         assert!(line.contains("p95 9.3"), "{line}");
         assert!(

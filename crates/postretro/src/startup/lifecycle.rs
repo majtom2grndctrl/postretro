@@ -27,7 +27,6 @@ use glam::Vec3;
 use winit::event_loop::ActiveEventLoop;
 
 use crate::App;
-use crate::frame_timing::InterpolableState;
 use crate::render;
 use crate::scripting::builtins::descriptor_materializes_ai_enemy;
 use crate::startup::loading_screen::LoadingStep;
@@ -192,7 +191,7 @@ impl App {
     }
 
     pub(crate) fn has_installed_level(&self) -> bool {
-        self.boot_state == BootState::Running && self.level.is_some()
+        self.level_is_installed_state() && self.level.is_some()
     }
 
     pub(crate) fn rebuild_active_reaction_subscribers(&mut self) {
@@ -339,7 +338,10 @@ impl App {
         // endpoint before checking its channel, without touching level state.
         let _ = self.poll_world_less_transport(frame_dt);
         match self.next_loading_step() {
-            LoadingStep::Install(payload) => self.finish_level_payload(*payload, event_loop),
+            LoadingStep::Install(payload) => {
+                self.finish_level_payload(*payload, event_loop);
+                false
+            }
             LoadingStep::Fail(reason) => {
                 self.finish_level_failure(reason, event_loop);
                 false
@@ -420,20 +422,20 @@ impl App {
         &mut self,
         payload: crate::startup::worker::LevelPayload,
         event_loop: &ActiveEventLoop,
-    ) -> bool {
+    ) {
         match payload.level {
             Some(world) => {
                 if let Err(err) = self.install_level_payload(world, payload.prm_cache_root) {
                     self.finish_level_failure(err.to_string(), event_loop);
-                    return false;
+                    return;
                 }
-                // The spawn cell's lightmap blocks are resident before the
-                // first level frame renders.
-                if let Err(err) = self.install_spawn_streaming() {
+                // The level's streaming sessions exist before Settling asks
+                // them anything, so a missing session means "not streamed".
+                if let Err(err) = self.install_level_streaming_sessions() {
                     log::error!("[Loader] level streaming install failed: {err:#}");
                     self.exit_result = Err(err);
                     event_loop.exit();
-                    return false;
+                    return;
                 }
                 // The install frame never counts, and no CPU timing surface may
                 // show a window from the previous level.
@@ -444,24 +446,17 @@ impl App {
                 // player_spawn. The host pawn stays driven locally by `simulate_tick`.
                 self.host_register_own_pawn_after_install();
                 self.level_load = None;
-                self.end_loading_screen();
-                if let Some(renderer) = self.renderer.as_mut() {
-                    renderer.clear_splash();
-                }
-                self.boot_state = BootState::Running;
                 self.boot_load = false;
-                // Defer log line C until after the first level frame's render
-                // returns, so `first_level_frame` captures GPU work the user
-                // actually sees.
-                self.pending_level_log = true;
-                true
+                // The level is held behind the loading tree, which stays
+                // active, until its first frame's streamed set is resident.
+                self.enter_settling(std::time::Instant::now());
+                self.request_redraw();
             }
             None => {
                 self.finish_level_failure(
                     "worker delivered no level payload".to_string(),
                     event_loop,
                 );
-                false
             }
         }
     }
@@ -541,10 +536,9 @@ impl App {
                 .as_ref()
                 .expect("active level source retained before parity installation");
             endpoint.set_join_seed(join_seed);
-            endpoint.set_level_parity(Some((
-                level_identity(source, &self.content_root),
-                level_content_digest,
-            )));
+            let identity = level_identity(source, &self.content_root);
+            self.published_level_identity = Some(identity.clone());
+            endpoint.set_level_parity(Some((identity, level_content_digest)));
             endpoint.set_relevel_catalog_id(match source {
                 LevelSource::Catalog(id) => Some(id.clone()),
                 LevelSource::Path(_) => None,
@@ -973,16 +967,15 @@ impl App {
                 if moved { "local pawn" } else { "camera only" },
             );
         }
-        // The spawn eye, computed once: the followed local pawn's eye (the
-        // point every tick moves the camera to), else the camera placed above.
-        // Both interpolation endpoints hold it, so a frame before the first
-        // tick renders from this eye, the one the spawn preload made
-        // resident, and the first tick blends from it rather than from the
-        // pawn's origin or the previous level's pose.
-        let spawn_eye = self.followed_pawn_eye().unwrap_or(self.camera.position);
-        self.camera.position = spawn_eye;
-        self.frame_timing
-            .hold_state(InterpolableState::new(spawn_eye));
+        // Put the camera at the followed local pawn's eye (the point every tick
+        // moves it to), else leave it where the start pose placed it, then move
+        // it to the presented pose: that spawn pose, or the menu pose when the
+        // frontend menu is up. Both interpolation endpoints hold it, so a frame
+        // before the first tick renders from the pose Settling made resident,
+        // and the first tick blends from it rather than from the pawn's origin
+        // or the previous level's pose.
+        self.camera.position = self.followed_pawn_eye().unwrap_or(self.camera.position);
+        self.place_camera_at_presented_pose();
         self.level_timings.record("camera_pose");
 
         // Renderer-side fog: pixel scale + per-cell masks. The fog-volume entities
@@ -1471,7 +1464,7 @@ pub(crate) mod tests {
     use std::collections::{BTreeMap, VecDeque};
     use std::time::Instant;
 
-    use crate::frame_timing::{FrameRateMeter, FrameTiming};
+    use crate::frame_timing::{FrameRateMeter, FrameTiming, InterpolableState};
     use crate::input::InputFocus;
     use crate::scripting;
     use crate::scripting::primitives::register_all;
@@ -1799,6 +1792,8 @@ pub(crate) mod tests {
             last_resolve_at: None,
             boot_destination: None,
             pending_level_log: false,
+            settle: None,
+            published_level_identity: None,
             pending_splash_override: None,
             host_spawn_points: Vec::new(),
             script_time: 0.0,
@@ -2970,11 +2965,11 @@ pub(crate) mod tests {
             .split("if let Err(err) = self.install_level_payload(")
             .nth(1)
             .unwrap()
-            .split("// The spawn cell")
+            .split("// The level's streaming sessions exist")
             .next()
             .unwrap();
         assert!(rejection.contains("self.finish_level_failure(err.to_string(), event_loop);"));
-        assert!(rejection.contains("return false;"));
+        assert!(rejection.contains("return;"));
         let failure = source
             .split("fn finish_level_failure(")
             .nth(1)

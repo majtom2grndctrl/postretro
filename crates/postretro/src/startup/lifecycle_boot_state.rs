@@ -29,6 +29,8 @@ impl App {
         self.splash_frame = 0;
         self.os_wait_from = None;
         self.pending_level_log = false;
+        // A suspended Settling stretch fires no reveal and leaves no timer.
+        self.settle = None;
         self.level_load = None;
         self.active_level_tags.clear();
         self.active_level_source = None;
@@ -49,20 +51,18 @@ impl App {
         event_loop: &ActiveEventLoop,
         frame_dt: f32,
     ) -> bool {
+        // Settling counts as installed: a request drained here unloads the
+        // held level before its settle check can reveal it.
         if matches!(
             self.boot_state,
-            BootState::Loading | BootState::Frontend | BootState::Running
+            BootState::Loading | BootState::Frontend | BootState::Settling | BootState::Running
         ) {
             self.drain_level_requests();
         }
 
-        // Splash frames draw no UI and Loading frames draw a display-only
-        // loading tree, so UI input that reached them is dropped here rather
-        // than delivered to the first frame that takes input.
-        if matches!(
-            self.boot_state,
-            BootState::Booting | BootState::Splash | BootState::Loading
-        ) {
+        // A Settling reveal frame still drops here: input pressed while the
+        // level was held activates nothing on the first Running frame.
+        if self.boot_state.drops_ui_input() {
             self.drop_ui_input_on_non_ui_frame();
         }
 
@@ -81,6 +81,7 @@ impl App {
                 // frontend-safe frame that skips gameplay/world work.
                 true
             }
+            BootState::Settling => self.run_settling_frame(event_loop, frame_dt),
             BootState::Running => {
                 // Steady state — fall through to the normal frame loop.
                 true
@@ -190,19 +191,24 @@ impl App {
                     let Some(load) = self.resolve_level_source(source) else {
                         continue;
                     };
-                    if self.boot_state == BootState::Running {
+                    if self.level_is_installed_state() {
                         self.unload_level();
                     }
                     self.begin_level_load(load);
                     return;
                 }
                 LevelRequest::Unload => {
-                    if self.boot_state == BootState::Running {
+                    if self.level_is_installed_state() {
                         self.unload_level();
                     }
                 }
             }
         }
+    }
+
+    /// Running, or Settling: a level is installed, revealed or not.
+    pub(crate) fn level_is_installed_state(&self) -> bool {
+        matches!(self.boot_state, BootState::Settling | BootState::Running)
     }
 
     pub(in crate::startup) fn level_load_in_flight(&self) -> bool {

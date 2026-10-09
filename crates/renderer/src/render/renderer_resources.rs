@@ -321,6 +321,7 @@ impl Renderer {
         full.promoted_static_weights = vec![0.0; geometry.entity_shadow_lights.len()];
         full.promoted_static_weight_scratch.clear();
         full.promoted_baked_last_update_time = None;
+        full.promotions_start_whole = false;
         // Match the init-time policy: selected-static and section-45 animated
         // candidates share the fixed-projection cache. A level with neither
         // source frees it; either source allocates/reuses it and clears every

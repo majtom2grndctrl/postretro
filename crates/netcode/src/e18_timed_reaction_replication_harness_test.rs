@@ -287,6 +287,7 @@ fn relay_pair() -> (NetServer, NetClient) {
     client.set_mod_identity("test.mod".to_string(), "1.0.0".to_string());
     client.set_mod_digest(Some(static_fingerprint));
     client.set_level_parity(Some(("test-level".to_string(), static_fingerprint)));
+    postretro_net::harness::reveal_both(&mut server, &mut client, "test-level");
 
     (server, client)
 }

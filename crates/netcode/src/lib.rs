@@ -3431,6 +3431,7 @@ mod tests {
         client.set_mod_identity("postretro.test".to_string(), "1".to_string());
         client.set_mod_digest(Some([7; 32]));
         client.set_level_parity(Some(("test-level".to_string(), [9; 32])));
+        postretro_net::harness::reveal_both(&mut server, &mut client, "test-level");
         client.update_connections(Duration::from_millis(16));
         for packet in client.packets_to_send() {
             server.process_packet_from(&packet, CLIENT_ID);
@@ -3486,6 +3487,7 @@ mod tests {
         client.set_mod_identity("postretro.test".to_string(), "1".to_string());
         client.set_mod_digest(Some([7; 32]));
         client.set_level_parity(Some(("test-level".to_string(), [9; 32])));
+        postretro_net::harness::reveal_both(&mut server, &mut client, "test-level");
         client.update_connections(Duration::from_millis(16));
         for packet in client.packets_to_send() {
             server.process_packet_from(&packet, CLIENT_ID);
@@ -5736,8 +5738,8 @@ mod tests {
     fn enemy_projectile_authority_reuses_the_existing_wire_versions() {
         assert_eq!(
             postretro_net::handshake::PROTOCOL_ID,
-            0x_5052_4C39,
-            "observer weapon cues require application protocol PRL9"
+            0x_5052_4C41,
+            "the revealed participation vocabulary requires application protocol PRLA (protocol 10)"
         );
         assert_eq!(
             postretro_net::handshake::WIRE_VERSION,

@@ -353,6 +353,8 @@ pub(crate) fn build_session() -> Result<BootSession> {
         last_resolve_at: None,
         boot_destination: None,
         pending_level_log: false,
+        settle: None,
+        published_level_identity: None,
         pending_splash_override: None,
         boot_timings,
         session_boot_config,

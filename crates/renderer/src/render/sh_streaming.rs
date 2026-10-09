@@ -64,8 +64,8 @@ mod tests;
 
 use allocator::{FirstFitRanges, PoolRange, SparsePool};
 use compose_plan::{ComposeFramePlan, RowMembership, StreamedComposePlanner};
-pub use diagnostics::ShStreamingLiveDiagnostics;
 use diagnostics::{InstallCpuCounters, PoolGrowthCounters};
+pub use diagnostics::{ShMissBuckets, ShStreamingLiveDiagnostics};
 use direct_compose::DirectSparseRowUpload;
 use floor::plan_initial_pool_floor;
 pub(crate) use gpu::StagedUploads;

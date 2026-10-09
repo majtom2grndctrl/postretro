@@ -97,6 +97,17 @@ impl FrameTiming {
         }
     }
 
+    /// Drop accumulated time and restart the wall clock at `now`, so the next
+    /// frame ticks only for the time since `now`. A held level calls it at the
+    /// end of its last held frame. Each held frame already ran `begin_frame`
+    /// and drained whole ticks, so no catch-up builds over the hold; the rearm
+    /// drops that frame's leftover fraction and its own duration, so the
+    /// reveal frame ticks only for its own interval, usually not at all.
+    pub fn rearm(&mut self, now: Instant) {
+        self.accumulator = Duration::ZERO;
+        self.last_frame = now;
+    }
+
     /// Swap current state into previous, write new current state.
     /// Called once per tick from the game logic.
     pub fn push_state(&mut self, new_state: InterpolableState) {
@@ -606,5 +617,27 @@ mod tests {
             FRAMETIME_RING_SIZE * std::mem::size_of::<Duration>(),
             "samples buffer must be a fixed-size array",
         );
+    }
+
+    // A rearm drops leftover time and restarts the clock, so the next frame
+    // ticks only for the time since the rearm.
+    #[test]
+    fn rearm_drops_held_time_so_the_next_frame_ticks_only_its_own() {
+        let start = Instant::now();
+        let mut timing = FrameTiming::new(InterpolableState::new(Vec3::ZERO));
+        timing.last_frame = start;
+        let held = timing.begin_frame(start + Duration::from_secs(5));
+        assert!(
+            held.ticks > 1,
+            "without a rearm, the time since the last frame is owed"
+        );
+
+        // A held frame drains whole ticks and leaves just under one behind.
+        let mut timing = FrameTiming::new(InterpolableState::new(Vec3::ZERO));
+        timing.accumulate(Duration::from_millis(200));
+        let reveal = start + Duration::from_secs(5);
+        timing.rearm(reveal);
+        let first = timing.begin_frame(reveal + TICK_DURATION);
+        assert_eq!(first.ticks, 1, "only the frame since the rearm is owed");
     }
 }

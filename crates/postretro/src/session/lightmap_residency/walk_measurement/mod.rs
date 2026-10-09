@@ -38,8 +38,9 @@ use postretro_visibility::{TimingGate, VisibilityPath, VisibleCells, determine_v
 
 use super::{LightmapLevelView, LightmapStreamingSession};
 use crate::cpu_timing::StreamingStage;
-use crate::lightmap_streaming::levers::LEAD_UNITS_PER_METRE;
 use crate::session::level_streaming::{LevelStreaming, StreamingFrame};
+use crate::streaming::cell_demand::CellDemand;
+use crate::streaming::cell_demand::LEAD_UNITS_PER_METRE;
 use crate::streaming::cluster_hints::decode_level_hints;
 use paths::{SplitMix64, WALK_SEED, WalkKind, camera_adjacency, walk_path};
 use pool_mirror::{PoolMirror, PoolStats};
@@ -318,14 +319,19 @@ fn run(world: &LevelWorld, walk: &Walk, levers: Levers) -> RunReport {
     let hints = decode_level_hints(world.cluster_directory()).expect("id-49 hints");
     let mut session =
         LightmapStreamingSession::new(view, hints.as_deref()).expect("lightmap session");
-    {
-        let lever = session.controller.levers_mut();
-        lever.set_pool_cap_layers(levers.cap_layers);
-        lever.set_lead_metres(levers.lead_metres);
-    }
-    let lead = session.controller.levers().lead();
+    session
+        .controller
+        .levers_mut()
+        .set_pool_cap_layers(levers.cap_layers);
+    // L is the level's: set on the stage, which every frame hands the
+    // lightmap demand.
+    let mut stage = CellDemand::new(view.residency_set.max_lead);
+    stage.set_lead_metres(levers.lead_metres);
+    let lead = stage.lead();
+    session.controller.set_lead(lead);
     let mut mirror = PoolMirror::new(view.manifest, levers.cap_layers);
     let mut level = LevelStreaming::default();
+    level.install_cell_demand(stage);
     level.install_lightmap(session);
 
     let mut report = RunReport {
@@ -335,8 +341,8 @@ fn run(world: &LevelWorld, walk: &Walk, levers: Levers) -> RunReport {
     let started = Instant::now();
     let mut rng = SplitMix64(WALK_SEED ^ 0xE7E5);
 
-    // Level install: the spawn cell's mandatory set, read synchronously and
-    // installed in one drain before the first frame.
+    // A synchronous preload approximating a settled entry: the spawn cell's
+    // mandatory set, read and installed in one drain before the first frame.
     let spawn_eye = eye_point(world, walk.cells[0], &mut rng);
     let spawn_cell = world.locate_cell(spawn_eye) as u32;
     let before = section_reads(&read_counters);
@@ -345,7 +351,7 @@ fn run(world: &LevelWorld, walk: &Walk, levers: Levers) -> RunReport {
         session.update_camera_set(view.residency_set, spawn_cell);
         let summary = session
             .preload(&[], |batch| Ok(mirror.drain(batch)))
-            .expect("spawn preload");
+            .expect("settled-entry preload");
         assert_eq!(summary.deferred, 0, "a fresh pool never defers a preload");
         assert!(session.settled(), "spawn set resident after preload");
         report.preload_pairs = summary.reads.pairs;
@@ -429,6 +435,7 @@ fn run(world: &LevelWorld, walk: &Walk, levers: Levers) -> RunReport {
                         camera_cell: Some(camera_cell as usize),
                         path: visibility.stats.path,
                         monotonic_seconds: seconds,
+                        settling: false,
                         cpu: &cpu,
                     },
                 )
@@ -622,7 +629,7 @@ fn print_run(walk: &Walk, levers: Levers, report: &RunReport) {
         report.wall.as_secs_f64(),
     );
     println!(
-        "   spawn preload: {} pairs, {:.1} MiB read, {:.1} MiB uploaded in one drain, {:.1} ms \
+        "   settled-entry preload: {} pairs, {:.1} MiB read, {:.1} MiB uploaded in one drain, {:.1} ms \
          (positional reads + model plan)",
         report.preload_pairs,
         mib(report.preload_bytes),
@@ -826,10 +833,10 @@ fn lightmap_residency_walks_from_prl() {
 }
 
 /// AC 24, CPU half: level load time under the process's
-/// `POSTRETRO_LIGHTMAP_STREAMING` mode, then (streaming only) the spawn
-/// preload at `POSTRETRO_LIGHTMAP_WALK_SPAWN` = `x,y,z`: positional reads plus
-/// the pool model's plan, as level install runs it. GPU upload is not timed
-/// here; headless captures carry it. Run once per mode:
+/// `POSTRETRO_LIGHTMAP_STREAMING` mode, then (streaming only) a synchronous
+/// preload at `POSTRETRO_LIGHTMAP_WALK_SPAWN` = `x,y,z`, approximating a
+/// settled entry: positional reads plus the pool model's plan. GPU upload is
+/// not timed here; headless captures carry it. Run once per mode:
 ///
 /// ```text
 /// POSTRETRO_LIGHTMAP_STREAMING=all-resident \
@@ -887,10 +894,10 @@ fn lightmap_install_timing_from_prl() {
         session.update_camera_set(view.residency_set, camera_cell);
         let summary = session
             .preload(&[], |batch| Ok(mirror.drain(batch)))
-            .expect("spawn preload");
+            .expect("settled-entry preload");
         let preload = preload_started.elapsed();
         println!(
-            "repeat {repeat}: stream load {:.1} ms; spawn preload (cell {camera_cell}) {} pairs, \
+            "repeat {repeat}: stream load {:.1} ms; settled-entry preload (cell {camera_cell}) {} pairs, \
              {:.1} MiB, {:.1} ms; pool first generation {} layers",
             load.as_secs_f64() * 1000.0,
             summary.reads.pairs,

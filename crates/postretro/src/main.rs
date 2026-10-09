@@ -246,7 +246,13 @@ fn client_drain_control(app: &mut App, controls: Vec<ServerControlMessage>) {
                 );
             }
             ServerControlMessage::Divergence(DivergenceReason::Holding(cause)) => {
-                log::warn!("[Net] host is holding this client for content parity: {cause:?}");
+                if cause.is_revealed_hold() {
+                    log::info!(
+                        "[Net] host is holding this client until both peers reveal the level: {cause:?}"
+                    );
+                } else {
+                    log::warn!("[Net] host is holding this client for content parity: {cause:?}");
+                }
                 if let Some(session) = app.session.as_mut()
                     && let Some(endpoint) = session.net_endpoint.as_mut()
                 {
@@ -1009,11 +1015,19 @@ pub(crate) struct App {
     /// during the hold.
     boot_destination: Option<crate::startup::BootDestination>,
 
-    /// Set when `Loading → Running` transitions; consumed at the bottom of the
-    /// first `Running` frame after `render_frame_indirect` returns. Ensures
-    /// log line C ends with `first_level_frame` covering the cost of the
-    /// frame the user actually sees.
+    /// Set at the Settling → Running reveal; consumed at the bottom of the
+    /// reveal frame after `render_frame_indirect` returns. Ensures log line C
+    /// ends with `first_level_frame` covering the cost of the frame the user
+    /// actually sees.
     pending_level_log: bool,
+
+    /// The level identity install published as parity, which the reveal
+    /// publishes again; `None` without an installed level or without a net
+    /// endpoint.
+    published_level_identity: Option<String>,
+
+    /// The current level entry's Settling stretch; `Some` only in Settling.
+    settle: Option<crate::startup::settling::SettleState>,
 
     /// Set during `mod_init` if a mod registers a `SplashSource` override.
     /// The consume path in `run_splash_frame` frame 1 is wired; today the field
@@ -1999,6 +2013,7 @@ impl ApplicationHandler for App {
             }
         }
         self.clear_net_level_parity();
+        self.discard_pending_system_commands();
         self.clear_surface_lifetime_level_state();
         // Drop any in-flight level-load worker handoff. On resume the splash
         // state machine starts over from frame 0 and will spawn a fresh
@@ -3909,16 +3924,22 @@ impl App {
                                             join_seed_state.mark_reclaimed(*client_id);
                                         }
                                         log::info!(
-                                            "[Net] client {client_id} admitted; awaiting content parity"
+                                            "[Net] client {client_id} admitted; awaiting content parity and both reveals"
                                         );
                                     }
                                     HandshakeOutcome::Rejected { client_id, cause } => {
                                         log::warn!("[Net] client {client_id} rejected: {cause:?}");
                                     }
                                     HandshakeOutcome::ParityHeld { client_id, cause } => {
-                                        log::info!(
-                                            "[Net] client {client_id} held for content parity: {cause:?}"
-                                        );
+                                        if cause.is_revealed_hold() {
+                                            log::info!(
+                                                "[Net] client {client_id} held until both peers reveal the level: {cause:?}"
+                                            );
+                                        } else {
+                                            log::info!(
+                                                "[Net] client {client_id} held for content parity: {cause:?}"
+                                            );
+                                        }
                                     }
                                 }
                             }

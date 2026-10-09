@@ -5,12 +5,13 @@
 //! `session/sh_async_workers/issuer_trace_tests.rs`.
 //!
 //! The driver follows the production async frame (`LevelStreaming::prepare_drains`
-//! with SH alone): update targets, admit last frame's completions, promote,
-//! drain plus requests, then apply the renderer's outcome. A
-//! simulated issuer completes every outstanding request next frame. It
-//! cancels one whose cluster left the target set, unless the schedule marked
-//! that read as already in flight; in-flight reads complete as prepared. The
-//! simulated renderer accepts every ready chunk and confirms every eviction.
+//! with SH alone): promote last frame's installs, update targets, admit last
+//! frame's completions, drain plus requests, then apply the renderer's
+//! outcome. A simulated issuer completes every outstanding request next
+//! frame. It cancels one whose cluster left the target set, unless the
+//! schedule marked that read as already in flight; in-flight reads complete
+//! as prepared. The simulated renderer accepts every ready chunk and
+//! confirms every eviction.
 //!
 //! Regenerate only when a behaviour change is intended:
 //! `POSTRETRO_REGEN_SH_TRACE=1 cargo test -p postretro --bin postretro sh_trace`.
@@ -19,25 +20,27 @@
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
 
+use postretro_level_format::cell_residency_set::CellResidencySetSection;
 use postretro_level_format::cluster_sh_payloads::DecodedClusterShPayload;
-use postretro_level_loader::CoupledCellPair;
 use postretro_visibility::VisibleCells;
 
 use super::super::topology::SeamPortalEndpoint;
 use super::tests::hinted_topology;
 use super::*;
+use crate::lightmap_streaming::test_fixtures::{PORTAL, residency_set};
+use crate::sh_streaming::generation::FixedGenerationClock;
 use crate::sh_streaming::trace_fixture::assert_matches_baseline;
+use crate::streaming::cell_demand::CellDemand;
 use crate::streaming::drain_budget::MAX_INSTALL_DECODED_BYTES_PER_DRAIN;
 
 const BASELINE: &str = "sh_controller_trace_baseline.txt";
 const MIB: usize = 1024 * 1024;
-const METRE: u32 = 1024;
 const CLUSTERS: usize = 12;
 /// Decoded chunk size per cluster. Mixed so drains both fill and stop on the
 /// 8 MiB budget; cluster 6 alone exceeds it.
 const DECODED_MIB: [usize; CLUSTERS] = [2, 1, 3, 5, 1, 1, 9, 2, 1, 3, 1, 2];
-/// Logical pool budget: seven clusters of 8 bytes, below the warm set plus
-/// the pin, so optional work yields to pressure.
+/// Logical pool budget: seven clusters of 8 bytes, below the reach plus the
+/// pin, so optional work yields to pressure.
 const NOMINAL_CLUSTER_BYTES: u64 = 56;
 
 /// One render frame of the schedule.
@@ -64,35 +67,56 @@ const fn frame(
     }
 }
 
-/// Cells 0..11 in a one-metre chain, one cluster per cell. Cluster 11 is
-/// pinned; cluster 5's halo is owned by cluster 4; an authored seam joins 6
-/// and 9; cluster 7 (priority 3) and 9 (priority 2) carry authored priority.
+/// Cells 0..11 in a chain, four metres a hop, one cluster per cell. Cluster
+/// 11 is pinned; cluster 5's halo is owned by cluster 4; an authored seam
+/// joins 6 and 9; cluster 7 (priority 3) and 9 (priority 2) carry authored
+/// priority.
 const SCHEDULE: &[Frame] = &[
-    // Spawn: visible 0-1, warm 0..7, pinned 11. Permits cap the first requests.
+    // Spawn: visible 0-1, lead 0..4, band 5..6, pinned 11. Permits cap the
+    // first requests.
     frame(0.0, 0, &[0, 1], &[]),
     frame(0.1, 0, &[0, 1], &[]),
     frame(0.2, 0, &[0, 1], &[]),
-    // Seam near side 6 visible from cell 3: 9 is seam-warm only.
+    // Seam near side 6 visible from cell 3: 9, also in the band, is seam-warm.
     frame(0.3, 3, &[3, 6], &[]),
-    // The seam closes before 9 is read: its queued request is cancelled.
+    // The seam closes as 9's read lands. 9 falls back to the band, pressure
+    // trims band clusters 8 and 9, and the drain drops 9's ready read.
     frame(0.4, 3, &[3], &[]),
+    // The seam reopens: 9 is seam-warm again, and pressure trims it again
+    // within the same drain, so the published targets do not change.
     frame(0.5, 3, &[3, 6], &[]),
-    // Closes again, but 9's read is already in flight this time.
+    // Closes again. No read of 9 is outstanding, so its in-flight mark holds
+    // nothing.
     frame(0.6, 3, &[3], &[9]),
-    // The in-flight read lands for a departed cluster.
     frame(0.7, 3, &[3], &[]),
-    // Warm set shifts to 2..9; 0 and 1 enter hysteresis.
+    // The reach covers the whole chain from the middle; pressure trims and
+    // evicts band clusters 0 and 1.
     frame(1.0, 6, &[6, 7], &[]),
     frame(1.1, 6, &[6, 7], &[]),
     frame(1.2, 6, &[6, 7], &[]),
-    // Far end: warm 4..11. 0 and 1 have outlived hysteresis.
+    // Far end: reach 4..11, and pressure trims band clusters 4 and 5. 0..3
+    // leave the horizon and enter hysteresis; 0 and 1, evicted earlier, are
+    // read again as hysteresis targets.
     frame(3.5, 10, &[10, 11], &[]),
     frame(3.6, 10, &[10, 11], &[]),
     frame(3.7, 10, &[10, 11], &[]),
-    // 2 and 3 have outlived hysteresis too.
+    // 0..3 have outlived hysteresis.
     frame(6.0, 10, &[10], &[]),
     frame(6.1, 10, &[10], &[]),
 ];
+
+/// The chain's id 51: from each camera cell, every cell within six hops at
+/// four metres a hop. Cells within 16 m (four hops) are lead, the rest band.
+fn chain_set() -> CellResidencySetSection {
+    let rows: Vec<(u32, u32, u32)> = (0..CLUSTERS as u32)
+        .flat_map(|camera| {
+            (0..CLUSTERS as u32)
+                .filter(move |&cell| camera.abs_diff(cell) <= 6)
+                .map(move |cell| (camera, cell, camera.abs_diff(cell) * 4))
+        })
+        .collect();
+    residency_set(CLUSTERS as u32, &rows, 32)
+}
 
 fn trace_controller() -> ShResidencyController {
     let chain: Vec<Vec<u32>> = (0..CLUSTERS as u32)
@@ -109,15 +133,7 @@ fn trace_controller() -> ShResidencyController {
     let mut priorities = vec![0; CLUSTERS];
     priorities[7] = 3;
     priorities[9] = 2;
-    let pairs: Vec<CoupledCellPair> = (1..CLUSTERS)
-        .map(|cell| CoupledCellPair {
-            cell_a: cell - 1,
-            cell_b: cell,
-            distance: METRE,
-            aperture: METRE,
-        })
-        .collect();
-    ShResidencyController::for_test_with_cell_pairs(
+    ShResidencyController::for_test_with_budget(
         hinted_topology(
             (0..CLUSTERS as u32).collect(),
             chain,
@@ -131,7 +147,7 @@ fn trace_controller() -> ShResidencyController {
             BTreeSet::from([11]),
             priorities,
         ),
-        &pairs,
+        &FixedGenerationClock::new(1),
         ShGpuBudgetInputs {
             renderer_effective_floor_bytes: Some(NOMINAL_CLUSTER_BYTES),
             ..ShGpuBudgetInputs::default()
@@ -144,8 +160,9 @@ fn class_name(class: TargetClass) -> &'static str {
     match class {
         TargetClass::Visible => "visible",
         TargetClass::Pinned => "pinned",
+        TargetClass::Lead => "lead",
         TargetClass::SeamWarm => "seam-warm",
-        TargetClass::Prefetch => "prefetch",
+        TargetClass::Band => "band",
         TargetClass::Hysteresis => "hysteresis",
     }
 }
@@ -308,6 +325,8 @@ fn record_state(controller: &ShResidencyController, out: &mut String) {
 }
 
 fn run_schedule() -> String {
+    let set = chain_set();
+    let stage = CellDemand::new(set.max_lead);
     let mut controller = trace_controller();
     let mut out = String::new();
     writeln!(
@@ -333,10 +352,12 @@ fn run_schedule() -> String {
             ids(frame.in_flight.iter().copied()),
         )
         .unwrap();
+        controller.promote_composed_clusters();
+        let visible = VisibleCells::Culled(frame.visible_cells.to_vec());
         controller
             .update_targets(
-                &VisibleCells::Culled(frame.visible_cells.to_vec()),
-                Some(frame.camera_cell),
+                &visible,
+                Some(stage.frame(&set, frame.camera_cell as u32, PORTAL, &visible)),
                 frame.seconds,
             )
             .unwrap();
@@ -347,7 +368,6 @@ fn run_schedule() -> String {
             &mut reading,
             &mut out,
         );
-        controller.promote_composed_clusters();
         let (batch, requests) = controller.take_async_drain_batch_and_requests().unwrap();
         record_drain(&controller, &batch, &mut out);
         let issued: Vec<String> = requests

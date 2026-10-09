@@ -170,10 +170,10 @@ pub use lightmap_residency::{
 };
 pub use lightmap_streaming::{
     DEFAULT_LIGHTMAP_POOL_CAP_LAYERS, LightmapStreamingLevers, LightmapStreamingLiveDiagnostics,
-    MAX_LIGHTMAP_POOL_CAP_LAYERS,
+    MAX_LIGHTMAP_POOL_CAP_LAYERS, StreamingReachLever,
 };
 use promoted_depth_cache::{PromotedDepthCache, PromotedDepthCacheFramePlan};
-pub use renderer_render_frame::ShDrainFrameResult;
+pub use renderer_render_frame::{FrameScene, ShDrainFrameResult};
 pub use renderer_splash::PresentationDrawInput;
 pub use residency::{
     ResidencyAllocation, ResidencyAllocationShape, ResidencyAllocationState, ResidencySource,
@@ -187,7 +187,7 @@ pub use sh_residency::{
 };
 pub use sh_sample_regions::{ShSampleRegion, ShSampleRegionSets};
 pub use sh_streaming::{
-    ShComposePassDiagnostics, ShResidencyDrainError, ShResidencySnapshot,
+    ShComposePassDiagnostics, ShMissBuckets, ShResidencyDrainError, ShResidencySnapshot,
     ShStreamingLiveDiagnostics,
 };
 use sh_volume::{ShVolumeResources, ShVolumeSections};

@@ -45,7 +45,16 @@ impl UiTree {
         // mirrors `layout::project_element`'s pivot math, but applied ONCE to the
         // whole tree, with taffy-relative child positions added underneath.
         let placement = self.placement(device_size);
-        collect_draw_data_from_layout(
+        let mut data = UiDrawData::default();
+        // The background is paint op 0, beneath every root widget. It covers
+        // the device backbuffer, not the letterboxed canvas, and an unknown
+        // image size simply skips it.
+        if let Some(background) = &self.background
+            && let Some(instance) = background.instance(device_size)
+        {
+            data.push_image(background.image(), instance);
+        }
+        append_draw_data_from_layout(
             &self.taffy,
             self.root,
             placement.root_origin,
@@ -56,17 +65,21 @@ impl UiTree {
             time_seconds,
             &self.visibility,
             &self.scroll.states,
-        )
+            &mut data,
+        );
+        data
     }
 }
 
-/// Read a pre-computed taffy subtree into device-pixel draw data. Both the
-/// retained gameplay tree and the presentation one-shot layout use this exact
-/// lowering path; callers choose the root origin and canvas origin. Presentation
-/// passes `[0.0, 0.0]` for both origins so its returned list is relative to its
-/// world-projected anchor rather than the retained UI letterbox canvas.
+/// Read a pre-computed taffy subtree into device-pixel draw data, reusing
+/// `data`'s storage. Both the retained gameplay tree and the presentation
+/// one-shot layout share this lowering path; callers choose the root origin and
+/// canvas origin. Presentation passes `[0.0, 0.0]` for both origins so its list
+/// is relative to its world-projected anchor rather than the retained UI
+/// letterbox canvas, and calls this every frame so its bounded quads/text/image
+/// batches stay at a warm allocation high-water mark.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn collect_draw_data_from_layout(
+pub(super) fn collect_draw_data_from_layout_into(
     taffy: &taffy::prelude::TaffyTree<NodeContext>,
     root: NodeId,
     root_origin: [f32; 2],
@@ -77,9 +90,10 @@ pub(super) fn collect_draw_data_from_layout(
     time_seconds: f64,
     visibility: &HashMap<NodeId, VisibilityState>,
     scroll: &[ScrollState],
-) -> UiDrawData {
-    let mut data = UiDrawData::default();
-    collect_draw_data_from_layout_into(
+    data: &mut UiDrawData,
+) {
+    data.clear_preserving_capacity();
+    append_draw_data_from_layout(
         taffy,
         root,
         root_origin,
@@ -90,16 +104,14 @@ pub(super) fn collect_draw_data_from_layout(
         time_seconds,
         visibility,
         scroll,
-        &mut data,
+        data,
     );
-    data
 }
 
-/// Reusable-storage form of [`collect_draw_data_from_layout`]. Presentation
-/// layouts call this every frame so their bounded quads/text/image batches stay
-/// at a warm allocation high-water mark.
+/// Append a laid-out subtree's paint ops after whatever `data` already holds
+/// (the retained tree's background, or nothing).
 #[allow(clippy::too_many_arguments)]
-pub(super) fn collect_draw_data_from_layout_into(
+fn append_draw_data_from_layout(
     taffy: &taffy::prelude::TaffyTree<NodeContext>,
     root: NodeId,
     root_origin: [f32; 2],
@@ -125,7 +137,6 @@ pub(super) fn collect_draw_data_from_layout_into(
         inert_theme,
         scroll,
     };
-    data.clear_preserving_capacity();
     collect_node(taffy, root, root_origin, &walk, visibility, data);
 }
 

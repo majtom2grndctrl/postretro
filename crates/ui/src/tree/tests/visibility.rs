@@ -68,6 +68,7 @@ fn visible_when_false_hides_subtree_from_draw_and_focus() {
         accessible_name: None,
         role: None,
         restore_on_return: None,
+        background: None,
     };
     let mut ui = UiTree::from_descriptor(&tree, &theme());
     let mut fs = font_system();
@@ -119,6 +120,7 @@ fn visible_when_true_restores_draw_and_focus() {
         accessible_name: None,
         role: None,
         restore_on_return: None,
+        background: None,
     };
     let mut ui = UiTree::from_descriptor(&tree, &theme());
     let mut fs = font_system();
@@ -164,6 +166,7 @@ fn visible_when_resolved_change_marks_dirty_and_reexports() {
         accessible_name: None,
         role: None,
         restore_on_return: None,
+        background: None,
     };
     let mut ui = UiTree::from_descriptor(&tree, &theme());
     let mut fs = font_system();
@@ -257,6 +260,7 @@ fn grid_container_visible_when_true_restores_display_grid_not_flex() {
         accessible_name: None,
         role: None,
         restore_on_return: None,
+        background: None,
     };
     let mut ui = UiTree::from_descriptor(&tree, &theme());
     let mut fs = font_system();
@@ -352,6 +356,7 @@ fn visible_when_local_cell_hides_and_shows_node() {
         accessible_name: None,
         role: None,
         restore_on_return: None,
+        background: None,
     };
 
     let mut ui = UiTree::from_descriptor(&scoped_tree, &theme());

@@ -1,6 +1,6 @@
 // Top-level placement envelope (`AnchoredTree`) wrapping the root widget, plus the
 // `CaptureMode` it declares: anchor/offset placement, input-capture behavior,
-// initial focus, and the text-entry target slot.
+// initial focus, the text-entry target slot, and the optional `TreeBackground`.
 // See: context/lib/ui.md §1
 
 use serde::{Deserialize, Serialize};
@@ -87,6 +87,57 @@ pub struct AnchoredTree {
     /// initial focus. Wire key `restoreOnReturn`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub restore_on_return: Option<bool>,
+    /// Optional full-window background image drawn beneath the root. Absent on
+    /// most trees, so the key is skip-serialized and a tree without it
+    /// round-trips byte-identically. Wire key `background`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub background: Option<TreeBackground>,
+}
+
+/// A tree's decorative background: one UI image (registry key, the same
+/// namespace as `Image({ asset })`) drawn across the whole device backbuffer
+/// with cover fit, beneath every root widget. It ignores `anchor`/`offset` and
+/// has no focus, hit-test, or accessibility node. An object rather than a bare
+/// string so later fields (tint, fit) extend it without a wire break.
+///
+/// An empty `image` is rejected at the serde boundary too, so JSON assets uphold
+/// the same contract as the JS and Luau bridges.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    rename_all = "camelCase",
+    deny_unknown_fields,
+    try_from = "TreeBackgroundWire"
+)]
+pub struct TreeBackground {
+    pub image: String,
+}
+
+impl TreeBackground {
+    /// The contract serde and both bridges enforce: a non-empty image key.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.image.is_empty() {
+            return Err("`background.image` must be a non-empty UI image key".to_string());
+        }
+        Ok(())
+    }
+}
+
+/// Serde-only input shape for [`TreeBackground`]: unknown keys are rejected
+/// here, and the conversion applies [`TreeBackground::validate`].
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct TreeBackgroundWire {
+    image: String,
+}
+
+impl TryFrom<TreeBackgroundWire> for TreeBackground {
+    type Error = String;
+
+    fn try_from(wire: TreeBackgroundWire) -> Result<Self, Self::Error> {
+        let background = TreeBackground { image: wire.image };
+        background.validate()?;
+        Ok(background)
+    }
 }
 
 impl AnchoredTree {
@@ -110,6 +161,7 @@ impl AnchoredTree {
             accessible_name: None,
             role: None,
             restore_on_return: None,
+            background: None,
         }
     }
 }

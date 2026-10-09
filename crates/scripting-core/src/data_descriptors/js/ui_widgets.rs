@@ -42,6 +42,12 @@ pub fn anchored_tree_from_js_value<'js>(
     let accessible_name = get_optional_string_js(&obj, "accessibleName")?;
     let role = role_opt_from_js(&obj)?;
     let restore_on_return = get_optional_bool_js(&obj, "restoreOnReturn")?;
+    let background = match optional_value_js(&obj, "background")? {
+        Some(raw) => Some(parse_tree_background(
+            conv::js_to_json(ctx, raw).map_err(js_err)?,
+        )?),
+        None => None,
+    };
 
     Ok(AnchoredTree {
         anchor,
@@ -53,6 +59,7 @@ pub fn anchored_tree_from_js_value<'js>(
         accessible_name,
         role,
         restore_on_return,
+        background,
     })
 }
 

@@ -37,6 +37,13 @@ pub fn anchored_tree_from_lua_value(value: LuaValue) -> Result<AnchoredTree, Des
     let accessible_name = get_optional_string_lua(&table, "accessibleName")?;
     let role = role_opt_from_lua(&table)?;
     let restore_on_return = get_optional_bool_lua(&table, "restoreOnReturn")?;
+    let raw_background: LuaValue = table.get("background").map_err(lua_err)?;
+    let background = match raw_background {
+        LuaValue::Nil => None,
+        raw => Some(parse_tree_background(
+            conv::lua_to_json(raw).map_err(lua_err)?,
+        )?),
+    };
 
     Ok(AnchoredTree {
         anchor,
@@ -48,6 +55,7 @@ pub fn anchored_tree_from_lua_value(value: LuaValue) -> Result<AnchoredTree, Des
         accessible_name,
         role,
         restore_on_return,
+        background,
     })
 }
 

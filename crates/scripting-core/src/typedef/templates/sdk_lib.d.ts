@@ -857,9 +857,11 @@
   /** Tree input behavior. `"capture"` makes this tree consume UI input and freeze lower modal layers; `"passthrough"` is the HUD/default mode and lets game input continue. */
   export type WidgetCaptureMode = "capture" | "passthrough";
   /** Placement envelope props for `Tree`. `anchor` + `offset` position the root in 1280x720 logical UI space; `captureMode`, `initialFocus`, and `textEntryTarget` control modal/input behavior. `restoreOnReturn` (on by default) returns focus to the control it left when a tree pushed above closes; `false` lands on `initialFocus`. */
-  export type TreeProps = { anchor: WidgetAnchor; offset: [number, number]; captureMode?: WidgetCaptureMode; initialFocus?: string; textEntryTarget?: Ref<string>; accessibleName?: string; role?: WidgetRole; restoreOnReturn?: boolean };
+  /** A tree's background. `image` is a UI image key (the same namespace as `Image({ asset })`). It fills the whole window with cover fit (scaled to fill, cropped to keep its aspect), beneath the tree's widgets, ignoring `anchor` and `offset`. Decorative: no focus or accessibility node. A missing image draws nothing. */
+  export type TreeBackground = { image: string };
+  export type TreeProps = { anchor: WidgetAnchor; offset: [number, number]; captureMode?: WidgetCaptureMode; initialFocus?: string; textEntryTarget?: Ref<string>; accessibleName?: string; role?: WidgetRole; restoreOnReturn?: boolean; background?: TreeBackground };
   /** The flat `AnchoredTree` envelope produced by `Tree(...)` and stored in UI registries. `textEntryTarget` is serialized to its dotted state-slot name. */
-  export type AnchoredTreeDescriptor = { anchor: WidgetAnchor; offset: [number, number]; root: WidgetDescriptor; captureMode?: WidgetCaptureMode; initialFocus?: string; textEntryTarget?: string; accessibleName?: string; role?: WidgetRole; restoreOnReturn?: boolean };
+  export type AnchoredTreeDescriptor = { anchor: WidgetAnchor; offset: [number, number]; root: WidgetDescriptor; captureMode?: WidgetCaptureMode; initialFocus?: string; textEntryTarget?: string; accessibleName?: string; role?: WidgetRole; restoreOnReturn?: boolean; background?: TreeBackground };
   /** Wrap a root widget descriptor in the `AnchoredTree` placement envelope. `root` is a POSITIONAL second argument. */
   export function Tree(props: TreeProps, root: WidgetDescriptor): AnchoredTreeDescriptor;
   /** Props accepted by `defineUiTree`. The returned object preserves the runtime manifest entry shape `{ name, tree, alwaysOn?, hideBelow? }`. */

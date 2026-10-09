@@ -1404,7 +1404,7 @@ export type ModManifest = {
   theme: ThemeTokens?,
   --- Font assets: family name → TTF asset path. Optional; changing custom font assets requires an engine restart.
   fonts: { [string]: string }?,
-  --- UI images: image name → PNG path relative to the mod root. Optional. Each loads into the UI image registry under its name at mod init and after a hot reload, so any tree can show it with `Image({ asset: name })`. Names beginning `engine/` are reserved. A reserved name, a non-string value, a path that leaves the mod, a missing file, or an undecodable PNG warns and skips that entry.
+  --- UI images: image name → PNG path relative to the mod root. Optional. Each loads into the UI image registry under its name, so any tree can show it with `Image({ asset: name })` or a `Tree` `background`. Most load at mod init and after a hot reload; an image only loading trees draw (a map's `loadingTree`, `loading.tree`, or your `loadingScreen`) loads in the background while its loading screen shows and is released when the load ends, unless a level's own trees draw it too. Names beginning `engine/` are reserved. A reserved name, a non-string value, a path that leaves the mod, a missing file, or an undecodable PNG warns and skips that entry.
   uiImages: { [string]: string }?,
   --- Mod-wide loading screen. Optional; omission shows the engine fallback loading screen.
   loading: ModLoading?,

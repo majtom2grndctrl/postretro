@@ -3419,7 +3419,9 @@ export default defineMod({
   tree or presentation template. That image loads in the background when a load
   shows its tree and is released when the load ends, so a large screenshot costs
   nothing while you play. Until it finishes loading, the tree's other widgets
-  draw without it; on a very short load it may never appear.
+  draw without it; on a very short load it may never appear. If a level's own
+  trees (`setupLevel().uiTrees`) draw it too, it loads with the level instead
+  and stays loaded.
 - An image whose name matches a glyph image (`input.glyphs`) is drawn as the
   glyph, with a warning.
 - A tree `background` naming an image that is neither in `uiImages`, an

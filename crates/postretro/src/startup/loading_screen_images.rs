@@ -1,17 +1,19 @@
 // Loading-only UI images: decoded on a worker when a load chooses its tree,
 // uploaded by the Loading and Settling frames that poll, released when the
-// loading screen ends.
+// loading screen ends. A level tree naming one promotes it to eager instead.
 // See: context/lib/boot_sequence.md §1 · context/lib/ui.md §5
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::Path;
-use std::sync::mpsc::{self, Receiver};
+use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::Instant;
 
 use postretro_ui::descriptor::AnchoredTree;
 
 use crate::App;
 use crate::app::ui_images::{DecodedUiImage, ModUiImages, decode_ui_image};
+
+use super::LoadingScreenState;
 
 /// Where loading-only images upload to and release from: the renderer in
 /// play, a plain map in tests.
@@ -122,7 +124,14 @@ impl LoadingImages {
         let Some(arrivals) = &self.arrivals else {
             return;
         };
-        let arrived: Vec<LoadingImageDecode> = arrivals.try_iter().collect();
+        let mut arrived = Vec::new();
+        let worker_gone = loop {
+            match arrivals.try_recv() {
+                Ok(decode) => arrived.push(decode),
+                Err(TryRecvError::Empty) => break false,
+                Err(TryRecvError::Disconnected) => break true,
+            }
+        };
         for decode in arrived {
             let LoadingImageDecode {
                 key,
@@ -157,6 +166,15 @@ impl LoadingImages {
                     self.uploaded.insert(key);
                 }
                 Err(err) => log::warn!("[UI] uiImages.{key} did not load ({err}); skipping it"),
+            }
+        }
+        // The worker sends every decode before it exits, so a closed channel
+        // with decodes still owed means it panicked partway.
+        if worker_gone {
+            for key in std::mem::take(&mut self.pending).into_keys() {
+                log::warn!(
+                    "[UI] uiImages.{key} did not load: its decode worker stopped; skipping it"
+                );
             }
         }
         if self.pending.is_empty() {
@@ -197,7 +215,79 @@ pub(crate) fn wanted_loading_images(
         .collect()
 }
 
+/// Promote the loading-only images among `level_keys` (the image keys the
+/// installed level's trees name) to eager, registering each now unless
+/// something already holds its key. The active load disowns them, so its end
+/// releases none, and a decode of one still in flight is discarded on
+/// arrival. Level install is already a blocking frame, so the decode runs
+/// here, on the main thread.
+pub(crate) fn promote_level_images<'a>(
+    level_keys: impl IntoIterator<Item = &'a str>,
+    mod_root: &Path,
+    images: &mut ModUiImages,
+    loading: &mut LoadingScreenState,
+    registry: &mut impl LoadingImageRegistry,
+) {
+    let mut registered = HashSet::new();
+    for (key, path) in images.promote(level_keys) {
+        if registry.contains(&key) {
+            // This load's upload, or glyph art that wins the key.
+            registered.insert(key);
+            continue;
+        }
+        let started = Instant::now();
+        let image = match decode_ui_image(mod_root, &key, &path) {
+            Ok(image) => image,
+            Err(err) => {
+                log::warn!("[UI] uiImages.{key} did not load: {err}; skipping it");
+                continue;
+            }
+        };
+        let decode_ms = started.elapsed().as_secs_f64() * 1000.0;
+        let (width, height) = (image.width, image.height);
+        match registry.register(image) {
+            Ok(()) => {
+                log::info!(
+                    "[UI] level tree promoted loading-screen image `{key}` to eager: {width}x{height} px, decoded in {decode_ms:.1} ms"
+                );
+                registered.insert(key);
+            }
+            Err(err) => log::warn!("[UI] uiImages.{key} did not load ({err}); skipping it"),
+        }
+    }
+    loading.disown_images(&registered);
+    images.note_promoted_registered(&registered);
+}
+
+/// Every image key the level-tier trees name.
+fn level_tree_image_keys(stack: &postretro_ui::modal_stack::ModalStack) -> Vec<&str> {
+    stack
+        .resolved_trees()
+        .filter(|(tier, _)| *tier == postretro_ui::modal_stack::ScopeTier::Level)
+        .flat_map(|(_, tree)| tree.image_keys())
+        .collect()
+}
+
 impl App {
+    /// Promote the loading-only images the just-installed level's trees name
+    /// (`promote_level_images`). Runs once per level install.
+    pub(crate) fn promote_level_tree_images(&mut self) {
+        let (Some(session), Some(renderer)) = (self.session.as_mut(), self.renderer.as_mut())
+        else {
+            return;
+        };
+        if !renderer.is_full_ready() {
+            return;
+        }
+        promote_level_images(
+            level_tree_image_keys(&session.modal_stack),
+            &self.content_root,
+            &mut session.mod_ui_images,
+            &mut session.loading_screen,
+            renderer,
+        );
+    }
+
     /// Upload the active load's loading-only images that finished decoding.
     /// Loading and Settling frames call this; it never waits on the worker.
     pub(crate) fn poll_loading_images(&mut self) {
@@ -381,12 +471,12 @@ mod tests {
                 .is_none()
         );
 
-        // The next load shows a tree with no images; however long the first
-        // decode takes, nothing it produced reaches the registry.
+        // The next load shows a tree with no images. The first load's
+        // channel closed with it, so nothing its decode produces, whenever it
+        // finishes, can reach the registry.
         let mut plain = entry();
         plain.loading_tree.clear();
         app.begin_loading_screen(&plain);
-        std::thread::sleep(Duration::from_millis(200));
         let mut registry = FakeRegistry::default();
         poll_until_decoded(&mut app, &mut registry);
         assert!(registry.0.is_empty());
@@ -466,6 +556,125 @@ mod tests {
         assert!(
             registry.contains(SHOT),
             "glyph art or an eager reload owns it now"
+        );
+    }
+
+    /// Register a level-tier tree drawing `SHOT` and promote what the level's
+    /// trees name into `registry`, as level install does.
+    fn install_level_tree(app: &mut App, registry: &mut FakeRegistry) {
+        let session = app.session.as_mut().unwrap();
+        session.modal_stack.register_script_trees(
+            vec![crate::app::ui_images::tests::tree(
+                "level.intro",
+                Some(SHOT),
+                &[],
+            )],
+            ScopeTier::Level,
+        );
+        promote_level_images(
+            level_tree_image_keys(&session.modal_stack),
+            &app.content_root,
+            &mut session.mod_ui_images,
+            &mut session.loading_screen,
+            registry,
+        );
+    }
+
+    #[test]
+    fn loading_images_level_tree_promotes_a_loading_only_image_to_eager() {
+        let root = mod_root();
+        let mut app = app_with_loading_tree(root.path(), "ui/e1m1.png");
+        let mut registry = FakeRegistry::default();
+        let capture = postretro_test_log_capture::LogCapture::start();
+
+        install_level_tree(&mut app, &mut registry);
+
+        assert_eq!(
+            registry.0.get(SHOT),
+            Some(&[4, 2]),
+            "install registers it at once"
+        );
+        let images = &app.session.as_ref().unwrap().mod_ui_images;
+        assert_eq!(images.deferred_path(SHOT), None, "no longer loading-only");
+        capture.assert_logged_once(
+            log::Level::Info,
+            "level tree promoted loading-screen image `shots/e1m1` to eager: 4x2 px",
+        );
+
+        // A later load showing the same tree wants nothing: the key is eager.
+        app.begin_loading_screen(&entry());
+        assert!(!active_images(&mut app).is_decoding());
+    }
+
+    #[test]
+    fn loading_images_end_does_not_release_a_promoted_image() {
+        let root = mod_root();
+        for uploaded_first in [true, false] {
+            let mut app = app_with_loading_tree(root.path(), "ui/e1m1.png");
+            app.begin_loading_screen(&entry());
+            let mut registry = FakeRegistry::default();
+            if uploaded_first {
+                // The load uploaded the image before the level installed.
+                poll_until_decoded(&mut app, &mut registry);
+                assert!(registry.contains(SHOT));
+            }
+            install_level_tree(&mut app, &mut registry);
+            // A decode still in flight lands after the promotion; it is stale.
+            poll_until_decoded(&mut app, &mut registry);
+
+            let images = std::mem::take(active_images(&mut app));
+            images.release(&mut registry);
+            assert!(
+                registry.contains(SHOT),
+                "uploaded first: {uploaded_first}; the level tree keeps it"
+            );
+        }
+    }
+
+    #[test]
+    fn loading_images_next_commit_recomputes_the_promoted_set() {
+        let root = mod_root();
+        let mut app = app_with_loading_tree(root.path(), "ui/e1m1.png");
+        let mut registry = FakeRegistry::default();
+        install_level_tree(&mut app, &mut registry);
+        let deferred = |app: &App| {
+            app.session
+                .as_ref()
+                .unwrap()
+                .mod_ui_images
+                .deferred_path(SHOT)
+                .map(str::to_string)
+        };
+        assert_eq!(deferred(&app), None);
+
+        let tree = crate::app::ui_images::tests::tree(TREE, Some(SHOT), &[]);
+        app.commit_loading_manifest(
+            ui_images("ui/e1m1.png"),
+            ModLoading::default(),
+            refs(&[tree]),
+        );
+        assert_eq!(
+            deferred(&app).as_deref(),
+            Some("ui/e1m1.png"),
+            "the commit's own trees decide again; the level tier is not one"
+        );
+    }
+
+    #[test]
+    fn loading_images_worker_that_stops_early_warns_for_what_it_owed() {
+        let (tx, rx) = mpsc::channel::<LoadingImageDecode>();
+        drop(tx);
+        let mut images = LoadingImages {
+            pending: [(SHOT.to_string(), "ui/e1m1.png".to_string())].into(),
+            arrivals: Some(rx),
+            uploaded: BTreeSet::new(),
+        };
+        let capture = postretro_test_log_capture::LogCapture::start();
+        images.upload_arrived(&ModUiImages::default(), &mut FakeRegistry::default());
+        assert!(!images.is_decoding());
+        capture.assert_logged_once(
+            log::Level::Warn,
+            "uiImages.shots/e1m1 did not load: its decode worker stopped",
         );
     }
 }

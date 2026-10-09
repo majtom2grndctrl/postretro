@@ -127,6 +127,15 @@ impl Renderer {
             .is_some_and(|full| full.ui_images.contains(key))
     }
 
+    /// A decode for `key` is in flight: an `image` widget that draws it before
+    /// the upload lands does not warn that the key is unregistered. No-op
+    /// before full init.
+    pub fn expect_ui_image(&self, key: &str) {
+        if let Some(full) = self.full.as_ref() {
+            full.ui_images.expect(key);
+        }
+    }
+
     /// Drop the UI image registered under `key`, releasing its texture. A
     /// retained tree drawing it rebuilds without it. Returns whether the key
     /// was registered; false before full init.

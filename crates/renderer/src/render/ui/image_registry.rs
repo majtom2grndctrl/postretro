@@ -18,7 +18,8 @@ use super::*;
 /// (`engine/` keys, such as the splash logo), the mod manifest's `uiImages`
 /// (name → mod-relative PNG), and glyph art, registered in that order so a
 /// glyph wins a key it shares with a mod image. A loading-only mod image
-/// registers while its loading screen shows and is removed when it ends.
+/// registers while its loading screen shows and is removed when it ends,
+/// unless a level tree promoted it.
 #[derive(Default)]
 pub(crate) struct UiImageRegistry {
     pub(super) entries: std::collections::HashMap<String, UiImageEntry>,
@@ -60,6 +61,13 @@ impl UiImageRegistry {
     /// Whether `key` currently resolves to an uploaded texture.
     pub fn contains(&self, key: &str) -> bool {
         self.entries.contains_key(key)
+    }
+
+    /// A decode for `key` is on its way: a draw that misses it before the
+    /// upload lands is expected, so the missing-key warning skips it. The
+    /// decode reports its own failure.
+    pub fn expect(&self, key: &str) {
+        self.warned_missing.borrow_mut().insert(key.to_string());
     }
 
     /// Drop `key`'s texture and natural size. The size generation moves, so a
@@ -163,6 +171,17 @@ mod tests {
             removed,
             "removing an absent key leaves retained layout alone"
         );
+    }
+
+    #[test]
+    fn image_registry_expected_key_misses_quietly_until_registered() {
+        let registry = UiImageRegistry::default();
+        registry.expect(KEY);
+        let capture = postretro_test_log_capture::LogCapture::start();
+        assert!(registry.resolve(KEY).is_none());
+        assert!(registry.resolve("dev/loading/typo").is_none());
+        capture.assert_not_logged(log::Level::Warn, KEY);
+        capture.assert_logged_once(log::Level::Warn, "'dev/loading/typo' is not registered");
     }
 
     /// Releasing a loading-only image must stop a retained tree drawing it,

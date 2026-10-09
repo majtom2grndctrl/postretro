@@ -1,7 +1,8 @@
 // UI image registry producers other than glyph art: the mod's `uiImages` and
 // the engine's own images. Loaded before glyph art, which re-registers after
 // them so a glyph wins any key both claim. Loading-only mod images are split
-// off here and load with their loading screen instead.
+// off here and load with their loading screen instead, unless a level tree
+// promotes them.
 // See: context/lib/ui.md §5 · context/lib/boot_sequence.md §1
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -81,10 +82,10 @@ pub(crate) struct ModUiImages {
     /// The committed manifest's `uiImages`: key → mod-relative PNG path.
     committed: BTreeMap<String, String>,
     /// The committed entries that load at mod init and on staged reload:
-    /// everything but `deferred`.
+    /// everything but `deferred`, including keys a level tree promoted.
     eager: BTreeMap<String, String>,
-    /// Loading-only keys: named by a loading candidate and by nothing else.
-    /// They load with the loading screen that shows them.
+    /// Loading-only keys: named by a loading candidate and by nothing else,
+    /// and not promoted. They load with the loading screen that shows them.
     deferred: BTreeSet<String>,
     /// Tree backgrounds still to check for an unknown key, once per commit.
     unchecked_backgrounds: Option<Vec<(String, String)>>,
@@ -116,6 +117,39 @@ impl ModUiImages {
             .collect();
         self.committed = images;
         self.unchecked_backgrounds = Some(refs.backgrounds);
+    }
+
+    /// A level tree names `keys`: each loading-only one becomes eager until the
+    /// next commit recomputes the split, so no loading screen's end releases
+    /// it. Returns the promoted `(key, mod-relative path)` pairs, which the
+    /// caller registers now. A promotion keeps already-uploaded eager images
+    /// current, so the next sync does not reload them.
+    pub(crate) fn promote<'a>(
+        &mut self,
+        keys: impl IntoIterator<Item = &'a str>,
+    ) -> Vec<(String, String)> {
+        let was_current = self
+            .loaded
+            .as_ref()
+            .is_some_and(|(images, _)| *images == self.eager);
+        let mut promoted = Vec::new();
+        for key in keys {
+            let Some(path) = self.deferred_path(key).map(str::to_string) else {
+                continue;
+            };
+            self.deferred.remove(key);
+            self.eager.insert(key.to_string(), path.clone());
+            if was_current && let Some((images, _)) = self.loaded.as_mut() {
+                images.insert(key.to_string(), path.clone());
+            }
+            promoted.push((key.to_string(), path));
+        }
+        promoted
+    }
+
+    /// Record the promoted keys that are registered now, as eager loads do.
+    pub(crate) fn note_promoted_registered(&mut self, keys: &HashSet<String>) {
+        self.keys.extend(keys.iter().cloned());
     }
 
     /// The mod-relative path of a loading-only image, or `None` when `key` is
@@ -207,7 +241,8 @@ pub(crate) struct DecodedUiImage {
 
 /// Decode one `uiImages` entry under `mod_root`. The error names the file and
 /// the cause; the caller's warning names the entry. Runs on whichever thread
-/// calls it: the main thread for eager images, a worker for loading-only ones.
+/// calls it: the main thread for eager and promoted images, a worker for
+/// loading-only ones.
 pub(crate) fn decode_ui_image(
     mod_root: &Path,
     key: &str,

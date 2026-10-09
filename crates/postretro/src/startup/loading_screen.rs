@@ -172,6 +172,13 @@ impl App {
                 })
             })
             .unwrap_or_default();
+        // An `Image` drawing one of them misses it until its upload lands;
+        // that is the decode's wait, not an unregistered key.
+        if let Some(renderer) = renderer {
+            for (key, _) in &wanted {
+                renderer.expect_ui_image(key);
+            }
+        }
         state.active = Some(ActiveLoad {
             tree,
             progress: progress.clone(),

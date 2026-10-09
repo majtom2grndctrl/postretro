@@ -506,8 +506,8 @@ A splash projectile does not also apply its ordinary single-target impact
 damage: the struck entity receives splash once, which prevents double-counting.
 A projectile without `splash` keeps direct-impact behavior. Splash damage is
 host-authoritative in connected play; Health changes replicate normally, while
-the firing client keeps its predicted burst and remote observers receive one
-impact burst over the presentation channel.
+the firing client keeps its predicted burst and every other player sees one
+impact burst at the blast point.
 
 `visual.body` is a required discriminated union. Use either a sprite body,
 `{ kind: "sprite", sprite: "projectiles/plasma_blue_orb.png" }`, or a rigid

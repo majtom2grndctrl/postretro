@@ -169,6 +169,8 @@ The digest is deliberately not a hash of the compiled level bytes. That would tu
 
 Combat feedback the player reads and forgets — floating damage numbers and damaged-enemy health or shield facts — is **presented, not replicated**. The host sends it as transient events on a dedicated unreliable channel to the client that earned it; loss and reordering are acceptable. Enemy health and state stay host-only. Clients display the pushed facts without simulating them, so cosmetics never enter a digest or block a join.
 
+**Impact bursts follow the same rule: one per contact on every peer, spawned locally.** The built-in spark burst never crosses the wire. The firing peer's own simulation spawns it: the host's local fire, or the client's predicted hitscan and projectile contact, gated like its `impact` event, so a dry or silent pull shows none and a later rejection does not retract it. Every other client spawns it from the reliable observer impact cue's contacts, using each contact's normal, and the host spawns it for a client's shot at HIT ingestion from the validated contacts. One route per peer is the invariant. Splash once also sent observers a burst over the Presentation channel, which would have doubled the cue's, so the cue is now the only observer route. An impact that publishes no cue (no `shot_id`, or more contacts than a cue carries) shows no burst to observers.
+
 Damaged-enemy overlays are private per recipient. The host renderer owns only
 host-local feedback; each remote recipient has an independent cap and linger
 lifecycle. Equal-time cap decisions use the stable non-recycled `NetworkId`, so

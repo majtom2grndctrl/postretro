@@ -1,14 +1,16 @@
 //! Measurement harness: SH mandatory bytes per camera cell under the id-51 reach.
-//! See: context/plans/in-progress/sh-streaming--reveal-gate-and-warm-horizon (task 1)
+//! See: context/lib/rendering_pipeline.md §4 (Cluster SH residency)
 
-// The brief's go/no-go gate. For every camera cell (not solid, not exterior),
-// the SH mandatory tier the id-51 reach would hold: the clusters of the
-// cell's id-51 entries with lead <= L (lead 0 is the cell's own dilated
-// visible set, so Visible is inside it), plus pinned clusters, closed over
-// baked owners. Bytes are the controller's logical charge per cluster
-// (`requested_resident_bytes`), the figure its 256 MiB floor compares after
-// fixed metadata and whole-resident scatter. Beside it, the lightmap's
-// mandatory pair bytes for the same cell and L, as its controller demands.
+// The go/no-go check for an id-51 mandatory tier: whether its worst cell,
+// with fixed metadata, fits the SH floor. For every camera cell (not solid,
+// not exterior), the SH mandatory tier the id-51 reach would hold: the
+// clusters of the cell's id-51 entries with lead <= L (lead 0 is the cell's
+// own dilated visible set, so Visible is inside it), plus pinned clusters,
+// closed over baked owners. Bytes are the controller's logical charge per
+// cluster (`requested_resident_bytes`), the figure its 256 MiB floor
+// compares after fixed metadata and whole-resident scatter. Beside it, the
+// lightmap's mandatory pair bytes for the same cell and L, as its controller
+// demands.
 //
 // Run from the workspace root, once per PRL:
 //

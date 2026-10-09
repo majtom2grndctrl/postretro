@@ -330,6 +330,10 @@ impl Renderer {
     /// Pre-scene compute work encoded before any render pass: BVH/visibility cull,
     /// animated-lightmap compose, and SH compose. All write storage the forward
     /// pass later samples, so they precede the depth pre-pass.
+    ///
+    /// `render_world` gates the cull and the animated-lightmap compose;
+    /// `composes_sh` gates the SH compose. They are independent: a
+    /// compose-only frame (Settling) composes SH without drawing the world.
     pub(super) fn record_pre_scene_compute(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,

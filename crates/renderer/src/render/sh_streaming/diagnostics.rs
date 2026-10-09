@@ -65,20 +65,25 @@ fn duration_micros(elapsed: Duration) -> u64 {
 }
 
 /// Visible SH misses by cause, each pointing at the lever a later change
-/// would pull. Every miss lands in exactly one bucket.
+/// would pull. Every miss lands in exactly one bucket. A cluster that waits
+/// on its owner closure, unrequested or read but not installable, takes the
+/// bucket of the wait it is behind, followed down the owner chain, and any
+/// failed owner makes it `failed`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ShMissBuckets {
     /// Not targeted before it became visible: outside the reach.
     pub outside_reach: u64,
-    /// Targeted but trimmed by budget pressure.
+    /// Trimmed from the targets by budget pressure.
     pub trimmed_by_pressure: u64,
-    /// Targeted, its read queued or in flight.
+    /// Targeted, its read waiting for a permit, queued or in flight.
     pub read_in_flight: u64,
-    /// Read, waiting on the per-drain install budget.
+    /// Read, waiting on the per-drain install budget. A chunk the renderer
+    /// defers while a pool growth waits on a retiring generation counts
+    /// here too.
     pub held_by_drain_budget: u64,
     /// Installed, waiting for its compose to be submitted.
     pub awaiting_compose: u64,
-    /// Its read or install failed.
+    /// Its read or install failed, or an owner's did.
     pub failed: u64,
 }
 
@@ -105,7 +110,9 @@ pub struct ShStreamingLiveDiagnostics {
     pub misses: u64,
     /// `misses` by cause; the buckets sum to it.
     pub miss_buckets: ShMissBuckets,
-    /// Requests issued for a cluster evicted earlier in the level.
+    /// Requests issued for a cluster evicted earlier in the level, whatever
+    /// class requests it: a hysteresis-class read of a departing cluster
+    /// counts as well as one the view or reach waits on.
     pub rereads: u64,
     pub installs: u64,
     pub evictions: u64,

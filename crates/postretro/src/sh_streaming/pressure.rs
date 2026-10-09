@@ -19,8 +19,8 @@ impl ShResidencyController {
         // pinned while any other target still depends on it; owner closure is
         // then preserved before the renderer independently checks installed
         // dependencies at the release boundary.
-        // Recompute eligibility after every suppression. A prefetch owner may
-        // initially be pinned only by a colder prefetch dependent; once that
+        // Recompute eligibility after every suppression. A band owner may
+        // initially be pinned only by a colder band dependent; once that
         // dependent leaves, the owner is eligible in this same bounded drain
         // rather than forcing an avoidable growth/extra-frame residency.
         while projected > nominal {
@@ -127,10 +127,7 @@ impl ShResidencyController {
                 (state.state == ClusterResidencyState::Sampleable
                     && !self.targets.contains(&(cluster_id as u32))
                     && !self.topology.hints.pinned.contains(&(cluster_id as u32))
-                    && !matches!(
-                        state.class,
-                        Some(TargetClass::Visible | TargetClass::Pinned)
-                    ))
+                    && !state.class.is_some_and(TargetClass::is_mandatory))
                 .then_some(cluster_id as u32)
             })
             .collect();
@@ -203,9 +200,9 @@ impl ShResidencyController {
     }
 
     /// Pressure yields by class, then lower authored priority, then the
-    /// farthest reach lead (outside the reach counts as farthest), then LRU. Expired
-    /// departures deliberately keep `compare_eviction_keys` above, because
-    /// they are no longer policy work.
+    /// farthest reach lead (outside the reach counts as farthest), then LRU.
+    /// Expired departures deliberately keep `compare_eviction_keys` above,
+    /// because they are no longer policy work.
     fn compare_pressure_keys(&self, left: u32, right: u32) -> Ordering {
         self.pressure_class_rank(left)
             .cmp(&self.pressure_class_rank(right))

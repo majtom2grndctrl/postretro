@@ -1,4 +1,4 @@
-//! Lightmap controller preload: synchronous pair reads into one drain batch.
+//! Lightmap controller preload for capture and tests: synchronous pair reads.
 //! See: context/lib/rendering_pipeline.md §4 (Lightmap cell-block residency)
 
 use postretro_level_loader::{LightmapBlockClass, LightmapDrainBatch, PreparedLightmapBlock};

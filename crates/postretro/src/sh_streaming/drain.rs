@@ -18,7 +18,7 @@ impl ShResidencyController {
     }
 
     /// Async-only drain policy. Departed residents leave before pressure can
-    /// suppress cold prefetch, and every eviction remains only a request until
+    /// suppress cold band work, and every eviction remains only a request until
     /// the renderer confirms that no installed dependent pins its owner.
     #[cfg(any(test, feature = "capture"))]
     pub(crate) fn take_async_drain_batch(

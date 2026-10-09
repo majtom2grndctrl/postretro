@@ -868,7 +868,7 @@ fn participation_cause(
     if let Some(cause) = parity_cause(installed_mod_digest, installed_level, declaration) {
         return Some(cause);
     }
-    // Parity holding implies an installed level; stay total regardless.
+    // Parity matching implies an installed level; stay total regardless.
     let Some((identity, _)) = installed_level else {
         return Some(HoldingCause::HostLevelAbsent);
     };
@@ -1254,7 +1254,7 @@ impl NetClient {
 
     /// Whether the host has activated the current participation generation.
     /// Gameplay-local work such as private persistence must pause while a
-    /// parity demotion leaves the transport connection open.
+    /// parity or reveal demotion leaves the transport connection open.
     #[must_use]
     pub fn is_participating(&self) -> bool {
         self.active_participation_epoch.is_some()
@@ -1605,13 +1605,7 @@ mod tests {
     }
 
     fn matching_relay_pair() -> (NetServer, NetClient) {
-        let (mut server, mut client) = relay_pair();
-        server.set_mod_identity("postretro.test".to_string(), "1".to_string());
-        server.set_mod_digest(Some([7; 32]));
-        server.set_level_parity(Some(("test-level".to_string(), [9; 32])));
-        client.set_mod_identity("postretro.test".to_string(), "1".to_string());
-        client.set_mod_digest(Some([7; 32]));
-        client.set_level_parity(Some(("test-level".to_string(), [9; 32])));
+        let (mut server, mut client) = settling_relay_pair();
         reveal_both(&mut server, &mut client, "test-level");
         (server, client)
     }
@@ -2878,7 +2872,7 @@ mod tests {
         relay_client_to_server(&mut client, &mut server);
         let _ = server.poll_handshakes();
 
-        // About 11.5 s of polls, past the engine's ten-second Settling timeout.
+        // About 11.5 s of polls, well past any bounded settle.
         for _ in 0..(12 * 60) {
             relay_client_to_server(&mut client, &mut server);
             assert!(server.poll_handshakes().lifecycle.is_empty());
@@ -3004,10 +2998,10 @@ mod tests {
         relay_client_to_server(&mut client, &mut server);
         assert!(server.poll_handshakes().lifecycle.is_empty());
 
-        // Same-identity restart: unload clears the host's reveal before the
-        // reinstall publishes parity.
-        server.set_revealed_level(None);
+        // Same-identity restart: unload retracts parity then the reveal, as
+        // `clear_net_level_parity` does, before the reinstall publishes parity.
         server.set_level_parity(None);
+        server.set_revealed_level(None);
         server.set_level_parity(Some(("test-level".to_string(), [9; 32])));
         let restarted = server.poll_handshakes();
         assert_eq!(participating_entries(&restarted.lifecycle), 0);
@@ -3060,8 +3054,8 @@ mod tests {
     fn host_restart_repromotes_revealed_client_once_in_either_order() {
         // Running client: no client traffic after the restart.
         let (mut server, _client) = participate_relay_pair();
-        server.set_revealed_level(None);
         server.set_level_parity(None);
+        server.set_revealed_level(None);
         server.set_level_parity(Some(("test-level".to_string(), [9; 32])));
         let mut lifecycle = server.poll_handshakes().lifecycle;
         server.set_revealed_level(Some("test-level".to_string()));

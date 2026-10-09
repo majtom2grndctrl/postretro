@@ -16,7 +16,7 @@ use crate::lighting::lightmap::LightmapStreamCounters;
 /// every other count is cumulative since the level's streaming began.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct LightmapStreamingLiveDiagnostics {
-    // Levers in force.
+    // Levers and lead in force.
     pub pool_cap_layers: u32,
     pub lead_metres: f32,
     pub max_lead_metres: f32,

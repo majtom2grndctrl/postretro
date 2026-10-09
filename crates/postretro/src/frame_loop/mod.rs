@@ -66,9 +66,9 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
     app.drain_observe_live_requests();
 
     // Seat holds measure elapsed rendered time rather than fixed
-    // simulation time: Frontend and Loading keep polling a host even
-    // though neither runs the simulation loop. Advance exactly here,
-    // once per frame, because a Splash/install frame can drain the
+    // simulation time: Frontend, Loading and Settling keep polling a
+    // host even though none runs the simulation loop. Advance exactly
+    // here, once per frame, because a Splash/install frame can drain the
     // transport more than once.
     app.advance_seat_hold_clock(frame_dt);
 
@@ -89,6 +89,9 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
         app.drain_script_reload_requests();
     }
 
+    // A Settling redraw that reaches the Running path below is the reveal
+    // frame: its release was decided on the previous frame.
+    let reveal_frame = app.boot_state == BootState::Settling;
     if !app.drive_boot_state_for_redraw(event_loop, frame_dt) {
         app.service_window_modes();
         return;
@@ -96,8 +99,8 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
 
     // Advance the timed-reaction scheduler's monotonic frame counter
     // after the boot/install boundary but before any same-frame UI
-    // dispatch or gameplay ticks. A `levelLoad` wait enrolled while a
-    // ready world installs above therefore advances on this redraw's
+    // dispatch or gameplay ticks. A `levelLoad` wait enrolled at install,
+    // held through Settling, therefore advances on the reveal redraw's
     // first tick. A UI wait enrolled below stamps the new counter and
     // remains protected from this redraw's ticks.
     // Distinct from `frame_timing.begin_frame`.
@@ -357,11 +360,13 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
     // mouse_axes and look state belongs to the render-rate path.
     // Capturing UI still drains raw input to prevent stale deltas from
     // replaying later, but the consumed look is neutral so player aim
-    // cannot move while a modal owns input.
+    // cannot move while a modal owns input. The reveal frame's look is
+    // neutral too, so it presents the settled orientation even under a
+    // stick held through the hold.
     let gameplay_snapshot = {
         let session = app.session.as_mut().expect("running session installed");
         let drained_look = session.input_system.drain_look_inputs();
-        let look = if ui_captures_gameplay {
+        let look = if ui_captures_gameplay || reveal_frame {
             input::LookInputs::default()
         } else {
             drained_look
@@ -2495,7 +2500,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                 );
             }
             if app.pending_level_log {
-                // First level frame just presented — close out
+                // Reveal frame just presented — close out
                 // log line C with the present-cost of the frame
                 // the user is about to see.
                 app.level_timings.record("first_level_frame");

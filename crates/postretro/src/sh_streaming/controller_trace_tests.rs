@@ -5,12 +5,13 @@
 //! `session/sh_async_workers/issuer_trace_tests.rs`.
 //!
 //! The driver follows the production async frame (`LevelStreaming::prepare_drains`
-//! with SH alone): update targets, admit last frame's completions, promote,
-//! drain plus requests, then apply the renderer's outcome. A
-//! simulated issuer completes every outstanding request next frame. It
-//! cancels one whose cluster left the target set, unless the schedule marked
-//! that read as already in flight; in-flight reads complete as prepared. The
-//! simulated renderer accepts every ready chunk and confirms every eviction.
+//! with SH alone): promote last frame's installs, update targets, admit last
+//! frame's completions, drain plus requests, then apply the renderer's
+//! outcome. A simulated issuer completes every outstanding request next
+//! frame. It cancels one whose cluster left the target set, unless the
+//! schedule marked that read as already in flight; in-flight reads complete
+//! as prepared. The simulated renderer accepts every ready chunk and
+//! confirms every eviction.
 //!
 //! Regenerate only when a behaviour change is intended:
 //! `POSTRETRO_REGEN_SH_TRACE=1 cargo test -p postretro --bin postretro sh_trace`.
@@ -66,29 +67,36 @@ const fn frame(
     }
 }
 
-/// Cells 0..11 in a one-metre chain, one cluster per cell. Cluster 11 is
-/// pinned; cluster 5's halo is owned by cluster 4; an authored seam joins 6
-/// and 9; cluster 7 (priority 3) and 9 (priority 2) carry authored priority.
+/// Cells 0..11 in a chain, four metres a hop, one cluster per cell. Cluster
+/// 11 is pinned; cluster 5's halo is owned by cluster 4; an authored seam
+/// joins 6 and 9; cluster 7 (priority 3) and 9 (priority 2) carry authored
+/// priority.
 const SCHEDULE: &[Frame] = &[
     // Spawn: visible 0-1, lead 0..4, band 5..6, pinned 11. Permits cap the
     // first requests.
     frame(0.0, 0, &[0, 1], &[]),
     frame(0.1, 0, &[0, 1], &[]),
     frame(0.2, 0, &[0, 1], &[]),
-    // Seam near side 6 visible from cell 3: 9 is seam-warm only.
+    // Seam near side 6 visible from cell 3: 9, also in the band, is seam-warm.
     frame(0.3, 3, &[3, 6], &[]),
-    // The seam closes before 9 is read: its queued request is cancelled.
+    // The seam closes as 9's read lands. 9 falls back to the band, pressure
+    // trims band clusters 8 and 9, and the drain drops 9's ready read.
     frame(0.4, 3, &[3], &[]),
+    // The seam reopens: 9 is seam-warm again, and pressure trims it again
+    // within the same drain, so the published targets do not change.
     frame(0.5, 3, &[3, 6], &[]),
-    // Closes again, but 9's read is already in flight this time.
+    // Closes again. No read of 9 is outstanding, so its in-flight mark holds
+    // nothing.
     frame(0.6, 3, &[3], &[9]),
-    // The in-flight read lands for a departed cluster.
     frame(0.7, 3, &[3], &[]),
-    // The reach covers the whole chain from the middle.
+    // The reach covers the whole chain from the middle; pressure trims and
+    // evicts band clusters 0 and 1.
     frame(1.0, 6, &[6, 7], &[]),
     frame(1.1, 6, &[6, 7], &[]),
     frame(1.2, 6, &[6, 7], &[]),
-    // Far end: reach 4..11; 0..3 leave the horizon and enter hysteresis.
+    // Far end: reach 4..11, and pressure trims band clusters 4 and 5. 0..3
+    // leave the horizon and enter hysteresis; 0 and 1, evicted earlier, are
+    // read again as hysteresis targets.
     frame(3.5, 10, &[10, 11], &[]),
     frame(3.6, 10, &[10, 11], &[]),
     frame(3.7, 10, &[10, 11], &[]),
@@ -344,6 +352,7 @@ fn run_schedule() -> String {
             ids(frame.in_flight.iter().copied()),
         )
         .unwrap();
+        controller.promote_composed_clusters();
         let visible = VisibleCells::Culled(frame.visible_cells.to_vec());
         controller
             .update_targets(
@@ -359,7 +368,6 @@ fn run_schedule() -> String {
             &mut reading,
             &mut out,
         );
-        controller.promote_composed_clusters();
         let (batch, requests) = controller.take_async_drain_batch_and_requests().unwrap();
         record_drain(&controller, &batch, &mut out);
         let issued: Vec<String> = requests

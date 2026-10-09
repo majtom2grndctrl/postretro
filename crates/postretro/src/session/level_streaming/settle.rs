@@ -17,9 +17,9 @@ pub(crate) enum ResourceSettle {
 }
 
 impl ResourceSettle {
-    /// `unsettled` is a session's count, `None` before its first demand
-    /// update; `None` for the session itself means the resource does not
-    /// stream.
+    /// `session` is `None` when the resource does not stream; otherwise it
+    /// carries the session's unsettled count, itself `None` before the
+    /// session's first demand update.
     pub(crate) fn of(session: Option<Option<usize>>) -> Self {
         match session {
             None => Self::NotStreamed,
@@ -93,7 +93,7 @@ mod tests {
         assert!(report.settled());
     }
 
-    // P1: an empty target list before the first demand update is "not yet
+    // An empty target list before the first demand update is "not yet
     // asked", whatever the session would count.
     #[test]
     fn settle_check_refuses_before_first_settle_pose_update() {

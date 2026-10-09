@@ -338,7 +338,10 @@ impl App {
         // endpoint before checking its channel, without touching level state.
         let _ = self.poll_world_less_transport(frame_dt);
         match self.next_loading_step() {
-            LoadingStep::Install(payload) => self.finish_level_payload(*payload, event_loop),
+            LoadingStep::Install(payload) => {
+                self.finish_level_payload(*payload, event_loop);
+                false
+            }
             LoadingStep::Fail(reason) => {
                 self.finish_level_failure(reason, event_loop);
                 false
@@ -419,12 +422,12 @@ impl App {
         &mut self,
         payload: crate::startup::worker::LevelPayload,
         event_loop: &ActiveEventLoop,
-    ) -> bool {
+    ) {
         match payload.level {
             Some(world) => {
                 if let Err(err) = self.install_level_payload(world, payload.prm_cache_root) {
                     self.finish_level_failure(err.to_string(), event_loop);
-                    return false;
+                    return;
                 }
                 // The level's streaming sessions exist before Settling asks
                 // them anything, so a missing session means "not streamed".
@@ -432,7 +435,7 @@ impl App {
                     log::error!("[Loader] level streaming install failed: {err:#}");
                     self.exit_result = Err(err);
                     event_loop.exit();
-                    return false;
+                    return;
                 }
                 // The install frame never counts, and no CPU timing surface may
                 // show a window from the previous level.
@@ -448,14 +451,12 @@ impl App {
                 // active, until its first frame's streamed set is resident.
                 self.enter_settling(std::time::Instant::now());
                 self.request_redraw();
-                false
             }
             None => {
                 self.finish_level_failure(
                     "worker delivered no level payload".to_string(),
                     event_loop,
                 );
-                false
             }
         }
     }
@@ -967,8 +968,8 @@ impl App {
             );
         }
         // Put the camera at the followed local pawn's eye (the point every tick
-        // moves it to), else leave it where the start pose placed it, then on
-        // the presented pose: that spawn pose, or the menu pose when the
+        // moves it to), else leave it where the start pose placed it, then move
+        // it to the presented pose: that spawn pose, or the menu pose when the
         // frontend menu is up. Both interpolation endpoints hold it, so a frame
         // before the first tick renders from the pose Settling made resident,
         // and the first tick blends from it rather than from the pawn's origin
@@ -2968,7 +2969,7 @@ pub(crate) mod tests {
             .next()
             .unwrap();
         assert!(rejection.contains("self.finish_level_failure(err.to_string(), event_loop);"));
-        assert!(rejection.contains("return false;"));
+        assert!(rejection.contains("return;"));
         let failure = source
             .split("fn finish_level_failure(")
             .nth(1)

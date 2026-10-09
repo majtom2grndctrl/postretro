@@ -1,5 +1,6 @@
 //! Streaming tab: SH cluster residency and lightmap cell-block residency
-//! gauges, cumulative counters, and the lightmap pool-cap and lead levers.
+//! gauges, cumulative counters, the lightmap pool-cap lever and the level's
+//! lead L lever.
 //!
 //! Rows are built as plain label/value strings first so the grouping and
 //! formatting are testable without an egui context.

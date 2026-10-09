@@ -441,7 +441,7 @@ fn sh_only_level_streams_through_the_level_drain_step_and_retires_cleanly() {
 // Settling's drains make the presented pose's lightmap set resident through
 // the level owner, with no synchronous read at install: the settle answer
 // starts "not yet asked", reaches settled, and the session install created is
-// the one still current afterwards (L4, L7).
+// the one still current afterwards.
 #[test]
 fn settling_frames_install_the_settle_set_and_keep_the_install_session() {
     let prl = StreamedLightmapPrl::write();
@@ -465,7 +465,7 @@ fn settling_frames_install_the_settle_set_and_keep_the_install_session() {
     );
 
     // Settle in cell 0: cells 0 and 1 are mandatory at the default lead, and
-    // cell 2 is the prefetch band.
+    // cell 2 is the band.
     let cpu = StageFrame::default();
     let visible = VisibleCells::Culled(vec![0, 1]);
     wait_until("the settle set installs", || {
@@ -663,8 +663,8 @@ fn a_mid_level_lightmap_decline_keeps_sh_for_its_pending_outcome() {
         level.lightmap().is_none(),
         "no lightmap work after the decline"
     );
-    // P11: L is the level's; a lightmap decline leaves the stage, and its
-    // lead, to SH.
+    // L is the level's; a lightmap decline leaves the stage, and its lead,
+    // to SH.
     assert_eq!(
         level.cell_demand().map(CellDemand::lead),
         Some(CellDemand::new(view.residency_set.max_lead).lead()),
@@ -887,8 +887,83 @@ fn retirement_empties_the_old_completion_queue_its_issuer_is_blocked_on() {
     wait_until("the blocked issuer to finish", || retirement.try_finish());
 }
 
-// L8: install performs no synchronous lightmap read. Settling's drains bring
-// the spawn set in; only capture and tests preload.
+/// Whether a source file is itself a test module or test fixture, by the
+/// crate's naming convention.
+fn is_test_source(path: &std::path::Path) -> bool {
+    let stem = path.file_stem().unwrap().to_string_lossy();
+    stem == "tests"
+        || stem.ends_with("_tests")
+        || stem.ends_with("_test")
+        || stem.contains("test_fixture")
+}
+
+/// `source` without its `#[cfg(test)]` modules: out-of-line declarations
+/// (`mod name;`, with any `#[path]`) are dropped, and an inline `mod name {`
+/// is dropped through its closing brace, found at the `mod` line's own
+/// indent in formatted source. Every other line stays, test-only items
+/// included.
+fn production_text(source: &str) -> String {
+    let lines: Vec<&str> = source.lines().collect();
+    let mut kept = Vec::new();
+    let mut index = 0;
+    while index < lines.len() {
+        if lines[index].trim() != "#[cfg(test)]" {
+            kept.push(lines[index]);
+            index += 1;
+            continue;
+        }
+        let mut item = index + 1;
+        while lines
+            .get(item)
+            .is_some_and(|line| line.trim_start().starts_with("#["))
+        {
+            item += 1;
+        }
+        let Some(&line) = lines.get(item) else {
+            break;
+        };
+        let declaration = line.trim();
+        let declaration = ["pub(crate) ", "pub(super) ", "pub "]
+            .iter()
+            .find_map(|visibility| declaration.strip_prefix(visibility))
+            .unwrap_or(declaration);
+        if declaration.starts_with("mod ") && declaration.ends_with(';') {
+            index = item + 1;
+        } else if declaration.starts_with("mod ") && declaration.ends_with('{') {
+            let close = format!("{}}}", &line[..line.len() - line.trim_start().len()]);
+            index = lines[item..]
+                .iter()
+                .position(|candidate| *candidate == close)
+                .map_or(lines.len(), |end| item + end + 1);
+        } else {
+            kept.push(lines[index]);
+            index += 1;
+        }
+    }
+    kept.join("\n")
+}
+
+#[test]
+fn production_text_keeps_the_module_body_after_a_test_declaration() {
+    let source = [
+        "mod hooks;",
+        "#[cfg(test)]",
+        "mod tests;",
+        "fn install() { session.preload(&set); }",
+        "#[cfg(test)]",
+        "mod inline {",
+        "    fn nested() {}",
+        "}",
+    ]
+    .join("\n");
+    assert_eq!(
+        production_text(&source),
+        "mod hooks;\nfn install() { session.preload(&set); }"
+    );
+}
+
+// Install performs no synchronous lightmap read. Settling's drains bring the
+// spawn set in; only capture and tests preload.
 #[test]
 fn no_production_path_calls_spawn_lightmap_preload() {
     let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
@@ -904,11 +979,11 @@ fn no_production_path_calls_spawn_lightmap_preload() {
                 continue;
             }
             let name = path.file_name().unwrap().to_string_lossy();
-            if !name.ends_with(".rs") || name.contains("test") {
+            if !name.ends_with(".rs") || is_test_source(&path) {
                 continue;
             }
             let source = std::fs::read_to_string(&path).unwrap();
-            let production = source.split("#[cfg(test)]").next().unwrap();
+            let production = production_text(&source);
             for needle in ["install_spawn_lightmap", ".preload(&", ".preload_batch("] {
                 if production.contains(needle) && !path.ends_with("lightmap_residency/mod.rs") {
                     offenders.push(format!("{}: {needle}", path.display()));

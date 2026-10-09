@@ -90,9 +90,9 @@ fn parked_batch_holds_later_batches_until_the_renderer_returns_its_outcome() {
     assert_eq!(session.ledger().in_memory_bytes(), 0);
 }
 
-// Level install's preload through the session: the renderer's drain installs
-// the spawn cell's mandatory set in one batch, the outcome is applied, and the
-// session then drains frames as usual.
+// A synchronous preload through the session, approximating a settled entry:
+// the renderer's drain installs the camera cell's mandatory set in one batch,
+// the outcome is applied, and the session then drains frames as usual.
 #[test]
 fn session_preload_installs_the_spawn_set_through_one_renderer_drain() {
     let source = TestBlockSource::new(corridor_blocks(64, true));

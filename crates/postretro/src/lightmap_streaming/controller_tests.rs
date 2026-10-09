@@ -1137,8 +1137,9 @@ fn settle_check_waits_on_drawn_blocks_on_every_visibility_path() {
     }
 }
 
-// L10, lightmap half: once Settling installs every drawn block, the reveal
-// frame's identical non-portal view counts none drawn and not resident.
+// Lightmap half of the no-visible-miss reveal: once Settling installs every
+// drawn block, the reveal frame's identical non-portal view counts none drawn
+// and not resident.
 #[test]
 fn settled_reveal_frame_counts_no_drawn_block_missing() {
     let path = VisibilityPath::NoPortalsFallback;

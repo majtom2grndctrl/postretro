@@ -1508,7 +1508,7 @@ fn sync_proof_drain_keeps_departed_residents_without_budget_eviction() {
 }
 
 #[test]
-fn pressure_suppresses_prefetch_persistently_without_evicting_visible_work() {
+fn pressure_suppresses_band_persistently_without_evicting_visible_work() {
     let mut controller = controller_with_nominal_budget(
         topology(
             vec![0, 1, 2, 3],
@@ -1551,7 +1551,7 @@ fn pressure_suppresses_prefetch_persistently_without_evicting_visible_work() {
         .unwrap();
     assert!(
         controller.is_targeted(1),
-        "a changed horizon clears suppression so the prefetch can recover"
+        "a changed horizon clears suppression so the band can recover"
     );
     assert!(controller.is_targeted(3));
 }
@@ -1617,7 +1617,7 @@ fn pressure_recovery_waits_until_owner_closed_horizon_fits() {
 }
 
 #[test]
-fn pressure_rechecks_a_prefetch_owner_after_its_prefetch_dependent_is_suppressed() {
+fn pressure_rechecks_a_band_owner_after_its_band_dependent_is_suppressed() {
     let mut controller = controller_with_nominal_budget(
         topology(
             vec![0, 1, 2],
@@ -1676,7 +1676,7 @@ fn pressure_owner_recheck_does_not_log_a_transient_overshoot() {
 }
 
 #[test]
-fn pressure_does_not_evict_a_just_installed_prefetch_cluster() {
+fn pressure_does_not_evict_a_just_installed_band_cluster() {
     let mut controller = controller_with_nominal_budget(
         topology(
             vec![0, 1],
@@ -1723,7 +1723,7 @@ fn non_evictable_overshoot_logs_once_per_onset_and_remains_separate_from_replace
 }
 
 #[test]
-fn a_pinned_prefetch_owner_counts_as_non_evictable_overshoot() {
+fn a_pinned_band_owner_counts_as_non_evictable_overshoot() {
     let mut controller = controller_with_nominal_budget(
         topology(
             vec![0, 1, 2],
@@ -1794,7 +1794,7 @@ fn outcome_preflight_does_not_evict_before_later_install_counter_overflow() {
 
 #[test]
 fn settle_check_waits_on_each_sh_settle_tier_and_ignores_optional_targets() {
-    // Cluster 0 is drawn and owned by 2; 1 neighbours 0 (prefetch); 3 is pinned.
+    // Cluster 0 is drawn and owned by 2; 1 neighbours 0 (band); 3 is pinned.
     let mut controller = controller(hinted_topology(
         vec![0, 1, 2, 3],
         vec![vec![1], vec![0], vec![], vec![]],
@@ -1829,6 +1829,6 @@ fn settle_check_waits_on_each_sh_settle_tier_and_ignores_optional_targets() {
     assert_ne!(
         controller.state(1),
         Some(ClusterResidencyState::Sampleable),
-        "the prefetch target is still cold, and the set settles anyway"
+        "the band target is still cold, and the set settles anyway"
     );
 }

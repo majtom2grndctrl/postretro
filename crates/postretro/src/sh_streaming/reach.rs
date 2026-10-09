@@ -9,9 +9,9 @@ use crate::streaming::cell_demand::{DemandFrame, PathDemand};
 
 /// The clusters the camera cell's id-51 set reaches, each at its nearest
 /// cell's lead. Rebuilt only when the camera cell or lead L changes, so
-/// turning in place or standing still costs no lookup. Lead and band split at the stage's L:
-/// within L is mandatory reach, past it (up to the baked maximum) is the
-/// optional band.
+/// turning in place or standing still costs no lookup. Lead and band split
+/// at the stage's L: within L is mandatory reach, past it (up to the baked
+/// maximum) is the optional band.
 #[derive(Debug, Default)]
 pub(super) struct ShReach {
     /// Camera cell and L the clusters were computed for.
@@ -24,7 +24,8 @@ pub(super) struct ShReach {
 impl ShReach {
     /// Applies one frame's cell demand; `None` (no usable id 51) empties the
     /// reach: no lead or band tier. A solid or exterior camera cell with no
-    /// baked set, and the empty world, keep the current reach.
+    /// baked set, and the empty world, keep the current reach, so a change of
+    /// L takes effect once the camera is in a cell with a baked set.
     pub(super) fn update(
         &mut self,
         frame: Option<DemandFrame<'_>>,

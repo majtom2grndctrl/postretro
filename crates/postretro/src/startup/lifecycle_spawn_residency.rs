@@ -20,10 +20,9 @@ impl App {
         })
     }
 
-    /// Runs once the rest of level install has placed the camera: creates
-    /// the level's streaming sessions. Nothing is read here; Settling's drains
-    /// make the presented pose's set resident. A failure is fatal, as it is
-    /// for the frame's streaming step.
+    /// Creates the level's streaming sessions at install. Nothing is read
+    /// here; Settling's drains make the presented pose's set resident. A
+    /// failure is fatal, as it is for the frame's streaming step.
     pub(super) fn install_level_streaming_sessions(&mut self) -> Result<()> {
         let (Some(world), Some(renderer), Some(session)) = (
             self.level.as_ref(),

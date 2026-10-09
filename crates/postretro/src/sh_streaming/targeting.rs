@@ -9,6 +9,17 @@ use crate::streaming::cell_demand::DemandFrame;
 
 use super::*;
 
+/// The one bucket a visible miss lands in; see `ShMissBuckets`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MissCause {
+    OutsideReach,
+    TrimmedByPressure,
+    ReadInFlight,
+    HeldByDrainBudget,
+    AwaitingCompose,
+    Failed,
+}
+
 impl ShResidencyController {
     /// Uses monotonic render seconds, not a frame count, so the two-second
     /// retention window is identical at 30, 60, and 144 Hz. The horizon is
@@ -230,24 +241,98 @@ impl ShResidencyController {
     }
 
     fn miss_bucket(&mut self, cluster_id: u32) -> &mut u64 {
-        let state = &self.states[cluster_id as usize];
-        let targeted = self.targets.contains(&cluster_id);
+        let cause = self.miss_cause(cluster_id);
         let buckets = &mut self.counters.miss_buckets;
+        match cause {
+            MissCause::OutsideReach => &mut buckets.outside_reach,
+            MissCause::TrimmedByPressure => &mut buckets.trimmed_by_pressure,
+            MissCause::ReadInFlight => &mut buckets.read_in_flight,
+            MissCause::HeldByDrainBudget => &mut buckets.held_by_drain_budget,
+            MissCause::AwaitingCompose => &mut buckets.awaiting_compose,
+            MissCause::Failed => &mut buckets.failed,
+        }
+    }
+
+    /// A targeted cluster that is not requested (`Absent`) or not installed
+    /// (`Ready`) because of its owner closure takes the owner's cause: a
+    /// dependent is requested and installed only after its owners.
+    fn miss_cause(&self, cluster_id: u32) -> MissCause {
+        let state = &self.states[cluster_id as usize];
         match state.state {
-            ClusterResidencyState::Failed => &mut buckets.failed,
-            ClusterResidencyState::InstalledUncomposed => &mut buckets.awaiting_compose,
-            ClusterResidencyState::Ready => &mut buckets.held_by_drain_budget,
-            ClusterResidencyState::Queued => &mut buckets.read_in_flight,
+            ClusterResidencyState::Failed => MissCause::Failed,
+            ClusterResidencyState::InstalledUncomposed => MissCause::AwaitingCompose,
+            ClusterResidencyState::Queued => MissCause::ReadInFlight,
+            ClusterResidencyState::Ready => self
+                .owner_wait_cause(cluster_id)
+                .unwrap_or(MissCause::HeldByDrainBudget),
             ClusterResidencyState::Absent | ClusterResidencyState::Sampleable => {
                 if state.suppressed {
-                    &mut buckets.trimmed_by_pressure
-                } else if targeted {
-                    // Targeted and waiting for a permit or the issuer.
-                    &mut buckets.read_in_flight
+                    MissCause::TrimmedByPressure
+                } else if self.targets.contains(&cluster_id) {
+                    // Targeted and waiting for an owner, a permit or the issuer.
+                    self.owner_wait_cause(cluster_id)
+                        .unwrap_or(MissCause::ReadInFlight)
                 } else {
-                    &mut buckets.outside_reach
+                    MissCause::OutsideReach
                 }
             }
+        }
+    }
+
+    /// `None` when every owner in the closure is Sampleable. A failed owner
+    /// anywhere in the closure wins, since no read gets past it. Otherwise the
+    /// first non-Sampleable owner names the cause, following its own owner
+    /// wait down the chain the way requests and installs do.
+    fn owner_wait_cause(&self, cluster_id: u32) -> Option<MissCause> {
+        let mut pending = VecDeque::from([cluster_id]);
+        let mut seen = BTreeSet::from([cluster_id]);
+        while let Some(current) = pending.pop_front() {
+            for &owner in &self.topology.owners[current as usize] {
+                if self.states[owner as usize].state == ClusterResidencyState::Failed {
+                    return Some(MissCause::Failed);
+                }
+                if seen.insert(owner) {
+                    pending.push_back(owner);
+                }
+            }
+        }
+
+        let mut waiting = None;
+        let mut current = cluster_id;
+        let mut seen = BTreeSet::from([cluster_id]);
+        while let Some((owner, cause)) =
+            self.topology.owners[current as usize]
+                .iter()
+                .find_map(|&owner| {
+                    Self::own_wait_cause(self.states[owner as usize].state)
+                        .map(|cause| (owner, cause))
+                })
+        {
+            // Planner topology rejects owner cycles; stop rather than loop
+            // if a malformed fixture slips through.
+            if !seen.insert(owner) {
+                break;
+            }
+            waiting = Some(cause);
+            match self.states[owner as usize].state {
+                ClusterResidencyState::Absent | ClusterResidencyState::Ready => current = owner,
+                _ => break,
+            }
+        }
+        waiting
+    }
+
+    /// The cause a non-Sampleable owner's own state names; `None` once it is
+    /// Sampleable.
+    const fn own_wait_cause(state: ClusterResidencyState) -> Option<MissCause> {
+        match state {
+            ClusterResidencyState::Sampleable => None,
+            ClusterResidencyState::Absent | ClusterResidencyState::Queued => {
+                Some(MissCause::ReadInFlight)
+            }
+            ClusterResidencyState::Ready => Some(MissCause::HeldByDrainBudget),
+            ClusterResidencyState::InstalledUncomposed => Some(MissCause::AwaitingCompose),
+            ClusterResidencyState::Failed => Some(MissCause::Failed),
         }
     }
 

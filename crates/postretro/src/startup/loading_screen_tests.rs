@@ -247,14 +247,11 @@ fn loading_slots_are_set_at_begin_and_reset_at_end() {
 /// the reveal and the failure route end it. These need an event loop to run,
 /// so the routes are pinned in source. Every entry (boot map, catalog load,
 /// restart, backdrop, relevel) installs through `finish_level_payload`, so
-/// none reaches Running without Settling (L1, L4).
+/// none reaches Running without Settling.
 #[test]
 fn loading_screen_ends_at_reveal_and_on_failure() {
     let source = include_str!("lifecycle.rs")
-        .split(
-            "#[cfg(test)]
-pub(crate) mod tests",
-        )
+        .split("#[cfg(test)]\npub(crate) mod tests")
         .next()
         .unwrap();
     let success = source

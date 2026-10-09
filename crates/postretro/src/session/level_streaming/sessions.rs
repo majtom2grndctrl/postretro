@@ -100,8 +100,8 @@ impl LevelStreaming {
         } else {
             self.retire(sh);
         }
-        // Hints belong to the level: a session replaced within it keeps
-        // them, and a new manifest invalidates them.
+        // Hints and the cell-demand stage belong to the level: a session
+        // replaced within it keeps them, and a new manifest invalidates them.
         if level_changed {
             self.hints = None;
             self.cell_demand = None;
@@ -127,9 +127,10 @@ impl LevelStreaming {
         Ok(true)
     }
 
-    /// Releases every session, the issuer, and the level's hints: level
-    /// unload, or a frame with nothing to stream. Threads that have already
-    /// finished join at once; the rest retire off the frame path.
+    /// Releases every session, the issuer, the level's hints, and its
+    /// cell-demand stage: level unload, or a frame with nothing to stream.
+    /// Threads that have already finished join at once; the rest retire off
+    /// the frame path.
     pub(crate) fn clear(&mut self, sh: &mut Option<ShStreamingSession>) {
         self.retire(sh);
         self.hints = None;

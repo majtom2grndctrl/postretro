@@ -162,6 +162,9 @@ impl BlockDemand {
     /// least visible while its pair is resident or on its way, so the
     /// renderer never frees a block the frame draws, and never reads one for
     /// it.
+    ///
+    /// A change of L takes effect once the camera is in a cell with a baked
+    /// set; a solid or exterior cell keeps the previous split.
     pub(crate) fn update(&mut self, map: &LevelBlockMap, frame: DemandFrame<'_>) -> bool {
         let camera_cell = frame.camera_cell;
         let lead = frame.lead;
@@ -197,9 +200,9 @@ impl BlockDemand {
         }
     }
 
-    /// Capture's fixed view: the camera cell's baked set, plus every drawn
-    /// cell's blocks as visible whatever the visibility path. An empty world
-    /// looks up no residency set.
+    /// The camera cell's baked set, plus every drawn cell's blocks as visible
+    /// whatever the visibility path. Capture's fixed view and every Settling
+    /// frame use it. An empty world looks up no residency set.
     pub(crate) fn update_capture_view(&mut self, map: &LevelBlockMap, frame: DemandFrame<'_>) {
         if frame.draws_cells() {
             self.recompute_if_changed(map, frame.residency_set, frame.camera_cell, frame.lead);

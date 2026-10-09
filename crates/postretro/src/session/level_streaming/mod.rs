@@ -47,9 +47,10 @@ pub(crate) struct StreamingFrame<'a> {
 
 /// Streaming state whose lifetime is one loaded level: the lightmap session,
 /// the one issuer both resources read through, the level's id-49 hints
-/// decoded once for both, a cancelled predecessor's retirement, and the
-/// reused merged drain. SH's session stays on `Session` (it is read by
-/// diagnostics and outcome hooks) and is passed in; this owner retires the
+/// decoded once for both, the level's cell-demand stage, a cancelled
+/// predecessor's retirement, and the reused merged drain. SH's session stays
+/// on `Session` (it is read by diagnostics and outcome hooks) and is passed
+/// in; this owner retires the
 /// issuer whenever either session is replaced, so no session outlives the
 /// issuer it reads through.
 #[derive(Debug, Default)]

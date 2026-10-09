@@ -474,11 +474,11 @@ impl LightmapResidencyController {
         self.demand_updated = true;
     }
 
-    /// Capture's fixed view: the camera cell's baked set plus every drawn
-    /// cell's blocks as visible, whatever the visibility path. Capture is an
-    /// offline tool that renders the full view synchronously, so it is exempt
-    /// from the in-play rule that a non-portal frame reads only the camera
-    /// cell's baked set.
+    /// The camera cell's baked set plus every drawn cell's blocks as visible,
+    /// whatever the visibility path. Capture's fixed view and every Settling
+    /// frame use it: both wait on the full view before presenting, so they are
+    /// exempt from the in-play rule that a non-portal frame reads only the
+    /// camera cell's baked set.
     pub(crate) fn update_capture_view(&mut self, frame: DemandFrame<'_>) {
         self.lead = frame.lead;
         self.demand.update_capture_view(&self.map, frame);

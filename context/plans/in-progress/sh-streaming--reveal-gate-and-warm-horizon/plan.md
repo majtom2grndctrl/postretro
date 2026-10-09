@@ -10,7 +10,7 @@ Source is unchanged since the brief's `ef855f247`; only plan files moved. Every 
 
 **Boot and frame loop**
 - C1. Brief: install is followed by `BootState::Running`. Source: `finish_level_payload` returns true, so the install redraw continues through the whole Running body (`frame_loop/mod.rs:92`), and the install frame is already the first Running frame. Plan: the install frame enters Settling and boot dispatch returns false, so it ticks nothing and presents no world.
-- C2. Fact the brief omits: `frame_timing.begin_frame` runs above boot dispatch on every redraw, and its accumulator is clamped at 250 ms (`sim/src/sim/frame_timing.rs`). A Settling hold therefore ends with up to about 15 catch-up ticks. Plan: re-arm the fixed-step accumulator on the reveal edge, so the first Running frame runs today's install-frame tick count (P12).
+- C2. Fact the brief omits: `frame_timing.begin_frame` runs above boot dispatch on every redraw, and its accumulator is clamped at 250 ms (`sim/src/sim/frame_timing.rs`). Plan: re-arm the fixed-step accumulator on the reveal edge (P12). As built (round-2 review): every held frame's `begin_frame` already drains whole ticks, so no catch-up builds over a hold. The re-arm drops only the last held frame's own duration, so the reveal frame ticks for its own interval, usually not at all, and the first tick lands on the next frame, still after the switch to Running.
 - C3. Fact the brief omits: `poll_staged_manifest_results` runs only in the Running frame tail and the frontend UI path. Plan: Settling frames call it, so P13 holds. Clarification, same meaning: a committed reload in Running clears the scheduler when a level is installed, which drops `levelLoad` waits. Settling inherits that behavior ("as in Running").
 - C4. Fact the brief omits: `loadLevel`, `restartLevel` and `returnToFrontend` are system commands. They become level requests only in `dispatch_system_commands`, which Settling holds. A script request queued during install therefore lands on the reveal frame. Requests that can arrive during Settling come from network relevel, the dev level cycle and frontend enqueues. Plan: the Settling load and unload ACs are proven through `enqueue_level_request`, the seam those paths share.
 - C5. Brief: `drain_level_requests` unloads only from Running (`:193`, `:200`). Plan: Settling joins Running there, so a request unloads the Settling world first (P2).
@@ -83,7 +83,7 @@ Test names are planned, not yet written. "Engine-free" means a pure function, co
 | **L6** a UI input pressed in Settling activates nothing on the first Running frame; the clamp ages across Settling | `settling_drops_ui_input` + `limiter_frame_ages_across_settling` (extends the `main.rs` limiter test) | achievable as stated | pass: `settling_drops_ui_input_like_loading`; gameplay input suspended per Settling frame (keys, mouse, pad levels). Limiter ages through the same world-less frame as Loading (structure) |
 | **L7** cluster reaches Sampleable and block installs during Settling, without Running | `settling_streaming_step_promotes_cluster_and_installs_block` (session tests with the stub drain outcome capture fixtures already use) + M2 in engine | achievable as stated | pass: lightmap half `settling_frames_install_the_settle_set_and_keep_the_install_session`; SH half observed in engine (compose-only frames reach Sampleable; campaign-test 1.0 s, hallway 6.4 s holds, no timeout) |
 | **L8** no production path calls the spawn preload | grep gate test `no_production_path_calls_spawn_lightmap_preload` | achievable as stated | pass: `no_production_path_calls_spawn_lightmap_preload` |
-| **L9** one presented pose for install, Settling and first Running frame; backdrop and menu-pushed relevel at the menu pose; else first `player_spawn` | `presented_pose_resolves_menu_then_spawn` (pure resolver) + `install_settling_and_reveal_read_one_presented_pose` | achievable as stated | partial: `presented_pose_resolves_menu_then_spawn`; held view built after `commit_render_extents`; hold input suspended. Menu-pushed relevel not tested end to end |
+| **L9** one presented pose for install, Settling and first Running frame; backdrop and menu-pushed relevel at the menu pose; else first `player_spawn` | `presented_pose_resolves_menu_then_spawn` (pure resolver) + `install_settling_and_reveal_read_one_presented_pose` | achievable as stated | partial: `presented_pose_resolves_menu_then_spawn`; held view built after `commit_render_extents`; hold input suspended; reveal-frame gap input suspended and look neutral (`reveal_frame_input_is_neutral`). Menu-pushed relevel not tested end to end |
 | **L10** a settled reveal records no SH visible miss and no drawn non-resident block, for pawn spawn and backdrop (P1, P9) | `settled_reveal_frame_counts_no_sh_or_lightmap_miss` | achievable as stated | pass: `settled_reveal_frame_counts_no_sh_miss`, `settled_reveal_frame_counts_no_drawn_block_missing`; engine runs logged 0 SH and 0 lightmap misses after reveal |
 | **L11** timeout releases with exactly one warning; a settle on or before the deadline frame warns nothing (P3) | `settle_timeout_warns_once` + `settle_on_deadline_frame_releases_without_warning` (log capture) | achievable as stated | pass: `settle_timeout_warns_once_and_reveals_into_running`, `settled_reveal_logs_no_timeout_warning`, `settle_on_deadline_frame_releases_without_warning` |
 | **L12** `restartLevel` after a timed-out entry gets a fresh timeout | `restart_after_timeout_starts_fresh_settle_timer` | achievable as stated | pass: `restart_after_timeout_starts_fresh_settle_timer` |
@@ -184,12 +184,36 @@ Neither map pins a cluster. At L = 32 m the hallway's worst cell is 148.0 MiB (2
   - A full retract and re-reveal collapsed into one host drain keeps the pawn (same hole parity had).
   - Commands install queued run before the reveal frame's visibility.
 
-## Gate (2026-10-08, after fixes)
+- Review panel round 2 (11 reviewers: 5 correctness tracers incl. one seam pass, contract verifier, 2 adversarial, 3 hygiene/drift). **No must-fix code findings.** One 🔴 comment drift (`for_test` described the retired id-46 fallback), fixed. Should-fix findings, all fixed:
+  - Input arriving between the release decision and the reveal frame reached the reveal frame, turning the view off the settled pose. The reveal edge now suspends input as a held frame does, and the reveal frame applies no look.
+  - Miss buckets blamed the wrong lever for a cluster waiting on its owner closure. A failed owner now buckets `failed`; an owner wait takes that owner's bucket.
+  - The re-read counter's docs now say it includes hysteresis reads of a departing cluster.
+  - The optional-request permit reserve gained a test (`band_requests_leave_permits_for_mandatory_work`).
+  - Both grep gates cut each file at its first `#[cfg(test)]`; they now strip only test modules (`production_text`, with tests).
+  - `finish_level_payload`'s always-false return is gone.
+  - About 30 drift items and nits: install-preload wording, prefetch → band, the C2 rearm rationale, plan labels in code, header pointers, retraction order in net tests, a stronger P4 source guard.
+- Focused re-review of the round-2 fixes: no must-fix or should-fix; doc nits fixed.
+- Owner decision, not fixed: the settle timeout counts wall-clock time while the window is minimized or occluded. SH cannot compose then, so a long minimize ends in a timed-out, cold reveal. Pausing the clock while compose is impossible would change "Timeout, never hang" (an occluded host would hold clients indefinitely).
+- Accepted round-2 nits:
+  - The reveal frame's first tick, if any, can move the pawn before visibility; a resize between the decision frame and the reveal frame changes the frustum.
+  - A Ready cluster deferred by renderer retirement pressure counts under the drain-budget bucket (documented).
+  - `update_targets` rebuilds the horizon every frame; its cost now scales with the reach. Left for the resource run to measure.
+  - `DrainRank::sh` carries lead 0; capture builds two `CellDemand` stages; the first SH log window after reveal includes Settling work.
+  - A join seed is lost when a promotion and a demotion land in one host poll (pre-existing race).
+  - `is_test_source` misses some cfg(test) files outside the test-name convention, which errs strict.
+  - The trace no longer exercises request cancellation or a read landing for a departed cluster; unit tests still cover both.
+
+## Gate (2026-10-08, after round-1 fixes)
 
 - Passing: `cargo fmt --check`, `clippy -D warnings` (workspace, all targets, `postretro/dev-tools`), `cargo check --release`, `crate-graph --check`.
 - `cargo test --workspace --no-fail-fast`: every target passes except `ui_slot_snapshot_clones_present_values_and_skips_valueless_slots` (§Pre-existing failures).
 - `cargo test -p postretro --features capture`: same single failure.
 - `clippy --features capture` reports five errors, all on lines this branch never touched: `capture/prepared.rs` loop and items-after-test-module, `capture/report.rs` arguments, `capture/scene.rs`, `tests/capture_shadowmask_groups.rs`. They predate the branch and are not fixed here.
+
+## Gate (2026-10-08, after round-2 fixes)
+
+- Passing: `cargo fmt --check`, `clippy -D warnings` (workspace, all targets; and `postretro` with `dev-tools`).
+- `cargo test --workspace --no-fail-fast`: every target passes except `ui_slot_snapshot_clones_present_values_and_skips_valueless_slots` (§Pre-existing failures). The SH trace baseline is unchanged.
 
 ## Delegated budget answer, as built
 

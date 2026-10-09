@@ -48,7 +48,7 @@ impl DrainClass {
 /// by field: class; at equal class, SH before lightmap blocks; then higher
 /// priority, then lower lead, then lower key. SH items carry lead 0, so SH
 /// keeps its class, priority, cluster-id order. Blocks order by priority
-/// (nonzero only in the prefetch band), then lead, then block id.
+/// (nonzero only in the band), then lead, then block id.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct DrainRank {
     class: DrainClass,
@@ -131,10 +131,11 @@ pub(crate) struct DrainAdmission {
 pub(crate) struct DrainBytesOverflow;
 
 /// Orders a merged ready list for admission, then admits the leading items
-/// that fit `budget` (normally [`MAX_INSTALL_DECODED_BYTES_PER_DRAIN`]). The first always fits
-/// whatever its size, so an oversized item cannot stall residency. Admission
-/// stops at the first item over budget rather than skipping ahead to
-/// smaller, lower-ranked work, so frame cost tracks bytes, not item count.
+/// that fit `budget` (normally [`MAX_INSTALL_DECODED_BYTES_PER_DRAIN`]). The
+/// first always fits whatever its size, so an oversized item cannot stall
+/// residency. Admission stops at the first item over budget rather than
+/// skipping ahead to smaller, lower-ranked work, so frame cost tracks bytes,
+/// not item count.
 ///
 /// Every rank is unique (resource plus key), so the unstable sort orders
 /// exactly as a stable one would, without the stable sort's buffer.

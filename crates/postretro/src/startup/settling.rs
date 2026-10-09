@@ -100,8 +100,7 @@ impl App {
         event_loop: &ActiveEventLoop,
         frame_dt: f32,
     ) -> bool {
-        if let Some(release) = self.settle.as_ref().and_then(|settle| settle.release) {
-            self.reveal_level(release);
+        if self.reveal_if_released() {
             return true;
         }
         let _ = self.poll_world_less_transport(frame_dt);
@@ -109,29 +108,7 @@ impl App {
         if self.boot_state != BootState::Settling {
             return false;
         }
-        // Nothing the player does while the level is hidden acts on it: mouse
-        // look and gameplay presses lift without a pulse, as on the frontend,
-        // so the reveal frame presents the pose that settled. The pad's levels
-        // are recorded first, as the frontend does, so a pad input held through
-        // the hold stays inert after reveal instead of pressing fresh; the
-        // frame's pad presses and nav intents are dropped with it.
-        let App {
-            session,
-            nav_stick_tracker,
-            ..
-        } = self;
-        if let Some(session) = session.as_mut() {
-            let context = session.ui_nav_context();
-            if let Some(gamepad) = session.gamepad_system.as_mut() {
-                let _ = gamepad.update(
-                    &mut session.input_system,
-                    nav_stick_tracker,
-                    session.bindings.ui_nav(),
-                    context,
-                );
-            }
-            session.input_system.suspend_gameplay();
-        }
+        self.suspend_held_level_input();
 
         let frame_start = Instant::now();
         // The held view projects at the extent the reveal frame will commit,
@@ -191,6 +168,48 @@ impl App {
         false
     }
 
+    /// Nothing the player does while the level is hidden acts on it: mouse
+    /// look and gameplay presses lift without a pulse, as on the frontend.
+    /// The pad's levels are recorded first, as the frontend does, so a pad
+    /// input held through the hold stays inert after reveal instead of
+    /// pressing fresh; the frame's pad presses and nav intents are dropped
+    /// with it.
+    fn suspend_held_level_input(&mut self) {
+        let App {
+            session,
+            nav_stick_tracker,
+            ..
+        } = self;
+        let Some(session) = session.as_mut() else {
+            return;
+        };
+        let context = session.ui_nav_context();
+        if let Some(gamepad) = session.gamepad_system.as_mut() {
+            let _ = gamepad.update(
+                &mut session.input_system,
+                nav_stick_tracker,
+                session.bindings.ui_nav(),
+                context,
+            );
+        }
+        session.input_system.suspend_gameplay();
+    }
+
+    /// Reveal on the redraw after a release decision; returns whether it did.
+    /// Input that arrived since the deciding frame is suspended as on a held
+    /// frame, so a mouse delta or press from that gap neither turns the pose
+    /// the reveal frame presents nor reaches its first tick. The frame loop
+    /// applies no look on the reveal frame, so a held stick does not turn it
+    /// either.
+    fn reveal_if_released(&mut self) -> bool {
+        let Some(release) = self.settle.as_ref().and_then(|settle| settle.release) else {
+            return false;
+        };
+        self.suspend_held_level_input();
+        self.reveal_level(release);
+        true
+    }
+
     /// Decide this frame's release and move the bar, never down.
     fn advance_settle(&mut self, report: SettleReport, now: Instant) {
         let Some(settle) = self.settle.as_mut() else {
@@ -241,13 +260,21 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+    use postretro_entities::slot_table::SlotValue;
+    use postretro_scripting_core::store_bridge::read_store_slot;
+    use postretro_test_log_capture::LogCapture;
+    use winit::keyboard::KeyCode;
+
     use super::*;
+    use crate::input::{Action, ButtonState};
+    use crate::startup::lifecycle::tests::test_app;
+    use crate::startup::{LevelLoadEntry, LevelRequest};
 
     fn report(sh: ResourceSettle, lightmap: ResourceSettle) -> SettleReport {
         SettleReport { sh, lightmap }
     }
 
-    // P3: a settle on the deadline frame is a settle, not a timeout.
+    // A settle on the deadline frame is a settle, not a timeout.
     #[test]
     fn settle_on_deadline_frame_releases_without_warning() {
         let settled = report(ResourceSettle::Settled, ResourceSettle::NotStreamed);
@@ -270,7 +297,7 @@ mod tests {
         );
     }
 
-    // P10: a growing shortfall holds the bar; a shrinking one advances it;
+    // A growing shortfall holds the bar; a shrinking one advances it;
     // a release fills it.
     #[test]
     fn settle_progress_is_monotone_and_reaches_one_before_reveal() {
@@ -283,13 +310,6 @@ mod tests {
         assert!(settle_progress(4, 8, false) <= half);
         assert_eq!(settle_progress(3, 8, true), 1.0);
     }
-
-    use postretro_entities::slot_table::SlotValue;
-    use postretro_scripting_core::store_bridge::read_store_slot;
-    use postretro_test_log_capture::LogCapture;
-
-    use crate::startup::lifecycle::tests::test_app;
-    use crate::startup::{LevelLoadEntry, LevelRequest};
 
     const TIMEOUT_WARNING: &str = "settle timeout";
 
@@ -433,7 +453,7 @@ mod tests {
         assert_eq!(last, 1.0, "the settled frame fills the bar");
     }
 
-    // P2: a request drained on a frame whose settle check would pass wins.
+    // A request drained on a frame whose settle check would pass wins.
     #[test]
     fn level_request_during_settling_unloads_without_reveal_edge() {
         let started = Instant::now();
@@ -456,7 +476,7 @@ mod tests {
         );
     }
 
-    // P7: a suspend during Settling fires no reveal and leaves no timer.
+    // A suspend during Settling fires no reveal and leaves no timer.
     #[test]
     fn suspend_during_settling_leaves_no_settle_state() {
         let mut app = settling_app(Instant::now());
@@ -482,8 +502,8 @@ mod tests {
         }
     }
 
-    // P6 and the host half of P5/P15: a timed-out reveal is a reveal, and
-    // unload and suspend (both through `clear_net_level_parity`) retract it.
+    // A timed-out reveal is a reveal, and the host's own reveal is retracted
+    // by unload and by suspend (both through `clear_net_level_parity`).
     #[test]
     fn timeout_release_is_a_reveal_edge_and_unload_retracts_it() {
         let started = Instant::now();
@@ -505,8 +525,8 @@ mod tests {
         assert_eq!(host_revealed(&app), None);
     }
 
-    // P4: the reveal fires in boot dispatch, before the frame's world poll,
-    // so the promotion it causes is consumed by a world poll that spawns the
+    // The reveal fires in boot dispatch, before the frame's world poll, so
+    // the promotion it causes is consumed by a world poll that spawns the
     // pawn, never by a world-less one.
     #[test]
     fn host_reveal_lands_before_the_reveal_frames_world_poll() {
@@ -516,12 +536,25 @@ mod tests {
             .find("frame_order::run_snapshot_apply_stage(")
             .unwrap();
         assert!(dispatch < world_poll);
+        // The Running path, from the end of the Frontend early return to the
+        // world poll, has no world-less poll to consume the promotion first.
+        let running = frame
+            .split("app.finish_first_launch_hold_if_closed();")
+            .nth(1)
+            .unwrap()
+            .split("frame_order::run_snapshot_apply_stage(")
+            .next()
+            .unwrap();
+        assert!(
+            !running.contains("poll_world_less_transport("),
+            "the reveal frame's Running path polls only the world"
+        );
         let settling = include_str!("settling.rs")
             .split("#[cfg(test)]")
             .next()
             .unwrap();
         let body = settling.split("fn run_settling_frame(").nth(1).unwrap();
-        let reveal = body.find("self.reveal_level(release)").unwrap();
+        let reveal = body.find("self.reveal_if_released()").unwrap();
         let world_less = body.find("self.poll_world_less_transport(").unwrap();
         assert!(
             reveal < world_less,
@@ -529,7 +562,44 @@ mod tests {
         );
     }
 
-    // P2/P7: commands install queued for the reveal frame die with an
+    // Input from the gap between the deciding frame and the reveal frame is
+    // suspended as on a held frame: a mouse delta turns nothing and a press
+    // reaches no tick, so the reveal frame presents the settled pose.
+    #[test]
+    fn reveal_frame_input_is_neutral() {
+        let started = Instant::now();
+        let mut app = settling_app(started);
+        app.advance_settle(
+            report(ResourceSettle::Settled, ResourceSettle::Settled),
+            started,
+        );
+        assert!(release(&app).is_some(), "the next redraw reveals");
+
+        let input = &mut app.session.as_mut().unwrap().input_system;
+        input.handle_mouse_delta(40.0, -25.0);
+        input.handle_keyboard_event(KeyCode::Space, true);
+
+        assert!(app.reveal_if_released());
+        assert_eq!(app.boot_state, BootState::Running);
+        let input = &mut app.session.as_mut().unwrap().input_system;
+        let look = input.drain_look_inputs();
+        assert_eq!(look.yaw_delta(1.0 / 60.0), 0.0, "no gap mouse look");
+        assert_eq!(look.pitch_delta(1.0 / 60.0), 0.0, "no gap mouse look");
+        let snapshot = input.snapshot();
+        assert_eq!(
+            snapshot.button(Action::Jump),
+            ButtonState::Inactive,
+            "a gap press reaches no tick, and stays inert while held"
+        );
+
+        // A held stick is persistent, not suspended: the frame loop applies
+        // no look on the reveal frame instead.
+        let frame = include_str!("../frame_loop/mod.rs");
+        assert!(frame.contains("let reveal_frame = app.boot_state == BootState::Settling;"));
+        assert!(frame.contains("let look = if ui_captures_gameplay || reveal_frame {"));
+    }
+
+    // Commands install queued for the reveal frame die with an
     // abandoned settle; none plays a sound in the next level or the frontend.
     #[test]
     fn abandoned_settle_discards_commands_install_queued() {

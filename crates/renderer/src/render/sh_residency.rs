@@ -74,7 +74,8 @@ pub struct ShStreamingLifecycleSummary {
     pub misses: u64,
     /// `misses` by cause.
     pub miss_buckets: super::ShMissBuckets,
-    /// Requests issued for a cluster evicted earlier in the level.
+    /// Requests issued for a cluster evicted earlier in the level, whatever
+    /// class requests it, hysteresis reads of a departing cluster included.
     pub rereads: u64,
     pub installs: u64,
     pub evictions: u64,

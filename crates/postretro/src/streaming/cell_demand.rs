@@ -1,6 +1,5 @@
-//! The level's one cell-demand stage: lead L over the baked id-51 reach, and
-//! the frame's visibility path, as every streamed resource reads them.
-//! See: context/lib/rendering_pipeline.md §4 (Lightmap cell-block residency)
+//! The level's one cell-demand stage: lead L and the frame's visibility path.
+//! See: context/lib/rendering_pipeline.md §4 (lightmap and SH residency)
 
 use postretro_level_format::cell_residency_set::CellResidencySetSection;
 use postretro_level_format::cell_visibility::CELL_VISIBILITY_DISTANCE_FIXED_POINT_SCALE;

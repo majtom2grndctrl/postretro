@@ -57,7 +57,8 @@ pub(crate) struct ShClusterRequest {
     pub(crate) cluster_id: u32,
     pub(crate) chunk_hash: [u8; 32],
     /// The cluster's class was in the mandatory tier (`Visible`, `Pinned` or
-    /// `Lead`, owner closure included) when requested. Mandatory reads are served before optional ones.
+    /// `Lead`, owner closure included) when requested. Mandatory reads are
+    /// served before optional ones.
     pub(crate) mandatory: bool,
 }
 
@@ -175,7 +176,9 @@ pub(crate) struct ShResidencyCounters {
     pub(crate) misses: u64,
     /// `misses` by cause; the buckets sum to it.
     pub(crate) miss_buckets: postretro_renderer::ShMissBuckets,
-    /// Requests issued for a cluster evicted earlier in the level.
+    /// Requests issued for a cluster evicted earlier in the level, whatever
+    /// class requests it: a hysteresis-class read of a departing cluster
+    /// counts as well as one the view or reach waits on.
     pub(crate) rereads: u64,
     pub(crate) installs: u64,
     pub(crate) evictions: u64,
@@ -423,10 +426,10 @@ impl ShResidencyController {
     }
 
     /// Settle-set targets (the mandatory tier: Visible, Pinned and Lead,
-    /// owner closure included) not
-    /// yet Sampleable, as of the latest target update. `None` before the
-    /// first update: the controller has not been asked for a view yet. A
-    /// failed target stays unsettled; the settle timeout bounds it.
+    /// owner closure included) not yet Sampleable, as of the latest target
+    /// update. `None` before the first update: the controller has not been
+    /// asked for a view yet. A failed target stays unsettled; the settle
+    /// timeout bounds it.
     pub(crate) fn unsettled_targets(&self) -> Option<usize> {
         self.demand_updated.then(|| {
             self.targets
@@ -560,7 +563,8 @@ impl ShResidencyController {
         Ok(())
     }
 
-    /// Test controllers have no id 46, so they use the cluster-hop fallback.
+    /// Test controllers carry no reach until a test passes a demand frame to
+    /// `update_targets`.
     #[cfg(test)]
     fn for_test(
         topology: PlannerTopology,

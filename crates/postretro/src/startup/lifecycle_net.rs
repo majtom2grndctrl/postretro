@@ -151,6 +151,8 @@ impl App {
     /// | level-scope UI trees (`modal_stack` `ScopeTier::Level`) | |
     /// | progress tracker, death-event carryover, world presentation intake/pool/fact tracking, active wieldable, client weapon prediction state, camera pose | |
     /// | streaming sessions (SH and lightmap), the level's read issuer and workers | |
+    /// | level parity, published level identity, this peer's reveal | |
+    /// | settle state and its timer, the active loading screen, undispatched system commands | |
     pub(crate) fn unload_level(&mut self) {
         let unload_started = std::time::Instant::now();
         self.cpu_timer.level_changed();
@@ -272,8 +274,10 @@ impl App {
     /// Install's `levelLoad` commands wait in the queue through Settling for
     /// the reveal frame; an unload or suspend before reveal abandons them, so
     /// none plays a sound or changes state in the next level or the frontend.
-    /// A Running level's queue is already empty here: every frame dispatches
-    /// it before the next frame's request drain.
+    /// A Running level's queue is normally empty here, since the frame loop
+    /// dispatches it every frame. That ordering is not checked: a command
+    /// queued after the last dispatch is dropped with the rest, never replayed
+    /// into the next level.
     pub(crate) fn discard_pending_system_commands(&mut self) {
         if let Some(session) = self.session.as_ref() {
             drop(session.scripting.script_ctx.system_commands.take());

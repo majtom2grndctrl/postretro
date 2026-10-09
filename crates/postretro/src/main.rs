@@ -1022,7 +1022,8 @@ pub(crate) struct App {
     pending_level_log: bool,
 
     /// The level identity install published as parity, which the reveal
-    /// publishes again; `None` without an installed level.
+    /// publishes again; `None` without an installed level or without a net
+    /// endpoint.
     published_level_identity: Option<String>,
 
     /// The current level entry's Settling stretch; `Some` only in Settling.

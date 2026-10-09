@@ -194,8 +194,8 @@ impl LightmapStreamingSession {
         self.manifest.clone()
     }
 
-    /// Demand from the camera cell's baked set and the pins alone: the spawn
-    /// camera cell at level install.
+    /// Demand from the camera cell's baked set and the pins alone. Test-only:
+    /// a level entry demands through Settling's frames instead.
     #[cfg(test)]
     pub(crate) fn update_camera_set(
         &mut self,

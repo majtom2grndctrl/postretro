@@ -630,6 +630,52 @@ fn requests_for_visible_and_pinned_targets_are_mandatory() {
 }
 
 #[test]
+fn band_requests_leave_permits_for_mandatory_work() {
+    let optional = MAX_OPTIONAL_STREAM_PERMITS as u32;
+    // From camera cell 0, cells 1 to `optional + 2` lie in the band, one
+    // metre apart from 20 m. Cell `drawn` is outside the reach.
+    let band_cells = 1..=optional + 2;
+    let drawn = optional + 3;
+    let mut controller = controller(one_cell_per_cluster(drawn as usize + 1));
+    let rows: Vec<(u32, u32, u32)> = band_cells
+        .clone()
+        .map(|cell| (0, cell, 19 + cell))
+        .collect();
+    let set = residency_set(drawn + 1, &rows, 32);
+    let mut stage = CellDemand::new(set.max_lead);
+    reach_update(&mut controller, &stage, &set, 0, PORTAL, &[], 0.0);
+
+    let band = drain_requests(&mut controller);
+    assert_eq!(
+        band.iter()
+            .map(|request| request.cluster_id)
+            .collect::<Vec<_>>(),
+        (1..=optional).collect::<Vec<_>>(),
+        "band requests stop at the optional permits"
+    );
+    assert!(band.iter().all(|request| !request.mandatory));
+    assert_eq!(controller.permits_in_use(), MAX_OPTIONAL_STREAM_PERMITS);
+    assert!(controller.take_next_request().unwrap().is_none());
+
+    // A newly drawn cluster still gets a permit.
+    reach_update(&mut controller, &stage, &set, 0, PORTAL, &[drawn], 0.1);
+    let visible = controller.take_next_request().unwrap().unwrap();
+    assert_eq!((visible.cluster_id, visible.mandatory), (drawn, true));
+
+    // So does a band cluster that a longer L moves into the lead tier, while
+    // the cluster still past L waits.
+    stage.set_lead_metres((19 + optional + 1) as f32);
+    reach_update(&mut controller, &stage, &set, 0, PORTAL, &[drawn], 0.2);
+    let lead = controller.take_next_request().unwrap().unwrap();
+    assert_eq!((lead.cluster_id, lead.mandatory), (optional + 1, true));
+    assert_eq!(
+        controller.states[*band_cells.end() as usize].class,
+        Some(TargetClass::Band)
+    );
+    assert!(controller.take_next_request().unwrap().is_none());
+}
+
+#[test]
 fn admission_counts_every_discarded_completed_read() {
     let mut controller = controller_with_nominal_budget(
         topology(
@@ -683,8 +729,97 @@ fn admission_counts_every_discarded_completed_read() {
     assert_eq!(counters.discarded_read_bytes, 21);
 }
 
-// R7: the cluster-count warm horizon and its id-46 walk are retired; SH's
-// reach is id 51 through the cell-demand stage.
+/// Whether a source file is itself a test module or test fixture, by the
+/// crate's naming convention.
+fn is_test_source(path: &std::path::Path) -> bool {
+    let stem = path.file_stem().unwrap().to_string_lossy();
+    stem == "tests"
+        || stem.ends_with("_tests")
+        || stem.ends_with("_test")
+        || stem.contains("test_fixture")
+}
+
+/// `source` without its `#[cfg(test)]` modules: out-of-line declarations
+/// (`mod name;`, with any `#[path]`) are dropped, and an inline `mod name {`
+/// is dropped through its closing brace, found at the `mod` line's own
+/// indent in formatted source. Every other line stays, test-only items
+/// included.
+fn production_text(source: &str) -> String {
+    let lines: Vec<&str> = source.lines().collect();
+    let mut kept = Vec::new();
+    let mut index = 0;
+    while index < lines.len() {
+        if lines[index].trim() != "#[cfg(test)]" {
+            kept.push(lines[index]);
+            index += 1;
+            continue;
+        }
+        let mut item = index + 1;
+        while lines
+            .get(item)
+            .is_some_and(|line| line.trim_start().starts_with("#["))
+        {
+            item += 1;
+        }
+        let Some(&line) = lines.get(item) else {
+            break;
+        };
+        let declaration = line.trim();
+        let declaration = ["pub(crate) ", "pub(super) ", "pub "]
+            .iter()
+            .find_map(|visibility| declaration.strip_prefix(visibility))
+            .unwrap_or(declaration);
+        if declaration.starts_with("mod ") && declaration.ends_with(';') {
+            index = item + 1;
+        } else if declaration.starts_with("mod ") && declaration.ends_with('{') {
+            let close = format!("{}}}", &line[..line.len() - line.trim_start().len()]);
+            index = lines[item..]
+                .iter()
+                .position(|candidate| *candidate == close)
+                .map_or(lines.len(), |end| item + end + 1);
+        } else {
+            kept.push(lines[index]);
+            index += 1;
+        }
+    }
+    kept.join("\n")
+}
+
+#[test]
+fn production_text_drops_only_test_modules() {
+    let source = [
+        "use a;",
+        "#[cfg(test)]",
+        "mod tests;",
+        "#[cfg(test)]",
+        "#[path = \"x_tests.rs\"]",
+        "pub(crate) mod x_tests;",
+        "fn keep() {}",
+        "#[cfg(test)]",
+        "fn test_helper() {}",
+        "#[cfg(test)]",
+        "mod inline {",
+        "    fn nested() {",
+        "    }",
+        "}",
+        "fn after() {}",
+    ]
+    .join("\n");
+    assert_eq!(
+        production_text(&source),
+        [
+            "use a;",
+            "fn keep() {}",
+            "#[cfg(test)]",
+            "fn test_helper() {}",
+            "fn after() {}",
+        ]
+        .join("\n")
+    );
+}
+
+// The cluster-count warm horizon and its id-46 walk are retired; SH's reach
+// is id 51 through the cell-demand stage.
 #[test]
 fn no_production_path_reads_warm_set() {
     let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
@@ -698,11 +833,11 @@ fn no_production_path_reads_warm_set() {
                 continue;
             }
             let name = path.file_name().unwrap().to_string_lossy();
-            if !name.ends_with(".rs") || name.contains("test") {
+            if !name.ends_with(".rs") || is_test_source(&path) {
                 continue;
             }
             let source = std::fs::read_to_string(&path).unwrap();
-            let production = source.split("#[cfg(test)]").next().unwrap();
+            let production = production_text(&source);
             for needle in ["WARM_SET_CLUSTERS", "warm_set", "WarmSource", "warm_rank"] {
                 if production.contains(needle) {
                     offenders.push(format!("{}: {needle}", path.display()));
@@ -718,8 +853,8 @@ fn misses(controller: &ShResidencyController) -> (u64, postretro_renderer::ShMis
     (counters.misses, counters.miss_buckets)
 }
 
-// R8: a cluster read again after eviction counts once per re-read; its
-// first read does not count.
+// A cluster read again after eviction counts once per re-read; its first
+// read does not count.
 #[test]
 fn reread_counter_counts_only_post_eviction_reads() {
     let mut controller = controller(one_cell_per_cluster(2));
@@ -757,60 +892,229 @@ fn reread_counter_counts_only_post_eviction_reads() {
     assert_eq!(controller.counters().rereads, 1);
 }
 
-// R9: each visible miss lands in exactly one bucket, and every bucket is
-// reachable. Each case sets cluster 1's state, then makes it visible.
-#[test]
-fn visible_miss_lands_in_exactly_one_bucket() {
-    // From camera cell 0 the reach holds cluster 1 alone, at 4 m.
+/// Targets cluster 1 as a lead cluster: from camera cell 0 the reach holds
+/// it alone, at 4 m. Nothing is visible.
+fn target_cluster_one_as_lead(controller: &mut ShResidencyController, now: f64) {
     let set = residency_set(6, &[(0, 1, 4)], 32);
     let stage = CellDemand::new(set.max_lead);
-    type Setup = fn(&mut ShResidencyController);
-    let cases: [(&str, Setup); 6] = [
-        ("outside reach", |_| {}),
-        ("in flight", |controller| {
-            let request = controller.take_next_request().unwrap().unwrap();
-            assert_eq!(request.cluster_id, 1);
-        }),
-        ("drain budget", |controller| {
-            let _ = controller.take_next_request().unwrap().unwrap();
-            let prepared = prepared(controller, 1);
-            assert_eq!(
-                controller.admit_prepared(prepared).unwrap(),
-                ShDrainAdmission::Ready
-            );
-        }),
-        ("compose", |controller| {
-            let _ = controller.take_next_request().unwrap().unwrap();
-            let prepared = prepared(controller, 1);
-            controller.admit_prepared(prepared).unwrap();
-            let batch = controller.take_async_drain_batch().unwrap();
-            controller
-                .apply_drain_outcome(ShDrainOutcome {
-                    accepted: batch.ready.iter().map(|p| p.chunk.cluster_id).collect(),
-                    ..ShDrainOutcome::default()
-                })
-                .unwrap();
-        }),
-        ("failed", |controller| {
-            let request = controller.take_next_request().unwrap().unwrap();
-            controller.admit_failed_request(request).unwrap();
-        }),
-        ("pressure", |controller| {
-            controller.states[1].suppressed = true;
-        }),
+    reach_update(controller, &stage, &set, 0, PORTAL, &[], now);
+    assert!(controller.is_targeted(1));
+}
+
+/// Six clusters, one cell each; cluster 1 is a lead target owned by
+/// `owners_of_one`, which its owner closure targets too.
+fn cluster_one_lead(owners_of_one: &[u32]) -> ShResidencyController {
+    let mut owners = vec![Vec::new(); 6];
+    owners[1] = owners_of_one.to_vec();
+    let mut controller = controller(topology(
+        (0..6).collect(),
+        vec![Vec::new(); 6],
+        owners,
+        vec![1; 6],
+    ));
+    target_cluster_one_as_lead(&mut controller, 0.0);
+    let _ = controller.take_async_drain_batch().unwrap();
+    controller
+}
+
+/// Cluster 1 is ready while its owner 2 is read again. Its read was in flight
+/// when both left the targets and 2 was evicted; it lands once both return.
+fn ready_behind_an_evicted_owner() -> ShResidencyController {
+    let mut controller = cluster_one_lead(&[2]);
+    assert_eq!(
+        controller.take_next_request().unwrap().unwrap().cluster_id,
+        2
+    );
+    admit_ready(&mut controller, 2);
+    assert_eq!(take_batch(&mut controller, true), vec![2]);
+    controller.promote_composed_clusters();
+    assert_eq!(
+        controller.take_next_request().unwrap().unwrap().cluster_id,
+        1
+    );
+
+    controller
+        .update_targets(&VisibleCells::Culled(Vec::new()), None, 0.1)
+        .unwrap();
+    controller
+        .update_targets(&VisibleCells::Culled(Vec::new()), None, 2.2)
+        .unwrap();
+    let batch = controller.take_async_drain_batch().unwrap();
+    assert_eq!(batch.evictions, vec![2]);
+    controller
+        .apply_drain_outcome(ShDrainOutcome {
+            evicted: batch.evictions,
+            ..ShDrainOutcome::default()
+        })
+        .unwrap();
+
+    target_cluster_one_as_lead(&mut controller, 2.3);
+    admit_ready(&mut controller, 1);
+    assert_eq!(controller.state(2), Some(ClusterResidencyState::Absent));
+    controller
+}
+
+fn admit_ready(controller: &mut ShResidencyController, cluster_id: u32) {
+    let prepared = prepared(controller, cluster_id);
+    assert_eq!(
+        controller.admit_prepared(prepared).unwrap(),
+        ShDrainAdmission::Ready
+    );
+}
+
+// Each visible miss lands in exactly one bucket, and every bucket is
+// reachable. A cluster waiting on its owner closure takes the owner's
+// bucket. Each case readies cluster 1, then makes it visible.
+#[test]
+fn visible_miss_lands_in_exactly_one_bucket() {
+    const OUTSIDE_REACH: usize = 0;
+    const PRESSURE: usize = 1;
+    const IN_FLIGHT: usize = 2;
+    const DRAIN_BUDGET: usize = 3;
+    const COMPOSE: usize = 4;
+    const FAILED: usize = 5;
+    type Setup = fn() -> ShResidencyController;
+    let cases: [(&str, Setup, usize); 11] = [
+        (
+            "outside reach",
+            || controller(one_cell_per_cluster(6)),
+            OUTSIDE_REACH,
+        ),
+        (
+            "pressure",
+            || {
+                // Visible cluster 0 alone overfills the pool, so band
+                // cluster 1 (20 m) yields before it is ever read.
+                let set = residency_set(6, &[(0, 1, 20)], 32);
+                let stage = CellDemand::new(set.max_lead);
+                let mut controller = budgeted(
+                    topology(
+                        (0..6).collect(),
+                        vec![Vec::new(); 6],
+                        vec![Vec::new(); 6],
+                        vec![8; 6],
+                    ),
+                    4,
+                );
+                reach_update(&mut controller, &stage, &set, 0, PORTAL, &[0], 0.0);
+                assert_eq!(controller.states[1].class, Some(TargetClass::Band));
+                mark_sampleable(&mut controller, 0);
+                let _ = controller.take_async_drain_batch().unwrap();
+                assert!(!controller.is_targeted(1), "the band cluster yields");
+                controller
+            },
+            PRESSURE,
+        ),
+        (
+            "in flight",
+            || {
+                let mut controller = cluster_one_lead(&[]);
+                let request = controller.take_next_request().unwrap().unwrap();
+                assert_eq!(request.cluster_id, 1);
+                controller
+            },
+            IN_FLIGHT,
+        ),
+        (
+            "owner in flight",
+            || {
+                let mut controller = cluster_one_lead(&[2]);
+                let request = controller.take_next_request().unwrap().unwrap();
+                assert_eq!(request.cluster_id, 2, "the owner reads first");
+                controller
+            },
+            IN_FLIGHT,
+        ),
+        (
+            "ready behind an owner in flight",
+            || {
+                let mut controller = ready_behind_an_evicted_owner();
+                let request = controller.take_next_request().unwrap().unwrap();
+                assert_eq!(request.cluster_id, 2);
+                controller
+            },
+            IN_FLIGHT,
+        ),
+        (
+            "drain budget",
+            || {
+                let mut controller = cluster_one_lead(&[]);
+                let _ = controller.take_next_request().unwrap().unwrap();
+                admit_ready(&mut controller, 1);
+                controller
+            },
+            DRAIN_BUDGET,
+        ),
+        (
+            "owner held by drain budget",
+            || {
+                let mut controller = cluster_one_lead(&[2]);
+                let _ = controller.take_next_request().unwrap().unwrap();
+                admit_ready(&mut controller, 2);
+                controller
+            },
+            DRAIN_BUDGET,
+        ),
+        (
+            "compose",
+            || {
+                let mut controller = cluster_one_lead(&[]);
+                let _ = controller.take_next_request().unwrap().unwrap();
+                admit_ready(&mut controller, 1);
+                assert_eq!(take_batch(&mut controller, true), vec![1]);
+                controller
+            },
+            COMPOSE,
+        ),
+        (
+            "ready behind an owner awaiting compose",
+            || {
+                let mut controller = ready_behind_an_evicted_owner();
+                let _ = controller.take_next_request().unwrap().unwrap();
+                admit_ready(&mut controller, 2);
+                assert_eq!(
+                    take_batch(&mut controller, true),
+                    vec![2],
+                    "cluster 1 is not offered ahead of its owner"
+                );
+                controller
+            },
+            COMPOSE,
+        ),
+        (
+            "failed",
+            || {
+                let mut controller = cluster_one_lead(&[]);
+                let request = controller.take_next_request().unwrap().unwrap();
+                controller.admit_failed_request(request).unwrap();
+                controller
+            },
+            FAILED,
+        ),
+        (
+            "failed owner",
+            || {
+                // Cluster 1 is never requested past its failed owner.
+                let mut controller = cluster_one_lead(&[2]);
+                let request = controller.take_next_request().unwrap().unwrap();
+                assert_eq!(request.cluster_id, 2);
+                controller.admit_failed_request(request).unwrap();
+                assert!(controller.take_next_request().unwrap().is_none());
+                controller
+            },
+            FAILED,
+        ),
     ];
-    for (name, setup) in cases {
-        let mut controller = controller(one_cell_per_cluster(6));
-        if name != "outside reach" {
-            // Cluster 1 is a lead target before it becomes visible.
-            reach_update(&mut controller, &stage, &set, 0, PORTAL, &[], 0.0);
-            assert!(controller.is_targeted(1));
-            let _ = controller.take_async_drain_batch().unwrap();
-            setup(&mut controller);
-        }
+    for (name, setup, expected) in cases {
+        let mut controller = setup();
+        assert_ne!(
+            controller.state(1),
+            Some(ClusterResidencyState::Sampleable),
+            "{name}"
+        );
         let before = misses(&controller);
         controller
-            .update_targets(&VisibleCells::Culled(vec![1]), None, 0.1)
+            .update_targets(&VisibleCells::Culled(vec![1]), None, 5.0)
             .unwrap();
         let (count, buckets) = misses(&controller);
         assert_eq!(count, before.0 + 1, "{name}: one miss");
@@ -822,21 +1126,13 @@ fn visible_miss_lands_in_exactly_one_bucket() {
             buckets.awaiting_compose - before.1.awaiting_compose,
             buckets.failed - before.1.failed,
         ];
-        let expected = match name {
-            "outside reach" => 0,
-            "pressure" => 1,
-            "in flight" => 2,
-            "drain budget" => 3,
-            "compose" => 4,
-            _ => 5,
-        };
         let mut want = [0; 6];
         want[expected] = 1;
         assert_eq!(delta, want, "{name}");
     }
 }
 
-// P9: a Settling frame presents nothing and counts nothing; the reveal frame
+// A Settling frame presents nothing and counts nothing; the reveal frame
 // counts a still-cold visible cluster once.
 #[test]
 fn settling_records_no_visible_miss() {
@@ -858,8 +1154,8 @@ fn settling_records_no_visible_miss() {
     assert_eq!(controller.counters().misses, 1, "one episode, counted once");
 }
 
-// L10, SH half: once Settling reports the settle set sampleable, the reveal
-// frame's identical view counts no visible miss.
+// SH's half of a settled reveal: once Settling reports the settle set
+// sampleable, the reveal frame's identical view counts no visible miss.
 #[test]
 fn settled_reveal_frame_counts_no_sh_miss() {
     let set = corridor_set();

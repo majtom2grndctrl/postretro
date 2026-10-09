@@ -559,7 +559,9 @@ ticks its credit still owed are charged to the weapon's own host cooldown, raisi
 only: without that, a weapon leaving and returning would restart its credit chain and
 earn the tolerance again. While a weapon is holstered its owed recovery freezes, as the
 host player's does, and the frozen ticks do not count toward the host half, so switching
-away and back cannot clear a recovery early. The remote weapon stage never fires or
+away and back cannot clear a recovery early. A weapon whose retained start is already due
+is not frozen by commands stamped after that start, since the client fired it before
+switching. The remote weapon stage never fires or
 ticks a weapon that has left the pawn's inventory; a start bound to one is refused, and
 a refusal reports the recovery of the weapon in the start's own slot.
 
@@ -617,7 +619,9 @@ rewind newer execution. An admitted execution's outcome may only shorten the cli
 predicted recovery, never lengthen it: the host admits on the client's own shot tick,
 so the local countdown is already what admission requires; the host's remainder is
 one transit stale and would make a client fire slower than the host player. An
-initiation rejection still adopts the host's value. Slot-only cooldown projection can
+initiation rejection still adopts the host's value. A completion marks the activation
+terminal but never cancels a client execution still in progress: under catch-up the host
+can finish a burst before the client has predicted its last shot. Slot-only cooldown projection can
 seed an instance before prediction starts, but cannot roll back its active prediction.
 No full weapon rollback.
 

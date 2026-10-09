@@ -205,19 +205,50 @@ impl ShResidencyController {
     /// render frame would turn refresh rate into a diagnostic input and would
     /// hide the useful question: how often did a visible cluster lack a
     /// sampleable resident closure?
+    ///
+    /// Each miss lands in one bucket, read from the cluster's state before
+    /// this frame retargets it. Settling frames present nothing and count
+    /// nothing.
     fn record_visible_misses(
         &mut self,
         visible: &BTreeSet<u32>,
     ) -> Result<(), ShResidencyControllerError> {
+        if self.misses_suspended {
+            return Ok(());
+        }
         self.prior_visible_misses.retain(|id| visible.contains(id));
         for &cluster_id in visible {
             if self.states[cluster_id as usize].state != ClusterResidencyState::Sampleable
                 && self.prior_visible_misses.insert(cluster_id)
             {
                 Self::increment_counter(&mut self.counters.misses, "visible misses")?;
+                let bucket = self.miss_bucket(cluster_id);
+                Self::increment_counter(bucket, "visible miss bucket")?;
             }
         }
         Ok(())
+    }
+
+    fn miss_bucket(&mut self, cluster_id: u32) -> &mut u64 {
+        let state = &self.states[cluster_id as usize];
+        let targeted = self.targets.contains(&cluster_id);
+        let buckets = &mut self.counters.miss_buckets;
+        match state.state {
+            ClusterResidencyState::Failed => &mut buckets.failed,
+            ClusterResidencyState::InstalledUncomposed => &mut buckets.awaiting_compose,
+            ClusterResidencyState::Ready => &mut buckets.held_by_drain_budget,
+            ClusterResidencyState::Queued => &mut buckets.read_in_flight,
+            ClusterResidencyState::Absent | ClusterResidencyState::Sampleable => {
+                if state.suppressed {
+                    &mut buckets.trimmed_by_pressure
+                } else if targeted {
+                    // Targeted and waiting for a permit or the issuer.
+                    &mut buckets.read_in_flight
+                } else {
+                    &mut buckets.outside_reach
+                }
+            }
+        }
     }
 
     fn validate_time(&self, time: f64) -> Result<(), ShResidencyControllerError> {

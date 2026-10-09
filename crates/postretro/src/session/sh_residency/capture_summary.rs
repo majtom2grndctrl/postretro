@@ -73,6 +73,8 @@ impl ShStreamingSession {
             sampleable_clusters: count(controller.sampleable_clusters, "sampleable state count")?,
             failed_clusters: count(controller.failed_clusters, "failed state count")?,
             misses: controller.counters.misses,
+            miss_buckets: controller.counters.miss_buckets,
+            rereads: controller.counters.rereads,
             installs: controller.counters.installs,
             evictions: controller.counters.evictions,
             retries: controller.counters.retries,

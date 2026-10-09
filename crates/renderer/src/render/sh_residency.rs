@@ -72,6 +72,10 @@ pub struct ShStreamingLifecycleSummary {
     pub sampleable_clusters: u64,
     pub failed_clusters: u64,
     pub misses: u64,
+    /// `misses` by cause.
+    pub miss_buckets: super::ShMissBuckets,
+    /// Reads of a cluster evicted earlier in the level.
+    pub rereads: u64,
     pub installs: u64,
     pub evictions: u64,
     pub retries: u64,

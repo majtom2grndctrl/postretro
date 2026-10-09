@@ -131,3 +131,57 @@ fn session_preload_installs_the_spawn_set_through_one_renderer_drain() {
         "the first frame drains after the preload's outcome"
     );
 }
+
+// Settling presents nothing: its drawn blocks, cold or not, count no
+// lightmap visible miss. The first frame after reveal counts them.
+#[test]
+fn settling_frames_count_no_lightmap_visible_miss() {
+    let source = TestBlockSource::new(corridor_blocks(64, true));
+    let set = corridor_set();
+    let mut session = LightmapStreamingSession::with_source(
+        Arc::clone(&source) as Arc<dyn LightmapBlockSource>,
+        &set,
+        None,
+    )
+    .unwrap();
+    let _route = session.take_route();
+    let visible = VisibleCells::Culled(vec![0, 5]);
+    let frame = |settling: bool, session: &mut LightmapStreamingSession| {
+        let mut drain = SharedDrain::default();
+        drain.begin();
+        session
+            .begin_drain(
+                DemandFrame {
+                    lead: crate::streaming::cell_demand::DEFAULT_LEAD,
+                    residency_set: &set,
+                    camera_cell: 0,
+                    path: PORTAL,
+                    visible_cells: &visible,
+                },
+                settling,
+                &mut drain,
+            )
+            .unwrap();
+        drain.admit().unwrap();
+        session.finish_drain(&drain, None).unwrap();
+        session.refresh_diagnostics(None);
+    };
+    frame(true, &mut session);
+    assert_eq!(session.controller().counters().drawn_not_resident, 0);
+    // The parked batch returns before the next frame drains.
+    session
+        .take_drain_batch_for_renderer()
+        .expect("the settling frame parks a batch");
+    session
+        .apply_outcome(LightmapDrainOutcome {
+            pool: headroom(8),
+            ..LightmapDrainOutcome::default()
+        })
+        .unwrap();
+    frame(false, &mut session);
+    assert_eq!(
+        session.controller().counters().drawn_not_resident,
+        2,
+        "the first presented frame counts both cold drawn blocks"
+    );
+}

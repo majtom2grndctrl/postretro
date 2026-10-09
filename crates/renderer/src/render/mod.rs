@@ -187,7 +187,7 @@ pub use sh_residency::{
 };
 pub use sh_sample_regions::{ShSampleRegion, ShSampleRegionSets};
 pub use sh_streaming::{
-    ShComposePassDiagnostics, ShResidencyDrainError, ShResidencySnapshot,
+    ShComposePassDiagnostics, ShMissBuckets, ShResidencyDrainError, ShResidencySnapshot,
     ShStreamingLiveDiagnostics,
 };
 use sh_volume::{ShVolumeResources, ShVolumeSections};

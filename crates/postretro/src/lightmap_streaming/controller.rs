@@ -521,6 +521,12 @@ impl LightmapResidencyController {
         })
     }
 
+    /// The latest frame's drawn blocks are not counted as visible misses:
+    /// a settling frame presents nothing.
+    pub(crate) fn discard_frame_misses(&mut self) {
+        self.misses_due = false;
+    }
+
     /// Settle-set blocks not installed, as of the latest demand update: every
     /// mandatory block and every visible (drawn) one. Under
     /// [`Self::update_capture_view`] demand, which Settling uses, that is

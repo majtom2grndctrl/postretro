@@ -1136,3 +1136,24 @@ fn settle_check_waits_on_drawn_blocks_on_every_visibility_path() {
         );
     }
 }
+
+// L10, lightmap half: once Settling installs every drawn block, the reveal
+// frame's identical non-portal view counts none drawn and not resident.
+#[test]
+fn settled_reveal_frame_counts_no_drawn_block_missing() {
+    let path = VisibilityPath::NoPortalsFallback;
+    let mut rig = Rig::corridor(None);
+    let first = rig
+        .settling_frame(0, path, &VisibleCells::Culled(vec![0, 5, 6]))
+        .expect("no outcome outstanding");
+    rig.install_all(&first, headroom(0));
+    rig.complete_all();
+    settle_lightmap(&mut rig, path, &[0, 5, 6]);
+    assert_eq!(rig.controller.unsettled_blocks(), Some(0));
+    let batch = rig
+        .frame(0, path, &VisibleCells::Culled(vec![0, 5, 6]))
+        .expect("no outcome outstanding");
+    rig.install_all(&batch, headroom(0));
+    rig.controller.count_visible_misses();
+    assert_eq!(rig.controller.counters().last_frame_drawn_not_resident, 0);
+}

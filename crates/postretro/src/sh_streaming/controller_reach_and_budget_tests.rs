@@ -710,3 +710,167 @@ fn no_production_path_reads_warm_set() {
     }
     assert!(offenders.is_empty(), "{offenders:#?}");
 }
+
+fn misses(controller: &ShResidencyController) -> (u64, postretro_renderer::ShMissBuckets) {
+    let counters = controller.counters();
+    (counters.misses, counters.miss_buckets)
+}
+
+// R8: a cluster read again after eviction counts once per re-read; its
+// first read does not count.
+#[test]
+fn reread_counter_counts_only_post_eviction_reads() {
+    let mut controller = controller(one_cell_per_cluster(2));
+    controller
+        .update_targets(&VisibleCells::Culled(vec![0]), None, 0.0)
+        .unwrap();
+    stream_until_idle(&mut controller);
+    assert_eq!(
+        controller.counters().rereads,
+        0,
+        "a first read is not a re-read"
+    );
+
+    // Cluster 0 leaves every target class and is evicted after hysteresis.
+    controller
+        .update_targets(&VisibleCells::Culled(vec![1]), None, 0.1)
+        .unwrap();
+    stream_until_idle(&mut controller);
+    controller
+        .update_targets(&VisibleCells::Culled(vec![1]), None, 2.5)
+        .unwrap();
+    let batch = controller.take_async_drain_batch().unwrap();
+    assert_eq!(batch.evictions, vec![0]);
+    controller
+        .apply_drain_outcome(ShDrainOutcome {
+            evicted: batch.evictions,
+            ..ShDrainOutcome::default()
+        })
+        .unwrap();
+
+    controller
+        .update_targets(&VisibleCells::Culled(vec![0, 1]), None, 2.6)
+        .unwrap();
+    stream_until_idle(&mut controller);
+    assert_eq!(controller.counters().rereads, 1);
+}
+
+// R9: each visible miss lands in exactly one bucket, and every bucket is
+// reachable. Each case sets cluster 1's state, then makes it visible.
+#[test]
+fn visible_miss_lands_in_exactly_one_bucket() {
+    // From camera cell 0 the reach holds cluster 1 alone, at 4 m.
+    let set = residency_set(6, &[(0, 1, 4)], 32);
+    let stage = CellDemand::new(set.max_lead);
+    type Setup = fn(&mut ShResidencyController);
+    let cases: [(&str, Setup); 6] = [
+        ("outside reach", |_| {}),
+        ("in flight", |controller| {
+            let request = controller.take_next_request().unwrap().unwrap();
+            assert_eq!(request.cluster_id, 1);
+        }),
+        ("drain budget", |controller| {
+            let _ = controller.take_next_request().unwrap().unwrap();
+            let prepared = prepared(controller, 1);
+            assert_eq!(
+                controller.admit_prepared(prepared).unwrap(),
+                ShDrainAdmission::Ready
+            );
+        }),
+        ("compose", |controller| {
+            let _ = controller.take_next_request().unwrap().unwrap();
+            let prepared = prepared(controller, 1);
+            controller.admit_prepared(prepared).unwrap();
+            let batch = controller.take_async_drain_batch().unwrap();
+            controller
+                .apply_drain_outcome(ShDrainOutcome {
+                    accepted: batch.ready.iter().map(|p| p.chunk.cluster_id).collect(),
+                    ..ShDrainOutcome::default()
+                })
+                .unwrap();
+        }),
+        ("failed", |controller| {
+            let request = controller.take_next_request().unwrap().unwrap();
+            controller.admit_failed_request(request).unwrap();
+        }),
+        ("pressure", |controller| {
+            controller.states[1].suppressed = true;
+        }),
+    ];
+    for (name, setup) in cases {
+        let mut controller = controller(one_cell_per_cluster(6));
+        if name != "outside reach" {
+            // Cluster 1 is a lead target before it becomes visible.
+            reach_update(&mut controller, &stage, &set, 0, PORTAL, &[], 0.0);
+            assert!(controller.is_targeted(1));
+            let _ = controller.take_async_drain_batch().unwrap();
+            setup(&mut controller);
+        }
+        let before = misses(&controller);
+        controller
+            .update_targets(&VisibleCells::Culled(vec![1]), None, 0.1)
+            .unwrap();
+        let (count, buckets) = misses(&controller);
+        assert_eq!(count, before.0 + 1, "{name}: one miss");
+        let delta = [
+            buckets.outside_reach - before.1.outside_reach,
+            buckets.trimmed_by_pressure - before.1.trimmed_by_pressure,
+            buckets.read_in_flight - before.1.read_in_flight,
+            buckets.held_by_drain_budget - before.1.held_by_drain_budget,
+            buckets.awaiting_compose - before.1.awaiting_compose,
+            buckets.failed - before.1.failed,
+        ];
+        let expected = match name {
+            "outside reach" => 0,
+            "pressure" => 1,
+            "in flight" => 2,
+            "drain budget" => 3,
+            "compose" => 4,
+            _ => 5,
+        };
+        let mut want = [0; 6];
+        want[expected] = 1;
+        assert_eq!(delta, want, "{name}");
+    }
+}
+
+// P9: a Settling frame presents nothing and counts nothing; the reveal frame
+// counts a still-cold visible cluster once.
+#[test]
+fn settling_records_no_visible_miss() {
+    let mut controller = controller(one_cell_per_cluster(2));
+    controller.suspend_visible_misses(true);
+    for frame in 0..3 {
+        controller
+            .update_targets(&VisibleCells::Culled(vec![0]), None, f64::from(frame) * 0.1)
+            .unwrap();
+    }
+    assert_eq!(controller.counters().misses, 0);
+    controller.suspend_visible_misses(false);
+    controller
+        .update_targets(&VisibleCells::Culled(vec![0]), None, 0.4)
+        .unwrap();
+    controller
+        .update_targets(&VisibleCells::Culled(vec![0]), None, 0.5)
+        .unwrap();
+    assert_eq!(controller.counters().misses, 1, "one episode, counted once");
+}
+
+// L10, SH half: once Settling reports the settle set sampleable, the reveal
+// frame's identical view counts no visible miss.
+#[test]
+fn settled_reveal_frame_counts_no_sh_miss() {
+    let set = corridor_set();
+    let stage = CellDemand::new(set.max_lead);
+    let mut controller = controller(one_cell_per_cluster(6));
+    controller.suspend_visible_misses(true);
+    let mut now = 0.0;
+    while controller.unsettled_targets() != Some(0) {
+        reach_update(&mut controller, &stage, &set, 0, PORTAL, &[0, 5], now);
+        stream_until_idle(&mut controller);
+        now += 0.1;
+    }
+    controller.suspend_visible_misses(false);
+    reach_update(&mut controller, &stage, &set, 0, PORTAL, &[0, 5], now);
+    assert_eq!(controller.counters().misses, 0);
+}

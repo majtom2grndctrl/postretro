@@ -28,6 +28,8 @@ pub(super) fn assemble_live_diagnostics(
     live.permits_in_use = count(controller.permits_in_use);
     let counters = &controller.counters;
     live.misses = counters.misses;
+    live.miss_buckets = counters.miss_buckets;
+    live.rereads = counters.rereads;
     live.installs = counters.installs;
     live.evictions = counters.evictions;
     live.retries = counters.retries;
@@ -102,9 +104,10 @@ fn compose_gauges_changed_or_active(
         || now.animated_direct_compose != before.animated_direct_compose
 }
 
-fn cumulative_counters(d: &ShStreamingLiveDiagnostics) -> [u64; 17] {
+fn cumulative_counters(d: &ShStreamingLiveDiagnostics) -> [u64; 18] {
     [
         d.misses,
+        d.rereads,
         d.installs,
         d.evictions,
         d.retries,
@@ -135,7 +138,9 @@ fn format_line(
     format!(
         "[SH streaming] last {elapsed_seconds:.1} s: {reads} reads ({coalesced} coalesced) \
          {read_bytes} incl. {gap_bytes} gap, {installs} installs {installed_bytes}, \
-         {misses} misses, {evictions} evictions, {retries} retries, {cancelled} cancelled, \
+         {misses} misses (reach {miss_reach}, pressure {miss_pressure}, in flight \
+         {miss_in_flight}, budget {miss_budget}, compose {miss_compose}, failed {miss_failed}), \
+         {rereads} re-reads, {evictions} evictions, {retries} retries, {cancelled} cancelled, \
          {discarded} discarded ({discarded_bytes}), {budget_limited} budget-limited drains, \
          {growths} pool growths (+{growth_bytes}), install CPU {install_ms:.2} ms \
          (growth {growth_ms:.2} ms) \
@@ -156,6 +161,13 @@ fn format_line(
         installs = delta(|d| d.installs),
         installed_bytes = format_bytes(delta(|d| d.decoded_bytes_installed)),
         misses = delta(|d| d.misses),
+        miss_reach = delta(|d| d.miss_buckets.outside_reach),
+        miss_pressure = delta(|d| d.miss_buckets.trimmed_by_pressure),
+        miss_in_flight = delta(|d| d.miss_buckets.read_in_flight),
+        miss_budget = delta(|d| d.miss_buckets.held_by_drain_budget),
+        miss_compose = delta(|d| d.miss_buckets.awaiting_compose),
+        miss_failed = delta(|d| d.miss_buckets.failed),
+        rereads = delta(|d| d.rereads),
         evictions = delta(|d| d.evictions),
         retries = delta(|d| d.retries),
         cancelled = delta(|d| d.cancelled_requests),

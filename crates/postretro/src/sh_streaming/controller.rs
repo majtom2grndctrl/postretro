@@ -170,6 +170,10 @@ pub(crate) struct ShEvictionKey {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct ShResidencyCounters {
     pub(crate) misses: u64,
+    /// `misses` by cause; the buckets sum to it.
+    pub(crate) miss_buckets: postretro_renderer::ShMissBuckets,
+    /// Requests for a cluster evicted earlier in the level.
+    pub(crate) rereads: u64,
     pub(crate) installs: u64,
     pub(crate) evictions: u64,
     pub(crate) retries: u64,
@@ -234,6 +238,8 @@ struct ClusterState {
     effective_priority: u32,
     suppressed: bool,
     failure: Option<FailureState>,
+    /// Evicted since its last read: the next request is a re-read.
+    evicted: bool,
 }
 
 impl Default for ClusterState {
@@ -247,6 +253,7 @@ impl Default for ClusterState {
             effective_priority: 0,
             suppressed: false,
             failure: None,
+            evicted: false,
         }
     }
 }
@@ -287,6 +294,8 @@ pub(crate) struct ShResidencyController {
     /// Targets have been derived from a view at least once. Until then an
     /// empty target set means "not yet asked", not "nothing to hold".
     demand_updated: bool,
+    /// Settling: no frame is presented, so no visible miss is counted.
+    misses_suspended: bool,
     counters: ShResidencyCounters,
 }
 
@@ -357,6 +366,7 @@ impl ShResidencyController {
             overshoot_reported: false,
             prior_visible_misses: BTreeSet::new(),
             demand_updated: false,
+            misses_suspended: false,
             counters: ShResidencyCounters::default(),
         })
     }
@@ -401,6 +411,12 @@ impl ShResidencyController {
     /// cancellation.
     pub(crate) fn targets(&self) -> &BTreeSet<u32> {
         &self.targets
+    }
+
+    /// While true (Settling), target updates count no visible miss and leave
+    /// the per-episode record alone, so the reveal frame counts fresh.
+    pub(crate) fn suspend_visible_misses(&mut self, suspended: bool) {
+        self.misses_suspended = suspended;
     }
 
     /// Settle-set targets (Visible and Pinned, owner closure included) not

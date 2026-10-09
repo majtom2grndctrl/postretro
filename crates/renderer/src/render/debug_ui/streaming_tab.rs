@@ -199,6 +199,25 @@ fn streaming_sections(d: &ShStreamingLiveDiagnostics) -> [StreamingSection; 5] {
                 ("Installs", d.installs.to_string()),
                 ("Evictions", d.evictions.to_string()),
                 ("Misses", d.misses.to_string()),
+                (
+                    "Misses: reach / pressure / in flight",
+                    format!(
+                        "{} / {} / {}",
+                        d.miss_buckets.outside_reach,
+                        d.miss_buckets.trimmed_by_pressure,
+                        d.miss_buckets.read_in_flight,
+                    ),
+                ),
+                (
+                    "Misses: budget / compose / failed",
+                    format!(
+                        "{} / {} / {}",
+                        d.miss_buckets.held_by_drain_budget,
+                        d.miss_buckets.awaiting_compose,
+                        d.miss_buckets.failed,
+                    ),
+                ),
+                ("Re-reads", d.rereads.to_string()),
                 ("Retries", d.retries.to_string()),
                 ("Decoded installed", format_bytes(d.decoded_bytes_installed)),
                 (

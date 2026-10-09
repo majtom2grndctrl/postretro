@@ -64,6 +64,24 @@ fn duration_micros(elapsed: Duration) -> u64 {
     u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX)
 }
 
+/// Visible SH misses by cause, each pointing at the lever a later change
+/// would pull. Every miss lands in exactly one bucket.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ShMissBuckets {
+    /// Not targeted before it became visible: outside the reach.
+    pub outside_reach: u64,
+    /// Targeted but trimmed by budget pressure.
+    pub trimmed_by_pressure: u64,
+    /// Targeted, its read queued or in flight.
+    pub read_in_flight: u64,
+    /// Read, waiting on the per-drain install budget.
+    pub held_by_drain_budget: u64,
+    /// Installed, waiting for its compose to be submitted.
+    pub awaiting_compose: u64,
+    /// Its read or install failed.
+    pub failed: u64,
+}
+
 /// One frame's view of SH streaming for the dev-tools Streaming tab and the
 /// periodic log. Plain data: residency and compose work are current-frame
 /// gauges; controller, worker, install, and growth fields are cumulative
@@ -85,6 +103,10 @@ pub struct ShStreamingLiveDiagnostics {
     pub logical_occupancy_bytes: u64,
     // Controller counters.
     pub misses: u64,
+    /// `misses` by cause; the buckets sum to it.
+    pub miss_buckets: ShMissBuckets,
+    /// Reads of a cluster evicted earlier in the level.
+    pub rereads: u64,
     pub installs: u64,
     pub evictions: u64,
     pub retries: u64,

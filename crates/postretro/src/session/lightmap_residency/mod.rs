@@ -311,6 +311,8 @@ impl LightmapStreamingSession {
     ) -> Result<()> {
         if settling {
             self.controller.update_capture_view(frame);
+            // Nothing is presented while settling, so nothing counts as missed.
+            self.controller.discard_frame_misses();
         } else {
             self.controller.update(frame);
         }

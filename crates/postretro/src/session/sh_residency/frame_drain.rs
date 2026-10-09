@@ -43,13 +43,16 @@ impl ShStreamingSession {
     /// First half of this frame's drain in the loaded mode: target update,
     /// reads (sync-proof) or completion admission (async), then SH's ready
     /// clusters offered to `drain`.
+    /// A settling frame counts no visible miss.
     pub(in crate::session) fn begin_drain(
         &mut self,
         visible_cells: &VisibleCells,
         reach: Option<DemandFrame<'_>>,
+        settling: bool,
         monotonic_seconds: f64,
         drain: &mut SharedDrain,
     ) -> Result<PendingShDrain> {
+        self.controller.suspend_visible_misses(settling);
         match self.mode {
             ShStreamingMode::SyncProof => {
                 self.update_targets(visible_cells, reach, monotonic_seconds)?;

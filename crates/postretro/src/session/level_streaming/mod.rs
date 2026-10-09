@@ -136,7 +136,7 @@ impl LevelStreaming {
     }
 
     /// The dev-tools lead slider and the walk measurement set L here.
-    #[cfg(any(test, feature = "dev-tools"))]
+    #[cfg(feature = "dev-tools")]
     pub(crate) fn cell_demand_mut(&mut self) -> Option<&mut CellDemand> {
         self.cell_demand.as_mut()
     }
@@ -184,6 +184,7 @@ impl LevelStreaming {
             Some(streaming) => Some(streaming.begin_drain(
                 frame.visible_cells,
                 demand_frame,
+                frame.settling,
                 frame.monotonic_seconds,
                 &mut self.drain,
             )?),

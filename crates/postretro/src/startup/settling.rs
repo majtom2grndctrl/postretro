@@ -111,8 +111,25 @@ impl App {
         }
         // Nothing the player does while the level is hidden acts on it: mouse
         // look and gameplay presses lift without a pulse, as on the frontend,
-        // so the reveal frame presents the pose that settled.
-        if let Some(session) = self.session.as_mut() {
+        // so the reveal frame presents the pose that settled. The pad's levels
+        // are recorded first, as the frontend does, so a pad input held through
+        // the hold stays inert after reveal instead of pressing fresh; the
+        // frame's pad presses and nav intents are dropped with it.
+        let App {
+            session,
+            nav_stick_tracker,
+            ..
+        } = self;
+        if let Some(session) = session.as_mut() {
+            let context = session.ui_nav_context();
+            if let Some(gamepad) = session.gamepad_system.as_mut() {
+                let _ = gamepad.update(
+                    &mut session.input_system,
+                    nav_stick_tracker,
+                    session.bindings.ui_nav(),
+                    context,
+                );
+            }
             session.input_system.suspend_gameplay();
         }
 

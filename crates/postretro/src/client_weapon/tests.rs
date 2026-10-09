@@ -1472,6 +1472,84 @@ mod impact_burst {
         );
     }
 
+    fn observed_impact(points: &[Vec3]) -> crate::netcode::weapon_cues::ObserverWeaponCueDelivery {
+        crate::netcode::weapon_cues::ObserverWeaponCueDelivery {
+            shot_id: postretro_foundation::ShotId::from_parts(
+                9,
+                40,
+                postretro_foundation::ActivationLane::Primary,
+                0,
+            ),
+            kind: crate::netcode::weapon_cues::WeaponCueKind::Impact,
+            sound: None,
+            additional_sound: None,
+            alias: None,
+            emitter: postretro_entities::Emitter::Contacts(
+                points
+                    .iter()
+                    .map(|&point| postretro_entities::ImpactContact::new(point, Vec3::Y, None))
+                    .collect(),
+            ),
+        }
+    }
+
+    // The frame's observer step bursts a received cue once per contact, only
+    // in the frame it arrived: the next frame's net poll rebuilds the list
+    // before the step runs again.
+    #[test]
+    fn client_frame_bursts_observed_impact_cues_once_in_their_arrival_frame() {
+        let mut app = presented_catchup_app(false);
+        let registry = app
+            .session
+            .as_ref()
+            .unwrap()
+            .scripting
+            .script_ctx
+            .registry
+            .clone();
+        app.observer_weapon_cues = vec![observed_impact(&[Vec3::ZERO, Vec3::X])];
+        let before = particles(&app);
+
+        app.spawn_observer_impact_bursts(&mut registry.borrow_mut());
+        assert_eq!(particles(&app) - before, 2 * weapon::IMPACT_PARTICLE_COUNT);
+
+        app.net_poll_and_apply(1.0 / 60.0);
+        assert!(app.observer_weapon_cues.is_empty());
+        app.spawn_observer_impact_bursts(&mut registry.borrow_mut());
+        assert_eq!(
+            particles(&app) - before,
+            2 * weapon::IMPACT_PARTICLE_COUNT,
+            "a cue never bursts again in a later frame"
+        );
+    }
+
+    // A frame without a client endpoint already burst from its own simulation,
+    // so the observer step adds nothing even if a cue were present.
+    #[test]
+    fn single_player_and_host_frames_take_no_observer_burst_route() {
+        let mut solo = crate::startup::lifecycle::tests::test_app();
+        let mut host = crate::startup::lifecycle::tests::test_app();
+        host.session.as_mut().unwrap().net_endpoint = crate::netcode::NetEndpoint::from_role(
+            &crate::netcode::NetRole::Host { port: 0 },
+            None,
+        )
+        .unwrap();
+        for app in [&mut solo, &mut host] {
+            app.observer_weapon_cues = vec![observed_impact(&[Vec3::ZERO])];
+            let registry = app
+                .session
+                .as_ref()
+                .unwrap()
+                .scripting
+                .script_ctx
+                .registry
+                .clone();
+            let before = particles(app);
+            app.spawn_observer_impact_bursts(&mut registry.borrow_mut());
+            assert_eq!(particles(app), before);
+        }
+    }
+
     #[test]
     fn client_dry_and_silent_pulls_spawn_no_burst() {
         for presentation in [

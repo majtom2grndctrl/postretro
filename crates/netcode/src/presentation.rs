@@ -1488,10 +1488,11 @@ mod tests {
         assert!(registry.take_presentation_spawns().is_empty());
     }
 
-    // Regression: a non-finite built-in anchor reached particle transforms and
-    // poisoned later simulation and render math.
+    // Regression: a non-finite spawn anchor reached particle transforms and
+    // poisoned later simulation and render math. The guard runs before any
+    // template or built-in id is consulted.
     #[test]
-    fn client_builtin_splash_rejects_non_finite_anchor_before_spawning_particles() {
+    fn client_presentation_spawn_rejects_non_finite_anchor_before_spawning() {
         let mut registry = EntityRegistry::new();
         let mut overlay_state = ClientOverlayFactState::default();
         let replication = ClientReplication::new();

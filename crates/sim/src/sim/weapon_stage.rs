@@ -2057,131 +2057,150 @@ mod tests {
     }
 
     #[test]
-    fn remote_projectile_muzzle_matches_local_helper_and_presentation_origin() {
-        let registry = Rc::new(RefCell::new(EntityRegistry::new()));
-        let canonical_name = "weapon.test.remote-muzzle";
-        let placement = WeaponPlacementDescriptor {
-            offset: PlacementOffset {
-                right: 0.3,
-                up: -0.2,
-                forward: 0.7,
-            },
-            rotation: PlacementRotation {
-                yaw: 12.0,
-                pitch: -7.0,
-                roll: 3.0,
-            },
-        };
-        let mod_default = WeaponPlacementDescriptor {
-            offset: PlacementOffset {
-                right: 9.0,
-                up: 8.0,
-                forward: 7.0,
-            },
-            rotation: PlacementRotation::default(),
-        };
-        let muzzle_local = Vec3::new(0.15, -0.1, -0.8);
-        let splash = SplashDescriptor {
-            knockback: None,
-            radius: 6.0,
-            min_fraction: 0.2,
-            self_damage: true,
-        };
-        let (pawn, weapon) = {
-            let mut registry = registry.borrow_mut();
-            let pawn = registry.spawn(Transform {
-                position: Vec3::new(2.0, 3.0, 4.0),
-                ..Transform::default()
-            });
-            registry
-                .set_component(pawn, trigger_movement())
-                .expect("remote pawn carries eye-height movement");
-            let weapon = registry.spawn(Transform::default());
-            let mut component = projectile_weapon_component(canonical_name);
-            component.muzzle_offset = Some(muzzle_local);
-            component.splash = Some(splash.clone());
-            registry
-                .set_component(weapon, component)
-                .expect("remote projectile weapon attaches");
-            registry
-                .set_component(weapon, weapon_provenance(canonical_name))
-                .expect("weapon has its canonical archetype");
-            (pawn, weapon)
-        };
-        let mut remote = remote_command(pawn, Some(weapon), 42, 9, true, false);
-        remote.command.movement.facing_yaw = 0.4;
-        remote.aim_pitch = -0.25;
+    fn remote_projectile_muzzle_matches_local_helper_and_presentation_origin_along_start_aim() {
+        // 0: the live aim. 1: a delivered start's own aim wins over a different
+        // delivering aim. 2: a start aim failing the command checks reads live.
+        for case in 0..3 {
+            let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+            let canonical_name = "weapon.test.remote-muzzle";
+            let placement = WeaponPlacementDescriptor {
+                offset: PlacementOffset {
+                    right: 0.3,
+                    up: -0.2,
+                    forward: 0.7,
+                },
+                rotation: PlacementRotation {
+                    yaw: 12.0,
+                    pitch: -7.0,
+                    roll: 3.0,
+                },
+            };
+            let mod_default = WeaponPlacementDescriptor {
+                offset: PlacementOffset {
+                    right: 9.0,
+                    up: 8.0,
+                    forward: 7.0,
+                },
+                rotation: PlacementRotation::default(),
+            };
+            let muzzle_local = Vec3::new(0.15, -0.1, -0.8);
+            let splash = SplashDescriptor {
+                knockback: None,
+                radius: 6.0,
+                min_fraction: 0.2,
+                self_damage: true,
+            };
+            let (pawn, weapon) = {
+                let mut registry = registry.borrow_mut();
+                let pawn = registry.spawn(Transform {
+                    position: Vec3::new(2.0, 3.0, 4.0),
+                    ..Transform::default()
+                });
+                registry
+                    .set_component(pawn, trigger_movement())
+                    .expect("remote pawn carries eye-height movement");
+                let weapon = registry.spawn(Transform::default());
+                let mut component = projectile_weapon_component(canonical_name);
+                component.muzzle_offset = Some(muzzle_local);
+                component.splash = Some(splash.clone());
+                registry
+                    .set_component(weapon, component)
+                    .expect("remote projectile weapon attaches");
+                registry
+                    .set_component(weapon, weapon_provenance(canonical_name))
+                    .expect("weapon has its canonical archetype");
+                (pawn, weapon)
+            };
+            let mut remote = remote_command(pawn, Some(weapon), 42, 9, true, false);
+            remote.command.movement.facing_yaw = 0.4;
+            remote.aim_pitch = -0.25;
+            let declared = crate::sim::RemoteStartAim {
+                pitch: remote.aim_pitch,
+                yaw: remote.command.movement.facing_yaw,
+            };
+            if case == 1 {
+                remote.start_aim = Some(declared);
+                remote.command.movement.facing_yaw = 1.3;
+                remote.aim_pitch = 0.5;
+            } else if case == 2 {
+                remote.start_aim = Some(crate::sim::RemoteStartAim {
+                    pitch: f32::NAN,
+                    yaw: 2.0,
+                });
+            }
 
-        let result = run_remote_weapon_commands(
-            &registry,
-            &[remote.clone()],
-            &[projectile_weapon_descriptor(
-                canonical_name,
-                placement.clone(),
-            )],
-            Some(&mod_default),
-            &CollisionWorld::new(),
-            &HitZoneStore::new(),
-            0.0,
-            1.0 / 60.0,
-        );
+            let result = run_remote_weapon_commands(
+                &registry,
+                &[remote.clone()],
+                &[projectile_weapon_descriptor(
+                    canonical_name,
+                    placement.clone(),
+                )],
+                Some(&mod_default),
+                &CollisionWorld::new(),
+                &HitZoneStore::new(),
+                0.0,
+                1.0 / 60.0,
+            );
 
-        let eye = Vec3::new(2.0, 3.5, 4.0);
-        let direction = Vec3::new(
-            -remote.command.movement.facing_yaw.sin() * remote.aim_pitch.cos(),
-            remote.aim_pitch.sin(),
-            -remote.command.movement.facing_yaw.cos() * remote.aim_pitch.cos(),
-        )
-        .normalize();
-        let local_origin = weapon::muzzle_world_origin(eye, direction, &placement, muzzle_local);
-        let [authorized] = result.authorized_shots.as_slice() else {
-            panic!("accepted remote projectile fire mints one authorization");
-        };
-        let [presentation] = result.projectile_presentation_launches.as_slice() else {
-            panic!("canonical remote projectile fire emits one observer launch");
-        };
+            let eye = Vec3::new(2.0, 3.5, 4.0);
+            let direction = Vec3::new(
+                -declared.yaw.sin() * declared.pitch.cos(),
+                declared.pitch.sin(),
+                -declared.yaw.cos() * declared.pitch.cos(),
+            )
+            .normalize();
+            let local_origin =
+                weapon::muzzle_world_origin(eye, direction, &placement, muzzle_local);
+            let [authorized] = result.authorized_shots.as_slice() else {
+                panic!("accepted remote projectile fire mints one authorization");
+            };
+            let [presentation] = result.projectile_presentation_launches.as_slice() else {
+                panic!("canonical remote projectile fire emits one observer launch");
+            };
 
-        assert!(
-            authorized.shot.fire_origin.distance(local_origin) <= 1.0e-6,
-            "identical remote and local muzzle inputs compose to the same origin"
-        );
-        assert_eq!(
-            authorized.shot.splash.as_ref(),
-            Some(&splash),
-            "remote FIRE freezes splash tuning for later host contact resolution"
-        );
-        let expected_direction =
-            (eye + direction * authorized.shot.range - local_origin).normalize();
-        assert!(
-            authorized
-                .shot
-                .projectile_direction
-                .expect("projectile authorization freezes a direction")
-                .distance(expected_direction)
-                <= 1.0e-6,
-            "remote FIRE converges from the muzzle to the eye ray's range endpoint"
-        );
-        assert_eq!(
-            authorized.shot.projectile_speed,
-            Some(presentation.projectile.speed),
-        );
-        assert_eq!(
-            authorized.shot.projectile_lifetime_seconds,
-            Some(presentation.projectile.lifetime_ms / 1_000.0),
-        );
-        assert_eq!(authorized.shot.projectile_tick_seconds, Some(1.0 / 60.0));
-        assert_eq!(
-            authorized.shot.projectile_radius,
-            Some(presentation.projectile.radius),
-        );
-        assert!(
-            presentation.origin.distance(local_origin) <= 1.0e-6,
-            "the observer launch reuses the authorization's exact muzzle point"
-        );
-        assert!(
-            presentation.direction.distance(expected_direction) <= 1.0e-6,
-            "remote presentation reuses the authorization's converged direction"
-        );
+            assert!(
+                authorized.shot.fire_origin.distance(local_origin) <= 1.0e-6,
+                "identical remote and local muzzle inputs compose to the same origin"
+            );
+            assert_eq!(
+                authorized.shot.splash.as_ref(),
+                Some(&splash),
+                "remote FIRE freezes splash tuning for later host contact resolution"
+            );
+            let expected_direction =
+                (eye + direction * authorized.shot.range - local_origin).normalize();
+            assert!(
+                authorized
+                    .shot
+                    .projectile_direction
+                    .expect("projectile authorization freezes a direction")
+                    .distance(expected_direction)
+                    <= 1.0e-6,
+                "remote FIRE converges from the muzzle to the eye ray's range endpoint"
+            );
+            assert_eq!(
+                authorized.shot.projectile_speed,
+                Some(presentation.projectile.speed),
+            );
+            assert_eq!(
+                authorized.shot.projectile_lifetime_seconds,
+                Some(presentation.projectile.lifetime_ms / 1_000.0),
+            );
+            assert_eq!(authorized.shot.projectile_tick_seconds, Some(1.0 / 60.0));
+            assert_eq!(
+                authorized.shot.projectile_radius,
+                Some(presentation.projectile.radius),
+            );
+            assert!(
+                presentation.origin.distance(local_origin) <= 1.0e-6,
+                "the observer launch reuses the authorization's exact muzzle point"
+            );
+            assert!(
+                presentation.direction.distance(expected_direction) <= 1.0e-6,
+                "remote presentation reuses the authorization's converged direction"
+            );
+        }
     }
 
     #[test]

@@ -1,5 +1,6 @@
 //! Correlated start/release/cancel recovery beside movement playout.
 use crate::prediction::client_tick_le;
+use crate::sim::RemoteStartAim;
 use postretro_foundation::{ActivationInput, ActivationRelease, ActivationToken};
 use std::collections::VecDeque;
 
@@ -17,7 +18,7 @@ struct RetainedEdge {
 }
 /// A client-named start retained beside movement playout, so a catch-up trim or
 /// stale-drop of its carrying command cannot erase it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct RetainedStart {
     pub token: ActivationToken,
     /// Client tick of the carrying command. The start is due once the resolved
@@ -25,11 +26,14 @@ pub(crate) struct RetainedStart {
     pub command_tick: u32,
     /// Firing slot the carrying command named.
     pub firing_slot: u8,
+    /// Aim the carrying command declared, already through intake sanitization.
+    /// The start's shot fires along it, whichever later command delivers it.
+    pub aim: RemoteStartAim,
     /// Host tick at which playout first found it due. Expiry runs from here, so
     /// a start playout has not reached yet is never refused for waiting.
     due_since: Option<u32>,
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum DueStart {
     Start(RetainedStart),
     /// Two seconds passed without admission; the caller publishes the refusal.
@@ -39,6 +43,8 @@ pub(crate) enum DueStart {
 pub(crate) struct ActivationEdges {
     edges: VecDeque<RetainedEdge>,
     starts: VecDeque<RetainedStart>,
+    /// The start most recently taken from the lane, for its shot's aim.
+    delivered: Option<RetainedStart>,
     admitted: VecDeque<ActivationToken>,
     overflow_cancel: Option<ActivationToken>,
     settled_start: [Option<u32>; 2],
@@ -46,7 +52,13 @@ pub(crate) struct ActivationEdges {
 impl ActivationEdges {
     /// Retain a start in intake order. Duplicates, settled starts, and starts past
     /// the per-client bound are not retained, so playout never delivers them.
-    pub fn observe_start(&mut self, token: ActivationToken, command_tick: u32, firing_slot: u8) {
+    pub fn observe_start(
+        &mut self,
+        token: ActivationToken,
+        command_tick: u32,
+        firing_slot: u8,
+        aim: RemoteStartAim,
+    ) {
         if self.is_settled(token)
             || self.admitted.contains(&token)
             || self.starts.iter().any(|start| start.token == token)
@@ -58,6 +70,7 @@ impl ActivationEdges {
             token,
             command_tick,
             firing_slot,
+            aim,
             due_since: None,
         });
     }
@@ -86,9 +99,15 @@ impl ActivationEdges {
             .front()
             .is_some_and(|start| start.token == token)
         {
-            self.starts.pop_front();
+            self.delivered = self.starts.pop_front();
         }
         self.admit(token)
+    }
+    /// Aim captured with `token`'s start, once the lane has delivered it.
+    pub fn delivered_aim(&self, token: ActivationToken) -> Option<RemoteStartAim> {
+        self.delivered
+            .filter(|start| start.token == token)
+            .map(|start| start.aim)
     }
     pub fn observe(&mut self, input: ActivationInput, tick: u32) {
         self.prune(tick);
@@ -255,11 +274,14 @@ mod tests {
             lane: ActivationLane::Secondary,
         }
     }
+    fn aim(yaw: f32) -> RemoteStartAim {
+        RemoteStartAim { pitch: 0.1, yaw }
+    }
     #[test]
-    fn activation_start_lane_ignores_duplicates_settled_starts_and_overflow() {
+    fn activation_start_lane_keeps_first_aim_and_ignores_duplicates_settled_starts_and_overflow() {
         let mut edges = ActivationEdges::default();
-        edges.observe_start(token(4), 4, 0);
-        edges.observe_start(token(4), 9, 0);
+        edges.observe_start(token(4), 4, 0, aim(0.0));
+        edges.observe_start(token(4), 9, 0, aim(0.7));
         assert_eq!(edges.starts.len(), 1, "a duplicate start is retained once");
         assert_eq!(
             edges.due_start(3, 0, false),
@@ -269,16 +291,23 @@ mod tests {
         let Some(DueStart::Start(start)) = edges.due_start(4, 0, false) else {
             panic!("a resolved start is due");
         };
+        assert_eq!(edges.delivered_aim(start.token), None, "not yet delivered");
         assert!(edges.take_start(start.token));
+        assert_eq!(
+            edges.delivered_aim(start.token),
+            Some(aim(0.0)),
+            "the delivered start keeps its first carrying command's aim"
+        );
+        assert_eq!(edges.delivered_aim(token(5)), None);
         edges.terminal(start.token);
-        edges.observe_start(token(4), 4, 0);
-        edges.observe_start(token(3), 3, 0);
+        edges.observe_start(token(4), 4, 0, aim(0.0));
+        edges.observe_start(token(3), 3, 0, aim(0.0));
         assert!(
             edges.starts.is_empty(),
             "settled starts are never retained again"
         );
         for tick in 5..5 + MAX_RETAINED_ACTIVATION_EDGES as u32 + 1 {
-            edges.observe_start(token(tick), tick, 0);
+            edges.observe_start(token(tick), tick, 0, aim(0.0));
         }
         assert_eq!(edges.starts.len(), MAX_RETAINED_ACTIVATION_EDGES);
         assert!(

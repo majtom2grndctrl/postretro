@@ -5068,6 +5068,7 @@ impl App {
             fire_tick,
             client_tick: resolved.client_tick,
             aim_pitch: resolved.aim_pitch,
+            start_aim: None,
             command: resolved.command.clone(),
         }
     }

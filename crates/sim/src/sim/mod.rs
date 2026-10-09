@@ -235,6 +235,17 @@ pub struct RemotePawnCommand {
     pub client_tick: u32,
     pub aim_pitch: f32,
     pub command: SimCommand,
+    /// Aim of the command that carried this tick's delivered activation start,
+    /// captured at host intake. Only that shot's FIRE reconstruction reads it;
+    /// movement and facing keep `command.movement`. `None` reads the live aim.
+    pub start_aim: Option<RemoteStartAim>,
+}
+
+/// A client's declared aim, in radians, as one input command carried it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RemoteStartAim {
+    pub pitch: f32,
+    pub yaw: f32,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -2335,6 +2346,7 @@ mod tests {
             fire_tick: client_tick,
             client_tick,
             aim_pitch: 0.0,
+            start_aim: None,
             command: {
                 let mut command = sim_command(fire, reload);
                 if fire {

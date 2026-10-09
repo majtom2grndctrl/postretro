@@ -333,8 +333,15 @@ fn remote_projectile_aim(
     let movement = registry
         .get_component::<PlayerMovementComponent>(remote.pawn)
         .ok()?;
-    let yaw = remote.command.movement.facing_yaw;
-    let pitch = remote.aim_pitch;
+    // A delivered start fires along the aim its own command declared. An aim
+    // failing the command checks reads as the delivering command's aim.
+    let (yaw, pitch) = remote
+        .start_aim
+        .filter(|aim| aim.yaw.is_finite() && aim.pitch.is_finite())
+        .map_or(
+            (remote.command.movement.facing_yaw, remote.aim_pitch),
+            |aim| (aim.yaw, aim.pitch),
+        );
     if !yaw.is_finite() || !pitch.is_finite() {
         return None;
     }

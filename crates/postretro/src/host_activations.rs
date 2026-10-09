@@ -6,7 +6,9 @@ use postretro_entities::components::health::HealthComponent;
 use postretro_entities::components::inventory::Inventory;
 use postretro_entities::components::weapon::WeaponComponent;
 use postretro_entities::{ComponentKind, ComponentValue, EntityId, EntityRegistry};
-use postretro_foundation::{ActivationId, ActivationToken, activation_duration_ticks};
+use postretro_foundation::{
+    ACTIVATION_TICKS_PER_SECOND, ActivationId, ActivationToken, activation_duration_ticks,
+};
 use postretro_net::transport::NetServer;
 use postretro_net::wire;
 
@@ -164,10 +166,37 @@ pub(super) fn guard_initiation(
         // refuse a start that playout delivered compressed.
         component.cooldown_remaining_ms = 0.0;
     }
+    // The start's shot fires along the aim its own command declared, not the
+    // aim of whichever later command delivered it.
+    command.start_aim = command
+        .command
+        .activation
+        .initiation
+        .and_then(|token| queues.start_aim(command.owner_client_id, token));
     // Ensure private weapon instances have a stable owner-outcome identity
     // before any shot is debited or presentation is sent.
     if let Some(weapon) = command.weapon {
         allocator.stamp(weapon);
+    }
+}
+
+/// After the simulation tick, a weapon that left its client's inventory loses
+/// that client's cadence record. Its own cooldown keeps whatever recovery the
+/// record's credit still owes, so no later holder, that client included, fires
+/// ahead of one recovery after its last credited execution. Cooldown only
+/// counts down while a holder ticks the weapon, so the charge never shortens.
+pub(super) fn release_departed_weapons(
+    registry: &mut EntityRegistry,
+    queues: &mut netcode::HostCommandQueues,
+    owners: &netcode::MovementOwners,
+) {
+    for (weapon, owed_ticks) in queues.release_departed_cadence(registry, owners) {
+        if let Ok(ComponentValue::Weapon(component)) =
+            registry.get_component_value_mut(weapon, ComponentKind::Weapon)
+        {
+            let owed_ms = owed_ticks as f32 * 1000.0 / ACTIVATION_TICKS_PER_SECOND as f32;
+            component.cooldown_remaining_ms = component.cooldown_remaining_ms.max(owed_ms);
+        }
     }
 }
 
@@ -339,15 +368,17 @@ impl App {
         &mut self,
         progress: &[sim::RemoteActivationProgress],
     ) {
+        let Some(session) = self.session.as_mut() else {
+            return;
+        };
+        let registry = session.scripting.script_ctx.registry.clone();
         let Some(netcode::NetEndpoint::Host {
             allocator,
             command_queues,
             server,
+            owners,
             ..
-        }) = self
-            .session
-            .as_mut()
-            .and_then(|session| session.net_endpoint.as_mut())
+        }) = session.net_endpoint.as_mut()
         else {
             return;
         };
@@ -369,6 +400,7 @@ impl App {
                 ),
             });
         }
+        release_departed_weapons(&mut registry.borrow_mut(), command_queues, owners);
     }
 }
 

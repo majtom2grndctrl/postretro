@@ -1,0 +1,18 @@
+{
+  "map": "content/dev/maps/movement-feel.prl",
+  "camera": {
+    "position": [
+      16.51,
+      7.62,
+      25.4
+    ],
+    "yaw_deg": 35,
+    "pitch_deg": -12,
+    "fov_deg": 90
+  },
+  "resolution": [
+    1920,
+    1080
+  ],
+  "output": "content/dev/ui/loading/movement-feel.png"
+}

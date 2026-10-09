@@ -55,11 +55,10 @@ import {
 } from "./scripts/hud";
 import { pauseMenu } from "./scripts/pause-menu";
 import {
-  loadingCombatDemo,
-  loadingHazard,
   loadingImages,
-  loadingNeon,
+  loadingPlain,
   loadingPool,
+  mapLoadingTrees,
 } from "./scripts/loading-screens";
 import { devInput } from "./scripts/input";
 import {
@@ -132,13 +131,12 @@ export default defineMod({
     frontendMenu,
     devLevelSelectMenu,
     optionsMenu,
-    loadingHazard,
-    loadingNeon,
-    loadingCombatDemo,
+    loadingPlain,
+    ...mapLoadingTrees,
   ],
-  // DEV FIXTURE: mod loading screens. Images any tree may draw by key, and a
-  // mod-wide pool the engine picks from per load; the combat demo's catalog
-  // entry overrides the pool (scripts/loading-screens.ts).
+  // DEV FIXTURE: mod loading screens. Each catalog entry names a tree that
+  // draws its map's screenshot; path loads fall back to the mod-wide pool
+  // (scripts/loading-screens.ts).
   uiImages: loadingImages,
   loading: { tree: loadingPool },
   // DEV FIXTURE — these remain global so any dev map using the shared combat

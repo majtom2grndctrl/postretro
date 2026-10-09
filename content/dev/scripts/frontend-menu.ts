@@ -32,6 +32,7 @@ import {
   type ValueTextCase,
   type WidgetDescriptor,
 } from "postretro/ui";
+import { loadingTreeName } from "./loading-screens";
 
 const TITLE_MENU_NAME = "frontend.menuTree";
 const LEVEL_SELECT_MENU_NAME = "frontend.devLevelSelect";
@@ -48,39 +49,36 @@ export const mapCatalog = defineMapCatalog([
     path: "maps/campaign-test.prl",
     name: "Moody Vibe Test",
     tags: ["campaign", "recommended"],
+    loadingTree: loadingTreeName("campaign-test"),
   },
   {
     id: "kinematic-platform",
     path: "maps/kinematic-platform.prl",
     name: "Moving Platforms Test",
     tags: ["platform", "test"],
+    loadingTree: loadingTreeName("kinematic-platform"),
   },
   {
     id: "movement-feel",
     path: "maps/movement-feel.prl",
     name: "Combat Arena Test",
     tags: ["combat", "movement", "recommended"],
+    loadingTree: loadingTreeName("movement-feel"),
   },
   {
     id: "stress-warren-hallway-inspection",
     path: "maps/stress-warren-hallway-inspection.prl",
     name: "Stress Test",
     tags: ["stress", "test"],
+    loadingTree: loadingTreeName("stress-warren-hallway-inspection"),
   },
   {
     id: "combat-demo",
     path: "maps/combat-demo.prl",
     name: "Combat + Emissive Test",
     tags: ["combat", "emissive", "recommended"],
-    // Overrides the mod-wide loading pool for this map (it is also the
-    // frontend backdrop, so its loading screen shows at every boot).
-    loadingTree: "dev.loading.combatDemo",
-  },
-  {
-    id: "splash-damage-demo",
-    path: "maps/splash-damage-demo.prl",
-    name: "Rocket Splash Damage Test",
-    tags: ["combat", "test"],
+    // Also the frontend backdrop, so its loading screen shows at every boot.
+    loadingTree: loadingTreeName("combat-demo"),
   },
 ]);
 

@@ -1,0 +1,18 @@
+{
+  "map": "content/dev/maps/kinematic-platform.prl",
+  "camera": {
+    "position": [
+      0.0,
+      5.08,
+      -2.54
+    ],
+    "yaw_deg": 0,
+    "pitch_deg": -8,
+    "fov_deg": 90
+  },
+  "resolution": [
+    1920,
+    1080
+  ],
+  "output": "content/dev/ui/loading/kinematic-platform.png"
+}

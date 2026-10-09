@@ -1,7 +1,7 @@
 # sh-streaming--reveal-gate-and-warm-horizon — plan of record
 
 mode: resumable
-status: approved
+status: approved — built; awaiting owner manual proofs and "land the plane"
 read at: 4677eda27
 
 Source is unchanged since the brief's `ef855f247`; only plan files moved. Every symbol cited by Decisions and Path was re-read at `4677eda27`. No Decision premise is false. The corrections below are Path or location drift, plus facts the Path omits that the build must handle.
@@ -65,63 +65,63 @@ Source is unchanged since the brief's `ef855f247`; only plan files moved. Every 
 
 Test names are planned, not yet written. "Engine-free" means a pure function, controller or session tests, `test_app`, or the net relay seam, all without a GPU.
 
-| AC | Proof | Status |
-|---|---|---|
-| **S1** not settled while an SH settle target is below Sampleable, or a settle-set block is not installed | `settle_check_waits_on_each_sh_tier_and_each_lightmap_block` (settle chokepoint, controller fixtures) | achievable as stated |
-| **S2** settles with band, seam-warm and lightmap-band targets cold | `settle_check_ignores_band_seam_warm_and_lightmap_band` | achievable as stated |
-| **S3** drawn blocks outside the baked set, and on a non-portal path, block settling until installed | `settle_check_waits_on_drawn_blocks_on_every_visibility_path` | achievable as stated |
-| **S4** settled immediately when nothing streams | `settle_check_answers_settled_when_no_resource_streams` | achievable as stated |
-| **S5** a streamed level does not settle before its first demand update from the settle pose (P1) | `settle_check_refuses_before_first_settle_pose_update` | achievable as stated |
-| **S6** streamed SH with no usable id 51 settles on Visible, Pinned and owners; no lead or band in play | `sh_without_id51_targets_no_lead_or_band_tier` | achievable as stated |
-| **S7** budget below the settle set still settles; the set is admitted past budget | `settle_set_admits_past_budget_and_settles` (async controller, small floor) | achievable as stated |
-| **S8** capture's SH preload waits on the chokepoint's SH answer and settles when the band exceeds budget | `capture_preload_settles_on_chokepoint_sh_answer` (`capture` feature) | achievable as stated |
-| **L1** boot map, catalog, `restartLevel`, backdrop and relevel each pass install → Settling | `every_level_entry_installs_into_settling` (`test_app` with a level-less renderer stub; one case per entry route) | achievable as stated |
-| **L2** tick count, game time and timed-reaction counter frozen; no system-command drain; first tick and drain after reveal (P12) | `settling_frames_hold_sim_scheduler_and_system_commands` + accumulator re-arm unit test | achievable as stated |
-| **L3** no world present, no level sound, loading tree each redraw; queued level sounds dispatch on reveal | `settling_paints_loading_tree_and_defers_level_sounds` (Settling paint returns a world-less frame kind; system-command queue inspected) | achievable as stated |
-| **L4** no Settling frame releases streaming sessions; active load not ended before reveal | `settling_keeps_install_streaming_sessions_through_reveal` (session generation identity) | achievable as stated |
-| **L5** `loading.progress` never decreases; reads 1.0 on the last Settling frame, timeout included (P10) | `settle_progress_is_monotone_and_reaches_one_before_reveal` | achievable as stated |
-| **L6** a UI input pressed in Settling activates nothing on the first Running frame; the clamp ages across Settling | `settling_drops_ui_input` + `limiter_frame_ages_across_settling` (extends the `main.rs` limiter test) | achievable as stated |
-| **L7** cluster reaches Sampleable and block installs during Settling, without Running | `settling_streaming_step_promotes_cluster_and_installs_block` (session tests with the stub drain outcome capture fixtures already use) + M2 in engine | achievable as stated |
-| **L8** no production path calls the spawn preload | grep gate test `no_production_path_calls_spawn_lightmap_preload` | achievable as stated |
-| **L9** one presented pose for install, Settling and first Running frame; backdrop and menu-pushed relevel at the menu pose; else first `player_spawn` | `presented_pose_resolves_menu_then_spawn` (pure resolver) + `install_settling_and_reveal_read_one_presented_pose` | achievable as stated |
-| **L10** a settled reveal records no SH visible miss and no drawn non-resident block, for pawn spawn and backdrop (P1, P9) | `settled_reveal_frame_counts_no_sh_or_lightmap_miss` | achievable as stated |
-| **L11** timeout releases with exactly one warning; a settle on or before the deadline frame warns nothing (P3) | `settle_timeout_warns_once` + `settle_on_deadline_frame_releases_without_warning` (log capture) | achievable as stated |
-| **L12** `restartLevel` after a timed-out entry gets a fresh timeout | `restart_after_timeout_starts_fresh_settle_timer` | achievable as stated |
-| **L13** load request during Settling: no stale settle or timer; a request on a would-settle frame unloads first, no reveal edge (P2) | `level_request_during_settling_unloads_without_reveal_edge` | achievable as stated |
-| **L14** suspend during Settling: no reveal edge, no settle state survives (P7) | `suspend_during_settling_leaves_no_settle_state` (`reset_boot_state_after_suspend`) | achievable as stated |
-| **L15** Settling during prior-generation retirement issues no read until join, then settles (P8) | `settling_waits_for_retirement_then_settles` | achievable as stated |
-| **L16** staged script commit during Settling recomposes reactions (P13) | `staged_commit_during_settling_recomposes_level_reactions` | achievable as stated |
-| **L17** reveal-frame promotion at full weight; later promotion ramps over `PROMOTE_SECONDS` | `reveal_frame_promotion_starts_whole_later_promotion_ramps` (renderer light-slot data logic) | achievable as stated |
-| **L18** regression guard: after Running, a non-resident visible cluster renders ambient floor that frame | `running_frame_never_waits_on_cold_cluster` (async controller: miss counted and sample word zero, no stall path) | achievable as stated |
-| **C1** both peers publish parity at install; divergent client gets its cause during Settling | relay-seam test `parity_published_at_install_reaches_settling_client` | achievable as stated |
-| **C2** parity-matched settling client held; pawn on the poll draining its reveal; one promotion when parity and reveal share a batch | `revealed_declaration_promotes_once_even_batched_with_parity` | achievable as stated |
-| **C3** timed-out client still declares; timed-out host records reveal and promotes (P6) | net: `host_reveal_promotes_revealed_matched_client`; engine: `timeout_release_is_a_reveal_edge` | achievable as stated |
-| **C4** client revealed while parity mismatched is promoted the moment parity matches | `revealed_before_parity_match_promotes_on_match` | achievable as stated |
-| **C5** reveal never arrives: held with revealed cause, connected past timeout, no entity state | `unrevealed_client_stays_admitted_and_receives_no_entity_state` | achievable as stated |
-| **C6** duplicate reveal: no second entry; reveal naming another level does not promote | `duplicate_or_foreign_reveal_does_not_repromote` | achievable as stated |
-| **C7** client unload or suspend retracts; same-level re-install held until its own reveal, even when unload and install collapse into one batch (P7) | `retracted_reveal_holds_reinstall_until_new_reveal` | achievable as stated |
-| **C8** host Settling: no promotion, client stays connected through the hold; promoted once on host reveal with pawn; also after host same-level `restartLevel` (P4, P5) | net: `host_unrevealed_holds_revealed_client`; engine: `host_reveal_recorded_after_settling_poll_spawns_pawn_in_world_poll` (frame-order test) | achievable as stated |
-| **C9** host suspend clears own reveal; resumed same-level install promotes only at new reveal (P15) | `host_suspend_clears_own_reveal` (engine: `clear_net_level_parity` path) | achievable as stated |
-| **C10** host restart: Running client re-promoted at host reveal without re-declaring; settling client promoted once after both reveals in either order; no client reload (P14) | `host_restart_repromotes_revealed_client_once_in_either_order` | achievable as stated |
-| **C11** mod-digest demotion and recovery re-promotes without a new reveal | `mod_digest_recovery_repromotes_without_new_reveal` | achievable as stated |
-| **C12** disconnect while held: no pawn, record gone, rejoin held until it reveals again | `disconnect_clears_revealed_record` | achievable as stated |
-| **C13** revealed-only demotion sends a Holding diagnostic and retires the client epoch | `revealed_only_demotion_sends_holding_and_retires_epoch` | achievable as stated |
-| **C14** declaration and both causes round-trip; previous wire constants refused at gate 1 | extend `control_envelopes_round_trip`; append-layout guard mirrors; `revealed_vocabulary_refuses_previous_protocol_id` | achievable as stated |
-| **R1** SH mandatory = Visible, Pinned, owners, plus clusters of id-51 entries with lead ≤ L; a cluster with all cells past L is not mandatory | `sh_mandatory_tier_is_id51_reach_within_lead` | achievable as stated |
-| **R2** one L drives both; L change moves both sets; SH-only level uses L; decline mid-level or mid-Settling leaves SH lead tier unchanged (P11) | `one_lead_drives_sh_and_lightmap_and_survives_decline` | achievable as stated |
-| **R3** non-portal path in play: SH requests every drawn cluster Visible; lead and band from the stage's classes | `non_portal_path_keeps_sh_visible_and_stage_lead_classes` | achievable as stated |
-| **R4** Streaming tab slider, capture `lead_metres` and walk measurement use level-scope L; slider present for SH-only and after decline | `streaming_levers_read_and_set_level_scope_lead` + dev-tools build check; walk measurement compiles against the stage | achievable as stated |
-| **R5** over budget, mandatory SH admitted (pool grows); band yields farthest lead first | `band_yields_farthest_lead_first_mandatory_never_refused` | achievable as stated |
-| **R6** within budget, a departed Sampleable cluster is still evicted after hysteresis | extend existing departure-eviction tests to the new classes | achievable as stated |
-| **R7** no production path reads `WARM_SET_CLUSTERS` or the id-46 warm walk | grep gate test `no_production_path_reads_warm_set` (module deleted) | achievable as stated |
-| **R8** re-read counter increments on a re-read after eviction, not on first read | `reread_counter_counts_only_post_eviction_reads` | achievable as stated |
-| **R9** each visible SH miss in exactly one bucket, each bucket reached; Settling adds nothing; timed-out reveal counts once (P9) | `visible_miss_lands_in_exactly_one_bucket` (one fixture per bucket) + `settling_records_no_visible_miss` | achievable as stated |
-| **R10** Line C's `first_level_frame` on the reveal frame; Settling hold its own mark | `line_c_marks_settle_hold_and_reveal_frame` (source-order and timing-name test) | achievable as stated |
-| **M1** SH mandatory bytes per camera cell at default L on hallway-inspection and campaign-test, beside lightmap; worst and p95; stop if over the threshold | owner-visible report from `#[ignore]` harness (task 1) | manual; measured 2026-10-08, gate passes (§Measurement) |
-| **M2** visual: no ambient-floor SH or SH-only lightmap in the first view, four entry routes, two maps | owner, in-engine | manual |
-| **M3** resource run on largest stress map, before/after, pinned fixture and route | owner, in-engine (executor prepares the route and counters) | manual |
-| **M4** route's in-play SH misses fall vs baseline; resident SH past budget is mandatory only | owner, from M3 data | manual |
-| **M5** co-op loopback: both settle; neither sees the other's pawn move before its own reveal; host restart with a long settle | owner, two engines on loopback | manual |
+| AC | Proof | Status | Result |
+|---|---|---|---|
+| **S1** not settled while an SH settle target is below Sampleable, or a settle-set block is not installed | `settle_check_waits_on_each_sh_tier_and_each_lightmap_block` (settle chokepoint, controller fixtures) | achievable as stated | pass: `settle_check_waits_on_each_sh_settle_tier_and_ignores_optional_targets`, `settle_check_waits_on_drawn_blocks_on_every_visibility_path`, `sh_mandatory_tier_is_id51_reach_within_lead` (lead tier) |
+| **S2** settles with band, seam-warm and lightmap-band targets cold | `settle_check_ignores_band_seam_warm_and_lightmap_band` | achievable as stated | pass: same three tests (band, prefetch and lightmap band cold while settled) |
+| **S3** drawn blocks outside the baked set, and on a non-portal path, block settling until installed | `settle_check_waits_on_drawn_blocks_on_every_visibility_path` | achievable as stated | pass: `settle_check_waits_on_drawn_blocks_on_every_visibility_path` |
+| **S4** settled immediately when nothing streams | `settle_check_answers_settled_when_no_resource_streams` | achievable as stated | pass: `settle_check_answers_settled_when_no_resource_streams` |
+| **S5** a streamed level does not settle before its first demand update from the settle pose (P1) | `settle_check_refuses_before_first_settle_pose_update` | achievable as stated | pass: `settle_check_refuses_before_first_settle_pose_update` |
+| **S6** streamed SH with no usable id 51 settles on Visible, Pinned and owners; no lead or band in play | `sh_without_id51_targets_no_lead_or_band_tier` | achievable as stated | pass: `sh_without_id51_targets_no_lead_or_band_tier` |
+| **S7** budget below the settle set still settles; the set is admitted past budget | `settle_set_admits_past_budget_and_settles` (async controller, small floor) | achievable as stated | pass at controller level: `band_yields_farthest_lead_first_mandatory_never_refused` (mandatory admitted past an 8-byte budget). No end-to-end Settling fixture |
+| **S8** capture's SH preload waits on the chokepoint's SH answer and settles when the band exceeds budget | `capture_preload_settles_on_chokepoint_sh_answer` (`capture` feature) | achievable as stated | partial: capture preload waits on `unsettled_targets() == Some(0)` and counts no misses; capture suite (111) passes. No dedicated band-over-budget capture fixture |
+| **L1** boot map, catalog, `restartLevel`, backdrop and relevel each pass install → Settling | `every_level_entry_installs_into_settling` (`test_app` with a level-less renderer stub; one case per entry route) | achievable as stated | pass: `loading_screen_ends_at_reveal_and_on_failure` pins every entry through `finish_level_payload` → `enter_settling`; engine runs (boot map) show `settle_hold` then `first_level_frame` |
+| **L2** tick count, game time and timed-reaction counter frozen; no system-command drain; first tick and drain after reveal (P12) | `settling_frames_hold_sim_scheduler_and_system_commands` + accumulator re-arm unit test | achievable as stated | pass by structure: Settling dispatch returns false, so no tick, scheduler counter or system-command drain runs; `rearm_drops_held_time_so_the_next_frame_ticks_only_its_own`. No frame-loop integration test |
+| **L3** no world present, no level sound, loading tree each redraw; queued level sounds dispatch on reveal | `settling_paints_loading_tree_and_defers_level_sounds` (Settling paint returns a world-less frame kind; system-command queue inspected) | achievable as stated | partial: world-less compose-only paint, sounds left queued until the reveal frame (structure); `abandoned_settle_discards_commands_install_queued`. No integration test of the reveal-frame dispatch |
+| **L4** no Settling frame releases streaming sessions; active load not ended before reveal | `settling_keeps_install_streaming_sessions_through_reveal` (session generation identity) | achievable as stated | pass: `settling_frames_install_the_settle_set_and_keep_the_install_session`; held frames never call `clear_level_streaming` |
+| **L5** `loading.progress` never decreases; reads 1.0 on the last Settling frame, timeout included (P10) | `settle_progress_is_monotone_and_reaches_one_before_reveal` | achievable as stated | pass: `settle_progress_never_decreases_across_a_growing_set`, `settle_timeout_warns_once_and_reveals_into_running` (1.0 before reset) |
+| **L6** a UI input pressed in Settling activates nothing on the first Running frame; the clamp ages across Settling | `settling_drops_ui_input` + `limiter_frame_ages_across_settling` (extends the `main.rs` limiter test) | achievable as stated | pass: `settling_drops_ui_input_like_loading`; gameplay input suspended per Settling frame (keys, mouse, pad levels). Limiter ages through the same world-less frame as Loading (structure) |
+| **L7** cluster reaches Sampleable and block installs during Settling, without Running | `settling_streaming_step_promotes_cluster_and_installs_block` (session tests with the stub drain outcome capture fixtures already use) + M2 in engine | achievable as stated | pass: lightmap half `settling_frames_install_the_settle_set_and_keep_the_install_session`; SH half observed in engine (compose-only frames reach Sampleable; campaign-test 1.0 s, hallway 6.4 s holds, no timeout) |
+| **L8** no production path calls the spawn preload | grep gate test `no_production_path_calls_spawn_lightmap_preload` | achievable as stated | pass: `no_production_path_calls_spawn_lightmap_preload` |
+| **L9** one presented pose for install, Settling and first Running frame; backdrop and menu-pushed relevel at the menu pose; else first `player_spawn` | `presented_pose_resolves_menu_then_spawn` (pure resolver) + `install_settling_and_reveal_read_one_presented_pose` | achievable as stated | partial: `presented_pose_resolves_menu_then_spawn`; held view built after `commit_render_extents`; hold input suspended. Menu-pushed relevel not tested end to end |
+| **L10** a settled reveal records no SH visible miss and no drawn non-resident block, for pawn spawn and backdrop (P1, P9) | `settled_reveal_frame_counts_no_sh_or_lightmap_miss` | achievable as stated | pass: `settled_reveal_frame_counts_no_sh_miss`, `settled_reveal_frame_counts_no_drawn_block_missing`; engine runs logged 0 SH and 0 lightmap misses after reveal |
+| **L11** timeout releases with exactly one warning; a settle on or before the deadline frame warns nothing (P3) | `settle_timeout_warns_once` + `settle_on_deadline_frame_releases_without_warning` (log capture) | achievable as stated | pass: `settle_timeout_warns_once_and_reveals_into_running`, `settled_reveal_logs_no_timeout_warning`, `settle_on_deadline_frame_releases_without_warning` |
+| **L12** `restartLevel` after a timed-out entry gets a fresh timeout | `restart_after_timeout_starts_fresh_settle_timer` | achievable as stated | pass: `restart_after_timeout_starts_fresh_settle_timer` |
+| **L13** load request during Settling: no stale settle or timer; a request on a would-settle frame unloads first, no reveal edge (P2) | `level_request_during_settling_unloads_without_reveal_edge` | achievable as stated | pass: `level_request_during_settling_unloads_without_reveal_edge` (unload; a load takes the same unload path); release skipped while a request is queued |
+| **L14** suspend during Settling: no reveal edge, no settle state survives (P7) | `suspend_during_settling_leaves_no_settle_state` (`reset_boot_state_after_suspend`) | achievable as stated | pass: `suspend_during_settling_leaves_no_settle_state` |
+| **L15** Settling during prior-generation retirement issues no read until join, then settles (P8) | `settling_waits_for_retirement_then_settles` | achievable as stated | pass by structure: `start_reads` refuses while retirement is pending and demand still updates, so the answer reads Unsettled. No Settling-specific test |
+| **L16** staged script commit during Settling recomposes reactions (P13) | `staged_commit_during_settling_recomposes_level_reactions` | achievable as stated | partial: `settling_counts_as_installed`; Settling polls staged results. No staged-commit-during-Settling test |
+| **L17** reveal-frame promotion at full weight; later promotion ramps over `PROMOTE_SECONDS` | `reveal_frame_promotion_starts_whole_later_promotion_ramps` (renderer light-slot data logic) | achievable as stated | pass: `reveal_frame_promotion_starts_whole_later_promotion_ramps` |
+| **L18** regression guard: after Running, a non-resident visible cluster renders ambient floor that frame | `running_frame_never_waits_on_cold_cluster` (async controller: miss counted and sample word zero, no stall path) | achievable as stated | pass: existing SH miss and ambient-floor paths unchanged in Running; miss tests count without stalling |
+| **C1** both peers publish parity at install; divergent client gets its cause during Settling | relay-seam test `parity_published_at_install_reaches_settling_client` | achievable as stated | pass: `parity_published_at_install_reaches_settling_client` |
+| **C2** parity-matched settling client held; pawn on the poll draining its reveal; one promotion when parity and reveal share a batch | `revealed_declaration_promotes_once_even_batched_with_parity` | achievable as stated | pass: `revealed_declaration_promotes_once_even_batched_with_parity` |
+| **C3** timed-out client still declares; timed-out host records reveal and promotes (P6) | net: `host_reveal_promotes_revealed_matched_client`; engine: `timeout_release_is_a_reveal_edge` | achievable as stated | pass: `host_reveal_promotes_revealed_matched_client`, `timeout_release_is_a_reveal_edge_and_unload_retracts_it` |
+| **C4** client revealed while parity mismatched is promoted the moment parity matches | `revealed_before_parity_match_promotes_on_match` | achievable as stated | pass: `revealed_before_parity_match_promotes_on_match` |
+| **C5** reveal never arrives: held with revealed cause, connected past timeout, no entity state | `unrevealed_client_stays_admitted_and_receives_no_entity_state` | achievable as stated | pass: `unrevealed_client_stays_admitted_and_receives_no_entity_state` |
+| **C6** duplicate reveal: no second entry; reveal naming another level does not promote | `duplicate_or_foreign_reveal_does_not_repromote` | achievable as stated | pass: `duplicate_or_foreign_reveal_does_not_repromote` |
+| **C7** client unload or suspend retracts; same-level re-install held until its own reveal, even when unload and install collapse into one batch (P7) | `retracted_reveal_holds_reinstall_until_new_reveal` | achievable as stated | pass: `retracted_reveal_holds_reinstall_until_new_reveal` |
+| **C8** host Settling: no promotion, client stays connected through the hold; promoted once on host reveal with pawn; also after host same-level `restartLevel` (P4, P5) | net: `host_unrevealed_holds_revealed_client`; engine: `host_reveal_recorded_after_settling_poll_spawns_pawn_in_world_poll` (frame-order test) | achievable as stated | pass: `host_unrevealed_holds_revealed_client`, `host_reveal_lands_before_the_reveal_frames_world_poll` |
+| **C9** host suspend clears own reveal; resumed same-level install promotes only at new reveal (P15) | `host_suspend_clears_own_reveal` (engine: `clear_net_level_parity` path) | achievable as stated | pass: `host_suspend_clears_own_reveal`; engine `clear_net_level_parity` retracts on suspend |
+| **C10** host restart: Running client re-promoted at host reveal without re-declaring; settling client promoted once after both reveals in either order; no client reload (P14) | `host_restart_repromotes_revealed_client_once_in_either_order` | achievable as stated | pass: `host_restart_repromotes_revealed_client_once_in_either_order` |
+| **C11** mod-digest demotion and recovery re-promotes without a new reveal | `mod_digest_recovery_repromotes_without_new_reveal` | achievable as stated | pass: `mod_digest_recovery_repromotes_without_new_reveal` |
+| **C12** disconnect while held: no pawn, record gone, rejoin held until it reveals again | `disconnect_clears_revealed_record` | achievable as stated | pass: `disconnect_clears_revealed_record` |
+| **C13** revealed-only demotion sends a Holding diagnostic and retires the client epoch | `revealed_only_demotion_sends_holding_and_retires_epoch` | achievable as stated | pass: `revealed_only_demotion_sends_holding_and_retires_epoch` |
+| **C14** declaration and both causes round-trip; previous wire constants refused at gate 1 | extend `control_envelopes_round_trip`; append-layout guard mirrors; `revealed_vocabulary_refuses_previous_protocol_id` | achievable as stated | pass: `control_envelopes_round_trip`, append guards, `revealed_vocabulary_refuses_previous_protocol_id` |
+| **R1** SH mandatory = Visible, Pinned, owners, plus clusters of id-51 entries with lead ≤ L; a cluster with all cells past L is not mandatory | `sh_mandatory_tier_is_id51_reach_within_lead` | achievable as stated | pass: `sh_mandatory_tier_is_id51_reach_within_lead` |
+| **R2** one L drives both; L change moves both sets; SH-only level uses L; decline mid-level or mid-Settling leaves SH lead tier unchanged (P11) | `one_lead_drives_sh_and_lightmap_and_survives_decline` | achievable as stated | pass: `one_lead_from_the_stage_moves_the_sh_split`; lightmap reads L from the same `DemandFrame`; decline test asserts the stage outlives it |
+| **R3** non-portal path in play: SH requests every drawn cluster Visible; lead and band from the stage's classes | `non_portal_path_keeps_sh_visible_and_stage_lead_classes` | achievable as stated | pass: `non_portal_path_keeps_sh_visible_and_stage_lead_classes` |
+| **R4** Streaming tab slider, capture `lead_metres` and walk measurement use level-scope L; slider present for SH-only and after decline | `streaming_levers_read_and_set_level_scope_lead` + dev-tools build check; walk measurement compiles against the stage | achievable as stated | partial: slider is level-scope (`StreamingReachLever`), capture reports the stage lead, walk measurement sets the stage; dev-tools build compiles. No dedicated test |
+| **R5** over budget, mandatory SH admitted (pool grows); band yields farthest lead first | `band_yields_farthest_lead_first_mandatory_never_refused` | achievable as stated | pass: `band_yields_farthest_lead_first_mandatory_never_refused` |
+| **R6** within budget, a departed Sampleable cluster is still evicted after hysteresis | extend existing departure-eviction tests to the new classes | achievable as stated | pass: retained departure-eviction tests (`departed_residents_wait_for_hysteresis_then_evict_dependents_before_owners`, `reread_counter_counts_only_post_eviction_reads`) |
+| **R7** no production path reads `WARM_SET_CLUSTERS` or the id-46 warm walk | grep gate test `no_production_path_reads_warm_set` (module deleted) | achievable as stated | pass: `no_production_path_reads_warm_set` |
+| **R8** re-read counter increments on a re-read after eviction, not on first read | `reread_counter_counts_only_post_eviction_reads` | achievable as stated | pass: `reread_counter_counts_only_post_eviction_reads` |
+| **R9** each visible SH miss in exactly one bucket, each bucket reached; Settling adds nothing; timed-out reveal counts once (P9) | `visible_miss_lands_in_exactly_one_bucket` (one fixture per bucket) + `settling_records_no_visible_miss` | achievable as stated | pass: `visible_miss_lands_in_exactly_one_bucket`, `settling_records_no_visible_miss`, `settling_frames_count_no_lightmap_visible_miss` |
+| **R10** Line C's `first_level_frame` on the reveal frame; Settling hold its own mark | `line_c_marks_settle_hold_and_reveal_frame` (source-order and timing-name test) | achievable as stated | pass: `settle_timeout_warns_once_and_reveals_into_running` (`settle_hold` mark); engine Line C shows `streaming_sessions`, `settle_hold`, `first_level_frame` |
+| **M1** SH mandatory bytes per camera cell at default L on hallway-inspection and campaign-test, beside lightmap; worst and p95; stop if over the threshold | owner-visible report from `#[ignore]` harness (task 1) | manual; measured 2026-10-08, gate passes (§Measurement) | pass (2026-10-08): gate passes, §Measurement |
+| **M2** visual: no ambient-floor SH or SH-only lightmap in the first view, four entry routes, two maps | owner, in-engine | manual | outstanding (owner). Executor runs: campaign-test and hallway boot entry revealed with 0 misses; other routes not run |
+| **M3** resource run on largest stress map, before/after, pinned fixture and route | owner, in-engine (executor prepares the route and counters) | manual | outstanding (owner) |
+| **M4** route's in-play SH misses fall vs baseline; resident SH past budget is mandatory only | owner, from M3 data | manual | outstanding (owner) |
+| **M5** co-op loopback: both settle; neither sees the other's pawn move before its own reveal; host restart with a long settle | owner, two engines on loopback | manual | outstanding (owner) |
 
 ## Tasks
 
@@ -161,3 +161,38 @@ Neither map pins a cluster. At L = 32 m the hallway's worst cell is 148.0 MiB (2
 
 ## Owner notes
 - 2026-10-08: approved. Owner sample at the hallway spawn, today's code: lightmap mandatory 58 blocks / 36.7 MiB, pool 15 layers / 224 MiB; SH 70 targets (8 warm) all Sampleable, logical occupancy 80.2 MiB, pool capacity 720.4 MiB. Task 1 confirms which SH bytes the 256 MiB floor covers before applying the go/no-go threshold.
+
+## Review loop
+
+- Review panel (10 reviewers: 4 correctness tracers, contract verifier, 2 adversarial, 3 hygiene/drift). Must-fix findings, all fixed in `ef9695ab2`:
+  - Hold input reached the reveal frame. Settling now suspends gameplay input each frame, and records pad levels first (`47c1dd9e2`).
+  - The held view used a stale aspect. Settling now commits render extents before building it.
+  - Commands install queued survived an abandoned or suspended settle. Unload and suspend now discard them.
+- Should-fix findings, all fixed:
+  - Misses were counted before this frame's compose promotion. Promotion now runs first.
+  - Capture's preload counted misses. It now counts none.
+  - SH had no permit reserve. Optional requests now stop at half the permits.
+  - The reveal identity was recomputed. It now reuses the identity install published.
+  - Code-comment drift.
+- Focused re-review of the fixes: one gap (pad levels), fixed. No further findings.
+- Deferred to landing: the library docs (`networking.md`, `boot_sequence.md`, `rendering_pipeline.md`, `index.md`) still describe the warm set, the spawn preload and the revealed term as not built. The brief schedules this capture at landing.
+- Accepted nits:
+  - `ParityHeld` and `reevaluate_parity` keep their names; the docs now cover revealed holds.
+  - The renderer GPU timing window spans the hold.
+  - A no-loading-tree Settling frame shows the splash color without the logo.
+  - The reveal-frame flag survives a skipped present.
+  - A full retract and re-reveal collapsed into one host drain keeps the pawn (same hole parity had).
+  - Commands install queued run before the reveal frame's visibility.
+
+## Gate (2026-10-08, after fixes)
+
+- Passing: `cargo fmt --check`, `clippy -D warnings` (workspace, all targets, `postretro/dev-tools`), `cargo check --release`, `crate-graph --check`.
+- `cargo test --workspace --no-fail-fast`: every target passes except `ui_slot_snapshot_clones_present_values_and_skips_valueless_slots` (§Pre-existing failures).
+- `cargo test -p postretro --features capture`: same single failure.
+- `clippy --features capture` reports five errors, all on lines this branch never touched: `capture/prepared.rs` loop and items-after-test-module, `capture/report.rs` arguments, `capture/scene.rs`, `tests/capture_shadowmask_groups.rs`. They predate the branch and are not fixed here.
+
+## Delegated budget answer, as built
+
+Settling drains at 32 MiB per drain. The owner's M3 run should time the hold at both 8 and 32 MiB. Two notes for that run:
+- Lightmap in-hand read-ahead is also capped at 32 MiB (`MAX_IN_HAND_PAIR_BYTES`), so reads may limit the lightmap half of the hold before the drain does.
+- The executor's runs measured a 1.0 s hold on campaign-test and 6.4 s on the hallway stress map, both at 32 MiB.

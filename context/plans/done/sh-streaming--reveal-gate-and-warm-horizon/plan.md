@@ -1,7 +1,7 @@
 # sh-streaming--reveal-gate-and-warm-horizon — plan of record
 
 mode: resumable
-status: approved — built; awaiting owner manual proofs and "land the plane"
+status: landed (2026-10-09)
 read at: 4677eda27
 
 Source is unchanged since the brief's `ef855f247`; only plan files moved. Every symbol cited by Decisions and Path was re-read at `4677eda27`. No Decision premise is false. The corrections below are Path or location drift, plus facts the Path omits that the build must handle.
@@ -118,10 +118,10 @@ Test names are planned, not yet written. "Engine-free" means a pure function, co
 | **R9** each visible SH miss in exactly one bucket, each bucket reached; Settling adds nothing; timed-out reveal counts once (P9) | `visible_miss_lands_in_exactly_one_bucket` (one fixture per bucket) + `settling_records_no_visible_miss` | achievable as stated | pass: `visible_miss_lands_in_exactly_one_bucket`, `settling_records_no_visible_miss`, `settling_frames_count_no_lightmap_visible_miss` |
 | **R10** Line C's `first_level_frame` on the reveal frame; Settling hold its own mark | `line_c_marks_settle_hold_and_reveal_frame` (source-order and timing-name test) | achievable as stated | pass: `settle_timeout_warns_once_and_reveals_into_running` (`settle_hold` mark); engine Line C shows `streaming_sessions`, `settle_hold`, `first_level_frame` |
 | **M1** SH mandatory bytes per camera cell at default L on hallway-inspection and campaign-test, beside lightmap; worst and p95; stop if over the threshold | owner-visible report from `#[ignore]` harness (task 1) | manual; measured 2026-10-08, gate passes (§Measurement) | pass (2026-10-08): gate passes, §Measurement |
-| **M2** visual: no ambient-floor SH or SH-only lightmap in the first view, four entry routes, two maps | owner, in-engine | manual | outstanding (owner). Executor runs: campaign-test and hallway boot entry revealed with 0 misses; other routes not run |
-| **M3** resource run on largest stress map, before/after, pinned fixture and route | owner, in-engine (executor prepares the route and counters) | manual | outstanding (owner) |
-| **M4** route's in-play SH misses fall vs baseline; resident SH past budget is mandatory only | owner, from M3 data | manual | outstanding (owner) |
-| **M5** co-op loopback: both settle; neither sees the other's pawn move before its own reveal; host restart with a long settle | owner, two engines on loopback | manual | outstanding (owner) |
+| **M2** visual: no ambient-floor SH or SH-only lightmap in the first view, four entry routes, two maps | owner, in-engine | manual | pass (owner playtest, 2026-10-09). Executor runs: campaign-test and hallway boot entry revealed with 0 misses |
+| **M3** resource run on largest stress map, before/after, pinned fixture and route | owner, in-engine (executor prepares the route and counters) | manual | not separately recorded; owner landed on the 2026-10-09 playtest; the settle timeout did not reproduce |
+| **M4** route's in-play SH misses fall vs baseline; resident SH past budget is mandatory only | owner, from M3 data | manual | not separately recorded; owner landed on the 2026-10-09 playtest; the settle timeout did not reproduce |
+| **M5** co-op loopback: both settle; neither sees the other's pawn move before its own reveal; host restart with a long settle | owner, two engines on loopback | manual | not separately recorded; owner landed on the 2026-10-09 playtest; the settle timeout did not reproduce |
 
 ## Tasks
 
@@ -193,7 +193,7 @@ Neither map pins a cluster. At L = 32 m the hallway's worst cell is 148.0 MiB (2
   - `finish_level_payload`'s always-false return is gone.
   - About 30 drift items and nits: install-preload wording, prefetch → band, the C2 rearm rationale, plan labels in code, header pointers, retraction order in net tests, a stronger P4 source guard.
 - Focused re-review of the round-2 fixes: no must-fix or should-fix; doc nits fixed.
-- Owner decision, not fixed: the settle timeout counts wall-clock time while the window is minimized or occluded. SH cannot compose then, so a long minimize ends in a timed-out, cold reveal. Pausing the clock while compose is impossible would change "Timeout, never hang" (an occluded host would hold clients indefinitely).
+- Owner accepted, not fixed (did not reproduce in the 2026-10-09 playtest): the settle timeout counts wall-clock time while the window is minimized or occluded. SH cannot compose then, so a long minimize ends in a timed-out, cold reveal. Pausing the clock while compose is impossible would change "Timeout, never hang" (an occluded host would hold clients indefinitely).
 - Accepted round-2 nits:
   - The reveal frame's first tick, if any, can move the pawn before visibility; a resize between the decision frame and the reveal frame changes the frustum.
   - A Ready cluster deferred by renderer retirement pressure counts under the drain-budget bucket (documented).

@@ -171,7 +171,7 @@ the lightmap plan widens its bake projections if the gap is material.
   order-dependence objection, since the trip depends on total steps, not portal order.
   Rejected anyway: a trip costs budget plus rect steps, the contract loosens regardless,
   and the id-51 bake would sample a walk whose meaning changes per pose.
-- `ready/sh-streaming--reveal-gate-and-warm-horizon` settles on every Visible target, so
+- `done/sh-streaming--reveal-gate-and-warm-horizon` settles on every Visible target, so
   a superset enlarges its settle set.
 - At promotion, `rendering_pipeline.md` §2's algorithm description ("the id Tech 4
   approach", "narrows the frustum", "exact portal set") needs a rewrite, not a word swap.

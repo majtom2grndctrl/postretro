@@ -43,8 +43,7 @@ and never participates in ack, resend, reconciliation, or participation-epoch
 bookkeeping. A lost packet simply produces no cosmetic, and a late joiner receives no
 buffered event.
 The host's frame bridge is bounded and keeps the oldest events in a burst. Overflow
-drops newest events and emits one count-bearing warning at drain; it never grows memory
-without limit. Clients reject non-finite presentation anchors before local intake.
+drops the newest events silently; memory stays bounded. Clients reject non-finite presentation anchors before local intake.
 
 ## Wire/codec invariants
 
@@ -512,10 +511,10 @@ of movement cursor holds or jumps, with at most one shot per execution per tick.
 
 **Starts survive playout.** A reliable-ordered Input stream stalls for a whole resend
 interval when one packet is lost or the host hitches, and the catch-up trim then keeps
-only the newest commands. A start dropped there loses its shot, and a surviving start
-judged by host spacing alone is refused as cooling; either deletes a lagging client's
-predicted bolt mid-flight. Intake therefore retains each start before stale-drop and
-trim, up to 64 per client, and delivers the oldest once its own command tick has
+only the newest commands. A start dropped there would lose its shot, and a surviving
+start judged by host spacing alone would be refused as cooling; either deletes a lagging
+client's predicted bolt mid-flight. Intake therefore retains each start before stale-drop
+and trim, up to 64 per client, and delivers the oldest once its own command tick has
 resolved and no execution is live. A start that arrives during a live execution waits
 rather than being refused. A retained start expires two seconds after it first becomes
 due and is reported as an initiation rejection. A start dropped at intake, because 64
@@ -526,16 +525,25 @@ seconds of total stall, so the gap is accepted rather than given its own refusal
 **Cadence is judged in client ticks, capped by host time.** Two halves gate a start.
 The client half: its client tick must be at least the weapon's recovery,
 `ceil(recovery_ms / tick_ms)`, after the client tick at which the previous execution's
-recovery began; failing it refuses the start and mints nothing. The host half: the
-start waits in its lane until host time since that recovery began, plus the 150 ms
-charge tolerance, covers the recovery. Each execution is credited at the client's
-claimed time clamped to at most the tolerance past host time, so an early start carries
-its lead into the next rather than earning a fresh tolerance per shot. Over any W host
-ticks, executions admitted stay at or below ⌊(W + tolerance) / R⌋ + 1 whatever ticks a
-client stamps. Measuring in host ticks alone is what refused on-time starts after a
-trim; measuring in client ticks alone would let a client fire as fast as it stamps. A
-charged action's recovery runs from its client release tick, moved forward only; other
-executions ignore releases for cadence, as the weapon machine does.
+recovery began; failing it refuses the start and mints nothing. The host half: each
+execution is credited at the client's claimed host time clamped to
+[host now − 500 ms, host now + 150 ms] (30 and 9 ticks at 60 Hz), and a start waits in
+its lane until host time since the previous recovery began, measured at that credit,
+covers the recovery. The upper clamp makes an early start carry its lead into the next
+rather than earn a fresh tolerance per shot. The lower clamp lets a stall's backlog up to
+500 ms old drain at once; flooring credit at host time would drain a held trigger's
+backlog at exactly the rate new starts arrive, so the rest of the hold would lag by the
+stall, hitscan HITs would expire, and press lanes would overtake the lagging starts. A
+start whose claimed time lags host now by more than the 500 ms allowance is refused
+promptly as an initiation rejection and mints nothing; a stall over 500 ms therefore
+refuses its oldest excess shots, and observers see the surviving delayed shots as a brief
+burst. Over any W host ticks, executions admitted per weapon stay at or below
+⌊(W + 39) / R⌋ + 1 whatever ticks a client stamps: a fixed allowance (30 + 9 ticks),
+never a faster sustained rate. A recovery of zero ticks is capped at one start per real
+resolution, since the formula needs R ≥ 1. Measuring in host ticks alone would refuse
+on-time starts after a trim; measuring in client ticks alone would let a client fire as
+fast as it stamps. A charged action's recovery runs from its client release tick, moved
+forward only; other executions ignore releases for cadence, as the weapon machine does.
 
 Cadence state is **per weapon**: one record per inventory slot, naming the weapon that
 began it, so the bound holds for each weapon and a switch away and back keeps that
@@ -545,15 +553,18 @@ each host tick, a record whose weapon no longer holds its slot in that client's
 inventory (drop, hand-over, despawn) is removed, so it can never authorize again. The
 ticks its credit still owed are charged to the weapon's own host cooldown, raising it
 only: without that, a weapon leaving and returning would restart its credit chain and
-earn the tolerance again. After a long stall the host half may hold later shots of the
-same hold by up to the tolerance; it delays them, never refuses them.
+earn the tolerance again.
 
-**A late start fires along its own aim.** A retained start keeps the aim of the command
-that carried it at intake, and a shot fired on the tick that start is delivered uses
-that aim for FIRE origin, direction and projectile launch, so it lands where the client's
-prediction showed it. Movement, facing and avatar pose follow the delivering command.
-Later ordinals and a charged release use the live aim, as client prediction does. World
-line-of-sight and origin-obstruction checks are unchanged.
+**A late start fires along its own aim, once.** A retained start keeps the aim of the
+command that carried it at intake. That captured aim applies only to an uncharged
+action's shot fired on the tick the start is delivered: it sets FIRE origin, direction
+and projectile launch for that shot, so it lands where the client's prediction showed it.
+A charged release and later burst ordinals use the delivering command's aim; for a late
+start that is not the aim the client predicted for those ordinals, a known divergence.
+Movement, facing and avatar pose follow the delivering command. World line-of-sight and
+origin-obstruction checks are unchanged. A late-admitted direct projectile whose HIT is
+already waiting retires its observer flight at the contact almost immediately, so
+observers see the contact rather than the flight; this is known behaviour.
 
 Explicit release/cancel names the initiating activation. Intake retains edges before
 stale-drop or backlog trimming, deduplicates them, and delivers them once after that
@@ -682,14 +693,18 @@ any geometry check.
 
 Early HIT for a future ordinal waits for its matching decision. Cancellation rejects
 unissued ordinals; previously authorized projectiles retain their normal validation and
-lifetime. Per client, pending declarations, retained release/cancel records, and terminal
-activation records are each bounded to 64. Unknown declarations/edges expire two seconds
-from first receipt; duplicates never refresh expiry. Future ordinals expire two seconds
+lifetime. Per client, pending declarations, retained release/cancel records, terminal
+activation records, and retained starts are each bounded to 64, as is each of the use
+and drop press lanes; a press arriving at a full lane is dropped silently. Unknown
+declarations/edges expire two seconds from first receipt; duplicates never refresh
+expiry. A retained start expires two seconds after it first becomes due, not from
+receipt. Future ordinals expire two seconds
 after their scheduled decision. Terminal records expire two seconds after termination;
 overflow evicts the oldest, while a monotonic settled-start watermark prevents replay
 after eviction. Live future ordinals remain independent of that watermark. Declaration
-overflow rejects the newest HIT without undoing FIRE. Expiry does not reject an
-initiation that remains eligible for admission. If FIRE is still unknown or
+overflow rejects the newest HIT without undoing FIRE. Expiry of a HIT declaration or
+edge record does not reject a FIRE initiation that remains eligible for admission; only a
+retained start's own expiry does. If FIRE is still unknown or
 pending at overflow or expiry, a reliable HIT-only refusal retires the client's hit feedback record without
 changing recovery or its predicted flight. A later actual FIRE denial still removes
 that shot's flight even after its hit feedback record has gone; no refusal queue is
@@ -741,8 +756,10 @@ standing-eye ray would false-reject a legitimate crouched shot near cover.
   contact with the checks an entity hit gets — range from the live eye, and eye line of
   sight to a point pulled 1 cm back from the contact, so the struck surface never blocks
   its own validation. It applies no damage from one.
-- **Declared normals are contact data only.** A non-finite or non-unit normal drops that
-  record's contact data and never affects damage validation. Validated normals reach the
+- **Declared normals are contact data only.** An accepted entity or world contact whose
+  declared normal is non-finite or non-unit keeps its contact with a zero normal, so the
+  burst takes its upward fallback; the invalid normal never affects damage validation.
+  Validated normals reach the
   host's impact presentation; a splash impact keeps its host-resolved normal. The host
   raises one `impact` per remote shot carrying every validated contact, as a local
   shot does (`audio.md` §4).
@@ -798,7 +815,9 @@ through per-slot wire-shape tags: `[slot, number]` is tag 1, `[slot, flag]` tag 
 value, so `WIRE_VERSION` and `SNAPSHOT_VERSION` are unchanged. A mixed-build peer is not
 refused: the handshake admits it, and its client rejects every state batch at the
 fingerprint check for the whole session, so no replicated state (health included) reaches
-it until both peers run the same build.
+it until both peers run the same build. A client built before observer bursts spawned from
+the impact cue gets no observer splash burst from a newer host, because it bursts only from
+the retired presentation spawn; nothing gates on it.
 
 ## Current contract
 

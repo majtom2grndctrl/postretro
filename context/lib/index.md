@@ -51,6 +51,7 @@
 - **Theme variants / high contrast / text scale / contrast diagnostic / focus visuals** → `ui.md` §1, §2
 - **Captions / subtitles / sound-direction cues / mono audio / bus volume options** → `audio.md` §1 (Mixer bus tree), §5
 - **Damage direction indicator / player damage bearing** → `networking.md` §Presentation events vs. replicated state
+- **Impact burst / spark burst / observer impact cue / which peer spawns the burst** → `networking.md` §Presentation events vs. replicated state
 - **UI layer / HUD / widgets / theming / UI state binding** → `ui.md`
 - **Engine-owned assets / `core/` tree / built-in UI descriptors / splash image / where engine assets live vs. mod content** → `ui.md` §5 · `build_pipeline.md` §Distribution packaging
 - **Resource management / textures / materials** → `resource_management.md`

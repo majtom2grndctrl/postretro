@@ -11,9 +11,10 @@ use crate::ui::descriptor::{
 
 /// Convert a QuickJS descriptor value (the object returned by the `tree`
 /// factory) into a typed [`AnchoredTree`]. Mirrors [`entity_descriptor_from_js`]:
-/// a hand-written field reader that builds the typed tree directly (no
-/// `serde_json::Value` lowering), returning a named [`DescriptorError`] on
-/// malformed input and never panicking.
+/// a hand-written field reader that builds the typed tree directly, returning a
+/// named [`DescriptorError`] on malformed input and never panicking. Only
+/// `background` lowers through `serde_json::Value`, so both runtimes share its
+/// serde validator ([`parse_tree_background`]).
 pub fn anchored_tree_from_js_value<'js>(
     ctx: &Ctx<'js>,
     value: JsValue<'js>,
@@ -42,6 +43,12 @@ pub fn anchored_tree_from_js_value<'js>(
     let accessible_name = get_optional_string_js(&obj, "accessibleName")?;
     let role = role_opt_from_js(&obj)?;
     let restore_on_return = get_optional_bool_js(&obj, "restoreOnReturn")?;
+    let background = match optional_value_js(&obj, "background")? {
+        Some(raw) => Some(parse_tree_background(
+            conv::js_to_json(ctx, raw).map_err(js_err)?,
+        )?),
+        None => None,
+    };
 
     Ok(AnchoredTree {
         anchor,
@@ -53,6 +60,7 @@ pub fn anchored_tree_from_js_value<'js>(
         accessible_name,
         role,
         restore_on_return,
+        background,
     })
 }
 

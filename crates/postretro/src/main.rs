@@ -7919,6 +7919,7 @@ mod tests {
                 accessible_name: None,
                 role: None,
                 restore_on_return: None,
+                background: None,
             }
         }
 
@@ -10702,6 +10703,7 @@ mod tests {
                 accessible_name: None,
                 role: None,
                 restore_on_return: None,
+                background: None,
             }
         }
 
@@ -10955,6 +10957,7 @@ mod tests {
                 accessible_name: None,
                 role: None,
                 restore_on_return: None,
+                background: None,
             },
             always_on: true,
             hide_below: false,
@@ -12286,6 +12289,7 @@ mod tests {
                 accessible_name: None,
                 role: None,
                 restore_on_return: None,
+                background: None,
             }
         }
 

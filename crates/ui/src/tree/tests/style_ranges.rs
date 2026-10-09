@@ -67,6 +67,7 @@ fn style_ranges_change_text_color_at_the_declared_fraction() {
         accessible_name: None,
         role: None,
         restore_on_return: None,
+        background: None,
     };
     let mut fs = font_system();
 
@@ -121,6 +122,7 @@ fn style_ranges_band_color_token_degrades_to_magenta_in_draw_list() {
         accessible_name: None,
         role: None,
         restore_on_return: None,
+        background: None,
     };
     let mut ui = UiTree::from_descriptor(&tree, &theme());
     let mut fs = font_system();
@@ -162,6 +164,7 @@ fn style_ranges_without_a_bind_are_dropped_and_keep_the_base_color() {
         accessible_name: None,
         role: None,
         restore_on_return: None,
+        background: None,
     };
     let mut ui = UiTree::from_descriptor(&tree, &theme());
     let mut fs = font_system();
@@ -220,6 +223,7 @@ fn style_ranges_evaluate_the_eased_display_value_mid_tween() {
         accessible_name: None,
         role: None,
         restore_on_return: None,
+        background: None,
     };
     let mut ui = UiTree::from_descriptor(&tree, &theme());
     let mut fs = font_system();

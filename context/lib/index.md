@@ -82,7 +82,8 @@
 - **Boot / startup / splash / level-load sequence / mod loading** → `boot_sequence.md`
 - **Settling / level reveal / settle chokepoint and timeout / presented pose / first complete frame** → `boot_sequence.md` §1 (Settling) · streamed settle sets: `rendering_pipeline.md` §4 · co-op reveal: `networking.md` §Slot lifecycle
 - **Level-load timing / log line C / per-stage install, texture, geometry and unload marks / where load time goes** → `boot_sequence.md` §Startup timing vocabulary
-- **Loading screen / loading tree pools / `loading.progress` / level-load progress counter / install deferral / mod `uiImages`** → `boot_sequence.md` §1 (Loading screen), §2 · `ui.md` §5
+- **Loading screen / loading tree pools / `loading.progress` / level-load progress counter / install deferral / mod `uiImages` / lazy loading-only images (decode on tree choice, release at load end, level-tree promotion)** → `boot_sequence.md` §1 (Loading screen), §2 · `ui.md` §5
+- **Full-window tree background / `Tree.background` / cover-fit image beneath a UI tree** → `ui.md` §1
 - **Experimental spikes / build-to-learn specs** → `experimental_spikes.md`
 - **3rd party library docs** → use `context7` tool (wgpu, winit, kira, glam).
 

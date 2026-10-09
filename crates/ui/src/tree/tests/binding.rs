@@ -50,6 +50,7 @@ fn bound_text_resolves_slot_value_through_format_template() {
         accessible_name: None,
         role: None,
         restore_on_return: None,
+        background: None,
     };
     let mut slots = HashMap::new();
     slots.insert("player.health".to_string(), SlotValue::Number(87.0));
@@ -79,6 +80,7 @@ fn bound_text_without_format_renders_bare_value() {
         accessible_name: None,
         role: None,
         restore_on_return: None,
+        background: None,
     };
     let mut slots = HashMap::new();
     slots.insert("player.ammo".to_string(), SlotValue::Number(12.5));
@@ -110,6 +112,7 @@ fn bound_number_decimal_places_rounds_display_without_changing_slot_value() {
         accessible_name: None,
         role: None,
         restore_on_return: None,
+        background: None,
     };
     let mut slots = HashMap::new();
     slots.insert("player.health".to_string(), SlotValue::Number(87.36));
@@ -136,6 +139,7 @@ fn bound_text_falls_back_to_literal_when_slot_absent() {
         accessible_name: None,
         role: None,
         restore_on_return: None,
+        background: None,
     };
     let mut ui = UiTree::from_descriptor(&tree, &theme());
     let mut fs = font_system();
@@ -162,6 +166,7 @@ fn bound_panel_resolves_color_slot_into_fill() {
         accessible_name: None,
         role: None,
         restore_on_return: None,
+        background: None,
     };
     let mut slots = HashMap::new();
     slots.insert(
@@ -199,6 +204,7 @@ fn bound_panel_falls_back_on_malformed_array_length() {
         accessible_name: None,
         role: None,
         restore_on_return: None,
+        background: None,
     };
     let mut slots = HashMap::new();
     slots.insert(
@@ -236,6 +242,7 @@ fn bound_panel_falls_back_when_slot_absent() {
         accessible_name: None,
         role: None,
         restore_on_return: None,
+        background: None,
     };
     let mut ui = UiTree::from_descriptor(&tree, &theme());
     let mut fs = font_system();
@@ -268,6 +275,7 @@ fn retained_panel_fill_change_rebuilds_draw_list_without_recompute() {
         accessible_name: None,
         role: None,
         restore_on_return: None,
+        background: None,
     };
     let mut ui = UiTree::from_descriptor(&tree, &theme());
     let mut fs = font_system();
@@ -321,6 +329,7 @@ fn retained_bound_text_content_change_triggers_relayout() {
         accessible_name: None,
         role: None,
         restore_on_return: None,
+        background: None,
     };
     let mut ui = UiTree::from_descriptor(&tree, &theme());
     let mut fs = font_system();
@@ -359,6 +368,7 @@ fn retained_unbound_slot_change_invalidates_nothing() {
         accessible_name: None,
         role: None,
         restore_on_return: None,
+        background: None,
     };
     let mut ui = UiTree::from_descriptor(&tree, &theme());
     let mut fs = font_system();
@@ -403,6 +413,7 @@ fn retained_settled_frame_skips_draw_rebuild_and_recompute() {
         accessible_name: None,
         role: None,
         restore_on_return: None,
+        background: None,
     };
     let mut ui = UiTree::from_descriptor(&tree, &theme());
     let mut fs = font_system();

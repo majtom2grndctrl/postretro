@@ -397,6 +397,7 @@ impl App {
         let mut committed_loading: Option<(
             std::collections::BTreeMap<String, String>,
             postretro_scripting_core::runtime::ModLoading,
+            crate::app::ui_images::ManifestImageRefs,
         )> = None;
         // Same deferral as theme/fonts and `frontend`: the renderer setter needs
         // `&mut self`, which the session borrow below forbids. A failed mod init
@@ -456,6 +457,21 @@ impl App {
                     .mod_manifest()
                     .map(|manifest| manifest.movers.auto_close_ms)
                     .unwrap_or(crate::runtime_movers::ENGINE_AUTO_CLOSE_MS);
+                // Which images the manifest's UI names, read before the drains
+                // below take its trees, templates and catalog.
+                let image_refs = session
+                    .scripting
+                    .script_runtime
+                    .mod_manifest()
+                    .map(|manifest| {
+                        crate::app::ui_images::ManifestImageRefs::from_manifest(
+                            &manifest.ui_trees,
+                            &manifest.presentation_templates,
+                            &manifest.maps,
+                            &manifest.loading.tree,
+                        )
+                    })
+                    .unwrap_or_default();
                 // Drain the manifest's engine-global `DataRegistry` registrations
                 // (entity types, maps, global reactions/crossings) through the
                 // shared extractor also used by the headless observability path, so
@@ -483,6 +499,7 @@ impl App {
                     committed_loading = Some((
                         std::mem::take(&mut manifest.ui_images),
                         std::mem::take(&mut manifest.loading),
+                        image_refs,
                     ));
                     let mod_theme = std::mem::take(&mut manifest.theme);
                     let mod_fonts = std::mem::take(&mut manifest.fonts);
@@ -589,8 +606,8 @@ impl App {
         if let Some((mod_theme, mod_fonts)) = deferred_theme_fonts {
             self.install_mod_ui_theme_and_fonts(mod_theme, mod_fonts);
         }
-        if let Some((ui_images, loading)) = committed_loading {
-            self.commit_loading_manifest(ui_images, loading);
+        if let Some((ui_images, loading, image_refs)) = committed_loading {
+            self.commit_loading_manifest(ui_images, loading, image_refs);
         }
         self.apply_mod_bloom_render_profile(committed_render_profile);
         self.apply_mod_audio_profile(committed_audio_profile);

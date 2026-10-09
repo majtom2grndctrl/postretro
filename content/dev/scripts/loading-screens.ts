@@ -1,11 +1,9 @@
-// DEV FIXTURE: mod loading screens. The mod-wide pool picks one of the first
-// two trees at random per load; the combat demo's catalog entry overrides it
-// with the third. Every tree shows mod imagery from `uiImages`, the loading
-// level's name, and a bar bound to the engine's load progress.
+// DEV FIXTURE: mod loading screens. Each catalog map's entry names its own tree,
+// which draws a screenshot of that map full-window behind the level name and a
+// bar bound to the engine's load progress. Path loads with no catalog entry fall
+// back to the mod-wide pool, a plain tree with no imagery.
 import {
   Bar,
-  HStack,
-  Image,
   Text,
   Tree,
   VStack,
@@ -14,85 +12,76 @@ import {
   getDesignTokens,
   getGameState,
 } from "postretro/ui";
+import { loadingTreeName } from "./frontend-menu";
 import { hudTheme } from "./hud";
 
-/// Image registry keys this module draws; `start-script.ts` maps them to PNGs.
-export const loadingImages = {
-  "dev/loading/hazard": "textures/Level Eleven Games Sci-Fi Texture Pack v1/ConcreteFloor-Hazard-Full-01_64.png",
-  "dev/loading/neon": "textures/neon/neon_glow_panel.png",
-};
+/// Catalog maps with a loading screenshot. Each shot is a capture scene in
+/// `ui/loading/scenes/`; re-run it after editing the map.
+const SCREENSHOT_MAPS = [
+  "campaign-test",
+  "kinematic-platform",
+  "movement-feel",
+  "stress-warren-hallway-inspection",
+  "combat-demo",
+] as const;
+
+type ScreenshotMap = (typeof SCREENSHOT_MAPS)[number];
 
 type Rgba = [number, number, number, number];
 
 const COLOR_TRACK: Rgba = [0.04, 0.05, 0.07, 1.0];
-const COLOR_HAZARD: Rgba = [0.85, 0.52, 0.05, 1.0];
-const COLOR_NEON: Rgba = [0.10, 0.80, 0.90, 1.0];
+const COLOR_NEON: Rgba = [0.1, 0.8, 0.9, 1.0];
+const COLOR_SCRIM: Rgba = [0.01, 0.015, 0.02, 0.8];
+
+const PANEL_WIDTH = 440;
+const PANEL_PADDING = 16;
 
 const { loading } = getGameState();
 const { color, font } = getDesignTokens(hudTheme);
 
-function progressBar(fill: Rgba | typeof color.ok, width: number) {
-  return Bar({
-    bind: bindState(loading.progress, { tween: { durationMs: 200.0, easing: "easeOut" } }),
-    max: 1,
-    fill,
-    background: COLOR_TRACK,
-    width,
-    height: 8,
+function imageKey(mapId: ScreenshotMap): string {
+  return `dev/loading/${mapId}`;
+}
+
+/// Image registry keys this module draws; `start-script.ts` maps them to PNGs.
+export const loadingImages = Object.fromEntries(
+  SCREENSHOT_MAPS.map((mapId) => [imageKey(mapId), `ui/loading/${mapId}.png`]),
+);
+
+/// The level name and progress bar on a dark panel in the bottom-left corner,
+/// over the map's screenshot when it has one.
+function loadingTree(name: string, background?: string) {
+  return defineUiTree({
+    name,
+    tree: Tree(
+      {
+        anchor: "bottomLeft",
+        offset: [32.0, -32.0],
+        ...(background ? { background: { image: background } } : {}),
+      },
+      VStack({ gap: 10, padding: PANEL_PADDING, width: PANEL_WIDTH, fill: COLOR_SCRIM }, [
+        Text({ content: "LOADING", fontSize: 14, color: COLOR_NEON, font: font.mono }),
+        Text({ content: "", fontSize: 28, color: color.hud.text, font: font.mono, bind: loading.levelName }),
+        Bar({
+          bind: bindState(loading.progress, { tween: { durationMs: 200.0, easing: "easeOut" } }),
+          max: 1,
+          fill: COLOR_NEON,
+          background: COLOR_TRACK,
+          width: PANEL_WIDTH - 2 * PANEL_PADDING,
+          height: 8,
+        }),
+      ]),
+    ),
   });
 }
 
-function levelName(fontSize: number) {
-  return Text({ content: "", fontSize, color: color.hud.text, font: font.mono, bind: loading.levelName });
-}
+/// One tree per screenshot map.
+export const mapLoadingTrees = SCREENSHOT_MAPS.map((mapId) =>
+  loadingTree(loadingTreeName(mapId), imageKey(mapId)),
+);
 
-/// A hazard stripe plate over the level name and an amber bar.
-export const loadingHazard = defineUiTree({
-  name: "dev.loading.hazard",
-  tree: Tree(
-    { anchor: "center", offset: [0.0, 0.0] },
-    VStack({ gap: 16, align: "center" }, [
-      Image({ asset: "dev/loading/hazard", width: 160, decorative: true }),
-      Text({ content: "LOADING", fontSize: 14, color: color.hud.text, font: font.mono }),
-      levelName(28),
-      progressBar(COLOR_HAZARD, 400),
-    ]),
-  ),
-});
-
-/// Neon panels flanking the level name, a cyan bar beneath.
-export const loadingNeon = defineUiTree({
-  name: "dev.loading.neon",
-  tree: Tree(
-    { anchor: "bottom", offset: [0.0, -64.0] },
-    VStack({ gap: 12, align: "center" }, [
-      HStack({ gap: 24, align: "center" }, [
-        Image({ asset: "dev/loading/neon", width: 96, decorative: true }),
-        levelName(32),
-        Image({ asset: "dev/loading/neon", width: 96, decorative: true }),
-      ]),
-      progressBar(COLOR_NEON, 640),
-    ]),
-  ),
-});
-
-/// The combat demo's own screen: both images, a wide bar.
-export const loadingCombatDemo = defineUiTree({
-  name: "dev.loading.combatDemo",
-  tree: Tree(
-    { anchor: "center", offset: [0.0, 0.0] },
-    VStack({ gap: 20, align: "center" }, [
-      HStack({ gap: 8, align: "center" }, [
-        Image({ asset: "dev/loading/hazard", width: 64, height: 64, decorative: true }),
-        Image({ asset: "dev/loading/neon", width: 64, height: 64, decorative: true }),
-        Image({ asset: "dev/loading/hazard", width: 64, height: 64, decorative: true }),
-      ]),
-      Text({ content: "COMBAT DEMO", fontSize: 14, color: COLOR_HAZARD, font: font.mono }),
-      levelName(24),
-      progressBar(color.ok, 720),
-    ]),
-  ),
-});
+/// The fallback for loads with no catalog entry.
+export const loadingPlain = loadingTree("dev.loading.plain");
 
 /// The mod-wide pool (`loading.tree`).
-export const loadingPool = [loadingHazard.name, loadingNeon.name];
+export const loadingPool = [loadingPlain.name];

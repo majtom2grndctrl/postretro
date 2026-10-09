@@ -429,6 +429,8 @@ impl App {
                     self.finish_level_failure(err.to_string(), event_loop);
                     return;
                 }
+                // A level tree drawing a loading-only image keeps it loaded.
+                self.promote_level_tree_images();
                 // The level's streaming sessions exist before Settling asks
                 // them anything, so a missing session means "not streamed".
                 if let Err(err) = self.install_level_streaming_sessions() {

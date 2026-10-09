@@ -140,6 +140,7 @@ impl App {
 
         self.advance_loading_screen(frame_dt);
         self.sync_glyph_art();
+        self.poll_loading_images();
         // Without a registered loading tree the held frame still composes, over
         // an empty UI on the splash color, so the settle advances.
         let snapshot = self.loading_screen_snapshot().unwrap_or_default();

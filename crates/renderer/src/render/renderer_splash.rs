@@ -120,6 +120,31 @@ impl Renderer {
         Ok(())
     }
 
+    /// Whether `key` is a registered UI image. False before full init.
+    pub fn has_ui_image(&self, key: &str) -> bool {
+        self.full
+            .as_ref()
+            .is_some_and(|full| full.ui_images.contains(key))
+    }
+
+    /// A decode for `key` is in flight: an `image` widget that draws it before
+    /// the upload lands does not warn that the key is unregistered. No-op
+    /// before full init.
+    pub fn expect_ui_image(&self, key: &str) {
+        if let Some(full) = self.full.as_ref() {
+            full.ui_images.expect(key);
+        }
+    }
+
+    /// Drop the UI image registered under `key`, releasing its texture. A
+    /// retained tree drawing it rebuilds without it. Returns whether the key
+    /// was registered; false before full init.
+    pub fn unregister_ui_image(&mut self, key: &str) -> bool {
+        self.full
+            .as_mut()
+            .is_some_and(|full| full.ui_images.unregister(key))
+    }
+
     /// Store the elapsed presented-frame time the photosensitivity limiter
     /// ages its window and rate allowance by. The App calls this beside
     /// `set_ui_snapshot`. An input the resolve has not yet consumed (its frame's

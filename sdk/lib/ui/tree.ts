@@ -45,7 +45,8 @@ export type WidgetCaptureMode = "capture" | "passthrough";
  * writable String slot this tree's text entry edits. Both optional and omitted
  * when absent. `restoreOnReturn` is on unless the tree sets it `false`: a pop
  * that reveals the tree returns focus to the control it left, while a fresh
- * push always lands on `initialFocus`. Mirrors `descriptor.rs` `AnchoredTree`.
+ * push always lands on `initialFocus`. `background` draws one UI image across
+ * the whole window beneath the tree. Mirrors `descriptor.rs` `AnchoredTree`.
  */
 export type TreeProps = {
   anchor: WidgetAnchor;
@@ -56,7 +57,17 @@ export type TreeProps = {
   accessibleName?: string;
   role?: WidgetRole;
   restoreOnReturn?: boolean;
+  background?: TreeBackground;
 };
+
+/**
+ * A tree's background. `image` is a UI image key (the same namespace as
+ * `Image({ asset })`). It fills the whole window with cover fit (scaled to fill,
+ * cropped to keep its aspect), beneath the tree's widgets, ignoring `anchor` and
+ * `offset`. Decorative: no focus or accessibility node. A missing image draws
+ * nothing. Mirrors `descriptor.rs` `TreeBackground`.
+ */
+export type TreeBackground = { image: string };
 
 /**
  * The flat envelope descriptor `Tree` produces: the `AnchoredTree` wire shape.
@@ -73,6 +84,7 @@ export type AnchoredTreeDescriptor = {
   accessibleName?: string;
   role?: WidgetRole;
   restoreOnReturn?: boolean;
+  background?: TreeBackground;
 };
 
 /** A UI-tree registration entry returned through `ModManifest.uiTrees` or
@@ -208,6 +220,21 @@ export function Tree(props: TreeProps, root: WidgetDescriptor): AnchoredTreeDesc
     }
     // An explicit value is kept either way: `false` opts the tree out.
     out.restoreOnReturn = props.restoreOnReturn;
+  }
+  if (props.background !== undefined) {
+    const background = props.background as unknown;
+    if (background === null || typeof background !== "object" || Array.isArray(background)) {
+      throw new Error("Tree: `background` must be an object `{ image }`");
+    }
+    // An `undefined` property is absent, as the bridge and Luau treat it.
+    for (const [key, value] of Object.entries(background)) {
+      if (key !== "image" && value !== undefined) {
+        throw new Error(`Tree: unknown \`background\` key \`${key}\``);
+      }
+    }
+    const image = (background as { image?: unknown }).image;
+    requireNonemptyString(image, "background.image", "Tree");
+    out.background = { image: image as string };
   }
   return out;
 }

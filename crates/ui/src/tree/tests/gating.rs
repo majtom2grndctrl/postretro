@@ -19,6 +19,7 @@ fn gating_tree() -> AnchoredTree {
         accessible_name: None,
         role: None,
         restore_on_return: None,
+        background: None,
     }
 }
 
@@ -275,6 +276,7 @@ fn rebuilt_tree_recomputes_from_empty_cache() {
         accessible_name: None,
         role: None,
         restore_on_return: None,
+        background: None,
     };
     let mut second = UiTree::from_descriptor(&reshaped, &theme());
     second.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots());

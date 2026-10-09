@@ -518,7 +518,10 @@ predicted bolt mid-flight. Intake therefore retains each start before stale-drop
 trim, up to 64 per client, and delivers the oldest once its own command tick has
 resolved and no execution is live. A start that arrives during a live execution waits
 rather than being refused. A retained start expires two seconds after it first becomes
-due and is reported as an initiation rejection.
+due and is reported as an initiation rejection. A start dropped at intake, because 64
+are already retained or because it replays a settled start, mints nothing and is not
+reported; the client's predicted shot stands until its HIT is denied. Reaching 64 takes
+seconds of total stall, so the gap is accepted rather than given its own refusal slot.
 
 **Cadence is judged in client ticks, capped by host time.** Two halves gate a start.
 The client half: its client tick must be at least the weapon's recovery,

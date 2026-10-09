@@ -26,8 +26,8 @@ use postretro_level_loader::LevelWorld;
 
 use super::topology::PlannerTopology;
 use crate::lightmap_streaming::block_map::LevelBlockMap;
-use crate::lightmap_streaming::levers::{DEFAULT_LEAD_METRES, LEAD_UNITS_PER_METRE};
 use crate::lightmap_streaming::source::ManifestBlockSource;
+use crate::streaming::cell_demand::{DEFAULT_LEAD_METRES, LEAD_UNITS_PER_METRE};
 use crate::streaming::cluster_hints::decode_level_hints;
 
 const PRL_ENV: &str = "POSTRETRO_SH_REACH_PRL";

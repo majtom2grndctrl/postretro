@@ -45,9 +45,9 @@ impl crate::session::Session {
         if !self.ensure_level_streaming_sessions(sh_manifest, level, renderer)? {
             return Ok(ShDrainBatch::default());
         }
-        let residency_set = level
-            .and_then(LightmapLevelView::of)
-            .map(|view| view.residency_set);
+        // Id 51 straight from the level: SH reads the reach whether or not
+        // the lightmap streams.
+        let residency_set = level.and_then(|world| world.cell_residency_set.as_ref());
         self.level_streaming
             .prepare_drains(&mut self.sh_streaming, residency_set, frame)
     }
@@ -110,6 +110,7 @@ impl crate::session::Session {
                 sh,
                 lightmap: level.and_then(LightmapLevelView::of),
                 cluster_directory: level.and_then(LevelWorld::cluster_directory),
+                residency_set: level.and_then(|world| world.cell_residency_set.as_ref()),
             },
             |manifest, mode, hints| {
                 let hints = hints.context("[SH streaming] a streamed level carries no id 49")?;

@@ -170,7 +170,7 @@ pub use lightmap_residency::{
 };
 pub use lightmap_streaming::{
     DEFAULT_LIGHTMAP_POOL_CAP_LAYERS, LightmapStreamingLevers, LightmapStreamingLiveDiagnostics,
-    MAX_LIGHTMAP_POOL_CAP_LAYERS,
+    MAX_LIGHTMAP_POOL_CAP_LAYERS, StreamingReachLever,
 };
 use promoted_depth_cache::{PromotedDepthCache, PromotedDepthCacheFramePlan};
 pub use renderer_render_frame::{FrameScene, ShDrainFrameResult};

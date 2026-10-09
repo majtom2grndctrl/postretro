@@ -200,6 +200,7 @@ fn preload_installs_every_block_of_a_multi_block_mandatory_cell_before_settling(
         if capture {
             let visible = VisibleCells::Culled(vec![0]);
             rig.controller.update_capture_view(DemandFrame {
+                lead: crate::streaming::cell_demand::DEFAULT_LEAD,
                 residency_set: &rig.set,
                 camera_cell: 0,
                 path: PORTAL,

@@ -22,7 +22,7 @@ pub(crate) use sessions::WantedStreaming;
 use super::lightmap_residency::LightmapStreamingSession;
 use super::sh_residency::ShStreamingSession;
 use crate::cpu_timing::StreamingStage;
-use crate::lightmap_streaming::demand::DemandFrame;
+use crate::streaming::cell_demand::CellDemand;
 use crate::streaming::cluster_hints::ClusterHints;
 use crate::streaming::drain_budget::{
     MAX_INSTALL_DECODED_BYTES_PER_DRAIN, SETTLING_INSTALL_DECODED_BYTES_PER_DRAIN,
@@ -55,6 +55,10 @@ pub(crate) struct StreamingFrame<'a> {
 #[derive(Debug, Default)]
 pub(crate) struct LevelStreaming {
     lightmap: Option<LightmapStreamingSession>,
+    /// The level's cell-demand stage (lead L over id 51); `None` without a
+    /// usable id 51. Level-scoped like the hints: it outlives a lightmap
+    /// decline and a session replaced within the level.
+    cell_demand: Option<CellDemand>,
     reads: Option<LevelReadIssuer>,
     retirement: Option<StreamingRetirement>,
     drain: SharedDrain,
@@ -125,6 +129,25 @@ impl LevelStreaming {
         }
     }
 
+    /// The level's cell-demand stage, which owns lead L.
+    #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
+    pub(crate) fn cell_demand(&self) -> Option<&CellDemand> {
+        self.cell_demand.as_ref()
+    }
+
+    /// The dev-tools lead slider and the walk measurement set L here.
+    #[cfg(any(test, feature = "dev-tools"))]
+    pub(crate) fn cell_demand_mut(&mut self) -> Option<&mut CellDemand> {
+        self.cell_demand.as_mut()
+    }
+
+    /// A level owner without sessions (the walk measurement) installs the
+    /// stage itself.
+    #[cfg(test)]
+    pub(crate) fn install_cell_demand(&mut self, stage: CellDemand) {
+        self.cell_demand = Some(stage);
+    }
+
     /// One frame's streaming work for both resources:
     ///
     /// 1. start this level's issuer if no predecessor is still retiring;
@@ -154,15 +177,17 @@ impl LevelStreaming {
             )?),
             None => None,
         };
-        let lightmap_frame =
-            residency_set
-                .zip(frame.camera_cell)
-                .map(|(residency_set, camera_cell)| DemandFrame {
+        let lightmap_frame = residency_set
+            .zip(self.cell_demand.as_ref())
+            .zip(frame.camera_cell)
+            .map(|((residency_set, stage), camera_cell)| {
+                stage.frame(
                     residency_set,
-                    camera_cell: camera_cell as u32,
-                    path: frame.path,
-                    visible_cells: frame.visible_cells,
-                });
+                    camera_cell as u32,
+                    frame.path,
+                    frame.visible_cells,
+                )
+            });
         if let Some(parked) = self
             .lightmap
             .as_mut()

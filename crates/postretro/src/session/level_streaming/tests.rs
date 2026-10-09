@@ -23,6 +23,7 @@ use crate::session::lightmap_residency::LightmapLevelView;
 use crate::session::sh_async_workers::{ShAsyncWorkers, ShWorkerSource};
 use crate::session::sh_residency::sync_manifest_test_fixture;
 use crate::sh_streaming::controller::ShClusterRequest;
+use crate::streaming::cell_demand::{CellDemand, DemandFrame};
 use crate::streaming::request::StreamResource;
 
 /// SH's id 49, decoded as level scope does.
@@ -206,6 +207,7 @@ fn level_issuer_reads_sh_and_lightmap_mandatory_first_in_ascending_offset_on_one
         lightmap
             .begin_drain(
                 DemandFrame {
+                    lead: crate::streaming::cell_demand::DEFAULT_LEAD,
                     residency_set: &set,
                     camera_cell: 1,
                     path: PORTAL,
@@ -276,6 +278,7 @@ fn reload_discards_the_old_generations_pair_and_rereads_it() {
     let visible = VisibleCells::Culled(Vec::new());
     let cpu = StageFrame::default();
     let mut level = LevelStreaming::default();
+    level.install_cell_demand(CellDemand::new(corridor_set().max_lead));
     level.install_lightmap(lightmap_session(&source));
     let old_ledger = Arc::downgrade(level.lightmap().unwrap().ledger());
     let old_generation = level.lightmap().unwrap().controller().generation();
@@ -289,6 +292,7 @@ fn reload_discards_the_old_generations_pair_and_rereads_it() {
     log.wait_for_reads(4);
 
     level.retire(&mut None);
+    level.install_cell_demand(CellDemand::new(corridor_set().max_lead));
     level.install_lightmap(lightmap_session(&source));
     assert_ne!(
         level.lightmap().unwrap().controller().generation(),
@@ -349,6 +353,7 @@ fn sh_and_lightmap_stream_through_one_issuer_and_unload_releases_everything() {
     let source = TestBlockSource::new(corridor_blocks(64, true));
     let set = corridor_set();
     let mut level = LevelStreaming::default();
+    level.install_cell_demand(CellDemand::new(corridor_set().max_lead));
     level.install_lightmap(lightmap_session(&source));
     let ledger = Arc::downgrade(level.lightmap().unwrap().ledger());
 
@@ -457,6 +462,7 @@ fn settling_frames_install_the_settle_set_and_keep_the_install_session() {
         sh: None,
         lightmap: Some(view),
         cluster_directory: world.cluster_directory(),
+        residency_set: world.cell_residency_set.as_ref(),
     };
     let mut level = LevelStreaming::default();
     let mut sh = None;
@@ -521,6 +527,7 @@ fn sh_mode_change_mid_level_keeps_the_lightmap_session_and_its_resident_blocks()
         sh: Some((&sh_manifest, mode)),
         lightmap: Some(view),
         cluster_directory: world.cluster_directory(),
+        residency_set: world.cell_residency_set.as_ref(),
     };
     let mut level = LevelStreaming::default();
     let mut sh = None;
@@ -590,6 +597,7 @@ fn a_renderer_that_does_not_stream_the_lightmap_declines_it_for_the_level() {
         sh: None,
         lightmap: LightmapLevelView::of(&world),
         cluster_directory: world.cluster_directory(),
+        residency_set: world.cell_residency_set.as_ref(),
     };
     let mut level = LevelStreaming::default();
     let mut sh = None;
@@ -643,6 +651,7 @@ fn a_mid_level_lightmap_decline_keeps_sh_for_its_pending_outcome() {
         sh: Some((&sh_manifest, ShStreamingMode::SyncProof)),
         lightmap: Some(view),
         cluster_directory: world.cluster_directory(),
+        residency_set: world.cell_residency_set.as_ref(),
     };
     let mut level = LevelStreaming::default();
     let mut sh = None;
@@ -665,6 +674,13 @@ fn a_mid_level_lightmap_decline_keeps_sh_for_its_pending_outcome() {
     assert!(
         level.lightmap().is_none(),
         "no lightmap work after the decline"
+    );
+    // P11: L is the level's; a lightmap decline leaves the stage, and its
+    // lead, to SH.
+    assert_eq!(
+        level.cell_demand().map(CellDemand::lead),
+        Some(CellDemand::new(view.residency_set.max_lead).lead()),
+        "the cell-demand stage outlives the decline"
     );
     let parked = level.lightmap.as_ref().expect("the issuer keeps it parked");
     assert!(parked.is_declined());
@@ -742,6 +758,7 @@ fn a_rollback_recurring_on_every_drain_declines_the_lightmap_with_one_error() {
         sh: None,
         lightmap: Some(view),
         cluster_directory: world.cluster_directory(),
+        residency_set: world.cell_residency_set.as_ref(),
     };
     let mut level = LevelStreaming::default();
     let short_run = MAX_CONSECUTIVE_ROLLED_BACK_DRAINS - 1;
@@ -777,6 +794,7 @@ fn a_rolled_back_renderer_drain_returns_its_pairs_and_a_contract_violation_is_fa
     let visible = VisibleCells::Culled(Vec::new());
     let cpu = StageFrame::default();
     let mut level = LevelStreaming::default();
+    level.install_cell_demand(CellDemand::new(corridor_set().max_lead));
     level.install_lightmap(lightmap_session(&source));
     let mut sh = None;
 

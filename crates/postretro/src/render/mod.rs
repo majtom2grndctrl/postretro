@@ -29,7 +29,7 @@ pub use postretro_renderer::{
     ResidencyAllocationShape, ResidencyAllocationState, ResidencySource, SPLASH_CLEAR_COLOR,
     SdfShadowMode, ShResidencyReport, ShSampleRegion, ShSampleRegionSets,
     ShStreamingLifecycleSummary, SpatialCellSetDiagnostics, SpatialDiagnostics,
-    SpriteCollectionRegistration, WorldWireframeMode, level_world_to_geometry,
+    SpriteCollectionRegistration, StreamingReachLever, WorldWireframeMode, level_world_to_geometry,
     sprite_specular_exponent_is_valid, validate_level_geometry_ranges,
 };
 

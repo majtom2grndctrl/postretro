@@ -99,7 +99,7 @@ fn unflagged_cell_is_mandatory_only_through_lead_or_visibility() {
     rig.controller
         .apply_outcome(LightmapDrainOutcome::default())
         .unwrap();
-    rig.controller.levers_mut().set_lead_metres(24.0);
+    rig.stage.set_lead_metres(24.0);
     rig.portal(0, &[]);
     assert_eq!(
         rig.controller.target(3),
@@ -398,7 +398,7 @@ fn camera_cell_and_lead_change_in_one_frame_recompute_demand_once() {
     rig.settle(2, &[], headroom(8));
     let recomputes = rig.controller.counters().baked_recomputes;
 
-    rig.controller.levers_mut().set_lead_metres(10.0);
+    rig.stage.set_lead_metres(10.0);
     rig.portal(3, &[]);
     assert_eq!(rig.controller.counters().baked_recomputes, recomputes + 1);
     assert_eq!(

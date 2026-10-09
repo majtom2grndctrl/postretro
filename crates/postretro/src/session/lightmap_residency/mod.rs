@@ -475,24 +475,20 @@ impl LightmapStreamingSession {
     /// The levers as the dev-tools Streaming tab edits them.
     #[cfg(feature = "dev-tools")]
     pub(crate) fn slider_levers(&self) -> postretro_renderer::LightmapStreamingLevers {
-        let levers = self.controller.levers();
         postretro_renderer::LightmapStreamingLevers {
-            pool_cap_layers: levers.pool_cap_layers(),
-            lead_metres: levers.lead_metres(),
-            max_lead_metres: levers.max_lead_metres(),
+            pool_cap_layers: self.controller.levers().pool_cap_layers(),
         }
     }
 
-    /// Applies the Streaming tab's levers. The lead takes effect at the next
-    /// demand update; the cap rides the next drain batch.
+    /// Applies the Streaming tab's lever: the cap rides the next drain batch.
     #[cfg(feature = "dev-tools")]
     pub(crate) fn set_slider_levers(
         &mut self,
         sliders: postretro_renderer::LightmapStreamingLevers,
     ) {
-        let levers = self.controller.levers_mut();
-        levers.set_pool_cap_layers(sliders.pool_cap_layers);
-        levers.set_lead_metres(sliders.lead_metres);
+        self.controller
+            .levers_mut()
+            .set_pool_cap_layers(sliders.pool_cap_layers);
     }
 
     #[cfg(test)]

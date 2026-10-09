@@ -22,7 +22,7 @@ use postretro_level_format::{SectionBlob, SectionId, write_prl};
 use postretro_level_loader::{LevelWorld, LightmapStreamManifest};
 use postretro_render_cpu::lightmap_pool::LightmapPoolModel;
 
-use super::levers::LEAD_UNITS_PER_METRE;
+use crate::streaming::cell_demand::LEAD_UNITS_PER_METRE;
 
 /// Cells in a row along +x, one metre each, joined by a portal at every
 /// shared face. Cell c owns block c.

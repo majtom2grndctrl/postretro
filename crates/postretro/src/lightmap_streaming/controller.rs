@@ -15,6 +15,7 @@ use super::demand::{BlockDemand, BlockTarget, DemandFrame};
 use super::levers::LightmapLevers;
 use super::source::LightmapBlockSource;
 use crate::sh_streaming::generation::{GenerationClock, ProcessGenerationClock};
+use crate::streaming::cell_demand::{CellDemand, to_metres};
 use crate::streaming::cluster_hints::ClusterHints;
 use crate::streaming::drain_budget::MAX_INSTALL_DECODED_BYTES_PER_DRAIN;
 use crate::streaming::request::{ReadTier, StreamResource};
@@ -213,6 +214,11 @@ pub(crate) struct LightmapResidencyController {
     map: LevelBlockMap,
     demand: BlockDemand,
     levers: LightmapLevers,
+    /// The lead L the latest demand update used, fixed point: the
+    /// level-scope stage's, for diagnostics and the test-only camera set.
+    lead: u32,
+    /// The level's baked maximum lead (id-51 header).
+    max_lead: u32,
     /// Published to the issuer's lightmap route for pre-read cancellation.
     targets: Arc<TargetBitset>,
     generation: u64,
@@ -308,7 +314,9 @@ impl LightmapResidencyController {
             content_tag: source.content_tag(),
             source,
             demand,
-            levers: LightmapLevers::new(residency_set.max_lead),
+            levers: LightmapLevers::new(),
+            lead: CellDemand::new(residency_set.max_lead).lead(),
+            max_lead: residency_set.max_lead,
             targets: Arc::new(TargetBitset::new(block_count)),
             generation,
             slots: vec![
@@ -365,6 +373,23 @@ impl LightmapResidencyController {
 
     pub(crate) fn levers(&self) -> LightmapLevers {
         self.levers
+    }
+
+    /// Sets the lead a test-only camera-set update reads, as a frame from the
+    /// stage would.
+    #[cfg(test)]
+    pub(crate) fn set_lead(&mut self, lead: u32) {
+        self.lead = lead;
+    }
+
+    /// The lead L the latest demand used, in metres.
+    pub(crate) fn lead_metres(&self) -> f32 {
+        to_metres(self.lead)
+    }
+
+    /// The level's baked maximum lead in metres.
+    pub(crate) fn max_lead_metres(&self) -> f32 {
+        to_metres(self.max_lead)
     }
 
     /// The dev-tools sliders and capture's cap override write here. A lead
@@ -441,7 +466,8 @@ impl LightmapResidencyController {
     /// The frame's drawn blocks are counted for visible misses by
     /// [`Self::count_visible_misses`], after the frame's drain.
     pub(crate) fn update(&mut self, frame: DemandFrame<'_>) {
-        self.may_request = self.demand.update(&self.map, self.levers.lead(), frame);
+        self.lead = frame.lead;
+        self.may_request = self.demand.update(&self.map, frame);
         self.camera_set_only = !frame.is_portal_walk();
         self.retarget_dirty();
         self.misses_due = frame.draws_cells();
@@ -454,8 +480,8 @@ impl LightmapResidencyController {
     /// from the in-play rule that a non-portal frame reads only the camera
     /// cell's baked set.
     pub(crate) fn update_capture_view(&mut self, frame: DemandFrame<'_>) {
-        self.demand
-            .update_capture_view(&self.map, self.levers.lead(), frame);
+        self.lead = frame.lead;
+        self.demand.update_capture_view(&self.map, frame);
         self.may_request = true;
         self.camera_set_only = false;
         self.retarget_dirty();
@@ -473,7 +499,7 @@ impl LightmapResidencyController {
         camera_cell: u32,
     ) {
         self.demand
-            .update_camera_set(&self.map, self.levers.lead(), residency_set, camera_cell);
+            .update_camera_set(&self.map, self.lead, residency_set, camera_cell);
         self.may_request = true;
         self.camera_set_only = true;
         self.retarget_dirty();

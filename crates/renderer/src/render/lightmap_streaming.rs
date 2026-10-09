@@ -10,6 +10,7 @@ use super::Renderer;
 use crate::lighting::lightmap::{LightmapResidencyDrainError, LightmapStreamCounters};
 pub use diagnostics::{
     LightmapStreamingLevers, LightmapStreamingLiveDiagnostics, MAX_LIGHTMAP_POOL_CAP_LAYERS,
+    StreamingReachLever,
 };
 
 /// Default pool cap in layers (15 × 14 MiB = 210 MiB of BC pool at the

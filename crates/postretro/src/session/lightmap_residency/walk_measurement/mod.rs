@@ -38,8 +38,9 @@ use postretro_visibility::{TimingGate, VisibilityPath, VisibleCells, determine_v
 
 use super::{LightmapLevelView, LightmapStreamingSession};
 use crate::cpu_timing::StreamingStage;
-use crate::lightmap_streaming::levers::LEAD_UNITS_PER_METRE;
 use crate::session::level_streaming::{LevelStreaming, StreamingFrame};
+use crate::streaming::cell_demand::CellDemand;
+use crate::streaming::cell_demand::LEAD_UNITS_PER_METRE;
 use crate::streaming::cluster_hints::decode_level_hints;
 use paths::{SplitMix64, WALK_SEED, WalkKind, camera_adjacency, walk_path};
 use pool_mirror::{PoolMirror, PoolStats};
@@ -318,14 +319,19 @@ fn run(world: &LevelWorld, walk: &Walk, levers: Levers) -> RunReport {
     let hints = decode_level_hints(world.cluster_directory()).expect("id-49 hints");
     let mut session =
         LightmapStreamingSession::new(view, hints.as_deref()).expect("lightmap session");
-    {
-        let lever = session.controller.levers_mut();
-        lever.set_pool_cap_layers(levers.cap_layers);
-        lever.set_lead_metres(levers.lead_metres);
-    }
-    let lead = session.controller.levers().lead();
+    session
+        .controller
+        .levers_mut()
+        .set_pool_cap_layers(levers.cap_layers);
+    // L is the level's: set on the stage, which every frame hands the
+    // lightmap demand.
+    let mut stage = CellDemand::new(view.residency_set.max_lead);
+    stage.set_lead_metres(levers.lead_metres);
+    let lead = stage.lead();
+    session.controller.set_lead(lead);
     let mut mirror = PoolMirror::new(view.manifest, levers.cap_layers);
     let mut level = LevelStreaming::default();
+    level.install_cell_demand(stage);
     level.install_lightmap(session);
 
     let mut report = RunReport {

@@ -10,10 +10,11 @@ use super::super::ShComposePassDiagnostics;
 use super::super::ShStreamingLiveDiagnostics;
 use super::super::{
     LightmapStreamingLevers, LightmapStreamingLiveDiagnostics, MAX_LIGHTMAP_POOL_CAP_LAYERS,
+    StreamingReachLever,
 };
 
 /// The Streaming tab's lightmap input: the live counters, shown read-only,
-/// and the two levers, edited in place. The caller writes changed levers
+/// and the pool-cap lever, edited in place. The caller writes changed levers
 /// back to the residency controller after the frame's UI runs.
 #[derive(Debug)]
 pub struct LightmapStreamingTab<'a> {
@@ -26,7 +27,20 @@ pub(super) fn draw_streaming_tab(
     renderer: &mut Renderer,
     diagnostics: Option<&ShStreamingLiveDiagnostics>,
     lightmap: Option<LightmapStreamingTab<'_>>,
+    reach: Option<&mut StreamingReachLever>,
 ) {
+    // The reach is the level's, not a resource's: present for a level that
+    // streams SH alone and after a lightmap decline.
+    if let Some(reach) = reach {
+        ui.label("Lead L (m)");
+        let max_lead = reach.max_lead_metres.max(0.0);
+        ui.add(egui::Slider::new(&mut reach.lead_metres, 0.0..=max_lead).step_by(0.5));
+        ui.label(
+            egui::RichText::new("Dev-tools lever: one reach for SH and lightmap, next frame.")
+                .weak(),
+        );
+        ui.separator();
+    }
     egui::CollapsingHeader::new("Lightmap blocks")
         .default_open(true)
         .show(ui, |ui| match lightmap {
@@ -52,15 +66,7 @@ fn draw_lightmap_streaming(ui: &mut egui::Ui, tab: LightmapStreamingTab<'_>) {
         )
         .logarithmic(true),
     );
-    ui.label("Lead L (m)");
-    let max_lead = levers.max_lead_metres.max(0.0);
-    ui.add(egui::Slider::new(&mut levers.lead_metres, 0.0..=max_lead).step_by(0.5));
-    ui.label(
-        egui::RichText::new(
-            "Dev-tools levers: the cap rides the next drain, the lead the next frame.",
-        )
-        .weak(),
-    );
+    ui.label(egui::RichText::new("Dev-tools lever: the cap rides the next drain.").weak());
     for section in lightmap_sections(diagnostics) {
         egui::CollapsingHeader::new(section.title)
             .id_salt(("lightmap_streaming", section.title))

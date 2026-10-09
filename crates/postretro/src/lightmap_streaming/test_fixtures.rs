@@ -17,10 +17,9 @@ use postretro_render_cpu::lightmap_pool::LightmapPoolModel;
 use postretro_visibility::{VisibilityPath, VisibleCells};
 
 use super::controller::LightmapResidencyController;
-use super::demand::DemandFrame;
-use super::levers::LEAD_UNITS_PER_METRE;
 use super::route::{LightmapCompletion, LightmapReadResult};
 use super::source::{BlockSummary, LightmapBlockSource};
+use crate::streaming::cell_demand::LEAD_UNITS_PER_METRE;
 use crate::streaming::cluster_hints::ClusterHints;
 use crate::streaming::read_gate_test_fixture::ReadGate;
 use crate::streaming::request::{ReadRequest, StreamResource};
@@ -317,6 +316,8 @@ pub(crate) fn corridor_hints(pinned: &[u32], priorities: &[(u32, u8)]) -> Cluste
 pub(crate) struct Rig {
     pub(crate) source: Arc<TestBlockSource>,
     pub(crate) set: CellResidencySetSection,
+    /// The level-scope stage owning lead L.
+    pub(crate) stage: crate::streaming::cell_demand::CellDemand,
     pub(crate) controller: LightmapResidencyController,
     pub(crate) requests: Vec<ReadRequest>,
     pub(crate) drain: SharedDrain,
@@ -341,6 +342,7 @@ impl Rig {
         .unwrap();
         Self {
             source,
+            stage: crate::streaming::cell_demand::CellDemand::new(set.max_lead),
             set,
             controller,
             requests: Vec::new(),
@@ -378,17 +380,13 @@ impl Rig {
     ) -> Option<LightmapDrainBatch> {
         let Self {
             set,
+            stage,
             controller,
             requests,
             drain,
             ..
         } = self;
-        let frame = DemandFrame {
-            residency_set: set,
-            camera_cell,
-            path,
-            visible_cells,
-        };
+        let frame = stage.frame(set, camera_cell, path, visible_cells);
         if settling {
             controller.update_capture_view(frame);
         } else {

@@ -16,6 +16,7 @@ fn drain_once(session: &mut LightmapStreamingSession, set: &CellResidencySetSect
     session
         .begin_drain(
             DemandFrame {
+                lead: crate::streaming::cell_demand::DEFAULT_LEAD,
                 residency_set: set,
                 camera_cell: 0,
                 path: PORTAL,

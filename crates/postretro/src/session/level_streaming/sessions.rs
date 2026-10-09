@@ -2,6 +2,8 @@
 //! preload, and the renderer's lightmap drain result.
 //! See: context/lib/rendering_pipeline.md §4
 
+use crate::streaming::cell_demand::CellDemand;
+use postretro_level_format::cell_residency_set::CellResidencySetSection;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -26,6 +28,9 @@ pub(crate) struct WantedStreaming<'a> {
     pub(crate) lightmap: Option<LightmapLevelView<'a>>,
     /// The level's id 49: both sessions share the hints decoded from it.
     pub(crate) cluster_directory: Option<&'a ClusterDirectorySection>,
+    /// The level's id 51, read directly from the level so a level that
+    /// streams SH alone, or declines its lightmap, still has its reach.
+    pub(crate) residency_set: Option<&'a CellResidencySetSection>,
 }
 
 impl LevelStreaming {
@@ -99,6 +104,12 @@ impl LevelStreaming {
         // them, and a new manifest invalidates them.
         if level_changed {
             self.hints = None;
+            self.cell_demand = None;
+        }
+        if self.cell_demand.is_none() {
+            self.cell_demand = wanted
+                .residency_set
+                .map(|set| CellDemand::new(set.max_lead));
         }
         if self.hints.is_none() {
             // Tagged for the shared layer: the hints serve both resources.
@@ -122,6 +133,7 @@ impl LevelStreaming {
     pub(crate) fn clear(&mut self, sh: &mut Option<ShStreamingSession>) {
         self.retire(sh);
         self.hints = None;
+        self.cell_demand = None;
         self.poll_retirement();
     }
 

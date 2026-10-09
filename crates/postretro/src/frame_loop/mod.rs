@@ -2216,6 +2216,13 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                         (*streaming.live_diagnostics(), streaming.slider_levers())
                     });
                     let mut lightmap_levers = lightmap_streaming.map(|(_, levers)| levers);
+                    let reach_before = session.level_streaming.cell_demand().map(|stage| {
+                        render::StreamingReachLever {
+                            lead_metres: stage.lead_metres(),
+                            max_lead_metres: stage.max_lead_metres(),
+                        }
+                    });
+                    let mut reach = reach_before;
                     let ctx_clone = debug_ui.ctx.clone();
                     let full_output = ctx_clone.run_ui(raw_input, |ui| {
                         let ctx = ui.ctx();
@@ -2251,6 +2258,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                                             levers,
                                         }
                                     }),
+                                reach.as_mut(),
                             );
                         }
                     });
@@ -2259,6 +2267,12 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                         && let Some(streaming) = session.level_streaming.lightmap_mut()
                     {
                         streaming.set_slider_levers(after);
+                    }
+                    if let Some(after) = reach
+                        && reach_before != Some(after)
+                        && let Some(stage) = session.level_streaming.cell_demand_mut()
+                    {
+                        stage.set_lead_metres(after.lead_metres);
                     }
                     debug_ui
                         .winit_state

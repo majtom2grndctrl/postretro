@@ -534,8 +534,12 @@ rather than earn a fresh tolerance per shot. The lower clamp lets a stall's back
 500 ms old drain at once; flooring credit at host time would drain a held trigger's
 backlog at exactly the rate new starts arrive, so the rest of the hold would lag by the
 stall, hitscan HITs would expire, and press lanes would overtake the lagging starts. A
-start whose claimed time lags host now by more than the 500 ms allowance is refused
-promptly as an initiation rejection and mints nothing; a stall over 500 ms therefore
+start is refused promptly as an initiation rejection, minting nothing, when its claimed
+time lags host now by more than the 500 ms allowance and it was also stamped more than
+the allowance before the client's newest received command. The second condition keeps a
+lasting rise in latency or clock drift, which shifts a whole credit chain late, from
+refusing every later start on that weapon; the bound comes from the credit clamp either
+way. A stall over 500 ms therefore
 refuses its oldest excess shots, and observers see the surviving delayed shots as a brief
 burst. Over any W host ticks, executions admitted per weapon stay at or below
 ⌊(W + 39) / R⌋ + 1 whatever ticks a client stamps: a fixed allowance (30 + 9 ticks),
@@ -553,7 +557,20 @@ each host tick, a record whose weapon no longer holds its slot in that client's
 inventory (drop, hand-over, despawn) is removed, so it can never authorize again. The
 ticks its credit still owed are charged to the weapon's own host cooldown, raising it
 only: without that, a weapon leaving and returning would restart its credit chain and
-earn the tolerance again.
+earn the tolerance again. While a weapon is holstered its owed recovery freezes, as the
+host player's does, and the frozen ticks do not count toward the host half, so switching
+away and back cannot clear a recovery early. The remote weapon stage never fires or
+ticks a weapon that has left the pawn's inventory; a start bound to one is refused, and
+a refusal reports the recovery of the weapon in the start's own slot.
+
+**Presses keep their order against retained starts.** A reload, use or drop press
+stamped after the oldest still-retained start waits until that start is delivered or
+refused, and a press stamped before it is delivered first, holding the start a tick, so
+drop-then-fire and fire-then-reload reach the host in the client's order. On a start's
+delivery tick only presses stamped at or before that start ride with it. A retained
+start's own release and cancel edges do not age while it waits. Weapon switches carry no
+client tick and are still applied on arrival, so a switch can overtake a retained start;
+the start still fires the weapon in its own captured slot.
 
 **A late start fires along its own aim, once.** A retained start keeps the aim of the
 command that carried it at intake. That captured aim applies only to an uncharged
@@ -675,6 +692,10 @@ This is sound only because co-op PvE is a trust-with-cheap-validation model — 
 non-goal. Splash projectile detonation is stricter: the declaration binds the authorized
 shot, but the host derives the first contact from frozen fire origin, direction, speed,
 radius, range, lifetime, and elapsed host ticks. The client never selects a splash center.
+A splash declaration waits until host travel since FIRE, at the frozen speed, covers its
+farthest valid declared contact plus one tick, capped by frozen range and lifetime, so a
+start admitted late after a stall still replays far enough to reach the contact the
+client saw; the declared point only delays the replay and never selects the detonation.
 
 ### `shot_id`: the security spine
 

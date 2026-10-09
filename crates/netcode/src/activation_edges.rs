@@ -1,11 +1,14 @@
-//! Correlated start/release/cancel recovery beside movement playout.
+// Correlated start/release/cancel recovery beside movement playout.
+// See: context/lib/networking.md §Combat authority · §`shot_id`: the security spine
 use crate::prediction::client_tick_le;
 use crate::sim::RemoteStartAim;
 use postretro_foundation::{ActivationInput, ActivationRelease, ActivationToken};
 use std::collections::VecDeque;
 
 pub const MAX_RETAINED_ACTIVATION_EDGES: usize = 64;
-const RETENTION_TICKS: u32 = 120;
+/// Two seconds at 60 Hz: how long an unknown edge, or a due start the lane
+/// cannot admit, is retained.
+pub(crate) const RETENTION_TICKS: u32 = 120;
 #[derive(Debug, Clone, Copy)]
 struct RetainedEdge {
     token: ActivationToken,
@@ -36,7 +39,8 @@ pub(crate) struct RetainedStart {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum DueStart {
     Start(RetainedStart),
-    /// Two seconds passed without admission; the caller publishes the refusal.
+    /// `RETENTION_TICKS` passed since it first became due without admission;
+    /// the caller publishes the refusal.
     Expired(ActivationToken),
 }
 #[derive(Debug, Default)]
@@ -45,6 +49,9 @@ pub(crate) struct ActivationEdges {
     starts: VecDeque<RetainedStart>,
     /// The start most recently taken from the lane, for its shot's aim.
     delivered: Option<RetainedStart>,
+    /// The start most recently refused from the lane, for its own weapon's
+    /// recovery in the refusal.
+    refused: Option<RetainedStart>,
     admitted: VecDeque<ActivationToken>,
     overflow_cancel: Option<ActivationToken>,
     settled_start: [Option<u32>; 2],
@@ -77,7 +84,7 @@ impl ActivationEdges {
     /// The oldest retained start once its command tick is resolved and no
     /// execution is live. Starts leave strictly in intake order, so the ledger's
     /// monotonic settled-start watermark never passes a start still retained.
-    /// A due start not admitted within two seconds expires.
+    /// A due start not admitted within `RETENTION_TICKS` expires.
     pub fn due_start(&mut self, resolved_tick: u32, tick: u32, live: bool) -> Option<DueStart> {
         let front = self.starts.front_mut()?;
         if !client_tick_le(front.command_tick, resolved_tick) {
@@ -86,22 +93,60 @@ impl ActivationEdges {
         let due_since = *front.due_since.get_or_insert(tick);
         if tick.wrapping_sub(due_since) >= RETENTION_TICKS {
             let token = front.token;
-            self.starts.pop_front();
+            self.refuse_front(token);
             return Some(DueStart::Expired(token));
         }
         (!live).then_some(DueStart::Start(*front))
     }
     /// Remove the delivered front start and open its edge correlation. False
-    /// when retention settled it meanwhile; the caller refuses it.
+    /// when a terminal settled it meanwhile; the caller refuses it.
     pub fn take_start(&mut self, token: ActivationToken) -> bool {
+        let taken = self.pop_front_start(token);
+        let admitted = self.admit(token);
+        if taken.is_some() {
+            if admitted {
+                self.delivered = taken;
+            } else {
+                self.refused = taken;
+            }
+        }
+        admitted
+    }
+    /// Refuse the front start without admitting it; the caller publishes the
+    /// refusal and settles it.
+    pub fn refuse_front(&mut self, token: ActivationToken) {
+        if let Some(start) = self.pop_front_start(token) {
+            self.refused = Some(start);
+        }
+    }
+    fn pop_front_start(&mut self, token: ActivationToken) -> Option<RetainedStart> {
         if self
             .starts
             .front()
             .is_some_and(|start| start.token == token)
         {
-            self.delivered = self.starts.pop_front();
+            self.starts.pop_front()
+        } else {
+            None
         }
-        self.admit(token)
+    }
+    /// Whether a retained start from `firing_slot` is due: its command tick
+    /// has resolved, so the client stamped it before the resolving command.
+    pub fn has_due_start(&self, firing_slot: u8, resolved_tick: u32) -> bool {
+        self.starts.iter().any(|start| {
+            start.firing_slot == firing_slot && client_tick_le(start.command_tick, resolved_tick)
+        })
+    }
+    /// Command tick of the oldest start still retained. Presses stamped after
+    /// it wait, so none reaches the weapon ahead of that start.
+    pub fn oldest_start_tick(&self) -> Option<u32> {
+        self.starts.front().map(|start| start.command_tick)
+    }
+    /// Firing slot `token`'s start named, once the lane has refused it.
+    pub fn refused_slot(&self, token: ActivationToken) -> Option<u8> {
+        self.refused
+            .filter(|start| start.token == token)
+            .map(|start| start.firing_slot)
     }
     /// Aim captured with `token`'s start, once the lane has delivered it.
     pub fn delivered_aim(&self, token: ActivationToken) -> Option<RemoteStartAim> {
@@ -230,8 +275,28 @@ impl ActivationEdges {
         self.settled_start[token.lane as usize]
             .is_some_and(|watermark| (token.start_tick.wrapping_sub(watermark) as i32) <= 0)
     }
+    /// Age out unknown edges. The edges of a retained start, or of the start
+    /// just delivered, never age: they are delivered once it is admitted, or
+    /// dropped when it is refused. Settling an edge raises its lane's watermark
+    /// over every start at or below its token, so an expired edge stays,
+    /// undeliverable, until no retained start sits at or below it; only a
+    /// start's own refusal or terminal settles a start.
     fn prune(&mut self, tick: u32) {
+        let starts = &self.starts;
+        let delivered = self.delivered.map(|start| start.token);
+        let own = |token: ActivationToken| {
+            delivered == Some(token) || starts.iter().any(|start| start.token == token)
+        };
+        let shields = |token: ActivationToken| {
+            starts.iter().any(|start| {
+                start.token.lane == token.lane
+                    && client_tick_le(start.token.start_tick, token.start_tick)
+            })
+        };
         for edge in &mut self.edges {
+            if own(edge.token) {
+                continue;
+            }
             if tick.wrapping_sub(edge.first_tick) >= RETENTION_TICKS {
                 edge.delivered = true;
             }
@@ -246,6 +311,7 @@ impl ActivationEdges {
             // A live activation keeps its delivered-edge history until terminal,
             // so duplicate releases cannot revive while later cancellation remains valid.
             let retain = self.admitted.contains(&edge.token)
+                || shields(edge.token)
                 || tick.wrapping_sub(edge.first_tick) < RETENTION_TICKS
                 || edge
                     .cancel_first_tick
@@ -278,7 +344,7 @@ mod tests {
         RemoteStartAim { pitch: 0.1, yaw }
     }
     #[test]
-    fn activation_start_lane_keeps_first_aim_and_ignores_duplicates_settled_starts_and_overflow() {
+    fn activation_start_lane_retains_a_duplicate_once_with_its_first_carrying_aim() {
         let mut edges = ActivationEdges::default();
         edges.observe_start(token(4), 4, 0, aim(0.0));
         edges.observe_start(token(4), 9, 0, aim(0.7));
@@ -299,21 +365,76 @@ mod tests {
             "the delivered start keeps its first carrying command's aim"
         );
         assert_eq!(edges.delivered_aim(token(5)), None);
-        edges.terminal(start.token);
+    }
+    #[test]
+    fn activation_start_lane_never_retains_a_settled_start_again() {
+        let mut edges = ActivationEdges::default();
+        edges.observe_start(token(4), 4, 0, aim(0.0));
+        assert!(edges.take_start(token(4)));
+        edges.terminal(token(4));
         edges.observe_start(token(4), 4, 0, aim(0.0));
         edges.observe_start(token(3), 3, 0, aim(0.0));
-        assert!(
-            edges.starts.is_empty(),
-            "settled starts are never retained again"
-        );
-        for tick in 5..5 + MAX_RETAINED_ACTIVATION_EDGES as u32 + 1 {
+        assert!(edges.starts.is_empty());
+    }
+    #[test]
+    fn activation_start_lane_overflow_drops_the_newest_start() {
+        let mut edges = ActivationEdges::default();
+        let first = 5;
+        let overflow = first + MAX_RETAINED_ACTIVATION_EDGES as u32;
+        for tick in first..=overflow {
             edges.observe_start(token(tick), tick, 0, aim(0.0));
         }
         assert_eq!(edges.starts.len(), MAX_RETAINED_ACTIVATION_EDGES);
         assert!(
-            edges.starts.iter().all(|start| start.token != token(69)),
+            edges
+                .starts
+                .iter()
+                .all(|start| start.token != token(overflow)),
             "overflow drops the newest start"
         );
+    }
+    // Regression: a start behind the lane front never aged, but its release edge
+    // aged out and settled it, so the lane refused it on admission.
+    #[test]
+    fn activation_edge_expiry_never_settles_a_still_retained_start() {
+        let mut edges = ActivationEdges::default();
+        let (front, behind, unknown) = (token(4), token(6), token(8));
+        edges.observe_start(front, 4, 0, aim(0.0));
+        edges.observe_start(behind, 6, 0, aim(0.0));
+        for edge in [behind, unknown] {
+            edges.observe(
+                ActivationInput {
+                    release: Some(ActivationRelease {
+                        token: edge,
+                        release_tick: edge.start_tick + 1,
+                    }),
+                    ..ActivationInput::default()
+                },
+                0,
+            );
+        }
+        let late = RETENTION_TICKS * 2;
+        let mut delivered = ActivationInput::default();
+        edges.deliver(&mut delivered, late, None);
+        assert!(edges.take_start(front));
+        edges.terminal(front);
+        let Some(DueStart::Start(start)) = edges.due_start(6, late, false) else {
+            panic!("the start behind the front is still due");
+        };
+        assert!(
+            edges.take_start(start.token),
+            "never settled while retained"
+        );
+        edges.deliver(&mut delivered, late + 1, None);
+        assert_eq!(
+            delivered.release.map(|release| release.token),
+            Some(behind),
+            "its own release still follows it"
+        );
+        // Nothing retained shields the expired unknown edge now; it settles.
+        edges.deliver(&mut delivered, late + 2, None);
+        edges.observe_start(unknown, 8, 0, aim(0.0));
+        assert!(edges.starts.is_empty());
     }
     #[test]
     fn activation_edge_release_then_cancel_delivers_both_once() {

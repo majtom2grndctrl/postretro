@@ -518,12 +518,13 @@ fn client_weapon_outcomes_require_token_host_identity_and_captured_instance() {
     };
     // A's own countdown outlasts the host's remaining recovery, which may only
     // shorten it; the 50 ms below therefore shows the outcome reached A.
-    if let postretro_entities::ComponentValue::Weapon(component) = registry
+    let postretro_entities::ComponentValue::Weapon(component) = registry
         .get_component_value_mut(weapon, postretro_entities::ComponentKind::Weapon)
-        .unwrap()
-    {
-        component.cooldown_remaining_ms = 400.0;
-    }
+        .expect("weapon A stays live")
+    else {
+        panic!("weapon A holds a weapon component");
+    };
+    component.cooldown_remaining_ms = 400.0;
     let effect = frame
         .records
         .outcome(&mut registry, old_cancel)
@@ -1201,6 +1202,58 @@ fn client_weapon_held_reload_does_not_cancel_later_burst_ordinals() {
             .shells_fired,
         2
     );
+}
+
+// Regression: after a host hitch the host ran a whole burst in its catch-up
+// ticks, so its completion reached the client before the client's own last
+// burst shot. The client cancelled its burst, predicted fewer shots than the
+// host authorized, and restarted inside the host's recovery.
+#[test]
+fn client_weapon_host_completion_ahead_of_prediction_keeps_the_remaining_burst_shots() {
+    use postretro_net::wire::{ActivationOutcome as O, NetworkId, WireActivationToken};
+    let (mut registry, _, id) = fixture(
+        serde_json::json!({"trigger":"press","recoveryMs":130,"steps":[
+            {"kind":"shot"},{"kind":"wait","durationMs":50},
+            {"kind":"shot"},{"kind":"wait","durationMs":50},{"kind":"shot"}]}),
+        false,
+    );
+    let mut frame = ClientWeaponFrame::default();
+    let mut start = command(true, true);
+    predict(&mut frame, &mut registry, &mut start, 1);
+    let token = start
+        .activation
+        .initiation
+        .expect("the press names its start");
+    let wire = WireActivationToken {
+        start_tick: token.start_tick,
+        lane: 0,
+    };
+    for outcome in [
+        O::InitiationAccepted {
+            token: wire,
+            weapon: NetworkId(3),
+        },
+        O::Completed {
+            token: wire,
+            weapon: NetworkId(3),
+            recovery_ticks: 8,
+        },
+    ] {
+        let effect = frame.records.outcome(&mut registry, outcome);
+        assert!(effect.is_none_or(|effect| !effect.rejected));
+    }
+    for tick in 2..9 {
+        predict(&mut frame, &mut registry, &mut command(false, false), tick);
+    }
+    assert_eq!(
+        registry
+            .get_component::<WeaponComponent>(id)
+            .unwrap()
+            .shells_fired,
+        3,
+        "the host fired the whole burst, so the client predicts it too"
+    );
+    assert_eq!(frame.due.len(), 3);
 }
 
 #[test]

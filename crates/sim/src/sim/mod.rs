@@ -237,7 +237,8 @@ pub struct RemotePawnCommand {
     pub command: SimCommand,
     /// Aim of the command that carried this tick's delivered activation start,
     /// captured at host intake. Only that shot's FIRE reconstruction reads it;
-    /// movement and facing keep `command.movement`. `None` reads the live aim.
+    /// movement and facing keep `command.movement`. `None` uses the delivering
+    /// command's aim.
     pub start_aim: Option<RemoteStartAim>,
 }
 

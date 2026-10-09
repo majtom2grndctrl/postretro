@@ -3,10 +3,15 @@
 use crate::weapon;
 use postretro_entities::components::weapon::WeaponComponent;
 use postretro_entities::{EntityId, EntityRegistry};
-use postretro_foundation::ActivationToken;
+use postretro_foundation::{ACTIVATION_TICKS_PER_SECOND, ActivationToken};
 use std::collections::{HashMap, VecDeque};
 
 const MAX_RECORDS: usize = 64;
+
+/// Milliseconds in `ticks` fixed activation ticks, the host's recovery unit.
+fn ticks_ms(ticks: u32) -> f32 {
+    ticks as f32 * 1000.0 / ACTIVATION_TICKS_PER_SECOND as f32
+}
 struct ActivationRecord {
     weapon: EntityId,
     host_weapon: Option<u32>,
@@ -170,11 +175,15 @@ impl ActivationRecords {
                 recovery_ticks,
                 ..
             } => (Some(weapon.0), None, Some(recovery_ticks), true),
+            // The host ran every authored step, so a local execution still
+            // running is the same program behind it, as after a host hitch's
+            // catch-up ticks; its remaining shots were authorized too.
+            // Cancelling it would drop them and restart early.
             O::Completed {
                 weapon,
                 recovery_ticks,
                 ..
-            } => (Some(weapon.0), None, Some(recovery_ticks), true),
+            } => (Some(weapon.0), None, Some(recovery_ticks), false),
         };
         if host.is_some() && host != record.host_weapon {
             return None;
@@ -215,7 +224,7 @@ impl ActivationRecords {
             if self.latest.get(&record.weapon) == Some(&token)
                 && let Some(ticks) = recovery
             {
-                let host_ms = ticks as f32 * (1000.0 / 60.0);
+                let host_ms = ticks_ms(ticks);
                 // The host's remaining recovery is one transit stale. An admitted
                 // execution's recovery began at this client's own shot, which is
                 // where host admission measures cadence from, so it may only
@@ -300,8 +309,15 @@ mod tests {
                 },
             )
             .unwrap();
-        assert_eq!(completed.recovery_ms, Some(100.0));
-        assert_eq!(cooldown(&registry, weapon), 100.0);
+        let near = |actual: Option<f32>, expected: f32| {
+            actual.is_some_and(|actual| (actual - expected).abs() < 1.0e-4)
+        };
+        assert!(
+            near(completed.recovery_ms, 100.0),
+            "{:?}",
+            completed.recovery_ms
+        );
+        assert!(near(Some(cooldown(&registry, weapon)), 100.0));
 
         let refused = ActivationToken {
             start_tick: 18,
@@ -320,9 +336,9 @@ mod tests {
                 },
             )
             .unwrap();
-        let host_ms = 8.0 * (1000.0 / 60.0);
-        assert_eq!(effect.recovery_ms, Some(host_ms));
-        assert_eq!(cooldown(&registry, weapon), host_ms);
+        let host_ms = ticks_ms(8);
+        assert!(near(effect.recovery_ms, host_ms));
+        assert!(near(Some(cooldown(&registry, weapon)), host_ms));
     }
     #[test]
     fn client_weapon_active_history_does_not_expire_during_max_charge_and_waits() {

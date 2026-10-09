@@ -1,6 +1,7 @@
 //! Timing proof through production input conversion, authoritative playout, and
 //! connected-client catch-up. Fixtures author ordinary shot/wait data.
 use super::*;
+use crate::activation_edges::RETENTION_TICKS;
 use postretro_combat_model::activation::{advance_activation, start_activation};
 use postretro_foundation::{
     ActivationInput, ActivationLane, ActivationProgram, ActivationRelease, ActivationStep,
@@ -323,7 +324,7 @@ fn activation_competing_release_delivers_live_cancel_before_due_shot() {
         cancel: Some(live),
     };
     assert!(queues.ingest(7, &command(competing.start_tick, input)));
-    let mut resolved = queues.resolve_tick(7).unwrap();
+    let resolved = queues.resolve_tick(7).unwrap();
     assert_eq!(resolved.source, command_queue::ResolutionSource::Real);
     // B waits in the retained lane while A is live, so neither B's start nor its
     // release competes; A's correlated cancellation reaches A in this same tick.
@@ -338,7 +339,6 @@ fn activation_competing_release_delivers_live_cancel_before_due_shot() {
         },
         102
     ));
-    resolved.command.activation.initiation = None;
     let cancelled = advance_activation(
         &mut cursor,
         &program,
@@ -391,7 +391,7 @@ fn activation_competing_cancel_cannot_delay_live_cancel_before_due_shot() {
             }
         )
     ));
-    let mut resolved = queues.resolve_tick(7).unwrap();
+    let resolved = queues.resolve_tick(7).unwrap();
     assert_eq!(resolved.source, command_queue::ResolutionSource::Real);
     assert!(
         resolved.command.activation.initiation.is_none(),
@@ -399,7 +399,6 @@ fn activation_competing_cancel_cannot_delay_live_cancel_before_due_shot() {
     );
     assert_eq!(resolved.command.activation.cancel, Some(live.token));
     assert!(!queues.activations.can_accept(7, competing, 102));
-    resolved.command.activation.initiation = None;
     let cancelled = advance_activation(
         &mut cursor,
         &program,
@@ -648,7 +647,7 @@ fn activation_retained_starts_wait_for_the_live_execution_and_leave_in_order() {
 }
 
 #[test]
-fn activation_retained_start_expires_into_a_refusal_after_two_seconds() {
+fn activation_retained_start_expires_into_a_refusal_retention_ticks_after_first_due() {
     let mut queues = HostCommandQueues::new();
     for tick in 1..=3 {
         let input = ActivationInput {
@@ -675,17 +674,25 @@ fn activation_retained_start_expires_into_a_refusal_after_two_seconds() {
         &charged,
         100
     ));
+    // Token 2's command resolves on the loop's first resolution, where it first
+    // waits behind the live charge. It has no cadence record, so only retention
+    // ages it.
+    let first_due = 0;
     let mut refused = Vec::new();
-    for tick in 4..140 {
+    for (resolution, tick) in (4..4 + RETENTION_TICKS + 20).enumerate() {
         queues.ingest(7, &command(tick, ActivationInput::default()));
         let resolved = queues.resolve_tick(7).unwrap();
         assert!(resolved.command.activation.initiation.is_none());
-        refused.extend(resolved.rejected_activation);
+        refused.extend(
+            resolved
+                .rejected_activation
+                .map(|token| (resolution, token)),
+        );
     }
     assert_eq!(
         refused,
-        vec![token(2)],
-        "an unadmitted start expires once, as a refusal"
+        vec![(first_due + RETENTION_TICKS as usize, token(2))],
+        "an unadmitted start expires once, as a refusal, `RETENTION_TICKS` after it first became due"
     );
 }
 
@@ -828,8 +835,11 @@ fn activation_pending_unknown_duplicate_expiry_and_overflow_reject_newest() {
     assert_eq!(pending.len(), 64);
 }
 
+// Regression: an unknown edge for a later token aged out while a start below it
+// waited in the lane; settling it raised the lane's watermark over that start,
+// so the lane refused a start it never judged.
 #[test]
-fn activation_queued_start_settled_by_unknown_edge_expiry_cannot_execute() {
+fn activation_unknown_edge_expiry_cannot_settle_a_still_retained_start() {
     let mut queues = HostCommandQueues::new();
     let start = token(180);
     for tick in [0, 1, 180] {
@@ -845,13 +855,14 @@ fn activation_queued_start_settled_by_unknown_edge_expiry_cannot_execute() {
         ));
     }
     // The later unknown token's edge expires while playout walks the older gap.
+    let unknown = token(200);
     assert!(queues.ingest(
         7,
         &command(
             201,
             ActivationInput {
                 release: Some(ActivationRelease {
-                    token: token(200),
+                    token: unknown,
                     release_tick: 201
                 }),
                 ..ActivationInput::default()
@@ -864,26 +875,43 @@ fn activation_queued_start_settled_by_unknown_edge_expiry_cannot_execute() {
         let resolved = host_resolve_remote_commands(&owners, &mut queues);
         assert_eq!(resolved.len(), 1);
         assert_eq!(resolved[0].client_tick, tick);
-        assert!(resolved[0].command.activation.initiation.is_none());
+        assert!(resolved[0].rejected_activation.is_none());
+        assert!(resolved[0].command.activation.release.is_none());
         assert_eq!(
-            resolved[0].rejected_activation,
+            resolved[0].command.activation.initiation,
             (tick == 180).then_some(start)
         );
         if tick == 180 {
             assert_eq!(resolved[0].source, command_queue::ResolutionSource::Real);
         }
     }
+    // Once nothing it covers is retained, the expired edge settles its token:
+    // a start naming it on its own command is never retained, so playout
+    // neither delivers nor refuses it. Unsettled, it would fire on tick 200.
     assert!(queues.ingest(
         7,
         &command(
-            181,
+            unknown.start_tick,
             ActivationInput {
-                cancel: Some(start),
+                initiation: Some(unknown),
                 ..ActivationInput::default()
             }
         )
     ));
-    let resolved = host_resolve_remote_commands(&owners, &mut queues);
-    assert!(resolved[0].command.activation.cancel.is_none());
-    assert!(resolved[0].rejected_activation.is_none());
+    let mut played_replay = false;
+    for _ in 0..2 * RETENTION_TICKS {
+        let resolved = host_resolve_remote_commands(&owners, &mut queues);
+        assert!(resolved[0].command.activation.initiation.is_none());
+        assert!(resolved[0].command.activation.release.is_none());
+        assert!(resolved[0].rejected_activation.is_none());
+        if resolved[0].client_tick == unknown.start_tick {
+            assert_eq!(resolved[0].source, command_queue::ResolutionSource::Real);
+            played_replay = true;
+            break;
+        }
+    }
+    assert!(
+        played_replay,
+        "playout must reach the replayed start's command"
+    );
 }

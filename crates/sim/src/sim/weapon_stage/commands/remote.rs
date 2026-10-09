@@ -35,6 +35,33 @@ pub(in crate::sim) fn run_remote_weapon_commands(
         else {
             continue;
         };
+        // The command bound its weapon before this tick's drop or hand-over
+        // ran. A weapon that has since left the pawn's inventory is neither
+        // fired nor ticked for it; a start bound to it is refused.
+        if registry
+            .get_component::<Inventory>(remote.pawn)
+            .is_ok_and(|inventory| !inventory.wieldables.contains(&Some(weapon)))
+        {
+            if let Some(token) = remote
+                .command
+                .activation
+                .initiation
+                .or(remote.rejected_activation)
+            {
+                activation_progress.push(super::super::super::RemoteActivationProgress {
+                    pawn: remote.pawn,
+                    owner_client_id: remote.owner_client_id,
+                    weapon,
+                    tick: remote.fire_tick,
+                    recovery_ms: weapon_component.cooldown_remaining_ms,
+                    advance: weapon::execution::WeaponActivationAdvance {
+                        rejected: Some(token),
+                        ..Default::default()
+                    },
+                });
+            }
+            continue;
+        }
         let pose_available = (weapon_component.resolution != ResolutionMode::Projectile
             && weapon_component.knockback.is_none())
             || remote_projectile_aim(&registry, remote).is_some();
@@ -207,7 +234,7 @@ pub(in crate::sim) fn run_remote_weapon_commands(
                 };
                 let Some((eye, direction)) = remote_projectile_aim(&registry, remote) else {
                     log::warn!(
-                        "[Net] remote projectile fire has no valid live pawn aim; dropping shot"
+                        "[Net] remote projectile fire has no finite aim or no pawn eye; dropping shot"
                     );
                     rejected_projectile_fires.push(RemoteProjectileFireRejection {
                         owner_client_id: remote.owner_client_id,
@@ -333,8 +360,8 @@ fn remote_projectile_aim(
     let movement = registry
         .get_component::<PlayerMovementComponent>(remote.pawn)
         .ok()?;
-    // A delivered start fires along the aim its own command declared. An aim
-    // failing the command checks reads as the delivering command's aim.
+    // A delivered start fires along the aim its own command declared. A
+    // non-finite start aim falls back to the delivering command's aim.
     let (yaw, pitch) = remote
         .start_aim
         .filter(|aim| aim.yaw.is_finite() && aim.pitch.is_finite())
@@ -358,4 +385,66 @@ fn remote_projectile_aim(
         transform.position + Vec3::Y * movement.capsule.eye_height,
         direction / length_squared.sqrt(),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::sim::tests::{remote_command, run_remote_only_tick, weapon_component};
+    use postretro_entities::components::inventory::Inventory;
+    use postretro_entities::components::weapon::WeaponComponent;
+    use postretro_entities::{EntityId, EntityRegistry, Transform};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    fn armed_pawn(holds_weapon: bool) -> (Rc<RefCell<EntityRegistry>>, EntityId, EntityId) {
+        let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let (pawn, weapon) = {
+            let mut registry = registry.borrow_mut();
+            let pawn = registry.spawn(Transform::default());
+            let weapon = registry.spawn(Transform::default());
+            registry
+                .set_component(weapon, weapon_component("weapon.test.remote"))
+                .unwrap();
+            let mut inventory = Inventory::default();
+            inventory.wieldables[0] = holds_weapon.then_some(weapon);
+            registry.set_component(pawn, inventory).unwrap();
+            (pawn, weapon)
+        };
+        (registry, pawn, weapon)
+    }
+
+    // Regression: a drop earlier in the same tick left the command bound to the
+    // dropped weapon, and the remote weapon stage fired it anyway.
+    #[test]
+    fn remote_fire_never_fires_a_weapon_that_left_the_pawns_inventory() {
+        let (held, pawn, weapon) = armed_pawn(true);
+        let events = run_remote_only_tick(
+            held,
+            &[remote_command(pawn, Some(weapon), 42, 9, true, false)],
+        );
+        assert_eq!(events.authorized_shots.len(), 1, "a held weapon fires");
+
+        let (dropped, pawn, weapon) = armed_pawn(false);
+        let command = remote_command(pawn, Some(weapon), 42, 9, true, false);
+        let start = command.command.activation.initiation;
+        let events = run_remote_only_tick(dropped.clone(), &[command]);
+        assert!(events.authorized_shots.is_empty());
+        assert!(crate::emission::weapon_addresses(&events.weapon).is_empty());
+        let [progress] = events.remote_activation_progress.as_slice() else {
+            panic!(
+                "the bound start settles: {:?}",
+                events.remote_activation_progress
+            );
+        };
+        assert_eq!(progress.advance.rejected, start, "its start is refused");
+        assert!(progress.advance.attempted.is_none());
+        assert_eq!(
+            dropped
+                .borrow()
+                .get_component::<WeaponComponent>(weapon)
+                .unwrap()
+                .shells_fired,
+            0
+        );
+    }
 }

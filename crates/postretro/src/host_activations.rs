@@ -108,14 +108,38 @@ pub(super) fn guard_initiation(
     if let Some((_, bound_weapon)) = queues.activations.live_binding(command.owner_client_id) {
         command.weapon = Some(bound_weapon);
     }
-    let request = command.command.activation.initiation;
-    let Some(token) = command.rejected_activation.or(request) else {
+    let shot_id = command.shot_id;
+    let id_for = |token| {
+        shot_id.map(|shot| ActivationId {
+            pawn: shot.pawn,
+            token,
+        })
+    };
+    // The lane refused a retained start: it never binds this tick's weapon, so
+    // its refusal reports its own weapon's recovery.
+    if let Some(token) = command.rejected_activation.take() {
+        let recovery = refused_start_recovery_ticks(
+            registry,
+            queues,
+            command.owner_client_id,
+            command.pawn,
+            token,
+        );
+        let id = id_for(token);
+        reject_initiation(
+            queues,
+            server,
+            command.owner_client_id,
+            id,
+            token,
+            command.fire_tick,
+            recovery,
+        );
+    }
+    let Some(token) = command.command.activation.initiation else {
         return;
     };
-    let id = command.shot_id.map(|shot| ActivationId {
-        pawn: shot.pawn,
-        token,
-    });
+    let id = id_for(token);
     let weapon_available = command.weapon.is_some_and(|weapon| {
         registry.exists(command.pawn) && registry.get_component::<WeaponComponent>(weapon).is_ok()
     });
@@ -125,16 +149,15 @@ pub(super) fn guard_initiation(
             .can_accept(command.owner_client_id, id, command.fire_tick)
     });
     let cadence = match command.weapon {
-        Some(weapon) if command.rejected_activation.is_none() => queues.activation_cadence(
+        Some(weapon) => queues.activation_cadence(
             command.owner_client_id,
             weapon,
             command.command.firing_slot,
             token.start_tick,
         ),
-        _ => netcode::CadenceVerdict::Unrecorded,
+        None => netcode::CadenceVerdict::Unrecorded,
     };
-    if command.rejected_activation.is_some()
-        || !command.real_command
+    if !command.real_command
         || !weapon_available
         || !ledger_allows
         || cadence == netcode::CadenceVerdict::Refused
@@ -162,17 +185,13 @@ pub(super) fn guard_initiation(
             registry.get_component_value_mut(weapon, ComponentKind::Weapon)
     {
         // Client spacing already covers the recovery this weapon's own execution
-        // began. The host countdown started when the host fired, so it would
-        // refuse a start that playout delivered compressed.
+        // began, and the lane's host half held the start until host time, less
+        // the ticks the weapon spent holstered, did too. The host countdown
+        // started when the host fired, so it would refuse a start that playout
+        // delivered compressed.
         component.cooldown_remaining_ms = 0.0;
     }
-    // The start's shot fires along the aim its own command declared, not the
-    // aim of whichever later command delivered it.
-    command.start_aim = command
-        .command
-        .activation
-        .initiation
-        .and_then(|token| queues.start_aim(command.owner_client_id, token));
+    command.start_aim = start_aim(registry, queues, command);
     // Ensure private weapon instances have a stable owner-outcome identity
     // before any shot is debited or presentation is sent.
     if let Some(weapon) = command.weapon {
@@ -181,10 +200,10 @@ pub(super) fn guard_initiation(
 }
 
 /// After the simulation tick, a weapon that left its client's inventory loses
-/// that client's cadence record. Its own cooldown keeps whatever recovery the
-/// record's credit still owes, so no later holder, that client included, fires
-/// ahead of one recovery after its last credited execution. Cooldown only
-/// counts down while a holder ticks the weapon, so the charge never shortens.
+/// that client's cadence record. Its own cooldown is raised to whatever recovery
+/// the record's credit still owes, never lowered, so no later holder, that
+/// client included, fires ahead of one recovery after its last credited
+/// execution. Cooldown only counts down while a holder ticks the weapon.
 pub(super) fn release_departed_weapons(
     registry: &mut EntityRegistry,
     queues: &mut netcode::HostCommandQueues,
@@ -198,6 +217,63 @@ pub(super) fn release_departed_weapons(
             component.cooldown_remaining_ms = component.cooldown_remaining_ms.max(owed_ms);
         }
     }
+}
+
+/// An uncharged start's shot fires along the aim its own command declared, not
+/// the aim of whichever later command delivered it. A charged action fires at
+/// its release, along the delivering command's aim.
+fn start_aim(
+    registry: &EntityRegistry,
+    queues: &netcode::HostCommandQueues,
+    command: &sim::RemotePawnCommand,
+) -> Option<sim::RemoteStartAim> {
+    let token = command.command.activation.initiation?;
+    let weapon = command.weapon?;
+    if action_charges(registry, weapon, token.lane) {
+        return None;
+    }
+    queues.start_aim(command.owner_client_id, token)
+}
+
+/// Whether `weapon`'s action on `lane` charges: its shot fires at the release.
+fn action_charges(
+    registry: &EntityRegistry,
+    weapon: EntityId,
+    lane: postretro_foundation::ActivationLane,
+) -> bool {
+    registry
+        .get_component::<WeaponComponent>(weapon)
+        .is_ok_and(|component| match lane {
+            postretro_foundation::ActivationLane::Primary => component.primary.charge.is_some(),
+            postretro_foundation::ActivationLane::Secondary => component
+                .secondary
+                .as_ref()
+                .is_some_and(|action| action.charge.is_some()),
+        })
+}
+
+/// Recovery of the weapon in the firing slot a refused retained start named,
+/// or zero when that slot is empty. The delivering command may name another
+/// slot; the client applies a refusal's recovery to the start's own weapon.
+fn refused_start_recovery_ticks(
+    registry: &EntityRegistry,
+    queues: &netcode::HostCommandQueues,
+    client: u64,
+    pawn: EntityId,
+    token: ActivationToken,
+) -> u32 {
+    queues
+        .refused_start_slot(client, token)
+        .and_then(|slot| {
+            registry
+                .get_component::<Inventory>(pawn)
+                .ok()?
+                .wieldables
+                .get(usize::from(slot))
+                .copied()
+                .flatten()
+        })
+        .map_or(0, |weapon| recovery_ticks(registry, weapon))
 }
 
 fn reject_initiation(
@@ -916,6 +992,155 @@ mod tests {
         inventory.wieldables[0] = Some(weapon);
         registry.set_component(pawn, inventory).unwrap();
         (registry, pawn, weapon, id, descriptor)
+    }
+
+    fn wire_command(
+        client_tick: u32,
+        firing_slot: u8,
+        start: Option<ActivationToken>,
+    ) -> wire::InputCommand {
+        wire::InputCommand {
+            client_tick,
+            movement: wire::WireMovementInput {
+                wish_dir: [0.0; 2],
+                jump_pressed: false,
+                dash_pressed: false,
+                running: false,
+                crouch_intent: false,
+                facing_yaw: 0.25,
+                use_pressed: false,
+                drop_pressed: false,
+                aim_pitch: 0.1,
+                firing_slot,
+            },
+            fire_button: wire::WireFireButtonState {
+                pressed: start.is_some(),
+                active: start.is_some(),
+            },
+            secondary_button: wire::WireFireButtonState {
+                pressed: false,
+                active: false,
+            },
+            reload: false,
+            activation: wire::WireActivationInput {
+                initiation: start.map(wire_token),
+                release: None,
+                cancel: None,
+            },
+        }
+    }
+
+    /// Ingest `commands` for client 7 as one backlog and resolve once.
+    fn resolve_backlog(
+        queues: &mut netcode::HostCommandQueues,
+        pawn: EntityId,
+        commands: impl IntoIterator<Item = wire::InputCommand>,
+    ) -> netcode::ResolvedPawnCommand {
+        for command in commands {
+            assert!(queues.ingest_for_test(7, &command));
+        }
+        let mut owners = netcode::MovementOwners::default();
+        owners.set_for_test(pawn, 7);
+        netcode::host_resolve_remote_commands(&owners, queues)
+            .pop()
+            .expect("the backlog resolves")
+    }
+
+    // Regression: a retained start the lane refused reported the recovery of the
+    // weapon the delivering command named, which the client then adopted onto
+    // the start's own weapon.
+    #[test]
+    fn lane_refusal_reports_the_refused_starts_own_weapon_recovery() {
+        let (mut registry, pawn, weapon, _, descriptor) = fixture();
+        let other = registry.spawn(Transform::default());
+        registry
+            .set_component(
+                other,
+                WeaponComponent::from_descriptor_with_canonical(&descriptor, Some("other")),
+            )
+            .unwrap();
+        let mut inventory = registry.get_component::<Inventory>(pawn).unwrap().clone();
+        inventory.wieldables[1] = Some(other);
+        registry.set_component(pawn, inventory).unwrap();
+        let start = ActivationToken {
+            start_tick: 1,
+            lane: ActivationLane::Primary,
+        };
+        let mut queues = netcode::HostCommandQueues::default();
+        // The start rides slot 0; the client then switches, so the backlog that
+        // survives the trim names slot 1. A later terminal settles the start
+        // while it waits, so the lane refuses it.
+        let backlog = (1..=12)
+            .map(|tick| wire_command(tick, u8::from(tick > 1), (tick == 1).then_some(start)));
+        for command in backlog {
+            assert!(queues.ingest_for_test(7, &command));
+        }
+        queues.activation_terminal(
+            7,
+            ActivationToken {
+                start_tick: 5,
+                ..start
+            },
+        );
+        let resolved = resolve_backlog(&mut queues, pawn, Vec::new());
+        assert_eq!(resolved.rejected_activation, Some(start));
+        assert_eq!(resolved.command.firing_slot, 1);
+        let own = recovery_ticks(&registry, weapon);
+        assert_ne!(own, recovery_ticks(&registry, other));
+        assert_eq!(
+            refused_start_recovery_ticks(&registry, &queues, 7, pawn, start),
+            own
+        );
+    }
+
+    // Regression: a charged action's release, delivered on its start's tick,
+    // fired along the start's captured aim; it fires along the delivering aim.
+    #[test]
+    fn start_aim_applies_only_to_an_uncharged_action() {
+        let (mut registry, pawn, weapon, _, _) = fixture();
+        let start = ActivationToken {
+            start_tick: 1,
+            lane: ActivationLane::Primary,
+        };
+        let mut queues = netcode::HostCommandQueues::default();
+        let resolved = resolve_backlog(
+            &mut queues,
+            pawn,
+            [wire_command(1, 0, Some(start)), wire_command(2, 0, None)],
+        );
+        assert_eq!(resolved.command.activation.initiation, Some(start));
+        let command = sim::RemotePawnCommand {
+            real_command: true,
+            rejected_activation: None,
+            pawn,
+            owner_client_id: 7,
+            weapon: Some(weapon),
+            shot_id: None,
+            fire_tick: 0,
+            client_tick: resolved.client_tick,
+            aim_pitch: 0.0,
+            start_aim: None,
+            command: resolved.command.clone(),
+        };
+        let aim =
+            start_aim(&registry, &queues, &command).expect("an uncharged start keeps its aim");
+        assert!((aim.pitch - 0.1).abs() < 1.0e-6 && (aim.yaw - 0.25).abs() < 1.0e-6);
+        let mut charged = action(1);
+        charged["charge"] = json!({ "minMs": 200, "fullMs": 1000 });
+        let descriptor: WeaponDescriptor = serde_json::from_value(json!({
+            "damage": 10, "range": 100, "resolution": "hitscan", "primary": charged,
+        }))
+        .unwrap();
+        registry
+            .set_component(
+                weapon,
+                WeaponComponent::from_descriptor_with_canonical(
+                    &descriptor.validate().unwrap(),
+                    Some("charged"),
+                ),
+            )
+            .unwrap();
+        assert_eq!(start_aim(&registry, &queues, &command), None);
     }
 
     #[test]

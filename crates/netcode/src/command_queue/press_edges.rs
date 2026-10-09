@@ -4,18 +4,42 @@
 // Both arrive as one-tick edges on the wire, so a catch-up trim or stale-drop of
 // the carrying command would erase the press. Intake records each edge from the
 // reliable-ordered stream first; an advancing resolution delivers each one once,
-// in order, after its tick resolves. Unlike reload these are edges, not levels,
-// so no low tick is needed before a recovered press.
+// in order, after its tick resolves and behind any older retained start. Unlike
+// reload these are edges, not levels, so no low tick is needed before a
+// recovered press.
 
 use std::collections::VecDeque;
 
 use postretro_net::wire::InputCommand;
 
-use crate::netcode::prediction::client_tick_le;
+use crate::activation_edges::MAX_RETAINED_ACTIVATION_EDGES;
+use crate::prediction::client_tick_le;
 use crate::sim::SimCommand;
 
-/// Per-lane bound, matching the other per-client retained-edge bounds.
-const MAX_RETAINED_PRESSES: usize = 64;
+/// Per-lane bound, the same as the retained activation start and edge lanes.
+const MAX_RETAINED_PRESSES: usize = MAX_RETAINED_ACTIVATION_EDGES;
+
+/// Which due presses an advancing resolution may deliver. A press must not
+/// reach the weapon ahead of an older start still waiting in its lane: a
+/// reload or drop delivered first would refuse, or fire the wrong weapon for,
+/// a shot the client fired before it. On the tick a start is delivered, a
+/// later press would also land on that start's weapon.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum PressGate {
+    /// No start is retained.
+    Open,
+    /// Presses stamped at or before this client tick.
+    Through(u32),
+}
+
+impl PressGate {
+    pub(super) fn admits(self, tick: u32) -> bool {
+        match self {
+            Self::Open => true,
+            Self::Through(horizon) => client_tick_le(tick, horizon),
+        }
+    }
+}
 
 #[derive(Debug, Default)]
 pub(super) struct PressEdges {
@@ -46,21 +70,42 @@ impl PressEdges {
     }
 
     /// Replace the resolved command's use and drop bits with at most one due
-    /// retained press each. Only advancing resolutions call this.
-    pub(super) fn deliver(&mut self, resolved_tick: u32, command: &mut SimCommand) {
-        let use_pressed = take_due(&mut self.use_presses, resolved_tick);
-        let drop_pressed = take_due(&mut self.drop_presses, resolved_tick);
+    /// retained press each that `gate` admits. Only advancing resolutions call this.
+    pub(super) fn deliver(
+        &mut self,
+        resolved_tick: u32,
+        gate: PressGate,
+        command: &mut SimCommand,
+    ) {
+        let use_pressed = take_due(&mut self.use_presses, resolved_tick, gate);
+        let drop_pressed = take_due(&mut self.drop_presses, resolved_tick, gate);
         command.use_pressed = use_pressed;
         command.movement.use_pressed = use_pressed;
         command.drop_pressed = drop_pressed;
         command.movement.drop_pressed = drop_pressed;
     }
+
+    /// Oldest use or drop press whose tick has resolved.
+    pub(super) fn oldest_due(&self, resolved_tick: u32) -> Option<u32> {
+        [self.use_presses.front(), self.drop_presses.front()]
+            .into_iter()
+            .flatten()
+            .copied()
+            .filter(|tick| client_tick_le(*tick, resolved_tick))
+            .reduce(|oldest, tick| {
+                if client_tick_le(tick, oldest) {
+                    tick
+                } else {
+                    oldest
+                }
+            })
+    }
 }
 
-fn take_due(presses: &mut VecDeque<u32>, resolved_tick: u32) -> bool {
+fn take_due(presses: &mut VecDeque<u32>, resolved_tick: u32, gate: PressGate) -> bool {
     let due = presses
         .front()
-        .is_some_and(|tick| client_tick_le(*tick, resolved_tick));
+        .is_some_and(|tick| client_tick_le(*tick, resolved_tick) && gate.admits(*tick));
     if due {
         presses.pop_front();
     }
@@ -131,6 +176,154 @@ mod tests {
                     && r.command.drop_pressed == r.command.movement.drop_pressed),
             "full command and movement mirror carry the same edge"
         );
+    }
+
+    fn start(command: &mut InputCommand) {
+        command.activation.initiation = Some(postretro_net::wire::WireActivationToken {
+            start_tick: command.client_tick,
+            lane: 0,
+        });
+    }
+
+    /// Resolve after a stall: ingest `backlog` at once, then one new command
+    /// per resolution.
+    fn resolve_stall(
+        queues: &mut HostCommandQueues,
+        backlog: impl IntoIterator<Item = InputCommand>,
+        resolutions: u32,
+    ) -> Vec<ResolvedCommand> {
+        for tick in 0..2 {
+            assert!(queues.ingest(CLIENT, &command(tick)));
+        }
+        queues.resolve_tick(CLIENT).unwrap();
+        let mut next = 2;
+        for command in backlog {
+            next = command.client_tick + 1;
+            assert!(queues.ingest(CLIENT, &command));
+        }
+        (0..resolutions)
+            .map(|offset| {
+                queues.ingest(CLIENT, &command(next + offset));
+                queues.resolve_tick(CLIENT).unwrap()
+            })
+            .collect()
+    }
+
+    fn only_once(resolved: &[ResolvedCommand], found: impl Fn(&ResolvedCommand) -> bool) -> usize {
+        let indices: Vec<usize> = resolved
+            .iter()
+            .enumerate()
+            .filter(|&(_, resolved)| found(resolved))
+            .map(|(index, _)| index)
+            .collect();
+        assert_eq!(indices.len(), 1, "delivered exactly once: {indices:?}");
+        indices[0]
+    }
+
+    // Regression: a stall ending in a reload delivered the reload by command tick
+    // while the earlier starts waited in their lane, so the host refused them.
+    #[test]
+    fn reload_and_drop_stamped_after_retained_starts_wait_until_those_starts_are_delivered() {
+        let mut queues = HostCommandQueues::new();
+        let backlog = (2..20).map(|tick| {
+            let mut command = command(tick);
+            if tick == 3 || tick == 11 {
+                start(&mut command);
+            }
+            command.reload = (15..17).contains(&tick);
+            command.movement.drop_pressed = tick == 16;
+            command
+        });
+        let resolved = resolve_stall(&mut queues, backlog, 6);
+        assert!(
+            resolved[0].client_tick > 2,
+            "the backlog must take the catch-up trim"
+        );
+        let starts = [3, 11].map(|tick| {
+            only_once(&resolved, |resolved| {
+                resolved
+                    .command
+                    .activation
+                    .initiation
+                    .is_some_and(|token| token.start_tick == tick)
+            })
+        });
+        let reload = only_once(&resolved, |resolved| resolved.command.reload);
+        let dropped = only_once(&resolved, |resolved| resolved.command.drop_pressed);
+        assert!(starts[0] < starts[1], "starts leave in order");
+        assert!(
+            starts[1] < reload && starts[1] < dropped,
+            "starts {starts:?}, reload {reload}, drop {dropped}"
+        );
+    }
+
+    // Regression: a late start for slot 0, delivered by a command sent after the
+    // client switched to slot 1, set that whole tick's firing slot, so slot 1's
+    // reload press on the same command reloaded slot 0's weapon instead.
+    #[test]
+    fn a_late_start_for_another_slot_never_carries_a_later_reload_press() {
+        let mut queues = HostCommandQueues::new();
+        for tick in 0..2 {
+            assert!(queues.ingest(CLIENT, &command(tick)));
+        }
+        queues.resolve_tick(CLIENT).unwrap();
+        let switched = |tick: u32| {
+            let mut command = command(tick);
+            command.movement.firing_slot = u8::from(tick > 3);
+            if tick == 3 {
+                start(&mut command);
+            }
+            command.reload = tick == 19;
+            command
+        };
+        for tick in 2..21 {
+            assert!(queues.ingest(CLIENT, &switched(tick)));
+        }
+        let resolved: Vec<ResolvedCommand> = (21..24)
+            .map(|tick| {
+                queues.ingest(CLIENT, &switched(tick));
+                queues.resolve_tick(CLIENT).unwrap()
+            })
+            .collect();
+        let fired = &resolved[0];
+        assert_eq!(
+            fired
+                .command
+                .activation
+                .initiation
+                .map(|token| token.start_tick),
+            Some(3)
+        );
+        assert_eq!(fired.command.firing_slot, 0, "the start fires its own slot");
+        assert!(!fired.command.reload, "the later press waits");
+        let reload = only_once(&resolved, |resolved| resolved.command.reload);
+        assert_eq!(resolved[reload].command.firing_slot, 1);
+        assert!(resolved[reload].command.activation.initiation.is_none());
+    }
+
+    // Regression: a drop stamped before a start, both inside a stall, reached the
+    // host on the start's tick, so the dropped weapon fired.
+    #[test]
+    fn drop_stamped_before_a_retained_start_reaches_the_host_on_an_earlier_tick() {
+        let mut queues = HostCommandQueues::new();
+        let backlog = (2..20).map(|tick| {
+            let mut command = command(tick);
+            command.movement.drop_pressed = tick == 5;
+            if tick == 7 {
+                start(&mut command);
+            }
+            command
+        });
+        let resolved = resolve_stall(&mut queues, backlog, 4);
+        let dropped = resolved
+            .iter()
+            .position(|resolved| resolved.command.drop_pressed)
+            .expect("the drop survives the stall");
+        let fired = resolved
+            .iter()
+            .position(|resolved| resolved.command.activation.initiation.is_some())
+            .expect("the start survives the stall");
+        assert!(dropped < fired, "drop on {dropped}, start on {fired}");
     }
 
     #[test]

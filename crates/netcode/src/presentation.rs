@@ -1333,11 +1333,14 @@ mod tests {
         let mut health_at_impact_drain = None;
         let mut pending = crate::netcode::PendingHitDeclarations::new();
         assert!(pending.push_at(PREDICTED_OWNER_CLIENT, delivered, 10));
+        // A splash declaration waits until host travel from FIRE (tick 9, 1 m a
+        // tick) covers its declared point 4 m out.
+        let intake_tick = 15;
         let ready = crate::netcode::host_take_ready_hit_declarations(
             &crate::netcode::HostCommandQueues::new(),
             &mut open_shots,
             &mut pending,
-            10,
+            intake_tick,
         );
         let mut projectile_contact = None;
         let mut remote_impacts = Vec::new();
@@ -1349,7 +1352,7 @@ mod tests {
             &allocator,
             &owners,
             &mut open_shots,
-            10,
+            intake_tick,
             0.0,
             ready,
             |registry| {

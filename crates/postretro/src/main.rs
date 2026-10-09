@@ -4253,35 +4253,12 @@ impl App {
                             );
                         }
                         if effect.rejected {
-                            self.client_weapon.due.retain(|queued| {
-                                queued.weapon != effect.weapon
-                                    || (queued.shot.activation.shot_id.start_tick
-                                        != effect.token.start_tick
-                                        || queued.shot.activation.shot_id.lane != effect.token.lane)
-                            });
-                            let shots: Vec<_> = registry
-                                .iter_with_kind(postretro_entities::ComponentKind::Projectile)
-                                .filter_map(|(_, value)| {
-                                    let postretro_entities::ComponentValue::Projectile(projectile) =
-                                        value
-                                    else {
-                                        return None;
-                                    };
-                                    projectile.predicted_shot_id.filter(|id| {
-                                        id.start_tick == effect.token.start_tick
-                                            && id.lane == effect.token.lane
-                                            && projectile.owner_weapon == effect.weapon
-                                    })
-                                })
-                                .collect();
-                            for id in shots {
-                                let _ = self.client_predicted_shots.apply_verdict(
-                                    &mut registry,
-                                    id,
-                                    false,
-                                    false,
-                                );
-                            }
+                            self.client_weapon.retract_rejected_activation(
+                                &mut registry,
+                                &mut self.client_predicted_shots,
+                                effect.token,
+                                effect.weapon,
+                            );
                         }
                     }
                 }

@@ -34,6 +34,7 @@ mod activation_admission;
 mod activation_cadence;
 mod press_edges;
 pub use activation_cadence::CadenceVerdict;
+use press_edges::PressGate;
 
 /// Host-side movement-authority owner map: `EntityId -> owning client id`. The
 /// engine-side metadata snapshot production stamps onto each owned pawn's
@@ -251,15 +252,22 @@ impl ClientCommandState {
         self.latest_observed_reload = Some((cmd.client_tick, cmd.reload));
     }
 
-    fn preserve_due_reload_press(&mut self, resolved_tick: u32, command: &mut SimCommand) {
-        let press_due = self
+    fn preserve_due_reload_press(
+        &mut self,
+        resolved_tick: u32,
+        gate: PressGate,
+        command: &mut SimCommand,
+    ) {
+        let due_press = self
             .pending_reload_presses
             .front()
-            .is_some_and(|tick| client_tick_le(*tick, resolved_tick));
-        if press_due {
-            if self.last_emitted_reload {
-                // The false tick clears `WeaponComponent::reload_press_consumed`; keep
-                // the press queued for the next authoritative resolution.
+            .copied()
+            .filter(|tick| client_tick_le(*tick, resolved_tick));
+        if let Some(tick) = due_press {
+            if self.last_emitted_reload || !gate.admits(tick) {
+                // The false tick clears `WeaponComponent::reload_press_consumed`; a
+                // gated press waits behind an older retained start, so the level
+                // must not stand in for it. Keep it queued either way.
                 command.reload = false;
             } else {
                 command.reload = true;
@@ -270,7 +278,9 @@ impl ClientCommandState {
     }
 
     /// Insert a sanitized command into the pending queue with bootstrap-window
-    /// validation, reload observation, stale-drop, and exact-duplicate collapse.
+    /// validation, stale-drop, and exact-duplicate collapse. Before stale-drop,
+    /// its reload, use, and drop presses and its activation start and edges are
+    /// retained in their own lanes, so a stale or later-trimmed command keeps them.
     /// Returns `true` if the command was queued, `false` if it was rejected or dropped.
     /// Invalid numeric fields never reach here — sanitization happens at the
     /// [`HostCommandQueues::ingest`] boundary.
@@ -407,8 +417,9 @@ pub struct ResolvedPawnCommand {
     /// consumes it locally; snapshot production reads the same queue state.
     pub aim_pitch: f32,
     pub client_tick: u32,
-    /// A retained initiation that expired or was settled while retained. The owning
-    /// weapon machine must publish its correlated rejection rather than execute it.
+    /// A retained start the lane refused: lagging past the catch-up allowance,
+    /// expired, or settled while retained. It never executes; its rejection
+    /// reports the recovery of the weapon in the slot it named.
     pub rejected_activation: Option<postretro_foundation::ActivationToken>,
     #[allow(dead_code)]
     pub source: ResolutionSource,
@@ -592,9 +603,8 @@ impl HostCommandQueues {
             state.held_ticks = 0;
             state.resolved_cursor = Some(expected);
             state.drop_stale(expected);
-            state.preserve_due_reload_press(expected, &mut sim);
-            state.press_edges.deliver(expected, &mut sim);
-            let rejected_activation = state.deliver_due_start(expected, live_activation, &mut sim);
+            let rejected_activation =
+                state.deliver_retained(expected, live_activation, true, &mut sim);
             state.deliver_edges(&mut sim.activation, live_activation);
             let diag_lead = state
                 .latest_observed_reload
@@ -763,8 +773,7 @@ impl HostCommandQueues {
         // disarms so the neutral-walk advances toward them. For a neutral-walk or a
         // deep-buffer yield, `pending` still holds commands, so this stays false.
         state.building_playout = state.pending.is_empty();
-        state.preserve_due_reload_press(expected, &mut sim);
-        state.press_edges.deliver(expected, &mut sim);
+        state.deliver_retained(expected, live_activation, false, &mut sim);
         state.deliver_edges(&mut sim.activation, live_activation);
         let diag_lead = state
             .latest_observed_reload

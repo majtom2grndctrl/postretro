@@ -1,42 +1,5 @@
 // Client-domain recovery admission for remote activation starts.
 // See: context/lib/networking.md §Combat authority · §Host input command queue
-//
-// Two tick domains meet here. Client ticks are the client's own fixed-tick
-// stamps: start ticks, release ticks, and the client tick at which a recovery
-// began. Host ticks are this client's playout clock, `ClientCommandState::host_tick`,
-// which advances once per host fixed tick the client is resolved.
-//
-// The rule: a start is eligible once its client tick is at least the recovery
-// after the client tick at which the previous execution's recovery began, and
-// host time since that recovery began, plus `CADENCE_TOLERANCE_TICKS`, also
-// covers the recovery. The client half is checked when the start binds a
-// weapon; the host half holds the start in its retained lane until it passes.
-//
-// Host time "since that recovery began" is measured from a credited host tick,
-// not the tick the host happened to fire. Each execution is credited at the
-// client's claimed time, clamped to [host now, host now + tolerance]. Credit
-// therefore never trails host time at admission, and an early start carries its
-// lead into the next one instead of earning a fresh tolerance each time. A
-// charged execution fires at its release, so its credit moves to the release,
-// forward only; any other execution ignores releases, as the machine does.
-//
-// Records are per weapon: one per firing slot, naming the weapon whose
-// execution began it, so an A→B→A switch finds A's own record. A record stands
-// only while its weapon still holds that slot in the client's inventory;
-// `release_departed` clears it once the weapon leaves (drop, hand-over,
-// despawn) and reports the host ticks its credit still owes, which the host
-// charges to that weapon's own cooldown. At most one record per inventory slot.
-//
-// Bound, per weapon (pinned by the `cannot_exceed_window_bound` tests): each
-// admitted execution's credit is at least one recovery after the weapon's last
-// one, the first credit in a window is at or after the window opens, and every
-// credit is at most `CADENCE_TOLERANCE_TICKS` past its admission. So over any
-// span of W host ticks, executions admitted on one weapon ≤
-// ⌊(W + CADENCE_TOLERANCE_TICKS) / R⌋ + 1, whatever client ticks the client
-// stamps. A departed weapon keeps the chain through its cooldown: the owed
-// ticks hold its next fire to at least one recovery after its last credit. The
-// constant above W / R is 1 + 9 / R: under 2 for any recovery of 150 ms or
-// more, 2.125 at 130 ms.
 
 use crate::prediction::client_tick_le;
 use postretro_entities::EntityId;
@@ -46,6 +9,21 @@ use postretro_foundation::ActivationToken;
 /// 150 ms at 60 Hz: the charge rule's tolerance, applied to cadence.
 pub(crate) const CADENCE_TOLERANCE_TICKS: u32 =
     postretro_combat_model::activation::CHARGE_TOLERANCE_TICKS;
+
+/// 500 ms at 60 Hz. A start may claim a host time this far behind host now and
+/// still be credited there, so a stall's backlog drains at once. Credited no
+/// earlier than host now, a held trigger's backlog drained at one shot per
+/// recovery, the rate new starts arrive, so the rest of the hold lagged by the
+/// whole stall. A start claiming further back is refused: past this, a late
+/// shot costs more than a hold that stays on time.
+pub(crate) const CATCH_UP_ALLOWANCE_TICKS: u32 = 30;
+
+/// Most executions one weapon can admit in any `window` host ticks, whatever
+/// client ticks are stamped. A zero recovery imposes no spacing; playout's one
+/// start per host tick bounds it instead, well inside this.
+pub fn window_bound(window: u32, recovery_ticks: u32) -> u32 {
+    (window + CATCH_UP_ALLOWANCE_TICKS + CADENCE_TOLERANCE_TICKS) / recovery_ticks.max(1) + 1
+}
 
 /// What the client half of the rule says about a start bound to a weapon.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,6 +45,10 @@ struct Recovery {
     credit_tick: u32,
     /// `ceil(recovery_ms / tick_ms)`, the client's predicted countdown in ticks.
     recovery_ticks: u32,
+    /// Host ticks since credit on which a real command named another firing
+    /// slot while this recovery still owed. A holstered weapon's cooldown is
+    /// frozen, so those ticks do not count toward its recovery.
+    frozen_ticks: u32,
 }
 
 /// The delivered start whose execution may begin the next recovery.
@@ -85,13 +67,66 @@ struct Execution {
 }
 
 impl Recovery {
+    /// Host ticks since credit that the weapon was the firing weapon. Negative
+    /// while credit still leads host time.
+    fn active_ticks(&self, host_tick: u32) -> i64 {
+        host_ticks_since(host_tick, self.credit_tick) - i64::from(self.frozen_ticks)
+    }
+
     /// Host ticks after `host_tick` before one recovery has passed since credit.
     fn owed_ticks(&self, host_tick: u32) -> u32 {
-        (i64::from(self.recovery_ticks) - host_ticks_since(host_tick, self.credit_tick)).max(0)
-            as u32
+        (i64::from(self.recovery_ticks) - self.active_ticks(host_tick)).max(0) as u32
+    }
+
+    /// Host tick the client claims for a start at `start_tick`: the credit,
+    /// moved by the client's own spacing since the recovery began.
+    fn claimed_tick(&self, start_tick: u32) -> u32 {
+        self.credit_tick
+            .wrapping_add_signed(start_tick.wrapping_sub(self.client_tick) as i32)
     }
 }
 
+/// One client's cadence records and the execution that may begin the next one.
+///
+/// Two tick domains meet here. Client ticks are the client's own stamps: start
+/// ticks, release ticks, and the client tick at which a recovery began. Host
+/// ticks are this client's playout clock, `ClientCommandState::host_tick`,
+/// which advances once per host fixed tick the client is resolved.
+///
+/// A start is eligible once its client tick is at least the recovery after the
+/// client tick its weapon's previous recovery began (the client half, checked
+/// when the start binds a weapon), and host time since that recovery's credit,
+/// less the ticks the weapon spent holstered, plus `CADENCE_TOLERANCE_TICKS`,
+/// covers the recovery (the host half, which holds the start in its lane).
+///
+/// Each execution is credited at the client's claimed host time, clamped to
+/// [host now − `CATCH_UP_ALLOWANCE_TICKS`, host now + `CADENCE_TOLERANCE_TICKS`].
+/// An early start carries its lead into the next instead of earning a fresh
+/// tolerance; a backlog up to the allowance old drains at once; a start claiming
+/// further back is refused (`lags_allowance`). A charged execution fires at its
+/// release, so its credit moves to the release, forward only; any other
+/// execution ignores releases, as the machine does.
+///
+/// Records are per weapon: one per firing slot, naming the weapon whose
+/// execution began it, so an A→B→A switch finds A's own record. A record stands
+/// only while its weapon still holds that slot in the client's inventory;
+/// `release_departed` clears it once the weapon leaves (drop, hand-over,
+/// despawn) and reports the host ticks its credit still owes, which the host
+/// charges to that weapon's own cooldown.
+///
+/// Bound, per weapon (pinned by the `cannot_exceed_window_bound` tests). The
+/// client half makes each claim at least one recovery past the previous credit;
+/// the host half admits only once host now + tolerance reaches that point, so
+/// the upper clamp never cuts it and each credit is at least one recovery after
+/// the last. The first credit in a window is at least its admission minus the
+/// allowance, the last at most its admission plus the tolerance. So over any W
+/// host ticks one weapon admits at most `window_bound(W, R)` =
+/// ⌊(W + allowance + tolerance) / R⌋ + 1 executions, whatever client ticks are
+/// stamped. The constant above W / R is 1 + 39 / R: at most 2 for any recovery
+/// of 39 ticks (650 ms) or more, about 5.9 at 130 ms. It is a one-time catch-up,
+/// never a faster sustained rate. Holstered ticks only make the host half
+/// stricter. A departed weapon keeps the chain through its cooldown: the owed
+/// ticks hold its next fire to at least one recovery after its last credit.
 #[derive(Debug, Default)]
 pub(crate) struct ActivationCadence {
     /// Latest recovery per firing slot, each naming the weapon that began it.
@@ -110,13 +145,65 @@ impl ActivationCadence {
             .flatten()
     }
 
+    /// Whether any weapon holds a record; none means nothing can depart.
+    pub fn has_records(&self) -> bool {
+        self.displaced.is_some() || self.recoveries.iter().any(Option::is_some)
+    }
+
     /// Host half of the rule for a start that would fire from `firing_slot`:
     /// the record of the weapon holding that slot.
     pub fn host_time_allows(&self, firing_slot: u8, host_tick: u32) -> bool {
         self.recovery(firing_slot).is_none_or(|recovery| {
-            host_ticks_since(host_tick, recovery.credit_tick) + i64::from(CADENCE_TOLERANCE_TICKS)
+            recovery.active_ticks(host_tick) + i64::from(CADENCE_TOLERANCE_TICKS)
                 >= i64::from(recovery.recovery_ticks)
         })
+    }
+
+    /// A start that would fire from `firing_slot` claims a host time more than
+    /// the allowance behind host now, and was stamped more than the allowance
+    /// before `newest_client_tick`, the newest command this client has sent.
+    /// The second clause keeps a whole stream that trails its old credit
+    /// (clock drift, a lasting rise in latency) from reading as a backlog: only
+    /// starts stuck behind newer input are refused.
+    pub fn lags_allowance(
+        &self,
+        token: ActivationToken,
+        firing_slot: u8,
+        host_tick: u32,
+        newest_client_tick: u32,
+    ) -> bool {
+        let allowance = i64::from(CATCH_UP_ALLOWANCE_TICKS);
+        self.recovery(firing_slot).is_some_and(|recovery| {
+            host_ticks_since(host_tick, recovery.claimed_tick(token.start_tick)) > allowance
+                && i64::from(newest_client_tick.wrapping_sub(token.start_tick) as i32) > allowance
+        })
+    }
+
+    /// A real command named `firing_slot` on `host_tick`. Every other slot's
+    /// weapon is holstered for that tick, so a recovery it still owes freezes,
+    /// as its own cooldown does. Without this, a switch back would find the
+    /// holstered time already counted and fire ahead of the host player.
+    ///
+    /// `fired_before(slot)`: a start from that slot is retained and already
+    /// due, so the client stamped it, wielding that weapon, before this
+    /// command. This command's later switch did not holster the weapon for
+    /// that start, so its recovery does not freeze; freezing it held the start
+    /// behind a backlog that had already switched away.
+    pub fn holster_others(
+        &mut self,
+        firing_slot: u8,
+        host_tick: u32,
+        fired_before: impl Fn(u8) -> bool,
+    ) {
+        for (slot, entry) in self.recoveries.iter_mut().enumerate() {
+            if slot != usize::from(firing_slot)
+                && !u8::try_from(slot).is_ok_and(&fired_before)
+                && let Some(recovery) = entry.as_mut()
+                && recovery.active_ticks(host_tick) < i64::from(recovery.recovery_ticks)
+            {
+                recovery.frozen_ticks = recovery.frozen_ticks.saturating_add(1);
+            }
+        }
     }
 
     /// Client half of the rule. Wrap-aware: a start at or before the recorded
@@ -225,6 +312,7 @@ impl ActivationCadence {
             client_tick: execution.client_tick.wrapping_add(offset),
             credit_tick: execution.credit_tick.wrapping_add(offset),
             recovery_ticks,
+            frozen_ticks: 0,
         });
     }
 
@@ -255,11 +343,15 @@ fn host_ticks_since(now: u32, earlier: u32) -> i64 {
     i64::from(now.wrapping_sub(earlier) as i32)
 }
 
-/// The client's claimed host tick, clamped to [host now, host now + tolerance].
+/// The client's claimed host tick, clamped to
+/// [host now − `CATCH_UP_ALLOWANCE_TICKS`, host now + `CADENCE_TOLERANCE_TICKS`].
 fn credit(previous_credit: u32, client_span: i32, host_tick: u32) -> u32 {
     let claimed = previous_credit.wrapping_add_signed(client_span);
-    let lead = host_ticks_since(claimed, host_tick);
-    host_tick.wrapping_add(lead.clamp(0, i64::from(CADENCE_TOLERANCE_TICKS)) as u32)
+    let lead = host_ticks_since(claimed, host_tick).clamp(
+        -i64::from(CATCH_UP_ALLOWANCE_TICKS),
+        i64::from(CADENCE_TOLERANCE_TICKS),
+    );
+    host_tick.wrapping_add_signed(lead as i32)
 }
 
 #[cfg(test)]
@@ -358,13 +450,53 @@ mod tests {
     }
 
     #[test]
-    fn cadence_late_start_never_credits_before_host_admission() {
+    fn cadence_backlog_within_the_allowance_drains_at_once_from_its_claims() {
         let mut cadence = ActivationCadence::default();
         assert!(admit(&mut cadence, 100, 0));
-        // Client spacing claims host tick 8, but the start reached the host at 40.
+        // A stall delivers starts claiming host ticks 8, 16, 24 and 32 together
+        // at host tick 30. Each is credited at its claim, so they leave at once
+        // rather than one per recovery behind the stall.
+        for start in [108, 116, 124, 132] {
+            assert!(admit(&mut cadence, start, 30), "start {start}");
+        }
+        assert!(
+            !admit(&mut cadence, 140, 30),
+            "a claim past host now + tolerance waits"
+        );
+        assert!(admit(&mut cadence, 140, 31));
+    }
+
+    #[test]
+    fn cadence_start_lagging_past_the_allowance_is_refused_only_behind_newer_input() {
+        let mut cadence = ActivationCadence::default();
+        assert!(admit(&mut cadence, 100, 0));
+        let late = token(108);
+        // Claims host tick 8: 30 ticks behind at host tick 38, 32 at host tick 40.
+        assert!(!cadence.lags_allowance(late, 0, 38, 200));
+        assert!(
+            cadence.lags_allowance(late, 0, 40, 200),
+            "a backlog start stuck behind newer input"
+        );
+        assert!(
+            !cadence.lags_allowance(late, 0, 40, 110),
+            "the whole stream trails its old credit: drift, not a backlog"
+        );
+        assert!(
+            !cadence.lags_allowance(late, 1, 40, 200),
+            "another slot has no claim to measure"
+        );
+        // Admitted anyway, it is credited no further back than the allowance:
+        // host tick 10, so the drain stops at the window bound.
         assert!(admit(&mut cadence, 108, 40));
-        assert!(!cadence.host_time_allows(0, 38));
-        assert!(cadence.host_time_allows(0, 39));
+        let mut start = 116;
+        while admit(&mut cadence, start, 40) {
+            start += R;
+        }
+        assert_eq!(
+            (start - 108) / R,
+            window_bound(0, R),
+            "admissions on host tick 40"
+        );
     }
 
     #[test]
@@ -425,8 +557,8 @@ mod tests {
         );
     }
 
-    /// Admissions per host window never exceed ⌊(W + tolerance) / R⌋ + 1,
-    /// whatever client ticks the client stamps.
+    /// Admissions per host window never exceed `window_bound`, whatever client
+    /// ticks the client stamps.
     #[test]
     fn cadence_stamping_client_cannot_exceed_window_bound() {
         for recovery_ticks in [1, 4, 8, 9, 30] {
@@ -458,9 +590,8 @@ mod tests {
                 for (first, &opened) in admitted.iter().enumerate() {
                     for (last, &closed) in admitted.iter().enumerate().skip(first) {
                         let window = closed - opened;
-                        let bound = (window + CADENCE_TOLERANCE_TICKS) / recovery_ticks + 1;
                         assert!(
-                            (last - first + 1) as u32 <= bound,
+                            (last - first + 1) as u32 <= window_bound(window, recovery_ticks),
                             "R {recovery_ticks}, stamp {stamp_step}: {} admissions in {window} host ticks",
                             last - first + 1
                         );
@@ -514,9 +645,8 @@ mod tests {
             for (first, &opened) in admitted.iter().enumerate() {
                 for (last, &closed) in admitted.iter().enumerate().skip(first) {
                     let window = closed - opened;
-                    let bound = (window + CADENCE_TOLERANCE_TICKS) / recovery_ticks + 1;
                     assert!(
-                        (last - first + 1) as u32 <= bound,
+                        (last - first + 1) as u32 <= window_bound(window, recovery_ticks),
                         "R {recovery_ticks}: {} admissions in {window} host ticks",
                         last - first + 1
                     );
@@ -586,8 +716,7 @@ mod tests {
                 for (last, &closed) in self.admitted.iter().enumerate().skip(first) {
                     let window = closed - opened;
                     assert!(
-                        (last - first + 1) as u32
-                            <= (window + CADENCE_TOLERANCE_TICKS) / recovery + 1,
+                        (last - first + 1) as u32 <= window_bound(window, recovery),
                         "{label}, R {recovery}: {} admissions in {window} host ticks",
                         last - first + 1
                     );
@@ -656,6 +785,116 @@ mod tests {
                 "a switch never loses a weapon's record; only its first start is unrecorded"
             );
         }
+    }
+
+    /// The host player's cooldown freezes while its weapon is holstered. A
+    /// stamping client switching A→B→A must not find that time already counted:
+    /// its first A start after the switch waits for the frozen remainder, less
+    /// only the tolerance every cadence path grants.
+    #[test]
+    fn cadence_switch_back_under_stamping_cannot_beat_the_host_players_frozen_remainder() {
+        const LONG: u32 = 30;
+        let mut cadence = ActivationCadence::default();
+        let mut rifle = HostWeapon::new(9, 0, LONG);
+        let mut stamp = 1000u32;
+        assert_eq!(
+            rifle.attempt(&mut cadence, stamp, ActivationLane::Primary, 0),
+            Some(CadenceVerdict::Unrecorded)
+        );
+        // Wielded for two host ticks, then holstered while the client fires slot 1.
+        let (holstered_at, back_at) = (3u32, 43u32);
+        for host_tick in 1..back_at {
+            cadence.holster_others(u8::from(host_tick >= holstered_at), host_tick, |_| false);
+        }
+        // The host player's cooldown counts wielded ticks only.
+        let host_player_earliest = LONG + (back_at - holstered_at);
+        let mut first = None;
+        for host_tick in back_at..back_at + LONG {
+            cadence.holster_others(0, host_tick, |_| false);
+            stamp = stamp.wrapping_add(1000);
+            if first.is_none()
+                && rifle
+                    .attempt(&mut cadence, stamp, ActivationLane::Primary, host_tick)
+                    .is_some()
+            {
+                first = Some(host_tick);
+            }
+        }
+        assert_eq!(
+            first,
+            Some(host_player_earliest - CADENCE_TOLERANCE_TICKS),
+            "counting the holstered ticks would have admitted it on host tick {back_at}"
+        );
+    }
+
+    // Regression: a backlog's commands after a weapon switch resolved while the
+    // earlier weapon's start still waited in the lane. Naming the new slot, they
+    // froze that weapon's recovery under its own start, which then waited until
+    // its claim lagged past the allowance and was refused.
+    #[test]
+    fn cadence_retained_start_is_not_frozen_by_a_switch_stamped_after_it() {
+        use super::super::{HostCommandQueues, neutral_sim_command};
+        const CLIENT: u64 = 7;
+        const LONG: u32 = 12;
+        // The client fires slot 1 at ticks 2 and 14, one recovery apart, then
+        // switches to slot 0 from tick 15.
+        let stamped = |tick: u32| {
+            let mut command = crate::netcode::wire_convert::sim_command_to_input(
+                &neutral_sim_command(0.0),
+                tick,
+                0.0,
+            );
+            command.movement.firing_slot = u8::from(tick <= 14);
+            if tick == 2 || tick == 14 {
+                command.activation.initiation = Some(postretro_net::wire::WireActivationToken {
+                    start_tick: tick,
+                    lane: 0,
+                });
+            }
+            command
+        };
+        let mut queues = HostCommandQueues::new();
+        for tick in 0..2 {
+            assert!(queues.ingest(CLIENT, &stamped(tick)));
+        }
+        let mut first = None;
+        for tick in 2..5 {
+            assert!(queues.ingest(CLIENT, &stamped(tick)));
+            let resolved = queues.resolve_tick(CLIENT).unwrap();
+            first = first.or(resolved.command.activation.initiation);
+        }
+        let first = first.expect("the first start is delivered on its own tick");
+        queues.activation_recovery_began(CLIENT, first, weapon(), LONG, false);
+        // A stall delivers the rest at once; the trim keeps only commands that
+        // already name slot 0.
+        for tick in 5..=40 {
+            assert!(queues.ingest(CLIENT, &stamped(tick)));
+        }
+        let resolved: Vec<_> = (41..47)
+            .map(|tick| {
+                queues.ingest(CLIENT, &stamped(tick));
+                queues.resolve_tick(CLIENT).unwrap()
+            })
+            .collect();
+        assert!(resolved[0].client_tick > 14, "the backlog takes the trim");
+        assert!(resolved.iter().all(|r| r.rejected_activation.is_none()));
+        let delivered = resolved
+            .iter()
+            .position(|r| {
+                r.command
+                    .activation
+                    .initiation
+                    .is_some_and(|token| token.start_tick == 14)
+            })
+            .expect("the slot 1 start is delivered");
+        assert_eq!(resolved[delivered].command.firing_slot, 1);
+        // Host time since the first start's credit covers the recovery, less the
+        // tolerance, on the third host tick after it.
+        assert_eq!(
+            delivered,
+            (LONG - CADENCE_TOLERANCE_TICKS - 1) as usize,
+            "held only by host time, never by the later switch"
+        );
     }
 
     #[test]

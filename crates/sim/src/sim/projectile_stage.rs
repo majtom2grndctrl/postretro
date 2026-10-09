@@ -1529,7 +1529,6 @@ mod tests {
         assert!(projectile_impact_emissions(&[]).is_empty());
     }
 
-    // Pin P14: the projectile despawns on the tick it hits; its contact survives.
     #[test]
     fn projectile_dispatch_point_is_the_contact_point_for_direct_hits_and_none_for_splash() {
         for splash in [false, true] {
@@ -1586,6 +1585,7 @@ mod tests {
         }
     }
 
+    // Pin P14: the projectile despawns on the tick it hits; its contact survives.
     #[test]
     fn projectile_despawned_on_hit_reports_its_full_contact_and_source() {
         let registry = Rc::new(RefCell::new(EntityRegistry::new()));

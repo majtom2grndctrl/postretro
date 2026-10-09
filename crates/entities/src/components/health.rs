@@ -65,8 +65,8 @@ pub struct DamageContext {
     /// is evaluator-only data, never an IR input or command-target token.
     pub producer: DamageProducer,
     /// World-space contact point (engine coordinates, no offset applied) when
-    /// the producer has one. Splash, script, crush and AI damage leave it
-    /// `None`. Evaluator-only data, like `producer`.
+    /// the producer has one. Splash, script, crush and AI contact attacks leave
+    /// it `None`. Evaluator-only data, like `producer`.
     pub point: Option<Vec3>,
 }
 

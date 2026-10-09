@@ -28,7 +28,7 @@ local resupply = Postretro.defineReaction("closet.resupply", Postretro.players()
 
 function setupLevel(_ctx)
   local door = Postretro.getMapEntities("mover", { tag = "closet_door" }) -- members, fixed at install
-  local closets = Postretro.getMapEntities("spawner", { tag = "closet_spawner" }) -- spawned_tags "closet"
+  local closets = Postretro.getMapEntities("spawner", { tag = "closet_spawner" }) -- spawned_tags "closet enemy"
   local plate = Postretro.getMapEntities("trigger", { tag = "closet_reveal_plate" })
   local alarmLights = Postretro.getMapEntities("light", { tag = "closet_alarm" })
   table.sort(alarmLights, function(a, b)

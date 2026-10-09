@@ -96,6 +96,20 @@ class DoorAndClosetAuthoringTests(unittest.TestCase):
         self.assertIn('"classname" "reference_enemy"', enemy)
         self.assertIn('"_tags" "enemy"', enemy)
 
+    def test_every_emitted_enemy_and_spawner_carries_the_enemy_tag(self):
+        entities = GENERATOR.generate(
+            3, 3, 1, 1, 0.15, 0.5, "none", 1, 0, 0.2, 0.5, 1, True,
+            0, 4, 0, 0, "touch", 0, 1, 0.0,
+        )[3]
+        enemies = [e for e in entities if '"classname" "reference_enemy"' in e]
+        spawners = [e for e in entities if '"classname" "entity_spawner"' in e]
+        self.assertTrue(enemies)
+        self.assertTrue(spawners)
+        for enemy in enemies:
+            self.assertIn('"_tags" "enemy"', enemy)
+        for spawner in spawners:
+            self.assertIn('"spawned_tags" "enemy"', spawner)
+
     def test_closets_do_not_require_other_gameplay_content(self):
         result = GENERATOR.generate(
             3, 3, 1, 1, 0.15, 0.5, "none", 1, 0, 0.2, 0.5, 1, True,

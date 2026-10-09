@@ -516,6 +516,14 @@ fn client_weapon_outcomes_require_token_host_identity_and_captured_instance() {
         weapon: NetworkId(991),
         recovery_ticks: 3,
     };
+    // A's own countdown outlasts the host's remaining recovery, which may only
+    // shorten it; the 50 ms below therefore shows the outcome reached A.
+    if let postretro_entities::ComponentValue::Weapon(component) = registry
+        .get_component_value_mut(weapon, postretro_entities::ComponentKind::Weapon)
+        .unwrap()
+    {
+        component.cooldown_remaining_ms = 400.0;
+    }
     let effect = frame
         .records
         .outcome(&mut registry, old_cancel)

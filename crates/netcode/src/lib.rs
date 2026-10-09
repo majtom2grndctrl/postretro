@@ -103,8 +103,8 @@ mod snapshot_regression_harness_test;
 
 pub use client::{ClientPresentationInputs, ClientReplication, MoverCorrection};
 pub use command_queue::{
-    HostCommandQueues, MovementOwners, ResolutionSource, ResolvedPawnCommand, WeaponOwners,
-    active_wieldable_for_pawn, host_resolve_remote_commands,
+    CadenceVerdict, HostCommandQueues, MovementOwners, ResolutionSource, ResolvedPawnCommand,
+    WeaponOwners, active_wieldable_for_pawn, host_resolve_remote_commands,
 };
 pub use endpoint::{
     ClientApplyFrameOutcome, ClientArmedLocalPawn, ClientTimeSync, CurrentSwitchResolution,

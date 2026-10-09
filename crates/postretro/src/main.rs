@@ -5016,7 +5016,7 @@ impl App {
                     resolved,
                 );
                 host_activations::guard_initiation(
-                    &registry,
+                    &mut registry,
                     allocator,
                     command_queues,
                     server,

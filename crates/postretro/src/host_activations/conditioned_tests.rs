@@ -788,7 +788,7 @@ impl Fixture {
                 &resolved,
             );
             guard_initiation(
-                &registry,
+                &mut registry,
                 &mut self.allocator,
                 &mut self.queues,
                 &mut self.server,
@@ -1390,19 +1390,19 @@ fn conditioned_activation_release_before_admission_and_same_tick_early_release_a
 #[test]
 fn conditioned_activation_trimmed_start_stale_projection_and_named_hold_restart() {
     let mut trimmed = Fixture::new(LinkConfig::perfect(), descriptor(false, true, 1, "hold"));
-    let discarded = token(1, ActivationLane::Secondary);
+    let retained = token(1, ActivationLane::Secondary);
     trimmed
         .frame
         .records
-        .request(discarded, trimmed.local_actors.weapon);
+        .request(retained, trimmed.local_actors.weapon);
     for tick in 1..=12 {
         let mut command = neutral();
         if tick == 1 {
-            command.activation.initiation = Some(discarded);
+            command.activation.initiation = Some(retained);
         }
         if tick == 3 {
             command.activation.release = Some(ActivationRelease {
-                token: discarded,
+                token: retained,
                 release_tick: 3,
             });
         }
@@ -1411,12 +1411,25 @@ fn conditioned_activation_trimmed_start_stale_projection_and_named_hold_restart(
     trimmed.host_tick();
     trimmed.idle(13, 16);
     trimmed.assert_no_host_shot();
+    assert_eq!(
+        trimmed.accepted(retained),
+        1,
+        "the trimmed start survives in its retained lane"
+    );
+    assert!(
+        trimmed.cancelled(retained),
+        "its retained early release cancels without debit"
+    );
     let mut retry = neutral();
-    retry.activation.initiation = Some(discarded);
-    trimmed.send_input(discarded.start_tick, &retry);
+    retry.activation.initiation = Some(retained);
+    trimmed.send_input(retained.start_tick, &retry);
     trimmed.idle(30, 32);
     trimmed.assert_no_host_shot();
-    assert_eq!(trimmed.accepted(discarded), 0);
+    assert_eq!(
+        trimmed.accepted(retained),
+        1,
+        "a stale retransmit cannot admit the settled start again"
+    );
 
     let mut fixture = Fixture::new(mandated_link(), descriptor(true, false, 1, "hold"));
     // A stale empty projection suppresses cosmetics, while host ammo permits a
@@ -2124,4 +2137,182 @@ fn conditioned_steady_hold_reference_cell_drain_refuses_only_for_resource() {
         "a full cell pays for the first twenty bolts"
     );
     assert_eq!(report.bolts_removed_early, report.fire_denied);
+}
+
+/// Three-round hitscan burst: shots 50 ms apart, then the authored recovery.
+fn burst_rifle(trigger: &str, recovery_ms: f32) -> WeaponDescriptor {
+    serde_json::from_value::<WeaponDescriptor>(json!({
+        "damage": 10, "range": 96, "resolution": "hitscan",
+        "primary": { "trigger": trigger, "recoveryMs": recovery_ms, "steps": [
+            { "kind": "shot" }, { "kind": "wait", "durationMs": 50 },
+            { "kind": "shot" }, { "kind": "wait", "durationMs": 50 },
+            { "kind": "shot" },
+        ] },
+        "resource": { "kind": "ammo", "type": "rounds", "magazine": 100_000, "reserve": 0 },
+    }))
+    .unwrap()
+    .validate()
+    .unwrap()
+}
+
+/// Reference rocket cadence (`reference_rocket` primary: press, 750 ms recovery)
+/// without splash, with an ample magazine so no reload interrupts the stream.
+fn rocket_launcher() -> WeaponDescriptor {
+    serde_json::from_value::<WeaponDescriptor>(json!({
+        "damage": 36, "range": 128, "resolution": "projectile",
+        "primary": { "trigger": "press", "recoveryMs": 750, "steps": [{ "kind": "shot" }] },
+        "resource": { "kind": "ammo", "type": "rockets", "magazine": 100_000, "reserve": 0 },
+        "projectile": { "speed": 30, "radius": 0.25, "lifetimeMs": 4000,
+            "visual": { "body": { "kind": "sprite", "sprite": "sprites/test.png", "size": 1.0 } } },
+    }))
+    .unwrap()
+    .validate()
+    .unwrap()
+}
+
+// Regression: a burst restart reaching the host while its previous burst still
+// executed there was refused as a concurrent activation.
+#[test]
+fn conditioned_burst_hold_restarts_are_never_refused_under_loss_and_hitch() {
+    let mut failures = Vec::new();
+    for (label, link, hitch) in [
+        ("clean", LinkConfig::perfect(), None),
+        ("mandated", mandated_link(), None),
+        ("mandated-seed-a", mandated_link_seeded(0x13c6_ee670), None),
+        ("clean+host-hitch", LinkConfig::perfect(), Some((60, 12))),
+    ] {
+        let (_, report) =
+            run_steady_hold_with_host_hitch(link, burst_rifle("hold", 130.0), false, 360, hitch);
+        eprintln!("burst {}", summarize(label, &report));
+        if !report.initiation_rejected.is_empty()
+            || !report.fire_denied.is_empty()
+            || !report.ghosts.is_empty()
+        {
+            failures.push(summarize(label, &report));
+        }
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+// Regression: rocket presses at the authored rate lost their in-flight rocket
+// to a refused start after a stalled input stream.
+#[test]
+fn conditioned_rocket_presses_at_recovery_rate_keep_every_rocket_under_loss_and_hitch() {
+    let mut failures = Vec::new();
+    for (label, link, hitch) in [
+        ("clean", LinkConfig::perfect(), None),
+        ("mandated", mandated_link(), None),
+        ("mandated-seed-a", mandated_link_seeded(0x13c6_ee670), None),
+        ("clean+host-hitch", LinkConfig::perfect(), Some((45, 12))),
+    ] {
+        // 45 ticks covers the 750 ms recovery.
+        let (_, report) = run_stream(link, rocket_launcher(), true, 360, hitch, Some(45));
+        eprintln!("rocket {}", summarize(label, &report));
+        // Every press lands at the authored rate, so every press fires.
+        if report.predicted.len() != 8
+            || !report.initiation_rejected.is_empty()
+            || !report.bolts_removed_early.is_empty()
+        {
+            failures.push(summarize(label, &report));
+        }
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+/// Shots the listen host's own player gets from the same weapon over `ticks`
+/// fixed ticks of held primary: the shared machine with controller starts.
+fn host_player_shots(descriptor: &WeaponDescriptor, ticks: u32) -> usize {
+    let mut component =
+        WeaponComponent::from_descriptor_with_canonical(descriptor, Some("host-player"));
+    (0..ticks)
+        .filter(|&tick| {
+            weapon::execution::advance_weapon_activation(
+                &mut component,
+                weapon::execution::ActivationCommand {
+                    tick,
+                    pawn: 1,
+                    real_command: true,
+                    input: ActivationInput::default(),
+                    controller_starts: true,
+                    primary: weapon::FireButtonState {
+                        pressed: tick == 0,
+                        active: true,
+                    },
+                    secondary: weapon::FireButtonState {
+                        pressed: false,
+                        active: false,
+                    },
+                },
+                DT * 1000.0,
+                false,
+                true,
+            )
+            .shot
+            .is_some()
+        })
+        .count()
+}
+
+// Regression: an outcome reset the client's recovery to the host's remaining
+// value without transit, so a clean-link client fired every ~10 ticks, not 8.
+#[test]
+fn conditioned_clean_link_hold_at_authored_rate_matches_the_host_player_shot_count() {
+    let rifle = plasma_rifle(1.0e6);
+    let host_player = host_player_shots(&rifle, 360);
+    assert_eq!(
+        host_player, 45,
+        "130 ms recovery is 8 ticks: 45 shots in 6 s"
+    );
+    let (_, report) = run_steady_hold(LinkConfig::perfect(), rifle, true, 360);
+    eprintln!("{}", summarize("clean", &report));
+    assert_eq!(report.predicted.len(), host_player);
+    assert_eq!(report.authorized, report.predicted);
+    assert!(report.initiation_rejected.is_empty() && report.fire_denied.is_empty());
+}
+
+// A client that stamps its starts one recovery apart in client ticks, while its
+// clock runs many times faster than the host's, gains no fire rate: authorized
+// shots over any host window stay within ⌊(W + 9) / R⌋ + 1.
+#[test]
+fn conditioned_tick_stamping_client_cannot_exceed_the_host_cadence_bound() {
+    const RECOVERY_TICKS: u32 = 8;
+    const TOLERANCE_TICKS: u32 = 9;
+    for commands_per_host_tick in [8u32, 24] {
+        let mut fixture = Fixture::new(LinkConfig::perfect(), hitscan_rifle("press", 130.0));
+        let mut client_tick = 1000u32;
+        for _ in 0..360 {
+            for _ in 0..commands_per_host_tick {
+                let mut command = neutral();
+                if client_tick.is_multiple_of(RECOVERY_TICKS) {
+                    command = held(ActivationLane::Primary, true);
+                    command.activation.initiation =
+                        Some(token(client_tick, ActivationLane::Primary));
+                }
+                fixture.send_input(client_tick, &command);
+                client_tick += 1;
+            }
+            fixture.host_tick();
+        }
+        let fire_ticks: Vec<u32> = fixture
+            .authorized
+            .iter()
+            .map(|shot| shot.fire_tick)
+            .collect();
+        eprintln!(
+            "{commands_per_host_tick} commands per host tick: {} authorized over 360 host ticks",
+            fire_ticks.len()
+        );
+        assert!(!fire_ticks.is_empty());
+        assert!(fire_ticks.len() as u32 <= (359 + TOLERANCE_TICKS) / RECOVERY_TICKS + 1);
+        for (first, &opened) in fire_ticks.iter().enumerate() {
+            for (last, &closed) in fire_ticks.iter().enumerate().skip(first) {
+                let shots = (last - first + 1) as u32;
+                let window = closed - opened;
+                assert!(
+                    shots <= (window + TOLERANCE_TICKS) / RECOVERY_TICKS + 1,
+                    "{shots} shots in {window} host ticks"
+                );
+            }
+        }
+    }
 }

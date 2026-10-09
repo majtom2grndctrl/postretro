@@ -2,7 +2,7 @@
 // Per-client queues hold sanitized inbound full remote commands keyed by client id; the
 // per-pawn resolved cursor (`last_processed_client_tick`) drives a hold-then-neutral gap
 // policy so a missing command tick never stalls locomotion.
-// See: context/lib/networking.md (gap policy, bounded playout, reload edge lane).
+// See: context/lib/networking.md (gap policy, bounded playout, retained edge lanes).
 //
 // Freeze/trim depth-ordering — the one coupling worth stating in-file, because the two
 // depth-keyed mechanisms live in the same function and must not fight. The gap-policy
@@ -29,6 +29,11 @@ use crate::netcode::wire_convert::{input_command_to_sim, sanitize_input_command}
 use crate::sim::SimCommand;
 use postretro_entities::components::inventory::Inventory;
 use postretro_entities::{EntityId, EntityRegistry};
+
+mod activation_admission;
+mod activation_cadence;
+mod press_edges;
+pub use activation_cadence::CadenceVerdict;
 
 /// Host-side movement-authority owner map: `EntityId -> owning client id`. The
 /// engine-side metadata snapshot production stamps onto each owned pawn's
@@ -168,6 +173,9 @@ const CLIENT_TICK_HALF_RANGE: u32 = 1 << 31;
 #[derive(Debug, Default)]
 struct ClientCommandState {
     activation_edges: crate::activation_edges::ActivationEdges,
+    cadence: activation_cadence::ActivationCadence,
+    /// Use and drop rising edges, retained like reload presses.
+    press_edges: press_edges::PressEdges,
     host_tick: u32,
     /// Pending sanitized commands, kept sorted-ascending and deduplicated by
     /// `client_tick`. Normally small (steady state holds ~[`INPUT_BUFFER_TARGET`]
@@ -282,10 +290,8 @@ impl ClientCommandState {
         // bootstrap tick could poison the independent reload-edge ordering state even
         // though it never entered `pending`.
         self.observe_reload_level(&cmd);
-        self.activation_edges.observe(
-            crate::wire_convert::activation_input_from_wire(cmd.activation),
-            self.host_tick,
-        );
+        self.press_edges.observe(&cmd);
+        self.observe_activation(&cmd);
 
         // Stale: a command at or below the resolved cursor describes a tick the host
         // already settled authoritatively. Drop it. Wrap-aware `<=` (serial-number
@@ -401,8 +407,8 @@ pub struct ResolvedPawnCommand {
     /// consumes it locally; snapshot production reads the same queue state.
     pub aim_pitch: f32,
     pub client_tick: u32,
-    /// A real initiation refused by retention's replay watermark. The owning weapon
-    /// machine must publish its correlated rejection rather than execute the request.
+    /// A retained initiation that expired or was settled while retained. The owning
+    /// weapon machine must publish its correlated rejection rather than execute it.
     pub rejected_activation: Option<postretro_foundation::ActivationToken>,
     #[allow(dead_code)]
     pub source: ResolutionSource,
@@ -507,10 +513,10 @@ impl HostCommandQueues {
         // up faster than the +1-per-tick cursor consumes them — a startup-handshake or
         // hitch backlog. Drop all but the serially newest INPUT_BUFFER_TARGET so the resolved
         // cursor never sits more than a small bounded buffer behind the newest received
-        // command. Reload edges from the discarded prefix remain in their independent
-        // recovery lane. Wrap-aware throughout: the new oldest's `client_tick - 1`
-        // (serial arithmetic) is the cursor the normal exact-tick path then consumes as
-        // `Real`.
+        // command. Reload, use, drop, and activation edges from the discarded prefix
+        // remain in their independent recovery lanes. Wrap-aware throughout: the new
+        // oldest's `client_tick - 1` (serial arithmetic) is the cursor the normal
+        // exact-tick path then consumes as `Real`.
         if state.pending.len() > INPUT_BUFFER_MAX {
             diag_trims = 1;
             let (_, newest_index) = state
@@ -580,13 +586,6 @@ impl HostCommandQueues {
             && let Some(cmd) = state.take_exact(expected)
         {
             let mut sim = input_command_to_sim(&cmd);
-            let rejected_activation = sim
-                .activation
-                .initiation
-                .filter(|token| !state.activation_edges.admit(*token));
-            if rejected_activation.is_some() {
-                sim.activation.initiation = None;
-            }
             state.latest_aim_pitch = Some(cmd.movement.aim_pitch);
             state.latest_facing_yaw = Some(cmd.movement.facing_yaw);
             state.last_resolved = Some(cmd);
@@ -594,9 +593,9 @@ impl HostCommandQueues {
             state.resolved_cursor = Some(expected);
             state.drop_stale(expected);
             state.preserve_due_reload_press(expected, &mut sim);
-            state
-                .activation_edges
-                .deliver(&mut sim.activation, state.host_tick, live_activation);
+            state.press_edges.deliver(expected, &mut sim);
+            let rejected_activation = state.deliver_due_start(expected, live_activation, &mut sim);
+            state.deliver_edges(&mut sim.activation, live_activation);
             let diag_lead = state
                 .latest_observed_reload
                 .map(|(newest, _)| expected.wrapping_sub(newest) as i32);
@@ -645,9 +644,7 @@ impl HostCommandQueues {
                     ResolutionSource::Neutral,
                 ),
             };
-            state
-                .activation_edges
-                .deliver(&mut sim.activation, state.host_tick, live_activation);
+            state.deliver_edges(&mut sim.activation, live_activation);
             let diag_lead = state
                 .latest_observed_reload
                 .map(|(newest, _)| expected.wrapping_sub(newest) as i32);
@@ -705,9 +702,7 @@ impl HostCommandQueues {
                     .expect("frontier freeze requires a command to hold"),
             );
             let source = ResolutionSource::Held;
-            state
-                .activation_edges
-                .deliver(&mut sim.activation, state.host_tick, live_activation);
+            state.deliver_edges(&mut sim.activation, live_activation);
             let diag_lead = state
                 .latest_observed_reload
                 .map(|(newest, _)| expected.wrapping_sub(newest) as i32);
@@ -769,9 +764,8 @@ impl HostCommandQueues {
         // deep-buffer yield, `pending` still holds commands, so this stays false.
         state.building_playout = state.pending.is_empty();
         state.preserve_due_reload_press(expected, &mut sim);
-        state
-            .activation_edges
-            .deliver(&mut sim.activation, state.host_tick, live_activation);
+        state.press_edges.deliver(expected, &mut sim);
+        state.deliver_edges(&mut sim.activation, live_activation);
         let diag_lead = state
             .latest_observed_reload
             .map(|(newest, _)| expected.wrapping_sub(newest) as i32);
@@ -894,7 +888,7 @@ fn neutral_sim_command(facing_yaw: f32) -> SimCommand {
 
 /// Carry movement and reload across a packet gap without inventing an activation
 /// start or use/drop press. Committed shots advance on their own fixed-tick clock;
-/// retained correlated release/cancel edges are delivered separately. Reload's
+/// retained starts and release/cancel edges are delivered separately. Reload's
 /// weapon-owned press latch prevents the carried level from restarting a reload.
 fn held_gap_sim_command(prev: &InputCommand) -> SimCommand {
     let mut sim = input_command_to_sim(prev);

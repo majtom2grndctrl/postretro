@@ -1,4 +1,5 @@
-//! Correlated release/cancel recovery beside movement playout.
+//! Correlated start/release/cancel recovery beside movement playout.
+use crate::prediction::client_tick_le;
 use postretro_foundation::{ActivationInput, ActivationRelease, ActivationToken};
 use std::collections::VecDeque;
 
@@ -14,14 +15,81 @@ struct RetainedEdge {
     delivered: bool,
     cancel_delivered: bool,
 }
+/// A client-named start retained beside movement playout, so a catch-up trim or
+/// stale-drop of its carrying command cannot erase it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RetainedStart {
+    pub token: ActivationToken,
+    /// Client tick of the carrying command. The start is due once the resolved
+    /// cursor reaches it, so it never fires ahead of its own aim.
+    pub command_tick: u32,
+    /// Firing slot the carrying command named.
+    pub firing_slot: u8,
+    /// Host tick at which playout first found it due. Expiry runs from here, so
+    /// a start playout has not reached yet is never refused for waiting.
+    due_since: Option<u32>,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DueStart {
+    Start(RetainedStart),
+    /// Two seconds passed without admission; the caller publishes the refusal.
+    Expired(ActivationToken),
+}
 #[derive(Debug, Default)]
 pub(crate) struct ActivationEdges {
     edges: VecDeque<RetainedEdge>,
+    starts: VecDeque<RetainedStart>,
     admitted: VecDeque<ActivationToken>,
     overflow_cancel: Option<ActivationToken>,
     settled_start: [Option<u32>; 2],
 }
 impl ActivationEdges {
+    /// Retain a start in intake order. Duplicates, settled starts, and starts past
+    /// the per-client bound are not retained, so playout never delivers them.
+    pub fn observe_start(&mut self, token: ActivationToken, command_tick: u32, firing_slot: u8) {
+        if self.is_settled(token)
+            || self.admitted.contains(&token)
+            || self.starts.iter().any(|start| start.token == token)
+            || self.starts.len() >= MAX_RETAINED_ACTIVATION_EDGES
+        {
+            return;
+        }
+        self.starts.push_back(RetainedStart {
+            token,
+            command_tick,
+            firing_slot,
+            due_since: None,
+        });
+    }
+    /// The oldest retained start once its command tick is resolved and no
+    /// execution is live. Starts leave strictly in intake order, so the ledger's
+    /// monotonic settled-start watermark never passes a start still retained.
+    /// A due start not admitted within two seconds expires.
+    pub fn due_start(&mut self, resolved_tick: u32, tick: u32, live: bool) -> Option<DueStart> {
+        let front = self.starts.front_mut()?;
+        if !client_tick_le(front.command_tick, resolved_tick) {
+            return None;
+        }
+        let due_since = *front.due_since.get_or_insert(tick);
+        if tick.wrapping_sub(due_since) >= RETENTION_TICKS {
+            let token = front.token;
+            self.starts.pop_front();
+            return Some(DueStart::Expired(token));
+        }
+        (!live).then_some(DueStart::Start(*front))
+    }
+    /// Remove the delivered front start and open its edge correlation. False
+    /// when retention settled it meanwhile; the caller refuses it.
+    pub fn take_start(&mut self, token: ActivationToken) -> bool {
+        if self
+            .starts
+            .front()
+            .is_some_and(|start| start.token == token)
+        {
+            self.starts.pop_front();
+        }
+        self.admit(token)
+    }
     pub fn observe(&mut self, input: ActivationInput, tick: u32) {
         self.prune(tick);
         if let Some(release) = input.release {
@@ -133,6 +201,7 @@ impl ActivationEdges {
     pub fn terminal(&mut self, token: ActivationToken) {
         self.admitted.retain(|admitted| *admitted != token);
         self.edges.retain(|edge| edge.token != token);
+        self.starts.retain(|start| start.token != token);
         if self.overflow_cancel == Some(token) {
             self.overflow_cancel = None;
         }
@@ -185,6 +254,37 @@ mod tests {
             start_tick: tick,
             lane: ActivationLane::Secondary,
         }
+    }
+    #[test]
+    fn activation_start_lane_ignores_duplicates_settled_starts_and_overflow() {
+        let mut edges = ActivationEdges::default();
+        edges.observe_start(token(4), 4, 0);
+        edges.observe_start(token(4), 9, 0);
+        assert_eq!(edges.starts.len(), 1, "a duplicate start is retained once");
+        assert_eq!(
+            edges.due_start(3, 0, false),
+            None,
+            "not due before its tick"
+        );
+        let Some(DueStart::Start(start)) = edges.due_start(4, 0, false) else {
+            panic!("a resolved start is due");
+        };
+        assert!(edges.take_start(start.token));
+        edges.terminal(start.token);
+        edges.observe_start(token(4), 4, 0);
+        edges.observe_start(token(3), 3, 0);
+        assert!(
+            edges.starts.is_empty(),
+            "settled starts are never retained again"
+        );
+        for tick in 5..5 + MAX_RETAINED_ACTIVATION_EDGES as u32 + 1 {
+            edges.observe_start(token(tick), tick, 0);
+        }
+        assert_eq!(edges.starts.len(), MAX_RETAINED_ACTIVATION_EDGES);
+        assert!(
+            edges.starts.iter().all(|start| start.token != token(69)),
+            "overflow drops the newest start"
+        );
     }
     #[test]
     fn activation_edge_release_then_cancel_delivers_both_once() {

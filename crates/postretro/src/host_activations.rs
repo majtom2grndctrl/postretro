@@ -94,10 +94,10 @@ pub(super) fn observe_lifecycle(
     );
 }
 
-/// Read-only replay/concurrency admission precedes the authoritative resource
+/// Replay, concurrency, and cadence admission precede the authoritative resource
 /// debit. The ledger is populated only by an actual successful machine start.
 pub(super) fn guard_initiation(
-    registry: &EntityRegistry,
+    registry: &mut EntityRegistry,
     allocator: &mut netcode::NetworkIdAllocator,
     queues: &mut netcode::HostCommandQueues,
     server: &mut NetServer,
@@ -122,10 +122,17 @@ pub(super) fn guard_initiation(
             .activations
             .can_accept(command.owner_client_id, id, command.fire_tick)
     });
+    let cadence = match command.weapon {
+        Some(weapon) if command.rejected_activation.is_none() => {
+            queues.activation_cadence(command.owner_client_id, weapon, token.start_tick)
+        }
+        _ => netcode::CadenceVerdict::Unrecorded,
+    };
     if command.rejected_activation.is_some()
         || !command.real_command
         || !weapon_available
         || !ledger_allows
+        || cadence == netcode::CadenceVerdict::Refused
     {
         command.command.activation.initiation = None;
         command.rejected_activation = Some(token);
@@ -144,6 +151,15 @@ pub(super) fn guard_initiation(
             );
             command.rejected_activation = None;
         }
+    } else if cadence == netcode::CadenceVerdict::Eligible
+        && let Some(weapon) = command.weapon
+        && let Ok(ComponentValue::Weapon(component)) =
+            registry.get_component_value_mut(weapon, ComponentKind::Weapon)
+    {
+        // Client spacing already covers the recovery this weapon's own execution
+        // began. The host countdown started when the host fired, so it would
+        // refuse a start that playout delivered compressed.
+        component.cooldown_remaining_ms = 0.0;
     }
     // Ensure private weapon instances have a stable owner-outcome identity
     // before any shot is debited or presentation is sent.
@@ -263,6 +279,19 @@ fn record_activation_progress(
                 },
             ));
         }
+    }
+    if let Some(shot) = advance.attempted
+        && advance
+            .authorization
+            .is_some_and(|verdict| verdict != crate::weapon::WeaponFireAuthorization::Rejected)
+    {
+        // The machine restarts recovery for every shot it does not reject.
+        queues.activation_recovery_began(
+            client,
+            shot.activation().token,
+            progress.weapon,
+            recovery_ticks,
+        );
     }
     if let Some(shot) = advance.attempted {
         let authorized = advance.shot.is_some();

@@ -325,11 +325,11 @@ fn activation_competing_release_delivers_live_cancel_before_due_shot() {
     assert!(queues.ingest(7, &command(competing.start_tick, input)));
     let mut resolved = queues.resolve_tick(7).unwrap();
     assert_eq!(resolved.source, command_queue::ResolutionSource::Real);
-    assert_eq!(resolved.command.activation.initiation, Some(competing));
-    assert_eq!(resolved.command.activation.release, input.release);
+    // B waits in the retained lane while A is live, so neither B's start nor its
+    // release competes; A's correlated cancellation reaches A in this same tick.
+    assert!(resolved.command.activation.initiation.is_none());
+    assert!(resolved.command.activation.release.is_none());
     assert_eq!(resolved.command.activation.cancel, Some(live));
-    // Command admission precedes the host's concurrency guard. B is refused while
-    // the correlated cancellation must still reach A in this same fixed tick.
     assert!(!queues.activations.can_accept(
         7,
         postretro_foundation::ActivationId {
@@ -393,9 +393,9 @@ fn activation_competing_cancel_cannot_delay_live_cancel_before_due_shot() {
     ));
     let mut resolved = queues.resolve_tick(7).unwrap();
     assert_eq!(resolved.source, command_queue::ResolutionSource::Real);
-    assert_eq!(
-        resolved.command.activation.initiation,
-        Some(competing.token)
+    assert!(
+        resolved.command.activation.initiation.is_none(),
+        "B waits in the retained lane while A is live"
     );
     assert_eq!(resolved.command.activation.cancel, Some(live.token));
     assert!(!queues.activations.can_accept(7, competing, 102));
@@ -563,26 +563,130 @@ fn activation_live_overflow_cancel_precedes_competing_admitted_cancel() {
     );
 }
 
+// Regression: a start inside the catch-up trimmed prefix vanished, so its later
+// HIT was denied as never fired.
 #[test]
-fn activation_backlog_discarded_start_never_creates_deferred_execution() {
+fn activation_backlog_trimmed_start_is_retained_and_delivered_once_with_its_release() {
     let mut queues = HostCommandQueues::new();
     let start = token(1);
+    let release = ActivationRelease {
+        token: start,
+        release_tick: 3,
+    };
     for tick in 1..=12 {
         let input = ActivationInput {
             initiation: (tick == 1).then_some(start),
-            release: (tick == 3).then_some(ActivationRelease {
-                token: start,
-                release_tick: 3,
-            }),
+            release: (tick == 3).then_some(release),
             cancel: None,
         };
         assert!(queues.ingest(7, &command(tick, input)));
     }
+    let first = queues.resolve_tick(7).unwrap();
+    assert_eq!(
+        first.client_tick, 11,
+        "movement playout still trims to the newest commands"
+    );
+    assert_eq!(first.command.activation.initiation, Some(start));
+    assert_eq!(
+        first.command.activation.release,
+        Some(release),
+        "the retained release follows its start on the same resolution"
+    );
+    // A stale retransmit of the delivered start cannot deliver it again.
+    queues.ingest(
+        7,
+        &command(
+            1,
+            ActivationInput {
+                initiation: Some(start),
+                ..ActivationInput::default()
+            },
+        ),
+    );
     for _ in 0..8 {
         let resolved = queues.resolve_tick(7).unwrap();
         assert!(resolved.command.activation.initiation.is_none());
         assert!(resolved.command.activation.release.is_none());
     }
+}
+
+#[test]
+fn activation_retained_starts_wait_for_the_live_execution_and_leave_in_order() {
+    let mut queues = HostCommandQueues::new();
+    let program = program(false);
+    for tick in 1..=12 {
+        let input = ActivationInput {
+            initiation: matches!(tick, 1 | 2).then_some(token(tick)),
+            ..ActivationInput::default()
+        };
+        assert!(queues.ingest(7, &command(tick, input)));
+    }
+    let first = queues.resolve_tick(7).unwrap();
+    assert_eq!(first.command.activation.initiation, Some(token(1)));
+    let live = postretro_foundation::ActivationId {
+        pawn: 4,
+        token: token(1),
+    };
+    assert!(queues.activations.accept(
+        7,
+        live,
+        postretro_entities::EntityId::from_raw(9),
+        &program,
+        100
+    ));
+    let waiting = queues.resolve_tick(7).unwrap();
+    assert!(
+        waiting.command.activation.initiation.is_none(),
+        "a retained start never competes with the live execution"
+    );
+    queues.activations.terminal(7, live, 101);
+    queues.activation_terminal(7, live.token);
+    queues.ingest(7, &command(13, ActivationInput::default()));
+    let next = queues.resolve_tick(7).unwrap();
+    assert_eq!(next.command.activation.initiation, Some(token(2)));
+    assert!(next.rejected_activation.is_none());
+}
+
+#[test]
+fn activation_retained_start_expires_into_a_refusal_after_two_seconds() {
+    let mut queues = HostCommandQueues::new();
+    for tick in 1..=3 {
+        let input = ActivationInput {
+            initiation: matches!(tick, 1 | 2).then_some(token(tick)),
+            ..ActivationInput::default()
+        };
+        assert!(queues.ingest(7, &command(tick, input)));
+    }
+    let first = queues.resolve_tick(7).unwrap();
+    assert_eq!(first.command.activation.initiation, Some(token(1)));
+    let live = postretro_foundation::ActivationId {
+        pawn: 4,
+        token: token(1),
+    };
+    let mut charged = program(true);
+    charged.charge = Some(ChargeTiming {
+        min_ticks: 2,
+        full_ticks: 600,
+    });
+    assert!(queues.activations.accept(
+        7,
+        live,
+        postretro_entities::EntityId::from_raw(9),
+        &charged,
+        100
+    ));
+    let mut refused = Vec::new();
+    for tick in 4..140 {
+        queues.ingest(7, &command(tick, ActivationInput::default()));
+        let resolved = queues.resolve_tick(7).unwrap();
+        assert!(resolved.command.activation.initiation.is_none());
+        refused.extend(resolved.rejected_activation);
+    }
+    assert_eq!(
+        refused,
+        vec![token(2)],
+        "an unadmitted start expires once, as a refusal"
+    );
 }
 
 #[test]

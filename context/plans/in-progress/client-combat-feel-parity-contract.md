@@ -13,13 +13,19 @@ A connected client's combat should read the way the listen host's does. Two play
 3. **The splash world-point presentation spawn stops being a burst route.** Splash detonations already raise an impact cue, so the `BUILTIN_SPLASH_IMPACT_TEMPLATE_ID` burst would double the cue's. Observers take the splash burst from the cue only. If retiring that burst leaves its producer and template id with no remaining consumer, remove them in the same change.
 4. **The host bursts remote contacts at ingest.** Where host HIT ingestion raises the remote shot's one `impact` emission, it also spawns one burst per validated contact. Remote splash already spawns its burst there and must not gain a second.
 5. **A client's own hitscan burst follows the `impact` address.** It plays from predicted contacts only under `ClientPullPresentation::Fire`, the same gate that raises `impact`. A dry or silent pull shows none. A later FIRE or HIT rejection does not retract it, just as the impact sound is not retracted. The burst lasts about 0.18 s, so it usually ends before the verdict arrives.
-6. **The plasma cutoff is treated as a general fault until shown otherwise.** The owner directed that the vanishing bolts be read as a possible symptom of something not specific to the plasma gun. Consequence: Track B fixes the general mechanism and covers every affected weapon shape and prediction surface the diagnosis finds, with plasma as one acceptance case among them, not a plasma-only patch. Root cause and fix direction: open, see Open questions.
+6. **The plasma cutoff is a general input-playout fault, not a plasma fault.** Reproduced: when a lost packet or a host hitch stalls the reliable Input stream, the host's catch-up trim keeps only the newest commands and jumps its cursor. Client-named activation starts inside the trimmed range are never seen, so the shot is denied later at HIT. Starts that survive land too few host ticks after the previous shot, and the host refuses them as still cooling, so the client deletes the bolt about one round trip into flight. It affects every weapon shape: hold and press, projectile and hitscan, primary and secondary. Hitscan loses its muzzle flash, hitmarker and damage. The host player never takes this path.
+7. **Cadence is judged by the client's spacing, capped by host time** (owner). A client start is cadence-eligible when its client tick is at least the weapon's recovery after the client tick at which the previous execution's recovery began. It must also arrive no earlier than host time since that recovery began, plus a 150 ms tolerance, would allow. Consequence: over any host window, authorized shots stay at or below window ÷ recovery plus a constant, so stamping client ticks cannot raise the fire rate. This mirrors the charge rule already in `networking.md`.
+8. **Starts survive the playout trim and stale-drop** (owner). They are retained and delivered in order through the independent edge lane that release and cancel edges already use. Admission then applies the decision-7 rule, the existing per-client bound of 64, and the 2 s expiry. Consequence: the `networking.md` rule "A start discarded by playout cannot become a delayed activation" is revised. Observers see a late-admitted shot late, which is acceptable.
+9. **Use and drop presses survive the trim** (owner). They are retained as rising edges through the same kind of lane reload presses already use, and delivered once. Movement trimming is unchanged.
+10. **The client's recovery reset stops lagging the host's cadence.** Today an outcome resets the client's predicted recovery to the host's remaining value without subtracting transit time, so a connected client fires slower than the host player. The client's predicted cadence at the authored rate must match the host player's and must never run ahead of decision 7's admission. Integrator's call, inside the owner's parity goal.
 
 ## Invariants
 
 - **Exactly one burst per contact per peer.** The firing peer's own simulation spawns it: host-local sim, or client prediction (`advance_predicted` already does so for projectiles). Every other peer spawns it from one route only. Hard: a double burst is the regression this contract most expects. Tests assert counts of `ParticleState` entities per contact (`IMPACT_PARTICLE_COUNT` per burst), not mere presence.
 - **Particles never cross the wire.** Bursts are client-local cosmetics spawned from facts that already arrive.
-- **No wire or version changes.** `WIRE_VERSION`, `SNAPSHOT_VERSION`, the application-protocol constant, and the tuning epoch are unchanged. Gate: `git diff main -- crates/net/src/wire.rs` shows no layout or constant change.
+- **No wire or version changes in Track A.** `WIRE_VERSION`, `SNAPSHOT_VERSION`, the application-protocol constant, and the tuning epoch are unchanged by it. Track B should avoid a wire change too. If one proves necessary, it bumps versions under `networking.md` §Version gates and the track reports it.
+- **Tick domains are explicit.** Every recovery or spacing value in Track B names its domain, client ticks or host ticks. Recovery in ticks is `ceil(recovery_ms / tick_ms)` at 60 Hz, matching the client's predicted cooldown, which counts down by `dt` until it reaches zero or below. Client-tick comparisons are wrap-aware serial arithmetic, like `client_tick_le`.
+- **A refused or expired start mints no authorized shot**, and a retained start is still refused if decision 7 is not met when it is admitted.
 - **FIRE stays host-authoritative.** A refused fire mints no authorized shot and can bind no damage (`networking.md` §`shot_id`). No track may weaken that.
 - **The burst normal is the contact's normal.** A zero or non-finite normal takes `impact_frame`'s existing fallback. Only `Emitter::Contacts` anchors spawn bursts; an entity-anchored cue has no contact and spawns none.
 - **Layering.** `postretro-net` stays postretro-free, and the binary never reaches below its crates' public surface by copying logic. `layering_invariants_hold` enforces direction.
@@ -29,7 +35,7 @@ A connected client's combat should read the way the listen host's does. Two play
 
 **Track A — impact parity.** Owns impact-burst spawning on every route above: the client's own fire path (`crates/postretro/src/client_weapon/`), observer cue delivery in the binary, host HIT ingestion's remote contact presentation in `crates/netcode`, the splash world-point burst route, and a shared burst-for-contacts helper in `crates/sim/src/weapon/impact.rs` if one earns its place. Does not touch activation admission, cooldown, or verdict logic.
 
-**Track B — plasma bolt survival.** Brief pending the reproduction. Expected to own host activation admission or cadence in `crates/netcode` and `crates/sim/src/weapon/`, plus the client outcome handling that despawns predicted projectiles.
+**Track B — activation cadence and playout edges.** Owns host command playout and edge retention (`crates/netcode/src/command_queue.rs`, `activation_edges.rs`, `activation_ledger.rs`), host activation admission (`crates/postretro/src/host_activations.rs`, and the shared weapon machine in `crates/sim/src/weapon/` only where admission must take a client-domain recovery), and client recovery reconcile (`crates/postretro/src/client_weapon/reconcile.rs`). Owns the conditioned harness tests in `crates/postretro/src/host_activations/conditioned_tests.rs`. Does not touch impact presentation. Track B does not edit `context/lib/`; the integrator folds its results in.
 
 ## Acceptance
 
@@ -41,9 +47,15 @@ Track A:
 - `cargo test -p <crate> <filter>` for each new test reports a non-zero passed count.
 - `git diff main --stat -- crates/net/` shows no change to `wire.rs` constants.
 
-Track B: pending.
+Track B:
+- The four reproduction tests in `conditioned_tests.rs` pass: `conditioned_steady_hold_keeps_every_resourced_predicted_bolt_to_its_natural_end`, `conditioned_steady_hold_host_hitch_on_clean_link_keeps_resourced_bolts`, `conditioned_steady_hitscan_hold_is_never_refused_with_ample_ammo`, and `conditioned_rapid_press_taps_are_never_refused_with_ample_ammo`. Their assertions are not weakened.
+- `conditioned_steady_hold_reference_cell_drain_refuses_only_for_resource` still passes: real resource exhaustion still refuses.
+- A clean-link hold at the authored rate authorizes the same shot count over 6 s as the host player's own weapon (45 at 130 ms).
+- A new test shows a client that stamps its commands faster than recovery cannot exceed window ÷ recovery plus the decided constant in authorized shots.
+- Use and drop presses inside a trimmed range are each delivered exactly once.
+- `cargo test -p postretro --bin postretro conditioned_` and the focused `postretro-netcode` command-queue and activation tests pass, with counts reported.
 
 ## Open questions
 
-- **Plasma root cause.** Leading hypothesis: during a steady hold, the host refuses some hold restarts that the client issued on time by its own tick clock. Committed waits advance once per host tick, while command playout can deliver several client commands in one host tick. The client then despawns the refused activation's bolt when the outcome arrives, about one round trip into flight. A reproduction is in progress; the fix direction is an owner decision once it is confirmed.
+- **Burst (multi-step) restarts and the rocket** are expected to be covered by decisions 7 and 8 but were not reproduced directly. Track B confirms or reports.
 - **Impact producers without a cue.** Emissions with no `shot_id` publish no observer cue. Track A reports any such producer that reaches observers (enemy fire is the candidate) rather than adding a wire route.

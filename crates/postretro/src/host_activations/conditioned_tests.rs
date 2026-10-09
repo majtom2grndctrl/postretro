@@ -54,6 +54,13 @@ fn mandated_link() -> LinkConfig {
     }
 }
 
+fn mandated_link_seeded(seed: u64) -> LinkConfig {
+    LinkConfig {
+        seed,
+        ..mandated_link()
+    }
+}
+
 fn neutral() -> sim::SimCommand {
     sim::SimCommand {
         input_tick: 0,
@@ -318,6 +325,15 @@ struct Fixture {
     reconciled: Vec<(ActivationToken, bool, bool)>,
     sources: Vec<netcode::ResolutionSource>,
     resolved_ticks: Vec<u32>,
+    /// Mirror the binary's outcome handling (`main.rs`, `effect.rejected`): a
+    /// rejected activation despawns every predicted projectile of that token.
+    mirror_rejection_despawn: bool,
+    /// Predicted shots whose flight ended naturally (range/lifetime expiry).
+    expired: Vec<ShotId>,
+    /// Predicted projectiles despawned by a rejected activation outcome.
+    outcome_retracted: Vec<ShotId>,
+    /// `(host tick, resolved client tick, source)` per host resolution.
+    playout: Vec<(u32, u32, netcode::ResolutionSource)>,
 }
 
 impl Fixture {
@@ -398,6 +414,10 @@ impl Fixture {
             reconciled: Vec::new(),
             sources: Vec::new(),
             resolved_ticks: Vec::new(),
+            mirror_rejection_despawn: false,
+            expired: Vec::new(),
+            outcome_retracted: Vec::new(),
+            playout: Vec::new(),
         };
         for _ in 0..256 {
             fixture.transport();
@@ -464,6 +484,32 @@ impl Fixture {
                                     component,
                                     recovery,
                                 );
+                            }
+                            if self.mirror_rejection_despawn && effect.rejected {
+                                // Same selection as the binary's receive path.
+                                let mut registry = self.local.borrow_mut();
+                                let shots: Vec<ShotId> = registry
+                                    .iter_with_kind(ComponentKind::Projectile)
+                                    .filter_map(|(_, value)| {
+                                        let ComponentValue::Projectile(projectile) = value else {
+                                            return None;
+                                        };
+                                        projectile.predicted_shot_id.filter(|id| {
+                                            id.start_tick == effect.token.start_tick
+                                                && id.lane == effect.token.lane
+                                                && projectile.owner_weapon == effect.weapon
+                                        })
+                                    })
+                                    .collect();
+                                for id in shots {
+                                    let _ = self.predicted.apply_verdict(
+                                        &mut registry,
+                                        id,
+                                        false,
+                                        false,
+                                    );
+                                    self.outcome_retracted.push(id);
+                                }
                             }
                             self.reconciled
                                 .push((effect.token, effect.terminal, effect.rejected));
@@ -697,6 +743,7 @@ impl Fixture {
                     );
                 }
                 sim::PredictedProjectileResolution::Expired { shot_id } => {
+                    self.expired.push(shot_id);
                     self.declare(shot_id, Vec::new())
                 }
             }
@@ -721,6 +768,8 @@ impl Fixture {
         for resolved in resolved {
             self.sources.push(resolved.source);
             self.resolved_ticks.push(resolved.client_tick);
+            self.playout
+                .push((self.tick, resolved.client_tick, resolved.source));
             let mut registry = self.host.borrow_mut();
             observe_lifecycle(
                 &mut registry,
@@ -1685,4 +1734,394 @@ fn conditioned_activation_stale_full_projection_refuses_damage_and_old_verdict_p
     );
     near(fixture.damage(), 30.0);
     assert_eq!(fixture.ammo(), MAGAZINE - 1);
+}
+
+/// Reference plasma rifle shape (`content/dev/scripts/reference-projectiles.ts`,
+/// `reference_plasma_bolt` primary): hold, 130 ms recovery, one shot per step,
+/// cell resource, 40 m/s bolt, 96 m range, 5 s lifetime.
+fn plasma_rifle(cell_capacity: f32) -> WeaponDescriptor {
+    serde_json::from_value::<WeaponDescriptor>(json!({
+        "damage": 10, "knockback": { "speed": 3.0, "upwardBias": 0.1 }, "range": 96,
+        "resolution": "projectile",
+        "primary": { "trigger": "hold", "recoveryMs": 130, "steps": [{ "kind": "shot" }] },
+        "resource": { "kind": "cell", "capacity": cell_capacity, "costPerShot": 5,
+            "regenPerSecond": 25, "regenDelayMs": 600 },
+        "projectile": { "speed": 40, "radius": 0.5, "lifetimeMs": 5000,
+            "visual": { "body": { "kind": "sprite", "sprite": "sprites/test.png", "size": 1.5 } } },
+    }))
+    .unwrap()
+    .validate()
+    .unwrap()
+}
+
+/// The same hold cadence resolved as hitscan, with an ample magazine.
+fn hitscan_hold_rifle(recovery_ms: f32) -> WeaponDescriptor {
+    hitscan_rifle("hold", recovery_ms)
+}
+
+fn hitscan_rifle(trigger: &str, recovery_ms: f32) -> WeaponDescriptor {
+    serde_json::from_value::<WeaponDescriptor>(json!({
+        "damage": 10, "range": 96, "resolution": "hitscan",
+        "primary": { "trigger": trigger, "recoveryMs": recovery_ms, "steps": [{ "kind": "shot" }] },
+        "resource": { "kind": "ammo", "type": "rounds", "magazine": 100_000, "reserve": 0 },
+    }))
+    .unwrap()
+    .validate()
+    .unwrap()
+}
+
+#[derive(Debug, Default)]
+struct StreamReport {
+    predicted: Vec<ShotId>,
+    authorized: Vec<ShotId>,
+    /// Activation starts the host refused (never a resource decision).
+    initiation_rejected: Vec<ShotId>,
+    /// Per-shot FIRE denials (resource or other).
+    fire_denied: Vec<ShotId>,
+    /// Predicted bolts removed before natural expiry.
+    bolts_removed_early: Vec<ShotId>,
+    /// Predicted shots the host neither authorized nor refused.
+    ghosts: Vec<ShotId>,
+    /// For each refused start: client gap since the previous authorized start,
+    /// and host ticks between their resolutions.
+    refusal_spacing: Vec<(u32, u32, u32)>,
+    catch_up_jumps: usize,
+}
+
+fn run_steady_hold(
+    link: LinkConfig,
+    descriptor: WeaponDescriptor,
+    projectile: bool,
+    hold_ticks: u32,
+) -> (Fixture, StreamReport) {
+    run_steady_hold_with_host_hitch(link, descriptor, projectile, hold_ticks, None)
+}
+
+/// Taps the primary trigger every `period` ticks (pressed one tick, held two).
+fn run_rapid_taps(
+    link: LinkConfig,
+    descriptor: WeaponDescriptor,
+    projectile: bool,
+    ticks: u32,
+    period: u32,
+) -> (Fixture, StreamReport) {
+    run_stream(link, descriptor, projectile, ticks, None, Some(period))
+}
+
+/// `hitch = Some((period, length))`: every `period` client ticks the host
+/// simulation stalls for `length` ticks (a long host frame), then runs the
+/// missed fixed ticks back to back, as the frame loop's accumulator does.
+fn run_steady_hold_with_host_hitch(
+    link: LinkConfig,
+    descriptor: WeaponDescriptor,
+    projectile: bool,
+    hold_ticks: u32,
+    hitch: Option<(u32, u32)>,
+) -> (Fixture, StreamReport) {
+    run_stream(link, descriptor, projectile, hold_ticks, hitch, None)
+}
+
+fn run_stream(
+    link: LinkConfig,
+    descriptor: WeaponDescriptor,
+    projectile: bool,
+    hold_ticks: u32,
+    hitch: Option<(u32, u32)>,
+    tap_period: Option<u32>,
+) -> (Fixture, StreamReport) {
+    let mut fixture = Fixture::new(link, descriptor);
+    fixture.mirror_rejection_despawn = true;
+    if projectile {
+        // Clear the line of fire so every bolt can reach its full range.
+        for (registry, target) in [
+            (&fixture.host, fixture.host_actors.target),
+            (&fixture.local, fixture.local_actors.target),
+        ] {
+            registry
+                .borrow_mut()
+                .set_component(
+                    target,
+                    Transform {
+                        position: Vec3::new(500.0, 0.5, 500.0),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+        }
+    }
+    let start = 1000u32;
+    let mut stalled = 0;
+    for offset in 0..hold_ticks {
+        let mut command = match tap_period {
+            None => held(ActivationLane::Primary, offset == 0),
+            Some(period) if offset % period < 2 => {
+                held(ActivationLane::Primary, offset % period == 0)
+            }
+            Some(_) => neutral(),
+        };
+        let in_hitch =
+            hitch.is_some_and(|(period, length)| offset >= period && offset % period < length);
+        if in_hitch {
+            fixture.predict(start + offset, &mut command);
+            fixture.send_input(start + offset, &command);
+            fixture.advance_projectiles();
+            stalled += 1;
+            continue;
+        }
+        for _ in 0..stalled {
+            fixture.host_tick();
+        }
+        stalled = 0;
+        fixture.step(start + offset, command);
+    }
+    // Long enough for 96 m at 40 m/s plus the declaration round trip.
+    fixture.idle(start + hold_ticks, 360);
+
+    let mut report = StreamReport {
+        predicted: fixture
+            .snapshots
+            .iter()
+            .map(|shot| shot.activation.shot_id)
+            .collect(),
+        authorized: fixture.authorized.iter().map(|shot| shot.shot_id).collect(),
+        ..Default::default()
+    };
+    let wire_of = |id: ShotId| netcode::wire_convert::shot_id_to_wire(id);
+    for &id in &report.predicted {
+        let token = wire_token(id.activation().token);
+        if fixture.outcomes.iter().any(|outcome| {
+            matches!(outcome, wire::ActivationOutcome::InitiationRejected { token: t, .. } if *t == token)
+        }) {
+            report.initiation_rejected.push(id);
+        }
+        if fixture
+            .verdicts
+            .iter()
+            .any(|verdict| verdict.shot_id == wire_of(id) && !verdict.accept)
+        {
+            report.fire_denied.push(id);
+        }
+        let authorized = report.authorized.contains(&id);
+        if !authorized
+            && !report.initiation_rejected.contains(&id)
+            && !report.fire_denied.contains(&id)
+        {
+            report.ghosts.push(id);
+        }
+    }
+    if projectile {
+        let live: HashSet<ShotId> = fixture
+            .local
+            .borrow()
+            .iter_with_kind(ComponentKind::Projectile)
+            .filter_map(|(_, value)| match value {
+                ComponentValue::Projectile(component) => component.predicted_shot_id,
+                _ => None,
+            })
+            .collect();
+        assert!(live.is_empty(), "every flight must have ended: {live:?}");
+        report.bolts_removed_early = report
+            .predicted
+            .iter()
+            .copied()
+            .filter(|id| !fixture.expired.contains(id))
+            .collect();
+    }
+    let host_tick_of = |client_tick: u32| {
+        fixture
+            .playout
+            .iter()
+            .find(|(_, tick, source)| {
+                *tick == client_tick && *source == netcode::ResolutionSource::Real
+            })
+            .map(|(host, _, _)| *host)
+    };
+    for &id in &report.initiation_rejected {
+        let previous = report
+            .authorized
+            .iter()
+            .filter(|shot| shot.start_tick < id.start_tick)
+            .map(|shot| shot.start_tick)
+            .max();
+        if let (Some(previous), Some(now), Some(then)) = (
+            previous,
+            host_tick_of(id.start_tick),
+            previous.and_then(host_tick_of),
+        ) {
+            report
+                .refusal_spacing
+                .push((id.start_tick, id.start_tick - previous, now - then));
+        }
+    }
+    if std::env::var_os("STREAM_DUMP").is_some() {
+        for &id in &report.predicted {
+            let resolved: Vec<_> = fixture
+                .playout
+                .iter()
+                .filter(|(_, tick, _)| *tick == id.start_tick)
+                .collect();
+            let token = wire_token(id.activation().token);
+            let outcomes: Vec<_> = fixture
+                .outcomes
+                .iter()
+                .filter(|o| match o {
+                    wire::ActivationOutcome::InitiationAccepted { token: t, .. }
+                    | wire::ActivationOutcome::InitiationRejected { token: t, .. }
+                    | wire::ActivationOutcome::ExecutionAccepted { token: t, .. }
+                    | wire::ActivationOutcome::Cancelled { token: t, .. }
+                    | wire::ActivationOutcome::Completed { token: t, .. } => *t == token,
+                })
+                .collect();
+            let verdicts: Vec<_> = fixture
+                .verdicts
+                .iter()
+                .filter(|v| v.shot_id == wire_of(id))
+                .collect();
+            let fire = fixture
+                .authorized
+                .iter()
+                .find(|s| s.shot_id == id)
+                .map(|s| s.fire_tick);
+            eprintln!(
+                "shot start {} resolved {:?} host_fire {:?} outcomes {:?} verdicts {:?} expired {}",
+                id.start_tick,
+                resolved,
+                fire,
+                outcomes,
+                verdicts,
+                fixture.expired.contains(&id)
+            );
+        }
+        for (host, client, source) in &fixture.playout {
+            eprintln!("playout host {host} client {client} {source:?}");
+        }
+    }
+    report.catch_up_jumps = fixture
+        .playout
+        .windows(2)
+        .filter(|pair| pair[1].1.wrapping_sub(pair[0].1) > 1)
+        .count();
+    (fixture, report)
+}
+
+fn summarize(label: &str, report: &StreamReport) -> String {
+    format!(
+        "{label}: predicted {}, host authorized {}, initiation-rejected {} {:?}, \
+         fire-denied {}, bolts removed early {}, ghosts {}, playout jumps {}, \
+         refused (start, client gap, host gap) {:?}",
+        report.predicted.len(),
+        report.authorized.len(),
+        report.initiation_rejected.len(),
+        report
+            .initiation_rejected
+            .iter()
+            .map(|id| id.start_tick)
+            .collect::<Vec<_>>(),
+        report.fire_denied.len(),
+        report.bolts_removed_early.len(),
+        report.ghosts.len(),
+        report.catch_up_jumps,
+        report.refusal_spacing,
+    )
+}
+
+// Regression: during a steady hold, a connected client's predicted plasma bolts
+// vanished mid-flight although the host had resource to fire every one of them.
+#[test]
+fn conditioned_steady_hold_keeps_every_resourced_predicted_bolt_to_its_natural_end() {
+    let mut failures = Vec::new();
+    for (label, link) in [
+        ("clean", LinkConfig::perfect()),
+        ("mandated", mandated_link()),
+        // Mandated delay/jitter/loss; seeds where a restart reaches the host early.
+        ("mandated-seed-a", mandated_link_seeded(0x13c6_ee670)),
+        ("mandated-seed-b", mandated_link_seeded(0x9e37_6cbb)),
+    ] {
+        // Cell large enough that drain cannot explain any refusal.
+        let (_, report) = run_steady_hold(link, plasma_rifle(1.0e6), true, 360);
+        eprintln!("{}", summarize(label, &report));
+        if !report.bolts_removed_early.is_empty() || !report.initiation_rejected.is_empty() {
+            failures.push(summarize(label, &report));
+        }
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+// Regression: on a loss-free link, a host frame hitch longer than the playout
+// backlog bound deletes the client's in-flight predicted bolt the same way.
+#[test]
+fn conditioned_steady_hold_host_hitch_on_clean_link_keeps_resourced_bolts() {
+    let (_, report) = run_steady_hold_with_host_hitch(
+        LinkConfig::perfect(),
+        plasma_rifle(1.0e6),
+        true,
+        360,
+        Some((60, 12)),
+    );
+    let label = "clean+host-hitch-200ms-every-1s";
+    eprintln!("{}", summarize(label, &report));
+    assert!(
+        report.bolts_removed_early.is_empty() && report.initiation_rejected.is_empty(),
+        "{}",
+        summarize(label, &report)
+    );
+}
+
+// A refused hold restart is not projectile-specific: it retracts a hitscan
+// shot's muzzle flash and hitmarker the same way.
+#[test]
+fn conditioned_steady_hitscan_hold_is_never_refused_with_ample_ammo() {
+    let mut failures = Vec::new();
+    for (label, link) in [
+        ("clean", LinkConfig::perfect()),
+        ("mandated", mandated_link()),
+        ("mandated-seed-a", mandated_link_seeded(0x13c6_ee670)),
+    ] {
+        let (_, report) = run_steady_hold(link, hitscan_hold_rifle(130.0), false, 360);
+        eprintln!("{}", summarize(label, &report));
+        if !report.initiation_rejected.is_empty() || !report.fire_denied.is_empty() {
+            failures.push(summarize(label, &report));
+        }
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+// Same mechanism for a press trigger tapped at its recovery rate (9 ticks ≥ 130 ms).
+#[test]
+fn conditioned_rapid_press_taps_are_never_refused_with_ample_ammo() {
+    let mut failures = Vec::new();
+    let tap = hitscan_rifle("press", 130.0);
+    for (label, link) in [
+        ("clean", LinkConfig::perfect()),
+        ("mandated", mandated_link()),
+        ("mandated-seed-a", mandated_link_seeded(0x13c6_ee670)),
+    ] {
+        let (_, report) = run_rapid_taps(link, tap.clone(), false, 360, 9);
+        eprintln!("press {}", summarize(label, &report));
+        if !report.initiation_rejected.is_empty() || !report.fire_denied.is_empty() {
+            failures.push(summarize(label, &report));
+        }
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+/// The reference cell (100 / 5 / 25 s⁻¹ after 600 ms) drains after twenty bolts.
+/// Those later refusals are resource decisions: per-shot FIRE denials that remove
+/// the stale-projection bolt, never a refused activation start.
+#[test]
+fn conditioned_steady_hold_reference_cell_drain_refuses_only_for_resource() {
+    let (_, report) = run_steady_hold(LinkConfig::perfect(), plasma_rifle(100.0), true, 360);
+    eprintln!("cell-100 {}", summarize("clean", &report));
+    assert!(report.initiation_rejected.is_empty());
+    assert!(report.authorized.len() >= 20);
+    assert!(!report.fire_denied.is_empty());
+    let first_twenty: Vec<ShotId> = report.predicted.iter().take(20).copied().collect();
+    assert!(
+        report
+            .fire_denied
+            .iter()
+            .all(|id| !first_twenty.contains(id)),
+        "a full cell pays for the first twenty bolts"
+    );
+    assert_eq!(report.bolts_removed_early, report.fire_denied);
 }

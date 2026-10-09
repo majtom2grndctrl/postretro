@@ -201,6 +201,7 @@ impl App {
         // Settling frames never count, and no CPU timing surface may show a
         // window from before the reveal.
         self.cpu_timer.level_changed();
+        self.publish_net_reveal();
         self.boot_state = BootState::Running;
         // Defer log line C until after the reveal frame's render returns, so
         // `first_level_frame` captures GPU work the user actually sees.
@@ -440,5 +441,60 @@ mod tests {
         assert!(BootState::Settling.drops_ui_input());
         assert!(BootState::Loading.drops_ui_input());
         assert!(!BootState::Running.drops_ui_input());
+    }
+
+    fn host_revealed(app: &App) -> Option<String> {
+        match app.session.as_ref()?.net_endpoint.as_ref()? {
+            crate::netcode::NetEndpoint::Host { server, .. } => {
+                server.revealed_level().map(str::to_owned)
+            }
+            crate::netcode::NetEndpoint::Client { .. } => None,
+        }
+    }
+
+    // P6 and the host half of P5/P15: a timed-out reveal is a reveal, and
+    // unload and suspend (both through `clear_net_level_parity`) retract it.
+    #[test]
+    fn timeout_release_is_a_reveal_edge_and_unload_retracts_it() {
+        let started = Instant::now();
+        let mut app = settling_app(started);
+        app.active_level_source = Some(crate::startup::LevelSource::Catalog("e1m1".into()));
+        app.session.as_mut().unwrap().net_endpoint = crate::netcode::NetEndpoint::from_role(
+            &crate::netcode::NetRole::Host { port: 0 },
+            None,
+        )
+        .unwrap();
+        assert_eq!(host_revealed(&app), None, "Settling has not revealed");
+
+        app.advance_settle(unsettled(2), started + SETTLE_TIMEOUT);
+        app.reveal_level(release(&app).expect("the deadline releases"));
+        assert_eq!(host_revealed(&app).as_deref(), Some("e1m1"));
+
+        app.clear_net_level_parity();
+        assert_eq!(host_revealed(&app), None);
+    }
+
+    // P4: the reveal fires in boot dispatch, before the frame's world poll,
+    // so the promotion it causes is consumed by a world poll that spawns the
+    // pawn, never by a world-less one.
+    #[test]
+    fn host_reveal_lands_before_the_reveal_frames_world_poll() {
+        let frame = include_str!("../frame_loop/mod.rs");
+        let dispatch = frame.find("app.drive_boot_state_for_redraw(").unwrap();
+        let world_poll = frame
+            .find("frame_order::run_snapshot_apply_stage(")
+            .unwrap();
+        assert!(dispatch < world_poll);
+        let settling = include_str!("settling.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .unwrap();
+        let body = settling.split("fn run_settling_frame(").nth(1).unwrap();
+        let reveal = body.find("self.reveal_level(release)").unwrap();
+        let world_less = body.find("self.poll_world_less_transport(").unwrap();
+        assert!(
+            reveal < world_less,
+            "a revealing redraw polls only as Running"
+        );
     }
 }

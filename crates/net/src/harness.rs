@@ -236,6 +236,20 @@ impl PacketConditioner {
     }
 }
 
+/// Test fixture: both peers reveal `identity`. Parity alone never promotes;
+/// a slot also needs the host's own reveal and the client's revealed
+/// declaration (`networking.md` §Slot lifecycle), so every parity-matched relay
+/// pair that expects to participate calls this beside its parity setup. The
+/// client's declaration rides its next Control flush.
+pub fn reveal_both(
+    server: &mut crate::transport::NetServer,
+    client: &mut crate::transport::NetClient,
+    identity: &str,
+) {
+    server.set_revealed_level(Some(identity.to_owned()));
+    client.set_revealed_level(Some(identity.to_owned()));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -288,13 +302,15 @@ mod tests {
         .expect("client transport");
 
         // E15 admission is immutable and parity is a separate live predicate.
-        // This relay fixture intentionally installs a complete matching triple.
+        // This relay fixture intentionally installs a complete matching triple
+        // and reveals it on both peers, so the slot participates.
         server.set_mod_identity("test.mod".to_string(), "1.0.0".to_string());
         server.set_mod_digest(Some(static_fingerprint));
         server.set_level_parity(Some(("test-level".to_string(), static_fingerprint)));
         client.set_mod_identity("test.mod".to_string(), "1.0.0".to_string());
         client.set_mod_digest(Some(static_fingerprint));
         client.set_level_parity(Some(("test-level".to_string(), static_fingerprint)));
+        reveal_both(&mut server, &mut client, "test-level");
 
         server.add_relay_connection(CLIENT_ID, None);
         client.set_connected();

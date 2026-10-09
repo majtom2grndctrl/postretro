@@ -259,6 +259,30 @@ impl App {
         };
         endpoint.set_level_parity(None);
         endpoint.set_relevel_catalog_id(None);
+        // Retract this peer's reveal with its parity: a host's own reveal is
+        // cleared here at unload and at suspend (a resumed install runs no
+        // unload), and a client declares none.
+        endpoint.set_revealed_level(None);
         endpoint.reset_level_scoped_host_state();
+    }
+
+    /// The reveal edge's net half: publish that this peer has revealed the
+    /// installed level. A host records its own reveal, which may promote
+    /// revealed, parity-matched clients; the world poll later this frame
+    /// consumes that promotion and spawns their pawns (P4). A client declares
+    /// its reveal to the host. A timed-out reveal publishes the same (P6).
+    pub(crate) fn publish_net_reveal(&mut self) {
+        let Some(source) = self.active_level_source.as_ref() else {
+            return;
+        };
+        let identity = crate::startup::lifecycle::level_identity(source, &self.content_root);
+        let Some(endpoint) = self
+            .session
+            .as_mut()
+            .and_then(|session| session.net_endpoint.as_mut())
+        else {
+            return;
+        };
+        endpoint.set_revealed_level(Some(identity));
     }
 }

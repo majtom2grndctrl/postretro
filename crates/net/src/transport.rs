@@ -127,6 +127,11 @@ pub struct NetServer {
     transport: NetcodeServerTransport,
     slots: SlotTable,
     parity_declarations: HashMap<ClientId, ParityDeclaration>,
+    /// The level identity each slot last declared revealed. Absent means not
+    /// revealed. Only the client's own declaration or `close_slot` changes it:
+    /// parity changes and host level changes leave it in place, so a demoted
+    /// slot re-promotes without a fresh reveal once the other terms hold.
+    revealed_declarations: HashMap<ClientId, String>,
     connect_claims: HashMap<ClientId, ConnectClaim>,
     pending_lifecycle: Vec<SlotEvent>,
     /// Live slots that closed since the previous poll. Reported to the engine
@@ -141,6 +146,10 @@ pub struct NetServer {
     mod_identity: Option<(String, String)>,
     mod_digest: Option<[u8; 32]>,
     level_parity: Option<(String, [u8; 32])>,
+    /// The level identity the host itself has revealed (finished settling).
+    /// Cleared by the engine at unload and suspend, so a reinstall of the same
+    /// level holds every slot until the host's new reveal.
+    revealed_level: Option<String>,
     relevel_catalog_id: Option<String>,
     // Retained only for the Phase-2 compatibility setter below.
     legacy_kinematic_static_fingerprint: Option<[u8; 32]>,
@@ -170,6 +179,7 @@ impl NetServer {
             transport,
             slots: SlotTable::new(),
             parity_declarations: HashMap::new(),
+            revealed_declarations: HashMap::new(),
             connect_claims: HashMap::new(),
             pending_lifecycle: Vec::new(),
             pending_slot_disconnects: Vec::new(),
@@ -180,6 +190,7 @@ impl NetServer {
             mod_identity: None,
             mod_digest: None,
             level_parity: None,
+            revealed_level: None,
             relevel_catalog_id: None,
             legacy_kinematic_static_fingerprint: kinematic_static_fingerprint,
         })
@@ -208,6 +219,19 @@ impl NetServer {
     pub fn set_level_parity(&mut self, level: Option<(String, [u8; 32])>) {
         self.level_parity = level;
         let _ = self.reevaluate_parity(None);
+    }
+
+    /// Record the level identity the host has revealed, or `None` at unload
+    /// and suspend. A slot participates only once the host has revealed its
+    /// installed level, so a promotion never lands while the host is settling.
+    pub fn set_revealed_level(&mut self, level: Option<String>) {
+        self.revealed_level = level;
+        let _ = self.reevaluate_parity(None);
+    }
+
+    /// The level identity the host has revealed, if any.
+    pub fn revealed_level(&self) -> Option<&str> {
+        self.revealed_level.as_deref()
     }
 
     /// Install the catalog id clients should follow. This is intentionally
@@ -328,7 +352,8 @@ impl NetServer {
         let expected_protocol = protocol_version();
 
         for client_id in self.server.clients_id() {
-            let mut parity_moved = false;
+            // Set by any declaration the participation predicate reads.
+            let mut declaration_moved = false;
             if self.slots.is_closed(client_id) {
                 while self
                     .server
@@ -337,8 +362,8 @@ impl NetServer {
                 {}
                 continue;
             }
-            // Once admitted, the next queued Control message can only be parity;
-            // leave it reliably queued until the required installed digest exists.
+            // Every predicate verdict needs the installed mod digest, so an
+            // admitted slot's Control stays reliably queued until it exists.
             if !matches!(self.slots.state(client_id), Some(SlotState::Pending))
                 && self.mod_digest.is_none()
             {
@@ -394,7 +419,7 @@ impl NetServer {
                         }
                         let _ = self.slots.admit(client_id);
                         outcomes.push(HandshakeOutcome::Admitted { client_id });
-                        parity_moved = self.parity_declarations.contains_key(&client_id);
+                        declaration_moved = self.parity_declarations.contains_key(&client_id);
                         if let Some(catalog_id) = self.relevel_catalog_id.clone() {
                             self.send_relevel(client_id, &catalog_id);
                         }
@@ -404,7 +429,7 @@ impl NetServer {
                     }
                     ClientControlMessage::Parity(declaration) => {
                         self.parity_declarations.insert(client_id, declaration);
-                        parity_moved = true;
+                        declaration_moved = true;
                         if self.mod_digest.is_none() {
                             break;
                         }
@@ -425,15 +450,29 @@ impl NetServer {
                         // registry-blind, so pass the opaque map through.
                         join_seeds.push((client_id, slots));
                     }
+                    ClientControlMessage::Revealed(level) => {
+                        // Retained like parity: only the batch's last
+                        // declaration reaches the predicate below.
+                        match level {
+                            Some(level) => {
+                                self.revealed_declarations.insert(client_id, level);
+                            }
+                            None => {
+                                self.revealed_declarations.remove(&client_id);
+                            }
+                        }
+                        declaration_moved = true;
+                    }
                 }
                 if self.mod_digest.is_none() {
                     break;
                 }
             }
-            // Control is reliable-ordered. Evaluate the final retained declaration
+            // Control is reliable-ordered. Evaluate the final retained declarations
             // once after draining this batch so an earlier stale declaration cannot
-            // emit a transient diagnostic before a later same-batch replacement.
-            if parity_moved
+            // emit a transient diagnostic before a later same-batch replacement,
+            // and parity plus a reveal in one batch promote once.
+            if declaration_moved
                 && self.mod_digest.is_some()
                 && matches!(
                     self.slots.state(client_id),
@@ -500,8 +539,9 @@ impl NetServer {
         );
     }
 
-    /// Enforce the single participation predicate after any source install or
-    /// parity arrival. Install-driven transitions land in `pending_lifecycle`.
+    /// Enforce the single participation predicate after any source install,
+    /// host reveal, or declaration arrival. Install-driven transitions land in
+    /// `pending_lifecycle`.
     fn reevaluate_parity(&mut self, only: Option<ClientId>) -> Option<HoldingCause> {
         let ids = only.map_or_else(|| self.server.clients_id(), |id| vec![id]);
         let mut selected_cause = None;
@@ -510,10 +550,14 @@ impl NetServer {
             if !matches!(state, Some(SlotState::Admitted | SlotState::Participating)) {
                 continue;
             }
-            let cause = parity_cause(
+            let cause = participation_cause(
                 self.mod_digest,
                 self.level_parity.as_ref(),
                 self.parity_declarations.get(&client_id),
+                self.revealed_level.as_deref(),
+                self.revealed_declarations
+                    .get(&client_id)
+                    .map(String::as_str),
             );
             match cause {
                 None => {
@@ -546,6 +590,7 @@ impl NetServer {
         // the prior state first to report only a live transport disconnect.
         let was_live = matches!(self.slots.state(client_id), Some(state) if !matches!(state, SlotState::Closed { .. }));
         self.parity_declarations.remove(&client_id);
+        self.revealed_declarations.remove(&client_id);
         self.connect_claims.remove(&client_id);
         self.holding_diagnostics.remove(&client_id);
         self.participation_epochs.remove(&client_id);
@@ -807,8 +852,39 @@ impl NetServer {
     }
 }
 
+/// The single participation predicate: `None` means the slot participates.
+/// Content parity is checked first, then the revealed term, so both revealed
+/// causes rank below every content cause. Check order is the published
+/// holding-diagnostic precedence.
+fn participation_cause(
+    installed_mod_digest: Option<[u8; 32]>,
+    installed_level: Option<&(String, [u8; 32])>,
+    declaration: Option<&ParityDeclaration>,
+    host_revealed: Option<&str>,
+    client_revealed: Option<&str>,
+) -> Option<HoldingCause> {
+    if let Some(cause) = parity_cause(installed_mod_digest, installed_level, declaration) {
+        return Some(cause);
+    }
+    // Parity holding implies an installed level; stay total regardless.
+    let Some((identity, _)) = installed_level else {
+        return Some(HoldingCause::HostLevelAbsent);
+    };
+    if host_revealed != Some(identity.as_str()) {
+        return Some(HoldingCause::HostNotRevealed {
+            identity: identity.clone(),
+        });
+    }
+    if client_revealed != Some(identity.as_str()) {
+        return Some(HoldingCause::ClientNotRevealed {
+            identity: identity.clone(),
+        });
+    }
+    None
+}
+
 /// `None` means the declaration and installed triple match. The order here is
-/// the published holding-diagnostic precedence.
+/// the content half of the published holding-diagnostic precedence.
 fn parity_cause(
     installed_mod_digest: Option<[u8; 32]>,
     installed_level: Option<&(String, [u8; 32])>,
@@ -879,9 +955,13 @@ pub struct NetClient {
     parity_sent: bool,
     join_seed_sent: bool,
     join_seed: BTreeMap<String, JoinSeedValue>,
+    /// Whether the host holds the current `revealed_level`. A fresh
+    /// connection starts sent: the host reads an absent record as not revealed.
+    revealed_sent: bool,
     mod_identity: Option<(String, String)>,
     mod_digest: Option<[u8; 32]>,
     level_parity: Option<(String, [u8; 32])>,
+    revealed_level: Option<String>,
     active_participation_epoch: Option<u64>,
     retired_participation_epoch: Option<u64>,
     legacy_kinematic_static_fingerprint: Option<[u8; 32]>,
@@ -934,9 +1014,11 @@ impl NetClient {
             parity_sent: false,
             join_seed_sent: false,
             join_seed: BTreeMap::new(),
+            revealed_sent: true,
             mod_identity: None,
             mod_digest: None,
             level_parity: None,
+            revealed_level: None,
             active_participation_epoch: None,
             retired_participation_epoch: None,
             legacy_kinematic_static_fingerprint: kinematic_static_fingerprint,
@@ -959,6 +1041,16 @@ impl NetClient {
             self.level_parity = level;
             self.parity_sent = false;
             self.join_seed_sent = false;
+        }
+    }
+
+    /// Declare the level identity this client has revealed (finished settling),
+    /// or `None` at unload and suspend. Independent of parity: a mod-digest or
+    /// level change re-declares parity but leaves this declaration as set.
+    pub fn set_revealed_level(&mut self, level: Option<String>) {
+        if self.revealed_level != level {
+            self.revealed_level = level;
+            self.revealed_sent = false;
         }
     }
 
@@ -1018,6 +1110,13 @@ impl NetClient {
                 );
                 self.join_seed_sent = true;
             }
+        }
+        if !self.revealed_sent {
+            self.client.send_message(
+                Channel::Control,
+                wire::encode(&ClientControlMessage::Revealed(self.revealed_level.clone())),
+            );
+            self.revealed_sent = true;
         }
     }
 
@@ -1366,6 +1465,7 @@ fn drain_client_channel(client: &mut RenetClient, channel: Channel) -> Vec<Vec<u
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::harness::reveal_both;
     use proptest::prelude::*;
 
     const RELAY_CLIENT_ID: ClientId = 41;
@@ -1510,7 +1610,52 @@ mod tests {
         client.set_mod_identity("postretro.test".to_string(), "1".to_string());
         client.set_mod_digest(Some([7; 32]));
         client.set_level_parity(Some(("test-level".to_string(), [9; 32])));
+        reveal_both(&mut server, &mut client, "test-level");
         (server, client)
+    }
+
+    /// Matching content on both peers with no reveal on either side: both
+    /// peers have installed and published parity but are still settling.
+    fn settling_relay_pair() -> (NetServer, NetClient) {
+        let (mut server, mut client) = relay_pair();
+        server.set_mod_identity("postretro.test".to_string(), "1".to_string());
+        server.set_mod_digest(Some([7; 32]));
+        server.set_level_parity(Some(("test-level".to_string(), [9; 32])));
+        client.set_mod_identity("postretro.test".to_string(), "1".to_string());
+        client.set_mod_digest(Some([7; 32]));
+        client.set_level_parity(Some(("test-level".to_string(), [9; 32])));
+        (server, client)
+    }
+
+    fn participating_entries(lifecycle: &[SlotEvent]) -> usize {
+        lifecycle
+            .iter()
+            .filter(|event| matches!(event, SlotEvent::Participating { .. }))
+            .count()
+    }
+
+    fn holding_causes(controls: &[ServerControlMessage]) -> Vec<HoldingCause> {
+        controls
+            .iter()
+            .filter_map(|message| match message {
+                ServerControlMessage::Divergence(DivergenceReason::Holding(cause)) => {
+                    Some(cause.clone())
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn host_not_revealed() -> HoldingCause {
+        HoldingCause::HostNotRevealed {
+            identity: "test-level".to_string(),
+        }
+    }
+
+    fn client_not_revealed() -> HoldingCause {
+        HoldingCause::ClientNotRevealed {
+            identity: "test-level".to_string(),
+        }
     }
 
     fn participate_relay_pair() -> (NetServer, NetClient) {
@@ -1825,6 +1970,7 @@ mod tests {
         server.set_mod_identity("postretro.test".to_string(), "1".to_string());
         server.set_mod_digest(Some([7; 32]));
         server.set_level_parity(Some(("test-level".to_string(), [9; 32])));
+        reveal_both(&mut server, &mut client, "test-level");
 
         let stale = ParityDeclaration {
             mod_digest: [3; 32],
@@ -2519,6 +2665,579 @@ mod tests {
         }
     }
 
+    #[test]
+    fn participation_cause_ranks_revealed_below_every_content_cause() {
+        let installed = ("test-level".to_string(), [9; 32]);
+        let matching = ParityDeclaration {
+            mod_digest: [7; 32],
+            level: Some(installed.clone()),
+        };
+        let divergent = ParityDeclaration {
+            mod_digest: [7; 32],
+            level: Some(("test-level".to_string(), [8; 32])),
+        };
+
+        assert!(matches!(
+            participation_cause(
+                Some([7; 32]),
+                Some(&installed),
+                Some(&divergent),
+                None,
+                None
+            ),
+            Some(HoldingCause::LevelDigest { .. })
+        ));
+        assert_eq!(
+            participation_cause(Some([7; 32]), Some(&installed), Some(&matching), None, None),
+            Some(host_not_revealed()),
+            "the host term is checked before the client term"
+        );
+        assert_eq!(
+            participation_cause(
+                Some([7; 32]),
+                Some(&installed),
+                Some(&matching),
+                Some("test-level"),
+                Some("other-level"),
+            ),
+            Some(client_not_revealed())
+        );
+        assert_eq!(
+            participation_cause(
+                Some([7; 32]),
+                Some(&installed),
+                Some(&matching),
+                Some("test-level"),
+                Some("test-level"),
+            ),
+            None
+        );
+    }
+
+    // AC C1: parity publishes at install, so a content-divergent client learns
+    // its cause while both peers are still settling, ahead of any revealed cause.
+    #[test]
+    fn parity_published_at_install_reaches_settling_client() {
+        let (mut server, mut client) = settling_relay_pair();
+        client.set_level_parity(Some(("client-map".to_string(), [9; 32])));
+
+        relay_client_to_server(&mut client, &mut server);
+        let poll = server.poll_handshakes();
+        assert!(matches!(
+            poll.handshakes.as_slice(),
+            [
+                HandshakeOutcome::Admitted { .. },
+                HandshakeOutcome::ParityHeld {
+                    cause: HoldingCause::LevelIdentity { .. },
+                    ..
+                }
+            ]
+        ));
+        relay_server_to_client(&mut server, &mut client);
+        assert!(matches!(
+            holding_causes(&client.drain_control()).as_slice(),
+            [HoldingCause::LevelIdentity { .. }]
+        ));
+
+        // Once the content matches, the hold names the remaining revealed term.
+        client.set_level_parity(Some(("test-level".to_string(), [9; 32])));
+        relay_client_to_server(&mut client, &mut server);
+        let _ = server.poll_handshakes();
+        relay_server_to_client(&mut server, &mut client);
+        assert_eq!(
+            holding_causes(&client.drain_control()),
+            vec![host_not_revealed()]
+        );
+        assert!(!server.is_participating(RELAY_CLIENT_ID));
+    }
+
+    // AC C2: a parity-matched settling client is held with no participation
+    // marker; its reveal promotes it on the poll that drains it. Parity and the
+    // reveal in one batch promote once.
+    #[test]
+    fn revealed_declaration_promotes_once_even_batched_with_parity() {
+        let (mut server, mut client) = settling_relay_pair();
+        server.set_revealed_level(Some("test-level".to_string()));
+
+        relay_client_to_server(&mut client, &mut server);
+        let held = server.poll_handshakes();
+        assert_eq!(participating_entries(&held.lifecycle), 0);
+        assert_eq!(
+            server.slot_state(RELAY_CLIENT_ID),
+            Some(SlotState::Admitted)
+        );
+        assert!(!server.send_snapshot(RELAY_CLIENT_ID, vec![1]));
+        relay_server_to_client(&mut server, &mut client);
+        assert_eq!(
+            holding_causes(&client.drain_control()),
+            vec![client_not_revealed()]
+        );
+        assert!(!client.is_participating(), "no epoch marker while held");
+
+        client.set_revealed_level(Some("test-level".to_string()));
+        relay_client_to_server(&mut client, &mut server);
+        let promoted = server.poll_handshakes();
+        assert_eq!(
+            promoted.lifecycle,
+            vec![SlotEvent::Participating {
+                client_id: RELAY_CLIENT_ID
+            }]
+        );
+        relay_server_to_client(&mut server, &mut client);
+        assert!(client.drain_control().is_empty());
+        assert!(client.is_participating());
+
+        // Batched: admission, parity, join seed and reveal in one host drain.
+        let (mut server, mut client) = settling_relay_pair();
+        reveal_both(&mut server, &mut client, "test-level");
+        relay_client_to_server(&mut client, &mut server);
+        let poll = server.poll_handshakes();
+        assert_eq!(
+            poll.lifecycle,
+            vec![SlotEvent::Participating {
+                client_id: RELAY_CLIENT_ID
+            }],
+            "one promotion, one pawn"
+        );
+        assert!(
+            !poll
+                .handshakes
+                .iter()
+                .any(|outcome| matches!(outcome, HandshakeOutcome::ParityHeld { .. })),
+            "no transient revealed hold inside the batch"
+        );
+        relay_server_to_client(&mut server, &mut client);
+        assert!(client.drain_control().is_empty());
+        assert!(client.is_participating());
+    }
+
+    // AC C3 (net half): the host's reveal, timed out or settled alike, promotes
+    // a revealed, parity-matched client.
+    #[test]
+    fn host_reveal_promotes_revealed_matched_client() {
+        let (mut server, mut client) = settling_relay_pair();
+        client.set_revealed_level(Some("test-level".to_string()));
+        relay_client_to_server(&mut client, &mut server);
+        let held = server.poll_handshakes();
+        assert!(matches!(
+            held.handshakes.as_slice(),
+            [
+                HandshakeOutcome::Admitted { .. },
+                HandshakeOutcome::ParityHeld { cause, .. }
+            ] if *cause == host_not_revealed()
+        ));
+
+        server.set_revealed_level(Some("test-level".to_string()));
+        assert_eq!(
+            server.poll_handshakes().lifecycle,
+            vec![SlotEvent::Participating {
+                client_id: RELAY_CLIENT_ID
+            }]
+        );
+    }
+
+    // AC C4: a reveal declared while parity mismatched is retained and promotes
+    // the moment parity matches, with no second declaration.
+    #[test]
+    fn revealed_before_parity_match_promotes_on_match() {
+        let (mut server, mut client) = settling_relay_pair();
+        server.set_revealed_level(Some("test-level".to_string()));
+        client.set_level_parity(Some(("test-level".to_string(), [8; 32])));
+        client.set_revealed_level(Some("test-level".to_string()));
+        relay_client_to_server(&mut client, &mut server);
+        assert!(matches!(
+            server.poll_handshakes().handshakes.as_slice(),
+            [
+                HandshakeOutcome::Admitted { .. },
+                HandshakeOutcome::ParityHeld {
+                    cause: HoldingCause::LevelDigest { .. },
+                    ..
+                }
+            ]
+        ));
+
+        client.set_level_parity(Some(("test-level".to_string(), [9; 32])));
+        assert!(client.revealed_sent, "the reveal is not declared again");
+        relay_client_to_server(&mut client, &mut server);
+        assert_eq!(
+            server.poll_handshakes().lifecycle,
+            vec![SlotEvent::Participating {
+                client_id: RELAY_CLIENT_ID
+            }]
+        );
+    }
+
+    // AC C5: a client that never reveals stays admitted and connected, held
+    // under the revealed cause, and is sent no entity state.
+    #[test]
+    fn unrevealed_client_stays_admitted_and_receives_no_entity_state() {
+        let (mut server, mut client) = settling_relay_pair();
+        server.set_revealed_level(Some("test-level".to_string()));
+        relay_client_to_server(&mut client, &mut server);
+        let _ = server.poll_handshakes();
+
+        // Twelve seconds of polls, past the engine's ten-second Settling timeout.
+        for _ in 0..(12 * 60) {
+            relay_client_to_server(&mut client, &mut server);
+            assert!(server.poll_handshakes().lifecycle.is_empty());
+            assert!(!server.send_snapshot(RELAY_CLIENT_ID, vec![1]));
+            server.update_connections(Duration::from_millis(16));
+            relay_server_to_client(&mut server, &mut client);
+        }
+
+        assert_eq!(server.connected_clients(), vec![RELAY_CLIENT_ID]);
+        assert_eq!(
+            server.slot_state(RELAY_CLIENT_ID),
+            Some(SlotState::Admitted)
+        );
+        assert_eq!(
+            holding_causes(&client.drain_control()),
+            vec![client_not_revealed()]
+        );
+        assert!(client.drain_snapshots().is_empty());
+        assert!(!client.is_participating());
+    }
+
+    // AC C6: a duplicate reveal is a no-op, and a reveal naming another level
+    // never promotes.
+    #[test]
+    fn duplicate_or_foreign_reveal_does_not_repromote() {
+        let (mut server, mut client) = participate_relay_pair();
+        relay_server_to_client(&mut server, &mut client);
+        assert!(client.drain_control().is_empty());
+        let epoch = client.active_participation_epoch;
+        assert!(epoch.is_some());
+
+        for _ in 0..4 {
+            client.client.send_message(
+                Channel::Control,
+                wire::encode(&ClientControlMessage::Revealed(Some(
+                    "test-level".to_string(),
+                ))),
+            );
+        }
+        relay_client_to_server(&mut client, &mut server);
+        let poll = server.poll_handshakes();
+        assert!(poll.lifecycle.is_empty());
+        assert!(poll.handshakes.is_empty());
+        relay_server_to_client(&mut server, &mut client);
+        assert!(client.drain_control().is_empty());
+        assert_eq!(client.active_participation_epoch, epoch, "no new epoch");
+
+        let (mut server, mut client) = settling_relay_pair();
+        server.set_revealed_level(Some("test-level".to_string()));
+        client.set_revealed_level(Some("other-level".to_string()));
+        relay_client_to_server(&mut client, &mut server);
+        let poll = server.poll_handshakes();
+        assert_eq!(participating_entries(&poll.lifecycle), 0);
+        assert!(matches!(
+            poll.handshakes.as_slice(),
+            [
+                HandshakeOutcome::Admitted { .. },
+                HandshakeOutcome::ParityHeld { cause, .. }
+            ] if *cause == client_not_revealed()
+        ));
+    }
+
+    // AC C7: unload and suspend retract the reveal. A same-level reinstall
+    // whose unload and install collapse into one host batch leaves parity
+    // unchanged, so only the retained retraction holds it until its own reveal.
+    #[test]
+    fn retracted_reveal_holds_reinstall_until_new_reveal() {
+        let (mut server, mut client) = participate_relay_pair();
+
+        // Unload, flushed but not yet drained by the host.
+        client.set_level_parity(None);
+        client.set_revealed_level(None);
+        relay_client_to_server(&mut client, &mut server);
+        // Reinstall the same level, flushed into the same host batch.
+        client.set_level_parity(Some(("test-level".to_string(), [9; 32])));
+        relay_client_to_server(&mut client, &mut server);
+
+        let poll = server.poll_handshakes();
+        assert_eq!(
+            poll.lifecycle,
+            vec![SlotEvent::Demoted {
+                client_id: RELAY_CLIENT_ID,
+                cause: client_not_revealed(),
+            }]
+        );
+        assert!(!server.is_participating(RELAY_CLIENT_ID));
+
+        client.set_revealed_level(Some("test-level".to_string()));
+        relay_client_to_server(&mut client, &mut server);
+        assert_eq!(
+            server.poll_handshakes().lifecycle,
+            vec![SlotEvent::Participating {
+                client_id: RELAY_CLIENT_ID
+            }]
+        );
+    }
+
+    // AC C8 (net half): while the host settles, a revealed, parity-matched
+    // client is held and stays connected; the host's reveal promotes it once.
+    // A host restart of the same level identity holds again until its new reveal.
+    #[test]
+    fn host_unrevealed_holds_revealed_client() {
+        let (mut server, mut client) = settling_relay_pair();
+        client.set_revealed_level(Some("test-level".to_string()));
+        for _ in 0..(12 * 60) {
+            relay_client_to_server(&mut client, &mut server);
+            assert_eq!(
+                participating_entries(&server.poll_handshakes().lifecycle),
+                0
+            );
+            server.update_connections(Duration::from_millis(16));
+            relay_server_to_client(&mut server, &mut client);
+        }
+        assert_eq!(server.connected_clients(), vec![RELAY_CLIENT_ID]);
+        assert_eq!(
+            holding_causes(&client.drain_control()),
+            vec![host_not_revealed()]
+        );
+
+        server.set_revealed_level(Some("test-level".to_string()));
+        let promoted = server.poll_handshakes();
+        assert_eq!(participating_entries(&promoted.lifecycle), 1);
+        relay_client_to_server(&mut client, &mut server);
+        assert!(server.poll_handshakes().lifecycle.is_empty());
+
+        // Same-identity restart: unload clears the host's reveal before the
+        // reinstall publishes parity.
+        server.set_revealed_level(None);
+        server.set_level_parity(None);
+        server.set_level_parity(Some(("test-level".to_string(), [9; 32])));
+        let restarted = server.poll_handshakes();
+        assert_eq!(participating_entries(&restarted.lifecycle), 0);
+        assert!(!server.is_participating(RELAY_CLIENT_ID));
+        server.set_revealed_level(Some("test-level".to_string()));
+        assert_eq!(
+            server.poll_handshakes().lifecycle,
+            vec![SlotEvent::Participating {
+                client_id: RELAY_CLIENT_ID
+            }]
+        );
+    }
+
+    // AC C9 (net half): suspend clears the host's own reveal through the same
+    // retraction as unload; a resumed install of the same level holds every
+    // revealed client until the host's new reveal.
+    #[test]
+    fn host_suspend_clears_own_reveal() {
+        let (mut server, _client) = participate_relay_pair();
+
+        // Suspend: parity and reveal both retracted, as `clear_net_level_parity` does.
+        server.set_level_parity(None);
+        server.set_revealed_level(None);
+        assert!(matches!(
+            server.poll_handshakes().lifecycle.as_slice(),
+            [SlotEvent::Demoted { .. }]
+        ));
+
+        // Resume reinstalls the same identity with no unload in between.
+        server.set_level_parity(Some(("test-level".to_string(), [9; 32])));
+        assert!(server.poll_handshakes().lifecycle.is_empty());
+        assert_eq!(
+            server.slot_state(RELAY_CLIENT_ID),
+            Some(SlotState::Admitted)
+        );
+
+        server.set_revealed_level(Some("test-level".to_string()));
+        assert_eq!(
+            server.poll_handshakes().lifecycle,
+            vec![SlotEvent::Participating {
+                client_id: RELAY_CLIENT_ID
+            }]
+        );
+    }
+
+    // AC C10: a host restart re-promotes a running client at the host's reveal
+    // without a new declaration; a client still settling is promoted exactly
+    // once, after both reveals, in either order.
+    #[test]
+    fn host_restart_repromotes_revealed_client_once_in_either_order() {
+        // Running client: no client traffic after the restart.
+        let (mut server, _client) = participate_relay_pair();
+        server.set_revealed_level(None);
+        server.set_level_parity(None);
+        server.set_level_parity(Some(("test-level".to_string(), [9; 32])));
+        let mut lifecycle = server.poll_handshakes().lifecycle;
+        server.set_revealed_level(Some("test-level".to_string()));
+        lifecycle.extend(server.poll_handshakes().lifecycle);
+        assert_eq!(participating_entries(&lifecycle), 1);
+        assert!(server.is_participating(RELAY_CLIENT_ID));
+
+        for host_reveals_first in [true, false] {
+            let (mut server, mut client) = settling_relay_pair();
+            relay_client_to_server(&mut client, &mut server);
+            let mut lifecycle = server.poll_handshakes().lifecycle;
+            if host_reveals_first {
+                server.set_revealed_level(Some("test-level".to_string()));
+                lifecycle.extend(server.poll_handshakes().lifecycle);
+                assert_eq!(participating_entries(&lifecycle), 0);
+                client.set_revealed_level(Some("test-level".to_string()));
+                relay_client_to_server(&mut client, &mut server);
+                lifecycle.extend(server.poll_handshakes().lifecycle);
+            } else {
+                client.set_revealed_level(Some("test-level".to_string()));
+                relay_client_to_server(&mut client, &mut server);
+                lifecycle.extend(server.poll_handshakes().lifecycle);
+                assert_eq!(participating_entries(&lifecycle), 0);
+                server.set_revealed_level(Some("test-level".to_string()));
+                lifecycle.extend(server.poll_handshakes().lifecycle);
+            }
+            assert_eq!(
+                participating_entries(&lifecycle),
+                1,
+                "host reveals first: {host_reveals_first}"
+            );
+            assert!(server.is_participating(RELAY_CLIENT_ID));
+        }
+    }
+
+    // AC C11: the revealed record survives a mod-digest demotion, so recovery
+    // re-promotes without a new declaration.
+    #[test]
+    fn mod_digest_recovery_repromotes_without_new_reveal() {
+        let (mut server, _client) = participate_relay_pair();
+        server.set_mod_digest(Some([8; 32]));
+        assert!(matches!(
+            server.poll_handshakes().lifecycle.as_slice(),
+            [SlotEvent::Demoted {
+                cause: HoldingCause::ModDigest { .. },
+                ..
+            }]
+        ));
+        server.set_mod_digest(Some([7; 32]));
+        assert_eq!(
+            server.poll_handshakes().lifecycle,
+            vec![SlotEvent::Participating {
+                client_id: RELAY_CLIENT_ID
+            }]
+        );
+    }
+
+    // AC C12: a held client that disconnects never spawns and leaves no
+    // revealed record; its rejoin, on a fresh id, is held until it reveals.
+    #[test]
+    fn disconnect_clears_revealed_record() {
+        let (mut server, mut client) = settling_relay_pair();
+        client.set_revealed_level(Some("test-level".to_string()));
+        relay_client_to_server(&mut client, &mut server);
+        let _ = server.poll_handshakes();
+        assert!(server.revealed_declarations.contains_key(&RELAY_CLIENT_ID));
+
+        assert_eq!(
+            server.close_relay_connection(RELAY_CLIENT_ID, CloseCause::Disconnect),
+            None,
+            "a held slot has no participating pawn to clean up"
+        );
+        assert!(!server.revealed_declarations.contains_key(&RELAY_CLIENT_ID));
+        server.set_revealed_level(Some("test-level".to_string()));
+        assert_eq!(
+            participating_entries(&server.poll_handshakes().lifecycle),
+            0
+        );
+
+        const REJOIN_ID: ClientId = RELAY_CLIENT_ID + 1;
+        let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind rejoin socket");
+        let server_addr = server.local_addr()[0];
+        let mut rejoin = NetClient::new(
+            socket,
+            server_addr,
+            REJOIN_ID,
+            Duration::from_secs(1),
+            None,
+            None,
+        )
+        .expect("construct rejoin client");
+        server.add_relay_connection(REJOIN_ID, None);
+        rejoin.set_connected();
+        rejoin.set_mod_identity("postretro.test".to_string(), "1".to_string());
+        rejoin.set_mod_digest(Some([7; 32]));
+        rejoin.set_level_parity(Some(("test-level".to_string(), [9; 32])));
+
+        let flush = |rejoin: &mut NetClient, server: &mut NetServer| {
+            rejoin.update_connections(Duration::from_millis(16));
+            for packet in rejoin.packets_to_send() {
+                server.process_packet_from(&packet, REJOIN_ID);
+            }
+        };
+        flush(&mut rejoin, &mut server);
+        let held = server.poll_handshakes();
+        assert_eq!(participating_entries(&held.lifecycle), 0);
+        assert_eq!(server.slot_state(REJOIN_ID), Some(SlotState::Admitted));
+
+        rejoin.set_revealed_level(Some("test-level".to_string()));
+        flush(&mut rejoin, &mut server);
+        assert_eq!(
+            server.poll_handshakes().lifecycle,
+            vec![SlotEvent::Participating {
+                client_id: REJOIN_ID
+            }]
+        );
+    }
+
+    // AC C13: a demotion caused by the revealed term alone still sends the
+    // Holding diagnostic, which retires the client's participation epoch.
+    #[test]
+    fn revealed_only_demotion_sends_holding_and_retires_epoch() {
+        let (mut server, mut client) = participate_relay_pair();
+        relay_server_to_client(&mut server, &mut client);
+        assert!(client.drain_control().is_empty());
+        assert!(client.is_participating());
+
+        client.set_revealed_level(None);
+        relay_client_to_server(&mut client, &mut server);
+        let poll = server.poll_handshakes();
+        assert_eq!(
+            poll.lifecycle,
+            vec![SlotEvent::Demoted {
+                client_id: RELAY_CLIENT_ID,
+                cause: client_not_revealed(),
+            }]
+        );
+        assert_eq!(
+            poll.handshakes,
+            vec![HandshakeOutcome::ParityHeld {
+                client_id: RELAY_CLIENT_ID,
+                cause: client_not_revealed(),
+            }]
+        );
+        relay_server_to_client(&mut server, &mut client);
+        assert_eq!(
+            holding_causes(&client.drain_control()),
+            vec![client_not_revealed()]
+        );
+        assert!(!client.is_participating(), "the hold retires the epoch");
+
+        // The host half demotes the same way.
+        client.set_revealed_level(Some("test-level".to_string()));
+        relay_client_to_server(&mut client, &mut server);
+        assert_eq!(
+            participating_entries(&server.poll_handshakes().lifecycle),
+            1
+        );
+        relay_server_to_client(&mut server, &mut client);
+        let _ = client.drain_control();
+        assert!(client.is_participating());
+
+        server.set_revealed_level(None);
+        assert_eq!(
+            server.poll_handshakes().lifecycle,
+            vec![SlotEvent::Demoted {
+                client_id: RELAY_CLIENT_ID,
+                cause: host_not_revealed(),
+            }]
+        );
+        relay_server_to_client(&mut server, &mut client);
+        assert_eq!(
+            holding_causes(&client.drain_control()),
+            vec![host_not_revealed()]
+        );
+        assert!(!client.is_participating());
+    }
+
     #[derive(Debug, Clone)]
     enum ParityOperation {
         InstallMod(Option<u8>),
@@ -2527,23 +3246,35 @@ mod tests {
             mod_digest: u8,
             level: Option<(u8, u8)>,
         },
+        /// The host records (or clears) its own reveal of `map-{identity}`.
+        HostReveal(Option<u8>),
+        /// The client declares (or retracts) its reveal of `map-{identity}`.
+        ClientReveal(Option<u8>),
+    }
+
+    /// A small value domain, so generated declarations and reveals often match
+    /// the installed values and both predicate directions are exercised.
+    fn small() -> impl Strategy<Value = u8> {
+        0_u8..3
     }
 
     fn parity_operation() -> impl Strategy<Value = ParityOperation> {
         prop_oneof![
-            proptest::option::of(any::<u8>()).prop_map(ParityOperation::InstallMod),
-            proptest::option::of((any::<u8>(), any::<u8>()))
-                .prop_map(ParityOperation::InstallLevel),
-            (
-                any::<u8>(),
-                proptest::option::of((any::<u8>(), any::<u8>()))
-            )
+            proptest::option::of(small()).prop_map(ParityOperation::InstallMod),
+            proptest::option::of((small(), small())).prop_map(ParityOperation::InstallLevel),
+            (small(), proptest::option::of((small(), small())))
                 .prop_map(|(mod_digest, level)| ParityOperation::Declare { mod_digest, level }),
+            proptest::option::of(small()).prop_map(ParityOperation::HostReveal),
+            proptest::option::of(small()).prop_map(ParityOperation::ClientReveal),
         ]
     }
 
+    fn level_identity(identity: u8) -> String {
+        format!("map-{identity}")
+    }
+
     fn level_pair((identity, digest): (u8, u8)) -> (String, [u8; 32]) {
-        (format!("map-{identity}"), [digest; 32])
+        (level_identity(identity), [digest; 32])
     }
 
     #[derive(Default)]
@@ -2551,6 +3282,8 @@ mod tests {
         installed_mod: Option<u8>,
         installed_level: Option<(u8, u8)>,
         declaration: Option<(u8, Option<(u8, u8)>)>,
+        host_revealed: Option<u8>,
+        client_revealed: Option<u8>,
     }
 
     fn apply_parity_operation(
@@ -2578,6 +3311,24 @@ mod tests {
                 );
                 let _ = server.reevaluate_parity(Some(RELAY_CLIENT_ID));
             }
+            ParityOperation::HostReveal(value) => {
+                model.host_revealed = value;
+                server.set_revealed_level(value.map(level_identity));
+            }
+            ParityOperation::ClientReveal(value) => {
+                model.client_revealed = value;
+                match value {
+                    Some(identity) => {
+                        server
+                            .revealed_declarations
+                            .insert(RELAY_CLIENT_ID, level_identity(identity));
+                    }
+                    None => {
+                        server.revealed_declarations.remove(&RELAY_CLIENT_ID);
+                    }
+                }
+                let _ = server.reevaluate_parity(Some(RELAY_CLIENT_ID));
+            }
         }
         let expected = matches!(
             (
@@ -2592,6 +3343,8 @@ mod tests {
             ) if installed_mod == declared_mod
                 && installed_identity == declared_identity
                 && installed_digest == declared_digest
+                && model.host_revealed == Some(installed_identity)
+                && model.client_revealed == Some(installed_identity)
         );
         (server.is_participating(RELAY_CLIENT_ID), expected)
     }
@@ -2612,9 +3365,10 @@ mod tests {
                 prop_assert_eq!(actual, expected);
             }
 
-            // Every generated sequence finishes with an explicit demotion and
-            // recovery using the retained declaration, so both directions are
-            // exercised rather than left to random operation selection.
+            // Every generated sequence finishes with explicit demotions and
+            // recoveries using the retained declarations, so both directions of
+            // every term are exercised rather than left to random selection. The
+            // mod-digest recovery re-promotes on the retained reveals alone.
             for operation in [
                 ParityOperation::Declare {
                     mod_digest: 17,
@@ -2622,8 +3376,14 @@ mod tests {
                 },
                 ParityOperation::InstallLevel(Some((4, 23))),
                 ParityOperation::InstallMod(Some(17)),
+                ParityOperation::HostReveal(Some(4)),
+                ParityOperation::ClientReveal(Some(4)),
                 ParityOperation::InstallMod(Some(18)),
                 ParityOperation::InstallMod(Some(17)),
+                ParityOperation::ClientReveal(None),
+                ParityOperation::ClientReveal(Some(4)),
+                ParityOperation::HostReveal(None),
+                ParityOperation::HostReveal(Some(4)),
             ] {
                 let (actual, expected) =
                     apply_parity_operation(&mut server, &mut model, operation);

@@ -598,6 +598,17 @@ impl NetEndpoint {
         }
     }
 
+    /// Publish the level identity this peer has revealed, or `None` to retract
+    /// it at unload and suspend. A host records its own reveal; a client
+    /// declares its reveal to the host. A slot participates only once both
+    /// peers have revealed the host's installed level.
+    pub fn set_revealed_level(&mut self, level: Option<String>) {
+        match self {
+            Self::Host { server, .. } => server.set_revealed_level(level),
+            Self::Client { client, .. } => client.set_revealed_level(level),
+        }
+    }
+
     /// Install the client-owned per-owner persistence seed to send with the
     /// next parity declaration. This is intentionally a no-op for hosts.
     pub fn set_join_seed(&mut self, slots: BTreeMap<String, JoinSeedValue>) {

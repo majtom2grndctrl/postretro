@@ -876,6 +876,7 @@ mod tests {
         client.set_mod_identity("postretro.seat-test".to_string(), "1.0.0".to_string());
         client.set_mod_digest(Some(RELAY_MOD_DIGEST));
         client.set_level_parity(Some((level.to_string(), RELAY_LEVEL_DIGEST)));
+        postretro_net::harness::reveal_both(server, client, level);
     }
 
     fn relay_client_to_server(client_id: u64, client: &mut NetClient, server: &mut NetServer) {

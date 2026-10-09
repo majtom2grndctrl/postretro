@@ -734,7 +734,11 @@ activation commands/outcomes advance the application protocol to PRL8 and wire t
 24. Explicit projectile body size/model scale/shot identity and reliable frozen
 observer weapon cues advance the application protocol to PRL9, `WIRE_VERSION` to
 25, and `SNAPSHOT_VERSION` to 17. Incompatible peers fail the handshake; snapshot
-17 independently rejects older snapshot envelopes. The PRL level-file format is
+17 independently rejects older snapshot envelopes. The client's revealed-level
+Control declaration and the two revealed holding causes advance the application
+protocol to 10, spelled `PRLA` because the id is four ASCII bytes. They are appended
+variants and the append-layout guards show no shipped encoding changed, so
+`WIRE_VERSION` stays 25. The PRL level-file format is
 unchanged. The host movement descriptor's knockback response advances the tuning
 epoch to 9; host-resolved activation programs/scaling bases advance it to 10.
 Slot-correlated owner-private weapon samples change only the state-schema fingerprint,

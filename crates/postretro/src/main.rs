@@ -246,7 +246,13 @@ fn client_drain_control(app: &mut App, controls: Vec<ServerControlMessage>) {
                 );
             }
             ServerControlMessage::Divergence(DivergenceReason::Holding(cause)) => {
-                log::warn!("[Net] host is holding this client for content parity: {cause:?}");
+                if cause.is_revealed_hold() {
+                    log::info!(
+                        "[Net] host is holding this client until both peers reveal the level: {cause:?}"
+                    );
+                } else {
+                    log::warn!("[Net] host is holding this client for content parity: {cause:?}");
+                }
                 if let Some(session) = app.session.as_mut()
                     && let Some(endpoint) = session.net_endpoint.as_mut()
                 {
@@ -3919,9 +3925,15 @@ impl App {
                                         log::warn!("[Net] client {client_id} rejected: {cause:?}");
                                     }
                                     HandshakeOutcome::ParityHeld { client_id, cause } => {
-                                        log::info!(
-                                            "[Net] client {client_id} held for content parity: {cause:?}"
-                                        );
+                                        if cause.is_revealed_hold() {
+                                            log::info!(
+                                                "[Net] client {client_id} held until both peers reveal the level: {cause:?}"
+                                            );
+                                        } else {
+                                            log::info!(
+                                                "[Net] client {client_id} held for content parity: {cause:?}"
+                                            );
+                                        }
                                     }
                                 }
                             }

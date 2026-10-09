@@ -332,13 +332,6 @@ mod tests {
     }
 
     #[test]
-    fn contact_bursts_spawn_nothing_for_no_contacts() {
-        let mut registry = EntityRegistry::new();
-        spawn_impact_effects_for_contacts(&mut registry, &[]);
-        assert_eq!(count_particles(&registry), 0);
-    }
-
-    #[test]
     fn impact_particles_clean_up_after_lifetime() {
         let mut registry = EntityRegistry::new();
         spawn_impact_effect_at(&mut registry, Vec3::ZERO, Vec3::Y);

@@ -23,16 +23,43 @@ pub(in crate::sim) fn run_remote_weapon_commands(
     let mut weapon_events = Vec::new();
 
     for remote in remote_pawn_commands {
-        // Remote authorization requires live ownership. A delayed command for a
-        // despawned pawn must not mutate its former weapon or mint an open shot.
-        if !registry.exists(remote.pawn) {
-            continue;
-        }
+        // A start this command carries, admitted or refused by the guard. Every
+        // path that runs no machine still settles it, so its token reaches a
+        // terminal and the client learns of the refusal.
+        let start = remote
+            .command
+            .activation
+            .initiation
+            .or(remote.rejected_activation);
+        let refuse_start = |weapon: EntityId, recovery_ms: f32| {
+            start.map(|token| super::super::super::RemoteActivationProgress {
+                pawn: remote.pawn,
+                owner_client_id: remote.owner_client_id,
+                weapon,
+                tick: remote.fire_tick,
+                recovery_ms,
+                advance: weapon::execution::WeaponActivationAdvance {
+                    rejected: Some(token),
+                    ..Default::default()
+                },
+            })
+        };
+        // The guard binds a weapon to every start and settles one with none.
         let Some(weapon) = remote.weapon else {
             continue;
         };
+        // Remote authorization requires live ownership. A delayed command for a
+        // despawned pawn must not mutate its former weapon or mint an open shot.
+        if !registry.exists(remote.pawn) {
+            let recovery_ms = registry
+                .get_component::<WeaponComponent>(weapon)
+                .map_or(0.0, |component| component.cooldown_remaining_ms);
+            activation_progress.extend(refuse_start(weapon, recovery_ms));
+            continue;
+        }
         let Ok(mut weapon_component) = registry.get_component::<WeaponComponent>(weapon).cloned()
         else {
+            activation_progress.extend(refuse_start(weapon, 0.0));
             continue;
         };
         // The command bound its weapon before this tick's drop or hand-over
@@ -42,24 +69,8 @@ pub(in crate::sim) fn run_remote_weapon_commands(
             .get_component::<Inventory>(remote.pawn)
             .is_ok_and(|inventory| !inventory.wieldables.contains(&Some(weapon)))
         {
-            if let Some(token) = remote
-                .command
-                .activation
-                .initiation
-                .or(remote.rejected_activation)
-            {
-                activation_progress.push(super::super::super::RemoteActivationProgress {
-                    pawn: remote.pawn,
-                    owner_client_id: remote.owner_client_id,
-                    weapon,
-                    tick: remote.fire_tick,
-                    recovery_ms: weapon_component.cooldown_remaining_ms,
-                    advance: weapon::execution::WeaponActivationAdvance {
-                        rejected: Some(token),
-                        ..Default::default()
-                    },
-                });
-            }
+            activation_progress
+                .extend(refuse_start(weapon, weapon_component.cooldown_remaining_ms));
             continue;
         }
         let pose_available = (weapon_component.resolution != ResolutionMode::Projectile
@@ -360,8 +371,9 @@ fn remote_projectile_aim(
     let movement = registry
         .get_component::<PlayerMovementComponent>(remote.pawn)
         .ok()?;
-    // A delivered start fires along the aim its own command declared. A
-    // non-finite start aim falls back to the delivering command's aim.
+    // A delivered start fires along the aim its own command declared. Intake
+    // already rejects non-finite aim, so the fallback to the delivering
+    // command's aim is defence in depth.
     let (yaw, pitch) = remote
         .start_aim
         .filter(|aim| aim.yaw.is_finite() && aim.pitch.is_finite())
@@ -446,5 +458,44 @@ mod tests {
                 .shells_fired,
             0
         );
+    }
+
+    // Regression: a start reaching the weapon stage after its pawn or weapon
+    // component vanished earlier in the tick was dropped silently: no progress,
+    // so its token never settled and the client never learned of the refusal.
+    #[test]
+    fn remote_start_whose_pawn_or_weapon_vanished_this_tick_is_still_refused() {
+        let (gone_pawn, pawn, weapon) = armed_pawn(true);
+        gone_pawn.borrow_mut().despawn(pawn).unwrap();
+        let (gone_component, other_pawn, other_weapon) = armed_pawn(true);
+        gone_component
+            .borrow_mut()
+            .remove_component::<WeaponComponent>(other_weapon)
+            .unwrap();
+        for (registry, pawn, weapon) in [
+            (gone_pawn, pawn, weapon),
+            (gone_component, other_pawn, other_weapon),
+        ] {
+            let mut command = remote_command(pawn, Some(weapon), 42, 9, true, false);
+            let start = command.command.activation.initiation;
+            let events = run_remote_only_tick(registry.clone(), std::slice::from_ref(&command));
+            let [progress] = events.remote_activation_progress.as_slice() else {
+                panic!("the start settles: {:?}", events.remote_activation_progress);
+            };
+            assert_eq!(progress.advance.rejected, start);
+            assert!(events.authorized_shots.is_empty());
+
+            // A start the guard already refused settles the same way.
+            command.command.activation.initiation = None;
+            command.rejected_activation = start;
+            let events = run_remote_only_tick(registry, &[command]);
+            let [progress] = events.remote_activation_progress.as_slice() else {
+                panic!(
+                    "the refusal settles: {:?}",
+                    events.remote_activation_progress
+                );
+            };
+            assert_eq!(progress.advance.rejected, start);
+        }
     }
 }

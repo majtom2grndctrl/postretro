@@ -1,32 +1,45 @@
-// Use and drop rising edges retained beside movement playout.
+// Reload, use and drop presses retained beside movement playout, and their
+// delivery in the client's order.
 // See: context/lib/networking.md §Host input command queue
 //
-// Both arrive as one-tick edges on the wire, so a catch-up trim or stale-drop of
-// the carrying command would erase the press. Intake records each edge from the
-// reliable-ordered stream first; an advancing resolution delivers each one once,
-// in order, after its tick resolves and behind any older retained start. Unlike
-// reload these are edges, not levels, so no low tick is needed before a
-// recovered press.
+// Use and drop arrive as one-tick edges on the wire, so a catch-up trim or
+// stale-drop of the carrying command would erase the press. Intake records each
+// edge from the reliable-ordered stream first; an advancing resolution delivers
+// each one once, in order, after its tick resolves and behind any older retained
+// start. Unlike reload these are edges, not levels, so no low tick is needed
+// before a recovered press.
 
 use std::collections::VecDeque;
 
 use postretro_net::wire::InputCommand;
 
+use super::ClientCommandState;
 use crate::activation_edges::MAX_RETAINED_ACTIVATION_EDGES;
 use crate::prediction::client_tick_le;
 use crate::sim::SimCommand;
+use postretro_foundation::ActivationToken;
 
 /// Per-lane bound, the same as the retained activation start and edge lanes.
 const MAX_RETAINED_PRESSES: usize = MAX_RETAINED_ACTIVATION_EDGES;
 
-/// Which due presses an advancing resolution may deliver. A press must not
-/// reach the weapon ahead of an older start still waiting in its lane: a
-/// reload or drop delivered first would refuse, or fire the wrong weapon for,
-/// a shot the client fired before it. On the tick a start is delivered, a
-/// later press would also land on that start's weapon.
+/// A retained press: its command's client tick and the firing slot that
+/// command named, the weapon the client held when it pressed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct Press {
+    pub tick: u32,
+    pub slot: u8,
+}
+
+/// Which due presses an advancing resolution may deliver, by client tick. A
+/// press must not reach the weapon ahead of an older start still waiting in its
+/// lane, nor ahead of a shot the live execution owes from before it: a reload or
+/// drop delivered first would refuse, or fire the wrong weapon for, a shot the
+/// client fired before it. On the tick a start is delivered, a later press
+/// would also land on that start's weapon. Any input the client stamps with a
+/// tick and the host must apply in order can share this gate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum PressGate {
-    /// No start is retained.
+    /// Nothing older is waiting.
     Open,
     /// Presses stamped at or before this client tick.
     Through(u32),
@@ -39,12 +52,37 @@ impl PressGate {
             Self::Through(horizon) => client_tick_le(tick, horizon),
         }
     }
+
+    /// Admits only what both gates admit.
+    pub(super) fn and(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Open, gate) | (gate, Self::Open) => gate,
+            (Self::Through(a), Self::Through(b)) => {
+                Self::Through(serial_oldest([a, b]).unwrap_or(a))
+            }
+        }
+    }
+
+    pub(super) fn through(horizon: Option<u32>) -> Self {
+        horizon.map_or(Self::Open, Self::Through)
+    }
+}
+
+/// Serially oldest of `ticks`, wrap-aware.
+fn serial_oldest(ticks: impl IntoIterator<Item = u32>) -> Option<u32> {
+    ticks.into_iter().reduce(|oldest, tick| {
+        if client_tick_le(tick, oldest) {
+            tick
+        } else {
+            oldest
+        }
+    })
 }
 
 #[derive(Debug, Default)]
 pub(super) struct PressEdges {
-    use_presses: VecDeque<u32>,
-    drop_presses: VecDeque<u32>,
+    use_presses: VecDeque<Press>,
+    drop_presses: VecDeque<Press>,
     /// Newest command tick observed. Only strictly newer commands contribute an
     /// edge, so duplicate or stale retransmits cannot add a press.
     latest_observed: Option<u32>,
@@ -59,57 +97,141 @@ impl PressEdges {
             return;
         }
         self.latest_observed = Some(command.client_tick);
+        let press = Press {
+            tick: command.client_tick,
+            slot: command.movement.firing_slot,
+        };
         for (pressed, presses) in [
             (command.movement.use_pressed, &mut self.use_presses),
             (command.movement.drop_pressed, &mut self.drop_presses),
         ] {
             if pressed && presses.len() < MAX_RETAINED_PRESSES {
-                presses.push_back(command.client_tick);
+                presses.push_back(press);
             }
         }
     }
 
-    /// Replace the resolved command's use and drop bits with at most one due
-    /// retained press each that `gate` admits. Only advancing resolutions call this.
-    pub(super) fn deliver(
+    /// Replace the resolved command's use and drop bits with the retained press
+    /// at the front of each lane stamped at `tick`. Returns the dropped press's
+    /// slot. Only advancing resolutions call this.
+    fn deliver(&mut self, tick: Option<u32>, command: &mut SimCommand) -> Option<u8> {
+        let use_pressed = take_at(&mut self.use_presses, tick).is_some();
+        let dropped = take_at(&mut self.drop_presses, tick);
+        command.use_pressed = use_pressed;
+        command.movement.use_pressed = use_pressed;
+        command.drop_pressed = dropped.is_some();
+        command.movement.drop_pressed = dropped.is_some();
+        dropped.map(|press| press.slot)
+    }
+
+    fn fronts(&self) -> impl Iterator<Item = u32> + '_ {
+        [self.use_presses.front(), self.drop_presses.front()]
+            .into_iter()
+            .flatten()
+            .map(|press| press.tick)
+    }
+}
+
+fn take_at(presses: &mut VecDeque<Press>, tick: Option<u32>) -> Option<Press> {
+    if presses.front().map(|press| press.tick) == tick && tick.is_some() {
+        presses.pop_front()
+    } else {
+        None
+    }
+}
+
+impl ClientCommandState {
+    /// Oldest reload, use, or drop press whose tick has resolved.
+    pub(super) fn oldest_due_press(&self, resolved_tick: u32) -> Option<u32> {
+        serial_oldest(
+            self.pending_reload_presses
+                .front()
+                .map(|press| press.tick)
+                .into_iter()
+                .chain(self.press_edges.fronts())
+                .filter(|tick| client_tick_le(*tick, resolved_tick)),
+        )
+    }
+
+    /// Deliver the presses of one client tick: the oldest due press tick, once
+    /// `gate` admits it. Presses of different client ticks never share a
+    /// resolution, so the sim's fixed stage order (drop before use, reload
+    /// after) cannot reorder them. A delivered reload or drop names the slot it
+    /// was pressed in, and this resolution fires from that slot so the press
+    /// reaches the weapon the client held.
+    ///
+    /// Bound: each advancing resolution delivers every lane's press at the
+    /// oldest admitted tick (a reload may first need one low tick), so a press
+    /// waits at most one resolution per older press tick, plus whatever holds
+    /// `gate`.
+    pub(super) fn deliver_presses(
         &mut self,
         resolved_tick: u32,
         gate: PressGate,
         command: &mut SimCommand,
     ) {
-        let use_pressed = take_due(&mut self.use_presses, resolved_tick, gate);
-        let drop_pressed = take_due(&mut self.drop_presses, resolved_tick, gate);
-        command.use_pressed = use_pressed;
-        command.movement.use_pressed = use_pressed;
-        command.drop_pressed = drop_pressed;
-        command.movement.drop_pressed = drop_pressed;
+        let tick = self
+            .oldest_due_press(resolved_tick)
+            .filter(|tick| gate.admits(*tick));
+        let reloaded = self.deliver_reload_press(resolved_tick, tick, command);
+        let dropped = self.press_edges.deliver(tick, command);
+        if let Some(slot) = reloaded.or(dropped) {
+            command.firing_slot = slot;
+        }
     }
 
-    /// Oldest use or drop press whose tick has resolved.
-    pub(super) fn oldest_due(&self, resolved_tick: u32) -> Option<u32> {
-        [self.use_presses.front(), self.drop_presses.front()]
-            .into_iter()
-            .flatten()
+    /// Reload is a level on the wire. A due press that is not this tick's, or
+    /// that follows a high level the weapon already saw, emits a low tick and
+    /// stays queued: the low tick clears `WeaponComponent::reload_press_consumed`,
+    /// and a press held back must not be stood in for by the raw level.
+    fn deliver_reload_press(
+        &mut self,
+        resolved_tick: u32,
+        tick: Option<u32>,
+        command: &mut SimCommand,
+    ) -> Option<u8> {
+        let mut delivered = None;
+        if let Some(press) = self
+            .pending_reload_presses
+            .front()
             .copied()
-            .filter(|tick| client_tick_le(*tick, resolved_tick))
-            .reduce(|oldest, tick| {
-                if client_tick_le(tick, oldest) {
-                    tick
-                } else {
-                    oldest
-                }
-            })
+            .filter(|press| client_tick_le(press.tick, resolved_tick))
+        {
+            if self.last_emitted_reload || tick != Some(press.tick) {
+                command.reload = false;
+            } else {
+                command.reload = true;
+                self.pending_reload_presses.pop_front();
+                delivered = Some(press.slot);
+            }
+        }
+        self.last_emitted_reload = command.reload;
+        delivered
     }
-}
 
-fn take_due(presses: &mut VecDeque<u32>, resolved_tick: u32, gate: PressGate) -> bool {
-    let due = presses
-        .front()
-        .is_some_and(|tick| client_tick_le(*tick, resolved_tick) && gate.admits(*tick));
-    if due {
-        presses.pop_front();
+    /// A non-advancing hold replays its held command's reload level. While the
+    /// oldest due reload press is held back, by an older press, an older start,
+    /// or the live execution, the replayed level must not deliver it early.
+    pub(super) fn hold_gated_reload(
+        &self,
+        live: Option<ActivationToken>,
+        command: &mut SimCommand,
+    ) {
+        let Some(cursor) = self.resolved_cursor else {
+            return;
+        };
+        let held_back = self
+            .pending_reload_presses
+            .front()
+            .filter(|press| client_tick_le(press.tick, cursor))
+            .is_some_and(|press| {
+                self.oldest_due_press(cursor) != Some(press.tick)
+                    || !self.order_gate(live, None).admits(press.tick)
+            });
+        if held_back {
+            command.reload = false;
+        }
     }
-    due
 }
 
 #[cfg(test)]
@@ -365,5 +487,189 @@ mod tests {
             ticks.iter().all(|(tick, dropped)| *dropped == (*tick == 3)),
             "{ticks:?}"
         );
+    }
+
+    // Regression: presses from different client ticks delivered on one
+    // resolution applied in the sim's fixed stage order, so a drop pressed after
+    // a use reached the host first.
+    #[test]
+    fn presses_of_different_client_ticks_never_share_a_resolution() {
+        let mut queues = HostCommandQueues::new();
+        let backlog = (2..20).map(|tick| {
+            let mut command = command(tick);
+            command.movement.use_pressed = tick == 3;
+            command.movement.drop_pressed = tick == 4;
+            command.reload = tick == 4;
+            command
+        });
+        let resolved = resolve_stall(&mut queues, backlog, 6);
+        assert!(
+            resolved[0].client_tick > 4,
+            "the backlog must take the catch-up trim"
+        );
+        let used = only_once(&resolved, |resolved| resolved.command.use_pressed);
+        let dropped = only_once(&resolved, |resolved| resolved.command.drop_pressed);
+        let reloaded = only_once(&resolved, |resolved| resolved.command.reload);
+        assert!(used < dropped, "use on {used}, drop on {dropped}");
+        assert_eq!(
+            dropped, reloaded,
+            "presses of one client tick ride together"
+        );
+    }
+
+    // Regression: a retained reload or drop press reached whatever weapon the
+    // delivering command named, so a reload pressed on slot 1 before a switch to
+    // slot 0 reloaded slot 0's weapon.
+    #[test]
+    fn reload_and_drop_reach_the_slot_they_were_pressed_in_after_a_switch() {
+        let mut queues = HostCommandQueues::new();
+        let backlog = (2..20).map(|tick| {
+            let mut command = command(tick);
+            command.movement.firing_slot = u8::from(tick <= 4);
+            command.reload = tick == 3;
+            command.movement.drop_pressed = tick == 4;
+            if tick == 7 {
+                start(&mut command);
+            }
+            command
+        });
+        let resolved = resolve_stall(&mut queues, backlog, 6);
+        assert!(
+            resolved[0].client_tick > 7,
+            "the backlog must take the catch-up trim"
+        );
+        let reloaded = only_once(&resolved, |resolved| resolved.command.reload);
+        let dropped = only_once(&resolved, |resolved| resolved.command.drop_pressed);
+        let fired = only_once(&resolved, |resolved| {
+            resolved.command.activation.initiation.is_some()
+        });
+        assert_eq!(resolved[reloaded].command.firing_slot, 1);
+        assert_eq!(resolved[dropped].command.firing_slot, 1);
+        assert_eq!(resolved[fired].command.firing_slot, 0, "slot 0 fires");
+        assert!(reloaded < dropped && dropped < fired);
+    }
+
+    // Regression: a frontier freeze replayed the held command's high reload
+    // level while its press waited behind an older retained start, so the
+    // weapon saw a rising edge and reloaded ahead of that start.
+    #[test]
+    fn frontier_freeze_never_replays_a_reload_press_held_behind_an_older_start() {
+        let mut queues = HostCommandQueues::new();
+        let mut reload = command(10);
+        reload.reload = true;
+        let mut state = ClientCommandState {
+            resolved_cursor: Some(10),
+            last_resolved: Some(reload),
+            last_emitted_reload: false,
+            pending_reload_presses: VecDeque::from([Press { tick: 6, slot: 0 }]),
+            latest_observed_reload: Some((10, true)),
+            ..Default::default()
+        };
+        state.activation_edges.observe_start(
+            postretro_foundation::ActivationToken {
+                start_tick: 5,
+                lane: postretro_foundation::ActivationLane::Primary,
+            },
+            0,
+            crate::sim::RemoteStartAim {
+                pitch: 0.0,
+                yaw: 0.0,
+            },
+        );
+        queues.clients.insert(CLIENT, state);
+        let frozen = queues.resolve_tick(CLIENT).unwrap();
+        assert_eq!(frozen.source, ResolutionSource::Held);
+        assert_eq!(frozen.client_tick, 11, "a non-advancing freeze");
+        assert!(
+            !frozen.command.reload,
+            "the held-back press is not replayed"
+        );
+    }
+
+    fn burst() -> postretro_foundation::ActivationProgram {
+        use postretro_foundation::ActivationStep::{Shot, Wait};
+        postretro_foundation::ActivationProgram::new(
+            vec![Shot, Wait { ticks: 2 }, Shot, Wait { ticks: 2 }, Shot],
+            None,
+            8,
+        )
+        .unwrap()
+    }
+
+    /// A start at tick 4 stalled into the catch-up trim, then a press stamped
+    /// `press_after` ticks later. Admits the start as the host machine would
+    /// (`charges` for a charged action) and resolves `resolutions` more ticks,
+    /// ending the execution after `live_for` of them. The first resolution
+    /// delivers the start.
+    fn late_start_then_reload(
+        press_after: u32,
+        charges: bool,
+        live_for: usize,
+        resolutions: u32,
+    ) -> Vec<ResolvedCommand> {
+        let mut queues = HostCommandQueues::new();
+        let pressed = 4 + press_after;
+        let backlog = (2..pressed + 12).map(|tick| {
+            let mut command = command(tick);
+            if tick == 4 {
+                start(&mut command);
+            }
+            command.reload = tick == pressed;
+            command
+        });
+        let mut resolved = resolve_stall(&mut queues, backlog, 1);
+        let start = resolved[0]
+            .command
+            .activation
+            .initiation
+            .expect("the late start is delivered first");
+        assert!(resolved[0].client_tick > pressed, "the press is due");
+        let id = postretro_foundation::ActivationId {
+            pawn: 1,
+            token: start,
+        };
+        let weapon = postretro_entities::EntityId::from_raw(9);
+        assert!(queues.activations.accept(CLIENT, id, weapon, &burst(), 0));
+        queues.activation_admitted(CLIENT, start, charges);
+        let next = pressed + 12;
+        for offset in 0..resolutions {
+            if offset as usize == live_for {
+                queues.activations.terminal(CLIENT, id, 0);
+            }
+            queues.ingest(CLIENT, &command(next + offset));
+            resolved.push(queues.resolve_tick(CLIENT).unwrap());
+        }
+        resolved
+    }
+
+    // Regression: after a late start's delivery, a reload the client pressed
+    // mid-burst reached the host on the next tick and cut short the burst the
+    // client had fired up to that press.
+    #[test]
+    fn press_stamped_mid_burst_waits_until_the_late_bursts_clock_reaches_it() {
+        let resolved = late_start_then_reload(3, false, usize::MAX, 8);
+        let reload = only_once(&resolved, |resolved| resolved.command.reload);
+        assert_eq!(
+            reload, 3,
+            "delivered when the burst's clock reaches the press"
+        );
+    }
+
+    /// The wait on a live execution is bounded: it ends when the execution ends,
+    /// however far its clock trails the press.
+    #[test]
+    fn press_waiting_on_a_live_execution_goes_once_it_ends() {
+        let resolved = late_start_then_reload(40, false, 3, 8);
+        let reload = only_once(&resolved, |resolved| resolved.command.reload);
+        assert_eq!(reload, 4, "held while live, delivered on the next tick");
+    }
+
+    /// A charge's shots begin at its release, so a press during the charge
+    /// waits on nothing.
+    #[test]
+    fn press_during_an_unreleased_charge_is_not_held() {
+        let resolved = late_start_then_reload(3, true, usize::MAX, 8);
+        let reload = only_once(&resolved, |resolved| resolved.command.reload);
+        assert_eq!(reload, 1);
     }
 }

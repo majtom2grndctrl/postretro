@@ -344,6 +344,8 @@ struct Fixture {
     playout: Vec<(u32, u32, netcode::ResolutionSource)>,
     /// `(host tick, start)` per retained start the lane refused.
     lane_refusals: Vec<(u32, ActivationToken)>,
+    /// `(host tick, command)` per host resolution, as playout delivered it.
+    resolved_commands: Vec<(u32, netcode::ResolvedPawnCommand)>,
     /// Camera pitch the next `send_input` declares.
     aim_pitch: f32,
     /// `(host tick, owned pawn facing yaw)` after each host simulation tick.
@@ -433,6 +435,7 @@ impl Fixture {
             expired: Vec::new(),
             playout: Vec::new(),
             lane_refusals: Vec::new(),
+            resolved_commands: Vec::new(),
             aim_pitch: 0.0,
             host_facing: Vec::new(),
         };
@@ -817,6 +820,7 @@ impl Fixture {
             if let Some(start) = resolved.rejected_activation {
                 self.lane_refusals.push((self.tick, start));
             }
+            self.resolved_commands.push((self.tick, resolved.clone()));
             let mut registry = self.host.borrow_mut();
             observe_lifecycle(
                 &mut registry,
@@ -3097,4 +3101,209 @@ fn conditioned_handed_back_weapon_cannot_fire_on_its_old_holders_stale_record() 
         )),
         "the stale-stamped start is refused, not admitted on the old record"
     );
+}
+
+/// Host ticks from when the client sent its command at `client_tick` to `host_tick`.
+fn delay_since_sent(fixture: &Fixture, client_tick: u32, host_tick: u32) -> u32 {
+    let sent = fixture
+        .sent
+        .iter()
+        .position(|input| input.client_tick == client_tick)
+        .expect("the command was sent");
+    host_tick - fixture.sent_at[sent]
+}
+
+/// A clean link carries no stall, so playout delivers each command within a
+/// few ticks of sending it.
+const CLEAN_LINK_DELIVERY_TICKS: u32 = 4;
+
+/// A 600 ms press rifle in slot 0, tapped twice 3 ticks apart: the second tap
+/// lands inside its recovery, so the client's prediction refuses it, but the
+/// client names a start on every rising edge as production does. `then` runs
+/// the client ticks after it.
+fn double_tap_then(then: impl Fn(u32) -> sim::SimCommand) -> Fixture {
+    let mut fixture = Fixture::new(LinkConfig::perfect(), hitscan_rifle("press", 600.0));
+    fixture.mirror_rejection_despawn = true;
+    fixture.equip_second(&hitscan_rifle("press", 130.0));
+    let start = 1000u32;
+    for offset in 0..60 {
+        let tick = start + offset;
+        let command = match offset {
+            0 | 3 => stamped_start(tick),
+            _ => then(offset),
+        };
+        fixture.step(tick, command);
+    }
+    fixture.idle(start + 60, 60);
+    let refused_tap = token(start + 3, ActivationLane::Primary);
+    assert!(
+        fixture
+            .snapshots
+            .iter()
+            .all(|shot| shot.activation.shot_id.start_tick != refused_tap.start_tick),
+        "the client's prediction refuses the second tap"
+    );
+    assert!(
+        fixture
+            .sent
+            .iter()
+            .any(|input| input.activation.initiation == Some(wire_token(refused_tap))),
+        "but still names its start"
+    );
+    assert!(
+        fixture.outcomes.iter().any(|outcome| matches!(outcome,
+            wire::ActivationOutcome::InitiationRejected { token, .. } if *token == wire_token(refused_tap))),
+        "the host refuses it"
+    );
+    assert!(
+        fixture
+            .authorized
+            .iter()
+            .all(|shot| shot.shot_id.start_tick != refused_tap.start_tick)
+    );
+    fixture
+}
+
+// Regression: a tap the client's prediction refused still named a start, which
+// waited at the host's lane front on host time for most of the weapon's
+// recovery. A switch-and-fire or a reload right after the double tap waited
+// behind it, about half a second on a clean link.
+#[test]
+fn conditioned_locally_refused_tap_never_delays_a_following_switch_and_fire() {
+    let fired = 1006u32;
+    let fixture = double_tap_then(|offset| {
+        let mut command = if offset == 6 {
+            stamped_start(1000 + offset)
+        } else {
+            neutral()
+        };
+        if offset == 5 {
+            command.select_slot = Some(1);
+        }
+        command
+    });
+    let shot = fixture
+        .authorized
+        .iter()
+        .find(|shot| shot.shot_id.start_tick == fired)
+        .expect("the switched-to weapon fires");
+    assert_ne!(shot.weapon, fixture.host_actors.weapon, "fired from slot 1");
+    let delay = delay_since_sent(&fixture, fired, shot.fire_tick);
+    assert!(
+        delay <= CLEAN_LINK_DELIVERY_TICKS,
+        "fired {delay} host ticks after sending"
+    );
+}
+
+#[test]
+fn conditioned_locally_refused_tap_never_delays_a_following_reload() {
+    let pressed = 1005u32;
+    let fixture = double_tap_then(|offset| {
+        let mut command = neutral();
+        command.reload = offset == 5;
+        command
+    });
+    let (host_tick, _) = fixture
+        .resolved_commands
+        .iter()
+        .find(|(_, resolved)| resolved.command.reload)
+        .expect("the reload press reaches the host");
+    let delay = delay_since_sent(&fixture, pressed, *host_tick);
+    assert!(
+        delay <= CLEAN_LINK_DELIVERY_TICKS,
+        "reloaded {delay} host ticks after sending"
+    );
+}
+
+/// A three-round burst tapped at `TAP`, whose input then stalls into the
+/// catch-up trim, so the host admits the start late. Four ticks into the burst,
+/// after its second shot and before its third, `edge` adds a reload press or
+/// the burst's cancel.
+fn late_burst_with_edge(edge: impl Fn(&mut sim::SimCommand, ActivationToken)) -> Fixture {
+    const START: u32 = 1000;
+    const TAP: u32 = 10;
+    const STALL: std::ops::Range<u32> = 8..30;
+    let mut fixture = Fixture::new(LinkConfig::perfect(), burst_rifle("press", 130.0));
+    fixture.mirror_rejection_despawn = true;
+    let tap = token(START + TAP, ActivationLane::Primary);
+    let mut withheld = Vec::new();
+    for offset in 0..60 {
+        let tick = START + offset;
+        let mut command = if offset == TAP {
+            stamped_start(tick)
+        } else {
+            neutral()
+        };
+        if offset == TAP + 4 {
+            edge(&mut command, tap);
+        }
+        fixture.predict(tick, &mut command);
+        if STALL.contains(&offset) {
+            withheld.push((tick, command));
+        } else {
+            for (tick, command) in withheld.drain(..) {
+                fixture.send_input(tick, &command);
+            }
+            fixture.send_input(tick, &command);
+        }
+        fixture.advance_projectiles();
+        fixture.host_tick();
+    }
+    fixture.idle(START + 60, 120);
+    let delivered = fixture
+        .resolved_commands
+        .iter()
+        .find(|(_, resolved)| resolved.command.activation.initiation == Some(tap))
+        .map(|(_, resolved)| resolved.client_tick)
+        .expect("the stalled start is delivered");
+    assert!(
+        delivered > tap.start_tick + 4,
+        "the start is admitted late, behind its edge"
+    );
+    let predicted: Vec<u8> = fixture
+        .snapshots
+        .iter()
+        .map(|shot| shot.activation.shot_id.ordinal)
+        .collect();
+    assert_eq!(
+        predicted,
+        vec![0, 1],
+        "the client fires two rounds before its edge"
+    );
+    fixture
+}
+
+fn assert_host_fires_what_the_client_fired(fixture: &Fixture) {
+    let predicted: Vec<ShotId> = fixture
+        .snapshots
+        .iter()
+        .map(|shot| shot.activation.shot_id)
+        .collect();
+    let authorized: Vec<ShotId> = fixture.authorized.iter().map(|shot| shot.shot_id).collect();
+    assert_eq!(
+        authorized, predicted,
+        "the host mints every round the client fired, no more"
+    );
+    assert!(
+        fixture.hit_refusals.is_empty(),
+        "{:?}",
+        fixture.hit_refusals
+    );
+}
+
+// Regression: after a late start's delivery, a reload the client pressed
+// mid-burst reached the host on the next tick and cut the burst short of a
+// round the client had already fired, so that round's HIT was denied.
+#[test]
+fn conditioned_reload_pressed_mid_burst_keeps_every_round_fired_before_it_after_a_stall() {
+    let fixture = late_burst_with_edge(|command, _| command.reload = true);
+    assert_host_fires_what_the_client_fired(&fixture);
+}
+
+// Regression: the same for a cancel, which reached the host on the start's own
+// delivery tick.
+#[test]
+fn conditioned_cancel_mid_burst_keeps_every_round_fired_before_it_after_a_stall() {
+    let fixture = late_burst_with_edge(|command, tap| command.activation.cancel = Some(tap));
+    assert_host_fires_what_the_client_fired(&fixture);
 }

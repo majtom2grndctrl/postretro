@@ -32,9 +32,10 @@ use postretro_entities::{EntityId, EntityRegistry};
 
 mod activation_admission;
 mod activation_cadence;
+mod departed_weapons;
 mod press_edges;
 pub use activation_cadence::CadenceVerdict;
-use press_edges::PressGate;
+use press_edges::Press;
 
 /// Host-side movement-authority owner map: `EntityId -> owning client id`. The
 /// engine-side metadata snapshot production stamps onto each owned pawn's
@@ -214,9 +215,11 @@ struct ClientCommandState {
     /// Reload is a level bit at the wire/sim boundary but an edge-triggered action at
     /// the weapon. Record rising edges from the reliable-ordered receive stream before
     /// stale-drop or catch-up trimming so a delayed tap survives command recovery.
-    pending_reload_presses: VecDeque<u32>,
+    pending_reload_presses: VecDeque<Press>,
     /// Newest command observed at intake and its reload level. Only strictly newer
-    /// ticks advance this pair, so duplicate/stale retransmits cannot mint another edge.
+    /// ticks advance this pair, so duplicate/stale retransmits cannot mint another
+    /// edge. Its tick is also the newest client tick received, which cadence
+    /// measures a start's lag against.
     latest_observed_reload: Option<(u32, bool)>,
     /// Reload level emitted on the previous authoritative resolution. A recovered
     /// press waits behind one false tick when necessary so the weapon's level-to-edge
@@ -247,34 +250,12 @@ impl ClientCommandState {
             .map(|(_, reload)| reload)
             .unwrap_or(false);
         if cmd.reload && !previous_level {
-            self.pending_reload_presses.push_back(cmd.client_tick);
+            self.pending_reload_presses.push_back(Press {
+                tick: cmd.client_tick,
+                slot: cmd.movement.firing_slot,
+            });
         }
         self.latest_observed_reload = Some((cmd.client_tick, cmd.reload));
-    }
-
-    fn preserve_due_reload_press(
-        &mut self,
-        resolved_tick: u32,
-        gate: PressGate,
-        command: &mut SimCommand,
-    ) {
-        let due_press = self
-            .pending_reload_presses
-            .front()
-            .copied()
-            .filter(|tick| client_tick_le(*tick, resolved_tick));
-        if let Some(tick) = due_press {
-            if self.last_emitted_reload || !gate.admits(tick) {
-                // The false tick clears `WeaponComponent::reload_press_consumed`; a
-                // gated press waits behind an older retained start, so the level
-                // must not stand in for it. Keep it queued either way.
-                command.reload = false;
-            } else {
-                command.reload = true;
-                self.pending_reload_presses.pop_front();
-            }
-        }
-        self.last_emitted_reload = command.reload;
     }
 
     /// Insert a sanitized command into the pending queue with bootstrap-window
@@ -297,7 +278,7 @@ impl ClientCommandState {
         }
 
         // Observe only ticks admitted to the serial window. Otherwise an invalid
-        // bootstrap tick could poison the independent reload-edge ordering state even
+        // bootstrap tick could poison the independent edge-lane ordering state even
         // though it never entered `pending`.
         self.observe_reload_level(&cmd);
         self.press_edges.observe(&cmd);
@@ -379,6 +360,7 @@ impl ClientCommandState {
 pub struct HostCommandQueues {
     pub activations: crate::activation_ledger::HostActivationLedger,
     clients: HashMap<u64, ClientCommandState>,
+    departed: departed_weapons::DepartedWeapons,
     /// Off-by-default per-client resolution/jump diagnostics (see `netdiag`). Reset
     /// with the queue on level unload; inert unless `postretro::netdiag=debug`.
     diag: HostQueueDiag,
@@ -631,7 +613,7 @@ impl HostCommandQueues {
         // Buildup withhold (the standing playout floor). While the one-shot latch is armed
         // and the grace is not exhausted, withhold the first `Real` — no advance, no
         // `drop_stale`, no `take_exact` (already skipped above while armed), and no
-        // `preserve_due_reload_press` (a non-advancing withhold keeps `expected` constant).
+        // `deliver_presses` (a non-advancing withhold keeps `expected` constant).
         // This is SEPARATE from the frontier gap-freeze below: buildup is depth-keyed on
         // `pending.len()` (it disarms at `>= INPUT_BUFFER_TARGET`), so it withholds even
         // with one command already buffered, which the frontier (`pending.is_empty()`) gate
@@ -701,7 +683,7 @@ impl HostCommandQueues {
 
         if hold_without_advance {
             // Freeze: leave `resolved_cursor` unchanged, do NOT `drop_stale`, do NOT
-            // `take_exact`, and do NOT thread `preserve_due_reload_press` (a non-advancing
+            // `take_exact`, and do NOT thread `deliver_presses` (a non-advancing
             // freeze keeps `expected` constant, so a due reload press waits for an advancing
             // tick). `held_ticks` still increments so the grace stays bounded.
             state.held_ticks += 1;
@@ -711,6 +693,7 @@ impl HostCommandQueues {
                     .as_ref()
                     .expect("frontier freeze requires a command to hold"),
             );
+            state.hold_gated_reload(live_activation, &mut sim);
             let source = ResolutionSource::Held;
             state.deliver_edges(&mut sim.activation, live_activation);
             let diag_lead = state
@@ -819,9 +802,13 @@ impl HostCommandQueues {
             .and_then(|state| state.latest_aim_pitch)
     }
 
-    /// Drop a client's queue + cursor on slot close. Idempotent.
+    /// Drop a client's queue + cursor on slot close. Idempotent. Its cadence
+    /// records are charged to their weapons on the next host tick, as if each
+    /// weapon had left its inventory.
     pub fn remove_client(&mut self, client_id: u64) {
-        self.clients.remove(&client_id);
+        if let Some(state) = self.clients.remove(&client_id) {
+            self.departed.defer(state.cadence.retire(state.host_tick));
+        }
         self.activations.remove_client(client_id);
     }
 }
@@ -898,7 +885,9 @@ fn neutral_sim_command(facing_yaw: f32) -> SimCommand {
 /// Carry movement and reload across a packet gap without inventing an activation
 /// start or use/drop press. Committed shots advance on their own fixed-tick clock;
 /// retained starts and release/cancel edges are delivered separately. Reload's
-/// weapon-owned press latch prevents the carried level from restarting a reload.
+/// weapon-owned press latch prevents the carried level from restarting a reload;
+/// a non-advancing hold also forces the level low while a due reload press is
+/// held back behind older input (`hold_gated_reload`).
 fn held_gap_sim_command(prev: &InputCommand) -> SimCommand {
     let mut sim = input_command_to_sim(prev);
     sim.fire_button = crate::weapon::FireButtonState {
@@ -2385,13 +2374,13 @@ mod tests {
     }
 
     // Finding (1): the frontier-freeze reload divergence corner. A Real reload command
-    // that inserts a release for a due recovered press (`preserve_due_reload_press` with
+    // that inserts a release for a due recovered press (`deliver_presses` with
     // `last_emitted_reload == true`) leaves `last_resolved.reload == true` while
     // `last_emitted_reload == false`. A frontier freeze on the next tick replays the held
     // reload level (true) via `held_gap_sim_command` — a false->true on a NON-advancing
     // hold. This PINS that the corner is benign for the weapon's level->edge dedup
     // (`WeaponComponent::reload_press_consumed`): the freeze does not pop the recovered
-    // press, so the next advancing `preserve_due_reload_press` re-emits the same high
+    // press, so the next advancing `deliver_presses` re-emits the same high
     // level as a weapon no-op while re-syncing `last_emitted_reload`. The emitted stream
     // therefore carries exactly ONE rising edge for the one recovered press — not dropped,
     // not doubled. Determined benign, so the behavior is pinned, not changed: syncing
@@ -2409,7 +2398,7 @@ mod tests {
             resolved_cursor: Some(10),
             last_resolved: Some(reload_command(10, 1.0)), // reload == true
             last_emitted_reload: false,
-            pending_reload_presses: VecDeque::from([5u32]), // 5 <= cursor: a due press
+            pending_reload_presses: VecDeque::from([Press { tick: 5, slot: 0 }]), // 5 <= cursor: a due press
             latest_observed_reload: Some((10, true)),
             ..Default::default()
         };

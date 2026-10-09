@@ -3,15 +3,10 @@
 use crate::weapon;
 use postretro_entities::components::weapon::WeaponComponent;
 use postretro_entities::{EntityId, EntityRegistry};
-use postretro_foundation::{ACTIVATION_TICKS_PER_SECOND, ActivationToken};
+use postretro_foundation::{ActivationToken, activation_ticks_ms};
 use std::collections::{HashMap, VecDeque};
 
 const MAX_RECORDS: usize = 64;
-
-/// Milliseconds in `ticks` fixed activation ticks, the host's recovery unit.
-fn ticks_ms(ticks: u32) -> f32 {
-    ticks as f32 * 1000.0 / ACTIVATION_TICKS_PER_SECOND as f32
-}
 struct ActivationRecord {
     weapon: EntityId,
     host_weapon: Option<u32>,
@@ -26,6 +21,9 @@ pub(crate) struct OutcomeEffect {
     pub weapon: EntityId,
     pub terminal: bool,
     pub rejected: bool,
+    /// Local cooldown the outcome left on `weapon`, in ms. `None` when the
+    /// outcome carries no recovery or names an activation older than the
+    /// weapon's latest, which never rewinds newer execution.
     pub recovery_ms: Option<f32>,
 }
 #[derive(Default)]
@@ -224,7 +222,7 @@ impl ActivationRecords {
             if self.latest.get(&record.weapon) == Some(&token)
                 && let Some(ticks) = recovery
             {
-                let host_ms = ticks_ms(ticks);
+                let host_ms = activation_ticks_ms(ticks);
                 // The host's remaining recovery is one transit stale. An admitted
                 // execution's recovery began at this client's own shot, which is
                 // where host admission measures cadence from, so it may only
@@ -336,7 +334,7 @@ mod tests {
                 },
             )
             .unwrap();
-        let host_ms = ticks_ms(8);
+        let host_ms = activation_ticks_ms(8);
         assert!(near(effect.recovery_ms, host_ms));
         assert!(near(Some(cooldown(&registry, weapon)), host_ms));
     }

@@ -7,7 +7,7 @@ use postretro_entities::components::inventory::Inventory;
 use postretro_entities::components::weapon::WeaponComponent;
 use postretro_entities::{ComponentKind, ComponentValue, EntityId, EntityRegistry};
 use postretro_foundation::{
-    ACTIVATION_TICKS_PER_SECOND, ActivationId, ActivationToken, activation_duration_ticks,
+    ActivationId, ActivationToken, activation_duration_ticks, activation_ticks_ms,
 };
 use postretro_net::transport::NetServer;
 use postretro_net::wire;
@@ -213,8 +213,9 @@ pub(super) fn release_departed_weapons(
         if let Ok(ComponentValue::Weapon(component)) =
             registry.get_component_value_mut(weapon, ComponentKind::Weapon)
         {
-            let owed_ms = owed_ticks as f32 * 1000.0 / ACTIVATION_TICKS_PER_SECOND as f32;
-            component.cooldown_remaining_ms = component.cooldown_remaining_ms.max(owed_ms);
+            component.cooldown_remaining_ms = component
+                .cooldown_remaining_ms
+                .max(activation_ticks_ms(owed_ticks));
         }
     }
 }
@@ -342,6 +343,14 @@ fn record_activation_progress(
             "guarded successful machine initiation must admit its ledger binding"
         );
         if accepted {
+            queues.activation_admitted(
+                client,
+                token,
+                advance
+                    .program
+                    .as_ref()
+                    .is_some_and(|program| program.timing.charge.is_some()),
+            );
             publish(HostActivationFact::Outcome(
                 wire::ActivationOutcome::InitiationAccepted {
                     token: wire_token(token),

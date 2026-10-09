@@ -60,10 +60,27 @@ struct Execution {
     client_tick: u32,
     /// Host tick at which the host began that same execution step.
     host_tick: u32,
-    credit_tick: u32,
+    /// Host tick on which the lane delivered the start.
+    delivered_tick: u32,
+    /// Newest client tick received when the start was delivered.
+    newest_tick: u32,
+    /// Chosen at the first recovery, once the bound weapon is known.
+    credit_tick: Option<u32>,
     /// First release delivered to this execution: client release tick and the
     /// host tick it was delivered on. Only a charged action's shots wait on it.
     release: Option<(u32, u32)>,
+    /// Whether the action charges, once the host machine admitted it.
+    charges: Option<bool>,
+    /// Whether any shot's recovery began, so a charge's clock sits at its release.
+    fired: bool,
+}
+
+impl Execution {
+    /// Client tick this execution's own clock has reached on `host_tick`.
+    fn clock(&self, host_tick: u32) -> u32 {
+        self.client_tick
+            .wrapping_add(host_tick.wrapping_sub(self.host_tick))
+    }
 }
 
 impl Recovery {
@@ -103,7 +120,10 @@ impl Recovery {
 /// [host now − `CATCH_UP_ALLOWANCE_TICKS`, host now + `CADENCE_TOLERANCE_TICKS`].
 /// An early start carries its lead into the next instead of earning a fresh
 /// tolerance; a backlog up to the allowance old drains at once; a start claiming
-/// further back is refused (`lags_allowance`). A charged execution fires at its
+/// further back is refused (`lags_allowance`). A start with no record for its
+/// bound weapon claims the host tick it was delivered, less how far it trailed
+/// the newest command received, at most the allowance and never before the
+/// weapon's last departed recovery ended. A charged execution fires at its
 /// release, so its credit moves to the release, forward only; any other
 /// execution ignores releases, as the machine does.
 ///
@@ -126,7 +146,8 @@ impl Recovery {
 /// of 39 ticks (650 ms) or more, about 5.9 at 130 ms. It is a one-time catch-up,
 /// never a faster sustained rate. Holstered ticks only make the host half
 /// stricter. A departed weapon keeps the chain through its cooldown: the owed
-/// ticks hold its next fire to at least one recovery after its last credit.
+/// ticks hold its next fire to at least one recovery after its last credit, and
+/// its next unrecorded credit lies no earlier than that point.
 #[derive(Debug, Default)]
 pub(crate) struct ActivationCadence {
     /// Latest recovery per firing slot, each naming the weapon that began it.
@@ -159,9 +180,18 @@ impl ActivationCadence {
         })
     }
 
+    /// Client half of the rule against the record `firing_slot` holds, for a
+    /// start at the lane front: a start this refuses would be refused once
+    /// bound, so it never holds the lane on host time or a live execution.
+    pub fn client_half_refuses(&self, firing_slot: u8, start_tick: u32) -> bool {
+        self.recovery(firing_slot).is_some_and(|recovery| {
+            self.client_spacing(recovery.weapon, firing_slot, start_tick) == CadenceVerdict::Refused
+        })
+    }
+
     /// A start that would fire from `firing_slot` claims a host time more than
     /// the allowance behind host now, and was stamped more than the allowance
-    /// before `newest_client_tick`, the newest command this client has sent.
+    /// before `newest_client_tick`, the newest command received from this client.
     /// The second clause keeps a whole stream that trails its old credit
     /// (clock drift, a lasting rise in latency) from reading as a backlog: only
     /// starts stuck behind newer input are refused.
@@ -233,25 +263,66 @@ impl ActivationCadence {
         }
     }
 
-    /// A start left the retained lane on `host_tick`. Its credit continues the
-    /// recorded recovery by the client's spacing.
-    pub fn begin(&mut self, token: ActivationToken, firing_slot: u8, host_tick: u32) {
-        let credit_tick = match self.recovery(firing_slot) {
-            Some(recovery) => credit(
-                recovery.credit_tick,
-                token.start_tick.wrapping_sub(recovery.client_tick) as i32,
-                host_tick,
-            ),
-            None => host_tick,
-        };
+    /// A start left the retained lane on `host_tick`, when the newest command
+    /// received was `newest_client_tick`. Its credit is chosen at its first
+    /// recovery, against the weapon it bound.
+    pub fn begin(
+        &mut self,
+        token: ActivationToken,
+        firing_slot: u8,
+        host_tick: u32,
+        newest_client_tick: u32,
+    ) {
         self.execution = Some(Execution {
             token,
             firing_slot,
             client_tick: token.start_tick,
             host_tick,
-            credit_tick,
+            delivered_tick: host_tick,
+            newest_tick: newest_client_tick,
+            credit_tick: None,
             release: None,
+            charges: None,
+            fired: false,
         });
+    }
+
+    /// The host machine admitted `token`'s execution; `charges`: its shots wait
+    /// for a release.
+    pub fn admitted(&mut self, token: ActivationToken, charges: bool) {
+        if let Some(execution) = self
+            .execution
+            .as_mut()
+            .filter(|execution| execution.token == token)
+        {
+            execution.charges = Some(charges);
+        }
+    }
+
+    /// Client tick that the live execution (`live`, or a start delivered this
+    /// host tick) has reached. A reload, use, drop or cancel the client stamped
+    /// after it waits, so every shot the client fired before that input is
+    /// minted first. `pending_release(token)`: a release received for it and
+    /// not yet delivered.
+    ///
+    /// Bound: an execution's clock advances one client tick per host tick and
+    /// the execution ends after its last authored step, so an input waits at
+    /// most until the clock reaches its tick or the execution's remaining steps
+    /// run out. A charge's shots begin at its release: until one fires it holds
+    /// nothing, except inputs stamped after a release delivered this same tick.
+    pub fn order_horizon(
+        &self,
+        live: Option<ActivationToken>,
+        host_tick: u32,
+        pending_release: impl FnOnce(ActivationToken) -> Option<u32>,
+    ) -> Option<u32> {
+        let execution = self.execution.filter(|execution| {
+            live == Some(execution.token) || execution.delivered_tick == host_tick
+        })?;
+        if execution.charges == Some(true) && !execution.fired {
+            return pending_release(execution.token);
+        }
+        Some(execution.clock(host_tick))
     }
 
     /// A release was delivered to `token`'s execution on `host_tick`. It moves
@@ -276,6 +347,11 @@ impl ActivationCadence {
     /// machine ignores too; moving the clock there would shift a burst's
     /// recovery by however early the release was delivered. A release stamped
     /// before the execution never moves the clock back, so it cannot shed credit.
+    ///
+    /// `cool_ticks`: host ticks since `weapon`'s last departed recovery ended,
+    /// or the allowance when none is remembered. An unrecorded start's credit
+    /// never lies before that end, so leaving and returning cannot restart the
+    /// chain early.
     pub fn recovery_began(
         &mut self,
         token: ActivationToken,
@@ -283,23 +359,27 @@ impl ActivationCadence {
         recovery_ticks: u32,
         charged: bool,
         host_tick: u32,
+        cool_ticks: u32,
     ) {
-        let Some(execution) = self
-            .execution
-            .as_mut()
-            .filter(|execution| execution.token == token)
+        let Some(mut execution) = self.execution.filter(|execution| execution.token == token)
         else {
             return;
         };
+        let mut credit_tick = execution
+            .credit_tick
+            .unwrap_or_else(|| self.first_credit(&execution, weapon, cool_ticks));
         if charged && let Some((release_tick, release_host_tick)) = execution.release.take() {
             let span = release_tick.wrapping_sub(execution.client_tick) as i32;
             if span >= 0 {
-                execution.credit_tick = credit(execution.credit_tick, span, release_host_tick);
+                credit_tick = credit(credit_tick, span, release_host_tick);
                 execution.client_tick = release_tick;
                 execution.host_tick = release_host_tick;
             }
         }
-        let execution = *execution;
+        execution.credit_tick = Some(credit_tick);
+        execution.charges = Some(charged);
+        execution.fired = true;
+        self.execution = Some(execution);
         let Some(entry) = self.recoveries.get_mut(usize::from(execution.firing_slot)) else {
             return;
         };
@@ -310,10 +390,35 @@ impl ActivationCadence {
         *entry = Some(Recovery {
             weapon,
             client_tick: execution.client_tick.wrapping_add(offset),
-            credit_tick: execution.credit_tick.wrapping_add(offset),
+            credit_tick: credit_tick.wrapping_add(offset),
             recovery_ticks,
             frozen_ticks: 0,
         });
+    }
+
+    /// Credit for `execution`'s first recovery. The slot's record continues its
+    /// chain only when it names the weapon the start bound; otherwise the start
+    /// is unrecorded and claims its delivery tick less how far it trailed the
+    /// newest command, capped by the allowance and by `cool_ticks`.
+    fn first_credit(&self, execution: &Execution, weapon: EntityId, cool_ticks: u32) -> u32 {
+        match self
+            .recovery(execution.firing_slot)
+            .filter(|recovery| recovery.weapon == weapon)
+        {
+            Some(recovery) => credit(
+                recovery.credit_tick,
+                execution.client_tick.wrapping_sub(recovery.client_tick) as i32,
+                execution.host_tick,
+            ),
+            None => {
+                let trailed = (execution.newest_tick.wrapping_sub(execution.client_tick) as i32)
+                    .max(0)
+                    .unsigned_abs();
+                execution
+                    .host_tick
+                    .wrapping_sub(trailed.min(CATCH_UP_ALLOWANCE_TICKS).min(cool_ticks))
+            }
+        }
     }
 
     /// Clear every record whose weapon no longer holds its slot, by `held(slot)`.
@@ -333,6 +438,16 @@ impl ActivationCadence {
         departed
             .into_iter()
             .chain([self.displaced.take()])
+            .flatten()
+            .map(move |recovery| (recovery.weapon, recovery.owed_ticks(host_tick)))
+    }
+
+    /// Every record, as when its client leaves: each weapon with the host ticks
+    /// after `host_tick` its credited recovery still owes.
+    pub fn retire(self, host_tick: u32) -> impl Iterator<Item = (EntityId, u32)> {
+        self.recoveries
+            .into_iter()
+            .chain([self.displaced])
             .flatten()
             .map(move |recovery| (recovery.weapon, recovery.owed_ticks(host_tick)))
     }
@@ -377,9 +492,41 @@ mod tests {
         {
             return false;
         }
-        cadence.begin(token(start_tick), 0, host_tick);
-        cadence.recovery_began(token(start_tick), weapon(), R, false, host_tick);
+        cadence.begin(token(start_tick), 0, host_tick, start_tick);
+        cadence.recovery_began(
+            token(start_tick),
+            weapon(),
+            R,
+            false,
+            host_tick,
+            CATCH_UP_ALLOWANCE_TICKS,
+        );
         true
+    }
+
+    /// Admissions over every window between two of them stay within
+    /// `window_bound`.
+    fn assert_within_window_bound(admitted: &[u32], recovery_ticks: u32, label: &str) {
+        for (first, &opened) in admitted.iter().enumerate() {
+            for (last, &closed) in admitted.iter().enumerate().skip(first) {
+                let window = closed - opened;
+                assert!(
+                    (last - first + 1) as u32 <= window_bound(window, recovery_ticks),
+                    "{label}, R {recovery_ticks}: {} admissions in {window} host ticks",
+                    last - first + 1
+                );
+            }
+        }
+    }
+
+    fn xorshift(seed: u64) -> impl FnMut() -> u64 {
+        let mut state = seed;
+        move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        }
     }
 
     #[test]
@@ -504,10 +651,10 @@ mod tests {
         let mut cadence = ActivationCadence::default();
         assert!(admit(&mut cadence, 100, 0));
         let charged = token(120);
-        cadence.begin(charged, 0, 20);
+        cadence.begin(charged, 0, 20, charged.start_tick);
         // The release named client tick 150 reaches the host late, at 60.
         cadence.release(charged, 150, 60);
-        cadence.recovery_began(charged, weapon(), R, true, 60);
+        cadence.recovery_began(charged, weapon(), R, true, 60, CATCH_UP_ALLOWANCE_TICKS);
         assert_eq!(
             cadence.client_spacing(weapon(), 0, 157),
             CadenceVerdict::Refused
@@ -524,9 +671,9 @@ mod tests {
         assert!(admit(&mut cadence, 100, 0));
         let charged = token(108);
         // Client spacing claims host tick 8; it starts at 1 and carries that lead.
-        cadence.begin(charged, 0, 1);
+        cadence.begin(charged, 0, 1, charged.start_tick);
         cadence.release(charged, 50, 1);
-        cadence.recovery_began(charged, weapon(), R, true, 1);
+        cadence.recovery_began(charged, weapon(), R, true, 1, CATCH_UP_ALLOWANCE_TICKS);
         assert_eq!(
             cadence.client_spacing(weapon(), 0, 115),
             CadenceVerdict::Refused,
@@ -539,14 +686,14 @@ mod tests {
     #[test]
     fn cadence_burst_recovery_begins_at_its_last_shot() {
         let mut cadence = ActivationCadence::default();
-        cadence.begin(token(100), 0, 10);
-        cadence.recovery_began(token(100), weapon(), R, false, 10);
+        cadence.begin(token(100), 0, 10, 100);
+        cadence.recovery_began(token(100), weapon(), R, false, 10, CATCH_UP_ALLOWANCE_TICKS);
         // A release delivered mid-burst, early or stamped before the start,
         // does not move an uncharged burst's clock: the machine ignores it.
         cadence.release(token(100), 102, 11);
-        cadence.recovery_began(token(100), weapon(), R, false, 13);
+        cadence.recovery_began(token(100), weapon(), R, false, 13, CATCH_UP_ALLOWANCE_TICKS);
         cadence.release(token(100), 40, 14);
-        cadence.recovery_began(token(100), weapon(), R, false, 16);
+        cadence.recovery_began(token(100), weapon(), R, false, 16, CATCH_UP_ALLOWANCE_TICKS);
         assert_eq!(
             cadence.client_spacing(weapon(), 0, 113),
             CadenceVerdict::Refused
@@ -574,29 +721,25 @@ mod tests {
                             && cadence.client_spacing(weapon(), 0, start_tick)
                                 != CadenceVerdict::Refused
                         {
-                            cadence.begin(token(start_tick), 0, host_tick);
+                            cadence.begin(token(start_tick), 0, host_tick, start_tick);
                             cadence.recovery_began(
                                 token(start_tick),
                                 weapon(),
                                 recovery_ticks,
                                 false,
                                 host_tick,
+                                CATCH_UP_ALLOWANCE_TICKS,
                             );
                             admitted.push(host_tick);
                             start_tick = start_tick.wrapping_add(stamp_step);
                         }
                     }
                 }
-                for (first, &opened) in admitted.iter().enumerate() {
-                    for (last, &closed) in admitted.iter().enumerate().skip(first) {
-                        let window = closed - opened;
-                        assert!(
-                            (last - first + 1) as u32 <= window_bound(window, recovery_ticks),
-                            "R {recovery_ticks}, stamp {stamp_step}: {} admissions in {window} host ticks",
-                            last - first + 1
-                        );
-                    }
-                }
+                assert_within_window_bound(
+                    &admitted,
+                    recovery_ticks,
+                    &format!("stamp {stamp_step}"),
+                );
                 assert!(admitted.len() as u32 >= 600 / recovery_ticks);
             }
         }
@@ -606,13 +749,7 @@ mod tests {
     /// recorded recovery, and releases stamped anywhere, charged or not.
     #[test]
     fn cadence_arbitrary_stamps_and_releases_cannot_exceed_window_bound() {
-        let mut state = 0x9e37_79b9_7f4a_7c15_u64;
-        let mut next = move || {
-            state ^= state << 13;
-            state ^= state >> 7;
-            state ^= state << 17;
-            state
-        };
+        let mut next = xorshift(0x9e37_79b9_7f4a_7c15);
         for recovery_ticks in [1, 8, 30] {
             let mut cadence = ActivationCadence::default();
             let mut admitted = Vec::new();
@@ -626,7 +763,7 @@ mod tests {
                         continue;
                     }
                     let token = token(start_tick);
-                    cadence.begin(token, 0, host_tick);
+                    cadence.begin(token, 0, host_tick, token.start_tick);
                     let roll = next();
                     if roll & 1 == 1 {
                         cadence.release(token, (roll >> 8) as u32, host_tick);
@@ -637,21 +774,13 @@ mod tests {
                         recovery_ticks,
                         roll & 2 == 2,
                         host_tick,
+                        CATCH_UP_ALLOWANCE_TICKS,
                     );
                     admitted.push(host_tick);
                 }
             }
             assert!(admitted.len() as u32 >= 2000 / (recovery_ticks + CADENCE_TOLERANCE_TICKS));
-            for (first, &opened) in admitted.iter().enumerate() {
-                for (last, &closed) in admitted.iter().enumerate().skip(first) {
-                    let window = closed - opened;
-                    assert!(
-                        (last - first + 1) as u32 <= window_bound(window, recovery_ticks),
-                        "R {recovery_ticks}: {} admissions in {window} host ticks",
-                        last - first + 1
-                    );
-                }
-            }
+            assert_within_window_bound(&admitted, recovery_ticks, "arbitrary stamps");
         }
     }
 
@@ -685,6 +814,28 @@ mod tests {
             lane: ActivationLane,
             host_tick: u32,
         ) -> Option<CadenceVerdict> {
+            self.attempt_trailing(
+                cadence,
+                start_tick,
+                lane,
+                host_tick,
+                start_tick,
+                CATCH_UP_ALLOWANCE_TICKS,
+            )
+        }
+
+        /// `attempt`, delivered when the newest command received was
+        /// `newest_tick`, with `cool_ticks` since the weapon's last departed
+        /// recovery ended.
+        fn attempt_trailing(
+            &mut self,
+            cadence: &mut ActivationCadence,
+            start_tick: u32,
+            lane: ActivationLane,
+            host_tick: u32,
+            newest_tick: u32,
+            cool_ticks: u32,
+        ) -> Option<CadenceVerdict> {
             if !cadence.host_time_allows(self.slot, host_tick) {
                 return None;
             }
@@ -694,8 +845,15 @@ mod tests {
                 return None;
             }
             let token = ActivationToken { start_tick, lane };
-            cadence.begin(token, self.slot, host_tick);
-            cadence.recovery_began(token, self.weapon, self.recovery_ticks, false, host_tick);
+            cadence.begin(token, self.slot, host_tick, newest_tick);
+            cadence.recovery_began(
+                token,
+                self.weapon,
+                self.recovery_ticks,
+                false,
+                host_tick,
+                cool_ticks,
+            );
             self.cool_at = host_tick + self.recovery_ticks;
             self.admitted.push(host_tick);
             Some(verdict)
@@ -711,27 +869,7 @@ mod tests {
         }
 
         fn assert_window_bound(&self, label: &str) {
-            let recovery = self.recovery_ticks;
-            for (first, &opened) in self.admitted.iter().enumerate() {
-                for (last, &closed) in self.admitted.iter().enumerate().skip(first) {
-                    let window = closed - opened;
-                    assert!(
-                        (last - first + 1) as u32 <= window_bound(window, recovery),
-                        "{label}, R {recovery}: {} admissions in {window} host ticks",
-                        last - first + 1
-                    );
-                }
-            }
-        }
-    }
-
-    fn xorshift(seed: u64) -> impl FnMut() -> u64 {
-        let mut state = seed;
-        move || {
-            state ^= state << 13;
-            state ^= state >> 7;
-            state ^= state << 17;
-            state
+            assert_within_window_bound(&self.admitted, self.recovery_ticks, label);
         }
     }
 
@@ -835,17 +973,21 @@ mod tests {
     fn cadence_retained_start_is_not_frozen_by_a_switch_stamped_after_it() {
         use super::super::{HostCommandQueues, neutral_sim_command};
         const CLIENT: u64 = 7;
-        const LONG: u32 = 12;
-        // The client fires slot 1 at ticks 2 and 14, one recovery apart, then
-        // switches to slot 0 from tick 15.
+        const LONG: u32 = 16;
+        const SECOND: u32 = 2 + LONG;
+        // The first start trails the newest command by the two-tick playout
+        // margin when delivered. Unrecorded, it is credited that much earlier.
+        const FIRST_START_LAG: u32 = 2;
+        // The client fires slot 1 at ticks 2 and 18, one recovery apart, then
+        // switches to slot 0 from tick 19.
         let stamped = |tick: u32| {
             let mut command = crate::netcode::wire_convert::sim_command_to_input(
                 &neutral_sim_command(0.0),
                 tick,
                 0.0,
             );
-            command.movement.firing_slot = u8::from(tick <= 14);
-            if tick == 2 || tick == 14 {
+            command.movement.firing_slot = u8::from(tick <= SECOND);
+            if tick == 2 || tick == SECOND {
                 command.activation.initiation = Some(postretro_net::wire::WireActivationToken {
                     start_tick: tick,
                     lane: 0,
@@ -876,7 +1018,10 @@ mod tests {
                 queues.resolve_tick(CLIENT).unwrap()
             })
             .collect();
-        assert!(resolved[0].client_tick > 14, "the backlog takes the trim");
+        assert!(
+            resolved[0].client_tick > SECOND,
+            "the backlog takes the trim"
+        );
         assert!(resolved.iter().all(|r| r.rejected_activation.is_none()));
         let delivered = resolved
             .iter()
@@ -884,15 +1029,15 @@ mod tests {
                 r.command
                     .activation
                     .initiation
-                    .is_some_and(|token| token.start_tick == 14)
+                    .is_some_and(|token| token.start_tick == SECOND)
             })
             .expect("the slot 1 start is delivered");
         assert_eq!(resolved[delivered].command.firing_slot, 1);
         // Host time since the first start's credit covers the recovery, less the
-        // tolerance, on the third host tick after it.
+        // tolerance, on the fifth host tick after the stall.
         assert_eq!(
             delivered,
-            (LONG - CADENCE_TOLERANCE_TICKS - 1) as usize,
+            (LONG - CADENCE_TOLERANCE_TICKS - 1 - FIRST_START_LAG) as usize,
             "held only by host time, never by the later switch"
         );
     }
@@ -939,8 +1084,8 @@ mod tests {
         assert_eq!(cadence.release_departed(held, 3).count(), 0);
         // A weapon handed into a slot whose record it never made displaces it.
         let other = EntityId::from_raw(11);
-        cadence.begin(token(140), 1, 40);
-        cadence.recovery_began(token(140), other, R, false, 40);
+        cadence.begin(token(140), 1, 40, 140);
+        cadence.recovery_began(token(140), other, R, false, 40, CATCH_UP_ALLOWANCE_TICKS);
         let held = |slot: usize| (slot == 1).then_some(other);
         assert_eq!(
             cadence.release_departed(held, 40).collect::<Vec<_>>(),
@@ -986,6 +1131,104 @@ mod tests {
                     }
                 }
                 rifle.assert_window_bound(&format!("drop and pickup, stamp {stamp_step}"));
+                assert!(rifle.admitted.len() as u32 >= 900 / (recovery_ticks + 3) / 3);
+            }
+        }
+    }
+
+    // Regression: a weapon's first start, unrecorded, was credited at the host
+    // tick a stall delivered it, so its backlog drained one shot per recovery
+    // and the rest of the hold lagged by the stall.
+    #[test]
+    fn cadence_unrecorded_start_after_a_stall_credits_back_by_its_lag() {
+        let mut cadence = ActivationCadence::default();
+        // A hold's first start at client tick 100 reaches the host at host tick
+        // 30, when commands through 132 have arrived.
+        cadence.begin(token(100), 0, 30, 132);
+        cadence.recovery_began(token(100), weapon(), R, false, 30, CATCH_UP_ALLOWANCE_TICKS);
+        for start in [108, 116, 124, 132] {
+            assert!(
+                admit(&mut cadence, start, 30),
+                "start {start} drains at once"
+            );
+        }
+
+        // A weapon whose departed recovery ended only 5 ticks ago claims no
+        // credit before that end.
+        let mut cadence = ActivationCadence::default();
+        cadence.begin(token(100), 0, 30, 132);
+        cadence.recovery_began(token(100), weapon(), R, false, 30, 5);
+        assert!(admit(&mut cadence, 108, 30), "credit 25, claim 33");
+        assert!(!admit(&mut cadence, 116, 30), "claim 41 waits");
+    }
+
+    #[test]
+    fn cadence_record_naming_another_weapon_never_credits_the_bound_weapon() {
+        let mut cadence = ActivationCadence::default();
+        assert!(admit(&mut cadence, 100, 0));
+        // Another weapon now holds slot 0 and fires far ahead in client ticks.
+        let other = EntityId::from_raw(10);
+        cadence.begin(token(200), 0, 10, 200);
+        cadence.recovery_began(token(200), other, R, false, 10, CATCH_UP_ALLOWANCE_TICKS);
+        assert!(
+            cadence.host_time_allows(0, 10),
+            "credited at its own delivery, not continuing the rifle's chain"
+        );
+    }
+
+    /// Unrecorded starts credited back by how far they trailed the newest
+    /// command, through drops and pickups, stay within the window bound: no
+    /// credit precedes the end of the departed record's owed recovery.
+    #[test]
+    fn cadence_trailing_unrecorded_starts_through_drop_and_pickup_cannot_exceed_window_bound() {
+        use super::super::departed_weapons::DepartedWeapons;
+        let mut next = xorshift(0x5851_f42d_4c95_7f2d);
+        for recovery_ticks in [1, 4, 8, 9, 30] {
+            for stamp_step in [recovery_ticks, 1000] {
+                let mut cadence = ActivationCadence::default();
+                let mut departed = DepartedWeapons::default();
+                let mut rifle = HostWeapon::new(9, 0, recovery_ticks);
+                let mut start_tick = u32::MAX - 500;
+                let mut away_until = 0;
+                for host_tick in 0..900u32 {
+                    departed.advance();
+                    let held = host_tick >= away_until;
+                    if held && next().is_multiple_of(5) {
+                        away_until = host_tick + 1 + (next() % 3) as u32;
+                    }
+                    let holding = host_tick >= away_until;
+                    let owed: Vec<_> = cadence
+                        .release_departed(
+                            |slot| (holding && slot == 0).then_some(rifle.weapon),
+                            host_tick,
+                        )
+                        .collect();
+                    for &(weapon, ticks) in &owed {
+                        departed.depart(weapon, ticks);
+                    }
+                    rifle.depart(owed, host_tick);
+                    if !holding {
+                        continue;
+                    }
+                    for _ in 0..4 {
+                        let newest = start_tick.wrapping_add((next() % 60) as u32);
+                        let cool = departed.cool_ticks(rifle.weapon);
+                        if rifle
+                            .attempt_trailing(
+                                &mut cadence,
+                                start_tick,
+                                ActivationLane::Primary,
+                                host_tick,
+                                newest,
+                                cool,
+                            )
+                            .is_some()
+                        {
+                            start_tick = start_tick.wrapping_add(stamp_step);
+                        }
+                    }
+                }
+                rifle.assert_window_bound(&format!("trailing, stamp {stamp_step}"));
                 assert!(rifle.admitted.len() as u32 >= 900 / (recovery_ticks + 3) / 3);
             }
         }

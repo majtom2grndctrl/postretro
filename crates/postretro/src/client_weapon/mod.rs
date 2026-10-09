@@ -6,43 +6,6 @@ pub(crate) use frame::ClientWeaponFrame;
 
 use crate::{App, PresentedAimPose, netcode, sim, weapon};
 use postretro_entities::components::weapon::WeaponComponent;
-use postretro_entities::{ComponentKind, ComponentValue, EntityId, EntityRegistry};
-use postretro_foundation::{ActivationToken, ShotId};
-
-impl ClientWeaponFrame {
-    /// Retract what a rejected activation predicted on `owner_weapon`: its shots
-    /// still due this frame, and every live predicted projectile of `token`.
-    pub(crate) fn retract_rejected_activation(
-        &mut self,
-        registry: &mut EntityRegistry,
-        predicted: &mut weapon::ClientPredictedShots,
-        token: ActivationToken,
-        owner_weapon: EntityId,
-    ) {
-        self.due.retain(|queued| {
-            let id = queued.shot.activation.shot_id;
-            queued.weapon != owner_weapon
-                || id.start_tick != token.start_tick
-                || id.lane != token.lane
-        });
-        let shots: Vec<ShotId> = registry
-            .iter_with_kind(ComponentKind::Projectile)
-            .filter_map(|(_, value)| {
-                let ComponentValue::Projectile(projectile) = value else {
-                    return None;
-                };
-                projectile.predicted_shot_id.filter(|id| {
-                    id.start_tick == token.start_tick
-                        && id.lane == token.lane
-                        && projectile.owner_weapon == owner_weapon
-                })
-            })
-            .collect();
-        for id in shots {
-            let _ = predicted.apply_verdict(registry, id, false, false);
-        }
-    }
-}
 
 impl App {
     pub(crate) fn predict_client_weapon_command(

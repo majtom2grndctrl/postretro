@@ -364,19 +364,20 @@ fn activation_competing_cancel_cannot_delay_live_cancel_before_due_shot() {
     let competing = postretro_foundation::ActivationId {
         pawn: live.pawn,
         token: ActivationToken {
-            start_tick: 102,
+            start_tick: 103,
             lane: ActivationLane::Primary,
         },
     };
-    // Regression: B's earlier cancellation occupied the cancel slot even though
-    // the ledger owned A, whose cancellation had also arrived before its due shot.
+    // Regression: B's cancellation occupied the cancel slot even though the
+    // ledger owned A, whose cancellation, stamped on its due shot's own tick,
+    // had also arrived. A cancel waits for its own tick on A's clock, so A's
+    // is stamped 102: a later one would first owe the client the shot at 102.
     assert!(queues.ingest(
         7,
         &command(
             102,
             ActivationInput {
-                initiation: Some(competing.token),
-                cancel: Some(competing.token),
+                cancel: Some(live.token),
                 ..ActivationInput::default()
             }
         )
@@ -386,7 +387,8 @@ fn activation_competing_cancel_cannot_delay_live_cancel_before_due_shot() {
         &command(
             103,
             ActivationInput {
-                cancel: Some(live.token),
+                initiation: Some(competing.token),
+                cancel: Some(competing.token),
                 ..ActivationInput::default()
             }
         )
@@ -913,5 +915,75 @@ fn activation_unknown_edge_expiry_cannot_settle_a_still_retained_start() {
     assert!(
         played_replay,
         "playout must reach the replayed start's command"
+    );
+}
+
+// Regression: after a late start's delivery, a cancel the client sent mid-burst
+// reached the host on the delivery tick and cut the burst short of the shots
+// the client had fired before cancelling.
+#[test]
+fn activation_cancel_stamped_mid_burst_waits_for_the_late_bursts_own_clock() {
+    let program = program(false);
+    let start = token(10);
+    let id = postretro_foundation::ActivationId {
+        pawn: 4,
+        token: start,
+    };
+    let mut queues = HostCommandQueues::new();
+    for tick in 0..2 {
+        assert!(queues.ingest(7, &command(tick, ActivationInput::default())));
+    }
+    queues.resolve_tick(7).unwrap();
+    // Shots at client ticks 10 and 12 precede the cancel at 13; the third, at
+    // 14, never fired on the client. A stall delivers it all at once.
+    for tick in 2..30 {
+        let input = ActivationInput {
+            initiation: (tick == 10).then_some(start),
+            cancel: (tick == 13).then_some(start),
+            ..ActivationInput::default()
+        };
+        assert!(queues.ingest(7, &command(tick, input)));
+    }
+    let mut cursor = None;
+    let mut shots = Vec::new();
+    let mut terminal = None;
+    for (offset, next) in (30..42).enumerate() {
+        let tick = 100 + offset as u32;
+        queues.ingest(7, &command(next, ActivationInput::default()));
+        let resolved = queues.resolve_tick(7).unwrap();
+        if resolved.command.activation.initiation == Some(start) {
+            assert!(resolved.client_tick > 13, "the start is delivered late");
+            assert!(queues.activations.accept(
+                7,
+                id,
+                postretro_entities::EntityId::from_raw(9),
+                &program,
+                tick
+            ));
+            queues.activation_admitted(7, start, false);
+            cursor = Some(start_activation(start, id.pawn, tick, &program));
+        }
+        if let Some(live) = cursor.as_mut() {
+            let result =
+                advance_activation(live, &program, tick, true, resolved.command.activation);
+            if let Some(shot) = result.shot {
+                shots.push(shot.shot_id.ordinal);
+            }
+            if let Some(reason) = result.terminal {
+                terminal = Some(reason);
+                queues.activations.terminal(7, id, tick);
+                queues.activation_terminal(7, start);
+                cursor = None;
+            }
+        }
+    }
+    assert_eq!(
+        shots,
+        vec![0, 1],
+        "every shot the client fired, and no more"
+    );
+    assert_eq!(
+        terminal,
+        Some(postretro_combat_model::activation::ActivationTermination::Cancelled)
     );
 }

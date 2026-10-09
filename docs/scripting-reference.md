@@ -3393,7 +3393,8 @@ continuing — a bad UI registration never aborts boot or level load.
 
 `uiImages` maps an image name to a PNG inside your mod. Each entry loads into
 the engine's UI image registry under its name, so any tree — HUD, menu, or
-loading screen — draws it with `Image({ asset: name })`:
+loading screen — draws it with `Image({ asset: name })`, or across the whole
+window with `Tree({ background: { image: name } })`:
 
 ```typescript
 export default defineMod({
@@ -3502,7 +3503,8 @@ every frame of the load, and its tweens and fades run, but it never takes input
 — a button on it cannot be pressed. No HUD or menu draws with it. The screen
 clears to the boot splash's background color, so keep your art's edges on that
 color, `[28, 33, 39]` in 8-bit sRGB, if you want a seamless hand-off from the
-splash.
+splash. To fill the window with a picture instead, give the tree a
+`background: { image }` (see the `Tree` envelope under *Factories*).
 
 In Luau, the same manifest fields are `loading = { tree = { "loadingSkyline", "loadingAlley" } }`
 and `loadingTree = "loadingEntry"` on a map entry.

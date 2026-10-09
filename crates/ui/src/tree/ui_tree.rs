@@ -417,8 +417,9 @@ impl UiTree {
         let image_sizes_changed = self.last_image_sizes_generation != Some(image_sizes_generation);
         if image_sizes_changed {
             self.mark_image_nodes_dirty();
-            // The background crop reads its image size at collect time; the
-            // relayout below forces the draw-list rebuild that applies it.
+            // The background caches its image size; re-read it here, and the
+            // relayout below forces the draw-list rebuild that recomputes the
+            // crop from it.
             self.refresh_background_size(image_sizes);
         }
         // taffy reports the root dirty after a structural rebuild OR after the

@@ -47,7 +47,7 @@ impl BackgroundState {
 /// The rect is device pixels `[0, 0, w, h]` from the backbuffer's top-left, not
 /// the letterboxed canvas, so no splash-color band shows at any aspect.
 /// Untinted, no 9-slice margin.
-pub(super) fn cover_instance(device_size: [u32; 2], image_size: [f32; 2]) -> Option<UiInstance> {
+fn cover_instance(device_size: [u32; 2], image_size: [f32; 2]) -> Option<UiInstance> {
     let uv_rect = cover_uv_rect(device_size, image_size)?;
     Some(UiInstance {
         rect: [0.0, 0.0, device_size[0] as f32, device_size[1] as f32],
@@ -62,7 +62,7 @@ pub(super) fn cover_instance(device_size: [u32; 2], image_size: [f32; 2]) -> Opt
 /// texels are centered. Each extent is computed as a ratio of the two axis
 /// scales so the filled axis is exactly 1 (both are when the aspects match).
 /// `None` for a zero-size device or a non-positive or non-finite image size.
-pub(super) fn cover_uv_rect(device_size: [u32; 2], image_size: [f32; 2]) -> Option<[f32; 4]> {
+fn cover_uv_rect(device_size: [u32; 2], image_size: [f32; 2]) -> Option<[f32; 4]> {
     let [iw, ih] = image_size;
     if device_size[0] == 0
         || device_size[1] == 0

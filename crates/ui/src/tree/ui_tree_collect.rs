@@ -73,12 +73,12 @@ impl UiTree {
 }
 
 /// Read a pre-computed taffy subtree into device-pixel draw data, reusing
-/// `data`'s storage. Both the retained gameplay tree and the presentation
-/// one-shot layout share this lowering path; callers choose the root origin and
-/// canvas origin. Presentation passes `[0.0, 0.0]` for both origins so its list
-/// is relative to its world-projected anchor rather than the retained UI
-/// letterbox canvas, and calls this every frame so its bounded quads/text/image
-/// batches stay at a warm allocation high-water mark.
+/// `data`'s storage: the presentation one-shot layout's entry to the lowering
+/// the retained tree also uses ([`append_draw_data_from_layout`]). Presentation
+/// passes `[0.0, 0.0]` for both origins so its list is relative to its
+/// world-projected anchor rather than the retained UI letterbox canvas, and
+/// calls this every frame so its bounded quads/text/image batches stay at a warm
+/// allocation high-water mark.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn collect_draw_data_from_layout_into(
     taffy: &taffy::prelude::TaffyTree<NodeContext>,

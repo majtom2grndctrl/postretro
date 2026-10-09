@@ -112,18 +112,9 @@ pub struct TreeBackground {
     pub image: String,
 }
 
-impl TreeBackground {
-    /// The contract serde and both bridges enforce: a non-empty image key.
-    pub fn validate(&self) -> Result<(), String> {
-        if self.image.is_empty() {
-            return Err("`background.image` must be a non-empty UI image key".to_string());
-        }
-        Ok(())
-    }
-}
-
 /// Serde-only input shape for [`TreeBackground`]: unknown keys are rejected
-/// here, and the conversion applies [`TreeBackground::validate`].
+/// here, and the conversion rejects an empty image key. Both bridges lower
+/// `background` to JSON and deserialize through this, so it is the one check.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct TreeBackgroundWire {
@@ -134,9 +125,10 @@ impl TryFrom<TreeBackgroundWire> for TreeBackground {
     type Error = String;
 
     fn try_from(wire: TreeBackgroundWire) -> Result<Self, Self::Error> {
-        let background = TreeBackground { image: wire.image };
-        background.validate()?;
-        Ok(background)
+        if wire.image.is_empty() {
+            return Err("`background.image` must be a non-empty UI image key".to_string());
+        }
+        Ok(TreeBackground { image: wire.image })
     }
 }
 

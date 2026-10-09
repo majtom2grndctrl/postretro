@@ -114,8 +114,8 @@ fn layer_entry(tree: AnchoredTree) -> postretro_ui::UiTreeEntry {
     }
 }
 
-/// The widget's device-pixel rect `[x, y, w, h]`, found as the one non-white quad
-/// in the plain-quad list (the background rides the image list).
+/// The widget's device-pixel rect `[x, y, w, h]`, found as the plain quad in the
+/// widget's fill color (the background rides the image list).
 fn widget_rect(draw: &UiDrawData) -> [f32; 4] {
     draw.quads
         .instances

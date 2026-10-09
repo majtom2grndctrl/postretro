@@ -21,9 +21,11 @@ export const damageNumber = definePresentationTemplate("dev.damageNumber", {
     bind: fact.number("value", { format: "{}", decimalPlaces: 0 }),
   }),
   lifetimeMs: 750,
-  motion: { rise: 0.45, easing: "easeOut" },
+  // Device pixels. Each pellet spawns its own number at its hit point; the
+  // scatter separates pellets that land a few centimetres apart.
+  motion: { rise: 40, easing: "easeOut" },
   fade: { startMs: 425 },
-  spawnScatter: { radius: 0.12 },
+  spawnScatter: { radius: 8 },
 });
 
 export const damagedEnemyBar = definePresentationTemplate("dev.damagedEnemyBar", {

@@ -89,6 +89,12 @@ class DoorAndClosetAuthoringTests(unittest.TestCase):
         self.assertIn('"on_fire" "warren.closet.2.spawn"', trigger)
         self.assertIn('"fire_mode" "once"', trigger)
         self.assertIn('"_tags" "warren_closet_spawner_2"', spawner)
+        self.assertIn('"spawned_tags" "enemy"', spawner)
+
+    def test_placed_enemy_carries_the_enemy_tag(self):
+        enemy = GENERATOR.enemy_entity((0, 0, 16), 90)
+        self.assertIn('"classname" "reference_enemy"', enemy)
+        self.assertIn('"_tags" "enemy"', enemy)
 
     def test_closets_do_not_require_other_gameplay_content(self):
         result = GENERATOR.generate(

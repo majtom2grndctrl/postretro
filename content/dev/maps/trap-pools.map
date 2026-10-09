@@ -53,6 +53,7 @@
 "archetype" "reference_enemy"
 "count" "1"
 "_tags" "trap_pools_closet_a"
+"spawned_tags" "enemy"
 }
 {
 "classname" "trigger_volume"
@@ -77,6 +78,7 @@
 "archetype" "reference_enemy"
 "count" "1"
 "_tags" "trap_pools_closet_b"
+"spawned_tags" "enemy"
 }
 {
 "classname" "trigger_volume"
@@ -101,6 +103,7 @@
 "archetype" "reference_enemy"
 "count" "1"
 "_tags" "trap_pools_closet_c"
+"spawned_tags" "enemy"
 }
 {
 "classname" "trigger_volume"
@@ -125,6 +128,7 @@
 "archetype" "reference_enemy"
 "count" "1"
 "_tags" "trap_pools_closet_d"
+"spawned_tags" "enemy"
 }
 // The mod-global percentage pool uses the matching catalog tag in start-script.ts.
 {
@@ -150,6 +154,7 @@
 "archetype" "reference_enemy"
 "count" "1"
 "_tags" "trap_pools_ambush_a"
+"spawned_tags" "enemy"
 }
 {
 "classname" "trigger_volume"
@@ -174,6 +179,7 @@
 "archetype" "reference_enemy"
 "count" "1"
 "_tags" "trap_pools_ambush_b"
+"spawned_tags" "enemy"
 }
 {
 "classname" "trigger_volume"
@@ -198,6 +204,7 @@
 "archetype" "reference_enemy"
 "count" "1"
 "_tags" "trap_pools_ambush_c"
+"spawned_tags" "enemy"
 }
 {
 "classname" "trigger_volume"
@@ -222,4 +229,5 @@
 "archetype" "reference_enemy"
 "count" "1"
 "_tags" "trap_pools_ambush_d"
+"spawned_tags" "enemy"
 }

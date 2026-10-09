@@ -3461,24 +3461,28 @@
 "classname" "reference_enemy"
 "origin" "-1375 -2077 464"
 "angles" "0 254 0"
+"_tags" "enemy"
 }
 // entity 79
 {
 "classname" "reference_enemy"
 "origin" "-4060 822 464"
 "angles" "0 281 0"
+"_tags" "enemy"
 }
 // entity 80
 {
 "classname" "reference_enemy"
 "origin" "-2503 1799 80"
 "angles" "0 171 0"
+"_tags" "enemy"
 }
 // entity 81
 {
 "classname" "reference_enemy"
 "origin" "4092 433 80"
 "angles" "0 32 0"
+"_tags" "enemy"
 }
 // entity 82
 {

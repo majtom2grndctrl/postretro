@@ -679,6 +679,7 @@ pub(crate) fn build_full_renderer(
         promoted_static_weight_buffer,
         promoted_static_weight_scratch: Vec::new(),
         promoted_baked_last_update_time: None,
+        promotions_start_whole: false,
         promoted_depth_cache,
         promoted_depth_cache_missing_layer_warned: false,
         promoted_depth_cache_frame_plan: PromotedDepthCacheFramePlan::default(),

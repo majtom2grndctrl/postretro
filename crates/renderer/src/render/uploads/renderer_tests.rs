@@ -2,7 +2,7 @@
 //! See: context/plans/in-progress/per-frame-upload-batching/index.md
 
 use super::UploadCounts;
-use crate::render::{ClearColor, Renderer, ShSampleRegionSets};
+use crate::render::{ClearColor, FrameScene, Renderer, ShSampleRegionSets};
 use glam::{Mat4, Vec3};
 use postretro_level_loader::ShDrainBatch;
 use postretro_visibility::{CameraCullVisibility, VisibilityPath, VisibleCells};
@@ -210,7 +210,7 @@ fn record_window(
             &[],
             1.0,
             CLEAR,
-            true,
+            FrameScene::World,
         )
         .unwrap();
     encoder
@@ -375,7 +375,7 @@ fn acquire_failures_flush_each_frame_and_preserve_a_real_diff_gated_setter() {
                 &[],
                 1.0,
                 CLEAR,
-                true,
+                FrameScene::World,
                 ShDrainBatch::default(),
             )
             .unwrap();

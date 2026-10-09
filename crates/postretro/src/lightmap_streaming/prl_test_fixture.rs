@@ -3,7 +3,6 @@
 
 use std::path::PathBuf;
 
-use glam::Vec3;
 use postretro_level_format::bvh::BvhSection;
 use postretro_level_format::cell_locator::{
     CellLocatorChild, CellLocatorNodeRecord, CellLocatorSection,
@@ -64,11 +63,6 @@ impl StreamedLightmapPrl {
         );
         world
     }
-}
-
-/// An eye point inside `cell`.
-pub(crate) fn eye_in_cell(cell: u32) -> Vec3 {
-    Vec3::new(cell as f32 + 0.5, 0.5, 0.5)
 }
 
 /// The renderer's placement policy over `manifest`'s blocks at the default

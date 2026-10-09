@@ -44,6 +44,10 @@ pub(crate) trait LightmapBlockSource: Send + Sync {
 
     /// One pair read synchronously on the calling thread: install preload and
     /// capture, never the frame path.
+    #[cfg_attr(
+        not(feature = "capture"),
+        allow(dead_code, reason = "capture and tests preload synchronously")
+    )]
     fn read_block_pair(&self, block: u32) -> Result<LightmapBlockPayload, PrlLoadError> {
         let ranges = self.block_file_ranges(block)?;
         let lightmap = self.read_file_span(ranges.lightmap)?;

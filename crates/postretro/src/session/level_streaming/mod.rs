@@ -24,6 +24,9 @@ use super::sh_residency::ShStreamingSession;
 use crate::cpu_timing::StreamingStage;
 use crate::lightmap_streaming::demand::DemandFrame;
 use crate::streaming::cluster_hints::ClusterHints;
+use crate::streaming::drain_budget::{
+    MAX_INSTALL_DECODED_BYTES_PER_DRAIN, SETTLING_INSTALL_DECODED_BYTES_PER_DRAIN,
+};
 use crate::streaming::shared_drain::SharedDrain;
 
 /// One frame's visibility, as every streamed resource reads it.
@@ -179,7 +182,11 @@ impl LevelStreaming {
             }
             _ => false,
         };
-        self.drain.admit()?;
+        self.drain.admit_within(if frame.settling {
+            SETTLING_INSTALL_DECODED_BYTES_PER_DRAIN
+        } else {
+            MAX_INSTALL_DECODED_BYTES_PER_DRAIN
+        })?;
         let batch = match (sh.as_mut(), sh_pending) {
             (Some(streaming), Some(pending)) => streaming.finish_drain(pending, &self.drain)?,
             _ => ShDrainBatch::default(),

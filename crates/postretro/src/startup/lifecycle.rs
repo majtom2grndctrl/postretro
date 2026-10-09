@@ -191,7 +191,7 @@ impl App {
     }
 
     pub(crate) fn has_installed_level(&self) -> bool {
-        self.boot_state == BootState::Running && self.level.is_some()
+        self.level_is_installed_state() && self.level.is_some()
     }
 
     pub(crate) fn rebuild_active_reaction_subscribers(&mut self) {
@@ -426,9 +426,9 @@ impl App {
                     self.finish_level_failure(err.to_string(), event_loop);
                     return false;
                 }
-                // The spawn cell's lightmap blocks are resident before the
-                // first level frame renders.
-                if let Err(err) = self.install_spawn_streaming() {
+                // The level's streaming sessions exist before Settling asks
+                // them anything, so a missing session means "not streamed".
+                if let Err(err) = self.install_level_streaming_sessions() {
                     log::error!("[Loader] level streaming install failed: {err:#}");
                     self.exit_result = Err(err);
                     event_loop.exit();
@@ -443,17 +443,12 @@ impl App {
                 // player_spawn. The host pawn stays driven locally by `simulate_tick`.
                 self.host_register_own_pawn_after_install();
                 self.level_load = None;
-                self.end_loading_screen();
-                if let Some(renderer) = self.renderer.as_mut() {
-                    renderer.clear_splash();
-                }
-                self.boot_state = BootState::Running;
                 self.boot_load = false;
-                // Defer log line C until after the first level frame's render
-                // returns, so `first_level_frame` captures GPU work the user
-                // actually sees.
-                self.pending_level_log = true;
-                true
+                // The level is held behind the loading tree, which stays
+                // active, until its first frame's streamed set is resident.
+                self.enter_settling(std::time::Instant::now());
+                self.request_redraw();
+                false
             }
             None => {
                 self.finish_level_failure(
@@ -1797,6 +1792,7 @@ pub(crate) mod tests {
             last_resolve_at: None,
             boot_destination: None,
             pending_level_log: false,
+            settle: None,
             pending_splash_override: None,
             host_spawn_points: Vec::new(),
             script_time: 0.0,
@@ -2968,7 +2964,7 @@ pub(crate) mod tests {
             .split("if let Err(err) = self.install_level_payload(")
             .nth(1)
             .unwrap()
-            .split("// The spawn cell")
+            .split("// The level's streaming sessions exist")
             .next()
             .unwrap();
         assert!(rejection.contains("self.finish_level_failure(err.to_string(), event_loop);"));

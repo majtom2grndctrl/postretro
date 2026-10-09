@@ -466,6 +466,7 @@ impl LightmapResidencyController {
     /// Demand from `camera_cell`'s baked set within lead L plus the pins, with
     /// no drawn cells: the spawn camera cell at level install, before any
     /// frame has walked its portals.
+    #[cfg(test)]
     pub(crate) fn update_camera_set(
         &mut self,
         residency_set: &CellResidencySetSection,
@@ -484,6 +485,7 @@ impl LightmapResidencyController {
     /// update. Visible and band blocks do not count. A mandatory block whose
     /// pair failed stays unsettled: it cannot become resident this
     /// generation. This is the lightmap answer a settle chokepoint asks.
+    #[cfg(test)]
     pub(crate) fn settled(&self) -> bool {
         self.demand.demanded_blocks(&self.map).all(|block| {
             let slot = &self.slots[block as usize];

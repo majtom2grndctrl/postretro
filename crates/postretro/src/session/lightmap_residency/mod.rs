@@ -83,6 +83,10 @@ impl RendererDrainFailure {
 
 /// What a synchronous preload read and the renderer installed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(
+    not(feature = "capture"),
+    allow(dead_code, reason = "capture and tests preload synchronously")
+)]
 pub(crate) struct LightmapPreloadSummary {
     pub(crate) reads: LightmapPreloadReads,
     pub(crate) installed: u32,
@@ -192,6 +196,7 @@ impl LightmapStreamingSession {
 
     /// Demand from the camera cell's baked set and the pins alone: the spawn
     /// camera cell at level install.
+    #[cfg(test)]
     pub(crate) fn update_camera_set(
         &mut self,
         residency_set: &CellResidencySetSection,
@@ -222,6 +227,10 @@ impl LightmapStreamingSession {
     /// A renderer error is returned as the typed
     /// [`LightmapResidencyDrainError`] (see [`RendererDrainFailure::of`]),
     /// after the controller has taken the batch's pairs back.
+    #[cfg_attr(
+        not(feature = "capture"),
+        allow(dead_code, reason = "capture and tests preload synchronously")
+    )]
     pub(crate) fn preload(
         &mut self,
         keep_missing: &[u32],
@@ -260,6 +269,7 @@ impl LightmapStreamingSession {
 
     /// Whether the camera cell's mandatory set is resident, as of the latest
     /// demand update. See [`LightmapResidencyController::settled`].
+    #[cfg(test)]
     pub(crate) fn settled(&self) -> bool {
         self.controller.settled()
     }

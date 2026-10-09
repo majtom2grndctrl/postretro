@@ -13,6 +13,11 @@ use super::request::{ReadTier, StreamResource};
 /// admitted, so one oversized item still installs.
 pub(crate) const MAX_INSTALL_DECODED_BYTES_PER_DRAIN: u64 = 8 * 1024 * 1024;
 
+/// The per-drain budget while a level entry is Settling. No world frame is
+/// drawn, so a drain costs only loading-tree cadence; a larger budget shortens
+/// the hold.
+pub(crate) const SETTLING_INSTALL_DECODED_BYTES_PER_DRAIN: u64 = 32 * 1024 * 1024;
+
 /// A ready item's class on the one scale every resource shares. Declaration
 /// order is admission order; `Visible` through `Lead` form the mandatory
 /// tier, the rest the optional tier.
@@ -125,19 +130,22 @@ pub(crate) struct DrainAdmission {
 pub(crate) struct DrainBytesOverflow;
 
 /// Orders a merged ready list for admission, then admits the leading items
-/// that fit [`MAX_INSTALL_DECODED_BYTES_PER_DRAIN`]. The first always fits
+/// that fit `budget` (normally [`MAX_INSTALL_DECODED_BYTES_PER_DRAIN`]). The first always fits
 /// whatever its size, so an oversized item cannot stall residency. Admission
 /// stops at the first item over budget rather than skipping ahead to
 /// smaller, lower-ranked work, so frame cost tracks bytes, not item count.
 ///
 /// Every rank is unique (resource plus key), so the unstable sort orders
 /// exactly as a stable one would, without the stable sort's buffer.
-pub(crate) fn admit_drain(items: &mut [DrainItem]) -> Result<DrainAdmission, DrainBytesOverflow> {
+pub(crate) fn admit_drain(
+    items: &mut [DrainItem],
+    budget: u64,
+) -> Result<DrainAdmission, DrainBytesOverflow> {
     items.sort_unstable_by_key(|item| item.rank);
     let mut total = 0u64;
     for (admitted, item) in items.iter().enumerate() {
         let next = total.checked_add(item.bytes).ok_or(DrainBytesOverflow)?;
-        if admitted > 0 && next > MAX_INSTALL_DECODED_BYTES_PER_DRAIN {
+        if admitted > 0 && next > budget {
             return Ok(DrainAdmission {
                 admitted,
                 bytes: total,
@@ -192,7 +200,7 @@ mod tests {
             sh(DrainClass::Visible, 3, 1),
             sh(DrainClass::Hysteresis, 1, 1),
         ];
-        admit_drain(&mut items).unwrap();
+        admit_drain(&mut items, MAX_INSTALL_DECODED_BYTES_PER_DRAIN).unwrap();
 
         use StreamResource::{LightmapBlock as Lm, Sh};
         assert_eq!(
@@ -226,7 +234,7 @@ mod tests {
             bytes: 1,
         };
         let mut items = [near, ranked];
-        admit_drain(&mut items).unwrap();
+        admit_drain(&mut items, MAX_INSTALL_DECODED_BYTES_PER_DRAIN).unwrap();
         assert_eq!(items[0], ranked);
     }
 
@@ -240,7 +248,7 @@ mod tests {
             pair(DrainClass::Visible, 0, 7, 3 * MIB),
             sh(DrainClass::Pinned, 1, MIB),
         ];
-        let admission = admit_drain(&mut items).unwrap();
+        let admission = admit_drain(&mut items, MAX_INSTALL_DECODED_BYTES_PER_DRAIN).unwrap();
         assert_eq!(
             admission,
             DrainAdmission {
@@ -266,7 +274,7 @@ mod tests {
                 MAX_INSTALL_DECODED_BYTES_PER_DRAIN,
             ),
         ];
-        let admission = admit_drain(&mut items).unwrap();
+        let admission = admit_drain(&mut items, MAX_INSTALL_DECODED_BYTES_PER_DRAIN).unwrap();
         assert_eq!(
             admission,
             DrainAdmission {
@@ -285,7 +293,7 @@ mod tests {
             pair(DrainClass::Visible, 0, 7, 2 * MIB),
             sh(DrainClass::Prefetch, 1, 1),
         ];
-        let admission = admit_drain(&mut items).unwrap();
+        let admission = admit_drain(&mut items, MAX_INSTALL_DECODED_BYTES_PER_DRAIN).unwrap();
         assert_eq!(
             admission,
             DrainAdmission {

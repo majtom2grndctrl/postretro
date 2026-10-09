@@ -1015,6 +1015,9 @@ pub(crate) struct App {
     /// frame the user actually sees.
     pending_level_log: bool,
 
+    /// The current level entry's Settling stretch; `Some` only in Settling.
+    settle: Option<crate::startup::settling::SettleState>,
+
     /// Set during `mod_init` if a mod registers a `SplashSource` override.
     /// The consume path in `run_splash_frame` frame 1 is wired; today the field
     /// stays `None` because no mod system yet calls the setter.

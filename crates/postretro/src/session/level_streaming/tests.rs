@@ -16,9 +16,7 @@ use postretro_visibility::VisibleCells;
 
 use super::*;
 use crate::lightmap_streaming::controller::BlockPhase;
-use crate::lightmap_streaming::prl_test_fixture::{
-    StreamedLightmapPrl, eye_in_cell, manifest_pool_model,
-};
+use crate::lightmap_streaming::prl_test_fixture::{StreamedLightmapPrl, manifest_pool_model};
 use crate::lightmap_streaming::source::LightmapBlockSource;
 use crate::lightmap_streaming::test_fixtures::*;
 use crate::session::lightmap_residency::LightmapLevelView;
@@ -81,6 +79,17 @@ fn frame<'a>(
         monotonic_seconds: 0.0,
         settling: false,
         cpu,
+    }
+}
+
+fn settling_frame<'a>(
+    visible_cells: &'a VisibleCells,
+    camera_cell: usize,
+    cpu: &'a StageFrame<StreamingStage>,
+) -> StreamingFrame<'a> {
+    StreamingFrame {
+        settling: true,
+        ..frame(visible_cells, camera_cell, cpu)
     }
 }
 
@@ -434,11 +443,12 @@ fn sh_only_level_streams_through_the_level_drain_step_and_retires_cleanly() {
     );
 }
 
-// AC 11 through the level owner the install path drives: the spawn eye's
-// camera cell's mandatory set is resident in the renderer's pool before the
-// first drain step, and the first frame keeps the preloaded session.
+// Settling's drains make the presented pose's lightmap set resident through
+// the level owner, with no synchronous read at install: the settle answer
+// starts "not yet asked", reaches settled, and the session install created is
+// the one still current afterwards (L4, L7).
 #[test]
-fn spawn_preload_makes_the_spawn_set_resident_and_the_first_frame_keeps_the_session() {
+fn settling_frames_install_the_settle_set_and_keep_the_install_session() {
     let prl = StreamedLightmapPrl::write();
     let world = prl.load();
     let view = LightmapLevelView::of(&world).unwrap();
@@ -451,45 +461,39 @@ fn spawn_preload_makes_the_spawn_set_resident_and_the_first_frame_keeps_the_sess
     let mut level = LevelStreaming::default();
     let mut sh = None;
     assert!(level.ensure_sessions(&mut sh, wanted, no_sh).unwrap());
+    let generation = level.lightmap().unwrap().controller().generation();
+    assert_eq!(
+        level.lightmap().unwrap().unsettled_blocks(),
+        None,
+        "install reads nothing and asks nothing"
+    );
 
-    // Spawn in cell 0: cells 0 and 1 are mandatory at the default lead, and
+    // Settle in cell 0: cells 0 and 1 are mandatory at the default lead, and
     // cell 2 is the prefetch band.
-    level
-        .install_spawn_lightmap(&world, eye_in_cell(0), |batch| {
-            Ok(model_drain(&mut model, batch))
-        })
-        .unwrap();
+    let cpu = StageFrame::default();
+    let visible = VisibleCells::Culled(vec![0, 1]);
+    wait_until("the settle set installs", || {
+        assert!(level.ensure_sessions(&mut sh, wanted, no_sh).unwrap());
+        level
+            .prepare_drains(
+                &mut sh,
+                Some(view.residency_set),
+                settling_frame(&visible, 0, &cpu),
+            )
+            .unwrap();
+        model_drains_lightmap(&mut level, &mut model);
+        level.lightmap().unwrap().unsettled_blocks() == Some(0)
+    });
     let session = level.lightmap().unwrap();
+    assert_eq!(session.controller().generation(), generation);
     for block in [0, 1] {
         assert_eq!(
             session.controller().phase(block),
             BlockPhase::Installed,
-            "spawn block {block}"
+            "settle block {block}"
         );
-        assert!(model.is_resident(block), "spawn block {block} in the pool");
+        assert!(model.is_resident(block), "settle block {block} in the pool");
     }
-    assert!(
-        !model.is_resident(2),
-        "band blocks wait for in-play prefetch"
-    );
-    assert!(session.settled());
-    let generation = session.controller().generation();
-
-    // The first frame: the same session and controller, no reset, nothing
-    // mandatory read again.
-    assert!(level.ensure_sessions(&mut sh, wanted, no_sh).unwrap());
-    let cpu = StageFrame::default();
-    let visible = VisibleCells::Culled(vec![0, 1]);
-    level
-        .prepare_drains(&mut sh, Some(view.residency_set), frame(&visible, 0, &cpu))
-        .unwrap();
-    let session = level.lightmap().unwrap();
-    assert_eq!(session.controller().generation(), generation);
-    let batch = session
-        .parked_batch()
-        .expect("the first frame drains after the preload");
-    assert!(batch.target_reset.is_none(), "not a fresh controller");
-    assert!(batch.ready.is_empty());
 }
 
 // Regression: an SH mode change mid-level replaced the lightmap session too,
@@ -525,11 +529,6 @@ fn sh_mode_change_mid_level_keeps_the_lightmap_session_and_its_resident_blocks()
             .ensure_sessions(&mut sh, wanted(ShStreamingMode::SyncProof), make_sh)
             .unwrap()
     );
-    level
-        .install_spawn_lightmap(&world, eye_in_cell(0), |batch| {
-            Ok(model_drain(&mut model, batch))
-        })
-        .unwrap();
     let generation = level.lightmap().unwrap().controller().generation();
 
     // One frame as the app runs it: both drains, the renderer accepting all.
@@ -542,8 +541,13 @@ fn sh_mode_change_mid_level_keeps_the_lightmap_session_and_its_resident_blocks()
         sh.as_mut().unwrap().accept_drain_for_test(&batch).unwrap();
         model_drains_lightmap(level, &mut model);
     };
-    run_frame(&mut level, &mut sh);
-    run_frame(&mut level, &mut sh);
+    wait_until("the mandatory blocks install", || {
+        run_frame(&mut level, &mut sh);
+        let lightmap = level.lightmap().unwrap().controller();
+        [0, 1]
+            .iter()
+            .all(|&block| lightmap.phase(block) == BlockPhase::Installed)
+    });
 
     assert!(
         level
@@ -591,10 +595,19 @@ fn a_renderer_that_does_not_stream_the_lightmap_declines_it_for_the_level() {
     let mut sh = None;
     assert!(level.ensure_sessions(&mut sh, wanted, no_sh).unwrap());
 
+    let cpu = StageFrame::default();
+    let visible = VisibleCells::Culled(vec![0]);
+    let residency_set = LightmapLevelView::of(&world).unwrap().residency_set;
     level
-        .install_spawn_lightmap(&world, eye_in_cell(0), |_| {
-            Err(LightmapResidencyDrainError::NotStreaming)
-        })
+        .prepare_drains(&mut sh, Some(residency_set), frame(&visible, 0, &cpu))
+        .unwrap();
+    level
+        .lightmap_mut()
+        .unwrap()
+        .take_drain_batch_for_renderer()
+        .expect("the first frame parks a lightmap batch");
+    level
+        .apply_lightmap_drain(Err(LightmapResidencyDrainError::NotStreaming))
         .unwrap();
     assert!(level.lightmap().is_none());
     for _ in 0..3 {
@@ -616,7 +629,6 @@ fn a_mid_level_lightmap_decline_keeps_sh_for_its_pending_outcome() {
     let prl = StreamedLightmapPrl::write();
     let world = prl.load();
     let view = LightmapLevelView::of(&world).unwrap();
-    let mut model = manifest_pool_model(view.manifest);
     let (_temp, sh_path) = sync_manifest_test_fixture::write_one_cluster_prl();
     let sh_world = postretro_level_loader::load_prl(sh_path.to_str().unwrap()).unwrap();
     let sh_manifest = Arc::clone(
@@ -635,11 +647,6 @@ fn a_mid_level_lightmap_decline_keeps_sh_for_its_pending_outcome() {
     let mut level = LevelStreaming::default();
     let mut sh = None;
     assert!(level.ensure_sessions(&mut sh, wanted, make_sh).unwrap());
-    level
-        .install_spawn_lightmap(&world, eye_in_cell(0), |batch| {
-            Ok(model_drain(&mut model, batch))
-        })
-        .unwrap();
 
     // SH's batch is out when the renderer declines the lightmap.
     let cpu = StageFrame::default();
@@ -872,4 +879,36 @@ fn retirement_empties_the_old_completion_queue_its_issuer_is_blocked_on() {
     retirement.add_issuer(issuer);
     retirement.drain_lightmap_completions(queue, Arc::new(LightmapRouteLedger::default()));
     wait_until("the blocked issuer to finish", || retirement.try_finish());
+}
+
+// L8: install performs no synchronous lightmap read. Settling's drains bring
+// the spawn set in; only capture and tests preload.
+#[test]
+fn no_production_path_calls_spawn_lightmap_preload() {
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut stack = vec![src.clone()];
+    let mut offenders = Vec::new();
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                if !path.ends_with("capture") && !path.ends_with("walk_measurement") {
+                    stack.push(path);
+                }
+                continue;
+            }
+            let name = path.file_name().unwrap().to_string_lossy();
+            if !name.ends_with(".rs") || name.contains("test") {
+                continue;
+            }
+            let source = std::fs::read_to_string(&path).unwrap();
+            let production = source.split("#[cfg(test)]").next().unwrap();
+            for needle in ["install_spawn_lightmap", ".preload(&", ".preload_batch("] {
+                if production.contains(needle) && !path.ends_with("lightmap_residency/mod.rs") {
+                    offenders.push(format!("{}: {needle}", path.display()));
+                }
+            }
+        }
+    }
+    assert!(offenders.is_empty(), "{offenders:#?}");
 }

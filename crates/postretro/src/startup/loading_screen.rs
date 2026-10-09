@@ -239,6 +239,26 @@ impl App {
         }
     }
 
+    /// Raise `loading.progress` to `progress` past the parse share, through
+    /// Settling. Never lowers the bar.
+    pub(crate) fn raise_loading_progress(&mut self, progress: f32) {
+        let Some(session) = self.session.as_mut() else {
+            return;
+        };
+        let Some(load) = session.loading_screen.active.as_mut() else {
+            return;
+        };
+        if progress > load.shown {
+            load.shown = progress.min(1.0);
+            let shown = load.shown;
+            write_loading_slot(
+                &session.scripting.script_ctx,
+                PROGRESS_SLOT,
+                SlotValue::Number(shown),
+            );
+        }
+    }
+
     /// Paint one Loading frame: the chosen loading tree as the frame's only UI
     /// layer, world-less, over the splash background. Without a session, a
     /// full-ready renderer, or any registered loading tree, paint the boot

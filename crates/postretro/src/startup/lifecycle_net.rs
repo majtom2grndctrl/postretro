@@ -229,6 +229,10 @@ impl App {
         self.active_level_source = None;
 
         self.pending_level_log = false;
+        // An unload during Settling abandons the settle: no reveal edge fires,
+        // and the held level's loading screen ends with it.
+        self.settle = None;
+        self.end_loading_screen();
         self.camera = Camera::new(Vec3::ZERO, 0.0, 0.0);
         self.frame_timing
             .push_state(InterpolableState::new(Vec3::ZERO));

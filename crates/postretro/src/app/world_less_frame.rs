@@ -20,6 +20,14 @@ pub(crate) struct HeldLevelView {
     pub(crate) view_proj: Mat4,
 }
 
+/// A held level's prepared frame: its visibility from the held view and the
+/// SH batch its streaming step produced, waiting to be presented.
+pub(crate) struct HeldLevelFrame {
+    view: HeldLevelView,
+    visible_render: VisibleRenderPreparation,
+    sh_drain_batch: ShDrainBatch,
+}
+
 impl App {
     /// Render and present one world-less frame showing `ui_snapshot` over
     /// `clear_color`. Releases any level streaming: nothing is installed to
@@ -48,29 +56,79 @@ impl App {
         )
     }
 
-    /// A world-less frame over the installed level: runs the level's
-    /// visibility and streaming step from `view`, composes the SH it made
-    /// resident, and draws none of the world. The level's streaming sessions
-    /// survive the frame. Same return and error contract as
-    /// [`Self::present_world_less_frame`]; also false without a level.
+    /// The held level's half of a Settling frame, before its paint: the
+    /// level's visibility and streaming step from `view`. Returns `None`,
+    /// having done nothing, without a level, session or full-ready renderer.
+    /// The level's streaming sessions survive; the frame that presents the
+    /// result composes the SH it made resident.
+    pub(crate) fn prepare_held_level_frame(
+        &mut self,
+        view: HeldLevelView,
+    ) -> anyhow::Result<Option<HeldLevelFrame>> {
+        let (Some(world), Some(session), Some(renderer)) = (
+            self.level.as_ref(),
+            self.session.as_mut(),
+            self.renderer.as_mut(),
+        ) else {
+            return Ok(None);
+        };
+        if !renderer.is_full_ready() {
+            return Ok(None);
+        }
+        {
+            let registry = session.scripting.script_ctx.registry.borrow();
+            crate::rebuild_blocked_portals(&mut self.blocked_portals, Some(world), &registry);
+        }
+        let visible_render = VisibleRenderPreparation::for_level(
+            world,
+            view.eye,
+            view.view_proj,
+            &self.blocked_portals,
+            false,
+            &mut self.scratch_cells,
+            self.cpu_timer.gate(),
+        );
+        let streaming_cpu = postretro_stage_timing::StageFrame::<cpu_timing::StreamingStage>::new(
+            self.cpu_timer.gate(),
+        );
+        let sh_drain_batch = session.run_level_streaming_step(
+            world.sh_stream_manifest(),
+            Some(world),
+            renderer,
+            crate::session::level_streaming::StreamingFrame {
+                visible_cells: &visible_render.visible_cells,
+                camera_cell: Some(visible_render.stats.camera_cell as usize),
+                path: visible_render.stats.path,
+                monotonic_seconds: self.script_time,
+                settling: true,
+                cpu: &streaming_cpu,
+            },
+        )?;
+        Ok(Some(HeldLevelFrame {
+            view,
+            visible_render,
+            sh_drain_batch,
+        }))
+    }
+
+    /// Present a world-less frame over the held level `held` prepared:
+    /// composes the SH its drain made resident and draws none of the world.
+    /// Same return and error contract as [`Self::present_world_less_frame`].
     pub(crate) fn present_held_level_frame(
         &mut self,
         event_loop: &ActiveEventLoop,
         frame_start: Instant,
         ui_snapshot: postretro_ui::UiReadSnapshot,
         clear_color: render::ClearColor,
-        view: HeldLevelView,
+        held: HeldLevelFrame,
     ) -> bool {
-        if self.level.is_none() {
-            return false;
-        }
         self.present_world_less_scene(
             event_loop,
             frame_start,
             ui_snapshot,
             clear_color,
             false,
-            Some(view),
+            Some(held),
         )
     }
 
@@ -81,7 +139,7 @@ impl App {
         ui_snapshot: postretro_ui::UiReadSnapshot,
         clear_color: render::ClearColor,
         export_focus_rects: bool,
-        held: Option<HeldLevelView>,
+        held: Option<HeldLevelFrame>,
     ) -> bool {
         let (Some(session), Some(renderer)) = (self.session.as_mut(), self.renderer.as_mut())
         else {
@@ -103,72 +161,33 @@ impl App {
             .presentation_pool
             .recycle_draw_inputs(recycled_inputs);
 
-        let (visible_render, camera_cell, sh_drain_batch, scene) =
-            match (held, self.level.as_ref()) {
-                (Some(view), Some(world)) => {
-                    {
-                        let registry = session.scripting.script_ctx.registry.borrow();
-                        crate::rebuild_blocked_portals(
-                            &mut self.blocked_portals,
-                            Some(world),
-                            &registry,
-                        );
-                    }
-                    let visible_render = VisibleRenderPreparation::for_level(
-                        world,
-                        view.eye,
-                        view.view_proj,
-                        &self.blocked_portals,
-                        false,
-                        &mut self.scratch_cells,
-                        self.cpu_timer.gate(),
-                    );
-                    renderer.update_per_frame_uniforms(
-                        view.view_proj,
-                        view.eye,
-                        self.script_time as f32,
-                    );
-                    let streaming_cpu = postretro_stage_timing::StageFrame::<
-                        cpu_timing::StreamingStage,
-                    >::new(self.cpu_timer.gate());
-                    let batch = match session.run_level_streaming_step(
-                        world.sh_stream_manifest(),
-                        Some(world),
-                        renderer,
-                        crate::session::level_streaming::StreamingFrame {
-                            visible_cells: &visible_render.visible_cells,
-                            camera_cell: Some(visible_render.stats.camera_cell as usize),
-                            path: visible_render.stats.path,
-                            monotonic_seconds: self.script_time,
-                            settling: true,
-                            cpu: &streaming_cpu,
-                        },
-                    ) {
-                        Ok(batch) => batch,
-                        Err(err) => {
-                            self.exit_result = Err(err);
-                            event_loop.exit();
-                            return true;
-                        }
-                    };
-                    let camera_cell = Some(visible_render.stats.camera_cell);
-                    (
-                        visible_render,
-                        camera_cell,
-                        batch,
-                        render::FrameScene::ComposeOnly,
-                    )
-                }
-                _ => {
-                    session.clear_level_streaming();
-                    (
-                        VisibleRenderPreparation::empty_world(),
-                        None,
-                        ShDrainBatch::default(),
-                        render::FrameScene::Empty,
-                    )
-                }
-            };
+        let (visible_render, camera_cell, view_proj, sh_drain_batch, scene) = match held {
+            Some(held) => {
+                renderer.update_per_frame_uniforms(
+                    held.view.view_proj,
+                    held.view.eye,
+                    self.script_time as f32,
+                );
+                let camera_cell = Some(held.visible_render.stats.camera_cell);
+                (
+                    held.visible_render,
+                    camera_cell,
+                    held.view.view_proj,
+                    held.sh_drain_batch,
+                    render::FrameScene::ComposeOnly,
+                )
+            }
+            None => {
+                session.clear_level_streaming();
+                (
+                    VisibleRenderPreparation::empty_world(),
+                    None,
+                    Mat4::IDENTITY,
+                    ShDrainBatch::default(),
+                    render::FrameScene::Empty,
+                )
+            }
+        };
         let sh_frame_result = match renderer.render_frame_indirect(
             &mut session.font_system,
             visible_render.camera_cull(),
@@ -181,7 +200,7 @@ impl App {
                 movers: &[],
             },
             camera_cell,
-            held.map_or(Mat4::IDENTITY, |view| view.view_proj),
+            view_proj,
             &[],
             self.script_time,
             clear_color,

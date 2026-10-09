@@ -5,7 +5,6 @@
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use glam::Vec3;
 use postretro_level_loader::{
     LevelWorld, ShDrainBatch, ShStreamManifest, requested_streaming_mode,
 };
@@ -14,7 +13,7 @@ use postretro_stage_timing::StageFrame;
 
 use super::{StreamingFrame, WantedStreaming};
 use crate::cpu_timing::StreamingStage;
-use crate::session::lightmap_residency::{LightmapLevelView, LightmapStreamingSession};
+use crate::session::lightmap_residency::LightmapLevelView;
 use crate::session::sh_residency::{ShStreamingSession, require_loaded_streaming_mode};
 
 impl crate::session::Session {
@@ -74,45 +73,17 @@ impl crate::session::Session {
         Ok(batch)
     }
 
-    /// Level install: creates the level's streaming sessions, then makes the
-    /// spawn camera cell's mandatory lightmap set resident before the first
-    /// frame renders. `spawn_eye` is the eye the first frame presents. See
-    /// [`super::LevelStreaming::install_spawn_lightmap`].
+    /// Level install: creates the level's streaming sessions, so the settle
+    /// chokepoint reads a missing session as "not streamed". Reads nothing:
+    /// Settling's drains make the presented pose's set resident.
     pub(crate) fn install_level_streaming(
         &mut self,
         level: &LevelWorld,
-        renderer: &mut Renderer,
-        spawn_eye: Vec3,
+        renderer: &Renderer,
     ) -> Result<()> {
         self.level_streaming.poll_retirement();
-        if !self.ensure_level_streaming_sessions(
-            level.sh_stream_manifest(),
-            Some(level),
-            renderer,
-        )? {
-            return Ok(());
-        }
-        self.level_streaming
-            .install_spawn_lightmap(level, spawn_eye, |batch| {
-                renderer.drain_lightmap_residency(batch)
-            })?;
-        if !self.lightmap_residency_settled() {
-            // A failed read already warned; its block renders SH-only.
-            log::warn!(
-                "[Lightmap streaming] the spawn cell's mandatory set is not fully resident \
-                 after preload"
-            );
-        }
+        self.ensure_level_streaming_sessions(level.sh_stream_manifest(), Some(level), renderer)?;
         Ok(())
-    }
-
-    /// Whether the camera cell's mandatory lightmap set is resident, as of
-    /// the latest demand update. True when the level does not stream its
-    /// lightmap. This is the lightmap answer a settle chokepoint asks.
-    pub(crate) fn lightmap_residency_settled(&self) -> bool {
-        self.level_streaming
-            .lightmap()
-            .is_none_or(LightmapStreamingSession::settled)
     }
 
     /// Makes the streaming sessions match the loaded level (see

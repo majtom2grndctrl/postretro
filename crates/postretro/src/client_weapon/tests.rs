@@ -1350,3 +1350,144 @@ fn client_weapon_invalid_old_charge_correction_retracts_only_that_activation() {
     assert_eq!(component.cooldown_remaining_ms, before);
     assert_eq!(frame.due.len(), 1, "new B remains queued");
 }
+
+// Own-hitscan impact bursts. The fixture queues three due press-burst shots at
+// the camera's aim, so a one-contact scene yields three predicted contacts.
+mod impact_burst {
+    use super::*;
+    use postretro_entities::ComponentKind;
+
+    const SHOTS: usize = 3;
+
+    fn particles(app: &crate::App) -> usize {
+        app.session
+            .as_ref()
+            .unwrap()
+            .scripting
+            .script_ctx
+            .registry
+            .borrow()
+            .iter_with_kind(ComponentKind::ParticleState)
+            .count()
+    }
+
+    fn wall_ahead(app: &mut crate::App, distance: f32) {
+        let (eye, forward) = app.camera.aim_ray();
+        let center = eye + forward * distance;
+        let side = forward.cross(Vec3::Y).normalize_or_zero();
+        let up = Vec3::Y;
+        app.collision_world = crate::collision::CollisionWorld::from_triangles_for_test(
+            vec![
+                center - side * 4.0 - up * 4.0,
+                center + side * 4.0 - up * 4.0,
+                center + side * 4.0 + up * 4.0,
+                center - side * 4.0 + up * 4.0,
+            ],
+            vec![[0, 1, 2], [0, 2, 3]],
+        );
+    }
+
+    fn target_ahead(app: &crate::App, distance: f32) {
+        let (eye, forward) = app.camera.aim_ray();
+        let ctx = app.session.as_ref().unwrap().scripting.script_ctx.clone();
+        let mut registry = ctx.registry.borrow_mut();
+        let target = registry.spawn(Transform {
+            position: eye + forward * distance,
+            ..Default::default()
+        });
+        registry
+            .set_component(
+                target,
+                HealthComponent::from_descriptor(
+                    &serde_json::from_value(serde_json::json!({
+                        "max":100.0,"hitbox":{"halfExtents":[0.05,0.05,0.05]}
+                    }))
+                    .unwrap(),
+                ),
+            )
+            .unwrap();
+    }
+
+    fn fire_all(app: &mut crate::App) -> Vec<postretro_entities::WeaponEmission> {
+        let aim = app.presented_aim_pose(0.0);
+        let mut emissions = Vec::new();
+        app.run_client_fire_path_post_loop(0.0, 0.0, aim, &mut emissions);
+        assert_eq!(app.client_fire_resolutions.len(), SHOTS);
+        emissions
+    }
+
+    fn impacts(emissions: &[postretro_entities::WeaponEmission]) -> usize {
+        emissions.iter().filter(|e| e.address == "impact").count()
+    }
+
+    #[test]
+    fn client_own_hitscan_fire_bursts_once_per_world_contact() {
+        let mut app = presented_catchup_app(false);
+        wall_ahead(&mut app, 8.0);
+        let before = particles(&app);
+        let emissions = fire_all(&mut app);
+        assert_eq!(impacts(&emissions), SHOTS);
+        assert_eq!(
+            particles(&app) - before,
+            SHOTS * weapon::IMPACT_PARTICLE_COUNT,
+            "one burst per predicted world contact"
+        );
+    }
+
+    #[test]
+    fn client_own_hitscan_fire_bursts_once_per_entity_contact() {
+        let mut app = presented_catchup_app(false);
+        target_ahead(&app, 5.0);
+        let before = particles(&app);
+        let emissions = fire_all(&mut app);
+        assert_eq!(impacts(&emissions), SHOTS);
+        assert_eq!(
+            particles(&app) - before,
+            SHOTS * weapon::IMPACT_PARTICLE_COUNT,
+            "one burst per predicted entity contact"
+        );
+    }
+
+    #[test]
+    fn client_own_hitscan_burst_count_equals_the_impact_emission_contact_count() {
+        // Whatever the scene resolves, the bursts are exactly the contacts the
+        // `impact` emission carries, so the sound and the sparks stay one-to-one.
+        let mut app = presented_catchup_app(false);
+        target_ahead(&app, 5.0);
+        wall_ahead(&mut app, 8.0);
+        let before = particles(&app);
+        let emissions = fire_all(&mut app);
+        let contacts: usize = emissions
+            .iter()
+            .filter(|e| e.address == "impact")
+            .map(|e| match &e.emitter {
+                postretro_entities::Emitter::Contacts(contacts) => contacts.len(),
+                _ => 0,
+            })
+            .sum();
+        assert!(contacts >= SHOTS);
+        assert_eq!(
+            particles(&app) - before,
+            contacts * weapon::IMPACT_PARTICLE_COUNT
+        );
+    }
+
+    #[test]
+    fn client_dry_and_silent_pulls_spawn_no_burst() {
+        for presentation in [
+            weapon::ClientPullPresentation::DryFire,
+            weapon::ClientPullPresentation::Silent,
+        ] {
+            let mut app = presented_catchup_app(false);
+            wall_ahead(&mut app, 8.0);
+            target_ahead(&app, 5.0);
+            for queued in &mut app.client_weapon.due {
+                queued.presentation = presentation;
+            }
+            let before = particles(&app);
+            let emissions = fire_all(&mut app);
+            assert_eq!(impacts(&emissions), 0, "{presentation:?} raises no impact");
+            assert_eq!(particles(&app), before, "{presentation:?} spawns no burst");
+        }
+    }
+}

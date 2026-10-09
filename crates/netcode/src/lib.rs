@@ -135,8 +135,7 @@ pub use prediction::ClientPrediction;
 pub use presentation::{ClientOverlayFact, ingest_client_overlay_fact};
 pub use presentation::{
     ClientOverlayFactState, HostOverlayFactTracker, ingest_client_presentation_messages,
-    route_host_presentation_spawns, route_host_world_point_presentation_spawns,
-    send_host_overlay_facts, update_client_overlay_anchors,
+    route_host_presentation_spawns, send_host_overlay_facts, update_client_overlay_anchors,
 };
 pub use seat::clear_released_seat_slot_values;
 pub use state_slots::{HostStateReplication, ReplicatedSlotIdentity};
@@ -185,7 +184,7 @@ use postretro_entities::components::weapon::WeaponComponent;
 use postretro_entities::provenance::DescriptorProvenance;
 use postretro_entities::{
     ComponentKind, ComponentValue, EntityId, EntityRegistry, EntityTypeDescriptor, FactionRegistry,
-    FactionSentimentState, SlotTable, Transform, WorldPointPresentationSpawn,
+    FactionSentimentState, SlotTable, Transform,
 };
 use postretro_foundation::{NavAgentParams, PlayerMovementComponent, WeaponPlacementDescriptor};
 use postretro_net::replication::ServerReplication;
@@ -1915,7 +1914,10 @@ pub fn host_ingest_ready_hit_declarations(
             );
         }
         // A remote shot's validated contacts are its one `impact`, as a local shot's are.
+        // The host's own screen bursts once per contact here, splash included; every
+        // other peer bursts from the cue below.
         if !result.contacts.is_empty() {
+            weapon::spawn_impact_effects_for_contacts(registry, &result.contacts);
             let shot_id = crate::wire_convert::shot_id_from_wire(pending.declaration.shot_id);
             let emitter = emission::Emitter::Contacts(result.contacts);
             if let Some(cue) = weapon_cues::freeze_observer_weapon_cue(
@@ -2162,13 +2164,6 @@ fn ingest_hit_declaration(
             );
         }
         let point = impact.point;
-        weapon::spawn_impact_effect_at(context.registry, point, impact.normal);
-        context
-            .registry
-            .push_world_point_presentation_spawn(WorldPointPresentationSpawn {
-                world_anchor: point,
-                owner_pawn: open.shot.pawn.to_raw(),
-            });
         let hit_accepted = crate::sim::splash::emit_splash_damage(
             context.registry,
             context.hit_zone_store,
@@ -3984,6 +3979,122 @@ mod tests {
             result.contacts.is_empty(),
             "the bad normal voids the contact"
         );
+    }
+
+    /// Impact-burst particles the host's own registry holds after ingesting
+    /// `declaration` through the production host intake, and how many `impact`
+    /// emissions that intake raised for the host's scripts and sounds.
+    fn host_burst_after_ingest(
+        fixture: &mut HitIngestFixture,
+        declaration: wire::HitDeclaration,
+    ) -> (usize, usize) {
+        let mut pending = PendingHitDeclarations::new();
+        assert!(pending.push_at(7, declaration, 100));
+        let ready = host_take_ready_hit_declarations(
+            &HostCommandQueues::new(),
+            &mut fixture.open_shots,
+            &mut pending,
+            100,
+        );
+        assert_eq!(ready.len(), 1);
+        let (mut server, _client) = hit_refusal_link();
+        let mut impacts = 0;
+        host_ingest_ready_hit_declarations(
+            &mut server,
+            &mut fixture.registry,
+            &fixture.collision_world,
+            &fixture.hit_zone_store,
+            &fixture.allocator,
+            &fixture.owners,
+            &mut fixture.open_shots,
+            100,
+            0.0,
+            ready,
+            |_| {},
+            |_, _| {},
+            |_| impacts += 1,
+        );
+        let particles = fixture
+            .registry
+            .iter_with_kind(ComponentKind::ParticleState)
+            .count();
+        (particles, impacts)
+    }
+
+    // The host's screen bursts once per validated hitscan contact, entity and
+    // world alike, beside the one `impact` it raises for the shot.
+    #[test]
+    fn host_ingest_bursts_once_per_validated_remote_hitscan_contact() {
+        let mut fixture = HitIngestFixture::new(wall_at_x(8.0));
+        fixture.set_live_pellet_count(2);
+        fixture.mint_shot_from_live_weapon();
+        let mut entity_hit = fixture.record(Vec3::new(4.0, 0.5, 0.0), None);
+        entity_hit.normal = [-1.0, 0.0, 0.0];
+        let wall_hit = world_contact(Vec3::new(8.0, 0.5, 0.0), Vec3::NEG_X);
+        let declaration = fixture.declaration(vec![entity_hit, wall_hit]);
+
+        let (particles, impacts) = host_burst_after_ingest(&mut fixture, declaration);
+
+        assert_eq!(impacts, 1, "one impact per remote shot");
+        assert_eq!(particles, 2 * weapon::IMPACT_PARTICLE_COUNT);
+    }
+
+    // A contact the host rejects is not presented: no burst for a bad normal or
+    // for a wall the shooter cannot see.
+    #[test]
+    fn host_ingest_does_not_burst_for_rejected_remote_contacts() {
+        let mut fixture = HitIngestFixture::new(wall_at_x(2.0));
+        fixture.set_live_pellet_count(2);
+        fixture.mint_shot_from_live_weapon();
+        let mut bad_normal = fixture.record(Vec3::new(1.5, 0.5, 0.0), None);
+        bad_normal.target = PRESENTATION_CONTACT_TARGET;
+        bad_normal.normal = [0.0, 0.0, 0.0];
+        let behind_wall = world_contact(Vec3::new(8.0, 0.5, 0.0), Vec3::NEG_X);
+        let declaration = fixture.declaration(vec![bad_normal, behind_wall]);
+
+        let (particles, impacts) = host_burst_after_ingest(&mut fixture, declaration);
+
+        assert_eq!((particles, impacts), (0, 0));
+    }
+
+    #[test]
+    fn host_ingest_bursts_once_for_a_remote_direct_projectile_contact() {
+        let mut fixture = HitIngestFixture::new(CollisionWorld::new());
+        fixture.mint_shot_from_live_weapon();
+        fixture
+            .open_shots
+            .shots
+            .get_mut(&fixture.shot_id)
+            .expect("fixture shot remains open")
+            .shot
+            .is_projectile = true;
+        let mut hit = fixture.record(Vec3::new(4.0, 0.5, 0.0), None);
+        hit.normal = [-1.0, 0.0, 0.0];
+        let declaration = fixture.declaration(vec![hit]);
+
+        let (particles, impacts) = host_burst_after_ingest(&mut fixture, declaration);
+
+        assert_eq!(impacts, 1);
+        assert_eq!(particles, weapon::IMPACT_PARTICLE_COUNT);
+    }
+
+    // The splash burst used to spawn inside ingestion and again at the contact
+    // site; one burst per contact is the contract.
+    #[test]
+    fn host_ingest_bursts_exactly_once_for_a_remote_splash_contact() {
+        let mut fixture = HitIngestFixture::new(wall_at_x(0.5));
+        fixture.configure_projectile_splash(0.0);
+        let declaration = fixture.declaration(vec![wire::HitRecord {
+            normal: [0.0, 1.0, 0.0],
+            target: PRESENTATION_CONTACT_TARGET,
+            point: Vec3::new(0.5, 0.0, 0.0).to_array(),
+            zone: None,
+        }]);
+
+        let (particles, impacts) = host_burst_after_ingest(&mut fixture, declaration);
+
+        assert_eq!(impacts, 1);
+        assert_eq!(particles, weapon::IMPACT_PARTICLE_COUNT);
     }
 
     #[test]
@@ -5837,12 +5948,6 @@ mod tests {
         assert!(!result.hit_accepted);
         assert_eq!(result.projectile_contact, None);
         assert!(fixture.open_shots.get(fixture.shot_id).is_none());
-        assert!(
-            fixture
-                .registry
-                .take_world_point_presentation_spawns()
-                .is_empty()
-        );
         assert_eq!(
             fixture
                 .registry

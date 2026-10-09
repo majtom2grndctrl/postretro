@@ -45,12 +45,13 @@ pub use client_pull::{
 
 pub use damage::DamagePayload;
 pub use impact::{
+    IMPACT_PARTICLE_COUNT, lifetime as impact_lifetime, spawn_impact_effect_at,
+    spawn_impact_effects_for_contacts, spawn_projectile_impact_light,
+};
+pub use impact::{
     collection_id as impact_collection_id, emissive as impact_emissive,
     spec_exponent as impact_spec_exponent, spec_intensity as impact_spec_intensity,
     sprite_collection as impact_sprite_collection,
-};
-pub use impact::{
-    lifetime as impact_lifetime, spawn_impact_effect_at, spawn_projectile_impact_light,
 };
 
 /// Minimal weapon construction used by binary-owned gameplay orchestration tests.

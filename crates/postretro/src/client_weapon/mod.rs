@@ -139,6 +139,14 @@ impl App {
                 resolution.projectile_launch.is_some(),
                 !contacts.is_empty(),
             );
+            // The burst follows the `impact` address: a dry or silent pull raises
+            // neither, and a later verdict never retracts it.
+            if effects.addresses.contains(&"impact") {
+                weapon::spawn_impact_effects_for_contacts(
+                    &mut ctx.registry.borrow_mut(),
+                    &contacts,
+                );
+            }
             for address in effects.addresses {
                 pending.push(postretro_entities::WeaponEmission {
                     sounds: Some(queued.shot.sounds.clone()),

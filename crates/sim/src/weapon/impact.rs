@@ -9,6 +9,7 @@ use postretro_entities::components::billboard_emitter::LifetimeCurve;
 use postretro_entities::components::light::{LightAnimation, LightComponent, LightKind};
 use postretro_entities::components::particle::ParticleState;
 use postretro_entities::components::sprite_visual::SpriteVisual;
+use postretro_entities::reactions::emitter::ImpactContact;
 use postretro_entities::registry::{EntityRegistry, Transform};
 use postretro_foundation::ProjectileImpactLight;
 
@@ -29,7 +30,8 @@ const IMPACT_LIFETIME: f32 = 0.18;
 const IMPACT_EMISSIVE: f32 = 0.0;
 const IMPACT_SPEC_INTENSITY: f32 = 0.45;
 const IMPACT_SPEC_EXPONENT: f32 = 4.0;
-const IMPACT_PARTICLE_COUNT: usize = 9;
+/// Spark particles in one impact burst. Tests count in multiples of this.
+pub const IMPACT_PARTICLE_COUNT: usize = 9;
 const SURFACE_OFFSET: f32 = 0.03;
 
 static IMPACT_COLLECTION_ID: LazyLock<String> = LazyLock::new(|| {
@@ -84,6 +86,19 @@ pub fn spawn_impact_effect_at(registry: &mut EntityRegistry, point: Vec3, normal
         };
         let speed = 4.5 + (index % 3) as f32 * 1.35;
         spawn_particle(registry, origin, fan * speed, index);
+    }
+}
+
+/// Spawn one impact burst per contact, each along that contact's own normal.
+/// A zero or non-finite normal takes the burst's upward fallback. Callers that
+/// raise an `impact` for a shot's contacts spawn through here so the burst and
+/// the event stay one-to-one.
+pub fn spawn_impact_effects_for_contacts(
+    registry: &mut EntityRegistry,
+    contacts: &[ImpactContact],
+) {
+    for contact in contacts {
+        spawn_impact_effect_at(registry, contact.point, contact.normal);
     }
 }
 
@@ -255,6 +270,70 @@ mod tests {
                 "every impact particle must target the registered impact collection"
             );
         }
+    }
+
+    #[test]
+    fn contact_bursts_spawn_one_burst_per_contact_along_its_own_normal() {
+        let mut registry = EntityRegistry::new();
+        let contacts = [
+            ImpactContact::new(Vec3::new(0.0, 0.0, 0.0), Vec3::X, None),
+            ImpactContact::new(Vec3::new(10.0, 0.0, 0.0), Vec3::NEG_X, None),
+            ImpactContact::new(Vec3::new(20.0, 0.0, 0.0), Vec3::Z, None),
+        ];
+
+        spawn_impact_effects_for_contacts(&mut registry, &contacts);
+
+        assert_eq!(count_particles(&registry), 3 * IMPACT_PARTICLE_COUNT);
+        // A burst's particles share one origin just off its own surface, and the
+        // first ejects straight along the normal, so each contact's normal and
+        // point show in the particles found at its origin.
+        for contact in &contacts {
+            let at_contact = registry
+                .iter_with_kind(ComponentKind::ParticleState)
+                .filter_map(|(id, value)| {
+                    let ComponentValue::ParticleState(particle) = value else {
+                        return None;
+                    };
+                    let position = registry.get_component::<Transform>(id).ok()?.position;
+                    ((position - (contact.point + contact.normal * SURFACE_OFFSET)).length()
+                        < EPSILON)
+                        .then(|| Vec3::from_array(particle.velocity).normalize())
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(at_contact.len(), IMPACT_PARTICLE_COUNT);
+            assert!(
+                at_contact.iter().any(|v| v.dot(contact.normal) > 0.9999),
+                "the burst ejects along its own contact's normal"
+            );
+        }
+    }
+
+    #[test]
+    fn contact_bursts_take_the_upward_fallback_for_degenerate_normals() {
+        for normal in [Vec3::ZERO, Vec3::new(f32::NAN, 0.0, 1.0), Vec3::INFINITY] {
+            let mut registry = EntityRegistry::new();
+            spawn_impact_effects_for_contacts(
+                &mut registry,
+                &[ImpactContact::new(Vec3::ZERO, normal, None)],
+            );
+            assert_eq!(count_particles(&registry), IMPACT_PARTICLE_COUNT);
+            for (_id, value) in registry.iter_with_kind(ComponentKind::ParticleState) {
+                let ComponentValue::ParticleState(particle) = value else {
+                    continue;
+                };
+                assert!(
+                    particle.velocity.iter().all(|c| c.is_finite()) && particle.velocity[1] > 0.0,
+                    "{normal:?} must burst upward with finite velocity"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn contact_bursts_spawn_nothing_for_no_contacts() {
+        let mut registry = EntityRegistry::new();
+        spawn_impact_effects_for_contacts(&mut registry, &[]);
+        assert_eq!(count_particles(&registry), 0);
     }
 
     #[test]

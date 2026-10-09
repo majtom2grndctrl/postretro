@@ -1069,6 +1069,12 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
     if app.is_connected_client() {
         app.observe_client_weapon_edges(&mut client_sounds);
     }
+    // Observed impact cues burst here, once, in the frame they arrived: the
+    // cue list is rebuilt every frame in `net_poll_and_apply`.
+    netcode::weapon_cues::spawn_observer_impact_bursts(
+        &mut script_ctx.registry.borrow_mut(),
+        &app.observer_weapon_cues,
+    );
 
     // Status overlays are host/single-player presentation facts.
     // This runs once after every fixed tick (including zero-tick

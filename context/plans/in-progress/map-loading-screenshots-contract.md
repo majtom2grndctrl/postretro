@@ -45,7 +45,7 @@ Five eager 1920×1080 screenshots cost ~41 MB of resident textures plus a synchr
 - **Release when the loading screen ends.** Every path through `end_loading_screen` (reveal, failure, abandon, network relevel) and platform suspend unregisters the images that load uploaded. A decode still in flight at that point is discarded when it arrives. Consequence: zero resident cost outside a load; each load re-decodes its shot.
 - **Registry removal.** `UiImageRegistry` gains removal. It drops the entry and its natural size and bumps the image-size generation, so a retained tree rebuilds and stops emitting the quad. All wgpu stays in the renderer.
 - **Reload safety.** A staged reload that changes the committed `uiImages` or the loading pools recomputes the loading-only set. An in-flight decode whose key or path no longer matches is discarded on arrival.
-- **Logging.** Mod init's info line counts eager images and names how many were deferred. Each lazy upload logs one info line with key, size and decode milliseconds. Failures warn naming the `uiImages` entry, as eager loads do.
+- **Logging.** Mod init's info line counts eager images and names how many were deferred. Each lazy upload logs one info line with key, size and decode milliseconds. Failures warn naming the `uiImages` entry, as eager loads do. The same classification pass warns once per committed manifest for any tree's `background.image` key that names no `uiImages` entry, engine image or glyph art key, naming the tree. Today a misspelled background key draws nothing silently, because a background with no known size emits no quad and so never reaches the renderer's missing-key warning.
 
 ## Tracks and file ownership
 

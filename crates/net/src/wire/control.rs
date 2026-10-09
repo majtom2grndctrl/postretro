@@ -148,6 +148,10 @@ pub enum ClientControlMessage {
 pub struct ClientSwitchDeclaration {
     pub declaration_id: u32,
     pub slot: u8,
+    /// Client tick of the input command on which the switch was made. The host
+    /// orders the switch against that client's retained starts and presses by
+    /// it; the transport passes it through unvalidated, like `slot`.
+    pub client_tick: u32,
 }
 
 /// A terminal immutable-admission mismatch.
@@ -484,6 +488,7 @@ mod tests {
             ClientSwitchDeclaration {
                 declaration_id: 7,
                 slot: 3,
+                client_tick: u32::MAX - 1,
             }
         )));
         assert!(round_trips(&ClientControlMessage::JoinSeed {

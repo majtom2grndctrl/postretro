@@ -35,7 +35,9 @@ impl ClientCommandState {
     /// A real command carries at most one start, and none while an older press
     /// is still due: that press goes first. Presses stamped after the oldest
     /// retained start wait until it is delivered or refused, and presses stamped
-    /// after the live execution's clock wait for it. Returns a start to refuse.
+    /// after the live execution's clock wait for it. Starts and presses stamped
+    /// on or after a retained switch's command wait for that switch. Returns a
+    /// start to refuse.
     pub(super) fn deliver_retained(
         &mut self,
         resolved_tick: u32,
@@ -70,7 +72,8 @@ impl ClientCommandState {
     /// so only presses from its own command or earlier ride with it; a later
     /// press, perhaps for the weapon the client switched to, would land on the
     /// start's weapon. Otherwise presses stamped before the oldest retained
-    /// start may go. Either way none passes the live execution's clock.
+    /// start may go. Either way none passes the live execution's clock, nor a
+    /// retained switch stamped at or before it.
     pub(super) fn order_gate(
         &self,
         live: Option<ActivationToken>,
@@ -84,18 +87,20 @@ impl ClientCommandState {
                     .map(|tick| tick.wrapping_sub(1)),
             ),
         };
-        starts.and(PressGate::through(self.live_horizon(live)))
+        starts
+            .and(PressGate::through(self.live_horizon(live)))
+            .and(self.switch_gate())
     }
 
     /// Client tick the live execution's clock has reached, for inputs it holds.
-    fn live_horizon(&self, live: Option<ActivationToken>) -> Option<u32> {
+    pub(super) fn live_horizon(&self, live: Option<ActivationToken>) -> Option<u32> {
         self.cadence.order_horizon(live, self.host_tick, |token| {
             self.activation_edges.undelivered_release(token)
         })
     }
 
     /// Newest client tick received from this client.
-    fn newest_observed_tick(&self) -> Option<u32> {
+    pub(super) fn newest_observed_tick(&self) -> Option<u32> {
         self.latest_observed_reload.map(|(tick, _)| tick)
     }
 
@@ -103,14 +108,24 @@ impl ClientCommandState {
     /// execution is live, and host time allows it. A start the client half
     /// refuses, or whose claim lags past the catch-up allowance, is refused at
     /// once rather than held: the first even while an execution is live, since
-    /// that execution only moves the record later. Returns a start to refuse:
-    /// refused, lagging, expired, or settled while retained.
+    /// that execution only moves the record later. A start stamped on or after
+    /// a retained switch's command waits for it untouched, its expiry not yet
+    /// running.
+    /// Returns a start to refuse: refused, lagging, expired, or settled while
+    /// retained.
     fn deliver_due_start(
         &mut self,
         resolved_tick: u32,
         live: Option<ActivationToken>,
         command: &mut SimCommand,
     ) -> Option<ActivationToken> {
+        if self
+            .activation_edges
+            .oldest_start_tick()
+            .is_some_and(|tick| !self.switch_gate().admits(tick))
+        {
+            return None;
+        }
         let start = match self
             .activation_edges
             .due_start(resolved_tick, self.host_tick)?

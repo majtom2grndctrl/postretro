@@ -42,6 +42,9 @@ mod endpoint;
 pub mod frame_order;
 mod host;
 mod host_address;
+// Weapon-switch declarations: intake into the ordered switch lane, then
+// validation, application and reply on the fixed tick that releases them.
+mod host_switch;
 // Fix B: host-side delay-buffered presentation of connected-client pawns. New logic
 // lives here; `main.rs`/`interpolation.rs`/`endpoint.rs` carry only thin wiring.
 mod host_presentation;
@@ -122,6 +125,9 @@ pub use host_presentation::{
     record_client_pawn_poses as host_record_client_pawn_poses,
     restore_client_pawn_authoritative_poses as host_restore_client_pawn_authoritative_poses,
 };
+#[cfg(test)]
+use host_switch::{HostSwitchDecision, apply_host_switch_declaration};
+pub use host_switch::{host_apply_switch_deliveries, host_retain_switch_declaration};
 // `ResolvedCommand` / `ResolutionSource` are produced by the command queue and consumed
 // via the submodule path only; not re-exported here.
 pub use host_address::{dialable_host_address, probe_lan_address};
@@ -1459,120 +1465,6 @@ pub fn tuning_payload_for_pawn(
         })
         .unwrap_or_else(|| std::array::from_fn(|_| None));
     TuningPayload::new(movement, wieldables)
-}
-
-/// Validate one client-declared switch against the host's live pawn inventory.
-/// The client owns its equip presentation, while the host owns the committed slot
-/// used by snapshots and server-side systems. A refusal is owner-private reliable
-/// Control because a snapshot cannot recover a stationary client with no later
-/// baseline change to compare against.
-#[allow(clippy::too_many_arguments)] // keeps the wire declaration handler a flat leaf entry point.
-pub fn host_handle_switch_declaration(
-    registry: &mut EntityRegistry,
-    server: &mut NetServer,
-    slot_pawns: &SlotPawns,
-    weapon_owners: &mut WeaponOwners,
-    client_id: u64,
-    declaration_id: u32,
-    slot: u8,
-    mod_block_during_reload: bool,
-) {
-    let Some(pawn) = slot_pawns.pawn_for(client_id) else {
-        return;
-    };
-    if apply_host_switch_declaration(
-        registry,
-        pawn,
-        weapon_owners,
-        usize::from(slot),
-        mod_block_during_reload,
-    ) == HostSwitchDecision::Accepted
-    {
-        send_switch_accepted(server, client_id, declaration_id, slot);
-    } else {
-        send_switch_refusal(server, client_id, declaration_id, slot);
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum HostSwitchDecision {
-    Accepted,
-    Refused,
-}
-
-fn apply_host_switch_declaration(
-    registry: &mut EntityRegistry,
-    pawn: EntityId,
-    weapon_owners: &mut WeaponOwners,
-    target_slot: usize,
-    mod_block_during_reload: bool,
-) -> HostSwitchDecision {
-    let Some((mut inventory, active_changed)) =
-        crate::sim::normalize_wieldable_inventory(registry, pawn)
-    else {
-        return HostSwitchDecision::Refused;
-    };
-    if active_changed {
-        weapon_owners.mark_attachment_dirty(pawn);
-    }
-    let Some(_target) = inventory.wieldables.get(target_slot).copied().flatten() else {
-        return HostSwitchDecision::Refused;
-    };
-    if target_slot == inventory.active_slot {
-        return HostSwitchDecision::Accepted;
-    }
-
-    let reload_blocks_switch = inventory
-        .active_wieldable()
-        .and_then(|active| {
-            registry
-                .get_component::<postretro_entities::components::weapon::WeaponComponent>(active)
-                .ok()
-        })
-        .is_some_and(|weapon| {
-            weapon
-                .block_during_reload
-                .unwrap_or(mod_block_during_reload)
-                && weapon.state.is_reload_activity()
-        });
-    if reload_blocks_switch {
-        return HostSwitchDecision::Refused;
-    }
-
-    if let Some(outgoing) = inventory.active_wieldable()
-        && let Ok(postretro_entities::ComponentValue::Weapon(component)) =
-            registry.get_component_value_mut(outgoing, postretro_entities::ComponentKind::Weapon)
-    {
-        component.cancel_activation();
-    }
-    inventory.active_slot = target_slot;
-    inventory.switch_target = None;
-    inventory.switch_origin = None;
-    let _ = registry.set_component(pawn, inventory);
-    weapon_owners.mark_attachment_dirty(pawn);
-    HostSwitchDecision::Accepted
-}
-
-fn send_switch_accepted(server: &mut NetServer, client_id: u64, declaration_id: u32, slot: u8) {
-    server.send_control(
-        client_id,
-        wire::encode(&ServerControlMessage::SwitchAccepted(
-            ServerSwitchAccepted {
-                declaration_id,
-                slot,
-            },
-        )),
-    );
-}
-
-fn send_switch_refusal(server: &mut NetServer, client_id: u64, declaration_id: u32, slot: u8) {
-    server.send_control(
-        client_id,
-        wire::encode(&ServerControlMessage::SwitchRefused(ServerSwitchRefused {
-            declaration_id,
-            slot,
-        })),
-    );
 }
 
 pub fn host_send_tuning_if_changed(
@@ -6069,8 +5961,8 @@ mod tests {
         );
         assert_eq!(
             postretro_net::handshake::WIRE_VERSION,
-            25,
-            "frozen observer projectile facts and reliable cues require wire version 25"
+            26,
+            "the switch declaration's client tick advances the wire version to 26"
         );
         assert_eq!(
             postretro_net::wire::SNAPSHOT_VERSION,

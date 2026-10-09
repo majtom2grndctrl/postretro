@@ -34,8 +34,10 @@ mod activation_admission;
 mod activation_cadence;
 mod departed_weapons;
 mod press_edges;
+mod switch_lane;
 pub use activation_cadence::CadenceVerdict;
 use press_edges::Press;
+pub use switch_lane::SwitchDelivery;
 
 /// Host-side movement-authority owner map: `EntityId -> owning client id`. The
 /// engine-side metadata snapshot production stamps onto each owned pawn's
@@ -178,6 +180,9 @@ struct ClientCommandState {
     cadence: activation_cadence::ActivationCadence,
     /// Use and drop rising edges, retained like reload presses.
     press_edges: press_edges::PressEdges,
+    /// Weapon-switch declarations, released in client-tick order with starts
+    /// and presses.
+    switches: switch_lane::SwitchLane,
     host_tick: u32,
     /// Pending sanitized commands, kept sorted-ascending and deduplicated by
     /// `client_tick`. Normally small (steady state holds ~[`INPUT_BUFFER_TARGET`]
@@ -555,7 +560,10 @@ impl HostCommandQueues {
             // the stream-begin path: arm the one-shot buildup latch so the first real
             // command is withheld until a small playout depth accumulates.
             None => {
-                let (oldest, _) = state.serial_bounds()?;
+                let Some((oldest, _)) = state.serial_bounds() else {
+                    state.deliver_switches(live_activation);
+                    return None;
+                };
                 let first = state.pending[oldest].client_tick;
                 state.building_playout = true;
                 first
@@ -585,6 +593,7 @@ impl HostCommandQueues {
             state.held_ticks = 0;
             state.resolved_cursor = Some(expected);
             state.drop_stale(expected);
+            state.deliver_switches(live_activation);
             let rejected_activation =
                 state.deliver_retained(expected, live_activation, true, &mut sim);
             state.deliver_edges(&mut sim.activation, live_activation);
@@ -636,6 +645,7 @@ impl HostCommandQueues {
                     ResolutionSource::Neutral,
                 ),
             };
+            state.deliver_switches(live_activation);
             state.deliver_edges(&mut sim.activation, live_activation);
             let diag_lead = state
                 .latest_observed_reload
@@ -693,6 +703,7 @@ impl HostCommandQueues {
                     .as_ref()
                     .expect("frontier freeze requires a command to hold"),
             );
+            state.deliver_switches(live_activation);
             state.hold_gated_reload(live_activation, &mut sim);
             let source = ResolutionSource::Held;
             state.deliver_edges(&mut sim.activation, live_activation);
@@ -756,6 +767,7 @@ impl HostCommandQueues {
         // disarms so the neutral-walk advances toward them. For a neutral-walk or a
         // deep-buffer yield, `pending` still holds commands, so this stays false.
         state.building_playout = state.pending.is_empty();
+        state.deliver_switches(live_activation);
         state.deliver_retained(expected, live_activation, false, &mut sim);
         state.deliver_edges(&mut sim.activation, live_activation);
         let diag_lead = state
@@ -776,6 +788,30 @@ impl HostCommandQueues {
             rejected_activation: None,
             source,
         })
+    }
+
+    /// Retain a client's weapon-switch declaration for in-order release on a
+    /// later fixed tick. See [`Self::take_switch_deliveries`].
+    pub fn retain_switch(
+        &mut self,
+        client_id: u64,
+        declaration: postretro_net::wire::ClientSwitchDeclaration,
+    ) {
+        self.clients
+            .entry(client_id)
+            .or_default()
+            .retain_switch(declaration);
+    }
+
+    /// Switches this client's lane released since the last call, in arrival
+    /// order. Call after [`Self::resolve_tick`] and before the tick's
+    /// simulation, so a switch reaches the weapon ahead of the starts and
+    /// presses resolved with it.
+    pub fn take_switch_deliveries(&mut self, client_id: u64) -> Vec<SwitchDelivery> {
+        self.clients
+            .get_mut(&client_id)
+            .map(|state| state.switches.take_released())
+            .unwrap_or_default()
     }
 
     pub fn activation_terminal(

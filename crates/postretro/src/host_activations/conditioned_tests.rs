@@ -350,6 +350,18 @@ struct Fixture {
     aim_pitch: f32,
     /// `(host tick, owned pawn facing yaw)` after each host simulation tick.
     host_facing: Vec<(u32, f32)>,
+    weapon_owners: netcode::WeaponOwners,
+    /// Switch declarations the client has sent, numbered as production does.
+    next_switch_id: u32,
+    /// `(host tick, declaration id, accepted)` per switch outcome the client received.
+    switch_outcomes: Vec<(u32, u32, bool)>,
+    /// `(host tick, active slot)` on the host after each tick's switches applied.
+    host_active: Vec<(u32, usize)>,
+    /// `(host tick, weapon, outcome)` per host reload delivery.
+    reloads: Vec<(u32, EntityId, sim::ReloadOutcome)>,
+    /// Host touch stage state and the descriptors it resolves drops against.
+    touch: crate::sim::touch::TouchSystem,
+    descriptors: Vec<postretro_entities::EntityTypeDescriptor>,
 }
 
 impl Fixture {
@@ -438,6 +450,13 @@ impl Fixture {
             resolved_commands: Vec::new(),
             aim_pitch: 0.0,
             host_facing: Vec::new(),
+            weapon_owners: Default::default(),
+            next_switch_id: 0,
+            switch_outcomes: Vec::new(),
+            host_active: Vec::new(),
+            reloads: Vec::new(),
+            touch: Default::default(),
+            descriptors: Vec::new(),
         };
         for _ in 0..256 {
             fixture.transport();
@@ -526,8 +545,27 @@ impl Fixture {
         for packet in self.down.take_ready() {
             self.client.process_packet(&packet);
         }
-        let _ = self.server.poll_handshakes();
-        let _ = self.client.drain_control();
+        let poll = self.server.poll_handshakes();
+        for (client_id, declaration) in poll.switch_declarations {
+            netcode::host_retain_switch_declaration(
+                &mut self.queues,
+                &self.owners,
+                client_id,
+                declaration,
+            );
+        }
+        for message in self.client.drain_control() {
+            match message {
+                wire::ServerControlMessage::SwitchAccepted(accepted) => self
+                    .switch_outcomes
+                    .push((self.tick, accepted.declaration_id, true)),
+                wire::ServerControlMessage::SwitchRefused(refused) => {
+                    self.switch_outcomes
+                        .push((self.tick, refused.declaration_id, false))
+                }
+                _ => {}
+            }
+        }
         for bytes in self.client.drain_input() {
             match wire::decode::<wire::ServerMessage>(&bytes).unwrap() {
                 wire::ServerMessage::ActivationOutcomes(outcomes) => {
@@ -602,7 +640,7 @@ impl Fixture {
                 crouch_intent: false,
                 facing_yaw: command.movement.facing_yaw,
                 use_pressed: false,
-                drop_pressed: false,
+                drop_pressed: command.movement.drop_pressed,
                 aim_pitch: self.aim_pitch,
                 firing_slot: command.firing_slot,
             },
@@ -660,7 +698,7 @@ impl Fixture {
         command.input_tick = tick;
         // Match the real main loop: equip/switch first, fixed activation second,
         // spatial resolution last. This catches accidental double advancement.
-        sim::simulate_client_wieldable_tick(
+        let (switch_accepted, _) = sim::simulate_client_wieldable_tick(
             self.local.clone(),
             &self.world,
             &self.zones,
@@ -672,6 +710,17 @@ impl Fixture {
             0.0,
             DT,
         );
+        // Production declares an accepted switch on Control, stamped with the
+        // tick of the command it was made on.
+        if switch_accepted && let Some(slot) = command.select_slot {
+            self.client
+                .send_switch_declaration(wire::ClientSwitchDeclaration {
+                    declaration_id: self.next_switch_id,
+                    slot: u8::try_from(slot).expect("inventory slots fit a u8"),
+                    client_tick: tick,
+                });
+            self.next_switch_id += 1;
+        }
         let pawn_network = self.pawn_network();
         self.frame.predict(
             &mut self.local.borrow_mut(),
@@ -811,6 +860,20 @@ impl Fixture {
             u64::from(self.tick) * 16_667,
         );
         let resolved = netcode::host_resolve_remote_commands(&self.owners, &mut self.queues);
+        netcode::host_apply_switch_deliveries(
+            &mut self.host.borrow_mut(),
+            &mut self.server,
+            &self.owners,
+            &mut self.queues,
+            &mut self.weapon_owners,
+            false,
+        );
+        let active = self
+            .host
+            .borrow()
+            .get_component::<Inventory>(self.host_actors.pawn)
+            .map_or(usize::MAX, |inventory| inventory.active_slot);
+        self.host_active.push((self.tick, active));
         let mut commands = Vec::new();
         for resolved in resolved {
             self.sources.push(resolved.source);
@@ -847,14 +910,28 @@ impl Fixture {
             );
             commands.push(command);
         }
-        let events = sim::simulate_tick(
+        // The production drop route: each remote drop press becomes a touch-stage edge.
+        let drops: std::collections::HashMap<_, _> = commands
+            .iter()
+            .filter(|remote| remote.command.drop_pressed)
+            .map(|remote| {
+                (
+                    crate::trigger_system::PlayerId::Remote(remote.owner_client_id),
+                    true,
+                )
+            })
+            .collect();
+        let factions = postretro_entities::FactionRegistry::default();
+        let sentiment = RefCell::new(postretro_entities::FactionSentimentState::default());
+        let events = sim::simulate_tick_with_presentation_aim(
             self.host.clone(),
             &self.world,
             &self.zones,
             None,
             0.0,
-            None,
+            false,
             0.0,
+            (0.0, 0.0),
             &mut self.progress,
             postretro_ai::tick_runner!(&mut self.ai),
             &[],
@@ -866,8 +943,18 @@ impl Fixture {
                 aim_direction: Vec3::NEG_Z,
             },
             DT,
+            &mut self.touch,
+            &self.descriptors,
+            0,
+            &factions,
+            &sentiment,
             None,
+            &std::collections::HashMap::new(),
+            &drops,
+            None,
+            |_, _| {},
             |_| {},
+            sim::TimingGate::OFF,
         );
         let facing = self
             .host
@@ -876,6 +963,12 @@ impl Fixture {
             .map(|transform| transform.rotation.to_euler(glam::EulerRot::YXZ).0)
             .unwrap_or(f32::NAN);
         self.host_facing.push((self.tick, facing));
+        self.reloads.extend(
+            events
+                .reload_deliveries
+                .iter()
+                .map(|delivery| (self.tick, delivery.weapon(), delivery.outcome)),
+        );
         for progress in events.remote_activation_progress {
             record_activation_progress(&mut self.allocator, &mut self.queues, &progress, |fact| {
                 match fact {
@@ -3307,3 +3400,6 @@ fn conditioned_cancel_mid_burst_keeps_every_round_fired_before_it_after_a_stall(
     let fixture = late_burst_with_edge(|command, tap| command.activation.cancel = Some(tap));
     assert_host_fires_what_the_client_fired(&fixture);
 }
+
+// Weapon-switch declarations ordered by client tick with starts and presses.
+mod switch_order;

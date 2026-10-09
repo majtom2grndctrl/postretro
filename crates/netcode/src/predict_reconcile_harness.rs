@@ -158,10 +158,12 @@ fn run_ordered_switch_pair(refuse_final_for_reload: bool) -> (usize, Vec<Current
         ClientSwitchDeclaration {
             declaration_id: 41,
             slot: 1,
+            client_tick: 10,
         },
         ClientSwitchDeclaration {
             declaration_id: 42,
             slot: 2,
+            client_tick: 11,
         },
     ] {
         to_host.enqueue(postretro_net::wire::encode(

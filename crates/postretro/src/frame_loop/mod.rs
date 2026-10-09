@@ -709,7 +709,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                     repointed_pawns.push(pawn);
                 }
                 if switch_accepted && let Some(slot) = command.select_slot {
-                    app.client_declare_switch(slot);
+                    app.client_declare_switch(slot, input_tick);
                 }
                 {
                     let _scope = prediction_cpu.scope(cpu_timing::PredictionStage::Movers);

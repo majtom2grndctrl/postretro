@@ -11,9 +11,8 @@ use serde::{Deserialize, Serialize};
 /// side of the bridge can grow without bound.
 pub const MAX_PENDING_PRESENTATION_SPAWNS: usize = 128;
 
-/// Engine-owned presentation identifiers live below this prefix. The namespace
-/// is reserved so an author template can never collide with an engine id,
-/// including a retired engine id an older host may still send.
+/// Prefix reserved for engine-owned presentation identifiers. Author templates
+/// are rejected from it so they can never collide with an engine id.
 pub const BUILTIN_PRESENTATION_TEMPLATE_ID_PREFIX: &str = "postretro.builtin.";
 
 /// Whether an author-facing presentation template id collides with the

@@ -1,4 +1,4 @@
-// Frozen reliable observer weapon cues and impact-burst spawning from them; assets and sound playback remain local.
+// Frozen observer weapon cue records and the impact bursts spawned from them.
 // See: context/lib/networking.md · context/lib/audio.md · context/lib/scripting.md §12
 
 use glam::Vec3;

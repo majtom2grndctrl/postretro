@@ -1,4 +1,4 @@
-// Authoritative per-shot observer publication, local frozen cue delivery, and observer impact bursts.
+// Per-shot observer weapon cue publication, delivery, and observer impact bursts.
 // See: context/lib/networking.md §Combat authority · context/lib/audio.md §4
 use crate::{App, netcode};
 use postretro_entities::{AiCue, AiEmission, Emitter, WeaponEmission};

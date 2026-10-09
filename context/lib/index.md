@@ -66,6 +66,7 @@
 - **First-person weapon placement / viewmodel offset / where a weapon sits in view / placement vs view-feel / FP vs TP weapon vantage** → `networking.md` §Weapon placement is content
 - **Projectile fire origin / muzzle point / where a shot spawns / camera-eye vs barrel** → `networking.md` §Weapon placement is content (Fire origin composes on placement)
 - **Weapon descriptor vocabulary / one canonical weapon type / no player-vs-enemy weapon kind / wield restriction as attribute** → `entity_model.md` §Components (Weapon vocabulary)
+- **Remote fire rate under lag / activation start lane / client-tick cadence admission / starts, use, or drop lost to the playout trim** → `networking.md` §Combat authority · §Host input command queue
 - **Weapon resources / ammo vs heat vs cell / overheat lockout / cell regen / holstered weapons cooling / weapon-resource HUD slots** → `entity_model.md` §Components (Weapon resources) · connected-client prediction: `networking.md` §Combat authority
 - **Dynamic weapon accuracy / spread / bloom / recoil-as-accuracy-loss / movement inaccuracy / crosshair spread ring** → `entity_model.md` §Components (Weapon vocabulary — Dynamic accuracy) · `networking.md` §engine-randomness carve-out
 - **Splash / AoE / area damage / blast radius / distance falloff / rocket explosion** → `entity_model.md` §Components (Splash / area effects)

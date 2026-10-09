@@ -91,7 +91,11 @@ impl Renderer {
                 capture_animated_promotion_weights,
                 f64::from(animation_time_seconds),
                 clear_color,
-                render_world,
+                if render_world {
+                    FrameScene::World
+                } else {
+                    FrameScene::Empty
+                },
             )?;
 
             if self.capture_gpu_timing_state == CaptureGpuTimingState::Active
@@ -204,7 +208,11 @@ impl Renderer {
                 capture_animated_promotion_weights,
                 f64::from(animation_time_seconds),
                 clear_color,
-                render_world,
+                if render_world {
+                    FrameScene::World
+                } else {
+                    FrameScene::Empty
+                },
             )?;
 
             let capture_extent = self.render_extents().surface;

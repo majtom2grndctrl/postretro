@@ -1,4 +1,4 @@
-//! Lightmap controller preload: synchronous pair reads into one drain batch.
+//! Lightmap controller preload for capture and tests: synchronous pair reads.
 //! See: context/lib/rendering_pipeline.md §4 (Lightmap cell-block residency)
 
 use postretro_level_loader::{LightmapBlockClass, LightmapDrainBatch, PreparedLightmapBlock};
@@ -7,6 +7,10 @@ use super::*;
 
 /// What one synchronous preload read.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[cfg_attr(
+    not(feature = "capture"),
+    allow(dead_code, reason = "capture and tests preload synchronously")
+)]
 pub(crate) struct LightmapPreloadReads {
     /// Pairs read whole and placed in the batch.
     pub(crate) pairs: u32,
@@ -32,6 +36,10 @@ impl LightmapResidencyController {
     ///
     /// Call once, after a demand update and before any read or drain. The
     /// renderer's outcome goes back through [`Self::apply_outcome`].
+    #[cfg_attr(
+        not(feature = "capture"),
+        allow(dead_code, reason = "capture and tests preload synchronously")
+    )]
     pub(crate) fn preload_batch(
         &mut self,
         keep_missing: &[u32],

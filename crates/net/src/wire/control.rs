@@ -140,6 +140,10 @@ pub enum ClientControlMessage {
     JoinSeed {
         slots: BTreeMap<String, JoinSeedValue>,
     },
+    /// The level identity this client has revealed: the same opaque string as
+    /// its parity declaration's identity. `None` retracts a reveal at unload or
+    /// suspend. Re-sent on change; the host keeps the last one per slot.
+    Revealed(Option<String>),
 }
 
 /// Reliable client -> host declaration of the inventory slot the client switched to.
@@ -169,7 +173,12 @@ pub enum ClosingCause {
     },
 }
 
-/// A recoverable content mismatch. Variant order is also diagnostic precedence.
+/// A recoverable reason a slot is held below participating: a content
+/// mismatch, or a peer that has not yet revealed the host's installed level.
+///
+/// Variant order is wire layout only, so new variants must be appended. The
+/// order in which `NetServer`'s participation predicate checks its terms sets
+/// diagnostic precedence; both revealed causes rank below every content cause.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub enum HoldingCause {
     ModDigest {
@@ -189,6 +198,28 @@ pub enum HoldingCause {
         expected: [u8; 32],
         received: [u8; 32],
     },
+    /// Content parity holds, but the host has not yet revealed its installed
+    /// level (it is still settling). Carries the host's level identity.
+    HostNotRevealed {
+        identity: String,
+    },
+    /// Content parity holds and the host has revealed, but this client has not
+    /// declared that it revealed the host's level. Carries the host's level
+    /// identity.
+    ClientNotRevealed {
+        identity: String,
+    },
+}
+
+impl HoldingCause {
+    /// A revealed hold: content matches and the slot waits only for a peer
+    /// to finish settling. Not a content problem, so not a warning.
+    pub fn is_revealed_hold(&self) -> bool {
+        matches!(
+            self,
+            Self::HostNotRevealed { .. } | Self::ClientNotRevealed { .. }
+        )
+    }
 }
 
 /// A divergence is statically either terminal or recoverable.
@@ -244,6 +275,14 @@ impl std::fmt::Display for DivergenceReason {
                 "level content differs for {identity}: expected {}, received {}",
                 digest_hex(expected),
                 digest_hex(received)
+            ),
+            Self::Holding(HoldingCause::HostNotRevealed { identity }) => write!(
+                f,
+                "content matches; waiting for the host to reveal {identity}"
+            ),
+            Self::Holding(HoldingCause::ClientNotRevealed { identity }) => write!(
+                f,
+                "content matches; waiting for this client to reveal {identity}"
             ),
         }
     }
@@ -497,8 +536,22 @@ mod tests {
                 JoinSeedValue::Array(vec![0.25, 0.75]),
             )]),
         }));
+        assert!(round_trips(&ClientControlMessage::Revealed(Some(
+            "map-a".to_string()
+        ))));
+        assert!(round_trips(&ClientControlMessage::Revealed(None)));
         assert!(round_trips(&ServerControlMessage::Divergence(
             DivergenceReason::Holding(HoldingCause::HostLevelAbsent),
+        )));
+        assert!(round_trips(&ServerControlMessage::Divergence(
+            DivergenceReason::Holding(HoldingCause::HostNotRevealed {
+                identity: "map-a".to_string(),
+            }),
+        )));
+        assert!(round_trips(&ServerControlMessage::Divergence(
+            DivergenceReason::Holding(HoldingCause::ClientNotRevealed {
+                identity: "map-a".to_string(),
+            }),
         )));
         assert!(round_trips(&ServerControlMessage::Tuning(vec![1, 2, 3])));
         assert!(round_trips(&ServerControlMessage::Relevel(

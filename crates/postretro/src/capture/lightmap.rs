@@ -6,7 +6,6 @@ use postretro_level_loader::{LevelWorld, LightmapStreamingMode};
 use postretro_renderer::LightmapStreamingLiveDiagnostics;
 
 use super::scene::CaptureScene;
-use crate::lightmap_streaming::demand::DemandFrame;
 use crate::render::Renderer;
 use crate::render_preparation::VisibleRenderPreparation;
 use crate::session::lightmap_residency::{LightmapLevelView, LightmapStreamingSession};
@@ -118,12 +117,15 @@ pub(super) fn preload_capture_lightmap(
     if let Some(cap) = scene.lightmap_pool_cap_layers {
         session.levers_mut().set_pool_cap_layers(cap);
     }
-    session.update_capture_demand(DemandFrame {
-        residency_set: view.residency_set,
-        camera_cell: visible_render.stats.camera_cell,
-        path: visible_render.stats.path,
-        visible_cells: &visible_render.visible_cells,
-    });
+    // Capture never sets L: its view demands at the level's default lead.
+    session.update_capture_demand(
+        crate::streaming::cell_demand::CellDemand::new(view.residency_set.max_lead).frame(
+            view.residency_set,
+            visible_render.stats.camera_cell,
+            visible_render.stats.path,
+            &visible_render.visible_cells,
+        ),
+    );
     let summary = session
         .preload(&scene.force_missing_lightmap_blocks, |batch| {
             renderer.drain_lightmap_residency(batch)

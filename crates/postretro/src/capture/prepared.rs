@@ -26,7 +26,9 @@ use crate::session::sh_residency::{ShStreamingSession, require_sync_proof_mode};
 use crate::sh_streaming::controller::SyncReadResult;
 use crate::startup::session::content_root_from_map;
 use crate::startup::worker::derive_prm_root_dev_layout;
+use crate::streaming::cell_demand::CellDemand;
 use crate::streaming::cluster_hints::decode_level_hints;
+use postretro_level_format::cell_residency_set::CellResidencySetSection;
 
 use super::lightmap::{
     CaptureLightmapResidency, preload_capture_lightmap, validate_lightmap_overrides,
@@ -189,12 +191,7 @@ impl PreparedCapture {
                 let hints = hints
                     .clone()
                     .context("[Capture] a streamed SH level carries no id 49")?;
-                ShStreamingSession::for_capture(
-                    manifest,
-                    world.cell_visibility.as_ref(),
-                    &renderer,
-                    hints,
-                )
+                ShStreamingSession::for_capture(manifest, &renderer, hints)
             })
             .transpose()?;
         let max_preload_frames = world
@@ -252,25 +249,44 @@ impl PreparedCapture {
             resolution: [width, height],
             lightmap_residency,
         };
-        prepared.preload_visible_sh(max_preload_frames)?;
+        prepared.preload_visible_sh(max_preload_frames, world.cell_residency_set.as_ref())?;
         Ok(prepared)
     }
 
-    /// Capture is a fixed authored instant, so make its visible SH closure
-    /// sampleable before either PNG publication or timed measurement begins.
-    fn preload_visible_sh(&mut self, max_frames: usize) -> Result<()> {
+    /// Capture is a fixed authored instant, so make its settle set sampleable
+    /// before either PNG publication or timed measurement begins: the same SH
+    /// answer the settle chokepoint asks a level entry. Optional targets
+    /// (seam-warm, band) do not hold it.
+    fn preload_visible_sh(
+        &mut self,
+        max_frames: usize,
+        residency_set: Option<&CellResidencySetSection>,
+    ) -> Result<()> {
         let Some(streaming) = self.sh_streaming.as_mut() else {
             return Ok(());
         };
-        let camera_cell = Some(self.visible_render.stats.camera_cell as usize);
-        streaming.update_targets(&self.visible_render.visible_cells, camera_cell, 0.0)?;
+        // Capture never sets L: its reach is a fresh stage's default.
+        let reach = residency_set.map(|set| {
+            CellDemand::new(set.max_lead).frame(
+                set,
+                self.visible_render.stats.camera_cell,
+                self.visible_render.stats.path,
+                &self.visible_render.visible_cells,
+            )
+        });
+        // Like Settling, the preload presents nothing: it counts no miss.
+        streaming.suspend_visible_misses(true);
+        streaming.update_targets(&self.visible_render.visible_cells, reach, 0.0)?;
         for _ in 0..max_frames {
             if self
                 .sh_streaming
                 .as_ref()
-                .is_some_and(ShStreamingSession::all_targets_sampleable)
+                .is_some_and(|streaming| streaming.unsettled_targets() == Some(0))
             {
                 self.renderer.reset_capture_measurement_timing();
+                if let Some(streaming) = self.sh_streaming.as_mut() {
+                    streaming.suspend_visible_misses(false);
+                }
                 return Ok(());
             }
             loop {
@@ -290,7 +306,7 @@ impl PreparedCapture {
             // record before the captured frame could pin it.
             let _ = self.submit_frame_without_readback(false, 0.0)?;
         }
-        bail!("SH capture preload did not make its visible cluster closure sampleable")
+        bail!("SH capture preload did not make its settle set sampleable")
     }
 
     fn take_sh_drain_batch(&mut self) -> Result<postretro_level_loader::ShDrainBatch> {

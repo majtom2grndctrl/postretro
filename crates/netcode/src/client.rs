@@ -557,7 +557,7 @@ impl ClientReplication {
     }
 
     /// Clear demoted-client replication bookkeeping without queueing baseline repair
-    /// requests. The host intentionally sends no snapshots until parity returns.
+    /// requests. The host intentionally sends no snapshots until participation returns.
     pub(crate) fn reset_for_demotion(&mut self) {
         self.map.clear();
         self.reverse_map.clear();

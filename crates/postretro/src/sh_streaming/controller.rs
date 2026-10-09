@@ -5,14 +5,14 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use postretro_level_loader::{
-    CellVisibility, PreparedShCluster, PrlLoadError, ShDrainBatch, ShDrainOutcome, ShStreamManifest,
+    PreparedShCluster, PrlLoadError, ShDrainBatch, ShDrainOutcome, ShStreamManifest,
 };
 use thiserror::Error;
 
 use super::budget::{FixedGpuCharges, ShGpuBudgetInputs, ShResidencyAccounting};
 use super::generation::{GenerationClock, ProcessGenerationClock};
+use super::reach::ShReach;
 use super::topology::PlannerTopology;
-use super::warm_set::{WarmSet, WarmSource};
 use crate::streaming::cluster_hints::ClusterHints;
 use crate::streaming::drain_budget::DrainClass;
 
@@ -25,15 +25,12 @@ mod pressure;
 #[path = "targeting.rs"]
 mod targeting;
 
-/// Cluster-hop radius of the warm-set fallback used without usable id 46.
-pub(crate) const PREFETCH_HOPS: u8 = 2;
-/// Warm-set size cap in distinct clusters, including the camera's own.
-pub(crate) const WARM_SET_CLUSTERS: usize = 8;
-/// Bounds one warm walk, which runs only when the camera changes cell.
-pub(crate) const WARM_WALK_MAX_SETTLED_CELLS: usize = 4096;
 pub(crate) const HYSTERESIS_SECONDS: f64 = 2.0;
 /// A permit covers one cluster from request until install, drop, or failure.
 pub(crate) const MAX_STREAM_PERMITS: usize = 8;
+/// Optional requests stop once this many permits are held, so the band can
+/// never hold every permit and delay fresh mandatory work behind it.
+pub(crate) const MAX_OPTIONAL_STREAM_PERMITS: usize = MAX_STREAM_PERMITS / 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ClusterResidencyState {
@@ -59,8 +56,9 @@ pub(crate) struct ShClusterRequest {
     pub(crate) content_tag: [u8; 32],
     pub(crate) cluster_id: u32,
     pub(crate) chunk_hash: [u8; 32],
-    /// The cluster's class was `Visible` or `Pinned` (owner closure included)
-    /// when requested. Mandatory reads are served before optional ones.
+    /// The cluster's class was in the mandatory tier (`Visible`, `Pinned` or
+    /// `Lead`, owner closure included) when requested. Mandatory reads are
+    /// served before optional ones.
     pub(crate) mandatory: bool,
 }
 
@@ -96,14 +94,29 @@ pub(crate) enum ShResidencyControllerError {
 enum TargetClass {
     Visible,
     Pinned,
+    /// In the level's id-51 reach within lead L: mandatory, never refused.
+    Lead,
     SeamWarm,
-    Prefetch,
+    /// In the reach past L, up to the baked maximum: optional.
+    Band,
     Hysteresis,
 }
 
 impl TargetClass {
     const fn is_pressure_eligible(self) -> bool {
-        matches!(self, Self::SeamWarm | Self::Prefetch)
+        matches!(self, Self::SeamWarm | Self::Band)
+    }
+
+    /// The mandatory tier: never refused, read before optional work.
+    const fn is_mandatory(self) -> bool {
+        matches!(self, Self::Visible | Self::Pinned | Self::Lead)
+    }
+
+    /// In the set a level entry waits on before its first frame: the
+    /// mandatory tier. Owners take their dependent's class, so the closure of
+    /// a settle target is one too.
+    const fn is_settle_target(self) -> bool {
+        self.is_mandatory()
     }
 
     /// The class on the shared drain scale. Order-preserving, so the shared
@@ -112,8 +125,9 @@ impl TargetClass {
         match self {
             Self::Visible => DrainClass::Visible,
             Self::Pinned => DrainClass::Pinned,
+            Self::Lead => DrainClass::Lead,
             Self::SeamWarm => DrainClass::SeamWarm,
-            Self::Prefetch => DrainClass::Prefetch,
+            Self::Band => DrainClass::Prefetch,
             Self::Hysteresis => DrainClass::Hysteresis,
         }
     }
@@ -160,6 +174,12 @@ pub(crate) struct ShEvictionKey {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct ShResidencyCounters {
     pub(crate) misses: u64,
+    /// `misses` by cause; the buckets sum to it.
+    pub(crate) miss_buckets: postretro_renderer::ShMissBuckets,
+    /// Requests issued for a cluster evicted earlier in the level, whatever
+    /// class requests it: a hysteresis-class read of a departing cluster
+    /// counts as well as one the view or reach waits on.
+    pub(crate) rereads: u64,
     pub(crate) installs: u64,
     pub(crate) evictions: u64,
     pub(crate) retries: u64,
@@ -186,7 +206,8 @@ pub(crate) struct ShResidencyControllerSnapshot {
     pub(crate) cpu: super::budget::CpuPhaseLedger,
     pub(crate) permits_in_use: usize,
     pub(crate) target_clusters: usize,
-    pub(crate) warm_clusters: usize,
+    /// Clusters in the mandatory reach (id 51 within lead L).
+    pub(crate) lead_clusters: usize,
     pub(crate) absent_clusters: usize,
     pub(crate) queued_clusters: usize,
     pub(crate) ready_clusters: usize,
@@ -223,6 +244,8 @@ struct ClusterState {
     effective_priority: u32,
     suppressed: bool,
     failure: Option<FailureState>,
+    /// Evicted since its last read: the next request is a re-read.
+    evicted: bool,
 }
 
 impl Default for ClusterState {
@@ -236,6 +259,7 @@ impl Default for ClusterState {
             effective_priority: 0,
             suppressed: false,
             failure: None,
+            evicted: false,
         }
     }
 }
@@ -252,9 +276,9 @@ struct ReadyCluster {
 pub(crate) struct ShResidencyController {
     manifest: Option<Arc<ShStreamManifest>>,
     topology: PlannerTopology,
-    warm_source: WarmSource,
-    /// Cached for `warm.camera_cell()`; recomputed only when that cell changes.
-    warm: WarmSet,
+    /// The level's reach from the cell-demand stage; recomputed only when
+    /// the camera cell or L changes.
+    reach: ShReach,
     generation: u64,
     content_tag: [u8; 32],
     states: Vec<ClusterState>,
@@ -273,45 +297,38 @@ pub(crate) struct ShResidencyController {
     non_evictable_overshoot_bytes: u64,
     overshoot_reported: bool,
     prior_visible_misses: BTreeSet<u32>,
+    /// Targets have been derived from a view at least once. Until then an
+    /// empty target set means "not yet asked", not "nothing to hold".
+    demand_updated: bool,
+    /// Settling: no frame is presented, so no visible miss is counted.
+    misses_suspended: bool,
     counters: ShResidencyCounters,
 }
 
 impl ShResidencyController {
-    /// `cell_visibility` is the same level's loaded id-46 section; the
-    /// controller builds its own per-cell adjacency from it. `hints` is the
-    /// level's id 49, decoded once at level scope for every resource.
+    /// `hints` is the level's id 49, decoded once at level scope for every
+    /// resource. The reach arrives each frame from the cell-demand stage.
     pub(crate) fn new(
         manifest: Arc<ShStreamManifest>,
         gpu_budget: ShGpuBudgetInputs,
-        cell_visibility: Option<&CellVisibility>,
         hints: Arc<ClusterHints>,
     ) -> Result<Self, ShResidencyControllerError> {
-        Self::with_clock(
-            manifest,
-            gpu_budget,
-            cell_visibility,
-            hints,
-            &ProcessGenerationClock,
-        )
+        Self::with_clock(manifest, gpu_budget, hints, &ProcessGenerationClock)
     }
 
     pub(crate) fn with_clock(
         manifest: Arc<ShStreamManifest>,
         gpu_budget: ShGpuBudgetInputs,
-        cell_visibility: Option<&CellVisibility>,
         hints: Arc<ClusterHints>,
         clock: &impl GenerationClock,
     ) -> Result<Self, ShResidencyControllerError> {
         let topology = PlannerTopology::from_manifest(&manifest, hints)?;
-        let warm_source =
-            WarmSource::from_cell_visibility(cell_visibility, topology.hints.cell_to_cluster.len());
-        Self::from_parts(Some(manifest), topology, warm_source, clock, gpu_budget)
+        Self::from_parts(Some(manifest), topology, clock, gpu_budget)
     }
 
     fn from_parts(
         manifest: Option<Arc<ShStreamManifest>>,
         topology: PlannerTopology,
-        warm_source: WarmSource,
         clock: &impl GenerationClock,
         gpu_budget: ShGpuBudgetInputs,
     ) -> Result<Self, ShResidencyControllerError> {
@@ -335,8 +352,7 @@ impl ShResidencyController {
         Ok(Self {
             manifest,
             topology,
-            warm_source,
-            warm: WarmSet::default(),
+            reach: ShReach::default(),
             generation,
             content_tag,
             states: vec![ClusterState::default(); cluster_count],
@@ -355,6 +371,8 @@ impl ShResidencyController {
             non_evictable_overshoot_bytes: 0,
             overshoot_reported: false,
             prior_visible_misses: BTreeSet::new(),
+            demand_updated: false,
+            misses_suspended: false,
             counters: ShResidencyCounters::default(),
         })
     }
@@ -401,10 +419,33 @@ impl ShResidencyController {
         &self.targets
     }
 
-    /// True only when every current visible/prefetch/owner target has crossed
-    /// the renderer-confirmed one-frame compose boundary. Static capture uses
-    /// this to know when its deterministic preload is complete.
-    #[cfg(any(test, feature = "capture"))]
+    /// While true (Settling), target updates count no visible miss and leave
+    /// the per-episode record alone, so the reveal frame counts fresh.
+    pub(crate) fn suspend_visible_misses(&mut self, suspended: bool) {
+        self.misses_suspended = suspended;
+    }
+
+    /// Settle-set targets (the mandatory tier: Visible, Pinned and Lead,
+    /// owner closure included) not yet Sampleable, as of the latest target
+    /// update. `None` before the first update: the controller has not been
+    /// asked for a view yet. A failed target stays unsettled; the settle
+    /// timeout bounds it.
+    pub(crate) fn unsettled_targets(&self) -> Option<usize> {
+        self.demand_updated.then(|| {
+            self.targets
+                .iter()
+                .filter(|&&cluster_id| {
+                    let state = &self.states[cluster_id as usize];
+                    state.class.is_some_and(TargetClass::is_settle_target)
+                        && state.state != ClusterResidencyState::Sampleable
+                })
+                .count()
+        })
+    }
+
+    /// True only when every current target, optional classes included, has
+    /// crossed the renderer-confirmed one-frame compose boundary.
+    #[cfg(test)]
     pub(crate) fn all_targets_sampleable(&self) -> bool {
         self.targets.iter().all(|&cluster_id| {
             self.states
@@ -433,7 +474,7 @@ impl ShResidencyController {
             cpu: self.accounting.cpu,
             permits_in_use: self.permits_in_use,
             target_clusters: self.targets.len(),
-            warm_clusters: self.warm.len(),
+            lead_clusters: self.reach.lead_count(),
             non_evictable_overshoot_bytes: self.non_evictable_overshoot_bytes,
             counters: self.counters,
             ..ShResidencyControllerSnapshot::default()
@@ -471,9 +512,9 @@ impl ShResidencyController {
         Ok(())
     }
 
-    /// Rank of a cluster in the current warm set; non-warm clusters rank last.
-    fn warm_rank(&self, cluster_id: u32) -> u32 {
-        self.warm.rank(cluster_id)
+    /// A cluster's reach lead; clusters outside the reach rank farthest.
+    fn reach_lead(&self, cluster_id: u32) -> u32 {
+        self.reach.lead_of(cluster_id)
     }
 
     fn ready_for_install(&self, cluster_id: u32) -> bool {
@@ -522,7 +563,8 @@ impl ShResidencyController {
         Ok(())
     }
 
-    /// Test controllers have no id 46, so they use the cluster-hop fallback.
+    /// Test controllers carry no reach until a test passes a demand frame to
+    /// `update_targets`.
     #[cfg(test)]
     fn for_test(
         topology: PlannerTopology,
@@ -537,29 +579,7 @@ impl ShResidencyController {
         clock: &impl GenerationClock,
         gpu_budget: ShGpuBudgetInputs,
     ) -> Result<Self, ShResidencyControllerError> {
-        let warm_source = WarmSource::resolve(
-            None::<(usize, &[postretro_level_loader::CoupledCellPair])>,
-            topology.hints.cell_to_cluster.len(),
-        );
-        Self::from_parts(None, topology, warm_source, clock, gpu_budget)
-    }
-
-    /// A test controller whose warm walk runs over the given id-46 pairs.
-    #[cfg(test)]
-    fn for_test_with_cell_pairs(
-        topology: PlannerTopology,
-        pairs: &[postretro_level_loader::CoupledCellPair],
-        gpu_budget: ShGpuBudgetInputs,
-    ) -> Result<Self, ShResidencyControllerError> {
-        let cell_count = topology.hints.cell_to_cluster.len();
-        let warm_source = WarmSource::resolve(Some((cell_count, pairs)), cell_count);
-        Self::from_parts(
-            None,
-            topology,
-            warm_source,
-            &super::generation::FixedGenerationClock::new(1),
-            gpu_budget,
-        )
+        Self::from_parts(None, topology, clock, gpu_budget)
     }
 }
 
@@ -606,11 +626,11 @@ fn validate_outcome_lists(outcome: &ShDrainOutcome) -> Result<(), ShResidencyCon
 }
 
 #[cfg(test)]
+#[path = "controller_reach_and_budget_tests.rs"]
+mod reach_and_budget_tests;
+#[cfg(test)]
 #[path = "controller_tests.rs"]
 mod tests;
 #[cfg(test)]
 #[path = "controller_trace_tests.rs"]
 mod trace_tests;
-#[cfg(test)]
-#[path = "controller_warm_and_budget_tests.rs"]
-mod warm_and_budget_tests;

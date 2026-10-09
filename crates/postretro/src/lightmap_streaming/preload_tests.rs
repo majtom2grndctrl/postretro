@@ -151,6 +151,7 @@ fn view_preload_reads_visible_blocks_and_keeps_forced_misses_unread() {
     // Camera 0: blocks 0 and 1 at lead 0, block 2 at 8 m; cell 5 is drawn but
     // outside the baked set.
     rig.controller.update(DemandFrame {
+        lead: crate::streaming::cell_demand::DEFAULT_LEAD,
         residency_set: &rig.set,
         camera_cell: 0,
         path: PORTAL,
@@ -185,6 +186,7 @@ fn capture_view_on_a_step_limit_path_preloads_every_drawn_block() {
     let mut rig = Rig::corridor(None);
     let mut model = pool_model(&rig.source);
     rig.controller.update_capture_view(DemandFrame {
+        lead: crate::streaming::cell_demand::DEFAULT_LEAD,
         residency_set: &rig.set,
         camera_cell: 0,
         path: postretro_visibility::VisibilityPath::PortalStepLimitFallback {

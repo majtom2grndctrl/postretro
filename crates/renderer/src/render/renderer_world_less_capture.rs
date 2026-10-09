@@ -67,7 +67,7 @@ impl Renderer {
             &[],
             now_seconds,
             clear_color,
-            false,
+            FrameScene::Empty,
         )?;
         self.queue.submit(std::iter::once(encoder.finish()));
         self.queue.assert_empty("world-less capture submit");

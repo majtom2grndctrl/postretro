@@ -99,7 +99,7 @@ The app gate splits by **mutability**, not by subject. A value belongs to the ea
 
 **Admission** carries what cannot change for a live connection: the two build constants and the mod's declared id. Nothing can make a mismatch here true later, so a mismatch is terminal — the slot closes immediately, the typed cause is sent reliably, and transport teardown waits for its acknowledgement. Without that delivery gate a player on the wrong mod cannot distinguish a refusal from an unreachable host.
 
-**Content parity** carries everything derived from loaded content: a mod compatibility digest, the identity of the installed level, and that level's content digest. Every one of these is *designed* to become true later — a level digest at the next install, a mod digest at the next reload. So a parity mismatch **never closes the connection**. It holds the slot below participating, names which of the three diverged, and clears itself when the values agree, whichever peer moved.
+**Content parity** carries everything derived from loaded content: a mod compatibility digest, the identity of the installed level, and that level's content digest. Every one of these is *designed* to become true later — a level digest at the next install, a mod digest at the next reload. So a parity mismatch **never closes the connection**. It holds the slot below participating, names which of the three diverged, and clears itself when the values agree, whichever peer moved. A parity match is necessary, not sufficient: the slot still waits for both peers to reveal the level (*Slot lifecycle*, the revealed term).
 
 Faction declarations and directional relationships are parity-gated mod content, refreshed with the mod digest after content commits. Declaration order remains meaningful because it establishes shared faction identities. Equivalent relationship encodings, including omitted or no-op overrides, canonicalize before comparison. The parity-gated content is the authored *baseline*; runtime-mutable live sentiment is host-authoritative **state**, not content — it replicates like mover phase and stays out of the content-parity digest, so a live-sentiment divergence never gates participation. Its writes are host-only by design: the host mutates and replicates, and a connected client converges on the host's values rather than writing its own. The live overlay admits only faction indices representable as `u16` and at most 4,096 diverged pairs. A write outside that transport envelope fails before changing host state. Snapshot production caches the lowered sparse set by overlay mutation generation, so unchanged frames do not rebuild it.
 When a content refresh changes a relationship baseline without changing faction identity, the preserved live overlay rebases before replication resets: values equal to the refreshed baseline leave the sparse set, while genuinely diverged values remain live.
@@ -112,9 +112,9 @@ The two stages queue independently. Each is evaluated once the value it compares
 
 ## Slot lifecycle
 
-A connection moves through four stages: **pending** (connected, nothing proven), **admitted** (the immutable values match — the connection is live and receives no entity state), **participating** (content parity holds; snapshots flow), and **closed**. Only a participating slot receives entity records.
+A connection moves through four stages: **pending** (connected, nothing proven), **admitted** (the immutable values match — the connection is live and receives no entity state), **participating** (content parity holds and both peers have revealed the level; snapshots flow), and **closed**. Only a participating slot receives entity records.
 
-**Participation is a predicate, not a pair of transitions.** A slot participates if and only if its last declaration matches the host's currently installed parity values, re-evaluated for every slot after every parity source is reinstalled. Demotion and promotion are two readings of one comparison, and there is one place that comparison happens — a later parity source cannot implement half of it.
+**Participation is a predicate, not a pair of transitions.** A slot participates if and only if its last declaration matches the host's currently installed parity values and both peers have revealed the host's installed level, re-evaluated for every slot after every parity source is reinstalled, after the host's reveal, and after a declaration arrives. Demotion and promotion are two readings of one comparison, and there is one place that comparison happens — a later parity source cannot implement half of it.
 
 Specifying this as transitions is the trap, and the level path hides it. A client re-declares at every level install, so a demote-only implementation looks correct there. The mod-digest path has no re-declaration and therefore no recovery: a slot held by a host-side reload would stay held forever even after the host reverted the edit, because the client's declaration never moves and it has no reason to re-send.
 
@@ -123,7 +123,9 @@ Two rules derive every per-slot effect from the state pair rather than from whic
 - **Any exit from participating clears that slot's state** — pawn, replication, ownership, command, state-slot, and combat — whatever the destination. A demotion clears exactly what a close clears because both are the same edge, and a slot demoted and then closed clears once, not twice.
 - **Any entry to participating registers the slot and spawns its pawn** — first admission and re-promotion alike, so a re-promoted slot needs no special case and no "must re-emit" rider.
 
-**Not built yet: the revealed term** (`ready/sh-streaming--reveal-gate-and-warm-horizon`). The predicate gains one term after content parity: both peers have revealed the host's installed level — finished Settling (`boot_sequence.md` §9). The client declares the revealed level identity on Control; the host records its own reveal and clears it at unload and suspend. A parity-matched slot that has not revealed stays admitted under a revealed holding cause, so the four stages and the entry rule below stand. Parity stays content identity, published at install. The name is "revealed", never "ready", which mods own.
+**The revealed term.** After content parity the predicate checks one more term: both peers have revealed the host's installed level, meaning each finished Settling (`boot_sequence.md` §1). The client declares on Control the level identity it has revealed (`ClientControlMessage::Revealed(Option<String>)`, the parity identity string), re-sent on change and `None` at unload or suspend; the host keeps the last one per slot. The host records its own reveal locally and clears it at unload and at suspend, since a resumed install runs no unload. A parity-matched slot that has not revealed stays admitted, held with `HoldingCause::HostNotRevealed` or `ClientNotRevealed`, so the four stages and the entry rule above stand. Both revealed causes rank below every content cause, and parity stays content identity published at install, so a content-divergent client learns its real cause while it is still settling.
+
+A slot's revealed record survives parity changes and host level changes. Only the client's own declaration or the slot closing changes it. A mod-digest demotion therefore re-promotes without a fresh reveal, and a restarted host re-promotes a Running client at its own reveal. The host half is load-bearing: a host is unrevealed while it settles, so no promotion happens in a Settling world-less poll, whose promotion handler spawns no pawn. Neither peer runs a timer; the Settling timeout bounds a live peer and keepalive a silent one. Revealed holds log at info, not warn: they are the ordinary join path, not a divergence. The name is "revealed", never "ready", which mods own.
 
 The connection survives; its state does not. A client id is stable within one connection but not across a rejoin — a relaunching peer arrives on a freshly minted id — so player identity keys to a durable seat, never to the connection.
 
@@ -189,7 +191,7 @@ Identity is declared, not proven — tamper resistance is a non-goal, and neithe
 
 State that survives a level change, enumerated rather than accreted:
 
-- **The connection** — its id, lifecycle stage, and last parity declaration. Not built yet: its last revealed declaration, which a host level change does not clear.
+- **The connection** — its id, lifecycle stage, last parity declaration, and the host's per-slot revealed record, which a host level change does not clear.
 - **The seat** — the host-minted durable player key, its asserted claim when one exists, its carried state, and its level-independent placement-assignment cursor. A seat sits above participation and is never released by a level transition.
 - **The roster** — the host's seat-keyed projection of host-minted seat ids, current connection state, and remaining fresh-seat count. Claims remain host-local for rejoin; neither player ids nor display names cross the roster wire.
 
@@ -887,24 +889,29 @@ E16's `JoinSeed` variant on `ClientControlMessage` advances it to 18. E16's dedi
 unreliable Presentation channel and `ServerPresentationMessage` family advance it to 19.
 Slide advances it to 20. The sparse faction-sentiment snapshot record advances
 `SNAPSHOT_VERSION` to 15 and `WIRE_VERSION` to 21; it changes no Input-channel
-`ClientMessage` or `ServerMessage` variant. Protected player knockback velocity advances
-`SNAPSHOT_VERSION` to 16 and `WIRE_VERSION` to 22. The hit record's contact normal
-advances `WIRE_VERSION` to 23; `SNAPSHOT_VERSION` is unchanged. Weapon activation
-commands/outcomes advance the application protocol to PRL8 and wire to 24. Explicit
-projectile body size/model scale/shot identity and reliable frozen observer weapon cues
-advance the application protocol to PRL9, `WIRE_VERSION` to 25, and `SNAPSHOT_VERSION` to
-17. The switch declaration's client tick advances `WIRE_VERSION` to 26; the application
-protocol (PRL9), `SNAPSHOT_VERSION` (17) and the tuning epoch are unchanged. Incompatible
-peers fail the handshake; snapshot 17 independently rejects older snapshot envelopes. The
-PRL level-file format is unchanged. The host movement descriptor's knockback response
-advances the tuning epoch to 9; host-resolved activation programs/scaling bases advance it
-to 10. Slot-correlated owner-private weapon samples change only the state-schema
-fingerprint, through per-slot wire-shape tags: `[slot, number]` is tag 1, `[slot, flag]`
-tag 2, and `[slot, number]` or `[slot]` (magazine and reserve) tag 3. They ride the
-existing array value, so `WIRE_VERSION` and `SNAPSHOT_VERSION` are unchanged. A
-mixed-build peer is not refused: the handshake admits it, and its client rejects every
-state batch at the fingerprint check for the whole session, so no replicated state (health
-included) reaches it until both peers run the same build.
+`ClientMessage` or `ServerMessage` variant. Protected player knockback velocity
+advances `SNAPSHOT_VERSION` to 16 and `WIRE_VERSION` to 22. The hit record's contact
+normal advances `WIRE_VERSION` to 23; `SNAPSHOT_VERSION` is unchanged. Weapon
+activation commands/outcomes advance the application protocol to PRL8 and wire to
+24. Explicit projectile body size/model scale/shot identity and reliable frozen
+observer weapon cues advance the application protocol to PRL9, `WIRE_VERSION` to
+25, and `SNAPSHOT_VERSION` to 17. The client's revealed-level
+Control declaration and the two revealed holding causes advance the application
+protocol to 10, spelled `PRLA` because the id is four ASCII bytes. They are appended
+variants and the append-layout guards show no shipped encoding changed, so they leave
+`WIRE_VERSION` at 25. The switch declaration's client tick advances `WIRE_VERSION` to
+26; the application protocol (`PRLA`), `SNAPSHOT_VERSION` (17) and the tuning epoch are
+unchanged. Incompatible peers fail the handshake; snapshot 17 independently rejects
+older snapshot envelopes. The PRL level-file format is
+unchanged. The host movement descriptor's knockback response advances the tuning
+epoch to 9; host-resolved activation programs/scaling bases advance it to 10.
+Slot-correlated owner-private weapon samples change only the state-schema fingerprint,
+through per-slot wire-shape tags: `[slot, number]` is tag 1, `[slot, flag]` tag 2, and
+`[slot, number]` or `[slot]` (magazine and reserve) tag 3. They ride the existing array
+value, so `WIRE_VERSION` and `SNAPSHOT_VERSION` are unchanged. A mixed-build peer is not
+refused: the handshake admits it, and its client rejects every state batch at the
+fingerprint check for the whole session, so no replicated state (health included) reaches
+it until both peers run the same build.
 
 ## Current contract
 

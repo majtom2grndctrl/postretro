@@ -4,6 +4,7 @@
 mod hooks;
 mod io;
 mod sessions;
+pub(crate) mod settle;
 #[cfg(test)]
 mod tests;
 
@@ -21,8 +22,11 @@ pub(crate) use sessions::WantedStreaming;
 use super::lightmap_residency::LightmapStreamingSession;
 use super::sh_residency::ShStreamingSession;
 use crate::cpu_timing::StreamingStage;
-use crate::lightmap_streaming::demand::DemandFrame;
+use crate::streaming::cell_demand::CellDemand;
 use crate::streaming::cluster_hints::ClusterHints;
+use crate::streaming::drain_budget::{
+    MAX_INSTALL_DECODED_BYTES_PER_DRAIN, SETTLING_INSTALL_DECODED_BYTES_PER_DRAIN,
+};
 use crate::streaming::shared_drain::SharedDrain;
 
 /// One frame's visibility, as every streamed resource reads it.
@@ -33,6 +37,9 @@ pub(crate) struct StreamingFrame<'a> {
     pub(crate) camera_cell: Option<usize>,
     pub(crate) path: VisibilityPath,
     pub(crate) monotonic_seconds: f64,
+    /// A Settling frame: the level is held behind the loading tree until its
+    /// settle set is resident.
+    pub(crate) settling: bool,
     /// This frame's streaming CPU stages; the binary folds them under
     /// `render_prep`.
     pub(crate) cpu: &'a StageFrame<StreamingStage>,
@@ -40,14 +47,19 @@ pub(crate) struct StreamingFrame<'a> {
 
 /// Streaming state whose lifetime is one loaded level: the lightmap session,
 /// the one issuer both resources read through, the level's id-49 hints
-/// decoded once for both, a cancelled predecessor's retirement, and the
-/// reused merged drain. SH's session stays on `Session` (it is read by
-/// diagnostics and outcome hooks) and is passed in; this owner retires the
+/// decoded once for both, the level's cell-demand stage, a cancelled
+/// predecessor's retirement, and the reused merged drain. SH's session stays
+/// on `Session` (it is read by diagnostics and outcome hooks) and is passed
+/// in; this owner retires the
 /// issuer whenever either session is replaced, so no session outlives the
 /// issuer it reads through.
 #[derive(Debug, Default)]
 pub(crate) struct LevelStreaming {
     lightmap: Option<LightmapStreamingSession>,
+    /// The level's cell-demand stage (lead L over id 51); `None` without a
+    /// usable id 51. Level-scoped like the hints: it outlives a lightmap
+    /// decline and a session replaced within the level.
+    cell_demand: Option<CellDemand>,
     reads: Option<LevelReadIssuer>,
     retirement: Option<StreamingRetirement>,
     drain: SharedDrain,
@@ -118,6 +130,25 @@ impl LevelStreaming {
         }
     }
 
+    /// The level's cell-demand stage, which owns lead L.
+    #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
+    pub(crate) fn cell_demand(&self) -> Option<&CellDemand> {
+        self.cell_demand.as_ref()
+    }
+
+    /// The dev-tools lead slider and the walk measurement set L here.
+    #[cfg(feature = "dev-tools")]
+    pub(crate) fn cell_demand_mut(&mut self) -> Option<&mut CellDemand> {
+        self.cell_demand.as_mut()
+    }
+
+    /// A level owner without sessions (the walk measurement) installs the
+    /// stage itself.
+    #[cfg(test)]
+    pub(crate) fn install_cell_demand(&mut self, stage: CellDemand) {
+        self.cell_demand = Some(stage);
+    }
+
     /// One frame's streaming work for both resources:
     ///
     /// 1. start this level's issuer if no predecessor is still retiring;
@@ -127,8 +158,9 @@ impl LevelStreaming {
     /// 4. each takes its admitted prefix into its batch and submits reads.
     ///
     /// Returns SH's batch; the lightmap batch waits in its session for the
-    /// renderer's lightmap drain. `residency_set` is the level's id 51, present
-    /// whenever a lightmap session is.
+    /// renderer's lightmap drain. `residency_set` is the level's id 51,
+    /// present whenever the level carries one, whether or not its lightmap
+    /// streams.
     pub(crate) fn prepare_drains(
         &mut self,
         sh: &mut Option<ShStreamingSession>,
@@ -138,24 +170,28 @@ impl LevelStreaming {
         self.poll_retirement();
         self.start_reads(sh)?;
         self.drain.begin();
+        // One cell-demand frame for both resources: one L, one reach.
+        let demand_frame = residency_set
+            .zip(self.cell_demand.as_ref())
+            .zip(frame.camera_cell)
+            .map(|((residency_set, stage), camera_cell)| {
+                stage.frame(
+                    residency_set,
+                    camera_cell as u32,
+                    frame.path,
+                    frame.visible_cells,
+                )
+            });
         let sh_pending = match sh.as_mut() {
             Some(streaming) => Some(streaming.begin_drain(
                 frame.visible_cells,
-                frame.camera_cell,
+                demand_frame,
+                frame.settling,
                 frame.monotonic_seconds,
                 &mut self.drain,
             )?),
             None => None,
         };
-        let lightmap_frame =
-            residency_set
-                .zip(frame.camera_cell)
-                .map(|(residency_set, camera_cell)| DemandFrame {
-                    residency_set,
-                    camera_cell: camera_cell as u32,
-                    path: frame.path,
-                    visible_cells: frame.visible_cells,
-                });
         if let Some(parked) = self
             .lightmap
             .as_mut()
@@ -167,15 +203,19 @@ impl LevelStreaming {
             .lightmap
             .as_mut()
             .filter(|session| !session.is_declined());
-        let lightmap_drains = match (lightmap, lightmap_frame) {
+        let lightmap_drains = match (lightmap, demand_frame) {
             (Some(lightmap), Some(lightmap_frame)) => {
                 let _scope = frame.cpu.scope(StreamingStage::LightmapResidency);
-                lightmap.begin_drain(lightmap_frame, &mut self.drain)?;
+                lightmap.begin_drain(lightmap_frame, frame.settling, &mut self.drain)?;
                 true
             }
             _ => false,
         };
-        self.drain.admit()?;
+        self.drain.admit_within(if frame.settling {
+            SETTLING_INSTALL_DECODED_BYTES_PER_DRAIN
+        } else {
+            MAX_INSTALL_DECODED_BYTES_PER_DRAIN
+        })?;
         let batch = match (sh.as_mut(), sh_pending) {
             (Some(streaming), Some(pending)) => streaming.finish_drain(pending, &self.drain)?,
             _ => ShDrainBatch::default(),

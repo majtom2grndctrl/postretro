@@ -15,6 +15,7 @@ use super::demand::{BlockDemand, BlockTarget, DemandFrame};
 use super::levers::LightmapLevers;
 use super::source::LightmapBlockSource;
 use crate::sh_streaming::generation::{GenerationClock, ProcessGenerationClock};
+use crate::streaming::cell_demand::{CellDemand, to_metres};
 use crate::streaming::cluster_hints::ClusterHints;
 use crate::streaming::drain_budget::MAX_INSTALL_DECODED_BYTES_PER_DRAIN;
 use crate::streaming::request::{ReadTier, StreamResource};
@@ -213,6 +214,11 @@ pub(crate) struct LightmapResidencyController {
     map: LevelBlockMap,
     demand: BlockDemand,
     levers: LightmapLevers,
+    /// The lead L the latest demand update used, fixed point: the
+    /// level-scope stage's, for diagnostics and the test-only camera set.
+    lead: u32,
+    /// The level's baked maximum lead (id-51 header).
+    max_lead: u32,
     /// Published to the issuer's lightmap route for pre-read cancellation.
     targets: Arc<TargetBitset>,
     generation: u64,
@@ -253,6 +259,9 @@ pub(crate) struct LightmapResidencyController {
     /// The latest demand update drew cells whose blocks have not yet been
     /// counted for visible misses.
     misses_due: bool,
+    /// Demand has been derived from a view at least once. Until then an empty
+    /// target set means "not yet asked", not "nothing to hold".
+    demand_updated: bool,
     /// Reused by outcome validation.
     outcome_scratch: Vec<u32>,
 }
@@ -305,7 +314,9 @@ impl LightmapResidencyController {
             content_tag: source.content_tag(),
             source,
             demand,
-            levers: LightmapLevers::new(residency_set.max_lead),
+            levers: LightmapLevers::new(),
+            lead: CellDemand::new(residency_set.max_lead).lead(),
+            max_lead: residency_set.max_lead,
             targets: Arc::new(TargetBitset::new(block_count)),
             generation,
             slots: vec![
@@ -345,6 +356,7 @@ impl LightmapResidencyController {
             counters: LightmapResidencyCounters::default(),
             residency: LightmapResidencyBytes::default(),
             misses_due: false,
+            demand_updated: false,
             outcome_scratch: Vec::new(),
         })
     }
@@ -363,9 +375,26 @@ impl LightmapResidencyController {
         self.levers
     }
 
-    /// The dev-tools sliders and capture's cap override write here. A lead
-    /// change takes effect at the next [`Self::update`]; the cap rides the
-    /// next drain batch.
+    /// Sets the lead a test-only camera-set update reads, as a frame from the
+    /// stage would.
+    #[cfg(test)]
+    pub(crate) fn set_lead(&mut self, lead: u32) {
+        self.lead = lead;
+    }
+
+    /// The lead L the latest demand used, in metres.
+    pub(crate) fn lead_metres(&self) -> f32 {
+        to_metres(self.lead)
+    }
+
+    /// The level's baked maximum lead in metres.
+    pub(crate) fn max_lead_metres(&self) -> f32 {
+        to_metres(self.max_lead)
+    }
+
+    /// The dev-tools pool-cap slider and capture's cap override write here;
+    /// the cap rides the next drain batch. Lead L is the level's, on the
+    /// cell-demand stage.
     #[cfg(any(test, feature = "capture", feature = "dev-tools"))]
     pub(crate) fn levers_mut(&mut self) -> &mut LightmapLevers {
         &mut self.levers
@@ -437,52 +466,87 @@ impl LightmapResidencyController {
     /// The frame's drawn blocks are counted for visible misses by
     /// [`Self::count_visible_misses`], after the frame's drain.
     pub(crate) fn update(&mut self, frame: DemandFrame<'_>) {
-        self.may_request = self.demand.update(&self.map, self.levers.lead(), frame);
+        self.lead = frame.lead;
+        self.may_request = self.demand.update(&self.map, frame);
         self.camera_set_only = !frame.is_portal_walk();
         self.retarget_dirty();
         self.misses_due = frame.draws_cells();
+        self.demand_updated = true;
     }
 
-    /// Capture's fixed view: the camera cell's baked set plus every drawn
-    /// cell's blocks as visible, whatever the visibility path. Capture is an
-    /// offline tool that renders the full view synchronously, so it is exempt
-    /// from the in-play rule that a non-portal frame reads only the camera
-    /// cell's baked set.
+    /// The camera cell's baked set plus every drawn cell's blocks as visible,
+    /// whatever the visibility path. Capture's fixed view and every Settling
+    /// frame use it: both wait on the full view before presenting, so they are
+    /// exempt from the in-play rule that a non-portal frame reads only the
+    /// camera cell's baked set.
     pub(crate) fn update_capture_view(&mut self, frame: DemandFrame<'_>) {
-        self.demand
-            .update_capture_view(&self.map, self.levers.lead(), frame);
+        self.lead = frame.lead;
+        self.demand.update_capture_view(&self.map, frame);
         self.may_request = true;
         self.camera_set_only = false;
         self.retarget_dirty();
         self.misses_due = frame.draws_cells();
+        self.demand_updated = true;
     }
 
     /// Demand from `camera_cell`'s baked set within lead L plus the pins, with
-    /// no drawn cells: the spawn camera cell at level install, before any
-    /// frame has walked its portals.
+    /// no drawn cells. Test-only: a level entry demands through Settling's
+    /// frames instead.
+    #[cfg(test)]
     pub(crate) fn update_camera_set(
         &mut self,
         residency_set: &CellResidencySetSection,
         camera_cell: u32,
     ) {
         self.demand
-            .update_camera_set(&self.map, self.levers.lead(), residency_set, camera_cell);
+            .update_camera_set(&self.map, self.lead, residency_set, camera_cell);
         self.may_request = true;
         self.camera_set_only = true;
         self.retarget_dirty();
+        self.demand_updated = true;
     }
 
     /// Whether the camera cell's mandatory set (every block within lead L of
     /// it, plus the pinned blocks) is installed, as of the latest demand
     /// update. Visible and band blocks do not count. A mandatory block whose
     /// pair failed stays unsettled: it cannot become resident this
-    /// generation. This is the lightmap answer a settle chokepoint asks.
+    /// generation. Test-only; the settle chokepoint asks
+    /// [`Self::unsettled_blocks`].
+    #[cfg(test)]
     pub(crate) fn settled(&self) -> bool {
         self.demand.demanded_blocks(&self.map).all(|block| {
             let slot = &self.slots[block as usize];
             slot.target
                 .is_none_or(|target| target.class != LightmapBlockClass::Mandatory)
                 || slot.phase == BlockPhase::Installed
+        })
+    }
+
+    /// The latest frame's drawn blocks are not counted as visible misses:
+    /// a settling frame presents nothing.
+    pub(crate) fn discard_frame_misses(&mut self) {
+        self.misses_due = false;
+    }
+
+    /// Settle-set blocks not installed, as of the latest demand update: every
+    /// mandatory block and every visible (drawn) one. Under
+    /// [`Self::update_capture_view`] demand, which Settling uses, that is
+    /// every block the view draws on any visibility path. `None` before the
+    /// first demand update. A failed pair stays unsettled; the settle timeout
+    /// bounds it.
+    pub(crate) fn unsettled_blocks(&self) -> Option<usize> {
+        self.demand_updated.then(|| {
+            self.slots
+                .iter()
+                .filter(|slot| {
+                    slot.target.is_some_and(|target| {
+                        matches!(
+                            target.class,
+                            LightmapBlockClass::Mandatory | LightmapBlockClass::Visible
+                        )
+                    }) && slot.phase != BlockPhase::Installed
+                })
+                .count()
         })
     }
 

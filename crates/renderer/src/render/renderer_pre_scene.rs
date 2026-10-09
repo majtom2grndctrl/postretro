@@ -330,12 +330,17 @@ impl Renderer {
     /// Pre-scene compute work encoded before any render pass: BVH/visibility cull,
     /// animated-lightmap compose, and SH compose. All write storage the forward
     /// pass later samples, so they precede the depth pre-pass.
+    ///
+    /// `render_world` gates the cull and the animated-lightmap compose;
+    /// `composes_sh` gates the SH compose. They are independent: a
+    /// compose-only frame (Settling) composes SH without drawing the world.
     pub(super) fn record_pre_scene_compute(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
         cam_vis: CameraCullVisibility<'_>,
         view_proj: Mat4,
         render_world: bool,
+        composes_sh: bool,
         frame_light_term_mask: LightTermMask,
     ) -> bool {
         let visible: &VisibleCells = cam_vis.cells;
@@ -555,7 +560,7 @@ impl Renderer {
         }
 
         // Before depth pre-pass: storage-write → sampled-read barrier for SH.
-        if render_world {
+        if composes_sh {
             let _sh_compose_scope = cpu.scope(RenderStage::ShCompose);
             let sh_compose_ts = full
                 .frame_timing

@@ -33,10 +33,9 @@ pub(crate) fn assemble_live_diagnostics(
     renderer: Option<&LightmapStreamCounters>,
     reads: Option<&dyn SectionReadBytes>,
 ) {
-    let levers = controller.levers();
-    live.pool_cap_layers = levers.pool_cap_layers();
-    live.lead_metres = levers.lead_metres();
-    live.max_lead_metres = levers.max_lead_metres();
+    live.pool_cap_layers = controller.levers().pool_cap_layers();
+    live.lead_metres = controller.lead_metres();
+    live.max_lead_metres = controller.max_lead_metres();
 
     let residency = controller.residency_bytes();
     live.block_count = controller.block_count() as u64;

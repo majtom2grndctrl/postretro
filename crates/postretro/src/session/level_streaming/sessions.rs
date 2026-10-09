@@ -1,15 +1,15 @@
-//! Which streaming sessions a level needs, their replacement, the spawn
-//! preload, and the renderer's lightmap drain result.
+//! Which streaming sessions a level needs, their replacement, and the
+//! renderer's lightmap drain result.
 //! See: context/lib/rendering_pipeline.md §4
 
+use crate::streaming::cell_demand::CellDemand;
+use postretro_level_format::cell_residency_set::CellResidencySetSection;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use glam::Vec3;
 use postretro_level_format::cluster_directory::ClusterDirectorySection;
 use postretro_level_loader::{
-    LevelWorld, LightmapDrainBatch, LightmapDrainOutcome, LightmapStreamManifest, ShStreamManifest,
-    ShStreamingMode,
+    LightmapDrainOutcome, LightmapStreamManifest, ShStreamManifest, ShStreamingMode,
 };
 use postretro_renderer::LightmapResidencyDrainError;
 
@@ -28,6 +28,9 @@ pub(crate) struct WantedStreaming<'a> {
     pub(crate) lightmap: Option<LightmapLevelView<'a>>,
     /// The level's id 49: both sessions share the hints decoded from it.
     pub(crate) cluster_directory: Option<&'a ClusterDirectorySection>,
+    /// The level's id 51, read directly from the level so a level that
+    /// streams SH alone, or declines its lightmap, still has its reach.
+    pub(crate) residency_set: Option<&'a CellResidencySetSection>,
 }
 
 impl LevelStreaming {
@@ -97,10 +100,16 @@ impl LevelStreaming {
         } else {
             self.retire(sh);
         }
-        // Hints belong to the level: a session replaced within it keeps
-        // them, and a new manifest invalidates them.
+        // Hints and the cell-demand stage belong to the level: a session
+        // replaced within it keeps them, and a new manifest invalidates them.
         if level_changed {
             self.hints = None;
+            self.cell_demand = None;
+        }
+        if self.cell_demand.is_none() {
+            self.cell_demand = wanted
+                .residency_set
+                .map(|set| CellDemand::new(set.max_lead));
         }
         if self.hints.is_none() {
             // Tagged for the shared layer: the hints serve both resources.
@@ -118,12 +127,14 @@ impl LevelStreaming {
         Ok(true)
     }
 
-    /// Releases every session, the issuer, and the level's hints: level
-    /// unload, or a frame with nothing to stream. Threads that have already
-    /// finished join at once; the rest retire off the frame path.
+    /// Releases every session, the issuer, the level's hints, and its
+    /// cell-demand stage: level unload, or a frame with nothing to stream.
+    /// Threads that have already finished join at once; the rest retire off
+    /// the frame path.
     pub(crate) fn clear(&mut self, sh: &mut Option<ShStreamingSession>) {
         self.retire(sh);
         self.hints = None;
+        self.cell_demand = None;
         self.poll_retirement();
     }
 
@@ -174,66 +185,6 @@ impl LevelStreaming {
         self.declined_lightmap
             .as_ref()
             .is_some_and(|declined| std::ptr::eq(declined.as_ptr(), Arc::as_ptr(manifest)))
-    }
-
-    /// Level install's spawn preload: the spawn eye's camera cell's baked
-    /// set within lead L, plus the pinned blocks, read synchronously through
-    /// the level's positional reader and installed through `install` (the
-    /// renderer's lightmap drain) as one batch, before the first frame
-    /// renders. An empty spawn range installs nothing, and play never waits
-    /// on a block afterwards. Does nothing without a lightmap session.
-    ///
-    /// A renderer that does not stream the lightmap declines it for the
-    /// level. A rolled-back drain leaves the spawn set to in-play reads. A
-    /// drain-contract violation is fatal.
-    pub(crate) fn install_spawn_lightmap(
-        &mut self,
-        level: &LevelWorld,
-        spawn_eye: Vec3,
-        install: impl FnOnce(
-            LightmapDrainBatch,
-        ) -> Result<LightmapDrainOutcome, LightmapResidencyDrainError>,
-    ) -> Result<()> {
-        let (Some(view), Some(session)) = (LightmapLevelView::of(level), self.lightmap.as_mut())
-        else {
-            return Ok(());
-        };
-        let camera_cell = level.locate_cell(spawn_eye) as u32;
-        session.update_camera_set(view.residency_set, camera_cell);
-        let summary = match session.preload(&[], install) {
-            Ok(summary) => summary,
-            Err(error) => {
-                let Some(drain_error) = error.downcast_ref::<LightmapResidencyDrainError>() else {
-                    return Err(error.context("[Lightmap streaming] spawn preload"));
-                };
-                return match RendererDrainFailure::of(drain_error) {
-                    RendererDrainFailure::NotStreaming => {
-                        warn_not_streaming();
-                        self.decline_lightmap();
-                        Ok(())
-                    }
-                    RendererDrainFailure::RolledBack => {
-                        log::warn!(
-                            "[Lightmap streaming] spawn preload drain failed and was rolled \
-                             back: {drain_error}; the spawn set streams in play"
-                        );
-                        Ok(())
-                    }
-                    RendererDrainFailure::Contract => {
-                        Err(error.context("[Lightmap streaming] spawn preload drain"))
-                    }
-                };
-            }
-        };
-        log::info!(
-            "[Lightmap streaming] spawn preload: camera cell {camera_cell}, {} of {} pair(s) \
-             installed, {:.1} MiB read in {:.1} ms",
-            summary.installed,
-            summary.reads.pairs + summary.reads.failed,
-            summary.reads.bytes as f64 / (1024.0 * 1024.0),
-            summary.elapsed.as_secs_f64() * 1000.0,
-        );
-        Ok(())
     }
 
     /// Applies the renderer's result for the parked lightmap batch. An

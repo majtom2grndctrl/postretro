@@ -85,7 +85,7 @@ impl HostJoinSeeds {
         self.reclaimed.insert(client_id);
     }
 
-    /// Buffer a seed while parity is held, or return it for immediate late
+    /// Buffer a seed while the slot is held, or return it for immediate late
     /// application once the connection already participates.
     pub(crate) fn receive(
         &mut self,

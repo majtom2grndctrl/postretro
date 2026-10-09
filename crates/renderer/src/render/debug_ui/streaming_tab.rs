@@ -1,5 +1,6 @@
 //! Streaming tab: SH cluster residency and lightmap cell-block residency
-//! gauges, cumulative counters, and the lightmap pool-cap and lead levers.
+//! gauges, cumulative counters, the lightmap pool-cap lever and the level's
+//! lead L lever.
 //!
 //! Rows are built as plain label/value strings first so the grouping and
 //! formatting are testable without an egui context.
@@ -10,10 +11,11 @@ use super::super::ShComposePassDiagnostics;
 use super::super::ShStreamingLiveDiagnostics;
 use super::super::{
     LightmapStreamingLevers, LightmapStreamingLiveDiagnostics, MAX_LIGHTMAP_POOL_CAP_LAYERS,
+    StreamingReachLever,
 };
 
 /// The Streaming tab's lightmap input: the live counters, shown read-only,
-/// and the two levers, edited in place. The caller writes changed levers
+/// and the pool-cap lever, edited in place. The caller writes changed levers
 /// back to the residency controller after the frame's UI runs.
 #[derive(Debug)]
 pub struct LightmapStreamingTab<'a> {
@@ -26,7 +28,20 @@ pub(super) fn draw_streaming_tab(
     renderer: &mut Renderer,
     diagnostics: Option<&ShStreamingLiveDiagnostics>,
     lightmap: Option<LightmapStreamingTab<'_>>,
+    reach: Option<&mut StreamingReachLever>,
 ) {
+    // The reach is the level's, not a resource's: present for a level that
+    // streams SH alone and after a lightmap decline.
+    if let Some(reach) = reach {
+        ui.label("Lead L (m)");
+        let max_lead = reach.max_lead_metres.max(0.0);
+        ui.add(egui::Slider::new(&mut reach.lead_metres, 0.0..=max_lead).step_by(0.5));
+        ui.label(
+            egui::RichText::new("Dev-tools lever: one reach for SH and lightmap, next frame.")
+                .weak(),
+        );
+        ui.separator();
+    }
     egui::CollapsingHeader::new("Lightmap blocks")
         .default_open(true)
         .show(ui, |ui| match lightmap {
@@ -52,15 +67,7 @@ fn draw_lightmap_streaming(ui: &mut egui::Ui, tab: LightmapStreamingTab<'_>) {
         )
         .logarithmic(true),
     );
-    ui.label("Lead L (m)");
-    let max_lead = levers.max_lead_metres.max(0.0);
-    ui.add(egui::Slider::new(&mut levers.lead_metres, 0.0..=max_lead).step_by(0.5));
-    ui.label(
-        egui::RichText::new(
-            "Dev-tools levers: the cap rides the next drain, the lead the next frame.",
-        )
-        .weak(),
-    );
+    ui.label(egui::RichText::new("Dev-tools lever: the cap rides the next drain.").weak());
     for section in lightmap_sections(diagnostics) {
         egui::CollapsingHeader::new(section.title)
             .id_salt(("lightmap_streaming", section.title))
@@ -128,7 +135,7 @@ fn streaming_sections(d: &ShStreamingLiveDiagnostics) -> [StreamingSection; 5] {
             title: "Residency",
             rows: vec![
                 ("Target clusters", d.target_clusters.to_string()),
-                ("Warm clusters", d.warm_clusters.to_string()),
+                ("Lead clusters", d.lead_clusters.to_string()),
                 ("Sampleable clusters", d.sampleable_clusters.to_string()),
                 ("Queued clusters", d.queued_clusters.to_string()),
                 ("Ready clusters", d.ready_clusters.to_string()),
@@ -193,6 +200,25 @@ fn streaming_sections(d: &ShStreamingLiveDiagnostics) -> [StreamingSection; 5] {
                 ("Installs", d.installs.to_string()),
                 ("Evictions", d.evictions.to_string()),
                 ("Misses", d.misses.to_string()),
+                (
+                    "Misses: reach / pressure / in flight",
+                    format!(
+                        "{} / {} / {}",
+                        d.miss_buckets.outside_reach,
+                        d.miss_buckets.trimmed_by_pressure,
+                        d.miss_buckets.read_in_flight,
+                    ),
+                ),
+                (
+                    "Misses: budget / compose / failed",
+                    format!(
+                        "{} / {} / {}",
+                        d.miss_buckets.held_by_drain_budget,
+                        d.miss_buckets.awaiting_compose,
+                        d.miss_buckets.failed,
+                    ),
+                ),
+                ("Re-reads", d.rereads.to_string()),
                 ("Retries", d.retries.to_string()),
                 ("Decoded installed", format_bytes(d.decoded_bytes_installed)),
                 (

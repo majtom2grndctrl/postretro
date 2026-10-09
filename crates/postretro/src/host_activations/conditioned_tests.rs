@@ -386,6 +386,7 @@ impl Fixture {
         client.set_mod_digest(Some(fingerprint));
         server.set_level_parity(Some(("test-level".into(), fingerprint)));
         client.set_level_parity(Some(("test-level".into(), fingerprint)));
+        postretro_net::harness::reveal_both(&mut server, &mut client, "test-level");
         server.add_relay_connection(CLIENT, None);
         client.set_connected();
         let mut host = EntityRegistry::new();

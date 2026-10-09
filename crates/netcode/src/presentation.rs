@@ -948,6 +948,7 @@ mod tests {
         client.set_mod_identity("postretro.test".to_string(), "1".to_string());
         client.set_mod_digest(Some([7; 32]));
         client.set_level_parity(Some(("test-level".to_string(), [9; 32])));
+        postretro_net::harness::reveal_both(server, &mut client, "test-level");
         server.add_relay_connection(client_id, None);
         client.set_connected();
 

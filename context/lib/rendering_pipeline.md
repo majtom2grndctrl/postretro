@@ -115,43 +115,49 @@ pairs default to bounded asynchronous residency. Ids 47/48 billboard direct scat
 whole-resident. The fragment sampler keeps its existing depth-moment indirection, fixed
 eight-corner stencil, bindings, and taps; it performs no residency lookup.
 
-The application derives visible, warm-set prefetch, hysteresis, and baked-owner targets
-after visibility. The warm set depends only on the camera cell, never the view direction,
-so turning in place causes no prefetch churn. It is a bounded shortest-path walk over the
-id-46 graded cell pairs from the camera cell, stopping at a fixed count of distinct
-clusters (the camera's own included). It is cached per camera cell and ranked by
-whole-metre path distance, then wider path aperture, then cluster ID. Without a usable
-id 46 it falls back to a two-hop cluster-adjacency expansion from the camera's cluster.
-The reachability component alone is never a target set; it usually spans the whole map.
-Not built yet (`sh-streaming--reveal-gate-and-warm-horizon`): the warm set is retired. SH
-takes the lightmap's id-51 reach through one level-scope cell-demand stage that owns L:
-Visible, Pinned, owner closure and the clusters of id-51 cells within L are mandatory and
-never refused; band clusters (lead past L) and seam-warm targets are optional, trimmed
-farthest lead first. SH still requests drawn clusters as Visible on every visibility path.
-Level entry waits in a Settling boot state until one settle chokepoint reports every
-streamed resource's set for the presented pose resident (`boot_sequence.md` §9).
+The application derives SH targets after visibility from two inputs: the frame's drawn
+clusters, and the level-scope cell-demand stage shared with lightmap blocks (below), which
+owns lead L. SH maps that stage's id-51 cells to clusters through the id-49 cell→cluster
+map; a cluster takes the smallest lead of its cells. Targets fall into two tiers:
+
+| Tier | Classes | Under budget pressure |
+|---|---|---|
+| Mandatory | Visible (every drawn cluster, on every visibility path), Pinned, Lead (id-51 cells within L), and their owner closure | Never refused or evicted; the pool grows past its budget |
+| Optional | SeamWarm, Band (id-51 cells past L, up to the baked maximum) | Trimmed farthest lead first |
+
+The reach depends only on the camera cell and L, never the view direction, so turning in
+place causes no reach churn; it is recomputed only when either changes. On a non-portal
+path, drawn clusters are still Visible, and lead and band come from the stage's classes for
+that path. A level without a usable id 51 has no lead or band tier, at entry or in play. SH
+reads nothing from id 46: the id-46 warm walk and its fixed cluster count are retired.
+Level entry waits in Settling until the mandatory tier is Sampleable from the presented
+pose, or a timeout releases it (`boot_sequence.md` §1, Settling); optional targets never
+hold the reveal, and in play no frame waits on a cluster.
+
 Authored id-49 v2 hints add persistent pinned clusters and their owner closure, plus
 preferred `SeamWarm` targets across marked portals when the near side is visible—even if
 an opaque door blocks traversal. Seam warm-up is best effort: it does not change door
 motion, gameplay, or the visible-cell set, and a cold opening still uses the ambient-floor
-miss fallback. Priority 0–3 ranks only pressure-eligible seam warm-up and prefetch work;
-visible and pinned demand wins regardless of priority. Only owner-safe prefetch and
-seam-warm targets may yield under budget pressure; pins and their owners are never evicted
-for pressure. Hysteresis retains its timer contract. Pressure priority selects which
-optional targets yield. The planner's drain request may list a dependent before its
-lower-ID owner; the renderer computes a dependency-safe release sequence and returns
-confirmed IDs in ascending order. Target ordering is Visible, Pinned, SeamWarm, Prefetch,
-then Hysteresis; within a class, requests order by descending effective priority, then
-warm rank, then cluster ID. Under pressure, among equal class and priority, the farthest
-warm cluster yields first. Owner closure propagates class and optional priority to a fixed
+miss fallback. Priority 0–3 ranks only pressure-eligible seam warm-up and band work;
+mandatory demand wins regardless of priority. Only owner-safe band and seam-warm targets
+may yield under budget pressure; mandatory targets and their owners are never evicted for
+pressure. Hysteresis retains its timer contract: a Sampleable cluster that leaves every
+target class is evicted once its window passes, even on a map within budget. Pressure
+priority selects which optional targets yield. The planner's drain request may list a
+dependent before its lower-ID owner; the renderer computes a dependency-safe release
+sequence and returns confirmed IDs in ascending order. Target ordering is Visible, Pinned,
+Lead, SeamWarm, Band, then Hysteresis; within a class, requests order by descending
+effective priority, then nearest lead, then cluster ID. Under pressure the band yields
+before seam-warm work and, among equal class and priority, the farthest lead yields first.
+Optional requests stop once half the stream permits are held, so the band never delays
+fresh mandatory work. Owner closure propagates class and optional priority to a fixed
 point, taking the maximum of an owner's authored value and same-class dependents. This
 policy stops at the CPU planner: it adds no renderer binding, shader branch, portal
 traversal, or visibility behavior. One issuer thread, shared with lightmap blocks (below),
-performs every id-50 read from the validated open file, off the frame path: visible and
-pinned work (owner closure included)
-before optional work, each tier in ascending file offset, with nearby chunks coalesced
+performs every id-50 read from the validated open file, off the frame path: mandatory
+work (owner closure included) before optional work, each tier in ascending file offset, with nearby chunks coalesced
 into one read. It takes new requests after every read, so fresh visible demand preempts
-queued prefetch, and it skips any request whose cluster has left the target set. A small
+queued optional work, and it skips any request whose cluster has left the target set. A small
 pool decodes and verifies chunks. A completion installs only when generation, content tag,
 target, and chunk hash still match. At the one renderer drain before SH compose, evictions
 first invalidate sample words; admitted clusters install base and sparse data, then
@@ -195,22 +201,26 @@ no id 22, or zero blocks, runs placeholder mode: every vertex reads 1×1 neutral
 Demand comes from the baked CellResidencySet (id 51), a streaming-owned cell relation keyed
 by cell, not an id-46 axis. For each camera cell it lists every cell within portal-path lead
 L, plus each such cell's visible set (the runtime portal walk sampled from eye points,
-dilated one portal hop), tagged with the smallest lead at which it becomes mandatory. The
-mandatory set is the camera cell's entries within L plus the cells of id-49 pinned
-clusters. Entries between L and the baked maximum form a prefetch band, which id-49
-priority regions rank. Baked demand is recomputed only when the camera cell or L changes;
+dilated one portal hop), tagged with the smallest lead at which it becomes mandatory. One
+level-scope cell-demand stage owns L and turns id 51 plus the frame's visibility path into
+per-cell classes. Each streamed resource maps those cells to its own units, blocks here and
+clusters for SH (§Cluster SH residency), so both hold one reach by construction, including
+when the lightmap does not stream or is declined. The mandatory set is the camera cell's
+entries within L plus the cells of id-49 pinned clusters. Entries between L and the baked
+maximum form the band, which id-49 priority regions rank. Baked demand is recomputed only when the camera cell or L changes;
 this frame's drawn cells add visible demand. Mandatory and visible blocks are never
 refused: the pool grows past its cap to hold them. The cap bounds band blocks, which stay
 resident while they remain in the band. Blocks outside both are freed at the next drain.
 Every non-portal visibility path demands only the camera cell's baked set, and nothing new
 from a solid or exterior camera cell. On those frames, drawn blocks already resident stay
-resident without new reads, and the frames count visible misses. Dev-tools Streaming-tab
-sliders set the pool cap (1–255 layers, default 15) and L (default 16 m, up to the baked
-maximum of 32 m). Neither is a player setting.
+resident without new reads, and the frames count visible misses. In the dev-tools
+Streaming tab, a level-scope slider sets L (default 16 m, up to the baked maximum of 32 m)
+for both resources, and a lightmap slider sets the pool cap (1–255 layers, default 15).
+Neither is a player setting.
 
 SH clusters and lightmap blocks share one read issuer thread and one per-drain byte
-budget. The issuer reads the mandatory tier (SH visible and pinned; block visible, pinned
-and lead) before the optional tier (SH seam-warm, prefetch and hysteresis; the lightmap
+budget. The issuer reads the mandatory tier (SH visible, pinned and lead; block visible,
+pinned and lead) before the optional tier (SH seam-warm, band and hysteresis; the lightmap
 band) across both resources, each tier in ascending file offset. Lightmap reads merge only
 byte-contiguous ranges, so bytes read from ids 22/42 equal the requested ranges plus the
 index. The drain admits ready work in tier order up to the shared budget, always at least
@@ -231,12 +241,13 @@ deferred and counts as a miss. The first generation holds the cap or what the le
 all-resident, whichever is smaller. One drain's copies, uploads and table writes reach the
 GPU in one submission.
 
-Level install reads the spawn cell's set within L, plus pins, synchronously through the
-positional reader and installs it in one drain before the first frame; play never waits on
-a block. `lightmap_residency_settled()` answers whether the camera cell's mandatory set is
-resident (true when the level does not stream): the lightmap answer a settle chokepoint
-asks. Capture preloads the view's mandatory and visible blocks synchronously, as it preloads
-SH. A renderer drain that fails rolls back whole, and its pairs are read again. Eight
+Level install reads no block. Settling's drains make the presented pose's set resident
+before the first world frame (`boot_sequence.md` §1, Settling), and play never waits on a
+block. While settling, demand covers the mandatory set plus every block the pose draws, on
+any visibility path, requested even where play would only hold them. The lightmap's settle
+answer counts those blocks not yet installed, and Settling frames count no visible misses.
+Capture and tests keep a synchronous preload of the view's mandatory and visible blocks, as
+capture preloads SH. A renderer drain that fails rolls back whole, and its pairs are read again. Eight
 consecutive rolled-back drains, or a renderer holding no streamed pool, decline lightmap
 streaming for the level; blocks not yet resident then stay misses. A mid-level decline parks
 the lightmap session (untargeted, draining its queue) while SH keeps its own session and
@@ -290,8 +301,8 @@ the frame they re-enter the gate, before any consumer samples them. A trigger ad
 per-pass change epoch rather than stamping rows: a row lags when a source it belonged to
 fired after the row was last composed, and dense per-row state lets planning, commit, and
 the lag counters visit only gated, pending, and residency-changed rows. Install, eviction, and
-slot-reuse rows bypass the view gate, including their scaled-node writers. Unlike the warm
-set, the gate is view-dependent: turning in place composes lagging rows as they come into
+slot-reuse rows bypass the view gate, including their scaled-node writers. Unlike the SH
+reach, the gate is view-dependent: turning in place composes lagging rows as they come into
 view. Any new SH consumer (an alternate camera, GPU particles, reflection probes) adds its
 sample regions before compose or forces full-resident compose. The dev/capture exactness
 switch forces every resident row through every available pass. This is the SH counterpart
@@ -307,8 +318,14 @@ allocates its own driver staging.
 
 Streaming diagnostics are always-on counters covering reads, coalescing, discarded and
 cancelled work, read latency, decoded bytes, install CPU time (with pool-growth time and
-the slowest drain that grew no pool reported apart), pool growth, misses, and evictions.
-They appear as a throttled `[SH streaming]` info log line (only when something changed),
+the slowest drain that grew no pool reported apart), pool growth, misses, evictions, and
+re-reads: requests for a cluster evicted earlier in the level, whatever class asks,
+including a hysteresis read of a departing cluster. Each visible miss lands in exactly one
+bucket naming the lever a later change would pull: outside the reach, trimmed by pressure,
+read in flight, held by the drain budget, awaiting compose, or failed. A cluster waiting on
+its owner closure takes the bucket of the owner wait it is behind, and any failed owner
+makes it failed. Settling frames count no misses; a cluster still cold on a timed-out
+reveal frame counts one there. The counters appear as a throttled `[SH streaming]` info log line (only when something changed),
 the dev-tools Streaming tab, and the capture report's streaming lifecycle JSON. They guide
 tuning and gate nothing. The dev-tools SH Volumes probe markers draw on streamed maps from
 the streaming base metadata. A Residency marker mode colors each probe from the renderer's

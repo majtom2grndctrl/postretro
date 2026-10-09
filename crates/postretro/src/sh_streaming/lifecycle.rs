@@ -74,10 +74,13 @@ impl ShResidencyController {
         )?;
         let state = &mut self.states[cluster_id as usize];
         state.state = ClusterResidencyState::Queued;
-        let mandatory = matches!(
-            state.class,
-            Some(TargetClass::Visible | TargetClass::Pinned)
-        );
+        if std::mem::take(&mut state.evicted) {
+            self.counters.rereads = self.counters.rereads.checked_add(1).ok_or(
+                ShResidencyControllerError::AccountingOverflow("stream re-reads"),
+            )?;
+        }
+        let state = &self.states[cluster_id as usize];
+        let mandatory = state.class.is_some_and(TargetClass::is_mandatory);
         Ok(Some(ShClusterRequest {
             generation: self.generation,
             content_tag: self.content_tag,
@@ -278,6 +281,7 @@ impl ShResidencyController {
                 .remove_logical(self.topology.requested_resident_bytes[*cluster_id as usize])
                 .expect("preflight validated confirmed eviction accounting");
             self.states[*cluster_id as usize].state = ClusterResidencyState::Absent;
+            self.states[*cluster_id as usize].evicted = true;
             Self::increment_counter(&mut self.counters.evictions, "stream evictions")
                 .expect("preflight validated eviction counter");
         }
@@ -347,10 +351,9 @@ impl ShResidencyController {
 
         for &cluster_id in &outcome.evicted {
             if self.topology.hints.pinned.contains(&cluster_id)
-                || matches!(
-                    self.states[cluster_id as usize].class,
-                    Some(TargetClass::Visible | TargetClass::Pinned)
-                )
+                || self.states[cluster_id as usize]
+                    .class
+                    .is_some_and(TargetClass::is_mandatory)
             {
                 return Err(ShResidencyControllerError::InvalidDrainOutcome(
                     "renderer attempted to evict a protected SH target".into(),

@@ -6,7 +6,7 @@ Find where level-load time goes and rank what is worth optimizing. This phase me
 
 ## Decisions
 
-- **The metric is wall time from load request to first level frame**, split two ways: the level worker (off the main thread) and main-thread install (which freezes the loading screen while it runs). A main-thread stage that costs the same as a worker stage ranks higher, because it is also a visible hitch.
+- **The metric is wall time from load request to first level frame**, split two ways: the level worker (off the main thread) and main-thread install (which freezes the loading screen while it runs). A main-thread stage that costs the same as a worker stage ranks higher, because it is also a visible hitch. Since level entry gained the Settling state, the first level frame is the reveal frame, the frame after Settling ends (`boot_sequence.md` §1).
 - **Two load paths are measured:** a first load from boot (CLI map) and a level change from Running, which adds unload. A path that cannot run in this container is reported, not skipped silently.
 - **Measurement uses the existing per-stage log (log line C, `StartupTimings` in `level_timings`).** Finer marks may be added inside a stage for the investigation. They stay uncommitted unless the finding recommends keeping them as permanent instrumentation.
 - **GPU-side cost is out of reach here.** The container has no Vulkan driver. Texture upload, geometry upload, and first-frame present are measured on the CPU side only, and flagged for measurement on the owner's Mac.

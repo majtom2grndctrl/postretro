@@ -83,6 +83,10 @@ impl RendererDrainFailure {
 
 /// What a synchronous preload read and the renderer installed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(
+    not(feature = "capture"),
+    allow(dead_code, reason = "capture and tests preload synchronously")
+)]
 pub(crate) struct LightmapPreloadSummary {
     pub(crate) reads: LightmapPreloadReads,
     pub(crate) installed: u32,
@@ -190,8 +194,9 @@ impl LightmapStreamingSession {
         self.manifest.clone()
     }
 
-    /// Demand from the camera cell's baked set and the pins alone: the spawn
-    /// camera cell at level install.
+    /// Demand from the camera cell's baked set and the pins alone. Test-only:
+    /// a level entry demands through Settling's frames instead.
+    #[cfg(test)]
     pub(crate) fn update_camera_set(
         &mut self,
         residency_set: &CellResidencySetSection,
@@ -222,6 +227,10 @@ impl LightmapStreamingSession {
     /// A renderer error is returned as the typed
     /// [`LightmapResidencyDrainError`] (see [`RendererDrainFailure::of`]),
     /// after the controller has taken the batch's pairs back.
+    #[cfg_attr(
+        not(feature = "capture"),
+        allow(dead_code, reason = "capture and tests preload synchronously")
+    )]
     pub(crate) fn preload(
         &mut self,
         keep_missing: &[u32],
@@ -252,8 +261,15 @@ impl LightmapStreamingSession {
         Ok(summary)
     }
 
+    /// Settle-set blocks not installed; `None` before the first demand
+    /// update. See [`LightmapResidencyController::unsettled_blocks`].
+    pub(crate) fn unsettled_blocks(&self) -> Option<usize> {
+        self.controller.unsettled_blocks()
+    }
+
     /// Whether the camera cell's mandatory set is resident, as of the latest
     /// demand update. See [`LightmapResidencyController::settled`].
+    #[cfg(test)]
     pub(crate) fn settled(&self) -> bool {
         self.controller.settled()
     }
@@ -284,12 +300,22 @@ impl LightmapStreamingSession {
 
     /// First half of this frame's drain: demand from this frame's visibility,
     /// completed reads admitted, and ready pairs offered to `drain`.
+    /// A settling frame demands every block its view draws, on any
+    /// visibility path, as capture does: the entry's first frame waits on
+    /// them, where play only holds them.
     pub(in crate::session) fn begin_drain(
         &mut self,
         frame: DemandFrame<'_>,
+        settling: bool,
         drain: &mut SharedDrain,
     ) -> Result<()> {
-        self.controller.update(frame);
+        if settling {
+            self.controller.update_capture_view(frame);
+            // Nothing is presented while settling, so nothing counts as missed.
+            self.controller.discard_frame_misses();
+        } else {
+            self.controller.update(frame);
+        }
         loop {
             match self.completions.try_recv() {
                 Ok(completion) => {
@@ -451,24 +477,20 @@ impl LightmapStreamingSession {
     /// The levers as the dev-tools Streaming tab edits them.
     #[cfg(feature = "dev-tools")]
     pub(crate) fn slider_levers(&self) -> postretro_renderer::LightmapStreamingLevers {
-        let levers = self.controller.levers();
         postretro_renderer::LightmapStreamingLevers {
-            pool_cap_layers: levers.pool_cap_layers(),
-            lead_metres: levers.lead_metres(),
-            max_lead_metres: levers.max_lead_metres(),
+            pool_cap_layers: self.controller.levers().pool_cap_layers(),
         }
     }
 
-    /// Applies the Streaming tab's levers. The lead takes effect at the next
-    /// demand update; the cap rides the next drain batch.
+    /// Applies the Streaming tab's lever: the cap rides the next drain batch.
     #[cfg(feature = "dev-tools")]
     pub(crate) fn set_slider_levers(
         &mut self,
         sliders: postretro_renderer::LightmapStreamingLevers,
     ) {
-        let levers = self.controller.levers_mut();
-        levers.set_pool_cap_layers(sliders.pool_cap_layers);
-        levers.set_lead_metres(sliders.lead_metres);
+        self.controller
+            .levers_mut()
+            .set_pool_cap_layers(sliders.pool_cap_layers);
     }
 
     #[cfg(test)]

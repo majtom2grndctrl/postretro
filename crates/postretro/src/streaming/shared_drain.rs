@@ -1,7 +1,9 @@
 //! One level-scope drain step: every resource's ready items, admitted once.
 //! See: context/lib/rendering_pipeline.md §"Cluster SH residency"
 
-use super::drain_budget::{DrainBytesOverflow, DrainItem, admit_drain};
+use super::drain_budget::{
+    DrainBytesOverflow, DrainItem, MAX_INSTALL_DECODED_BYTES_PER_DRAIN, admit_drain,
+};
 use super::request::StreamResource;
 
 /// The merged ready list of one drain. Each streamed resource offers its
@@ -38,8 +40,17 @@ impl SharedDrain {
 
     /// Orders every offered item on the shared scale and admits the leading
     /// items that fit the per-drain budget (the first always).
+    #[cfg_attr(
+        not(feature = "capture"),
+        allow(dead_code, reason = "production drains through `admit_within`")
+    )]
     pub(crate) fn admit(&mut self) -> Result<(), DrainBytesOverflow> {
-        self.admitted = admit_drain(&mut self.items)?.admitted;
+        self.admit_within(MAX_INSTALL_DECODED_BYTES_PER_DRAIN)
+    }
+
+    /// [`Self::admit`] against `budget` instead of the in-play budget.
+    pub(crate) fn admit_within(&mut self, budget: u64) -> Result<(), DrainBytesOverflow> {
+        self.admitted = admit_drain(&mut self.items, budget)?.admitted;
         Ok(())
     }
 

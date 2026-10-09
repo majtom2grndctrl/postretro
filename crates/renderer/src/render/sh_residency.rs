@@ -72,10 +72,16 @@ pub struct ShStreamingLifecycleSummary {
     pub sampleable_clusters: u64,
     pub failed_clusters: u64,
     pub misses: u64,
+    /// `misses` by cause.
+    pub miss_buckets: super::ShMissBuckets,
+    /// Requests issued for a cluster evicted earlier in the level, whatever
+    /// class requests it, hysteresis reads of a departing cluster included.
+    pub rereads: u64,
     pub installs: u64,
     pub evictions: u64,
     pub retries: u64,
-    pub warm_clusters: u64,
+    /// Clusters in the mandatory reach: the id-51 set within lead L.
+    pub lead_clusters: u64,
     pub cancelled_requests: u64,
     pub discarded_reads: u64,
     pub discarded_read_bytes: u64,

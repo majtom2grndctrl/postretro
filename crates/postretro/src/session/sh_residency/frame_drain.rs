@@ -8,6 +8,7 @@ use postretro_visibility::VisibleCells;
 use super::super::sh_async_workers::ShWorkerResult;
 use super::ShStreamingSession;
 use crate::sh_streaming::controller::SyncReadResult;
+use crate::streaming::cell_demand::DemandFrame;
 use crate::streaming::shared_drain::SharedDrain;
 
 /// SH's half-built batch between the two halves of a level-scope drain.
@@ -29,38 +30,45 @@ impl ShStreamingSession {
     pub(super) fn prepare_async_batch(
         &mut self,
         visible_cells: &VisibleCells,
-        camera_cell: Option<usize>,
+        reach: Option<DemandFrame<'_>>,
         monotonic_seconds: f64,
     ) -> Result<ShDrainBatch> {
         let mut drain = SharedDrain::default();
         let pending =
-            self.begin_async_drain(visible_cells, camera_cell, monotonic_seconds, &mut drain)?;
+            self.begin_async_drain(visible_cells, reach, monotonic_seconds, &mut drain)?;
         drain.admit()?;
         self.finish_drain(pending, &drain)
     }
 
-    /// First half of this frame's drain in the loaded mode: target update,
-    /// reads (sync-proof) or completion admission (async), then SH's ready
-    /// clusters offered to `drain`.
+    /// First half of this frame's drain in the loaded mode: last frame's
+    /// submitted composes promoted, target update, reads (sync-proof) or
+    /// completion admission (async), then SH's ready clusters offered to
+    /// `drain`.
+    ///
+    /// Promotion runs before the target update, so a cluster composed last
+    /// frame is Sampleable when this frame's visible misses are counted: the
+    /// frame draws it lit. A settling frame counts no visible miss.
     pub(in crate::session) fn begin_drain(
         &mut self,
         visible_cells: &VisibleCells,
-        camera_cell: Option<usize>,
+        reach: Option<DemandFrame<'_>>,
+        settling: bool,
         monotonic_seconds: f64,
         drain: &mut SharedDrain,
     ) -> Result<PendingShDrain> {
+        self.suspend_visible_misses(settling);
         match self.mode {
             ShStreamingMode::SyncProof => {
-                self.update_targets(visible_cells, camera_cell, monotonic_seconds)?;
-                while matches!(self.read_one_sync()?, SyncReadResult::Prepared(_)) {}
                 self.promote_composed_clusters();
+                self.update_targets(visible_cells, reach, monotonic_seconds)?;
+                while matches!(self.read_one_sync()?, SyncReadResult::Prepared(_)) {}
                 Ok(PendingShDrain {
                     batch: self.controller.begin_drain(false, drain)?,
                     submit_requests: false,
                 })
             }
             ShStreamingMode::Async => {
-                self.begin_async_drain(visible_cells, camera_cell, monotonic_seconds, drain)
+                self.begin_async_drain(visible_cells, reach, monotonic_seconds, drain)
             }
             ShStreamingMode::Off => unreachable!("a loaded streaming session cannot be off"),
         }
@@ -69,16 +77,16 @@ impl ShStreamingSession {
     fn begin_async_drain(
         &mut self,
         visible_cells: &VisibleCells,
-        camera_cell: Option<usize>,
+        reach: Option<DemandFrame<'_>>,
         monotonic_seconds: f64,
         drain: &mut SharedDrain,
     ) -> Result<PendingShDrain> {
-        self.update_targets(visible_cells, camera_cell, monotonic_seconds)?;
+        self.promote_composed_clusters();
+        self.update_targets(visible_cells, reach, monotonic_seconds)?;
         let Some(workers) = self.workers.as_ref() else {
             // A prior generation may still be finishing an uncancellable OS
             // read. Publish target deltas and miss fallback without waiting;
             // the level-scope owner starts this generation's workers after join.
-            self.promote_composed_clusters();
             return Ok(PendingShDrain {
                 batch: self.controller.begin_drain(true, drain)?,
                 submit_requests: false,
@@ -123,7 +131,6 @@ impl ShStreamingSession {
         }
         // Budget policy runs inside the drain and may suppress targets.
         // Requests are taken only after it, in `finish_drain`.
-        self.promote_composed_clusters();
         Ok(PendingShDrain {
             batch: self.controller.begin_drain(true, drain)?,
             submit_requests: true,

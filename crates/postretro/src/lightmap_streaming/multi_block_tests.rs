@@ -190,7 +190,7 @@ fn a_cell_leaving_demand_releases_every_block_including_one_in_flight() {
     assert_eq!(rig.controller.permits_in_use(), 0);
 }
 
-// P15: level install and capture preload read every block of a multi-block
+// P15: capture's preload reads every block of a multi-block
 // mandatory cell before the first frame; settled holds only once all are
 // resident.
 #[test]
@@ -200,6 +200,7 @@ fn preload_installs_every_block_of_a_multi_block_mandatory_cell_before_settling(
         if capture {
             let visible = VisibleCells::Culled(vec![0]);
             rig.controller.update_capture_view(DemandFrame {
+                lead: crate::streaming::cell_demand::DEFAULT_LEAD,
                 residency_set: &rig.set,
                 camera_cell: 0,
                 path: PORTAL,

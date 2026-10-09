@@ -153,10 +153,6 @@ fn candidate_gate_brightness(
 }
 
 impl Renderer {
-    // Animated lifecycle, cache validation, and tail packing stay with the
-    // shared-pool owner because their same-frame order is load-bearing:
-    // assign slot -> advance state -> validate cache -> encode both w arms.
-
     /// The next light-slot update is a level's reveal frame: lights promoted
     /// on it start at full weight instead of crossfading in.
     pub fn start_next_promotions_whole(&mut self) {
@@ -165,6 +161,9 @@ impl Renderer {
         }
     }
 
+    // Animated lifecycle, cache validation, and tail packing stay with the
+    // shared-pool owner because their same-frame order is load-bearing:
+    // assign slot -> advance state -> validate cache -> encode both w arms.
     /// Sub-0.01 lights excluded from slot ranking — animated-dark lights don't waste a shadow slot.
     /// Short/empty dynamic `effective_brightness` defaults to 1.0 for the
     /// pre-bridge frame. Missing animated-baked lookahead data defaults to 0.0

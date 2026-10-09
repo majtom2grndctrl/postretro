@@ -52,7 +52,7 @@ impl App {
         frame_dt: f32,
     ) -> bool {
         // Settling counts as installed: a request drained here unloads the
-        // held level before its settle check can reveal it (P2).
+        // held level before its settle check can reveal it.
         if matches!(
             self.boot_state,
             BootState::Loading | BootState::Frontend | BootState::Settling | BootState::Running

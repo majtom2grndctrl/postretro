@@ -92,6 +92,8 @@ pub enum HandshakeOutcome {
         client_id: ClientId,
         cause: ClosingCause,
     },
+    /// A slot is held below participating: any holding cause, content parity
+    /// or revealed.
     ParityHeld {
         client_id: ClientId,
         cause: HoldingCause,
@@ -2714,7 +2716,7 @@ mod tests {
         );
     }
 
-    // AC C1: parity publishes at install, so a content-divergent client learns
+    // parity publishes at install, so a content-divergent client learns
     // its cause while both peers are still settling, ahead of any revealed cause.
     #[test]
     fn parity_published_at_install_reaches_settling_client() {
@@ -2751,7 +2753,7 @@ mod tests {
         assert!(!server.is_participating(RELAY_CLIENT_ID));
     }
 
-    // AC C2: a parity-matched settling client is held with no participation
+    // a parity-matched settling client is held with no participation
     // marker; its reveal promotes it on the poll that drains it. Parity and the
     // reveal in one batch promote once.
     #[test]
@@ -2811,7 +2813,7 @@ mod tests {
         assert!(client.is_participating());
     }
 
-    // AC C3 (net half): the host's reveal, timed out or settled alike, promotes
+    // the host's reveal, timed out or settled alike, promotes
     // a revealed, parity-matched client.
     #[test]
     fn host_reveal_promotes_revealed_matched_client() {
@@ -2836,7 +2838,7 @@ mod tests {
         );
     }
 
-    // AC C4: a reveal declared while parity mismatched is retained and promotes
+    // a reveal declared while parity mismatched is retained and promotes
     // the moment parity matches, with no second declaration.
     #[test]
     fn revealed_before_parity_match_promotes_on_match() {
@@ -2867,7 +2869,7 @@ mod tests {
         );
     }
 
-    // AC C5: a client that never reveals stays admitted and connected, held
+    // a client that never reveals stays admitted and connected, held
     // under the revealed cause, and is sent no entity state.
     #[test]
     fn unrevealed_client_stays_admitted_and_receives_no_entity_state() {
@@ -2876,7 +2878,7 @@ mod tests {
         relay_client_to_server(&mut client, &mut server);
         let _ = server.poll_handshakes();
 
-        // Twelve seconds of polls, past the engine's ten-second Settling timeout.
+        // About 11.5 s of polls, past the engine's ten-second Settling timeout.
         for _ in 0..(12 * 60) {
             relay_client_to_server(&mut client, &mut server);
             assert!(server.poll_handshakes().lifecycle.is_empty());
@@ -2898,7 +2900,7 @@ mod tests {
         assert!(!client.is_participating());
     }
 
-    // AC C6: a duplicate reveal is a no-op, and a reveal naming another level
+    // a duplicate reveal is a no-op, and a reveal naming another level
     // never promotes.
     #[test]
     fn duplicate_or_foreign_reveal_does_not_repromote() {
@@ -2939,7 +2941,7 @@ mod tests {
         ));
     }
 
-    // AC C7: unload and suspend retract the reveal. A same-level reinstall
+    // unload and suspend retract the reveal. A same-level reinstall
     // whose unload and install collapse into one host batch leaves parity
     // unchanged, so only the retained retraction holds it until its own reveal.
     #[test]
@@ -2974,7 +2976,7 @@ mod tests {
         );
     }
 
-    // AC C8 (net half): while the host settles, a revealed, parity-matched
+    // while the host settles, a revealed, parity-matched
     // client is held and stays connected; the host's reveal promotes it once.
     // A host restart of the same level identity holds again until its new reveal.
     #[test]
@@ -3019,7 +3021,7 @@ mod tests {
         );
     }
 
-    // AC C9 (net half): suspend clears the host's own reveal through the same
+    // suspend clears the host's own reveal through the same
     // retraction as unload; a resumed install of the same level holds every
     // revealed client until the host's new reveal.
     #[test]
@@ -3051,7 +3053,7 @@ mod tests {
         );
     }
 
-    // AC C10: a host restart re-promotes a running client at the host's reveal
+    // a host restart re-promotes a running client at the host's reveal
     // without a new declaration; a client still settling is promoted exactly
     // once, after both reveals, in either order.
     #[test]
@@ -3095,7 +3097,7 @@ mod tests {
         }
     }
 
-    // AC C11: the revealed record survives a mod-digest demotion, so recovery
+    // the revealed record survives a mod-digest demotion, so recovery
     // re-promotes without a new declaration.
     #[test]
     fn mod_digest_recovery_repromotes_without_new_reveal() {
@@ -3117,7 +3119,7 @@ mod tests {
         );
     }
 
-    // AC C12: a held client that disconnects never spawns and leaves no
+    // a held client that disconnects never spawns and leaves no
     // revealed record; its rejoin, on a fresh id, is held until it reveals.
     #[test]
     fn disconnect_clears_revealed_record() {
@@ -3178,7 +3180,7 @@ mod tests {
         );
     }
 
-    // AC C13: a demotion caused by the revealed term alone still sends the
+    // a demotion caused by the revealed term alone still sends the
     // Holding diagnostic, which retires the client's participation epoch.
     #[test]
     fn revealed_only_demotion_sends_holding_and_retires_epoch() {

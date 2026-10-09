@@ -7,8 +7,9 @@ use std::collections::BTreeMap;
 use super::controller::ShResidencyControllerError;
 use crate::streaming::cell_demand::{DemandFrame, PathDemand};
 
-/// Rebuilt only when the camera cell or lead L changes, so turning in place
-/// or standing still costs no lookup. Lead and band split at the stage's L:
+/// The clusters the camera cell's id-51 set reaches, each at its nearest
+/// cell's lead. Rebuilt only when the camera cell or lead L changes, so
+/// turning in place or standing still costs no lookup. Lead and band split at the stage's L:
 /// within L is mandatory reach, past it (up to the baked maximum) is the
 /// optional band.
 #[derive(Debug, Default)]

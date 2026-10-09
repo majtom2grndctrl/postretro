@@ -1,5 +1,5 @@
-//! Which streaming sessions a level needs, their replacement, the spawn
-//! preload, and the renderer's lightmap drain result.
+//! Which streaming sessions a level needs, their replacement, and the
+//! renderer's lightmap drain result.
 //! See: context/lib/rendering_pipeline.md §4
 
 use crate::streaming::cell_demand::CellDemand;

@@ -464,7 +464,10 @@ impl ShResidencyController {
             .iter()
             .copied()
             .filter(|&cluster_id| {
-                self.states[cluster_id as usize].state == ClusterResidencyState::Absent
+                let state = &self.states[cluster_id as usize];
+                state.state == ClusterResidencyState::Absent
+                    && (self.permits_in_use < MAX_OPTIONAL_STREAM_PERMITS
+                        || state.class.is_some_and(TargetClass::is_mandatory))
             })
             .collect();
         // Authored priority outranks reach lead.

@@ -21,8 +21,8 @@ use crate::startup::worker::LevelPayload;
 pub(crate) const LOADING_SCREEN_NAME: &str = "loadingScreen";
 
 /// Share of the bar the worker's parse fills. The rest stands for the
-/// main-thread install, which runs as one blocking frame, so the bar holds
-/// here for the frame painted between delivery and install.
+/// main-thread install and the Settling hold: the bar holds here for the frame
+/// painted between delivery and install, then rises with the settle to 1.0.
 pub(crate) const LOAD_PARSE_SHARE: f32 = 0.85;
 
 const PROGRESS_SLOT: &str = "loading.progress";

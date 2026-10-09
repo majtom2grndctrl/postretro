@@ -256,7 +256,7 @@ impl PreparedCapture {
     /// Capture is a fixed authored instant, so make its settle set sampleable
     /// before either PNG publication or timed measurement begins: the same SH
     /// answer the settle chokepoint asks a level entry. Optional targets
-    /// (seam-warm, prefetch) do not hold it.
+    /// (seam-warm, band) do not hold it.
     fn preload_visible_sh(
         &mut self,
         max_frames: usize,
@@ -274,6 +274,8 @@ impl PreparedCapture {
                 &self.visible_render.visible_cells,
             )
         });
+        // Like Settling, the preload presents nothing: it counts no miss.
+        streaming.suspend_visible_misses(true);
         streaming.update_targets(&self.visible_render.visible_cells, reach, 0.0)?;
         for _ in 0..max_frames {
             if self
@@ -282,6 +284,9 @@ impl PreparedCapture {
                 .is_some_and(|streaming| streaming.unsettled_targets() == Some(0))
             {
                 self.renderer.reset_capture_measurement_timing();
+                if let Some(streaming) = self.sh_streaming.as_mut() {
+                    streaming.suspend_visible_misses(false);
+                }
                 return Ok(());
             }
             loop {

@@ -28,6 +28,9 @@ mod targeting;
 pub(crate) const HYSTERESIS_SECONDS: f64 = 2.0;
 /// A permit covers one cluster from request until install, drop, or failure.
 pub(crate) const MAX_STREAM_PERMITS: usize = 8;
+/// Optional requests stop once this many permits are held, so the band can
+/// never hold every permit and delay fresh mandatory work behind it.
+pub(crate) const MAX_OPTIONAL_STREAM_PERMITS: usize = MAX_STREAM_PERMITS / 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ClusterResidencyState {
@@ -53,8 +56,8 @@ pub(crate) struct ShClusterRequest {
     pub(crate) content_tag: [u8; 32],
     pub(crate) cluster_id: u32,
     pub(crate) chunk_hash: [u8; 32],
-    /// The cluster's class was `Visible` or `Pinned` (owner closure included)
-    /// when requested. Mandatory reads are served before optional ones.
+    /// The cluster's class was in the mandatory tier (`Visible`, `Pinned` or
+    /// `Lead`, owner closure included) when requested. Mandatory reads are served before optional ones.
     pub(crate) mandatory: bool,
 }
 
@@ -172,7 +175,7 @@ pub(crate) struct ShResidencyCounters {
     pub(crate) misses: u64,
     /// `misses` by cause; the buckets sum to it.
     pub(crate) miss_buckets: postretro_renderer::ShMissBuckets,
-    /// Requests for a cluster evicted earlier in the level.
+    /// Requests issued for a cluster evicted earlier in the level.
     pub(crate) rereads: u64,
     pub(crate) installs: u64,
     pub(crate) evictions: u64,
@@ -419,7 +422,8 @@ impl ShResidencyController {
         self.misses_suspended = suspended;
     }
 
-    /// Settle-set targets (Visible and Pinned, owner closure included) not
+    /// Settle-set targets (the mandatory tier: Visible, Pinned and Lead,
+    /// owner closure included) not
     /// yet Sampleable, as of the latest target update. `None` before the
     /// first update: the controller has not been asked for a view yet. A
     /// failed target stays unsettled; the settle timeout bounds it.

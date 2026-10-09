@@ -1,6 +1,6 @@
 //! Level-scope streaming proofs: one issuer for SH and lightmaps, session
-//! replacement, the spawn preload, renderer drain failures, reload and unload
-//! lifetimes. See: context/lib/testing_guide.md · plan AC 11, 13, 19; P3, P9, P12
+//! replacement, Settling's drains, renderer drain failures, reload and unload
+//! lifetimes. See: context/lib/testing_guide.md
 
 use std::collections::{BTreeSet, HashSet};
 use std::ops::Range;

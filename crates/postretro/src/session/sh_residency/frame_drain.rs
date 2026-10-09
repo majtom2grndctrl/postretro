@@ -40,10 +40,14 @@ impl ShStreamingSession {
         self.finish_drain(pending, &drain)
     }
 
-    /// First half of this frame's drain in the loaded mode: target update,
-    /// reads (sync-proof) or completion admission (async), then SH's ready
-    /// clusters offered to `drain`.
-    /// A settling frame counts no visible miss.
+    /// First half of this frame's drain in the loaded mode: last frame's
+    /// submitted composes promoted, target update, reads (sync-proof) or
+    /// completion admission (async), then SH's ready clusters offered to
+    /// `drain`.
+    ///
+    /// Promotion runs before the target update, so a cluster composed last
+    /// frame is Sampleable when this frame's visible misses are counted: the
+    /// frame draws it lit. A settling frame counts no visible miss.
     pub(in crate::session) fn begin_drain(
         &mut self,
         visible_cells: &VisibleCells,
@@ -52,12 +56,12 @@ impl ShStreamingSession {
         monotonic_seconds: f64,
         drain: &mut SharedDrain,
     ) -> Result<PendingShDrain> {
-        self.controller.suspend_visible_misses(settling);
+        self.suspend_visible_misses(settling);
         match self.mode {
             ShStreamingMode::SyncProof => {
+                self.promote_composed_clusters();
                 self.update_targets(visible_cells, reach, monotonic_seconds)?;
                 while matches!(self.read_one_sync()?, SyncReadResult::Prepared(_)) {}
-                self.promote_composed_clusters();
                 Ok(PendingShDrain {
                     batch: self.controller.begin_drain(false, drain)?,
                     submit_requests: false,
@@ -77,12 +81,12 @@ impl ShStreamingSession {
         monotonic_seconds: f64,
         drain: &mut SharedDrain,
     ) -> Result<PendingShDrain> {
+        self.promote_composed_clusters();
         self.update_targets(visible_cells, reach, monotonic_seconds)?;
         let Some(workers) = self.workers.as_ref() else {
             // A prior generation may still be finishing an uncancellable OS
             // read. Publish target deltas and miss fallback without waiting;
             // the level-scope owner starts this generation's workers after join.
-            self.promote_composed_clusters();
             return Ok(PendingShDrain {
                 batch: self.controller.begin_drain(true, drain)?,
                 submit_requests: false,
@@ -127,7 +131,6 @@ impl ShStreamingSession {
         }
         // Budget policy runs inside the drain and may suppress targets.
         // Requests are taken only after it, in `finish_drain`.
-        self.promote_composed_clusters();
         Ok(PendingShDrain {
             batch: self.controller.begin_drain(true, drain)?,
             submit_requests: true,

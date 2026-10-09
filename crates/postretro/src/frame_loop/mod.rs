@@ -1926,14 +1926,12 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                 presentation_tick,
             );
         }
-        // Prepare the controller while no borrowed draw collection
-        // is live. The actual drain still occurs as the first step
-        // inside `render_frame_indirect`, before scene recording.
-        // The warm set follows the same locator cell that seeded
-        // portal visibility this frame.
-        // One level-scope drain step for SH and lightmap blocks:
-        // one read issuer, one shared install budget.
-        // Lightmap residency CPU, folded under `render_prep` below.
+        // One level-scope streaming step for SH and lightmap blocks (one read
+        // issuer, one shared install budget), run while no borrowed draw
+        // collection is live: it prepares SH's batch, which drains as the first
+        // step inside `render_frame_indirect`, and drains the lightmap now, so
+        // the frame samples what it made resident. Its CPU folds under
+        // `render_prep` below.
         let streaming_cpu = postretro_stage_timing::StageFrame::<cpu_timing::StreamingStage>::new(
             app.cpu_timer.gate(),
         );

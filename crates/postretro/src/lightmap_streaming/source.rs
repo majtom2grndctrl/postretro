@@ -42,8 +42,8 @@ pub(crate) trait LightmapBlockSource: Send + Sync {
     /// The level's content identity for stale-completion checks.
     fn content_tag(&self) -> [u8; 32];
 
-    /// One pair read synchronously on the calling thread: install preload and
-    /// capture, never the frame path.
+    /// One pair read synchronously on the calling thread: capture and tests,
+    /// never the frame path or level install.
     #[cfg_attr(
         not(feature = "capture"),
         allow(dead_code, reason = "capture and tests preload synchronously")

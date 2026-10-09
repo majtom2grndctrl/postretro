@@ -183,7 +183,7 @@ impl LightmapStreamManifest {
     }
 
     /// Read one block pair synchronously: its id-22 range, then its id-42
-    /// range. For install preload and capture; in play the issuer reads.
+    /// range. For capture and tests; in play the issuer reads.
     pub fn read_block_pair(&self, block: u32) -> Result<LightmapBlockPayload, PrlLoadError> {
         let ranges = self.block_file_ranges(block)?;
         let lightmap = self.read_file_span(ranges.lightmap)?;

@@ -1015,11 +1015,15 @@ pub(crate) struct App {
     /// during the hold.
     boot_destination: Option<crate::startup::BootDestination>,
 
-    /// Set when `Loading → Running` transitions; consumed at the bottom of the
-    /// first `Running` frame after `render_frame_indirect` returns. Ensures
-    /// log line C ends with `first_level_frame` covering the cost of the
-    /// frame the user actually sees.
+    /// Set at the Settling → Running reveal; consumed at the bottom of the
+    /// reveal frame after `render_frame_indirect` returns. Ensures log line C
+    /// ends with `first_level_frame` covering the cost of the frame the user
+    /// actually sees.
     pending_level_log: bool,
+
+    /// The level identity install published as parity, which the reveal
+    /// publishes again; `None` without an installed level.
+    published_level_identity: Option<String>,
 
     /// The current level entry's Settling stretch; `Some` only in Settling.
     settle: Option<crate::startup::settling::SettleState>,
@@ -2008,6 +2012,7 @@ impl ApplicationHandler for App {
             }
         }
         self.clear_net_level_parity();
+        self.discard_pending_system_commands();
         self.clear_surface_lifetime_level_state();
         // Drop any in-flight level-load worker handoff. On resume the splash
         // state machine starts over from frame 0 and will spawn a fresh
@@ -3918,7 +3923,7 @@ impl App {
                                             join_seed_state.mark_reclaimed(*client_id);
                                         }
                                         log::info!(
-                                            "[Net] client {client_id} admitted; awaiting content parity"
+                                            "[Net] client {client_id} admitted; awaiting content parity and both reveals"
                                         );
                                     }
                                     HandshakeOutcome::Rejected { client_id, cause } => {

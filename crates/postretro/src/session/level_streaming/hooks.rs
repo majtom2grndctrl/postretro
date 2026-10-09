@@ -18,8 +18,8 @@ use crate::session::sh_residency::{ShStreamingSession, require_loaded_streaming_
 
 impl crate::session::Session {
     /// Releases every streaming session, the level's issuer, and their
-    /// manifest clones: at level unload, and on every legacy or world-free
-    /// frame. A following streamed level always gets fresh nonzero
+    /// manifest clones: at level unload, and on every legacy frame or
+    /// world-less frame that holds no level (never Settling's held frames). A following streamed level always gets fresh nonzero
     /// generations, even when its content bytes match the prior map.
     pub(crate) fn clear_level_streaming(&mut self) {
         self.level_streaming.clear(&mut self.sh_streaming);
@@ -31,8 +31,7 @@ impl crate::session::Session {
     /// [`Self::drain_lightmap_streaming`].
     ///
     /// SH streams when `sh_manifest` is present; lightmaps when the level's
-    /// storage is streaming. `level` supplies id 46 (read only when an SH
-    /// session is created), id 49 and id 51, all from the same load as
+    /// storage is streaming. `level` supplies id 49 and id 51, all from the same load as
     /// `sh_manifest`.
     pub(crate) fn prepare_streaming_drains(
         &mut self,

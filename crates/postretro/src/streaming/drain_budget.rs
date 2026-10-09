@@ -25,11 +25,12 @@ pub(crate) const SETTLING_INSTALL_DECODED_BYTES_PER_DRAIN: u64 = 32 * 1024 * 102
 pub(crate) enum DrainClass {
     Visible,
     Pinned,
-    /// A lightmap block mandatory only through the camera cell's baked set
-    /// within lead L. SH has no counterpart.
+    /// A lightmap block or SH cluster mandatory only through the camera
+    /// cell's id-51 set within lead L.
     Lead,
     SeamWarm,
-    /// SH warm-set prefetch, and the lightmap prefetch band.
+    /// The id-51 band past L: SH `Band` clusters and lightmap band blocks.
+    /// Kept as `Prefetch` on this shared scale; each resource names its own.
     Prefetch,
     Hysteresis,
 }

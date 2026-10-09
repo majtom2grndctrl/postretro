@@ -209,8 +209,7 @@ impl BlockDemand {
     }
 
     /// Demand from `camera_cell`'s baked set and the pins alone, with no drawn
-    /// cells: level install knows the spawn camera cell before any frame has
-    /// walked its portals. An empty range leaves only the pins.
+    /// cells; test-only. An empty range leaves only the pins.
     #[cfg(test)]
     pub(crate) fn update_camera_set(
         &mut self,

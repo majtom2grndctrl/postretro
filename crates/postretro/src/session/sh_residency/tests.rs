@@ -57,7 +57,7 @@ fn async_worker_failure_warns_once_across_same_identity_retry() {
     wait_for_failure(&mut session, 0.0);
     capture.assert_logged_once(log::Level::Warn, "cluster 0 read/decode failed:");
 
-    // No camera cell stands for the camera leaving; its warm set departs.
+    // No reach stands for the camera leaving; the visible cluster departs.
     session.prepare_async_batch(&empty, None, 0.1).unwrap();
     session.prepare_async_batch(&empty, None, 2.1).unwrap();
     session.prepare_async_batch(&visible, None, 2.2).unwrap();

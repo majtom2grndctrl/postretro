@@ -157,8 +157,9 @@ impl LevelStreaming {
     /// 4. each takes its admitted prefix into its batch and submits reads.
     ///
     /// Returns SH's batch; the lightmap batch waits in its session for the
-    /// renderer's lightmap drain. `residency_set` is the level's id 51, present
-    /// whenever a lightmap session is.
+    /// renderer's lightmap drain. `residency_set` is the level's id 51,
+    /// present whenever the level carries one, whether or not its lightmap
+    /// streams.
     pub(crate) fn prepare_drains(
         &mut self,
         sh: &mut Option<ShStreamingSession>,

@@ -1,4 +1,5 @@
-// Dev-only latency-sim harness: an in-memory packet relay conditioner. Gated on
+// Dev-only latency-sim harness: an in-memory packet relay conditioner, plus
+// relay-pair participation fixtures (`reveal_both`). Gated on
 // `dev-tools` (and always built under `test`).
 // See: context/lib/networking.md
 //

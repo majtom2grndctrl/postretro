@@ -42,7 +42,7 @@ impl SharedDrain {
     /// items that fit the per-drain budget (the first always).
     #[cfg_attr(
         not(feature = "capture"),
-        allow(dead_code, reason = "capture and tests preload synchronously")
+        allow(dead_code, reason = "production drains through `admit_within`")
     )]
     pub(crate) fn admit(&mut self) -> Result<(), DrainBytesOverflow> {
         self.admit_within(MAX_INSTALL_DECODED_BYTES_PER_DRAIN)

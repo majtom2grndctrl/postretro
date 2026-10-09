@@ -105,7 +105,7 @@ pub struct ShStreamingLiveDiagnostics {
     pub misses: u64,
     /// `misses` by cause; the buckets sum to it.
     pub miss_buckets: ShMissBuckets,
-    /// Reads of a cluster evicted earlier in the level.
+    /// Requests issued for a cluster evicted earlier in the level.
     pub rereads: u64,
     pub installs: u64,
     pub evictions: u64,

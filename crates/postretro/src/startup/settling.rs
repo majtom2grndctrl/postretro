@@ -46,7 +46,7 @@ impl SettleState {
 }
 
 /// Settles first, so a set that completes on the deadline frame releases
-/// without a warning (P3).
+/// without a warning.
 pub(crate) fn settle_decision(report: SettleReport, elapsed: Duration) -> Option<SettleRelease> {
     if report.settled() {
         Some(SettleRelease::Settled)
@@ -68,7 +68,7 @@ fn unsettled_units(report: SettleReport) -> Option<usize> {
 
 /// The bar's value through Settling, from the parse share up to 1.0, which a
 /// release reaches. A shortfall that grows raises the denominator instead of
-/// moving the bar back; the caller still never lowers the bar (P10).
+/// moving the bar back; the caller still never lowers the bar.
 pub(crate) fn settle_progress(unsettled: usize, peak_unsettled: usize, release: bool) -> f32 {
     if release {
         return 1.0;
@@ -109,8 +109,17 @@ impl App {
         if self.boot_state != BootState::Settling {
             return false;
         }
+        // Nothing the player does while the level is hidden acts on it: mouse
+        // look and gameplay presses lift without a pulse, as on the frontend,
+        // so the reveal frame presents the pose that settled.
+        if let Some(session) = self.session.as_mut() {
+            session.input_system.suspend_gameplay();
+        }
 
         let frame_start = Instant::now();
+        // The held view projects at the extent the reveal frame will commit,
+        // not the camera's default aspect left by an unload.
+        self.commit_render_extents();
         let view = self.presented_pose().held_view(self.camera.aspect());
         let held = match self.prepare_held_level_frame(view) {
             Ok(held) => held,
@@ -129,7 +138,11 @@ impl App {
             },
             |session| session.settle_report(),
         );
-        self.advance_settle(report, frame_start);
+        // A load or unload request that arrived in this frame's transport
+        // poll wins: no release is decided for a level about to unload.
+        if self.level_requests.is_empty() {
+            self.advance_settle(report, frame_start);
+        }
 
         self.advance_loading_screen(frame_dt);
         self.sync_glyph_art();
@@ -459,6 +472,7 @@ mod tests {
         let started = Instant::now();
         let mut app = settling_app(started);
         app.active_level_source = Some(crate::startup::LevelSource::Catalog("e1m1".into()));
+        app.published_level_identity = Some("e1m1".into());
         app.session.as_mut().unwrap().net_endpoint = crate::netcode::NetEndpoint::from_role(
             &crate::netcode::NetRole::Host { port: 0 },
             None,
@@ -495,6 +509,37 @@ mod tests {
         assert!(
             reveal < world_less,
             "a revealing redraw polls only as Running"
+        );
+    }
+
+    // P2/P7: commands install queued for the reveal frame die with an
+    // abandoned settle; none plays a sound in the next level or the frontend.
+    #[test]
+    fn abandoned_settle_discards_commands_install_queued() {
+        let mut app = settling_app(Instant::now());
+        app.session
+            .as_ref()
+            .unwrap()
+            .scripting
+            .script_ctx
+            .system_commands
+            .push(
+                postretro_entities::reactions::system_commands::SystemReactionCommand::PlaySound {
+                    sound: "door".into(),
+                    bus: None,
+                    at: None,
+                },
+            );
+        app.enqueue_level_request(LevelRequest::Unload);
+        app.drain_level_requests();
+        assert!(
+            app.session
+                .as_ref()
+                .unwrap()
+                .scripting
+                .script_ctx
+                .system_commands
+                .is_empty()
         );
     }
 }

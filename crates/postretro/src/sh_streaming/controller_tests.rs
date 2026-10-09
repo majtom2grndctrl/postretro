@@ -88,8 +88,8 @@ pub(super) fn two_hop_band(
         let mut next = Vec::new();
         for cluster in frontier {
             for &neighbor in &topology.adjacency[cluster as usize] {
-                if !hops.contains_key(&neighbor) {
-                    hops.insert(neighbor, hop);
+                if let std::collections::btree_map::Entry::Vacant(entry) = hops.entry(neighbor) {
+                    entry.insert(hop);
                     next.push(neighbor);
                 }
             }

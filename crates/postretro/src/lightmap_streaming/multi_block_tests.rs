@@ -190,7 +190,7 @@ fn a_cell_leaving_demand_releases_every_block_including_one_in_flight() {
     assert_eq!(rig.controller.permits_in_use(), 0);
 }
 
-// P15: level install and capture preload read every block of a multi-block
+// P15: capture's preload reads every block of a multi-block
 // mandatory cell before the first frame; settled holds only once all are
 // resident.
 #[test]

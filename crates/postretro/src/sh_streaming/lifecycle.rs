@@ -351,10 +351,9 @@ impl ShResidencyController {
 
         for &cluster_id in &outcome.evicted {
             if self.topology.hints.pinned.contains(&cluster_id)
-                || matches!(
-                    self.states[cluster_id as usize].class,
-                    Some(TargetClass::Visible | TargetClass::Pinned)
-                )
+                || self.states[cluster_id as usize]
+                    .class
+                    .is_some_and(TargetClass::is_mandatory)
             {
                 return Err(ShResidencyControllerError::InvalidDrainOutcome(
                     "renderer attempted to evict a protected SH target".into(),

@@ -392,9 +392,9 @@ impl LightmapResidencyController {
         to_metres(self.max_lead)
     }
 
-    /// The dev-tools sliders and capture's cap override write here. A lead
-    /// change takes effect at the next [`Self::update`]; the cap rides the
-    /// next drain batch.
+    /// The dev-tools pool-cap slider and capture's cap override write here;
+    /// the cap rides the next drain batch. Lead L is the level's, on the
+    /// cell-demand stage.
     #[cfg(any(test, feature = "capture", feature = "dev-tools"))]
     pub(crate) fn levers_mut(&mut self) -> &mut LightmapLevers {
         &mut self.levers
@@ -490,8 +490,8 @@ impl LightmapResidencyController {
     }
 
     /// Demand from `camera_cell`'s baked set within lead L plus the pins, with
-    /// no drawn cells: the spawn camera cell at level install, before any
-    /// frame has walked its portals.
+    /// no drawn cells. Test-only: a level entry demands through Settling's
+    /// frames instead.
     #[cfg(test)]
     pub(crate) fn update_camera_set(
         &mut self,
@@ -510,7 +510,8 @@ impl LightmapResidencyController {
     /// it, plus the pinned blocks) is installed, as of the latest demand
     /// update. Visible and band blocks do not count. A mandatory block whose
     /// pair failed stays unsettled: it cannot become resident this
-    /// generation. This is the lightmap answer a settle chokepoint asks.
+    /// generation. Test-only; the settle chokepoint asks
+    /// [`Self::unsettled_blocks`].
     #[cfg(test)]
     pub(crate) fn settled(&self) -> bool {
         self.demand.demanded_blocks(&self.map).all(|block| {

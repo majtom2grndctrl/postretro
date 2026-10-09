@@ -535,10 +535,9 @@ impl App {
                 .as_ref()
                 .expect("active level source retained before parity installation");
             endpoint.set_join_seed(join_seed);
-            endpoint.set_level_parity(Some((
-                level_identity(source, &self.content_root),
-                level_content_digest,
-            )));
+            let identity = level_identity(source, &self.content_root);
+            self.published_level_identity = Some(identity.clone());
+            endpoint.set_level_parity(Some((identity, level_content_digest)));
             endpoint.set_relevel_catalog_id(match source {
                 LevelSource::Catalog(id) => Some(id.clone()),
                 LevelSource::Path(_) => None,
@@ -967,13 +966,13 @@ impl App {
                 if moved { "local pawn" } else { "camera only" },
             );
         }
-        // The spawn eye, computed once: the followed local pawn's eye (the
-        // point every tick moves the camera to), else the camera placed above.
-        // The presented pose is that spawn pose unless the frontend menu is
-        // up. Both interpolation endpoints hold it, so a frame before the
-        // first tick renders from the pose Settling made resident, and the
-        // first tick blends from it rather than from the pawn's origin or the
-        // previous level's pose.
+        // Put the camera at the followed local pawn's eye (the point every tick
+        // moves it to), else leave it where the start pose placed it, then on
+        // the presented pose: that spawn pose, or the menu pose when the
+        // frontend menu is up. Both interpolation endpoints hold it, so a frame
+        // before the first tick renders from the pose Settling made resident,
+        // and the first tick blends from it rather than from the pawn's origin
+        // or the previous level's pose.
         self.camera.position = self.followed_pawn_eye().unwrap_or(self.camera.position);
         self.place_camera_at_presented_pose();
         self.level_timings.record("camera_pose");
@@ -1793,6 +1792,7 @@ pub(crate) mod tests {
             boot_destination: None,
             pending_level_log: false,
             settle: None,
+            published_level_identity: None,
             pending_splash_override: None,
             host_spawn_points: Vec::new(),
             script_time: 0.0,

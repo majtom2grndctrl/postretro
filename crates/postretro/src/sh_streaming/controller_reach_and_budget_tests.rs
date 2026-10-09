@@ -296,7 +296,9 @@ fn authored_priority_outranks_reach_lead_in_request_order() {
         .map(|request| request.cluster_id)
         .collect();
     // Visible, then lead by lead; in the band, priority 3 before nearer 3.
-    assert_eq!(requests, vec![0, 1, 2, 4, 3]);
+    // Band requests stop at half the permits, reserving the rest for
+    // mandatory work, so 3 waits.
+    assert_eq!(requests, vec![0, 1, 2, 4]);
 }
 
 #[test]

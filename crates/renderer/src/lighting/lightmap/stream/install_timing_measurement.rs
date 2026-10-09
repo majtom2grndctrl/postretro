@@ -1,7 +1,7 @@
 // Measurement helper (spatial-residency--lightmap-cell-blocks AC 22, install
 // time per drain): CPU time of repeated in-play-sized drains on a real
 // device, with the staging pool warm, next to the one cold first drain a
-// level-install preload pays. Not a proof; prints only.
+// synchronous preload pays (capture's). Not a proof; prints only.
 //
 // Run: cargo test -p postretro-renderer --lib lightmap_drain_install_timing \
 //        -- --ignored --nocapture

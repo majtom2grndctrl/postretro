@@ -36,6 +36,17 @@ Each dev catalog map's loading screen shows a screenshot of that map as a full-w
 - Mod pool (`loading.tree`): a single `dev.loading.plain` tree — the level name and bar, no imagery — for path loads with no catalog entry.
 - Catalog ids (unchanged): `campaign-test`, `kinematic-platform`, `movement-feel`, `stress-warren-hallway-inspection`, `combat-demo`.
 
+### Engine: loading-only images load lazily (amendment, owner decision)
+
+Five eager 1920×1080 screenshots cost ~41 MB of resident textures plus a synchronous decode at mod init and staged reload. The owner chose to load only the chosen loading tree's images.
+
+- **Loading-only images.** A mod `uiImages` entry is loading-only when some loading-candidate tree references it, as `background.image` or as an `Image` widget's `asset`, and no other registered mod tree or presentation template references it. Loading candidates are every name in any catalog entry's `loadingTree` pool, every name in the mod's `loading.tree` pool, and a mod-registered `loadingScreen`. Loading-only images are not decoded at mod init or staged reload. Every other entry stays eager, exactly as today. Consequence: no manifest or SDK change; authors write the same `uiImages`.
+- **Decode off the main thread, on choice.** When a load chooses its tree (`begin_loading_screen`), that tree's loading-only images not already registered start decoding on a worker thread. A Loading or Settling frame polls; once decoded, the main thread uploads through the existing registration path. Until then the background draws nothing (the unknown-size rule) and the tree's widgets draw normally. Consequence: no main-thread stall; on a very short load the shot may never appear.
+- **Release when the loading screen ends.** Every path through `end_loading_screen` (reveal, failure, abandon, network relevel) and platform suspend unregisters the images that load uploaded. A decode still in flight at that point is discarded when it arrives. Consequence: zero resident cost outside a load; each load re-decodes its shot.
+- **Registry removal.** `UiImageRegistry` gains removal. It drops the entry and its natural size and bumps the image-size generation, so a retained tree rebuilds and stops emitting the quad. All wgpu stays in the renderer.
+- **Reload safety.** A staged reload that changes the committed `uiImages` or the loading pools recomputes the loading-only set. An in-flight decode whose key or path no longer matches is discarded on arrival.
+- **Logging.** Mod init's info line counts eager images and names how many were deferred. Each lazy upload logs one info line with key, size and decode milliseconds. Failures warn naming the `uiImages` entry, as eager loads do.
+
 ## Tracks and file ownership
 
 | Track | Owner | Files |
@@ -43,6 +54,7 @@ Each dev catalog map's loading screen shows a screenshot of that map as a full-w
 | A. Engine `Tree` background | agent, isolated worktree | `crates/scripting-core/**`, `crates/ui/**`, `crates/sim/**` (typedef fixtures, gen output), `sdk/types/**`, compile-forced spillover elsewhere (`AnchoredTree` struct literals), `context/lib/ui.md`, `docs/scripting-reference.md` |
 | B. Screenshots | orchestrator, main checkout | `content/dev/ui/loading/**` |
 | C. Content wiring | orchestrator, after A merges | `content/dev/scripts/loading-screens.ts`, `content/dev/scripts/frontend-menu.ts`, `content/dev/start-script.ts`, `content/dev/start-script.js` if regenerated |
+| D. Lazy loading-only images | agent, on the branch after review round 2 | `crates/postretro/src/app/ui_images.rs`, `crates/postretro/src/startup/loading_screen*.rs`, suspend path, `crates/renderer/src/render/ui/image_registry.rs` and its renderer API, a pure image-key walk in `postretro-scripting-core` if needed, `context/lib/ui.md` §5, `context/lib/boot_sequence.md` §1 Loading screen |
 
 ## Acceptance
 
@@ -60,6 +72,11 @@ Each dev catalog map's loading screen shows a screenshot of that map as a full-w
 - `grep -n "textures/" content/dev/scripts/loading-screens.ts` → empty.
 - `grep -n "splash-damage-demo" content/dev/scripts/frontend-menu.ts` → empty.
 - A live run shows a screenshot loading screen for a catalog load and the frontend backdrop.
+
+**D**
+- Unit tests prove: an image referenced only by a loading candidate is deferred; one also referenced by a non-loading tree or a presentation template is eager; begin → decode → upload registers it; end unregisters it and a retained tree stops emitting its quad; end before the decode lands discards it; a reload that changes the entry discards the stale decode.
+- `cargo test -p postretro --bin postretro -- startup:: app::ui_images` and `cargo test -p postretro-renderer --lib image_registry` → nonzero passed, 0 failed.
+- A live boot logs mod init with 0 eager and 5 deferred images, then one lazy-upload line for `dev/loading/combat-demo` at the frontend-backdrop load.
 
 ## Open questions
 

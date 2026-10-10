@@ -107,7 +107,7 @@ Task names refer to the original brief; P numbers are execution/checkpoint order
 | P2 | Complete world participation and ownership lifecycle (T2a), resource/refresh/reconstruction/teardown proofs | integrator; bounded AI/physics worker after seam fixed | P1 | in progress |
 | P3 | Real dummy glTF/aim regression (T3) | bounded combat worker | P1 | complete |
 | P4 | Extract remote materialization loop to snapshot_apply (T1) | integrator | P1 | complete |
-| P5 | Extract wire component mirrors/validation (T1) | bounded worker | P1 | in progress |
+| P5 | Extract wire component mirrors/validation (T1) | bounded worker | P1 | complete |
 | P6 | Wire presentation state/bindings/clock/position, versions and all call sites (T5) | integrator | P4,P5 | pending |
 | P7 | Descriptor display set + HitVolume22, completeness retry/cache (T4) | integrator | P6 | pending |
 | P8 | Extract client mover bindings (T1) | bounded worker | P7 | pending |
@@ -133,6 +133,8 @@ Task names refer to the original brief; P numbers are execution/checkpoint order
 - P3 complete: `cargo test -p postretro-sim --lib real_dummy_`: 2 passed, 0 failed. Actual glTF torso capsule and independent settled splash_direct player eye ray both hit local and mesh-only display copies, with entity impact contacts and real zone tags. Pins use authored map origins/floor/signed gravity, public IdTech2 scale and inspected compiler axis conversion, actual dev pistol placement and eye height. The initial eye fixture incorrectly used positive gravity; corrected to map -9.81 before the successful rerun. No engine geometry defect reproduced, so no production aiming change.
 
 - P4 complete: remote materialization loop extracted without behavior changes; normalized source-body comparison preserved the original dispatch, initial animation, locomotion cache and attachment order. `cargo test -p postretro-netcode --lib enemy_replication_harness_test`: 17 passed; `cargo test -p postretro-netcode --lib remote_materialize::tests`: 9 passed.
+
+- P5 complete: component constants, mirrors, raw slots and validation moved unchanged to `wire/components.rs`, with explicit existing-path re-exports. Field/variant order and normalized production bodies preserved; private movement-finiteness proof moved with its implementation. `cargo test -p postretro-net --lib wire::`: 77 passed, 0 failed.
 
 ### P1 and P2 boundaries
 

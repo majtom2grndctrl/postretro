@@ -15,8 +15,8 @@ use super::loading_screen::ModLoading;
 use crate::ctx::ScriptCtx;
 use crate::data_descriptors::{
     EntityTypeDescriptor, ImpactEventDescriptor, ModFontAssets, ModThemeTokens,
-    PlayerEventDescriptor, PresentationOverlay, PresentationTemplate, RegisteredUiTree, SwitchingDescriptor,
-    TriggerEventDescriptor, TriggerPoolDescriptor, WeaponPlacementDescriptor,
+    PlayerEventDescriptor, PresentationOverlay, PresentationTemplate, RegisteredUiTree,
+    SwitchingDescriptor, TriggerEventDescriptor, TriggerPoolDescriptor, WeaponPlacementDescriptor,
 };
 use crate::data_registry::{
     FactionRegistry, FactionSentimentDescriptor, ScopedCrossing, ScopedReaction,

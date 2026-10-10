@@ -41,7 +41,14 @@ fn declare(world: &World, name: &str, network: ReplicationScope, per_owner: bool
 }
 
 fn global(world: &World, name: &str) -> f32 {
-    match world.script_ctx.slot_table.borrow().get(name).unwrap().value {
+    match world
+        .script_ctx
+        .slot_table
+        .borrow()
+        .get(name)
+        .unwrap()
+        .value
+    {
         Some(SlotValue::Number(value)) => value,
         ref other => panic!("{name} is {other:?}"),
     }
@@ -88,7 +95,11 @@ fn record_hp(owner: Option<&str>) -> NamedReaction {
     if let Some(owner) = owner {
         value["owner"] = json!(owner);
     }
-    system("recordHp", "setState", json!({ "slot": LAST_HP, "value": value }))
+    system(
+        "recordHp",
+        "setState",
+        json!({ "slot": LAST_HP, "value": value }),
+    )
 }
 
 fn low_health() -> IrNode {
@@ -120,11 +131,19 @@ fn by_player_reads_the_event_players_value_and_a_plain_read_is_rejected() {
         .write_value(Some(SlotValue::Number(90.0)));
     world.install(
         vec![record_hp(Some("@player"))],
-        vec![player_event(PlayerEventEdge::Becomes, low_health(), &["recordHp"])],
+        vec![player_event(
+            PlayerEventEdge::Becomes,
+            low_health(),
+            &["recordHp"],
+        )],
     );
     world.set_health(remote, 30.0);
     world.tick();
-    assert_eq!(global(&world, LAST_HP), 30.0, "byPlayer(on.player) reads the crossing player, not the host");
+    assert_eq!(
+        global(&world, LAST_HP),
+        30.0,
+        "byPlayer(on.player) reads the crossing player, not the host"
+    );
 
     let capture = LogCapture::start();
     let mut world = World::new();
@@ -132,7 +151,11 @@ fn by_player_reads_the_event_players_value_and_a_plain_read_is_rejected() {
     declare(&world, LAST_HP, ReplicationScope::SharedGlobal, false);
     world.install(
         vec![record_hp(None)],
-        vec![player_event(PlayerEventEdge::Becomes, low_health(), &["recordHp"])],
+        vec![player_event(
+            PlayerEventEdge::Becomes,
+            low_health(),
+            &["recordHp"],
+        )],
     );
     world.tick();
     assert_eq!(global(&world, LAST_HP), 0.0, "the plain read never runs");
@@ -157,7 +180,11 @@ fn a_mixed_address_is_dropped_whole_and_its_reactions_stay_for_other_sources() {
     chime.name = "recordHp".to_string();
     world.install(
         vec![chime, record_hp(None), play_sound("bleed", "bleed")],
-        vec![player_event(PlayerEventEdge::Becomes, low_health(), &["recordHp", "bleed"])],
+        vec![player_event(
+            PlayerEventEdge::Becomes,
+            low_health(),
+            &["recordHp", "bleed"],
+        )],
     );
     world.tick();
     assert_eq!(
@@ -165,7 +192,10 @@ fn a_mixed_address_is_dropped_whole_and_its_reactions_stay_for_other_sources() {
         vec!["bleed".to_string()],
         "the sound sharing the address drops with it; the next address still fires"
     );
-    assert_eq!(errors_containing(&capture, "drops address `recordHp`").len(), 1);
+    assert_eq!(
+        errors_containing(&capture, "drops address `recordHp`").len(),
+        1
+    );
     assert_eq!(
         world
             .script_ctx
@@ -190,15 +220,31 @@ fn machine_local_effects_are_rejected_and_a_shared_slot_write_lands_on_the_host(
     world.install(
         vec![
             system("dialog", "showDialog", json!({ "tree": "levelUp" })),
-            system("note", "setState", json!({ "slot": LOCAL_NOTE, "value": 1.0 })),
+            system(
+                "note",
+                "setState",
+                json!({ "slot": LOCAL_NOTE, "value": 1.0 }),
+            ),
             system("mark", "setState", json!({ "slot": LAST_HP, "value": 7.0 })),
         ],
-        vec![player_event(PlayerEventEdge::Becomes, low_health(), &["dialog", "note", "mark"])],
+        vec![player_event(
+            PlayerEventEdge::Becomes,
+            low_health(),
+            &["dialog", "note", "mark"],
+        )],
     );
     world.tick();
-    assert_eq!(global(&world, LAST_HP), 7.0, "a shared slot write installs and lands in-tick");
+    assert_eq!(
+        global(&world, LAST_HP),
+        7.0,
+        "a shared slot write installs and lands in-tick"
+    );
     assert!(
-        !errors_containing(&capture, "drops address `dialog`: reaction `dialog` `showDialog` is machine-local").is_empty()
+        !errors_containing(
+            &capture,
+            "drops address `dialog`: reaction `dialog` `showDialog` is machine-local"
+        )
+        .is_empty()
     );
     assert!(
         !errors_containing(&capture, "drops address `note`: reaction `note` `setState` writes `hud.note`, which does not replicate").is_empty()
@@ -238,7 +284,11 @@ fn context_free_routes_reaching_presentation_are_rejected_at_any_depth() {
             ),
             // fire → a clean reaction.
             sequence("clean", vec![fire_step("tally")]),
-            system("tally", "setState", json!({ "slot": LAST_HP, "value": 2.0 })),
+            system(
+                "tally",
+                "setState",
+                json!({ "slot": LAST_HP, "value": 2.0 }),
+            ),
         ],
         vec![player_event(
             PlayerEventEdge::Becomes,
@@ -246,7 +296,11 @@ fn context_free_routes_reaching_presentation_are_rejected_at_any_depth() {
             &["relay", "mark", "later", "clean", "fanfare"],
         )],
     );
-    for (address, reached) in [("relay", "fanfare"), ("mark", "recordHp"), ("later", "fanfare")] {
+    for (address, reached) in [
+        ("relay", "fanfare"),
+        ("mark", "recordHp"),
+        ("later", "fanfare"),
+    ] {
         let errors = errors_containing(&capture, &format!("drops address `{address}`"));
         assert_eq!(errors.len(), 1, "`{address}`: {errors:?}");
         assert!(
@@ -293,7 +347,12 @@ fn an_on_player_command_whose_pawn_is_gone_before_it_applies_warn_skips_and_sibl
         let slot_table = world.script_ctx.slot_table.borrow();
         world.table.evaluate(&registry, &slot_table);
     }
-    world.script_ctx.registry.borrow_mut().despawn(pawn).unwrap();
+    world
+        .script_ctx
+        .registry
+        .borrow_mut()
+        .despawn(pawn)
+        .unwrap();
     let capture = LogCapture::start();
     world.table.apply(&world.script_ctx, &mut world.residuals);
 
@@ -302,7 +361,11 @@ fn an_on_player_command_whose_pawn_is_gone_before_it_applies_warn_skips_and_sibl
     assert_eq!(world.health(other), 25.0, "the sibling fire still applies");
     // In-tick commands apply in listed order, so the second player's read sees
     // the damage listed before it. The gone pawn's read wrote nothing.
-    assert_eq!(global(&world, LAST_HP), 25.0, "the second player's read lands; the gone pawn's is skipped, never written as 0");
+    assert_eq!(
+        global(&world, LAST_HP),
+        25.0,
+        "the second player's read lands; the gone pawn's is skipped, never written as 0"
+    );
     assert_eq!(
         world.take_residual_reactions(),
         vec!["hiss".to_string(), "hiss".to_string()],
@@ -331,7 +394,11 @@ fn an_on_player_step_before_a_wait_lands_on_the_event_player_in_tick() {
                 },
             ],
         )],
-        vec![player_event(PlayerEventEdge::Becomes, low_health(), &["burn"])],
+        vec![player_event(
+            PlayerEventEdge::Becomes,
+            low_health(),
+            &["burn"],
+        )],
     );
     world.tick();
     assert_eq!(world.health(pawn), 25.0);
@@ -346,7 +413,11 @@ fn a_consequence_and_two_presentations_run_each_on_its_own_path_in_listed_order(
         vec![
             on_player("credit", "grantHealth", json!({ "amount": 10.0 })),
             play_sound("fanfare", "level_up"),
-            system("flash", "flashScreen", json!({ "color": [1.0, 0.9, 0.3, 0.4], "durationMs": 300.0 })),
+            system(
+                "flash",
+                "flashScreen",
+                json!({ "color": [1.0, 0.9, 0.3, 0.4], "durationMs": 300.0 }),
+            ),
         ],
         vec![player_event(
             PlayerEventEdge::Becomes,
@@ -355,7 +426,11 @@ fn a_consequence_and_two_presentations_run_each_on_its_own_path_in_listed_order(
         )],
     );
     world.tick();
-    assert_eq!(world.health(pawn), 40.0, "the credit applies on the event's tick");
+    assert_eq!(
+        world.health(pawn),
+        40.0,
+        "the credit applies on the event's tick"
+    );
     assert_eq!(
         world.take_residual_reactions(),
         vec!["fanfare".to_string(), "flash".to_string()],
@@ -389,7 +464,10 @@ fn a_reaction_using_on_player_is_not_bound_for_a_trigger() {
             .unwrap();
         trigger
     };
-    world.install(vec![on_player("scald", "applyDamage", json!({ "amount": 5.0 }))], Vec::new());
+    world.install(
+        vec![on_player("scald", "applyDamage", json!({ "amount": 5.0 }))],
+        Vec::new(),
+    );
     let capture = LogCapture::start();
     let bindings = {
         let registry = world.script_ctx.registry.borrow();
@@ -413,7 +491,8 @@ fn a_reaction_using_on_player_is_not_bound_for_a_trigger() {
 }
 
 #[test]
-fn a_reaction_losing_its_player_event_subscription_still_fires_under_a_crossing_for_the_local_player() {
+fn a_reaction_losing_its_player_event_subscription_still_fires_under_a_crossing_for_the_local_player()
+ {
     use postretro_entities::reactions::system_commands::SystemReactionCommand;
     use postretro_scripting_core::data_descriptors::build_crossing;
     use postretro_scripting_core::reaction_registry::ReactionPrimitiveRegistry;
@@ -475,13 +554,21 @@ fn a_reaction_losing_its_player_event_subscription_still_fires_under_a_crossing_
     assert_eq!(errors.len(), 1, "{errors:?}");
     assert!(errors[0].contains("still runs under every other source"));
     world.tick();
-    assert_eq!(global(&world, LAST_HP), 0.0, "the player event never runs it");
+    assert_eq!(
+        global(&world, LAST_HP),
+        0.0,
+        "the player event never runs it"
+    );
 
     let mut detector = CrossingDetector::new();
     let mut bindings = SystemReactionIrBindings::default();
     {
         let data = world.script_ctx.data_registry.borrow();
-        detector.initialize(&data, &world.script_ctx.slot_table.borrow(), &world.script_ctx);
+        detector.initialize(
+            &data,
+            &world.script_ctx.slot_table.borrow(),
+            &world.script_ctx,
+        );
         bindings.rebuild(&data, &world.script_ctx);
     }
     // The local player's own health drops; the crossing reads that machine's view.
@@ -498,20 +585,32 @@ fn a_reaction_losing_its_player_event_subscription_still_fires_under_a_crossing_
         &world.script_ctx,
     );
     let commands = world.script_ctx.system_commands.take();
-    let [SystemReactionCommand::SetState {
-        slot,
-        value,
-        dispatch_source,
-        dispatch_values,
-    }] = commands.as_slice()
+    let [
+        SystemReactionCommand::SetState {
+            slot,
+            value,
+            dispatch_source,
+            dispatch_values,
+        },
+    ] = commands.as_slice()
     else {
         panic!("the crossing fires recordHp once: {commands:?}");
     };
     assert_eq!(
-        bindings.dispatch(slot, value, dispatch_source, dispatch_values, &world.script_ctx),
+        bindings.dispatch(
+            slot,
+            value,
+            dispatch_source,
+            dispatch_values,
+            &world.script_ctx
+        ),
         SystemReactionIrDispatch::Evaluated
     );
-    assert_eq!(global(&world, LAST_HP), 30.0, "the plain read means this machine's own player");
+    assert_eq!(
+        global(&world, LAST_HP),
+        30.0,
+        "the plain read means this machine's own player"
+    );
 }
 
 #[test]

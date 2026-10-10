@@ -13,10 +13,10 @@ use crate::components::health::{IMPACT_DISPATCH_INPUTS, IMPACT_SOURCE_TOKEN, Imp
 use crate::ctx::ScriptCtx;
 use crate::ir::scope::{BindingScope, ResolvedInput, ResolvedOutput};
 use crate::ir::{IrType, IrValue};
-use crate::registry::{EntityId, EntityRegistry};
-use crate::slot_table::{SlotType, SlotValue};
 use crate::player_event_scope::EVENT_PLAYER_TOKEN;
 use crate::player_slots::{PlayerSlot, player_slot_value};
+use crate::registry::{EntityId, EntityRegistry};
+use crate::slot_table::{SlotType, SlotValue};
 use crate::store_bridge::write_store_slot;
 use postretro_foundation::Seat;
 
@@ -95,7 +95,10 @@ impl StoreScope {
 
     /// Project a present value of the declared type; `None` when absent or of
     /// another type.
-    pub(crate) fn project_slot_value(ir_type: IrType, value: Option<&SlotValue>) -> Option<IrValue> {
+    pub(crate) fn project_slot_value(
+        ir_type: IrType,
+        value: Option<&SlotValue>,
+    ) -> Option<IrValue> {
         match (ir_type, value?) {
             (IrType::Number, SlotValue::Number(value)) => Some(IrValue::Number(*value)),
             (IrType::Bool, SlotValue::Boolean(value)) => Some(IrValue::Bool(*value)),
@@ -259,7 +262,10 @@ impl DispatchScope {
                     .and_then(|snapshot| snapshot.engine[slot.index()]),
             ),
             EventPlayerHandle::Store(handle) => {
-                let seat = self.event_player.as_ref().and_then(|snapshot| snapshot.seat);
+                let seat = self
+                    .event_player
+                    .as_ref()
+                    .and_then(|snapshot| snapshot.seat);
                 let table = self.store.ctx.slot_table.borrow();
                 let value = seat.and_then(|seat| {
                     StoreScope::project_slot_value(
@@ -363,9 +369,7 @@ impl BindingScope for DispatchScope {
         self.store
             .resolve_owner_input(name)
             .map(|resolved| ResolvedInput {
-                handle: DispatchInputHandle::EventPlayer(EventPlayerHandle::Store(
-                    resolved.handle,
-                )),
+                handle: DispatchInputHandle::EventPlayer(EventPlayerHandle::Store(resolved.handle)),
                 ir_type: resolved.ir_type,
             })
     }

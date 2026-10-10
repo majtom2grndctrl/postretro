@@ -4,11 +4,11 @@
 
 mod evaluate;
 mod install;
-mod validate;
 #[cfg(test)]
 mod semantics_tests;
 #[cfg(test)]
 pub(crate) mod tests;
+mod validate;
 #[cfg(test)]
 mod validation_tests;
 
@@ -103,7 +103,10 @@ impl PlayerEventTable {
     }
 
     /// The frame-end steps a residual handle names.
-    pub fn residual(&self, handle: PlayerEventResidualHandle) -> Option<&[PrepartitionedReactionStep]> {
+    pub fn residual(
+        &self,
+        handle: PlayerEventResidualHandle,
+    ) -> Option<&[PrepartitionedReactionStep]> {
         self.residuals.get(handle.0).map(Vec::as_slice)
     }
 

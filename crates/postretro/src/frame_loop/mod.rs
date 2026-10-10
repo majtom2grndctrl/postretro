@@ -998,8 +998,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
             // sweep and the accumulators have landed. Player events read that
             // snapshot, then apply their in-tick commands.
             {
-                let _scope =
-                    sim_cpu.scope(postretro_sim::sim::cpu_stages::SimStage::PlayerEvents);
+                let _scope = sim_cpu.scope(postretro_sim::sim::cpu_stages::SimStage::PlayerEvents);
                 app.player_events
                     .run_tick(&script_ctx, &mut pending_player_event_residuals);
             }

@@ -9,11 +9,11 @@ pub(crate) mod app_dirs;
 pub(crate) mod audio_profile;
 #[cfg(test)]
 mod closet_reveal_surface_tests;
-#[cfg(test)]
-mod player_events_surface_tests;
 pub(crate) mod first_launch_hold;
 pub(crate) mod lifecycle;
 pub(crate) mod loading_screen;
+#[cfg(test)]
+mod player_events_surface_tests;
 pub(crate) mod presented_pose;
 pub(crate) mod reaction_validation;
 pub(crate) mod render_profile;

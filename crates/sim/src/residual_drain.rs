@@ -78,14 +78,16 @@ pub fn drain_frame_residuals(
         let _origin = scheduler.begin_origin(residual.pawn, PlayerId::Local(residual.pawn), false);
         // Presentation in this fire list plays on the event player's machine;
         // the app routes it. The marked local pawn with no seat presents here.
-        let previous = script_ctx.system_commands.replace_fire_context(SystemCommandFireContext {
-            source: "playerEvent".to_string(),
-            presentation_seat: match residual.player {
-                PlayerKey::Seat(seat) => Some(seat),
-                PlayerKey::Unseated(_) => None,
-            },
-            ..SystemCommandFireContext::default()
-        });
+        let previous = script_ctx
+            .system_commands
+            .replace_fire_context(SystemCommandFireContext {
+                source: "playerEvent".to_string(),
+                presentation_seat: match residual.player {
+                    PlayerKey::Seat(seat) => Some(seat),
+                    PlayerKey::Unseated(_) => None,
+                },
+                ..SystemCommandFireContext::default()
+            });
         follow_ups.extend(fire_prepartitioned_reactions_with_sequences(
             steps,
             registries.sequence,
@@ -100,11 +102,11 @@ pub fn drain_frame_residuals(
 
 #[cfg(test)]
 mod tests {
-    use postretro_entities::{
-        MoverCommand, PrimitiveDescriptor, ReactionDescriptor, TriggerActivation,
-        TriggerFireMode, TriggerVolumeComponent,
-    };
     use postretro_entities::reactions::system_commands::SystemReactionCommand;
+    use postretro_entities::{
+        MoverCommand, PrimitiveDescriptor, ReactionDescriptor, TriggerActivation, TriggerFireMode,
+        TriggerVolumeComponent,
+    };
     use postretro_foundation::Seat;
     use postretro_scripting_core::data_descriptors::{NamedReaction, PlayerEventEdge};
     use postretro_scripting_core::reaction_registry::ReactionPrimitiveRegistry;
@@ -218,7 +220,10 @@ mod tests {
             &mut follow_ups,
         );
 
-        assert_eq!(follow_ups, vec!["afterTrigger".to_string(), "afterPlayer".to_string()]);
+        assert_eq!(
+            follow_ups,
+            vec!["afterTrigger".to_string(), "afterPlayer".to_string()]
+        );
         let sounds: Vec<String> = world
             .script_ctx
             .system_commands
@@ -229,7 +234,11 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert_eq!(sounds, vec!["beep".to_string()], "the trigger's sound plays where it drains");
+        assert_eq!(
+            sounds,
+            vec!["beep".to_string()],
+            "the trigger's sound plays where it drains"
+        );
         let routed: Vec<(Seat, String)> = world
             .script_ctx
             .system_commands

@@ -459,7 +459,10 @@ mod tests {
         use crate::wire::{NetworkId, PresentationFact, ServerPresentationPayload};
         let facts = std::collections::BTreeMap::from([
             ("value".to_string(), PresentationFact::Number(12.5)),
-            ("label".to_string(), PresentationFact::Text("crit".to_string())),
+            (
+                "label".to_string(),
+                PresentationFact::Text("crit".to_string()),
+            ),
         ]);
         let cases = [
             (
@@ -513,7 +516,10 @@ mod tests {
                 "player-addressed presentation advances the application protocol by one"
             );
         };
-        assert_eq!(WIRE_VERSION, 26, "the byte layout of shipped messages is unchanged");
+        assert_eq!(
+            WIRE_VERSION, 26,
+            "the byte layout of shipped messages is unchanged"
+        );
         let previous = ProtocolVersion {
             app_protocol_id: PRE_COMMAND_PROTOCOL_ID,
             wire_version: WIRE_VERSION,

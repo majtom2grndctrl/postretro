@@ -839,12 +839,18 @@ mod tests {
         let ctx = ctx_with_reactions(vec![
             sequence(
                 "lateStep",
-                vec![wait_step(json!(200), false), sentinel_step(SequenceTarget::EventPlayer)],
+                vec![
+                    wait_step(json!(200), false),
+                    sentinel_step(SequenceTarget::EventPlayer),
+                ],
             ),
             sequence("lateRead", vec![wait_step(json!(200), false), owner_read]),
             sequence(
                 "early",
-                vec![sentinel_step(SequenceTarget::EventPlayer), wait_step(json!(200), false)],
+                vec![
+                    sentinel_step(SequenceTarget::EventPlayer),
+                    wait_step(json!(200), false),
+                ],
             ),
         ]);
         let capture = LogCapture::start();

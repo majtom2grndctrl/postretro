@@ -95,9 +95,10 @@ impl PlayerConditionScope {
         let mut values = self.values.borrow_mut();
         values.clear();
         values.extend(inputs.iter().map(|input| match input {
-            PlayerInput::Engine(slot) => {
-                project(slot.ir_type(), player_slot_value(registry, *slot, pawn).as_ref())
-            }
+            PlayerInput::Engine(slot) => project(
+                slot.ir_type(),
+                player_slot_value(registry, *slot, pawn).as_ref(),
+            ),
             PlayerInput::Owned { name, ir_type } => {
                 let seat = seat?;
                 let record = slot_table.get(name)?;
@@ -164,10 +165,12 @@ impl BindingScope for PlayerConditionScope {
         if name.starts_with('@') {
             return None;
         }
-        self.store.resolve_input(name).map(|resolved| ResolvedInput {
-            handle: PlayerConditionHandle::Store(resolved.handle),
-            ir_type: resolved.ir_type,
-        })
+        self.store
+            .resolve_input(name)
+            .map(|resolved| ResolvedInput {
+                handle: PlayerConditionHandle::Store(resolved.handle),
+                ir_type: resolved.ir_type,
+            })
     }
 
     fn resolve_output(&self, _name: &str) -> Option<ResolvedOutput<Self::OutputHandle>> {

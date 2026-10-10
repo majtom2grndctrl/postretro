@@ -20,13 +20,13 @@ use super::data_descriptors::{
     drain_impact_events_lua, drain_input_block_js, drain_input_block_lua, drain_loading_js,
     drain_loading_lua, drain_maps_js, drain_maps_lua, drain_mod_trigger_events_js,
     drain_mod_trigger_events_lua, drain_mover_defaults_js, drain_mover_defaults_lua,
-    drain_player_events_js, drain_player_events_lua,
-    drain_presentation_overlays_js, drain_presentation_overlays_lua,
-    drain_presentation_templates_js, drain_presentation_templates_lua, drain_render_profile_js,
-    drain_render_profile_lua, drain_switching_js, drain_switching_lua, drain_theme_js,
-    drain_theme_lua, drain_trigger_pools_js, drain_trigger_pools_lua, drain_ui_images_js,
-    drain_ui_images_lua, drain_ui_trees_js, drain_ui_trees_lua, entity_descriptor_from_js,
-    entity_faction_name_from_js, entity_faction_name_from_lua,
+    drain_player_events_js, drain_player_events_lua, drain_presentation_overlays_js,
+    drain_presentation_overlays_lua, drain_presentation_templates_js,
+    drain_presentation_templates_lua, drain_render_profile_js, drain_render_profile_lua,
+    drain_switching_js, drain_switching_lua, drain_theme_js, drain_theme_lua,
+    drain_trigger_pools_js, drain_trigger_pools_lua, drain_ui_images_js, drain_ui_images_lua,
+    drain_ui_trees_js, drain_ui_trees_lua, entity_descriptor_from_js, entity_faction_name_from_js,
+    entity_faction_name_from_lua,
 };
 use super::error::ScriptError;
 use super::luau::LuauConfig;
@@ -1076,9 +1076,11 @@ fn run_staged_mod_init_luau(
             reason: format!("mod-init: `{source_path}` triggerPools invalid: {e}"),
         }
     })?;
-    let player_events = drain_player_events_lua(&table, false, "returned mod manifest")
-        .map_err(|e| ScriptError::InvalidArgument {
-            reason: format!("mod-init: `{source_path}` playerEvents invalid: {e}"),
+    let player_events =
+        drain_player_events_lua(&table, false, "returned mod manifest").map_err(|e| {
+            ScriptError::InvalidArgument {
+                reason: format!("mod-init: `{source_path}` playerEvents invalid: {e}"),
+            }
         })?;
 
     Ok(ModManifestResult {

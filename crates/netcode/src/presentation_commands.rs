@@ -13,7 +13,9 @@ use crate::seat::SeatTable;
 
 /// The wire mirror of a presentation command. `None` for any other command;
 /// a sound's emitter anchor never crosses, since a player event has none.
-pub fn presentation_command_to_wire(command: &SystemReactionCommand) -> Option<PresentationCommand> {
+pub fn presentation_command_to_wire(
+    command: &SystemReactionCommand,
+) -> Option<PresentationCommand> {
     Some(match command {
         SystemReactionCommand::PlaySound { sound, bus, .. } => PresentationCommand::PlaySound {
             sound: sound.clone(),
@@ -59,7 +61,9 @@ pub fn presentation_command_to_wire(command: &SystemReactionCommand) -> Option<P
 /// The local command a received presentation command becomes: the same one a
 /// local reaction enqueues. `None`, with a warning, when a number is not
 /// finite.
-pub fn presentation_command_from_wire(command: PresentationCommand) -> Option<SystemReactionCommand> {
+pub fn presentation_command_from_wire(
+    command: PresentationCommand,
+) -> Option<SystemReactionCommand> {
     let finite = |values: &[f32]| values.iter().all(|value| value.is_finite());
     let (local, numbers): (SystemReactionCommand, Vec<f32>) = match command {
         PresentationCommand::PlaySound { sound, bus } => (
@@ -111,11 +115,16 @@ pub fn presentation_command_from_wire(command: PresentationCommand) -> Option<Sy
                 duration_ms,
                 frequency,
             },
-            [amplitude, duration_ms].into_iter().chain(frequency).collect(),
+            [amplitude, duration_ms]
+                .into_iter()
+                .chain(frequency)
+                .collect(),
         ),
     };
     if !finite(&numbers) {
-        log::warn!("[Netcode] dropped a forwarded presentation command carrying a non-finite number");
+        log::warn!(
+            "[Netcode] dropped a forwarded presentation command carrying a non-finite number"
+        );
         return None;
     }
     Some(local)

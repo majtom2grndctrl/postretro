@@ -15,8 +15,8 @@ use postretro_entities::scripting::error::ScriptError;
 use postretro_scripting_core::primitives_registry::ContextScope;
 
 mod committed;
-mod snapshots;
 mod player_surface;
+mod snapshots;
 mod surface;
 
 const EXPECTED_TS: &str = include_str!("fixtures/expected.d.ts");

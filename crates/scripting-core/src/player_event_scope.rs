@@ -12,7 +12,10 @@ pub const EVENT_PLAYER_TOKEN: &str = "@player";
 
 /// Visit every IR input leaf (`{ op: "input", name, owner? }`) in a
 /// primitive's raw args, depth first.
-fn for_each_input<'a>(value: &'a serde_json::Value, visit: &mut impl FnMut(&'a str, Option<&'a str>)) {
+fn for_each_input<'a>(
+    value: &'a serde_json::Value,
+    visit: &mut impl FnMut(&'a str, Option<&'a str>),
+) {
     match value {
         serde_json::Value::Object(map) => {
             if map.get("op").and_then(serde_json::Value::as_str) == Some("input")
@@ -36,7 +39,9 @@ fn for_each_input<'a>(value: &'a serde_json::Value, visit: &mut impl FnMut(&'a s
 /// Whether `args` hold a `byPlayer(on.player)` read.
 pub fn reads_event_player(args: &serde_json::Value) -> bool {
     let mut found = false;
-    for_each_input(args, &mut |_, owner| found |= owner == Some(EVENT_PLAYER_TOKEN));
+    for_each_input(args, &mut |_, owner| {
+        found |= owner == Some(EVENT_PLAYER_TOKEN)
+    });
     found
 }
 

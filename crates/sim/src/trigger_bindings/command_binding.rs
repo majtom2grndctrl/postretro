@@ -136,7 +136,14 @@ pub(super) fn bind_command(
     slot_table: &SlotTable,
     script_ctx: Option<&ScriptCtx>,
 ) -> Option<BoundTriggerCommand> {
-    bind_command_at(BindSite::Trigger, primitive, target, args, slot_table, script_ctx)
+    bind_command_at(
+        BindSite::Trigger,
+        primitive,
+        target,
+        args,
+        slot_table,
+        script_ctx,
+    )
 }
 
 pub(super) fn bind_command_at(

@@ -1034,5 +1034,9 @@ fn a_player_event_sees_a_remote_hit_flushed_after_the_sim_on_the_same_tick() {
             .current,
         90.0
     );
-    assert_eq!(residuals.len(), 1, "the remote hit is seen on the tick it lands");
+    assert_eq!(
+        residuals.len(),
+        1,
+        "the remote hit is seen on the tick it lands"
+    );
 }

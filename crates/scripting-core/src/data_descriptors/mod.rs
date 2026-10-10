@@ -92,8 +92,8 @@ mod lua {
 // (top-level files via `use super::*`, nested files via `use super::super::*`).
 pub(crate) use audio_profile::*;
 pub use error::*;
-pub use player_events::{drain_player_events_js, drain_player_events_lua};
 pub(crate) use movement_sounds::*;
+pub use player_events::{drain_player_events_js, drain_player_events_lua};
 pub use runtime_manifest::*;
 pub use validate::*;
 pub use vm_adapters::*;

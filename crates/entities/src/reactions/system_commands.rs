@@ -277,9 +277,11 @@ impl SystemReactionKind {
 
     pub const fn class(self) -> SystemReactionClass {
         match self {
-            Self::PlaySound | Self::Rumble | Self::FlashScreen | Self::Vignette | Self::ScreenShake => {
-                SystemReactionClass::Presentation
-            }
+            Self::PlaySound
+            | Self::Rumble
+            | Self::FlashScreen
+            | Self::Vignette
+            | Self::ScreenShake => SystemReactionClass::Presentation,
             Self::ShowDialog
             | Self::OpenMenu
             | Self::CloseDialog

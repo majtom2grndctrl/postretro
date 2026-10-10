@@ -101,7 +101,11 @@ fn set_global(world: &World, name: &str, value: f32) {
 }
 
 fn residual_players(world: &mut World) -> Vec<PlayerKey> {
-    let players = world.residuals.iter().map(|residual| residual.player).collect();
+    let players = world
+        .residuals
+        .iter()
+        .map(|residual| residual.player)
+        .collect();
     world.residuals.clear();
     players
 }
@@ -130,7 +134,11 @@ fn install_guarded_milestone(world: &mut World, guarded: bool) {
 }
 
 fn rebind(world: &World, pawn: EntityId, seat: Seat) {
-    world.script_ctx.registry.borrow_mut().bind_pawn_seat(pawn, seat);
+    world
+        .script_ctx
+        .registry
+        .borrow_mut()
+        .bind_pawn_seat(pawn, seat);
 }
 
 fn hold(world: &World, pawn: EntityId) {
@@ -147,11 +155,22 @@ fn guarded_milestone_fires_once_per_player_and_credits_only_that_seat() {
     set_owner(&world, XP, Seat(1), 100.0);
     world.tick();
     assert_eq!(residual_players(&mut world), vec![PlayerKey::Seat(Seat(1))]);
-    assert_eq!(owner(&world, LEVEL, Seat(1)), 2.0, "the crossing player levels up");
-    assert_eq!(owner(&world, LEVEL, Seat(2)), 1.0, "the other player is untouched");
+    assert_eq!(
+        owner(&world, LEVEL, Seat(1)),
+        2.0,
+        "the crossing player levels up"
+    );
+    assert_eq!(
+        owner(&world, LEVEL, Seat(2)),
+        1.0,
+        "the other player is untouched"
+    );
 
     world.tick();
-    assert!(residual_players(&mut world).is_empty(), "the guard extinguishes the condition");
+    assert!(
+        residual_players(&mut world).is_empty(),
+        "the guard extinguishes the condition"
+    );
 
     set_owner(&world, XP, Seat(2), 120.0);
     world.tick();
@@ -180,7 +199,11 @@ fn same_tick_fires_follow_group_resolution_order_and_repeat_identically() {
         vec![PlayerKey::Seat(Seat(7)), PlayerKey::Seat(Seat(3))],
         "fires in the players() group order"
     );
-    assert_eq!(run(), first, "identical registry histories give identical orders");
+    assert_eq!(
+        run(),
+        first,
+        "identical registry histories give identical orders"
+    );
 }
 
 #[test]
@@ -201,7 +224,11 @@ fn same_tick_conditions_evaluate_before_any_fire_applies() {
     };
     world.install(
         vec![heal_everyone, play_sound("chime", "medic")],
-        vec![player_event(PlayerEventEdge::Becomes, low_health(), &["medic", "chime"])],
+        vec![player_event(
+            PlayerEventEdge::Becomes,
+            low_health(),
+            &["medic", "chime"],
+        )],
     );
 
     world.tick();
@@ -210,11 +237,18 @@ fn same_tick_conditions_evaluate_before_any_fire_applies() {
         vec![PlayerKey::Seat(Seat(1)), PlayerKey::Seat(Seat(2))],
         "the first fire's heal does not suppress the second player's same-tick edge"
     );
-    assert_eq!(world.health(first), 100.0, "both fires applied: 40 + 30 + 30");
+    assert_eq!(
+        world.health(first),
+        100.0,
+        "both fires applied: 40 + 30 + 30"
+    );
     assert_eq!(world.health(second), 100.0, "45 + 30 + 30, capped");
 
     world.tick();
-    assert!(residual_players(&mut world).is_empty(), "the heal is seen next tick");
+    assert!(
+        residual_players(&mut world).is_empty(),
+        "the heal is seen next tick"
+    );
 }
 
 #[test]
@@ -229,12 +263,18 @@ fn becomes_and_ceases_fire_on_their_edge_only() {
         ],
     );
     world.tick();
-    assert!(world.take_residual_reactions().is_empty(), "false at first sight: neither edge");
+    assert!(
+        world.take_residual_reactions().is_empty(),
+        "false at first sight: neither edge"
+    );
     world.set_health(pawn, 30.0);
     world.tick();
     assert_eq!(world.take_residual_reactions(), vec!["bleed".to_string()]);
     world.tick();
-    assert!(world.take_residual_reactions().is_empty(), "a held condition fires nothing");
+    assert!(
+        world.take_residual_reactions().is_empty(),
+        "a held condition fires nothing"
+    );
     world.set_health(pawn, 80.0);
     world.tick();
     assert_eq!(world.take_residual_reactions(), vec!["mend".to_string()]);
@@ -265,7 +305,10 @@ fn condition_sees_a_write_before_the_seam_this_tick_and_a_later_write_next_tick(
     // A frame-end drain write lands after this frame's ticks evaluated.
     world.tick();
     set_global(&world, ALARM, 1.0);
-    assert!(world.take_residual_reactions().is_empty(), "not seen by an earlier tick");
+    assert!(
+        world.take_residual_reactions().is_empty(),
+        "not seen by an earlier tick"
+    );
     world.tick();
     assert_eq!(world.take_residual_reactions(), vec!["klaxon".to_string()]);
 }
@@ -305,7 +348,11 @@ fn no_player_pawn_fires_nothing_and_logs_nothing_above_debug() {
     let capture = LogCapture::start();
     world.install(
         vec![play_sound("bleed", "bleed")],
-        vec![player_event(PlayerEventEdge::Becomes, low_health(), &["bleed"])],
+        vec![player_event(
+            PlayerEventEdge::Becomes,
+            low_health(),
+            &["bleed"],
+        )],
     );
     world.tick();
     world.tick();
@@ -344,7 +391,11 @@ fn a_joining_player_is_first_seen_at_their_first_bound_tick() {
     world.spawn_player(Some(Seat(1)), 90.0);
     world.install(
         vec![play_sound("bleed", "bleed")],
-        vec![player_event(PlayerEventEdge::Becomes, low_health(), &["bleed"])],
+        vec![player_event(
+            PlayerEventEdge::Becomes,
+            low_health(),
+            &["bleed"],
+        )],
     );
     world.tick();
     // Bound to a seat but never sent input: the group, not the tick's
@@ -354,7 +405,10 @@ fn a_joining_player_is_first_seen_at_their_first_bound_tick() {
     assert_eq!(residual_players(&mut world), vec![PlayerKey::Seat(Seat(2))]);
     world.spawn_player(Some(Seat(3)), 90.0);
     world.tick();
-    assert!(residual_players(&mut world).is_empty(), "a player joining false fires nothing");
+    assert!(
+        residual_players(&mut world).is_empty(),
+        "a player joining false fires nothing"
+    );
 }
 
 #[test]
@@ -373,7 +427,10 @@ fn a_disconnect_hold_fires_nothing_and_a_reclaim_while_holding_fires_again() {
 
     hold(&world, pawn);
     world.tick();
-    assert!(world.take_residual_reactions().is_empty(), "becoming unobserved fires no ceases");
+    assert!(
+        world.take_residual_reactions().is_empty(),
+        "becoming unobserved fires no ceases"
+    );
 
     // A reclaim rebinds the same seat to a replacement pawn.
     let replacement = world.spawn_unbound(30.0);
@@ -386,7 +443,10 @@ fn a_disconnect_hold_fires_nothing_and_a_reclaim_while_holding_fires_again() {
     let healthy = world.spawn_unbound(90.0);
     rebind(&world, healthy, Seat(1));
     world.tick();
-    assert!(world.take_residual_reactions().is_empty(), "reclaiming while false fires nothing");
+    assert!(
+        world.take_residual_reactions().is_empty(),
+        "reclaiming while false fires nothing"
+    );
 }
 
 #[test]
@@ -396,18 +456,35 @@ fn seat_release_drops_edge_memory_and_a_new_seat_fires_once() {
     world.spawn_player(Some(Seat(2)), 90.0);
     world.install(
         vec![play_sound("bleed", "bleed")],
-        vec![player_event(PlayerEventEdge::Becomes, low_health(), &["bleed"])],
+        vec![player_event(
+            PlayerEventEdge::Becomes,
+            low_health(),
+            &["bleed"],
+        )],
     );
     world.tick();
     world.take_residual_reactions();
-    assert_eq!(world.table.edge_memory_len(), 2, "one entry per live player per event");
+    assert_eq!(
+        world.table.edge_memory_len(),
+        2,
+        "one entry per live player per event"
+    );
 
     // Release seat 1 and admit seat 3 before the next tick.
-    world.script_ctx.registry.borrow_mut().despawn(leaving).unwrap();
+    world
+        .script_ctx
+        .registry
+        .borrow_mut()
+        .despawn(leaving)
+        .unwrap();
     world.spawn_player(Some(Seat(3)), 30.0);
     world.tick();
     assert_eq!(residual_players(&mut world), vec![PlayerKey::Seat(Seat(3))]);
-    assert_eq!(world.table.edge_memory_len(), 2, "memory returns to the live player count");
+    assert_eq!(
+        world.table.edge_memory_len(),
+        2,
+        "memory returns to the live player count"
+    );
 }
 
 #[test]
@@ -468,7 +545,10 @@ fn a_zero_health_player_stays_observed_and_post_sweep_damage_reports_death_next_
     assert!(world.take_residual_reactions().is_empty());
 
     let died = crate::sim::run_death_sweep(&world.script_ctx.registry);
-    assert_eq!(died.iter().filter(|event| *event == "playerDied").count(), 1);
+    assert_eq!(
+        died.iter().filter(|event| *event == "playerDied").count(),
+        1
+    );
     world.tick();
     assert_eq!(
         world.take_residual_reactions(),
@@ -477,7 +557,10 @@ fn a_zero_health_player_stays_observed_and_post_sweep_damage_reports_death_next_
     );
     assert!(crate::sim::run_death_sweep(&world.script_ctx.registry).is_empty());
     world.tick();
-    assert!(world.take_residual_reactions().is_empty(), "no first-sight re-fire follows");
+    assert!(
+        world.take_residual_reactions().is_empty(),
+        "no first-sight re-fire follows"
+    );
 }
 
 #[test]
@@ -486,7 +569,11 @@ fn a_recompose_keeping_a_condition_fires_nothing_and_a_changed_condition_starts_
     world.spawn_player(Some(Seat(1)), 30.0);
     world.install(
         vec![play_sound("bleed", "bleed"), play_sound("drip", "drip")],
-        vec![player_event(PlayerEventEdge::Becomes, low_health(), &["bleed"])],
+        vec![player_event(
+            PlayerEventEdge::Becomes,
+            low_health(),
+            &["bleed"],
+        )],
     );
     world.tick();
     assert_eq!(world.take_residual_reactions(), vec!["bleed".to_string()]);
@@ -495,7 +582,10 @@ fn a_recompose_keeping_a_condition_fires_nothing_and_a_changed_condition_starts_
         {
             let mut data = world.script_ctx.data_registry.borrow_mut();
             data.clear();
-            data.set_level_reactions(vec![play_sound("bleed", "bleed"), play_sound("drip", "drip")]);
+            data.set_level_reactions(vec![
+                play_sound("bleed", "bleed"),
+                play_sound("drip", "drip"),
+            ]);
             data.set_level_player_events(vec![player_event(
                 PlayerEventEdge::Becomes,
                 condition,
@@ -514,7 +604,10 @@ fn a_recompose_keeping_a_condition_fires_nothing_and_a_changed_condition_starts_
     // Same condition and edge, edited fire list.
     recompose(&mut world, low_health());
     world.tick();
-    assert!(world.take_residual_reactions().is_empty(), "edge memory survives by content");
+    assert!(
+        world.take_residual_reactions().is_empty(),
+        "edge memory survives by content"
+    );
 
     recompose(&mut world, lt(input("player.health"), number(60.0)));
     world.tick();
@@ -554,12 +647,23 @@ fn a_missing_weapon_value_is_unobserved_and_regaining_it_fires_once() {
     world.install(
         vec![play_sound("click", "dry"), play_sound("full", "full")],
         vec![
-            player_event(PlayerEventEdge::Becomes, lt(input("player.ammo"), number(5.0)), &["click"]),
-            player_event(PlayerEventEdge::Ceases, lt(input("player.ammo"), number(5.0)), &["full"]),
+            player_event(
+                PlayerEventEdge::Becomes,
+                lt(input("player.ammo"), number(5.0)),
+                &["click"],
+            ),
+            player_event(
+                PlayerEventEdge::Ceases,
+                lt(input("player.ammo"), number(5.0)),
+                &["full"],
+            ),
         ],
     );
     world.tick();
-    assert!(world.take_residual_reactions().is_empty(), "no active weapon: unobserved");
+    assert!(
+        world.take_residual_reactions().is_empty(),
+        "no active weapon: unobserved"
+    );
 
     wield(&world, pawn, Some(ammo_weapon(3)));
     world.tick();
@@ -567,7 +671,10 @@ fn a_missing_weapon_value_is_unobserved_and_regaining_it_fires_once() {
 
     wield(&world, pawn, None);
     world.tick();
-    assert!(world.take_residual_reactions().is_empty(), "losing the value fires nothing");
+    assert!(
+        world.take_residual_reactions().is_empty(),
+        "losing the value fires nothing"
+    );
 
     wield(&world, pawn, Some(ammo_weapon(2)));
     world.tick();
@@ -581,9 +688,16 @@ fn a_connected_client_registers_and_fires_nothing() {
     world.script_ctx.owner_slot_writes_enabled.set(false);
     world.install(
         vec![play_sound("bleed", "bleed")],
-        vec![player_event(PlayerEventEdge::Becomes, low_health(), &["bleed"])],
+        vec![player_event(
+            PlayerEventEdge::Becomes,
+            low_health(),
+            &["bleed"],
+        )],
     );
-    assert!(world.table.is_empty(), "nothing registers on a connected client");
+    assert!(
+        world.table.is_empty(),
+        "nothing registers on a connected client"
+    );
     world.tick();
     assert!(world.take_residual_reactions().is_empty());
 }
@@ -636,5 +750,8 @@ fn steady_state_evaluation_allocates_nothing() {
         assert_eq!(world.residuals.len(), 1, "one edge per tick");
         world.residuals.clear();
     }
-    assert_eq!(allocations, 0, "per-tick evaluation and fire bookkeeping allocate nothing");
+    assert_eq!(
+        allocations, 0,
+        "per-tick evaluation and fire bookkeeping allocate nothing"
+    );
 }

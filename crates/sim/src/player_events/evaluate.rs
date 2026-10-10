@@ -53,7 +53,9 @@ impl PlayerEventTable {
 
         let player_count = scratch.players.len();
         scratch.values.clear();
-        scratch.values.resize(self.events.len() * player_count, None);
+        scratch
+            .values
+            .resize(self.events.len() * player_count, None);
         for (player_index, &(key, pawn)) in scratch.players.iter().enumerate() {
             let seat = match key {
                 PlayerKey::Seat(seat) => Some(seat),

@@ -79,13 +79,19 @@ fn level_player_events_parse_identically_and_reject_a_levels_entry_naming_the_sc
         .map(|record| record.message)
         .collect();
     assert_eq!(messages.len(), 2, "one rejection per runtime: {messages:?}");
-    assert_eq!(messages[0], messages[1], "the runtimes' diagnostics diverged");
+    assert_eq!(
+        messages[0], messages[1],
+        "the runtimes' diagnostics diverged"
+    );
     let unknown_edge = capture
         .records()
         .into_iter()
         .filter(|record| record.message.contains("playerEvents[2] is malformed"))
         .count();
-    assert_eq!(unknown_edge, 2, "an unknown edge word skips that entry in each runtime");
+    assert_eq!(
+        unknown_edge, 2,
+        "an unknown edge word skips that entry in each runtime"
+    );
 }
 
 #[test]
@@ -116,5 +122,8 @@ fn mod_player_events_keep_their_levels_scope_in_both_runtimes() {
     );
     assert_eq!(js, lua);
     assert_eq!(js.len(), 1);
-    assert_eq!(js[0].levels, vec!["arena".to_string(), "campaign".to_string()]);
+    assert_eq!(
+        js[0].levels,
+        vec!["arena".to_string(), "campaign".to_string()]
+    );
 }

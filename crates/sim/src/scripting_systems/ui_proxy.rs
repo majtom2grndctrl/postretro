@@ -45,7 +45,11 @@ fn pawn_health_values(registry: &EntityRegistry) -> Option<(EntityId, f32, f32)>
 const HUD_READ: ReloadRead = ReloadRead::Feedback(ReloadFeedbackConsumer::Hud);
 
 /// One weapon slot's HUD number, through the shared per-pawn lookup.
-fn hud_number(weapon: &WeaponComponent, reserve: Option<&AmmoReserve>, slot: PlayerSlot) -> Option<f32> {
+fn hud_number(
+    weapon: &WeaponComponent,
+    reserve: Option<&AmmoReserve>,
+    slot: PlayerSlot,
+) -> Option<f32> {
     match weapon_slot_value(weapon, reserve, slot, HUD_READ) {
         Some(SlotValue::Number(value)) => Some(value),
         _ => None,
@@ -104,7 +108,10 @@ impl ResourceHud {
                 }),
             WeaponResourceKind::Cell => number(PlayerSlot::Cell)
                 .zip(number(PlayerSlot::CellCapacity))
-                .map_or(Self::None, |(charge, capacity)| Self::Cell { charge, capacity }),
+                .map_or(Self::None, |(charge, capacity)| Self::Cell {
+                    charge,
+                    capacity,
+                }),
         }
     }
 

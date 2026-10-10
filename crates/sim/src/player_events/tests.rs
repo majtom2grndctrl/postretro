@@ -10,8 +10,7 @@ use postretro_entities::data_descriptors::HealthDescriptor;
 use postretro_entities::{EntityId, ScriptCtx, Transform};
 use postretro_foundation::{IrNode, IrValue, Seat};
 use postretro_scripting_core::data_descriptors::{
-    NamedReaction, PlayerEventDescriptor, PlayerEventEdge, PrimitiveDescriptor,
-    ReactionDescriptor,
+    NamedReaction, PlayerEventDescriptor, PlayerEventEdge, PrimitiveDescriptor, ReactionDescriptor,
 };
 use serde_json::json;
 
@@ -250,8 +249,16 @@ fn becomes_fires_for_the_crossing_player_and_damages_only_their_pawn() {
 
     world.set_health(second, 40.0);
     world.tick();
-    assert_eq!(world.health(first), 80.0, "only the crossing player is the target");
-    assert_eq!(world.health(second), 35.0, "the fire damages the event's player in-tick");
+    assert_eq!(
+        world.health(first),
+        80.0,
+        "only the crossing player is the target"
+    );
+    assert_eq!(
+        world.health(second),
+        35.0,
+        "the fire damages the event's player in-tick"
+    );
 
     world.tick();
     assert_eq!(
@@ -282,7 +289,11 @@ fn a_non_bool_condition_is_rejected_naming_the_event_and_its_bool_sibling_instal
         "player event setupLevel().playerEvents[0]: condition must produce Bool",
     );
     world.tick();
-    assert_eq!(world.health(pawn), 9.0, "the Bool sibling installs and fires once");
+    assert_eq!(
+        world.health(pawn),
+        9.0,
+        "the Bool sibling installs and fires once"
+    );
 }
 
 #[test]
@@ -292,7 +303,10 @@ fn one_condition_edge_and_reaction_bind_once_and_distinct_entries_fire_mod_globa
     let low = || lt(input("player.health"), number(50.0));
     let capture = LogCapture::start();
     world.install_composed(
-        vec![play_sound("fanfare", "level_up"), play_sound("hiss", "scald")],
+        vec![
+            play_sound("fanfare", "level_up"),
+            play_sound("hiss", "scald"),
+        ],
         vec![player_event(PlayerEventEdge::Becomes, low(), &["fanfare"])],
         vec![
             player_event(PlayerEventEdge::Becomes, low(), &["hiss"]),
@@ -305,7 +319,11 @@ fn one_condition_edge_and_reaction_bind_once_and_distinct_entries_fire_mod_globa
         .into_iter()
         .filter(|record| record.message.contains("is bound by both"))
         .collect();
-    assert_eq!(warnings.len(), 1, "one warning for the shared triple: {warnings:?}");
+    assert_eq!(
+        warnings.len(),
+        1,
+        "one warning for the shared triple: {warnings:?}"
+    );
     assert!(
         warnings[0].message.contains("ModManifest.playerEvents[0]")
             && warnings[0].message.contains("setupLevel().playerEvents[1]"),
@@ -329,18 +347,28 @@ fn a_levels_scoped_mod_event_fires_only_in_matching_levels() {
         ..player_event(PlayerEventEdge::Becomes, low(), &["fanfare"])
     };
     for (tags, expected) in [
-        (vec!["arena".to_string()], vec!["fanfare".to_string(), "hiss".to_string()]),
+        (
+            vec!["arena".to_string()],
+            vec!["fanfare".to_string(), "hiss".to_string()],
+        ),
         (vec!["campaign".to_string()], vec!["hiss".to_string()]),
     ] {
         let mut world = World::new();
         world.spawn_player(Some(Seat(1)), 10.0);
         world.install_composed(
-            vec![play_sound("fanfare", "level_up"), play_sound("hiss", "scald")],
+            vec![
+                play_sound("fanfare", "level_up"),
+                play_sound("hiss", "scald"),
+            ],
             vec![scoped.clone()],
             vec![player_event(PlayerEventEdge::Becomes, low(), &["hiss"])],
             &tags,
         );
         world.tick();
-        assert_eq!(world.take_residual_reactions(), expected, "level tags {tags:?}");
+        assert_eq!(
+            world.take_residual_reactions(),
+            expected,
+            "level tags {tags:?}"
+        );
     }
 }

@@ -3249,7 +3249,9 @@ mod tests {
                 .expect("source has health")
                 .clone();
             health.current = 37.0;
-            registry.set_component(source, health).expect("source is live");
+            registry
+                .set_component(source, health)
+                .expect("source is live");
             registry.bind_pawn_seat(source, Seat(7));
         }
         let mut runtime = ImpactPolicyRuntime::new(ctx.clone());

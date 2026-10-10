@@ -46,8 +46,8 @@ impl Session {
         let origin = Duration::from_secs(1);
         let server_socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("server socket");
         let server_addr: SocketAddr = server_socket.local_addr().expect("server address");
-        let mut server =
-            NetServer::new(server_socket, server_addr, 2, origin, Some(FINGERPRINT)).expect("server");
+        let mut server = NetServer::new(server_socket, server_addr, 2, origin, Some(FINGERPRINT))
+            .expect("server");
         server.set_mod_identity("test.mod".to_string(), "1.0.0".to_string());
         server.set_mod_digest(Some(FINGERPRINT));
         server.set_level_parity(Some(("test-level".to_string(), FINGERPRINT)));
@@ -56,16 +56,24 @@ impl Session {
         let mut clients = Vec::new();
         for client_id in [CLIENT_A, CLIENT_B] {
             let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("client socket");
-            let mut client =
-                NetClient::new(socket, server_addr, client_id, origin, Some(FINGERPRINT), None)
-                    .expect("client");
+            let mut client = NetClient::new(
+                socket,
+                server_addr,
+                client_id,
+                origin,
+                Some(FINGERPRINT),
+                None,
+            )
+            .expect("client");
             client.set_mod_identity("test.mod".to_string(), "1.0.0".to_string());
             client.set_mod_digest(Some(FINGERPRINT));
             client.set_level_parity(Some(("test-level".to_string(), FINGERPRINT)));
             client.set_revealed_level(Some("test-level".to_string()));
             server.add_relay_connection(client_id, None);
             client.set_connected();
-            seats.admit_or_reclaim(client_id, None, false).expect("seat admitted");
+            seats
+                .admit_or_reclaim(client_id, None, false)
+                .expect("seat admitted");
             clients.push((client_id, client));
         }
         let mut session = Self {
@@ -87,7 +95,9 @@ impl Session {
     }
 
     fn seat(&self, client: u64) -> Seat {
-        self.seats.seat_for_client(client).expect("client has a seat")
+        self.seats
+            .seat_for_client(client)
+            .expect("client has a seat")
     }
 
     fn relay_to_server(&mut self) {
@@ -147,10 +157,17 @@ fn a_player_events_flash_reaches_only_its_players_machine() {
     fire_for(&host_queue, Some(Seat(0)), sound("fanfare"));
 
     route_player_presentation(&host_queue, Some(&mut session.server), Some(&session.seats));
-    assert_eq!(host_queue.take(), vec![sound("fanfare")], "the host's own player presents on the host only");
+    assert_eq!(
+        host_queue.take(),
+        vec![sound("fanfare")],
+        "the host's own player presents on the host only"
+    );
     session.relay_to_clients();
     let frames = session.client_frames();
-    assert_eq!(frames, vec![(CLIENT_A, vec![flash()]), (CLIENT_B, Vec::new())]);
+    assert_eq!(
+        frames,
+        vec![(CLIENT_A, vec![flash()]), (CLIENT_B, Vec::new())]
+    );
 }
 
 #[test]
@@ -173,7 +190,12 @@ fn a_dropped_command_presents_nothing_and_the_next_one_still_arrives() {
     // The unreliable lane drops it: nothing reaches the client, nothing resends.
     session.server.update_connections(STEP);
     let _ = session.server.packets_to_send(CLIENT_A);
-    assert!(session.client_frames().iter().all(|(_, commands)| commands.is_empty()));
+    assert!(
+        session
+            .client_frames()
+            .iter()
+            .all(|(_, commands)| commands.is_empty())
+    );
 
     fire_for(&host_queue, Some(session.seat(CLIENT_A)), sound("kept"));
     route_player_presentation(&host_queue, Some(&mut session.server), Some(&session.seats));
@@ -208,8 +230,9 @@ fn a_non_finite_forwarded_command_is_dropped_at_intake_and_finite_siblings_prese
         capture
             .records()
             .iter()
-            .filter(|record| record.level == log::Level::Warn
-                && record.message.contains("non-finite"))
+            .filter(
+                |record| record.level == log::Level::Warn && record.message.contains("non-finite")
+            )
             .count(),
         2
     );
@@ -225,10 +248,16 @@ fn a_demoted_client_and_a_level_transition_present_nothing() {
     route_player_presentation(&host_queue, Some(&mut session.server), Some(&session.seats));
     session.relay_to_clients();
     assert!(
-        session.client_frames().iter().all(|(_, commands)| commands.is_empty()),
+        session
+            .client_frames()
+            .iter()
+            .all(|(_, commands)| commands.is_empty()),
         "a held client receives nothing"
     );
-    assert!(host_queue.take().is_empty(), "nor does it fall back to the host's screen");
+    assert!(
+        host_queue.take().is_empty(),
+        "nor does it fall back to the host's screen"
+    );
 
     // A fire on the last tick before a transition: the transition discards
     // the routed command before any later drain.

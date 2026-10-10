@@ -103,8 +103,14 @@ fn cooling(cooldown_ms: f32) -> WeaponComponent {
 /// to the lookup cannot skip this test.
 fn differing_states(slot: PlayerSlot) -> [PawnState; 2] {
     match slot {
-        PlayerSlot::Health => [PawnState::healthy(80.0, 100.0), PawnState::healthy(40.0, 100.0)],
-        PlayerSlot::MaxHealth => [PawnState::healthy(50.0, 100.0), PawnState::healthy(50.0, 60.0)],
+        PlayerSlot::Health => [
+            PawnState::healthy(80.0, 100.0),
+            PawnState::healthy(40.0, 100.0),
+        ],
+        PlayerSlot::MaxHealth => [
+            PawnState::healthy(50.0, 100.0),
+            PawnState::healthy(50.0, 60.0),
+        ],
         PlayerSlot::Ammo => [
             PawnState::wielding(ammo_weapon(6)),
             PawnState::wielding(ammo_weapon(3)),
@@ -233,7 +239,11 @@ fn two_pawns_read_and_replicate_their_own_value_for_every_per_player_slot() {
     let identity = ReplicatedSlotIdentity::default();
     let schema = ReplicatedSlotSchema::build(&host_table, &identity);
 
-    for entry in catalog.entries().iter().filter(|entry| entry.is_per_player()) {
+    for entry in catalog
+        .entries()
+        .iter()
+        .filter(|entry| entry.is_per_player())
+    {
         let slot = PlayerSlot::from_name(entry.wire_name).expect("source checked above");
         let mut registry = EntityRegistry::new();
         let mut owners = MovementOwners::new();
@@ -247,12 +257,23 @@ fn two_pawns_read_and_replicate_their_own_value_for_every_per_player_slot() {
             .unwrap_or_else(|| panic!("`{}` has a value for pawn A", slot.name()));
         let value_b = player_slot_value(&registry, slot, pawn_b)
             .unwrap_or_else(|| panic!("`{}` has a value for pawn B", slot.name()));
-        assert_ne!(value_a, value_b, "`{}` reads per pawn on the host", slot.name());
+        assert_ne!(
+            value_a,
+            value_b,
+            "`{}` reads per pawn on the host",
+            slot.name()
+        );
 
         let mut host = HostStateReplication::new();
         host.register_client(CLIENT_A);
         host.register_client(CLIENT_B);
-        host.ingest_frame(&host_table, &identity, &registry, &owners, &WeaponOwners::new());
+        host.ingest_frame(
+            &host_table,
+            &identity,
+            &registry,
+            &owners,
+            &WeaponOwners::new(),
+        );
         let id = schema
             .id_for(slot.name())
             .unwrap_or_else(|| panic!("`{}` replicates", slot.name()));
@@ -295,7 +316,13 @@ fn a_pawn_without_a_source_reads_absent_never_the_host_value() {
     owners.set(bare, CLIENT_A);
     let mut host = HostStateReplication::new();
     host.register_client(CLIENT_A);
-    host.ingest_frame(&host_table, &identity, &registry, &owners, &WeaponOwners::new());
+    host.ingest_frame(
+        &host_table,
+        &identity,
+        &registry,
+        &owners,
+        &WeaponOwners::new(),
+    );
     let id = schema.id_for("player.health").unwrap();
     let records = host.produce_for_client(CLIENT_A, 0).unwrap();
     assert!(

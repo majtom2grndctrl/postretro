@@ -36,9 +36,7 @@ fn direct_violation(descriptor: &ReactionDescriptor, slot_table: &SlotTable) -> 
         ));
     }
     if let Some(token) = trigger_token(descriptor) {
-        return Some(format!(
-            "uses `{token}`, which only trigger events publish"
-        ));
+        return Some(format!("uses `{token}`, which only trigger events publish"));
     }
     machine_local_effect(descriptor, slot_table)
 }
@@ -130,16 +128,16 @@ fn reached_violation(descriptor: &ReactionDescriptor, slot_table: &SlotTable) ->
         ));
     }
     if reaction_uses_event_player(descriptor) {
-        return Some(format!("uses `{EVENT_PLAYER_TOKEN}`, which a context-free dispatch does not carry"));
+        return Some(format!(
+            "uses `{EVENT_PLAYER_TOKEN}`, which a context-free dispatch does not carry"
+        ));
     }
     direct_violation(descriptor, slot_table)
 }
 
 fn context_free_routes(descriptor: &ReactionDescriptor) -> Box<dyn Iterator<Item = String> + '_> {
     match descriptor {
-        ReactionDescriptor::Primitive(primitive) => {
-            Box::new(primitive.on_complete.iter().cloned())
-        }
+        ReactionDescriptor::Primitive(primitive) => Box::new(primitive.on_complete.iter().cloned()),
         ReactionDescriptor::Sequence(steps) => Box::new(steps.iter().filter_map(|step| {
             matches!(step.id, SequenceTarget::Fire)
                 .then(|| step.args.get("event")?.as_str().map(str::to_string))

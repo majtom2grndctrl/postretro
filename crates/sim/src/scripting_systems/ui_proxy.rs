@@ -7,16 +7,18 @@ use std::collections::HashSet;
 
 use crate::scripting::primitives::store::write_store_slot;
 use postretro_entities::AmmoReserve;
-use postretro_entities::components::health::pawn_with_health;
 use postretro_entities::components::inventory::Inventory;
 use postretro_entities::components::player_movement::PlayerMovementComponent;
-use postretro_entities::components::weapon::WeaponComponent;
+use postretro_entities::components::weapon::{ReloadFeedbackConsumer, WeaponComponent};
 use postretro_entities::components::weapon_resource::WeaponResourceKind;
 use postretro_entities::ctx::ScriptCtx;
 use postretro_entities::provenance::DescriptorProvenance;
 use postretro_entities::registry::{EntityId, EntityRegistry};
 use postretro_entities::slot_table::{SlotOwnership, SlotValue};
 use postretro_foundation::ActivationToken;
+use postretro_scripting_core::player_slots::{
+    PlayerSlot, ReloadRead, player_slot_value, weapon_slot_value,
+};
 
 /// Read the current and maximum HP of the player pawn resolved by the local
 /// player marker, with legacy fallback to the first entity carrying
@@ -27,7 +29,34 @@ use postretro_foundation::ActivationToken;
 /// Pure read against the registry: no slot table, no GPU, so it is unit-testable
 /// without the publisher's `ScriptCtx`.
 fn pawn_health_values(registry: &EntityRegistry) -> Option<(EntityId, f32, f32)> {
-    pawn_with_health(registry).map(|(id, health)| (id, health.current, health.max))
+    let pawn = registry.local_player_movement_pawn()?;
+    let number = |slot| match player_slot_value(registry, slot, pawn) {
+        Some(SlotValue::Number(value)) => Some(value),
+        _ => None,
+    };
+    Some((
+        pawn,
+        number(PlayerSlot::Health)?,
+        number(PlayerSlot::MaxHealth)?,
+    ))
+}
+
+/// The HUD samples reload through its own endpoint cursor.
+const HUD_READ: ReloadRead = ReloadRead::Feedback(ReloadFeedbackConsumer::Hud);
+
+/// One weapon slot's HUD number, through the shared per-pawn lookup.
+fn hud_number(weapon: &WeaponComponent, reserve: Option<&AmmoReserve>, slot: PlayerSlot) -> Option<f32> {
+    match weapon_slot_value(weapon, reserve, slot, HUD_READ) {
+        Some(SlotValue::Number(value)) => Some(value),
+        _ => None,
+    }
+}
+
+fn hud_flag(weapon: &WeaponComponent, slot: PlayerSlot) -> bool {
+    matches!(
+        weapon_slot_value(weapon, None, slot, HUD_READ),
+        Some(SlotValue::Boolean(true))
+    )
 }
 
 /// The sampled active weapon's HUD facts. `sampled` is `None` with no pawn or
@@ -62,18 +91,20 @@ enum ResourceHud {
 
 impl ResourceHud {
     fn of(weapon: &WeaponComponent) -> Self {
+        let number = |slot| hud_number(weapon, None, slot);
         match weapon.resource_kind() {
             WeaponResourceKind::None => Self::None,
             WeaponResourceKind::Ammo => Self::Ammo,
-            WeaponResourceKind::Heat => weapon.heat.map_or(Self::None, |heat| Self::Heat {
-                heat: heat.heat,
-                overheat_at: heat.effective().overheat_at,
-                overheated: heat.overheated,
-            }),
-            WeaponResourceKind::Cell => weapon.cell.map_or(Self::None, |cell| Self::Cell {
-                charge: cell.charge,
-                capacity: cell.effective().capacity,
-            }),
+            WeaponResourceKind::Heat => number(PlayerSlot::Heat)
+                .zip(number(PlayerSlot::OverheatAt))
+                .map_or(Self::None, |(heat, overheat_at)| Self::Heat {
+                    heat,
+                    overheat_at,
+                    overheated: hud_flag(weapon, PlayerSlot::Overheated),
+                }),
+            WeaponResourceKind::Cell => number(PlayerSlot::Cell)
+                .zip(number(PlayerSlot::CellCapacity))
+                .map_or(Self::None, |(charge, capacity)| Self::Cell { charge, capacity }),
         }
     }
 
@@ -110,13 +141,14 @@ fn weapon_hud_values(registry: &EntityRegistry) -> WeaponHudValues {
                 movement.ground_params.speed.run,
             )
         });
-    let (progress, active) = weapon.reload_status();
-    let ammo = weapon.effective().ammo.map(|ammo| {
-        let reserve = registry
-            .get_component::<AmmoReserve>(pawn)
-            .map_or(0, |reserve| reserve.available(ammo.ammo_type));
-        (weapon.magazine, reserve)
-    });
+    let reserve = registry.get_component::<AmmoReserve>(pawn).ok();
+    let progress = hud_number(weapon, None, PlayerSlot::ReloadProgress).unwrap_or(0.0);
+    let active = hud_flag(weapon, PlayerSlot::ReloadActive);
+    // Integer-shaped HUD values: the lookup's `f32` round-trips them exactly
+    // through 2^24 (scripting.md §5).
+    let ammo = hud_number(weapon, reserve, PlayerSlot::Ammo)
+        .zip(hud_number(weapon, reserve, PlayerSlot::AmmoReserve))
+        .map(|(magazine, reserve)| (magazine as u32, reserve as u32));
     WeaponHudValues {
         sampled: Some(weapon_id),
         ammo,

@@ -21,6 +21,9 @@ sidecars, so every variant also exercises the **normal-map + specular** material
 path. Several textures per surface class spread geometry across more material
 buckets (= more indirect draw calls per frame).
 
+The zoned environment-volume fixture (`--preset env-volumes`) has its own
+README: [stress-env-volumes.README.md](stress-env-volumes.README.md).
+
 ## Regenerate
 
 ```bash

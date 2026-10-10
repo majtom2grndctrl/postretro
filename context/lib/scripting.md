@@ -158,7 +158,7 @@ There is no `.get()`, `.set()`, `gameState` global, `playerState` global, `gameS
 
 - `bindState(ref, options)` adds bind-only options such as `format` or `tween`;
 - `stateEquals(ref, value)` builds an equality predicate;
-- `updateState(ref, value)` builds a `setState` reaction descriptor.
+- `updateState(ref, value)` builds a `setState` reaction descriptor. Decided, not yet built: `value` may also be a fluent value — any `read(…)` expression, `byPlayer` reads included — in TypeScript and Luau.
 
 The retained wire stays dotted-name based. State references are SDK authoring descriptors, not live values. `read(ref)` lifts a number or boolean ref into the fluent impact-expression algebra; `fromRuntime.number(...)` and `.bool(...)` bridge a raw `runtime.*` node into that public algebra; `set(ref, value)` builds an absolute impact slot write; and `update(ref, cur => expression)` builds a frozen-snapshot read-modify-write while naming the slot once. `when(condition, effects)` is the deferred impact guard — a native `if` would inspect the author-time descriptor object, not a live value. UI/reaction helpers remain separate: `bindState`, `stateEquals`, and `updateState` operate on their own descriptor and dispatch path.
 
@@ -187,6 +187,8 @@ The runtime installs the generated tree before SDK prelude evaluation, captures 
 `player.weapon.current`, `player.weapon.pending`, and `player.weapon.switching` are readonly local display slots on every role. `current` names the committed active wieldable and changes only when the inventory repoints; `switching` is true while that inventory has an in-flight target. `pending` is the input-layer cursor's display value and defaults to an empty string until its producer is present. These values are not host-authoritative and do not replicate; HUD crossing behavior follows the local machine's publication cadence.
 
 `player.weaponCharging` and `player.weaponChargeProgress` are readonly local HUD facts for the active weapon on every role. Progress is normalized `[0, 1]`, derived from fixed-tick charge time, and remains full while held. Render-only frames do not advance it. Release, cancellation, switching, death, and input suspension clear charging and reset progress to zero. These facts do not replicate and are distinct from the cell resource's stored charge.
+
+**Per-player engine slots (decided, not yet built).** The catalog marks the owner-private engine player slots (health and the weapon resources). On the host each becomes per-player through one lookup from pawn to value that reads the pawn's components. Owner-private replication, player-event condition reads and `byPlayer` reads (§12) all share that lookup, so no stored per-player copy can drift. Outside a player-event condition a plain read keeps meaning the local player: HUD binds, `bindState`, local crossings and impact-policy ambient reads are unchanged. `byPlayer` on these refs takes `on.player` or `impact.source`.
 
 `session.openSeats` is a readonly client-local projection of the host's status roster. It is absent before admission and never carries player claims or display names. The roster Control message remains its only transport path.
 
@@ -400,6 +402,10 @@ false. A predicate that cannot bind or does not produce Bool warns and does
 not register a watcher. The threshold form retains its existing above/below
 edge behavior.
 
+A crossing runs on every machine over that machine's own view, so on the host
+it sees only the host's player. A crossing on a mod per-owner slot is rejected
+at bind. A per-player edge evaluated on the host is a player event (§12).
+
 Game-flow helpers are system reactions. `loadLevel(map)` carries a map catalog
 id and requests a lifecycle load. `restartLevel()` reloads the active map from
 the retained catalog id or raw dev path. `returnToFrontend()` unloads to the
@@ -517,6 +523,7 @@ Per-entity state fields are the composition seam between adopters: an impact pol
 | **crossing** | `onStateCrossing(ref, cond, [r])` | `CrossingParams` | `rising: Bool` |
 | **trigger event** | `t.on("enter" \| "exit", [r])` on a trigger member; `defineTriggerEvent({ tag, … })` in the mod manifest; both return through a `triggerEvents` manifest key | `TriggerEventParams` | `activators`, `trigger` opaque command-target tokens; `occupancy: Number` |
 | **named gameplay event** | weapon, reload, impact, enemy, movement and mover event addresses | `EmitterParams` | `emitter` opaque sound-anchor token |
+| **player event** *(decided, not yet built)* | `players().on(becomes \| ceases(cond), [r], options?)`, returned through a `playerEvents` manifest key | `PlayerEventParams` | `player` opaque command-target and owner token |
 | **tick** *(accumulators only)* | number slot schema `accumulate` tracer | `TickParams` | `dt: Number` |
 
 **Two kinds of parameter, one spelling each.**
@@ -532,7 +539,7 @@ Per-entity state fields are the composition seam between adopters: an impact pol
 
 **Per-tick is accumulator-only.** There is no bare per-tick reaction source. A Number slot may declare `accumulate: (t: TickParams) => delta`; the engine adds that delta each authoritative tick and clamps the result to the slot's declared range. `TickParams.dt` is available only to this schema tracer, never to `defineReaction`. A bare `onTick` reaction is added only if a concrete case blocks on it.
 
-**Trigger-event params have two channels.** `activators` and `trigger` are opaque command-target tokens. They are legal only in trigger-event reactions (`emitter`, below, is the one opaque token legal elsewhere). `on.activators` carries `damage`, `grantHealth`, `grantAmmo` and `addSlot` and targets the fire's activators; `on.trigger` carries `arm` and `disarm` and targets the firing volume. `occupancy` is a numeric runtime input: the effective occupant count at the enter or exit fire. It composes through `runtime` like other numeric inputs. Trigger events publish only `enter` and `exit`; occupancy-based conditions use crossings over ambient state.
+**Trigger-event params have two channels.** `activators` and `trigger` are opaque command-target tokens. They are legal only in trigger-event reactions; other sources publish their own tokens (`emitter` and `player`, below). `on.activators` carries `damage`, `grantHealth`, `grantAmmo` and `addSlot` and targets the fire's activators; `on.trigger` carries `arm` and `disarm` and targets the firing volume. `occupancy` is a numeric runtime input: the effective occupant count at the enter or exit fire. It composes through `runtime` like other numeric inputs. Trigger events publish only `enter` and `exit`; occupancy-based conditions use crossings over ambient state.
 
 **Named gameplay events publish an emitter token.** Weapon, reload, impact, enemy, movement and mover event sources publish `emitter` in their dispatch scope. `emitter` is an opaque token like `activators`, legal only as `playSound`'s `at`: `playSound(sound, { bus, at: on.emitter })` plays at that event's anchor (`audio.md` §4). `at` accepts nothing but the token, so no Vec3 value type enters the IR; the token resolves against the firing source's emitter on the app drain, never in IR. A reaction that reads it is scoped. A source that publishes no emitter (`levelLoad`, crossings, trigger events, deaths, completion follow-ups) skips it, warning once per source and sound, and never plays it dry. Install drops, and logs, a reaction whose `at` is anything other than the token, one that pairs `at` with a bus other than SFX, one that reads the token after a `wait`, and one whose `fire` step targets a reaction that reads it — `fire` dispatches with no emitter. Omitting `at` plays unpositioned on the named bus.
 
@@ -550,6 +557,7 @@ Per-entity state fields are the composition seam between adopters: an impact pol
 | player group | `players()` | `damage`, `grantHealth`, `grantAmmo`, `addSlot` |
 | activators token | `on.activators` | `damage`, `grantHealth`, `grantAmmo`, `addSlot` |
 | trigger token | `on.trigger` | `arm`, `disarm` |
+| player token *(decided, not yet built)* | `on.player` | `damage`, `grantHealth`, `grantAmmo`, `addSlot` |
 
 - **Members.** `getMapEntities(kind, { tag? })` returns the map-placed instances of one kind, in authored map order, as an array the author inspects in JS. No match returns an empty array; an unknown kind (`npc`, `transform`) fails to compile in TS and raises in Luau.
   - Handle methods bake the instance id into steps, returned as step arrays the author spreads into a sequence. A stale id warn-skips at dispatch, generation-checked.
@@ -564,7 +572,7 @@ Per-entity state fields are the composition seam between adopters: an impact pol
   - A group is opaque, with no members and no length. TS types expose neither; in Luau a frozen metatable makes `#g`, `g[1]` and `g.length` raise.
   - Each verb returns one descriptor carrying `kind` and the optional `tag`. It is legal as a reaction body and, unspread, as a sequence entry anywhere — including after a `wait`, where it resolves against whoever exists when the step runs. Zero matches is a debug no-op.
   - **Role check.** Group commands apply on host and single player only, decided by one predicate shared with owner-slot writes. On a connected client they apply nothing — not even to the client's own pawn — and log nothing above debug, because every machine runs the same reactions. Member steps in the same reaction still apply on the client: map members resolve on every machine from its local install. Steps after a `wait` run on the host only, because the scheduler is disabled on clients.
-- **Subject tokens.** The entity a fire is about: `on.activators`, `on.trigger`. Each verb returns one descriptor usable as a reaction body or, unspread, as a sequence entry. Legal only before any `wait`, because the fire context does not survive it; install drops a reaction that reads one after a `wait`, with an error naming it.
+- **Subject tokens.** The entity a fire is about: `on.activators`, `on.trigger`, and `on.player` for player events (below). Each verb returns one descriptor usable as a reaction body or, unspread, as a sequence entry. Legal only before any `wait`, because the fire context does not survive it; install drops a reaction that reads one after a `wait`, with an error naming it.
 
 **Group wire.** A primitive descriptor or sequence entry may carry `kind` (`npc` or `player`) beside an optional `tag`. Parse rejects, naming the reaction, an entry carrying both `id` and `kind`, or any other `kind` — in both runtimes. A kindless tag-keyed descriptor stays valid raw wire data and resolves over every tagged entity, as before; the SDK emits none. The NPC state primitive is `updateNpcState`. The net wire is unchanged: group commands are host-side manifest data, and `NetworkId` never reaches scripts.
 
@@ -581,6 +589,21 @@ Per-entity state fields are the composition seam between adopters: an impact pol
 - A member event survives a mod hot reload recompose and still fires for its volume alone.
 
 Tag-keyed declarations (`defineTriggerPool`, `defineImpactEvent`, `progress`) and `onStateCrossing` sit outside this rule.
+
+**Player events (decided, not yet built).** The group form of the per-member rule: `players().on(becomes(cond) | ceases(cond), fire, options?)` fires once per player per edge of that player's state.
+- **Declaration.** A pure descriptor, effective only when returned under `playerEvents` from `setupLevel` or `ModManifest`. It iterates the player group and takes no filter. `options.levels` scopes a `ModManifest` entry as crossings' `levels` does; a level entry carrying `levels` warns, naming the level script, and does not install, while its siblings do. Composition and dedupe follow trigger bindings: mod-global entries, then the level's, each in authored order; two entries resolving to one condition, edge and reaction bind once, with one warning naming both.
+- **Host only.** Registers and evaluates on host and single player only; a connected client registers nothing and fires nothing. Crossings keep their meaning (§10.4).
+- **Evaluation.** Once per authoritative tick, after the tick settles, death sweep included, as a snapshot: every (event, player) condition reads the settled tick before any fire applies, so outcomes do not depend on player or event order. A fire's writes are seen next tick. Frame-rate independent and inside the determinism gate.
+- **Condition and edge.** The condition is a Bool fluent expression; a non-Bool one is rejected at install, naming the event. `becomes` fires false→true, `ceases` true→false. No threshold form: a threshold is `read(x).ge(t)`.
+- **Plain per-player reads bind lexically.** Inside the condition, a plain read of a per-player slot — engine per-player (§5) or mod per-owner — means the player being evaluated; global slots read as everywhere. The binding stops at the condition. A reaction stays sourceless, so a plain per-player read in a reaction this source fires is rejected at install, naming the slot and pointing to `byPlayer(on.player)`.
+- **First sight.** An unobserved player counts as false. A player is unobserved at level install, without a pawn, during a disconnect hold, and while their pawn has no value for a slot the condition reads. Becoming unobserved fires nothing. At first observation `becomes` fires if the condition holds; `ceases` never does. Seat release drops the player's edge memory. A recompose keeps it for every (condition, edge) that survives, keyed by content, so editing a fire list re-fires nothing; a new or changed condition starts every player unobserved. This diverges from crossings' arm-only rule. A milestone over a value that outlives edge memory guards itself: the condition goes false once handled (`xp ≥ 100` and `level < 2`, with the fire raising `level`).
+- **`on.player`.** `PlayerEventParams.player` is the event's player as command target and read owner. A subject token carrying `on.activators`' verbs, it resolves to that player's pawn or seat and is legal only before any `wait`. `ref.byPlayer(on.player)` reads that player's value in the fired reaction. Both are legal only in reactions this source fires; under any other source, install rejects that subscription, naming the reaction and the source. Seats never reach the authoring surface.
+- **Rejection unit is the address.** When any reaction at an address in a player event's fire list breaks a rule here, the event drops that whole address, with an error naming the address, the reaction and the rule; the address still runs under every other source. A reaction-wide drop for a token read after a `wait` is unchanged.
+- **Context-free routes are checked at install.** A `fire` step and a completion follow-up (`onComplete`) dispatch with no context. A player-event reaction from which either route, at any depth, reaches presentation, a machine-local effect or a plain per-player read is rejected at install, naming both reactions.
+- **Presentation plays on the event player's machine.** Presentation reactions in the fire list (`playSound`, `rumble`, `flashScreen`, `vignette`, `screenShake`) play locally for the host's or single player's own player, else on that client alone (`networking.md` §Presentation events vs. replicated state). Routing is internal to the fire, not authored, and reaches the subject only. A machine-local effect it cannot forward — a UI-stack verb, a text edit, a `setState` on a non-replicated slot — is rejected at install, naming the reaction.
+- **No emitter.** `playSound` with `at: on.emitter` warn-skips, as for other emitterless sources; sounds play unpositioned on the player's machine.
+
+**Own state or host decision.** Presentation of a player's own replicated state — a low-health vignette, an ammo warning, a swim splash — is a local `onStateCrossing` on that player's machine: no host round trip, no loss. Presentation that follows a host decision — a level-up fanfare, a scald on overheat — goes directly in a player event's fire list, never behind `fire`.
 
 **The active reaction set is a derived view, not storage.** The engine recomposes it from retained mod-global and level-scoped sources whenever the active level tags change — level load, hot reload, return to frontend. A recompose erases whatever was written into the composed set and re-derives positions within it. Addresses survive it; positions do not. Durable per-reaction state lives outside the composed set.
 

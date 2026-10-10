@@ -10,6 +10,8 @@ while staying inside the engine's real size envelope. On top of that raw stress
 skeleton the generator can layer *gameplay* content -- arenas, enemies, weapon
 pickups, doors, lifts, and animated lights -- so a single map also exercises the
 entity, mover, trigger, and animated-lighting paths under load.
+The `env-volumes` preset adds test zones (stress_zones.py) plus fluid/gravity
+volumes and particle emitters (stress_environment.py).
 
 The binding engine constraint
 -----------------------------
@@ -103,6 +105,12 @@ feature-heavy map.
   to address them. Dynamic lighting remains available through the explicit
   `--lights dynamic` / `mixed` stress modes; lift-car lights are always dynamic
   because they move with their carrier.
+* `--env-volumes N` / `--emitters N` layer environment-resolution stress content
+  from `stress_environment.py`: fluid and gravity volumes in every room and
+  across doorways, and particle emitters that drift particles through them.
+  Each draws from its own RNG stream and is appended after every other entity,
+  so `--env-volumes 0` yields the same map minus the volumes (`--preset
+  env-volumes` is the fixture; see stress-env-volumes.README.md).
 
 Usage
 -----
@@ -189,6 +197,12 @@ import math
 import os
 import random
 import sys
+
+# Sibling content module; the directory is added so the import also resolves
+# when this file is loaded by path (the tests do) rather than run as a script.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import stress_environment  # noqa: E402
+import stress_zones  # noqa: E402
 
 # --- Lattice geometry (Quake units) ---------------------------------------
 PITCH_XY = 1280   # isolated room outer width/depth; interior = 1024 x 1024
@@ -291,6 +305,13 @@ ENEMY_CLASS = "reference_enemy"
 # The dev mod's death and damage-number policy matches this tag, so every
 # placed or closet-spawned enemy carries it.
 ENEMY_TAG = "enemy"
+
+# Enemy and pickup placement. The standing capsule is 0.4 m (~16 u) in radius,
+# so SPAWN_SPACING between centres leaves a body diameter of floor between two.
+SPAWN_SPACING = 64
+SPAWN_TRIES = 8          # shared-stream tries an arena placement spends (see floor_point)
+SPAWN_RETRY_TRIES = 32   # dedicated-stream tries for a spot clear of earlier ones
+SPAWN_STREAM = 0x5BA3E   # dedicated placement stream salt (XORed with the seed)
 
 
 def box_brush(x0, y0, z0, x1, y1, z1, tex_side, tex_top, tex_bottom):
@@ -793,6 +814,30 @@ def emit_arena(brushes, X, X_END, Y, Y_END, Z, arena, rng):
     )
 
 
+ARENA_SPAWN_CLEARANCE = 64   # arena spawns keep this far off the walls and the gap
+
+
+def arena_floor_strips(x0i, x1i, y0i, y1i, gap):
+    """Arena floor boxes `(x0, x1, y0, y1)` a spawn may use.
+
+    The floor under the mezzanine ring, clear of the drop gap's footprint: the
+    +Y strip and the two side strips. The -Y strip holds the staircase.
+    """
+    g0x, g0y, g1x, g1y = gap
+    c = ARENA_SPAWN_CLEARANCE
+    boxes = [(x0i + c, x1i - c, g1y + c, y1i - c),      # +Y, full width
+             (x0i + c, g0x - c, g0y + c, g1y - c),      # -X side
+             (g1x + c, x1i - c, g0y + c, g1y - c)]      # +X side
+    return [b for b in boxes if b[0] <= b[1] and b[2] <= b[3]]
+
+
+def sample_floor_box(boxes, zf, rng):
+    """A uniform point over the union of disjoint boxes, at floor height `zf`."""
+    areas = [(x1 - x0 + 1) * (y1 - y0 + 1) for x0, x1, y0, y1 in boxes]
+    x0, x1, y0, y1 = rng.choices(boxes, weights=areas)[0]
+    return rng.randint(x0, x1), rng.randint(y0, y1), zf
+
+
 # --- Scattered ceiling lights ----------------------------------------------
 LIGHT_MARGIN = 192          # keep scattered lights this far off the interior walls
 LIGHT_CRATE_CLEARANCE = 200 # keep a light at least this far (manhattan) from a crate
@@ -1018,12 +1063,13 @@ LIFT_CAR_H = STORY_H
 LIFT_CEIL_T = 24
 
 
-def lift_entities(idx, cx, cy, zf_low, climb, tag):
+def lift_entities(idx, cx, cy, zf_low, climb, tag, carry_light=None):
     """A multi-brush, ping-pong elevator car between two room layers.
 
     The floor, three cabin walls, and ceiling belong to one `kinematic_mover`,
     which is the engine's supported moving-group form.  Every other car gets a
-    carried dynamic cabin light to exercise the mover/light binding path.
+    carried dynamic cabin light to exercise the mover/light binding path;
+    `carry_light` overrides that (the zoned map lights every car).
     """
     z0 = zf_low
     z1 = z0 + LIFT_FLOOR_T
@@ -1061,7 +1107,7 @@ def lift_entities(idx, cx, cy, zf_low, climb, tag):
     wp_high = ["{", '"classname" "kinematic_waypoint"', f'"name" "{high}"',
                f'"origin" "{cx} {cy} {cz + climb}"', "}"]
     entities = [mover, wp_low, wp_high]
-    if idx % 2 == 0:
+    if carry_light if carry_light is not None else idx % 2 == 0:
         entities.append(light_entity(
             "dynamic", (cx, cy, wall_z1 - 32), (140, 217, 255),
             600, 420, False, None, carrier=name))
@@ -1071,7 +1117,8 @@ def lift_entities(idx, cx, cy, zf_low, climb, tag):
 def generate(nx, ny, nz, seed, braid_prob, shaft_prob, lights_mode, light_every,
              crates_per_room, spot_frac, static_frac, lights_per_room, stairs,
              n_arenas, n_enemies, n_weapons, n_doors, door_activation, n_lifts,
-             n_closets, animated_frac):
+             n_closets, animated_frac, n_env_volumes=0, n_emitters=0,
+             emitter_rate=0.0, emitter_lifetime=0.0, zoned=False):
     rng = random.Random(seed)
     spot_stride = max(1, round(1.0 / spot_frac)) if spot_frac > 0 else 0
     # center the grid near origin
@@ -1204,6 +1251,18 @@ def generate(nx, ny, nz, seed, braid_prob, shaft_prob, lights_mode, light_every,
             chosen = [rng.choice(cands)]
         for (i, j) in chosen:
             shafts.add((k, i, j))
+    lift_shafts = set(sorted(shafts)[:max(0, n_lifts)])
+
+    # Zoned layout (`--preset env-volumes`): every cell gets a zone whose
+    # policy gates the placements below. Without zoning every cell is "mixed",
+    # whose policy is never consulted, so un-zoned maps are unchanged.
+    zone_of = {}
+    if zoned:
+        lift_cells = {(i, j, kk) for (k, i, j) in lift_shafts for kk in (k - 1, k)}
+        zone_of = stress_zones.assign_zones(nx, ny, nz, arena_cells, lift_cells)
+        # The maze may leave the doors zone no doorway a door can fill. Cut one
+        # (no draw, so nothing else moves); door placement serves it first.
+        force_door_zone_doorways(doors, zone_of, nx, ny, X, X_END, Y, Y_END)
 
     brushes = []
     # Hallway lights are static whenever the map uses a baked-light mode. The
@@ -1281,7 +1340,6 @@ def generate(nx, ny, nz, seed, braid_prob, shaft_prob, lights_mode, light_every,
     # with unreachable upper layers is broken; --no-stairs opts out only if the
     # extra step brushes threaten a large grid's BSP-leaf budget. Shafts
     # chosen as lifts get a platform instead of stairs (below).
-    lift_shafts = set(sorted(shafts)[:max(0, n_lifts)])
     nstairs = 0
     if stairs:
         for (k, i, j) in sorted(shafts):
@@ -1308,8 +1366,17 @@ def generate(nx, ny, nz, seed, braid_prob, shaft_prob, lights_mode, light_every,
     # Shared animation budget (one-element list so callees can decrement it);
     # caps total animated baked lights at ANIMATED_LIGHT_CAP (see the const).
     anim_budget = [ANIMATED_LIGHT_CAP if animated_frac > 0 else 0]
-    if (lights_mode != "none" or crates_per_room > 0 or n_enemies or n_weapons
-            or n_closets):
+    underwater_lights = bool(anim_budget[0]) and "animated" in zone_of.values()
+    if underwater_lights:
+        # The animated zone's underwater lights draw on the same budget.
+        anim_budget[0] -= stress_zones.UNDERWATER_LIGHTS
+    room_zones = []        # zone per room_rects entry (zoned maps)
+    room_cell_of = []      # lattice cell per room_rects entry
+    room_crates = []       # crate base xy per room_rects entry
+    # Zoned maps always need the room bookkeeping: zone policy lights and
+    # crates every room, and lifts and the zone index look rooms up by cell.
+    if (zoned or lights_mode != "none" or crates_per_room > 0 or n_enemies
+            or n_weapons or n_closets or n_env_volumes or n_emitters):
         room_cells = {}
         for k in range(nz):
             for (i, j), r in layers[k].items():
@@ -1324,69 +1391,130 @@ def generate(nx, ny, nz, seed, braid_prob, shaft_prob, lights_mode, light_every,
             zf = Z[k] + SLAB_T // 2                  # interior floor
             zc = Z[k + 1] - SLAB_T // 2              # interior ceiling
             room_rects.append((zf, zc, x0i, x1i, y0i, y1i))
+            zone = zone_of.get((i0, j0, k), "mixed")
+            room_zones.append(zone)
+            room_cell_of.append((i0, j0, k))
+            room_crates.append([])
+            if zoned:
+                room_crates_n = stress_zones.policy(zone, "crates")
+                room_lights = stress_zones.policy(zone, "lights")
+                room_anim = animated_frac if stress_zones.policy(zone, "animated") else 0.0
+                spot_mix = stress_zones.policy(zone, "spot_mix")
+            else:
+                room_crates_n, room_lights, room_anim = (crates_per_room, lights_mode,
+                                                         animated_frac)
+                spot_mix = False
 
             # crate stacks (one wood texture per room so abutting stacks match).
             # Remember each stack's base xy so lights can be scattered clear of
             # them (a spot directly over a crate bakes shadow onto its own floor).
             crate_tex = pick(CRATE_TEX, r)
             crate_bases = []
-            for _ in range(crates_per_room):
+            for _ in range(room_crates_n):
                 base = emit_crate_stack(brushes, x0i, y0i, x1i, y1i, zf, zc,
                                         crate_tex, rng)
                 if base is not None:
                     crate_bases.append(base)
+                    room_crates[-1].append(base)
                     ncrates += 1
 
-            if lights_mode != "none" and r % max(1, light_every) == 0:
+            if room_lights != "none" and r % max(1, light_every) == 0:
                 added, ns = emit_room_lights(
                     lights, x0i, x1i, y0i, y1i, zf, zc, crate_bases, rng,
-                    lights_mode, lights_per_room, spot_stride, static_frac,
-                    animated_frac, nlit, anim_budget)
+                    room_lights, lights_per_room, spot_stride, static_frac,
+                    room_anim, nlit, anim_budget, spot_mix=spot_mix)
                 nlit += added
                 n_script_lights += ns
 
     # Arenas get their own lights (bright bake-only fixture + scattered coverage)
     # near the ceiling, clear of the central gap.
+    arena_lights = stress_zones.policy("arena", "lights") if zoned else lights_mode
     for ar in arena_rooms:
+        if arena_lights == "none":
+            continue
         added, ns = emit_room_lights(
             lights, ar["x0i"], ar["x1i"], ar["y0i"], ar["y1i"], ar["floor_z"],
-            ar["ceil_z"],
-            [], rng, lights_mode if lights_mode != "none" else "static",
-            max(3, lights_per_room), spot_stride, static_frac, animated_frac,
-            len(lights), anim_budget) if lights_mode != "none" else (0, 0)
+            ar["ceil_z"], [], rng, arena_lights, max(3, lights_per_room),
+            spot_stride, static_frac, 0.0 if zoned else animated_frac, len(lights),
+            anim_budget)
         n_script_lights += ns
 
     entities.extend(lights)
 
     # --- Gameplay: enemies + weapon pickups distributed across rooms -------
     place_rects = []
-    for (zf, zc, x0i, x1i, y0i, y1i) in room_rects:
+    for n, (zf, zc, x0i, x1i, y0i, y1i) in enumerate(room_rects):
+        if zoned and not stress_zones.policy(room_zones[n], "enemies"):
+            continue
         place_rects.append(("room", zf, x0i, x1i, y0i, y1i, None))
     for ar in arena_rooms:
         place_rects.append(("arena", ar["floor_z"], ar["x0i"], ar["x1i"],
                             ar["y0i"], ar["y1i"], ar["gap"]))
     prng = random.Random(seed ^ 0xA11CE)
+    # Spacing retries and arena spots draw here, never on `prng`, so a retry
+    # cannot move any later placement.
+    spawn_rng = random.Random(seed ^ SPAWN_STREAM)
+    enemy_rooms = {}       # (zf, x0i, x1i, y0i, y1i) -> enemies placed there
+    placed = []            # (x, y, floor_z) of every enemy and pickup so far
     prng.shuffle(place_rects)
+
+    def nearest_placed(point):
+        x, y, z = point
+        return min((math.hypot(x - px, y - py) for px, py, pz in placed if pz == z),
+                   default=math.inf)
 
     def floor_point(rect, inset=256):
         _, zf, x0i, x1i, y0i, y1i, gap = rect
-        for _ in range(8):
-            px = prng.randint(x0i + inset, max(x0i + inset, x1i - inset))
-            py = prng.randint(y0i + inset, max(y0i + inset, y1i - inset))
-            if gap is not None:                      # keep off an arena's drop gap
-                g0x, g0y, g1x, g1y = gap
-                if g0x <= px <= g1x and g0y <= py <= g1y:
-                    continue
-            return px, py, zf
-        return (x0i + x1i) // 2, y0i + inset, zf
+
+        def shared_try():
+            return (prng.randint(x0i + inset, max(x0i + inset, x1i - inset)),
+                    prng.randint(y0i + inset, max(y0i + inset, y1i - inset)), zf)
+
+        if gap is None:
+            boxes = [(x0i + inset, max(x0i + inset, x1i - inset),
+                      y0i + inset, max(y0i + inset, y1i - inset))]
+            candidate = shared_try()     # one try's draws, whatever it lands on
+        else:
+            # That inset box lies wholly inside an arena's drop gap, so every
+            # shared try misses there. Spend the same full try budget anyway:
+            # room placements keep the seed-stable spots committed warren maps
+            # have. The arena spot comes from its floor strips instead.
+            for _ in range(SPAWN_TRIES):
+                shared_try()
+            boxes = arena_floor_strips(x0i, x1i, y0i, y1i, gap)
+            candidate = sample_floor_box(boxes, zf, spawn_rng)
+        best, best_gap = candidate, nearest_placed(candidate)
+        for _ in range(SPAWN_RETRY_TRIES):
+            if best_gap >= SPAWN_SPACING:
+                break
+            candidate = sample_floor_box(boxes, zf, spawn_rng)
+            gap_to = nearest_placed(candidate)
+            if gap_to > best_gap:
+                best, best_gap = candidate, gap_to
+        # A floor too crowded for full spacing keeps its least-crowded try.
+        placed.append(best)
+        return best
 
     if place_rects:
+        arena_rects = [p for p in place_rects if p[0] == "arena"]
+        room_place = [p for p in place_rects if p[0] == "room"] or place_rects
         for e in range(max(0, n_enemies)):
-            rect = place_rects[e % len(place_rects)]
+            if zoned and arena_rects and e < stress_zones.ARENA_ENEMIES:
+                # The arena zone's share; the rest are the mixed zone's horde.
+                rect = arena_rects[e % len(arena_rects)]
+            elif zoned:
+                rect = room_place[e % len(room_place)]
+            else:
+                rect = place_rects[e % len(place_rects)]
+            enemy_rooms[rect[1:6]] = enemy_rooms.get(rect[1:6], 0) + 1
             px, py, zf = floor_point(rect)
             entities.append(enemy_entity((px, py, zf + 16), prng.randint(0, 359)))
         for w in range(max(0, n_weapons)):
-            rect = place_rects[(w + 3) % len(place_rects)]
+            if zoned and arena_rects and w % 2 == 0:
+                # Half the pickups lie among the arena's pools.
+                rect = arena_rects[(w // 2) % len(arena_rects)]
+            else:
+                rect = place_rects[(w + 3) % len(place_rects)]
             px, py, zf = floor_point(rect)
             entities.append(weapon_entity((px, py, zf + 16),
                                           WEAPON_CLASSES[w % len(WEAPON_CLASSES)]))
@@ -1394,6 +1522,15 @@ def generate(nx, ny, nz, seed, braid_prob, shaft_prob, lights_mode, light_every,
     # --- Gameplay: sliding doors over maze doorways ------------------------
     door_keys = list(doors.keys())
     random.Random(seed ^ 0xD0084).shuffle(door_keys)
+    if zoned:
+        # Doors only between mover-permitting zones; the doors zone's own
+        # doorways (one is always cut, above) take the first doors.
+        def door_zones(key):
+            return [zone_of[cell] for cell in door_cells(key)]
+        door_keys = [key for key in door_keys
+                     if all(z in DOOR_ZONES for z in door_zones(key))]
+        door_keys.sort(key=lambda key: "doors" not in door_zones(key))
+    door_tags = {}         # (i, j, k) -> door tags on that cell's walls
     ndoors = 0
     for key in door_keys[:max(0, n_doors)]:
         k, axis, i, j = key
@@ -1405,6 +1542,8 @@ def generate(nx, ny, nz, seed, braid_prob, shaft_prob, lights_mode, light_every,
         line = X[i] if axis == "x" else Y[j]
         entities.extend(door_entities(ndoors, axis, line, dcenter, zf,
                                       f"warren_door_{ndoors}", door_activation))
+        for cell in door_cells(key):
+            door_tags.setdefault(cell, []).append(f"warren_door_{ndoors}")
         ndoors += 1
 
     # --- Gameplay: sealed monster-closet pods ------------------------------
@@ -1413,7 +1552,8 @@ def generate(nx, ny, nz, seed, braid_prob, shaft_prob, lights_mode, light_every,
     # 512 x 384 pod plus its 256 u trigger approach stays inside that room.
     requested_closets = max(0, n_closets)
     nclosets = 0
-    closet_rects = list(room_rects)
+    closet_rects = [rect for n, rect in enumerate(room_rects)
+                    if not zoned or stress_zones.policy(room_zones[n], "closets")]
     random.Random(seed ^ 0xC105E7).shuffle(closet_rects)
     for zf, zc, x0i, x1i, y0i, y1i in closet_rects[:requested_closets]:
         if x1i - x0i < CLOSET_W or y1i - y0i < CLOSET_D + CLOSET_TRIGGER_REACH:
@@ -1431,16 +1571,215 @@ def generate(nx, ny, nz, seed, braid_prob, shaft_prob, lights_mode, light_every,
         scy = (Y[j] + Y_END[j]) // 2
         zf_low = Z[k - 1] + SLAB_T // 2
         entities.extend(lift_entities(nlifts, scx, scy, zf_low, PITCH_Z,
-                                     f"warren_lift_{nlifts}"))
+                                     f"warren_lift_{nlifts}",
+                                     carry_light=True if zoned else None))
         nlifts += 1
 
+    # --- Environment stress: features, emitters, then environment volumes --
+    # Each draws from its own RNG stream over the already-fixed rooms and
+    # doorways, and they are appended last (volumes very last), so a
+    # zero-volume map is exactly the volume map minus its trailing volume
+    # entities -- the stress run's baseline. Volumes may depend on features
+    # (anchors), never the reverse.
+    env_rooms = [(room_zones[n], rect) for n, rect in enumerate(room_rects)]
+    env_rooms += [("arena" if zoned else "mixed",
+                   (ar["floor_z"], ar["ceil_z"], ar["x0i"], ar["x1i"], ar["y0i"], ar["y1i"]))
+                  for ar in arena_rooms]
+    anchors = {}           # env_rooms index -> [anchor]
+    zone_index = []        # (zone, cell, rect, missing) per dedicated / lift / arena room
+    if zoned:
+        room_door_tags = {n: door_tags.get(cell, [])
+                          for n, cell in enumerate(room_cell_of)}
+        feature_entities, feature_anchors, zone_script_lights = (
+            stress_zones.zone_feature_entities(seed, env_rooms, room_door_tags,
+                                               light_entity, underwater_lights))
+        entities.extend(feature_entities)
+        n_script_lights += zone_script_lights
+        for n, anchor in feature_anchors:
+            anchors.setdefault(n, []).append(anchor)
+        # Lifts: one car settles into a pool, the next rises through a block,
+        # both in the lower room of their shaft.
+        for idx, (k, i, j) in enumerate(sorted(lift_shafts)):
+            n = room_cell_of.index((i, j, k - 1))
+            tag = "lift_pool" if idx % 2 == 0 else "lift_block"
+            anchors.setdefault(n, []).append(
+                (tag, (X[i] + X_END[i]) // 2, (Y[j] + Y_END[j]) // 2, room_rects[n][0]))
+        for n, bases in enumerate(room_crates):
+            if room_zones[n] == "crates":
+                for bx, by in bases:
+                    anchors.setdefault(n, []).append(
+                        ("crate", bx + CRATE_EDGE // 2, by + CRATE_EDGE // 2, room_rects[n][0]))
+
+    # Emitters: the particle zone's few first (their anchors pull volumes
+    # round them), then the mixed zone's stress load.
+    emitter_sets = [(n_emitters, [n for n, (z, _) in enumerate(env_rooms) if z == "mixed"], 0)]
+    if zoned:
+        particle_rooms = [n for n, (z, _) in enumerate(env_rooms) if z == "particles"]
+        n_particle = min(n_emitters, stress_zones.PARTICLE_ZONE_EMITTERS) if particle_rooms else 0
+        emitter_sets = [(n_particle, particle_rooms, 1),
+                        (n_emitters - n_particle, emitter_sets[0][1], 0)]
+    for count, room_ids, salt in emitter_sets:
+        emitted, emitter_anchors = stress_environment.emitter_entities(
+            count, seed, [env_rooms[n][1] for n in room_ids], emitter_rate,
+            emitter_lifetime, salt)
+        entities.extend(emitted)
+        for local, anchor in emitter_anchors:
+            n = room_ids[local]
+            if env_rooms[n][0] == "particles":
+                anchors.setdefault(n, []).append(anchor)
+
+    # Doorways touching a water-only or doors room always get a spanning
+    # volume; other mixed-zone doorways share the random doorway budget.
+    def doorway_zones(key):
+        return {zone_of[cell] for cell in door_cells(key)} if zoned else {"mixed"}
+    zone_doors = {key: c for key, c in doors.items()
+                  if doorway_zones(key) & {"water", "doors"}}
+    mixed_doors = {key: c for key, c in doors.items()
+                   if key not in zone_doors and "mixed" in doorway_zones(key)}
+    entities.extend(stress_environment.env_volume_entities(
+        n_env_volumes, seed,
+        [(zone, rect, anchors.get(n, [])) for n, (zone, rect) in enumerate(env_rooms)],
+        doorway_boxes(mixed_doors, X, X_END, Y, Y_END, Z),
+        doorway_boxes(zone_doors, X, X_END, Y, Y_END, Z)))
+
+    if zoned:
+        switches = {kvp_value(e, "name") for e in entities
+                    if e[1] == '"classname" "switch"'}
+        for n, (zone, rect) in enumerate(env_rooms):
+            if zone != "mixed":
+                cell = room_cell_of[n] if n < len(room_cell_of) else "arena"
+                zone_index.append((zone, cell, rect,
+                                   missing_zone_features(zone, n, rect, room_door_tags,
+                                                         switches, room_crates, lights)))
+        # The mixed zone's measurement room: the one holding the most enemies
+        # and emitters (ties to the lowest room index).
+        emitter_points = [tuple(int(v) for v in e[2].split('"')[3].split())
+                          for e in entities if e[1] == '"classname" "billboard_emitter"']
+
+        def load(n):
+            zf, zc, x0, x1, y0, y1 = env_rooms[n][1]
+            emit = sum(1 for (x, y, z) in emitter_points
+                       if x0 <= x <= x1 and y0 <= y <= y1 and zf <= z <= zc)
+            return enemy_rooms.get((zf, x0, x1, y0, y1), 0) + emit
+
+        mixed_rooms = [n for n, (zone, _) in enumerate(env_rooms)
+                       if zone == "mixed" and n < len(room_cell_of)]
+        if mixed_rooms:
+            best = max(mixed_rooms, key=lambda n: (load(n), -n))
+            zone_index.append(("mixed", room_cell_of[best], env_rooms[best][1], []))
+
     return (brushes, (spx, spy, spz), total_rooms, entities, lights, ncrates,
-            nstairs, len(arena_rooms), ndoors, nlifts, nclosets, n_script_lights)
+            nstairs, len(arena_rooms), ndoors, nlifts, nclosets, n_script_lights,
+            zone_index)
+
+
+DOOR_ZONES = ("doors", "mixed")   # zones a maze door may join
+
+
+def kvp_value(entity, key):
+    prefix = f'"{key}" "'
+    return next((line[len(prefix):-1] for line in entity if line.startswith(prefix)), None)
+
+
+def missing_zone_features(zone, n, rect, room_door_tags, switches, room_crates, lights):
+    """The guaranteed features a zone room lacks (empty when satisfied).
+
+    Doors rooms need a door and its switch; crates rooms a crate stack plus a
+    baked and a runtime spot. A room only lacks one when the layout leaves no
+    place for it (no door-permitting neighbour, `--doors 0`, crates that
+    cannot fit)."""
+    missing = []
+    if zone == "doors":
+        if not room_door_tags.get(n):
+            missing.append("door")
+        if f"env_switch_{n}" not in switches:
+            missing.append("switch")
+    elif zone == "crates":
+        zf, zc, x0, x1, y0, y1 = rect
+        spots = set()
+        for light in lights:
+            x, y, z = (float(v) for v in kvp_value(light, "origin").split())
+            if x0 <= x <= x1 and y0 <= y <= y1 and zf <= z <= zc:
+                spots.add(light[1])
+        if not room_crates[n]:
+            missing.append("crate stack")
+        if '"classname" "light_spot"' not in spots:
+            missing.append("baked spot")
+        if '"classname" "light_dynamic_spot"' not in spots:
+            missing.append("runtime spot")
+    return missing
+
+
+def force_door_zone_doorways(doors, zone_of, nx, ny, X, X_END, Y, Y_END):
+    """Cut a doorway for each doors-zone cell the maze left without one into a
+    door-permitting neighbour. Takes the first candidate boundary in key order
+    and the wall slot its grid-line neighbours leave free, so no straight
+    sightline crosses a shared room."""
+    for cell, zone in sorted(zone_of.items()):
+        if zone != "doors":
+            continue
+        i, j, k = cell
+        cands = []
+        if i > 0:
+            cands.append((k, "x", i, j))
+        if i < nx - 1:
+            cands.append((k, "x", i + 1, j))
+        if j > 0:
+            cands.append((k, "y", i, j))
+        if j < ny - 1:
+            cands.append((k, "y", i, j + 1))
+        cands = [key for key in cands
+                 if all(zone_of[c] in DOOR_ZONES for c in door_cells(key))]
+        if not cands or any(key in doors for key in cands):
+            continue
+        key = min(cands)
+        _, axis, ki, kj = key
+        if axis == "x":
+            lo, hi = Y[kj], Y_END[kj]
+            line = [(k, "x", ki - 1, kj), (k, "x", ki + 1, kj)]
+        else:
+            lo, hi = X[ki], X_END[ki]
+            line = [(k, "y", ki, kj - 1), (k, "y", ki, kj + 1)]
+        taken = {0 if doors[n] == slot_center(lo, hi, 0) else 1
+                 for n in line if n in doors}
+        doors[key] = slot_center(lo, hi, 1 if taken == {0} else 0)
+
+
+def door_cells(key):
+    """The two lattice cells a maze door key `(k, axis, i, j)` joins."""
+    k, axis, i, j = key
+    return (i, j, k), ((i - 1, j, k) if axis == "x" else (i, j - 1, k))
+
+
+DOORWAY_VOLUME_REACH = 192   # how far a doorway-spanning volume enters each room
+
+
+def doorway_boxes(doors, X, X_END, Y, Y_END, Z):
+    """Opening boxes (x0, y0, x1, y1, zf, ztop) for every maze doorway.
+
+    A maze door cuts both room walls on either side of a corridor band; the box
+    runs through both walls and the band and DOORWAY_VOLUME_REACH into each
+    room, slightly wider than the opening so it also overlaps the jambs.
+    """
+    h = WALL_T // 2
+    r = DOORWAY_VOLUME_REACH
+    half = DOOR_W // 2 + 32
+    out = []
+    for (k, axis, i, j), dcenter in sorted(doors.items()):
+        zf = Z[k] + SLAB_T // 2
+        ztop = zf + DOOR_H - 32
+        if axis == "x":
+            out.append((X_END[i - 1] - h - r, dcenter - half,
+                        X[i] + h + r, dcenter + half, zf, ztop))
+        else:
+            out.append((dcenter - half, Y_END[j - 1] - h - r,
+                        dcenter + half, Y[j] + h + r, zf, ztop))
+    return out
 
 
 def emit_room_lights(out, x0i, x1i, y0i, y1i, zf, zc, crate_bases, rng, lights_mode,
                      lights_per_room, spot_stride, static_frac, animated_frac,
-                     global_idx, anim_budget):
+                     global_idx, anim_budget, spot_mix=False):
     """Append one room's lights to `out`; return (count, script_light_count).
 
     Lights near the ceiling, SCATTERED across the room rather than one central
@@ -1456,6 +1795,11 @@ def emit_room_lights(out, x0i, x1i, y0i, y1i, zf, zc, crate_bases, rng, lights_m
     four static spots. Steady static coverage is also bake-only; animation is an
     explicit opt-in that promotes only the selected coverage lights so a script
     can address them. Dynamic and mixed modes remain deliberate stress overrides.
+
+    `spot_mix` (mixed mode only) makes every coverage light a spot and, when
+    the draws left the room one-sided, flips the last one so the room holds
+    both a baked and a runtime spot (a one-light room gets a runtime one). In
+    a room without animation the flip changes no draw.
     """
     cz = zc - 24
     lx0, lx1 = x0i + LIGHT_MARGIN, x1i - LIGHT_MARGIN
@@ -1464,6 +1808,7 @@ def emit_room_lights(out, x0i, x1i, y0i, y1i, zf, zc, crate_bases, rng, lights_m
     nlit = global_idx
     added = 0
     promotable = 0    # runtime-present (`_bake_only 0`) baked lights this room
+    spot_modes = set()  # light modes of this room's spots (`spot_mix`)
 
     # One dim bake-only point fill per room. Its range reaches the far floor
     # corner, including the room's vertical distance, so it remains useful in
@@ -1488,6 +1833,15 @@ def emit_room_lights(out, x0i, x1i, y0i, y1i, zf, zc, crate_bases, rng, lights_m
             this_mode = "static" if rng.random() < static_frac else "dynamic"
         else:
             this_mode = lights_mode
+        if spot_mix and lights_mode == "mixed":
+            if not spot:
+                spot, falloff, intensity = True, 1600, SPOT_INTENSITY
+            if s == per - 1:
+                if "dynamic" not in spot_modes:
+                    this_mode = "dynamic"
+                elif "static" not in spot_modes:
+                    this_mode = "static"
+            spot_modes.add(this_mode)
         # Baked coverage lights: steady ones are BAKE-ONLY; an animated one is
         # PROMOTABLE (it keeps a runtime entity) but only while under the
         # promotable cap. Animation is a baked-light feature bounded by the
@@ -1640,6 +1994,23 @@ def main(argv):
             # committed torture fixture deterministic rather than seed-lucky.
             lifts=2, monster_closets=3, animated_frac=1.0,
         ),
+        # env-volumes: the environment-resolution stress fixture -- ~1000
+        #           fluid/gravity volumes, 64 AI agents and ~10,000 live
+        #           particles (40 emitters x 50/s x 5 s) on a statically lit
+        #           grid whose bake is deliberately long (about a minute; see
+        #           the fixture README). `--env-volumes 0` gives its baseline.
+        "env-volumes": dict(
+            # The warren showcase's feature set, zoned (stress_zones.py) so
+            # water is checked alone, beside each feature, and all together.
+            # 8x6x3: the NFL arena plus its frame, two lifts (shaft_prob 1.0
+            # guarantees both shafts), the eight single-room zones along the top
+            # layer's first row, and two full storeys of mixed stress rooms.
+            grid=[8, 6, 3], lights="static", spot_frac=1.0, light_every=1,
+            door_prob=0.3, shaft_prob=1.0, lights_per_room=4, arenas=1,
+            enemies=64, weapons=8, doors=6, door_activation="use", lifts=2,
+            monster_closets=3, animated_frac=1.0, zones=True,
+            env_volumes=1000, emitters=40, emitter_rate=50.0, emitter_lifetime=5.0,
+        ),
     }
 
     ap = argparse.ArgumentParser(description=__doc__,
@@ -1652,13 +2023,21 @@ def main(argv):
                          "--lightmap-density 0.06. 'warren' => the full gameplay "
                          "showcase (arenas, enemies, weapons, use doors, closets, lifts, "
                          "animated lights) on a conservative feature-heavy grid; bake it at "
-                         "--lightmap-density 0.25.")
+                         "--lightmap-density 0.25. 'env-volumes' => the environment-"
+                         "resolution stress fixture (1000 fluid/gravity volumes, 64 "
+                         "enemies, ~10,000 live particles); add --env-volumes 0 for "
+                         "its baseline.")
     ap.add_argument("--grid", nargs=3, type=int, default=None,
                     metavar=("NX", "NY", "NZ"),
                     help="cells along X, Y, and vertical layers (default 7 6 3, "
                          "a conservative size for the added corridor shells)")
     ap.add_argument("-o", "--out", default="content/dev/maps/stress-warren.map")
     ap.add_argument("--seed", type=int, default=1)
+    ap.add_argument("--data-script", default=None, metavar="PATH",
+                    help="where to write (and reference) the generated data-script "
+                         "sidecar; defaults to <out-stem>.generated.ts. A baseline "
+                         "variant points at its full map's sidecar so the two maps "
+                         "differ only in their volume entities.")
     ap.add_argument("--door-prob", type=float, default=None,
                     help="maze braid factor: rooms are first connected by a "
                          "spanning-tree maze (one door per tree edge), then each "
@@ -1743,6 +2122,28 @@ def main(argv):
                     help="number of shafts whose jump-stairs are replaced with a "
                          "ping-pong multi-brush elevator car between layers. "
                          "(default 0)")
+    ap.add_argument("--zones", action="store_const", const=True, default=None,
+                    help="lay the map out in test zones (stress_zones.py): water-only "
+                         "rooms, one room per water+feature pairing, and a mixed "
+                         "stress zone. Per-zone policy overrides --lights / --crates "
+                         "and confines enemies, doors and closets to their zones. "
+                         "(default off; on in the env-volumes preset)")
+    ap.add_argument("--env-volumes", type=int, default=None, metavar="N",
+                    help="number of fluid_volume / gravity_volume brush entities "
+                         "layered into the rooms (pools, floating blocks, room-wide "
+                         "gravity, overlaps, doorway spans, non-AABB hulls, "
+                         "multi-brush). Drawn from a dedicated RNG stream and "
+                         "appended last, so 0 gives the identical map without them. "
+                         "(default 0)")
+    ap.add_argument("--emitters", type=int, default=None, metavar="N",
+                    help="number of billboard_emitter particle emitters near room "
+                         "centres, alternating rising and falling. (default 0)")
+    ap.add_argument("--emitter-rate", type=float, default=None, metavar="R",
+                    help="particles per second per emitter (default 50)")
+    ap.add_argument("--emitter-lifetime", type=float, default=None, metavar="S",
+                    help="particle lifetime in seconds; rate x lifetime is an "
+                         "emitter's steady-state live count and must stay within "
+                         "the 4096 per-emitter cap. (default 5)")
     ap.add_argument("--no-stairs", action="store_true",
                     help="do NOT thread jump-stair spirals up through shafts. By "
                          "default every shaft gets a compact spiral of jumpable "
@@ -1759,7 +2160,8 @@ def main(argv):
                      lights="none", light_every=1, crates=0, spot_frac=1.0,
                      lights_per_room=4, animated_frac=0.0, arenas=0, enemies=0,
                      weapons=0, doors=0, door_activation="touch", lifts=0,
-                     monster_closets=0)
+                     monster_closets=0, zones=False, env_volumes=0, emitters=0,
+                     emitter_rate=50.0, emitter_lifetime=5.0)
 
     def resolve(name):
         if getattr(args, name) is not None:
@@ -1784,7 +2186,20 @@ def main(argv):
     args.door_activation = resolve("door_activation")
     args.lifts = resolve("lifts")
     args.monster_closets = resolve("monster_closets")
+    args.zones = resolve("zones")
+    args.env_volumes = resolve("env_volumes")
+    args.emitters = resolve("emitters")
+    args.emitter_rate = resolve("emitter_rate")
+    args.emitter_lifetime = resolve("emitter_lifetime")
     stairs = not args.no_stairs
+    for flag, value in (("--emitter-rate", args.emitter_rate),
+                        ("--emitter-lifetime", args.emitter_lifetime)):
+        if not math.isfinite(value) or value < 0:
+            ap.error(f"{flag} must be a finite number >= 0 (got {value:g})")
+    per_emitter = args.emitter_rate * args.emitter_lifetime
+    if args.emitters and per_emitter > stress_environment.MAX_SPRITES_PER_EMITTER:
+        ap.error(f"--emitter-rate x --emitter-lifetime = {per_emitter:g} exceeds the "
+                 f"{stress_environment.MAX_SPRITES_PER_EMITTER}-particle per-emitter cap")
 
     nx, ny, nz = args.grid
     if min(nx, ny, nz) < 1:
@@ -1799,15 +2214,18 @@ def main(argv):
               file=sys.stderr)
 
     (brushes, spawn, rooms, entities, lights, ncrates, nstairs, narenas,
-     ndoors, nlifts, nclosets, n_script_lights) = generate(
+     ndoors, nlifts, nclosets, n_script_lights, zone_index) = generate(
         nx, ny, nz, args.seed, args.door_prob, args.shaft_prob,
         args.lights, args.light_every, args.crates, args.spot_frac,
         args.static_frac, args.lights_per_room, stairs,
         args.arenas, args.enemies, args.weapons, args.doors, args.door_activation,
-        args.lifts, args.monster_closets, args.animated_frac)
+        args.lifts, args.monster_closets, args.animated_frac,
+        args.env_volumes, args.emitters, args.emitter_rate, args.emitter_lifetime,
+        args.zones)
     data_script = None
     if n_script_lights or nclosets:
-        data_script = os.path.splitext(os.path.abspath(args.out))[0] + ".generated.ts"
+        data_script = os.path.abspath(args.data_script) if args.data_script else (
+            os.path.splitext(os.path.abspath(args.out))[0] + ".generated.ts")
         write_generated_data_script(data_script, n_script_lights > 0, nclosets)
     write_map(args.out, brushes, spawn, nx, ny, nz, entities, data_script)
     if args.arenas > 0 and narenas < args.arenas:
@@ -1834,6 +2252,20 @@ def main(argv):
     print(f"gameplay: {nenem} enemies, {nweap} weapons, {ndoors} {args.door_activation} doors, "
           f"{nclosets} monster closets, {nlifts} lifts"
           + (f"; data_script {data_script}" if data_script else ""))
+    classes = [e[1] for e in entities]
+    nfluid = classes.count('"classname" "fluid_volume"')
+    ngrav = classes.count('"classname" "gravity_volume"')
+    nemit = classes.count('"classname" "billboard_emitter"')
+    print(f"environment: {nfluid + ngrav} volumes ({nfluid} fluid, {ngrav} gravity); "
+          f"{nemit} emitters (~{nemit * per_emitter:g} live particles)")
+    for zone, cell, rect, missing in zone_index:
+        note = stress_zones.ZONE_LABELS[zone]
+        if missing:
+            note = f"UNMET {zone} zone: no {', no '.join(missing)}"
+            print(f"warning: zone {zone} cell {cell} lacks its {', '.join(missing)}",
+                  file=sys.stderr)
+        print(f"zone {zone:<9} cell {cell}: --start-pose={stress_zones.engine_pose(rect)}"
+              f"  # {note}")
     print(f"extent: X/Y +/-{max(half_x, half_y)} u, Z {nz*PITCH_Z} u tall")
     print(f"wrote {args.out}")
 

@@ -26,6 +26,14 @@ pub enum SimStage {
     Steering,
     /// Remote and local weapon commands and projectile launch bookkeeping.
     Weapons,
+    /// Inside `Steering`: `agent_steering::tick` — path replans, separation
+    /// and every agent's collide-and-slide.
+    SteerAgents,
+    /// Inside `Steering`: player and brain animation locomotion plus
+    /// presentation pose inputs.
+    SteerPose,
+    /// Inside `Steering`: auto-close timers and the mover blocking pass.
+    SteerMovers,
 }
 
 impl StageSet for SimStage {
@@ -38,6 +46,9 @@ impl StageSet for SimStage {
         Self::Ai,
         Self::Steering,
         Self::Weapons,
+        Self::SteerAgents,
+        Self::SteerPose,
+        Self::SteerMovers,
     ];
 
     fn index(self) -> usize {
@@ -54,12 +65,16 @@ impl StageSet for SimStage {
             Self::Ai => "sim_ai",
             Self::Steering => "sim_steering",
             Self::Weapons => "sim_weapons",
+            Self::SteerAgents => "sim_steer_agents",
+            Self::SteerPose => "sim_steer_pose",
+            Self::SteerMovers => "sim_steer_movers",
         }
     }
 
     fn parent(self) -> Option<Self> {
         match self {
             Self::Tick => None,
+            Self::SteerAgents | Self::SteerPose | Self::SteerMovers => Some(Self::Steering),
             _ => Some(Self::Tick),
         }
     }

@@ -1791,10 +1791,16 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
         session
             .presentation_pool
             .recycle_draw_inputs(recycled_inputs);
+        // Particle CPU (emit, sim, render collect), folded under `render_prep`
+        // after the collector below.
+        let particle_cpu = postretro_stage_timing::StageFrame::<cpu_timing::ParticleStage>::new(
+            app.cpu_timer.gate(),
+        );
         // Emitter bridge — after script `tick` handler, before particle
         // sim. Spawns new particles; the sim advances them the same
         // frame so they don't appear stuck at origin.
         {
+            let _scope = particle_cpu.scope(cpu_timing::ParticleStage::Emit);
             let mut registry = script_ctx.registry.borrow_mut();
             // Cap headroom comes from the previous frame's sim tally
             // (see particle_sim::tick) — the bridge no longer walks the
@@ -1809,9 +1815,10 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
 
         // Particle sim — after emitter bridge, before light bridge.
         // Pure Rust; scripts never observe individual particles.
-        // Refills `particle_live_counts` with this tick's per-emitter
+        // Refills `particle_live_counts` with this frame's per-emitter
         // survivor count for the next frame's bridge headroom.
         {
+            let _scope = particle_cpu.scope(cpu_timing::ParticleStage::Sim);
             let mut registry = script_ctx.registry.borrow_mut();
             scripting_systems::particle_sim::tick(
                 &mut registry,
@@ -1930,6 +1937,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                     .unwrap_or_else(|| replication.latest_server_tick().map_or(0.0, f64::from)),
                 None => 0.0,
             };
+            let _scope = particle_cpu.scope(cpu_timing::ParticleStage::Collect);
             session.particle_render.collect_at_tick(
                 &registry,
                 app.level.as_ref(),
@@ -1937,6 +1945,12 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                 presentation_tick,
             );
         }
+        app.cpu_timer.nested_mut().extend_from(
+            &particle_cpu,
+            Some(postretro_stage_timing::StageSet::label(
+                cpu_timing::FrameStage::RenderPrep,
+            )),
+        );
         // One level-scope streaming step for SH and lightmap blocks (one read
         // issuer, one shared install budget), run while no borrowed draw
         // collection is live: it prepares SH's batch, which drains as the first

@@ -776,8 +776,11 @@ where
 
     {
         let mut registry = registry.borrow_mut();
+        let substage = cpu.scope(SimStage::SteerAgents);
         // AgentTickResult only carries a diagnostic `replans` counter, not observable sim state, so the return value is intentionally discarded.
         let _ = agent_steering::tick(&mut registry, collision_world, nav_graph, gravity, tick_dt);
+        drop(substage);
+        let substage = cpu.scope(SimStage::SteerPose);
         update_player_animation_locomotion(&mut registry, hit_zone_store, anim_time);
         update_brain_animation_playback_rates(&mut registry, hit_zone_store, anim_time);
         update_presentation_pose_inputs(
@@ -795,6 +798,8 @@ where
                 remote_network_ids: &HashMap::new(),
             },
         );
+        drop(substage);
+        let substage = cpu.scope(SimStage::SteerMovers);
         if let Some(auto_close_timers) = auto_close_timers.as_ref() {
             auto_close_timers.tick(&mut registry, tick_dt);
         }
@@ -809,6 +814,7 @@ where
             &mut mover_events,
             &mut on_impact,
         );
+        drop(substage);
     }
 
     drop(stage);

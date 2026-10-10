@@ -60,6 +60,7 @@
 - **3D model / glTF import (scale, pivot, material format)** → `resource_management.md` §7
 - **Scripting / primitives / SDK types / scripting crate boundaries / VM compile firewall** → `scripting.md`
 - **Reaction dispatch model / event sources / dispatch scopes / reaction parameters / occupancy exposure** → `scripting.md` §12
+- **Per-player events / `players().on` / reacting to one player's state in co-op / presenting on that player's machine** → `scripting.md` §12 (Player events) · delivery: `networking.md` §Presentation events vs. replicated state
 - **Entity addressing / map members (`getMapEntities`) vs. groups (`npcs`, `players`) vs. subject tokens / per-member `.on` sources / spawned-NPC tags** → `scripting.md` §12 (Entity addressing)
 - **Netcode / multiplayer / co-op / replication / transport / wire format** → `networking.md`
 - **Live introspection channel / observe-live / localhost debug socket / reading a running session's state over a socket** → `networking.md` §Not netcode: the live introspection channel

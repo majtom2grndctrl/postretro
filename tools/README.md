@@ -95,6 +95,12 @@ Per-script deps:
 | `gen_stress_map.py` | none (stdlib only) |
 | `inspect_fbx_ascii.py` | none (stdlib only) |
 
+`gen_stress_map.py` imports two sibling helper modules, `stress_environment.py`
+(environment-volume shapes and particle emitters) and `stress_zones.py` (zoned
+layout for `--preset env-volumes`). Both are stdlib-only and are not entry
+points. See `content/dev/maps/stress-env-volumes.README.md` for the
+env-volumes fixture.
+
 `gen_normal.py` imports `numpy` inside a `try`/`except`: if it's missing, the
 script still runs but falls back to a flat/neutral normal map instead of the
 Sobel-filtered one.

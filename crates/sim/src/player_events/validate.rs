@@ -12,8 +12,8 @@ use postretro_scripting_core::data_descriptors::{
 };
 use postretro_scripting_core::data_registry::DataRegistry;
 use postretro_scripting_core::player_event_scope::{
-    EVENT_PLAYER_TOKEN, is_local_player_slot, plain_per_player_read, reaction_uses_event_player,
-    reads_dispatch_input,
+    EVENT_PLAYER_TOKEN, audience_token, is_local_player_slot, plain_per_player_read,
+    reaction_uses_event_player, reads_dispatch_input,
 };
 
 /// The trigger-fire occupancy input. A player-event fire binds against a scope
@@ -118,18 +118,71 @@ fn reads_occupancy(descriptor: &ReactionDescriptor) -> bool {
 }
 
 fn trigger_token(descriptor: &ReactionDescriptor) -> Option<&'static str> {
+    fn trigger_audience(args: &serde_json::Value) -> Option<&'static str> {
+        match audience_token(args) {
+            Some("@activators") => Some("on.activators"),
+            Some("@trigger") => Some("on.trigger"),
+            _ => None,
+        }
+    }
     match descriptor {
         ReactionDescriptor::Primitive(primitive) => match primitive.target.as_deref() {
             Some("@activators") => Some("on.activators"),
             Some("@trigger") => Some("on.trigger"),
-            _ => None,
+            _ => trigger_audience(&primitive.args),
         },
         ReactionDescriptor::Sequence(steps) => steps.iter().find_map(|step| match step.id {
             SequenceTarget::Activators => Some("on.activators"),
             SequenceTarget::FiredTrigger => Some("on.trigger"),
-            _ => None,
+            _ => trigger_audience(&step.args),
         }),
         ReactionDescriptor::Progress(_) => None,
+    }
+}
+
+/// Distinct reaction addresses reachable from `address` that contain a
+/// machine-local UI or text verb. Includes the root and post-wait steps, and
+/// follows every `fire` and `onComplete` edge in every same-named body. Cycles
+/// terminate at the address boundary; output follows deterministic discovery
+/// order. Hosted trigger installation uses this to warn per (binding, reaction).
+pub fn reachable_machine_local_reactions(
+    address: &str,
+    data_registry: &DataRegistry,
+) -> Vec<String> {
+    let mut pending = vec![address.to_string()];
+    let mut visited = HashSet::new();
+    let mut reached = Vec::new();
+    while let Some(address) = pending.pop() {
+        if !visited.insert(address.clone()) {
+            continue;
+        }
+        let mut machine_local = false;
+        for reaction in data_registry
+            .reactions
+            .iter()
+            .filter(|reaction| reaction.name == address)
+        {
+            machine_local |= descriptor_has_machine_local_effect(&reaction.descriptor);
+            pending.extend(context_free_routes(&reaction.descriptor));
+        }
+        if machine_local {
+            reached.push(address);
+        }
+    }
+    reached
+}
+
+fn descriptor_has_machine_local_effect(descriptor: &ReactionDescriptor) -> bool {
+    let machine_local = |primitive: &str| {
+        SystemReactionKind::from_primitive_name(primitive)
+            .is_some_and(|kind| kind.class() == SystemReactionClass::MachineLocal)
+    };
+    match descriptor {
+        ReactionDescriptor::Primitive(primitive) => machine_local(&primitive.primitive),
+        ReactionDescriptor::Sequence(steps) => {
+            steps.iter().any(|step| machine_local(&step.primitive))
+        }
+        ReactionDescriptor::Progress(_) => false,
     }
 }
 

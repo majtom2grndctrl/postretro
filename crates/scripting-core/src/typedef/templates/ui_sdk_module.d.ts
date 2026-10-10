@@ -14,6 +14,7 @@ declare module "postretro/ui" {
     CrossingOptions,
     CrossingParams,
     EmitterTarget,
+    ActivatorsTarget, TriggerTarget, PlayerTarget, TriggerEventParams, PlayerEventParams, EmitterParams,
     Reaction,
     CrossingDescriptor,
     NumberValue,
@@ -21,6 +22,7 @@ declare module "postretro/ui" {
     BoolRef,
     RuntimeValue,
     CommandId,
+    Effect,
   } from "postretro";
 
   /** Linear RGBA color token value. Components are in display-linear 0-1 space; alpha is the fourth element. */
@@ -265,17 +267,18 @@ declare module "postretro/ui" {
   /** Build a watcher from a Bool-valued runtime predicate over live store slots. It fires on false-to-true edges and re-arms after the predicate returns false. A predicate already true at registration only arms; it must later return false, then true, to fire. */
   export function onStateCrossing(predicate: RuntimeValue, fire: (Reaction<{}> | Reaction<CrossingParams> | string)[], options?: CrossingOptions): CrossingDescriptor;
   /** Options for `playSound`: `bus` routes to a mixer bus (SFX when omitted); `at: on.emitter` positions the sound where the named gameplay event happened, on the SFX bus. */
-  export type PlaySoundOptions = { bus?: string; at?: EmitterTarget };
-  /** Play `sound`. Without `options.at` it plays unpositioned. A reaction reading `on.emitter` fired by a source that publishes no emitter is skipped with a warning. */
-  export function playSound(sound: string, options?: PlaySoundOptions): PrimitiveReactionDescriptor;
-  /** Trigger gamepad rumble. `strong` and optional `weak` are motor intensities in [0, 1]; `durationMs` is milliseconds. */
-  export function rumble(strong: number, durationMs: number, weak?: number | null): PrimitiveReactionDescriptor;
-  /** Flash the screen with linear RGBA `color`; `durationMs` is the decay time in milliseconds. */
-  export function flashScreen(color: [number, number, number, number], durationMs: number): PrimitiveReactionDescriptor;
-  /** Apply a screen-edge vignette. `strength` is the peak amount, `durationMs` is total rise+decay time, and optional `color` is linear RGB. */
-  export function vignette(strength: number, durationMs: number, color?: [number, number, number] | null): PrimitiveReactionDescriptor;
-  /** Shake the screen. `amplitude` is logical-reference px, `durationMs` is milliseconds, and optional `frequency` is Hz. */
-  export function screenShake(amplitude: number, durationMs: number, frequency?: number | null): PrimitiveReactionDescriptor;
+  export type PresentationAudience = ActivatorsTarget | TriggerTarget | PlayerTarget | "everyone";
+  export type PresentationOptions = { audience?: PresentationAudience };
+  export type AudienceScope<A> = (Extract<A, ActivatorsTarget | TriggerTarget> extends never ? {} : TriggerEventParams) & (Extract<A, PlayerTarget> extends never ? {} : PlayerEventParams);
+  export type PlaySoundOptions = PresentationOptions & { bus?: string; at?: EmitterTarget };
+  export type PresentationBody<O extends PresentationOptions> = PrimitiveReactionDescriptor<AudienceScope<O["audience"]>>;
+  export type SoundBody<O extends PlaySoundOptions> = PrimitiveReactionDescriptor<AudienceScope<O["audience"]> & (Extract<O["at"], EmitterTarget> extends never ? {} : EmitterParams)>;
+  /** Play sound on its default or explicit audience, optionally at the event emitter. */
+  export function playSound<O extends PlaySoundOptions = {}>(sound: string, options?: O): SoundBody<O>;
+  export function rumble<O extends PresentationOptions = {}>(strong: number, durationMs: number, weak?: number | null, options?: O): PresentationBody<O>;
+  export function flashScreen<O extends PresentationOptions = {}>(color: [number, number, number, number], durationMs: number, options?: O): PresentationBody<O>;
+  export function vignette<O extends PresentationOptions = {}>(strength: number, durationMs: number, color?: [number, number, number] | null, options?: O): PresentationBody<O>;
+  export function screenShake<O extends PresentationOptions = {}>(amplitude: number, durationMs: number, frequency?: number | null, options?: O): PresentationBody<O>;
   /** Push UI tree `tree` as a modal; optional `onCommit` names a reaction fired on commit. Unknown tree names warn and no-op. */
   export function showDialog(tree: string, onCommit?: string | null): PrimitiveReactionDescriptor;
   export const KEYBOARD_TREE: "keyboard";

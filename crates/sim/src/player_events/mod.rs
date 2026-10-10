@@ -9,6 +9,7 @@ mod semantics_tests;
 #[cfg(test)]
 pub(crate) mod tests;
 mod validate;
+pub use validate::reachable_machine_local_reactions;
 #[cfg(test)]
 mod validation_tests;
 

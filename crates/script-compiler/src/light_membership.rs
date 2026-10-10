@@ -1535,6 +1535,83 @@ mod tests {
     }
 
     #[test]
+    fn presentation_audience_builders_match_across_sdk_runtimes_and_preserve_positionals() {
+        let js = r#"
+            function setupLevel() {
+              return { reactions: [defineReaction("capture", on => ({ primitive: "capture", args: {
+                bodies: [on.activators, on.trigger, on.player, "everyone", 42].flatMap(audience => [
+                  playSound("alarm", { bus: "ui", audience }),
+                  rumble(0.75, 200, 0.25, { audience }),
+                  flashScreen([1, 0, 0, 0.5], 300, { audience }),
+                  vignette(0.5, 400, [0.25, 0.5, 0.75], { audience }),
+                  screenShake(3, 500, 7, { audience }),
+                  rumble(0.75, 200, undefined, { audience }),
+                  vignette(0.5, 400, undefined, { audience }),
+                  screenShake(3, 500, undefined, { audience }),
+                ])
+              }}))] };
+            }
+        "#;
+        let luau = r#"
+            local ui = require("postretro/ui")
+            function setupLevel()
+              return { reactions = { defineReaction("capture", function(on)
+                local bodies = {}
+                for _, audience in ipairs({ on.activators, on.trigger, on.player, "everyone", 42 }) do
+                  local batch = {
+                    ui.playSound("alarm", { bus = "ui", audience = audience }),
+                    ui.rumble(0.75, 200, 0.25, { audience = audience }),
+                    ui.flashScreen({1, 0, 0, 0.5}, 300, { audience = audience }),
+                    ui.vignette(0.5, 400, {0.25, 0.5, 0.75}, { audience = audience }),
+                    ui.screenShake(3, 500, 7, { audience = audience }),
+                    ui.rumble(0.75, 200, nil, { audience = audience }),
+                    ui.vignette(0.5, 400, nil, { audience = audience }),
+                    ui.screenShake(3, 500, nil, { audience = audience }),
+                  }
+                  for _, body in ipairs(batch) do table.insert(bodies, body) end
+                end
+                return { primitive = "capture", args = { bodies = bodies } }
+              end) } }
+            end
+        "#;
+        let world = || Rc::new(BuildWorld::new(&table()).unwrap());
+        let stubs = || Rc::new(RefCell::new(BTreeSet::new()));
+        let ts = evaluate_quickjs(js, Path::new("audience.ts"), world(), stubs()).unwrap();
+        let lua = evaluate_luau(
+            luau,
+            Path::new("audience.luau"),
+            Path::new("."),
+            world(),
+            stubs(),
+        )
+        .unwrap();
+        assert_eq!(ts, lua);
+        let bodies = ts["reactions"][0]["args"]["bodies"].as_array().unwrap();
+        assert_eq!(bodies.len(), 40);
+        for (batch, audience) in bodies.chunks_exact(8).zip([
+            "@activators",
+            "@trigger",
+            "@player",
+            "everyone",
+            "@invalid",
+        ]) {
+            for body in batch {
+                assert_eq!(body["args"]["audience"], audience);
+            }
+            assert_eq!(batch[0]["args"]["bus"], "ui");
+            assert_eq!(batch[1]["args"]["weak"], 0.25);
+            assert_eq!(
+                batch[3]["args"]["color"],
+                serde_json::json!([0.25, 0.5, 0.75])
+            );
+            assert_eq!(batch[4]["args"]["frequency"], 7);
+            assert!(batch[5]["args"].get("weak").is_none());
+            assert!(batch[6]["args"].get("color").is_none());
+            assert!(batch[7]["args"].get("frequency").is_none());
+        }
+    }
+
+    #[test]
     fn quickjs_collects_static_and_dynamic_membership_from_light_handles() {
         let source = r#"
             function setupLevel() {

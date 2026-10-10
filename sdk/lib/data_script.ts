@@ -89,7 +89,14 @@ export type ProgressReactionDescriptor = {
 };
 
 /** Invokes a named Rust primitive. A group command (`npcs(...)`, `players()`) carries `kind` and an optional `tag` filter; a subject-token command (`on.activators`, `on.trigger`, `on.player`) carries `target: "@activators"`, `"@trigger"` or `"@player"`. A raw descriptor with only a non-empty `tag` resolves over every entity carrying it (fog, emitter and animation primitives have no typed builder). True system reactions carry neither and enqueue typed engine commands such as `playSound`, `rumble`, `flashScreen`, and the UI-stack reactions. `args` carries the primitive's typed payload. */
-export type PrimitiveReactionDescriptor = {
+declare const reactionBodyScopeBrand: unique symbol;
+
+/** A body retains the fire context its builders require, including direct-body registration. */
+export type ReactionBodyScope<S> = {
+  readonly [reactionBodyScopeBrand]?: (scope: S) => void;
+};
+
+export type PrimitiveReactionDescriptor<S = {}> = ReactionBodyScope<S> & {
   primitive: string;
   kind?: "npc" | "player";
   tag?: string;
@@ -165,11 +172,7 @@ export type SequenceReactionDescriptor = {
 };
 
 /** `name` is merged into the descriptor at the top level so the Rust deserializer reads event name and body from one flat object. */
-export type NamedReactionDescriptor = { name: string; levels?: string[] } & (
-  | ProgressReactionDescriptor
-  | PrimitiveReactionDescriptor
-  | SequenceReactionDescriptor
-);
+export type NamedReactionDescriptor<S = any> = { name: string; levels?: string[] } & ReactionBody<S>;
 
 /**
  * Deserialized once at level load; the data-script VM is dropped immediately after.
@@ -249,15 +252,16 @@ type ModManifestInput = Omit<import("postretro").ModManifest, "stores"> & {
   readonly stores?: readonly (StoreDeclaration | StoreHandle)[];
 };
 
-export type ReactionBody =
+export type ReactionBody<S = {}> = ReactionBodyScope<S> & (
   | ProgressReactionDescriptor
-  | PrimitiveReactionDescriptor
-  | SequenceReactionDescriptor;
+  | PrimitiveReactionDescriptor<S>
+  | SequenceReactionDescriptor
+);
 
 declare const reactionScopeBrand: unique symbol;
 
 /** A named reaction whose phantom dispatch scope is enforced only by TypeScript. */
-export type Reaction<S = {}> = NamedReactionDescriptor & {
+export type Reaction<S = {}> = NamedReactionDescriptor<S> & {
   readonly [reactionScopeBrand]?: (scope: S) => void;
 };
 

@@ -1745,7 +1745,9 @@ declare module "postretro" {
   };
 
   /** Primitive reaction body: invokes the named Rust primitive. A group command (`npcs(...)`, `players()`) carries `kind` and an optional `tag` filter; a subject-token command (`on.activators`, `on.trigger`, `on.player`) carries `target: "@activators"`, `"@trigger"` or `"@player"`. A raw descriptor with only a non-empty `tag` resolves over every entity carrying it — the form for fog, emitter and animation primitives (`setFogGlow`, `setEmitterRate`, `setAnimationState`), which have no typed builder. True system reactions carry neither and enqueue typed engine commands such as `playSound`, `rumble`, `flashScreen`, and the UI-stack reactions. `args` carries the primitive's typed payload (e.g. `{ rate: 0 }` for `setEmitterRate`, `{ sound: "alarm" }` for `playSound`). */
-  export type PrimitiveReactionDescriptor = {
+  const reactionBodyScopeBrand: unique symbol;
+  export type ReactionBodyScope<S> = { readonly [reactionBodyScopeBrand]?: (scope: S) => void };
+  export type PrimitiveReactionDescriptor<S = {}> = ReactionBodyScope<S> & {
     primitive: string;
     kind?: GroupKind;
     tag?: string;
@@ -1881,11 +1883,8 @@ declare module "postretro" {
   };
 
   /** Descriptor produced by `defineReaction`. The `name` field is merged into the descriptor at the top level so the Rust deserializer reads both fields from one flat object. */
-  export type NamedReactionDescriptor = { name: string; levels?: string[] } & (
-    | ProgressReactionDescriptor
-    | PrimitiveReactionDescriptor
-    | SequenceReactionDescriptor
-  );
+  export type ReactionBody<S = {}> = ReactionBodyScope<S> & (ProgressReactionDescriptor | PrimitiveReactionDescriptor<S> | SequenceReactionDescriptor);
+  export type NamedReactionDescriptor<S = any> = { name: string; levels?: string[] } & ReactionBody<S>;
 
   /** Dispatch values published by a state-crossing fire. */
   export type CrossingParams = Readonly<{ rising: RuntimeRead }>;
@@ -1936,7 +1935,7 @@ declare module "postretro" {
   export type PlayerEventParams = Readonly<{ player: PlayerTarget }>;
   const reactionScopeBrand: unique symbol;
   /** Named reaction with a type-only, contravariant dispatch-scope marker. */
-  export type Reaction<S = {}> = NamedReactionDescriptor & { readonly [reactionScopeBrand]?: (scope: S) => void };
+  export type Reaction<S = {}> = NamedReactionDescriptor<S> & { readonly [reactionScopeBrand]?: (scope: S) => void };
 
   // Shared fluent-expression IR skin. This vocabulary lowers to the existing closed
   // RuntimeValue op set; boolean composition is represented exclusively with
@@ -2106,25 +2105,11 @@ declare module "postretro" {
    * to `Button.onPress` or crossing `fire` entries.
    * @param name Stable event/reaction name consumed by dispatch. Optional.
    * @param descriptor Reaction body data consumed later by Rust. */
-  export function defineReaction(
-    descriptor:
-      | ProgressReactionDescriptor
-      | PrimitiveReactionDescriptor
-      | SequenceReactionDescriptor,
-  ): Reaction<{}>;
-  export function defineReaction(
-    tracer: (params: CrossingParams) => ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor,
-  ): Reaction<CrossingParams>;
-  export function defineReaction(
-    tracer: (params: TriggerEventParams) => ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor,
-  ): Reaction<TriggerEventParams>;
-  export function defineReaction(
-    tracer: (params: EmitterParams) => ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor,
-  ): Reaction<EmitterParams>;
-  export function defineReaction(
-    tracer: (params: PlayerEventParams) => ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor,
-  ): Reaction<PlayerEventParams>;
-
+  export function defineReaction<S = {}>(descriptor: ReactionBody<S>): Reaction<S>;
+  export function defineReaction(tracer: (params: CrossingParams) => ReactionBody<CrossingParams>): Reaction<CrossingParams>;
+  export function defineReaction(tracer: (params: TriggerEventParams) => ReactionBody<TriggerEventParams>): Reaction<TriggerEventParams>;
+  export function defineReaction(tracer: (params: EmitterParams) => ReactionBody<EmitterParams>): Reaction<EmitterParams>;
+  export function defineReaction(tracer: (params: PlayerEventParams) => ReactionBody<PlayerEventParams>): Reaction<PlayerEventParams>;
   /** Define a pure impact-policy descriptor. Omit `id` only in a TypeScript direct top-level binding declaration; scripts-build supplies that binding's name. Register it only by returning it through `events`. */
   export function defineImpactEvent(
     filter: ImpactEventFilter,
@@ -2135,29 +2120,11 @@ declare module "postretro" {
     filter: ImpactEventFilter,
     build: (impact: Impact) => readonly EffectOrGroup[],
   ): ImpactEvent;
-  export function defineReaction(
-    name: string,
-    descriptor:
-      | ProgressReactionDescriptor
-      | PrimitiveReactionDescriptor
-      | SequenceReactionDescriptor,
-  ): Reaction<{}>;
-  export function defineReaction(
-    name: string,
-    tracer: (params: CrossingParams) => ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor,
-  ): Reaction<CrossingParams>;
-  export function defineReaction(
-    name: string,
-    tracer: (params: TriggerEventParams) => ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor,
-  ): Reaction<TriggerEventParams>;
-  export function defineReaction(
-    name: string,
-    tracer: (params: EmitterParams) => ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor,
-  ): Reaction<EmitterParams>;
-  export function defineReaction(
-    name: string,
-    tracer: (params: PlayerEventParams) => ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor,
-  ): Reaction<PlayerEventParams>;
+  export function defineReaction<S = {}>(name: string, descriptor: ReactionBody<S>): Reaction<S>;
+  export function defineReaction(name: string, tracer: (params: CrossingParams) => ReactionBody<CrossingParams>): Reaction<CrossingParams>;
+  export function defineReaction(name: string, tracer: (params: TriggerEventParams) => ReactionBody<TriggerEventParams>): Reaction<TriggerEventParams>;
+  export function defineReaction(name: string, tracer: (params: EmitterParams) => ReactionBody<EmitterParams>): Reaction<EmitterParams>;
+  export function defineReaction(name: string, tracer: (params: PlayerEventParams) => ReactionBody<PlayerEventParams>): Reaction<PlayerEventParams>;
 
   /** Mod-global trigger event: a standing rule keyed by tag, accepted only in `ModManifest.triggerEvents`. Build it with `defineTriggerEvent`. */
   export type TriggerEventDescriptor = { tag: string; event: "enter" | "exit"; fire: string[]; levels?: string[] };
@@ -2288,7 +2255,7 @@ declare module "postretro" {
     Slot extends { type: "array" } ? StoreStateRefForSlot<Slot, ReadonlyArray<number>> :
     StoreStateRefForSlot<Slot, string>;
 
-  declare const storeDefinitionBrand: unique symbol;
+  const storeDefinitionBrand: unique symbol;
   /** Frozen store handle whose enumerable keys are its schema's slot refs. Pass it to `defineMod({ stores: [store] })`. */
   export type StoreDefinition<S extends Record<string, StoreSlotSchema>> = {
     readonly [K in keyof S]: StateValueForSlot<S[K]>;
@@ -2660,6 +2627,7 @@ declare module "postretro/ui" {
     CrossingOptions,
     CrossingParams,
     EmitterTarget,
+    ActivatorsTarget, TriggerTarget, PlayerTarget, TriggerEventParams, PlayerEventParams, EmitterParams,
     Reaction,
     CrossingDescriptor,
     NumberValue,
@@ -2667,6 +2635,7 @@ declare module "postretro/ui" {
     BoolRef,
     RuntimeValue,
     CommandId,
+    Effect,
   } from "postretro";
 
   /** Linear RGBA color token value. Components are in display-linear 0-1 space; alpha is the fourth element. */
@@ -2911,17 +2880,18 @@ declare module "postretro/ui" {
   /** Build a watcher from a Bool-valued runtime predicate over live store slots. It fires on false-to-true edges and re-arms after the predicate returns false. A predicate already true at registration only arms; it must later return false, then true, to fire. */
   export function onStateCrossing(predicate: RuntimeValue, fire: (Reaction<{}> | Reaction<CrossingParams> | string)[], options?: CrossingOptions): CrossingDescriptor;
   /** Options for `playSound`: `bus` routes to a mixer bus (SFX when omitted); `at: on.emitter` positions the sound where the named gameplay event happened, on the SFX bus. */
-  export type PlaySoundOptions = { bus?: string; at?: EmitterTarget };
-  /** Play `sound`. Without `options.at` it plays unpositioned. A reaction reading `on.emitter` fired by a source that publishes no emitter is skipped with a warning. */
-  export function playSound(sound: string, options?: PlaySoundOptions): PrimitiveReactionDescriptor;
-  /** Trigger gamepad rumble. `strong` and optional `weak` are motor intensities in [0, 1]; `durationMs` is milliseconds. */
-  export function rumble(strong: number, durationMs: number, weak?: number | null): PrimitiveReactionDescriptor;
-  /** Flash the screen with linear RGBA `color`; `durationMs` is the decay time in milliseconds. */
-  export function flashScreen(color: [number, number, number, number], durationMs: number): PrimitiveReactionDescriptor;
-  /** Apply a screen-edge vignette. `strength` is the peak amount, `durationMs` is total rise+decay time, and optional `color` is linear RGB. */
-  export function vignette(strength: number, durationMs: number, color?: [number, number, number] | null): PrimitiveReactionDescriptor;
-  /** Shake the screen. `amplitude` is logical-reference px, `durationMs` is milliseconds, and optional `frequency` is Hz. */
-  export function screenShake(amplitude: number, durationMs: number, frequency?: number | null): PrimitiveReactionDescriptor;
+  export type PresentationAudience = ActivatorsTarget | TriggerTarget | PlayerTarget | "everyone";
+  export type PresentationOptions = { audience?: PresentationAudience };
+  export type AudienceScope<A> = (Extract<A, ActivatorsTarget | TriggerTarget> extends never ? {} : TriggerEventParams) & (Extract<A, PlayerTarget> extends never ? {} : PlayerEventParams);
+  export type PlaySoundOptions = PresentationOptions & { bus?: string; at?: EmitterTarget };
+  export type PresentationBody<O extends PresentationOptions> = PrimitiveReactionDescriptor<AudienceScope<O["audience"]>>;
+  export type SoundBody<O extends PlaySoundOptions> = PrimitiveReactionDescriptor<AudienceScope<O["audience"]> & (Extract<O["at"], EmitterTarget> extends never ? {} : EmitterParams)>;
+  /** Play sound on its default or explicit audience, optionally at the event emitter. */
+  export function playSound<O extends PlaySoundOptions = {}>(sound: string, options?: O): SoundBody<O>;
+  export function rumble<O extends PresentationOptions = {}>(strong: number, durationMs: number, weak?: number | null, options?: O): PresentationBody<O>;
+  export function flashScreen<O extends PresentationOptions = {}>(color: [number, number, number, number], durationMs: number, options?: O): PresentationBody<O>;
+  export function vignette<O extends PresentationOptions = {}>(strength: number, durationMs: number, color?: [number, number, number] | null, options?: O): PresentationBody<O>;
+  export function screenShake<O extends PresentationOptions = {}>(amplitude: number, durationMs: number, frequency?: number | null, options?: O): PresentationBody<O>;
   /** Push UI tree `tree` as a modal; optional `onCommit` names a reaction fired on commit. Unknown tree names warn and no-op. */
   export function showDialog(tree: string, onCommit?: string | null): PrimitiveReactionDescriptor;
   export const KEYBOARD_TREE: "keyboard";

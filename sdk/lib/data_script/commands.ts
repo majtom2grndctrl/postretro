@@ -167,9 +167,9 @@ function tokenCommand(target: SubjectTokenTarget): CommandBuilder<SubjectTokenCo
   return (primitive, args) => ({ primitive, target, args });
 }
 
-export const ACTIVATORS_TARGET = Object.freeze(
-  playerVerbs(tokenCommand("@activators")),
-) as unknown as ActivatorsTarget;
+const activatorsTarget = playerVerbs(tokenCommand("@activators"));
+Object.defineProperty(activatorsTarget, "__wire", { value: "@activators", enumerable: false });
+export const ACTIVATORS_TARGET = Object.freeze(activatorsTarget) as unknown as ActivatorsTarget;
 
 // `__wire` (non-enumerable) lets an engine state ref's `byPlayer`, built
 // before this module loads, recognize the token without seeing it.
@@ -178,7 +178,9 @@ Object.defineProperty(playerTarget, "__wire", { value: "@player", enumerable: fa
 export const PLAYER_TARGET = Object.freeze(playerTarget) as unknown as PlayerTarget;
 
 const triggerCommand = tokenCommand("@trigger");
-export const TRIGGER_TARGET = Object.freeze({
+const triggerTarget = {
   arm: () => triggerCommand("armTrigger", {}),
   disarm: () => triggerCommand("disarmTrigger", {}),
-}) as unknown as TriggerTarget;
+};
+Object.defineProperty(triggerTarget, "__wire", { value: "@trigger", enumerable: false });
+export const TRIGGER_TARGET = Object.freeze(triggerTarget) as unknown as TriggerTarget;

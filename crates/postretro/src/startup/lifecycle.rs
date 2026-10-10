@@ -254,7 +254,22 @@ impl App {
             bindings
         };
         self.trigger_bindings = bindings;
+        self.warn_hosted_trigger_machine_local();
         self.rebuild_player_events(true);
+    }
+
+    fn warn_hosted_trigger_machine_local(&self) {
+        let Some(session) = self.session.as_ref() else {
+            return;
+        };
+        crate::startup::reaction_validation::warn_hosted_trigger_machine_local(
+            &session.scripting.script_ctx,
+            &self.trigger_bindings,
+            matches!(
+                session.net_endpoint.as_ref(),
+                Some(crate::netcode::NetEndpoint::Host { .. })
+            ),
+        );
     }
 
     /// Rebind player events over the active composed set. A recompose keeps
@@ -896,6 +911,7 @@ impl App {
 
         self.kinematic_mover_colliders = products.mover_colliders;
         self.trigger_bindings = products.trigger_bindings;
+        self.warn_hosted_trigger_machine_local();
         // A level install starts every player unobserved: no edge memory
         // carries from the previous level.
         self.rebuild_player_events(false);
@@ -1177,9 +1193,22 @@ fn rebuild_reaction_subscribers(
                 event_player_addresses.insert(reaction.name.clone());
             }
         }
+        let audience_addresses: std::collections::HashMap<String, String> = data_registry
+            .reactions
+            .iter()
+            .filter_map(|reaction| {
+                crate::startup::reaction_validation::reaction_audience_token(&reaction.descriptor)
+                    .map(|token| (reaction.name.clone(), token.to_string()))
+            })
+            .collect();
         data_registry.crossings.retain_mut(|crossing| {
             let crossing_id = crossing.slot.as_deref().unwrap_or("<predicate>");
             crossing.fire.retain(|address| {
+                if let Some(token) = audience_addresses.get(address) {
+                    log::error!("[Scripting] crossing on `{crossing_id}` drops address `{address}`: reaction `{address}` uses audience `{token}`, which this source does not publish");
+                    return false;
+                }
+
                 if event_player_addresses.contains(address) {
                     log::error!(
                         "[Scripting] crossing on `{crossing_id}` drops address `{address}`: reaction `{address}` uses `on.player`, which only a player event publishes"
@@ -1196,12 +1225,26 @@ fn rebuild_reaction_subscribers(
             });
             !crossing.fire.is_empty()
         });
+        for reaction in &mut data_registry.reactions {
+            if reaction.name == "levelLoad"
+                && let Some(token) = crate::startup::reaction_validation::reaction_audience_token(
+                    &reaction.descriptor,
+                )
+            {
+                log::error!(
+                    "[Scripting] levelLoad: reaction `levelLoad` uses audience `{token}`, which this source does not publish; dropping the reaction"
+                );
+                reaction.descriptor = postretro_entities::ReactionDescriptor::Sequence(Vec::new());
+            }
+        }
         if level_load_has_sentinel {
             log::warn!(
                 "[Scripting] levelLoad references trigger-sentinel work; incompatible commands will be skipped"
             );
         }
-        if event_player_addresses.contains("levelLoad") {
+        if event_player_addresses.contains("levelLoad")
+            && !audience_addresses.contains_key("levelLoad")
+        {
             log::error!(
                 "[Scripting] levelLoad: reaction `levelLoad` uses `on.player`, which only a player event publishes; its `on.player` work never runs at level load"
             );
@@ -4903,5 +4946,180 @@ pub(crate) mod tests {
             }),
             "legacy sentinel warning fired for an `@player`-only levelLoad"
         );
+    }
+    #[test]
+    fn audience_source_gates_reject_all_tokens_for_crossings_and_level_load() {
+        use postretro_test_log_capture::LogCapture;
+        for token in ["@activators", "@trigger", "@player"] {
+            let ctx = ScriptCtx::new();
+            let named = |name: &str| NamedReaction {
+                name: name.into(),
+                descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
+                    primitive: "playSound".into(),
+                    target: None,
+                    kind: None,
+                    tag: None,
+                    on_complete: None,
+                    args: serde_json::json!({"sound":"beep", "audience":token}),
+                }),
+            };
+            ctx.data_registry.borrow_mut().populate_level(
+                vec![named("audience"), named("levelLoad")],
+                vec![CrossingDescriptor {
+                    slot: Some("player.health".into()),
+                    condition: CrossingCondition::Below { threshold: 0.5 },
+                    max: 100.0,
+                    edge: None,
+                    fire: vec!["audience".into()],
+                }],
+                &[],
+            );
+            let capture = LogCapture::start();
+            rebuild_reaction_subscribers(
+                &mut postretro_scripting_core::reaction_dispatch::ProgressTracker::new(),
+                &mut postretro_scripting_core::state_crossings::CrossingDetector::new(),
+                &ctx,
+                SubscriberRebuild::LevelInstall,
+            );
+            assert!(ctx.data_registry.borrow().crossings.is_empty(), "{token}");
+            assert!(
+                matches!(&ctx.data_registry.borrow().reactions[1].descriptor,
+                ReactionDescriptor::Sequence(steps) if steps.is_empty())
+            );
+            capture.assert_logged_once(
+                log::Level::Error,
+                "crossing on `player.health` drops address `audience`",
+            );
+            capture.assert_logged_once(
+                log::Level::Error,
+                "levelLoad: reaction `levelLoad` uses audience",
+            );
+        }
+    }
+
+    /// Parse identical raw descriptors through a bundled TS entry and the Luau
+    /// data-script runtime. Builder serialization is covered by the SDK tests.
+    pub(crate) fn runtime_audience_manifest(
+        value: &serde_json::Value,
+        luau: bool,
+    ) -> postretro_scripting_core::data_descriptors::LevelManifest {
+        fn lua(value: &serde_json::Value) -> String {
+            use serde_json::Value;
+            match value {
+                Value::Null => {
+                    panic!("Lua nil omits a field; parity fixtures use representable values")
+                }
+                Value::Bool(_) | Value::Number(_) | Value::String(_) => value.to_string(),
+                Value::Array(values) => format!(
+                    "{{{}}}",
+                    values.iter().map(lua).collect::<Vec<_>>().join(",")
+                ),
+                Value::Object(values) => format!(
+                    "{{{}}}",
+                    values
+                        .iter()
+                        .map(|(key, value)| format!(
+                            "[{}]={}",
+                            serde_json::to_string(key).unwrap(),
+                            lua(value)
+                        ))
+                        .collect::<Vec<_>>()
+                        .join(",")
+                ),
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir
+            .path()
+            .join(if luau { "audience.luau" } else { "audience.ts" });
+        let source = if luau {
+            format!("function setupLevel(_ctx) return {} end", lua(value))
+        } else {
+            format!("export function setupLevel() {{ return {value}; }}")
+        };
+        std::fs::write(&path, &source).unwrap();
+        let source = if luau {
+            source
+        } else {
+            postretro_script_compiler::bundle_entry(&path).expect("raw audience TS fixture bundles")
+        };
+        let ctx = ScriptCtx::new();
+        let runtime = ScriptRuntime::new(
+            &PrimitiveRegistry::new(),
+            &ScriptRuntimeConfig::default(),
+            &ctx,
+        )
+        .unwrap();
+        runtime.run_data_script(
+            &postretro_level_format::data_script::DataScriptSection {
+                compiled_bytes: source.into_bytes(),
+                source_path: path.to_string_lossy().into_owned(),
+            },
+            dir.path(),
+        )
+    }
+
+    #[test]
+    fn runtime_audience_source_install_parity_for_crossings_and_level_load() {
+        use postretro_test_log_capture::LogCapture;
+        for audience in [
+            Some("@activators"),
+            Some("@trigger"),
+            Some("@player"),
+            Some("everyone"),
+            None,
+        ] {
+            let mut args = serde_json::json!({ "sound": "beep" });
+            if let Some(audience) = audience {
+                args["audience"] = serde_json::json!(audience);
+            }
+            let fixture = serde_json::json!({
+                "reactions": [
+                    { "name": "crossingCue", "primitive": "playSound", "args": args },
+                    { "name": "levelLoad", "primitive": "playSound", "args": args }
+                ],
+                "crossings": [{ "slot": "player.health", "below": 25, "max": 100, "fire": ["crossingCue"] }]
+            });
+            let ts = runtime_audience_manifest(&fixture, false);
+            let luau = runtime_audience_manifest(&fixture, true);
+            assert_eq!(ts.reactions.len(), 2, "fixture must parse: {audience:?}");
+            assert_eq!(ts.crossings.len(), 1);
+            assert_eq!(ts.reactions, luau.reactions);
+            assert_eq!(ts.crossings, luau.crossings);
+            let scoped = audience.is_some_and(|audience| audience.starts_with('@'));
+            for manifest in [ts, luau] {
+                let ctx = ScriptCtx::new();
+                ctx.data_registry.borrow_mut().populate_level(
+                    manifest.reactions,
+                    manifest.crossings,
+                    &[],
+                );
+                let capture = LogCapture::start();
+                rebuild_reaction_subscribers(
+                    &mut ProgressTracker::new(),
+                    &mut postretro_scripting_core::state_crossings::CrossingDetector::new(),
+                    &ctx,
+                    SubscriberRebuild::LevelInstall,
+                );
+                let data = ctx.data_registry.borrow();
+                assert_eq!(data.crossings.is_empty(), scoped, "{audience:?}");
+                assert_eq!(
+                    matches!(&data.reactions[1].descriptor, ReactionDescriptor::Sequence(steps) if steps.is_empty()),
+                    scoped
+                );
+                if scoped {
+                    capture.assert_logged_once(
+                        log::Level::Error,
+                        "crossing on `player.health` drops address `crossingCue`",
+                    );
+                    capture.assert_logged_once(
+                        log::Level::Error,
+                        "levelLoad: reaction `levelLoad` uses audience",
+                    );
+                } else {
+                    capture.assert_not_logged(log::Level::Error, "uses audience");
+                }
+            }
+        }
     }
 }

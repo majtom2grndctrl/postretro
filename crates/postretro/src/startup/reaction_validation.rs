@@ -74,6 +74,46 @@ fn invalid_at_value(args: &serde_json::Value) -> Option<&str> {
         .filter(|at| *at != postretro_entities::EMITTER_AT_TOKEN)
 }
 
+/// The audience is accepted only by the five presentation builders. A present
+/// null, number or object is malformed as well as an unknown string.
+fn invalid_audience(primitive: &str, args: &serde_json::Value) -> Option<String> {
+    let value = args.get("audience")?;
+    let presentation =
+        postretro_entities::reactions::system_commands::SystemReactionKind::from_primitive_name(
+            primitive,
+        )
+        .is_some_and(|kind| {
+            kind.class()
+                == postretro_entities::reactions::system_commands::SystemReactionClass::Presentation
+        });
+    if presentation
+        && matches!(
+            value.as_str(),
+            Some("@activators" | "@trigger" | "@player" | "everyone")
+        )
+    {
+        None
+    } else {
+        Some(value.to_string())
+    }
+}
+
+fn args_read_audience(args: &serde_json::Value) -> bool {
+    postretro_scripting_core::player_event_scope::audience_token(args).is_some()
+}
+
+pub(crate) fn reaction_audience_token(descriptor: &ReactionDescriptor) -> Option<&str> {
+    match descriptor {
+        ReactionDescriptor::Primitive(p) => {
+            postretro_scripting_core::player_event_scope::audience_token(&p.args)
+        }
+        ReactionDescriptor::Sequence(steps) => steps.iter().find_map(|step| {
+            postretro_scripting_core::player_event_scope::audience_token(&step.args)
+        }),
+        ReactionDescriptor::Progress(_) => None,
+    }
+}
+
 /// Pass A — body-only validation (V1, V4a, V6, and the emitter-token/bus rules). Reads and mutates the
 /// `DataRegistry` alone. Must run before `build_trigger_bindings`, or the binder
 /// binds a body this pass rejects.
@@ -90,6 +130,24 @@ pub(crate) fn validate_reaction_bodies_pass_a(script_ctx: &ScriptCtx) {
         .collect();
 
     for index in 0..data_registry.reactions.len() {
+        let audience_violation = match &data_registry.reactions[index].descriptor {
+            ReactionDescriptor::Primitive(p) => {
+                invalid_audience(&p.primitive, &p.args).map(|value| (p.primitive.clone(), value))
+            }
+            ReactionDescriptor::Sequence(steps) => steps.iter().find_map(|step| {
+                invalid_audience(&step.primitive, &step.args)
+                    .map(|value| (step.primitive.clone(), value))
+            }),
+            ReactionDescriptor::Progress(_) => None,
+        };
+        if let Some((primitive, value)) = audience_violation {
+            let name = &data_registry.reactions[index].name;
+            log::error!(
+                "[Scripting] reaction `{name}`: `{primitive}` has invalid audience {value}; only presentation builders accept @activators, @trigger, @player or everyone. Dropping the reaction"
+            );
+            data_registry.reactions[index].descriptor = ReactionDescriptor::Sequence(Vec::new());
+            continue;
+        }
         // `at`, when present, names only the opaque emitter token; any other
         // value — including the SDKs' lowered `"@invalid"` sentinel — never
         // installs. Checked before the bus and sequence-only rows below.
@@ -165,6 +223,7 @@ pub(crate) fn validate_reaction_bodies_pass_a(script_ctx: &ScriptCtx) {
                         | SequenceTarget::FiredTrigger
                         | SequenceTarget::EventPlayer
                 ) || args_read_emitter(&step.args)
+                    || args_read_audience(&step.args)
                     || postretro_scripting_core::player_event_scope::reads_event_player(&step.args)
             })
         {
@@ -289,6 +348,10 @@ fn scoped_fire_targets(
                 .as_deref()
                 .map(|target| format!("primitive target sentinel `{target}`"))
                 .or_else(|| {
+                    args_read_audience(&primitive.args)
+                        .then(|| format!("`{}` uses a token audience", primitive.primitive))
+                })
+                .or_else(|| {
                     args_read_emitter(&primitive.args)
                         .then(|| format!("`{}` at `on.emitter`", primitive.primitive))
                 })
@@ -320,8 +383,11 @@ fn scoped_fire_targets(
                         SequenceTarget::Entity(_)
                         | SequenceTarget::Group(_)
                         | SequenceTarget::Wait
-                        | SequenceTarget::Fire => args_read_emitter(&step.args)
-                            .then(|| format!("sequence step {step_index} `at` `on.emitter`")),
+                        | SequenceTarget::Fire => (args_read_emitter(&step.args)
+                            || args_read_audience(&step.args))
+                        .then(|| {
+                            format!("sequence step {step_index} reads a token audience or emitter")
+                        }),
                     })
             }
             ReactionDescriptor::Progress(_) => None,
@@ -477,6 +543,60 @@ pub(crate) fn derive_interruptible_wait_exit_edges(
         for &trigger in triggers {
             if derived.insert(trigger) {
                 trigger_bindings.bind_edge_only(trigger, TriggerEventEdge::Exit);
+            }
+        }
+    }
+}
+
+/// Hosted trigger UI remains local. Walk all routes once per binding/reaction;
+/// this diagnostic never drops the binding or changes single-player behavior.
+pub(crate) fn warn_hosted_trigger_machine_local(
+    script_ctx: &ScriptCtx,
+    bindings: &TriggerBindingTable,
+    hosted: bool,
+) {
+    if !hosted {
+        return;
+    }
+    let registry = script_ctx.registry.borrow();
+    let data = script_ctx.data_registry.borrow();
+    let mut roots = Vec::new();
+    for (trigger, _) in registry.iter_with_kind(ComponentKind::TriggerVolume) {
+        if let Ok(volume) = registry.get_component::<TriggerVolumeComponent>(trigger) {
+            for (edge, address) in [
+                (TriggerEventEdge::Enter, &volume.on_fire),
+                (TriggerEventEdge::Exit, &volume.on_exit),
+            ] {
+                if !address.is_empty() {
+                    roots.push((trigger, edge, address.clone()));
+                }
+            }
+        }
+    }
+    roots.extend(
+        resolve_manifest_trigger_events(&registry, &data, ResolutionDiagnostics::Silent)
+            .into_iter()
+            .map(|binding| (binding.trigger, binding.edge, binding.reaction)),
+    );
+    roots.sort_by(|a, b| {
+        (a.0, matches!(a.1, TriggerEventEdge::Exit), &a.2).cmp(&(
+            b.0,
+            matches!(b.1, TriggerEventEdge::Exit),
+            &b.2,
+        ))
+    });
+    let mut warned = HashSet::new();
+    for (trigger, edge, address) in roots {
+        if !bindings.bound_edges().contains(&(trigger, edge)) {
+            continue;
+        }
+        for reaction in
+            postretro_sim::player_events::reachable_machine_local_reactions(&address, &data)
+        {
+            if warned.insert((trigger, edge, reaction.clone())) {
+                log::warn!(
+                    "[Scripting] hosted trigger {trigger} {edge:?} reaches machine-local reaction `{reaction}`; UI-stack and text effects present only on the host"
+                );
             }
         }
     }
@@ -1923,5 +2043,287 @@ mod tests {
             55.0,
             "the group step lands on the seat-bound pawn",
         );
+    }
+    #[test]
+    fn audience_pass_a_accepts_only_four_spellings_on_five_presentation_builders() {
+        for primitive in [
+            "playSound",
+            "rumble",
+            "flashScreen",
+            "vignette",
+            "screenShake",
+        ] {
+            for audience in ["@activators", "@trigger", "@player", "everyone"] {
+                let mut reaction = play_sound("legal", None, false);
+                if let ReactionDescriptor::Primitive(p) = &mut reaction.descriptor {
+                    p.primitive = primitive.into();
+                    p.args["audience"] = json!(audience);
+                }
+                let ctx = ctx_with_reactions(vec![reaction]);
+                validate_reaction_bodies_pass_a(&ctx);
+                assert!(!is_dropped(&ctx, "legal"), "{primitive} {audience}");
+            }
+            for audience in [
+                json!("@invalid"),
+                json!("activators"),
+                json!(null),
+                json!(5),
+                json!(true),
+                json!({}),
+                json!([]),
+            ] {
+                let mut reaction = play_sound("bad", None, false);
+                if let ReactionDescriptor::Primitive(p) = &mut reaction.descriptor {
+                    p.primitive = primitive.into();
+                    p.args["audience"] = audience.clone();
+                }
+                let ctx = ctx_with_reactions(vec![reaction]);
+                let capture = LogCapture::start();
+                validate_reaction_bodies_pass_a(&ctx);
+                assert!(is_dropped(&ctx, "bad"), "{primitive} {audience}");
+                capture.assert_logged_once(log::Level::Error, "reaction `bad`");
+            }
+        }
+        for primitive in ["openMenu", "setState", "setFogDensity", "applyDamage"] {
+            let mut reaction = play_sound("wrongBuilder", None, false);
+            if let ReactionDescriptor::Primitive(p) = &mut reaction.descriptor {
+                p.primitive = primitive.into();
+                p.args["audience"] = json!("everyone");
+            }
+            let ctx = ctx_with_reactions(vec![reaction]);
+            validate_reaction_bodies_pass_a(&ctx);
+            assert!(is_dropped(&ctx, "wrongBuilder"), "{primitive}");
+        }
+    }
+
+    #[test]
+    fn audience_token_does_not_survive_wait_or_context_free_fire() {
+        for token in ["@activators", "@trigger", "@player"] {
+            let mut reaction = play_sound("scoped", None, false);
+            if let ReactionDescriptor::Primitive(p) = &mut reaction.descriptor {
+                p.args["audience"] = json!(token);
+            }
+            let post_wait = SequenceStep {
+                id: SequenceTarget::Entity(EntityId::from_raw(1)),
+                primitive: "playSound".into(),
+                args: json!({"sound":"beep", "audience":token}),
+            };
+            let ctx = ctx_with_reactions(vec![
+                reaction,
+                sequence("caller", vec![fire_step("scoped")]),
+                sequence("afterWait", vec![wait_step(json!(17), false), post_wait]),
+            ]);
+            validate_reaction_bodies_pass_a(&ctx);
+            assert!(is_dropped(&ctx, "afterWait"), "{token}");
+            run_pass_b(&ctx);
+            assert!(is_dropped(&ctx, "caller"), "{token}");
+            assert!(
+                !is_dropped(&ctx, "scoped"),
+                "a legal direct source may still bind it"
+            );
+        }
+        let mut reaction = play_sound("public", None, false);
+        if let ReactionDescriptor::Primitive(p) = &mut reaction.descriptor {
+            p.args["audience"] = json!("everyone");
+        }
+        let ctx = ctx_with_reactions(vec![
+            reaction,
+            sequence("caller", vec![fire_step("public")]),
+        ]);
+        validate_reaction_bodies_pass_a(&ctx);
+        run_pass_b(&ctx);
+        assert!(!is_dropped(&ctx, "caller"));
+    }
+
+    #[test]
+    fn hosted_trigger_ui_warning_walks_post_wait_and_followups_once_per_binding() {
+        let mut dialog = play_sound("dialog", None, false);
+        if let ReactionDescriptor::Primitive(p) = &mut dialog.descriptor {
+            p.primitive = "openMenu".into();
+            p.args = json!({"tree":"menu"});
+            p.on_complete = Some("root".into());
+        }
+        let ctx = ctx_with_reactions(vec![
+            sequence(
+                "root",
+                vec![
+                    wait_step(json!(17), false),
+                    fire_step("dialog"),
+                    fire_step("dialog"),
+                ],
+            ),
+            dialog,
+        ]);
+        spawn_trigger(&ctx, "root", "", TriggerFireMode::Multiple, &[]);
+        let bindings = validated_bindings(&ctx);
+        for hosted in [false, true] {
+            let capture = LogCapture::start();
+            warn_hosted_trigger_machine_local(&ctx, &bindings, hosted);
+            let warnings = capture
+                .records()
+                .into_iter()
+                .filter(|record| {
+                    record
+                        .message
+                        .contains("reaches machine-local reaction `dialog`")
+                })
+                .count();
+            assert_eq!(
+                warnings,
+                usize::from(hosted),
+                "single player/client must stay quiet"
+            );
+        }
+        ctx.owner_slot_writes_enabled.set(false);
+        let capture = LogCapture::start();
+        warn_hosted_trigger_machine_local(&ctx, &bindings, false);
+        assert!(
+            !capture
+                .records()
+                .iter()
+                .any(|record| record.message.contains("machine-local reaction"))
+        );
+    }
+
+    #[test]
+    fn runtime_audience_install_parity_for_body_and_subject_gates() {
+        use crate::startup::lifecycle::tests::runtime_audience_manifest;
+        use postretro_sim::player_events::PlayerEventTable;
+        // Raw descriptors deliberately exercise engine gates that SDK types
+        // prevent authors from expressing. Builder wire parity has its own test.
+        let mut rows = Vec::new();
+        for value in [
+            json!("@unknown"),
+            json!(7),
+            json!(false),
+            json!({"bad":true}),
+            json!([1]),
+        ] {
+            rows.push(("malformed", Some(value), true));
+        }
+        rows.push(("wrongBuilder", Some(json!("everyone")), true));
+        for token in ["@activators", "@trigger", "@player"] {
+            rows.push(("wait", Some(json!(token)), true));
+            rows.push(("fire", Some(json!(token)), true));
+            rows.push(("trigger", Some(json!(token)), token == "@player"));
+            rows.push(("player", Some(json!(token)), token != "@player"));
+        }
+        for audience in [Some(json!("everyone")), None] {
+            for gate in ["malformed", "fire", "trigger", "player"] {
+                rows.push((gate, audience.clone(), false));
+            }
+        }
+        for (gate, audience, reject) in rows {
+            let mut args = json!({"sound":"beep"});
+            if let Some(audience) = &audience {
+                args["audience"] = audience.clone();
+            }
+            let mut subject = json!({"name":"subject", "primitive":"playSound", "args":args});
+            if gate == "wrongBuilder" {
+                subject["primitive"] = json!("setFogDensity");
+            }
+            if gate == "wait" {
+                subject = json!({"name":"subject", "sequence":[
+                    {"id":"@wait", "primitive":"wait", "args":{"durationMs":17}},
+                    {"id":1, "primitive":"playSound", "args":args}
+                ]});
+            }
+            let mut fixture = json!({"reactions":[subject]});
+            if gate == "fire" {
+                fixture["reactions"].as_array_mut().unwrap().push(
+                    json!({"name":"caller", "sequence":[
+                        {"id":"@fire", "primitive":"fire", "args":{"event":"subject"}}
+                    ]}),
+                );
+            }
+            if gate == "player" {
+                fixture["playerEvents"] = json!([{"edge":"becomes", "condition":{"op":"const", "value":true}, "fire":["subject"]}]);
+            }
+            let ts = runtime_audience_manifest(&fixture, false);
+            let luau = runtime_audience_manifest(&fixture, true);
+            assert_eq!(
+                ts.reactions.len(),
+                if gate == "fire" { 2 } else { 1 },
+                "fixture parse: {gate} {audience:?}"
+            );
+            assert_eq!(
+                ts.reactions, luau.reactions,
+                "parsed bodies: {gate} {audience:?}"
+            );
+            assert_eq!(ts.player_events, luau.player_events);
+            if gate == "player" {
+                assert_eq!(ts.player_events.len(), 1);
+            }
+            let mut diagnostics = Vec::new();
+            for manifest in [ts, luau] {
+                let ctx = ctx_with_reactions(manifest.reactions);
+                {
+                    let mut data = ctx.data_registry.borrow_mut();
+                    data.set_level_player_events(manifest.player_events);
+                    data.recompose(&[]);
+                }
+                let trigger = (gate == "trigger")
+                    .then(|| spawn_trigger(&ctx, "subject", "", TriggerFireMode::Multiple, &[]));
+                let capture = LogCapture::start();
+                let rejected = match gate {
+                    "trigger" => {
+                        let bindings = validated_bindings(&ctx);
+                        !bindings
+                            .bound_edges()
+                            .contains(&(trigger.unwrap(), TriggerEventEdge::Enter))
+                    }
+                    "player" => {
+                        validate_reaction_bodies_pass_a(&ctx);
+                        {
+                            let mut registry = ctx.registry.borrow_mut();
+                            let pawn = registry.spawn(Transform::default());
+                            registry.mark_local_player_pawn(pawn).unwrap();
+                        }
+                        let mut table = PlayerEventTable::build(
+                            &ctx,
+                            Default::default(),
+                            Default::default(),
+                            None,
+                        );
+                        let mut residuals = Vec::new();
+                        table.run_tick(&ctx, &mut residuals);
+                        residuals.is_empty()
+                    }
+                    "fire" => {
+                        validate_reaction_bodies_pass_a(&ctx);
+                        run_pass_b(&ctx);
+                        is_dropped(&ctx, "caller")
+                    }
+                    _ => {
+                        validate_reaction_bodies_pass_a(&ctx);
+                        is_dropped(&ctx, "subject")
+                    }
+                };
+                assert_eq!(rejected, reject, "{gate} {audience:?}");
+                let errors: Vec<_> = capture
+                    .records()
+                    .into_iter()
+                    .filter(|record| record.level == log::Level::Error)
+                    .map(|record| record.message)
+                    .collect();
+                assert_eq!(
+                    !errors.is_empty(),
+                    reject,
+                    "named install diagnostic: {gate} {audience:?}: {errors:?}"
+                );
+                if reject {
+                    assert!(
+                        errors.iter().any(
+                            |message| message.contains("subject") || message.contains("caller")
+                        )
+                    );
+                }
+                diagnostics.push(errors);
+            }
+            assert_eq!(
+                diagnostics[0], diagnostics[1],
+                "install diagnostics: {gate} {audience:?}"
+            );
+        }
     }
 }

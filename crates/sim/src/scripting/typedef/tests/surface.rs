@@ -94,20 +94,20 @@ fn reaction_handle_authoring_types_widen_in_both_outputs() {
     // Five authoring shapes (data, crossing, trigger-event, emitter and
     // player-event tracer), each with and without an explicit name.
     assert_eq!(
-        ts.matches("export function defineReaction(").count(),
+        ts.matches("export function defineReaction").count(),
         10,
         "ts must declare data and all dispatch-scope tracer defineReaction overloads"
     );
     assert!(
         ts.contains("export type EmitterParams = Readonly<{ emitter: EmitterTarget }>")
             && ts.contains("tracer: (params: EmitterParams)")
-            && ts.contains("export function playSound(sound: string, options?: PlaySoundOptions)"),
+            && ts.contains("export function playSound<O extends PlaySoundOptions = {}>(sound: string, options?: O)"),
         "ts must expose the emitter dispatch scope and playSound options:\n{ts}"
     );
     assert!(
         luau.contains("export type EmitterParams = { emitter: EmitterTarget }")
             && luau.contains("(tracer: (EmitterParams) ->")
-            && luau.contains("export type PlaySoundOptions = { bus: string?, at: EmitterTarget? }"),
+            && luau.contains("export type PlaySoundOptions = { bus: string?, at: EmitterTarget?, audience: PresentationAudience? }"),
         "luau must expose the emitter dispatch scope and playSound options:\n{luau}"
     );
     assert!(

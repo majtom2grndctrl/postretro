@@ -13090,72 +13090,84 @@
 "classname" "reference_enemy"
 "origin" "4384 -995 80"
 "angles" "0 59 0"
+"_tags" "enemy"
 }
 // entity 384
 {
 "classname" "reference_enemy"
 "origin" "607 -649 720"
 "angles" "0 9 0"
+"_tags" "enemy"
 }
 // entity 385
 {
 "classname" "reference_enemy"
 "origin" "-4248 2644 720"
 "angles" "0 276 0"
+"_tags" "enemy"
 }
 // entity 386
 {
 "classname" "reference_enemy"
 "origin" "-602 -2422 720"
 "angles" "0 275 0"
+"_tags" "enemy"
 }
 // entity 387
 {
 "classname" "reference_enemy"
 "origin" "880 -2344 720"
 "angles" "0 273 0"
+"_tags" "enemy"
 }
 // entity 388
 {
 "classname" "reference_enemy"
 "origin" "2741 2721 720"
 "angles" "0 134 0"
+"_tags" "enemy"
 }
 // entity 389
 {
 "classname" "reference_enemy"
 "origin" "-2355 -1075 720"
 "angles" "0 114 0"
+"_tags" "enemy"
 }
 // entity 390
 {
 "classname" "reference_enemy"
 "origin" "2651 -1039 720"
 "angles" "0 123 0"
+"_tags" "enemy"
 }
 // entity 391
 {
 "classname" "reference_enemy"
 "origin" "-4117 677 720"
 "angles" "0 109 0"
+"_tags" "enemy"
 }
 // entity 392
 {
 "classname" "reference_enemy"
 "origin" "953 673 720"
 "angles" "0 252 0"
+"_tags" "enemy"
 }
 // entity 393
 {
 "classname" "reference_enemy"
 "origin" "-2283 -2316 720"
 "angles" "0 144 0"
+"_tags" "enemy"
 }
 // entity 394
 {
 "classname" "reference_enemy"
 "origin" "-837 2294 720"
 "angles" "0 334 0"
+"_tags" "enemy"
 }
 // entity 395
 {
@@ -13545,6 +13557,7 @@
 "archetype" "reference_enemy"
 "count" "2"
 "_tags" "warren_closet_spawner_0"
+"spawned_tags" "enemy"
 }
 // entity 430
 {
@@ -13604,6 +13617,7 @@
 "archetype" "reference_enemy"
 "count" "2"
 "_tags" "warren_closet_spawner_1"
+"spawned_tags" "enemy"
 }
 // entity 435
 {
@@ -13663,6 +13677,7 @@
 "archetype" "reference_enemy"
 "count" "2"
 "_tags" "warren_closet_spawner_2"
+"spawned_tags" "enemy"
 }
 // entity 440
 {

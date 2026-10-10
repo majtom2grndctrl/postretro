@@ -82,6 +82,7 @@ pub fn dispatch(
                 weapon: None,
                 zone: None,
                 producer: DamageProducer::AppDrain,
+                point: None,
             },
         );
     }

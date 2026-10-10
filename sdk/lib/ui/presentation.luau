@@ -6,8 +6,10 @@ export type WidgetEasing = "linear" | "easeIn" | "easeOut" | "easeInOut"
 export type PresentationTemplateProps = {
   root: { [string]: any },
   lifetimeMs: number,
+  -- `rise` is the total upward travel over the lifetime, in device pixels.
   motion: { rise: number, easing: WidgetEasing },
   fade: { startMs: number },
+  -- Maximum random screen-space offset per spawn, in device pixels.
   spawnScatter: { radius: number },
   worldAnchor: { socket: string, offsetY: number }?,
 }

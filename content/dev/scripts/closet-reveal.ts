@@ -21,7 +21,7 @@ const resupply = defineReaction("closet.resupply", players().grantAmmo("shells.b
 
 export function setupLevel() {
   const door = getMapEntities("mover", { tag: "closet_door" }); // members, fixed at install
-  const closets = getMapEntities("spawner", { tag: "closet_spawner" }); // spawned_tags "closet"
+  const closets = getMapEntities("spawner", { tag: "closet_spawner" }); // spawned_tags "closet enemy"
   const plate = getMapEntities("trigger", { tag: "closet_reveal_plate" });
   const alarmLights = getMapEntities("light", { tag: "closet_alarm" }).sort(
     (a, b) => a.position.x - b.position.x, // inspect in JS

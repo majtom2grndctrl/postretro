@@ -1647,6 +1647,7 @@ Postretro.getMapEntities("light", { tag = "hallway_wave" })
 
 - Fields are a snapshot taken when the query runs. Member methods build reaction steps; they never change the entity during setup.
 - Only map-placed entities appear. A light or emitter carried by a spawned NPC, or by a player, never does.
+- A static light whose origin is inside solid geometry is dropped at compile time (the compiler warns, naming the entity), so it has no runtime presence and never appears in `"light"` results.
 - Call it in a level's data script, during module evaluation or in `setupLevel`. In a mod start script it raises an error naming the call, because no level exists yet.
 - An unknown kind is an error. NPCs and players are not members; use `npcs()` and `players()`.
 - Member methods return step arrays: spread them into a `sequence` (`...door.start()`), or use one as a whole `sequence`.

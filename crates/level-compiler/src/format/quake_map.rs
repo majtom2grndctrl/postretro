@@ -622,6 +622,17 @@ pub(crate) fn authored_light_start_active(
     }
 }
 
+/// Diagnostic name for a light, in the `.map` vocabulary a mapper searches
+/// for in the editor: entity index in file order, classname, and the origin
+/// string exactly as authored. Shared stages print it verbatim.
+pub(crate) fn light_source_label(
+    entity_index: usize,
+    classname: &str,
+    authored_origin: &str,
+) -> String {
+    format!("entity {entity_index} '{classname}' at origin \"{authored_origin}\"")
+}
+
 fn parse_f32(s: &str) -> Option<f32> {
     s.trim().parse::<f32>().ok()
 }

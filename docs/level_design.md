@@ -65,6 +65,8 @@ Radiates light in all directions from a single point.
 
 **Static vs. dynamic:** By default, lights are baked into the lightmap and indirect lighting volume at compile time — they're essentially free at runtime and cast soft baked shadows (penumbra width controlled by `_light_size`/`_angular_diameter`; set to `0` for the classic hard-pixel look). Set `_dynamic 1` if you need a light to move, change intensity during play, or be spawned by a script.
 
+**Keep static lights out of solid.** A static `light` or `light_spot` whose origin sits inside a brush is dropped at compile time, and the compiler warns, naming the entity. It lights nothing, has no runtime presence, and won't match `getMapEntities("light", …)`. A light flush against a brush face is fine. If you see the warning, move the light into open space. Dynamic lights and `light_sun` are never dropped this way.
+
 ---
 
 ### `light_spot` — Spotlight

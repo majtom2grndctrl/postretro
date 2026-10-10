@@ -813,6 +813,7 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
     // construction.
     let mut lights: Vec<MapLight> = Vec::new();
     let mut light_start_active_defaults = Vec::new();
+    let mut light_source_labels: Vec<String> = Vec::new();
     // Generic map entities for runtime classname dispatch — non-light point
     // entities only. Brush entities (those with brushes attached) are resolved
     // separately by their dedicated subsystems (e.g. `fog_volume`).
@@ -1046,6 +1047,11 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
                         })?,
                     );
                     lights.push(light);
+                    light_source_labels.push(quake_map::light_source_label(
+                        entities.len() - 1,
+                        &classname,
+                        &get_property(&geo_map, entity_id, "origin").unwrap_or_default(),
+                    ));
                     if let Some(assembly_index) = sibling_assembly_index {
                         assembly_members[assembly_index]
                             .light_indices
@@ -1549,6 +1555,7 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
         lights,
         carried_light_links,
         light_start_active_defaults,
+        light_source_labels,
         data_script,
         map_entities,
         kinematic_movers,

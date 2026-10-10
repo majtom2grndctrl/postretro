@@ -17,13 +17,12 @@ struct StepSection {
     stages: &'static [StageId],
 }
 
-const PARSE_STAGES: &[StageId] = &[
-    StageId::Parsing,
-    StageId::DataScript,
-    StageId::TextureValidation,
-];
+const PARSE_STAGES: &[StageId] = &[StageId::Parsing, StageId::TextureValidation];
+// DataScript sits with the world stages: it runs after partitioning, which
+// classifies the buried lights its light table omits.
 const WORLD_GEOMETRY_STAGES: &[StageId] = &[
     StageId::Partitioning,
+    StageId::DataScript,
     StageId::Visibility,
     StageId::Geometry,
     StageId::BvhBuild,
@@ -396,7 +395,7 @@ mod tests {
         assert!(text.contains("Lighting 0/7"));
         assert!(text.contains("EntityShadowLights"));
         assert!(text.contains("Direct SH Delta Bake"));
-        assert!(!text.contains("Parse 0/3\nParsing"));
+        assert!(!text.contains("Parse 0/2\nParsing"));
 
         // Only the newest foreground stage is highlighted; its open outer
         // stage stays muted.
@@ -419,8 +418,8 @@ mod tests {
         let mut state = state();
         state.begin_step(StageId::LightmapBake);
         let text = rendered(&mut state, 40, 30);
-        assert!(text.contains("Parse 0/3"));
-        assert!(text.contains("World 0/6"));
+        assert!(text.contains("Parse 0/2"));
+        assert!(text.contains("World 0/7"));
         assert!(text.contains("Lighting 0/7"));
         assert!(text.contains("World 0/3"));
         assert!(text.contains("Lighting 0/4"));

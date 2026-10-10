@@ -1,6 +1,6 @@
-// Buried static lights: baked-tier lights whose emitter lies wholly inside
-// solid world geometry. Such a light reaches no receiver, so the compiler
-// drops it from every light namespace and warns with the light's source label.
+// Buried static lights: baked-tier lights whose origin lies inside solid world
+// geometry. The compiler drops such a light from every light namespace and
+// warns with the light's source label.
 // See: context/lib/build_pipeline.md §Compiler pipeline
 
 use glam::DVec3;
@@ -8,9 +8,9 @@ use glam::DVec3;
 use crate::map_data::{LightType, MapLight};
 use crate::partition::{BspChild, BspTree};
 
-/// Minimum emitter radius for the solid test. A light whose origin lies on, or
-/// within this distance of, a face of the solid region reaches the empty side
-/// and is not buried; only an origin strictly inside solid is.
+/// Surface tolerance for the origin test. An origin on, or within this
+/// distance of, a face of the solid region counts as on the empty side and is
+/// not buried; only an origin strictly inside solid is.
 pub(crate) const BURIED_LIGHT_SURFACE_TOLERANCE_METERS: f64 = 1.0e-3;
 
 /// True when every BSP leaf the sphere can touch is solid.
@@ -19,7 +19,9 @@ pub(crate) const BURIED_LIGHT_SURFACE_TOLERANCE_METERS: f64 = 1.0e-3;
 /// `radius` of `center`, so the visited leaves cover the sphere. Solid leaves
 /// are wholly inside a brush (`build_pipeline.md` §Compiler pipeline, BSP
 /// construction), so an all-solid visit proves the sphere is inside solid. An
-/// empty tree has no solid space.
+/// empty tree has no solid space. A non-finite center gives NaN plane
+/// distances, which descend both sides, so the visit reaches an empty leaf and
+/// reports not solid.
 pub(crate) fn sphere_wholly_in_solid(tree: &BspTree, center: DVec3, radius: f64) -> bool {
     if tree.leaves.is_empty() {
         return false;
@@ -38,10 +40,12 @@ pub(crate) fn sphere_wholly_in_solid(tree: &BspTree, center: DVec3, radius: f64)
             BspChild::Node(index) => {
                 let node = &tree.nodes[index];
                 let distance = center.dot(node.plane_normal) - node.plane_distance;
-                if distance >= -radius {
+                // A NaN distance (non-finite center) descends both sides.
+                let unknown = distance.is_nan();
+                if unknown || distance >= -radius {
                     stack.push(node.front.clone());
                 }
-                if distance <= radius {
+                if unknown || distance <= radius {
                     stack.push(node.back.clone());
                 }
             }
@@ -52,18 +56,21 @@ pub(crate) fn sphere_wholly_in_solid(tree: &BspTree, center: DVec3, radius: f64)
 
 /// Which `MapData::lights` entries are buried, indexed by source light.
 ///
-/// Only baked-tier Point and Spot lights are classified. A dynamic light can
-/// move, and a directional light's origin plays no part in its lighting.
+/// A light is buried when its origin lies strictly inside solid, whatever its
+/// `light_size`. The chunk lists admit a light from its origin, so an origin in
+/// solid would add specular through that solid even when the emitter sphere
+/// pokes into air. Only baked-tier Point and Spot lights are classified. A
+/// dynamic light can move, and a directional light's origin plays no part in
+/// its lighting.
 #[derive(Debug, Clone, Default)]
 pub struct BuriedLights {
     buried: Vec<bool>,
 }
 
 impl BuriedLights {
-    /// Classify every light against the compiler BSP. The emitter is the
-    /// sphere the lightmap bake samples for soft shadows (`light_size`),
-    /// floored at [`BURIED_LIGHT_SURFACE_TOLERANCE_METERS`]; a light is buried
-    /// only when that whole sphere is solid, so no area sample can reach air.
+    /// Classify every light against the compiler BSP: buried when the ball of
+    /// radius [`BURIED_LIGHT_SURFACE_TOLERANCE_METERS`] around its origin is
+    /// wholly solid, so a light flush on a face is kept.
     pub fn classify(tree: &BspTree, lights: &[MapLight]) -> Self {
         let buried = lights
             .iter()
@@ -73,8 +80,7 @@ impl BuriedLights {
                     && sphere_wholly_in_solid(
                         tree,
                         light.origin,
-                        f64::from(light.light_size.max(0.0))
-                            .max(BURIED_LIGHT_SURFACE_TOLERANCE_METERS),
+                        BURIED_LIGHT_SURFACE_TOLERANCE_METERS,
                     )
             })
             .collect();
@@ -84,6 +90,13 @@ impl BuriedLights {
     /// No light is buried. Out-of-range indices also read as not buried.
     pub fn none() -> Self {
         Self::default()
+    }
+
+    /// An explicit buried set, indexed by source light, for tests whose
+    /// subject is a consumer of the set rather than the classification.
+    #[cfg(test)]
+    pub(crate) fn from_flags(buried: Vec<bool>) -> Self {
+        Self { buried }
     }
 
     pub fn is_buried(&self, source_index: usize) -> bool {
@@ -111,7 +124,8 @@ impl BuriedLights {
                 .unwrap_or("light with no source label");
             log::warn!(
                 "[Compiler] Light inside solid geometry: {label} (engine ({:.3}, {:.3}, {:.3}) m). \
-                 Excluded from every bake and runtime light set; move it into open space.",
+                 Excluded from every light bake and runtime light set; move it into open \
+                 space.",
                 light.origin.x,
                 light.origin.y,
                 light.origin.z,
@@ -231,19 +245,37 @@ mod tests {
     }
 
     #[test]
-    fn emitter_sphere_reaching_air_is_not_buried() {
-        // Origin 4 u (~0.1 m) inside the pillar's +x face. A hard point light
-        // is buried; the default 0.25 m emitter pokes into the room and still
-        // contributes soft-shadow samples, so it is kept.
+    fn shallow_origin_in_solid_is_buried_whatever_its_light_size() {
+        // Origin 4 u (~0.1 m) inside the pillar's +x face. The default emitter
+        // sphere pokes into the room, but the chunk lists admit the light from
+        // its origin, so it is buried either way.
         let shallow = [28.0, 0.0, 128.0];
         let map = pillar_room(&[
             light_entity(shallow, "\"_light_size\" \"0\"\n"),
             light_entity(shallow, ""),
         ]);
+        assert!(
+            f64::from(map.lights[1].light_size) > 4.0 * 0.0254,
+            "the default emitter must reach past the face for this test to mean anything"
+        );
         let (_, buried) = classify(&map);
 
-        assert!(buried.is_buried(0));
-        assert!(!buried.is_buried(1));
+        assert!(buried.is_buried(0), "hard emitter, origin in solid");
+        assert!(buried.is_buried(1), "default emitter, origin in solid");
+    }
+
+    #[test]
+    fn non_finite_origin_is_not_buried() {
+        let map = pillar_room(&[light_entity(INSIDE_PILLAR, "\"_light_size\" \"0\"\n")]);
+        let result = partition::partition(&map.brush_volumes).expect("partition");
+        for bad in [f64::NAN, f64::INFINITY] {
+            let mut lights = map.lights.clone();
+            lights[0].origin = DVec3::new(bad, 0.0, 0.0);
+            assert!(
+                !BuriedLights::classify(&result.tree, &lights).is_buried(0),
+                "origin x = {bad} must not read as buried"
+            );
+        }
     }
 
     #[test]
@@ -409,9 +441,9 @@ mod tests {
         );
     }
 
-    /// A shipped content map with no lights buried in its brushwork. The
-    /// AABB-based scratch tooling that first counted buried lights flagged
-    /// every light on this map; the BSP solid test must flag none.
+    /// A shipped content map with no lights buried in its brushwork. Its
+    /// lights sit beside brushes, where a bounding-box test would flag them;
+    /// the BSP solid test must flag none.
     #[test]
     fn kinematic_platform_has_no_buried_lights() {
         let path = crate::fixture_pipeline::fixture_path("kinematic-platform");

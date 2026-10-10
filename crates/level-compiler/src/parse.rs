@@ -1047,10 +1047,10 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
                         })?,
                     );
                     lights.push(light);
-                    light_source_labels.push(format!(
-                        "entity {} '{classname}' at origin \"{}\"",
+                    light_source_labels.push(quake_map::light_source_label(
                         entities.len() - 1,
-                        get_property(&geo_map, entity_id, "origin").unwrap_or_default(),
+                        &classname,
+                        &get_property(&geo_map, entity_id, "origin").unwrap_or_default(),
                     ));
                     if let Some(assembly_index) = sibling_assembly_index {
                         assembly_members[assembly_index]

@@ -841,18 +841,21 @@ fn chunk_light_influence(light: &MapLight, chunk_min: Vec3, chunk_max: Vec3) -> 
 /// a geometric receiver remain eligible to keep a light.
 ///
 /// A back-facing sample is offset *behind* its face, into the solid every
-/// world face backs onto. That admits a light buried in that solid, but the
-/// offset is not what admits it: an on-plane or front-side sample is clear
-/// too, because the only face such a segment crosses is the receiver itself,
-/// inside `SAMPLE_END_TOLERANCE_METERS`. The compiler therefore removes buried
-/// lights before this bake (`buried_lights.rs`) rather than changing the
-/// offset. For any other light behind the face, the segment must enter the
-/// solid through another world face, which occludes unless the entry lies
-/// within that same end tolerance of the sample (solid under 2 cm thick, or a
-/// sample at a convex edge whose neighbouring face already sees the light).
-/// The one remaining false admission is a light in exterior void behind a hull
-/// wall: exterior-facing faces are culled, so nothing occludes it, offset or
-/// not. Pinned by `back_facing_receiver_offset_admits_only_lights_in_its_solid`.
+/// world face backs onto. That admits a light whose origin is in that solid,
+/// but the offset is not what admits it: an on-plane or front-side sample is
+/// clear too, because the only face such a segment crosses is the receiver
+/// itself, inside `SAMPLE_END_TOLERANCE_METERS`. The compiler therefore removes
+/// every light whose origin is in solid before this bake (`buried_lights.rs`)
+/// rather than changing the offset. For a light in open space behind the face,
+/// the segment must enter the solid through another world face, which
+/// occludes unless the entry lies within that same end tolerance of the
+/// sample. The remaining false admissions are:
+/// - a light in exterior void behind a hull wall: exterior-facing faces are
+///   culled, so nothing occludes it, offset or not;
+/// - a light behind solid thinner than the 2 cm end tolerance;
+/// - a sample at a convex edge whose neighbouring face already sees the light.
+///
+/// Pinned by `back_facing_receiver_offset_admits_only_lights_in_its_solid`.
 fn any_receiver_unoccluded(
     bvh: &Bvh<f32, 3>,
     primitives: &[BvhPrimitive],
@@ -2016,9 +2019,9 @@ mod tests {
 
     /// The back-facing receiver offset pushes the sample into the solid behind
     /// its face. Pins that this admits only a light inside that solid (which
-    /// the compiler now excludes as buried), that an on-plane sample would
-    /// admit it just the same, and that a light in open space behind the
-    /// solid stays occluded.
+    /// the compiler excludes as buried), that an on-plane sample would admit
+    /// it just the same, and that a light in open space behind the solid stays
+    /// occluded.
     #[test]
     fn back_facing_receiver_offset_admits_only_lights_in_its_solid() {
         // A 1 m slab, x in [-0.5, 0.5], between two rooms: both faces are
@@ -2072,7 +2075,8 @@ mod tests {
         );
         assert!(
             segment_clear(&bvh, &prims, &geo, &buried, Vec3::new(0.5, 0.5, 0.0)),
-            "an on-plane sample admits it too: the end tolerance, not the offset,              lets a buried light through, so buried lights are excluded upstream"
+            "an on-plane sample admits it too: the end tolerance, not the offset, \
+             lets a buried light through, so buried lights are excluded upstream"
         );
     }
 

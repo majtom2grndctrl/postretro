@@ -100,6 +100,13 @@ class SpatialLayoutTests(unittest.TestCase):
         self.assertEqual(origin_of(inside_wall), (-236.0, float(front), 552.0))
         self.assertEqual(origin_of(outside), (0.0, 100.0, 552.0))
 
+    def test_closet_light_move_accepts_non_integer_origins(self):
+        fractional = GENERATOR.light_entity(
+            "static", (-236.5, 400.0, 552.25), (255, 255, 255), 1024, 180, True, None)
+        GENERATOR.move_lights_out_of_closet([fractional], 0, 256, 64, 576)
+        front = 256 - (GENERATOR.CLOSET_TRIGGER_REACH - GENERATOR.LIGHT_MARGIN)
+        self.assertEqual(origin_of(fractional), (-236.5, float(front), 552.25))
+
     def test_ordinary_cells_are_not_merged_across_reserved_bands(self):
         rooms = GENERATOR.tile_layer(2, 2, None, set())
         self.assertEqual(len(set(rooms.values())), 4)
@@ -621,7 +628,6 @@ def cross(a, b):
 
 def dot(a, b):
     return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-
 
 
 def brush_text_planes(brush):

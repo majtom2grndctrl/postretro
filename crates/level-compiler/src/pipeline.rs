@@ -649,11 +649,44 @@ fn run_after_parsing(
         );
     }
 
+    let stage_start = begin_stage(reporter.as_ref(), StageId::TextureValidation);
+    let texture_root = resolve_texture_root(&args.input);
+    texture_validation::validate_sibling_color_spaces(&texture_root)?;
+    finish_stage(
+        &mut timings,
+        reporter.as_ref(),
+        StageId::TextureValidation,
+        stage_start,
+        true,
+    );
+
+    let stage_start = begin_stage(reporter.as_ref(), StageId::Partitioning);
+    let result = partition::partition(&map_data.brush_volumes)?;
+    finish_stage(
+        &mut timings,
+        reporter.as_ref(),
+        StageId::Partitioning,
+        stage_start,
+        true,
+    );
+    if args.verbose {
+        partition::log_stats(&result.tree, &result.faces);
+    }
+
+    // Classify buried lights before the data script runs, so the script's
+    // light table already omits lights that will have no runtime entity
+    // (`buried_lights.rs`). Classification reads only fields the membership
+    // manifest never changes, so it holds for the post-manifest lights the
+    // namespaces below are built from.
+    let buried_lights = BuriedLights::classify(&result.tree, &map_data.lights);
+    buried_lights.warn(&map_data.lights, &map_data.light_source_labels);
+
     let stage_start = begin_stage(reporter.as_ref(), StageId::DataScript);
     let compiled_data_script = compile_worldspawn_data_script(
         &args.input,
         map_data.data_script.as_deref(),
         &map_data.lights,
+        &buried_lights,
         crate::script_light_membership::map_members_from_map(
             &map_data.kinematic_movers,
             &map_data.trigger_volumes,
@@ -685,34 +718,8 @@ fn run_after_parsing(
         data_script_section.is_some(),
     );
 
-    let stage_start = begin_stage(reporter.as_ref(), StageId::TextureValidation);
-    let texture_root = resolve_texture_root(&args.input);
-    texture_validation::validate_sibling_color_spaces(&texture_root)?;
-    finish_stage(
-        &mut timings,
-        reporter.as_ref(),
-        StageId::TextureValidation,
-        stage_start,
-        true,
-    );
-
-    let stage_start = begin_stage(reporter.as_ref(), StageId::Partitioning);
-    let result = partition::partition(&map_data.brush_volumes)?;
-    finish_stage(
-        &mut timings,
-        reporter.as_ref(),
-        StageId::Partitioning,
-        stage_start,
-        true,
-    );
-    if args.verbose {
-        partition::log_stats(&result.tree, &result.faces);
-    }
-
-    // Light namespaces form after the BSP so a light buried in solid can be
-    // left out of every one of them (`buried_lights.rs`).
-    let buried_lights = BuriedLights::classify(&result.tree, &map_data.lights);
-    buried_lights.warn(&map_data.lights, &map_data.light_source_labels);
+    // Light namespaces form after the manifest applies, from the post-manifest
+    // lights, and leave every buried light out.
     let static_baked_lights = light_namespaces::StaticBakedLights::from_lights_excluding(
         &map_data.lights,
         &buried_lights,
@@ -1071,8 +1078,8 @@ fn run_after_parsing(
     };
     // SH bake stages use raw MapData source indices so bake-only animated
     // lights can own descriptors. Runtime map lights come from compact
-    // AlphaLights (`_bake_only` omitted), so remap the lookup table exactly
-    // once at the PRL boundary.
+    // AlphaLights (`_bake_only` and buried lights omitted), so remap the
+    // lookup table exactly once at the PRL boundary.
     sh_volume_section.slot_for_map_light =
         alpha_lights_ns.compact_source_table(&raw_slot_for_map_light);
     // Both warm grouped and cold monolithic bakes reach this packaging seam as

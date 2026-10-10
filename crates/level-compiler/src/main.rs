@@ -1468,11 +1468,13 @@ impl Drop for DataScriptTempDir {
 /// the normal no-script path; once a script is present, a missing or malformed
 /// sidecar is a build error rather than a silently unanimated static light.
 /// `map_members` rides in the light table so the script's mover, trigger and
-/// spawner queries answer what runtime answers.
+/// spawner queries answer what runtime answers. `buried_lights` are left out of
+/// the light table for the same reason: they have no runtime entity.
 fn compile_worldspawn_data_script(
     map_path: &Path,
     data_script_path: Option<&str>,
     lights: &[map_data::MapLight],
+    buried_lights: &buried_lights::BuriedLights,
     map_members: Vec<postretro_level_format::light_membership::MapMember>,
 ) -> anyhow::Result<Option<CompiledDataScript>> {
     let Some(rel) = data_script_path else {
@@ -1508,8 +1510,9 @@ fn compile_worldspawn_data_script(
     }
 
     let temporary = DataScriptTempDir::create()?;
-    let light_table = crate::script_light_membership::light_table_from_lights(lights)?
-        .with_map_members(map_members);
+    let light_table =
+        crate::script_light_membership::light_table_from_lights(lights, buried_lights)?
+            .with_map_members(map_members);
     temporary.write_light_table(&light_table)?;
 
     // Always stage emitted bytes away from authored content. In particular, a
@@ -3086,9 +3089,14 @@ mod tests {
 
     #[test]
     fn data_script_absent_kvp_emits_no_section() {
-        let result =
-            compile_worldspawn_data_script(Path::new("/dev/null/fake.map"), None, &[], Vec::new())
-                .expect("None KVP must succeed");
+        let result = compile_worldspawn_data_script(
+            Path::new("/dev/null/fake.map"),
+            None,
+            &[],
+            &buried_lights::BuriedLights::none(),
+            Vec::new(),
+        )
+        .expect("None KVP must succeed");
         assert!(
             result.is_none(),
             "absent data_script KVP must not emit a DataScript section"
@@ -3132,8 +3140,13 @@ mod tests {
         let _ = std::fs::create_dir_all(&tmp_dir);
         let map_path = tmp_dir.join("test.map");
         let _ = std::fs::write(&map_path, "");
-        let result =
-            compile_worldspawn_data_script(&map_path, Some("does-not-exist.ts"), &[], Vec::new());
+        let result = compile_worldspawn_data_script(
+            &map_path,
+            Some("does-not-exist.ts"),
+            &[],
+            &buried_lights::BuriedLights::none(),
+            Vec::new(),
+        );
         assert!(
             result.is_err(),
             "missing data_script file must be a compile error"
@@ -3155,10 +3168,15 @@ mod tests {
         let luau_source = "function setupLevel(_)\n  return { reactions = { defineReaction(\"noop\", { primitive = \"noop\" }) } }\nend\n";
         std::fs::write(&luau_path, luau_source).unwrap();
 
-        let compiled =
-            compile_worldspawn_data_script(&map_path, Some("level-data.luau"), &[], Vec::new())
-                .expect("luau data_script should compile")
-                .expect("section must be emitted");
+        let compiled = compile_worldspawn_data_script(
+            &map_path,
+            Some("level-data.luau"),
+            &[],
+            &buried_lights::BuriedLights::none(),
+            Vec::new(),
+        )
+        .expect("luau data_script should compile")
+        .expect("section must be emitted");
 
         assert_eq!(compiled.section.compiled_bytes, luau_source.as_bytes());
         assert!(
@@ -3180,10 +3198,15 @@ mod tests {
         let source = "globalThis.setupLevel = function() { return { reactions: [] }; };\n";
         std::fs::write(&source_path, source).unwrap();
 
-        let compiled =
-            compile_worldspawn_data_script(&map_path, Some("level-data.js"), &[], Vec::new())
-                .expect("JavaScript data script should compile")
-                .expect("section must be emitted");
+        let compiled = compile_worldspawn_data_script(
+            &map_path,
+            Some("level-data.js"),
+            &[],
+            &buried_lights::BuriedLights::none(),
+            Vec::new(),
+        )
+        .expect("JavaScript data script should compile")
+        .expect("section must be emitted");
 
         assert_eq!(
             std::fs::read_to_string(&source_path).expect("read authored source after compile"),
@@ -3208,6 +3231,7 @@ mod tests {
             &map_path,
             map_data.data_script.as_deref(),
             &map_data.lights,
+            &buried_lights::BuriedLights::none(),
             script_light_membership::map_members_from_map(
                 &map_data.kinematic_movers,
                 &map_data.trigger_volumes,

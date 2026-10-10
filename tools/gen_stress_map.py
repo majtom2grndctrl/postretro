@@ -1029,11 +1029,13 @@ def move_lights_out_of_closet(lights, cx, front_y, zf, zc):
         for n, line in enumerate(light):
             if not line.startswith('"origin" '):
                 continue
-            px, py, pz = (int(v) for v in line.split('"')[3].split())
+            tx, ty, tz = line.split('"')[3].split()
+            px, py, pz = float(tx), float(ty), float(tz)
             if x0 <= px <= x1 and y0 <= py <= y1 and zf <= pz <= zc:
                 # LIGHT_MARGIN in front of the pod still clears the room's
-                # front wall by the same scatter margin.
-                light[n] = f'"origin" "{px} {y0 - (CLOSET_TRIGGER_REACH - LIGHT_MARGIN)} {pz}"'
+                # front wall by the same scatter margin. x and z keep their
+                # source text so the output stays byte-stable.
+                light[n] = f'"origin" "{tx} {y0 - (CLOSET_TRIGGER_REACH - LIGHT_MARGIN)} {tz}"'
 
 
 def monster_closet_entities(idx, cx, front_y, zf, zc):

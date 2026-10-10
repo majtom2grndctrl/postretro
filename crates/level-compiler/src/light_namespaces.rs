@@ -4,7 +4,7 @@
 // filter predicates. Each stage takes the slice it needs; no further filtering.
 //
 // Index-space contracts:
-// - `AlphaLightsNs`: on-disk `AlphaLightRecord` order (`!bake_only`).
+// - `AlphaLightsNs`: on-disk `AlphaLightRecord` order (`!bake_only`, not buried).
 //   `LightInfluence` records share this slot space — record `i` aligns across both.
 //   NOTE: `ChunkLightList` light_indices do NOT share this space; emitted in the
 //   compacted `!is_dynamic` spec_lights space (`pack_spec_lights`), dynamic lights
@@ -53,9 +53,10 @@ pub struct AlphaLightEntry<'a> {
 
 /// Lights for the static lightmap bake and SH base bake.
 ///
-/// Filter: `!is_dynamic && animation.is_none()` — position axis only, never
-/// shadow type. SH needs every baked-tier light (both shadow types) for bounce;
-/// filtering on shadow type here would starve it. The `sdf` exclusion lives at
+/// Filter: `!is_dynamic && animation.is_none()` and not buried
+/// (`crate::buried_lights`) — position axis only, never shadow type. SH needs
+/// every unburied baked-tier light (both shadow types) for bounce; filtering on
+/// shadow type here would starve it. The `sdf` exclusion lives at
 /// the direct lightmap consumer, keeping `lm_irr` disjoint from the runtime SDF
 /// set while SH still sees all baked-tier lights. Iteration order: original `&[MapLight]`.
 #[derive(Debug, Clone)]
@@ -97,11 +98,12 @@ impl<'a> StaticBakedLights<'a> {
 
 /// Lights for the animated weight-map bake, animation descriptors, and SH delta bake.
 ///
-/// Filter: `!is_dynamic && animation.is_some()` — position axis only, never
-/// shadow type. The delta bake needs every animated baked-tier light for bounce;
-/// filtering on shadow type here would starve it. The `sdf` exclusion lives at
-/// the direct weight-map consumer (`lm_anim` stays disjoint from the runtime SDF
-/// set; delta bake still sees all animated baked-tier lights). `bake_only`
+/// Filter: `!is_dynamic && animation.is_some()` and not buried
+/// (`crate::buried_lights`) — position axis only, never shadow type. The delta
+/// bake needs every animated baked-tier light for bounce; filtering on shadow
+/// type here would starve it. The `sdf` exclusion lives at the direct
+/// weight-map consumer (`lm_anim` stays disjoint from the runtime SDF set;
+/// delta bake still sees every animated baked-tier light that is not buried). `bake_only`
 /// animated lights are retained — they participate in weight-map compose at
 /// runtime. Indices match the runtime `AnimationDescriptor` buffer and
 /// `AnimatedLightChunks` light_indices. Iteration order: original `&[MapLight]`.
@@ -191,9 +193,9 @@ impl<'a> AnimatedBakedLights<'a> {
 /// Lights for the AlphaLights pack, LightInfluence pack, LightTags pack, and
 /// chunk light list bake.
 ///
-/// Filter: `!bake_only`. Indices match on-disk `AlphaLightRecord` slot space —
-/// AlphaLights, LightInfluence, and LightTags records all align. Iteration
-/// order: original `&[MapLight]`.
+/// Filter: `!bake_only` and not buried (`crate::buried_lights`). Indices match
+/// on-disk `AlphaLightRecord` slot space — AlphaLights, LightInfluence, and
+/// LightTags records all align. Iteration order: original `&[MapLight]`.
 #[derive(Debug, Clone)]
 pub struct AlphaLightsNs<'a> {
     entries: Vec<AlphaLightEntry<'a>>,

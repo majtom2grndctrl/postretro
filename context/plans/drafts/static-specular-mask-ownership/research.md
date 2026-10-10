@@ -105,6 +105,23 @@ elsewhere; the proxy is a lower bound.
   - Deciding cuts from shadowed demand needs visibility before packing, from a coarse
     pre-pass or a repack. That cost is unjustified at today's residuals.
 
+## Animated-baked lights
+
+- **Visibility source:** the AnimatedWeightMaps stage (`bake_one_chunk`) traces
+  `soft_visibility` per chart-interior texel, per chunk light. It uses the same charts,
+  placements, per-texel seed and area-sample count as the static walk.
+- **What it stores:** `weight = contribution_to_weight(...) × v` per `TexelLight`.
+  Entries with `v <= 0` or below `WEIGHT_EPSILON` are omitted, so visibility is
+  recovered by division and an absent entry means occluded.
+- **Ordering:** it runs after `FusedShadowmaskPlan::finish()` today. It reads no walk
+  output; every input is final after atlas preparation.
+- **Promotion:** animated lights never hold a shadowmask channel. Their promotion is
+  runtime-only, and the union iterates the selected-static suffix only
+  (`pack_forward_shadowmask_metadata` marks animated rows invalid).
+- **Specular:** `pack_spec_lights` packs constant `color × intensity` at install, and
+  the world specular loop never reads `anim_descriptors`/`anim_samples`. Strobing,
+  color cycling and script-disabled state are all ignored today.
+
 ## Capacity lever (carried from the previous draft)
 
 - BC5 `.rg` pairs dominate BC4 planes: same bytes per mask, twice the masks per group.

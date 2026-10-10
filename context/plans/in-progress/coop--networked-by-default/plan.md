@@ -112,7 +112,7 @@ Task names refer to the original brief; P numbers are execution/checkpoint order
 | P7 | Descriptor display set + HitVolume22, completeness retry/cache (T4) | integrator | P6 | in progress |
 | P8 | Extract client mover bindings (T1) | bounded worker | P7 | pending |
 | P9 | Stable identity, MapOrdinal23, authored-prefix resolver (T7) | integrator | P7,P8 | pending |
-| P10 | Extract replication encoder/state (T1) | bounded worker | P6 | in progress |
+| P10 | Extract replication encoder/state (T1) | bounded worker | P6 | complete |
 | P11 | Budget/order/flights/ack repair + byte telemetry (T6) | bounded net worker | P10 | pending |
 | P12 | Fire origin, ordered recipients, all drains, tick occupants and positioned sound (T8) | integrator | P6,P9 | pending |
 | P13 | TS/Luau audience SDK/types/compiler/install/source gates and UI warning (T9) | bounded SDK worker; integrator shared validation seams | P12 | pending |
@@ -139,6 +139,8 @@ Task names refer to the original brief; P numbers are execution/checkpoint order
 - P2 complete: real TouchSystem pickup/drop retains Health 37, magazine 3, recovery 87, every reserve (including explicit zero), ownership and spatial participation transitions. Deferred script removal still applies to held weapons and clears ownership on generation reuse. Client Control/baseline arrival orders, retuning and replacement/removal preserve retained state; current-inventory teardown protects former dropped/reacquired items; demotion/re-promotion rebuilds fresh instances. `held_descriptor_lifecycle` (sim 2 passed), the two touch lifecycle tests (1 each), duplicate/full and auto-touch ordering regressions (1 each), scripting-core `held_descriptor_lifecycle_refresh_preserves_ownership_and_retained_state` (1 passed), client current-inventory despawn and o22/o24 demotion tests (1 each) passed. Resource tests (11 passed) and nine existing inactive cooldown/reload/drop/tuning filters (1 each) passed. Initial AI/physics/spatial consumer checks are recorded above. Integration removed an overly broad queued-projectile guard: accepted endpoint contacts/effects remain, while target damage/policy rechecks ownership; corrected regression passed (1 test).
 
 - P6 complete: appended light/emitter/fog raw slots and typed state/animation mirrors, shared finite/curve-bound validation, binding metadata and record-shape gates, appended server script clock, positioned sound field/intake, tracker binding forwarding and dirty detection. Host serializes the future bridge sample clock (freeze respected). Wire 27/snapshot18; PRLB unchanged; previous26 refused at both gates and historical fixtures retained. `postretro-net` wire filter: 85 passed; handshake: 18 passed; replication: 43 passed. `postretro-netcode` presentation_commands: 10 passed; host catch-up clock, engine discriminants and live version pins: 1 each; client::tests: 55 passed; enemy replication harness: 17 passed. `cargo check -p postretro-netcode -p postretro --features postretro/dev-tools` passed. State payload apply remains deliberately deferred to P14.
+
+- P10 complete: extracted per-client state, encoder body and recipient authority helper to `replication/encode.rs`; internal `pub(super)` visibility permits parent access. Static comparison against P6 preserved encoder/helper bodies and state field order; `EntitySnapshot`/`EntityState` unchanged. `cargo test -p postretro-net --lib replication::tests`: 43 passed, 0 failed. No budget/flight behavior changed in this split.
 
 ### P1 and P2 boundaries
 

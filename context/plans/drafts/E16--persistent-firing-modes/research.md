@@ -65,6 +65,7 @@ Cancellation/resource policy: `context/lib/entity_model.md` §Weapon activations
 | Selection belongs to one instance and owner lifetime | Component, drop, client re-materialization, inventory carry, host request binding, correction | AC5–6 |
 | Captured activation identity stays fixed | Start, charge release, due-shot lookup, prediction/correction, delayed impacts | AC4, AC6–7 |
 | Selection cannot create resource/recovery state | Selector gate, reload priority, primary gate, cancellation | AC2–3 |
+| A pending target is transient and never fires | Busy detection, idle-tick apply before the start gate, discard on switch/drop/death/suspension/disconnect/restore | AC3, AC5 |
 | Every accepted selector press applies at most once | Render latch, fixed intake, host admission, deduplication, correction | AC2, AC6, AC8 |
 | Feedback describes that same selection | HUD publication, owner cue, host acknowledgement, observer cue | AC7 |
 

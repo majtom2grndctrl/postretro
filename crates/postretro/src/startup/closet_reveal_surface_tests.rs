@@ -618,6 +618,7 @@ fn frame(
                         fired_trigger: Some(event.fire.trigger),
                         activator,
                         occupancy,
+                        event_player: None,
                     },
                 );
                 if let Some(handle) = execution.residual() {

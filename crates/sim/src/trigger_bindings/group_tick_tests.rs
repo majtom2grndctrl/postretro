@@ -159,6 +159,7 @@ impl Level {
                         fired_trigger: Some(event.fire.trigger),
                         activator,
                         occupancy,
+                        event_player: None,
                     },
                 );
                 commands.extend(execution.commands.iter().copied());

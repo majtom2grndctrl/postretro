@@ -253,6 +253,22 @@ impl App {
             bindings
         };
         self.trigger_bindings = bindings;
+        self.rebuild_player_events(true);
+    }
+
+    /// Rebind player events over the active composed set. A recompose keeps
+    /// edge memory for every condition and edge that survives it.
+    pub(crate) fn rebuild_player_events(&mut self, keep_edge_memory: bool) {
+        let Some(session) = self.session.as_ref() else {
+            return;
+        };
+        let previous = std::mem::take(&mut self.player_events);
+        self.player_events = postretro_sim::player_events::PlayerEventTable::build(
+            &session.scripting.script_ctx,
+            session.scripting.command_diagnostics.clone(),
+            session.scripting.spawn_context.clone(),
+            keep_edge_memory.then_some(&previous),
+        );
     }
 
     pub(super) fn resolve_level_source(&self, source: LevelSource) -> Option<InFlightLevelLoad> {
@@ -879,6 +895,9 @@ impl App {
 
         self.kinematic_mover_colliders = products.mover_colliders;
         self.trigger_bindings = products.trigger_bindings;
+        // A level install starts every player unobserved: no edge memory
+        // carries from the previous level.
+        self.rebuild_player_events(false);
         self.trigger_pool_report = products.trigger_pool_report;
         // Retain spawn-point placements for the host's runtime seat-accept path:
         // each accepted client's descriptor pawn materializes from them later.
@@ -1781,6 +1800,7 @@ pub(crate) mod tests {
             mover_yaw_carry_ground: postretro_foundation::GroundRef::Airborne,
             kinematic_mover_render: crate::runtime_movers::KinematicMoverRenderCollector::new(),
             trigger_bindings: crate::trigger_bindings::TriggerBindingTable::default(),
+            player_events: Default::default(),
             trigger_pool_report: TriggerPoolInstallReport::default(),
             client_fire_resolutions: Vec::new(),
             client_weapon: Default::default(),

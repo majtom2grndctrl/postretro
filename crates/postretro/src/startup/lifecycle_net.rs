@@ -130,6 +130,7 @@ impl App {
         self.mover_yaw_carry_ground = postretro_foundation::GroundRef::Airborne;
         self.kinematic_mover_render.clear();
         self.trigger_bindings = TriggerBindingTable::default();
+        self.player_events = Default::default();
         self.trigger_pool_report = TriggerPoolInstallReport::default();
         self.client_fire_resolutions.clear();
         self.client_predicted_shots.clear();

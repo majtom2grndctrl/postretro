@@ -44,6 +44,16 @@ pub struct StoreHandle {
     ir_type: IrType,
 }
 
+impl StoreHandle {
+    pub(crate) fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub(crate) fn ir_type(&self) -> IrType {
+        self.ir_type
+    }
+}
+
 /// Binds and evaluates IR against the engine-global [`SlotTable`] via a captured
 /// [`ScriptCtx`]. Cloning the ctx is cheap (it bumps `Rc`s); the scope owns its
 /// clone so it can read and write the live table without an external borrow.
@@ -73,7 +83,7 @@ impl StoreScope {
 
     /// Project a slot's declared type into the IR value model, or `None` for the
     /// non-projectable kinds (`String`/`Enum`/`Array`).
-    fn project(slot_type: &SlotType) -> Option<IrType> {
+    pub(crate) fn project(slot_type: &SlotType) -> Option<IrType> {
         match slot_type {
             SlotType::Number => Some(IrType::Number),
             SlotType::Boolean => Some(IrType::Bool),
@@ -81,7 +91,7 @@ impl StoreScope {
         }
     }
 
-    fn project_value(ir_type: IrType, value: Option<&SlotValue>) -> IrValue {
+    pub(crate) fn project_value(ir_type: IrType, value: Option<&SlotValue>) -> IrValue {
         match (ir_type, value) {
             (IrType::Number, Some(SlotValue::Number(value))) => IrValue::Number(*value),
             (IrType::Bool, Some(SlotValue::Boolean(value))) => IrValue::Bool(*value),
@@ -92,9 +102,10 @@ impl StoreScope {
         }
     }
 
-    /// Resolve the addressable half of an owner store. Only the impact scope
+    /// Resolve the addressable half of an owner store. Only a scope that
+    /// publishes an owner — the impact source, the evaluated or event player —
     /// exposes this handle after it validates the owner token.
-    fn resolve_owner_input(&self, name: &str) -> Option<ResolvedInput<StoreHandle>> {
+    pub(crate) fn resolve_owner_input(&self, name: &str) -> Option<ResolvedInput<StoreHandle>> {
         let table = self.ctx.slot_table.borrow();
         let record = table.get(name)?;
         if !record.schema.per_owner {

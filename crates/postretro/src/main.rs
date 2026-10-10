@@ -978,6 +978,9 @@ pub(crate) struct App {
     /// Per-level trigger event bindings resolved from the final composed
     /// reaction set during install. The fixed-tick seam borrows this table.
     trigger_bindings: trigger_bindings::TriggerBindingTable,
+    /// Host-only player events bound from the composed active set, with their
+    /// per-player edge memory. Rebuilt with the trigger bindings.
+    player_events: postretro_sim::player_events::PlayerEventTable,
     /// Host-local outcome of the most recent trigger-pool install. Connected
     /// clients retain the default empty report because they never run the pass.
     trigger_pool_report: trigger_pools::TriggerPoolInstallReport,

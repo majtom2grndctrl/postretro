@@ -61,6 +61,7 @@ pub(super) fn bind_primitive(
         match sentinel {
             "@activators" => Some(BoundTarget::Activators),
             "@trigger" => Some(BoundTarget::FiredTrigger),
+            "@player" => Some(BoundTarget::EventPlayer),
             spelling => {
                 log::warn!("[Trigger] illegal primitive target sentinel `{spelling}`; not binding");
                 return None;

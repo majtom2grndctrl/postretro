@@ -1178,6 +1178,7 @@ fn host_armed_trap_pool_spawn_reaches_client() {
                     fired_trigger: Some(event.fire.trigger),
                     activator: Some(player),
                     occupancy,
+                    event_player: None,
                 },
             );
         },

@@ -88,6 +88,8 @@ pub(crate) enum BoundTarget {
     Entity(EntityId),
     Activators,
     FiredTrigger,
+    /// `on.player`: the pawn of the player a player event fires for.
+    EventPlayer,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -98,6 +100,9 @@ pub struct TriggerFireContext {
     /// for every command in the fixed-tick path.
     pub activator: Option<EntityId>,
     pub occupancy: usize,
+    /// The event player's pawn on a player-event fire; `None` on every
+    /// trigger fire, so `on.player` never resolves under a trigger.
+    pub event_player: Option<EntityId>,
 }
 
 enum ResolvedTargets<'a> {
@@ -358,7 +363,8 @@ impl BoundTriggerCommand {
                     BoundTarget::Group(group) => resolve_group(registry, group),
                     BoundTarget::Entity(_)
                     | BoundTarget::Activators
-                    | BoundTarget::FiredTrigger => {
+                    | BoundTarget::FiredTrigger
+                    | BoundTarget::EventPlayer => {
                         log::warn!(
                             "[Trigger] updateNpcState requires a tag or group target; special target is invalid; skipping"
                         );
@@ -383,7 +389,10 @@ impl BoundTriggerCommand {
                         spawn_from_spawner_member(registry, id, spawn_context);
                     }
                 }
-                BoundTarget::Group(_) | BoundTarget::Activators | BoundTarget::FiredTrigger => {
+                BoundTarget::Group(_)
+                | BoundTarget::Activators
+                | BoundTarget::FiredTrigger
+                | BoundTarget::EventPlayer => {
                     log::warn!(
                         "[Trigger] spawnFromSpawner requires a spawner member or tag target; skipping"
                     );
@@ -461,6 +470,15 @@ impl BoundTarget {
             }
             Self::Activators => ResolvedTargets::Borrowed(fire_context.activator.as_slice()),
             Self::FiredTrigger => ResolvedTargets::Borrowed(fire_context.fired_trigger.as_slice()),
+            Self::EventPlayer => match fire_context.event_player {
+                Some(pawn) if !registry.exists(pawn) => {
+                    log::warn!(
+                        "[Scripting] player event target {pawn:?} no longer exists; skipping command"
+                    );
+                    ResolvedTargets::Borrowed(&[])
+                }
+                _ => ResolvedTargets::Borrowed(fire_context.event_player.as_slice()),
+            },
         }
     }
 }

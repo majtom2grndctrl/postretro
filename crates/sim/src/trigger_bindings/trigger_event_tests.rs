@@ -209,6 +209,7 @@ impl World {
                         fired_trigger: Some(event.fire.trigger),
                         activator: Some(pawn),
                         occupancy,
+                        event_player: None,
                     },
                 );
                 let commands = execution.commands.len();

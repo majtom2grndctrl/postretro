@@ -44,7 +44,7 @@ enum PrimitiveClass {
 /// Keep only directly-owned work in the binding. `onComplete` names remain
 /// ordered residual hops, so their graphs resolve when the app drains rather
 /// than flattening recursively at level install.
-pub(super) fn partition_direct_reaction(
+pub(crate) fn partition_direct_reaction(
     reaction: &NamedReaction,
     body_ordinal: usize,
     data_registry: &DataRegistry,

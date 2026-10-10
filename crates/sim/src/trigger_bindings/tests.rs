@@ -654,6 +654,7 @@ fn presentation_sequence_step_with_sentinel_target_rejects_without_residual() {
             fired_trigger: Some(trigger),
             activator: Some(trigger),
             occupancy: 1,
+            event_player: None,
         },
     );
     assert!(execution.commands.is_empty());
@@ -893,6 +894,7 @@ fn activator_target_damages_each_edge_presser_once_and_leaves_bystander_untouche
                 fired_trigger: Some(trigger),
                 activator: Some(entrant),
                 occupancy: 2,
+                event_player: None,
             },
         );
     }

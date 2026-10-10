@@ -945,6 +945,7 @@ fn trigger_fire_context(
         fired_trigger: Some(event.fire.trigger),
         activator,
         occupancy,
+        event_player: None,
     }
 }
 

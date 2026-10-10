@@ -12,6 +12,8 @@ mod tests;
 #[cfg(test)]
 mod trigger_event_tests;
 
+pub(crate) use partition::partition_direct_reaction;
+
 pub use manifest_events::{
     ResolutionDiagnostics, ResolvedTriggerEvent, TriggerEventSource,
     resolve_manifest_trigger_events,
@@ -34,7 +36,7 @@ pub(crate) use crate::trigger_commands::BoundTriggerCommandKind;
 use crate::trigger_commands::{BoundTriggerCommand, TriggerFireContext};
 use crate::trigger_system::TriggerEventEdge;
 
-const TRIGGER_EVENT_INPUTS: &[(&str, postretro_foundation::IrType)] =
+pub(crate) const TRIGGER_EVENT_INPUTS: &[(&str, postretro_foundation::IrType)] =
     &[("@occupancy", postretro_foundation::IrType::Number)];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

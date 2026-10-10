@@ -24,14 +24,14 @@ use crate::spawner::SpawnContext;
 
 const MAX_HEALTH: f32 = 100.0;
 
-pub(super) struct World {
-    pub(super) script_ctx: ScriptCtx,
-    pub(super) table: PlayerEventTable,
-    pub(super) residuals: Vec<PlayerEventResidual>,
+pub(crate) struct World {
+    pub(crate) script_ctx: ScriptCtx,
+    pub(crate) table: PlayerEventTable,
+    pub(crate) residuals: Vec<PlayerEventResidual>,
 }
 
 impl World {
-    pub(super) fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             script_ctx: ScriptCtx::new(),
             table: PlayerEventTable::default(),
@@ -39,7 +39,20 @@ impl World {
         }
     }
 
-    pub(super) fn spawn_player(&self, seat: Option<Seat>, health: f32) -> EntityId {
+    /// A pawn bound to `seat`, or the marked local pawn when `seat` is `None`.
+    pub(crate) fn spawn_player(&self, seat: Option<Seat>, health: f32) -> EntityId {
+        let pawn = self.spawn_unbound(health);
+        let mut registry = self.script_ctx.registry.borrow_mut();
+        match seat {
+            Some(seat) => registry.bind_pawn_seat(pawn, seat),
+            None => registry.mark_local_player_pawn(pawn).unwrap(),
+        }
+        pawn
+    }
+
+    /// A player-shaped pawn no seat or local marker binds yet: a reclaim's
+    /// replacement before the seat table rebinds it.
+    pub(crate) fn spawn_unbound(&self, health: f32) -> EntityId {
         let mut registry = self.script_ctx.registry.borrow_mut();
         let pawn = registry
             .try_spawn(
@@ -58,14 +71,13 @@ impl World {
         });
         component.current = health;
         registry.set_component(pawn, component).unwrap();
-        match seat {
-            Some(seat) => registry.bind_pawn_seat(pawn, seat),
-            None => registry.mark_local_player_pawn(pawn).unwrap(),
-        }
+        registry
+            .set_component(pawn, crate::trigger_bindings::group_tick_tests::movement())
+            .unwrap();
         pawn
     }
 
-    pub(super) fn set_health(&self, pawn: EntityId, health: f32) {
+    pub(crate) fn set_health(&self, pawn: EntityId, health: f32) {
         let mut registry = self.script_ctx.registry.borrow_mut();
         let mut component = registry
             .get_component::<HealthComponent>(pawn)
@@ -75,7 +87,7 @@ impl World {
         registry.set_component(pawn, component).unwrap();
     }
 
-    pub(super) fn health(&self, pawn: EntityId) -> f32 {
+    pub(crate) fn health(&self, pawn: EntityId) -> f32 {
         self.script_ctx
             .registry
             .borrow()
@@ -86,7 +98,7 @@ impl World {
 
     /// Commit `reactions` and level `events` as a level install does, then
     /// bind a fresh table.
-    pub(super) fn install(
+    pub(crate) fn install(
         &mut self,
         reactions: Vec<NamedReaction>,
         events: Vec<PlayerEventDescriptor>,
@@ -108,7 +120,7 @@ impl World {
 
     /// Commit mod-global and level player events, compose them for `tags`,
     /// and bind a fresh table.
-    pub(super) fn install_composed(
+    pub(crate) fn install_composed(
         &mut self,
         reactions: Vec<NamedReaction>,
         global: Vec<PlayerEventDescriptor>,
@@ -133,7 +145,7 @@ impl World {
 
     /// The reaction names this tick's fires left for the frame-end drain, in
     /// drain order, then clear them.
-    pub(super) fn take_residual_reactions(&mut self) -> Vec<String> {
+    pub(crate) fn take_residual_reactions(&mut self) -> Vec<String> {
         let names = self
             .residuals
             .iter()
@@ -152,32 +164,32 @@ impl World {
         names
     }
 
-    pub(super) fn tick(&mut self) {
+    pub(crate) fn tick(&mut self) {
         self.table.run_tick(&self.script_ctx, &mut self.residuals);
     }
 }
 
-pub(super) fn input(name: &str) -> IrNode {
+pub(crate) fn input(name: &str) -> IrNode {
     IrNode::Input {
         name: name.to_string(),
         owner: None,
     }
 }
 
-pub(super) fn number(value: f32) -> IrNode {
+pub(crate) fn number(value: f32) -> IrNode {
     IrNode::Const {
         value: IrValue::Number(value),
     }
 }
 
-pub(super) fn lt(a: IrNode, b: IrNode) -> IrNode {
+pub(crate) fn lt(a: IrNode, b: IrNode) -> IrNode {
     IrNode::Lt {
         a: Box::new(a),
         b: Box::new(b),
     }
 }
 
-pub(super) fn player_event(
+pub(crate) fn player_event(
     edge: PlayerEventEdge,
     condition: IrNode,
     fire: &[&str],
@@ -190,7 +202,7 @@ pub(super) fn player_event(
     }
 }
 
-pub(super) fn on_player(name: &str, primitive: &str, args: serde_json::Value) -> NamedReaction {
+pub(crate) fn on_player(name: &str, primitive: &str, args: serde_json::Value) -> NamedReaction {
     NamedReaction {
         name: name.to_string(),
         descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
@@ -204,7 +216,7 @@ pub(super) fn on_player(name: &str, primitive: &str, args: serde_json::Value) ->
     }
 }
 
-pub(super) fn play_sound(name: &str, sound: &str) -> NamedReaction {
+pub(crate) fn play_sound(name: &str, sound: &str) -> NamedReaction {
     NamedReaction {
         name: name.to_string(),
         descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {

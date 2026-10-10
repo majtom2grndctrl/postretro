@@ -23,6 +23,7 @@ pub mod impact_policy;
 pub mod mover_commands;
 pub mod nav;
 pub mod player_events;
+pub mod residual_drain;
 pub mod scripting;
 pub mod scripting_systems;
 pub mod sim;

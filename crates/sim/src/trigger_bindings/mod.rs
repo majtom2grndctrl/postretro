@@ -3,7 +3,7 @@
 
 mod command_binding;
 #[cfg(test)]
-mod group_tick_tests;
+pub(crate) mod group_tick_tests;
 mod install;
 mod manifest_events;
 mod partition;

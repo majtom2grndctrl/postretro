@@ -5,7 +5,9 @@
 mod evaluate;
 mod install;
 #[cfg(test)]
-mod tests;
+mod semantics_tests;
+#[cfg(test)]
+pub(crate) mod tests;
 
 use std::cell::RefCell;
 
@@ -89,6 +91,12 @@ impl std::fmt::Debug for PlayerEventTable {
 impl PlayerEventTable {
     pub fn is_empty(&self) -> bool {
         self.events.is_empty()
+    }
+
+    /// Edge-memory entries across every event: one per observed player.
+    #[cfg(test)]
+    pub(crate) fn edge_memory_len(&self) -> usize {
+        self.events.iter().map(|event| event.memory.len()).sum()
     }
 
     /// The frame-end steps a residual handle names.

@@ -342,7 +342,7 @@ fn attach_brain(registry: &mut EntityRegistry, id: EntityId) {
         .unwrap();
 }
 
-pub(super) fn movement() -> PlayerMovementComponent {
+pub(crate) fn movement() -> PlayerMovementComponent {
     PlayerMovementComponent::from_descriptor(&PlayerMovementDescriptor {
         sounds: None,
         knockback: Default::default(),

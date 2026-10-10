@@ -96,7 +96,8 @@ General engine practice, not re-verified against sources this session.
 - `rendering_pipeline.md` §12: a window dominated by `wait_acquire` is GPU-bound, "so work on the GPU side first". This brief proceeds anyway. On this Mac it buys roughly zero frame time between 1k and 10k. Its player-visible wins are elsewhere: the 20k point spirals the fixed step (184–238 ms frames, 11–14 ticks per frame), and gameplay spawn capacity and tick cost stop depending on particles. Both hold on any GPU.
 - The adapter lacks `TIMESTAMP_QUERY`. A Metal System Trace was not taken: the screen locked before it could run.
 
-**Queued GPU smoke spike** (not drafted; the owner is running another spike first).
+**Queued GPU smoke spike** (not drafted). Owner, 2026-10-09: not next, and **diagnosis only**; a fix is its own plan.
+- A second suspect besides shimmer, unverified: `billboard_direct_scatter_compose` is "present only while needed" (`rendering_pipeline.md`, billboard manual GPU check). If "needed" means while any billboard is live, a level-sized compose pass would also cost the same at any particle count. The cheap tests below separate the two: the isotropic swap and out-of-view emitters remove shimmer cost but not compose cost.
 - Lead: all 40 fixture emitters use `smoke_puff`, which has a baked normal map (`content/dev/textures/smoke_puff/smoke_puff_00_normal.png`, added by the `billboard-specular-shimmer` thin slice, a5fcc1a2c). A normal slot makes a collection a specular-shimmer material, and shimmer evaluates every static chunk-light record per fragment (`rendering_pipeline.md` §7.4). Count-independent cost points at per-fragment work over screen coverage, not per-instance work.
 - Cheap tests:
   - swap the fixture's sprite to `smoke_puff_isotropic` (same art, no normal slot);

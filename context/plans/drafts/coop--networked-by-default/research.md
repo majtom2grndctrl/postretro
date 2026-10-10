@@ -197,5 +197,8 @@ Owner kept one spec; adopted the rest.
 Owner decisions in r1: positioned host-only sounds carry their position on the wire; host-only despawn of client-local presentation entities deferred to the `coop--bound-presentation-despawn` brief; no presentation follows a `wait`.
 Orchestrator additions in r1 (from the despawn brief's findings): `prop_mesh` bound by `MapEntity` ordinal with captured animation state; Task 10's bound-tombstone rule; fog and emitter primitives have no typed builder.
 | r1 follow-up | orchestrator self-review | — | — | — | Task 8 split into Task 8 (fire origin and recipients) and Task 9 (audience authoring and install checks); later tasks renumbered 10–12 | — | — |
+| r2 | broad, anchor, temporal | 5 | 27 | 11 | 63 blocks after merges | `prop_mesh` binding dropped (no animation states, no health: A1, B4); A7, T12 moot | 4 (A1/B4 from the orchestrator's `prop_mesh` fold-in; T1 from r1's no-payload-without-override rule; T2 from r1's producer drop) |
 
 Tooling note: `apply_findings.py` applied only the first `FIX` block of a finding that carried several (D3–D8 second blocks were dropped while it reported success). The self-review re-applied them; verify full REPLACE text after any multi-block apply.
+
+r2 orchestrator call: a networked entity's light or emitter records under any origin (T1), under the owner's "host owns it, it reaches clients" principle; a host-player-only crossing then changes a networked lit prop for every client.

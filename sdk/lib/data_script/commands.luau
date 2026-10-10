@@ -1,15 +1,18 @@
 --!nocheck
--- Command targets: the `npcs` and `players` groups and the trigger-event
--- subject tokens (`on.activators`, `on.trigger`). Each carries exactly the
--- verbs its kind supports, called with colon syntax; a verb builds the closed
--- wire descriptor.
--- Part chunk of `data_script.luau`: evaluated first, published through the
+-- Command targets: the `npcs` and `players` groups and the subject tokens
+-- (`on.activators`, `on.trigger`, `on.player`). Each carries exactly the verbs
+-- its kind supports, called with colon syntax; a verb builds the closed wire
+-- descriptor.
+-- Part chunk of `data_script.luau`: evaluated after `player_events.luau`
+-- (whose `playerEvent` builds `players():on`), published through the
 -- temporary `__postretroDataScriptParts` bridge (`reactions.luau` reads the
 -- subject tokens from it), and merged into its returned builder table. Type
 -- names refer to the declarations in `data_script.luau`.
 -- See: context/lib/scripting.md §7 (SDK library globals), §12
 
 local CommandsSdk = {}
+
+local playerEvent = __postretroDataScriptParts.playerEvents.playerEvent
 
 -- A command target is opaque: an empty frozen table whose metatable serves its
 -- verbs. Indexing anything else, `#target`, `for _ in target`, or a write raises
@@ -18,7 +21,9 @@ local CommandsSdk = {}
 -- but it walks the empty table and yields no member.
 -- Each verb checks its receiver, so `target.verb(x)` (a dot call, which passes
 -- `x` as the receiver) raises instead of building a command from shifted args.
-local function opaqueTarget(call: string, verbs: { [string]: any })
+-- `wire`, when given, is served as `__wire` so an engine state ref's
+-- `byPlayer`, built before this chunk runs, can recognize the token.
+local function opaqueTarget(call: string, verbs: { [string]: any }, wire: string?)
   local names = {}
   for name in pairs(verbs) do
     table.insert(names, name)
@@ -60,6 +65,9 @@ local function opaqueTarget(call: string, verbs: { [string]: any })
       if verb ~= nil then
         return verb
       end
+      if key == "__wire" and wire ~= nil then
+        return wire
+      end
       if type(key) == "string" then
         error(misuse(string.format("has no verb or field `%s`", key)), 2)
       end
@@ -77,8 +85,8 @@ local function opaqueTarget(call: string, verbs: { [string]: any })
   })))
 end
 
--- The four player-facing verbs, shared by `players()` and `on.activators`;
--- only the addressing each stamps differs.
+-- The four player-facing verbs, shared by `players()`, `on.activators` and
+-- `on.player`; only the addressing each stamps differs.
 local function playerVerbs(make)
   return {
     damage = function(_self, amount: number)
@@ -123,9 +131,14 @@ function CommandsSdk.npcs(filter: NpcGroupFilter?): NpcGroup
 end
 
 --- Address every seat-bound player pawn. Resolved when each command takes
---- effect. Opaque: no members, no length.
+--- effect. Opaque: no members, no length. `players():on(edge, fire, options?)`
+--- builds a player event for a manifest's `playerEvents`.
 function CommandsSdk.players(): PlayerGroup
-  return opaqueTarget("players()", playerVerbs(groupCommand("player", nil)))
+  local verbs = playerVerbs(groupCommand("player", nil))
+  verbs.on = function(_self, edge, fire, options)
+    return playerEvent(edge, fire, options)
+  end
+  return opaqueTarget("players()", verbs)
 end
 
 -- Subject tokens lower to one descriptor, `{ primitive, target, args }`, used
@@ -137,6 +150,7 @@ local function tokenCommand(target: string)
 end
 
 local ACTIVATORS_TARGET = opaqueTarget("on.activators", playerVerbs(tokenCommand("@activators")))
+local PLAYER_TARGET = opaqueTarget("on.player", playerVerbs(tokenCommand("@player")), "@player")
 
 local triggerCommand = tokenCommand("@trigger")
 local TRIGGER_TARGET = opaqueTarget("on.trigger", {
@@ -151,5 +165,6 @@ local TRIGGER_TARGET = opaqueTarget("on.trigger", {
 return {
   builders = CommandsSdk,
   ACTIVATORS_TARGET = ACTIVATORS_TARGET,
+  PLAYER_TARGET = PLAYER_TARGET,
   TRIGGER_TARGET = TRIGGER_TARGET,
 }

@@ -56,6 +56,10 @@ export type PrimitiveReactionDescriptor = {
 
 local UiReactionsSdk = {}
 
+-- Fluent refs lower through the private identity map the prelude shares with
+-- the data-script builders; it is captured here before the bridge is hidden.
+local loweredValue = __postretroExpressionRefs.loweredValue
+
 local function stateSlot(ref: any, helper: string): string
   if type(ref) ~= "table" or type(ref.slot) ~= "string" or #ref.slot == 0 then
     error(`{helper}: expected a state reference with a nonempty \`slot\``)
@@ -396,12 +400,17 @@ end
 --- Write `value` to the writable state reference at the game-logic stage.
 --- Pure: returns the existing `setState` primitive reaction body, no engine
 --- side effect. Literal values use the normal runtime readonly gate, coercion,
---- and range path. A `RuntimeValue` binds once at level install through
---- `StoreScope`. Known Number and Boolean slots, including readonly slots,
---- project as inputs. The write target must be writable; unknown or
---- nonprojectable inputs and readonly targets reject the IR before it can fire.
+--- and range path. A fluent value (`read(...)` and its operators, including
+--- `byPlayer(on.player)` reads in a player-event reaction) or a raw
+--- `RuntimeValue` binds once at level install. Known Number and Boolean slots,
+--- including readonly slots, project as inputs. The write target must be
+--- writable; unknown or nonprojectable inputs and readonly targets reject the
+--- IR before it can fire.
 function UiReactionsSdk.updateState(ref: any, value: any): PrimitiveReactionDescriptor
-  return { primitive = "setState", args = { slot = stateSlot(ref, "updateState"), value = value } }
+  return {
+    primitive = "setState",
+    args = { slot = stateSlot(ref, "updateState"), value = loweredValue(value) },
+  }
 end
 
 --- Append `text` to the current string value of the writable String slot `slot`

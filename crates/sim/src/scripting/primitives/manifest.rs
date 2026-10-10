@@ -246,6 +246,11 @@ pub(crate) fn register_sdk_type(registry: &mut PrimitiveRegistry) {
             "Mod-global trigger events, each a standing rule keyed by tag: build each with `defineTriggerEvent({ tag, event, fire, levels? })`. Optional; `levels` selects the map tags it binds in. A volume-keyed entry (a trigger member's `on`) belongs in `setupLevel` and is rejected here.",
         )
         .field(
+            "playerEvents?",
+            "Vec<PlayerEventDescriptor>",
+            "Mod-global player events, each built with `players().on(becomes(cond) | ceases(cond), fire, { levels? })`. Optional; evaluated on the host once per player per tick, and `levels` selects the map tags it installs in. Mod-global entries compose before a level's own; a repeated condition, edge and reaction binds once.",
+        )
+        .field(
             "triggerPools?",
             "Vec<TriggerPoolDescriptor>",
             "Trigger-volume arming pools. Optional; compose by level tags.",
@@ -573,6 +578,7 @@ mod tests {
             "crossings",
             "events",
             "triggerEvents",
+            "playerEvents",
             "triggerPools",
             "stores",
         ];

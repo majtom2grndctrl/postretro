@@ -70,6 +70,11 @@ const DATA_SCRIPT_LUAU_SRC: &str = include_str!("../../../sdk/lib/data_script.lu
 /// main module returns. `(bridge key, source, sdk/lib-relative path)`.
 const DATA_SCRIPT_PART_SOURCES: &[(&str, &str, &str)] = &[
     (
+        "playerEvents",
+        include_str!("../../../sdk/lib/data_script/player_events.luau"),
+        "data_script/player_events.luau",
+    ),
+    (
         "commands",
         include_str!("../../../sdk/lib/data_script/commands.luau"),
         "data_script/commands.luau",
@@ -170,6 +175,8 @@ const DATA_SCRIPT_FIELDS: &[&str] = &[
     "defineTriggerEvent",
     "npcs",
     "players",
+    "becomes",
+    "ceases",
     "wait",
     "fire",
     "scopeReactions",
@@ -353,6 +360,8 @@ pub const POSTRETRO_ROOT_MODULE_EXPORTS: &[&str] = &[
     "defineTriggerEvent",
     "npcs",
     "players",
+    "becomes",
+    "ceases",
     "wait",
     "fire",
     "scopeReactions",
@@ -552,15 +561,12 @@ pub fn evaluate_prelude(
         .map_err(|e| ScriptError::InvalidArgument {
             reason: format!("failed to install global `activation`: {e}"),
         })?;
-    globals
-        .set(EXPRESSION_REFS_GLOBAL, mlua::Value::Nil)
-        .map_err(|e| ScriptError::InvalidArgument {
-            reason: format!("failed to clear temporary expression-ref bridge: {e}"),
-        })?;
 
     // Step 6b: evaluate `ui/reactions.luau` for the `postretro/ui` virtual
     // module. Do not lift its fields to globals: the UI SDK exposes no
-    // author-visible Luau UI bare globals.
+    // author-visible Luau UI bare globals. `updateState` captures the
+    // expression-ref bridge to lower fluent values, so the bridge is hidden
+    // only afterwards.
     let ui_reactions_sdk: Table = lua
         .load(UI_REACTIONS_LUAU_SRC)
         .set_name("postretro/sdk/ui/reactions.luau")
@@ -568,6 +574,11 @@ pub fn evaluate_prelude(
         .map_err(|e| ScriptError::ScriptThrew {
             msg: format!("failed to evaluate SDK prelude `ui/reactions.luau`: {e}"),
             source_name: "sdk/lib/ui/reactions.luau".to_string(),
+        })?;
+    globals
+        .set(EXPRESSION_REFS_GLOBAL, mlua::Value::Nil)
+        .map_err(|e| ScriptError::InvalidArgument {
+            reason: format!("failed to clear temporary expression-ref bridge: {e}"),
         })?;
 
     let ui_theme_sdk: Table = lua

@@ -74,6 +74,11 @@ const DATA_SCRIPT_LUAU: &str = include_str!("../../../sdk/lib/data_script.luau")
 /// mirroring scripting-core's `evaluate_data_script_sdk`.
 const DATA_SCRIPT_PART_LUAU: &[(&str, &str, &str)] = &[
     (
+        "playerEvents",
+        include_str!("../../../sdk/lib/data_script/player_events.luau"),
+        "sdk/lib/data_script/player_events.luau",
+    ),
+    (
         "commands",
         include_str!("../../../sdk/lib/data_script/commands.luau"),
         "sdk/lib/data_script/commands.luau",
@@ -389,9 +394,24 @@ fn install_js_determinism(ctx: &JsCtx<'_>) -> Result<()> {
 }
 
 fn install_js_game_state(ctx: &JsCtx<'_>) -> Result<()> {
-    let bridge = game_state_refs_json();
+    let bridge = json_to_js(ctx, &game_state_refs_json())?;
+    let install: JsFunction = ctx
+        .eval(JS_INSTALL_BY_PLAYER)
+        .context("failed to build QuickJS byPlayer installer")?;
+    let player: JsObject = bridge
+        .as_object()
+        .and_then(|root| root.get("player").ok())
+        .context("getGameState bridge has no player tree")?;
+    for leaf in PER_PLAYER_LEAVES {
+        let leaf: JsObject = player
+            .get(*leaf)
+            .with_context(|| format!("getGameState bridge has no player.{leaf}"))?;
+        install
+            .call::<_, ()>((leaf,))
+            .context("failed to install QuickJS byPlayer")?;
+    }
     ctx.globals()
-        .set("__postretroGameStateRefs", json_to_js(ctx, &bridge)?)
+        .set("__postretroGameStateRefs", bridge)
         .context("failed to install QuickJS getGameState bridge")?;
     Ok(())
 }
@@ -476,10 +496,15 @@ fn install_lua_determinism(lua: &Lua) -> mlua::Result<()> {
 }
 
 fn install_lua_game_state(lua: &Lua) -> mlua::Result<()> {
-    lua.globals().set(
-        "__postretroGameStateRefs",
-        json_to_lua(lua, &game_state_refs_json())?,
-    )?;
+    let bridge = json_to_lua(lua, &game_state_refs_json())?;
+    let install: LuaFunction = lua.load(LUAU_INSTALL_BY_PLAYER).eval()?;
+    if let LuaValue::Table(root) = &bridge {
+        let player: LuaTable = root.get("player")?;
+        for leaf in PER_PLAYER_LEAVES {
+            install.call::<()>(player.get::<LuaTable>(*leaf)?)?;
+        }
+    }
+    lua.globals().set("__postretroGameStateRefs", bridge)?;
     Ok(())
 }
 
@@ -528,6 +553,8 @@ const DATA_SCRIPT_FIELDS: &[&str] = &[
     "defineTriggerEvent",
     "npcs",
     "players",
+    "becomes",
+    "ceases",
     "wait",
     "fire",
     "scopeReactions",
@@ -597,13 +624,14 @@ fn install_lua_prelude(lua: &Lua, mod_root: &Path) -> mlua::Result<()> {
     }
     let data = eval_lua_table(lua, DATA_SCRIPT_LUAU, "sdk/lib/data_script.luau")?;
     globals.set("__postretroDataScriptParts", LuaValue::Nil)?;
-    globals.set("__postretroExpressionRefs", LuaValue::Nil)?;
     copy_lua_fields(&globals, &data, DATA_SCRIPT_FIELDS)?;
 
     // Keep the SDK's virtual-module construction in its runtime order. In
-    // particular, widgets and layouts capture the temporary theme-token
-    // validator before it is hidden from author code.
+    // particular, `updateState` captures the expression-ref bridge and widgets
+    // and layouts capture the temporary theme-token validator before each is
+    // hidden from author code.
     let ui_reactions = eval_lua_table(lua, UI_REACTIONS_LUAU, "sdk/lib/ui/reactions.luau")?;
+    globals.set("__postretroExpressionRefs", LuaValue::Nil)?;
     let ui_theme = eval_lua_table(lua, UI_THEME_LUAU, "sdk/lib/ui/theme.luau")?;
     globals.set(
         "__postretroUnwrapThemeToken",
@@ -832,17 +860,78 @@ fn copy_readonly_lua_table(lua: &Lua, source: LuaTable, depth: usize) -> mlua::R
     Ok(table)
 }
 
+/// The per-player engine leaves under `player`, which carry a non-enumerable
+/// `byPlayer`. Mirrors the catalog's `OwnerPrivatePlayer` entries, which
+/// scripting-core's `game_state_refs.rs` decorates at runtime.
+const PER_PLAYER_LEAVES: &[&str] = &[
+    "ammo",
+    "ammoReserve",
+    "cell",
+    "cellCapacity",
+    "health",
+    "heat",
+    "maxHealth",
+    "overheatAt",
+    "overheated",
+    "reloadActive",
+    "reloadProgress",
+    "weaponCooldownMs",
+];
+
+/// Mirrors scripting-core's `QUICKJS_INSTALL_BY_PLAYER`: `byPlayer` lowers
+/// `on.player` and `impact.source` to their owner tokens by wire spelling.
+const JS_INSTALL_BY_PLAYER: &str = r#"(leaf) => {
+  const slot = leaf.slot;
+  const kind = leaf.kind;
+  Object.defineProperty(leaf, "byPlayer", {
+    value: function byPlayer(owner) {
+      const wire = owner !== null && typeof owner === "object" ? owner.__wire : undefined;
+      return Object.freeze({
+        slot,
+        kind,
+        owner: wire === "@player" || wire === "@impact.source" ? wire : "@invalid",
+      });
+    },
+    enumerable: false,
+  });
+}"#;
+
+/// Mirrors scripting-core's `LUAU_INSTALL_BY_PLAYER`.
+const LUAU_INSTALL_BY_PLAYER: &str = r#"return function(leaf)
+  local slot = leaf.slot
+  local kind = leaf.kind
+  local function byPlayer(_self, owner)
+    local wire = nil
+    if type(owner) == "table" then
+      local ok, value = pcall(function()
+        return owner.__wire
+      end)
+      wire = if ok then value else nil
+    end
+    if wire ~= "@player" and wire ~= "@impact.source" then
+      wire = "@invalid"
+    end
+    return table.freeze({ slot = slot, kind = kind, owner = wire })
+  end
+  setmetatable(leaf, table.freeze({ __index = table.freeze({ byPlayer = byPlayer }) }))
+end"#;
+
 fn game_state_refs_json() -> JsonValue {
     json!({
         "input": { "mode": { "slot": "input.mode" } },
         "player": {
-            "ammo": { "slot": "player.ammo" },
-            "ammoReserve": { "slot": "player.ammo_reserve" },
-            "health": { "slot": "player.health" },
-            "maxHealth": { "slot": "player.max_health" },
-            "reloadActive": { "slot": "player.reload_active" },
-            "reloadProgress": { "slot": "player.reload_progress" },
-            "weaponCooldownMs": { "slot": "player.weapon_cooldown_ms" }
+            "ammo": { "slot": "player.ammo", "kind": "number" },
+            "ammoReserve": { "slot": "player.ammoReserve", "kind": "number" },
+            "cell": { "slot": "player.cell", "kind": "number" },
+            "cellCapacity": { "slot": "player.cellCapacity", "kind": "number" },
+            "health": { "slot": "player.health", "kind": "number" },
+            "heat": { "slot": "player.heat", "kind": "number" },
+            "maxHealth": { "slot": "player.maxHealth", "kind": "number" },
+            "overheatAt": { "slot": "player.overheatAt", "kind": "number" },
+            "overheated": { "slot": "player.overheated", "kind": "boolean" },
+            "reloadActive": { "slot": "player.reloadActive", "kind": "boolean" },
+            "reloadProgress": { "slot": "player.reloadProgress", "kind": "number" },
+            "weaponCooldownMs": { "slot": "player.weaponCooldownMs", "kind": "number" }
         },
         "screen": {
             "flash": { "slot": "screen.flash" },

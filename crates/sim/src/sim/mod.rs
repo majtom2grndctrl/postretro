@@ -2461,7 +2461,11 @@ mod tests {
             .cpu
             .value(cpu_stages::SimStage::Tick)
             .expect("tick timed");
-        for &stage in &cpu_stages::SimStage::ALL[1..] {
+        // `PlayerEvents` runs after the tick returns, in the frame loop.
+        for &stage in cpu_stages::SimStage::ALL[1..]
+            .iter()
+            .filter(|stage| stage.parent().is_some())
+        {
             let value = events
                 .cpu
                 .value(stage)

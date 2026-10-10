@@ -40,7 +40,7 @@ export type TriggerEventRule = {
 };
 
 /** Lower reaction handles to their dispatch names; bare names pass through. */
-export function triggerEventFireNames(fire: TriggerEventReaction[]): string[] {
+export function triggerEventFireNames(fire: readonly (string | { readonly name: string })[]): string[] {
   return fire.map((reaction) => typeof reaction === "string" ? reaction : reaction.name);
 }
 

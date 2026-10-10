@@ -156,14 +156,18 @@ pub(super) fn emit_ts_type(ty: &RegisteredType, out: &mut String) {
     }
 }
 
+/// A per-player leaf (`EngineStateCatalogEntry::is_per_player`) carries a
+/// `byPlayer` owner read, so it types as the `Player*Ref` form.
 pub fn state_ref_ts(
     capability: EngineStateCapability,
     value_type: EngineStateValueType<'_>,
+    per_player: bool,
 ) -> String {
-    let ref_ty = if capability == EngineStateCapability::Writable {
-        "Ref"
-    } else {
-        "ComputedRef"
+    let ref_ty = match (capability == EngineStateCapability::Writable, per_player) {
+        (true, false) => "Ref",
+        (false, false) => "ComputedRef",
+        (true, true) => "PlayerRef",
+        (false, true) => "PlayerComputedRef",
     };
     format!("{ref_ty}<{}>", value_type.to_ts())
 }
@@ -177,7 +181,11 @@ fn emit_ts_game_state_node(
     match node {
         EngineStateTreeNode::Leaf { entry_index } => {
             let entry = &catalog[*entry_index];
-            out.push_str(&state_ref_ts(entry.capability, entry.value_type));
+            out.push_str(&state_ref_ts(
+                entry.capability,
+                entry.value_type,
+                entry.is_per_player(),
+            ));
         }
         EngineStateTreeNode::Object(children) => {
             out.push_str("{\n");
@@ -222,7 +230,7 @@ pub fn emit_ts_game_state_refs(out: &mut String) {
 //   sdk/lib/entities/{lights,emitters,fog_volumes,movers,triggers,spawners}.ts
 //   sdk/lib/util/keyframes.ts
 //   sdk/lib/data_script.ts  (re-exported via index.ts)
-//   sdk/lib/data_script/{reactions,commands,trigger_events}.ts  (re-exported via data_script.ts)
+//   sdk/lib/data_script/{reactions,commands,trigger_events,player_events}.ts  (re-exported via data_script.ts)
 //   sdk/lib/ui/{text,widgets,layout,tree,state}.ts
 // Drift between this block and those files causes IDE types that don't match
 // runtime behavior. Update this block whenever an SDK lib signature changes.

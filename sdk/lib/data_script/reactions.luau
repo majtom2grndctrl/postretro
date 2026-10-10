@@ -15,14 +15,15 @@ local ReactionsSdk = {}
 -- never enter returned descriptors themselves.
 local commands = __postretroDataScriptParts.commands
 local ACTIVATORS_TARGET = commands.ACTIVATORS_TARGET
+local PLAYER_TARGET = commands.PLAYER_TARGET
 local TRIGGER_TARGET = commands.TRIGGER_TARGET
 -- The emitter token carries its own wire spelling, so `playSound` (a separate
 -- prelude chunk) lowers it without seeing this chunk's private tokens.
 local EMITTER_TARGET = table.freeze({ __wire = "@emitter" })
 
 -- One SDK-internal merged params table is shared by every author-time tracer.
--- Its value shape includes sibling opaque target tokens (activators, trigger)
--- alongside the input nodes.
+-- Its value shape includes sibling opaque target tokens (activators, trigger,
+-- player) alongside the input nodes.
 local DISPATCH_PARAMS = table.freeze({
   rising = table.freeze({ op = "input", name = "@rising" }),
   dt = table.freeze({ op = "input", name = "@dt" }),
@@ -30,6 +31,7 @@ local DISPATCH_PARAMS = table.freeze({
   trigger = TRIGGER_TARGET,
   occupancy = table.freeze({ op = "input", name = "@occupancy" }),
   emitter = EMITTER_TARGET,
+  player = PLAYER_TARGET,
 })
 
 --- Enroll the rest of this sequence body with the host scheduler and stop;

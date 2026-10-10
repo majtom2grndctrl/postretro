@@ -17,6 +17,8 @@ declare module "postretro/ui" {
     Reaction,
     CrossingDescriptor,
     NumberValue,
+    NumberRef,
+    BoolRef,
     RuntimeValue,
     CommandId,
   } from "postretro";
@@ -316,8 +318,8 @@ declare module "postretro/ui" {
   export function setSentiment(from: string, to: string, value: number): PrimitiveReactionDescriptor;
   /** Add `delta` to the current live sentiment from `from` toward `to` at frame end (or its authored baseline when unchanged). The pair is directional. Negative deltas degrade the relationship; positive deltas bond it. Unknown faction names warn and no-op. */
   export function adjustSentiment(from: string, to: string, delta: number): PrimitiveReactionDescriptor;
-  /** Write a literal or runtime value at game-logic time. Literals use the normal readonly-gated coercion and range path. Runtime values bind once at level install: known Number and Boolean slots, including readonly slots, project as inputs; only a writable Number/Boolean output target is accepted. Unknown/nonprojectable inputs and readonly targets reject. */
-  export function updateState<T>(ref: Ref<T>, value: T | RuntimeValue): PrimitiveReactionDescriptor;
+  /** Write a literal, fluent or runtime value at game-logic time. Literals use the normal readonly-gated coercion and range path. A fluent value (`read(…)` and its operators, `byPlayer(on.player)` reads in a player-event reaction included) or a raw runtime value binds once at level install: known Number and Boolean slots, including readonly slots, project as inputs; only a writable Number/Boolean output target is accepted. Unknown/nonprojectable inputs and readonly targets reject. */
+  export function updateState<T>(ref: Ref<T>, value: T | RuntimeValue | NumberRef | BoolRef): PrimitiveReactionDescriptor;
   export function appendText(ref: Ref<string>, text: string): PrimitiveReactionDescriptor;
   export function backspaceText(ref: Ref<string>): PrimitiveReactionDescriptor;
   export function clearText(ref: Ref<string>): PrimitiveReactionDescriptor;

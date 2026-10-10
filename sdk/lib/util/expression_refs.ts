@@ -62,6 +62,12 @@ export function boolNode(value: BoolValue): RuntimeValue {
   return boolNodes.get(value) ?? (value as RuntimeValue);
 }
 
+/** The IR node behind a fluent ref; any other value (a literal, a raw node) unchanged. */
+export function loweredValue<T>(value: T): T | RuntimeValue {
+  if (value === null || typeof value !== "object") return value;
+  return numberNodes.get(value) ?? boolNodes.get(value) ?? value;
+}
+
 export function numberRef(node: RuntimeValue): NumberRef {
   const ref: NumberRef = {
     plus: (n) => numberRef({ op: "add", a: node, b: numberNode(n) }),

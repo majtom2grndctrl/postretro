@@ -437,6 +437,8 @@ mod tests {
                 "defineTriggerEvent",
                 "npcs",
                 "players",
+                "becomes",
+                "ceases",
                 "wait",
                 "fire",
                 "scopeReactions",

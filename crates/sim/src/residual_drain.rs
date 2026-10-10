@@ -2,7 +2,7 @@
 //! then player-event residuals, each in tick order and authored order.
 //! See: context/lib/scripting.md §12 (Player events)
 
-use postretro_entities::{EntityId, ScriptCtx};
+use postretro_entities::{EntityId, ScriptCtx, SystemCommandFireContext};
 use postretro_scripting_core::reaction_dispatch::{
     ResidualOrigin, fire_prepartitioned_reactions_with_sequences,
 };
@@ -11,7 +11,7 @@ use postretro_scripting_core::reaction_registry::{
 };
 use postretro_scripting_core::sequence::SequencedPrimitiveRegistry;
 
-use crate::player_events::{PlayerEventResidual, PlayerEventTable};
+use crate::player_events::{PlayerEventResidual, PlayerEventTable, PlayerKey};
 use crate::scripting_systems::reaction_scheduler::ReactionScheduler;
 use crate::trigger_bindings::{TriggerBindingTable, TriggerResidualHandle};
 use crate::trigger_system::{PlayerId, TriggerSystem};
@@ -76,6 +76,16 @@ pub fn drain_frame_residuals(
         // so two players' tails never cancel or restart each other. There is
         // no paired exit to cancel an interruptible wait.
         let _origin = scheduler.begin_origin(residual.pawn, PlayerId::Local(residual.pawn), false);
+        // Presentation in this fire list plays on the event player's machine;
+        // the app routes it. The marked local pawn with no seat presents here.
+        let previous = script_ctx.system_commands.replace_fire_context(SystemCommandFireContext {
+            source: "playerEvent".to_string(),
+            presentation_seat: match residual.player {
+                PlayerKey::Seat(seat) => Some(seat),
+                PlayerKey::Unseated(_) => None,
+            },
+            ..SystemCommandFireContext::default()
+        });
         follow_ups.extend(fire_prepartitioned_reactions_with_sequences(
             steps,
             registries.sequence,
@@ -84,6 +94,7 @@ pub fn drain_frame_residuals(
             script_ctx,
             ResidualOrigin::TriggerBinding,
         ));
+        script_ctx.system_commands.replace_fire_context(previous);
     }
 }
 
@@ -218,6 +229,21 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert_eq!(sounds, vec!["beep".to_string(), "bleed".to_string()]);
+        assert_eq!(sounds, vec!["beep".to_string()], "the trigger's sound plays where it drains");
+        let routed: Vec<(Seat, String)> = world
+            .script_ctx
+            .system_commands
+            .take_routed()
+            .into_iter()
+            .filter_map(|(seat, command)| match command {
+                SystemReactionCommand::PlaySound { sound, .. } => Some((seat, sound)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            routed,
+            vec![(Seat(1), "bleed".to_string())],
+            "the player event's sound is routed to its player"
+        );
     }
 }

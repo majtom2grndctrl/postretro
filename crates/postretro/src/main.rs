@@ -3387,6 +3387,19 @@ impl App {
         else {
             return;
         };
+        // Presentation a player event fired for one player goes to that
+        // player's machine; whatever stays here joins this drain.
+        if let Some(session) = self.session.as_mut() {
+            let server = match session.net_endpoint.as_mut() {
+                Some(netcode::NetEndpoint::Host { server, .. }) => Some(server.as_mut()),
+                _ => None,
+            };
+            netcode::presentation_commands::route_player_presentation(
+                &script_ctx.system_commands,
+                server,
+                session.seat_table.as_ref(),
+            );
+        }
         for command in script_ctx.system_commands.take() {
             match command {
                 SystemReactionCommand::PlaySound { sound, bus, at } => {
@@ -4347,6 +4360,14 @@ impl App {
                             &registry,
                         )
                     }));
+                let (presentation_commands, presentation_messages) =
+                    netcode::presentation_commands::split_presentation_commands(
+                        presentation_messages,
+                    );
+                netcode::presentation_commands::ingest_presentation_commands(
+                    presentation_commands,
+                    &script_ctx.system_commands,
+                );
                 netcode::ingest_client_presentation_messages(
                     &mut registry,
                     presentation_messages,

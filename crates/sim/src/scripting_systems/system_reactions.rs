@@ -1636,6 +1636,7 @@ mod tests {
             source: "crossing:7".to_string(),
             values: vec![("@rising".to_string(), IrValue::Bool(true))],
             emitter: None,
+            presentation_seat: None,
         });
 
         registry
@@ -1696,6 +1697,7 @@ mod tests {
             source: source.to_string(),
             values: Vec::new(),
             emitter,
+            presentation_seat: None,
         }
     }
 

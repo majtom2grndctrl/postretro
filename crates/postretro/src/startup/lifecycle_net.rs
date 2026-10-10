@@ -281,7 +281,7 @@ impl App {
     /// into the next level.
     pub(crate) fn discard_pending_system_commands(&mut self) {
         if let Some(session) = self.session.as_ref() {
-            drop(session.scripting.script_ctx.system_commands.take());
+            session.scripting.script_ctx.system_commands.discard_all();
         }
     }
 

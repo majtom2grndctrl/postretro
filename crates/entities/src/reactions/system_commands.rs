@@ -103,6 +103,9 @@ pub enum SystemReactionCommand {
 #[derive(Clone, Default)]
 pub struct SystemCommandQueue {
     commands: Rc<RefCell<Vec<SystemReactionCommand>>>,
+    /// Presentation a player event fired for one player, held for the app to
+    /// present on that player's machine.
+    routed: Rc<RefCell<Vec<(Seat, SystemReactionCommand)>>>,
     fire_context: Rc<RefCell<SystemCommandFireContext>>,
 }
 
@@ -114,6 +117,9 @@ pub struct SystemCommandFireContext {
     /// one (level load, crossings, triggers, deaths, follow-ups) leave it
     /// `None`, and a reaction reading `on.emitter` there is skipped.
     pub emitter: Option<Emitter>,
+    /// The player whose machine presentation from this fire plays on. Only a
+    /// player event sets it; every other source presents where it drains.
+    pub presentation_seat: Option<Seat>,
 }
 
 impl SystemCommandQueue {
@@ -121,8 +127,21 @@ impl SystemCommandQueue {
         Self::default()
     }
 
+    /// Enqueue a command. Presentation fired for one player is held apart
+    /// for [`Self::take_routed`]; everything else drains locally.
     pub fn push(&self, command: SystemReactionCommand) {
-        self.commands.borrow_mut().push(command);
+        let seat = self.fire_context.borrow().presentation_seat;
+        match seat {
+            Some(seat) if command.class() == SystemReactionClass::Presentation => {
+                self.routed.borrow_mut().push((seat, command));
+            }
+            _ => self.commands.borrow_mut().push(command),
+        }
+    }
+
+    /// Presentation routed to a player, in fire order.
+    pub fn take_routed(&self) -> Vec<(Seat, SystemReactionCommand)> {
+        std::mem::take(&mut self.routed.borrow_mut())
     }
 
     /// Replace the active named-fire context, returning the prior context so a
@@ -143,8 +162,14 @@ impl SystemCommandQueue {
         std::mem::take(&mut self.commands.borrow_mut())
     }
 
+    /// Drop every queued command, routed presentation included.
+    pub fn discard_all(&self) {
+        self.commands.borrow_mut().clear();
+        self.routed.borrow_mut().clear();
+    }
+
     pub fn is_empty(&self) -> bool {
-        self.commands.borrow().is_empty()
+        self.commands.borrow().is_empty() && self.routed.borrow().is_empty()
     }
 }
 

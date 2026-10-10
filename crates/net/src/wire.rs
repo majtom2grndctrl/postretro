@@ -91,6 +91,40 @@ pub enum ServerPresentationPayload {
         has_shield: bool,
         alive: bool,
     },
+    /// A presentation command a player event fired for this client's player.
+    /// The client turns it into the same local command a local reaction
+    /// enqueues.
+    Command(PresentationCommand),
+}
+
+/// Wire mirror of the engine's presentation system-reaction commands. Sounds
+/// carry no anchor: a player event publishes no emitter, so they play
+/// unpositioned.
+#[derive(Debug, Clone, PartialEq, Encode, Decode)]
+pub enum PresentationCommand {
+    PlaySound {
+        sound: String,
+        bus: Option<String>,
+    },
+    Rumble {
+        strong: f32,
+        weak: Option<f32>,
+        duration_ms: f32,
+    },
+    FlashScreen {
+        color: [f32; 4],
+        duration_ms: f32,
+    },
+    Vignette {
+        color: Option<[f32; 3]>,
+        strength: f32,
+        duration_ms: f32,
+    },
+    ScreenShake {
+        amplitude: f32,
+        duration_ms: f32,
+        frequency: Option<f32>,
+    },
 }
 
 /// Frozen scalar facts for a descriptor-backed observer projectile. Assets stay local.
@@ -2073,6 +2107,45 @@ mod tests {
             },
         };
         assert!(round_trips(&overlay));
+    }
+
+    #[test]
+    fn every_presentation_command_round_trips_with_identical_fields() {
+        let commands = [
+            PresentationCommand::PlaySound {
+                sound: "level_up".to_string(),
+                bus: Some("ui".to_string()),
+            },
+            PresentationCommand::PlaySound {
+                sound: "scald".to_string(),
+                bus: None,
+            },
+            PresentationCommand::Rumble {
+                strong: 0.75,
+                weak: Some(0.25),
+                duration_ms: 120.0,
+            },
+            PresentationCommand::FlashScreen {
+                color: [1.0, 0.9, 0.3, 0.4],
+                duration_ms: 300.0,
+            },
+            PresentationCommand::Vignette {
+                color: Some([0.8, 0.0, 0.0]),
+                strength: 0.6,
+                duration_ms: 800.0,
+            },
+            PresentationCommand::ScreenShake {
+                amplitude: 0.4,
+                duration_ms: 250.0,
+                frequency: Some(18.0),
+            },
+        ];
+        for command in commands {
+            let message = ServerPresentationMessage {
+                payload: ServerPresentationPayload::Command(command),
+            };
+            assert!(round_trips(&message), "{message:?}");
+        }
     }
 
     #[test]

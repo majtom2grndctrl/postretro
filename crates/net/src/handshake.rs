@@ -9,9 +9,10 @@ pub use crate::wire::{ClosingCause, DivergenceReason, HoldingCause};
 /// Weapon activation outcomes advanced it to PRL8 and observer cues to PRL9;
 /// the client's revealed-level declaration and the two revealed holding
 /// causes advance it to protocol 10. The id is four ASCII bytes, so the
-/// counter byte continues as a hex digit: protocol 10 is "PRLA". Independent of
+/// counter byte continues as a hex digit: protocol 10 is "PRLA". Player-addressed
+/// presentation commands advance it to protocol 11, "PRLB". Independent of
 /// the baked PRL file format.
-pub const PROTOCOL_ID: u32 = 0x_5052_4C41; // "PRLA"
+pub const PROTOCOL_ID: u32 = 0x_5052_4C42; // "PRLB"
 /// E15's admission/parity envelopes and participation-framed traffic layouts.
 /// E17 adds `blocked` to `WireKinematicMoverState`; E16 consumed epoch 16 for
 /// `drop_pressed` on the Input channel and `JoinSeed` advances this to 18. The
@@ -159,8 +160,8 @@ mod tests {
     fn knockback_snapshot_layout_refuses_previous_wire_version() {
         const PRE_KNOCKBACK_WIRE_VERSION: u32 = 21;
         assert_eq!(
-            PROTOCOL_ID, 0x_5052_4C41,
-            "revealed vocabulary requires application protocol PRLA (protocol 10)"
+            PROTOCOL_ID, 0x_5052_4C42,
+            "player-addressed presentation commands require application protocol PRLB (protocol 11)"
         );
         const {
             assert!(
@@ -433,6 +434,101 @@ mod tests {
         ));
     }
 
+    /// `ServerPresentationPayload` as shipped before player-addressed commands.
+    #[derive(Debug, Clone, PartialEq, bitcode::Encode, bitcode::Decode)]
+    enum PreCommandPresentationPayload {
+        Spawn {
+            template_id: String,
+            anchor: [f32; 3],
+            value: f32,
+            facts: std::collections::BTreeMap<String, crate::wire::PresentationFact>,
+        },
+        OverlayFact {
+            enemy_id: crate::wire::NetworkId,
+            health_fraction: f32,
+            shield_fraction: f32,
+            has_shield: bool,
+            alive: bool,
+        },
+    }
+
+    // Appending the command variant leaves every shipped presentation payload
+    // byte-identical, so it needs no wire-version bump.
+    #[test]
+    fn appending_presentation_commands_keeps_existing_payload_bytes() {
+        use crate::wire::{NetworkId, PresentationFact, ServerPresentationPayload};
+        let facts = std::collections::BTreeMap::from([
+            ("value".to_string(), PresentationFact::Number(12.5)),
+            ("label".to_string(), PresentationFact::Text("crit".to_string())),
+        ]);
+        let cases = [
+            (
+                PreCommandPresentationPayload::Spawn {
+                    template_id: "damage".to_string(),
+                    anchor: [1.0, 2.0, 3.0],
+                    value: 12.5,
+                    facts: facts.clone(),
+                },
+                ServerPresentationPayload::Spawn {
+                    template_id: "damage".to_string(),
+                    anchor: [1.0, 2.0, 3.0],
+                    value: 12.5,
+                    facts,
+                },
+            ),
+            (
+                PreCommandPresentationPayload::OverlayFact {
+                    enemy_id: NetworkId(7),
+                    health_fraction: 0.5,
+                    shield_fraction: 0.25,
+                    has_shield: true,
+                    alive: true,
+                },
+                ServerPresentationPayload::OverlayFact {
+                    enemy_id: NetworkId(7),
+                    health_fraction: 0.5,
+                    shield_fraction: 0.25,
+                    has_shield: true,
+                    alive: true,
+                },
+            ),
+        ];
+        for (before, after) in cases {
+            assert_eq!(
+                bitcode::encode(&before),
+                crate::wire::encode(&after),
+                "appending presentation commands changed a shipped encoding; bump WIRE_VERSION"
+            );
+        }
+    }
+
+    // A previous-build peer cannot decode a presentation command, so gate 1
+    // must refuse it before any decode.
+    #[test]
+    fn presentation_commands_refuse_the_previous_protocol_id() {
+        const PRE_COMMAND_PROTOCOL_ID: u32 = 0x_5052_4C41; // "PRLA"
+        const {
+            assert!(
+                PROTOCOL_ID == PRE_COMMAND_PROTOCOL_ID + 1,
+                "player-addressed presentation advances the application protocol by one"
+            );
+        };
+        assert_eq!(WIRE_VERSION, 26, "the byte layout of shipped messages is unchanged");
+        let previous = ProtocolVersion {
+            app_protocol_id: PRE_COMMAND_PROTOCOL_ID,
+            wire_version: WIRE_VERSION,
+        };
+        assert!(matches!(
+            validate_handshake(protocol_version(), previous),
+            Err(ClosingCause::Protocol { .. })
+        ));
+        assert_ne!(
+            transport_protocol_id(),
+            ((PRE_COMMAND_PROTOCOL_ID as u64) << 32) | u64::from(WIRE_VERSION),
+            "gate 1 refuses a peer that predates presentation commands"
+        );
+    }
+
     #[test]
     fn roster_entry_fields_stay_claim_free() {
         let entry = crate::wire::RosterEntry {
@@ -518,7 +614,7 @@ mod activation_epoch_tests {
     #[test]
     fn activation_records_and_outcomes_reject_previous_layout_and_vocabulary() {
         assert_eq!(WIRE_VERSION, 26);
-        assert_eq!(PROTOCOL_ID, 0x5052_4c41);
+        assert_eq!(PROTOCOL_ID, 0x5052_4c42);
         for received in [
             ProtocolVersion {
                 app_protocol_id: PROTOCOL_ID,
@@ -563,7 +659,10 @@ mod switch_tick_epoch_tests {
     #[test]
     fn switch_tick_advances_only_the_wire_version_and_refuses_wire_25_peers() {
         assert_eq!(WIRE_VERSION, 26);
-        assert_eq!(PROTOCOL_ID, 0x5052_4c41, "the vocabulary is unchanged");
+        assert_eq!(
+            PROTOCOL_ID, 0x5052_4c42,
+            "the switch tick changed no vocabulary; player-addressed presentation later advanced it to PRLB"
+        );
         assert_eq!(
             crate::wire::SNAPSHOT_VERSION,
             17,

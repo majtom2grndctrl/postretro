@@ -304,6 +304,13 @@ impl SeatTable {
         })
     }
 
+    /// The live client bound to `seat`. The host's own seat and a held seat
+    /// have none.
+    #[must_use]
+    pub fn client_for_seat(&self, seat: Seat) -> Option<u64> {
+        self.client_bindings.get(&seat).copied()
+    }
+
     #[must_use]
     pub fn seat_for_client(&self, client_id: u64) -> Option<Seat> {
         self.client_bindings

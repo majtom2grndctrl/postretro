@@ -75,6 +75,7 @@ pub fn fire_named_event_with_sequences(
             source,
             values,
             emitter,
+            presentation_seat: None,
         },
     );
     let mut chained = Vec::new();

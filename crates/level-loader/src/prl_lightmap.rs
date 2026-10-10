@@ -8,7 +8,7 @@ use postretro_level_format::animated_light_weight_maps::AnimatedLightWeightMapsS
 use postretro_level_format::lightmap::{
     LightmapBlockIndex, LightmapBlockPayload, SectionByteRange,
 };
-use postretro_level_format::shadowmask_atlas::ShadowmaskBlockIndex;
+use postretro_level_format::shadowmask_atlas_smb6::ShadowmaskBlockIndex;
 use postretro_render_data::geometry::WorldVertex;
 
 use crate::prl::{LightmapMode, PrlLoadError};

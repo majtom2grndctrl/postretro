@@ -1,7 +1,7 @@
 // Raw RGBA shadowmask fill → per-block BC5 group planes.
 // See: context/lib/build_pipeline.md §PRL section IDs
 
-use postretro_level_format::shadowmask_atlas::{SHADOWMASK_GROUP_COUNT, group_plane_len};
+use postretro_level_format::shadowmask_atlas_smb6::{SHADOWMASK_GROUP_COUNT, group_plane_len};
 
 use crate::bc5::encode_bc5_rg_masks;
 use crate::lightmap_bake::{CellBlock, copy_unit_rect};
@@ -165,7 +165,7 @@ pub(super) fn all_visible_blocks(blocks: &[CellBlock]) -> Vec<[Vec<u8>; 2]> {
 /// read fully visible, as the raw fill initializes them.
 #[cfg(test)]
 pub(crate) fn decode_blocks_to_layers(
-    section: &postretro_level_format::shadowmask_atlas::ShadowmaskAtlasSection,
+    section: &postretro_level_format::shadowmask_atlas_smb6::ShadowmaskAtlasSection,
     blocks: &[CellBlock],
     width: u32,
     height: u32,
@@ -198,7 +198,7 @@ pub(crate) fn decode_blocks_to_layers(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use postretro_level_format::shadowmask_atlas::ShadowmaskAtlasSection;
+    use postretro_level_format::shadowmask_atlas_smb6::ShadowmaskAtlasSection;
 
     fn block(layer: u32, x: u32, y: u32, width: u32, height: u32) -> CellBlock {
         CellBlock {

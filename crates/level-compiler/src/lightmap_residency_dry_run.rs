@@ -59,7 +59,7 @@ mod visible_set_tests;
 use postretro_level_format::cell_residency_set::CellResidencySetSection;
 use postretro_level_format::cell_visibility::CoupledPairRecord;
 use postretro_level_format::lightmap::{IRRADIANCE_FORMAT_BC6H, IRRADIANCE_FORMAT_RGBA16F};
-use postretro_level_format::shadowmask_atlas::SHADOWMASK_GROUP_COUNT;
+use postretro_level_format::shadowmask_atlas_smb6::SHADOWMASK_GROUP_COUNT;
 use postretro_level_loader::LevelWorld;
 
 use crate::cell_residency_bake::portal_distance::PortalGraphInput;

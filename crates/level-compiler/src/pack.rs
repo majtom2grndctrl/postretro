@@ -46,7 +46,7 @@ use postretro_level_format::navmesh::NavMeshSection;
 use postretro_level_format::portals::{PortalRecord, PortalsSection};
 use postretro_level_format::sdf_atlas::SdfAtlasSection;
 use postretro_level_format::sh_volume::OctahedralShVolumeSection;
-use postretro_level_format::shadowmask_atlas::ShadowmaskAtlasSection;
+use postretro_level_format::shadowmask_atlas_smb6::ShadowmaskAtlasSection;
 use postretro_level_format::texture_cache_keys::TextureCacheKeysSection;
 use postretro_level_format::trigger_volumes::TriggerVolumesSection;
 #[cfg(test)]
@@ -1149,7 +1149,7 @@ mod tests {
                 .blocks
                 .iter()
                 .map(|block| {
-                    let len = postretro_level_format::shadowmask_atlas::group_plane_len(
+                    let len = postretro_level_format::shadowmask_atlas_smb6::group_plane_len(
                         block.width.into(),
                         block.height.into(),
                     )

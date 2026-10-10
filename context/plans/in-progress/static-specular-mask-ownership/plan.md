@@ -98,6 +98,18 @@ packing, and runtime.
   - Billboard loops read `cone_dir_and_type.xyz` (`billboard.wgsl:367,738`). Packing the
     sun's aim must leave billboard output unchanged.
 
+- **Tasks 2 and 3 land as one commit, and the format change goes expand-then-contract.**
+  The SMB7 codec takes the final names in `level-format::shadowmask_atlas`. The SMB6 codec
+  moves unchanged to a temporary `shadowmask_atlas_smb6` module, and every consumer now
+  imports it from there. Each consumer switches to SMB7 in its own task: the compiler in
+  task 5, the loader and renderer in tasks 8–9. The legacy module is deleted with the last
+  switch, so the branch never carries an id 42 that the runtime cannot read. The split and the
+  import move touch the same files, so separate commits would leave a non-compiling state
+  between them.
+- **Brief "payload length that disagrees with the block arithmetic" (AC 44)** → SMB6 never
+  rejected trailing bytes after the last group plane. SMB7 does: a section whose length
+  differs from the end of its last blob is refused.
+
 ## Delegated answers
 
 - **Lit-texel floor: 16 interior texels.** The census cleared every stress-map overflow
@@ -225,8 +237,8 @@ Each task commits with its plan update.
 | # | Task | Owner | Depends on | Status |
 |---|---|---|---|---|
 | 1 | **First slice: owner delivery.** Extract the world specular loop from `fs_main` into a callable function. Add the owner-based static half (4 owners, `0xFFFF` stop, channel = position) and the `sdf_sel` SDF half. Build a GPU-required harness that renders owner-only specular from a hand-built per-vertex owner stream through a flat varying. Also check face-range reconstruction from BVH leaves on shipped PRLs (campaign-test, hallway, kinematic-platform, movement-feel): leaf count = face count, contiguous ranges. Riskiest premises: the flat-varying owner path, and face recovery without changing id 17 | integrating executor | — | done: `world_static_specular` and `world_static_light_specular` in `forward.wgsl`; the old chunk loop calls the per-light helper until task 9. `world_specular_test` runs 6 GPU tests with `POSTRETRO_REQUIRE_GPU=1` on the 1660 (43 passed with the shader and mask-sampling suites). Owners ride a second `Uint16x4` vertex buffer as a flat varying. Face recovery (scratch reader over ids 17/19): campaign-test 774 faces = 774 leaves; kinematic-platform 87; movement-feel 279; sdf-shadow-test 24; hallway 8437; stress-warren-mini 1271; combat-demo 91. All contiguous, covering every index, with disjoint per-face vertex ranges |
-| 2 | Split `pipeline/lightmap_stage.rs` and `shadowmask_bake.rs` along their responsibilities, with no behavior change. Move the analytic graph and standalone reference paths out of the root | integrating executor | — | |
-| 3 | `level-format` `SMB7`: `SHADOWMASK_OWNER_EMPTY = 0xFFFF`, a face-count header, the owner table, and load rejects (AC 44). Rework the prefix helpers for streaming. `SMB6` becomes a named re-bake. Readers compile against it | integrating executor | 2 | |
+| 2 | Split `pipeline/lightmap_stage.rs` and `shadowmask_bake.rs` along their responsibilities, with no behavior change. Move the analytic graph and standalone reference paths out of the root | integrating executor | — | done (with 3): `lightmap_stage.rs` 1671 → 439 lines plus `peak.rs`, `partitions.rs`, `tests.rs`; `shadowmask_bake.rs` 1003 → 437 plus `standalone.rs` and `analytic_graph.rs` (both retire in task 5). No behavior change: 101 tests in those modules pass unedited apart from imports |
+| 3 | `level-format` `SMB7`: `SHADOWMASK_OWNER_EMPTY = 0xFFFF`, a face-count header, the owner table, and load rejects (AC 44). Rework the prefix helpers for streaming. `SMB6` becomes a named re-bake. Readers compile against it | integrating executor | 2 | done: SMB7 codec with `ShadowmaskOwnerBounds` and `validate_face_owners`; 18 codec tests cover every AC 44 reject and the SMB5/SMB6 re-bake messages. Consumers moved to `shadowmask_atlas_smb6`. Workspace and `capture,dev-tools` targets check clean; level-format 604, compiler shadowmask and lightmap 110, loader 51, renderer lightmap and shadowmask 82, lighting 65 tests pass |
 | 4 | Compiler eligibility and presence: eligible set and `source_index` → spec index map. Owner-index cap error before any lightmap work (AC 48). Decouple id-42 presence from ids 40 and 41 in prepare, pack plan, memo validator and residency dry run (AC 45, 47) | integrating executor | 3 | |
 | 5 | In-walk ownership for uncut faces. Per-layer texel → face map. Per-face shadowed sums with an `is_finite` gate. Floor tier, then id-40 tier, then contribution, then index. Eviction zeros the padded rect; an owner's first write zeros unwritten texels. Before encode, sort owners ascending and permute the channel planes. Drop report and `--verbose` peak from `finish()`. Retire the graph and assignment (AC 20–32, 34–37, 14, 24) | integrating executor | 4 | |
 | 6 | Cut-face estimate. Plumb `FaceCut` and `face_remap` to the walk. Sample emitted sub-chart interiors on the floor stride with deduplication. Trace only lights whose analytic term reaches. Rank and fix owners before the walk; clear zero-bake owners after it. Exact parent lit-texel count. Report a cut face once, by parent (AC 3–9, 33, 42) | integrating executor | 5 | |

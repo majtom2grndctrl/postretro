@@ -7,7 +7,7 @@
 use postretro_level_format::lightmap::{
     LIGHTMAP_POOL_LAYER_EDGE, LightmapBlockIndex, LightmapBlockPayload, LightmapHeader,
 };
-use postretro_level_format::shadowmask_atlas::{
+use postretro_level_format::shadowmask_atlas_smb6::{
     SHADOWMASK_GROUP_COUNT, ShadowmaskBlockIndex, group_plane_len,
 };
 use postretro_render_cpu::lightmap_pool::{AllResidentPool, place_all_resident};

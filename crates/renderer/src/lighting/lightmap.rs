@@ -17,7 +17,7 @@ mod upload;
 
 use postretro_level_format::SectionId;
 use postretro_level_format::lightmap::LightmapBlockIndex;
-use postretro_level_format::shadowmask_atlas::ShadowmaskBlockIndex;
+use postretro_level_format::shadowmask_atlas_smb6::ShadowmaskBlockIndex;
 use postretro_level_loader::{LightmapDrainBatch, LightmapDrainOutcome};
 use postretro_render_cpu::lightmap_pool::{block_table_bytes, placeholder_block_table};
 use wgpu::util::DeviceExt;

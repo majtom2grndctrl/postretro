@@ -8,7 +8,7 @@ use postretro_level_format::SectionEntry;
 use postretro_level_format::lightmap::{
     LightmapBlockIndex, LightmapBlockPayload, SectionByteRange,
 };
-use postretro_level_format::shadowmask_atlas::ShadowmaskBlockIndex;
+use postretro_level_format::shadowmask_atlas_smb6::ShadowmaskBlockIndex;
 
 use super::boundary::LightmapDrainBatch;
 use super::lightmap_stream_error;

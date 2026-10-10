@@ -22,7 +22,7 @@ use postretro_level_format::sdf_atlas::SdfAtlasSection;
 use postretro_level_format::sh_volume::{
     OctahedralShVolumeSection, validate_storage_levels_against_delta,
 };
-use postretro_level_format::shadowmask_atlas::ShadowmaskBlockIndex;
+use postretro_level_format::shadowmask_atlas_smb6::ShadowmaskBlockIndex;
 use postretro_render_data::influence::LightInfluence;
 
 use crate::prl::{LevelWorld, LightType, LightmapMode, MapLight, PrlLoadError, ShadowType};

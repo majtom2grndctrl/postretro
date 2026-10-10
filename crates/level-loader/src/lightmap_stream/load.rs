@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use postretro_level_format::lightmap::{LIGHTMAP_HEADER_BYTES, LightmapBlockIndex, LightmapHeader};
-use postretro_level_format::shadowmask_atlas::{
+use postretro_level_format::shadowmask_atlas_smb6::{
     SHADOWMASK_BLOCK_RECORD_BYTES, ShadowmaskBlockIndex, shadowmask_block_count_offset,
     shadowmask_prefix_len_through_block_count,
 };

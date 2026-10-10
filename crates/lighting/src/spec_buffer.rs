@@ -4,7 +4,7 @@
 // See: context/lib/rendering_pipeline.md
 
 use crate::falloff_model_code;
-use postretro_level_format::shadowmask_atlas::SHADOWMASK_CHANNEL_DROPPED;
+use postretro_level_format::shadowmask_atlas_smb6::SHADOWMASK_CHANNEL_DROPPED;
 use postretro_level_loader::{LightType, MapLight, ShadowType};
 
 /// Byte size of one `SpecLight` record. WGSL layout is four packed vec4<f32>

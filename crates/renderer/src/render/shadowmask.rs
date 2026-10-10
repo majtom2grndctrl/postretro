@@ -4,7 +4,7 @@
 #[cfg(test)]
 use super::renderer_types::LevelGeometryShStorage;
 use super::renderer_types::{LevelGeometry, PromotedBakedLightRecord, PromotedShadowPoolKind};
-use postretro_level_format::shadowmask_atlas::SHADOWMASK_CHANNEL_DROPPED;
+use postretro_level_format::shadowmask_atlas_smb6::SHADOWMASK_CHANNEL_DROPPED;
 use postretro_level_loader::MapLight;
 
 pub(crate) const FORWARD_SHADOWMASK_META_VEC4S_PER_RECORD: usize = 2;
@@ -200,7 +200,7 @@ fn push_f32(out: &mut Vec<u8>, value: f32) {
 mod tests {
     use super::super::renderer_types::PromotedBakedLightSource;
     use super::*;
-    use postretro_level_format::shadowmask_atlas::ShadowmaskAtlasSection;
+    use postretro_level_format::shadowmask_atlas_smb6::ShadowmaskAtlasSection;
     use postretro_level_loader::{FalloffModel, LightType, ShadowType};
     use postretro_lighting::spec_buffer::{
         SPEC_LIGHT_SHADOWMASK_NONE, SPEC_LIGHT_SIZE, pack_spec_lights,

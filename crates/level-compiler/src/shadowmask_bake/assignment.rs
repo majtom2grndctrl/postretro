@@ -3,7 +3,7 @@
 
 use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 
-use postretro_level_format::shadowmask_atlas::SHADOWMASK_CHANNEL_DROPPED;
+use postretro_level_format::shadowmask_atlas_smb6::SHADOWMASK_CHANNEL_DROPPED;
 
 use crate::map_data::MapLight;
 

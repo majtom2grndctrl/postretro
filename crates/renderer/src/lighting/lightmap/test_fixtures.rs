@@ -7,7 +7,7 @@ use postretro_level_format::lightmap::{
     IRRADIANCE_FORMAT_RGBA16F, LightmapBlock, LightmapBlockIndex, LightmapBlockPayload,
     LightmapMode, LightmapSection, f32_to_f16_bits,
 };
-use postretro_level_format::shadowmask_atlas::{ShadowmaskAtlasSection, ShadowmaskBlockIndex};
+use postretro_level_format::shadowmask_atlas_smb6::{ShadowmaskAtlasSection, ShadowmaskBlockIndex};
 
 pub(crate) struct BlockFixture {
     pub(crate) index: LightmapBlockIndex,

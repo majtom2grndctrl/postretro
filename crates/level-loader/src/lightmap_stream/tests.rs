@@ -10,7 +10,7 @@ use postretro_level_format::lightmap::{
     DIRECTION_TEXEL_BYTES, IRRADIANCE_FORMAT_RGBA16F, IRRADIANCE_TEXEL_BYTES, LightmapBlock,
     LightmapBlockPayload, LightmapMode, LightmapSection,
 };
-use postretro_level_format::shadowmask_atlas::{ShadowmaskAtlasSection, group_plane_len};
+use postretro_level_format::shadowmask_atlas_smb6::{ShadowmaskAtlasSection, group_plane_len};
 use postretro_level_format::{SectionBlob, SectionId};
 use postretro_test_log_capture::LogCapture;
 

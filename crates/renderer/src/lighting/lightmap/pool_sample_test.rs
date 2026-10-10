@@ -15,7 +15,7 @@
 // `POSTRETRO_REQUIRE_GPU` to any non-empty value other than `0` to make a
 // missing adapter fail the test instead of skipping it.
 
-use postretro_level_format::shadowmask_atlas::SHADOWMASK_CHANNEL_DROPPED;
+use postretro_level_format::shadowmask_atlas_smb6::SHADOWMASK_CHANNEL_DROPPED;
 use postretro_render_cpu::lightmap_pool::{
     AllResidentPool, BlockPlacement, block_table_bytes, placeholder_block_table,
 };

@@ -21,7 +21,7 @@ use postretro_level_format::entity_shadow_lights::EntityShadowLightsSection;
 use postretro_level_format::geometry::GeometrySection;
 use postretro_level_format::lightmap::{DIRECTION_TEXEL_BYTES, LightmapBlockIndex};
 use postretro_level_format::portals::{PortalRecord, PortalsSection};
-use postretro_level_format::shadowmask_atlas::ShadowmaskBlockIndex;
+use postretro_level_format::shadowmask_atlas_smb6::ShadowmaskBlockIndex;
 use postretro_level_format::{SectionId, read_container, read_section_data};
 use postretro_level_loader::LevelWorld;
 

@@ -507,7 +507,7 @@ pub struct LevelGeometry<'a> {
     /// cell block. The index only; install hands the groups to
     /// `install_level_geometry` inside each block's payload.
     pub shadowmask_atlas:
-        Option<&'a postretro_level_format::shadowmask_atlas::ShadowmaskBlockIndex>,
+        Option<&'a postretro_level_format::shadowmask_atlas_smb6::ShadowmaskBlockIndex>,
     /// `None` → no SDF static-occluder atlas; runtime SDF shadow pass disabled.
     /// An empty-geometry section (zero grid dims) is treated the same way.
     pub sdf_atlas: Option<&'a postretro_level_format::sdf_atlas::SdfAtlasSection>,

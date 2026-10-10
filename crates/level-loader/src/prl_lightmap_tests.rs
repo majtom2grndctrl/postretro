@@ -14,7 +14,7 @@ use postretro_level_format::lightmap::{
     LIGHTMAP_BLOCK_RECORD_BYTES, LIGHTMAP_HEADER_BYTES, LIGHTMAP_POOL_LAYER_EDGE, LightmapBlock,
     LightmapMode, LightmapSection,
 };
-use postretro_level_format::shadowmask_atlas::{ShadowmaskAtlasSection, group_plane_len};
+use postretro_level_format::shadowmask_atlas_smb6::{ShadowmaskAtlasSection, group_plane_len};
 use postretro_test_log_capture::LogCapture;
 
 /// Id-22 cell blocks at these extents (multiples of 4), one per cell, with

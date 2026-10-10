@@ -17,7 +17,7 @@ use crate::map_data::{FalloffModel, LightType, ShadowType};
 use crate::reporter::StageProgress;
 use glam::{DVec3, Vec3};
 use postretro_level_format::geometry::{FaceMeta, GeometrySection, Vertex};
-use postretro_level_format::shadowmask_atlas::SHADOWMASK_CHANNEL_DROPPED;
+use postretro_level_format::shadowmask_atlas_smb6::SHADOWMASK_CHANNEL_DROPPED;
 use postretro_level_format::texture_names::TextureNamesSection;
 use postretro_test_log_capture::LogCapture;
 use rayon::ThreadPoolBuilder;

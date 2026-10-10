@@ -5,7 +5,7 @@ use std::fmt::Write as _;
 use postretro_level_format::cell_visibility::{
     CELL_VISIBILITY_DISTANCE_FIXED_POINT_SCALE, CELL_VISIBILITY_FANOUT_K,
 };
-use postretro_level_format::shadowmask_atlas::SHADOWMASK_GROUP_COUNT;
+use postretro_level_format::shadowmask_atlas_smb6::SHADOWMASK_GROUP_COUNT;
 
 use super::layouts::RUNTIME_LAYER_FLOOR;
 use super::mandatory::{DistanceBound, MandatoryBytes};

@@ -16,7 +16,7 @@ use image::RgbaImage;
 use postretro_level_format as prl_format;
 use postretro_level_format::SectionId;
 use postretro_level_format::lightmap::LightmapBlockIndex;
-use postretro_level_format::shadowmask_atlas::{
+use postretro_level_format::shadowmask_atlas_smb6::{
     SHADOWMASK_CHANNEL_DROPPED, SHADOWMASK_GROUP_COUNT, ShadowmaskAtlasSection,
 };
 

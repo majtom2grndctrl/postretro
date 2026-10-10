@@ -16,7 +16,7 @@
 // `POSTRETRO_REQUIRE_GPU` to any non-empty value other than `0` to make a
 // missing adapter fail the test instead of skipping it.
 
-use postretro_level_format::shadowmask_atlas::{
+use postretro_level_format::shadowmask_atlas_smb6::{
     SHADOWMASK_CHANNEL_DROPPED, SHADOWMASK_GROUP_COUNT,
 };
 use postretro_lighting::spec_buffer::SPEC_LIGHT_SHADOWMASK_NONE;

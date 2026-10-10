@@ -3035,7 +3035,7 @@ pub(crate) mod tests {
             IRRADIANCE_FORMAT_RGBA16F, LightmapBlock, LightmapBlockPayload, LightmapMode,
             LightmapSection,
         };
-        use postretro_level_format::shadowmask_atlas::ShadowmaskAtlasSection;
+        use postretro_level_format::shadowmask_atlas_smb6::ShadowmaskAtlasSection;
 
         let mut app = test_app();
         assert!(app.renderer.is_none());

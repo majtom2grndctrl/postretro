@@ -1,7 +1,7 @@
 // Shadowmask channel fill over already-assigned selected lights.
 // See: context/lib/build_pipeline.md §PRL section IDs
 
-use postretro_level_format::shadowmask_atlas::{
+use postretro_level_format::shadowmask_atlas_smb6::{
     SHADOWMASK_CHANNEL_DROPPED, ShadowmaskAtlasSection,
 };
 

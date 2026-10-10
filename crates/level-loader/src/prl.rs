@@ -54,7 +54,7 @@ use postretro_level_format::sdf_atlas::SdfAtlasSection;
 #[cfg(feature = "load-prl")]
 use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 #[cfg(feature = "load-prl")]
-use postretro_level_format::shadowmask_atlas::ShadowmaskBlockIndex;
+use postretro_level_format::shadowmask_atlas_smb6::ShadowmaskBlockIndex;
 #[cfg(feature = "load-prl")]
 use postretro_level_format::texture_cache_keys::TextureCacheKeysSection;
 #[cfg(feature = "load-prl")]
@@ -2492,8 +2492,10 @@ mod tests {
     fn shadowmask_section(
         extents: &[(u16, u16)],
         channels: Vec<u8>,
-    ) -> postretro_level_format::shadowmask_atlas::ShadowmaskAtlasSection {
-        use postretro_level_format::shadowmask_atlas::{ShadowmaskAtlasSection, group_plane_len};
+    ) -> postretro_level_format::shadowmask_atlas_smb6::ShadowmaskAtlasSection {
+        use postretro_level_format::shadowmask_atlas_smb6::{
+            ShadowmaskAtlasSection, group_plane_len,
+        };
         let blocks = extents
             .iter()
             .enumerate()
@@ -2509,7 +2511,7 @@ mod tests {
     }
 
     fn shadowmask_blob(
-        section: postretro_level_format::shadowmask_atlas::ShadowmaskAtlasSection,
+        section: postretro_level_format::shadowmask_atlas_smb6::ShadowmaskAtlasSection,
     ) -> prl_format::SectionBlob {
         prl_format::SectionBlob {
             section_id: SectionId::ShadowmaskAtlas as u32,
@@ -6679,7 +6681,7 @@ mod tests {
     // fails the load; bytes that read as a valid tag must fail too.
     #[test]
     fn load_prl_rejects_a_pre_bc5_shadowmask_layout() {
-        use postretro_level_format::shadowmask_atlas::SHADOWMASK_FORMAT_BC5_RG_BLOCKS;
+        use postretro_level_format::shadowmask_atlas_smb6::SHADOWMASK_FORMAT_BC5_RG_BLOCKS;
         for (label, blob) in [
             ("raw", pre_bc5_shadowmask_blob(4, 4, 2)),
             (
@@ -6707,7 +6709,7 @@ mod tests {
     // section, which loads; every slot is the sentinel, so it reads fully lit.
     #[test]
     fn load_prl_keeps_an_all_sentinel_shadowmask_section() {
-        use postretro_level_format::shadowmask_atlas::SHADOWMASK_CHANNEL_DROPPED;
+        use postretro_level_format::shadowmask_atlas_smb6::SHADOWMASK_CHANNEL_DROPPED;
         let section = shadowmask_section(&[(4, 4)], vec![SHADOWMASK_CHANNEL_DROPPED]);
         let tmp = write_prl_fixture(
             selected_light_sections_with(shadowmask_blob(section.clone())),

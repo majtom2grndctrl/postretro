@@ -20,7 +20,7 @@ campaign-test's animated lights stayed fully on after the addressing-model SDK c
 ## Acceptance
 
 - `cargo test -p postretro-renderer --lib splash_pass` — all pass, count > 0.
-- `cargo test -p postretro --lib data_script_staleness` — all pass, count > 0.
+- `cargo test -p postretro --features dev-tools --bin postretro data_script_staleness` — all pass, count > 0.
 - `rg -n "setFogScatter|SetFogScatter|\bscatter: 0" content sdk docs crates --glob '!**/target/**'` — empty.
 - Typedef freshness tests in `postretro-sim` pass.
 - campaign-test run log: no `setupLevel threw`, no `not registered` line. Visual: arena lights pulse (owner).

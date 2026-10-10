@@ -156,7 +156,7 @@ Up to 16 `env_fog_volume` entities are allowed per map.
 | `color` | RGB | `255 255 255` | Fog tint color as `"R G B"` values 0–255 |
 | `density` | float | `0.5` | How opaque the fog is. Higher values thicken the fog faster; values above 1.0 are very heavy. |
 | `falloff` | float | `1.0` | How sharply the fog fades at the volume boundary. `0` = hard cutoff, `1` = smooth linear ramp. |
-| `scatter` | float | `0.6` | How much light scatters toward the camera. Higher values make dynamic spotlights produce more visible beams and halos. |
+| `glow` | float | `0.6` | How much the fog lights up near light sources. `0` stays dark even under bright lights; `1` picks up full light color. Raise for misty glow, lower for thick opaque smoke. |
 | `height_gradient` | float | `0.0` | Density bias by height. `0` = uniform density throughout the volume; `1` = denser at the bottom, thinner at the top. Good for ground-hugging smoke or water surface haze. |
 | `radial_falloff` | float | `0.0` | Density falloff toward the outer edges of the volume. `0` = no falloff (flat-sided box); `1` = sphere-shaped cloud, thin at the edges and dense at the center. |
 | `_tags` | string | `""` | Space-delimited tags for script queries (e.g. `"smoke ambient"`). Not visible in-game. |

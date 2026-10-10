@@ -1596,6 +1596,8 @@ function setupLevel(_ctx)
 end
 ```
 
+A map names its data script with the `data_script` key on `worldspawn`, a path relative to the `.map` file. `prl-build` compiles the script into the `.prl`, and the engine runs that compiled copy, never the file beside it. Rebuild the map after editing its data script. When the script file is newer than the `.prl`, the engine logs an error at level load naming both. It does not notice edits to modules the script imports.
+
 ---
 
 ## Addressing entities
@@ -2090,7 +2092,7 @@ Returned in `FogVolumeHandle.component` from `getMapEntities("fog")`. All fields
 | Field | Type | Description |
 |-------|------|-------------|
 | `density` | `number` | Optical density of the volume. `0` is transparent; values above `1` saturate quickly. Wire default: `0.5`. |
-| `glow` | `number` | How much the fog lights up near light sources, in `[0.0, 1.0]`. `0` stays dark under bright lights; `1` picks up full light color. Raise for misty glow, lower for thick opaque smoke. |
+| `glow` | `number` | How much the fog lights up near light sources, in `[0.0, 1.0]`. `0` stays dark under bright lights; `1` picks up full light color. Raise for misty glow, lower for thick opaque smoke. Wire default: `0.6`. |
 | `edgeSoftness` | `number` | Soft falloff width at the volume boundary, in meters. `0` is a hard edge. |
 | `falloff` | `number` | Radial falloff exponent. Used by `fog_lamp`, `fog_tube`, and axis-aligned `fog_volume` (ellipsoid path). Stored on plane-bounded `fog_volume` (non-axis-aligned) entities but not consulted by their shader path. Wire default per FGD: `fog_lamp` = `2.0`, `fog_tube` = `1.5`, axis-aligned `fog_volume` = `2.0`. |
 | `tint` | `readonly [number, number, number]` | Per-volume RGB scatter multiplier in linear space. `[1, 1, 1]` = no tint. Each channel clamped to `[0, +∞)`. |
@@ -2155,10 +2157,12 @@ Overwrites `FogVolumeComponent.falloff` on every target. `falloff` must be finit
   falloff?: number,
   tint?: readonly [number, number, number],
   saturation?: number,
+  minBrightness?: number,
+  lightRange?: number,
 }
 ```
 
-Combined partial-update primitive. Any subset of the six fields may be present. Each field is validated independently per the rules above (out-of-range `density` / `glow` / `edgeSoftness` / `tint` channel / `saturation` clamp; out-of-range `falloff` is dropped). Absent fields preserve the target's current component value. The component is mutated once per target with the merged result; if all supplied fields fail validation, no write occurs for any target.
+Combined partial-update primitive. Any subset of the eight fields may be present. Each field is validated independently per the rules above (out-of-range `density` / `glow` / `edgeSoftness` / `tint` channel / `saturation` / `minBrightness` clamp; a non-positive or non-finite `lightRange` clamps to `0.001`; out-of-range `falloff` is dropped). Absent fields preserve the target's current component value. The component is mutated once per target with the merged result; if all supplied fields fail validation, no write occurs for any target.
 
 Use `setFogParams` when an author wants to change two or more fields atomically — adjacent single-field steps would briefly observe a partial update on the GPU.
 

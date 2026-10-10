@@ -1,7 +1,4 @@
-// Stale level-script detection at level load. A `.prl` embeds a compiled copy
-// of its data script at bake time and the engine runs only that copy, so a map
-// baked before a script edit silently keeps the old behavior — or, after an SDK
-// break, throws in `setupLevel` and installs no reactions at all.
+// Load-time error for a map baked before the last edit to its level script.
 // See: context/lib/scripting.md §2 (Data context lifecycle)
 
 use std::path::Path;
@@ -40,6 +37,8 @@ fn source_newer_than_map(map_path: &Path, source_path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use log::Level;
+    use postretro_test_log_capture::LogCapture;
     use std::fs::File;
     use std::time::{Duration, SystemTime};
 
@@ -74,5 +73,58 @@ mod tests {
         let map = dir.path().join("level.prl");
         write_with_mtime(&map, SystemTime::now());
         assert!(!source_newer_than_map(&map, &dir.path().join("absent.ts")));
+    }
+
+    /// Equal timestamps read as fresh: only a strictly newer source is stale.
+    #[test]
+    fn equal_mtimes_are_fresh() {
+        let dir = tempfile::tempdir().unwrap();
+        let (map, source) = (dir.path().join("level.prl"), dir.path().join("level.ts"));
+        let stamp = SystemTime::now() - Duration::from_secs(3600);
+        write_with_mtime(&source, stamp);
+        write_with_mtime(&map, stamp);
+        assert!(!source_newer_than_map(&map, &source));
+    }
+
+    /// The section carries the path as `prl-build` records it: canonicalized,
+    /// which on Windows is a `\\?\` verbatim path.
+    fn section_for(source: &Path) -> DataScriptSection {
+        DataScriptSection {
+            compiled_bytes: Vec::new(),
+            source_path: std::fs::canonicalize(source)
+                .unwrap()
+                .to_string_lossy()
+                .into_owned(),
+        }
+    }
+
+    #[test]
+    fn stale_section_logs_one_error_naming_map_and_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let (map, source) = (dir.path().join("level.prl"), dir.path().join("level.ts"));
+        let baked = SystemTime::now() - Duration::from_secs(3600);
+        write_with_mtime(&map, baked);
+        write_with_mtime(&source, baked + Duration::from_secs(60));
+        let section = section_for(&source);
+
+        let capture = LogCapture::start();
+        report_stale_data_script(&map, Some(&section));
+        capture.assert_logged_once(Level::Error, "level.prl");
+        capture.assert_logged_once(Level::Error, "level.ts");
+    }
+
+    #[test]
+    fn fresh_or_absent_section_logs_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let (map, source) = (dir.path().join("level.prl"), dir.path().join("level.ts"));
+        let edited = SystemTime::now() - Duration::from_secs(3600);
+        write_with_mtime(&source, edited);
+        write_with_mtime(&map, edited + Duration::from_secs(60));
+        let section = section_for(&source);
+
+        let capture = LogCapture::start();
+        report_stale_data_script(&map, Some(&section));
+        report_stale_data_script(&map, None);
+        capture.assert_not_logged(Level::Error, "level.prl");
     }
 }

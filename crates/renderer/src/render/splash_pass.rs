@@ -333,9 +333,9 @@ impl BootSplashPass {
 /// Aspect-preserving device-pixel rect `[x, y, w, h]` for the logo, centered in
 /// the `viewport`: `LOGO_WIDTH_FRACTION` of the fitted 16:9 reference frame's
 /// width, unless that would exceed `LOGO_MAX_HEIGHT_FRACTION` of the window
-/// height. Pure math — no GPU — so it
-/// is unit-tested without a device. A degenerate viewport or source (zero on any
-/// axis) yields a zero-size rect, which the draw renders as nothing.
+/// height. Pure math — no GPU — so it is unit-tested without a device. A
+/// degenerate viewport or source (zero on any axis) yields a zero-size rect,
+/// which the draw renders as nothing.
 fn logo_rect(src_dims: [u32; 2], viewport: [u32; 2]) -> [f32; 4] {
     let (vw, vh) = (viewport[0] as f32, viewport[1] as f32);
     let (sw, sh) = (src_dims[0] as f32, src_dims[1] as f32);

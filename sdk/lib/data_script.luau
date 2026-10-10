@@ -179,7 +179,7 @@ export type SetFogFalloffStep = {
 export type SetFogParamsStep = {
   id: number,
   primitive: "setFogParams",
-  args: { density: number?, glow: number?, edgeSoftness: number?, falloff: number? },
+  args: { density: number?, glow: number?, edgeSoftness: number?, falloff: number?, tint: {number}?, saturation: number?, minBrightness: number?, lightRange: number? },
 }
 
 export type MoverStartStep = {
